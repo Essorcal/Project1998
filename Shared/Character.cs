@@ -38,6 +38,8 @@ public sealed class Character
     public byte Might    = 3;
     public byte Will     = 3;
     public byte Grace    = 3;
+    public uint Exp      = 0;
+    public uint Coins    = 0;
     public byte Armor    = 0;
     public byte MaxInv   = 27;
 

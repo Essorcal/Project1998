@@ -263,8 +263,9 @@ public sealed class Session
         Log.Info("   -> mapinfo(0x15)");
         SendXy();
         SendSelfLook();
+        SendStats();
 
-        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self ==");
+        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats ==");
     }
 
     private Character _char = new();
@@ -285,7 +286,7 @@ public sealed class Session
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232);
         Log.Info("   -> mapinfo(0x15)");
-        SendStatus();
+        SendStats();
         SendSelfLook();
         SendXy();
         SendMap(0x22, 3, Array.Empty<byte>(), "map-done(0x22)");
@@ -304,21 +305,39 @@ public sealed class Session
         SendMap(0x05, _gameInc++, d.ToArray(), "id(0x05) — YOUR entity id");
     }
 
-    private void SendStatus()
+    // 0x08 self-stats -> the always-on HUD. Opcode + full byte layout decoded empirically (2026-07-24):
+    // a real 6.x server capture (jeedee/TkServer) proved stats = 0x08; a self-describing gradient packet
+    // (!stg, body[i]=i) then pinned every 4.95 field offset by reading the value off the HUD. flags=0x78
+    // selects the full-stats form. Multi-byte stat fields are big-endian u32 (verified: HP=0x18191A1B at
+    // offset 24, Exp=0x20212223 at 32, etc.).
+    //   [0]=flags(0x78) [1]=nation [2]=totem [4]=level [5..8]=maxHP u32BE [9..12]=maxMP u32BE
+    //   [13]=might [14]=will [17]=grace [24..27]=HP u32BE [28..31]=MP u32BE [32..35]=exp u32BE
+    //   [36..39]=coins u32BE
+    private void SendStats()
     {
-        var d = new List<byte>
-        {
-            0x1F,                       // flags (fullstats|hpmp|alwayson) — ROUGH guess
-            0, _char.Nation, _char.Totem, 0, _char.Level
-        };
-        d.AddRange(Be32(_char.MaxHp));
-        d.AddRange(Be32(_char.MaxMp));
-        d.Add(_char.Might); d.Add(_char.Will); d.Add(3); d.Add(3); d.Add(_char.Grace);
-        d.AddRange(new byte[] { 0, 0, _char.Armor, 0, 0, 0, 0, 0, 0, 0 });
-        d.Add(_char.MaxInv);
-        d.AddRange(Be32(_char.Hp));
-        d.AddRange(Be32(_char.Mp));
-        SendMap(0x08, 0, d.ToArray(), "status(0x08)");
+        var d = new byte[58];
+        d[0] = 0x78;                        // flags: full-stats form
+        d[1] = _char.Nation;
+        d[2] = _char.Totem;
+        d[4] = _char.Level;
+        WriteBe32(d, 5, _char.MaxHp);       // maxHP  (offset hypothesis — verify vs the HP "cur/max" text)
+        WriteBe32(d, 9, _char.MaxMp);       // maxMP
+        d[13] = _char.Might;
+        d[14] = _char.Will;
+        d[17] = _char.Grace;
+        WriteBe32(d, 24, _char.Hp);         // current HP (confirmed)
+        WriteBe32(d, 28, _char.Mp);         // current MP (confirmed)
+        WriteBe32(d, 32, _char.Exp);        // experience (confirmed)
+        WriteBe32(d, 36, _char.Coins);      // coins      (confirmed)
+        SendMap(0x08, _gameInc++, d, "stats(0x08)");
+    }
+
+    private static void WriteBe32(byte[] d, int off, uint v)
+    {
+        d[off]     = (byte)(v >> 24);
+        d[off + 1] = (byte)(v >> 16);
+        d[off + 2] = (byte)(v >> 8);
+        d[off + 3] = (byte)v;
     }
 
     /// <summary>
@@ -436,6 +455,7 @@ public sealed class Session
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
         if (text.StartsWith("!r6", StringComparison.OrdinalIgnoreCase)) { StatReplay6x(text); return; }
+        if (text.StartsWith("!stg", StringComparison.OrdinalIgnoreCase)) { StatGradient(text); return; }
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         SendSpeech(chatType, _char.Id, msg);
@@ -548,6 +568,19 @@ public sealed class Session
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x01, 0x00, 0x00, 0xb3, 0x3d, 0x00, // trailing settings/flags
     };
+
+    // "!stg" — self-describing GRADIENT stats packet on 0x08 (the confirmed 4.95 stats opcode). Body
+    // byte[i] = i, so every HUD number reveals its own field offset: a byte field shows its offset; a
+    // u32 field shows 0xNN.. from which the offset AND endianness fall out. Flags kept at 0x78 (the
+    // captured 6.x "full" value that lit every field). One read maps the entire 4.95 layout.
+    private void StatGradient(string text)
+    {
+        var d = new byte[60];
+        d[0] = 0x78;                                   // flags (full-stats)
+        for (int i = 1; i < d.Length; i++) d[i] = (byte)i;
+        SendMap(0x08, _gameInc++, d, "stat-gradient(0x08)");
+        Log.Info("   -> STAT GRADIENT on 0x08 (body[i]=i); read each HUD number = that field's offset");
+    }
 
     private void StatReplay6x(string text)
     {
