@@ -28,6 +28,7 @@ def load(name):
 
 MONSTERS = load("monsters.json")
 ATLAS = load("atlas.json")
+PALETTES = load("palettes.json")
 
 def load_mapping():
     if os.path.exists(MAPPING_PATH):
@@ -73,6 +74,16 @@ input{background:#1f232b;color:var(--txt);border:1px solid var(--edge);border-ra
 .vline .num{width:52px}
 .vline .rm{padding:5px 8px;background:transparent;border-color:transparent;color:var(--mut);font-size:15px;line-height:1}
 .vline .rm:hover{color:var(--warn)}
+.vline .colbtn{padding:4px 6px;display:flex;align-items:center;gap:3px;font-size:13px}
+.vline .colbtn .colidx{font-size:11px;color:var(--accent);min-width:8px}
+#colorpick{position:absolute;z-index:120;display:none;background:#12151b;border:1px solid var(--accent);border-radius:8px;box-shadow:0 10px 30px #000b;padding:8px;width:340px}
+#colorpick .cphdr{font-size:11.5px;color:var(--mut);margin-bottom:6px}
+#colorpick .cpgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;max-height:340px;overflow:auto}
+#colorpick .cpsw{display:flex;flex-direction:column;align-items:center;gap:2px;padding:3px;border:1px solid var(--edge);border-radius:5px;cursor:pointer;background:#1b1f27}
+#colorpick .cpsw:hover{border-color:var(--accent)}
+#colorpick .cpsw.sel{border-color:var(--accent);background:#22302a}
+#colorpick .cpsw span{font-size:9px;color:var(--mut)}
+#colorpick canvas,#colorpick .cpcanv canvas{image-rendering:pixelated;max-width:38px;max-height:38px}
 .meta{font-size:10.5px;color:var(--mut);min-height:13px;padding-left:2px}
 .meta b{color:var(--warn)}
 .addv{align-self:flex-start;font-size:12px;padding:4px 9px;color:var(--accent)}
@@ -101,16 +112,20 @@ input{background:#1f232b;color:var(--txt);border:1px solid var(--edge);border-ra
 </header>
 <div class="legend" style="padding:8px 16px 0">
   Each sprite is one look id (= <code>0x8000 | id</code> in the 0x07 spawn). A sprite can be <b>several
-  monsters</b> — click <b>+ variant</b> to add color/level variants (red/blue/green dog…). Type in the name
-  box to search Nexus Atlas (sorted by exp); pick one to auto-fill exp/type. <b>col</b> = optional 0x07 color
-  byte (0 = sprite default). Auto-saves in your browser; <b>Save to repo</b> writes <code>data/monster_mapping.json</code>.
+  monsters</b> — click <b>+ variant</b> for color/level variants (red/blue/green dog…). Type in the name box
+  to search Nexus Atlas; picking one auto-fills exp/type. The <b>🎨</b> button shows this sprite in all 20
+  recolor palettes — click the one that matches the variant's color (that palette index is the spawn color).
+  Auto-saves in your browser; <b>Save to repo</b> writes <code>data/monster_mapping.json</code>.
 </div>
 <div class="grid" id="grid"></div>
 <div id="pick"></div>
+<div id="colorpick"></div>
 <div id="toast"></div>
 <script>
 const MONSTERS = __MONSTERS__;
 const ATLAS = __ATLAS__;
+const PALETTES = __PALETTES__;                 // 20 x 256 x [r,g,b] recolor LUTs
+const MON = {}; MONSTERS.forEach(x=>MON[x.id]=x);
 const LSKEY = "tk495_monster_map_v2";
 // normalize a stored value to an array of variant objects
 function toList(v){ if(!v) return []; if(Array.isArray(v)) return v; if(v.name) return [v]; return []; }
@@ -141,20 +156,67 @@ function variantRow(v){
   const row=document.createElement('div'); row.className='vrow';
   row.innerHTML=`<div class="vline">
       <input class="name" placeholder="monster name…" autocomplete="off" value="${esc(v.name)}">
-      <input class="num color" type="number" placeholder="col" title="0x07 color byte (0=default)" value="${v.color??''}">
-      <input class="num hp" type="number" placeholder="hp" title="HP" value="${v.hp??''}">
-      <input class="num exp" type="number" placeholder="exp" title="exp reward" value="${v.exp??''}">
+      <button class="colbtn" title="pick recolor (palette)">🎨<span class="colidx">${v.color??''}</span></button>
+      <input class="num hp" type="number" placeholder="hp" title="HP (optional; blank = derived from exp)" value="${v.hp??''}">
       <button class="rm" title="remove variant">×</button>
     </div><div class="meta"></div>`;
+  row.dataset.color = (v.color??'');
   row.querySelector('.rm').onclick=()=>{
     const card=row.closest('.card');
     row.remove();
     if(!card.querySelector('.vrow')) card.querySelector('.variants').appendChild(variantRow());
     commitCard(card);
   };
+  row.querySelector('.colbtn').onclick=(e)=>{ e.preventDefault(); openColorPicker(row); };
   refreshMeta(row);
   return row;
 }
+// draw a sprite's palette-indices into a canvas using palette p (or its default when p is null/'')
+function drawSprite(canvas, mon, p, scale){
+  const idx=Uint8Array.from(atob(mon.idx),c=>c.charCodeAt(0));
+  const w=mon.fw, h=mon.fh; const pal=PALETTES[(p==null||p==='')?mon.pal:p]||PALETTES[mon.pal];
+  scale=scale||1; canvas.width=w*scale; canvas.height=h*scale;
+  const ctx=canvas.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  const img=ctx.createImageData(w,h);
+  for(let i=0;i<w*h;i++){ const k=idx[i]; const o=i*4;
+    if(k){ const c=pal[k]; img.data[o]=c[0]; img.data[o+1]=c[1]; img.data[o+2]=c[2]; img.data[o+3]=255; } }
+  // put at 1x then scale
+  const tmp=document.createElement('canvas'); tmp.width=w; tmp.height=h; tmp.getContext('2d').putImageData(img,0,0);
+  ctx.drawImage(tmp,0,0,w*scale,h*scale);
+}
+// ---- color / recolor picker ----
+let colorRow=null;
+function openColorPicker(row){
+  colorRow=row; const card=row.closest('.card'); const mon=MON[+card.dataset.id];
+  const cp=document.getElementById('colorpick');
+  if(!mon || !mon.idx){ cp.innerHTML='<div class="cphdr">no sprite indices for this id</div>'; }
+  else {
+    let html='<div class="cphdr">Pick the recolor (palette) for this variant — click a swatch. '+
+             '<b>Default</b> = the sprite\'s own palette.</div><div class="cpgrid">';
+    html+=`<div class="cpsw" data-p=""><div class="cpcanv" id="cpd"></div><span>default (${mon.pal})</span></div>`;
+    for(let p=0;p<PALETTES.length;p++) html+=`<div class="cpsw" data-p="${p}"><canvas class="cpc" data-p="${p}"></canvas><span>${p}</span></div>`;
+    html+='</div>'; cp.innerHTML=html;
+    // render swatches
+    const dc=document.createElement('canvas'); drawSprite(dc,mon,'',2); document.getElementById('cpd').appendChild(dc);
+    cp.querySelectorAll('canvas.cpc').forEach(cv=>drawSprite(cv,mon,+cv.dataset.p,2));
+    const cur=row.dataset.color;
+    cp.querySelectorAll('.cpsw').forEach(sw=>{ if((sw.dataset.p||'')===(cur||'')) sw.classList.add('sel'); });
+  }
+  // position near the button
+  const r=row.querySelector('.colbtn').getBoundingClientRect();
+  cp.style.left=Math.min(r.left+window.scrollX, window.scrollX+innerWidth-360)+'px';
+  cp.style.top=(r.bottom+window.scrollY+2)+'px'; cp.style.display='block';
+}
+function closeColorPicker(){ const cp=document.getElementById('colorpick'); cp.style.display='none'; colorRow=null; }
+document.getElementById('colorpick').addEventListener('mousedown',e=>{
+  const sw=e.target.closest('.cpsw'); if(!sw||!colorRow) return; e.preventDefault();
+  const p=sw.dataset.p;
+  colorRow.dataset.color=p;
+  colorRow.querySelector('.colidx').textContent = p===''? '' : p;
+  commitCard(colorRow.closest('.card')); closeColorPicker();
+});
+document.addEventListener('mousedown',e=>{ const cp=document.getElementById('colorpick');
+  if(cp.style.display==='block' && !e.target.closest('#colorpick') && !e.target.closest('.colbtn')) closeColorPicker(); });
 function refreshMeta(row){
   const nm=row.querySelector('.name').value.trim();
   const a=byName[nm.toLowerCase()];
@@ -166,9 +228,9 @@ function commitCard(card){
   const vs=[...card.querySelectorAll('.vrow')].map(r=>{
     const name=r.querySelector('.name').value.trim(); if(!name) return null;
     const a=byName[name.toLowerCase()];
-    return {name, color:numOr(r.querySelector('.color').value),
+    return {name, color:numOr(r.dataset.color),          // palette/recolor from the 🎨 picker
             hp:numOr(r.querySelector('.hp').value),
-            exp:numOr(r.querySelector('.exp').value) ?? (a?a.exp:undefined),
+            exp:a?a.exp:undefined,                        // exp is auto from Atlas
             type:a?a.type:undefined, atlas:a?a.name:undefined};
   }).filter(Boolean);
   if(vs.length) MAP[id]=vs; else delete MAP[id];
@@ -271,6 +333,7 @@ class H(http.server.BaseHTTPRequestHandler):
             page = (PAGE
                     .replace("__MONSTERS__", json.dumps(MONSTERS))
                     .replace("__ATLAS__", json.dumps(ATLAS))
+                    .replace("__PALETTES__", json.dumps(PALETTES))
                     .replace("__MAPPING__", json.dumps(load_mapping())))
             self._send(200, page)
         else:
