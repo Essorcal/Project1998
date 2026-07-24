@@ -435,6 +435,7 @@ public sealed class Session
         if (text.StartsWith("!row", StringComparison.OrdinalIgnoreCase)) { LookRow(text); return; }
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
+        if (text.StartsWith("!r6", StringComparison.OrdinalIgnoreCase)) { StatReplay6x(text); return; }
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         SendSpeech(chatType, _char.Id, msg);
@@ -523,6 +524,38 @@ public sealed class Session
         }
         SendSpeech(0, _char.Id, "batch done"u8.ToArray());
         Log.Info("   -> STAT BATCH done");
+    }
+
+    // "!r6 [hexop]" — replay the EXACT stats packet captured from a real 6.x server (jeedee/TkServer
+    // game_server.rb), decrypted with the shared NexonInc cipher. 6.x uses opcode 0x08 for stats; this
+    // is a valid low-level character: level=1, maxHP=51, maxMP=33, might/will/grace=3. If the 4.95 HUD
+    // populates, 0x08 is (still) the stats opcode here; if not, its opcode shifted and we match this
+    // KNOWN-GOOD layout against 4.95 handlers. Default op 0x08; pass another hex op to try the layout
+    // on a different opcode.
+    private static readonly byte[] Stats6xFull =
+    {
+        0x78,                               // flags (full)
+        0x00, 0x00, 0x00, 0x00,             // unk, nation, totem, unk
+        0x01,                               // level = 1
+        0x00, 0x00, 0x00, 0x33,             // maxHP u32BE = 51
+        0x00, 0x00, 0x00, 0x21,             // maxMP u32BE = 33
+        0x03, 0x03, 0x03, 0x03, 0x03,       // might, will, ?, ?, grace
+        0x00, 0x00,
+        0x63, 0xdf, 0x9c, 0x5f,             // (captured; ac/exp-ish region)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x33, 0x00, 0x00, 0x00, 0x21,       // repeat 51/33 -> current HP/MP block
+        0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0xb3, 0x3d, 0x00, // trailing settings/flags
+    };
+
+    private void StatReplay6x(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        byte op = 0x08;
+        if (parts.Length > 1) byte.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out op);
+        SendMap(op, _gameInc++, Stats6xFull, $"replay6x-stats(0x{op:x2})");
+        Log.Info($"   -> REPLAY 6.x stats on op=0x{op:x2} (expect HUD: level 1, HP 51, MP 33, might/will/grace 3)");
     }
 
     // "!sweep" is DISABLED. Blind-sweeping unknown opcodes crashes the client: several handlers do real
