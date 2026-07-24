@@ -19,6 +19,16 @@ public sealed class Session
     private string _user = "?";
     private bool _enteredWorld;   // true once world entry loaded _char; gates the disconnect save
 
+    // --- world-light diagnostic knobs (env-tweakable, no rebuild needed to sweep) ---
+    //   NEXUS_LIGHT      integer 0..65535, the map light/darkness value (default 232, proven bright on 4.95)
+    //   NEXUS_LIGHT_FMT  how to encode it on the 0x15: "beu16" (default, 4.95), "leu16", or "u8"
+    // 5.33 draws terrain black with the 4.95-proven be-u16 232; sweeping these isolates whether the
+    // client reads the light field at a different width/endianness (leading 00 -> light 0 -> black).
+    private static readonly int LightValue =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_LIGHT"), out var lv) ? lv : 232;
+    private static readonly string LightFmt =
+        (Environment.GetEnvironmentVariable("NEXUS_LIGHT_FMT") ?? "beu16").Trim().ToLowerInvariant();
+
     // AA 00 13 7E 1B "CONNECTED SERVER\n"  (plaintext welcome, as the 6.x reference sends)
     private static readonly byte[] Welcome =
         BuildWelcome();
@@ -275,6 +285,12 @@ public sealed class Session
     private byte[] _encTable = Array.Empty<byte>();
     private byte _gameInc = 0;   // per-packet increment for game-channel sends
 
+    // Live creatures the player can fight. Server-authoritative HP; the client only draws them.
+    // Populated by the mob commands (!mob/!mobrow/!spawn); entries are removed on death (0x0E).
+    private readonly List<Mob> _mobs = new();
+    private uint _nextMobId = 5000;      // entity-id pool for spawned creatures (well above the self id)
+    private byte _facing = 0;            // last direction the player faced (0=N 1=E 2=S 3=W); drives melee
+
     /// <summary>
     /// Best-effort world-entry burst, extrapolated from the RTK 6.x/7.x reference sequence
     /// (intif.c char-load callback). ROUGH: formats/increments/flags are first-pass guesses —
@@ -389,8 +405,9 @@ public sealed class Session
         //   [0]=body/sex(0=M,1=F)  [1]=form/state(0=normal; 1 ghost, 3 mount, 5 invisible-spell)
         //   [2]=face  [3]=armor/coat  [4]=? (no visible change 0..8)  [5]=weapon  [6]=shield
         // NOTE the old code put "Hair" in [1] = the FORM byte — that's what blanked the character.
-        var app = new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, (byte)_char.Armor, 0, 0, 0 };
-        SendLook(_char.Id, _char.X, _char.Y, dir: 0, app, renderKind: 1, _char.Name, "self(0x33)");
+        //   ... [5]=weapon (Honor sword/Flame blade/…), [6]=shield
+        var app = new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, (byte)_char.Armor, 0, _char.Weapon, 0 };
+        SendLook(_char.Id, _char.X, _char.Y, dir: _facing, app, renderKind: 1, _char.Name, "self(0x33)");
     }
 
     // General 0x33 "create/look" for ANY entity (self or a test dummy). Type=0 = the 7-byte player
@@ -412,6 +429,75 @@ public sealed class Session
         d.Add((byte)nm.Length);
         d.AddRange(nm);
         SendMap(0x33, _gameInc++, d.ToArray(), label);
+    }
+
+    // 0x16 CREATURE spawn (handler 0x450a00 -> builder 0x44dbc0 -> ctor 0x463020 -> base 0x462ec0).
+    // Unlike 0x33 (which ALWAYS draws from the player sprite archive 0x4f2a84, so it can only render
+    // players/NPCs that look human), 0x16 has its OWN graphic — this is the real monster/creature path.
+    // Decoded field layout (offsets from the opcode byte; multi-byte = big-endian):
+    //   +1  u32 owner/parent id (unused by the ctor; send 0)
+    //   +5  u16 GRAPHIC id  -> stored at sprite+0x130 by 0x462ec0  (THE creature sprite)
+    //   +7  u32 entity id   -> find/despawn key (must match what we track + pass to 0x0E)
+    //   +0xb u16 X   +0xd u16 Y            (resting tile -> stored at entity+0x10c/+0x110)
+    //   +0xf u16 X'  +0x11 u16 Y'          (the "walked-from" tile)
+    //   +0x13 u32 flags (color/hp-bar?; send 0)   +0x17 u8 dir
+    // There is NO name field and NO viewport gate (0x44dbc0 skips the 0x424310 check), so a creature
+    // can be placed anywhere. The graphic id-space is unknown — swept live via !mobrow.
+    //
+    // *** CRITICAL: (X',Y') MUST differ from (X,Y). *** The ctor 0x463020 computes the walk distance
+    // `[obj+0x148] = |X-X'| + |Y-Y'|`, and the per-frame screen-position code (0x463160) does
+    // `idiv [obj+0x148]`. A stationary spawn with (X',Y')==(X,Y) → distance 0 → **integer
+    // divide-by-zero → client crash** (found live via the Frida crash-catcher). So a creature always
+    // "walks in" one tile: we send the from-tile one step north (or south at the top edge), distance 1.
+    private void SendCreature(uint id, ushort sprite, ushort x, ushort y, byte dir, string label)
+    {
+        ushort fromX = x;
+        ushort fromY = (ushort)(y > 0 ? y - 1 : y + 1);   // 1 tile away so the walk distance != 0
+        var d = new List<byte>();
+        d.AddRange(Be32(0));         // +1  owner/parent id
+        d.AddRange(Be(sprite));      // +5  graphic id
+        d.AddRange(Be32(id));        // +7  entity id
+        d.AddRange(Be(x));           // +0xb resting X
+        d.AddRange(Be(y));           // +0xd resting Y
+        d.AddRange(Be(fromX));       // +0xf walked-from X
+        d.AddRange(Be(fromY));       // +0x11 walked-from Y
+        d.AddRange(Be32(0));         // +0x13 flags
+        d.Add(dir);                  // +0x17 dir
+        SendMap(0x16, _gameInc++, d.ToArray(), label);
+    }
+
+    // 0x0E despawn (server->client; handler 0x450440): count(u8) then that many entity ids (u32BE).
+    // The client destroys each by id (0x44d9f0) and stops early on a 0 id, so never pass id 0.
+    private void SendDespawn(params uint[] ids)
+    {
+        if (ids.Length == 0) return;
+        var d = new List<byte> { (byte)Math.Min(ids.Length, 255) };
+        foreach (var id in ids) d.AddRange(Be32(id));
+        SendMap(0x0E, _gameInc++, d.ToArray(), $"despawn(0x0E) x{ids.Length}");
+    }
+
+    // 0x29 floating number (handler 0x4504b0 -> 0x44e0a0): entityId(u32BE) number(u8) A/B/C(u16BE).
+    // The u8 is what gets formatted to text over the entity (0..255 — fine for damage); A*1000 feeds
+    // the pop animation offset, B/C style. We send A/B/C = 0 for a plain centered number.
+    private void SendNumber(uint id, byte number)
+    {
+        var d = new List<byte>();
+        d.AddRange(Be32(id));
+        d.Add(number);
+        d.AddRange(Be(0));           // A
+        d.AddRange(Be(0));           // B
+        d.AddRange(Be(0));           // C
+        SendMap(0x29, _gameInc++, d.ToArray(), $"number(0x29) id={id} n={number}");
+    }
+
+    // Register a creature server-side AND draw it on the client (via 0x16). Used by the mob commands.
+    private Mob SpawnMob(ushort sprite, ushort x, ushort y, string name, int hp, byte dir = 2)
+    {
+        var mob = new Mob(_nextMobId++, sprite, x, y, name, hp) { Dir = dir };
+        _mobs.Add(mob);
+        SendCreature(mob.Id, sprite, x, y, dir, $"mob '{name}' gfx={sprite}");
+        Log.Info($"   -> spawn mob {mob.Id} '{name}' gfx={sprite} @({x},{y}) hp={hp}");
+        return mob;
     }
 
     // Screen tile where the self is drawn (viewport anchor). Camera scroll = (X-_scrX, Y-_scrY),
@@ -441,6 +527,7 @@ public sealed class Session
     private void HandleWalk(byte[] dec)
     {
         byte dir = dec.Length > 0 ? dec[0] : (byte)0;
+        _facing = (byte)(dir & 3);   // remember which way we're facing so melee (0x13) knows the front tile
         int nx = _char.X, ny = _char.Y;
         switch (dir & 3)
         {
@@ -487,6 +574,12 @@ public sealed class Session
         // those 7 bytes; "!row i lo hi" spawns a labeled row sweeping appearance[i] from lo..hi.
         if (text.StartsWith("!look", StringComparison.OrdinalIgnoreCase)) { LookOne(text); return; }
         if (text.StartsWith("!row", StringComparison.OrdinalIgnoreCase)) { LookRow(text); return; }
+        // ---- mobs / combat (check !mobrow before !mob, !spawn before the catch-all !s) ----
+        if (text.StartsWith("!mobrow", StringComparison.OrdinalIgnoreCase)) { MobRow(text); return; }   // sweep graphic ids
+        if (text.StartsWith("!mob", StringComparison.OrdinalIgnoreCase)) { MobOne(text); return; }       // spawn one creature
+        if (text.StartsWith("!kill", StringComparison.OrdinalIgnoreCase)) { KillMobs(); return; }         // despawn all mobs
+        if (text.StartsWith("!weapon", StringComparison.OrdinalIgnoreCase)) { SetWeapon(text); return; }  // equip weapon sprite
+        if (text.StartsWith("!spawn", StringComparison.OrdinalIgnoreCase)) { SpawnCritters(text); return; } // squirrel/rabbit pack
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
         if (text.StartsWith("!r6", StringComparison.OrdinalIgnoreCase)) { StatReplay6x(text); return; }
@@ -548,6 +641,93 @@ public sealed class Session
             SendLook(id, x, y, dir: 2, app, renderKind: 1, $"{idx}={v}", $"row byte[{idx}]={v}");
         }
         Log.Info($"   -> LOOK row: appearance[{idx}] sweep {lo}..{hi}");
+    }
+
+    // ---- mob / combat lab ----
+    // The 4.95 creature GRAPHIC id-space is unknown, so we discover it live (look-lab style) via 0x16.
+    //   "!mob <hi> <lo> [hp]"   spawn ONE creature on the tile in front of you (gfx = hi*256+lo) so you
+    //                           can see it and immediately whack it.
+    //   "!mobrow <lo> <hi> [step]"  spawn a W->E row sweeping graphic id lo..hi (step defaults to 1).
+    //                           The gfx id is a FRAME index into the monster archive (client adds
+    //                           0x4000, category "I"), and Monster.tbl's "Starting" column lists each
+    //                           monster's idle frame — the first ~19 monsters start at 0,20,40,...,360.
+    //                           So "!mobrow 0 360 20" shows one idle sprite per monster 0..18.
+    //   "!spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
+    //   "!kill"                 despawn every mob.
+
+    private static int[] ParseInts(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var vals = new List<int>();
+        for (int i = 1; i < parts.Length; i++) if (int.TryParse(parts[i], out var v)) vals.Add(v);
+        return vals.ToArray();
+    }
+
+    private void MobOne(string text)
+    {
+        var a = ParseInts(text);
+        int hi = a.Length > 0 ? a[0] : 0;
+        int lo = a.Length > 1 ? a[1] : 1;
+        int hp = a.Length > 2 ? a[2] : 6;
+        ushort sprite = (ushort)((hi << 8) | (lo & 0xFF));
+        var (fx, fy) = FrontTile();
+        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+        SpawnMob(sprite, x, y, $"m{sprite}", hp);
+    }
+
+    private void MobRow(string text)
+    {
+        var a = ParseInts(text);
+        int lo = a.Length > 0 ? a[0] : 1;
+        int hi = a.Length > 1 ? a[1] : lo + 11;
+        int step = a.Length > 2 ? Math.Max(1, a[2]) : 1;
+        ushort y = (ushort)Math.Clamp(_char.Y - 2, 0, _char.MapYs - 1);
+        int col = 0;
+        for (int v = lo; v <= hi && col < 12; v += step, col++)
+        {
+            ushort x = (ushort)Math.Clamp(_char.X - 4 + col, 0, _char.MapXs - 1);
+            SpawnMob((ushort)v, x, y, $"g{v}", 6);
+        }
+        Log.Info($"   -> MOB row: graphic id sweep {lo}..{hi} step {step}");
+    }
+
+    private void KillMobs()
+    {
+        if (_mobs.Count == 0) { SendMessage("no mobs to clear"); return; }
+        SendDespawn(_mobs.Select(m => m.Id).ToArray());
+        int n = _mobs.Count;
+        _mobs.Clear();
+        SendMessage($"cleared {n} mob(s)");
+        Log.Info($"   -> KILL: despawned {n} mobs");
+    }
+
+    // A small pack of low-level critters around the player. Sprite id defaults are placeholders until
+    // the real squirrel/rabbit ids are pinned via !mobrow — pass "!spawn <hi> <lo>" to use a known id.
+    private void SpawnCritters(string text)
+    {
+        var a = ParseInts(text);
+        int hi = a.Length > 0 ? a[0] : 0;
+        int lo = a.Length > 1 ? a[1] : 1;
+        ushort sprite = (ushort)((hi << 8) | (lo & 0xFF));
+        (int dx, int dy)[] spots = { (0, -2), (2, 0), (-2, 0), (0, 2) };
+        foreach (var (dx, dy) in spots)
+        {
+            ushort x = (ushort)Math.Clamp(_char.X + dx, 0, _char.MapXs - 1);
+            ushort y = (ushort)Math.Clamp(_char.Y + dy, 0, _char.MapYs - 1);
+            SpawnMob(sprite, x, y, "critter", 6, dir: 2);
+        }
+        Log.Info($"   -> SPAWN critters sprite={sprite}");
+    }
+
+    private void SetWeapon(string text)
+    {
+        var a = ParseInts(text);
+        _char.Weapon = (byte)(a.Length > 0 ? a[0] : 0);
+        if (_enteredWorld) _store.Save(_char);
+        SendSelfLook();   // re-send the self appearance so the weapon shows (may need a relog to redraw)
+        SendMessage($"weapon set to {_char.Weapon}");
+        Log.Info($"   -> WEAPON set to {_char.Weapon}");
     }
 
     // ---- stats/HUD probe lab ----
@@ -697,7 +877,40 @@ public sealed class Session
     private void HandleAttack(byte[] dec)
     {
         SendAction(_char.Id, type: 1, time: 8, param: 0);   // type 1 = attack swing
+
+        // Melee resolves against whatever creature stands on the tile directly in front of us
+        // (facing tracked from the last walk step). Server-authoritative: we own the mob's HP.
+        var (fx, fy) = FrontTile();
+        var mob = MobAt(fx, fy);
+        if (mob is null) return;
+
+        int dmg = Math.Max(1, _char.Might + (_char.Weapon > 0 ? 3 : 0));   // might + a flat weapon bonus
+        mob.Hp -= dmg;
+        SendNumber(mob.Id, (byte)Math.Min(dmg, 255));                      // floating "-N" over the mob
+        Log.Info($"   -> hit mob {mob.Id} '{mob.Name}' for {dmg} -> {mob.Hp}/{mob.MaxHp}");
+
+        if (!mob.Alive)
+        {
+            _mobs.Remove(mob);
+            SendDespawn(mob.Id);                       // 0x0E: remove the corpse from the client
+            _char.Exp += (uint)mob.MaxHp;              // reward: exp equal to the mob's max HP
+            SendStats();                               // refresh the HUD exp bar
+            SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
+            Log.Info($"   -> mob {mob.Id} '{mob.Name}' defeated");
+        }
     }
+
+    // The map tile one step ahead of the player, in the direction we're currently facing.
+    private (int x, int y) FrontTile()
+    {
+        int x = _char.X, y = _char.Y;
+        switch (_facing & 3) { case 0: y--; break; case 1: x++; break; case 2: y++; break; case 3: x--; break; }
+        return (x, y);
+    }
+
+    // First living mob standing on (x,y), or null.
+    private Mob? MobAt(int x, int y) =>
+        _mobs.FirstOrDefault(m => m.Alive && m.X == x && m.Y == y);
 
     private void SendAction(uint id, byte type, ushort time, byte param)
     {
@@ -958,7 +1171,15 @@ public sealed class Session
         b.Add(0);            // realm
         b.Add((byte)t.Length);
         b.AddRange(t);
-        b.AddRange(Be(light));
+        // light field — encoding chosen by NEXUS_LIGHT_FMT so 5.33's parse can be probed live.
+        var lv = LightValue;
+        switch (LightFmt)
+        {
+            case "u8":    b.Add((byte)(lv & 0xFF)); break;                 // single byte (5.x may have narrowed it)
+            case "leu16": b.Add((byte)(lv & 0xFF)); b.Add((byte)(lv >> 8)); break;  // little-endian u16
+            default:      b.AddRange(Be((ushort)lv)); break;              // big-endian u16 (4.95-proven)
+        }
+        Log.Info($"   -> mapinfo(0x15) light={lv} fmt={LightFmt}");
         Send(MapBuild(Opcode.MapInfo, inc, b.ToArray()));
     }
 

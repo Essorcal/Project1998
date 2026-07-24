@@ -305,6 +305,45 @@ entityId(u32) type(u8) time(u16) param(u8)
 Handler `0x4503a0`: plays the action (client scales `time` ×10). `type`: 0=stand, 1=attack, 2=throw,
 3=shot, 4=sit, 6=magic, 8=eat.
 
+**`0x33` type-1 form** (parser `0x4361b0`): `… type(=01) app0 app1 spriteId(u16) extra(u8) renderKind nameLen name`
+(5 appearance bytes; `app0`/`app1` are clobbered by the `u16` at +2). **⚠ This does NOT draw creatures.**
+The `0x33` sprite ctor (`0x463380`, *any* renderKind 1/2/3) always builds from the **player sprite archive
+`0x4f2a84`** — so `0x33` can only render players and human-looking NPCs. Sweeping type-1 sprite ids
+`1..140` all rendered *invisible* (a broken player compose). `0x33` is **not** a monster path either;
+the real monster spawn is still unidentified — see §11a.
+
+**`0x16` — ground ITEM / object spawn** (handler `0x450a00` → `0x44dbc0` → ctor `0x463020` → `0x462ec0`).
+> **⚠ NOT a monster.** Originally mislabeled "creature spawn" — live RE proved otherwise (see §11a). The
+> object it creates draws its sprite from category **`"I"` = Item.epf** (via `0x435ab0`, id+`0x4000`), has no
+> collision and no AI. The real monster-spawn opcode (which would draw from **`"M"` = Monster.epf**) is still
+> **unidentified** — see the open problem in §16.
+
+Layout (offsets from opcode byte; multi-byte big-endian), verified from the handler + ctor:
+```
++1 owner(u32=0)  +5 GRAPHIC(u16)  +7 entityId(u32)  +0xb X(u16) +0xd Y(u16)
++0xf X'(u16) +0x11 Y'(u16)  +0x13 flags(u32=0)  +0x17 dir(u8)
+```
+The `u16` at **+5 is the item graphic id** (a frame index into Item.epf; the client adds `0x4000` and looks
+it up in category `"I"`), stored at sprite+`0x130` by `0x462ec0`; `+7` is the entity id (find/despawn key).
+`(X,Y)` = the resting tile (entity+`0x10c/+0x110`); `(X',Y')` = the "walked-from" tile. **`(X',Y')` MUST
+differ from `(X,Y)`** — the ctor computes `[obj+0x148] = |X-X'|+|Y-Y'|` and the per-frame position code
+`idiv`s by it, so `(X',Y')==(X,Y)` → divide-by-zero → **client crash** (send the from-tile 1 step away).
+No name field, no viewport gate (`0x44dbc0` skips the `0x424310` check), so the object can be placed anywhere.
+
+**`0x0E` — despawn list** (handler `0x450440`):
+```
+count(u8) entityId0(u32) entityId1(u32) …
+```
+Destroys each entity by id (`0x44d9f0`). The loop **stops early on a `0` id**, so never send id `0`.
+(Note: client→server `0x0E` is *chat*; the same opcode means despawn only in the server→client direction.)
+
+**`0x29` — floating number** (handler `0x4504b0` → `0x44e0a0`), e.g. melee damage:
+```
+entityId(u32) number(u8) A(u16) B(u16) C(u16)
+```
+The `u8` is formatted to text and popped over the entity (0–255 — fine for damage). `A` is scaled ×1000
+and feeds the pop animation offset; `B`/`C` are style. Send `A=B=C=0` for a plain centered number.
+
 **`0x1E` / `0x20`** — acks / time, as in §6.
 
 ---
@@ -511,6 +550,43 @@ over their head.
 **not** `0x13`. (The `0x13` receive-handler `0x4508f0` computes animation `0x8f − a`; with `a=0` that
 is `0x8f` = the **death** animation, which makes the character flash "dead". This bit us — §14.)
 
+**Weapon.** `Character.Weapon` renders in the player's `0x33` type-0 appearance slot `[5]` (the sword/blade
+slot — see §8), persists in the store, and drives the melee damage bonus. This works (it draws on the
+player, which renders). With no weapon the space-bar attack plays the empty-handed *throw* animation/sound.
+
+**Combat (server-authoritative) — ⚠ WORKS SERVER-SIDE ONLY, no client mob yet.** The server owns mob HP
+(`Shared/Mob.cs`, tracked in `Session._mobs`). On `0x13`: send the player swing (`0x1A`), then resolve melee
+against the mob on the tile *in front* of the player (facing tracked from the last walk `0x32`); apply
+`might + weapon bonus`, pop a `0x29` number over the mob, and on death `0x0E` (despawn) + exp via a fresh
+`0x08`. **All of that is real code, but it currently targets an *invisible, non-interactive* `0x16` object
+(§7.2) — not a monster.** The pipeline (damage/number/despawn/exp) is correct and reusable once the real
+monster entity exists; only the spawn/rendering is missing. See §11a.
+
+## 11a. Monster rendering — the sprite category system (spawn opcode UNSOLVED)
+
+The client's sprite manager (`[0x4fd2f8]`) groups sprites into **categories keyed by a single letter**,
+each backed by an EPF archive from `NexusTK.dat`, all loaded at startup (registry table `0x47b4c6`, A–Z):
+`I` = **Item.epf**, `M` = **Monster.epf**, `B`/`H`/`F` = body/head/face, `T` = tiles, `S` = shields/swords,
+etc. A sprite is resolved by `(categoryLetter, id)`; e.g. the item resolver `0x435ab0` does
+`id + 0x4000` in category `"I"` (`0x431020` → `0x431450`, entry = base + id·24).
+
+**The blocker:** the `0x16` object draws *only* from `"I"` (Item) — its draw methods `0x462f86` /
+`0x4631c0` (vtable `0x4cd18c`) hardcode `"I"`. A real monster must draw from `"M"` (Monster.epf), and our
+`0x16` spawn **never triggers an `"M"` lookup**. So `0x16` is the wrong opcode for monsters.
+
+**Where to continue (the concrete next lead):** find the code that resolves sprites in category `"M"`.
+On world entry the client itself does `M`-lookups for ids `0..9` (a preload loop, via `0x430de0`) —
+hook that call's **return address** in Frida (`re/frida_probe.py` already has the `"M"`-filtered
+`catlookup`/`catlookup2` hooks; add `this.returnAddress`) to find the monster draw/entity code, then work
+back to the monster **entity class** and the **spawn opcode** that populates it. Monster frame layout is in
+`Monster.tbl` (plain text: `NumMonsters 327`, per-id `Palette/Starting/Walk/Attack…`; `Starting` = the
+idle frame index into Monster.epf). Parse `NexusTK.dat` with the Nexon PAK format: `u32 count` then 17-byte
+entries `{u32 offset, char name[13]}` (first offset == header size).
+
+**Discovery commands** currently in `Session.HandleChat` (they spawn `0x16` *items*, not monsters — keep for
+reuse once the real opcode is found): `!mobrow <lo> <hi> [step]`, `!mob <hi> <lo> [hp]`, `!spawn [hi] [lo]`,
+`!kill`, `!weapon <n>`.
+
 ---
 
 ## 12. Maps
@@ -549,12 +625,12 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x0b` | `0x44fb70` | **no-op** |
 | `0x0c` | `0x4502c0` | ✓ move / animate entity |
 | `0x0d` | `0x450170` | ✓ over-head speech |
-| `0x0e` | `0x450440` | (client→server chat) |
+| `0x0e` | `0x450440` | ✓ **despawn list** (server→client): `count(u8)` + `id(u32)`× (client→server = chat) |
 | `0x11` | `0x450350` | entity + 1 byte |
 | `0x12` | `0x4509a0` | entity + 2 bytes |
 | `0x13` | `0x4508f0` | ✓ attack-recv (anim `0x8f − a`; **death at a=0**) |
 | `0x15` | `0x44f8b0` | ✓ enter-map |
-| `0x16` | `0x450a00` | creature/object spawn (via `0x44dbc0`) |
+| `0x16` | `0x450a00` | ✓ **ground ITEM/object spawn** (draws from Item.epf `"I"`): `+5 gfx(u16) +7 id(u32) +0xb X/Y …`. **NOT a monster** — §7.2, §11a |
 | `0x1a` | `0x4503a0` | ✓ action (attack/sit/…) |
 | `0x1b` | `0x450830` | ? |
 | `0x1d` | `0x450db0` | entity + 1 byte |
@@ -563,7 +639,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x20` | `0x44f820` | ✓ time-of-day |
 | `0x21` | `0x450f90` | UI window (`0x174`) |
 | `0x26` | `0x44fb80` | **no-op** (7.x self-walk; dead in 4.95) |
-| `0x29` | `0x4504b0` | entityId + flag + A×1000 (float number / effect?) |
+| `0x29` | `0x4504b0` | ✓ **floating number** over entity: `id(u32) number(u8) A/B/C(u16)`; the u8 is the text (0–255) |
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
 | `0x2f` | `0x44f490` | ? |
 | `0x30` | `0x44f530` | ? |
@@ -608,7 +684,19 @@ on.
   we assumed the 7 bytes were `[sex][hair][face]…`. They are not (§8). Decode by observation, not
   assumption.
 - The 4.95 player look is **only** the 7-byte type-0 form. There is **no** rich equipment/hair
-  appearance packet (`type=1` is a monster direct-sprite form). Don't go hunting for one.
+  appearance packet. (`0x33` type=1 is a direct-sprite form but still draws from the *player* archive,
+  not monsters — don't mistake it for a creature path; see §7.2/§11a.)
+
+**Monsters (the big one — still open)**
+- **`0x16` is the ground-ITEM spawn, not the monster spawn.** Cost ~8 test cycles: it creates a
+  monster-*class* object (vtable `0x4cd18c`, its own tick `0x463270`) but that object draws its sprite from
+  category **`"I"` = Item.epf**, so it's invisible (item id doesn't exist), has no collision, and never does
+  an `"M"`(Monster) lookup. The opcode-map's "creature/**obj** spawn" note meant *object/item*. Verified via
+  a Frida hook that logged which sprite category each render requested. Find the real monster path via the
+  `"M"` category draw — §11a.
+- **`0x16` divide-by-zero crash:** its position interpolation `idiv`s by `|X-X'|+|Y-Y'|`, so a "stationary"
+  spawn with from-tile == to-tile crashes the client (`arithmetic` exception at `0x4631f7`). Always send the
+  from-tile ≥1 away.
 
 **Movement**
 - **One `0x0C` only animates; it does not advance the tile.** You must also send `0x04` to commit the
@@ -691,6 +779,12 @@ magnitude faster for "what does this byte mean" questions.
   the creation UI. The correct create-ack is unknown; note the login-channel `0x02` sub-dispatch is
   *not* in the game-channel handler `0x444de0` (which only guards `opcode==2` for enter-world), so the
   login-channel `0x02` responses are handled by a different state object worth RE-ing.
+- **Monsters — UNSOLVED (the current focus).** The real monster-spawn opcode is unknown. Ruled out:
+  `0x33` (player body archive), `0x07` (player path), `0x16` (**ground item** — Item.epf, not a monster;
+  cost several cycles — see §14). Monsters must draw from category **`"M"` = Monster.epf** (loaded at
+  startup). Full plan in **§11a**: hook the return address of the client's own `"M"` sprite lookups to find
+  the monster draw/entity code, then work back to the spawn opcode. The server-side combat pipeline
+  (`Mob`, melee resolution, `0x29` damage, `0x0E` despawn, exp) is already built and reusable.
 - **Other players / NPCs.** Rendering is already proven (§15). Remaining: handle the client's view-rect
   refresh (`0x06`/`0x11`), spawn nearby entities on entry, and broadcast movement (`0x0C`) between
   sessions.
@@ -753,8 +847,13 @@ opcodes and layouts drift between versions:
 | `0x44faf0` | `0x04` coords/camera |
 | `0x44f8b0` | `0x15` enter-map |
 | `0x44fef0` | `0x33` self/entity spawn |
-| `0x436120` | 7-byte appearance parser (type 0) |
-| `0x4361b0` | monster appearance parser (type 1) |
+| `0x436120` | 7-byte appearance parser (`0x33` type 0) |
+| `0x4361b0` | direct-sprite appearance parser (`0x33` type 1; still player archive) |
+| `0x450a00` → `0x44dbc0` → `0x463020` → `0x462ec0` | `0x16` item/object spawn + ctor |
+| `0x435ab0` | item sprite resolver (`id+0x4000` in category `"I"`) |
+| `0x431020` / `0x430de0` | generic sprite lookup by `(categoryLetter, id)` |
+| `0x430c30` | load/create a sprite category into the manager `[0x4fd2f8]` |
+| `0x47b4c6` | A–Z sprite-category registry table |
 | `0x4502c0` | `0x0C` move/animate |
 | `0x450170` | `0x0D` speech |
 | `0x4503a0` | `0x1A` action |

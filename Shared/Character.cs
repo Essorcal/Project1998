@@ -27,6 +27,11 @@ public sealed class Character
     public ushort Face   = 0;
     public ushort Hair   = 0;
 
+    // Wielded weapon — renders as the 0x33 type-0 appearance[5] slot (look-lab: 0=unarmed, then
+    // Honor sword / Flame blade / Electra / Steelthorn / Blood / Primogen …). Also drives the melee
+    // damage bonus in Session.HandleAttack. Persisted so the weapon survives a relog.
+    public byte   Weapon = 0;
+
     // vitals / stats
     public byte Nation   = 1;   // kingdom id -> HUD crest (NATION_E.EPF). See NationName for the table.
     public byte Totem    = 4;   // 4 = none

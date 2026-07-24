@@ -36,6 +36,12 @@ RVA = {
     "mapload":  0x04a780,  # loads Maps\TK%d.map  -- fires when client renders a map
     "worldctor":0x04a090,  # game-world object ctor -- built only on 0x02+00 (enter-world trigger)
     # ---- 0x33 self-entity handler internals (to find where it bails) ----
+    "h16":      0x050a00,  # 0x450a00  the 0x16 creature-spawn handler
+    "creaturebuild":0x04dbc0,  # 0x44dbc0 creature builder (ctor 0x463020 -> base 0x462ec0)
+    "monresolve":0x035ab0,  # 0x435ab0 monster sprite resolver: (id, out); sprite = (id+0x4000) in cat "I"
+    "catload":  0x030c30,  # 0x430c30 load/create a sprite category (by name) into the manager
+    "catlookup":0x031020,  # 0x431020 generic sprite lookup: (nameStr, id, out) -> copies descriptor
+    "catlookup2":0x030de0, # 0x430de0 alternate sprite lookup (nameStr, ...) in the same module
     "h33":      0x04fef0,  # the 0x33 handler
     "place":    0x024310,  # 0x424310  place/validate at (Y,X) -> al; al==0 => BAIL
     "entcreate":0x04d7d0,  # 0x44d7d0  create/find entity -> eax; null => BAIL
@@ -208,6 +214,77 @@ function hookCreateFile(name, wide) {
 hookCreateFile('CreateFileA', false);
 hookCreateFile('CreateFileW', true);
 
+// ---- CRASH CATCHER: log the faulting address + module-relative RVA + backtrace ----
+Process.setExceptionHandler(function (details) {
+  try {
+    const pc = details.context.pc;
+    const rva = pc.sub(base);
+    let bt = '';
+    try {
+      bt = Thread.backtrace(details.context, Backtracer.ACCURATE)
+        .map(a => { const r = a.sub(base); return '0x' + a.toString(16) +
+          (r.compare(0)>=0 && r.compare(ptr(0x400000))<0 ? ' (rva 0x'+r.toString(16)+')' : ''); })
+        .slice(0, 14).join('\n      ');
+    } catch (e) { bt = '<no backtrace>'; }
+    send({t:'CRASH', m:'*** ' + details.type + ' @ pc=0x' + pc.toString(16) +
+      '  rva=0x' + rva.toString(16) + '  access=' + (details.memory ? (details.memory.operation+' '+details.memory.address) : '?') +
+      '\n   backtrace:\n      ' + bt});
+  } catch (e) { send({t:'CRASH', m:'exception in handler: ' + e}); }
+  return false;   // let the crash proceed (we just logged it)
+});
+
+// ---- 0x16 creature-spawn trace ----
+let in16 = 0;
+Interceptor.attach(at('h16'), {
+  onEnter(args) { in16++; send({t:'T16', m:'0x16 creature handler ENTER (body ' + hex(args[0], 28) + ')'}); },
+  onLeave(ret) { in16--; }
+});
+Interceptor.attach(at('creaturebuild'), {
+  onEnter(args) {
+    send({t:'T16', m:'  0x44dbc0 build: id=0x' + args[0].toString(16) + ' a1=0x' + args[1].toString(16) +
+      ' gfx?=0x' + args[3].toString(16) + ' X=0x' + args[5].toString(16) + ' Y=0x' + args[4].toString(16)});
+  },
+  onLeave(ret) { send({t:'T16', m:'  0x44dbc0 build done'}); }
+});
+// Monster sprite resolver: log ONCE per unique frame id whether a sprite descriptor was found.
+// out (arg1) gets 4 dwords copied in ONLY if the (id+0x4000) lookup in category "I" succeeds; if the
+// descriptor stays all-zero the monster frame isn't registered (archive not loaded / wrong id space).
+const seenSpr = {};
+Interceptor.attach(at('monresolve'), {
+  onEnter(args) { this.id = args[0].toInt32() & 0xffff; this.out = args[1]; },
+  onLeave(ret) {
+    seenSpr[this.id] = (seenSpr[this.id]||0) + 1;
+    if (seenSpr[this.id] > 4) return;   // log the first few resolves per id: does the descriptor fill in?
+    let d = '<unreadable>';
+    try { d = [0,4,8,0xc].map(o => '0x' + (this.out.add(o).readU32()>>>0).toString(16)).join(' '); } catch (e) {}
+    send({t:'SPR', m:'resolve#' + seenSpr[this.id] + ' frame=' + this.id + ' -> sprite 0x' +
+      (this.id+0x4000).toString(16) + '  descriptor[' + d + ']'});
+  }
+});
+// Category loader: fires when the sprite manager loads/creates a named category.
+Interceptor.attach(at('catload'), {
+  onEnter(args) {
+    let nm = '?'; try { nm = args[0].readCString(); } catch (e) {}
+    send({t:'SPR', m:'*** CATEGORY LOAD *** name="' + nm + '" (ptr=' + args[0] + ')'});
+  }
+});
+// Generic sprite lookup filtered to category "M" (Monster.epf) — the monster BODY draws from here.
+// Logs the requested id once per id so we learn the monster id-space + offset for the "M" category.
+const seenM = {};
+function mHook(fn) {
+  Interceptor.attach(at(fn), {
+    onEnter(args) {
+      let c0 = 0; try { c0 = args[0].readU8(); } catch (e) { return; }
+      if (c0 !== 0x4d) return;                     // only category "M" (Monster.epf)
+      const id = args[1].toInt32() >>> 0;
+      const key = fn + ':' + id;
+      if (seenM[key]) return; seenM[key] = 1;
+      send({t:'SPR', m:fn + ' M-lookup id=0x' + id.toString(16) + ' (' + id + ')'});
+    }
+  });
+}
+mHook('catlookup'); mHook('catlookup2');
+
 // ---- 0x33 self-entity handler trace: find exactly where it bails ----
 let in33 = 0;
 Interceptor.attach(at('h33'), {
@@ -298,6 +375,11 @@ function scanSentinels(exclLo, exclHi) {
   return out;
 }
 
+// HEAVY stats-hunt instrumentation (self-object diff + whole-memory sentinel scan on EVERY packet).
+// That hunt is DONE, and this per-packet Memory.scan is what makes the client crawl — so it's OFF by
+// default. Flip to true only if you need the write-watch again.
+const HEAVY = false;
+if (HEAVY)
 Interceptor.attach(at('dispatch'), {
   onEnter(args) {
     this.world = this.context.ecx;
@@ -358,7 +440,7 @@ setInterval(function () {
   pokeCur++;
 }, 1600);
 
-send({t:'info', m:'hooks installed (recv/send/connect/decrypt/encrypt/worldctor/mapload/createfile/0x33-trace/statwatch/pokesweep)'});
+send({t:'info', m:'hooks installed (recv/send/decrypt/encrypt/0x33-trace/0x16-trace/crash-catcher' + (HEAVY ? '/statwatch/pokesweep' : ' — HEAVY stat-hunt OFF for speed') + ')'});
 """.replace("__RVA_JSON__", __import__("json").dumps(RVA)) \
    .replace("__SELF_OFF__", hex(SELF_OFF)) \
    .replace("__SELF_SNAP__", hex(SELF_SNAP))
@@ -402,6 +484,12 @@ def main():
             out("FILE  " + p["m"])
         elif t == "T33":
             out(">>33  " + p["m"])
+        elif t == "T16":
+            out(">>16  " + p["m"])
+        elif t == "SPR":
+            out(">>SPR " + p["m"])
+        elif t == "CRASH":
+            out("!!!!! " + p["m"])
         elif t == "WALK":
             out("WALK  " + p["m"])
         elif t == "DIFF":
