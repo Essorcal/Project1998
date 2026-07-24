@@ -56,11 +56,19 @@ public sealed class Character
     public string ClanTitle = "";          // rank within the clan
     public string Spouse    = "";           // marriage line ("" = none)
 
+    // The writable "profile" page shown when someone clicks you (0x34): a free-text blurb the player
+    // writes about their character, plus an optional drawn portrait bitmap. ProfilePic is the raw
+    // bitmap bytes WITHOUT the size prefix (null/empty = no picture). Edited via the client's
+    // change-profile packet (0x2F) and persisted.
+    public string ProfileText = "This character has not written a profile yet.";
+    public byte[]? ProfilePic = null;
+
     // Legend marks: the scrollable list at the bottom of the profile. Each = icon + color + text.
     // Seeded with a "born" entry (mirrors the real 6.x capture) so the window has visible content.
     public List<Legend> Legends = new()
     {
-        new Legend(icon: 0, color: 0, text: "Born in Hyul 31, Winter"),
+        // color 0x80 matches the real 6.x capture (`01 00 80 17 "Born…"`); color 0 renders invisible.
+        new Legend(icon: 0, color: 0x80, text: "Born in Hyul 31, Winter"),
     };
 
     // Raw body of the creation packet (0x04), kept verbatim until its appearance-byte layout is

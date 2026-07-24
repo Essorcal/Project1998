@@ -117,6 +117,7 @@ public sealed class Session
             case 0x13:                    HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
             case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
             case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile/inspect
+            case 0x4F:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
@@ -460,6 +461,8 @@ public sealed class Session
         if (text.StartsWith("!stg", StringComparison.OrdinalIgnoreCase)) { StatGradient(text); return; }
         if (text.StartsWith("!leg", StringComparison.OrdinalIgnoreCase)) { SendProfileReplay6x(); return; }   // exact 6.x 0x39 replay
         if (text.StartsWith("!self", StringComparison.OrdinalIgnoreCase)) { SendSelfProfile(); return; }        // native 0x39 builder
+        if (text.StartsWith("!ckm", StringComparison.OrdinalIgnoreCase)) { SendClickMarker(); return; }             // 0x34 with marker strings
+        if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { SendClickProfile(_char.Id); return; }  // native 0x34 click-profile
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         SendSpeech(chatType, _char.Id, msg);
@@ -691,7 +694,39 @@ public sealed class Session
         uint id = 0;
         if (dec.Length >= 5) id = (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]);
         Log.Info($"   -> CLICK-INFO (0x43) id={id}");
-        SendSelfProfile();   // only the self entity exists so far
+        // Click -> the public "profile" view (0x34): portrait + writable blurb, NOT the stats/legend
+        // window (0x39). Only the self entity exists so far, so always show ours.
+        SendClickProfile(id == 0 ? _char.Id : id);
+    }
+
+    // The client sends 0x4F when the player saves their profile from the edit box. Body (matches the
+    // client's own change-profile parse): [picSize u16BE][picSize bytes][blurbLen u8][blurb bytes][00].
+    // We persist both so a later click (0x34) shows the player's own words + drawing.
+    private void HandleChangeProfile(byte[] dec)
+    {
+        if (dec.Length < 3) return;
+        int picLen = (dec[0] << 8) | dec[1];
+        int off = 2;
+        if (picLen > 0 && off + picLen <= dec.Length)
+        {
+            _char.ProfilePic = dec[off..(off + picLen)];
+            off += picLen;
+        }
+        else
+        {
+            _char.ProfilePic = null;
+        }
+
+        if (off < dec.Length)
+        {
+            int tlen = dec[off++];
+            if (tlen >= 0 && off + tlen <= dec.Length)
+                _char.ProfileText = Encoding.ASCII.GetString(dec, off, tlen);
+        }
+
+        if (_enteredWorld) _store.Save(_char);
+        Log.Info($"   -> CHANGE-PROFILE (0x4F) saved: pic={_char.ProfilePic?.Length ?? 0}B text=\"{_char.ProfileText}\"");
+        SendMessage("Your profile has been saved.");
     }
 
     // 0x39 self-profile ("Mind's Eye"). Layout decoded from the 7.x clif_mystaytus builder and confirmed
@@ -775,6 +810,97 @@ public sealed class Session
     {
         SendMap(0x39, _gameInc++, Profile6x, "replay6x-profile(0x39)");
         Log.Info("   -> REPLAY 6.x self-profile on 0x39 (expect: AC 99, class Peasant, legend 'Born in Hyul 31, Winter')");
+    }
+
+    // 0x34 = the "click" profile: the public view shown when you click a character. Distinct from the
+    // profile-key window (0x39, stats/legend), it carries the character PORTRAIT, the writable profile
+    // TEXT + PICTURE, nation, and legend. Layout REVERSED from the 4.95 client's own parser (0x48b6a0,
+    // profile-page vtable+0x5c) — NOT the 7.x clif_clickonplayer, which is a different, much larger shape.
+    // All multi-byte ints are BIG-ENDIAN. Body (after opcode/increment):
+    //   5 header strings (u8 len + bytes): title, clan, clanTitle, class, name  (order confirmed live)
+    //   appearance: tag u8 (=0) + 7 look bytes (same 7-byte form as 0x33 type-0)
+    //   3 × portrait graphic id (u16BE) -> FACE.EPF
+    //   profile TEXT blurb (u8 len + bytes)
+    //   numeric attr (u32BE)   look-selector A (u8)   look-selector B (u8)   NATION (u8)
+    //   profile PICTURE (u16BE len + bytes)
+    //   legend count (u8) + legends { icon u8, color u8, textLen u8, text }
+    // NOTE: 4.95's click popup has NO totem slot (TOTEM.EPF is unreferenced in the client).
+    private void SendClickProfile(uint targetId)
+    {
+        var d = new List<byte>();
+
+        // header strings — order pinned by the marker test (each renders in its labeled slot)
+        AddLenStr(d, _char.Title);
+        AddLenStr(d, _char.ClanName);
+        AddLenStr(d, _char.ClanTitle);
+        AddLenStr(d, _char.ClassName);
+        AddLenStr(d, _char.Name);
+
+        // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
+        // which already renders this character correctly): [sex, form, face, armor, 0, 0, 0]
+        d.Add(0);
+        d.AddRange(new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, _char.Armor, 0, 0, 0 });
+
+        // three portrait/face graphic ids (feed FACE.EPF). 0 = default face for now.
+        d.AddRange(Be(0)); d.AddRange(Be(0)); d.AddRange(Be(0));
+
+        // FIELD #10 — PAGE-1 gear/item list (u8 len + text). Item names are TAB-separated (client
+        // converts 0x09 -> CR for multiline). Empty until inventory/equipment exists.
+        AddLenStr(d, GearListText());
+
+        d.AddRange(Be32(0));      // numeric scalar — unknown, 0 for now
+        d.Add(0xFF);              // look-selector A (0xff = none)
+        d.Add(0xFF);              // look-selector B (0xff = none)
+        d.Add(_char.Nation);      // nation index -> NATION_E.EPF
+
+        // FIELD #15 — profile PICTURE bitmap: u16BE size + bytes (empty = 00 00)
+        var pic = _char.ProfilePic ?? Array.Empty<byte>();
+        d.AddRange(Be((ushort)pic.Length));
+        d.AddRange(pic);
+
+        // FIELD #16 — PAGE-2 writable profile BLURB (u8 len + text). This is the free-text box, a
+        // SEPARATE field from the page-1 gear list. Omitting it desyncs the legend count.
+        var blurb = Encoding.ASCII.GetBytes(_char.ProfileText ?? "");
+        if (blurb.Length > 255) blurb = blurb[..255];
+        d.Add((byte)blurb.Length);
+        d.AddRange(blurb);
+
+        // FIELD #17/#18 — legends: count u8, then each { icon u8, color u8, textLen u8, text }
+        var legs = _char.Legends ?? new List<Legend>();
+        d.Add((byte)Math.Min(legs.Count, 255));
+        foreach (var lg in legs)
+        {
+            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
+            if (t.Length > 255) t = t[..255];
+            d.Add(lg.Icon);
+            d.Add(lg.Color);
+            d.Add((byte)t.Length);
+            d.AddRange(t);
+        }
+
+        SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={targetId} nation={_char.Nation} blurb={blurb.Length}B legends={legs.Count}");
+    }
+
+    // Page-1 gear/item list for the click profile: TAB-separated equipped-item names. No inventory
+    // system yet, so this is empty (page 1 shows a blank item list, which is correct for a naked char).
+    private string GearListText() => "";
+
+    // "!ckm" — send a 0x34 click-profile with DISTINCT MARKER strings in every text field, so we can
+    // read off which window slot each field lands in and pin the true 4.95 layout (the 7.x port
+    // misaligns). Numeric appearance (nation/totem/sprite) is handled by the parser RE separately.
+    private void SendClickMarker()
+    {
+        var save = (_char.Title, _char.ClanName, _char.ClanTitle, _char.ClassName, _char.Name, _char.ProfileText, _char.Legends);
+        _char.Title     = "TTL";
+        _char.ClanName  = "CLAN";
+        _char.ClanTitle = "CRANK";
+        _char.ClassName = "CLASS";
+        _char.Name      = "NAME";
+        _char.ProfileText = "BLURBTEXT";
+        _char.Legends   = new List<Legend> { new Legend(0, 0, "LEGEND") };
+        SendClickProfile(_char.Id);
+        (_char.Title, _char.ClanName, _char.ClanTitle, _char.ClassName, _char.Name, _char.ProfileText, _char.Legends) = save;
+        Log.Info("   -> MARKER click-profile sent (TTL/CLAN/CRANK/CLASS/NAME/BLURBTEXT/LEGEND)");
     }
 
     /// <summary>Build an encrypted game packet, send it, and log it.</summary>

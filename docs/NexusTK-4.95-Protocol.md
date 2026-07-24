@@ -246,9 +246,10 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x06` | Walk + view refresh | same as `0x32` + `x0 y0 x1 y1 checksum` | Sent every few steps instead of `0x32`; handle identically for movement. |
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
-| `0x43` | Inspect/examine | `01 entityId(u32) 00` | Clicking a character / pressing 's' on self. Opens the profile window `0x34`. |
+| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. Reply with the click-profile `0x34` (see §9.5). |
+| `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
+| `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
 | `0x11` | (view/heartbeat) | `01 00` / `02 00` | Sent periodically; no reply needed for basic play. |
-| `0x2d` | (request) | `2d 00` | Unanswered; no reply needed for basic play. |
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
 ### 7.2 Server → client
@@ -414,6 +415,66 @@ still unknown (see §16).
 
 ---
 
+## 9.5 The profile system (self-profile, click-profile, editing)
+
+There are **two distinct profile windows**, plus an edit path. Both windows are UI `0x198`; the client
+opens each on a different request opcode, and the server replies with a different packet. All
+multi-byte ints below are **big-endian**. See `Session.SendSelfProfile` / `SendClickProfile` /
+`HandleChangeProfile`.
+
+**Self-profile — request `0x2d` → reply `0x39` ("Mind's Eye").** Pressing the profile key sends
+`2d 00` (`body[0]==0` = self). Reply with `0x39`, the stats/legend summary (from 7.x `clif_mystaytus`,
+confirmed byte-for-byte against a real 6.x capture: AC=99, class "Peasant", legend "Born in Hyul 31,
+Winter"):
+```
+[AC u8][dam u8][hit u8]
+[clan : u8 len + bytes]           (len 0 = clanless)
+[clanTitle : u8 len + bytes]
+[title : u8 len + bytes]
+[spouse : u8 len + bytes]
+[group u8][TNL u32BE]
+[className : u8 len + bytes]
+14 × equip slot (10 bytes each, all zero = empty)
+[exchange u8]
+[00 u8][legendCount u16BE]
+legendCount × { icon u8, color u8, textLen u8, text }
+```
+
+**Click-profile — request `0x43` → reply `0x34`.** Clicking a character sends `43 01 id(u32) 00`. Reply
+with `0x34`, the public two-page view (portrait + gear on page 1; nation + picture + writable blurb on
+page 2). **This layout was reverse-engineered from the client's OWN parser `0x48b6a0`** (profile-page
+widget, vtable `0x4cee5c`, method +0x5c) — the 7.x `clif_clickonplayer` is a *different, larger* shape
+and does not fit 4.95. Body:
+```
+5 header strings (u8 len + bytes): title, clan, clanTitle, class, name   (order confirmed live)
+appearance: tag u8 (=0) + 7 look bytes                (same 7-byte form as 0x33 type-0 → correct sprite)
+3 × portrait graphic id (u16BE)                       (feed FACE.EPF; 0 = default)
+gear/item list (u8 len + text)                        PAGE 1; item names TAB-separated (client → CR)
+scalar (u32BE)                                        (unknown; 0)
+look-selector A (u8), look-selector B (u8)            (0xff = none)
+nation (u8)                                           PAGE 2; drawn via NATION_E.EPF
+picture (u16BE len + bitmap bytes)                    PAGE 2; empty = 00 00
+writable blurb (u8 len + text)                        PAGE 2; the free-text box
+legendCount (u8)                                      (NOTE: u8 here, unlike 0x39's u16)
+legendCount × { icon u8, color u8, textLen u8, text }
+```
+Gotchas that cost real debugging time:
+- The **gear text** (page 1) and the **writable blurb** (page 2) are two *separate* length-prefixed
+  strings at different points in the packet — do not merge them. **Omitting the blurb field desyncs
+  the legend count** (the parser eats the legend-count byte as the blurb length) → empty legend.
+- Legend **text color `0x80`** (from the real capture); color `0` renders the text invisible (icon
+  still shows).
+- 4.95's click popup has **no totem slot** (`TOTEM.EPF` is unreferenced in the client) — totem only
+  appears on the HUD/self-profile, not here.
+
+**Editing — client `0x4f`.** Saving the profile edit sends
+`4f | picSize(u16BE) | pic[] | blurbLen(u8) | blurb[] | 00`. Parse both (mirrors the client's own
+`clif_changeprofile`: `picSize = u16BE(body[0]); text at body[2+picSize]`), persist to the character,
+and reply with a `0x02` "Your profile has been saved." message. A later `0x43` click then shows the
+player's own words + drawing.
+
+---
+
 ## 10. Movement model
 
 **The client is server-authoritative for self-walk, and 4.95's model differs from 7.x.**
@@ -508,10 +569,10 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x30` | `0x44f530` | ? |
 | `0x31` | `0x451080` | ? |
 | `0x33` | `0x44fef0` | ✓ self/entity spawn (appearance) |
-| `0x34` | `0x450270` | ✓ profile window (opens UI `0x198`, no data payload) |
+| `0x34` | `0x450270` | ✓ **click-profile** window (UI `0x198`); body parsed by widget `0x48b6a0`. See §9.5 |
 | `0x35` | `0x450890` | ? |
 | `0x36` | `0x4515d0` | ? |
-| `0x39` | `0x4510f0` | opens window `0x198` — legend? |
+| `0x39` | `0x4510f0` | ✓ **self-profile** ("Mind's Eye", UI `0x198`): AC/clan/title/class/legend. See §9.5 |
 | `0x3b` | `0x450fe0` | ? (client heartbeat companion) |
 | `0x42` | `0x451120` | ? |
 | `0x44` | `0x4511a0` | ? |
