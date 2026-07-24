@@ -252,24 +252,63 @@ function readSelf(world) {
     return { self: self, bytes: new Uint8Array(self.readByteArray(SELF_SNAP)) };
   } catch (e) { return null; }
 }
+// Location-agnostic sentinel scan: the stats probe (Session.SendStatProbe) plants zero-free values
+// exp=0x11223344 and coins=0x55667788. If ANY opcode stores them (self entity OR a separate player
+// struct), scanning writable memory after the handler finds the persistent copy and its address —
+// revealing where 4.95 keeps HUD stats. We scan on the probed opcode only (skip the transient packet
+// buffer we were handed) and dedup addresses across calls so repeats stay quiet.
+const SENTINELS = ['44 33 22 11', '11 22 33 44', '88 77 66 55', '55 66 77 88'];  // exp/coins LE & BE
+const seenHits = {};
+function scanSentinels(exclLo, exclHi) {
+  const out = [];
+  let ranges;
+  try { ranges = Process.enumerateRanges('rw-'); } catch (e) { return out; }
+  for (const r of ranges) {
+    if (r.size > 0x2000000) continue;                 // skip huge mappings
+    for (const pat of SENTINELS) {
+      let hits;
+      try { hits = Memory.scanSync(r.base, r.size, pat); } catch (e) { continue; }
+      for (const h of hits) {
+        const a = h.address;
+        if (exclLo && a.compare(exclLo) >= 0 && a.compare(exclHi) < 0) continue;  // the packet buffer
+        const key = String(a);
+        if (seenHits[key]) continue;
+        seenHits[key] = 1;
+        let ctx = '<err>';
+        try { ctx = hex(a.sub(8), 32); } catch (e) {}
+        out.push({addr:key, pat:pat, ctx:ctx});
+      }
+    }
+  }
+  return out;
+}
+
 Interceptor.attach(at('dispatch'), {
   onEnter(args) {
     this.world = this.context.ecx;
-    this.op = -1;
-    try { this.op = args[0].add(0xc).readPointer().readU8(); } catch (e) {}
+    this.op = -1; this.buf = null;
+    try { this.buf = args[0].add(0xc).readPointer(); this.op = this.buf.readU8(); } catch (e) {}
     this.snap = readSelf(this.world);
   },
   onLeave(ret) {
-    if (!this.snap || this.op < 0 || MUTE_OPS[this.op]) return;
-    const after = readSelf(this.world);
-    if (!after || String(after.self) !== String(this.snap.self)) return;  // entity moved/realloc'd
-    const a = this.snap.bytes, b = after.bytes, diffs = [];
-    for (let i = 0; i < SELF_SNAP; i++) if (a[i] !== b[i]) diffs.push(i);
-    if (diffs.length) {
-      const parts = diffs.map(i => '+0x' + i.toString(16) + ':' +
-        ('0'+a[i].toString(16)).slice(-2) + '->' + ('0'+b[i].toString(16)).slice(-2));
-      send({t:'DIFF', op:this.op, n:diffs.length, m:parts.join(' ')});
+    if (this.op < 0 || MUTE_OPS[this.op]) return;
+    // 1) self-entity diff
+    if (this.snap) {
+      const after = readSelf(this.world);
+      if (after && String(after.self) === String(this.snap.self)) {
+        const a = this.snap.bytes, b = after.bytes, diffs = [];
+        for (let i = 0; i < SELF_SNAP; i++) if (a[i] !== b[i]) diffs.push(i);
+        if (diffs.length) {
+          const parts = diffs.map(i => '+0x' + i.toString(16) + ':' +
+            ('0'+a[i].toString(16)).slice(-2) + '->' + ('0'+b[i].toString(16)).slice(-2));
+          send({t:'DIFF', op:this.op, n:diffs.length, m:parts.join(' ')});
+        }
+      }
     }
+    // 2) whole-memory sentinel scan (finds stats stored anywhere, e.g. a separate player struct)
+    const lo = this.buf, hi = this.buf ? this.buf.add(0x100) : null;
+    const hits = scanSentinels(lo, hi);
+    for (const h of hits) send({t:'SENT', op:this.op, addr:h.addr, pat:h.pat, ctx:h.ctx});
   }
 });
 
@@ -321,6 +360,8 @@ def main():
             out("WALK  " + p["m"])
         elif t == "DIFF":
             out(f"DIFF  op=0x{p['op']:02x} changed {p['n']} self-bytes: {p['m']}")
+        elif t == "SENT":
+            out(f"SENT  op=0x{p['op']:02x} STORED sentinel [{p['pat']}] @ {p['addr']}  ctx: {p['ctx']}")
         else:
             out(str(p))
 

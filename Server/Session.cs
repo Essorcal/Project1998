@@ -434,6 +434,7 @@ public sealed class Session
         if (text.StartsWith("!look", StringComparison.OrdinalIgnoreCase)) { LookOne(text); return; }
         if (text.StartsWith("!row", StringComparison.OrdinalIgnoreCase)) { LookRow(text); return; }
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
+        if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         SendSpeech(chatType, _char.Id, msg);
@@ -505,6 +506,25 @@ public sealed class Session
         Log.Info($"   -> STAT PROBE op=0x{op:x2} flags=0x{flags:x2}");
     }
 
+    // "!batch" — fire the sentinel-laden status probe at a CURATED SAFE set of opcodes (no resource
+    // loaders like 0x2e, no risky memcpy/spawn), ~700ms apart with a bubble label. Paired with the
+    // probe's whole-memory sentinel scan, one run reveals which opcode (if any) STORES the stats — no
+    // matter where the client keeps them. Watch the HUD too and note any opcode that changes a number.
+    private void StatBatch(string text)
+    {
+        byte[] safe = { 0x11, 0x12, 0x1d, 0x1f, 0x1b, 0x21, 0x29, 0x2f, 0x30, 0x31,
+                        0x35, 0x36, 0x42, 0x46, 0x59, 0x34, 0x39 };
+        Log.Info($"   -> STAT BATCH over {safe.Length} opcodes");
+        foreach (var op in safe)
+        {
+            SendSpeech(0, _char.Id, Encoding.ASCII.GetBytes($"op 0x{op:x2}"));
+            SendStatProbe(op, 0xFF, level: 99);
+            System.Threading.Thread.Sleep(700);
+        }
+        SendSpeech(0, _char.Id, "batch done"u8.ToArray());
+        Log.Info("   -> STAT BATCH done");
+    }
+
     // "!sweep" is DISABLED. Blind-sweeping unknown opcodes crashes the client: several handlers do real
     // resource loads from the packet body (e.g. 0x2e = the skills/spells list loads an .EPF sprite archive
     // per entry — garbage bytes -> bogus filename -> "File not found .EPF" -> crash). Find the stats opcode
@@ -541,9 +561,9 @@ public sealed class Session
         // HPMP block
         d.AddRange(Be32(987));       // hp
         d.AddRange(Be32(456));       // mp
-        // XPMONEY block
-        d.AddRange(Be32(54321));     // exp
-        d.AddRange(Be32(777));       // money/coins
+        // XPMONEY block — zero-free distinctive sentinels so a memory scan finds the STORED copy cleanly
+        d.AddRange(Be32(0x11223344));  // exp   -> wire 11 22 33 44 ; stored LE 44 33 22 11
+        d.AddRange(Be32(0x55667788));  // coins -> wire 55 66 77 88 ; stored LE 88 77 66 55
         d.Add(50);                   // exp %
         // ALWAYS block
         d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0);
