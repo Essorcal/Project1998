@@ -1,0 +1,20 @@
+# ---- .NET build output ----
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+*.suo
+
+# ---- Runtime state & logs ----
+# Character store is generated at runtime and churns during testing.
+data/
+*.log
+server_live.err
+server-err.log
+
+# ---- RE tooling byproducts ----
+re/__pycache__/
+re/probe_log.txt
+
+# ---- Third-party client shim (8 MB of prebuilt binaries; re-downloadable) ----
+re/cnc-ddraw/
