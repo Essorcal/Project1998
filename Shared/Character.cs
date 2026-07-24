@@ -28,8 +28,14 @@ public sealed class Character
     public ushort Hair   = 0;
 
     // vitals / stats
-    public byte Nation   = 1;
+    public byte Nation   = 1;   // kingdom id -> HUD crest (NATION_E.EPF). See NationName for the table.
     public byte Totem    = 4;   // 4 = none
+
+    /// <summary>Nation id -> name, confirmed empirically on the 4.95 HUD (see Session `!nat`). The
+    /// names live in a client data file (no strings in the exe), so this table is the source of truth.</summary>
+    public static readonly string[] Nations =
+        { "Neutral", "Koguryo", "Buya", "Nagnang", "Shilla", "Jinhan" };
+    public static string NationName(byte id) => id < Nations.Length ? Nations[id] : $"nation#{id}";
     public byte Level    = 1;
     public uint MaxHp    = 100;
     public uint MaxMp    = 50;

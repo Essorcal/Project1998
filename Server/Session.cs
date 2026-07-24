@@ -312,7 +312,8 @@ public sealed class Session
     // a real 6.x server capture (jeedee/TkServer) proved stats = 0x08; a self-describing gradient packet
     // (!stg, body[i]=i) then pinned every 4.95 field offset by reading the value off the HUD. flags=0x78
     // selects the full-stats form. Multi-byte stat fields are big-endian u32 (verified: HP=0x18191A1B at
-    // offset 24, Exp=0x20212223 at 32, etc.).
+    // offset 24, Exp=0x20212223 at 32, etc.). maxHP[5]/maxMP[9] CONFIRMED via !hp (sending 100/1000
+    // drops the bar to ~10%). Nation id table (CONFIRMED via !nat, see Character.NationName).
     //   [0]=flags(0x78) [1]=nation [2]=totem [4]=level [5..8]=maxHP u32BE [9..12]=maxMP u32BE
     //   [13]=might [14]=will [17]=grace [24..27]=HP u32BE [28..31]=MP u32BE [32..35]=exp u32BE
     //   [36..39]=coins u32BE
@@ -323,8 +324,8 @@ public sealed class Session
         d[1] = _char.Nation;
         d[2] = _char.Totem;
         d[4] = _char.Level;
-        WriteBe32(d, 5, _char.MaxHp);       // maxHP  (offset hypothesis — verify vs the HP "cur/max" text)
-        WriteBe32(d, 9, _char.MaxMp);       // maxMP
+        WriteBe32(d, 5, _char.MaxHp);       // maxHP  (offset [5] confirmed via !hp bar-fill test)
+        WriteBe32(d, 9, _char.MaxMp);       // maxMP  (offset [9] confirmed)
         d[13] = _char.Might;
         d[14] = _char.Will;
         d[17] = _char.Grace;
@@ -341,6 +342,37 @@ public sealed class Session
         d[off + 1] = (byte)(v >> 16);
         d[off + 2] = (byte)(v >> 8);
         d[off + 3] = (byte)v;
+    }
+
+    // "!nat <n>" — send stats with nation byte = n so we can read which kingdom name/crest the HUD shows.
+    // Nation names live in a client data file (no strings in the exe; NATION_E.EPF is a graphic set), so
+    // the id -> nation mapping can only be built empirically. Sweep 0,1,2,... and record each.
+    private void StatNation(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        byte n = 0;
+        if (parts.Length > 1) byte.TryParse(parts[1], out n);
+        byte save = _char.Nation;
+        _char.Nation = n;
+        SendStats();
+        _char.Nation = save;
+        Log.Info($"   -> NATION probe: sent nation={n}; read the HUD nation name/crest");
+    }
+
+    // "!hp <cur> <max>" — send stats with HP=cur, maxHP=max (and the same for MP) to PIN the maxHP/maxMP
+    // offsets: if [5]/[9] are really maxHP/maxMP, the HP/MP bar fill becomes cur/max (e.g. 100/1000 = 10%
+    // full) and any "cur/max" text shows those numbers. If the bar stays full, the offset is wrong.
+    private void StatHpTest(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        uint cur = 100, max = 1000;
+        if (parts.Length > 1) uint.TryParse(parts[1], out cur);
+        if (parts.Length > 2) uint.TryParse(parts[2], out max);
+        var (sh, sm, smh, smm) = (_char.Hp, _char.Mp, _char.MaxHp, _char.MaxMp);
+        _char.Hp = cur; _char.MaxHp = max; _char.Mp = cur; _char.MaxMp = max;
+        SendStats();
+        (_char.Hp, _char.Mp, _char.MaxHp, _char.MaxMp) = (sh, sm, smh, smm);
+        Log.Info($"   -> HP/MAX probe: sent HP={cur}/max={max}; expect bar fill = {cur}/{max} and text '{cur}/{max}' if offsets [5]/[9] are correct");
     }
 
     /// <summary>
@@ -463,6 +495,8 @@ public sealed class Session
         if (text.StartsWith("!self", StringComparison.OrdinalIgnoreCase)) { SendSelfProfile(); return; }        // native 0x39 builder
         if (text.StartsWith("!ckm", StringComparison.OrdinalIgnoreCase)) { SendClickMarker(); return; }             // 0x34 with marker strings
         if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { SendClickProfile(_char.Id); return; }  // native 0x34 click-profile
+        if (text.StartsWith("!nat", StringComparison.OrdinalIgnoreCase)) { StatNation(text); return; }              // sweep nation id -> HUD name
+        if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         SendSpeech(chatType, _char.Id, msg);

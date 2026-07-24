@@ -384,11 +384,11 @@ form; `0x78` = the "full stats" form used below. Multi-byte stat fields are **bi
 ```
 body offset  field            type
 [0]          flags = 0x78     u8    (full-stats form)
-[1]          nation           u8    (id table TBD; 0 = Neutral)
+[1]          nation           u8    (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan)
 [2]          totem            u8    (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None)
 [4]          level            u8
-[5..8]       maxHP            u32BE (offset inferred; HP bar renders full)
-[9..12]      maxMP            u32BE (inferred)
+[5..8]       maxHP            u32BE (offset confirmed via !hp: HP=100/max=1000 -> bar ~10% full)
+[9..12]      maxMP            u32BE (confirmed)
 [13]         might            u8
 [14]         will             u8
 [17]         grace            u8
@@ -683,8 +683,8 @@ magnitude faster for "what does this byte mean" questions.
   so it was only found by *replaying a real 6.x server capture*. Do not trust "world remap = no-op" as
   proof an opcode is unhandled.) Layout was pinned with a self-describing gradient packet (`body[i]=i`,
   read each value off the HUD). Level/might/will/grace/HP/MP/exp/coins now populate the always-on HUD and
-  round-trip through the character store. Remaining polish: confirm `maxHP`/`maxMP` offsets (`[5]`/`[9]`,
-  inferred — HP bar renders full so they read ≥ current), and the exact `nation`/`totem` id tables.
+  round-trip through the character store. `maxHP`/`maxMP` offsets (`[5]`/`[9]`) and the `nation` id table
+  (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan) are now confirmed empirically (`!hp`, `!nat`).
 - **Hair** is not renderable via `0x33` in 4.95 (no slot in the 7-byte form). Likely requires a
   different mechanism (stylist NPC / equipment), if at all.
 - **Creation screen auto-close.** After `0x04`, our "Account created" message shows but doesn't dismiss
