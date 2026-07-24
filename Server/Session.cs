@@ -466,6 +466,48 @@ public sealed class Session
         SendMap(0x16, _gameInc++, d.ToArray(), label);
     }
 
+    // *** 0x07 = the REAL creature/monster spawn (the "area characters" list). *** Handler 0x44fdb0
+    // loops a u16 count of entities, each built by the SAME entity factory 0x44d7d0 that 0x33 uses —
+    // BUT here the look descriptor's `look` field selects a DIRECT sprite instead of the 7-byte player
+    // appearance. RE'd path: 0x44fdb0 -> 0x44d7d0 -> (look in 0x8000..0xbfff => descriptor type 1) ->
+    // 0x44d8c8 -> ctor 0x461a50 (entity vtable 0x4cd098). That entity's draw 0x461c70 branches on
+    //   [ent+0x178] (=type): type!=0 -> 0x461d37 -> monster resolver 0x434020/0x4342e0 which pushes
+    //   "MONSTER.EPF" (0x4f1d18) and resolves the sprite from Monster.epf via 0x433d00 (Monster.tbl).
+    // So look = 0x8000 + monsterLookId draws a real monster. (look < 0x8000 or > 0xbfff => descriptor
+    // type 2 -> 0x462ec0, vtable 0x4cd118 = the item/object base, i.e. the invisible 0x16 path.)
+    //
+    // Per-entry layout (12 bytes; body[0..1] = count, entries follow; multi-byte = big-endian):
+    //   +0 X(u16)  +2 Y(u16)  +4 id(u32)  +8 look(u16=0x8000|monsterLookId)  +10 color(u8)  +11 dir(u8)
+    // color -> palette (ent+0x18e via resolver), dir/state -> ent+0x18d. Unlike 0x16 there IS a viewport
+    // gate (0x424310): entries outside the camera rect are silently skipped, so spawn inside view.
+    private void SendCreatureList(IReadOnlyList<(uint id, ushort look, ushort x, ushort y, byte color, byte dir)> es)
+    {
+        if (es.Count == 0) return;
+        var d = new List<byte>();
+        d.AddRange(Be((ushort)es.Count));           // body[0..1] = entity count
+        foreach (var e in es)
+        {
+            d.AddRange(Be(e.x));                    // +0  X
+            d.AddRange(Be(e.y));                    // +2  Y
+            d.AddRange(Be32(e.id));                 // +4  entity id
+            d.AddRange(Be(e.look));                 // +8  look (0x8000|monsterId => Monster.epf)
+            d.Add(e.color);                         // +10 palette/color
+            d.Add(e.dir);                           // +11 dir/state
+        }
+        SendMap(0x07, _gameInc++, d.ToArray(), $"creature-list(0x07) x{es.Count}");
+    }
+
+    // Register a monster server-side AND draw it via the real Monster.epf path (0x07). lookId is the
+    // Monster.tbl look index (0..~326); we OR in 0x8000 to hit the direct-monster-sprite branch.
+    private Mob SpawnMonster(ushort lookId, ushort x, ushort y, string name, int hp, byte dir = 2, byte color = 0)
+    {
+        var mob = new Mob(_nextMobId++, lookId, x, y, name, hp) { Dir = dir };
+        _mobs.Add(mob);
+        SendCreatureList(new[] { (mob.Id, (ushort)(0x8000 | lookId), x, y, color, dir) });
+        Log.Info($"   -> spawn MONSTER {mob.Id} '{name}' look={lookId} @({x},{y}) hp={hp}");
+        return mob;
+    }
+
     // 0x0E despawn (server->client; handler 0x450440): count(u8) then that many entity ids (u32BE).
     // The client destroys each by id (0x44d9f0) and stops early on a 0 id, so never pass id 0.
     private void SendDespawn(params uint[] ids)
@@ -574,6 +616,9 @@ public sealed class Session
         // those 7 bytes; "!row i lo hi" spawns a labeled row sweeping appearance[i] from lo..hi.
         if (text.StartsWith("!look", StringComparison.OrdinalIgnoreCase)) { LookOne(text); return; }
         if (text.StartsWith("!row", StringComparison.OrdinalIgnoreCase)) { LookRow(text); return; }
+        // ---- REAL monsters via 0x07 (Monster.epf). check !crow before !cre ----
+        if (text.StartsWith("!crow", StringComparison.OrdinalIgnoreCase)) { CreatureRow(text); return; }  // sweep monster look ids
+        if (text.StartsWith("!cre", StringComparison.OrdinalIgnoreCase)) { CreatureOne(text); return; }    // spawn one real monster
         // ---- mobs / combat (check !mobrow before !mob, !spawn before the catch-all !s) ----
         if (text.StartsWith("!mobrow", StringComparison.OrdinalIgnoreCase)) { MobRow(text); return; }   // sweep graphic ids
         if (text.StartsWith("!mob", StringComparison.OrdinalIgnoreCase)) { MobOne(text); return; }       // spawn one creature
@@ -663,6 +708,41 @@ public sealed class Session
         return vals.ToArray();
     }
 
+    // "!cre <lookId> [hp]": spawn ONE real monster (Monster.epf, via 0x07) on the tile in front of you,
+    // so you can see it AND immediately melee it (combat is unchanged — it hits any Mob on the tile).
+    private void CreatureOne(string text)
+    {
+        var a = ParseInts(text);
+        int look = a.Length > 0 ? a[0] : 0;
+        int hp = a.Length > 1 ? a[1] : 6;
+        var (fx, fy) = FrontTile();
+        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+        SpawnMonster((ushort)look, x, y, $"c{look}", hp, dir: (byte)((_facing + 2) & 3));
+    }
+
+    // "!crow <lo> <hi> [step]": sweep monster look ids lo..hi across a W->E row (one 0x07 packet with
+    // up to 12 entries) so one screenshot maps the Monster.epf look-id space. Find squirrel/rabbit here.
+    private void CreatureRow(string text)
+    {
+        var a = ParseInts(text);
+        int lo = a.Length > 0 ? a[0] : 0;
+        int hi = a.Length > 1 ? a[1] : lo + 11;
+        int step = a.Length > 2 ? Math.Max(1, a[2]) : 1;
+        ushort y = (ushort)Math.Clamp(_char.Y - 2, 0, _char.MapYs - 1);
+        var es = new List<(uint, ushort, ushort, ushort, byte, byte)>();
+        int col = 0;
+        for (int v = lo; v <= hi && col < 12; v += step, col++)
+        {
+            ushort x = (ushort)Math.Clamp(_char.X - 4 + col, 0, _char.MapXs - 1);
+            var mob = new Mob(_nextMobId++, (ushort)v, x, y, $"c{v}", 6) { Dir = 2 };
+            _mobs.Add(mob);
+            es.Add((mob.Id, (ushort)(0x8000 | v), x, y, (byte)0, (byte)2));
+        }
+        SendCreatureList(es);
+        Log.Info($"   -> CREATURE row: monster look sweep {lo}..{hi} step {step} ({es.Count} sent)");
+    }
+
     private void MobOne(string text)
     {
         var a = ParseInts(text);
@@ -702,22 +782,21 @@ public sealed class Session
         Log.Info($"   -> KILL: despawned {n} mobs");
     }
 
-    // A small pack of low-level critters around the player. Sprite id defaults are placeholders until
-    // the real squirrel/rabbit ids are pinned via !mobrow — pass "!spawn <hi> <lo>" to use a known id.
+    // A small pack of REAL, killable monsters around the player (via 0x07 = Monster.epf). "!spawn
+    // [lookId] [hp]" — lookId is the Monster.tbl monster index (0..326); defaults to 0.
     private void SpawnCritters(string text)
     {
         var a = ParseInts(text);
-        int hi = a.Length > 0 ? a[0] : 0;
-        int lo = a.Length > 1 ? a[1] : 1;
-        ushort sprite = (ushort)((hi << 8) | (lo & 0xFF));
+        int look = a.Length > 0 ? a[0] : 0;
+        int hp = a.Length > 1 ? a[1] : 6;
         (int dx, int dy)[] spots = { (0, -2), (2, 0), (-2, 0), (0, 2) };
         foreach (var (dx, dy) in spots)
         {
             ushort x = (ushort)Math.Clamp(_char.X + dx, 0, _char.MapXs - 1);
             ushort y = (ushort)Math.Clamp(_char.Y + dy, 0, _char.MapYs - 1);
-            SpawnMob(sprite, x, y, "critter", 6, dir: 2);
+            SpawnMonster((ushort)look, x, y, $"monster{look}", hp, dir: 2);
         }
-        Log.Info($"   -> SPAWN critters sprite={sprite}");
+        Log.Info($"   -> SPAWN monster pack look={look}");
     }
 
     private void SetWeapon(string text)

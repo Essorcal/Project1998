@@ -309,14 +309,13 @@ Handler `0x4503a0`: plays the action (client scales `time` ×10). `type`: 0=stan
 (5 appearance bytes; `app0`/`app1` are clobbered by the `u16` at +2). **⚠ This does NOT draw creatures.**
 The `0x33` sprite ctor (`0x463380`, *any* renderKind 1/2/3) always builds from the **player sprite archive
 `0x4f2a84`** — so `0x33` can only render players and human-looking NPCs. Sweeping type-1 sprite ids
-`1..140` all rendered *invisible* (a broken player compose). `0x33` is **not** a monster path either;
-the real monster spawn is still unidentified — see §11a.
+`1..140` all rendered *invisible* (a broken player compose). `0x33` is **not** a monster path either —
+the real monster spawn is **`0x07`** (see above / §11a).
 
 **`0x16` — ground ITEM / object spawn** (handler `0x450a00` → `0x44dbc0` → ctor `0x463020` → `0x462ec0`).
 > **⚠ NOT a monster.** Originally mislabeled "creature spawn" — live RE proved otherwise (see §11a). The
 > object it creates draws its sprite from category **`"I"` = Item.epf** (via `0x435ab0`, id+`0x4000`), has no
-> collision and no AI. The real monster-spawn opcode (which would draw from **`"M"` = Monster.epf**) is still
-> **unidentified** — see the open problem in §16.
+> collision and no AI. For real monsters (drawn from **`"M"` = Monster.epf**) use **`0x07`** instead (above).
 
 Layout (offsets from opcode byte; multi-byte big-endian), verified from the handler + ctor:
 ```
@@ -329,6 +328,28 @@ it up in category `"I"`), stored at sprite+`0x130` by `0x462ec0`; `+7` is the en
 differ from `(X,Y)`** — the ctor computes `[obj+0x148] = |X-X'|+|Y-Y'|` and the per-frame position code
 `idiv`s by it, so `(X',Y')==(X,Y)` → divide-by-zero → **client crash** (send the from-tile 1 step away).
 No name field, no viewport gate (`0x44dbc0` skips the `0x424310` check), so the object can be placed anywhere.
+
+**`0x07` — creature / monster list** ✅ **THE REAL MONSTER SPAWN** (handler `0x44fdb0`). Confirmed live:
+draws real animated creatures from **`"M"` = Monster.epf**. Layout (offsets from opcode byte; big-endian):
+```
++1 count(u16)   then `count` × 12-byte entries:
+  +0 X(u16)  +2 Y(u16)  +4 entityId(u32)  +8 look(u16)  +0xa color(u8)  +0xb dir(u8)
+```
+The handler loops `count`, building each entity with the **same factory `0x44d7d0` that `0x33` (players)
+uses** — the difference is the `look` field. `0x44d7d0` classifies the look descriptor:
+- **`look ∈ [0x8000, 0xbfff]` → descriptor type 1 → direct creature sprite.** Entity ctor `0x461a50`
+  (entity vtable `0x4cd098`), whose draw `0x461c70` sees `[ent+0x178]!=0` and routes to the **monster
+  resolver `0x434020`/`0x4342e0`** → pushes `MONSTER.EPF` (`0x4f1d18`) → resolves the frame via `0x433d00`
+  (Monster.tbl). **So `look = 0x8000 | monsterId`, where `monsterId` is the Monster.tbl index (0..326).**
+- `look < 0x8000` or `> 0xbfff` → descriptor type 2 → `0x462ec0` (vtable `0x4cd118`) = the item/object base
+  (the invisible `0x16` path). Don't use for monsters.
+
+`color` = palette (→ resolver), `dir` = facing/state (→ ent+`0x18d`). **There IS a viewport gate** here
+(`0x424310`, unlike `0x16`): entries outside the camera rect are silently skipped, so spawn inside view.
+Verified live: `look 0x8000`→Monster.tbl frame 6, `0x8001`→26, `0x8002`→46 … i.e. **frame = 6 + 20·monsterId**
+(the idle "Starting" frame per Monster.tbl). Combat (melee → `0x29` number → `0x0E` despawn) works against
+these because they're real entities with collision. This is the `0x33`-monster path from Mithia 7.x
+(`clif_cmoblook_sub`: `look + 0x8000`) — it moved to `0x07` in 4.95 (see §17). Builder: `Session.SendCreatureList`.
 
 **`0x0E` — despawn list** (handler `0x450440`):
 ```
@@ -558,34 +579,39 @@ player, which renders). With no weapon the space-bar attack plays the empty-hand
 (`Shared/Mob.cs`, tracked in `Session._mobs`). On `0x13`: send the player swing (`0x1A`), then resolve melee
 against the mob on the tile *in front* of the player (facing tracked from the last walk `0x32`); apply
 `might + weapon bonus`, pop a `0x29` number over the mob, and on death `0x0E` (despawn) + exp via a fresh
-`0x08`. **All of that is real code, but it currently targets an *invisible, non-interactive* `0x16` object
-(§7.2) — not a monster.** The pipeline (damage/number/despawn/exp) is correct and reusable once the real
-monster entity exists; only the spawn/rendering is missing. See §11a.
+`0x08`. **This targets real `0x07` monsters (§7.2, §11a) — visible, with collision, killable.** Verified
+end-to-end live: spawn → melee → damage number → despawn → "You defeated" + exp.
 
-## 11a. Monster rendering — the sprite category system (spawn opcode UNSOLVED)
+## 11a. Monster rendering — the sprite category system ✅ SOLVED (`0x07`)
 
-The client's sprite manager (`[0x4fd2f8]`) groups sprites into **categories keyed by a single letter**,
-each backed by an EPF archive from `NexusTK.dat`, all loaded at startup (registry table `0x47b4c6`, A–Z):
-`I` = **Item.epf**, `M` = **Monster.epf**, `B`/`H`/`F` = body/head/face, `T` = tiles, `S` = shields/swords,
-etc. A sprite is resolved by `(categoryLetter, id)`; e.g. the item resolver `0x435ab0` does
-`id + 0x4000` in category `"I"` (`0x431020` → `0x431450`, entry = base + id·24).
+The client's sprite manager (`[0x4fd2f8]`) groups sprites into **categories**, each backed by an EPF archive
+from `NexusTK.dat`, all loaded at startup (registry table `0x47b4c6`). The category name is a **wide (UTF-16)
+string** — e.g. `"ITEM"` (`0x4f1fe8`), `"MONSTER.EPF"` (`0x4f1d18`), plus BODY/HEAD/FACE/tiles/shields/swords.
+A sprite is resolved by `(categoryName, id)`; the item resolver `0x435ab0` does `id + 0x4000` in `"ITEM"`
+(`0x431020`), while the **monster resolvers `0x434020` / `0x4342e0`** push `"MONSTER.EPF"` and resolve the
+frame through `0x433d00` (Monster.tbl lookup — no fixed offset; it's a table map).
 
-**The blocker:** the `0x16` object draws *only* from `"I"` (Item) — its draw methods `0x462f86` /
-`0x4631c0` (vtable `0x4cd18c`) hardcode `"I"`. A real monster must draw from `"M"` (Monster.epf), and our
-`0x16` spawn **never triggers an `"M"` lookup**. So `0x16` is the wrong opcode for monsters.
+**The answer: opcode `0x07`** (handler `0x44fdb0`) is the monster/creature-list spawn (full layout in §7.2).
+It builds each entity with the **same factory `0x44d7d0` that `0x33` uses**, but the look descriptor decides
+the archive: **`look ∈ [0x8000, 0xbfff]` ⇒ descriptor type 1 ⇒ creature entity (vtable `0x4cd098`)**, whose
+draw `0x461c70` (`[ent+0x178]!=0`) routes to the monster resolver → Monster.epf. So `look = 0x8000 | monsterId`
+(`monsterId` = the Monster.tbl index 0..326). How it was found: enumerated every call site of the generic
+sprite lookup `0x431020`/`0x430de0` → located the two that push `"MONSTER.EPF"` (`0x434020`/`0x4342e0`) →
+walked callers up to the draw methods in vtable `0x4cd098` → to its ctor `0x461a50` → to the factory `0x44d7d0`
+→ to its only two callers: the `0x33` handler (`0x44fef0`, players) and the **`0x07` handler (`0x44fdb0`)**.
 
-**Where to continue (the concrete next lead):** find the code that resolves sprites in category `"M"`.
-On world entry the client itself does `M`-lookups for ids `0..9` (a preload loop, via `0x430de0`) —
-hook that call's **return address** in Frida (`re/frida_probe.py` already has the `"M"`-filtered
-`catlookup`/`catlookup2` hooks; add `this.returnAddress`) to find the monster draw/entity code, then work
-back to the monster **entity class** and the **spawn opcode** that populates it. Monster frame layout is in
-`Monster.tbl` (plain text: `NumMonsters 327`, per-id `Palette/Starting/Walk/Attack…`; `Starting` = the
-idle frame index into Monster.epf). Parse `NexusTK.dat` with the Nexon PAK format: `u32 count` then 17-byte
+**Why not `0x33` or `0x16`:** all three `0x33` renderKinds (1/2/3) call `0x463380` with the *player* archive
+`0x4f2a84`, so `0x33` can never draw a monster in 4.95 (a gap from 7.x — see §17). `0x16` builds the item/object
+class (vtable `0x4cd18c`, category `"ITEM"`), invisible for monster ids.
+
+Monster frame layout is in `Monster.tbl` (plain text: `NumMonsters 327`, per-id `Palette/Starting/Walk/Attack…`;
+`Starting` = idle frame). Live sweep confirmed frame = `6 + 20·monsterId` for the early monsters (the idle
+"Starting" frame + a walk-cycle offset). Parse `NexusTK.dat` with the Nexon PAK format: `u32 count` then 17-byte
 entries `{u32 offset, char name[13]}` (first offset == header size).
 
-**Discovery commands** currently in `Session.HandleChat` (they spawn `0x16` *items*, not monsters — keep for
-reuse once the real opcode is found): `!mobrow <lo> <hi> [step]`, `!mob <hi> <lo> [hp]`, `!spawn [hi] [lo]`,
-`!kill`, `!weapon <n>`.
+**Commands** in `Session.HandleChat`: `!cre <lookId> [hp]` (one real monster in front, killable),
+`!crow <lo> <hi> [step]` (row sweep of the Monster.tbl look space), `!spawn [lookId] [hp]` (a pack),
+`!kill`, `!weapon <n>`. The `0x16` item commands (`!mob`, `!mobrow`) are kept for item/object discovery.
 
 ---
 
@@ -621,7 +647,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x04` | `0x44faf0` | ✓ coords / camera scroll + commit walk |
 | `0x05` | — | ✓ self entity id (server→client) |
 | `0x06` | `0x44fb90` | (client→server walk+view variant) |
-| `0x07` | `0x44fdb0` | list (u16 guard + struct) |
+| `0x07` | `0x44fdb0` | ✓ **creature/monster list** (server→client): `count(u16)` + 12B entries `X Y id look color dir`; `look=0x8000\|monsterId` → Monster.epf. §7.2/§11a |
 | `0x0b` | `0x44fb70` | **no-op** |
 | `0x0c` | `0x4502c0` | ✓ move / animate entity |
 | `0x0d` | `0x450170` | ✓ over-head speech |
@@ -687,7 +713,11 @@ on.
   appearance packet. (`0x33` type=1 is a direct-sprite form but still draws from the *player* archive,
   not monsters — don't mistake it for a creature path; see §7.2/§11a.)
 
-**Monsters (the big one — still open)**
+**Monsters (SOLVED — `0x07`)**
+- **The real monster spawn is `0x07`, not `0x33` or `0x16`.** `look = 0x8000 | monsterId` draws from
+  Monster.epf; full layout + how it was traced in §7.2/§11a. Verified live: visible, collidable, killable.
+- **`0x33` can never draw a monster in 4.95** — all renderKinds use the player archive `0x4f2a84`. Don't
+  retry the "type-1 sprite id" sweeps; they're a dead end (a 7.x-vs-4.95 gap — 7.x monsters ARE `0x33`).
 - **`0x16` is the ground-ITEM spawn, not the monster spawn.** Cost ~8 test cycles: it creates a
   monster-*class* object (vtable `0x4cd18c`, its own tick `0x463270`) but that object draws its sprite from
   category **`"I"` = Item.epf**, so it's invisible (item id doesn't exist), has no collision, and never does
@@ -779,12 +809,12 @@ magnitude faster for "what does this byte mean" questions.
   the creation UI. The correct create-ack is unknown; note the login-channel `0x02` sub-dispatch is
   *not* in the game-channel handler `0x444de0` (which only guards `opcode==2` for enter-world), so the
   login-channel `0x02` responses are handled by a different state object worth RE-ing.
-- **Monsters — UNSOLVED (the current focus).** The real monster-spawn opcode is unknown. Ruled out:
-  `0x33` (player body archive), `0x07` (player path), `0x16` (**ground item** — Item.epf, not a monster;
-  cost several cycles — see §14). Monsters must draw from category **`"M"` = Monster.epf** (loaded at
-  startup). Full plan in **§11a**: hook the return address of the client's own `"M"` sprite lookups to find
-  the monster draw/entity code, then work back to the spawn opcode. The server-side combat pipeline
-  (`Mob`, melee resolution, `0x29` damage, `0x0E` despawn, exp) is already built and reusable.
+- **Monsters — SOLVED (2026-07-24).** The real monster spawn is **`0x07`**: `look = 0x8000 | monsterId`
+  (Monster.tbl index) draws a live, animated, collidable, killable creature from Monster.epf. Full layout
+  and the trace that found it are in §7.2/§11a. The combat pipeline (`Mob`, melee, `0x29` damage, `0x0E`
+  despawn, exp) now runs against real monsters end-to-end. **Next monster work:** map the Monster.tbl look
+  ids to names (which id = squirrel/rabbit/etc.), give monsters server-side AI/movement (`0x0C`), and have
+  them fight back (`0x1A`/`0x13` toward the player + HP bars).
 - **Other players / NPCs.** Rendering is already proven (§15). Remaining: handle the client's view-rect
   refresh (`0x06`/`0x11`), spawn nearby entities on entry, and broadcast movement (`0x0C`) between
   sessions.
@@ -850,8 +880,11 @@ opcodes and layouts drift between versions:
 | `0x436120` | 7-byte appearance parser (`0x33` type 0) |
 | `0x4361b0` | direct-sprite appearance parser (`0x33` type 1; still player archive) |
 | `0x450a00` → `0x44dbc0` → `0x463020` → `0x462ec0` | `0x16` item/object spawn + ctor |
-| `0x435ab0` | item sprite resolver (`id+0x4000` in category `"I"`) |
-| `0x431020` / `0x430de0` | generic sprite lookup by `(categoryLetter, id)` |
+| `0x44fdb0` → `0x44d7d0` → `0x461a50` | **`0x07` monster-list handler → entity factory → creature ctor (vtable `0x4cd098`)** |
+| `0x461c70` / `0x462950` | creature-entity draw methods (route to monster resolver when `[ent+0x178]!=0`) |
+| `0x434020` / `0x4342e0` | **monster sprite resolvers** (push `"MONSTER.EPF"` `0x4f1d18` → `0x433d00` Monster.tbl → catlookup) |
+| `0x435ab0` | item sprite resolver (`id+0x4000` in category `"ITEM"`) |
+| `0x431020` / `0x430de0` | generic sprite lookup by `(categoryName, id)` |
 | `0x430c30` | load/create a sprite category into the manager `[0x4fd2f8]` |
 | `0x47b4c6` | A–Z sprite-category registry table |
 | `0x4502c0` | `0x0C` move/animate |

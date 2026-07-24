@@ -36,9 +36,12 @@ RVA = {
     "mapload":  0x04a780,  # loads Maps\TK%d.map  -- fires when client renders a map
     "worldctor":0x04a090,  # game-world object ctor -- built only on 0x02+00 (enter-world trigger)
     # ---- 0x33 self-entity handler internals (to find where it bails) ----
-    "h16":      0x050a00,  # 0x450a00  the 0x16 creature-spawn handler
-    "creaturebuild":0x04dbc0,  # 0x44dbc0 creature builder (ctor 0x463020 -> base 0x462ec0)
-    "monresolve":0x035ab0,  # 0x435ab0 monster sprite resolver: (id, out); sprite = (id+0x4000) in cat "I"
+    "h16":      0x050a00,  # 0x450a00  the 0x16 ground-ITEM spawn handler (Item.epf)
+    "h07":      0x04fdb0,  # 0x44fdb0  THE REAL creature/monster list handler (0x07); look 0x8000..0xbfff => Monster.epf
+    "monres1":  0x034020,  # 0x434020  monster sprite resolver A (pushes MONSTER.EPF -> catlookup2)
+    "monres2":  0x0342e0,  # 0x4342e0  monster sprite resolver B (pushes MONSTER.EPF -> catlookup)
+    "creaturebuild":0x04dbc0,  # 0x44dbc0 item builder (ctor 0x463020 -> base 0x462ec0)
+    "monresolve":0x035ab0,  # 0x435ab0 ITEM sprite resolver (id+0x4000 in cat "I") -- mislabeled historically
     "catload":  0x030c30,  # 0x430c30 load/create a sprite category (by name) into the manager
     "catlookup":0x031020,  # 0x431020 generic sprite lookup: (nameStr, id, out) -> copies descriptor
     "catlookup2":0x030de0, # 0x430de0 alternate sprite lookup (nameStr, ...) in the same module
@@ -231,6 +234,37 @@ Process.setExceptionHandler(function (details) {
       '\n   backtrace:\n      ' + bt});
   } catch (e) { send({t:'CRASH', m:'exception in handler: ' + e}); }
   return false;   // let the crash proceed (we just logged it)
+});
+
+// ---- 0x07 REAL creature/monster list trace ----
+// body layout: [0]=? [1..2]=count(u16 BE) then 12-byte entries {X(u16) Y(u16) id(u32) look(u16) color dir}.
+// look in 0x8000..0xbfff => descriptor type 1 => Monster.epf path (0x461a50 entity). Confirm count+looks.
+Interceptor.attach(at('h07'), {
+  onEnter(args) {
+    const b = args[0];
+    let cnt = 0; try { cnt = (b.add(1).readU8()<<8) | b.add(2).readU8(); } catch(e) {}
+    let looks = [];
+    try {
+      for (let i = 0; i < cnt && i < 12; i++) {
+        const e = b.add(3 + i*12);
+        const look = (e.add(8).readU8()<<8) | e.add(9).readU8();
+        looks.push('0x' + look.toString(16));
+      }
+    } catch(e) {}
+    send({t:'T07', m:'*** 0x07 creature-list ENTER count=' + cnt + ' looks=[' + looks.join(' ') + ']  body ' + hex(b, 32)});
+  },
+  onLeave(ret) { send({t:'T07', m:'  0x07 list done'}); }
+});
+// Monster resolvers: confirm the Monster.epf resolve path is actually reached from the spawn.
+const seenMonRes = {};
+['monres1','monres2'].forEach(function(fn){
+  Interceptor.attach(at(fn), {
+    onEnter(args) {
+      seenMonRes[fn] = (seenMonRes[fn]||0) + 1;
+      if (seenMonRes[fn] > 8) return;
+      send({t:'T07', m:'  ' + fn + ' MONSTER resolver hit #' + seenMonRes[fn] + ' (Monster.epf path reached)'});
+    }
+  });
 });
 
 // ---- 0x16 creature-spawn trace ----
@@ -486,6 +520,8 @@ def main():
             out(">>33  " + p["m"])
         elif t == "T16":
             out(">>16  " + p["m"])
+        elif t == "T07":
+            out(">>07  " + p["m"])
         elif t == "SPR":
             out(">>SPR " + p["m"])
         elif t == "CRASH":
