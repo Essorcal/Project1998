@@ -42,7 +42,14 @@ RVA = {
     "opnew":    0x03fd80,  # 0x43fd80  operator new; size 0x17c == sprite alloc (reached flag branch)
     "h04":      0x04faf0,  # 0x04 coords handler; reads [world+0x40c] (self entity ptr) for the camera
     "entmove":  0x062320,  # 0x462320 start-walk-animation(entity, X, Y, dir, speed); sets walking flags
+    # ---- stats/HUD write-watch ----
+    "dispatch": 0x04b9c0,  # world packet dispatcher: thiscall(ecx=world), arg0=pktObj, [pktObj+0xc]=buf, buf[0]=opcode
 }
+
+# The self player object is [world+0x40c]; world global is *(0x4fd3c8). We diff a generous slice of the
+# self object around every world packet so the stats opcode reveals itself by WHICH bytes it writes.
+SELF_OFF = 0x40c
+SELF_SNAP = 0x600
 
 JS = r"""
 'use strict';
@@ -230,8 +237,46 @@ Interceptor.attach(at('entmove'), {
   }
 });
 
-send({t:'info', m:'hooks installed (recv/send/connect/decrypt/encrypt/worldctor/mapload/createfile/0x33-trace)'});
-""".replace("__RVA_JSON__", __import__("json").dumps(RVA))
+// ---- STATS/HUD WRITE-WATCH ------------------------------------------------
+// Diff the self player object ([world+0x40c]) across every world packet. Whatever packet writes
+// stat-shaped bytes (level/HP/MP/might/...) is the stats opcode, and the changed offsets are the
+// struct layout. Layout-agnostic: we don't need to know where fields are, we watch what moves.
+// Movement/coords packets (0x04/0x0c) mutate position every step -> muted to cut noise; a probe is
+// sent while standing still anyway.
+const SELF_OFF = __SELF_OFF__, SELF_SNAP = __SELF_SNAP__;
+const MUTE_OPS = { 0x04:1, 0x0c:1 };
+function readSelf(world) {
+  try {
+    const self = world.add(SELF_OFF).readPointer();
+    if (self.isNull()) return null;
+    return { self: self, bytes: new Uint8Array(self.readByteArray(SELF_SNAP)) };
+  } catch (e) { return null; }
+}
+Interceptor.attach(at('dispatch'), {
+  onEnter(args) {
+    this.world = this.context.ecx;
+    this.op = -1;
+    try { this.op = args[0].add(0xc).readPointer().readU8(); } catch (e) {}
+    this.snap = readSelf(this.world);
+  },
+  onLeave(ret) {
+    if (!this.snap || this.op < 0 || MUTE_OPS[this.op]) return;
+    const after = readSelf(this.world);
+    if (!after || String(after.self) !== String(this.snap.self)) return;  // entity moved/realloc'd
+    const a = this.snap.bytes, b = after.bytes, diffs = [];
+    for (let i = 0; i < SELF_SNAP; i++) if (a[i] !== b[i]) diffs.push(i);
+    if (diffs.length) {
+      const parts = diffs.map(i => '+0x' + i.toString(16) + ':' +
+        ('0'+a[i].toString(16)).slice(-2) + '->' + ('0'+b[i].toString(16)).slice(-2));
+      send({t:'DIFF', op:this.op, n:diffs.length, m:parts.join(' ')});
+    }
+  }
+});
+
+send({t:'info', m:'hooks installed (recv/send/connect/decrypt/encrypt/worldctor/mapload/createfile/0x33-trace/statwatch)'});
+""".replace("__RVA_JSON__", __import__("json").dumps(RVA)) \
+   .replace("__SELF_OFF__", hex(SELF_OFF)) \
+   .replace("__SELF_SNAP__", hex(SELF_SNAP))
 
 
 def main():
@@ -274,6 +319,8 @@ def main():
             out(">>33  " + p["m"])
         elif t == "WALK":
             out("WALK  " + p["m"])
+        elif t == "DIFF":
+            out(f"DIFF  op=0x{p['op']:02x} changed {p['n']} self-bytes: {p['m']}")
         else:
             out(str(p))
 

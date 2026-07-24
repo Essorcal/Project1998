@@ -505,23 +505,15 @@ public sealed class Session
         Log.Info($"   -> STAT PROBE op=0x{op:x2} flags=0x{flags:x2}");
     }
 
-    // "!sweep" — walk the ranked candidate opcodes, one every ~600ms, each announced by an over-head
-    // bubble and carrying level==opcode as its sentinel, so whatever value lands on the HUD names the
-    // winning opcode. Watch the HUD while it runs; report which opcode (the level number) took effect.
+    // "!sweep" is DISABLED. Blind-sweeping unknown opcodes crashes the client: several handlers do real
+    // resource loads from the packet body (e.g. 0x2e = the skills/spells list loads an .EPF sprite archive
+    // per entry — garbage bytes -> bogus filename -> "File not found .EPF" -> crash). Find the stats opcode
+    // deterministically instead (self player object is [world+0x40c]); only fire "!s <op>" once a specific
+    // opcode is confirmed safe by reading its handler.
     private void StatSweep(string text)
     {
-        // Non-window, non-entity, substantial handlers first (most likely the always-on HUD), then the
-        // window-openers that could be the self-profile panel.
-        byte[] tier = { 0x2e, 0x4a, 0x19, 0x16, 0x49, 0x68, 0x3b, 0x66, 0x67, 0x34, 0x21, 0x42, 0x31, 0x2f, 0x30 };
-        Log.Info($"   -> STAT SWEEP over {tier.Length} opcodes");
-        foreach (var op in tier)
-        {
-            var label = Encoding.ASCII.GetBytes($"op 0x{op:x2}");
-            SendSpeech(0, _char.Id, label);
-            SendStatProbe(op, 0xFF, level: op);   // level sentinel == opcode
-            System.Threading.Thread.Sleep(700);
-        }
-        SendSpeech(0, _char.Id, "sweep done"u8.ToArray());
+        SendMessage("!sweep is disabled (crashes the client on resource-loading opcodes). Use !s <hexop>.");
+        Log.Info("   -> !sweep refused (unsafe blind probe)");
     }
 
     // Build a 7.x-style status packet (flags byte then FULLSTATS/HPMP/XPMONEY/ALWAYS blocks) with the
