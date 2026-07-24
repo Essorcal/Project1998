@@ -23,7 +23,13 @@ Work auto‑saves in your browser as you go; **Download JSON** is a manual backu
 
 - `Monster.epf`: header `u16 frameCount, u16 w, u16 h, u16 unk, u32 tocOffset`; pixels at `[12..toc]`;
   TOC at `toc`, 16 bytes/frame: `i16 top, i16 left, u32 pixOff, u32 stencilOff, i16 bottom, i16 right`.
-  Frame `w = |right-left|`, `h = |bottom-top|`, raw 8‑bit indices at `12+pixOff`, index 0 = transparent.
+  **True pixel count = `stencilOff − pixOff`; the box w/h are only approximate**, so derive dims by
+  whichever of `|right-left|` / `|bottom-top|` divides the pixel-byte count evenly (fallback: nearest
+  factor pair). Raw 8‑bit indices at `12+pixOff`, index 0 = transparent. Some frames are 2×2 placeholders
+  (`pixbytes=4`) for undrawn directions — skip them.
+- **Frame/direction layout:** a monster's frames start at `Starting` (Monster.tbl) and are grouped by
+  direction as `Starting + dir*Walk`. `dir 2` = **south (toward the viewer)** — matches the live‑game
+  `Starting+6` for `Walk=3`. `dir 0` (frames `0..Walk`) faces *away*, so show the south block.
 - `Monster.pal`: a `DLPalette` container of **20 recolor palettes** (blocks of 1056 B, each starting with
   the ASCII tag `DLPalette`). Within a block the 256 colors are **4 bytes/entry, RGB = the first 3 bytes**,
   starting at **byte offset 38** of the block (empirically pinned by matching a known sprite's dark outline
