@@ -18,3 +18,6 @@ re/probe_log.txt
 
 # ---- Third-party client shim (8 MB of prebuilt binaries; re-downloadable) ----
 re/cnc-ddraw/
+
+# runtime redirect dir written by the client
+client-5.33-redirect/

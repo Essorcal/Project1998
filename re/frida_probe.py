@@ -153,6 +153,21 @@ Interceptor.attach(at('encrypt'), {
         .slice(0, 8)
         .map(a => { const off = a.sub(base); return (off.compare(0x1000000) < 0) ? ('+0x' + off.toString(16)) : a.toString(); });
     }
+    // POKE-sweep control: the client's own chat (op 0x0e = chatType,msgLen,msg). "!poke" starts the
+    // self-object sweep, "!poke <hex>" starts at a given offset, "!pokestop" stops it. Client-side only.
+    if (op === 0x0e) {
+      try {
+        const mlen = src.add(2).readU8();
+        const msg = src.add(3).readAnsiString(mlen);
+        if (msg && msg.toLowerCase().indexOf('!pokestop') === 0) { pokeOn = false; send({t:'POKE', m:'sweep STOPPED'}); }
+        else if (msg && msg.toLowerCase().indexOf('!poke') === 0) {
+          const parts = msg.split(/\s+/);
+          if (parts.length > 1) { const v = parseInt(parts[1], 16); if (!isNaN(v)) pokeCur = v; }
+          if (pokeSavedOff >= 0) { try { const s = selfPtr(); if (s) s.add(pokeSavedOff).writeU8(pokeSaved); } catch(e){} pokeSavedOff = -1; }
+          pokeOn = true; send({t:'POKE', m:'sweep STARTED at self+0x' + pokeCur.toString(16)});
+        }
+      } catch (e) {}
+    }
     send({t:'encrypt', op:op, len:len, m:hex(src, len), bt:bt});
   }
 });
@@ -312,7 +327,38 @@ Interceptor.attach(at('dispatch'), {
   }
 });
 
-send({t:'info', m:'hooks installed (recv/send/connect/decrypt/encrypt/worldctor/mapload/createfile/0x33-trace/statwatch)'});
+// ---- POKE SWEEP: find where the HUD READS self stats (read-side look-lab) ----------------------
+// The write/scan hunt can't find the stats opcode (layout confound). Flip it: poke a sentinel (99)
+// into ONE self-object byte at a time and revert it, so 99 flashes on whichever HUD field sources
+// that offset. That pins the stat offsets on the self struct with no opcode/layout guessing; then a
+// static xref of writers to those offsets gives the real stats packet. Gated by the !poke chat cmd.
+const POKE_LO = 0x40, POKE_HI = 0x220, POKE_VAL = 0x63;   // 99
+const POKE_SKIP = [[0x132,0x142],[0x1a0,0x1a4]];          // name text, embedded object pointer
+let pokeOn = false, pokeCur = POKE_LO, pokeSaved = 0, pokeSavedOff = -1;
+function selfPtr() {
+  try { const w = ptr(0x4fd3c8).readPointer(); if (w.isNull()) return null;
+        const s = w.add(SELF_OFF).readPointer(); return s.isNull() ? null : s; } catch (e) { return null; }
+}
+function pokeSkip(off) { for (const r of POKE_SKIP) if (off >= r[0] && off < r[1]) return true; return false; }
+setInterval(function () {
+  if (!pokeOn) return;
+  const s = selfPtr(); if (!s) return;
+  if (pokeSavedOff >= 0) { try { s.add(pokeSavedOff).writeU8(pokeSaved); } catch (e) {} pokeSavedOff = -1; }
+  while (pokeSkip(pokeCur)) pokeCur++;
+  if (pokeCur >= POKE_HI) {
+    pokeOn = false;
+    send({t:'POKE', m:'sweep COMPLETE (0x40..0x220). If NO HUD number ever showed 99, stats are NOT on the self object.'});
+    pokeCur = POKE_LO; return;
+  }
+  try {
+    pokeSaved = s.add(pokeCur).readU8(); pokeSavedOff = pokeCur;
+    s.add(pokeCur).writeU8(POKE_VAL);
+    send({t:'POKE', m:'self+0x' + pokeCur.toString(16) + ' = 99  (was 0x' + ('0'+pokeSaved.toString(16)).slice(-2) + ')  <-- watch the HUD for 99'});
+  } catch (e) { send({t:'POKE', m:'self+0x' + pokeCur.toString(16) + ' <unwritable>'}); }
+  pokeCur++;
+}, 1600);
+
+send({t:'info', m:'hooks installed (recv/send/connect/decrypt/encrypt/worldctor/mapload/createfile/0x33-trace/statwatch/pokesweep)'});
 """.replace("__RVA_JSON__", __import__("json").dumps(RVA)) \
    .replace("__SELF_OFF__", hex(SELF_OFF)) \
    .replace("__SELF_SNAP__", hex(SELF_SNAP))
@@ -362,6 +408,8 @@ def main():
             out(f"DIFF  op=0x{p['op']:02x} changed {p['n']} self-bytes: {p['m']}")
         elif t == "SENT":
             out(f"SENT  op=0x{p['op']:02x} STORED sentinel [{p['pat']}] @ {p['addr']}  ctx: {p['ctx']}")
+        elif t == "POKE":
+            out("POKE  " + p["m"])
         else:
             out(str(p))
 
