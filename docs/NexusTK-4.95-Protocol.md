@@ -384,7 +384,7 @@ form; `0x78` = the "full stats" form used below. Multi-byte stat fields are **bi
 ```
 body offset  field            type
 [0]          flags = 0x78     u8    (full-stats form)
-[1]          nation           u8    (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan)
+[1]          nation           u8    (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan 6=Paekjae 7=Kaya)
 [2]          totem            u8    (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None)
 [4]          level            u8
 [5..8]       maxHP            u32BE (offset confirmed via !hp: HP=100/max=1000 -> bar ~10% full)
@@ -684,7 +684,7 @@ magnitude faster for "what does this byte mean" questions.
   proof an opcode is unhandled.) Layout was pinned with a self-describing gradient packet (`body[i]=i`,
   read each value off the HUD). Level/might/will/grace/HP/MP/exp/coins now populate the always-on HUD and
   round-trip through the character store. `maxHP`/`maxMP` offsets (`[5]`/`[9]`) and the `nation` id table
-  (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan) are now confirmed empirically (`!hp`, `!nat`).
+  (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan 6=Paekjae 7=Kaya) are confirmed empirically (`!hp`, `!nat`).
 - **Hair** is not renderable via `0x33` in 4.95 (no slot in the 7-byte form). Likely requires a
   different mechanism (stylist NPC / equipment), if at all.
 - **Creation screen auto-close.** After `0x04`, our "Account created" message shows but doesn't dismiss

@@ -34,7 +34,7 @@ public sealed class Character
     /// <summary>Nation id -> name, confirmed empirically on the 4.95 HUD (see Session `!nat`). The
     /// names live in a client data file (no strings in the exe), so this table is the source of truth.</summary>
     public static readonly string[] Nations =
-        { "Neutral", "Koguryo", "Buya", "Nagnang", "Shilla", "Jinhan" };
+        { "Neutral", "Koguryo", "Buya", "Nagnang", "Shilla", "Jinhan", "Paekjae", "Kaya" };
     public static string NationName(byte id) => id < Nations.Length ? Nations[id] : $"nation#{id}";
     public byte Level    = 1;
     public uint MaxHp    = 100;
