@@ -115,6 +115,8 @@ public sealed class Session
             case 0x06:                    HandleWalk(dec); break;   // client walk+sync (every few steps) -> same
             case 0x0E:                    HandleChat(dec); break;   // client chat -> echo as over-head speech
             case 0x13:                    HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
+            case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
+            case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile/inspect
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
@@ -456,6 +458,8 @@ public sealed class Session
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
         if (text.StartsWith("!r6", StringComparison.OrdinalIgnoreCase)) { StatReplay6x(text); return; }
         if (text.StartsWith("!stg", StringComparison.OrdinalIgnoreCase)) { StatGradient(text); return; }
+        if (text.StartsWith("!leg", StringComparison.OrdinalIgnoreCase)) { SendProfileReplay6x(); return; }   // exact 6.x 0x39 replay
+        if (text.StartsWith("!self", StringComparison.OrdinalIgnoreCase)) { SendSelfProfile(); return; }        // native 0x39 builder
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         SendSpeech(chatType, _char.Id, msg);
@@ -666,6 +670,111 @@ public sealed class Session
         d.AddRange(Be(time));
         d.Add(param);
         SendMap(0x1A, _gameInc++, d.ToArray(), $"action(0x1A) type={type} time={time}");
+    }
+
+    // ---- profile window (the "Mind's Eye") ----
+    // The client opens the self-profile window when the profile key is pressed by sending 0x2D. Byte 0
+    // == 0 is the self-profile request (byte != 0 is group status in 7.x). We reply with 0x39, the
+    // self-profile packet (clif_mystaytus): AC/clan/title/class/legend. Without this reply the window
+    // never appears — that's the bug the user hit.
+    private void HandleProfileRequest(byte[] dec)
+    {
+        byte sub = dec.Length > 0 ? dec[0] : (byte)0;
+        Log.Info($"   -> PROFILE request (0x2D) sub={sub}");
+        if (sub == 0) SendSelfProfile();
+    }
+
+    // The client clicks an entity to inspect it: 0x43 = 01 entityId(u32BE) 00. For our own id we show
+    // the self-profile; other ids would use the other-player profile (0x34) once other entities exist.
+    private void HandleClickInfo(byte[] dec)
+    {
+        uint id = 0;
+        if (dec.Length >= 5) id = (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]);
+        Log.Info($"   -> CLICK-INFO (0x43) id={id}");
+        SendSelfProfile();   // only the self entity exists so far
+    }
+
+    // 0x39 self-profile ("Mind's Eye"). Layout decoded from the 7.x clif_mystaytus builder and confirmed
+    // against a real 6.x capture (jeedee/TkServer) that decrypts to this exact shape (AC=99, class
+    // "Peasant", legend "Born in Hyul 31, Winter"). Body:
+    //   [AC u8][dam u8][hit u8]
+    //   [clan  : len u8 + bytes]        (len 0 = clanless)
+    //   [clanTitle : len u8 + bytes]
+    //   [title : len u8 + bytes]
+    //   [spouse : len u8 + bytes]
+    //   [group u8]  [TNL u32BE]
+    //   [className : len u8 + bytes]
+    //   14 × equip slot (each 10 bytes, all zero = empty)
+    //   [exchange u8]
+    //   [0 u8] [legendCount u16BE]
+    //   legendCount × { icon u8, color u8, textLen u8, text bytes }
+    private void SendSelfProfile()
+    {
+        var d = new List<byte>();
+        d.Add((byte)_char.Ac);
+        d.Add(_char.Dam);
+        d.Add(_char.Hit);
+        AddLenStr(d, _char.ClanName);
+        AddLenStr(d, _char.ClanTitle);
+        AddLenStr(d, _char.Title);
+        AddLenStr(d, _char.Spouse);
+        d.Add(0);                       // group flag (not grouped)
+        d.AddRange(Be32(_char.Tnl));    // experience to next level
+        AddLenStr(d, _char.ClassName);
+
+        for (int i = 0; i < 14; i++)    // 14 equipment slots, empty = 10 zero bytes each
+            d.AddRange(new byte[10]);
+
+        d.Add(0);                       // exchange flag
+
+        var legs = _char.Legends ?? new List<Legend>();
+        d.Add(0);                       // reserved
+        d.AddRange(Be((ushort)legs.Count));
+        foreach (var lg in legs)
+        {
+            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
+            d.Add(lg.Icon);
+            d.Add(lg.Color);
+            d.Add((byte)t.Length);
+            d.AddRange(t);
+        }
+
+        SendMap(0x39, _gameInc++, d.ToArray(), $"self-profile(0x39) title='{_char.Title}' ac={_char.Ac} legends={legs.Count}");
+    }
+
+    // length-prefixed ASCII string: [len u8][bytes]. Empty string -> a single 0 byte.
+    private static void AddLenStr(List<byte> d, string? s)
+    {
+        var b = Encoding.ASCII.GetBytes(s ?? "");
+        d.Add((byte)b.Length);
+        d.AddRange(b);
+    }
+
+    // "!leg" — replay the EXACT 0x39 self-profile captured from a real 6.x server (jeedee/TkServer),
+    // decrypted with the shared NexonInc cipher. Known-good content: AC 99, class "Peasant", legend
+    // "Born in Hyul 31, Winter". If the 4.95 profile window opens and shows these, the format is shared
+    // and our native SendSelfProfile is correct; if it garbles, we diff against this capture.
+    private static readonly byte[] Profile6x =
+    {
+        0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x2b, 0x07,
+        0x50, 0x65, 0x61, 0x73, 0x61, 0x6e, 0x74,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x80, 0x17,
+        0x42, 0x6f, 0x72, 0x6e, 0x20, 0x69, 0x6e, 0x20, 0x48, 0x79, 0x75, 0x6c, 0x20, 0x33, 0x31, 0x2c,
+        0x20, 0x57, 0x69, 0x6e, 0x74, 0x65, 0x72,
+    };
+
+    private void SendProfileReplay6x()
+    {
+        SendMap(0x39, _gameInc++, Profile6x, "replay6x-profile(0x39)");
+        Log.Info("   -> REPLAY 6.x self-profile on 0x39 (expect: AC 99, class Peasant, legend 'Born in Hyul 31, Winter')");
     }
 
     /// <summary>Build an encrypted game packet, send it, and log it.</summary>

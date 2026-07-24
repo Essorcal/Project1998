@@ -43,7 +43,38 @@ public sealed class Character
     public byte Armor    = 0;
     public byte MaxInv   = 27;
 
+    // profile / "Mind's Eye" self-profile (0x39 = clif_mystaytus). These populate the profile window
+    // the client opens on the profile key (client sends 0x2D, byte 0). AC is signed in TK (lower is
+    // better); Dam/Hit are the melee bonus lines. Tnl = experience "to next level".
+    public sbyte  Ac        = 0;
+    public byte   Dam       = 0;
+    public byte   Hit       = 0;
+    public uint   Tnl       = 0;
+    public string Title     = "";          // grade/honorific shown above the name (e.g. "Peasant")
+    public string ClassName = "Peasant";   // path/class line
+    public string ClanName  = "";          // guild/clan name ("" = clanless)
+    public string ClanTitle = "";          // rank within the clan
+    public string Spouse    = "";           // marriage line ("" = none)
+
+    // Legend marks: the scrollable list at the bottom of the profile. Each = icon + color + text.
+    // Seeded with a "born" entry (mirrors the real 6.x capture) so the window has visible content.
+    public List<Legend> Legends = new()
+    {
+        new Legend(icon: 0, color: 0, text: "Born in Hyul 31, Winter"),
+    };
+
     // Raw body of the creation packet (0x04), kept verbatim until its appearance-byte layout is
     // decoded from the logged dump and mapped onto the fields above. Null for the default spawn.
     public byte[]? CreationBlob = null;
+}
+
+/// <summary>One legend-mark line in the profile window: an icon id, a text color, and the text.</summary>
+public sealed class Legend
+{
+    public byte   Icon  = 0;
+    public byte   Color = 0;
+    public string Text  = "";
+
+    public Legend() { }
+    public Legend(byte icon, byte color, string text) { Icon = icon; Color = color; Text = text; }
 }
