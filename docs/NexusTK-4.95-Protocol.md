@@ -246,7 +246,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x06` | Walk + view refresh | same as `0x32` + `x0 y0 x1 y1 checksum` | Sent every few steps instead of `0x32`; handle identically for movement. |
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
-| `0x43` | Inspect/examine | `01 entityId(u32) 00` | Clicking a character / pressing 's' on self. Opens the profile window (needs stats data — unsolved). |
+| `0x43` | Inspect/examine | `01 entityId(u32) 00` | Clicking a character / pressing 's' on self. Opens the profile window `0x34`. |
 | `0x11` | (view/heartbeat) | `01 00` / `02 00` | Sent periodically; no reply needed for basic play. |
 | `0x2d` | (request) | `2d 00` | Unanswered; no reply needed for basic play. |
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
@@ -372,6 +372,41 @@ solved.
 > **Critical caveat:** the creation-packet byte space and the render-packet byte space are **different
 > id spaces** with different field *orders* (creation `[0]`=face but render `[2]`=face; creation
 > `[1]`=gender and render `[0]`=body). Do not assume they line up — map field-by-field.
+
+### Stats packet — `0x08` (server → client)
+
+Populates the always-on HUD (level, might, will, grace, HP/MP bars + numbers, experience, coins,
+nation, totem). Send it in the world-entry burst after `0x33`. Framing is the normal
+`AA | len | 08 | inc | body` with the NexonInc cipher. `body[0]` is a **flags** byte selecting the
+form; `0x78` = the "full stats" form used below. Multi-byte stat fields are **big-endian `u32`**.
+
+```
+body offset  field            type
+[0]          flags = 0x78     u8    (full-stats form)
+[1]          nation           u8    (id table TBD; 0 = Neutral)
+[2]          totem            u8    (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None)
+[4]          level            u8
+[5..8]       maxHP            u32BE (offset inferred; HP bar renders full)
+[9..12]      maxMP            u32BE (inferred)
+[13]         might            u8
+[14]         will             u8
+[17]         grace            u8
+[24..27]     HP (current)     u32BE
+[28..31]     MP (current)     u32BE
+[32..35]     experience       u32BE
+[36..39]     coins            u32BE
+```
+Body length ~58 bytes (unused offsets zero-filled). See `Session.SendStats()`.
+
+**How this was found (methodology worth reusing):** static dispatch analysis wrongly "proved" `0x08`
+was unhandled — it's a no-op in the world dispatcher remap *and* the conn-state object `0x444de0`, yet
+the client processes it anyway via a pre-dispatch path. It was cracked by **replaying a real 6.x server
+capture** (jeedee/TkServer `game_server.rb` has commented-out captured `send_data` packets; opcode `0x08`
+= stats, decrypt with the shared NexonInc cipher — see `re/decode6x.py`). The exact 4.95 field offsets
+were then pinned with a **self-describing gradient packet** (`body[i]=i`, in-game `!stg`): every HUD
+number equals its own field offset, and u32 values (e.g. `0x18191A1B` at offset 24) reveal size and
+big-endian order in one read. **Lesson: a "no-op in the dispatch table" is not proof an opcode is
+unhandled, and a close-version reference server (6.x here) beats guessing.**
 
 Server reply to `0x04`: we send an "Account created." message (a `0x02` message-box packet). This
 does **not** currently auto-close the creation screen — the exact create-ack that dismisses the UI is
@@ -581,15 +616,14 @@ magnitude faster for "what does this byte mean" questions.
 
 ## 16. Open problems / where to continue
 
-- **Stats / HUD (biggest gap).** No HP/MP/level/attributes are shown, and **nation ("Buya") and totem
-  are stats that live here**, which is why they don't appear after creation. The 4.95 self-stats opcode
-  has **not** been found by static RE. It is **not** `0x08` (that's 7.x; in 4.95 the client *sends*
-  `0x08` as a request and there's no receive-handler for it). Ruled out: `0x16` (creature spawn),
-  `0x29` (float number/effect), `0x2e` (skill list), `0x03` (download URL). Suggested approach:
-  **empirical** — set a Frida memory-write watch on the HUD HP/MP variable (find it via the HUD draw
-  code) to see which handler writes it, or send each undecoded opcode with a recognizable value
-  (HP=12345) and watch the HUD. Inspect (`0x43`) opens the profile window `0x34` (`0x450270`) but it's
-  empty until this is solved.
+- **Stats / HUD — SOLVED (2026-07-24).** The self-stats opcode is **`0x08`** — see the §"Stats packet"
+  reference. (Static dispatch analysis was misleading: `0x08` is a no-op in *both* the world dispatcher
+  remap and the conn-state object `0x444de0`, yet the client still processes it via a pre-dispatch path,
+  so it was only found by *replaying a real 6.x server capture*. Do not trust "world remap = no-op" as
+  proof an opcode is unhandled.) Layout was pinned with a self-describing gradient packet (`body[i]=i`,
+  read each value off the HUD). Level/might/will/grace/HP/MP/exp/coins now populate the always-on HUD and
+  round-trip through the character store. Remaining polish: confirm `maxHP`/`maxMP` offsets (`[5]`/`[9]`,
+  inferred — HP bar renders full so they read ≥ current), and the exact `nation`/`totem` id tables.
 - **Hair** is not renderable via `0x33` in 4.95 (no slot in the 7-byte form). Likely requires a
   different mechanism (stylist NPC / equipment), if at all.
 - **Creation screen auto-close.** After `0x04`, our "Account created" message shows but doesn't dismiss
@@ -620,7 +654,8 @@ opcodes and layouts drift between versions:
 **Confirmed 7.x ≠ 4.95 gaps:**
 - **Cipher:** 7.x = name-derived table cipher + 3 trailer bytes; 4.95 = simple NexonInc XOR, no trailer.
 - **Self-walk:** 7.x = `0x26`; 4.95 = `0x0C` + `0x04` (its `0x26` is a no-op).
-- **Stats:** 7.x = `0x08` (`OUT_STATUS`); 4.95 does not handle `0x08` on receive — different opcode, TBD.
+- **Stats:** 7.x = `0x08` (`OUT_STATUS`); 6.x = `0x08`; **4.95 = `0x08` too** (SOLVED — see the Stats
+  packet reference). The field *layout* differs from 6.x/7.x, so decode offsets per-version.
 - **Appearance:** 7.x `create_user` sends a rich equipment block (face, hairstyle, hair_color,
   face_color, coat…); 4.95's `0x33` type-0 is the 7-byte body/form/face/armor/weapon/shield form with
   **no hair**.
