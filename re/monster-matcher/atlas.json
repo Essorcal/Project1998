@@ -1,0 +1,2725 @@
+[
+{
+"name": "Evil presence",
+"exp": 0,
+"type": "Undead",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Nangen boy",
+"exp": 0,
+"type": "Human",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Nangen man",
+"exp": 0,
+"type": "Human",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Nangen merchant",
+"exp": 0,
+"type": "Human",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Nangen woman",
+"exp": 0,
+"type": "Human",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Void mouse",
+"exp": 0,
+"type": "Animal",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Yang mouse",
+"exp": 0,
+"type": "Animal",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Yin mouse",
+"exp": 0,
+"type": "Animal",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Magic rabbit",
+"exp": 5,
+"type": "Animal",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Rabbit",
+"exp": 5,
+"type": "Animal",
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Small rabbit",
+"exp": 5,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "White rabbit",
+"exp": 5,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Squirrel",
+"exp": 10,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Mouse",
+"exp": 15,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Rat",
+"exp": 25,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "White rat",
+"exp": 25,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Large centipede",
+"exp": 30,
+"type": "Insect",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Crow",
+"exp": 40,
+"type": "Animal",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Deer",
+"exp": 50,
+"type": "Animal",
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Doe",
+"exp": 50,
+"type": "Animal",
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Hare",
+"exp": 80,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Snake",
+"exp": 80,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Cat",
+"exp": 90,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Fierce mouse",
+"exp": 100,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Bat",
+"exp": 150,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Blissful bird",
+"exp": 250,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Raven",
+"exp": 250,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Dark buck",
+"exp": 300,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Dark deer",
+"exp": 300,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Large hare",
+"exp": 300,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Fox",
+"exp": 320,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Ogre explorer",
+"exp": 400,
+"type": null,
+"page": "islets",
+"snap": "20051101215917"
+},
+{
+"name": "Ravenous bird",
+"exp": 400,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Red hare",
+"exp": 400,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Sheep",
+"exp": 400,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Big bat",
+"exp": 500,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Big rat",
+"exp": 500,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Black buck",
+"exp": 500,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Island lobster",
+"exp": 500,
+"type": null,
+"page": "hausson",
+"snap": "20051026064140"
+},
+{
+"name": "Green squirrel",
+"exp": 550,
+"type": null,
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Wild piglet",
+"exp": 550,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Worm",
+"exp": 550,
+"type": "Insect",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Giant centipede",
+"exp": 600,
+"type": "Insect",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Snow rabbit",
+"exp": 600,
+"type": "Animal",
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Stone ogre",
+"exp": 600,
+"type": null,
+"page": "islets",
+"snap": "20051101215917"
+},
+{
+"name": "Horse",
+"exp": 640,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Nagnang guardsman",
+"exp": 640,
+"type": "Human",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Wolf",
+"exp": 640,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Cow",
+"exp": 900,
+"type": "Animal",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Terrified chicken",
+"exp": 900,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Wild pig",
+"exp": 900,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Bear",
+"exp": 1000,
+"type": "Animal",
+"page": "islets",
+"snap": "20051101215917"
+},
+{
+"name": "Blight thug",
+"exp": 1000,
+"type": "Human",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Mud snake",
+"exp": 1000,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Arctic deer",
+"exp": 1100,
+"type": "Animal",
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Albino buck",
+"exp": 1200,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Giant mantis",
+"exp": 1200,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Tiger",
+"exp": 1200,
+"type": "Animal",
+"page": "islets",
+"snap": "20051101215917"
+},
+{
+"name": "Dark fox",
+"exp": 1300,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Blood fox",
+"exp": 1500,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Lava fox",
+"exp": 1600,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Blood mantis",
+"exp": 2000,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Blood tick",
+"exp": 2000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Blood wolf",
+"exp": 2000,
+"type": "Animal",
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Slush ogre",
+"exp": 2000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "White wolf",
+"exp": 2200,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Fire worm",
+"exp": 2500,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Golden hare",
+"exp": 2700,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Sun fox",
+"exp": 3000,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Carrion raven",
+"exp": 3500,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Lightning wolf",
+"exp": 4000,
+"type": "Animal",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Iron panda",
+"exp": 4200,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Boa",
+"exp": 4444,
+"type": "Animal",
+"page": "islets",
+"snap": "20051101215917"
+},
+{
+"name": "Mad rabbit",
+"exp": 5500,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Mud bull",
+"exp": 5800,
+"type": "Animal",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Giant hare",
+"exp": 6500,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Iron tiger",
+"exp": 7000,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Plain monkey",
+"exp": 7000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Earth snake",
+"exp": 8000,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Warthog",
+"exp": 8200,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Giant iron tiger",
+"exp": 10000,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Yachi",
+"exp": 14000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Fierce dog",
+"exp": 15000,
+"type": "Animal",
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Rabbit sentry",
+"exp": 16000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Sly monkey",
+"exp": 16000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Seki",
+"exp": 16500,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Nine-tailed fox",
+"exp": 20000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Pale zombie",
+"exp": 20000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Slush king",
+"exp": 20000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Spry monkey",
+"exp": 20000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Ugly monkey",
+"exp": 23000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Monkey sentry",
+"exp": 24000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Black chick",
+"exp": 30000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Fighting dog",
+"exp": 32000,
+"type": "Animal",
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Li",
+"exp": 34000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Mythic mouse",
+"exp": 35000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Mythic hare",
+"exp": 37000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Gim-yi",
+"exp": 40000,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Golden rabbit",
+"exp": 40000,
+"type": "Animal",
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Mad dog",
+"exp": 40000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Snow ogre",
+"exp": 40000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Sute",
+"exp": 40000,
+"type": "Undead",
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Giant spider",
+"exp": 45000,
+"type": "Insect",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Hare witch",
+"exp": 45000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Wild chicken",
+"exp": 48000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Mythic monkey",
+"exp": 50000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Lesser ghost",
+"exp": 55000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Lobster",
+"exp": 55000,
+"type": null,
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Monkey mauler",
+"exp": 55000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Witch",
+"exp": 55000,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Giant scorpion",
+"exp": 65000,
+"type": "Insect",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Rooster sentry",
+"exp": 70000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Wild rooster",
+"exp": 71000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Pale dog",
+"exp": 75000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Trapdoor spider",
+"exp": 76000,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Leviathan",
+"exp": 80000,
+"type": null,
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Radiant chick",
+"exp": 80000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Dog sentry",
+"exp": 90000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Lesser skeleton",
+"exp": 90000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Wicked ghost",
+"exp": 90000,
+"type": null,
+"page": "buya",
+"snap": "20051026062046"
+},
+{
+"name": "Witch shaman",
+"exp": 90000,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Radiant spider",
+"exp": 100000,
+"type": "Insect",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Sleet ogre",
+"exp": 100000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Vile rat",
+"exp": 100000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Mad hare",
+"exp": 110000,
+"type": "Animal",
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Mythic rooster",
+"exp": 120000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Mythic dog",
+"exp": 140000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Strange thing",
+"exp": 140000,
+"type": null,
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Blood rat",
+"exp": 145000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Rooster swordsman",
+"exp": 150000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Pale scorpion",
+"exp": 155000,
+"type": "Insect",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Dog assassin",
+"exp": 160000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Black skeleton",
+"exp": 170000,
+"type": "Undead",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Wild horse",
+"exp": 170000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Giant rabbit",
+"exp": 180000,
+"type": "Animal",
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Simple monkey",
+"exp": 180000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Killer rat",
+"exp": 190000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Deep woods mantis",
+"exp": 200000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Grim ogre",
+"exp": 200000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Rat sentry",
+"exp": 200000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Skeleton Je",
+"exp": 200000,
+"type": "Undead",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Skeleton Ju",
+"exp": 200000,
+"type": "Undead",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Skeleton mage",
+"exp": 200000,
+"type": "Undead",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Skeleton warrior",
+"exp": 200000,
+"type": "Undead",
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Large bull",
+"exp": 205000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Skilled horse",
+"exp": 220000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Skeleton Ja",
+"exp": 240000,
+"type": "Undead",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Stubborn piglet",
+"exp": 240000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Dog trooper",
+"exp": 250000,
+"type": "Animal",
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Polar bear",
+"exp": 250000,
+"type": "Animal",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Quick monkey",
+"exp": 250000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Rabbit guardian",
+"exp": 250000,
+"type": "Sentry",
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "The infected",
+"exp": 250000,
+"type": "Undead",
+"page": "nagnang",
+"snap": "20051026064205"
+},
+{
+"name": "Massive scorpion",
+"exp": 260000,
+"type": null,
+"page": "kugnae",
+"snap": "20051026060930"
+},
+{
+"name": "Elite horse",
+"exp": 280000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Skeleton Ji",
+"exp": 280000,
+"type": "Undead",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Stubborn pig",
+"exp": 290000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Forest mantis",
+"exp": 300000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Hail ogre",
+"exp": 300000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Sand lobster",
+"exp": 300000,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Satan's little helper",
+"exp": 300000,
+"type": "Undead",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Southern ogre",
+"exp": 300000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Crazed mongrel",
+"exp": 320000,
+"type": "Animal",
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Raging bull",
+"exp": 320000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Mythic rat",
+"exp": 330000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Horse guardsman",
+"exp": 340000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Monkey guardian",
+"exp": 340000,
+"type": "Sentry",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Red chick",
+"exp": 340000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Agile monkey",
+"exp": 350000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Horse sentry",
+"exp": 350000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Rock lobster",
+"exp": 350000,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Monstrous monkey",
+"exp": 370000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Plain snake",
+"exp": 400000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Snow king",
+"exp": 400000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Spunky dog",
+"exp": 400000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Hop",
+"exp": 405000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Bright monkey",
+"exp": 430000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Charging ox",
+"exp": 440000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Dirt mantis",
+"exp": 440000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Muck ogre",
+"exp": 440000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Shadow mantis",
+"exp": 440000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Slime ogre",
+"exp": 440000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Mighty mouse",
+"exp": 450000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Ox sentry",
+"exp": 450000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Fiery chick",
+"exp": 470000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Death mongrel",
+"exp": 480000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Fat pig",
+"exp": 480000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "White chicken",
+"exp": 480000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Divine mouse",
+"exp": 500000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Divine rabbit",
+"exp": 500000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Dog guardian",
+"exp": 500000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Man-shik's crow",
+"exp": 500000,
+"type": "Animal",
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Snow beast",
+"exp": 500000,
+"type": null,
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "White rooster",
+"exp": 500000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Northern ogre",
+"exp": 520000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Stubborn warthog",
+"exp": 530000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Rabbit witch",
+"exp": 550000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Mythic horse",
+"exp": 570000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Blood snake",
+"exp": 580000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Boar sentry",
+"exp": 580000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Fierce sheep",
+"exp": 590000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Fast monkey",
+"exp": 600000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Radiant snake",
+"exp": 600000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Rooster guardian",
+"exp": 600000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Spirited horse",
+"exp": 610000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Divine monkey",
+"exp": 620000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Fluff",
+"exp": 630000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Spunky monkey",
+"exp": 630000,
+"type": "Animal",
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Thump",
+"exp": 630000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Frost ogre",
+"exp": 640000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Mud rat",
+"exp": 650000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Restless tiger",
+"exp": 675000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Flurry ogre",
+"exp": 700000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Hunter rat",
+"exp": 700000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Ice panther",
+"exp": 700000,
+"type": "Animal",
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Fire snake",
+"exp": 710000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Lava rat",
+"exp": 740000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Horse do",
+"exp": 750000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Horse swordsman",
+"exp": 760000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Log",
+"exp": 800000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Monkey basher",
+"exp": 800000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Snake sentry",
+"exp": 800000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Sting",
+"exp": 800000,
+"type": "Insect",
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Golden tiger",
+"exp": 810000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Ice ogre",
+"exp": 820000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Mythic ox",
+"exp": 825000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Ugly sheep",
+"exp": 840000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Ox gorer",
+"exp": 850000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Diamond horse",
+"exp": 880000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Dark tiger",
+"exp": 900000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Diamond monkey",
+"exp": 900000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Golden horse",
+"exp": 900000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Blizzard ogre",
+"exp": 1000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Divine dog",
+"exp": 1000000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Rat guardian",
+"exp": 1000000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Sleet king",
+"exp": 1000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Dog cutthroat",
+"exp": 1100000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Mythic pig",
+"exp": 1100000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Rabbit defender",
+"exp": 1100000,
+"type": "Sentry",
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Citelam",
+"exp": 1150000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Maletic",
+"exp": 1150000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Giant tiger",
+"exp": 1170000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Monkey defender",
+"exp": 1170000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Horse guardian",
+"exp": 1200000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Sheep sentry",
+"exp": 1200000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Spotted mutt",
+"exp": 1250000,
+"type": "Animal",
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Boar champion",
+"exp": 1300000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Drake",
+"exp": 1350000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Stout piglet",
+"exp": 1350000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Dragon hatchling",
+"exp": 1450000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Giant bull",
+"exp": 1450000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Frothing mutt",
+"exp": 1500000,
+"type": "Animal",
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Dark mantis",
+"exp": 1600000,
+"type": "Insect",
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Divine rooster",
+"exp": 1600000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Ghost mantis",
+"exp": 1600000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Hill ogre",
+"exp": 1600000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Killer mongrel",
+"exp": 1600000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Marsh ogre",
+"exp": 1600000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Mythic snake",
+"exp": 1600000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Young dragon",
+"exp": 1600000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Rampaging bull",
+"exp": 1700000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Snake shaman",
+"exp": 1700000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Stout pig",
+"exp": 1700000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Rooster barbarian",
+"exp": 1800000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Wild chick",
+"exp": 1800000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Angry ox",
+"exp": 2000000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Black chicken",
+"exp": 2000000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Ch'tan",
+"exp": 2000000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Deathwish",
+"exp": 2000000,
+"type": null,
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Forever tree",
+"exp": 2000000,
+"type": "Plant",
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Golden lobster",
+"exp": 2000000,
+"type": null,
+"page": "wilderness",
+"snap": "20051026071600"
+},
+{
+"name": "Mythic sheep",
+"exp": 2000000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Obese pig",
+"exp": 2000000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Sin-tu",
+"exp": 2000000,
+"type": null,
+"page": "crossroads",
+"snap": "20051026071536"
+},
+{
+"name": "Spirit rabbit",
+"exp": 2000000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Wolf-kin",
+"exp": 2000000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Zangze",
+"exp": 2000000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Zin-te",
+"exp": 2000000,
+"type": null,
+"page": "ogre",
+"snap": "20051023221123"
+},
+{
+"name": "Divine rat",
+"exp": 2100000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Dragon sentry",
+"exp": 2150000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Rat lord",
+"exp": 2200000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Simple snake",
+"exp": 2350000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Rabbit avenger",
+"exp": 2400000,
+"type": null,
+"page": "rabbit",
+"snap": "20051026064003"
+},
+{
+"name": "Great roost",
+"exp": 2500000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Skeleton Sa",
+"exp": 2500000,
+"type": "Undead",
+"page": "vale",
+"snap": "20051026061645"
+},
+{
+"name": "Spirit mouse",
+"exp": 2550000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Sheep veteran",
+"exp": 2600000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Ox guardian",
+"exp": 2700000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Stout warthog",
+"exp": 2700000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Divine horse",
+"exp": 2800000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Spirit monkey",
+"exp": 2800000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Avalance ogre",
+"exp": 3000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Hail king",
+"exp": 3000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Monkey avenger",
+"exp": 3000000,
+"type": null,
+"page": "monkey",
+"snap": "20051026063937"
+},
+{
+"name": "Mythic tiger",
+"exp": 3000000,
+"type": null,
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Horse chongun",
+"exp": 3200000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Tiger warrior",
+"exp": 3200000,
+"type": null,
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Glowing snake",
+"exp": 3250000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Earth rat",
+"exp": 3500000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Lava snake",
+"exp": 3700000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Wooden horse",
+"exp": 3800000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Sun feather",
+"exp": 3900000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Dog defender",
+"exp": 4000000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Night",
+"exp": 4000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Storm",
+"exp": 4200000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Red sheep",
+"exp": 4300000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Fire rat",
+"exp": 4400000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Mythic dragon",
+"exp": 4400000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Boar guardian",
+"exp": 4500000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Dark snake",
+"exp": 4500000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Dragon mage",
+"exp": 4800000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Blizzard",
+"exp": 5000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Divine ox",
+"exp": 5000000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Raging tiger",
+"exp": 5400000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Rooster defender",
+"exp": 5400000,
+"type": "Sentry",
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Ox charger",
+"exp": 5600000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Beady-eyed stalker",
+"exp": 5700000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Black sheep",
+"exp": 5900000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Lake winny",
+"exp": 5900000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Summit",
+"exp": 6000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Fire snorter",
+"exp": 6300000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Great horns",
+"exp": 6300000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Snake guardian",
+"exp": 6300000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Pale hunger",
+"exp": 6550000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Hooves",
+"exp": 6600000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Tough fight",
+"exp": 6800000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Bold piglet",
+"exp": 6900000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Flurry king",
+"exp": 7000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Meter worm",
+"exp": 7000000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Rat defender",
+"exp": 7000000,
+"type": "Sentry",
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Spirit rooster",
+"exp": 7000000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Bold pig",
+"exp": 7100000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Adolescent dragon",
+"exp": 7200000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Black tiger",
+"exp": 7200000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Sheep guardian",
+"exp": 7200000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Bold hog",
+"exp": 7300000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Flaming sheep",
+"exp": 7300000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Horse defender",
+"exp": 7400000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Slitherly",
+"exp": 7400000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Bold boar",
+"exp": 7500000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Mature dragon",
+"exp": 7600000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Ox defender",
+"exp": 7800000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Rooster avenger",
+"exp": 8000000,
+"type": null,
+"page": "rooster",
+"snap": "20051026061002"
+},
+{
+"name": "Spirit dog",
+"exp": 8000000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Dragon defender",
+"exp": 8100000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Sheep defender",
+"exp": 8100000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Spasm",
+"exp": 8100000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Dragon guardian",
+"exp": 8500000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Storm snake",
+"exp": 8500000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Brazen",
+"exp": 8650000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Dark sheep",
+"exp": 9000000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Dog avenger",
+"exp": 9000000,
+"type": null,
+"page": "dog",
+"snap": "20051026061957"
+},
+{
+"name": "Huge tiger",
+"exp": 9000000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Mighty wyrm",
+"exp": 9000000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Boar defender",
+"exp": 9450000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Snake defender",
+"exp": 9450000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Crazy claw",
+"exp": 9900000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Great wyrm",
+"exp": 9900000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Knap",
+"exp": 9900000,
+"type": "Animal",
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Blizzard king",
+"exp": 10000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Divine pig",
+"exp": 10000000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Old dragon",
+"exp": 10800000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Serpentine dragon",
+"exp": 10800000,
+"type": "Dragon",
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Divine snake",
+"exp": 12000000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Pig champion",
+"exp": 12000000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Spirit rat",
+"exp": 14000000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Two stripes",
+"exp": 14000000,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Spirit horse",
+"exp": 15000000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Divine sheep",
+"exp": 16000000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Rat avenger",
+"exp": 16000000,
+"type": null,
+"page": "rat",
+"snap": "20051026061132"
+},
+{
+"name": "Snake mage",
+"exp": 16000000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Horse avenger",
+"exp": 17000000,
+"type": null,
+"page": "horse",
+"snap": "20051026063509"
+},
+{
+"name": "Sheep sheperd",
+"exp": 18000000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Divine tiger",
+"exp": 20000000,
+"type": null,
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Spirit ox",
+"exp": 22000000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Tiger slasher",
+"exp": 22000000,
+"type": null,
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Ox avenger",
+"exp": 25000000,
+"type": null,
+"page": "ox",
+"snap": "20051025193016"
+},
+{
+"name": "Divine dragon",
+"exp": 26000000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Avalance king",
+"exp": 27050327,
+"type": null,
+"page": "arctic",
+"snap": "20051101215721"
+},
+{
+"name": "Spirit pig",
+"exp": 28000000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Pig avenger",
+"exp": 30000000,
+"type": null,
+"page": "pig",
+"snap": "20051026062520"
+},
+{
+"name": "Spirit snake",
+"exp": 32000000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Spirit sheep",
+"exp": 34000000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Dragon avenger",
+"exp": 35000000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Sheep avenger",
+"exp": 35000000,
+"type": null,
+"page": "sheep",
+"snap": "20051025191332"
+},
+{
+"name": "Snake avenger",
+"exp": 35000000,
+"type": null,
+"page": "snake",
+"snap": "20051026062021"
+},
+{
+"name": "Spirit dragon",
+"exp": 35000000,
+"type": null,
+"page": "dragon",
+"snap": "20051025195040"
+},
+{
+"name": "Spirit tiger",
+"exp": 35000000,
+"type": null,
+"page": "tiger",
+"snap": "20051026062745"
+},
+{
+"name": "Tiger avenger",
+"exp": 35000000,
+"type": null,
+"page": "tiger",
+"snap": "20051026062745"
+}
+]
