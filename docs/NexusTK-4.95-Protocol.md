@@ -30,7 +30,9 @@ that is called out too.
 10. [Movement model](#10-movement-model)
 11. [Speech & actions](#11-speech--actions)
 11b. [Shared world (multiplayer)](#11b-shared-world-multiplayer--players-see-each-other--the-same-mobs-)
+&nbsp;&nbsp;&nbsp;&nbsp;11b.1 [Persistent spawns, mob AI, collision & viewport streaming](#11b1-persistent-spawns-mob-ai-collision--viewport-streaming-)
 11c. [Items — bag, gear, ground, combat](#11c-items--bag-gear-ground-and-combat--built-awaiting-live-495-verification)
+11d. [Spells & skills](#11d-spells--skills--built-awaiting-live-495-verification)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -295,7 +297,9 @@ X(u16) Y(u16) dir(u8) entityId(u32) type(u8) <appearance> renderKind(u8) nameLen
 entityId(u32) X(u16) Y(u16) dir(u8)
 ```
 Handler `0x4502c0` → `0x462320`: starts the walk animation toward (X,Y) facing dir. **Animation only** —
-does not advance the client's logical tile by itself (see §10).
+does not advance the client's logical tile by itself (see §10). **Overshoot:** the walk ends one tile *past*
+(X,Y) in `dir` and commits there, so for a peer/mob (no `0x04` self-commit) you must send the **SOURCE** tile,
+not the destination — see the boxed note in §11b.
 
 **`0x0D` — over-head speech**
 ```
@@ -320,7 +324,9 @@ type(u8) pad(u8=0) bgm(u16BE) volume(u8)
 ```
 Handler `0x450ad0` (dispatch-table stub `0x44bb06` → real handler): `type` selects the audio backend
 inside the play fn `0x4798c0` — **2 = MIDI** (the stock `1.mid`..`12.mid` in `NexusTK.snd`, played via the
-single-instance MIDI player `[0x4fd3ac]`), 1 = `%03d.MP3`, 0 = a wav/sfx channel. `bgm 0` stops the music.
+single-instance MIDI player `[0x4fd3ac]`), 1 = `%03d.MP3`, **0 = a one-shot wav/sfx** (the play fn's type-0
+branch reads the sound id at body `+3` (u16BE) + volume at `+5`, and plays `NexusTK.snd` sound #id on a wav
+channel — this is the **spell sound-effect** path; `Session.SendSound`, ids 1–255 safe). `bgm 0` stops the music.
 `volume` is a raw byte the client **log-scales**: the handler computes `dB = 2000·log10(vol/100)` (so
 `vol=100` = 0 dB = nominal full, `vol>0` audible, `vol=0` silent), and the MIDI path then compresses it
 further against a base at `[snd+0x270]` — so the audible range is narrow and `>100` (up to 255) is the knob
@@ -384,12 +390,27 @@ count(u8) entityId0(u32) entityId1(u32) …
 Destroys each entity by id (`0x44d9f0`). The loop **stops early on a `0` id**, so never send id `0`.
 (Note: client→server `0x0E` is *chat*; the same opcode means despawn only in the server→client direction.)
 
-**`0x29` — floating number** (handler `0x4504b0` → `0x44e0a0`), e.g. melee damage:
+**`0x29` — effect animation over an entity** (handler `0x4504b0` → `0x44e0a0`). **NOT a floating damage number**
+— NexusTK has no floating combat numbers, and the disassembly proves it:
 ```
-entityId(u32) number(u8) A(u16) B(u16) C(u16)
+entityId(u32) effectId(u8, 1-based) A(u16) B(u16) C(u16)
 ```
-The `u8` is formatted to text and popped over the entity (0–255 — fine for damage). `A` is scaled ×1000
-and feeds the pop animation offset; `B`/`C` are style. Send `A=B=C=0` for a plain centered number.
+The `u8` is a **1-based index into the client's effect table** (`Effect.tbl`, 128 effects, drawn from `Effect.epf`).
+Trace: `0x4504b0` reads the fields, resolves the entity, calls `0x44e0a0`; that calls constructor `0x4354b0`,
+which does `idx = u8 − 1; if (idx < 0 || idx ≥ count) bail; entry = table[idx]` and copies the 36-byte effect
+template (9 dwords). A number renderer would `itoa` the value — this indexes a table, so it's a graphic. `u8 = 0`
+⇒ no effect. `A` is scaled ×1000 = the vertical pop offset; `B`/`C` are style. Send `A=B=C=0` to center it.
+**The wire `u8` maps directly to RTK's `sendAnimation(N)` id** (`NEXUS_EFX_WIRE_OFFSET = 0`) — proven live: Ion
+(`pcalign 0` → anim 4 = unaligned zap) sent with a `+1` offset drew the anim-5 graphic (unaligned heal), so
+`u8 = N` draws the anim-N effect (the handler's internal `−1` is cancelled by the table being loaded 1-based).
+The effect-id + sound-id per spell come from RTK's `global_zap`/`global_heal` `pcalign` ladder (ported to
+`Content.ZapEffect`/`HealEffect`; e.g. spark = 28, unaligned zap = 4, unaligned heal = 5, kwi-sin heal = 65).
+RTK's `sendAnimation(N)` ids all fall in 0–127 and line up with `Effect.tbl` (128 effects).
+
+> **History:** this opcode was previously documented (and used) as a "floating number" — sending the damage
+> value as the `u8`, which the client read as effect `#(dmg−1)`, an unintended graphic. Corrected 2026-07-25 by
+> disassembling the handler after the absence of in-game damage numbers was questioned. Melee still sends a raw
+> value here (`SendNumber`) pending a proper hit-effect id; spell casts now send real `Effect.tbl` ids (§11d).
 
 **`0x1E` / `0x20`** — acks / time, as in §6.
 
@@ -735,8 +756,9 @@ kept for item/object discovery.
 
 **Navigation & content commands** (data-driven, backed by the `Content` registry — §17.3): `!warp <name|id>
 [x y]` (fuzzy-match a map by name or id, optionally with coords, and enter it), `!maps [query]` /
-`!mobs [query]` (fuzzy list maps / mobs), `!summon <name|id>` (spawn a mob from the registry by name/id),
-`!rabbit` (the spawn→wander→kill MVP: look 21, wanders on a background task via `0x0C`, cleans up on death).
+`!mobs [query]` (fuzzy list maps / mobs), `!summon <name|id>` (spawn a mob from the registry by name/id, into
+the shared world with wander/respawn-less one-off AI), `!rabbit` (one wandering, killable rabbit in front of
+you). The persistent, auto-populated spawns (with respawns + drops) are separate — see §11b.1.
 All of these print their output as **over-head speech (`0x0D`) from the player's own entity** — the
 `SendLog()` helper — because `0x02`/`0x0F` are single-line message *boxes* that can't stack for a list;
 `0x0D` is the in-world chat-log channel (handler `0x450170`, 3000 ms bubble). **Door/portal warps** fire
@@ -826,11 +848,20 @@ On disconnect/warp-out (`World.LeaveMap`) the player is despawned (`0x0E`) for t
 `0x29`, spawn `0x07`, despawn `0x0E`. The moving player's OWN client is driven by the self-walk modes
 (§10), so it's excluded from the `0x0C` broadcast.
 
+> **`0x0C` for peers/mobs sends the SOURCE tile, not the destination.** The 4.95 client's `0x0C` walk always
+> ends **one tile past** the packet tile in the walk direction (the forward-slide overshoot of §7.2/§10.3 —
+> `logical = packet_tile`, then the render slides `+1` and commits there). For the self, `0x04` corrects it;
+> for a peer/mob with no commit it sticks, so the entity renders a tile ahead of where the server has it —
+> proven by live trace (server `(61,79)`, client drew `(62,79)`). Anchoring the packet on the **source** tile
+> makes `client_final = source + forward(dir) = the true destination`. Both `MoveEntity` (peers, in
+> `HandleWalk`) and `MoveMob` (mobs, in `World.Tick`) pass the pre-move tile for this reason.
+
 **Shared mobs + combat.** `!summon` / `!rabbit` spawn into the world (`SummonWorldMob`); the debug lab
 (`!cre`/`!mob`/`!crow`/look-lab) stays session-local. `HandleAttack` hits world mobs first: `World.TryDamage`
-applies damage **under the world lock** so two players can't double-kill, the number + death despawn are
-broadcast to all, and exp goes to the killer. A single background `World.Tick` (~600 ms) wanders every
-world mob (leashed to spawn, avoids player tiles + `Obj != 0`) and broadcasts each hop.
+applies damage **under the world lock** so two players can't double-kill; the number + death despawn are
+broadcast to all, **loot is rolled onto the floor**, the spawn point is scheduled to respawn, and **exp
+(the mob's real `Exp`)** goes to the killer. Beyond the commands, the world is populated automatically — see
+the spawn/AI system in **§11b.1**.
 
 **Threading.** All of `World`'s collections are guarded by one lock; socket writes happen **outside** the
 lock (recipient list snapshotted under it) and every cross-session send is exception-guarded, so a peer
@@ -844,11 +875,75 @@ via the trailing `0x33`, but peers/mobs vanish. So any in-place `0x15` resend mu
 `0x1b 07` frequently, this refresh is also a source of walk jitter — throttling it to real state changes is
 a movement-side TODO.
 
-**Known limitation (MVP).** No view-distance streaming: the `0x33`/`0x07` **viewport gate** (§14) silently
-skips entities outside the observer's camera rect, so two players far apart on a large map may not see each
-other until one walks close and a re-sync (move/refresh) redraws them. Fine when players are near each
-other (the common case). Mobs persist on a map after everyone leaves (they belong to the map, not a
-session); `!kill` clears the current map's world mobs for everyone.
+Mobs persist on a map after everyone leaves (they belong to the map, not a session); `!kill` clears the
+current map's world mobs for everyone. (Players still have no view-distance streaming: two players far apart
+on a large map may not see each other until one walks close and a re-sync redraws them — fine when they're
+near each other, the common case. Only **mobs** are viewport-streamed; see §11b.1.)
+
+---
+
+## 11b.1 Persistent spawns, mob AI, collision & viewport streaming ✅
+
+The world is populated automatically from the RTK spawn table, not just by commands.
+
+**Spawn roster (`Content.Spawns` ← `re/rtk-data/Spawns0.csv`).** At startup `World.PopulateSpawns` materializes
+**one live mob per RTK spawn point** on every *renderable* map (1175 points across 19 maps — Kugnae has 526,
+Buya 408, etc.). Each `SpawnDef` is `(mobId, map, x, y)`; the mob's look/colour/HP/exp/move-pace come from the
+mob registry (`Content.MobById`). Spawns for maps the client can't render are skipped. `Materialize` places the
+mob via **`FreeSpawnTile`** — the spawn tile if open, else the nearest unoccupied non-solid tile within 2 —
+because several RTK points share a tile (e.g. two squirrels at `72,93`) and a respawn can land where another mob
+wandered; without this they'd stack permanently. `Home` stays the original spawn tile (the leash anchor).
+
+**Respawn.** On death `World.TryDamage` clears the spawn's `Live`, sets `RespawnTick = _tick + RespawnTicks`
+(~18 s), and rolls loot. `World.Tick` refills any due point (only on maps with a player watching) via
+`Materialize`, minting a fresh mob id.
+
+**Drops (`Content.RollDrops`).** RTK's per-mob drop tables weren't exported, so a small themed table lives in
+`Content`: rabbit → rabbit meat (45 %), squirrel → green squirrel pelt (40 %), deer/doe → antler (50 %), fox →
+fox fur (60 %); others drop nothing. Rolled under the world lock, added to the map's floor-item list, and
+broadcast as `0x07` ground items (§11c) so anyone can pick them up.
+
+**AI pacing (RTK-faithful).** `World.Tick` runs every 600 ms but a mob only *acts* when its own
+**`MobMoveTime`** (ms, from the mob DB — rabbit/squirrel 3000, cat/fox/rat 2000) has accumulated in
+`Mob.MoveTimer` (seeded random so they don't all move in lock-step). Even then it mirrors RTK `mob_ai_normal`:
+`checkmove = rand(0..10)`; on `>=4` (~64 %) it picks a random facing and **only steps if that equals its current
+facing, else just turns in place** (broadcast as `0x11`); on `<4` (~36 %) it steps straight ahead. Net: a rabbit
+ambles a hop every few seconds and turns far more often than it moves — not a sprint every heartbeat.
+
+**Collision (matches the player).** A step is rejected unless the target tile is in-bounds, within
+`WanderRadius` (Chebyshev **2**) of `Home`, not on a player tile, **not on another mob**, and not solid.
+Solidity is **`MapData.Solid` = `Obj != 0 || Pass != 0`** — the same object **and** ground-passability test
+`Session.Blocked` uses, so mobs respect the walls/water/cliffs the player does (the earlier bug only checked
+the object layer). Mob-vs-mob uses a per-tick `mobTiles` set kept current as each mob moves, so two mobs can't
+share a tile or swap through each other in one tick. Players are also blocked from stepping onto a live mob
+(`_world.MobAt` in `HandleWalk`; warp tiles still take precedence).
+
+**Viewport streaming (`Session.SyncMobs`).** The `0x07` spawn is viewport-gated (§14): an off-screen spawn is
+silently dropped, and the client culls entities that move off-screen. So mobs are streamed per player:
+`_shownMobs` tracks which mob ids are drawn on that client; each tick (and on the player's own walk) `SyncMobs`
+sends `0x07` for mobs that entered the camera rect and `0x0E` for ones that left. **`ShowPad = HidePad = 0`** —
+the pads hug the *exact* 17×15 viewport: spawning ahead of the edge would mark a mob "shown" that the client
+dropped (→ never appears), and keeping one "shown" past the edge leaves a dead zone the client already culled
+(→ vanishes for good). `World.Tick` reconciles views **before** broadcasting moves, and `MoveMob`/`SideMob` are
+no-ops for players who don't have the mob shown — bounding on-wire traffic to on-screen mobs even on a 400-mob
+map. This is what lets the full spawn roster render without blanket-sending hundreds of entities.
+
+**Colours.** The `0x07` colour byte uses RTK's **`MobLookColor`**. (An experiment sending the client's decoded
+`Monster.tbl` palette instead rendered every mob green — RTK's per-mob colour matches the client for the common
+critters, so we kept it. A proper RTK-colour → client-palette mapping is future work; the decoded table lives in
+`re/rtk-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
+
+**Player HP/MP regen (`Session.RegenTick`).** The same heartbeat also heals **every connected player** — a
+separate `World.Tick` pass, *not* gated on mobs or viewport like the steps above. This ports RTK's
+`Player.regen` (`rtklua/Accepted/player.lua`, fired every 25 s from `pc_timer.lua`): while alive, restore
+**2 % of max HP** and **2 % of max MP**, then push a `0x08` stats packet. RTK scales the vita portion by its
+derived `healing` stat; we don't carry that, so **HP regen scales with Grace and MP regen with Will**
+(`ceil(max * 0.02 * (1 + stat/100))`), keeping RTK's 2 % base and 25 s cadence. Each session owns a
+`_regenAccum` that counts *real* elapsed ms, so the 25 s interval is independent of the 600 ms tick; the dead
+(HP 0) and the already-full are skipped, and a packet is emitted only on an actual change. Effective max is
+base + gear (`Totals()`). (Threading: this writes `_char.Hp/Mp` from the tick thread while the session's
+read-loop also writes them on damage/heal — lock-free, consistent with the codebase's `_char` posture; a
+collision at worst drops one small increment and self-corrects next tick.)
 
 ---
 
@@ -978,6 +1073,116 @@ the ground flag — real maps (TK0/Kugnae) gate thousands of cells by the ground
 
 ---
 
+## 11d. Spells & skills ⏳ (built; casting live-confirmed via Gateway — effects/formulas still awaiting broad 4.95 verification)
+
+The spellbook/skillbook is **server-authoritative**: the client ships spell *icons* (`SPELLINV.epf`,
+`Icon.epf` in `Inter.dat`) but **no spell-definition table** — the server sends each spell's name, type and
+prompt in the add-spell packet and the client just renders it. So the spell *roster* (names, class, level,
+prompt) is external data, taken from the RTK `Spells` table (real NexusTK-lineage content — Kugnae/nation
+geography matches, unlike Mithia). 906 rows → `Content.Spells` (841 after dropping section-header + inactive
+rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, PathId, Level, Question`.
+
+- **`PathId`** = the class that learns it: **0 Peasant · 1 Warrior · 2 Rogue · 3 Mage · 4 Poet**, 5+ subpaths,
+  99 = system/common. From the RTK `Paths` table (`Content.Paths`, `PthMark0` = class name; higher marks are
+  per-rank titles). `Character.ClassName` (set with `!class`) resolves to a path id via `PathIdForClass`.
+- **`Level`** = the character level required. Most advanced-class spells in this dump are level 0 (gated by
+  path/subpath, not base level); Peasant has a 0/1/25 spread. `!spells` teaches every class spell with
+  `Level ≤ Character.Level` — **plus the path-0 "peasant commons"** (Soothe, Gateway, Return, Mentor, Approach,
+  Summon), which every class keeps after subpathing. `Content.SpellsForClass` unions `PathId == yourClass` with
+  `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway are level 1, so `!lvl ≥ 1`).
+- **`Alignment`** (`SplAlignment`) = the sub-alignment: **-1** universal · **0** base/unaligned · **1** Kwisin ·
+  **2** Mingken · **3** Ohaeng. Each class's spells split roughly evenly across 0/1/2/3 (e.g. Warrior ~21 each),
+  and the four variants often **share a display name** (Rogue's "Maro's Remedy" ×4) — so teaching all of them
+  produced literal duplicates *and* handed a character three alignments they can't use. `Character.Alignment`
+  (0 unaligned / 1 Kwisin / 2 Mingken / 3 Ohaeng, set with `!align`) gates the teach: `SpellsForClass` keeps
+  only universal (-1) + the character's own alignment, then dedupes by display name (preferring the exact
+  alignment over universal). Result: **one** alignment set, no duplicates — Warrior 86→23, Mage 163→46 (also
+  keeps every class under the 52-slot cap). Default alignment is 0 (Unaligned) = the base set.
+- **`Type`** = the client's book discriminator (also the cast-shape selector): **1** = prompt spell (client
+  asks `Question`, e.g. Gateway "Which Gate(N,E,S,W)?"), **2** = targeted (client sends a target entity id),
+  **5** = self / no-target. type 1/2 render in the **Spell** book, type 5 in the **Skill** book — one packet,
+  keyed on type.
+
+**Add-spell — server→client `0x17`** (from RTK 7.x `clif_sendmagic`; body decrypted, big-endian):
+```
+slot(u8 = idx+1)  type(u8)  nameLen(u8) name  questionLen(u8) question
+```
+`0x17` is a **no-op in the main world dispatcher** (`remap[0x17-3] = 0x2a`, the default) — **exactly** like the
+item opcodes `0x0F/0x10/0x37/0x38`, which are no-ops there too yet work live via the client's *secondary*
+dispatcher. That shared property is the evidence the add-spell path is handled the same way (needs one live
+confirm, same as items did). Learned ids persist in `Character.Spells` (book order) and are re-sent on world
+entry by `RefreshSpells`. Remove-spell = **`0x18`** (`slot(u8=pos+1)`), used by `!forgetspells`.
+
+**Cast — client→server `0x0F`** (RTK `clif_parsemagic`): `body[0] = book slot+1`, then by the learned spell's
+type: **type 1** → the typed answer string (a **NUL-terminated ASCII** string right after the slot byte — RTK
+`strcpy`s it from offset 6, *not* length-prefixed, unlike the server→client `0x17` strings); **type 2** → target
+entity id (u32BE); **type 5** → nothing.
+**Live-confirmed** (2026-07-25): casting sends `0f | slot+1 00` — the client casts with **just the slot** (no
+target attached even for combat spells), e.g. `0f 1a 00` = cast book slot 26. So the server can't rely on a
+packet-supplied target.
+
+`HandleCast` plays the cast animation (`0x1A` **type 6 = magic**) for the caster + peers, then applies the
+spell's effect via a **data-driven magic engine** (`Session.ApplyCast`). The effect data is extracted straight
+from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `re/rtk-data/spell_effects.csv` (gitignored),
+loaded into `Content.SpellFx` and joined to each spell by identifier (the Lua table name == `SplIdentifier`).
+Each row carries an **archetype** + the spell's **real RTK numbers**: the damage/heal *formula string*, the true
+mana cost, buff stat+amount+duration, debuff kind+duration+chance, cooldown ("aether"). 621 of the ~841 spells
+have a row (100 % of the four caster classes' teachable sets); the rest fall back to the keyword classifier.
+
+`ApplyCast` dispatches on the archetype:
+- **Damage** → evaluates the spell's actual Lua damage formula (e.g. Spark = `15 + floor(level/2) + floor((will+3)/4)`)
+  via `Content.Formula` — a tiny arithmetic evaluator over the caster's effective stats (`player.level/will/…`,
+  `target.baseHealth`) supporting `+ - * /`, parens, decimals and `math.floor/ceil/random`. Spends the real mana
+  cost, hits the packet target id if present else **the mob on the tile the caster faces** (like melee), reusing
+  the world damage/despawn/exp path so a spell kill rewards exp/loot exactly like a melee kill.
+- **Heal** → evaluates the real heal amount and restores the caster's HP (clamped to effective max).
+- **Buff** → applies the spell's timed stat modifier(s) (might/hit/dam/…) for its RTK duration as a session-local
+  `ActiveBuff`, folded live into the HUD/profile/melee through `Session.Totals()` (gear + buffs). Recast refreshes.
+- **Debuff** → paralyze/sleep: freezes the target mob's wandering (`Mob.FrozenUntil`, honoured by `World.Tick`)
+  for the RTK duration, subject to the spell's hit-chance roll.
+- **ManaBattery** (Invoke / Spirit's Power / …) → verbatim RTK: HP cost = 40 % of *max* mana (HP floored at 100),
+  refill mana to full, 22 s cooldown.
+- **Gateway** (`Session.CastGateway`, base key `gateway`) → **live-confirmed on 4.95 (2026-07-25)** — warped
+  correctly, which also proves the type-1 answer wire format above. Intercepted before the archetype dispatch (a
+  teleport has no damage/heal row). Ports `Accepted/Spells/common/gateway.lua`: warp to one of the four **city gates** of the
+  caster's kingdom, the gate chosen by the type-1 N/E/S/W answer, the kingdom by the caster's **region**
+  (`Content.RegionOf`, from the RTK `Maps` table's `MapRegion` — 0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang; each
+  region's city map + four gate spawn-boxes are the verbatim RTK coords). Lands on a random tile inside the gate's
+  box (RTK's `math.random` spread) via the normal `EnterMap` redraw. Guards match RTK: the dead can't cast, a
+  `MapWarpout == 0` map says *"It doesn't work here"*, a non-kingdom map *"Cannot find any gates!"*. **No mana cost**
+  (RTK's gateway only calls `canCast`, a state check — no debit). Other regions (Baekdu/instances) TBD.
+- **Cure / Utility / Summon / other Teleport / Dialog** → spend the real mana + acknowledge (bespoke behaviour TBD).
+
+The formulas + costs are now **RTK-authoritative** (ported from the Lua), not server guesses. What stays a design
+choice is the *targeting/routing* the 4.95 client doesn't pin down (self-heal vs. ally, front-tile vs. packet
+target) and the effects we don't yet model (real summons, teleports, PvP).
+
+**Spell effect graphics — wired via `0x29`.** Each cast plays its real `Effect.tbl` animation over the target
+(Damage/Debuff) or the caster (Heal/Buff/Invoke): `Content.EffectAnim(fx, pathId)` returns the id, `Session.
+SendEffect` emits the `0x29` packet (see §7.3 for the opcode). The id comes from the spell's own `sendAnimation`
+call when it has one (buffs, Invoke → 11), else from the `pcalign` ladder in the shared helper — ported verbatim
+to `Content.ZapEffect` / `HealEffect` (spark → 28, thunder bolt → 27, kwi-sin zap → 17, unaligned heal → 5,
+kwi-sin heal → 65, …). Spells with no export row get a generic zap (4) / heal (5).
+
+**Sound — wired via `0x19` type 0.** RTK pairs each `pcalign` with a **sound id** (zap = 56, heal = 4, fire = 88,
+kwi-sin heal = 98); `Content.EffectSound` returns it and `Session.SendSound` emits a one-shot SFX using the same
+`0x19` packet as background music with `type = 0` (the wav/sfx channel — see §7.3). Each cast broadcasts effect +
+sound together (`Session.BroadcastFx`). The caster's `0x1A` magic pose still plays too.
+
+**Icons:** the `0x17` add-spell carries **no icon field** (neither does RTK's `clif_sendmagic`) — the client
+resolves the book icon internally, so no icon-id mapping pass is needed on the server side (unlike items/mobs).
+
+**Slot cap:** the client's book array size is unconfirmed for 4.95; RTK 7.x uses 52 (`MAX_SPELLS`). `!spells`
+caps at 52 (env `NEXUS_SPELLBOOK_CAP`) so an over-long teach can't overrun the client array — raise once a live
+test confirms the real limit (Mage has 163 class spells, so the cap bites until then).
+
+**GM commands:** `!class <Warrior|Rogue|Mage|Poet|Peasant>` (set class), `!align <Unaligned|Kwisin|Mingken|Ohaeng>`
+(set sub-alignment) + `!lvl <n>` (set level), then **`!spells`** = learn every class spell ≤ level for that
+alignment and fill the book; `!learnspell <name|id>` = learn one (any class, for testing); `!forgetspells` =
+clear the book.
+
+---
+
 ## 12. Maps
 
 Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`). They are:
@@ -1015,7 +1220,8 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x0c` | `0x4502c0` | ✓ move / animate entity |
 | `0x0d` | `0x450170` | ✓ over-head speech |
 | `0x0e` | `0x450440` | ✓ **despawn list** (server→client): `count(u8)` + `id(u32)`× (client→server = chat) |
-| `0x0f` | — | ⏳ **add item to bag slot** (server→client) — §11c. (client→server = magic) |
+| `0x0f` | — | ⏳ **add item to bag slot** (server→client) — §11c. **client→server = cast spell** (`clif_parsemagic`: slot+1, then per type: answer / target id / none) — §11d |
+| `0x17` | — | ⏳ **add spell to book** (server→client): `slot(u8) type(u8) name(u8len) question(u8len)` — §11d. (client→server = throw item) · `0x18` = remove spell |
 | `0x10` | — | ⏳ **remove item from bag slot** (server→client) — §11c |
 | `0x11` | `0x450350` | entity + 1 byte |
 | `0x12` | `0x4509a0` | entity + 2 bytes |
@@ -1030,7 +1236,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x20` | `0x44f820` | ✓ time-of-day |
 | `0x21` | `0x450f90` | UI window (`0x174`) |
 | `0x26` | `0x44fb80` (main) → **`0x4903d0`** (pre-dispatch) | **Self-walk — WORKS.** Main-table handler is a no-op, but `0x26` is pre-dispatched via the self-entity vtable (`+0x38` @ `0x4cf038` → `0x48eb40` → `handlerB`). This is the 4.95 self-walk primitive (§10.3). |
-| `0x29` | `0x4504b0` | ✓ **floating number** over entity: `id(u32) number(u8) A/B/C(u16)`; the u8 is the text (0–255) |
+| `0x29` | `0x4504b0` | ✓ **effect animation** over entity: `id(u32) effectId(u8, 1-based) A/B/C(u16)`; u8 indexes `Effect.tbl` (128 fx). **Not a damage number** — §11d |
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
 | `0x2f` | `0x44f490` | ? |
 | `0x30` | `0x44f530` | ? |
@@ -1099,6 +1305,12 @@ on.
 **Movement**
 - **One `0x0C` only animates; it does not advance the tile.** You must also send `0x04` to commit the
   step, or the character animates once and freezes. (§10)
+- **`0x0C` overshoots by one tile — send the SOURCE tile for peers/mobs.** The walk ends one tile *past* the
+  packet tile in `dir`. The self gets corrected by `0x04`; a peer/mob doesn't, so `0x0C(dest)` leaves it
+  rendered a tile ahead of the server (a single-stepping mob visibly sits on the wrong tile — looked like
+  mobs "walking through each other"). Fix: broadcast the **source** tile (`client_final = source + forward`).
+  Cost ~an afternoon of "is collision broken?" before a client-side position trace showed `client = server+1`.
+  (§7.2, §11b)
 - **Use `0x26` for self-walk in 4.95** — its main-table handler is a no-op, but it is pre-dispatched to the real self-walk handler (§10.3). A no-op in the dispatch table is NOT proof an opcode is unhandled (cf. `0x08`).
 
 **Combat**
@@ -1180,12 +1392,14 @@ magnitude faster for "what does this byte mean" questions.
 - **Monsters — SOLVED (2026-07-24).** The real monster spawn is **`0x07`**: `look = 0x8000 | monsterId`
   (Monster.tbl index) draws a live, animated, collidable, killable creature from Monster.epf. Full layout
   and the trace that found it are in §7.2/§11a. The combat pipeline (`Mob`, melee, `0x29` damage, `0x0E`
-  despawn, exp) now runs against real monsters end-to-end. **Next monster work:** map the Monster.tbl look
-  ids to names (which id = squirrel/rabbit/etc.), give monsters server-side AI/movement (`0x0C`), and have
-  them fight back (`0x1A`/`0x13` toward the player + HP bars).
-- **Other players / NPCs.** Rendering is already proven (§15). Remaining: handle the client's view-rect
-  refresh (`0x06`/`0x11`), spawn nearby entities on entry, and broadcast movement (`0x0C`) between
-  sessions.
+  despawn, exp) runs against real monsters end-to-end, and the world now **auto-populates the RTK spawn table
+  with wander AI (`0x0C`), collision, respawns, drops, and per-player viewport streaming** — see §11b.1.
+  **Remaining monster work:** map the Monster.tbl look ids to names (the matcher exists but its mapping is
+  empty — §11a.2); make aggressive mobs fight back (`0x1A`/`0x13` toward the player + HP bars); a proper RTK
+  colour → client-palette mapping (§11b.1).
+- **Other players / NPCs.** Rendering + movement broadcast are proven and shared-world is live (§11b). Peers
+  are **not** viewport-streamed yet (only mobs are), so distant players may not appear until close; add the
+  same `SyncMobs`-style streaming for players. NPCs (stationary, dialog) are not built.
 - **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x30, 0x31, 0x35, 0x36, 0x39, 0x3b,
   0x42, 0x44, 0x46, 0x4a, 0x4b, 0x66, 0x67, 0x68`.
 

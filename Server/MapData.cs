@@ -29,6 +29,12 @@ public sealed class MapData
     public ushort Pass(int x, int y) => _pass[y * Xs + x];
     public ushort Obj(int x, int y)  => _obj[y * Xs + x];
 
+    /// <summary>Is (x,y) impassable? An object (wall/prop) OR a set ground-passability flag (water/cliff/
+    /// out-of-bounds) blocks it — the same test the player's walk uses (see Session.Blocked), so mob AI and
+    /// player collision agree. Out-of-range coords count as solid.</summary>
+    public bool Solid(int x, int y) =>
+        x < 0 || y < 0 || x >= Xs || y >= Ys || _obj[y * Xs + x] != 0 || _pass[y * Xs + x] != 0;
+
     private static readonly Dictionary<ushort, MapData?> Cache = new();
 
     /// <summary>Load (and cache) map <paramref name="id"/> at the given dims, or null if the file is missing/short.</summary>

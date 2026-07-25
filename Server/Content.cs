@@ -3,8 +3,12 @@ namespace Server;
 /// <summary>A warpable map: id (== TK&lt;id&gt;.map and the 0x15 mapId), display name, and dimensions.</summary>
 public sealed record MapInfo(ushort Id, string Name, ushort Xs, ushort Ys);
 
-/// <summary>A summonable creature definition (name, sprite look, palette colour, HP, reward).</summary>
-public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level);
+/// <summary>A summonable creature definition (name, sprite look, palette colour, HP, reward, move pace).</summary>
+public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime);
+
+/// <summary>A fixed spawn point from the RTK spawn table: a mob id placed on a map tile. The world
+/// materializes one live mob per point and, on its death, respawns another after a delay.</summary>
+public sealed record SpawnDef(int MobId, ushort Map, ushort X, ushort Y);
 
 /// <summary>
 /// An item definition from the RTK item db (Items.csv). Field names mirror the client's item_data
@@ -48,6 +52,157 @@ public sealed record ItemDef(
 }
 
 /// <summary>
+/// A spell/skill definition from the RTK <c>Spells</c> table. <c>Name</c> is the display name
+/// (SplDescription, e.g. "Bolt"); <c>Key</c> is the internal identifier (SplIdentifier, e.g. "bolt_mage").
+/// <c>PathId</c> is the class that learns it (0=Peasant 1=Warrior 2=Rogue 3=Mage 4=Poet, 5+=subpaths,
+/// 99=system/common). <c>Level</c> is the character level required to learn it. <c>Alignment</c> is the
+/// sub-alignment the spell belongs to (<b>-1</b> = universal/any, <b>0</b> = base/unaligned, <b>1</b> = Kwisin,
+/// <b>2</b> = Mingken, <b>3</b> = Ohaeng); a character learns only universal + their own alignment's set, so
+/// the other alignments' parallel spells (which often share a display name) aren't taught as duplicates.
+/// <c>Type</c> is the client's spellbook type byte (the 0x17 add-spell / 0x0F cast discriminator): <b>1</b> =
+/// prompt spell (the client asks <c>Question</c> and sends the typed answer), <b>2</b> = targeted (the client
+/// sends a target entity id), <b>5</b> = self / no-target. The client renders type 1/2 in the Spell book and
+/// type 5 in the Skill book (both populate through the same 0x17 packet, keyed on this type).
+/// </summary>
+public sealed record SpellDef(int Id, string Key, string Name, byte Type, int PathId, int Level, int Alignment, string Question)
+{
+    public bool NeedsTarget => Type == 2;   // client sends a target entity id (u32) when casting
+    public bool NeedsPrompt => Type == 1;   // client sends the typed answer string when casting
+    public bool IsSpell     => Type is 1 or 2;   // magic — goes in the Spell book
+    public bool IsSkill     => Type == 5;        // physical ability — goes in the Skill book
+}
+
+/// <summary>The runtime EFFECT of a spell, extracted from RTK's Lua scripts (re/extract_spell_formulas.py →
+/// spell_effects.csv). Keyed by the same identifier as <see cref="SpellDef.Key"/> (the Lua table name ==
+/// SplIdentifier). <c>Archetype</c> is one of Damage / Heal / Buff / Debuff / ManaBattery / Cure / Utility /
+/// Summon / Teleport / Dialog. <c>AmountExpr</c> is the spell's real damage/heal formula as a Lua arithmetic
+/// string over player/target stats (evaluated by <see cref="Formula"/>); <c>Mana</c> is the true mana cost;
+/// buff/debuff/cure carry their own params. Session.ApplyCast dispatches on this. Missing fx ⇒ the keyword
+/// classifier is the fallback.</summary>
+public sealed record SpellFx(
+    string Key, string Archetype, int Mana, string AmountExpr, string BuffStat, string BuffAmt,
+    int DurationMs, string Debuff, string Chance, string HealthCost, int Animation, int Sound, int Aether,
+    int PcAlign);
+
+/// <summary>Tiny arithmetic evaluator for the Lua damage/heal formulas RTK spells use, e.g.
+/// <c>"25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4)"</c> or
+/// <c>"math.ceil(player.magic * 2.15)"</c>. Supports + - * /, unary sign, parens, decimal literals, dotted
+/// variables (player.level, target.baseHealth — resolved against a supplied var map), and the functions
+/// math.floor / math.ceil / math.abs / math.random. Unknown names resolve to 0 and a malformed expression
+/// yields 0 (never throws) — a missing formula degrades to "no effect", not a crash.</summary>
+public static class Formula
+{
+    private static readonly Random Rng = new();
+
+    public static double Eval(string? expr, IReadOnlyDictionary<string, double> vars)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return 0;
+        try { return new Parser(expr, vars).ParseAll(); }
+        catch { return 0; }
+    }
+
+    private sealed class Parser
+    {
+        private readonly string _s;
+        private readonly IReadOnlyDictionary<string, double> _v;
+        private int _i;
+        public Parser(string s, IReadOnlyDictionary<string, double> v) { _s = s; _v = v; }
+
+        private void Ws() { while (_i < _s.Length && char.IsWhiteSpace(_s[_i])) _i++; }
+        private char Cur => _i < _s.Length ? _s[_i] : '\0';
+
+        public double ParseAll() { double v = Expr(); return v; }
+
+        private double Expr()
+        {
+            double v = Term();
+            while (true)
+            {
+                Ws();
+                if (Cur == '+') { _i++; v += Term(); }
+                else if (Cur == '-') { _i++; v -= Term(); }
+                else return v;
+            }
+        }
+        private double Term()
+        {
+            double v = Factor();
+            while (true)
+            {
+                Ws();
+                if (Cur == '*') { _i++; v *= Factor(); }
+                else if (Cur == '/') { _i++; double d = Factor(); v = d == 0 ? 0 : v / d; }
+                else return v;
+            }
+        }
+        private double Factor()
+        {
+            Ws();
+            if (Cur == '-') { _i++; return -Factor(); }
+            if (Cur == '+') { _i++; return Factor(); }
+            return Primary();
+        }
+        private double Primary()
+        {
+            Ws();
+            if (Cur == '(') { _i++; double v = Expr(); Ws(); if (Cur == ')') _i++; return v; }
+            if (char.IsDigit(Cur) || Cur == '.') return Number();
+
+            int start = _i;
+            while (_i < _s.Length && (char.IsLetterOrDigit(_s[_i]) || _s[_i] == '_' || _s[_i] == '.')) _i++;
+            string name = _s.Substring(start, _i - start);
+            Ws();
+            if (Cur == '(')   // function call
+            {
+                _i++;
+                var args = new List<double>();
+                Ws();
+                if (Cur != ')')
+                {
+                    args.Add(Expr());
+                    while (true) { Ws(); if (Cur == ',') { _i++; args.Add(Expr()); } else break; }
+                }
+                Ws(); if (Cur == ')') _i++;
+                return Call(name.ToLowerInvariant(), args);
+            }
+            return Var(name);
+        }
+        private double Number()
+        {
+            int start = _i;
+            while (_i < _s.Length && (char.IsDigit(_s[_i]) || _s[_i] == '.')) _i++;
+            double.TryParse(_s.Substring(start, _i - start),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v);
+            return v;
+        }
+        private static double Call(string name, List<double> a)
+        {
+            double A0 = a.Count > 0 ? a[0] : 0;
+            switch (name)
+            {
+                case "math.floor": return Math.Floor(A0);
+                case "math.ceil":  return Math.Ceiling(A0);
+                case "math.abs":   return Math.Abs(A0);
+                case "math.max":   return a.Count >= 2 ? Math.Max(a[0], a[1]) : A0;
+                case "math.min":   return a.Count >= 2 ? Math.Min(a[0], a[1]) : A0;
+                case "math.random":
+                    if (a.Count >= 2) return Rng.Next((int)a[0], (int)a[1] + 1);
+                    if (a.Count == 1) return Rng.Next(1, (int)a[0] + 1);
+                    return Rng.NextDouble();
+                default: return 0;
+            }
+        }
+        private double Var(string name)
+        {
+            if (_v.TryGetValue(name, out var v)) return v;
+            int dot = name.LastIndexOf('.');
+            if (dot >= 0 && _v.TryGetValue(name[(dot + 1)..], out v)) return v;
+            return 0;
+        }
+    }
+}
+
+/// <summary>
 /// In-memory game-content registries loaded ONCE at startup from EXTERNAL, gitignored data
 /// (RTK-derived — see docs §17.1). The loader lives in the repo; the data does not, keeping this a
 /// logic-only server. Everything here is read-only after <see cref="Load"/>, so it is safe to share
@@ -62,10 +217,38 @@ public static class Content
     public static IReadOnlyList<MobDef> Mobs { get; private set; } = new List<MobDef>();
     public static IReadOnlyList<ItemDef> Items { get; private set; } = new List<ItemDef>();
 
+    // All learnable spells/skills (RTK Spells table, section-headers + inactive rows filtered out), and the
+    // class/path id -> display name table (RTK Paths table). Read-only after Load, shared lock-free.
+    public static IReadOnlyList<SpellDef> Spells { get; private set; } = new List<SpellDef>();
+    public static IReadOnlyDictionary<int, string> Paths { get; private set; } = new Dictionary<int, string>();
+
+    // Per-spell runtime effect (archetype + real RTK formulas), keyed by spell identifier. Drives the magic
+    // engine in Session.ApplyCast. Extracted from RTK's Lua by re/extract_spell_formulas.py; empty ⇒ every
+    // cast falls back to the keyword classifier. Read-only after Load, shared lock-free.
+    public static IReadOnlyDictionary<string, SpellFx> SpellFx { get; private set; } =
+        new Dictionary<string, SpellFx>();
+
+    // Fixed monster spawn points (RTK Spawns0.csv). One live mob per point; the world respawns it on death.
+    public static IReadOnlyList<SpawnDef> Spawns { get; private set; } = new List<SpawnDef>();
+
+    // 4.95 client Monster.tbl "Palette" per look id (0..326), decoded from the client PAK (see
+    // re/monster-matcher). This is the palette the CLIENT draws a given monster with — a DIFFERENT index
+    // space than RTK's MobLookColor. The 0x07 spawn color byte must carry THIS value (not RTK's) or the
+    // sprite recolors wrongly (e.g. a copper rabbit instead of the plain one). Most looks are palette 0.
+    public static IReadOnlyDictionary<ushort, byte> LookPalettes { get; private set; } =
+        new Dictionary<ushort, byte>();
+
     // Portals/doors: (sourceMap, x, y) -> (destMap, x, y). Only warps whose DESTINATION is a renderable
     // client map are kept (a warp to a 7.x-only map would strand the player on a black screen).
     public static IReadOnlyDictionary<(ushort m, ushort x, ushort y), (ushort m, ushort x, ushort y)> Warps
     { get; private set; } = new Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)>();
+
+    // Per-map region + warp-out flag (RTK Maps table: MapRegion / MapWarpout). Region groups maps into
+    // kingdoms (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …) and is what the Gateway spell keys off to pick
+    // the destination city; warpOut==false is a map that blocks Gateway/Return ("It doesn't work here").
+    // Loaded from the full RTK Maps.csv (map_index.csv, the renderable subset, doesn't carry these columns).
+    public static IReadOnlyDictionary<ushort, (int region, bool warpOut)> MapMeta { get; private set; } =
+        new Dictionary<ushort, (int, bool)>();
 
     public static void Load()
     {
@@ -73,7 +256,14 @@ public static class Content
         Mobs = LoadMobs(ResolvePath("NEXUS_MOBS", "re", "monster-matcher", "rtk_mobs.csv"));
         Items = LoadItems(ResolvePath("NEXUS_ITEMS", "re", "rtk-data", "Items.csv"));
         Warps = LoadWarps(ResolvePath("NEXUS_WARPS", "re", "rtk-data", "Warps.csv"));   // needs Maps
-        Log.Info($"content: {Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps loaded" +
+        Spawns = LoadSpawns(ResolvePath("NEXUS_SPAWNS", "re", "rtk-data", "Spawns0.csv"));
+        Paths = LoadPaths(ResolvePath("NEXUS_PATHS", "re", "rtk-data", "Paths.csv"));
+        Spells = LoadSpells(ResolvePath("NEXUS_SPELLS", "re", "rtk-data", "Spells.csv"));
+        SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "re", "rtk-data", "spell_effects.csv"));
+        LookPalettes = LoadLookPalettes(ResolvePath("NEXUS_MOB_PALETTES", "re", "rtk-data", "MobLookPalettes.csv"));
+        MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "re", "rtk-data", "Maps.csv"));   // region + warpOut for Gateway
+        Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check re/monster-matcher/rtk_mobs.csv)"
                      : ""));
@@ -82,6 +272,14 @@ public static class Content
     /// <summary>The portal at (map, x, y), if the player just stepped on a door tile.</summary>
     public static bool TryWarp(ushort map, ushort x, ushort y, out (ushort m, ushort x, ushort y) dest)
         => Warps.TryGetValue((map, x, y), out dest);
+
+    /// <summary>The RTK region a map belongs to (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …), or -1 if the
+    /// map has no region row. Used by the Gateway spell to resolve the caster's kingdom.</summary>
+    public static int RegionOf(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) ? m.region : -1;
+
+    /// <summary>Whether a map allows warp-out spells (Gateway/Return). Unknown maps default to true (only an
+    /// explicit MapWarpout==0 blocks); RTK shows "It doesn't work here" when this is false.</summary>
+    public static bool WarpOut(ushort mapId) => !MapMeta.TryGetValue(mapId, out var m) || m.warpOut;
 
     /// <summary>Offline check of the registries + fuzzy lookups (run via <c>--selftest</c>).</summary>
     public static void SelfTest()
@@ -118,8 +316,60 @@ public static class Content
         Line("--- SearchItems(\"sword\", 5) ---");
         foreach (var i in SearchItems("sword", 5)) Line($"    #{i.Id} {i.Name} type{i.Type} dam{i.Dam} icon{i.Icon}");
 
+        // --- Magic engine: archetype coverage + formula evaluation against known RTK values ---
+        Line($"--- Spell fx: {SpellFx.Count} rows ---");
+        var byArch = SpellFx.Values.GroupBy(f => f.Archetype).OrderByDescending(g => g.Count());
+        Line("    " + string.Join("  ", byArch.Select(g => $"{g.Key}={g.Count()}")));
+        // A representative caster: level 50, will 30, grace 20, might 40, 200 mana, 1000 HP.
+        var vars = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["player.level"] = 50, ["player.will"] = 30, ["player.grace"] = 20, ["player.might"] = 40,
+            ["player.magic"] = 200, ["player.maxMagic"] = 200, ["player.health"] = 1000, ["player.maxHealth"] = 1000,
+        };
+        Line("--- Formula.Eval (level50 will30 grace20 might40 mana200 hp1000) ---");
+        foreach (var key in new[] { "spark_mage", "heal_mage", "invoke_mage", "thunder_bolt_mage", "singe_mage" })
+        {
+            if (!SpellFx.TryGetValue(key, out var fx)) { Line($"    {key,-20} (no fx row)"); continue; }
+            string amt = string.IsNullOrEmpty(fx.AmountExpr) ? "" : $" amount={Formula.Eval(fx.AmountExpr, vars):0}";
+            string hc  = string.IsNullOrEmpty(fx.HealthCost) ? "" : $" healthCost={Formula.Eval(fx.HealthCost, vars):0}";
+            Line($"    {key,-20} {fx.Archetype,-11} mana={fx.Mana,-4}{amt}{hc}  [{fx.AmountExpr}]");
+        }
+        // spot-check the arithmetic evaluator itself (independent of any spell row)
+        Line("--- Formula sanity ---");
+        foreach (var (expr, want) in new (string, double)[]
+                 {
+                     ("15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4)", 48),  // spark @50/30
+                     ("math.ceil(player.magic * 2.15)", 430),
+                     ("100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2)", 230),
+                     ("math.floor(player.maxMagic * .4)", 80),                                        // invoke cost
+                 })
+        {
+            double got = Formula.Eval(expr, vars);
+            Line($"    {(Math.Abs(got - want) < 0.5 ? "ok " : "XX ")}{got,6:0} (want {want,4:0})  {expr}");
+        }
+
+        // --- Effect graphic resolution (pcalign ladder → Effect.tbl id) ---
+        Line("--- EffectAnim (spell → Effect.tbl id) ---");
+        foreach (var (key, path) in new[]
+                 {
+                     ("spark_mage", 3), ("glimpse_of_the_void_mage", 3), ("bolt_mage", 3),
+                     ("thunder_bolt_mage", 3), ("heal_mage", 3), ("ancestors_touch_mage", 3),
+                     ("invoke_mage", 3), ("might_mage", 3),
+                 })
+        {
+            if (!SpellFx.TryGetValue(key, out var fx)) { Line($"    {key,-24} (no fx)"); continue; }
+            Line($"    {key,-24} arch={fx.Archetype,-11} pcalign={fx.PcAlign,-5} -> anim {EffectAnim(fx, path),3}  sound {EffectSound(fx, path)}");
+        }
+
+        bool spellsOk = SpellFx.Count > 0
+            && SpellFx.TryGetValue("spark_mage", out var spk) && spk.Archetype == "Damage"
+            && Math.Abs(Formula.Eval(spk.AmountExpr, vars) - 48) < 0.5
+            && Math.Abs(Formula.Eval("math.ceil(player.magic * 2.15)", vars) - 430) < 0.5
+            && EffectAnim(spk, 3) == 28                                          // spark → Effect.tbl 28
+            && SpellFx.TryGetValue("heal_mage", out var hl) && EffectAnim(hl, 3) == 5;   // unaligned heal → 5
+
         bool ok = Maps.Count > 0 && Mobs.Count > 0 && Items.Count > 0
-                  && FindMap("kugnae") is not null && FindMob("rabbit") is not null;
+                  && FindMap("kugnae") is not null && FindMob("rabbit") is not null && spellsOk;
         Line(ok ? "SELFTEST: PASS" : "SELFTEST: FAIL (empty registry or missing expected entry)");
     }
 
@@ -186,6 +436,208 @@ public static class Content
     }
 
     public static ItemDef? ItemById(int id) => Items.FirstOrDefault(i => i.Id == id);
+    public static ItemDef? ItemByKey(string key) =>
+        Items.FirstOrDefault(i => string.Equals(i.Key, key, StringComparison.OrdinalIgnoreCase));
+
+    public static MobDef? MobById(int id) => Mobs.FirstOrDefault(m => m.Id == id);
+
+    // ---- spells / classes (used by !spells / !learnspell + casting) ---------------------------
+
+    /// <summary>The display name of a class/path id (e.g. 1 -> "Warrior"); "path&lt;id&gt;" if unknown.</summary>
+    public static string PathName(int pathId) =>
+        Paths.TryGetValue(pathId, out var n) && !string.IsNullOrEmpty(n) ? n : $"path{pathId}";
+
+    /// <summary>Resolve a class/path NAME (as stored on the character, e.g. "Warrior") to its path id, or
+    /// -1 if it matches no known class. Case-insensitive against the base class name (Paths.PthMark0).</summary>
+    public static int PathIdForClass(string? className)
+    {
+        var name = (className ?? "").Trim();
+        if (name.Length == 0) return -1;
+        foreach (var kv in Paths)
+            if (string.Equals(kv.Value, name, StringComparison.OrdinalIgnoreCase)) return kv.Key;
+        return -1;
+    }
+
+    /// <summary>Every spell/skill a class can learn at or below <paramref name="maxLevel"/> for a given
+    /// <paramref name="alignment"/> (0 unaligned / 1 Kwisin / 2 Mingken / 3 Ohaeng) — i.e. the teachable set
+    /// for "!spells". Includes the character's own path <em>and</em> the path-0 "peasant commons" (Soothe,
+    /// Gateway, Return, Mentor, Approach, Summon) that every class keeps after subpathing — in NexusTK those
+    /// are learned by all classes, not just Peasants, so a subpathed Warrior/Rogue/Mage/Poet still gets them.
+    /// A spell qualifies if it is universal (Alignment -1) OR matches the character's alignment; the other
+    /// sub-alignments' parallel spells are excluded, so an unaligned character never gets the
+    /// Kwisin/Mingken/Ohaeng variants (which often share a display name → looked like duplicates).
+    /// Deduped by display name as a safety net, preferring the exact-alignment version over a universal one.
+    /// Ordered by level then name so the spellbook fills in a sensible order.</summary>
+    public static List<SpellDef> SpellsForClass(int pathId, int maxLevel, int alignment) =>
+        Spells.Where(s => (s.PathId == pathId || s.PathId == 0) && s.Level <= maxLevel && (s.Alignment < 0 || s.Alignment == alignment))
+              .GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+              .Select(g => g.OrderByDescending(s => s.Alignment == alignment).ThenBy(s => s.Level).First())
+              .OrderBy(s => s.Level).ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+              .ToList();
+
+    public static SpellDef? SpellById(int id) => Spells.FirstOrDefault(s => s.Id == id);
+
+    /// <summary>The extracted RTK effect for a spell (real formula/archetype), or null if the export has no
+    /// row for its identifier (⇒ caller falls back to the keyword classifier).</summary>
+    public static SpellFx? FxFor(SpellDef sp) => SpellFx.TryGetValue(sp.Key, out var fx) ? fx : null;
+
+    // Sentinel for "this spell has no pcalign arg" (skills / non-global-helper spells).
+    public const int NoPcAlign = int.MinValue;
+
+    // ---- spell effect graphic (client 0x29) ---------------------------------------------------
+    // The 4.95 client's 0x29 handler plays effect N from Effect.tbl (128 effects) over an entity — it is NOT a
+    // floating damage number (proven by disassembly of 0x4504b0 → 0x44e0a0 → the index-into-table copy at
+    // 0x4354b0). RTK's shared helpers pick that effect id (and a sound id) from the spell's `pcalign` argument;
+    // these two tables are ported verbatim from rtklua/Accepted/Spells/common/global_zap.lua + global_heal.lua.
+    // Returns the Effect.tbl id (0..127), or -1 for "no graphic". Sound ids are carried for when a 4.95 sound
+    // opcode is confirmed (not wired yet).
+
+    /// <summary>pcalign → (Effect.tbl id, sound id) for damaging casts (global_zap / global_attack). Warrior
+    /// (baseClass 1) and Rogue (baseClass 2) shift their &lt;10 pcalign by +100 / +200 first — same as RTK.</summary>
+    public static (int anim, int sound) ZapEffect(int pcalign, int pathId)
+    {
+        if (pcalign < 10)
+        {
+            if (pathId == 1) pcalign += 100;   // warrior
+            else if (pathId == 2) pcalign += 200;   // rogue
+        }
+        return pcalign switch
+        {
+            0 => (4, 56),   1 => (17, 59),  2 => (30, 57),  3 => (4, 55),          // aligned zaps
+            10 => (27, 55), 11 => (28, 55), 12 => (29, 55), 13 => (-1, 58),        // thunder bolt / spark / singe / taunt(no gfx)
+            30 => (8, 88),  31 => (54, 88), 32 => (104, 88), 33 => (112, 88),      // mage hellfire/inferno/doom
+            34 => (41, 88), 35 => (42, 88), 36 => (43, 88),                        // mage fissure / lava surge / volcanic blast
+            40 => (51, 88), 41 => (100, 88), 42 => (86, 88), 43 => (114, 88),      // poet retribution
+            99 => (6, 88),                                                          // unaligned LS/WW (attack ladder)
+            100 => (7, 88), 101 => (67, 14), 102 => (7, 87), 103 => (60, 87), 104 => (31, 30),  // warrior
+            119 => (9, 14), 120 => (6, 88), 121 => (7, 87), 122 => (32, 87), 123 => (68, 94),   // warrior vita edits
+            124 => (7, 88), 125 => (60, 102), 126 => (67, 88), 127 => (69, 88),
+            200 => (9, 88), 201 => (67, 102), 202 => (32, 88), 203 => (68, 88), 204 => (69, 88),  // rogue
+            251 => (17, 59), 252 => (30, 57), 253 => (4, 55),                       // class-override zaps
+            400 => (12, -1), 401 => (44, -1),                                       // dart / death trap
+            _ => (4, 56),                                                           // default unaligned zap
+        };
+    }
+
+    /// <summary>pcalign → (Effect.tbl id, sound id) for healing casts (global_heal): 1 Kwi-Sin, 2 Ming-Ken,
+    /// 3 Ohaeng, else unaligned.</summary>
+    public static (int anim, int sound) HealEffect(int pcalign) => pcalign switch
+    {
+        1 => (65, 98),
+        2 => (64, 63),
+        3 => (63, 4),
+        _ => (5, 4),
+    };
+
+    /// <summary>The Effect.tbl graphic id to play for a cast (−1 = none). A spell whose own Lua body calls
+    /// sendAnimation (buffs, debuffs, Invoke) carries that id directly in <see cref="SpellFx.Animation"/>;
+    /// damaging/healing casts get theirs from the pcalign ladder in the shared helper.</summary>
+    public static int EffectAnim(SpellFx fx, int pathId)
+    {
+        if (fx.Animation > 0) return fx.Animation;                                  // spell set it explicitly
+        if (fx.PcAlign == NoPcAlign) return -1;                                     // no helper call, no explicit anim
+        return fx.Archetype == "Heal" ? HealEffect(fx.PcAlign).anim : ZapEffect(fx.PcAlign, pathId).anim;
+    }
+
+    /// <summary>The sound id to play for a cast (−1 = none), mirroring <see cref="EffectAnim"/>: the spell's own
+    /// playSound id if it has one (buffs, Invoke), else the pcalign ladder's sound.</summary>
+    public static int EffectSound(SpellFx fx, int pathId)
+    {
+        if (fx.Sound > 0) return fx.Sound;                                          // spell set it explicitly
+        if (fx.PcAlign == NoPcAlign) return -1;
+        return fx.Archetype == "Heal" ? HealEffect(fx.PcAlign).sound : ZapEffect(fx.PcAlign, pathId).sound;
+    }
+
+    public static SpellDef? FindSpell(string query)
+    {
+        query = query.Trim();
+        if (int.TryParse(query, out var id))
+        {
+            var byId = Spells.FirstOrDefault(s => s.Id == id);
+            if (byId is not null) return byId;
+        }
+        return BestByName(Spells, query, s => s.Name) ?? BestByName(Spells, query, s => s.Key);
+    }
+
+    public static List<SpellDef> SearchSpells(string query, int limit) =>
+        RankByName(Spells, query, s => s.Name).Take(limit).ToList();
+
+    // A spell's coarse effect category. There is NO per-spell effect data in the export (RTK runs ~900 Lua
+    // scripts), so this is a best-guess keyword classifier over the name + identifier. It drives the generic
+    // cast effect in Session.HandleCast: Damage spells deal magic damage, Heal spells restore HP, Buff/Utility
+    // give feedback. Refine per spell later if bespoke behaviour is wanted.
+    public enum SpellEffect { Utility, Damage, Heal, Buff }
+
+    private static readonly string[] HealWords =
+        { "heal", "remedy", "cure", "mend", "recover", "regen", "soothe", "bandage", "balm", "reviv",
+          "rejuven", "renew", "vitali", "refresh", "restore" };
+    private static readonly string[] DamageWords =
+        { "bolt", "blast", "flame", "fire", "ice", "frost", "cold", "lightn", "thunder", "zap", "storm",
+          "nova", "strike", "smite", "burn", "shock", "blaze", "meteor", "quake", "slash", "wrath", "doom",
+          "drain", "wound", "blood", "venom", "poison", "chaos", "shard", "spike", "fang", "claw", "bite",
+          "sever", "crush", "pierce", "inferno", "electr", "avalanche", "blizzard", "assault", "ambush",
+          "assassin", "attack" };
+    private static readonly string[] BuffWords =
+        { "bless", "augment", "armor", "shield", "harden", "protect", "guard", "bolster", "fortif", "haste",
+          "aegis", "barrier", "ward", "enchant", "empower", "strength" };
+
+    /// <summary>Best-guess effect category from the spell's name/identifier keywords. Heal wins over Damage
+    /// on overlap (e.g. "Healer's Revenge").</summary>
+    public static SpellEffect EffectOf(SpellDef sp)
+    {
+        var s = (sp.Name + " " + sp.Key).ToLowerInvariant();
+        bool Any(string[] words) { foreach (var k in words) if (s.Contains(k)) return true; return false; }
+        if (Any(HealWords))   return SpellEffect.Heal;
+        if (Any(DamageWords)) return SpellEffect.Damage;
+        if (Any(BuffWords))   return SpellEffect.Buff;
+        return SpellEffect.Utility;
+    }
+
+    private static readonly string[] AlignPrefixes = { "kwisin_", "mingken_", "ohaeng_" };
+    private static readonly string[] ClassSuffixes = { "_peasant", "_warrior", "_rogue", "_mage", "_poet" };
+
+    /// <summary>The spell's identifier with its sub-alignment prefix (kwisin_/mingken_/ohaeng_) and class
+    /// suffix (_mage/_poet/…) stripped — so every variant of "Invoke" (invoke_mage, invoke_poet, invoke)
+    /// collapses to the base key "invoke". Session.HandleCast switches on this to run bespoke per-spell
+    /// effects (which a keyword category can't express, e.g. Invoke = trade HP for MP).</summary>
+    public static string BaseKey(SpellDef sp)
+    {
+        var k = sp.Key.ToLowerInvariant();
+        foreach (var pre in AlignPrefixes) if (k.StartsWith(pre)) { k = k[pre.Length..]; break; }
+        foreach (var suf in ClassSuffixes) if (k.EndsWith(suf))   { k = k[..^suf.Length]; break; }
+        return k;
+    }
+
+    /// <summary>The fixed spawn points on a map (empty if none / map has no spawn data).</summary>
+    public static List<SpawnDef> SpawnsFor(ushort map) => Spawns.Where(s => s.Map == map).ToList();
+
+    // ---- mob drops (0x16 floor loot) ----------------------------------------------------------
+    // RTK's drop tables live in per-mob Lua and weren't exported, so the Buya critters get a small,
+    // themed table here: the classic meat/pelt/fur each drops at a modest rate. Unknown mobs drop
+    // nothing. Keyed by the mob's Identifier so it's data-adjacent and easy to extend.
+    private static readonly Dictionary<string, (string itemKey, double chance)[]> DropTable = new()
+    {
+        ["rabbit"]   = new[] { ("rabbit_meat", 0.45) },
+        ["squirrel"] = new[] { ("green_squirrel_pelt", 0.40) },
+        ["deer"]     = new[] { ("antler", 0.50) },
+        ["doe"]      = new[] { ("antler", 0.50) },
+        ["fox"]      = new[] { ("fox_fur", 0.60) },
+    };
+
+    /// <summary>Roll the drops for a slain mob: each table entry yields its item at its chance. Returns
+    /// the concrete (item, amount) pairs to drop on the floor (may be empty).</summary>
+    public static List<(ItemDef item, int amount)> RollDrops(MobDef def, Random rng)
+    {
+        var outp = new List<(ItemDef, int)>();
+        if (!DropTable.TryGetValue(def.Key, out var entries)) return outp;
+        foreach (var (itemKey, chance) in entries)
+        {
+            if (rng.NextDouble() >= chance) continue;
+            var it = ItemByKey(itemKey);
+            if (it is not null) outp.Add((it, 1));
+        }
+        return outp;
+    }
 
     public static List<ItemDef> SearchItems(string query, int limit) =>
         RankByName(Items, query, i => i.Name).Take(limit).ToList();
@@ -242,6 +694,21 @@ public static class Content
         return maps;
     }
 
+    // id -> (region, warpOut) from the full RTK Maps table. Only the three columns we need; unknown/blank
+    // region defaults to -1 (no kingdom), warpOut to true (allow) so only an explicit 0 blocks warp-outs.
+    private static Dictionary<ushort, (int region, bool warpOut)> LoadMapMeta(string? path)
+    {
+        var meta = new Dictionary<ushort, (int, bool)>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!col.TryGetValue("MapId", out var sid) || !ushort.TryParse(sid, out var id)) continue;
+            if (!int.TryParse(col.GetValueOrDefault("MapRegion", "-1"), out var region)) region = -1;
+            bool warpOut = col.GetValueOrDefault("MapWarpout", "1") != "0";
+            meta[id] = (region, warpOut);
+        }
+        return meta;
+    }
+
     private static List<MobDef> LoadMobs(string? path)
     {
         var mobs = new List<MobDef>();
@@ -253,10 +720,12 @@ public static class Content
             int.TryParse(col.GetValueOrDefault("Vita", "0"), out var hp);
             int.TryParse(col.GetValueOrDefault("Exp", "0"), out var exp);
             int.TryParse(col.GetValueOrDefault("Level", "0"), out var lvl);
+            // MobMoveTime (ms between move attempts). Absent/0 in older exports -> a calm default.
+            int move = int.TryParse(col.GetValueOrDefault("MobMoveTime", "0"), out var mv) && mv > 0 ? mv : 2500;
             var name = Clean(col.GetValueOrDefault("Description", ""));
             var key = Clean(col.GetValueOrDefault("Identifier", ""));
             if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"mob{id}" : key;
-            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl));
+            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move));
         }
         return mobs;
     }
@@ -304,6 +773,104 @@ public static class Content
             }
         }
         return warps;
+    }
+
+    // Spawn points: SpnMobId,SpnMapId,SpnX,SpnY (+ RTK bookkeeping columns we ignore). Rows whose mob or
+    // map is unknown are still returned; the world filters them against the loaded mob/map registries.
+    /// <summary>The 4.95 client palette to draw a monster look with (0x07 color byte). Falls back to 0
+    /// (the plain/base palette) for looks not in the table — the correct default for most monsters.</summary>
+    public static byte PaletteFor(ushort look) => LookPalettes.TryGetValue(look, out var p) ? p : (byte)0;
+
+    // Look,Palette from the decoded client Monster.tbl (re/monster-matcher). Look id -> client palette byte.
+    private static Dictionary<ushort, byte> LoadLookPalettes(string? path)
+    {
+        var pals = new Dictionary<ushort, byte>();
+        foreach (var col in ReadCsv(path))
+            if (ushort.TryParse(col.GetValueOrDefault("Look"), out var look)
+                && byte.TryParse(col.GetValueOrDefault("Palette"), out var pal))
+                pals[look] = pal;
+        return pals;
+    }
+
+    private static List<SpawnDef> LoadSpawns(string? path)
+    {
+        var spawns = new List<SpawnDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (int.TryParse(col.GetValueOrDefault("SpnMobId"), out var mob)
+                && ushort.TryParse(col.GetValueOrDefault("SpnMapId"), out var map)
+                && ushort.TryParse(col.GetValueOrDefault("SpnX"), out var x)
+                && ushort.TryParse(col.GetValueOrDefault("SpnY"), out var y))
+            {
+                spawns.Add(new SpawnDef(mob, map, x, y));
+            }
+        }
+        return spawns;
+    }
+
+    // Class/path table: PthId -> base class name (PthMark0). The higher PthMark columns are per-rank
+    // titles ("Il san (W)" …) we don't need here.
+    private static Dictionary<int, string> LoadPaths(string? path)
+    {
+        var paths = new Dictionary<int, string>();
+        foreach (var col in ReadCsv(path))
+            if (int.TryParse(col.GetValueOrDefault("PthId"), out var id))
+                paths[id] = Clean(col.GetValueOrDefault("PthMark0", ""));
+        return paths;
+    }
+
+    // Spells/skills. Rows that are section headers (name/ident begins with '=') or inactive (SplActive=0)
+    // are skipped — they're book dividers in the RTK data, not castable. SplQuestion "NO" means "no prompt".
+    private static List<SpellDef> LoadSpells(string? path)
+    {
+        var spells = new List<SpellDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!col.TryGetValue("SplId", out var sid) || !int.TryParse(sid, out var id)) continue;
+            if (col.GetValueOrDefault("SplActive", "1") == "0") continue;
+            var name  = Clean(col.GetValueOrDefault("SplDescription", ""));
+            var key   = Clean(col.GetValueOrDefault("SplIdentifier", ""));
+            if (string.IsNullOrEmpty(name) || name.StartsWith("=") || key.StartsWith("=")) continue;
+            byte.TryParse(col.GetValueOrDefault("SplType", "5"), out var type);
+            int.TryParse(col.GetValueOrDefault("SplPthId", "0"), out var pth);
+            int.TryParse(col.GetValueOrDefault("SplLevel", "0"), out var lvl);
+            if (!int.TryParse(col.GetValueOrDefault("SplAlignment", "-1"), out var align)) align = -1;
+            var q = Clean(col.GetValueOrDefault("SplQuestion", ""));
+            if (q.Equals("NO", StringComparison.OrdinalIgnoreCase)) q = "";
+            spells.Add(new SpellDef(id, key, name, type, pth, lvl, align, q));
+        }
+        return spells;
+    }
+
+    // Per-spell effect rows from re/extract_spell_formulas.py (spell_effects.csv). Keyed by identifier so it
+    // joins to SpellDef.Key. A missing/short file just yields an empty map (every cast then uses the keyword
+    // classifier). Numbers parse leniently — a blank cell is 0.
+    private static Dictionary<string, SpellFx> LoadSpellFx(string? path)
+    {
+        var fx = new Dictionary<string, SpellFx>(StringComparer.OrdinalIgnoreCase);
+        static int I(Dictionary<string, string> c, string k)
+            => int.TryParse(c.GetValueOrDefault(k, "").Trim(), out var v) ? v : 0;
+        foreach (var col in ReadCsv(path))
+        {
+            var key = col.GetValueOrDefault("key", "").Trim();
+            if (string.IsNullOrEmpty(key)) continue;
+            fx[key] = new SpellFx(
+                Key: key,
+                Archetype: col.GetValueOrDefault("archetype", "Utility").Trim(),
+                Mana: I(col, "mana"),
+                AmountExpr: col.GetValueOrDefault("amountExpr", "").Trim(),
+                BuffStat: col.GetValueOrDefault("buffStat", "").Trim(),
+                BuffAmt: col.GetValueOrDefault("buffAmt", "").Trim(),
+                DurationMs: I(col, "durationMs"),
+                Debuff: col.GetValueOrDefault("debuff", "").Trim(),
+                Chance: col.GetValueOrDefault("chance", "").Trim(),
+                HealthCost: col.GetValueOrDefault("healthCost", "").Trim(),
+                Animation: I(col, "animation"),
+                Sound: I(col, "sound"),
+                Aether: I(col, "aether"),
+                PcAlign: int.TryParse(col.GetValueOrDefault("pcalign", "").Trim(), out var pa) ? pa : NoPcAlign);
+        }
+        return fx;
     }
 
     // Minimal CSV reader: header row -> per-row {column: value} dicts. Handles quoted fields with commas.

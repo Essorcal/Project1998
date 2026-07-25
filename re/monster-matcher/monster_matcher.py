@@ -1,20 +1,21 @@
 #!/usr/bin/env python
 """
-NexusTK 4.95 monster sprite <-> name matching tool.
+NexusTK 4.95 monster sprite <-> name/color matching tool.
 
-Renders our OWN client's Monster.epf sprites (one thumbnail per look id 0..326)
-next to the Nexus Atlas monster list (names/exp/type scraped via Wayback, pre-6.5),
-and lets you assign one OR MORE named monsters to each look id in a browser
-(the same base sprite can be several monsters - color/level variants like
-red/blue/green dog). Saves to  data/monster_mapping.json  in the repo, which the
-server reads back.
+Left  = truth: our client's Monster.epf sprite for each look id (0..326).
+Right = the real, correctly-COLORED Nexus Atlas monster art (GIFs scraped from
+Wayback, pre-6.5). Each look id can hold several variants (red/blue/green dog):
+you pick them from a popover that shows the actual Atlas art, pre-ranked by shape
+similarity to the sprite. Picking an Atlas monster records its name, colour, exp,
+type and its real RGB palette — no more guessing palette indices.
 
-Run:   python re/monster-matcher/monster_matcher.py
-Then:  open http://localhost:8777
+Run:   python re/monster-matcher/monster_matcher.py   ->  http://localhost:8777
+Save writes  data/monster_mapping.json  (read back by the server).
 
-Mapping format (v2):  { "version":2, "entries": { "<lookId>": [ {name,color,hp,exp,type,atlas}, ... ] } }
+Mapping v3:  { "version":3, "entries": {
+    "<lookId>": [ {name,color,file,exp,type,hp,pal:[[r,g,b]...]}, ... ] } }
 """
-import json, os, sys, http.server, webbrowser
+import json, os, http.server, webbrowser
 from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +29,7 @@ def load(name):
 
 MONSTERS = load("monsters.json")
 ATLAS = load("atlas.json")
-PALETTES = load("palettes.json")
+ATLAS_REF = load("atlas_ref.json")   # {refs:[...], cand:{lookId:[{i,s}]}}
 
 def load_mapping():
     if os.path.exists(MAPPING_PATH):
@@ -37,7 +38,7 @@ def load_mapping():
                 return json.load(f)
         except Exception:
             pass
-    return {"version": 2, "entries": {}}
+    return {"version": 3, "entries": {}}
 
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
 <title>NexusTK 4.95 — Monster Matcher</title>
@@ -52,8 +53,7 @@ button{background:var(--card2);color:var(--txt);border:1px solid var(--edge);bor
 button.primary{background:var(--accent);color:#0c1a12;border-color:var(--accent);font-weight:600}
 button:hover{filter:brightness(1.12)}
 input{background:#1f232b;color:var(--txt);border:1px solid var(--edge);border-radius:5px;padding:6px 8px;font-size:13px}
-.stat{color:var(--mut);font-size:12px}
-.stat b{color:var(--accent)}
+.stat{color:var(--mut);font-size:12px}.stat b{color:var(--accent)}
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;padding:14px}
 @media(max-width:1100px){.grid{grid-template-columns:repeat(4,1fr)}}
@@ -64,83 +64,85 @@ input{background:#1f232b;color:var(--txt);border:1px solid var(--edge);border-ra
 .thumb{width:76px;height:76px;background:#12141a;border:1px solid var(--edge);border-radius:6px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
 .thumb img{image-rendering:pixelated;max-width:72px;max-height:72px}
 .idcol{display:flex;flex-direction:column;gap:2px}
-.lid{font-size:20px;font-weight:700}
-.lidsub{font-size:10px;color:var(--mut)}
-.variants{display:flex;flex-direction:column;gap:5px}
-.vrow{display:flex;flex-direction:column;gap:3px;border-top:1px dashed var(--edge);padding-top:5px}
+.lid{font-size:20px;font-weight:700}.lidsub{font-size:10px;color:var(--mut)}
+.variants{display:flex;flex-direction:column;gap:4px}
+.vrow{display:flex;gap:6px;align-items:center;border-top:1px dashed var(--edge);padding-top:4px}
 .vrow:first-child{border-top:none;padding-top:0}
-.vline{display:flex;gap:4px;align-items:center}
-.vline .name{flex:1;min-width:0}
-.vline .num{width:52px}
-.vline .rm{padding:5px 8px;background:transparent;border-color:transparent;color:var(--mut);font-size:15px;line-height:1}
-.vline .rm:hover{color:var(--warn)}
-.vline .colbtn{padding:4px 6px;display:flex;align-items:center;gap:3px;font-size:13px}
-.vline .colbtn .colidx{font-size:11px;color:var(--accent);min-width:8px}
-#colorpick{position:absolute;z-index:120;display:none;background:#12151b;border:1px solid var(--accent);border-radius:8px;box-shadow:0 10px 30px #000b;padding:8px;width:340px}
-#colorpick .cphdr{font-size:11.5px;color:var(--mut);margin-bottom:6px}
-#colorpick .cpgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;max-height:340px;overflow:auto}
-#colorpick .cpsw{display:flex;flex-direction:column;align-items:center;gap:2px;padding:3px;border:1px solid var(--edge);border-radius:5px;cursor:pointer;background:#1b1f27}
-#colorpick .cpsw:hover{border-color:var(--accent)}
-#colorpick .cpsw.sel{border-color:var(--accent);background:#22302a}
-#colorpick .cpsw span{font-size:9px;color:var(--mut)}
-#colorpick canvas,#colorpick .cpcanv canvas{image-rendering:pixelated;max-width:38px;max-height:38px}
-.meta{font-size:10.5px;color:var(--mut);min-height:13px;padding-left:2px}
-.meta b{color:var(--warn)}
+.vrow .gif{width:34px;height:34px;background:#12141a;border:1px solid var(--edge);border-radius:5px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.vrow .gif img{image-rendering:pixelated;max-width:32px;max-height:32px}
+.vrow .vmeta{flex:1;min-width:0}
+.vrow .vname{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vrow .vsub{font-size:10px;color:var(--mut)}
+.vrow .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;border:1px solid #0006;vertical-align:middle;margin-right:3px}
+.vrow .num{width:46px}
+.vrow .rm{padding:4px 7px;background:transparent;border-color:transparent;color:var(--mut);font-size:15px;line-height:1}
+.vrow .rm:hover{color:var(--warn)}
 .addv{align-self:flex-start;font-size:12px;padding:4px 9px;color:var(--accent)}
 .hidden{display:none}
 .legend{font-size:12px;color:var(--mut)}
-/* shared searchable picker */
-#pick{position:absolute;z-index:100;display:none;max-height:280px;overflow:auto;background:#161a21;border:1px solid var(--accent);border-radius:7px;box-shadow:0 8px 24px #000a;min-width:260px}
-#pick .pk{padding:6px 10px;cursor:pointer;display:flex;flex-direction:column;gap:1px;border-bottom:1px solid #222}
-#pick .pk:hover,#pick .pk.hi{background:#243b30}
-#pick .pk b{font-size:13px}
-#pick .pk span{font-size:11px;color:var(--mut)}
-#pick .pk.empty{color:var(--mut);cursor:default}
+.legend code{color:var(--txt)}
+/* variant picker popover */
+#vp{position:absolute;z-index:120;display:none;background:#12151b;border:1px solid var(--accent);border-radius:9px;box-shadow:0 12px 34px #000c;width:360px;max-height:70vh;display:none;flex-direction:column}
+#vp .vphd{padding:8px 10px;border-bottom:1px solid var(--edge);font-size:11.5px;color:var(--mut)}
+#vp .vphd input{width:100%;margin-top:6px}
+#vp .vplist{overflow:auto;padding:6px}
+#vp .sec{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:6px 4px 3px}
+#vp .opt{display:flex;gap:8px;align-items:center;padding:5px 6px;border-radius:6px;cursor:pointer}
+#vp .opt:hover,#vp .opt.hi{background:#243b30}
+#vp .opt .gif{width:38px;height:38px;background:#0d0f14;border:1px solid var(--edge);border-radius:5px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+#vp .opt .gif img{image-rendering:pixelated;max-width:36px;max-height:36px}
+#vp .opt .txt{flex:1;min-width:0}
+#vp .opt .on{font-size:12.5px;font-weight:600}
+#vp .opt .os{font-size:10.5px;color:var(--mut)}
+#vp .opt .score{font-size:10px;color:var(--accent);flex:0 0 auto}
+#vp .opt.picked{outline:1px solid var(--accent);background:#1c2a22}
+#vp .none{color:var(--mut);font-size:12px;padding:10px}
 #toast{position:fixed;bottom:18px;right:18px;background:var(--accent);color:#0c1a12;padding:10px 16px;border-radius:8px;font-weight:600;opacity:0;transition:.3s;pointer-events:none;z-index:200}
 #toast.show{opacity:1}
 </style></head><body>
 <header>
   <h1>🐾 NexusTK 4.95 Monster Matcher</h1>
-  <span class="stat"><b id="cnt">0</b> ids named · <b id="vcnt">0</b> monsters</span>
+  <span class="stat"><b id="cnt">0</b> ids named · <b id="vcnt">0</b> variants</span>
   <span class="sp"></span>
   <div class="controls">
-    <input id="search" placeholder="filter by look id / name…" style="width:200px">
+    <input id="search" placeholder="filter look id / name…" style="width:190px">
     <label class="stat"><input type="checkbox" id="onlyUnnamed"> only unnamed</label>
+    <label class="stat"><input type="checkbox" id="onlyCand" checked> only w/ suggestions</label>
     <button id="btnSave" class="primary">💾 Save to repo</button>
     <button id="btnExport">⬇ Download JSON</button>
   </div>
 </header>
 <div class="legend" style="padding:8px 16px 0">
-  Each sprite is one look id (= <code>0x8000 | id</code> in the 0x07 spawn). A sprite can be <b>several
-  monsters</b> — click <b>+ variant</b> for color/level variants (red/blue/green dog…). Type in the name box
-  to search Nexus Atlas; picking one auto-fills exp/type. The <b>🎨</b> button shows this sprite in all 20
-  recolor palettes — click the one that matches the variant's color (that palette index is the spawn color).
-  Auto-saves in your browser; <b>Save to repo</b> writes <code>data/monster_mapping.json</code>.
+  Left thumbnail = the client's <b>Monster.epf</b> sprite for one look id (<code>0x8000 | id</code> in the 0x07 spawn).
+  Click <b>+ add variant</b> to open the picker: it lists the <b>real, correctly-coloured Nexus Atlas art</b>,
+  pre-ranked by shape match to this sprite. Pick every colour/level variant (red/blue/green…). Each records the
+  monster's name, colour, exp/type and its real palette. Auto-saves locally; <b>Save to repo</b> writes
+  <code>data/monster_mapping.json</code>.
 </div>
 <div class="grid" id="grid"></div>
-<div id="pick"></div>
-<div id="colorpick"></div>
+<div id="vp"></div>
 <div id="toast"></div>
 <script>
 const MONSTERS = __MONSTERS__;
-const ATLAS = __ATLAS__;
-const PALETTES = __PALETTES__;                 // 20 x 256 x [r,g,b] recolor LUTs
+const REFS = __REFS__;            // atlas reference art [{file,name,color,w,h,pal,gif,exp,mtype}]
+const CAND = __CAND__;            // {lookId:[{i,s}]}  shape-ranked candidate indices into REFS
 const MON = {}; MONSTERS.forEach(x=>MON[x.id]=x);
-const LSKEY = "tk495_monster_map_v2";
-// normalize a stored value to an array of variant objects
+const REFBYFILE = {}; REFS.forEach((r,i)=>{r._i=i; REFBYFILE[r.file]=r;});
+const LSKEY = "tk495_monster_map_v3";
 function toList(v){ if(!v) return []; if(Array.isArray(v)) return v; if(v.name) return [v]; return []; }
 let MAP = {};
 (function initMap(){
-  const server = (__MAPPING__.entries)||{};
+  const server=(__MAPPING__.entries)||{};
   let draft={}; try{draft=JSON.parse(localStorage.getItem(LSKEY)||"{}");}catch(e){}
-  const src = Object.keys(server).length?server:draft;
+  const src=Object.keys(server).length?server:draft;
   for(const k in src){ const l=toList(src[k]); if(l.length) MAP[k]=l; }
 })();
 
 const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
-const numOr=v=>{const n=parseInt(v,10); return isNaN(n)?undefined:n;};
-const atlasSorted=[...ATLAS].sort((a,b)=>(a.exp||0)-(b.exp||0));
-const byName={}; atlasSorted.forEach(a=>byName[a.name.toLowerCase()]=a);
+const numOr=v=>{const n=parseInt(v,10);return isNaN(n)?undefined:n;};
+const rgb=c=>c?`rgb(${c[0]},${c[1]},${c[2]})`:'transparent';
+// dominant "colour" swatch = 2nd palette entry (1st is usually the dark outline)
+function keyColor(pal){ if(!pal||!pal.length) return null; return pal.length>1?pal[1]:pal[0]; }
 
 const grid=document.getElementById('grid');
 const cntEl=document.getElementById('cnt'), vcntEl=document.getElementById('vcnt');
@@ -151,167 +153,146 @@ function updCount(){
 }
 function saveLocal(){ localStorage.setItem(LSKEY,JSON.stringify(MAP)); updCount(); }
 
-function variantRow(v){
-  v=v||{};
-  const row=document.createElement('div'); row.className='vrow';
-  row.innerHTML=`<div class="vline">
-      <input class="name" placeholder="monster name…" autocomplete="off" value="${esc(v.name)}">
-      <button class="colbtn" title="pick recolor (palette)">🎨<span class="colidx">${v.color??''}</span></button>
-      <input class="num hp" type="number" placeholder="hp" title="HP (optional; blank = derived from exp)" value="${v.hp??''}">
-      <button class="rm" title="remove variant">×</button>
-    </div><div class="meta"></div>`;
-  row.dataset.color = (v.color??'');
-  row.querySelector('.rm').onclick=()=>{
-    const card=row.closest('.card');
-    row.remove();
-    if(!card.querySelector('.vrow')) card.querySelector('.variants').appendChild(variantRow());
-    commitCard(card);
-  };
-  row.querySelector('.colbtn').onclick=(e)=>{ e.preventDefault(); openColorPicker(row); };
-  refreshMeta(row);
+// ---- variant row (shows the real Atlas art) ----
+function variantRow(card,v){
+  const ref=REFBYFILE[v.file];
+  const row=document.createElement('div'); row.className='vrow'; row.dataset.file=v.file||'';
+  const kc=keyColor(v.pal||(ref&&ref.pal));
+  row.innerHTML=`<div class="gif">${ref?`<img src="${ref.gif}">`:''}</div>
+    <div class="vmeta">
+      <div class="vname">${esc(v.name)}</div>
+      <div class="vsub"><span class="swatch" style="background:${rgb(kc)}"></span>${v.color?esc(v.color)+' · ':''}${v.exp!=null?'exp '+v.exp:'exp ?'}${v.type?' · '+esc(v.type):''}</div>
+    </div>
+    <input class="num hp" type="number" placeholder="hp" title="HP override (optional; blank = derived from exp)" value="${v.hp??''}">
+    <button class="rm" title="remove">×</button>`;
+  row.querySelector('.hp').onchange=()=>commitCard(card);
+  row.querySelector('.rm').onclick=()=>{ row.remove(); commitCard(card); };
   return row;
-}
-// draw a sprite's palette-indices into a canvas using palette p (or its default when p is null/'')
-function drawSprite(canvas, mon, p, scale){
-  const idx=Uint8Array.from(atob(mon.idx),c=>c.charCodeAt(0));
-  const w=mon.fw, h=mon.fh; const pal=PALETTES[(p==null||p==='')?mon.pal:p]||PALETTES[mon.pal];
-  scale=scale||1; canvas.width=w*scale; canvas.height=h*scale;
-  const ctx=canvas.getContext('2d'); ctx.imageSmoothingEnabled=false;
-  const img=ctx.createImageData(w,h);
-  for(let i=0;i<w*h;i++){ const k=idx[i]; const o=i*4;
-    if(k){ const c=pal[k]; img.data[o]=c[0]; img.data[o+1]=c[1]; img.data[o+2]=c[2]; img.data[o+3]=255; } }
-  // put at 1x then scale
-  const tmp=document.createElement('canvas'); tmp.width=w; tmp.height=h; tmp.getContext('2d').putImageData(img,0,0);
-  ctx.drawImage(tmp,0,0,w*scale,h*scale);
-}
-// ---- color / recolor picker ----
-let colorRow=null;
-function openColorPicker(row){
-  colorRow=row; const card=row.closest('.card'); const mon=MON[+card.dataset.id];
-  const cp=document.getElementById('colorpick');
-  if(!mon || !mon.idx){ cp.innerHTML='<div class="cphdr">no sprite indices for this id</div>'; }
-  else {
-    let html='<div class="cphdr">Pick the recolor (palette) for this variant — click a swatch. '+
-             '<b>Default</b> = the sprite\'s own palette.</div><div class="cpgrid">';
-    html+=`<div class="cpsw" data-p=""><div class="cpcanv" id="cpd"></div><span>default (${mon.pal})</span></div>`;
-    for(let p=0;p<PALETTES.length;p++) html+=`<div class="cpsw" data-p="${p}"><canvas class="cpc" data-p="${p}"></canvas><span>${p}</span></div>`;
-    html+='</div>'; cp.innerHTML=html;
-    // render swatches
-    const dc=document.createElement('canvas'); drawSprite(dc,mon,'',2); document.getElementById('cpd').appendChild(dc);
-    cp.querySelectorAll('canvas.cpc').forEach(cv=>drawSprite(cv,mon,+cv.dataset.p,2));
-    const cur=row.dataset.color;
-    cp.querySelectorAll('.cpsw').forEach(sw=>{ if((sw.dataset.p||'')===(cur||'')) sw.classList.add('sel'); });
-  }
-  // position near the button
-  const r=row.querySelector('.colbtn').getBoundingClientRect();
-  cp.style.left=Math.min(r.left+window.scrollX, window.scrollX+innerWidth-360)+'px';
-  cp.style.top=(r.bottom+window.scrollY+2)+'px'; cp.style.display='block';
-}
-function closeColorPicker(){ const cp=document.getElementById('colorpick'); cp.style.display='none'; colorRow=null; }
-document.getElementById('colorpick').addEventListener('mousedown',e=>{
-  const sw=e.target.closest('.cpsw'); if(!sw||!colorRow) return; e.preventDefault();
-  const p=sw.dataset.p;
-  colorRow.dataset.color=p;
-  colorRow.querySelector('.colidx').textContent = p===''? '' : p;
-  commitCard(colorRow.closest('.card')); closeColorPicker();
-});
-document.addEventListener('mousedown',e=>{ const cp=document.getElementById('colorpick');
-  if(cp.style.display==='block' && !e.target.closest('#colorpick') && !e.target.closest('.colbtn')) closeColorPicker(); });
-function refreshMeta(row){
-  const nm=row.querySelector('.name').value.trim();
-  const a=byName[nm.toLowerCase()];
-  row.querySelector('.meta').innerHTML = a? `Atlas: exp <b>${a.exp}</b> · ${a.type||'?'} · ${a.page}`
-    : (nm? '<i>custom name (not in Atlas)</i>':'');
 }
 function commitCard(card){
   const id=card.dataset.id;
   const vs=[...card.querySelectorAll('.vrow')].map(r=>{
-    const name=r.querySelector('.name').value.trim(); if(!name) return null;
-    const a=byName[name.toLowerCase()];
-    return {name, color:numOr(r.dataset.color),          // palette/recolor from the 🎨 picker
-            hp:numOr(r.querySelector('.hp').value),
-            exp:a?a.exp:undefined,                        // exp is auto from Atlas
-            type:a?a.type:undefined, atlas:a?a.name:undefined};
+    const ref=REFBYFILE[r.dataset.file]; if(!ref) return null;
+    return {name:ref.name, color:ref.color||undefined, file:ref.file,
+            exp:ref.exp!=null?ref.exp:undefined, type:ref.mtype||undefined,
+            hp:numOr(r.querySelector('.hp').value), pal:ref.pal};
   }).filter(Boolean);
   if(vs.length) MAP[id]=vs; else delete MAP[id];
   card.classList.toggle('named',vs.length>0);
   saveLocal();
 }
+function renderVariants(card){
+  const id=card.dataset.id, vc=card.querySelector('.variants'); vc.innerHTML='';
+  (MAP[id]||[]).forEach(v=>vc.appendChild(variantRow(card,v)));
+}
 function card(mon){
   const id=String(mon.id), list=MAP[id]||[];
   const el=document.createElement('div'); el.className='card'+(list.length?' named':''); el.dataset.id=id;
+  el.dataset.hascand=(CAND[id]&&CAND[id].length)?'1':'0';
   const look='0x'+(0x8000|mon.id).toString(16);
   el.innerHTML=`<div class="top">
       <div class="thumb">${mon.img?`<img src="${mon.img}">`:'<span class=stat>no sprite</span>'}</div>
       <div class="idcol"><div class="lid">${mon.id}</div><div class="lidsub">look ${look} · pal ${mon.pal}</div></div>
     </div><div class="variants"></div>
-    <button class="addv">+ variant</button>`;
-  const vc=el.querySelector('.variants');
-  (list.length?list:[{}]).forEach(v=>vc.appendChild(variantRow(v)));
-  el.querySelector('.addv').onclick=()=>{ const r=variantRow(); vc.appendChild(r); r.querySelector('.name').focus(); };
-  el.addEventListener('change',e=>{ if(e.target.matches('.name,.color,.hp,.exp')){ commitCard(el); refreshMeta(e.target.closest('.vrow')); }});
+    <button class="addv">+ add variant</button>`;
+  renderVariants(el);
+  el.querySelector('.addv').onclick=(e)=>openVP(el,e.target);
   return el;
 }
 MONSTERS.forEach(mn=>grid.appendChild(card(mn)));
 updCount();
 
-// ---- shared searchable picker ----
-const PICK=document.getElementById('pick'); let pickInput=null, pickIdx=-1, pickItems=[];
-function openPick(input){ pickInput=input; fillPick(input.value); position(); PICK.style.display='block'; }
-function position(){ if(!pickInput)return; const r=pickInput.getBoundingClientRect();
-  PICK.style.left=(r.left+window.scrollX)+'px'; PICK.style.top=(r.bottom+window.scrollY+2)+'px'; PICK.style.width=Math.max(r.width,260)+'px'; }
-function fillPick(q){
-  q=(q||'').toLowerCase();
-  pickItems=atlasSorted.filter(a=>!q||a.name.toLowerCase().includes(q)).slice(0,80);
-  pickIdx=-1;
-  PICK.innerHTML=pickItems.length? pickItems.map((a,i)=>
-    `<div class="pk" data-i="${i}"><b>${esc(a.name)}</b><span>exp ${a.exp??'?'} · ${a.type||'?'} · ${a.page}</span></div>`).join('')
-    : '<div class="pk empty">no Atlas match — your text is kept as a custom name</div>';
+// ---- variant picker popover ----
+const VP=document.getElementById('vp'); let vpCard=null, vpItems=[], vpIdx=-1;
+function openVP(cardEl,anchor){
+  vpCard=cardEl;
+  VP.innerHTML=`<div class="vphd">Add a variant to <b>look ${cardEl.dataset.id}</b> — pick the matching Atlas monster (real colours).
+    <input id="vpq" placeholder="search all ${REFS.length} Atlas monsters by name…" autocomplete="off"></div>
+    <div class="vplist" id="vplist"></div>`;
+  fillVP('');
+  const r=anchor.getBoundingClientRect();
+  VP.style.left=Math.min(r.left+window.scrollX, window.scrollX+innerWidth-372)+'px';
+  VP.style.top=(r.bottom+window.scrollY+3)+'px'; VP.style.display='flex';
+  const q=document.getElementById('vpq'); q.oninput=()=>{fillVP(q.value);}; q.focus();
 }
-function choose(i){
-  const a=pickItems[i]; if(!a||!pickInput) return;
-  pickInput.value=a.name;
-  const row=pickInput.closest('.vrow');
-  if(!row.querySelector('.exp').value && a.exp!=null) row.querySelector('.exp').value=a.exp;
-  commitCard(pickInput.closest('.card')); refreshMeta(row);
-  hidePick();
+function closeVP(){ VP.style.display='none'; vpCard=null; vpItems=[]; vpIdx=-1; }
+function pickedFiles(){ return new Set((MAP[vpCard.dataset.id]||[]).map(v=>v.file)); }
+function optHTML(r,score,picked){
+  return `<div class="opt${picked?' picked':''}" data-file="${esc(r.file)}">
+    <div class="gif"><img src="${r.gif}"></div>
+    <div class="txt"><div class="on">${esc(r.name)}</div>
+      <div class="os">${r.color?esc(r.color)+' · ':''}${r.exp!=null?'exp '+r.exp:'exp ?'}${r.mtype?' · '+esc(r.mtype):''} · ${r.w}×${r.h}</div></div>
+    ${score!=null?`<div class="score">${(score*100).toFixed(0)}%</div>`:''}</div>`;
 }
-function hidePick(){ PICK.style.display='none'; pickInput=null; }
-PICK.addEventListener('mousedown',e=>{ const pk=e.target.closest('.pk'); if(pk&&pk.dataset.i!=null){ e.preventDefault(); choose(+pk.dataset.i);} });
-document.addEventListener('focusin',e=>{ if(e.target.classList.contains('name')) openPick(e.target); });
-document.addEventListener('input',e=>{ if(e.target===pickInput){ fillPick(e.target.value); position(); }});
-document.addEventListener('focusout',e=>{ if(e.target.classList.contains('name')) setTimeout(()=>{ if(pickInput===e.target) hidePick(); },120); });
+function fillVP(q){
+  if(!vpCard) return;
+  q=(q||'').trim().toLowerCase();
+  const pf=pickedFiles(); const list=document.getElementById('vplist');
+  const matches=r=>!q||r.name.toLowerCase().includes(q)||r.file.toLowerCase().includes(q);
+  const cs=(CAND[vpCard.dataset.id]||[]);
+  const suggested=cs.map(c=>{const r=REFS[c.i]; r._score=c.s; return r;}).filter(matches);
+  const sugFiles=new Set(suggested.map(r=>r.file));
+  const rest=REFS.filter(r=>!sugFiles.has(r.file)&&matches(r))
+    .slice().sort((a,b)=>a.name.localeCompare(b.name));
+  vpItems=suggested.concat(rest);
+  let html='';
+  if(suggested.length) html+='<div class="sec">suggested for this shape</div>'+
+    suggested.map(r=>optHTML(r,r._score,pf.has(r.file))).join('');
+  html+=`<div class="sec">${q?'other matches':'all atlas monsters'} (${rest.length})</div>`+
+    (rest.length? rest.map(r=>optHTML(r,null,pf.has(r.file))).join('')
+      : (suggested.length?'':'<div class="none">no Atlas monster matches</div>'));
+  list.innerHTML=html;
+  vpIdx=-1;
+}
+function toggleVariant(file){
+  const id=vpCard.dataset.id; const ref=REFBYFILE[file]; if(!ref) return;
+  const cur=MAP[id]||[]; const at=cur.findIndex(v=>v.file===file);
+  if(at>=0){ cur.splice(at,1); if(!cur.length) delete MAP[id]; else MAP[id]=cur; }
+  else { cur.push({name:ref.name,color:ref.color||undefined,file:ref.file,
+                   exp:ref.exp!=null?ref.exp:undefined,type:ref.mtype||undefined,pal:ref.pal});
+         MAP[id]=cur; }
+  vpCard.classList.toggle('named',(MAP[id]||[]).length>0);
+  renderVariants(vpCard); saveLocal();
+  // refresh popover picked-state
+  const q=document.getElementById('vpq'); fillVP(q?q.value:'');
+}
+VP.addEventListener('mousedown',e=>{ const o=e.target.closest('.opt'); if(o){ e.preventDefault(); toggleVariant(o.dataset.file);} });
+document.addEventListener('mousedown',e=>{ if(VP.style.display!=='none' && !e.target.closest('#vp') && !e.target.classList.contains('addv')) closeVP(); });
 document.addEventListener('keydown',e=>{
-  if(!pickInput||PICK.style.display==='none') return;
+  if(VP.style.display==='none') return;
+  if(e.key==='Escape'){ closeVP(); return; }
   if(e.key==='ArrowDown'||e.key==='ArrowUp'){ e.preventDefault();
-    pickIdx=Math.max(0,Math.min(pickItems.length-1,pickIdx+(e.key==='ArrowDown'?1:-1)));
-    [...PICK.children].forEach((c,i)=>c.classList.toggle('hi',i===pickIdx));
-    const hi=PICK.children[pickIdx]; if(hi)hi.scrollIntoView({block:'nearest'});
-  } else if(e.key==='Enter'){ if(pickIdx>=0){ e.preventDefault(); choose(pickIdx);} else hidePick(); }
-  else if(e.key==='Escape'){ hidePick(); }
+    vpIdx=Math.max(0,Math.min(vpItems.length-1,vpIdx+(e.key==='ArrowDown'?1:-1)));
+    [...VP.querySelectorAll('.opt')].forEach((c,i)=>c.classList.toggle('hi',i===vpIdx));
+    const hi=VP.querySelectorAll('.opt')[vpIdx]; if(hi)hi.scrollIntoView({block:'nearest'});
+  } else if(e.key==='Enter'){ if(vpIdx>=0 && vpItems[vpIdx]){ e.preventDefault(); toggleVariant(vpItems[vpIdx].file);} }
 });
-window.addEventListener('scroll',()=>{ if(pickInput) position(); },true);
+// page scroll (not the popover's own internal list, which is a normal thing to scroll
+// while browsing the full Atlas roster) invalidates the popover's anchored position.
+window.addEventListener('scroll',()=>{ if(vpCard) closeVP(); });
 
 // ---- filter ----
-const search=document.getElementById('search'), onlyU=document.getElementById('onlyUnnamed');
+const search=document.getElementById('search'), onlyU=document.getElementById('onlyUnnamed'), onlyC=document.getElementById('onlyCand');
 function applyFilter(){ const q=search.value.trim().toLowerCase();
   [...grid.children].forEach(c=>{ const id=c.dataset.id;
-    const names=(MAP[id]||[]).map(v=>v.name.toLowerCase()).join(' ');
+    const names=(MAP[id]||[]).map(v=>(v.name||'').toLowerCase()).join(' ');
     let ok=true; if(q) ok=id===q||id.includes(q)||names.includes(q);
     if(ok&&onlyU.checked) ok=!(MAP[id]&&MAP[id].length);
+    if(ok&&onlyC.checked) ok=c.dataset.hascand==='1'||(MAP[id]&&MAP[id].length);
     c.classList.toggle('hidden',!ok);
   });
 }
-search.addEventListener('input',applyFilter); onlyU.addEventListener('change',applyFilter);
+search.addEventListener('input',applyFilter); onlyU.addEventListener('change',applyFilter); onlyC.addEventListener('change',applyFilter);
+applyFilter();
 
 function toast(msg,warn){const t=document.getElementById('toast');t.textContent=msg;t.style.background=warn?'#e0a44a':'';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1900);}
 document.getElementById('btnSave').onclick=async()=>{
-  try{ const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:2,entries:MAP})});
-    const j=await r.json(); toast(j.ok?`Saved ${j.monsters} monsters across ${j.ids} ids`:'Save failed',!j.ok);
+  try{ const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:3,entries:MAP})});
+    const j=await r.json(); toast(j.ok?`Saved ${j.monsters} variants across ${j.ids} ids`:'Save failed',!j.ok);
   }catch(e){toast('Save failed: '+e,true);}
 };
 document.getElementById('btnExport').onclick=()=>{
-  const blob=new Blob([JSON.stringify({version:2,entries:MAP},null,1)],{type:'application/json'});
+  const blob=new Blob([JSON.stringify({version:3,entries:MAP},null,1)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='monster_mapping.json';a.click();
 };
 </script></body></html>"""
@@ -322,6 +303,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(b)
 
@@ -332,8 +314,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if urlparse(self.path).path in ("/", "/index.html"):
             page = (PAGE
                     .replace("__MONSTERS__", json.dumps(MONSTERS))
-                    .replace("__ATLAS__", json.dumps(ATLAS))
-                    .replace("__PALETTES__", json.dumps(PALETTES))
+                    .replace("__REFS__", json.dumps(ATLAS_REF["refs"]))
+                    .replace("__CAND__", json.dumps(ATLAS_REF["cand"]))
                     .replace("__MAPPING__", json.dumps(load_mapping())))
             self._send(200, page)
         else:
@@ -353,7 +335,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     entries[k] = lst
             os.makedirs(os.path.dirname(MAPPING_PATH), exist_ok=True)
             with open(MAPPING_PATH, "w", encoding="utf-8") as f:
-                json.dump({"version": 2, "entries": entries}, f, indent=1)
+                json.dump({"version": 3, "entries": entries}, f, indent=1)
             monsters = sum(len(v) for v in entries.values())
             self._send(200, json.dumps({"ok": True, "ids": len(entries), "monsters": monsters}), "application/json")
         except Exception as e:
@@ -363,7 +345,7 @@ def main():
     http.server.ThreadingHTTPServer.allow_reuse_address = True
     with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H) as httpd:
         url = f"http://localhost:{PORT}"
-        print(f"Monster Matcher: {len(MONSTERS)} sprites, {len(ATLAS)} Atlas monsters")
+        print(f"Monster Matcher: {len(MONSTERS)} sprites, {len(ATLAS_REF['refs'])} Atlas ref images")
         print(f"  -> open {url}")
         print(f"  -> Save writes {MAPPING_PATH}")
         print("  Ctrl-C to stop.")

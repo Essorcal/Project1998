@@ -18,12 +18,23 @@ public sealed class Mob
     public byte   Dir;         // facing 0=N 1=E 2=S 3=W
     public int    Hp;
     public int    MaxHp;
+    public int    Exp;         // reward granted to the killer (0 for debug dummies / decorations)
     public bool   Alive => Hp > 0;
 
     // Shared-world AI: a wandering mob hops at random within a few tiles of its spawn (Home). Set on
     // world mobs (see World.Tick); session-local debug dummies leave Wander=false and never move.
     public ushort HomeX, HomeY;
     public bool   Wander;
+
+    // Move pacing (RTK MobMoveTime): the minimum gap in milliseconds between move attempts. The world
+    // accumulates elapsed tick time in MoveTimer and only lets the mob act when it reaches MoveTime, so a
+    // rabbit (3000ms) hops far less often than the 600ms world heartbeat — matching RTK's per-mob timer.
+    public int MoveTime = 2500;   // ms between move attempts (town critters ~2000-3000)
+    public int MoveTimer;         // ms accumulated since the last attempt
+
+    // Set by a paralyze/sleep debuff (Session.CastDebuff): the Environment.TickCount64 until which the mob is
+    // frozen and won't wander. 0 = not debuffed. World.Tick skips movement while frozen.
+    public long FrozenUntil;
 
     public Mob() { }
 

@@ -1,0 +1,32 @@
+spawning C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe
+· module base = 0x400000
+· hooked h19 @ rva 0x50ad0
+· hooked play @ rva 0x798c0
+client resumed — log in, enter the world (music = PLAY type=2), then cast
+logging to C:\Users\brian\Desktop\NexusServer\re\sound_log.txt  (Ctrl-C to stop)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xa6ef18 (soundId=408 type=0)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0x3 (soundId=408 type=0)
+PLAY  play fn: soundId=401 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xa6ef28 (soundId=401 type=0)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0x5 (soundId=408 type=0)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0x6 (soundId=408 type=0)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0x7 (soundId=408 type=0)
+PLAY  play fn: soundId=0 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xb8cff34 (soundId=0 type=0)
+PLAY  play fn: soundId=0 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xb8cff34 (soundId=0 type=0)
+PLAY  play fn: soundId=0 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xb8cff34 (soundId=0 type=0)
+PLAY  play fn: soundId=0 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xb8cff34 (soundId=0 type=0)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0x8 (soundId=408 type=0)
+PLAY  play fn: soundId=0 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0xb8cff34 (soundId=0 type=0)
+PLAY  play fn: soundId=408 type=0  gate[mgr+8]=1 gate[mgr+0x274]=1
+PLAY     -> returned 0x9 (soundId=408 type=0)

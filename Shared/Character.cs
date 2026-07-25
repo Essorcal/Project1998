@@ -60,6 +60,21 @@ public sealed class Character
     public List<InvItem> Inventory = new();
     public List<InvItem> Equipment = new();
 
+    // Learned spells/skills, in spellbook order. Each entry is a Content.Spells id; the book slot the client
+    // uses (the 0x17 "pos" and the 0x0F cast "pos") is the index into this list. Persisted so the book
+    // survives a relog; re-sent on world entry. Taught by the !spells / !learnspell GM commands.
+    public List<int> Spells = new();
+
+    // Sub-alignment: 0 = Unaligned (base), 1 = Kwisin, 2 = Mingken, 3 = Ohaeng. Gates which spell set !spells
+    // teaches — a character learns only universal spells + their own alignment's set, never the other
+    // sub-alignments' parallel spells. Set with !align.
+    public byte Alignment = 0;
+
+    /// <summary>Sub-alignment id -> name (index = the Alignment value). Kwisin/Mingken/Ohaeng are NexusTK's
+    /// three sub-paths; 0 is the base "unaligned" set.</summary>
+    public static readonly string[] Alignments = { "Unaligned", "Kwisin", "Mingken", "Ohaeng" };
+    public static string AlignmentName(byte id) => id < Alignments.Length ? Alignments[id] : $"align#{id}";
+
     // profile / "Mind's Eye" self-profile (0x39 = clif_mystaytus). These populate the profile window
     // the client opens on the profile key (client sends 0x2D, byte 0). AC is signed in TK (lower is
     // better); Dam/Hit are the melee bonus lines. Tnl = experience "to next level".
