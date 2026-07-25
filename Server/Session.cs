@@ -267,6 +267,9 @@ public sealed class Session
                 HandleRefresh(dec);
                 break;
             case 0x0E:                    HandleChat(dec); break;   // client chat -> echo as over-head speech
+            // 0x1d = emotion request (the ':' emote wheel). body[0] = emote index; the client plays action
+            // type = index + 11 (RTK clif_parseemotion: sendaction(index+11)). Broadcast as a 0x1A action.
+            case 0x1D:                    HandleEmotion(dec); break;
             case 0x13:                    HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
             case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
             case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile/inspect
@@ -1585,10 +1588,17 @@ public sealed class Session
     private void SendUnequip(byte wireSlot) =>
         SendMap(0x38, _gameInc++, new byte[] { wireSlot, 0 }, $"unequip(0x38) slot={wireSlot}");
 
-    /// <summary>Draw a floor item on OUR client via the 0x16 ground-item path (Item.epf frame). The 0x16
-    /// object uses the SAME item resolver (0x435ab0, +0x4000) as the bag, so encode the frame via IconWire.</summary>
+    /// <summary>Draw a floor item AT REST via the 0x07 static-object path (NOT 0x16). Full RE (2026-07-24):
+    /// 0x16 builds a WALK projectile (vtable 0x4cd18c, tick 0x463270) that interpolates in then drops off the
+    /// moving-list / self-destructs on arrival -> invisible at rest (that was the bug). The 0x07 handler
+    /// (0x44fdb0 @ 0x44fe7f) routes any look OUTSIDE 0x8000..0xbfff to descriptor type 2 = the BASE object
+    /// (vtable 0x4cd118, tick 0x4601a0 = `xor al,al;ret` no-op) built by 0x462ec0 alone: it never moves, never
+    /// self-destructs, and is drawn by the shared render loop exactly like a monster but stationary. IconWire
+    /// frames (0..1310) map to 0xc000..0xc51e, all > 0xbfff, so they hit type 2 and resolve (look+0x4000)&0xffff
+    /// against Item.epf -- the SAME resolver the bag/0x0F path uses. Caveat: 0x07 has a viewport gate (0x424310),
+    /// so the tile must be on-screen when spawned (true for drop/throw at the player's feet).</summary>
     public void ShowGroundItem(GroundItem gi) =>
-        SendCreature(gi.Id, IconWire(gi.Graphic), gi.X, gi.Y, 0, $"grounditem(0x16) id={gi.Id} #{gi.ItemId} frame={gi.Graphic}");
+        SendCreatureList(new[] { (gi.Id, IconWire(gi.Graphic), gi.X, gi.Y, (byte)0, (byte)0) });
 
     // Equipping a weapon/armor is the ONLY thing that changes the 4.95 look (the 7-byte type-0 form has a
     // weapon slot [5] and an armor slot [3]); other gear slots have no appearance in 4.95. Re-draw self + peers.
@@ -2117,6 +2127,21 @@ public sealed class Session
             SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
             Log.Info($"   -> dummy {mob.Id} '{mob.Name}' defeated");
         }
+    }
+
+    // 0x1d = the emote wheel (press ':'), body[0] = emote index. The client plays action
+    // (index + 11) — see RTK clif_parseemotion: sendaction(&bl, RFIFOB(5)+11, 0x4E, 0). The +11 maps
+    // index 0 -> action 11 (Laughter) ... index 11 -> action 22 (Dance) ... index 13 -> 24 (Kiss).
+    // Broadcast it as a 0x1A action so we AND every peer on the map see the animation (the client's own
+    // action sprite carries any looped sound). time 0x4E matches RTK's emote length; param 0 = no extra sound.
+    private void HandleEmotion(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        byte action = (byte)(dec[0] + 11);
+        const ushort time = 0x4E;
+        SendAction(_char.Id, action, time, 0);                                       // play it on our own client
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, action, time, 0), except: this);  // and for peers
+        Log.Info($"   -> EMOTE idx={dec[0]} -> action {action} (0x1A)");
     }
 
     // The map tile one step ahead of the player, in the direction we're currently facing.
