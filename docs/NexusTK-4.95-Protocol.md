@@ -349,8 +349,10 @@ uses** — the difference is the `look` field. `0x44d7d0` classifies the look de
   (entity vtable `0x4cd098`), whose draw `0x461c70` sees `[ent+0x178]!=0` and routes to the **monster
   resolver `0x434020`/`0x4342e0`** → pushes `MONSTER.EPF` (`0x4f1d18`) → resolves the frame via `0x433d00`
   (Monster.tbl). **So `look = 0x8000 | monsterId`, where `monsterId` is the Monster.tbl index (0..326).**
-- `look < 0x8000` or `> 0xbfff` → descriptor type 2 → `0x462ec0` (vtable `0x4cd118`) = the item/object base
-  (the invisible `0x16` path). Don't use for monsters.
+- `look < 0x8000` or `> 0xbfff` → descriptor type 2 → `0x462ec0` (vtable `0x4cd118`) = the **static item/object
+  base** (tick `0x4601a0` = no-op). Don't use for monsters — but this **is** the correct path for
+  **ground items at rest** (it renders statically from Item.epf and never despawns, unlike the `0x16` walk
+  projectile; see §11c). `IconWire(N)` yields a `look` in this range (`0xc000+`).
 
 `color` = palette (→ resolver), `dir` = facing/state (→ ent+`0x18d`). **There IS a viewport gate** here
 (`0x424310`, unlike `0x16`): entries outside the camera rect are silently skipped, so spawn inside view.
@@ -866,9 +868,21 @@ blank icon (the `descriptor[0xc 0xc 0xc 0xc]` in Frida is the caller's `0x424280
 which wraps back to `N` after the client's `+0x4000` (`Session.IconWire`). Item.epf has exactly 1310 frames ==
 `Item.tbl`'s 1310 items, so **frame index == client item id**, and — confirmed live (frame 10 renders as an
 apple, RTK apple `ItmIcon=10`) — **RTK's `ItmIcon` already equals the client frame**, so `IconWire(def.Icon)`
-is all that's needed; no mapping table. `SendAddItem`/`SendEquip`/ground `0x16` all encode through `IconWire`.
+is all that's needed; no mapping table. `SendAddItem`/`SendEquip`/ground items all encode through `IconWire`.
 (RTK icons ≥ 1310 are 7.x-only items and render blank — acceptable.) Debug: `!icons [start]` fills the bag
 with frames `start..start+26`.
+
+**Ground items at rest — SOLVED (2026-07-25): use `0x07`, not `0x16`.** A floor item must *persist* where it
+lands, but `0x16` is a **walk projectile** (walk ctor `0x463020` → vtable `0x4cd18c`, walk tick `0x463270`):
+it animates toward its rest tile then drops off the moving list / self-destructs → **invisible at rest** (and
+it plays a throw sound on spawn). The fix is the **`0x07` static base-object** descriptor (§7.2): send an entry
+whose `look` is **outside `0x8000..0xbfff`**, which the factory `0x44d7d0` classifies as **descriptor type 2**
+→ base ctor `0x462ec0` (vtable `0x4cd118`, tick `0x4601a0` = `xor al,al;ret`, a **no-op**). It renders its
+sprite statically from **Item.epf** every frame via the shared draw slot and never moves or despawns — exactly
+what a resting item needs, with **no divide-by-zero risk** (that hazard is `0x16`-only; see §7.2). `IconWire(N)`
+already lands in the type-2 range: frames `0..1310` → `0xc000..0xc51e`, all `> 0xbfff`. So `ShowGroundItem`
+just calls `SendCreatureList(new[]{ (id, IconWire(gfx), x, y, (byte)0, (byte)0) })` — same builder as monsters,
+different `look` class. Switching off `0x16` also silenced the spurious throw sound on plain drops.
 
 **Server → client (draw the bag / gear):** all multi-byte big-endian; body offsets are from the first body
 byte (= raw frame `+5`).
@@ -878,7 +892,7 @@ byte (= raw frame `+5`).
 | `0x10` | remove from bag slot | `slot(u8=idx+1) reason(u8) 00 00` — reason `0`=Remove `1`=Drop `2`=Eat `4`=Throw `6`=Used … |
 | `0x37` | equip-window entry | `equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00` |
 | `0x38` | unequip-window | `spot(u8) 00` |
-| `0x16` | ground item (§7.2) | reused for floor items — graphic = item's `Icon` (Item.epf frame) |
+| `0x07` | ground item (§7.2) | floor items go through the **`0x07` static base-object** path (below), NOT `0x16` — graphic = item's `Icon` (Item.epf frame), encoded via `IconWire` |
 
 `equipType`/`spot` wire bytes (client `clif_getequiptype`): WEAP=1 ARMOR=2 SHIELD=3 HELM=4 NECKLACE=6
 LEFT=7 RIGHT=8 BOOTS=13 MANTLE=14 COAT=16 SUBLEFT=20 SUBRIGHT=21 FACEACC=22 CROWN=23. Item `Type` (ITM_*)
@@ -900,6 +914,16 @@ maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
 re-draws self + peers; other gear slots have no 4.95 appearance. Stat bonuses are carried in `ItemDef` but
 **not yet applied** to combat/AC (a follow-up). Floor items broadcast to everyone on the map and survive
 until picked up; gold drops as a sentinel ground pile (`ItemId = -1`) that refills the purse on pickup.
+
+**Throw collision — SOLVED (2026-07-25).** `HandleThrow` walks the item **tile-by-tile** from the player in
+the faced direction (0=N 1=E 2=S 3=W, capped at 3 tiles) and stops at the last *passable* tile, so items
+never come to rest on a wall or an unreachable tile. Passability uses the **same two sources the client's own
+collision uses** (§12): a tile is blocked if the **object layer** is non-zero **or** the **ground
+passability flag** is set. That flag is the **top 2 bits of the ground `u16`** — value **`3` = solid**, `0` =
+walkable (`1`/`2` never occur in real maps); `Session.Blocked` = `map.Obj(x,y) != 0 || map.Pass(x,y) != 0`.
+The earlier bug ("lands on a tile I can't walk to") was `Blocked` checking only the object layer and ignoring
+the ground flag — real maps (TK0/Kugnae) gate thousands of cells by the ground flag alone. Enforcement is
+`NEXUS_PASS` (default on; set `0` to disable); the same `Blocked` gates player walk/turn.
 
 **GM commands:** `!items [filter]` (browse registry), `!item <name/id> [amount]` (summon into bag),
 `!clearinv` (reset bag + gear).
@@ -949,7 +973,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x12` | `0x4509a0` | entity + 2 bytes |
 | `0x13` | `0x4508f0` | ✓ attack-recv (anim `0x8f − a`; **death at a=0**) |
 | `0x15` | `0x44f8b0` | ✓ enter-map |
-| `0x16` | `0x450a00` | ✓ **ground ITEM/object spawn** (draws from Item.epf `"I"`): `+5 gfx(u16) +7 id(u32) +0xb X/Y …`. **NOT a monster** — §7.2, §11a |
+| `0x16` | `0x450a00` | **ground ITEM/object spawn** (draws from Item.epf `"I"`): `+5 gfx(u16) +7 id(u32) +0xb X/Y …`. **NOT a monster** — §7.2, §11a. **Walk projectile → invisible at rest; the server uses `0x07` static objects for floor items instead — §11c.** |
 | `0x1a` | `0x4503a0` | ✓ action (attack/sit/…) |
 | `0x1b` | `0x450830` | ? |
 | `0x1d` | `0x450db0` | entity + 1 byte |
@@ -1018,7 +1042,8 @@ on.
   category **`"I"` = Item.epf**, so it's invisible (item id doesn't exist), has no collision, and never does
   an `"M"`(Monster) lookup. The opcode-map's "creature/**obj** spawn" note meant *object/item*. Verified via
   a Frida hook that logged which sprite category each render requested. Find the real monster path via the
-  `"M"` category draw — §11a.
+  `"M"` category draw — §11a. (Later: `0x16` is also wrong for **floor items** — as a walk projectile it
+  despawns at rest. Resting items use the `0x07` static base-object instead — §11c.)
 - **`0x16` divide-by-zero crash:** its position interpolation `idiv`s by `|X-X'|+|Y-Y'|`, so a "stationary"
   spawn with from-tile == to-tile crashes the client (`arithmetic` exception at `0x4631f7`). Always send the
   from-tile ≥1 away.
