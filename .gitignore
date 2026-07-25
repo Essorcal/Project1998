@@ -15,9 +15,33 @@ server-err.log
 # ---- RE tooling byproducts ----
 re/__pycache__/
 re/probe_log.txt
+re/probe_log_533.txt
+scratch_*.html
+
+# ---- Game DATA is kept OUT of this repo (logic-only server; see docs §11a.2/§17.1) ----
+# Extracted from the client PAK (regenerable via re/pak_extract.py):
+re/monster.epf
+re/monster.tbl
+re/monster.pal
+re/monster0.pal
+re/item.tbl
+re/monsfrm.tbl
+re/str_eng.res
+re/nexustk_dat_list.txt
+re/interdat_list.txt
+# Extracted from the RTK reference server / Nexus Atlas (regenerable via the tools in re/):
+re/rtk-data/
+re/monster-matcher/rtk_mobs.csv
+re/monster-matcher/atlas_img/
+re/monster-matcher/atlas_ref.json
+re/monster-matcher/cdx_monsternpc.json
+re/monster-matcher/*.png
 
 # ---- Third-party client shim (8 MB of prebuilt binaries; re-downloadable) ----
 re/cnc-ddraw/
+
+# ---- Reference server source (unkmc/RTK-Server, ~190MB; cloned for protocol reference only) ----
+RTK-Server/
 
 # runtime redirect dir written by the client
 client-5.33-redirect/

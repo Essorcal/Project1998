@@ -609,9 +609,71 @@ Monster frame layout is in `Monster.tbl` (plain text: `NumMonsters 327`, per-id 
 "Starting" frame + a walk-cycle offset). Parse `NexusTK.dat` with the Nexon PAK format: `u32 count` then 17-byte
 entries `{u32 offset, char name[13]}` (first offset == header size).
 
-**Commands** in `Session.HandleChat`: `!cre <lookId> [hp]` (one real monster in front, killable),
-`!crow <lo> <hi> [step]` (row sweep of the Monster.tbl look space), `!spawn [lookId] [hp]` (a pack),
-`!kill`, `!weapon <n>`. The `0x16` item commands (`!mob`, `!mobrow`) are kept for item/object discovery.
+**Commands** in `Session.HandleChat`: `!cre <lookId> [hp] [color]` (one real monster in front, killable;
+`color` = the `0x07` colour/recolor byte, see §11a.1), `!crecol <lookId> [loColor] [hiColor] [step]` (sweep
+the SAME look id across colour-byte values as a **grid**, 12/row, default `0..23`; the colour byte visibly
+wraps mod-24 with only 0-19 real), `!crow <lo> <hi> [step]` (row sweep of the Monster.tbl look space),
+`!spawn [lookId] [hp]` (a pack), `!kill`, `!weapon <n>`. The `0x16` item commands (`!mob`, `!mobrow`) are
+kept for item/object discovery.
+
+**Exhaustive client-data audit (2026-07-24):** confirmed monster/item **names and stats are NOT stored
+client-side anywhere** in the 4.x install — parsed every archive with the Nexon PAK format directly.
+`NexusTK.dat` (64 entries): `Monster.tbl`/`Item.tbl` are rendering metadata only (`Palette/Starting/Walk/
+Attack/Delay/Shadow` and `Palette/Alpha/Light` respectively — no name field on either, 327 monsters / 1310
+items). `Str_Eng.res` is generic `%s`-templated UI prompt text, not a name lookup table. `Inter.dat` (165
+entries) is 100% UI chrome (dialogs/buttons/fonts/login art) + localized menu strings + 8 nation `.des`
+blurbs — nothing entity-related. `.map` files (1750) are pure tile grids, `NexusTK.snd` is audio (same PAK
+header, 197 entries). So names/stats are server-supplied text only — confirms the Nexus Atlas scrape +
+matcher tool (`re/monster-matcher/`) is the only path to a name/stat table, not a shortcut we're missing.
+PAK tools: `re/pak_list.py <path.dat>` (directory listing), `re/pak_extract.py <path.dat> <EntryName>
+[outFile]` (extract one entry).
+
+### 11a.1 The `0x07` color byte = a pure palette-swap (recolor), applied in a deferred blit ✅
+
+The 12-byte `0x07` entry ends with a **`color` byte** (offset +10) then **`dir`** (+11). Live testing
+(`!crecol 27 0 4` → 5 visibly different-coloured bulls, frame identical) proves **`color` is a real,
+per-spawn recolor** — same sprite, different palette. This is confirmed independently three ways:
+
+- **Field layout (static arg-trace `0x44fdb0 → 0x44d7d0(factory) → 0x461a50(ctor)`):** `look` and `color`
+  travel as **one packed dword** `{u16 look, u8 color, u8 pad}` stored at `entity+0x17c`; so the colour
+  byte lives at `entity+0x17e`, and `dir` at `entity+0x18d`.
+- **Colour is NOT consumed in the resolve path** (so it is purely a palette op, never a frame/geometry op):
+  a full-binary xref of displacement `0x17e` = **zero real reads**; all five `entity+0x17c` dword readers
+  pass the whole packed value into the sprite resolvers, which use only the low 16 bits (look). All three
+  resolvers (`0x433d00` frame = `Starting + dir*Walk`; `0x4342e0`; `0x434020`) call
+  `catlookup(MONSTER.EPF, frame, out)` with no colour.
+- **Live hook on `0x433d00` dumping its output descriptor:** byte-identical across colours 0-4 —
+  `[id, Palette=0, Starting, Walk, Attack, Delay, Shadow]` = the `Monster.tbl` row, whose `Palette`
+  column is the *default per-monster* palette, independent of the spawn colour byte.
+
+⟹ The colour→palette-block selection happens in a **deferred blit stage** (the vtable `[esi+0x9c]`/`[esi+0xa0]`
+draw calls at the tail of the resolvers) that was not pinned down at the instruction level — but the
+*behaviour* is fully known and matches the reference server (below), so it did not need finishing.
+
+**Range:** `!crecol` shows the client cycling through **24** distinct results before repeating (colour 24 ==
+colour 0). Byte-scanning `Monster.pal` (count the `DLPalette` ASCII tags, don't divide file size) confirms
+the file holds **exactly 20** palette blocks. So the client applies a hardcoded `% 24` clamp unrelated to
+the real palette count; **only colours 0-19 are real recolors**; 20-23 read past the 20-slot array into
+adjacent memory (stable but undefined garbage — not legitimate variants).
+
+**Confirmed by the RTK reference server (§17.1):** RTK's creature-spawn packet is byte-identical
+(`look = 0x8000|monsterId`, then a `look_color` byte), and it stores `look_color` as a first-class
+per-monster DB field — recolors are the *same look with a different `look_color`*. Exactly our model.
+
+**Frida hooks used** (`re/frida_probe.py`): `monfr` (0x433d00; correct arg map `args[1]`=packed look+color,
+`args[3]`=dir, `args[7]`=out descriptor) and `monctor` (0x461a50). A page-protection software watchpoint on
+the entity is also in there but is NOISY (neighbour heap objects share the 4 KB page); it also revealed two
+Frida quirks on this target — `context.eflags` reads `undefined` (no single-step re-arm), and NativePointer
+objects captured outside the `setExceptionHandler` callback read back as `0x0` inside it (store plain ints).
+
+### 11a.2 Monster names / stats / colours — the data source ✅
+
+Names/stats are **not** in the client (audit above) — they come from the **RTK reference server DB** (§17.1)
+and the **Nexus Atlas** scrape (pre-6.5 exp values). Extract these **locally** with the tools in `re/` — the
+data itself is **kept out of this repo** (logic-only server; the generated CSVs are gitignored). RTK look-ids
+validate against our own EPF shape-matching (rat=91, mouse=120, bull=27, rabbit=21, fox=22, wolf=23, bear=24,
+squirrel=25). Colours ≤19 map to our `Monster.pal`; RTK colours >19 are 7.x-only and must be re-picked for
+4.95 via `!crecol`.
 
 ---
 
@@ -836,6 +898,40 @@ opcodes and layouts drift between versions:
   `clif_sendaction`, etc. Great for *concepts*, but 7.x specifics (cipher, `0x26` walk, `0x08` stats)
   do **not** apply to 4.95.
 
+### 17.1 github.com/unkmc/RTK-Server — Mithia/7.x, **content goldmine** ⭐ (2026-07-24)
+
+C core (`rtk/src/`, eAthena-style) + Lua content, and — crucially — a **full production MySQL dump**:
+`database/2020-09-02-21-55-01_RTK.sql.bak` (2 MB, 54 tables). **The creature-spawn packet is byte-identical
+to our `0x07`** (`rtk/src/map/clif.c`): `WFIFOW(fd,+16)=SWAP16(32768+mob->look)` then
+`WFIFOB(fd,+18)=mob->look_color`. So it validates our whole model: `look`=sprite, `look_color`=palette byte,
+recolors = same look/different colour (`struct mobdb_data{int look, look_color}` in `map.h`; loaded from
+SQL `MobLook`/`MobLookColor`; settable in Lua as `mob.lookColor`).
+
+**Content available in the dump** (regenerate the CSVs locally with the tools below — **not committed**,
+this repo is logic-only). Row counts and how much survives to 4.95 (cross-referenced against the client's
+1750 `TK<N>.map` files and look-id range 0-326):
+
+| Table | Rows | Usable in 4.95 | Gives |
+|---|---|---|---|
+| Mobs | 716 | 102 look-ids | name, look, `look_color`, HP(vita), exp, level, might/grace/will, min/max dmg |
+| Maps | 9850 | **1387** match `TK<N>.map` | **real map names** (MapId ↔ our `0x15` mapId; `MapId 0 = Kugnae = TK000000.map ↔ TK0.map`), BGM, indoor, light, PvP, warpout flags |
+| Warps | 4476 | **3060** (both ends exist) | portals `(srcMap,x,y)→(dstMap,x,y)` = world navigation |
+| Spawns0 | 1175 | **1175** | monster placement `(mobId, mapId, x, y)` |
+| NPCs0 | 385 | **283** | NPC placement + look/`look_color` (same recolor mechanism) |
+| Items | 2545 | names solid¹ | item name, type, look, icon, damage, armor, stat bonuses, prices |
+| Spells | 906 | names/structure | spell & skill definitions |
+| Paths | 23 | direct | class names + rank titles (Peasant→Warrior "Il san", Rogue, Mage, Poet…) |
+
+**Ignore** (their live players' state, not content): `Accounts, Character, Inventory, Equipment, Banks,
+Clans, Friends, Legends, Mail, Kills, SpellBook, Registry, Auctions, Boards, Parcels`.
+**Caveats:** RTK is 7.x — ¹item look/icon ids and colours >19 reference 7.x archives (names reliable, sprite
+ids/colours need 4.95 validation); stats are 7.x-balanced (structure correct, numbers a design choice); the
+non-overlapping maps/warps/NPCs are 7.x-added content and are filtered out of the extracts.
+**Reproduce:** clone `RTK-Server` (gitignored), then `python re/rtk_extract.py` writes the CSVs to
+`re/rtk-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
+tables with row counts. **None of this data is committed** — this repo is logic-only; the CSVs are
+generated locally and kept out of git.
+
 **Confirmed 7.x ≠ 4.95 gaps:**
 - **Cipher:** 7.x = name-derived table cipher + 3 trailer bytes; 4.95 = simple NexonInc XOR, no trailer.
 - **Self-walk:** 7.x = `0x26`; 4.95 = `0x0C` + `0x04` (its `0x26` is a no-op).
@@ -844,6 +940,19 @@ opcodes and layouts drift between versions:
 - **Appearance:** 7.x `create_user` sends a rich equipment block (face, hairstyle, hair_color,
   face_color, coat…); 4.95's `0x33` type-0 is the 7-byte body/form/face/armor/weapon/shield form with
   **no hair**.
+
+### 17.2 External data resources (kept OUTSIDE this repo)
+
+This repo is **logic-only**. All game *data* lives outside it and is regenerated locally with the tools in
+`re/`. Pointers so the data can always be re-fetched:
+
+| Resource | What it provides | Get it / tool |
+|---|---|---|
+| **Client PAK** `NexusTK.dat` / `Inter.dat` (in the client install) | `Monster.epf/.tbl/.pal`, `Item.epf/.tbl`, sprites, `Str_*.res` | `re/pak_list.py`, `re/pak_extract.py` |
+| **unkmc/RTK-Server** (`database/*.sql.bak`) | names, stats, `look`/`look_color`, maps, warps, spawns, NPCs, items, spells (§17.1) | clone repo → `re/rtk_extract.py` / `re/rtk_analyze.py` |
+| **Nexus Atlas** via Wayback (pre-6.5, ~2005-10) | monster names, exp, type; monster art GIFs | `re/monster-matcher/` scrapers (Wayback CDX + `im_` raw fetch) |
+| **DizzyThermal/TKViewer** | later-client DAT/DNA format docs (e.g. `MONSTER.DNA` struct) | GitHub (reference only) |
+| **jeedee/TkServer** (6.x), **darkalucard/StarterTK** (7.x) | packet-builder concepts (§17) | GitHub (reference only) |
 
 ---
 

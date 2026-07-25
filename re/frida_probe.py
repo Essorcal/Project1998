@@ -45,6 +45,14 @@ RVA = {
     "catload":  0x030c30,  # 0x430c30 load/create a sprite category (by name) into the manager
     "catlookup":0x031020,  # 0x431020 generic sprite lookup: (nameStr, id, out) -> copies descriptor
     "catlookup2":0x030de0, # 0x430de0 alternate sprite lookup (nameStr, ...) in the same module
+    "monfr":    0x033d00,  # 0x433d00 Monster.tbl->frame resolver; color byte feeds a *=Walk,+Starting
+                            # frame-index calc on SOME branches (static trace inconclusive on which) --
+                            # hook logs the real inputs/branch-selector/output live instead of guessing.
+    "monctor":  0x061a50,  # 0x461a50 creature entity ctor (vtable 0x4cd098); this=ecx, ret=eax=entity.
+                            # Confirmed live: 0x433d00's "color"-looking arg is actually dir (constant
+                            # across a !crecol sweep, frame is constant too) -- so whatever reads the
+                            # REAL color byte at entity+0x18d must be a later, still-unlocated blit step.
+                            # Software watchpoint (below) finds it directly instead of more static guessing.
     "h33":      0x04fef0,  # the 0x33 handler
     "place":    0x024310,  # 0x424310  place/validate at (Y,X) -> al; al==0 => BAIL
     "entcreate":0x04d7d0,  # 0x44d7d0  create/find entity -> eax; null => BAIL
@@ -106,6 +114,17 @@ function at(name) { return base.add(ptr(RVA[name])); }
 // ---- socket fd -> channel map (from connect) ----
 const fdInfo = {};
 
+// Windows message-pump hooks: PeekMessage/GetMessage are what actually DISPATCH a queued WM_TIMER to
+// its handler. If this counter does NOT advance while the client is blocked inside recv() (see the recv
+// hook below), that PROVES this thread cannot process timer-driven animation while waiting on our next
+// packet -- i.e. the client is single-threaded and network-blocked, not just "slow to redraw".
+let pumpCount = 0;
+['PeekMessageW', 'PeekMessageA', 'GetMessageW', 'GetMessageA'].forEach(function (name) {
+  const a = findExport('user32.dll', name);
+  if (!a) { send({t:'info', m:'no export user32.dll!' + name}); return; }
+  Interceptor.attach(a, { onEnter(args) { pumpCount++; } });
+});
+
 function hookWsock(name, onEnter, onLeave) {
   const a = findExport('WSOCK32.dll', name) || findExport('ws2_32.dll', name);
   if (!a) { send({t:'info', m:'no export ' + name}); return; }
@@ -122,12 +141,17 @@ hookWsock('connect', function (args) {
   send({t:'net', m:'connect fd=' + fd + ' -> ' + fdInfo[fd]});
 }, null);
 
-// recv(fd, buf, len, flags) -> log bytes actually received
+// recv(fd, buf, len, flags) -> log bytes actually received, PLUS how long this call BLOCKED and how many
+// message-pump calls happened during that block. pumped==0 across a long blockMs means the client's
+// thread could not process ANY Windows messages (incl. WM_TIMER) while waiting on us.
 hookWsock('recv', function (args) {
   this.fd = args[0].toInt32(); this.buf = args[1];
+  this.t0 = Date.now(); this.pump0 = pumpCount;
 }, function (ret) {
   const n = ret.toInt32();
-  if (n > 0) send({t:'recv', fd:this.fd, ch:fdInfo[this.fd]||'?', m:hex(this.buf, n), n:n});
+  const blockMs = Date.now() - this.t0;
+  const pumped = pumpCount - this.pump0;
+  if (n > 0) send({t:'recv', fd:this.fd, ch:fdInfo[this.fd]||'?', m:hex(this.buf, n), n:n, blockMs:blockMs, pumped:pumped});
 });
 
 // send(fd, buf, len, flags) -> log raw wire bytes leaving the client
@@ -217,8 +241,116 @@ function hookCreateFile(name, wide) {
 hookCreateFile('CreateFileA', false);
 hookCreateFile('CreateFileW', true);
 
-// ---- CRASH CATCHER: log the faulting address + module-relative RVA + backtrace ----
+// ---- SOFTWARE WATCHPOINT on a monster entity's [+0x170,+0x1a0) region (covers the packed
+// look/color/pad dword at +0x17c and the dir/anim fields at +0x18d-0x18f/+0x188) -------------------
+// Page-protection trick: mark the 4K page containing that region as PROT_NONE. Any touch to ANYTHING
+// on that page faults; we log the first fault from each distinct instruction (deduped by pc) whose
+// faulting address falls in the region, restore access so it can complete, then schedule a
+// near-immediate re-arm via setTimeout(0) so the very next JS tick re-applies PROT_NONE — this traces
+// repeated access without needing single-step/EFLAGS support (context.eflags isn't exposed in this
+// Frida/platform combo, confirmed live: "cannot read property 'or' of undefined"). Leakier than a true
+// single-step (a few instructions can run unwatched during the gap before re-arm), but the page gets
+// touched every render frame, so repeated faults still converge on every real reader within the budget.
+const PAGE_SIZE = 4096;
+const WATCH = {};              // pageBaseString -> {entity: NativePointer, target: NativePointer}
+const WATCH_LIMIT = 5;         // fewer entities = fewer pages = fault budget concentrated, not spread thin
+let watchCount = 0;
+const rearming = {};           // pageBaseString -> true while a re-arm setTimeout is pending (debounce)
+let faultTotal = 0;
+const FAULT_LIMIT = 30000;     // last run showed something touches these pages at high frequency and
+                                // burned 2000 faults in ~2s without ever landing in [0x170,0x1a0) --
+                                // need enough budget to survive that noise and see what's actually hot.
+let foundHits = 0;
+const offHist = {};            // off(decimal string) -> count, so we can see what's hot even w/o a "READER" match
+function bumpHist(off) { const k = String(off); offHist[k] = (offHist[k]||0) + 1; }
+function fmtOff(n) { return (n < 0 ? '-0x' + (-n).toString(16) : '+0x' + n.toString(16)); }
+function dumpHist(label) {
+  const rows = Object.keys(offHist).map(k => [parseInt(k,10), offHist[k]]).sort((a,b) => b[1]-a[1]).slice(0, 20);
+  send({t:'WATCH', m: label + ' top offsets (off:count): ' + rows.map(r => fmtOff(r[0])+':'+r[1]).join(' ')});
+}
+
+function pageBaseOf(addrPtr) {
+  const v = addrPtr.toUInt32();
+  return ptr(v - (v % PAGE_SIZE));
+}
+function releaseAllWatches(reason) {
+  for (const pb in WATCH) { try { Memory.protect(ptr(pb), PAGE_SIZE, 'rw-'); } catch (e) {} }
+  send({t:'WATCH', m:'*** watchpoints released (' + reason + ') — ' + Object.keys(WATCH).length + ' page(s) ***'});
+  for (const k in WATCH) delete WATCH[k];
+}
+function armWatch(entity) {
+  if (watchCount >= WATCH_LIMIT) return;
+  // CORRECTED (was 0x18d = dir, verified live+statically): look+color travel as one packed dword
+  // {u16 look, u8 color, u8 pad} stored whole into entity+0x17c by the ctor; little-endian puts the
+  // real color byte at +0x17e. The 0x18d/0x18e/0x18f/0x188 fields the draw path reads are unrelated.
+  const entityVal = entity.toUInt32();   // store as a plain number, NOT a NativePointer object --
+                                          // confirmed live: NativePointer object refs captured outside
+                                          // Process.setExceptionHandler's callback read back as 0x0
+                                          // inside it (plain values/strings survive fine, e.g. the page
+                                          // string keys have worked correctly this whole time).
+  const target = entity.add(0x17e);
+  const pb = pageBaseOf(target).toString();
+  if (WATCH[pb]) return;   // already watching this page (another entity shares it)
+  try {
+    Memory.protect(ptr(pb), PAGE_SIZE, '---');
+    WATCH[pb] = { entityVal: entityVal };
+    watchCount++;
+    send({t:'WATCH', m:'armed entity=' + entity + ' target(+0x17e)=' + target + ' page=' + pb + '  (' + watchCount + '/' + WATCH_LIMIT + ')'});
+  } catch (e) { send({t:'WATCH', m:'arm failed: ' + e}); }
+}
+
+// Any single instruction that touches ANY byte in [entity+REGION_LO, entity+REGION_HI) is worth
+// knowing about, regardless of exact offset (an exact-address match misses a multi-byte read whose
+// STARTING address the OS reports, e.g. a dword read at +0x17c that also covers our +0x17e byte).
+// Dedupe by program counter so each distinct reader/writer logs once, not once per frame.
+const REGION_LO = 0x170, REGION_HI = 0x1a0;
+const seenPC = {};
+
+// ---- CRASH CATCHER + watchpoint fault handler (Frida allows only one exception handler; merged) ----
 Process.setExceptionHandler(function (details) {
+  try {
+    // access violation on a page we're watching.
+    if (details.type === 'access-violation' && details.memory && WATCH[pageBaseOf(details.memory.address).toString()]) {
+      const pb = pageBaseOf(details.memory.address).toString();
+      const w = WATCH[pb];
+      faultTotal++;
+      // plain-number arithmetic (NativePointer object refs from another hook's context read back as
+      // 0x0 here, confirmed live via DIAG output — see armWatch's entityVal comment).
+      const off = details.memory.address.toUInt32() - w.entityVal;
+      bumpHist(off);   // record EVERY fault's offset, not just ones in our guessed region — see what's really hot
+      if (faultTotal % 5000 === 0) dumpHist('progress @' + faultTotal);
+      if (faultTotal > FAULT_LIMIT) { dumpHist('FINAL'); releaseAllWatches('fault limit hit'); return true; }
+      const pc = details.context.pc;
+      const pcKey = pc.toString();
+      if (off >= REGION_LO && off < REGION_HI && !seenPC[pcKey]) {
+        seenPC[pcKey] = true;
+        foundHits++;
+        const rva = pc.sub(base);
+        let bt = '';
+        try {
+          bt = Thread.backtrace(details.context, Backtracer.ACCURATE)
+            .map(a => '0x' + a.toString(16) + ' (rva 0x' + a.sub(base).toString(16) + ')')
+            .slice(0, 8).join(' <- ');
+        } catch (e) { bt = '<no backtrace>'; }
+        send({t:'WATCH', m:'*** READER #' + foundHits + ' *** entity=0x' + w.entityVal.toString(16) + ' off=' + fmtOff(off) +
+          ' op=' + details.memory.operation + ' pc=0x' + pc.toString(16) + ' rva=0x' + rva.toString(16) +
+          '\n   backtrace: ' + bt});
+      }
+      // restore so the faulting instruction can complete now, then re-arm shortly after on the JS
+      // event loop (no EFLAGS/single-step needed — see comment above WATCH for why).
+      try { Memory.protect(ptr(pb), PAGE_SIZE, 'rw-'); } catch (e) {}
+      if (!rearming[pb]) {
+        rearming[pb] = true;
+        setTimeout(function () {
+          rearming[pb] = false;
+          if (WATCH[pb]) { try { Memory.protect(ptr(pb), PAGE_SIZE, '---'); } catch (e) {} }
+        }, 0);
+      }
+      return true;
+    }
+  } catch (e) { send({t:'WATCH', m:'watch handler error: ' + e}); }
+
+  // ---- fallback: original crash-catcher logging for anything not ours ----
   try {
     const pc = details.context.pc;
     const rva = pc.sub(base);
@@ -234,6 +366,12 @@ Process.setExceptionHandler(function (details) {
       '\n   backtrace:\n      ' + bt});
   } catch (e) { send({t:'CRASH', m:'exception in handler: ' + e}); }
   return false;   // let the crash proceed (we just logged it)
+});
+
+// Arm a watch on every newly-constructed creature entity (up to WATCH_LIMIT), right after construction
+// finishes (so we don't fault on the ctor's own writes — only later reads are of interest).
+Interceptor.attach(at('monctor'), {
+  onLeave(ret) { armWatch(ret); }
 });
 
 // ---- 0x07 REAL creature/monster list trace ----
@@ -319,6 +457,44 @@ function mHook(fn) {
 }
 mHook('catlookup'); mHook('catlookup2');
 
+// ---- Monster.tbl frame resolver (0x433d00): find out LIVE what "color" actually does. Static trace
+// found several branches computing frame = Starting + color*Walk, gated by a byte at [ecx+0x108] on the
+// manager object ("this") that we can't see without running the client. Args (cdecl-style stack read,
+// valid at function entry regardless of internal convention): a0=X a1=Y a2=Z a3=color a4=[+0x188]field
+// a5=[+0x18e] a6=[+0x18f] a7=outStructPtr. ecx (this.context.ecx) = the manager; [ecx+0x108] is the
+// branch selector, [ecx+0x10f] a byte some branches read. onLeave retval = the computed frame index
+// (or -1 if the branch bails). Compare retval across different color values on the SAME look id to get
+// the real formula (or discover it's not linear at all).
+// CORRECTED arg map (from static disasm of 0x433d00): args[1] = packed {u16 look, u8 color, u8 pad}
+// dword, args[3] = dir, args[7] = OUT descriptor ptr (0x433d00 writes 7 dwords = the Monster.tbl row,
+// which includes the Palette index). Read the packed color = (args[1]>>16)&0xff, and on leave dump the
+// 7-dword output row -- if the palette field DIFFERS across color values on the same monster-id, color
+// reaches the palette here; if it's identical, it provably does not (matching the static xref finding).
+const seenFr = {};
+Interceptor.attach(at('monfr'), {
+  onEnter(args) {
+    const packed = args[1].toUInt32();
+    this.packed = packed;
+    this.realColor = (packed >>> 16) & 0xff;
+    this.monId = (packed + 0x8000) & 0xffff;   // low word +0x8000 = Monster.tbl index (per 0x433d09)
+    this.dir = args[3].toInt32() & 0xff;
+    this.outPtr = args[7];
+  },
+  onLeave(ret) {
+    const frame = ret.toInt32();
+    const key = this.monId + ',' + this.realColor;
+    if (seenFr[key]) return; seenFr[key] = 1;   // dedupe repeat draws; one line per (monster,color)
+    let row = '<unreadable>';
+    try {
+      const d = [];
+      for (let i = 0; i < 7; i++) d.push('0x' + (this.outPtr.add(i*4).readU32()>>>0).toString(16));
+      row = d.join(' ');
+    } catch (e) {}
+    send({t:'FR', m:'monfr monId=' + this.monId + ' color=' + this.realColor + ' dir=' + this.dir +
+      ' packed=0x' + this.packed.toString(16) + ' -> frame=' + frame + '  outRow[' + row + ']'});
+  }
+});
+
 // ---- 0x33 self-entity handler trace: find exactly where it bails ----
 let in33 = 0;
 Interceptor.attach(at('h33'), {
@@ -362,6 +538,32 @@ Interceptor.attach(at('entmove'), {
                      ' caller=' + (fromOurMove ? 'OUR-0x0c' : ('client@0x'+rva.toString(16)))});
   }
 });
+
+// ---- WALK-FRAME TICK POLLER ------------------------------------------------------------------
+// Poll the self entity's walking-state(+0x104), walk-active flag(+0x18c), dir(+0x18d), and the
+// per-tile interpolation frame-counter(+0x18e) every ~10ms, logging ONLY on change with a timestamp.
+// This shows exactly WHEN (real wall-clock time) the client's own animation advances -- independent of
+// when packets arrive. If frameCtr never changes while a recv() is blocked, but jumps the instant recv
+// returns, that confirms the walk animation cannot progress without a packet arriving.
+let lastTick = null;
+setInterval(function () {
+  if (!gSelf) return;
+  let state, active, dir, fc, x, y;
+  try {
+    state = gSelf.add(0x104).readU8();
+    active = gSelf.add(0x18c).readU8();
+    dir = gSelf.add(0x18d).readU8();
+    fc = gSelf.add(0x18e).readS8();
+    x = gSelf.add(0x10c).readS32();
+    y = gSelf.add(0x110).readS32();
+  } catch (e) { return; }
+  const cur = state + ',' + active + ',' + dir + ',' + fc + ',' + x + ',' + y;
+  if (cur !== lastTick) {
+    send({t:'TICK', m:'t=' + Date.now() + ' state=' + state + ' active=' + active + ' dir=' + dir +
+                    ' frameCtr=' + fc + ' pos=(' + x + ',' + y + ')'});
+    lastTick = cur;
+  }
+}, 10);
 
 // ---- STATS/HUD WRITE-WATCH ------------------------------------------------
 // Diff the self player object ([world+0x40c]) across every world packet. Whatever packet writes
@@ -474,7 +676,7 @@ setInterval(function () {
   pokeCur++;
 }, 1600);
 
-send({t:'info', m:'hooks installed (recv/send/decrypt/encrypt/0x33-trace/0x16-trace/crash-catcher' + (HEAVY ? '/statwatch/pokesweep' : ' — HEAVY stat-hunt OFF for speed') + ')'});
+send({t:'info', m:'hooks installed (recv/send/decrypt/encrypt/0x33-trace/0x16-trace/crash-catcher/msgpump/walk-tick-poller' + (HEAVY ? '/statwatch/pokesweep' : ' — HEAVY stat-hunt OFF for speed') + ')'});
 """.replace("__RVA_JSON__", __import__("json").dumps(RVA)) \
    .replace("__SELF_OFF__", hex(SELF_OFF)) \
    .replace("__SELF_SNAP__", hex(SELF_SNAP))
@@ -501,7 +703,10 @@ def main():
         elif t == "net":
             out("NET   " + p["m"])
         elif t == "recv":
-            out(f"RECV  fd={p['fd']} [{p['ch']}] {p['n']}B: {p['m']}")
+            blk = f" blockMs={p['blockMs']} pumped={p['pumped']}" if "blockMs" in p else ""
+            out(f"RECV  fd={p['fd']} [{p['ch']}] {p['n']}B{blk}: {p['m']}")
+        elif t == "TICK":
+            out("TICK  " + p["m"])
         elif t == "send":
             out(f"SEND  fd={p['fd']} [{p['ch']}] {p['n']}B: {p['m']}")
         elif t == "decrypt":
