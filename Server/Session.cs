@@ -1196,9 +1196,9 @@ public sealed class Session
         SendMap(0x11, _gameInc++, d.ToArray(), $"side(0x11) id={id} side={side}");
     }
 
-    // The per-cell `pass` short we STREAM to the 5.x client (honors the passtest:N diagnostic). On real
-    // maps this is the 4.x ground top-2-bits, which are 0 everywhere — collision on 5.x actually comes
-    // from the client self-blocking on the object layer, not this short. Kept for the wire format.
+    // The per-cell `pass` short we STREAM to the 5.x client (honors the passtest:N diagnostic). This is
+    // the 4.x ground top-2-bits (value 3 = blocked on real maps like TK0 — water/cliffs — 0 = walkable);
+    // it feeds both the wire format AND server collision (see Blocked, which now honors it).
     private static ushort PassAt(MapData map, int mx, int my)
     {
         if (MapDiag.StartsWith("passtest:"))
@@ -1206,18 +1206,22 @@ public sealed class Session
         return map.Pass(mx, my);
     }
 
-    // Server-side collision: is this destination cell solid? 4.x/5.x passability lives in the OBJECT
-    // (foreground) layer — a cell with an object (obj != 0) is a wall/fence and blocks movement. The
-    // ground word's top-2-bits are 0 on these maps, so they were never the passability source. The 5.x
-    // client already self-blocks on objects; enforcing it here makes the SERVER authoritative and, more
-    // importantly, gives the 4.x client (which defers all collision to us) real collision at all.
-    // NOTE: this treats every object as solid. If a decorative, walkable object ever false-blocks, swap
-    // this for a per-object-id passability table.
+    // Server-side collision: is this destination cell solid? TWO sources, either one blocks:
+    //   (1) OBJECT layer  — obj != 0 is a wall/fence/prop (foreground sprite).
+    //   (2) GROUND passability flag — the ground word's top-2-bits. On real world maps this is NOT 0:
+    //       e.g. Kugnae TK0 has 14841 cells flagged (value 3 = blocked, 0 = walkable; 1/2 never occur),
+    //       12203 of them with NO object — water, cliffs, out-of-bounds baked into the terrain. The
+    //       client (4.x AND 5.x) self-blocks on these, so a server that checked only the object layer let
+    //       thrown items land on water the player can't reach, and let a fully-deferring 4.x client walk
+    //       onto it. Honoring pass != 0 here makes the server's collision match the client's exactly.
+    // NOTE: treats every object as solid; if a decorative walkable object ever false-blocks, swap the
+    // object test for a per-object-id passability table. Doors sit on solid tiles but warp-precedence in
+    // HandleWalk lets you through them before this check.
     private static bool Blocked(MapData map, int mx, int my)
     {
         if (MapDiag.StartsWith("passtest:"))
             return (mx % 5 == 2) && PassTestN != 0;   // synthetic wall-lines
-        return map.Obj(mx, my) != 0;
+        return map.Obj(mx, my) != 0 || map.Pass(mx, my) != 0;
     }
 
     // 0x0C move: entityId(u32BE) X(u16BE) Y(u16BE) dir(u8). Handler 0x4502c0 finds the entity
@@ -1660,11 +1664,22 @@ public sealed class Session
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 4); }  // reason 4 = Throw
         else SendAddItem(it);
-        int tx = _char.X, ty = _char.Y;
-        switch (_facing & 3) { case 0: ty -= 3; break; case 1: tx += 3; break; case 2: ty += 3; break; case 3: tx -= 3; break; }
+        // Fly up to 3 tiles in the facing direction, but STOP at the last passable tile — a thrown item
+        // must not land past a wall/off the map into an unreachable spot. Step tile-by-tile and halt before
+        // the first blocked/off-map cell (same collision the player walk uses). If the tile directly ahead is
+        // solid, the item just lands on the thrower's own tile.
+        int tx = _char.X, ty = _char.Y, dx = 0, dy = 0;
+        switch (_facing & 3) { case 0: dy = -1; break; case 1: dx = 1; break; case 2: dy = 1; break; case 3: dx = -1; break; }
+        var tmap = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        for (int step = 0; step < 3; step++)
+        {
+            int cx = tx + dx, cy = ty + dy;
+            if (cx < 0 || cy < 0 || cx >= _char.MapXs || cy >= _char.MapYs) break;   // off the tile grid
+            if (PassEnforce && tmap != null && Blocked(tmap, cx, cy)) break;         // wall/object -> stop short
+            tx = cx; ty = cy;
+        }
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
-            X = (ushort)Math.Clamp(tx, 0, _char.MapXs - 1), Y = (ushort)Math.Clamp(ty, 0, _char.MapYs - 1),
-            Amount = 1, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
+            X = (ushort)tx, Y = (ushort)ty, Amount = 1, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
     }
 
     // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> consume (+ any heal).
