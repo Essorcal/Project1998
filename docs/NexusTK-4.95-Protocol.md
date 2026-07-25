@@ -308,7 +308,8 @@ Handler `0x450170`: shows `msg` in a bubble over the entity.
 entityId(u32) type(u8) time(u16) param(u8)
 ```
 Handler `0x4503a0`: plays the action (client scales `time` ×10; `param` @+8 is the 3rd arg to the
-entity's action vtable method `[vtbl+0x78]`). `type`: 0=stand, 1=attack, 2=throw, 3=shot, 4=sit,
+entity's action vtable method `[vtbl+0x78]`). `type`: 0=stand, 1=attack, 2=throw, 3=shot,
+4=sit/**pickup** (RTK `clif_parsegetitem` reuses 4 for the pick-up crouch), 5=**drop** (`clif_parsedropitem`),
 6=magic, 8=eat. **Emotes are actions too** — `type` 9=respect, 10=triumph, 11=laughter, 12=grief,
 13=shame, 14=affection, 15=boredom, 16=sleepiness, 17=surprise, 18=rage, 19=sarcasm, 20=shrug,
 21=annoyed, **22=dance**, 23=strange, 24=kiss, 27=charge, 28=attack-after-charge. (See §11 for `0x1d`.)
@@ -901,8 +902,8 @@ maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
 **Client → server (handled in `Session.Handle`):**
 | Op | Action | Body |
 |---|---|---|
-| `0x07` | pick up | (targets my tile) |
-| `0x08` | drop | `slot(u8=idx+1) [amount]` |
+| `0x07` | pick up | `pickuptype(u8)` — `,` = 0 (grab the top item on my tile), `<`/Shift+`,` = 1 (grab **everything** stacked on the tile) |
+| `0x08` | drop | `slot(u8=idx+1) all(u8)` — `all`: `0` = one, `1` = whole stack |
 | `0x17` | throw | `confirm(u8) slot(u8=idx+1)` |
 | `0x1A` | eat | `slot(u8=idx+1)` (ITM_EAT only) |
 | `0x1C` | use / equip | `slot(u8=idx+1)` — equipment → wear, else consume |
@@ -914,6 +915,16 @@ maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
 re-draws self + peers; other gear slots have no 4.95 appearance. Stat bonuses are carried in `ItemDef` but
 **not yet applied** to combat/AC (a follow-up). Floor items broadcast to everyone on the map and survive
 until picked up; gold drops as a sentinel ground pile (`ItemId = -1`) that refills the purse on pickup.
+
+**Item action animations (0x1A) — each item verb plays its bend-down pose + sound, on self AND peers.**
+Every item handler broadcasts a `0x1A` action (§13, builder `Session.SendAction` / peer `ActionOver`) so the
+character visibly stoops and the client plays the baked-in sound. The `(type, time)` pairs are RTK's
+(`clif.c`): **pickup = `(4, 40)`** (RTK `clif_parsegetitem`), **drop = `(5, 20)`** (`clif_parsedropitem` — a
+*distinct* pose from pickup), **throw = `(2, 20)`**, **eat = `(8, 40)`**. `sound` is 0 (the action sprite
+carries its own sound; a non-zero 4th arg would be a separate sound id). Ordering matches RTK: pickup plays
+the action **unconditionally** (even on an empty tile — the crouch fires on the keypress), while drop plays it
+only **after** the `NoDrop`/valid-slot guard passes. `<` (pick-up-all) plays the action once, then loops the
+tile until empty.
 
 **Throw collision — SOLVED (2026-07-25).** `HandleThrow` walks the item **tile-by-tile** from the player in
 the faced direction (0=N 1=E 2=S 3=W, capped at 3 tiles) and stops at the last *passable* tile, so items

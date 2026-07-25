@@ -1620,19 +1620,31 @@ public sealed class Session
     // ---- recv handlers (client -> server) ----
 
     // 0x07 pick up: grab whatever floor item sits on my tile; coins (sentinel ItemId<0) go to the purse.
+    // The client sends pickuptype at body[0] (RTK clif_parsegetitem: RFIFOB(fd,5)): ',' = 0 (grab the top
+    // item), '<'/Shift+, = 1 (grab EVERYTHING stacked on the tile). Either way, play the bend-down action
+    // first — type 4, time 40; the crouch sprite carries the pickup sound — on self AND peers, even when the
+    // tile is empty (matches RTK, which sends the action before it looks at the floor).
     private void HandlePickup(byte[] dec)
     {
-        var gi = _world.PickUp(_char.Map, _char.X, _char.Y);
-        if (gi is null) return;                       // nothing underfoot
-        if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); return; }   // coins -> purse
-        var def = Content.ItemById(gi.ItemId);
-        if (def is null) return;
-        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+        bool pickAll = dec.Length > 0 && dec[0] != 0;
+        SendAction(_char.Id, 4, 40, 0);                                                     // our crouch + sound
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 4, 40, 0), except: this);   // peers see it too
+
+        do
         {
-            // pack full — put it straight back on the floor so it isn't lost
-            _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
-                X = _char.X, Y = _char.Y, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
-        }
+            var gi = _world.PickUp(_char.Map, _char.X, _char.Y);
+            if (gi is null) return;                       // tile empty (or now cleared)
+            if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); continue; }   // coins -> purse
+            var def = Content.ItemById(gi.ItemId);
+            if (def is null) continue;
+            if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+            {
+                // pack full — put it straight back on the floor so it isn't lost, and stop grabbing.
+                _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
+                    X = _char.X, Y = _char.Y, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+                return;
+            }
+        } while (pickAll);                                // ',' runs once; '<' loops until the tile is empty
     }
 
     // 0x08 drop: dec[0]=slot(1-based). Drop the whole stack onto my tile.
@@ -1646,6 +1658,11 @@ public sealed class Session
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
         if (def.NoDrop) { SendLog($"You can't drop {def.Name}."); return; }
+
+        // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
+        // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
+        SendAction(_char.Id, 5, 20, 0);                                                     // our drop crouch + sound
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 5, 20, 0), except: this);   // peers see it too
 
         int count = dropAll ? it.Amount : 1;
         int remaining = it.Amount - count;
@@ -1662,7 +1679,8 @@ public sealed class Session
         int slot = dec[1] - 1;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
-        SendAction(_char.Id, 2, 20, 0);               // throw animation
+        SendAction(_char.Id, 2, 20, 0);                                                    // throw animation (self)
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 2, 20, 0), except: this);   // peers see the throw too
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 4); }  // reason 4 = Throw
         else SendAddItem(it);
