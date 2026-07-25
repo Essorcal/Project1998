@@ -16,6 +16,7 @@ public sealed class Session
     private readonly int _port;
     private readonly string _remote;
     private readonly CharacterStore _store;
+    private readonly World _world;   // the shared world (players + mobs); every broadcast goes through it
     private string _user = "?";
     private bool _enteredWorld;   // true once world entry loaded _char; gates the disconnect save
 
@@ -90,8 +91,11 @@ public sealed class Session
     //                              full step (legs + slide + camera), then after the anim completes send 0x04
     //                              to unblock the next step. By then move-commit's unregister is a no-op, so
     //                              the legs are NOT cancelled. NEXUS_V495_ACK_MS tunes the delay.
+    //   7 = nothing on a good walk (RTK-faithful) -> DEFAULT: client moves/animates/scrolls locally; 0x04
+    //       is sent ONLY as a correction (desync/block). Stops our per-step 0x04 from re-scrolling the
+    //       camera the client already moved (the residual "wonkiness" + fighting realm-center).
     private static readonly int V495SelfMove =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_SELF_MOVE"), out var sm) ? sm : 5;
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_SELF_MOVE"), out var sm) ? sm : 7;
 
     // Delay (ms) before the mode-5 unblock 0x04. Must be >= the client's local walk animation (~4 frames,
     // ~360ms) so the 0x04 lands AFTER the legs finish and doesn't cancel them. Too short => truncated legs;
@@ -122,12 +126,13 @@ public sealed class Session
         return all;
     }
 
-    public Session(TcpClient client, int port, CharacterStore store)
+    public Session(TcpClient client, int port, CharacterStore store, World world)
     {
         _client = client;
         _stream = client.GetStream();
         _port = port;
         _store = store;
+        _world = world;
         _ver = (port == 2001 || port == 2006) ? ClientVersion.V533 : ClientVersion.V495;
         _remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
     }
@@ -176,7 +181,9 @@ public sealed class Session
         catch (Exception e) { Log.Info($"!! {_remote} error: {e.Message}"); }
         finally
         {
-            _rabbitCts?.Cancel();   // stop any wandering mob task before the socket closes
+            // Leave the shared world: despawn us for the other players on our map. World mobs persist
+            // (they belong to the map, not this session), so they keep wandering for whoever remains.
+            if (_enteredWorld) _world.LeaveMap(this, _char.Map);
             // Persist the last state (position/stats) only for a session that actually entered the
             // world. The login-channel session never populates _char, so saving it would clobber the
             // real record with defaults.
@@ -357,9 +364,14 @@ public sealed class Session
         _char.Name = _user;
         ApplyAppearance(_char);   // re-derive appearance for records saved before the mapping existed
         _enteredWorld = true;
+        // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
+        // collide on the shared-world broadcast key). This id binds the client's camera (0x05/SendId) and
+        // is how peers address this player's move/speech/despawn packets. It is a runtime handle, not a
+        // persistent key, so we overwrite whatever was loaded and never save it back meaningfully.
+        _char.Id = _world.AllocatePlayerId();
         Log.Info(loaded is null
-            ? $"   -> ARRIVAL user='{_user}' — no saved character, using default spawn"
-            : $"   -> ARRIVAL user='{_user}' — loaded saved character at map {_char.Map} ({_char.X},{_char.Y})");
+            ? $"   -> ARRIVAL user='{_user}' — no saved character, using default spawn (entity id {_char.Id})"
+            : $"   -> ARRIVAL user='{_user}' — loaded saved character at map {_char.Map} ({_char.X},{_char.Y}) (entity id {_char.Id})");
 
         // *** THE MISSING TRIGGER (found by reversing NexusTK.exe) ***
         // After 0x10 the client is on the loading screen; its game-WORLD object doesn't exist yet,
@@ -385,6 +397,13 @@ public sealed class Session
         SendStats();
 
         Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats ==");
+
+        // Join the shared world: register on this map, draw everyone/everything already here for us, and
+        // let EnterMap broadcast US to them. From now on peers see our moves/speech and we see theirs.
+        var (peers, mobs) = _world.EnterMap(this, _char.Map);
+        foreach (var p in peers) ShowPlayer(p);   // existing players -> draw on our client (0x33)
+        foreach (var m in mobs) ShowMob(m);       // existing shared mobs -> draw on our client (0x07)
+        Log.Info($"   == world join: map {_char.Map} has {peers.Length} other player(s), {mobs.Length} mob(s) ==");
     }
 
     // ---- 5.33 terrain streaming (opcode 0x06) ----
@@ -483,12 +502,24 @@ public sealed class Session
     private uint _nextMobId = 5000;      // entity-id pool for spawned creatures (well above the self id)
     private byte _facing = 0;            // last direction the player faced (0=N 1=E 2=S 3=W); drives melee
     private byte _realm = RealmCenter;   // realm-center camera lock; toggled live by F4 (0x1b sub-cmd 0x07)
+    // Fast-move = the client's movement model (RTK clif_parsewalk gates on FLAG_FASTMOVE):
+    //   ON  = client-authoritative: the client moves/animates freely and is only corrected on desync.
+    //         The server must send the walker NOTHING on a good step (0x26 self-walk is skipped).
+    //   OFF = server-authoritative: the client will NOT move until the server assigns the tile, so every
+    //         step must be answered with a position/move packet.
+    // The client toggles it locally and notifies us via 0x1b sub-cmd 0x09 (it does NOT report its state on
+    // connect). The client PERSISTS fast-move across launches, and the working/smooth setup is fast-move
+    // ON (client-authoritative), so we default ON to match a client that already has it enabled. Each
+    // 0x1b/09 notification flips it to stay in sync. (If a fresh client actually boots OFF, one toggle
+    // re-syncs; NEXUS_V495_FASTMOVE_DEFAULT can override the assumed startup state.)
+    private bool _fastMove = FastMoveDefault;
 
-    // ---- MVP mob: one hardcoded, self-walking rabbit (see SpawnRabbit) ----
-    // Serializes socket writes so the wander thread and the read-loop can't interleave bytes on the wire.
+    private static readonly bool FastMoveDefault =
+        Environment.GetEnvironmentVariable("NEXUS_V495_FASTMOVE_DEFAULT") == "0" ? false : true;
+
+    // Serializes socket writes so the World's mob-AI thread and peer broadcasts can't interleave bytes
+    // with this session's own read-loop on the shared stream.
     private readonly object _sendLock = new();
-    private Mob? _rabbit;                          // the single MVP rabbit, or null
-    private CancellationTokenSource? _rabbitCts;   // stops its wander loop on death/disconnect
 
     /// <summary>
     /// Best-effort world-entry burst, extrapolated from the RTK 6.x/7.x reference sequence
@@ -792,8 +823,20 @@ public sealed class Session
         byte dir = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(dir & 3);   // remember which way we're facing so melee (0x13) knows the front tile
 
+        // Fast-move (client-authoritative) is flagged PER WALK: the client sets the high bit of the step
+        // counter (dec[1]) on every predicted step. This is authoritative per-packet, so we read it here
+        // instead of tracking the 0x1b/09 toggle (which desyncs if we guess the client's startup state).
+        //   high bit SET   -> client already moved/animated -> we send NOTHING (only correct on block).
+        //   high bit CLEAR -> server-authoritative -> the client waits; we assign the tile with 0x04.
+        bool clientFast = dec.Length > 1 && (dec[1] & 0x80) != 0;
+        _fastMove = clientFast;   // keep the tracked flag in sync for logging/other uses
+
+        // Both 4.95 and 5.33 report the client's believed current tile at body[2..5] (BE u16 x,y). We step
+        // from THAT tile (client-authoritative resync), so collision runs on the cell the client is really
+        // on and we never drift out of sync — this is what a normal walk needs (RTK only "corrects" the
+        // client via 0x04 on an actual mismatch/block, never on a good step).
         int fromX = _char.X, fromY = _char.Y;
-        if (_ver == ClientVersion.V533 && dec.Length >= 6)
+        if (dec.Length >= 6)
         {
             int rx = (dec[2] << 8) | dec[3];
             int ry = (dec[4] << 8) | dec[5];
@@ -834,6 +877,12 @@ public sealed class Session
 
         _char.X = (ushort)nx;
         _char.Y = (ushort)ny;
+
+        // Shared world: everyone ELSE on this map watches us step (0x0C animates our entity to the new
+        // tile on their clients). Our OWN client is handled by the self-walk modes below (mode 7 stays
+        // silent and lets the local controller animate) — so exclude ourselves from the broadcast.
+        _world.Broadcast(_char.Map, p => p.MoveEntity(_char.Id, _char.X, _char.Y, dir), except: this);
+
         if (_ver == ClientVersion.V533)
         {
             SendSelfWalk(dir, (ushort)fromX, (ushort)fromY);   // 0x26: animate one step from the old tile
@@ -885,6 +934,24 @@ public sealed class Session
             if (V495AckMs > 0) Thread.Sleep(V495AckMs);
             SendXyAt((ushort)fromX, (ushort)fromY);
         }
+        else if (V495SelfMove == 7)
+        {
+            // 4.95 DEFAULT (RTK-faithful, fast-move aware — see RTK clif_parsewalk's FLAG_FASTMOVE gate).
+            // clientFast comes straight from this walk's step-counter high bit (no toggle tracking needed).
+            if (clientFast)
+            {
+                // Client-authoritative: the client already moved/animated/scrolled itself. Send NOTHING on
+                // a good step (RTK skips the self-walk packet here). 0x04 stays reserved for corrections
+                // (desync/block, handled above). This is the smooth, self-paced walk.
+            }
+            else
+            {
+                // Server-authoritative: the client will NOT move until we assign the tile. Answer the walk
+                // with the position packet so it can advance. (0x26 self-walk — RTK's choice — is a no-op
+                // on 4.95, so we use 0x04, which the 4.95 client honors, to assign the step + camera.)
+                SendXy();
+            }
+        }
         else
         {
             // NEXUS_V495_SELF_MOVE=0: NO 0x0C. The self sprite stays centered; 0x04's camera scroll
@@ -902,6 +969,7 @@ public sealed class Session
         byte side = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(side & 3);
         SendSide(_char.Id, _facing);
+        _world.Broadcast(_char.Map, p => p.SideEntity(_char.Id, _facing), except: this);   // peers see us turn
         Log.Info($"   -> turn side={_facing} @ ({_char.X},{_char.Y})");
     }
 
@@ -920,7 +988,13 @@ public sealed class Session
             SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
             SendXy();
             SendSelfLook();
+            RedrawWorld();   // 0x15 rebuild drops FOREIGN entities — re-assert peers + mobs so they don't vanish
             Log.Info($"   -> setting 0x07 Realm-center = {(_realm != 0 ? "ON" : "OFF")} (refreshed in place)");
+        }
+        else if (setting == 0x09)
+        {
+            _fastMove = !_fastMove;   // client toggled fast-move; keep our model in sync
+            Log.Info($"   -> setting 0x09 Fast-move = {(_fastMove ? "ON (client-authoritative)" : "OFF (server-authoritative)")}");
         }
         else
         {
@@ -1035,8 +1109,10 @@ public sealed class Session
         if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
-        SendSpeech(chatType, _char.Id, msg);
-        Log.Info($"   -> speech type={chatType}: \"{text}\"");
+        // Real chat (not a ! command): everyone on the map hears it. Broadcast the over-head bubble (0x0D)
+        // to all co-located players INCLUDING us, so we see our own bubble too.
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(chatType, _char.Id, msg));
+        Log.Info($"   -> speech type={chatType}: \"{text}\" -> map {_char.Map}");
     }
 
     private uint _probeId = 1000;
@@ -1129,60 +1205,32 @@ public sealed class Session
     // face the rabbit and press space; HandleAttack finds it on the front tile and deals damage.
     private const ushort RabbitLook = 21;   // Monster.tbl look id — validated shape-match: rabbit = 21
 
-    // "!rabbit": drop a single rabbit on the tile in front of you and set it wandering.
+    // "!rabbit": drop a single wandering rabbit into the SHARED world on the tile in front of you.
+    // Everyone on the map sees it, everyone fights the SAME one, and World.Tick drives its wander — no
+    // per-session task anymore (that only moved the rabbit on the spawner's screen).
     private void SpawnRabbit()
     {
-        // Only one MVP rabbit at a time — retire the previous one (loop + sprite) before spawning.
-        if (_rabbit is not null)
-        {
-            _rabbitCts?.Cancel();
-            SendDespawn(_rabbit.Id);
-            _mobs.Remove(_rabbit);
-            _rabbit = null;
-        }
-
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         byte dir = (byte)((_facing + 2) & 3);   // face the player on arrival
-
-        _rabbit = SpawnMonster(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0);
+        SummonWorldMob(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0);
         SendLog("A rabbit appears. Face it and press space to attack.");
-
-        // Home = spawn tile; the rabbit hops within a few tiles of home on its own task.
-        _rabbitCts = new CancellationTokenSource();
-        var mob = _rabbit;
-        _ = Task.Run(() => WanderLoop(mob, x, y, _rabbitCts.Token));
     }
 
-    // Server-side mob AI tick. RTK's map-server runs a per-mob walk_timer that does exactly this: pick a
-    // step, validate passability, broadcast a 0x0C move. Here it's one rabbit on its own async task.
-    private async Task WanderLoop(Mob mob, ushort homeX, ushort homeY, CancellationToken ct)
+    // Register a mob in the SHARED world (drawn via 0x07 = Monster.epf) and broadcast the spawn to every
+    // player on the map. World.Tick then wanders it (leashed to its spawn tile); combat resolves against
+    // the world's authoritative HP in HandleAttack. This is the gameplay-mob path (!rabbit / !summon);
+    // the debug lab (!cre/!mob/!crow/look-lab) still uses the session-local SpawnMonster/SpawnMob.
+    private Mob SummonWorldMob(ushort look, ushort x, ushort y, string name, int hp, byte dir, byte color)
     {
-        try
+        var mob = new Mob(_world.AllocateMobId(), look, x, y, name, hp)
         {
-            while (!ct.IsCancellationRequested && mob.Alive)
-            {
-                await Task.Delay(700, ct);
-                if (ct.IsCancellationRequested || !mob.Alive) break;
-
-                byte dir = (byte)Random.Shared.Next(4);        // 0=N 1=E 2=S 3=W
-                int nx = mob.X, ny = mob.Y;
-                switch (dir) { case 0: ny--; break; case 1: nx++; break; case 2: ny++; break; case 3: nx--; break; }
-
-                var map = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-                bool ok = nx >= 0 && ny >= 0 && nx < _char.MapXs && ny < _char.MapYs
-                          && Math.Abs(nx - homeX) <= 3 && Math.Abs(ny - homeY) <= 3   // leash to home
-                          && !(nx == _char.X && ny == _char.Y)                        // never step onto the player
-                          && (map is null || !Blocked(map, nx, ny));                  // respect walls/objects
-                if (!ok) { mob.Dir = dir; continue; }   // blocked/leashed: turn in place, don't move
-
-                mob.X = (ushort)nx; mob.Y = (ushort)ny; mob.Dir = dir;
-                SendMove(mob.Id, mob.X, mob.Y, dir);    // 0x0C: client walks the entity one tile to (X,Y)
-            }
-        }
-        catch (OperationCanceledException) { /* despawned / disconnected — normal shutdown */ }
-        catch (Exception e) { Log.Info($"!! rabbit wander error: {e.Message}"); }
+            Dir = dir, Color = color, HomeX = x, HomeY = y, Wander = true,
+        };
+        _world.AddMob(_char.Map, mob);   // broadcasts the 0x07 spawn to every player on the map (incl. us)
+        Log.Info($"   -> world spawn mob {mob.Id} '{name}' look={look} c{color} @({x},{y}) hp={hp} on map {_char.Map}");
+        return mob;
     }
 
     // ===== navigation: warp + map/mob listing + data-driven summon ==========================
@@ -1193,10 +1241,9 @@ public sealed class Session
     // our entity id (0x05) are already established this session, so those are NOT resent.
     private void EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName)
     {
-        // Leaving the current map: retire our mobs. The client drops all foreign entities on a map
-        // change, so we clear the server-side list (and stop the rabbit's wander task) to match.
-        _rabbitCts?.Cancel();
-        _rabbit = null;
+        // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
+        // clear our session-local debug dummies (the client drops all foreign entities on a map change).
+        _world.LeaveMap(this, _char.Map);
         _mobs.Clear();
 
         _char.Map = mapId;
@@ -1208,7 +1255,12 @@ public sealed class Session
         SendMapInfo(mapId, xs, ys, mapName, 232, _gameInc++);   // 0x15 (light arg ignored; uses LightValue)
         SendXy();                                                // 0x04 coords + camera anchor
         SendSelfLook();                                          // 0x33 draw self on the new map
-        Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y})");
+
+        // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
+        var (peers, mobs) = _world.EnterMap(this, mapId);
+        foreach (var p in peers) ShowPlayer(p);
+        foreach (var m in mobs) ShowMob(m);
+        Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y}) — {peers.Length} player(s), {mobs.Length} mob(s) here");
     }
 
     // "!warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
@@ -1265,8 +1317,8 @@ public sealed class Session
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
-        SpawnMonster(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color);
-        SendLog($"Summoned {mob.Name} (look {mob.Look} c{mob.Color}, {mob.Hp}hp).");
+        SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color);
+        SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp).");
     }
 
     // "!crecol <lookId> [loColor] [hiColor] [step]": spawn the SAME look id across a GRID (12 cols/row,
@@ -1349,12 +1401,12 @@ public sealed class Session
 
     private void KillMobs()
     {
-        if (_mobs.Count == 0) { SendMessage("no mobs to clear"); return; }
-        SendDespawn(_mobs.Select(m => m.Id).ToArray());
-        int n = _mobs.Count;
-        _mobs.Clear();
-        SendMessage($"cleared {n} mob(s)");
-        Log.Info($"   -> KILL: despawned {n} mobs");
+        int world = _world.ClearMap(_char.Map);   // shared mobs -> despawned for EVERYONE on this map
+        int local = _mobs.Count;                  // session-local debug dummies -> just us
+        if (local > 0) { SendDespawn(_mobs.Select(m => m.Id).ToArray()); _mobs.Clear(); }
+        if (world + local == 0) { SendMessage("no mobs to clear"); return; }
+        SendMessage($"cleared {world} world mob(s) + {local} local dummy(s)");
+        Log.Info($"   -> KILL: despawned {world} world + {local} local mobs on map {_char.Map}");
     }
 
     // A small pack of REAL, killable monsters around the player (via 0x07 = Monster.epf). "!spawn
@@ -1530,28 +1582,49 @@ public sealed class Session
     // (client scales time x10). type: 0=stand,1=attack,2=throw,3=shot,4=sit,6=magic,8=eat.
     private void HandleAttack(byte[] dec)
     {
-        SendAction(_char.Id, type: 1, time: 8, param: 0);   // type 1 = attack swing
+        SendAction(_char.Id, type: 1, time: 8, param: 0);                                 // our own swing anim
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);  // peers see us swing
 
-        // Melee resolves against whatever creature stands on the tile directly in front of us
-        // (facing tracked from the last walk step). Server-authoritative: we own the mob's HP.
+        // Melee resolves against whatever creature stands on the tile directly in front of us (facing
+        // tracked from the last walk step). Check the SHARED world FIRST — HP there is world-authoritative
+        // so two players can't double-kill and both claim the reward — then fall back to session-local
+        // debug dummies (look-lab / !cre / !mob sweeps, visible only to us).
         var (fx, fy) = FrontTile();
+        int dmg = Math.Max(1, _char.Might + (_char.Weapon > 0 ? 3 : 0));   // might + a flat weapon bonus
+
+        var wmob = _world.MobAt(_char.Map, fx, fy);
+        if (wmob is not null)
+        {
+            if (_world.TryDamage(_char.Map, wmob, dmg, out bool died))
+            {
+                _world.Broadcast(_char.Map, p => p.NumberOver(wmob.Id, (byte)Math.Min(dmg, 255)));  // -N for all
+                Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg} -> {wmob.Hp}/{wmob.MaxHp}");
+                if (died)
+                {
+                    _world.Broadcast(_char.Map, p => p.DespawnEntity(wmob.Id));   // 0x0E corpse removed for all
+                    _char.Exp += (uint)wmob.MaxHp;                                // reward to the killer only
+                    SendStats();
+                    SendMessage($"You defeated {wmob.Name}. (+{wmob.MaxHp} exp)");
+                    Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated");
+                }
+            }
+            return;
+        }
+
         var mob = MobAt(fx, fy);
         if (mob is null) return;
 
-        int dmg = Math.Max(1, _char.Might + (_char.Weapon > 0 ? 3 : 0));   // might + a flat weapon bonus
         mob.Hp -= dmg;
-        SendNumber(mob.Id, (byte)Math.Min(dmg, 255));                      // floating "-N" over the mob
-        Log.Info($"   -> hit mob {mob.Id} '{mob.Name}' for {dmg} -> {mob.Hp}/{mob.MaxHp}");
-
+        SendNumber(mob.Id, (byte)Math.Min(dmg, 255));                      // floating "-N" over the dummy
+        Log.Info($"   -> hit dummy {mob.Id} '{mob.Name}' for {dmg} -> {mob.Hp}/{mob.MaxHp}");
         if (!mob.Alive)
         {
             _mobs.Remove(mob);
-            SendDespawn(mob.Id);                       // 0x0E: remove the corpse from the client
-            if (ReferenceEquals(mob, _rabbit)) { _rabbitCts?.Cancel(); _rabbit = null; }  // stop its wander loop
+            SendDespawn(mob.Id);                       // 0x0E: remove the corpse from our client
             _char.Exp += (uint)mob.MaxHp;              // reward: exp equal to the mob's max HP
             SendStats();                               // refresh the HUD exp bar
             SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
-            Log.Info($"   -> mob {mob.Id} '{mob.Name}' defeated");
+            Log.Info($"   -> dummy {mob.Id} '{mob.Name}' defeated");
         }
     }
 
@@ -1876,8 +1949,51 @@ public sealed class Session
 
     private static byte[] Be(ushort v) => new[] { (byte)(v >> 8), (byte)(v & 0xFF) };
 
-    // Locked so the background mob-AI thread (WanderLoop) and the read-loop thread can't interleave
-    // bytes mid-packet on the shared stream. (The `_gameInc++` at call sites is a benign nonce and not
-    // guarded; a rare duplicate is harmless since each packet carries its own inc in the header.)
+    // ===== shared-world API =====================================================================
+    // Called by the World (mob AI, broadcasts) and by PEER sessions to render entities on THIS client.
+    // All wrap the existing private packet builders, so cross-session sends go out through the same
+    // locked Send() as our own — no interleaving on the wire.
+
+    /// <summary>This player's runtime entity id / position, read by the world for AI + broadcasts.</summary>
+    public uint   PlayerId => _char.Id;
+    public ushort PlayerX  => _char.X;
+    public ushort PlayerY  => _char.Y;
+
+    /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
+    public PlayerSnapshot Snapshot() =>
+        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, _char.Weapon, _char.Name);
+
+    /// <summary>Draw player <paramref name="other"/> on our client (0x33 player look form).</summary>
+    public void ShowPlayer(Session other)
+    {
+        var s = other.Snapshot();
+        var app = new byte[] { s.Sex, 0, s.Face, s.Armor, 0, s.Weapon, 0 };   // same layout as SendSelfLook
+        SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
+    }
+
+    /// <summary>Draw shared mob <paramref name="m"/> on our client (0x07 Monster.epf spawn).</summary>
+    public void ShowMob(Mob m) =>
+        SendCreatureList(new[] { (m.Id, (ushort)(0x8000 | m.Sprite), m.X, m.Y, m.Color, m.Dir) });
+
+    /// <summary>Re-assert every co-located peer + mob on OUR client. Call after re-sending 0x15 mapinfo
+    /// in place (the realm-center refresh), which makes the client rebuild the map and drop all FOREIGN
+    /// entities — without this the other players/mobs silently vanish until they next move.</summary>
+    private void RedrawWorld()
+    {
+        var (peers, mobs) = _world.View(this, _char.Map);
+        foreach (var p in peers) ShowPlayer(p);
+        foreach (var m in mobs) ShowMob(m);
+    }
+
+    public void MoveEntity(uint id, ushort x, ushort y, byte dir) => SendMove(id, x, y, dir);      // 0x0C
+    public void SideEntity(uint id, byte side) => SendSide(id, side);                              // 0x11
+    public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
+    public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, type, time, param);  // 0x1A
+    public void NumberOver(uint id, byte number) => SendNumber(id, number);                        // 0x29
+    public void DespawnEntity(uint id) => SendDespawn(id);                                         // 0x0E
+
+    // Locked so the World's mob-AI thread and peer broadcasts can't interleave bytes mid-packet with this
+    // session's own read-loop on the shared stream. (The `_gameInc++` at call sites is a benign nonce and
+    // not guarded; a rare duplicate is harmless since each packet carries its own inc in the header.)
     private void Send(byte[] data) { lock (_sendLock) _stream.Write(data, 0, data.Length); }
 }

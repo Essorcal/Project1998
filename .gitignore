@@ -29,6 +29,8 @@ re/monsfrm.tbl
 re/str_eng.res
 re/nexustk_dat_list.txt
 re/interdat_list.txt
+# Compiled/converted client maps (game data; e.g. from re/map2cmp.py):
+re/*.cmp
 # Extracted from the RTK reference server / Nexus Atlas (regenerable via the tools in re/):
 re/rtk-data/
 re/monster-matcher/rtk_mobs.csv

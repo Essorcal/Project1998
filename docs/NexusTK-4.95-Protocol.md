@@ -29,6 +29,7 @@ that is called out too.
 9. [Character creation & the creation packet](#9-character-creation--the-creation-packet)
 10. [Movement model](#10-movement-model)
 11. [Speech & actions](#11-speech--actions)
+11b. [Shared world (multiplayer)](#11b-shared-world-multiplayer--players-see-each-other--the-same-mobs-)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -616,6 +617,16 @@ wraps mod-24 with only 0-19 real), `!crow <lo> <hi> [step]` (row sweep of the Mo
 `!spawn [lookId] [hp]` (a pack), `!kill`, `!weapon <n>`. The `0x16` item commands (`!mob`, `!mobrow`) are
 kept for item/object discovery.
 
+**Navigation & content commands** (data-driven, backed by the `Content` registry — §17.3): `!warp <name|id>
+[x y]` (fuzzy-match a map by name or id, optionally with coords, and enter it), `!maps [query]` /
+`!mobs [query]` (fuzzy list maps / mobs), `!summon <name|id>` (spawn a mob from the registry by name/id),
+`!rabbit` (the spawn→wander→kill MVP: look 21, wanders on a background task via `0x0C`, cleans up on death).
+All of these print their output as **over-head speech (`0x0D`) from the player's own entity** — the
+`SendLog()` helper — because `0x02`/`0x0F` are single-line message *boxes* that can't stack for a list;
+`0x0D` is the in-world chat-log channel (handler `0x450170`, 3000 ms bubble). **Door/portal warps** fire
+automatically in `HandleWalk`: a step onto a `(map,x,y)` that has a registry warp calls `EnterMap` and
+overrides collision (checked *before* the blocked-tile test).
+
 **Exhaustive client-data audit (2026-07-24):** confirmed monster/item **names and stats are NOT stored
 client-side anywhere** in the 4.x install — parsed every archive with the Nexon PAK format directly.
 `NexusTK.dat` (64 entries): `Monster.tbl`/`Item.tbl` are rendering metadata only (`Palette/Starting/Walk/
@@ -674,6 +685,54 @@ data itself is **kept out of this repo** (logic-only server; the generated CSVs 
 validate against our own EPF shape-matching (rat=91, mouse=120, bull=27, rabbit=21, fox=22, wolf=23, bear=24,
 squirrel=25). Colours ≤19 map to our `Monster.pal`; RTK colours >19 are 7.x-only and must be re-picked for
 4.95 via `!crecol`.
+
+---
+
+## 11b. Shared world (multiplayer) — players see each other + the same mobs ✅
+
+`Server/World.cs` is a single instance (created in `TkListener`, injected into every `Session`) that holds
+**all connected players and all live mobs, grouped by map**. It turns the previously per-connection server
+into one shared world: players on the same map see each other move/turn/speak, and everyone fights the
+**same** server-authoritative mobs.
+
+**Entity ids.** Every player is assigned a **unique** id from the world at arrival (`World.AllocatePlayerId`,
+`1+`). Before this, every character defaulted to `Id = 1`, which collided on the broadcast key — the fix
+that unblocked multiplayer. Shared mobs draw from a disjoint pool (`100000+`); the session-local *debug*
+dummies keep their own `5000+` pool (only ever visible to their own client, so cross-session collisions
+there don't matter). The self id still binds the client camera via `0x05` (`SendId`).
+
+**Join / leave.** On world entry AND on every warp (`Session.EnterMap`): the newcomer draws everyone
+already on the map (`0x33` per peer, `0x07` per mob) and `World.EnterMap` broadcasts the newcomer to them.
+On disconnect/warp-out (`World.LeaveMap`) the player is despawned (`0x0E`) for the peers left behind.
+
+**Broadcasts** (to all same-map players, usually excluding the actor): move `0x0C`, turn `0x11`, speech
+`0x0D` (real chat only — `!`-commands stay self-only via `SendLog`), attack swing `0x1A`, damage number
+`0x29`, spawn `0x07`, despawn `0x0E`. The moving player's OWN client is driven by the self-walk modes
+(§10), so it's excluded from the `0x0C` broadcast.
+
+**Shared mobs + combat.** `!summon` / `!rabbit` spawn into the world (`SummonWorldMob`); the debug lab
+(`!cre`/`!mob`/`!crow`/look-lab) stays session-local. `HandleAttack` hits world mobs first: `World.TryDamage`
+applies damage **under the world lock** so two players can't double-kill, the number + death despawn are
+broadcast to all, and exp goes to the killer. A single background `World.Tick` (~600 ms) wanders every
+world mob (leashed to spawn, avoids player tiles + `Obj != 0`) and broadcasts each hop.
+
+**Threading.** All of `World`'s collections are guarded by one lock; socket writes happen **outside** the
+lock (recipient list snapshotted under it) and every cross-session send is exception-guarded, so a peer
+whose socket just closed can't break a broadcast. Cross-session sends still go out through the target
+session's own locked `Send()`, so bytes never interleave mid-packet.
+
+**Gotcha — mapinfo refresh drops foreign entities.** Re-sending `0x15` in place (e.g. the realm-center
+`0x1b 07` refresh) makes the client rebuild the map and **drop every foreign entity** — the self survives
+via the trailing `0x33`, but peers/mobs vanish. So any in-place `0x15` resend must be followed by
+`Session.RedrawWorld()` (re-asserts co-located peers + mobs via `World.View`). Since the 4.95 client sends
+`0x1b 07` frequently, this refresh is also a source of walk jitter — throttling it to real state changes is
+a movement-side TODO.
+
+**Known limitation (MVP).** No view-distance streaming: the `0x33`/`0x07` **viewport gate** (§14) silently
+skips entities outside the observer's camera rect, so two players far apart on a large map may not see each
+other until one walks close and a re-sync (move/refresh) redraws them. Fine when players are near each
+other (the common case). Mobs persist on a map after everyone leaves (they belong to the map, not a
+session); `!kill` clears the current map's world mobs for everyone.
 
 ---
 
@@ -953,6 +1012,26 @@ This repo is **logic-only**. All game *data* lives outside it and is regenerated
 | **Nexus Atlas** via Wayback (pre-6.5, ~2005-10) | monster names, exp, type; monster art GIFs | `re/monster-matcher/` scrapers (Wayback CDX + `im_` raw fetch) |
 | **DizzyThermal/TKViewer** | later-client DAT/DNA format docs (e.g. `MONSTER.DNA` struct) | GitHub (reference only) |
 | **jeedee/TkServer** (6.x), **darkalucard/StarterTK** (7.x) | packet-builder concepts (§17) | GitHub (reference only) |
+| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `re/rtk-data/map_index.csv` |
+
+### 17.3 Runtime content registry (`Server/Content.cs`) — how the data is consumed
+
+The generated CSVs above are loaded once at startup by the static, load-once, read-only-after-load
+`Content` registry (`Content.Load()` in `Program.cs`; `--selftest` exercises it offline without opening
+ports). It powers the navigation commands (§11): fuzzy `FindMap`/`FindMob`/`SearchMaps`/`SearchMobs`
+(score: exact < prefix < substring < subsequence), `TryWarp((map,x,y)→(map,x,y))`, and `TryMap(id)`.
+Paths are env-overridable: `NEXUS_MAP_INDEX` → `map_index.csv`, `NEXUS_MOBS` → `rtk_mobs.csv`,
+`NEXUS_WARPS` → `Warps.csv`.
+
+**Map dims are client-authoritative** (`re/build_map_index.py`): every one of the client's ~1750
+`TK<id>.map` files is emitted — a map the client ships is warpable, period. The `.map` is headerless, so
+the only unknown is how to split `cells = filesize/4` into `(xs, ys)`. RTK's `rtkmaps/Accepted/<MapFile>`
+(first 4 bytes = `xs,ys` big-endian) merely *informs* the split when the product matches; otherwise the
+closest-aspect (or square) factor pair is picked. Any factor pair with the right **product** is safe — the
+client reads exactly the file bytes, so a wrong split only skews row-stride (map looks sheared), it never
+overruns or crashes. RTK dims never gate existence; a 7.x-resized map (e.g. JadeSpear's Home, RTK 17×15 vs
+client 12×12) is kept, not dropped. `Warps` are additionally filtered to destinations that exist in the
+client map set (no warping to a map the client can't render).
 
 ---
 

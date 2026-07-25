@@ -9,6 +9,7 @@ public sealed class TkListener
 {
     private readonly int[] _ports;
     private readonly CharacterStore _store;
+    private readonly World _world = new();   // the one shared world every session broadcasts through
 
     public TkListener(int[] ports)
     {
@@ -54,7 +55,7 @@ public sealed class TkListener
         while (true)
         {
             var client = await listener.AcceptTcpClientAsync();
-            _ = new Session(client, port, _store).RunAsync();   // fire-and-forget per connection
+            _ = new Session(client, port, _store, _world).RunAsync();   // fire-and-forget per connection
         }
     }
 }
