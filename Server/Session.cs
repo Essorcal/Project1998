@@ -284,12 +284,26 @@ public sealed class Session
             case 0x08:                    HandleDropItem(dec); break;  // drop a bag slot to the floor
             case 0x17:                    HandleThrow(dec); break;     // throw a bag slot (flies ahead)
             case 0x1A:                    HandleUseItem(dec, eat: true); break;   // eat/consume a slot
+            // 0x12 = the WIELD hotkey (press 'w', then the item's letter). Body = [slot(1-based), 00] — the
+            // same shape as 0x1C, confirmed by live capture (wield sent `12 01 00`). Double-click already used
+            // 0x1C; the hotkey just uses a different opcode, so route it to the same use/equip path.
+            case 0x12:                    HandleUseItem(dec, eat: false); break;  // wield hotkey -> equip a slot
             case 0x1C:                    HandleUseItem(dec, eat: false); break;  // use/equip a slot
             case 0x1F:                    HandleUnequip(dec); break;   // remove a worn item back to the bag
             case 0x24:                    HandleDropGold(dec); break;  // drop a gold amount
+            // 0x20 = the 'o' / Open key (RTK clif_parse case 0x20 "Clicked 'O'" -> clif_cancelafk + clif_open_sub
+            // -> onOpen script). A deliberate action (RTK's handler clears AFK, so NOT a heartbeat): in NexusTK it
+            // toggles the faced door object's open/closed graphic in place. See HandleOpen (swaps the object tile
+            // via the 0x06 cell-patch and broadcasts it to the map).
+            case 0x20:                    HandleOpen(dec); break;
             // 0x0F = cast a learned spell (RTK clif_parsemagic): body[0]=book slot+1, then per spell type
             // 1 -> typed answer string, type 2 -> target entity id (u32BE), type 5 -> nothing. See HandleCast.
             case 0x0F:                    HandleCast(dec); break;
+            // 0x66 = right-click "examine item" request. The client sends it (and RETRIES ~6× because we don't
+            // answer), expecting a 0x66 reply its handler 0x4511b0 renders as the item-detail popup. We can't
+            // build that reply until its wire format is known — for now decode+log the request so labelled
+            // right-clicks map body[1] -> which item. See HandleItemInfoRequest / issue #3.
+            case 0x66:                    HandleItemInfoRequest(dec); break;
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
@@ -776,6 +790,13 @@ public sealed class Session
         return e is null ? none : (byte)(Content.ItemById(e.ItemId)?.Look ?? 0);
     }
 
+    // The swing sfx of the weapon currently in hand (RTK ItmSound). 0 if unarmed or the weapon has no sound.
+    private int EquippedWeaponSound()
+    {
+        var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == 3);
+        return e is null ? 0 : (Content.ItemById(e.ItemId)?.Sound ?? 0);
+    }
+
     // General 0x33 "create/look" for ANY entity (self or a test dummy). Type=0 = the 7-byte player
     // appearance form (parser 0x436120). renderKind (byte after the 7 appearance bytes) MUST be 1/2/3
     // or handler 0x44fef0 bails before allocating the sprite (1 = player sprite). appearance[0] is the
@@ -884,24 +905,72 @@ public sealed class Session
         SendMap(0x0E, _gameInc++, d.ToArray(), $"despawn(0x0E) x{ids.Length}");
     }
 
-    // 0x29 is NOT a floating number — it plays effect N from the client's Effect.tbl (128 effects) over an
-    // entity. Proven by disassembly: handler 0x4504b0 → 0x44e0a0 → constructor 0x4354b0 uses the u8 as a
-    // 1-based index into the effect table (index = b-1) and copies that 36-byte template; a number renderer
-    // would itoa the value instead. NexusTK has no floating combat numbers. Wire (after id): b(u8) A/B/C(u16BE),
-    // where b = effectId+1 (1-based), A*1000 = vertical pop offset, B/C = style. See docs §11d.
+    // NexusTK has NO floating combat numbers — combat feedback is the over-head HP bar (0x13, below) plus the
+    // effect/spell animations (0x29, SendEffect). The old melee path used to abuse 0x29 with a raw damage value
+    // (which played effect #(dmg-1), an unintended graphic); that is gone — hits now send the 0x13 damage packet.
     //
-    // NOTE: melee still calls SendNumber below with a raw damage value (legacy) — that plays effect #(dmg-1),
-    // an unintended graphic. Left as-is for now (separate from the spell-animation work); revisit for a proper
-    // melee hit effect.
-    private void SendNumber(uint id, byte number)
+    // 0x13 (server->client) = the combat DAMAGE packet: over-head HP bar + a hit-reaction animation +
+    // an optional hit sound, all in ONE packet. Decoded from the 4.95 client handler 0x4508f0 (disx):
+    //   body = id(u32BE) | critical(u8) | percent(u8) | hitSound(u8)
+    //   * critical -> plays overlay animation (0x8f - critical, SIGNED) over the entity (a hit spark; the
+    //     hit-effect is queued for 0x78 ticks via 0x4622d0->0x41b5d0). RTK uses 33 (normal) / 255 (crit).
+    //   * percent  -> the over-head HP bar fill, 0..100 (the client skips the bar if percent > 100; 0 = empty).
+    //   * hitSound -> played through the sound manager if nonzero (RTK's u32 damage tail lands here as its high
+    //     byte = 0, so no hit sound normally; the 4.95 client ignores everything past body[7]).
+    // This is what draws the "remaining HP bar above a monster's head" on every hit. RTK's clif_send_mob_health
+    // builds the same shape (plus the ignored u32 damage). critical is calibratable live via NEXUS_HIT_CRIT.
+    private static readonly byte HitCritByte =
+        byte.TryParse(Environment.GetEnvironmentVariable("NEXUS_HIT_CRIT"), out var c) ? c : (byte)0x21; // 33 = RTK normal hit
+    private void SendDamage(uint id, byte percent, byte critical, byte hitSound = 0)
     {
+        if (percent > 100) percent = 100;                 // >100 would make the client skip the bar entirely
         var d = new List<byte>();
-        d.AddRange(Be32(id));
-        d.Add(number);
-        d.AddRange(Be(0));           // A
-        d.AddRange(Be(0));           // B
-        d.AddRange(Be(0));           // C
-        SendMap(0x29, _gameInc++, d.ToArray(), $"efx0x29 id={id} raw={number}");
+        d.AddRange(Be32(id));        // body[1..4] entity id (u32BE)
+        d.Add(critical);            // body[5] hit type -> overlay anim 0x8f-critical
+        d.Add(percent);             // body[6] HP bar fill 0..100
+        d.Add(hitSound);            // body[7] optional hit sfx (0 = none)
+        SendMap(0x13, _gameInc++, d.ToArray(), $"damage(0x13) id={id} pct={percent} crit={critical}");
+    }
+    public void DamageOver(uint id, byte percent, byte critical, byte hitSound = 0) => SendDamage(id, percent, critical, hitSound);  // peer-facing
+
+    // Remaining-HP percent for the over-head bar (1..100 for a live mob so its bar never reads empty; caller
+    // passes 0 explicitly on death). Guards against MaxHp<=0 and negative Hp (a killing blow overshoots).
+    private static byte HpPercent(Mob m)
+    {
+        int max = Math.Max(1, m.MaxHp);
+        int cur = Math.Clamp(m.Hp, 0, max);
+        if (cur <= 0) return 0;
+        int pct = (int)((long)cur * 100 / max);
+        return (byte)Math.Clamp(pct, 1, 100);
+    }
+
+    // Death beat: on a killing blow, empty the target's HP bar (0x13 percent=0, which also plays the final hit
+    // overlay), then remove the corpse (0x0E) after a short delay so it doesn't just pop out of existence. 4.95
+    // monsters have no death frame-set (monsfrm.tbl defines only walk/attack states), so the "death animation" is
+    // this beat: last hit spark + empty bar, held briefly, then despawn. Delay is calibratable via NEXUS_DEATH_DELAY_MS.
+    private static readonly int DeathDespawnMs =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_DEATH_DELAY_MS"), out var v) ? Math.Clamp(v, 0, 5000) : 600;
+
+    // Show the result of a hit that already resolved in the world: draw the over-head HP bar for everyone on the
+    // map, and on death run the death beat (empty bar + delayed despawn). `mob` is read for its remaining HP%.
+    private void ShowDamageResult(uint mobId, Mob mob, bool died)
+    {
+        byte pct = died ? (byte)0 : HpPercent(mob);
+        _world.Broadcast(_char.Map, p => p.DamageOver(mobId, pct, HitCritByte));
+        if (died) ScheduleDespawn(_char.Map, mobId, DeathDespawnMs);
+    }
+
+    // Broadcast a corpse despawn (0x0E) to the map after `ms`, so the death beat is visible first. The mob is
+    // already gone from the world's mob list (World.TryDamage removed it), so nothing ticks it in the meantime,
+    // and mob ids are monotonic so the id can't be reused before this fires. 0 ms = despawn immediately.
+    private void ScheduleDespawn(ushort map, uint id, int ms)
+    {
+        if (ms <= 0) { _world.Broadcast(map, p => p.DespawnEntity(id)); return; }
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(ms); _world.Broadcast(map, p => p.DespawnEntity(id)); }
+            catch (Exception ex) { Log.Info($"   -x delayed despawn {id} failed: {ex.Message}"); }
+        });
     }
 
     // Play effect `effectId` over an entity via 0x29 — the real 4.95 spell-animation path. The wire byte maps
@@ -1273,6 +1342,126 @@ public sealed class Session
         Log.Info($"   -> turn side={_facing} @ ({_char.X},{_char.Y})");
     }
 
+    // 0x20 = the 'o' / Open key. In NexusTK this TOGGLES the door object I'm facing between its closed and open
+    // graphic in place (RTK open.lua `openDoors`: setObject(m,x,y, closed<->open) — e.g. Buya door 342<->364;
+    // some doors are 3 tiles wide). It is purely COSMETIC (passability is untouched — collision is the ground
+    // pass flag only) and shared world state: everyone on the map is told to redraw. Entering a building is
+    // done by WALKING onto its warp tile (HandleWalk warp-precedence) — NOT by 'o', so 'o' never warps.
+    //
+    // Rendering the swap uses the server->client 0x06 CELL-PATCH packet (client handler 0x44fb90, RE'd via disx):
+    //   body = startX(u16BE) startY(u16BE) width(u8) height(u8) then width*height cells, each = ground(u16BE)
+    //   object(u16BE). The client writes each cell into its live map array and redraws the object layer over the
+    //   patched rectangle (tail 0x44df30 re-renders objects regardless of whether the ground word changed). We
+    //   keep the ground word unchanged (tile+pass) and set only the object word to the toggled door id.
+    // The next 'o' reads the mutated object back (via MapData.SetObj) and toggles the door closed again.
+    private void HandleOpen(byte[] dec)
+    {
+        int dx = 0, dy = 0;
+        switch (_facing & 3) { case 0: dy = -1; break; case 1: dx = 1; break; case 2: dy = 1; break; case 3: dx = -1; break; }
+        int fx = _char.X + dx, fy = _char.Y + dy;
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        if (fx < 0 || fy < 0 || fx >= _char.MapXs || fy >= _char.MapYs || md is null) return;
+
+        ushort obj = md.Obj(fx, fy);
+        var door = DoorToggle(obj);
+        Log.Info($"   -> OPEN('o') facing={_facing} front=({fx},{fy}) obj={obj} door={(door is null ? "no" : "yes")}");
+        if (door is null) return;
+
+        var (startDx, objs) = door.Value;
+        int sx = fx + startDx;
+        if (sx < 0 || sx + objs.Length > _char.MapXs) return;   // door run would fall off the map edge
+
+        // Mutate the shared map (so a later 'o' can toggle it back), then tell every client on the map to redraw.
+        for (int i = 0; i < objs.Length; i++) md.SetObj(sx + i, fy, objs[i]);
+        _world.Broadcast(_char.Map, p => p.PatchObjRow((ushort)sx, (ushort)fy, objs));
+    }
+
+    // The door-object toggle table, transcribed from RTK open.lua `openDoors`. Given the object the player is
+    // facing, returns (startDx, newObjectIds left->right) — startDx is where the affected run begins relative to
+    // the faced tile (a 3-wide door reports which corner you're on), and the ids are the swapped graphics for
+    // that run. Mappings are symmetric (closed<->open) so pressing 'o' twice returns the door to its first state.
+    // Returns null if the faced object is not a door. (RTK's 17408+ range doors are for maps whose object ids
+    // exceed the 4.x 14-bit field and aren't served here, so they're omitted.)
+    private static (int startDx, ushort[] objs)? DoorToggle(ushort obj)
+    {
+        switch (obj)
+        {
+            // single-tile swinging doors
+            case 51:  return (0, new ushort[] { 114 });
+            case 114: return (0, new ushort[] { 51 });
+            case 57:  return (0, new ushort[] { 115 });
+            case 115: return (0, new ushort[] { 57 });
+            case 76:  return (0, new ushort[] { 116 });
+            case 116: return (0, new ushort[] { 76 });
+            case 82:  return (0, new ushort[] { 117 });
+            case 117: return (0, new ushort[] { 82 });
+            // 3-tile-wide doors — the faced piece tells us which of the three tiles we're standing at
+            case 53:  return (0,  new ushort[] { 102, 103, 104 });
+            case 54:  return (-1, new ushort[] { 102, 103, 104 });
+            case 55:  return (-2, new ushort[] { 102, 103, 104 });
+            case 102: return (0,  new ushort[] { 53, 54, 55 });
+            case 103: return (-1, new ushort[] { 53, 54, 55 });
+            case 104: return (-2, new ushort[] { 53, 54, 55 });
+            case 78:  return (0,  new ushort[] { 105, 106, 107 });
+            case 79:  return (-1, new ushort[] { 105, 106, 107 });
+            case 80:  return (0,  new ushort[] { 105, 106, 107 });
+            case 105: return (0,  new ushort[] { 78, 79, 80 });
+            case 106: return (-1, new ushort[] { 78, 79, 80 });
+            case 107: return (-2, new ushort[] { 78, 79, 80 });
+            case 97:  return (-1, new ushort[] { 108, 109, 110 });
+            case 109: return (-1, new ushort[] { 96, 97, 98 });
+            case 100: return (-1, new ushort[] { 111, 112, 113 });
+            case 112: return (-1, new ushort[] { 99, 100, 101 });
+        }
+        // range-based single-tile toggles: open<->closed differ by a fixed delta
+        int o = obj;
+        int? nn = obj switch
+        {
+            >= 340 and <= 341 => o + 20,
+            >= 342 and <= 343 => o + 22,   // Buya door 342 -> 364
+            >= 344 and <= 345 => o + 18,
+            >= 346 and <= 347 => o + 20,
+            >= 348 and <= 349 => o + 22,
+            >= 350 and <= 353 => o + 24,
+            >= 354 and <= 355 => o + 14,
+            >= 360 and <= 361 => o - 20,
+            >= 362 and <= 363 => o - 18,
+            >= 364 and <= 365 => o - 22,   // 364 -> 342 (close it again)
+            >= 366 and <= 367 => o - 20,
+            >= 368 and <= 369 => o - 14,
+            >= 370 and <= 371 => o - 22,
+            >= 374 and <= 377 => o - 24,
+            >= 378 and <= 379 => o + 16,
+            >= 380 and <= 381 => o + 107,
+            >= 394 and <= 395 => o - 16,
+            >= 487 and <= 488 => o - 107,
+            _ => (int?)null,
+        };
+        return nn is null ? null : (0, new ushort[] { (ushort)nn.Value });
+    }
+
+    // Server->client 0x06 CELL PATCH: redraw a horizontal run of cells starting at (startX, y), setting each
+    // cell's object to objs[i] while keeping its ground word (tile + passability) unchanged. This is how doors
+    // open/close on the client (see HandleOpen). Wire: startX(u16BE) y(u16BE) width(u8) height=1(u8) then per
+    // cell ground(u16BE) object(u16BE). The ground word is read live from the map, so it reflects real terrain.
+    private void SendObjRow(ushort startX, ushort y, ushort[] objs)
+    {
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        if (md is null || objs.Length == 0) return;
+        var d = new List<byte>();
+        d.AddRange(Be(startX));
+        d.AddRange(Be(y));
+        d.Add((byte)objs.Length);   // width
+        d.Add(1);                   // height (single row)
+        for (int i = 0; i < objs.Length; i++)
+        {
+            d.AddRange(Be(md.GroundWord(startX + i, y)));   // ground (tile+pass) unchanged
+            d.AddRange(Be(objs[i]));                        // new object graphic
+        }
+        SendMap(0x06, _gameInc++, d.ToArray(), $"cellpatch(0x06) ({startX},{y}) w{objs.Length} objs=[{string.Join(",", objs)}]");
+    }
+    public void PatchObjRow(ushort startX, ushort y, ushort[] objs) => SendObjRow(startX, y, objs);   // peer-facing (0x06)
+
     // 0x1b = client setting toggle (F-keys). body[0] = setting id (matches RTK's settings-parse switch):
     //   0x07 = Realm center (F4, camera lock)   0x09 = Fast move   (others logged, not yet acted on).
     // For realm-center we flip the flag and re-apply it via an in-place refresh (0x15 mapinfo carries the
@@ -1373,22 +1562,26 @@ public sealed class Session
         return map.Pass(mx, my);
     }
 
-    // Server-side collision: is this destination cell solid? TWO sources, either one blocks:
-    //   (1) OBJECT layer  — obj != 0 is a wall/fence/prop (foreground sprite).
-    //   (2) GROUND passability flag — the ground word's top-2-bits. On real world maps this is NOT 0:
-    //       e.g. Kugnae TK0 has 14841 cells flagged (value 3 = blocked, 0 = walkable; 1/2 never occur),
-    //       12203 of them with NO object — water, cliffs, out-of-bounds baked into the terrain. The
-    //       client (4.x AND 5.x) self-blocks on these, so a server that checked only the object layer let
-    //       thrown items land on water the player can't reach, and let a fully-deferring 4.x client walk
-    //       onto it. Honoring pass != 0 here makes the server's collision match the client's exactly.
-    // NOTE: treats every object as solid; if a decorative walkable object ever false-blocks, swap the
-    // object test for a per-object-id passability table. Doors sit on solid tiles but warp-precedence in
-    // HandleWalk lets you through them before this check.
+    // Server-side collision: is this destination cell solid? The GROUND passability flag alone decides —
+    // the ground word's top-2-bits (value 3 = blocked, 0 = walkable; 1/2 never occur). On real world maps
+    // this is NOT 0: e.g. Kugnae TK0 has 14841 flagged cells — water, cliffs, out-of-bounds, AND the ground
+    // under every wall (map authors bake wall footprints into this layer). Confirmed against the heaviest
+    // wall objects on the real maps: obj 1519-1522 (~2000 placements each) sit on pass=3 ground 100% of the
+    // time. So walls are already caught by pass; the object layer is purely VISUAL.
+    //
+    // The object layer is therefore NOT a collision source. It used to be (obj != 0 blocked), which made the
+    // player "stuck on shadows" — shadows, flat rugs, ground-decor are objects on walkable ground and were
+    // wrongly blocked. The authoritative RTK reference server agrees exactly: map_canmove() has `if(obj)
+    // return 1;` COMMENTED OUT and collides on the pass layer only; object_flag_init() even parses SObj.tbl
+    // but leaves `objectFlags[z]=flag;` commented out — the object table's flags are height/draw-order, not
+    // passability (they don't predict blocking: wall objects 1519-1522 have flag high-byte 0x00, while many
+    // 0x0f-flagged objects sit on fully-walkable ground). Doors that ARE closed have pass=3 and still block
+    // (open them via 'o'/0x20); door tiles that are warps get warp-precedence in HandleWalk before this check.
     private static bool Blocked(MapData map, int mx, int my)
     {
         if (MapDiag.StartsWith("passtest:"))
             return (mx % 5 == 2) && PassTestN != 0;   // synthetic wall-lines
-        return map.Obj(mx, my) != 0 || map.Pass(mx, my) != 0;
+        return map.Pass(mx, my) != 0;
     }
 
     // 0x0C move: entityId(u32BE) X(u16BE) Y(u16BE) dir(u8). Handler 0x4502c0 finds the entity
@@ -1447,7 +1640,10 @@ public sealed class Session
         if (text.StartsWith("!learnspell", StringComparison.OrdinalIgnoreCase)) { LearnSpellCmd(text); return; } // learn one spell by name/id
         if (text.StartsWith("!forgetspells", StringComparison.OrdinalIgnoreCase)) { ForgetSpells(); return; }    // clear the spellbook
         if (text.StartsWith("!align", StringComparison.OrdinalIgnoreCase)) { SetAlignment(text); return; }        // set sub-alignment (Kwisin/Mingken/Ohaeng) for !spells
+        if (text.StartsWith("!swingsnd", StringComparison.OrdinalIgnoreCase)) { SetSwingSound(text); return; }  // set + audition the melee swing sfx id
         if (text.StartsWith("!snd", StringComparison.OrdinalIgnoreCase)) { SoundProbe(text); return; }   // play raw client sound ids (calibrate the NexusTK.snd id space)
+        if (text.StartsWith("!efx", StringComparison.OrdinalIgnoreCase)) { EffectProbe(text); return; }  // play raw Effect.tbl animation ids over self (calibrate the effect id space)
+        if (text.StartsWith("!hit", StringComparison.OrdinalIgnoreCase)) { HitProbe(text); return; }      // 0x13 over-head HP bar + hit anim on the faced mob (calibrate NEXUS_HIT_CRIT)
         if (text.StartsWith("!spawn", StringComparison.OrdinalIgnoreCase)) { SpawnCritters(text); return; } // squirrel/rabbit pack
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
@@ -1956,9 +2152,9 @@ public sealed class Session
         if (_world.TryDamage(_char.Map, mob, power, out bool died))
         {
             BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // graphic + sound
+            ShowDamageResult(mob.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
             if (died)
             {
-                _world.Broadcast(_char.Map, p => p.DespawnEntity(mob.Id));
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
                 _char.Exp += reward;
                 SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
@@ -2002,7 +2198,7 @@ public sealed class Session
         int applied = 0;
         for (int i = 0; i < stats.Length && i < amts.Length; i++)
             if (int.TryParse(amts[i].Split('.')[0], out var amt) && amt != 0)
-            { _buffs.Add(new ActiveBuff { Stat = stats[i], Amount = amt, Expires = expires, Key = sp.Key }); applied++; }
+            { _buffs.Add(new ActiveBuff { Stat = stats[i], Amount = amt, Expires = expires, Key = sp.Key, Name = sp.Name }); applied++; }
 
         SendStats();   // reflect the boosted caps/attributes on the HUD immediately
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // buff aura + sound
@@ -2123,9 +2319,9 @@ public sealed class Session
                 if (_world.TryDamage(_char.Map, mob, power, out bool died))
                 {
                     BroadcastFx(mob.Id, 4, 56);   // generic unaligned zap graphic + sound
+                    ShowDamageResult(mob.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
                     if (died)
                     {
-                        _world.Broadcast(_char.Map, p => p.DespawnEntity(mob.Id));
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
                         _char.Exp += reward;
                         SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
@@ -2238,6 +2434,18 @@ public sealed class Session
         d.AddRange(Be32(worn.Dura));
         d.AddRange(Be(0));
         SendMap(0x37, _gameInc++, d.ToArray(), $"equip(0x37) slot={worn.Slot} '{name}'");
+    }
+
+    // The profile-screen equipment ICON cells (helm + two rings). 4.95 has no character-sprite layer for these
+    // slots, so both profile views (0x39 self, 0x34 other) show them as ground-icon boxes fed by three u16
+    // fields. Encoded with IconWire, exactly like the 0x37 equip window (the old bug proved these boxes render
+    // an IconWire value — it wrongly showed the weapon there). Client wire slots (from 0x1F captures): helm=4,
+    // left ring=7, right ring=8. Returns 0 (empty box) when nothing is worn in that slot.
+    private ushort ProfileCellIcon(byte wireSlot)
+    {
+        var worn = _char.Equipment.FirstOrDefault(e => e.Slot == wireSlot);
+        var def = worn is null ? null : Content.ItemById(worn.ItemId);
+        return def is null ? (ushort)0 : IconWire(def.Icon);
     }
 
     // 0x38 unequip-window: spot(u8) 00.
@@ -2393,7 +2601,7 @@ public sealed class Session
 
     // Active timed stat buffs (from casting Buff spells). Session-local, like cooldowns — they clear on relog.
     // Each carries the stat it boosts, the amount, and the tick it expires at. Expired ones are pruned on read.
-    private sealed class ActiveBuff { public string Stat = ""; public int Amount; public long Expires; public string Key = ""; }
+    private sealed class ActiveBuff { public string Stat = ""; public int Amount; public long Expires; public string Key = ""; public string Name = ""; }
     private readonly List<ActiveBuff> _buffs = new();
 
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) BuffTotals()
@@ -2445,6 +2653,12 @@ public sealed class Session
         if (def.Level > _char.Level) { SendLog($"You must be level {def.Level} to wear {def.Name}."); return; }
         if (def.MightReq > EffMight) { SendLog($"You need {def.MightReq} might to wear {def.Name}."); return; }
         byte wire = def.EquipSlot;
+        // Rings/gauntlets are all Type 7 (wire slot 7 = left ring) but share TWO interchangeable slots — 7 and
+        // 8 (right ring). Wear the second one in the free right slot instead of replacing the left. Only when
+        // BOTH are taken does a new ring replace the left. (Slot 8 carries no items in the data, so it's only
+        // ever filled by this path.)
+        if (wire == 7 && _char.Equipment.Any(e => e.Slot == 7) && _char.Equipment.All(e => e.Slot != 8))
+            wire = 8;
 
         _char.Inventory.Remove(it);
         SendDelItem((byte)slot, 0);                   // reason 0 = Remove (moved to gear)
@@ -2463,7 +2677,8 @@ public sealed class Session
         SendEquip(worn);
         ApplyAppearance(def, equip: true);
         SendStats();                                  // push the new gear bonuses to the HUD
-        SendLog($"Equipped {def.Name}.");
+        // (No "Equipped X" over-head bubble — the paperdoll + gear stats are feedback enough; SendLog here
+        // spoke it as 0x0D chat over the character, which the player didn't want.)
     }
 
     // 0x1F unequip: dec[0]=wire equip-slot byte. Take the worn item off and return it to the bag.
@@ -2865,6 +3080,13 @@ public sealed class Session
         SendAction(_char.Id, type: 1, time: 8, param: 0);                                 // our own swing anim
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);  // peers see us swing
 
+        // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 when
+        // a weapon is in hand (bare-handed swings stay quiet). The sound is the weapon's own ItmSound (RTK's
+        // per-weapon mapping — most swords 331, Sword of power 337, …); !swingsnd overrides it for calibration.
+        // Everyone on the map hears it, bound to us.
+        int swing = _swingSfx > 0 ? _swingSfx : EquippedWeaponSound();
+        if (swing > 0) _world.Broadcast(_char.Map, p => p.SoundAt(swing, _char.Id));
+
         // Melee resolves against whatever creature stands on the tile directly in front of us (facing
         // tracked from the last walk step). Check the SHARED world FIRST — HP there is world-authoritative
         // so two players can't double-kill and both claim the reward — then fall back to session-local
@@ -2877,11 +3099,10 @@ public sealed class Session
         {
             if (_world.TryDamage(_char.Map, wmob, dmg, out bool died))
             {
-                _world.Broadcast(_char.Map, p => p.NumberOver(wmob.Id, (byte)Math.Min(dmg, 255)));  // -N for all
+                ShowDamageResult(wmob.Id, wmob, died);   // 0x13: over-head HP bar + hit anim (empty bar + delayed despawn on death)
                 Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg} -> {wmob.Hp}/{wmob.MaxHp}");
                 if (died)
                 {
-                    _world.Broadcast(_char.Map, p => p.DespawnEntity(wmob.Id));   // 0x0E corpse removed for all
                     uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
                     _char.Exp += reward;                                          // reward to the killer only
                     SendStats();
@@ -2896,12 +3117,15 @@ public sealed class Session
         if (mob is null) return;
 
         mob.Hp -= dmg;
-        SendNumber(mob.Id, (byte)Math.Min(dmg, 255));                      // floating "-N" over the dummy
+        bool dummyDied = !mob.Alive;
+        SendDamage(mob.Id, dummyDied ? (byte)0 : HpPercent(mob), HitCritByte);   // 0x13: over-head HP bar + hit anim (dummy is session-local)
         Log.Info($"   -> hit dummy {mob.Id} '{mob.Name}' for {dmg} -> {mob.Hp}/{mob.MaxHp}");
-        if (!mob.Alive)
+        if (dummyDied)
         {
             _mobs.Remove(mob);
-            SendDespawn(mob.Id);                       // 0x0E: remove the corpse from our client
+            uint deadId = mob.Id;
+            if (DeathDespawnMs <= 0) SendDespawn(deadId);   // 0x0E: remove the corpse from our client
+            else _ = Task.Run(async () => { try { await Task.Delay(DeathDespawnMs); SendDespawn(deadId); } catch { } });   // after the death beat
             _char.Exp += (uint)mob.MaxHp;              // reward: exp equal to the mob's max HP
             SendStats();                               // refresh the HUD exp bar
             SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
@@ -2950,6 +3174,11 @@ public sealed class Session
     // volume(u8 @+5, 0..100, client log-scales it). type 2 = MIDI (the stock 1.mid..12.mid in
     // NexusTK.snd); type 1 = mp3/lsr (the stock client has none). bgm 0 stops the music.
     private ushort _bgm = 0xFFFF;   // last track sent, so we don't restart the same song on a refresh
+
+    // Melee swing sfx (NexusTK.snd id). The client's action->sound table gives the swing action (0x1A type 1)
+    // NO sound (like magic/type 6 -> 0), so a weapon swing is silent unless we play one explicitly over 0x19.
+    // Calibrate the id live with "!swingsnd <id>" (auditions it), then it rides every armed swing; 0 = silent.
+    private int _swingSfx = 0;
     private void SendMusic(ushort bgm, byte type = 2, byte volume = 100)
     {
         var d = new List<byte>();
@@ -3010,11 +3239,82 @@ public sealed class Session
         if (played == 0) SendLog("no valid sound ids (want positive integers)");
     }
 
+    // "!swingsnd <id>" — set the melee swing sfx (and play it once so you can audition it in place). Use with
+    // "!snd" to hunt the right woosh id in NexusTK.snd, then "!swingsnd <that id>" bakes it onto every armed
+    // swing. "!swingsnd 0" mutes it again. Session-local (resets on relog) until we bake the final id as default.
+    private void SetSwingSound(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var id) || id < 0)
+        { SendLog($"usage: !swingsnd <id>   (current: {_swingSfx}; 0 = silent)"); return; }
+        _swingSfx = id;
+        if (id > 0) SendSound(id, _char.Id);
+        SendLog($"swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Log.Info($"   -> !swingsnd {id}");
+    }
+
+    // Play raw Effect.tbl animation ids (0x29) over the caster, to calibrate the 4.95 effect id space vs RTK's
+    // sendAnimation ids. Low ids (unaligned heal 5, spark 28) are confirmed identity, but RTK's 6.x/7.x client may
+    // have inserted effects that shift mid/high ids — e.g. the aligned heals (Ohaeng 63 / Ming-Ken 64 / Kwi-Sin 65)
+    // may not line up. `!efx 5 63 64 65` plays the four heal variants so we can see which id is really which.
+    private void EffectProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { SendLog("usage: !efx <id> [id2 …]   (play Effect.tbl anim ids 0..127 over you)"); return; }
+        int played = 0;
+        for (int i = 1; i < parts.Length && played < 8; i++)
+        {
+            if (!int.TryParse(parts[i], out var id) || id < 0 || id > 127) continue;
+            SendEffect(_char.Id, id);
+            SendLog($"effect {id}");
+            Log.Info($"   -> !efx {id}");
+            played++;
+        }
+        if (played == 0) SendLog("no valid effect ids (0..127)");
+    }
+
+    // "!hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
+    // draws the over-head HP bar at <pct>% and plays the hit overlay animation 0x8f-<crit>. Use it to calibrate
+    // NEXUS_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
+    // HitCritByte. e.g. "!hit 50" (half bar) then "!hit 50 0" / "!hit 50 40" to compare hit animations.
+    private void HitProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var pct))
+        { SendLog("usage: !hit <pct 0..100> [crit 0..255]   (over-head HP bar + hit anim on the faced mob)"); return; }
+        byte crit = parts.Length > 2 && byte.TryParse(parts[2], out var c) ? c : HitCritByte;
+        pct = Math.Clamp(pct, 0, 100);
+
+        var (fx, fy) = FrontTile();
+        var wmob = _world.MobAt(_char.Map, fx, fy);
+        uint target = wmob?.Id ?? MobAt(fx, fy)?.Id ?? _char.Id;
+        if (wmob is not null) _world.Broadcast(_char.Map, p => p.DamageOver(target, (byte)pct, crit));
+        else                  SendDamage(target, (byte)pct, crit);
+        SendLog($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
+        Log.Info($"   -> !hit id={target} pct={pct} crit={crit}");
+    }
+
     // ---- profile window (the "Mind's Eye") ----
     // The client opens the self-profile window when the profile key is pressed by sending 0x2D. Byte 0
     // == 0 is the self-profile request (byte != 0 is group status in 7.x). We reply with 0x39, the
     // self-profile packet (clif_mystaytus): AC/clan/title/class/legend. Without this reply the window
     // never appears — that's the bug the user hit.
+    // 0x66 right-click "examine item". Body (live capture): [0]=00 [1]=itemRef(varies per item) [2]=00
+    // [3..6]=01 01 01 01 [7..9]=00 00 00. body[1] is the item selector — decode it against the bag/gear by
+    // right-clicking KNOWN items and reading this log (does body[1] equal the slot? the icon? the item id?).
+    // Once body[1] is understood AND the 0x66 REPLY format (client handler 0x4511b0) is reversed, this can
+    // answer with the item-detail popup. Until then it's a decode probe (no reply -> the client stops retrying
+    // only after its own timeout, which is harmless).
+    private void HandleItemInfoRequest(byte[] dec)
+    {
+        int sel = dec.Length > 1 ? dec[1] : -1;
+        var it = _char.Inventory.FirstOrDefault(i => i.Slot == sel)
+              ?? _char.Equipment.FirstOrDefault(e => e.Slot == sel);
+        var def = it is null ? null : Content.ItemById(it.ItemId);
+        Log.Info($"   -> ITEM-INFO (0x66) sel={sel} (0x{(sel < 0 ? 0 : sel):x2}) body={Log.Hex(dec)}" +
+                 (def is null ? "  [no bag/gear item at that slot]" : $"  -> '{def.Name}' #{def.Id}"));
+    }
+
     private void HandleProfileRequest(byte[] dec)
     {
         byte sub = dec.Length > 0 ? dec[0] : (byte)0;
@@ -3429,6 +3729,23 @@ public sealed class Session
     //   [exchange u8]
     //   [0 u8] [legendCount u16BE]
     //   legendCount × { icon u8, color u8, textLen u8, text bytes }
+    //
+    // WIRE FORMAT (reverse-engineered from the client parser at 0x4732a0 — the mode-0 widget picked by the
+    // shared profile dispatcher 0x424820; the mode-1/other-view widget 0x48b6a0 is a DIFFERENT, larger layout):
+    //   [AC u8][dam u8][hit u8]
+    //   [clan str][clanTitle str][title str][spouse str]       (each: u8 len + bytes)
+    //   [group u8][TNL u32BE][className str]
+    //   [g0 u16BE][g1 u16BE][g2 u16BE]                         (three portrait/graphic ids — see below)
+    //   [box str]                                              (multi-line box; client maps TAB->CR)
+    //   [flag u8]
+    //   [legendCount u8]  then legendCount × { icon u8, color u8, len u8, text }
+    // CRITICAL: 4.95 has NO packed equipment-icon array and the legend count is a single u8. The old code
+    // sent a 6.x/RTK-shaped 14-cell/113-byte equip region (that fork has more item slots — hence the bigger
+    // block); on 4.95 it pushed the legend count into the padding (count read as 0 -> no legends) and spilled
+    // icons into the wrong fields (gear rendered in the wrong paperdoll slots). Proven by decoding a real 6.x
+    // capture with this exact grammar: it aligns perfectly up to the legend count, then the 6.x equip block
+    // remains unconsumed. The self paperdoll BODY is drawn from the live on-map character sprite, not this
+    // packet, so g0/g1/g2 = 0 (default) exactly matches the known-good capture.
     private void SendSelfProfile()
     {
         var eq = Totals();                    // fold worn-gear bonuses + active buffs into the displayed AC/dam/hit
@@ -3444,41 +3761,51 @@ public sealed class Session
         d.AddRange(Be32(_char.Tnl));    // experience to next level
         AddLenStr(d, _char.ClassName);
 
-        // 14 equipment slots, indexed by EQ index = ITM_type - 3 (EQ_WEAP=0 … EQ_COAT=13; see RTK itemdb.h).
-        // Empty slot = 10 zero bytes. Occupied slot (RTK clif_mystaytus): icon(u16BE) iconColor(u8)
-        // dispName(u8len+txt) baseName(u8len+txt) dura(u32BE) protected(u8). This is what fills the
-        // character-window paperdoll + item-name list. The iconColor byte IS present here on 4.95 (unlike the
-        // 0x0F/0x37 windows) — proven because our all-zero (10-byte) empty slots leave the trailing legends
-        // correctly aligned, which only holds if the client reads 10 bytes per empty slot.
-        for (int i = 0; i < 14; i++)
-        {
-            var worn = _char.Equipment.FirstOrDefault(e => (Content.ItemById(e.ItemId)?.Type ?? 0) - 3 == i);
-            var wdef = worn is null ? null : Content.ItemById(worn.ItemId);
-            if (worn is null || wdef is null) { d.AddRange(new byte[10]); continue; }
-            string disp = string.IsNullOrEmpty(worn.CustomName) ? wdef.Name : worn.CustomName;
-            d.AddRange(Be(IconWire(wdef.Icon)));
-            d.Add(wdef.IconColor);
-            AddLenStr(d, disp);
-            AddLenStr(d, wdef.Name);
-            d.AddRange(Be32(worn.Dura));
-            d.Add(0);                   // protection flag
-        }
+        // The three equipment ICON cells beside the doll: helm, left ring, right ring. These slots have no
+        // character-sprite layer in 4.95, so the profile shows them as ground-icon boxes fed by these u16s.
+        d.AddRange(Be(ProfileCellIcon(4)));   // helm  (wire slot 4)
+        d.AddRange(Be(ProfileCellIcon(7)));   // left ring  (wire slot 7)
+        d.AddRange(Be(ProfileCellIcon(8)));   // right ring (wire slot 8)
 
-        d.Add(0);                       // exchange flag
+        // The multi-line text BOX under the character. The client converts TAB(0x09)->CR(0x0d), so tab-separated
+        // entries become separate lines. This is the self-view's buff/effect box (issue #6): active buff/debuff
+        // names + remaining seconds. Empty when nothing is active. (The other-view 0x34 puts the GEAR list here
+        // instead; self-view = buffs, other-view = gear, exactly as requested.)
+        AddLenStr(d, BuffBoxText());
+        d.Add(0);                       // trailing flag before the legend list (client field +0x935; 0 in captures)
 
         var legs = _char.Legends ?? new List<Legend>();
-        d.Add(0);                       // reserved
-        d.AddRange(Be((ushort)legs.Count));
+        d.Add((byte)Math.Min(legs.Count, 255));   // legend count is a single u8 in 4.95 (NOT u16)
         foreach (var lg in legs)
         {
             var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
+            if (t.Length > 255) t = t[..255];
             d.Add(lg.Icon);
             d.Add(lg.Color);
             d.Add((byte)t.Length);
             d.AddRange(t);
         }
 
-        SendMap(0x39, _gameInc++, d.ToArray(), $"self-profile(0x39) title='{_char.Title}' ac={_char.Ac} legends={legs.Count}");
+        SendMap(0x39, _gameInc++, d.ToArray(),
+            $"self-profile(0x39) ac={_char.Ac} class='{_char.ClassName}' buffs={_buffs.Count} legends={legs.Count}");
+    }
+
+    // The self-view buff/effect box (issue #6): one tab-separated line per active buff/debuff with the remaining
+    // time in seconds. Grouped by spell so a multi-stat buff shows once. The client turns the tabs into line
+    // breaks (see SendSelfProfile). Reopening the profile re-reads the current durations.
+    private string BuffBoxText()
+    {
+        long now = Environment.TickCount64;
+        _buffs.RemoveAll(b => b.Expires <= now);
+        var lines = _buffs
+            .GroupBy(b => b.Key)
+            .Select(g =>
+            {
+                int secs = (int)Math.Max(0, (g.Max(x => x.Expires) - now + 999) / 1000);
+                var name = string.IsNullOrEmpty(g.First().Name) ? g.Key : g.First().Name;
+                return $"{name} ({secs}s)";
+            });
+        return string.Join('\t', lines);
     }
 
     // length-prefixed ASCII string: [len u8][bytes]. Empty string -> a single 0 byte.
@@ -3545,8 +3872,11 @@ public sealed class Session
         d.Add(0);
         d.AddRange(new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, _char.Armor, 0, WeaponLook(), ShieldLook() });
 
-        // three portrait/face graphic ids (feed FACE.EPF). 0 = default face for now.
-        d.AddRange(Be(0)); d.AddRange(Be(0)); d.AddRange(Be(0));
+        // three equipment ICON cells beside the doll: helm, left ring, right ring (no sprite layer for these
+        // in 4.95, so they render as ground-icon boxes). Same IconWire encoding as the 0x37 equip window.
+        d.AddRange(Be(ProfileCellIcon(4)));   // helm  (wire slot 4)
+        d.AddRange(Be(ProfileCellIcon(7)));   // left ring  (wire slot 7)
+        d.AddRange(Be(ProfileCellIcon(8)));   // right ring (wire slot 8)
 
         // FIELD #10 — PAGE-1 gear/item list (u8 len + text). Item names are TAB-separated (client
         // converts 0x09 -> CR for multiline). Empty until inventory/equipment exists.
@@ -3585,9 +3915,19 @@ public sealed class Session
         SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={targetId} nation={_char.Nation} blurb={blurb.Length}B legends={legs.Count}");
     }
 
-    // Page-1 gear/item list for the click profile: TAB-separated equipped-item names. No inventory
-    // system yet, so this is empty (page 1 shows a blank item list, which is correct for a naked char).
-    private string GearListText() => "";
+    // Page-1 gear/item list for the click profile (the "inspect another player" view): the names of every
+    // worn item, TAB-separated (the client turns 0x09 -> CR, one per line). This is the equipment list that
+    // shows below the portrait when you click a character. Ordered by the canonical equip-slot byte so the
+    // list reads weapon → armour → shield → helm → … regardless of the order items were put on.
+    private string GearListText()
+    {
+        var names = _char.Equipment
+            .Select(e => (worn: e, def: Content.ItemById(e.ItemId)))
+            .Where(x => x.def is not null)
+            .OrderBy(x => x.def!.EquipSlot)
+            .Select(x => string.IsNullOrEmpty(x.worn.CustomName) ? x.def!.Name : x.worn.CustomName);
+        return string.Join('\t', names);
+    }
 
     // "!ckm" — send a 0x34 click-profile with DISTINCT MARKER strings in every text field, so we can
     // read off which window slot each field lands in and pin the true 4.95 layout (the 7.x port
@@ -3771,7 +4111,6 @@ public sealed class Session
     public void SideEntity(uint id, byte side) => SendSide(id, side);                              // 0x11
     public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, type, time, param);  // 0x1A
-    public void NumberOver(uint id, byte number) => SendNumber(id, number);                        // 0x29 (legacy raw)
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
     public void DespawnEntity(uint id) { lock (_viewLock) _shownMobs.Remove(id); SendDespawn(id); }  // 0x0E
 

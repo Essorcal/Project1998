@@ -29,11 +29,27 @@ public sealed class MapData
     public ushort Pass(int x, int y) => _pass[y * Xs + x];
     public ushort Obj(int x, int y)  => _obj[y * Xs + x];
 
-    /// <summary>Is (x,y) impassable? An object (wall/prop) OR a set ground-passability flag (water/cliff/
-    /// out-of-bounds) blocks it — the same test the player's walk uses (see Session.Blocked), so mob AI and
-    /// player collision agree. Out-of-range coords count as solid.</summary>
+    /// <summary>The raw ground <c>u16</c> for a cell — tile in the low 14 bits, passability flag in the top 2.
+    /// This is the wire form the client's 0x06 cell-patch packet carries as the first word of each cell.</summary>
+    public ushort GroundWord(int x, int y) => (ushort)((_tile[y * Xs + x] & 0x3FFF) | (_pass[y * Xs + x] << 14));
+
+    /// <summary>Change the object tile at (x,y) — the door toggle ('o'/0x20) uses this. The cache is
+    /// process-wide, so a toggled door is shared world state: everyone already on the map is told to redraw via
+    /// the 0x06 patch, and reading it back lets the next 'o' toggle the door closed again. No-op if out of range.
+    /// Purely cosmetic — collision is the ground pass flag only (see <see cref="Solid"/>), which this leaves alone.</summary>
+    public void SetObj(int x, int y, ushort obj)
+    {
+        if (x < 0 || y < 0 || x >= Xs || y >= Ys) return;
+        _obj[y * Xs + x] = (ushort)(obj & 0x3FFF);
+    }
+
+    /// <summary>Is (x,y) impassable? Only the ground-passability flag blocks (water/cliff/out-of-bounds and
+    /// the ground baked under walls) — the object layer is VISUAL, not collision (matches the RTK reference's
+    /// map_canmove, which collides on pass only and leaves its object check commented out). This is the same
+    /// test the player's walk uses (see Session.Blocked), so mob AI and player collision agree. Out-of-range
+    /// coords count as solid.</summary>
     public bool Solid(int x, int y) =>
-        x < 0 || y < 0 || x >= Xs || y >= Ys || _obj[y * Xs + x] != 0 || _pass[y * Xs + x] != 0;
+        x < 0 || y < 0 || x >= Xs || y >= Ys || _pass[y * Xs + x] != 0;
 
     private static readonly Dictionary<ushort, MapData?> Cache = new();
 

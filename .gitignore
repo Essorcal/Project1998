@@ -29,6 +29,8 @@ re/Item.epf
 re/Item.pal
 re/Item.tbl
 re/items_*.png
+re/snd/
+re/sound_log.txt
 re/monsfrm.tbl
 re/str_eng.res
 re/nexustk_dat_list.txt

@@ -28,6 +28,12 @@ LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sound_log.txt")
 H19     = 0x050ad0   # 0x450ad0  the 0x19 (music/sound) handler; arg0 = decrypted packet body ptr (starts at opcode)
 PLAY    = 0x0798c0   # 0x4798c0  low-level audio play fn: thiscall(ecx=mgr), arg0=soundId, arg1=type
 DECRYPT = 0x078680   # 0x478680  decrypt(src, len, out, this); src[0]=opcode, out=decrypted body
+H1A     = 0x0503a0   # 0x4503a0  the 0x1A ACTION handler; body: id(u32)@+1 type(u8)@+5 time(u16)@+6 sound(u8)@+8
+GFLAG   = 0x0fd390   # 0x4fd390  global -> ptr; [ptr+0x456]==1 gates whether the action plays its sound byte
+SNDOBJ  = 0x063ab0   # 0x463ab0  positional-sound "play" wrapper: thiscall(ecx=obj); switch [obj+0x148] (mode 0..4)
+JT      = 0x063c88   #           the 5-dword mode->handler jump table 0x463ab0 dispatches through
+PLAY2   = 0x079d20   # 0x479d20  the OTHER low-level play fn (looping/streamed?), reached by one of the modes
+CTOR    = 0x063950   # 0x463950  sound-object ctor; stores mode at [obj+0x148], soundId at [obj+0x138]
 
 JS = r"""
 const MOD = 'NexusTK_local.exe';
@@ -59,6 +65,50 @@ tryHook(RVA_H19, 'h19', {
     const body = args[0];                 // edi = [ebp+8] = packet body (starts at opcode 0x19)
     let type = -1; try { type = body.add(1).readU8(); } catch(e){}
     send({t:'H19', m:'0x19 handler: type='+type+'  body[0..23]= '+hex(body, 24)});
+  }
+});
+
+// ---- 0x1A action handler: does our cast (type 6) arrive with a sound byte, and does the gate pass? ----
+tryHook(RVA_H1A, 'h1a', {
+  onEnter(args) {
+    const body = args[0];
+    let type=-1, snd=-1, flag=-1;
+    try { type = body.add(5).readU8(); } catch(e){}
+    try { snd  = body.add(8).readU8(); } catch(e){}
+    try { flag = base.add(RVA_GFLAG).readPointer().add(0x456).readU8(); } catch(e){}
+    send({t:'H1A', m:'0x1A action: type='+type+' sound(byte8)='+snd+'  gate[+0x456]='+flag+'  body= '+hex(body, 12)});
+  }
+});
+
+// ---- dump the mode->handler jump table so we know which [obj+0x148] value actually PLAYS ----
+try {
+  const jt = at(RVA_JT);
+  const rows = [];
+  for (let i = 0; i < 5; i++) {
+    const tgt = jt.add(i*4).readPointer();
+    rows.push('mode ' + i + ' -> 0x' + tgt.toString(16) + ' (rva 0x' + tgt.sub(base).toString(16) + ')');
+  }
+  send({t:'info', m:'MODE jump table [0x463c88]:\n     ' + rows.join('\n     ')});
+} catch (e) { send({t:'info', m:'JT dump failed: ' + e}); }
+
+// ---- positional-sound object: what MODE + soundId did our 0x19 packet actually build? ----
+tryHook(RVA_SNDOBJ, 'sndobj', {
+  onEnter(args) {
+    const obj = this.context.ecx;
+    let mode=-1, sid=-1, x=-1, y=-1;
+    try { mode = obj.add(0x148).readS32(); } catch(e){}
+    try { sid  = obj.add(0x138).readS32(); } catch(e){}
+    try { x    = obj.add(0x130).readS32(); } catch(e){}
+    try { y    = obj.add(0x134).readS32(); } catch(e){}
+    send({t:'SNDOBJ', m:'play-wrapper: mode[+0x148]='+mode+'  soundId[+0x138]='+sid+'  x='+x+' y='+y});
+  }
+});
+
+// ---- the OTHER low-level play fn (one mode routes here instead of 0x4798c0) ----
+tryHook(RVA_PLAY2, 'play2', {
+  onEnter(args) {
+    let a0=-1,a1=-1; try{a0=args[0].toInt32();}catch(e){} try{a1=args[1].toInt32();}catch(e){}
+    send({t:'PLAY2', m:'play2 (0x479d20): arg0='+a0+' arg1='+a1});
   }
 });
 
@@ -94,7 +144,7 @@ Process.setExceptionHandler(function (details) {
   } catch(e) { send({t:'CRASH', m:'exception in handler: '+e}); }
   return false;   // let it proceed; we just logged the location
 });
-""".replace("RVA_DECRYPT", "0x%x" % DECRYPT).replace("RVA_H19", "0x%x" % H19).replace("RVA_PLAY", "0x%x" % PLAY)
+""".replace("RVA_DECRYPT", "0x%x" % DECRYPT).replace("RVA_H1A", "0x%x" % H1A).replace("RVA_GFLAG", "0x%x" % GFLAG).replace("RVA_H19", "0x%x" % H19).replace("RVA_SNDOBJ", "0x%x" % SNDOBJ).replace("RVA_JT", "0x%x" % JT).replace("RVA_PLAY2", "0x%x" % PLAY2).replace("RVA_PLAY", "0x%x" % PLAY)
 
 
 def main():
@@ -111,6 +161,9 @@ def main():
         if   t == "info":   out("· " + p["m"])
         elif t == "RECV19": out("RECV19 " + p["m"])
         elif t == "H19":   out("H19   " + p["m"])
+        elif t == "H1A":   out("H1A   " + p["m"])
+        elif t == "SNDOBJ": out("SNDOBJ " + p["m"])
+        elif t == "PLAY2": out("PLAY2 " + p["m"])
         elif t == "PLAY":  out("PLAY  " + p["m"])
         elif t == "CRASH": out("!!!!! " + p["m"])
         else:              out(str(p))

@@ -320,15 +320,32 @@ entity's action vtable method `[vtbl+0x78]`). `type`: 0=stand, 1=attack, 2=throw
 13=shame, 14=affection, 15=boredom, 16=sleepiness, 17=surprise, 18=rage, 19=sarcasm, 20=shrug,
 21=annoyed, **22=dance**, 23=strange, 24=kiss, 27=charge, 28=attack-after-charge. (See §11 for `0x1d`.)
 
+**`0x13` — combat damage / over-head HP bar** (SOLVED 2026-07-25, decoded from handler `0x4508f0`).
+```
+entityId(u32BE) critical(u8) percent(u8) hitSound(u8)
+```
+One packet does three things on the target entity:
+- **HP bar** — `percent` (0–100) sets the over-head health bar fill (via `0x44e870`). The client **skips the
+  bar if `percent > 100`**, so clamp; `0` = empty (dead). This is the "remaining HP bar above a monster's head."
+- **Hit animation** — plays overlay animation `0x8f − critical` (SIGNED) over the entity (queued for `0x78`
+  ticks via `0x4622d0` → `0x41b5d0`), i.e. `critical` selects a hit spark. RTK uses `33` (normal) / `255` (crit).
+- **Hit sound** — `hitSound` is played through the sound manager if nonzero (RTK appends a `u32` damage tail
+  here; the 4.95 client reads only its **high byte** = `0` normally, and ignores everything past `body[7]`).
+
+RTK's `clif_send_mob_health` / `clif_send_pc_healthscript` build the same shape. `critical` is calibratable
+live via `NEXUS_HIT_CRIT`; `!hit <pct> [crit]` auditions the bar + hit anim over the faced mob. **Death beat:**
+4.95 monsters have **no** death frame-set (`monsfrm.tbl` defines only walk/attack), so a "death animation" is:
+send `percent = 0` (empty bar + final hit spark), then delay the `0x0E` despawn (`NEXUS_DEATH_DELAY_MS`, default
+600 ms) so the corpse doesn't pop out instantly. Players die to **ghost form** (appearance `[1]=1`, §8) instead.
+
 **`0x19` — background music.**
 ```
 type(u8) pad(u8=0) bgm(u16BE) volume(u8)
 ```
-Handler `0x450ad0` (dispatch-table stub `0x44bb06` → real handler): `type` selects the audio backend
-inside the play fn `0x4798c0` — **2 = MIDI** (the stock `1.mid`..`12.mid` in `NexusTK.snd`, played via the
-single-instance MIDI player `[0x4fd3ac]`), 1 = `%03d.MP3`, **0 = a one-shot wav/sfx** (the play fn's type-0
-branch reads the sound id at body `+3` (u16BE) + volume at `+5`, and plays `NexusTK.snd` sound #id on a wav
-channel — this is the **spell sound-effect** path; `Session.SendSound`, ids 1–255 safe). `bgm 0` stops the music.
+Handler `0x450ad0` (dispatch-table stub `0x44bb06` → real handler): `body[1] = type` selects the audio
+backend — **2 = MIDI** (the stock `1.mid`..`12.mid` in `NexusTK.snd`, played via the single-instance MIDI
+player `[0x4fd3ac]`), 1 = `%03d.MP3`, **0 = a positional wav/sfx**. Types 2/1 read `sound(u16BE)@+3` +
+`volume@+5` directly; `bgm 0` stops the music.
 `volume` is a raw byte the client **log-scales**: the handler computes `dB = 2000·log10(vol/100)` (so
 `vol=100` = 0 dB = nominal full, `vol>0` audible, `vol=0` silent), and the MIDI path then compresses it
 further against a base at `[snd+0x270]` — so the audible range is narrow and `>100` (up to 255) is the knob
@@ -336,6 +353,37 @@ to push louder. The client dedups (`cmp bgm,[midi+8]`) so re-sending the playing
 on map entry / change (the server picks the track per map — `Content.BgmFor`); there is no original
 map→track table in the client files, so the assignments are the server's own. Songs are numbered `N.mid`;
 some tracks may reference instrument samples a given install lacks, but that only manifests at high volume.
+
+**`0x19` type 0 — spell sound-effect (SOLVED 2026-07-25, live-verified).** The type-0 path is **not** a flat
+"play sound N" — it's a positional-sound TLV parser, and RTK's `clif_playsound` (a later-client `type 3`
+layout) mis-parses on 4.95 into a garbage sound object (mode 4, random id) → silent. The real 4.95 wire, cracked
+by RE (`re/frida_sound.py`; hooks the `0x19` handler → TLV tail `0x450c48` → spatial builder `0x44e6c0` → ctor
+`0x463950` → play wrapper `0x463ab0` → play fn `0x4798c0`):
+```
+19 | 00(type=sfx) | 03(P0) | soundId(u16BE) | 64(vol) | 03 00 01 | 00 00 00 00
+```
+`type 0` reads `soundId@body[3..4]` + `volume@body[5]`, then runs the TLV tail starting at `body[P0]+3` (P0=3
+puts it just past the 5-byte header). The tail's parsed **`C` field → the sound object's MODE** (`[obj+0x148]`);
+the play wrapper dispatches modes 0–4 and **only mode 1 reaches the audio player** — so the tail bytes
+`03(tagA) 00(B0) 01(C=mode 1)` with all skip bytes `0` are what make it play. `soundId`/`type`/`gain` reach the
+play fn via the "type-group" (`[ebp-0x1c/18/14]`, only populated by the type-0/1/2 prologue — `type 3` leaves
+them garbage, the other reason RTK's format failed). `volume` is log-scaled: `dB = 2000·log10(vol·0.01)` (const
+`@0x4cc408 = 0.0`, so `vol>0` audible; `100` = 0 dB). `Session.SendSound`/`SoundAt`; `BroadcastFx` sends the
+cast's effect (`0x29`) + this sound (`0x19`) to the whole map. **NOT** the `0x1A` action 4th byte: the client
+picks an action's sound from a fixed *action-type → sound* table (emote 22→311, sit 4→406), and **magic type 6
+→ sound 0 → silent** no matter what byte we send (proven: `byte8=0` even on the audible emotes). Effect
+animation and sound are **separate** — the `0x29` effect ctor chain makes no play call, so sound rides its own
+`0x19`. Per-spell sound id from RTK's `pcalign` ladder (`Content.EffectSound`) or the spell's explicit
+`fx.Sound`. Sound files are `NexusTK.snd` (a PAK of `NNN.wav` + `N.mid`, non-contiguous, ids up to ~720);
+`re/extract_snd.py` dumps them. **Best-effort only** — RTK's 6.x/7.x sound numbering doesn't perfectly match
+4.95's, and fan sites carry no sound data. Debug: `!snd <id>` auditions raw client sound ids live.
+
+**Missing-entity policy (2026-07-25): no fallbacks.** When an effect/sound id doesn't exist in the 4.95 client
+(e.g. `Effect.tbl` has only ids 0–127, so RTK anims ≥128 like `dark_veil`'s 136 are absent; a few RTK sounds
+have no matching `.wav`), we send it as-is and let the client show/play **nothing**, rather than substituting a
+stand-in — so a broken entry is visibly empty and easy to spot. `!efx <id>` auditions raw `Effect.tbl` ids
+(0–127) live to help identify the real 4.95 effect for a spell whose RTK id doesn't line up (a version-gap
+asset task deferred to when the correct 4.95 effect assets are sourced).
 
 **`0x33` type-1 form** (parser `0x4361b0`): `… type(=01) app0 app1 spriteId(u16) extra(u8) renderKind nameLen name`
 (5 appearance bytes; `app0`/`app1` are clobbered by the `u16` at +2). **⚠ This does NOT draw creatures.**
@@ -381,8 +429,8 @@ uses** — the difference is the `look` field. `0x44d7d0` classifies the look de
 `color` = palette (→ resolver), `dir` = facing/state (→ ent+`0x18d`). **There IS a viewport gate** here
 (`0x424310`, unlike `0x16`): entries outside the camera rect are silently skipped, so spawn inside view.
 Verified live: `look 0x8000`→Monster.tbl frame 6, `0x8001`→26, `0x8002`→46 … i.e. **frame = 6 + 20·monsterId**
-(the idle "Starting" frame per Monster.tbl). Combat (melee → `0x29` number → `0x0E` despawn) works against
-these because they're real entities with collision. This is the `0x33`-monster path from Mithia 7.x
+(the idle "Starting" frame per Monster.tbl). Combat (melee/spell → `0x13` HP bar + hit anim → death beat →
+`0x0E` despawn, see §7.2 `0x13`) works against these because they're real entities with collision. This is the `0x33`-monster path from Mithia 7.x
 (`clif_cmoblook_sub`: `look + 0x8000`) — it moved to `0x07` in 4.95 (see §17). Builder: `Session.SendCreatureList`.
 
 **`0x0E` — despawn list** (handler `0x450440`):
@@ -407,12 +455,18 @@ template (9 dwords). A number renderer would `itoa` the value — this indexes a
 `u8 = N` draws the anim-N effect (the handler's internal `−1` is cancelled by the table being loaded 1-based).
 The effect-id + sound-id per spell come from RTK's `global_zap`/`global_heal` `pcalign` ladder (ported to
 `Content.ZapEffect`/`HealEffect`; e.g. spark = 28, unaligned zap = 4, unaligned heal = 5, kwi-sin heal = 65).
-RTK's `sendAnimation(N)` ids all fall in 0–127 and line up with `Effect.tbl` (128 effects).
+Most RTK `sendAnimation(N)` ids fall in 0–127 and line up with `Effect.tbl` (128 effects), and low ids are
+confirmed identity (unaligned heal 5, spark 28). But the id spaces are **not** a perfect match: RTK's 6.x/7.x
+client has more/renumbered effects, so some ids land on the wrong effect (aligned-heal range) or are out of
+range entirely (`dark_veil` 136, plus a handful of GM spells) → the 4.95 client draws nothing. Per the
+no-fallback policy above, these stay empty until the correct 4.95 effect assets are sourced. `!efx <id>`
+auditions raw ids to calibrate.
 
 > **History:** this opcode was previously documented (and used) as a "floating number" — sending the damage
 > value as the `u8`, which the client read as effect `#(dmg−1)`, an unintended graphic. Corrected 2026-07-25 by
-> disassembling the handler after the absence of in-game damage numbers was questioned. Melee still sends a raw
-> value here (`SendNumber`) pending a proper hit-effect id; spell casts now send real `Effect.tbl` ids (§11d).
+> disassembling the handler after the absence of in-game damage numbers was questioned. The old melee `SendNumber`
+> hack is now **gone**: hits send the `0x13` combat packet (over-head HP bar + hit spark, §7.2); spell casts send
+> real `Effect.tbl` ids here for the cast graphic (§11d).
 
 **`0x1E` / `0x20`** — acks / time, as in §6.
 
@@ -538,9 +592,9 @@ multi-byte ints below are **big-endian**. See `Session.SendSelfProfile` / `SendC
 `HandleChangeProfile`.
 
 **Self-profile — request `0x2d` → reply `0x39` ("Mind's Eye").** Pressing the profile key sends
-`2d 00` (`body[0]==0` = self). Reply with `0x39`, the stats/legend summary (from 7.x `clif_mystaytus`,
-confirmed byte-for-byte against a real 6.x capture: AC=99, class "Peasant", legend "Born in Hyul 31,
-Winter"):
+`2d 00` (`body[0]==0` = self). Reply with `0x39`, the stats/legend summary. **This layout was
+reverse-engineered from the client's OWN parser `0x4732a0`** (the mode-0 self widget picked by the shared
+profile dispatcher `0x424820`; vtable `0x4cdf88`, method +0x5c). Body:
 ```
 [AC u8][dam u8][hit u8]
 [clan : u8 len + bytes]           (len 0 = clanless)
@@ -549,11 +603,21 @@ Winter"):
 [spouse : u8 len + bytes]
 [group u8][TNL u32BE]
 [className : u8 len + bytes]
-14 × equip slot (10 bytes each, all zero = empty)
-[exchange u8]
-[00 u8][legendCount u16BE]
+[helmIcon u16BE][leftRingIcon u16BE][rightRingIcon u16BE]   ← the 3 equip-icon cells beside the doll
+[buff box : u8 len + text]        ← multi-line; client maps TAB(0x09)→CR(0x0d), one line per active buff
+[flag u8]                         (client field +0x935; 0 in captures)
+[legendCount u8]                  ← a single u8 (NOT u16)
 legendCount × { icon u8, color u8, textLen u8, text }
 ```
+**⚠ Do NOT reuse a 6.x/RTK profile capture for 4.95.** Those forks have MORE item slots, so their `0x39`
+carries a ~116-byte equipment region between `className` and the legends. 4.95's parser has no such region —
+it reads only the 3 icon cells + buff box + one flag byte, then a **u8** legend count. Feeding it the 6.x
+shape pushes the legend count into the padding (read as 0 → no legends) and spills icons into the wrong
+fields (gear in wrong cells). Decoding a real 6.x capture with the grammar above proves it: the bytes align
+perfectly up to the legend count, then the 6.x equip block is left unconsumed. The self-view doll BODY is the
+LIVE on-map sprite (armor/weapon/shield only) — helm/rings have no sprite layer and show ONLY in the 3 icon
+cells. The **buff box** is the self-view analog of the click-profile's gear list (issue: self=buffs,
+other=gear); it holds `Name (Ns)` per active buff, grouped by spell (`Session.BuffBoxText`).
 
 **Click-profile — request `0x43` → reply `0x34`.** Clicking a character sends `43 01 id(u32) 00`. Reply
 with `0x34`, the public two-page view (portrait + gear on page 1; nation + picture + writable blurb on
@@ -563,7 +627,7 @@ and does not fit 4.95. Body:
 ```
 5 header strings (u8 len + bytes): title, clan, clanTitle, class, name   (order confirmed live)
 appearance: tag u8 (=0) + 7 look bytes                (same 7-byte form as 0x33 type-0 → correct sprite)
-3 × portrait graphic id (u16BE)                       (feed FACE.EPF; 0 = default)
+[helmIcon u16BE][leftRingIcon u16BE][rightRingIcon u16BE]  ← 3 equip-icon cells (SAME as 0x39; NOT portraits)
 gear/item list (u8 len + text)                        PAGE 1; item names TAB-separated (client → CR)
 scalar (u32BE)                                        (unknown; 0)
 look-selector A (u8), look-selector B (u8)            (0xff = none)
@@ -581,6 +645,13 @@ Gotchas that cost real debugging time:
   still shows).
 - 4.95's click popup has **no totem slot** (`TOTEM.EPF` is unreferenced in the client) — totem only
   appears on the HUD/self-profile, not here.
+- The **3 icon cells** (helm / left ring / right ring) are shared by BOTH views as three `u16BE` fields.
+  4.95 has no character-sprite layer for these slots, so the profile shows them as ground-icon boxes:
+  each = `IconWire(item.Icon)` (same encoding as the `0x37` equip window), `0` = empty box. They were
+  briefly mistaken for "portrait graphics"; a live test (an old bug rendered the *weapon* icon in the
+  helm box) proved they take an `IconWire` value. Order confirmed live: helm, left ring, right ring.
+  Wire slots come from the client's own `0x1F` unequip captures: **helm=4, left ring=7, right ring=8**.
+  Fed by `Session.ProfileCellIcon(wireSlot)`.
 
 **Editing — client `0x4f`.** Saving the profile edit sends
 `4f | picSize(u16BE) | pic[] | blurbLen(u8) | blurb[] | 00`. Parse both (mirrors the client's own
@@ -700,9 +771,11 @@ it is not needed to end the refresh.
 `chatType(u8) entityId(u32) msgLen(u8) msg` attributed to the speaker's entity id → bubble appears
 over their head.
 
-**Attack:** client sends `0x13` (bare `13 00`) on spacebar. **Reply with `0x1A` (action), type=1** —
-**not** `0x13`. (The `0x13` receive-handler `0x4508f0` computes animation `0x8f − a`; with `a=0` that
-is `0x8f` = the **death** animation, which makes the character flash "dead". This bit us — §14.)
+**Attack:** client sends `0x13` (bare `13 00`) on spacebar. The swing is a **`0x1A` action, type=1**. The
+server→client `0x13` is a *different* packet — the combat **damage / over-head HP bar** (§7.2) — sent at the
+hit resolution, not as the swing. (Historical trap: a *bare/zero* `0x13` gives `critical=0` → animation
+`0x8f − 0 = 0x8f`, a "death flash"; that scared us off replying `0x13` at all until the handler was fully
+decoded — the fix is simply to send a real `percent`/`critical`, which is what combat now does.)
 
 **Emotes (`:` wheel).** Client sends `0x1d` = `idx(u8) 00`. The emote plays as an action:
 `type = idx + 11`, broadcast as `0x1A` to the emoter **and every peer on the map** (RTK
@@ -715,12 +788,14 @@ The dance/emote sound rides along with the client's action sprite; no separate s
 slot — see §8), persists in the store, and drives the melee damage bonus. This works (it draws on the
 player, which renders). With no weapon the space-bar attack plays the empty-handed *throw* animation/sound.
 
-**Combat (server-authoritative) — ⚠ WORKS SERVER-SIDE ONLY, no client mob yet.** The server owns mob HP
-(`Shared/Mob.cs`, tracked in `Session._mobs`). On `0x13`: send the player swing (`0x1A`), then resolve melee
-against the mob on the tile *in front* of the player (facing tracked from the last walk `0x32`); apply
-`might + weapon bonus`, pop a `0x29` number over the mob, and on death `0x0E` (despawn) + exp via a fresh
-`0x08`. **This targets real `0x07` monsters (§7.2, §11a) — visible, with collision, killable.** Verified
-end-to-end live: spawn → melee → damage number → despawn → "You defeated" + exp.
+**Combat (server-authoritative).** The server owns mob HP (`Shared/Mob.cs` + `World`). On client `0x13`: send
+the player swing (`0x1A`), then resolve melee against the mob on the tile *in front* of the player (facing
+tracked from the last walk `0x32`); apply `might + weapon bonus`, broadcast the **`0x13` over-head HP bar + hit
+spark** to the whole map (`ShowDamageResult`), and on death send `percent=0` (empty bar + final spark) then a
+**delayed `0x0E`** despawn (the "death beat" — 4.95 has no monster death frames, see §7.2) + exp via a fresh
+`0x08`. Spell damage (`CastDamage`/`ApplyCastGeneric`) shows the same HP bar on top of the cast effect. **This
+targets real `0x07` monsters (§7.2, §11a) — visible, with collision, killable.** Verified end-to-end live:
+spawn → melee/spell → HP bar drains → death beat → despawn → "You defeated" + exp.
 
 ## 11a. Monster rendering — the sprite category system ✅ SOLVED (`0x07`)
 
@@ -846,9 +921,9 @@ already on the map (`0x33` per peer, `0x07` per mob) and `World.EnterMap` broadc
 On disconnect/warp-out (`World.LeaveMap`) the player is despawned (`0x0E`) for the peers left behind.
 
 **Broadcasts** (to all same-map players, usually excluding the actor): move `0x0C`, turn `0x11`, speech
-`0x0D` (real chat only — `!`-commands stay self-only via `SendLog`), attack swing `0x1A`, damage number
-`0x29`, spawn `0x07`, despawn `0x0E`. The moving player's OWN client is driven by the self-walk modes
-(§10), so it's excluded from the `0x0C` broadcast.
+`0x0D` (real chat only — `!`-commands stay self-only via `SendLog`), attack swing `0x1A`, combat damage /
+HP bar `0x13`, cast effect `0x29`, spawn `0x07`, despawn `0x0E`. The moving player's OWN client is driven by
+the self-walk modes (§10), so it's excluded from the `0x0C` broadcast.
 
 > **`0x0C` for peers/mobs sends the SOURCE tile, not the destination.** The 4.95 client's `0x0C` walk always
 > ends **one tile past** the packet tile in the walk direction (the forward-slide overshoot of §7.2/§10.3 —
@@ -886,15 +961,28 @@ near each other, the common case. Only **mobs** are viewport-streamed; see §11b
 
 ## 11b.1 Persistent spawns, mob AI, collision & viewport streaming ✅
 
-The world is populated automatically from the RTK spawn table, not just by commands.
+The world is populated automatically from **two** RTK spawn sources, not just by commands.
 
-**Spawn roster (`Content.Spawns` ← `re/rtk-data/Spawns0.csv`).** At startup `World.PopulateSpawns` materializes
-**one live mob per RTK spawn point** on every *renderable* map (1175 points across 19 maps — Kugnae has 526,
-Buya 408, etc.). Each `SpawnDef` is `(mobId, map, x, y)`; the mob's look/colour/HP/exp/move-pace come from the
-mob registry (`Content.MobById`). Spawns for maps the client can't render are skipped. `Materialize` places the
-mob via **`FreeSpawnTile`** — the spawn tile if open, else the nearest unoccupied non-solid tile within 2 —
-because several RTK points share a tile (e.g. two squirrels at `72,93`) and a respawn can land where another mob
-wandered; without this they'd stack permanently. `Home` stays the original spawn tile (the leash anchor).
+**Static spawn table (`Content.Spawns` ← `re/rtk-data/Spawns0.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
+— one live mob per point. This is only **1175 points across 19 maps** (Kugnae 526, Buya 408, a few specials): it
+covers the towns and little else. RTK's `Spawns0` SQL table genuinely has nothing for the hunting maps.
+
+**Area spawns (`Content.AreaSpawns` ← `re/rtk-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
+mobs.* RTK spawns hunting-map populations from a Lua "spawner NPC" (`mobSpawnHandler.lua`), not the SQL table, via
+`handleSpawn(npc, map, {mobIds}, {counts}, timer [,minX,minY,maxX,maxY])`. `re/extract_lua_spawns.py` parses those
+617 calls into `AreaSpawnDef (mobId, map, count, box)` — **2371 rows, ~21.5k mobs across 767 maps** (Mythic Nexus
+41, the zodiac caves — Ox Fury 176, Pig Path 181, Horse Valley 242 — wilderness, etc.). A zero box means "anywhere
+walkable on the map"; otherwise the mob's home is a random walkable tile inside the box (`World.PickAreaHome`).
+RTK's per-mob respawn `timer` is dropped in favour of the server's own cadence. *(Symptom this fixed: caves and the
+Buya haunted-house/animal batch were empty because only `Spawns0` was loaded.)*
+
+**Lazy materialization.** With ~21.5k mobs, `World.PopulateSpawns` no longer instantiates anything at boot — it just
+builds a cheap per-map `Spawn` point list (static tiles known; area tiles chosen later). The first time a player
+enters a map, `EnsureMaterialized(mapId)` (called under lock from `EnterMap`, before the room's mob list is read)
+instantiates that map's roster and loads its map file once. A cave nobody visits costs nothing. `Materialize` still
+places each mob via **`FreeSpawnTile`** — the home tile if open, else the nearest unoccupied non-solid tile within 2
+— because several RTK points share a tile and a respawn can land where another mob wandered; without this they'd
+stack. An area spawn's home tile is fixed on first materialize (respawns hug the same patch, like RTK sentries).
 
 **Respawn.** On death `World.TryDamage` clears the spawn's `Live`, sets `RespawnTick = _tick + RespawnTicks`
 (~18 s), and rolls loot. `World.Tick` refills any due point (only on maps with a player watching) via
@@ -914,9 +1002,10 @@ ambles a hop every few seconds and turns far more often than it moves — not a 
 
 **Collision (matches the player).** A step is rejected unless the target tile is in-bounds, within
 `WanderRadius` (Chebyshev **2**) of `Home`, not on a player tile, **not on another mob**, and not solid.
-Solidity is **`MapData.Solid` = `Obj != 0 || Pass != 0`** — the same object **and** ground-passability test
-`Session.Blocked` uses, so mobs respect the walls/water/cliffs the player does (the earlier bug only checked
-the object layer). Mob-vs-mob uses a per-tick `mobTiles` set kept current as each mob moves, so two mobs can't
+Solidity is **`MapData.Solid` = `Pass != 0`** — the **ground passability flag only**, the same test
+`Session.Blocked` uses, so mobs respect the same walls/water/cliffs the player does. The **object layer is
+NOT a collision source** (see §12 "stuck on shadows"): walls are baked into the ground pass flag; objects are
+visual. Mob-vs-mob uses a per-tick `mobTiles` set kept current as each mob moves, so two mobs can't
 share a tile or swap through each other in one tick. Players are also blocked from stepping onto a live mob
 (`_world.MobAt` in `HandleWalk`; warp tiles still take precedence).
 
@@ -1017,6 +1106,12 @@ byte (= raw frame `+5`).
 LEFT=7 RIGHT=8 BOOTS=13 MANTLE=14 COAT=16 SUBLEFT=20 SUBRIGHT=21 FACEACC=22 CROWN=23. Item `Type` (ITM_*)
 maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
 
+**⚠ Dual ring slots.** ALL rings/gauntlets are `Type 7` (156 items → wire slot **7**); `Type 8` carries
+**zero** items in the data, so the right-ring box (wire **8**) is only ever reached by fall-through:
+`EquipFromSlot` puts a ring in slot 7, and if 7 is already worn and 8 is free, wears it in **8** instead of
+replacing. Only when both are full does a new ring replace the left. (Subleft/subright are distinct item
+types with their own slots, so they need no such handling.)
+
 **Client → server (handled in `Session.Handle`):**
 | Op | Action | Body |
 |---|---|---|
@@ -1062,13 +1157,24 @@ tile until empty.
 
 **Throw collision — SOLVED (2026-07-25).** `HandleThrow` walks the item **tile-by-tile** from the player in
 the faced direction (0=N 1=E 2=S 3=W, capped at 3 tiles) and stops at the last *passable* tile, so items
-never come to rest on a wall or an unreachable tile. Passability uses the **same two sources the client's own
-collision uses** (§12): a tile is blocked if the **object layer** is non-zero **or** the **ground
-passability flag** is set. That flag is the **top 2 bits of the ground `u16`** — value **`3` = solid**, `0` =
-walkable (`1`/`2` never occur in real maps); `Session.Blocked` = `map.Obj(x,y) != 0 || map.Pass(x,y) != 0`.
-The earlier bug ("lands on a tile I can't walk to") was `Blocked` checking only the object layer and ignoring
-the ground flag — real maps (TK0/Kugnae) gate thousands of cells by the ground flag alone. Enforcement is
-`NEXUS_PASS` (default on; set `0` to disable); the same `Blocked` gates player walk/turn.
+never come to rest on a wall or an unreachable tile. Passability uses the **ground passability flag only**
+(§12): the **top 2 bits of the ground `u16`** — value **`3` = solid**, `0` = walkable (`1`/`2` never occur in
+real maps); `Session.Blocked` = `map.Pass(x,y) != 0`. The **object layer is NOT consulted** — see §12
+("stuck on shadows"): walls are baked into the ground flag, so real maps (TK0/Kugnae) gate thousands of cells
+by it; objects are visual. Enforcement is `NEXUS_PASS` (default on; set `0` to disable); the same `Blocked`
+gates player walk/turn.
+
+**Doors ('o' key / `0x20`) — WORKING (2026-07-25).** A door is an object drawn over the map. Pressing 'o'
+facing a door **toggles its open/closed graphic in place** — RTK `openDoors` (`open.lua`) does
+`setObject(m,x,y, closed↔open)`, e.g. Buya door `342 ↔ 364` (some doors span 3 tiles: x, x+1, x+2). It is
+**cosmetic only** (passability doesn't change) and shared world state. Entering a building is done by
+**walking** onto its warp tile (§warps), not by 'o'. Not every door leads anywhere — many are **decorative
+facades** (a passable gap in a wall sprite with no interior); RTK's authoritative `Warps` table confirms which
+doors are real entrances. `Session.HandleOpen`: reads the faced object, looks it up in the door toggle table
+(transcribed from `open.lua`), mutates the shared `MapData` object layer (so the next 'o' toggles it back), and
+sends the **`0x06` cell-patch** (see §13) to every client on the map to redraw. The client re-renders the
+object layer over the patched rectangle regardless of whether the ground word changed. Full door toggle table:
+memory `nexustk-495-doors`.
 
 **GM commands:** `!items [filter]` (browse registry), `!item <name/id> [amount]` (summon into bag),
 `!clearinv` (reset bag + gear).
@@ -1252,6 +1358,21 @@ The server's `0x15` (enter-map) tells the client which map id + dimensions to lo
 the `.map` file itself. Pick a map that actually has content: `TK27` is a uniform "void" tile (renders
 black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.
 
+**Passability — the ground flag ONLY; objects are visual ("stuck on shadows" fix, 2026-07-25).** A cell is
+solid iff the **top 2 bits of the ground `u16`** are set (value **`3` = solid**, `0` = walkable; `1`/`2`
+never occur). The **object `u16` is NOT a collision source.** The object word carries no passability bits of
+its own (its top 2 bits are always 0 across every map), and it indexes `SObj.tbl` (object id < the table's
+7608 entries) whose flags are **height / draw-order, not passability** — they don't predict blocking (the
+heaviest wall objects `1519`-`1522`, ~2000 placements each, have flag high-byte `0x00`, while many `0x0f`-
+flagged objects sit on fully-walkable ground). Instead, **map authors bake every wall's footprint into the
+ground pass flag**: those same wall objects sit on `pass=3` ground 100% of the time. So `pass` alone is
+authoritative and matches the client. The **authoritative RTK reference server agrees exactly**:
+`map_canmove()` has `if(obj) return 1;` **commented out** and collides on the pass layer only, and
+`object_flag_init()` parses `SObj.tbl` but leaves `objectFlags[z]=flag;` commented out. The old server
+checked `Obj != 0` too, which wrongly blocked decorative objects on walkable ground — shadows, flat rugs,
+ground decor — hence "**stuck on shadows**". (Doors are handled separately — the **'o' key (`0x20`)**
+toggles a door's graphic; see "Doors" below.)
+
 The **spawn coordinate must lie inside the camera viewport** at the moment `0x33` is processed, or the
 placement check bails and the character never renders (§14). With scroll `(0,0)` the initial viewport
 is roughly map tiles `0..14`, so spawn small (e.g. `(5,5)`), or set the scroll via `0x04` first.
@@ -1271,7 +1392,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x03` | `0x44f0e0` | download/URL (reads HKLM registry) |
 | `0x04` | `0x44faf0` | ✓ coords / camera scroll + commit walk |
 | `0x05` | — | ✓ self entity id (server→client) |
-| `0x06` | `0x44fb90` | (client→server walk+view variant) |
+| `0x06` | `0x44fb90` | ✓ **map CELL-PATCH** (server→client): `startX(u16BE) startY(u16BE) width(u8) height(u8)` then `width*height` cells row-major, each = `ground(u16BE) object(u16BE)`. Writes each cell into the client's live map array and redraws the object layer over the patched rect (tail `0x44df30`, independent of ground change). This is the door open/close primitive (`SendObjRow`/`HandleOpen`) — and the 5.x terrain-stream reply. (client→server `0x06` = walk+view variant, unrelated.) |
 | `0x07` | `0x44fdb0` | ✓ **creature/monster list** (server→client): `count(u16)` + 12B entries `X Y id look color dir`; `look=0x8000\|monsterId` → Monster.epf. §7.2/§11a |
 | `0x0b` | `0x44fb70` | **no-op** |
 | `0x0c` | `0x4502c0` | ✓ move / animate entity |
@@ -1282,7 +1403,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x10` | — | ⏳ **remove item from bag slot** (server→client) — §11c |
 | `0x11` | `0x450350` | entity + 1 byte |
 | `0x12` | `0x4509a0` | entity + 2 bytes |
-| `0x13` | `0x4508f0` | ✓ attack-recv (anim `0x8f − a`; **death at a=0**) |
+| `0x13` | `0x4508f0` | ✓ **combat damage / over-head HP bar** (server→client): `id(u32BE) crit(u8) percent(u8) hitSnd(u8)` → HP bar + hit anim `0x8f−crit` + sfx — §7.2 |
 | `0x15` | `0x44f8b0` | ✓ enter-map |
 | `0x16` | `0x450a00` | **ground ITEM/object spawn** (draws from Item.epf `"I"`): `+5 gfx(u16) +7 id(u32) +0xb X/Y …`. **NOT a monster** — §7.2, §11a. **Walk projectile → invisible at rest; the server uses `0x07` static objects for floor items instead — §11c.** |
 | `0x1a` | `0x4503a0` | ✓ action (attack/sit/…) |
@@ -1290,7 +1411,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x1d` | `0x450db0` | entity + 1 byte |
 | `0x1e` | — | ✓ ack |
 | `0x1f` | `0x450f40` | 3-state set (thresholds 0x0b/0x63/0x65 → `[world+0x401]`) |
-| `0x20` | `0x44f820` | ✓ time-of-day |
+| `0x20` | `0x44f820` | ✓ time-of-day (server→client). **client→server = the 'o'/Open key** (RTK `clif_parse` case `0x20` "Clicked 'O'" → `clif_cancelafk` + `clif_open_sub` → `openDoors`): in NexusTK this **toggles the faced door object's open/closed graphic in place** (cosmetic; passability untouched) — it does NOT warp. Body is a bare `00` (no target), so the server resolves the faced tile from its own pos + facing. Confirmed live 2026-07-25: sent **only** on the 'o' keypress (deliberate, not a heartbeat — RTK's handler clears AFK). `HandleOpen` toggles the faced door via the door table and the `0x06` cell-patch (above). Doors: §12 |
 | `0x21` | `0x450f90` | UI window (`0x174`) |
 | `0x26` | `0x44fb80` (main) → **`0x4903d0`** (pre-dispatch) | **Self-walk — WORKS.** Main-table handler is a no-op, but `0x26` is pre-dispatched via the self-entity vtable (`+0x38` @ `0x4cf038` → `0x48eb40` → `handlerB`). This is the 4.95 self-walk primitive (§10.3). |
 | `0x29` | `0x4504b0` | ✓ **effect animation** over entity: `id(u32) effectId(u8, 1-based) A/B/C(u16)`; u8 indexes `Effect.tbl` (128 fx). **Not a damage number** — §11d |
@@ -1371,8 +1492,10 @@ on.
 - **Use `0x26` for self-walk in 4.95** — its main-table handler is a no-op, but it is pre-dispatched to the real self-walk handler (§10.3). A no-op in the dispatch table is NOT proof an opcode is unhandled (cf. `0x08`).
 
 **Combat**
-- **Never reply to `0x13` (attack) with `0x13`.** Its handler plays anim `0x8f − a`; `a=0` → `0x8f` =
-  **death** animation ("character flashes dead"). Reply with `0x1A` action type=1 instead.
+- **The swing and the damage are two different packets.** The attack *swing* is a `0x1A` action (type=1). The
+  server→client `0x13` is the *combat damage* packet — over-head HP bar + hit spark (§7.2) — sent at hit
+  resolution. Do send it, with a real `percent`/`critical`; a **bare/zero** `0x13` gives `crit=0` → anim
+  `0x8f` (a "death flash"), which is the historical trap that made us wrongly avoid `0x13` entirely.
 
 **Creation / appearance mapping**
 - **Creation-packet field order ≠ render-packet field order, and they use different id spaces.**
@@ -1448,9 +1571,11 @@ magnitude faster for "what does this byte mean" questions.
   login-channel `0x02` responses are handled by a different state object worth RE-ing.
 - **Monsters — SOLVED (2026-07-24).** The real monster spawn is **`0x07`**: `look = 0x8000 | monsterId`
   (Monster.tbl index) draws a live, animated, collidable, killable creature from Monster.epf. Full layout
-  and the trace that found it are in §7.2/§11a. The combat pipeline (`Mob`, melee, `0x29` damage, `0x0E`
-  despawn, exp) runs against real monsters end-to-end, and the world now **auto-populates the RTK spawn table
-  with wander AI (`0x0C`), collision, respawns, drops, and per-player viewport streaming** — see §11b.1.
+  and the trace that found it are in §7.2/§11a. The combat pipeline (`Mob`, melee/spell, `0x13` HP bar + hit
+  spark, death beat + delayed `0x0E` despawn, exp) runs against real monsters end-to-end, and the world now **auto-populates
+  both spawn sources — the static `Spawns0` towns AND the ~21.5k dynamic hunting-map mobs from RTK's Lua spawner
+  (every Mythic cave/dungeon), materialized lazily per-map — with wander AI (`0x0C`), collision, respawns, drops, and
+  per-player viewport streaming** — see §11b.1.
   **Remaining monster work:** map the Monster.tbl look ids to names (the matcher exists but its mapping is
   empty — §11a.2); make aggressive mobs fight back (`0x1A`/`0x13` toward the player + HP bars); a proper RTK
   colour → client-palette mapping (§11b.1).
@@ -1498,7 +1623,8 @@ this repo is logic-only). Row counts and how much survives to 4.95 (cross-refere
 | Mobs | 716 | 102 look-ids | name, look, `look_color`, HP(vita), exp, level, might/grace/will, min/max dmg |
 | Maps | 9850 | **1387** match `TK<N>.map` | **real map names** (MapId ↔ our `0x15` mapId; `MapId 0 = Kugnae = TK000000.map ↔ TK0.map`), BGM, indoor, light, PvP, warpout flags |
 | Warps | 4476 | **3060** (both ends exist) | portals `(srcMap,x,y)→(dstMap,x,y)` = world navigation |
-| Spawns0 | 1175 | **1175** | monster placement `(mobId, mapId, x, y)` |
+| Spawns0 | 1175 | **1175** | *static* monster placement `(mobId, mapId, x, y)` — towns only (19 maps) |
+| AreaSpawns² | 2371 | **2371** | *dynamic* hunting-map spawns `(mobId, map, count, box)` from `mobSpawnHandler.lua` — ~21.5k mobs / 767 maps (all caves/dungeons) |
 | NPCs0 | 385 | **283** | NPC placement + look/`look_color` (same recolor mechanism) |
 | Items | 2545 | names solid¹ | item name, type, look, icon, damage, armor, stat bonuses, prices |
 | Spells | 906 | names/structure | spell & skill definitions |
@@ -1511,8 +1637,9 @@ ids/colours need 4.95 validation); stats are 7.x-balanced (structure correct, nu
 non-overlapping maps/warps/NPCs are 7.x-added content and are filtered out of the extracts.
 **Reproduce:** clone `RTK-Server` (gitignored), then `python re/rtk_extract.py` writes the CSVs to
 `re/rtk-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
-tables with row counts. **None of this data is committed** — this repo is logic-only; the CSVs are
-generated locally and kept out of git.
+tables with row counts. ²`AreaSpawns.csv` isn't an SQL table — it's generated from the Lua spawner by
+`python re/extract_lua_spawns.py` (parses `mobSpawnHandler.lua`'s `handleSpawn(...)` calls). **None of
+this data is committed** — this repo is logic-only; the CSVs are generated locally and kept out of git.
 
 **Confirmed 7.x ≠ 4.95 gaps:**
 - **Cipher:** 7.x = name-derived table cipher + 3 trailer bytes; 4.95 = simple NexonInc XOR, no trailer.
@@ -1601,7 +1728,7 @@ client map set (no warping to a map the client can't render).
 | `0x4502c0` | `0x0C` move/animate |
 | `0x450170` | `0x0D` speech |
 | `0x4503a0` | `0x1A` action |
-| `0x4508f0` | `0x13` attack-recv (death anim at a=0) |
+| `0x4508f0` | `0x13` combat damage / over-head HP bar (+ hit anim `0x8f−crit`) |
 | `0x424310` | spawn placement / viewport containment check |
 | `0x44d7d0` → `0x43fd80` → `0x463380` → `0x460760` | sprite build path |
 

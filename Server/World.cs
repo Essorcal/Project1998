@@ -47,17 +47,25 @@ public sealed class World
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
 
-    /// <summary>A fixed spawn point: one <see cref="Live"/> mob at a time, respawned <see cref="RespawnTick"/>
-    /// ticks after it dies. Built once from <see cref="Content.Spawns"/>; drives the persistent world roster.</summary>
+    /// <summary>A spawn point: one <see cref="Live"/> mob at a time, respawned <see cref="RespawnTick"/>
+    /// ticks after it dies. Built once from <see cref="Content.Spawns"/> (fixed tile, <see cref="Placed"/>
+    /// already true) and <see cref="Content.AreaSpawns"/> (a random home tile is chosen in the box the first
+    /// time the point materializes). Drives the persistent world roster.</summary>
     private sealed class Spawn
     {
         public MobDef Def = null!;
-        public ushort X, Y;
+        public ushort X, Y;          // home tile — fixed for a static spawn, chosen lazily for an area spawn
         public Mob?   Live;          // the currently-alive mob for this point (null while dead/pending)
         public long   RespawnTick;   // tick at which a dead point may respawn (0 = not pending)
+        public bool   Placed = true; // false ⇒ area spawn whose home tile isn't chosen yet (see Box)
+        public ushort MinX, MinY, MaxX, MaxY;   // area-spawn bounding box; all-zero ⇒ anywhere walkable on the map
     }
     private readonly Dictionary<ushort, List<Spawn>> _spawns = new();   // map -> its spawn points
     private readonly Dictionary<uint, Spawn> _mobSpawn = new();          // live mob id -> its spawn point
+    // Maps whose spawn roster has been materialized (mobs instantiated). Populated lazily on first player
+    // entry (EnsureMaterialized) so the world's ~21k hunting-map mobs don't all instantiate — and load their
+    // map files — at boot; a cave stays a cheap point-list until someone actually walks into it.
+    private readonly HashSet<ushort> _materialized = new();
     private long _tick;                                                  // heartbeat counter (600ms each)
 
     private const int TickMs = 600;         // world heartbeat period; also the unit MoveTimer accumulates in
@@ -87,9 +95,11 @@ public sealed class World
 
     // ---- persistent spawn roster --------------------------------------------------------------
 
-    /// <summary>Materialize one live mob per RTK spawn point on every renderable map. Runs once at
-    /// startup (Content is already loaded). Mobs exist immediately; each client only receives the ones
-    /// in its viewport (Session.SyncMobs), and dead points refill via <see cref="Tick"/>.</summary>
+    /// <summary>Build the persistent spawn-point roster from the static table (<see cref="Content.Spawns"/>,
+    /// fixed tiles) and the Lua area spawns (<see cref="Content.AreaSpawns"/>, a count of mobs per map/box).
+    /// Runs once at startup (Content is already loaded). This only builds cheap point objects — no mob is
+    /// instantiated and no map file is read until the first player enters that map (<see cref="EnsureMaterialized"/>),
+    /// so the ~21k hunting-map mobs don't flood memory or stall boot. Dead points refill via <see cref="Tick"/>.</summary>
     private void PopulateSpawns()
     {
         int points = 0, skipped = 0;
@@ -101,15 +111,44 @@ public sealed class World
                 var def = Content.MobById(sd.MobId);
                 if (def is null) { skipped++; continue; }                           // unknown mob id
 
-                var sp = new Spawn { Def = def, X = sd.X, Y = sd.Y };
-                if (!_spawns.TryGetValue(sd.Map, out var list)) { list = new(); _spawns[sd.Map] = list; }
-                list.Add(sp);
-                Materialize(sd.Map, sp);
+                AddSpawn(sd.Map, new Spawn { Def = def, X = sd.X, Y = sd.Y });
                 points++;
             }
+
+            foreach (var ad in Content.AreaSpawns)
+            {
+                if (!Content.Maps.ContainsKey(ad.Map)) { skipped += ad.Count; continue; }   // unrenderable map
+                var def = Content.MobById(ad.MobId);
+                if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
+
+                for (int i = 0; i < ad.Count; i++)
+                    AddSpawn(ad.Map, new Spawn
+                    {
+                        Def = def, Placed = false,
+                        MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
+                    });
+                points += ad.Count;
+            }
         }
-        Log.Info($"spawns: {points} live spawn points across {_spawns.Count} map(s)" +
+        Log.Info($"spawns: {points} spawn points (materialized lazily) across {_spawns.Count} map(s)" +
                  (skipped > 0 ? $" ({skipped} skipped — unknown map/mob)" : ""));
+    }
+
+    /// <summary>Append a spawn point to its map's roster. Caller holds <c>_lock</c>.</summary>
+    private void AddSpawn(ushort mapId, Spawn sp)
+    {
+        if (!_spawns.TryGetValue(mapId, out var list)) { list = new(); _spawns[mapId] = list; }
+        list.Add(sp);
+    }
+
+    /// <summary>Instantiate a map's spawn roster the first time anyone enters it (idempotent). Until this runs
+    /// the map's mobs don't exist, so a newcomer must trigger it BEFORE the room's mob list is read for them.
+    /// Caller holds <c>_lock</c>.</summary>
+    private void EnsureMaterialized(ushort mapId)
+    {
+        if (!_materialized.Add(mapId)) return;              // already done
+        if (!_spawns.TryGetValue(mapId, out var list)) return;
+        foreach (var sp in list) Materialize(mapId, sp);
     }
 
     /// <summary>Place every stationary NPC (Content.Npcs) into the world as a non-fighting mob. NPCs ride
@@ -144,6 +183,9 @@ public sealed class World
     private void Materialize(ushort mapId, Spawn sp)
     {
         var d = sp.Def;
+        // Area spawn's first materialize: choose a walkable home tile inside its box (or anywhere on the map
+        // for a zero box). Fixed once, so respawns hug the same patch like RTK's sentries.
+        if (!sp.Placed) { (sp.X, sp.Y) = PickAreaHome(mapId, sp); sp.Placed = true; }
         // Don't stack: several RTK spawn points share a tile, and a respawn can land where another mob has
         // wandered. Place on the spawn tile if free, else the nearest open one (home stays the spawn tile).
         var (sx, sy) = FreeSpawnTile(mapId, sp.X, sp.Y);
@@ -188,6 +230,29 @@ public sealed class World
         return (x, y);   // everything nearby is taken — accept the overlap rather than drop the mob
     }
 
+    /// <summary>Pick a random walkable home tile for an area spawn: inside its box, or anywhere on the map
+    /// when the box is zero (RTK's "no bounds" form). Samples a handful of random tiles and takes the first
+    /// walkable one; falls back to the box centre if the patch is dense/unloaded. Caller holds <c>_lock</c>.</summary>
+    private (ushort x, ushort y) PickAreaHome(ushort mapId, Spawn sp)
+    {
+        var (xs, ys) = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
+        int minX = sp.MinX, minY = sp.MinY, maxX = sp.MaxX, maxY = sp.MaxY;
+        bool wholeMap = minX == 0 && minY == 0 && maxX == 0 && maxY == 0;
+        if (wholeMap && xs > 0) { maxX = xs - 1; maxY = ys - 1; }
+        if (xs > 0) { maxX = Math.Min(maxX, xs - 1); maxY = Math.Min(maxY, ys - 1); }
+        if (maxX < minX) maxX = minX;
+        if (maxY < minY) maxY = minY;
+
+        var terrain = xs > 0 ? MapData.For(mapId, xs, ys) : null;
+        for (int tries = 0; tries < 48; tries++)
+        {
+            int tx = Random.Shared.Next(minX, maxX + 1);
+            int ty = Random.Shared.Next(minY, maxY + 1);
+            if (terrain is null || !terrain.Solid(tx, ty)) return ((ushort)tx, (ushort)ty);
+        }
+        return ((ushort)((minX + maxX) / 2), (ushort)((minY + maxY) / 2));   // dense/solid box — accept centre
+    }
+
     public uint AllocatePlayerId() { lock (_lock) return _nextPlayerId++; }
     public uint AllocateMobId()    { lock (_lock) return _nextMobId++; }
     public uint AllocateItemId()   { lock (_lock) return _nextItemId++; }
@@ -207,6 +272,7 @@ public sealed class World
         Session[] peers; Mob[] mobs;
         lock (_lock)
         {
+            EnsureMaterialized(mapId);                 // instantiate this map's spawns on first entry
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
             peers = m.Players.Where(p => p != s).ToArray();
