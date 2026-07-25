@@ -10,6 +10,15 @@ public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte C
 /// materializes one live mob per point and, on its death, respawns another after a delay.</summary>
 public sealed record SpawnDef(int MobId, ushort Map, ushort X, ushort Y);
 
+/// <summary>An NPC placement from the RTK NPCs0 table: a stationary being on a map tile. Nearly all
+/// (384/385) render via the creature path (0x07) exactly like a mob — <c>Look</c>/<c>Color</c> mirror
+/// <see cref="MobDef"/> — so the world spawns them as non-fighting mobs. <c>IsChar</c> marks the rare
+/// human-composite NPC (0x33). The shop/repair/bank flags select the dialog behaviour on click.</summary>
+public sealed record NpcDef(
+    int Id, string Key, string Name, ushort Map, ushort X, ushort Y, byte Dir,
+    ushort Look, byte Color, bool IsChar, bool Shop, bool Repair, bool Bank,
+    int MoveTime, int ReturnDistance);
+
 /// <summary>
 /// An item definition from the RTK item db (Items.csv). Field names mirror the client's item_data
 /// (see RTK itemdb.h). <c>Icon</c> is the inventory-window / ground (Item.epf) frame; <c>Look</c> is the
@@ -231,6 +240,12 @@ public static class Content
     // Fixed monster spawn points (RTK Spawns0.csv). One live mob per point; the world respawns it on death.
     public static IReadOnlyList<SpawnDef> Spawns { get; private set; } = new List<SpawnDef>();
 
+    // Stationary NPCs (RTK NPCs0.csv), placed once by the world as non-fighting mobs. Keyed by NpcId for
+    // click-time dialog lookup.
+    public static IReadOnlyList<NpcDef> Npcs { get; private set; } = new List<NpcDef>();
+    private static IReadOnlyDictionary<int, NpcDef> _npcById = new Dictionary<int, NpcDef>();
+    public static NpcDef? NpcById(int id) => _npcById.TryGetValue(id, out var n) ? n : null;
+
     // 4.95 client Monster.tbl "Palette" per look id (0..326), decoded from the client PAK (see
     // re/monster-matcher). This is the palette the CLIENT draws a given monster with — a DIFFERENT index
     // space than RTK's MobLookColor. The 0x07 spawn color byte must carry THIS value (not RTK's) or the
@@ -257,13 +272,15 @@ public static class Content
         Items = LoadItems(ResolvePath("NEXUS_ITEMS", "re", "rtk-data", "Items.csv"));
         Warps = LoadWarps(ResolvePath("NEXUS_WARPS", "re", "rtk-data", "Warps.csv"));   // needs Maps
         Spawns = LoadSpawns(ResolvePath("NEXUS_SPAWNS", "re", "rtk-data", "Spawns0.csv"));
+        Npcs = LoadNpcs(ResolvePath("NEXUS_NPCS", "re", "rtk-data", "NPCs0.csv"));   // needs Maps
+        _npcById = Npcs.ToDictionary(n => n.Id);
         Paths = LoadPaths(ResolvePath("NEXUS_PATHS", "re", "rtk-data", "Paths.csv"));
         Spells = LoadSpells(ResolvePath("NEXUS_SPELLS", "re", "rtk-data", "Spells.csv"));
         SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "re", "rtk-data", "spell_effects.csv"));
         LookPalettes = LoadLookPalettes(ResolvePath("NEXUS_MOB_PALETTES", "re", "rtk-data", "MobLookPalettes.csv"));
         MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "re", "rtk-data", "Maps.csv"));   // region + warpOut for Gateway
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check re/monster-matcher/rtk_mobs.csv)"
                      : ""));
@@ -806,6 +823,36 @@ public static class Content
             }
         }
         return spawns;
+    }
+
+    // Stationary NPCs (RTK NPCs0.csv). We keep only NPCs whose map the client can render and that sit on a
+    // real tile (skip the (0,0) placeholders — f1npc, treasure portals — which aren't placed beings). Look
+    // is the creature sprite; the world draws them via the same 0x07 path as a mob (see World.PopulateNpcs).
+    private static List<NpcDef> LoadNpcs(string? path)
+    {
+        var npcs = new List<NpcDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!int.TryParse(col.GetValueOrDefault("NpcId"), out var id)) continue;
+            ushort.TryParse(col.GetValueOrDefault("NpcMapId", "0"), out var map);
+            ushort.TryParse(col.GetValueOrDefault("NpcX", "0"), out var x);
+            ushort.TryParse(col.GetValueOrDefault("NpcY", "0"), out var y);
+            ushort.TryParse(col.GetValueOrDefault("NpcLook", "0"), out var look);
+            byte.TryParse(col.GetValueOrDefault("NpcLookColor", "0"), out var color);
+            int.TryParse(col.GetValueOrDefault("NpcMoveTime", "0"), out var move);
+            int.TryParse(col.GetValueOrDefault("NpcReturnDistance", "0"), out var leash);
+            bool Flag(string k) => col.GetValueOrDefault(k, "0") == "1";
+            if (!Maps.ContainsKey(map)) continue;        // map the 4.95 client can't render
+            if (x == 0 && y == 0) continue;              // (0,0) = unplaced placeholder / abstract NPC
+            var name = Clean(col.GetValueOrDefault("NpcDescription", ""));
+            var key = Clean(col.GetValueOrDefault("NpcIdentifier", ""));
+            if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"npc{id}" : key;
+            npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
+                IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
+                Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
+                MoveTime: move, ReturnDistance: leash));
+        }
+        return npcs;
     }
 
     // Class/path table: PthId -> base class name (PthMark0). The higher PthMark columns are per-rank

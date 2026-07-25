@@ -272,7 +272,11 @@ public sealed class Session
             case 0x1D:                    HandleEmotion(dec); break;
             case 0x13:                    HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
             case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
-            case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile/inspect
+            case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile / NPC dialog
+            // 0x3A = NPC dialog response (RTK clif_parsenpcdialog): the client sends this after the player
+            // acts on a dialog we opened via 0x30. body[0] = kind (01 text next/close, 02 menu pick, 04 input
+            // text). See HandleNpcDialog — a logging stub until the 0x30 send format is confirmed live.
+            case 0x3A:                    HandleNpcDialog(dec); break;
             case 0x4F:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
             // ---- items (opcode numbers from RTK 7.x recv dispatch; confirmed to align with 4.95 by the
             // walk/turn/chat/attack/setting opcodes already matching). See §11c. ----
@@ -545,6 +549,7 @@ public sealed class Session
     private Character _char = new();
     private byte[] _encTable = Array.Empty<byte>();
     private byte _gameInc = 0;   // per-packet increment for game-channel sends
+
 
     // Live creatures the player can fight. Server-authoritative HP; the client only draws them.
     // Populated by the mob commands (!mob/!mobrow/!spawn); entries are removed on death (0x0E).
@@ -918,37 +923,44 @@ public sealed class Session
         SendMap(0x29, _gameInc++, d.ToArray(), $"effect(0x29) id={id} efx={effectId}");
     }
 
-    // One-shot positional sound effect via 0x19. The 4.95 handler's type-0 path is NOT a flat "play sound N" —
-    // it parses a positional descriptor (mode + entity id + coords), so a short packet misparses and stays
-    // silent. This mirrors RTK's clif_playsound byte layout verbatim (a real NexusTK sound packet), bound to
-    // the source entity: [03][00 03][sound u16BE][vol][00 04][entityId u32BE][01 00 02 02][00 04][00]. The sound
-    // id space is NexusTK.snd (zap 56, heal 4, fire 88, …). Does NOT touch _bgm (sfx replay every cast).
-    // Kill switch: NEXUS_SPELL_SOUND=0 stops emitting the (still-being-reverse-engineered) sound packet, so a
-    // client that faults on it can keep playing while we trace. Default on.
-    private static readonly bool SoundEnabled =
-        Environment.GetEnvironmentVariable("NEXUS_SPELL_SOUND") != "0";
+    // One-shot sound effect via 0x19. RTK's clif_playsound (type 3, a positional descriptor) is a LATER-client
+    // format that the 4.95 client's TLV parser mis-walks into garbage (verified live: it built a sound object with
+    // mode 4 / random soundId and stayed silent). This is the reverse-engineered 4.95 layout instead.
+    //
+    // The 0x19 handler (0x450ad0): body[1]=type. type 0 = sfx -> reads soundId(u16BE)@body[3..4], volume(u8)@body[5],
+    // then runs a TLV tail (0x450c48) starting at body[2 (=P0)]+3. The tail's "C" field becomes the sound object's
+    // MODE (ctor 0x463950 -> [obj+0x148]); the play wrapper (0x463ab0) plays only for mode 1 (-> 0x463ae8 ->
+    // play fn 0x4798c0(soundId, type, gain, 0)). soundId/type/gain come from body[3..5] via the type-group. So we
+    // put a minimal TLV *after* the 5-byte header (P0=3) that yields tagA=3, B0=0, C=1 with all skip bytes 0:
+    //
+    //   19 | 00(type=sfx) | 03(P0) | soundId u16BE | 64(vol=100 -> 0 dB) | 03(tagA) 00(B0) 01(C=mode1) 00 00 00 …
+    //
+    // volume 100 -> gain 0 (full): the client does log10(vol*0.01)*2000 dB (const @0x4cc408 = 0.0, so >0 is audible).
+    // Sound id space is NexusTK.snd (zap 56, heal 4, fire 88, …). entityId is unused (this plays as a global sfx,
+    // which is what spell sounds want — full volume, not distance-attenuated). Does NOT touch _bgm.
     private void SendSound(int soundId, uint entityId, byte volume = 100)
     {
-        if (!SoundEnabled || soundId <= 0 || soundId > 255) return;
-        var d = new List<byte>
-        {
-            0x03,             // channel/type (RTK clif_playsound)
-            0x00, 0x03,       // sub-marker (RTK WBUFW(5)=3)
-        };
-        d.AddRange(Be((ushort)soundId));   // sound id (u16BE)
-        d.Add(volume);                     // volume (0..100)
-        d.Add(0x00); d.Add(0x04);          // RTK WBUFW(10)=4
-        d.AddRange(Be32(entityId));        // sound source entity (u32BE)
-        d.Add(0x01); d.Add(0x00); d.Add(0x02); d.Add(0x02);   // RTK trailing 1,0,2,2
-        d.Add(0x00); d.Add(0x04);          // RTK WBUFW(20)=4
-        d.Add(0x00);                       // RTK trailing 0
-        SendMap(0x19, _gameInc++, d.ToArray(), $"sound(0x19) sfx={soundId} id={entityId}");
+        // soundId rides body[3..4] as a u16; the play wrapper reads [obj+0x134] as a WORD, so keep it in range.
+        if (soundId <= 0 || soundId > 0xffff) { Log.Info($"   -x sound skipped sfx={soundId} (out of 1..65535)"); return; }
+        var d = new List<byte> { 0x00, 0x03 };   // type 0 (sfx); P0=3 -> TLV tail begins after the 5-byte header
+        d.AddRange(Be((ushort)soundId));          // body[3..4] soundId (u16BE)
+        d.Add(volume);                            // body[5] volume (0..100 -> dB gain; 100 = 0 dB)
+        d.Add(0x03); d.Add(0x00); d.Add(0x01);    // body[6..8] tagA=3, B0=0, C=1 (C -> object mode 1 = "play")
+        d.Add(0x00); d.Add(0x00); d.Add(0x00);    // body[9..11] B1=0, F=0, B2=0 (all skips 0 -> clean parse exit)
+        d.Add(0x00);                              // trailing pad
+        SendMap(0x19, _gameInc++, d.ToArray(), $"sound(0x19) sfx={soundId}");
     }
     public void SoundAt(int soundId, uint entityId) => SendSound(soundId, entityId);   // peer-facing (broadcast)
 
-    // Broadcast a cast's effect graphic (over `overId`) + its sound to everyone on the map, caster included, so
-    // the visuals + audio match RTK. Effect id / sound id come from the pcalign ladder (Content.EffectAnim /
-    // EffectSound). anim/sound < 0 are skipped.
+    // Broadcast a cast's effect graphic (0x29) + its sound (0x19) over `overId` to everyone on the map, caster
+    // included, so visuals + audio match RTK. Effect id / sound id come from the pcalign ladder
+    // (Content.EffectAnim / EffectSound). anim/sound < 0 are skipped.
+    //
+    // Sound uses RTK's clif_playsound layout (0x19 type 3 = a positional sound bound to the source entity). Static
+    // RE of the 4.95 client confirms this path IS wired to the audio player: 0x19 handler (0x450ad0) routes type>=2
+    // through the TLV tail 0x450c48 -> spatial builder 0x44e6c0 -> 0x463ab0 -> play fn 0x4798c0. (The earlier
+    // action-4th-byte route was a dead end: the client picks an action's sound from a fixed type->sound table, so
+    // magic/type 6 -> soundId 0 -> silent regardless of the byte we send.)
     private void BroadcastFx(uint overId, int anim, int sound)
     {
         if (anim >= 0)  _world.Broadcast(_char.Map, p => p.EffectOver(overId, anim));
@@ -1435,6 +1447,7 @@ public sealed class Session
         if (text.StartsWith("!learnspell", StringComparison.OrdinalIgnoreCase)) { LearnSpellCmd(text); return; } // learn one spell by name/id
         if (text.StartsWith("!forgetspells", StringComparison.OrdinalIgnoreCase)) { ForgetSpells(); return; }    // clear the spellbook
         if (text.StartsWith("!align", StringComparison.OrdinalIgnoreCase)) { SetAlignment(text); return; }        // set sub-alignment (Kwisin/Mingken/Ohaeng) for !spells
+        if (text.StartsWith("!snd", StringComparison.OrdinalIgnoreCase)) { SoundProbe(text); return; }   // play raw client sound ids (calibrate the NexusTK.snd id space)
         if (text.StartsWith("!spawn", StringComparison.OrdinalIgnoreCase)) { SpawnCritters(text); return; } // squirrel/rabbit pack
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
@@ -1589,6 +1602,7 @@ public sealed class Session
         // clear our session-local debug dummies (the client drops all foreign entities on a map change).
         _world.LeaveMap(this, _char.Map);
         _mobs.Clear();
+        _dlgReply = null;    // orphan any NPC prompt awaiting a reply — its NPC is on the old map
         ForgetShownMobs();   // new map -> the client wiped every foreign entity; re-stream from scratch
 
         _char.Map = mapId;
@@ -1858,6 +1872,10 @@ public sealed class Session
 
         if (!ApplyCast(sp, targetId, answer)) return;   // couldn't cast (no mana / too weak) — a message was already sent
 
+        // The cast's magic animation (0x1A type 6). Sound is NOT carried here — the client picks an action's sound
+        // from a fixed type->sound table (magic/type 6 has none), so the 4th byte is ignored. The spell's sound is
+        // sent separately over 0x19 by BroadcastFx (RTK clif_playsound), which the static RE shows IS wired to the
+        // audio player. param stays 0.
         SendAction(_char.Id, type: 6, time: 8, param: 0);                                  // cast anim (magic)
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 6, 8, 0), except: this);   // peers see us cast
         SendStats();                                                                        // push HP/MP to the HUD
@@ -2972,6 +2990,26 @@ public sealed class Session
         Log.Info($"   -> !music bgm={bgm} vol={vol}");
     }
 
+    // Play raw client sound ids (0x19 sfx) to calibrate the 4.95 NexusTK.snd id space. RTK's per-spell sound
+    // ids may not line up with the client's 001.wav..197.wav numbering, and the user hears "shifted" variants.
+    // `!snd 4` plays one; `!snd 4 5 6` plays several; `!snd 1 197 -` (a trailing '-') is rejected — keep it to a
+    // few at a time so they don't overlap into noise. Identify each by ear to map RTK sound -> client sound.
+    private void SoundProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { SendLog("usage: !snd <id> [id2 …]   (plays client sound ids; NexusTK.snd has 001..197.wav)"); return; }
+        int played = 0;
+        for (int i = 1; i < parts.Length && played < 8; i++)
+        {
+            if (!int.TryParse(parts[i], out var id) || id <= 0) continue;
+            SendSound(id, _char.Id);
+            SendLog($"playing sound {id}");
+            Log.Info($"   -> !snd {id}");
+            played++;
+        }
+        if (played == 0) SendLog("no valid sound ids (want positive integers)");
+    }
+
     // ---- profile window (the "Mind's Eye") ----
     // The client opens the self-profile window when the profile key is pressed by sending 0x2D. Byte 0
     // == 0 is the self-profile request (byte != 0 is group status in 7.x). We reply with 0x39, the
@@ -2991,9 +3029,360 @@ public sealed class Session
         uint id = 0;
         if (dec.Length >= 5) id = (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]);
         Log.Info($"   -> CLICK-INFO (0x43) id={id}");
-        // Click -> the public "profile" view (0x34): portrait + writable blurb, NOT the stats/legend
-        // window (0x39). Only the self entity exists so far, so always show ours.
+
+        // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
+        // non-fighting mobs), so MobById finds them; the IsNpc flag distinguishes them from a real creature.
+        if (id != 0 && _world.MobById(_char.Map, id) is { IsNpc: true } npc) { OpenNpcDialog(npc); return; }
+
+        // Otherwise -> the public "profile" view (0x34): portrait + writable blurb, NOT the stats/legend
+        // window (0x39). id 0 (or a plain creature/self) falls back to our own profile.
         SendClickProfile(id == 0 ? _char.Id : id);
+    }
+
+    // ===== NPC dialog =============================================================================
+    // Clicking an NPC (0x43) runs its behaviour here. An NPC is a COMPOSITION of reusable abilities
+    // (Shop, Bank, Transport, …) declared in NpcScripts; its own definition holds only what's unique to it.
+    // The flow is async: a behaviour awaits each prompt and the client's 0x3A reply (HandleNpcDialog)
+    // completes that await, so behaviours read as linear code (menu -> branch -> loop) rather than a
+    // callback tree — mirroring RTK's coroutine scripts. Everything runs on the read thread (the reply
+    // completes the TaskCompletionSource inline), so it never races the session's other state.
+    private readonly record struct DialogReply(byte Kind, int Step, int MenuIndex, string Input);
+    private TaskCompletionSource<DialogReply>? _dlgReply;   // the prompt currently awaiting a 0x3A reply
+    private const uint BankMax = 100_000_000;              // RTK per-account coin cap
+
+    private void OpenNpcDialog(Mob npc)
+    {
+        var def = Content.NpcById(npc.NpcDefId);
+        Log.Info($"   -> NPC dialog: id={npc.Id} '{npc.Name}' def={npc.NpcDefId}");
+        if (def is null) { SendScriptMessage(npc.Id, $"{npc.Name}\n\nGreetings, traveller.", NpcPortrait(npc), npc.Color); return; }
+        _ = RunNpcAsync(npc, def);   // fire-and-forget: suspends on the first prompt, resumes on the reply
+    }
+
+    // Assemble the NPC's top menu from its abilities' entries and dispatch the pick. Identical for every
+    // NPC — the abilities carry all the behaviour, so nothing NPC-specific lives here.
+    private async Task RunNpcAsync(Mob npc, NpcDef def)
+    {
+        try
+        {
+            var ctx = new NpcContext(this, npc, def);
+            var entries = NpcScripts.For(def).SelectMany(a => a.Entries(ctx)).ToList();
+            if (entries.Count == 0) { await ctx.Say("Greetings, traveller."); return; }
+
+            int choice = await ctx.Menu($"{def.Name}: How can I help you today?", entries.Select(e => e.label).ToList());
+            if (choice >= 1 && choice <= entries.Count) await entries[choice - 1].run(ctx);
+        }
+        catch (Exception e) { Log.Info($"!! NPC dialog error ('{npc.Name}'): {e.Message}"); }
+    }
+
+    // ---- async dialog primitives (used by NpcContext, which abilities call) ---------------------
+    // Each sends a 0x30 and awaits the client's 0x3A. A menu returns the 1-based pick (0 = cancelled).
+    internal async Task<int> DlgMenu(Mob npc, string prompt, IReadOnlyList<string> options)
+    {
+        SendNpcMenu(npc, prompt, options);
+        var r = await AwaitReply();
+        return r.Kind == 0x02 ? r.MenuIndex : 0;
+    }
+
+    internal async Task DlgSay(Mob npc, string text)
+    {
+        SendScriptMessage(npc.Id, text, NpcPortrait(npc), npc.Color);
+        await AwaitReply();   // hold the script until the player closes the box
+    }
+
+    // Free-text input box. Returns the typed string, or null if the player cancelled. The client confirms a
+    // real submit with kind 4 + step 2 (RTK clif_parsenpcdialog requires RFIFOB(fd,13)==2); anything else is
+    // a cancel/close.
+    internal async Task<string?> DlgInput(Mob npc, string prompt)
+    {
+        SendInputBox(npc, prompt);
+        var r = await AwaitReply();
+        return r.Kind == 0x04 && r.Step == 0x02 ? r.Input : null;
+    }
+
+    private Task<DialogReply> AwaitReply()
+    {
+        var tcs = new TaskCompletionSource<DialogReply>();
+        _dlgReply = tcs;      // a new click orphans any previous pending prompt (it's GC'd, never resumes)
+        return tcs.Task;
+    }
+
+    // ---- shop ability implementation (Buy / Sell) ----------------------------------------------
+    // Looped so the window stays open: pick -> confirm -> back to the list; cancel (0) to leave. Reads as a
+    // shop should — the async layer is what makes this straight-line instead of a web of callbacks.
+    internal async Task DlgBuy(Mob npc, Shops.Category[]? catalogue)
+    {
+        var cats = catalogue?.Where(c => c.Keys.Any(k => Content.ItemByKey(k) is not null)).ToList() ?? new();
+        if (cats.Count == 0) { await DlgSay(npc, "I've nothing to sell right now."); return; }
+
+        Shops.Category cat;
+        if (cats.Count == 1) cat = cats[0];   // flat shop (inn) — no category step
+        else
+        {
+            int ci = await DlgMenu(npc, "What would you like to buy?", cats.Select(c => c.Name).ToList());
+            if (ci < 1 || ci > cats.Count) return;
+            cat = cats[ci - 1];
+        }
+
+        var items = cat.Keys.Select(Content.ItemByKey).OfType<ItemDef>().ToList();
+        while (true)
+        {
+            int ii = await DlgMenu(npc, "What would you like?", items.Select(it => $"{it.Name} - {it.BuyPrice}g").ToList());
+            if (ii < 1 || ii > items.Count) return;   // cancelled -> done shopping
+            var it = items[ii - 1];
+            if (_char.Coins < (uint)it.BuyPrice) { await DlgSay(npc, $"You can't afford {it.Name} ({it.BuyPrice} gold)."); continue; }
+            if (!GiveItem(it)) return;                 // pack full — GiveItem already told the player
+            _char.Coins -= (uint)it.BuyPrice;
+            SendStats();
+            Log.Info($"   -> BUY '{it.Name}' -{it.BuyPrice}g (coins now {_char.Coins})");
+            await DlgSay(npc, $"You bought {it.Name} for {it.BuyPrice} gold.");
+        }
+    }
+
+    internal async Task DlgSell(Mob npc)
+    {
+        while (true)
+        {
+            var sellable = _char.Inventory.OrderBy(i => i.Slot)
+                .Select(inv => (inv, def: Content.ItemById(inv.ItemId)))
+                .Where(t => t.def is { NoDrop: false } && t.def.SellPrice > 0)
+                .ToList();
+            if (sellable.Count == 0) { await DlgSay(npc, "You have nothing I'd buy."); return; }
+
+            int i = await DlgMenu(npc, "What would you like to sell?",
+                                  sellable.Select(t => $"{t.def!.Name} - {t.def.SellPrice}g").ToList());
+            if (i < 1 || i > sellable.Count) return;
+            var (inv, def) = sellable[i - 1];
+            _char.Coins += (uint)def!.SellPrice;
+            if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 1); }   // reason 1 = removed
+            else SendAddItem(inv);
+            SendStats();
+            await DlgSay(npc, $"You sold {def.Name} for {def.SellPrice} gold.");
+        }
+    }
+
+    // ---- bank ability implementation (vault: coin + item storage) ------------------------------
+    // Looped like the shop: each action returns to the vault menu until the player cancels. Storage lives on
+    // the Character (BankMoney / BankItems) and persists via the JSON store. Joint/shared accounts (RTK's
+    // multi-owner vaults) are intentionally out of scope for a single-owner vault.
+    internal async Task DlgBank(Mob npc)
+    {
+        while (true)
+        {
+            var opts = new List<string> { "Deposit Item", "Withdraw Item" };
+            if (_char.Coins > 0)     opts.Add("Deposit Money");
+            if (_char.BankMoney > 0) opts.Add("Withdraw Money");
+
+            int c = await DlgMenu(npc, $"Your vault holds {_char.BankMoney} coins. What would you like to do?", opts);
+            if (c < 1 || c > opts.Count) return;
+            switch (opts[c - 1])
+            {
+                case "Deposit Item":   await BankDepositItem(npc);   break;
+                case "Withdraw Item":  await BankWithdrawItem(npc);  break;
+                case "Deposit Money":  await BankDepositMoney(npc);  break;
+                case "Withdraw Money": await BankWithdrawMoney(npc); break;
+            }
+        }
+    }
+
+    private async Task BankDepositMoney(Mob npc)
+    {
+        var s = await DlgInput(npc, $"You carry {_char.Coins} coins. How much will you deposit?");
+        if (s is null) return;   // cancelled
+        long amt = Math.Min(Math.Min(ParseAmount(s), _char.Coins), BankMax - _char.BankMoney);
+        if (amt <= 0) { await DlgSay(npc, "You deposit nothing."); return; }
+        _char.Coins -= (uint)amt;
+        _char.BankMoney += (uint)amt;
+        SendStats();
+        await DlgSay(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
+    }
+
+    private async Task BankWithdrawMoney(Mob npc)
+    {
+        var s = await DlgInput(npc, $"Your vault holds {_char.BankMoney} coins. How much will you withdraw?");
+        if (s is null) return;
+        long amt = Math.Min(ParseAmount(s), _char.BankMoney);
+        if (amt <= 0) { await DlgSay(npc, "You withdraw nothing."); return; }
+        _char.BankMoney -= (uint)amt;
+        _char.Coins += (uint)amt;
+        SendStats();
+        await DlgSay(npc, $"Here are your {amt} coins. Your vault now holds {_char.BankMoney}.");
+    }
+
+    private async Task BankDepositItem(Mob npc)
+    {
+        var items = _char.Inventory.OrderBy(i => i.Slot)
+            .Select(inv => (inv, def: Content.ItemById(inv.ItemId)))
+            .Where(t => t.def is not null)
+            .ToList();
+        if (items.Count == 0) { await DlgSay(npc, "You have nothing to store."); return; }
+
+        int i = await DlgMenu(npc, "Which item will you store?",
+                              items.Select(t => t.inv.Amount > 1 ? $"{t.def!.Name} ({t.inv.Amount})" : t.def!.Name).ToList());
+        if (i < 1 || i > items.Count) return;
+        var (inv, def) = items[i - 1];
+        _char.Inventory.Remove(inv);
+        SendDelItem((byte)inv.Slot, 1);         // reason 1 = removed from the bag
+        _char.BankItems.Add(inv);               // whole stack goes to the vault
+        await DlgSay(npc, $"You store {def!.Name} in your vault.");
+    }
+
+    private async Task BankWithdrawItem(Mob npc)
+    {
+        var stored = _char.BankItems
+            .Select(bi => (bi, def: Content.ItemById(bi.ItemId)))
+            .Where(t => t.def is not null)
+            .ToList();
+        if (stored.Count == 0) { await DlgSay(npc, "Your vault is empty."); return; }
+
+        int i = await DlgMenu(npc, "Which item will you withdraw?",
+                              stored.Select(t => t.bi.Amount > 1 ? $"{t.def!.Name} ({t.bi.Amount})" : t.def!.Name).ToList());
+        if (i < 1 || i > stored.Count) return;
+        var (bi, def) = stored[i - 1];
+        int slot = FreeSlot();
+        if (slot < 0) { await DlgSay(npc, "Your pack is full."); return; }
+        _char.BankItems.Remove(bi);
+        bi.Slot = (byte)slot;                   // assign a fresh bag slot (vault slots are meaningless)
+        _char.Inventory.Add(bi);
+        SendAddItem(bi);
+        await DlgSay(npc, $"You withdraw {def!.Name} from your vault.");
+    }
+
+    // Digits-only amount parse (mirrors RTK inputNumberCheck), capped so it can't overflow the coin math.
+    private static long ParseAmount(string? s)
+    {
+        long v = 0;
+        if (s is not null)
+            foreach (char ch in s)
+                if (char.IsDigit(ch)) { v = v * 10 + (ch - '0'); if (v > BankMax) return BankMax; }
+        return v;
+    }
+
+    // Portrait = the NPC's creature sprite drawn from Monster.epf — the SAME 0x8000|look encoding the on-map
+    // spawn uses (RTK clif.c:3190 sends the NPC graphic as look+32768). The dialog's kind-1 "npc gfx" range
+    // is exactly [32768, 49151], so an encoded creature look lands there; a look of 0 -> no portrait.
+    private static ushort NpcPortrait(Mob npc) => npc.Sprite == 0 ? (ushort)0 : (ushort)(0x8000 | npc.Sprite);
+
+    // 0x30 clif_scriptmenuseq (type-0, graphic head): a text prompt + picker buttons. Same frame mapping as
+    // SendScriptMessage (RTK WFIFO(fd,N) -> body[N-5]); the menu differs only in the kind bytes
+    // (body[0..1] = 02 02, RTK WFIFOB(5)=WFIFOB(6)=2) and the item list appended after the prompt:
+    //   body[23+L] = item count (u8), then each item = len(u8) + ASCII text, contiguous.
+    private void SendNpcMenu(Mob npc, string prompt, IReadOnlyList<string> options)
+    {
+        ushort gfx = NpcPortrait(npc);
+        byte head = gfx == 0 ? (byte)0 : gfx >= 49152 ? (byte)2 : (byte)1;
+        byte color = npc.Color;
+        var pr = Encoding.ASCII.GetBytes(prompt);
+
+        var d = new List<byte>();
+        d.Add(0x02); d.Add(0x02);          // [0..1] kind = menu (RTK WFIFOB(5)=2, WFIFOB(6)=2)
+        d.AddRange(Be32(npc.Id));          // [2..5] npc entity id
+        d.Add(head);                       // [6]   head kind
+        d.Add(1);                          // [7]
+        d.AddRange(Be(gfx));               // [8..9] portrait graphic
+        d.Add(color);                      // [10]  portrait palette
+        d.Add(1);                          // [11]
+        d.AddRange(Be(gfx));               // [12..13]
+        d.Add(color);                      // [14]
+        d.AddRange(Be32(1));               // [15..18]
+        d.Add(0);                          // [19] prev button
+        d.Add(0);                          // [20] next button
+        d.AddRange(Be((ushort)pr.Length)); // [21..22] prompt length
+        d.AddRange(pr);                    // [23..] prompt text
+        d.Add((byte)options.Count);        // [23+L] menu item count
+        foreach (var label in options)
+        {
+            var ob = Encoding.ASCII.GetBytes(label);
+            d.Add((byte)ob.Length);
+            d.AddRange(ob);
+        }
+        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-menu(0x30) id={npc.Id} x{options.Count}");
+    }
+
+    // 0x30 clif_inputseq (type-0, graphic head): a free-text entry box. Same head as the menu; kind bytes
+    // are 04 04 (RTK WFIFOB(5)=WFIFOB(6)=4). After the prompt come RTK's secondary lines we don't use:
+    //   [+1] dialog2 len(=0)   [+1] '*' separator(42)   [+1] dialog3 len(=0)   [+2] trailing (0,0).
+    // The client returns the text via 0x3A kind 4 (HandleNpcDialog -> DlgInput).
+    private void SendInputBox(Mob npc, string prompt)
+    {
+        ushort gfx = NpcPortrait(npc);
+        byte head = gfx == 0 ? (byte)0 : gfx >= 49152 ? (byte)2 : (byte)1;
+        byte color = npc.Color;
+        var pr = Encoding.ASCII.GetBytes(prompt);
+
+        var d = new List<byte>();
+        d.Add(0x04); d.Add(0x04);          // [0..1] kind = input (RTK WFIFOB(5)=WFIFOB(6)=4)
+        d.AddRange(Be32(npc.Id));          // [2..5] npc entity id
+        d.Add(head);                       // [6]   head kind
+        d.Add(1);                          // [7]
+        d.AddRange(Be(gfx));               // [8..9] portrait graphic
+        d.Add(color);                      // [10]  portrait palette
+        d.Add(1);                          // [11]
+        d.AddRange(Be(gfx));               // [12..13]
+        d.Add(color);                      // [14]
+        d.AddRange(Be32(1));               // [15..18]
+        d.Add(0);                          // [19] prev button
+        d.Add(0);                          // [20] next button
+        d.AddRange(Be((ushort)pr.Length)); // [21..22] prompt length
+        d.AddRange(pr);                    // [23..] prompt text
+        d.Add(0);                          // dialog2 length (unused)
+        d.Add(42);                         // '*' separator
+        d.Add(0);                          // dialog3 length (unused)
+        d.Add(0); d.Add(0);                // trailing pad (RTK advances len by +3 past dialog3)
+        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-input(0x30) id={npc.Id}");
+    }
+
+    // 0x30 clif_scriptmes (type-0, graphic head): a plain NPC text box. Ported from RTK clif.c; the RTK
+    // WFIFO(fd,N) offsets map to this server's body[N-5] (frame = AA len len opcode inc, body at wire+5).
+    //   body[0..1] u16=1   [2..5] npc id(u32BE)   [6] head kind(0 none/1 npc gfx/2 item gfx)   [7]=1
+    //   [8..9] gfx(u16BE)   [10] color   [11]=1   [12..13] gfx   [14] color   [15..18] u32=1
+    //   [19] prev-button    [20] next-button   [21..22] msg len(u16BE)   [23..] msg (ASCII)
+    // prev/next 0 => a single OK/close box; the client answers a close with 0x3A kind 1 (HandleNpcDialog).
+    private void SendScriptMessage(uint npcId, string msg, ushort gfx, byte color,
+                                   bool prev = false, bool next = false)
+    {
+        // Head kind, classified from the graphic id exactly as RTK does (clif_scriptmes): 0 -> none,
+        // >=49152 -> item gfx (kind 2), else -> npc/creature gfx (kind 1).
+        byte head = gfx == 0 ? (byte)0 : gfx >= 49152 ? (byte)2 : (byte)1;
+        var m = Encoding.ASCII.GetBytes(msg);
+        var d = new List<byte>();
+        d.AddRange(Be(1));                 // [0..1] type/count = 1
+        d.AddRange(Be32(npcId));           // [2..5] npc entity id
+        d.Add(head);                       // [6]   head kind
+        d.Add(1);                          // [7]
+        d.AddRange(Be(gfx));               // [8..9] portrait graphic
+        d.Add(color);                      // [10]  portrait palette
+        d.Add(1);                          // [11]
+        d.AddRange(Be(gfx));               // [12..13]
+        d.Add(color);                      // [14]
+        d.AddRange(Be32(1));               // [15..18]
+        d.Add((byte)(prev ? 1 : 0));       // [19] prev button
+        d.Add((byte)(next ? 1 : 0));       // [20] next button
+        d.AddRange(Be((ushort)m.Length));  // [21..22] message length
+        d.AddRange(m);                     // [23..] message text
+        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-dialog(0x30) id={npcId} {m.Length}B");
+    }
+
+    // 0x3A = the client's reply to a 0x30 we sent (RTK clif_parsenpcdialog). body[0]=kind (01 text/close,
+    // 02 menu pick, 04 input), [8]=step, [10]=menu index (1-based) or input length, [11..]=input text. We
+    // just complete the prompt that's awaiting a reply; the suspended behaviour resumes and drives what's
+    // next (nested menu, purchase, loop back). No routing table here — the await IS the continuation.
+    private void HandleNpcDialog(byte[] dec)
+    {
+        byte kind = dec.Length > 0 ? dec[0] : (byte)0;
+        int step = dec.Length > 8 ? dec[8] : 0;
+        int menuOrLen = dec.Length > 10 ? dec[10] : 0;
+        string input = "";
+        if (kind == 0x04 && dec.Length > 11)   // input box returned text
+        {
+            int n = Math.Min(menuOrLen, dec.Length - 11);
+            if (n > 0) input = Encoding.ASCII.GetString(dec, 11, n);
+        }
+        Log.Info($"   -> NPC-DIALOG (0x3A) kind={kind} step={step} menu/len={menuOrLen}" +
+                 (input.Length > 0 ? $" input='{input}'" : ""));
+
+        var tcs = _dlgReply;
+        _dlgReply = null;
+        tcs?.TrySetResult(new DialogReply(kind, step, menuOrLen, input));
     }
 
     // The client sends 0x4F when the player saves their profile from the edit box. Body (matches the

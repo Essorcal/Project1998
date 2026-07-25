@@ -21,10 +21,20 @@ public sealed class Mob
     public int    Exp;         // reward granted to the killer (0 for debug dummies / decorations)
     public bool   Alive => Hp > 0;
 
+    // NPCs are stationary "mobs that don't fight": they ride the exact same 0x07 creature render + viewport
+    // streaming as a real mob, but World.TryDamage rejects them (indestructible) and a click opens their
+    // dialog instead of a profile. NpcDefId is the RTK NpcId (Content.NpcById) for dialog/shop lookup.
+    public bool   IsNpc;
+    public int    NpcDefId;
+
     // Shared-world AI: a wandering mob hops at random within a few tiles of its spawn (Home). Set on
     // world mobs (see World.Tick); session-local debug dummies leave Wander=false and never move.
     public ushort HomeX, HomeY;
     public bool   Wander;
+    // Max Chebyshev distance a wanderer may stray from Home before being leashed back. Mobs use the world
+    // default (2); pacing NPCs carry their RTK NpcReturnDistance so a roaming merchant ranges wider than a
+    // town critter.
+    public int    Leash = 2;
 
     // Move pacing (RTK MobMoveTime): the minimum gap in milliseconds between move attempts. The world
     // accumulates elapsed tick time in MoveTimer and only lets the mob act when it reaches MoveTime, so a

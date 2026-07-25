@@ -60,6 +60,12 @@ public sealed class Character
     public List<InvItem> Inventory = new();
     public List<InvItem> Equipment = new();
 
+    // Bank (vault) storage, filled at an inn/bank NPC. BankMoney is coin held on account; BankItems is the
+    // stored stacks (their Slot is meaningless in the vault — a fresh bag slot is assigned on withdrawal).
+    // Both persist in the character JSON, so the vault survives a relog.
+    public uint          BankMoney = 0;
+    public List<InvItem> BankItems = new();
+
     // Learned spells/skills, in spellbook order. Each entry is a Content.Spells id; the book slot the client
     // uses (the 0x17 "pos" and the 0x0F cast "pos") is the index into this list. Persisted so the book
     // survives a relog; re-sent on world entry. Taught by the !spells / !learnspell GM commands.

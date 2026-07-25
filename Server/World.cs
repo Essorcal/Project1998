@@ -75,11 +75,13 @@ public sealed class World
     //   ground items: 500000 ..    (disjoint from players + mobs so a floor-item id never collides)
     private uint _nextPlayerId = 1;
     private uint _nextMobId = 100_000;
+    private uint _nextNpcId = 300_000;    // NPCs get their own id band (disjoint from mobs) so a click can tell them apart
     private uint _nextItemId = 500_000;
 
     public World()
     {
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
+        PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
         _ = Task.Run(TickLoop);           // start the shared mob-AI + respawn heartbeat
     }
 
@@ -110,6 +112,34 @@ public sealed class World
                  (skipped > 0 ? $" ({skipped} skipped — unknown map/mob)" : ""));
     }
 
+    /// <summary>Place every stationary NPC (Content.Npcs) into the world as a non-fighting mob. NPCs ride
+    /// the exact same 0x07 creature render + viewport streaming as a real mob (see Session.ShowMob/SyncMobs),
+    /// so they render + stream for free; they simply never wander, never respawn, and can't be damaged
+    /// (World.TryDamage rejects <see cref="Mob.IsNpc"/>). Clicking one opens its dialog (Session.HandleClickInfo).
+    /// Runs once at startup after Content.Load; the NPC's home tile is its spawn tile and it holds position.</summary>
+    private void PopulateNpcs()
+    {
+        int placed = 0;
+        lock (_lock)
+        {
+            foreach (var n in Content.Npcs)
+            {
+                var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y);   // don't stack on a mob spawn sharing the tile
+                // RTK gives some NPCs (animals, town dogs, roaming merchants) a MoveTime + ReturnDistance so
+                // they pace; the rest stand still. A leash of 0 means "don't stray", i.e. stationary.
+                bool paces = n.MoveTime > 0 && n.ReturnDistance > 0;
+                var npc = new Mob(_nextNpcId++, n.Look, nx, ny, n.Name, hp: 1)
+                {
+                    IsNpc = true, NpcDefId = n.Id, Color = n.Color, Dir = n.Dir,
+                    Wander = paces, MoveTime = paces ? n.MoveTime : 2500, Leash = n.ReturnDistance,
+                };
+                Map(n.Map).Mobs.Add(npc);
+                placed++;
+            }
+        }
+        Log.Info($"npcs: {placed} stationary NPC(s) placed");
+    }
+
     /// <summary>Create the live mob for a spawn point and register it. Caller holds <c>_lock</c>.</summary>
     private void Materialize(ushort mapId, Spawn sp)
     {
@@ -121,7 +151,7 @@ public sealed class World
         {
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
             // rendered every mob green — so we use RTK's per-mob colour, which matches for most creatures.)
-            Color = d.Color, Exp = d.Exp, Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true,
+            Color = d.Color, Exp = d.Exp, Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
         };
         Map(mapId).Mobs.Add(mob);
@@ -269,7 +299,7 @@ public sealed class World
         List<GroundItem>? drops = null;
         lock (_lock)
         {
-            if (!mob.Alive) return false;
+            if (!mob.Alive || mob.IsNpc) return false;   // NPCs are indestructible (a click talks to them, not fights)
             mob.Hp -= dmg;
             died = !mob.Alive;
             if (died && _maps.TryGetValue(mapId, out var m))
@@ -424,8 +454,8 @@ public sealed class World
 
                     bool ok = nx >= 0 && ny >= 0
                               && (dims.Item1 == 0 || (nx < dims.Item1 && ny < dims.Item2))
-                              && Math.Abs(nx - mob.HomeX) <= WanderRadius
-                              && Math.Abs(ny - mob.HomeY) <= WanderRadius                          // leash to spawn
+                              && Math.Abs(nx - mob.HomeX) <= mob.Leash
+                              && Math.Abs(ny - mob.HomeY) <= mob.Leash                             // leash to spawn
                               && !occupied.Contains(((ushort)nx, (ushort)ny))                     // not onto a player
                               && !mobTiles.Contains((nx, ny))                                      // not onto another mob
                               && (terrain is null || !terrain.Solid(nx, ny));                     // walls + water/cliffs (obj|pass)
