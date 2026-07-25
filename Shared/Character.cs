@@ -27,6 +27,10 @@ public sealed class Character
     public ushort Face   = 0;
     public ushort Hair   = 0;
 
+    // Mounted on a horse — renders as the 0x33 type-0 appearance[1] form byte = 3 (the client swaps the
+    // human sprite for the horse+rider composite, SPR ids 344/345). Session-visual only; not persisted.
+    public bool   Mounted = false;
+
     // Wielded weapon — renders as the 0x33 type-0 appearance[5] slot (look-lab: 0=unarmed, then
     // Honor sword / Flame blade / Electra / Steelthorn / Blood / Primogen …). Also drives the melee
     // damage bonus in Session.HandleAttack. Persisted so the weapon survives a relog.
@@ -70,6 +74,20 @@ public sealed class Character
     // uses (the 0x17 "pos" and the 0x0F cast "pos") is the index into this list. Persisted so the book
     // survives a relog; re-sent on world entry. Taught by the !spells / !learnspell GM commands.
     public List<int> Spells = new();
+
+    // Quest progress. Key = a quest id ("trial_of_iron"); value = its stage (0 = not started, 1 = active,
+    // 2 = done — quests define their own meaning). Objective counters live under composite keys
+    // ("trial_of_iron.kills"), so one flat map holds both stage machine and progress tallies. Persisted in
+    // the character JSON, so an accepted quest and its progress survive a relog. See Server/Quests.cs.
+    public Dictionary<string, int> Quests = new();
+
+    // String-valued quest registry (RTK's registryString): e.g. the active minor-quest key. Kept separate
+    // from the int map above so a quest can hold both a numeric stage and a string selection. Persisted.
+    public Dictionary<string, string> QuestStrings = new();
+
+    // Lifetime kills per mob key ("squirrel" -> 12), tallied on every world-mob kill. Quests read a delta of
+    // this (RTK's player:killCount) — kill-since-accept — so a fresh kill after accepting counts. Persisted.
+    public Dictionary<string, int> Kills = new();
 
     // Sub-alignment: 0 = Unaligned (base), 1 = Kwisin, 2 = Mingken, 3 = Ohaeng. Gates which spell set !spells
     // teaches — a character learns only universal spells + their own alignment's set, never the other
@@ -133,13 +151,16 @@ public sealed class InvItem
     { Slot = slot; ItemId = itemId; Amount = amount; Dura = dura; }
 }
 
-/// <summary>One legend-mark line in the profile window: an icon id, a text color, and the text.</summary>
+/// <summary>One legend-mark line in the profile window: an icon id, a text color, and the text. <see cref="Name"/>
+/// is an internal key (RTK's legend name, never sent to the client) so a quest can find/replace/remove its own
+/// legend by identity rather than matching on display text.</summary>
 public sealed class Legend
 {
     public byte   Icon  = 0;
     public byte   Color = 0;
     public string Text  = "";
+    public string Name  = "";
 
     public Legend() { }
-    public Legend(byte icon, byte color, string text) { Icon = icon; Color = color; Text = text; }
+    public Legend(byte icon, byte color, string text, string name = "") { Icon = icon; Color = color; Text = text; Name = name; }
 }

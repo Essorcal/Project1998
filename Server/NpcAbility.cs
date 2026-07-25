@@ -32,6 +32,56 @@ public sealed class NpcContext
 
     /// <summary>Run the bank/vault flow (deposit &amp; withdraw coin and items).</summary>
     public Task Bank() => _s.DlgBank(_npc);
+
+    // ---- quest helpers (used by QuestDef.Talk scripts; see Server/Quests.cs) ---------------------
+    /// <summary>This player's stage for a quest (0 = not started; a quest defines the rest).</summary>
+    public int  Stage(string questKey) => _s.QuestStage(questKey);
+    /// <summary>Set this player's stage for a quest (persists).</summary>
+    public void SetStage(string questKey, int stage) => _s.SetQuestStage(questKey, stage);
+    /// <summary>A quest progress counter (e.g. "trial_of_iron.kills"); 0 if unset.</summary>
+    public int  Counter(string counterKey) => _s.QuestCounter(counterKey);
+
+    /// <summary>Award experience (updates the HUD + persists).</summary>
+    public void AwardExp(uint amount)  => _s.AwardExp(amount);
+    /// <summary>Award coin (updates the HUD + persists).</summary>
+    public void AwardGold(uint amount) => _s.AwardGold(amount);
+
+    /// <summary>How many of an item (by content key) the player holds.</summary>
+    public int  CountItem(string itemKey) => _s.CountItem(itemKey);
+    /// <summary>Consume <paramref name="amount"/> of an item by key; false if the player hasn't that many.</summary>
+    public bool TakeItem(string itemKey, int amount) => _s.TakeItem(itemKey, amount);
+    /// <summary>Give a reward item by key; false if the item is unknown or the pack is full.</summary>
+    public bool GiveItem(string itemKey, int amount = 1) => _s.GiveRewardItem(itemKey, amount);
+
+    /// <summary>Lifetime kills for a mob key (RTK <c>player:killCount</c>). Quests compare a snapshot delta.</summary>
+    public int  KillCount(string mobKey) => _s.KillCount(mobKey);
+
+    /// <summary>An int-valued quest registry entry (RTK registry), 0 if unset. General store for quest
+    /// bookkeeping (counters, snapshots, timers) — distinct from <see cref="Stage"/>'s quest-stage meaning.</summary>
+    public int  Reg(string key) => _s.QuestCounter(key);
+    public void SetReg(string key, int value) => _s.SetQuestStage(key, value);
+
+    /// <summary>A string-valued quest registry entry (RTK registryString), "" if unset.</summary>
+    public string QuestStr(string key) => _s.QuestStr(key);
+    public void   SetQuestStr(string key, string value) => _s.SetQuestStr(key, value);
+
+    /// <summary>Does the player have the legend with this internal name?</summary>
+    public bool HasLegend(string name) => _s.HasLegend(name);
+    /// <summary>Add (or replace by name) a legend mark.</summary>
+    public void AddLegend(string text, string name, byte icon, byte color) => _s.AddLegend(text, name, icon, color);
+    /// <summary>Remove the legend with this internal name.</summary>
+    public void RemoveLegend(string name) => _s.RemoveLegend(name);
+
+    /// <summary>The player's level.</summary>
+    public int  Level => _s.CharLevel;
+    /// <summary>The "power" number quests gate on (RTK baseMagic*2 + baseHealth analog).</summary>
+    public int  Stat  => _s.CharStat;
+    /// <summary>Subpath mark count (0 for now).</summary>
+    public int  Mark  => _s.CharMark;
+    /// <summary>Random int in [1, maxInclusive].</summary>
+    public int  Random(int maxInclusive) => _s.QuestRandom(maxInclusive);
+    /// <summary>Wall-clock seconds since the Unix epoch (for cooldown timers).</summary>
+    public long NowUnix => _s.NowUnix;
 }
 
 /// <summary>
@@ -95,6 +145,27 @@ public sealed class TimeAbility : INpcAbility
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
         yield return ("Date & Time", c => c.Say($"It is {DateTime.Now:dddd, MMMM d} — {DateTime.Now:h:mm tt}."));
+    }
+}
+
+/// <summary>Surfaces this NPC's quests (from <see cref="Quests.ForNpc"/>) as menu entries — one per quest,
+/// its label reflecting the player's progress — and runs the quest's <see cref="QuestDef.Talk"/> script when
+/// picked. Added automatically to any NPC that has quests (see <see cref="NpcScripts.For"/>), so a quest is
+/// wired end to end just by listing it under a giver in <see cref="Quests.ByNpc"/>.</summary>
+public sealed class QuestAbility : INpcAbility
+{
+    public static readonly QuestAbility Instance = new();
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        foreach (var q in Quests.ForNpc(ctx.Def.Id))
+        {
+            var quest = q;   // capture per-iteration for the closure
+            int stage = ctx.Stage(quest.Key);
+            string label = stage >= QuestDef.Done ? $"{quest.Name} (done)"
+                         : stage > QuestDef.NotStarted ? $"{quest.Name} (in progress)"
+                         : quest.Name;
+            yield return (label, c => quest.Talk(c));
+        }
     }
 }
 

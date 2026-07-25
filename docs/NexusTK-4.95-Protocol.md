@@ -481,7 +481,7 @@ layout:**
 | Byte | Meaning | Notes |
 |---|---|---|
 | `[0]` | **Body / sex** | `0` = male, `1+` = female. |
-| `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. |
+| `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `!ride`/`!mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
 | `[2]` | **Face** | Distinct faces; range is larger than 8 (accepts values ≥ 0x34). |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
 | `[4]` | ? | No visible change for 0..8; likely hair/color/skin, untested at higher values. |
@@ -828,8 +828,8 @@ entries `{u32 offset, char name[13]}` (first offset == header size).
 `color` = the `0x07` colour/recolor byte, see §11a.1), `!crecol <lookId> [loColor] [hiColor] [step]` (sweep
 the SAME look id across colour-byte values as a **grid**, 12/row, default `0..23`; the colour byte visibly
 wraps mod-24 with only 0-19 real), `!crow <lo> <hi> [step]` (row sweep of the Monster.tbl look space),
-`!spawn [lookId] [hp]` (a pack), `!kill`, `!weapon <n>`. The `0x16` item commands (`!mob`, `!mobrow`) are
-kept for item/object discovery.
+`!spawn [lookId] [hp]` (a pack), `!kill`, `!weapon <n>`, `!ride`/`!mount [0|1]` (get on/off a horse — form
+byte 3, §8). The `0x16` item commands (`!mob`, `!mobrow`) are kept for item/object discovery.
 
 **Navigation & content commands** (data-driven, backed by the `Content` registry — §17.3): `!warp <name|id>
 [x y]` (fuzzy-match a map by name or id, optionally with coords, and enter it), `!maps [query]` /
@@ -1175,6 +1175,41 @@ doors are real entrances. `Session.HandleOpen`: reads the faced object, looks it
 sends the **`0x06` cell-patch** (see §13) to every client on the map to redraw. The client re-renders the
 object layer over the patched rectangle regardless of whether the ground word changed. Full door toggle table:
 memory `nexustk-495-doors`.
+
+**Scripted-tile warps — Mythic Nexus zodiac caves (map 41) — WORKING (2026-07-25).** Not every warp lives in
+the SQL `Warps` table. The 12 zodiac cave entrances on Mythic Nexus (map 41) are RTK **Lua tile-scripts**
+(`onScriptedTiles/onScriptedTilesMythic.lua` → `NPCs/mythic/mythic_cave_selector.lua`), so a step onto one is
+intercepted in `HandleWalk` **before** the collision test (like a warp), by `Session.TryMythicCaveEntrance`.
+Each animal has a **two-tile footprint** on map 41 (e.g. Rabbit `(49,12)`/`(50,12)`, Dragon `(29,19)`/`(30,19)`)
+and a cave-1 destination map (Rabbit→201, Ox→170, Pig→181, Horse→246, Dragon→257, …). The cave has **three
+depth tiers**: cave 1 = base map, cave 2 = `base+3000`, cave 3 = `base+4000` (all renderable — e.g. `170` Red
+Bull 1 / `3170` Red Bull 2 / `4170` Red Bull 3). Entry is **level/vitals-gated** (`Scripts/mythicCaveReqCheck.lua`):
+per animal, tier *t* needs `level ≥ Lₜ` **and** (`maxHP ≥ Hₜ` **or** `maxMP ≥ Mₜ`) — tier-1 has no HP/MP floor,
+so level alone unlocks it (Rabbit L25, Monkey L32, Dog L39, … +7 per animal, Dragon L99). RTK's picker menu is
+GM/Config-only; with it off (our default) it **auto-warps to the deepest tier the player qualifies for**, which
+`TryMythicCaveEntrance` reproduces. Under-levelled → refused with a flavour line (8+ levels short = *"Nightmarish
+visions of your own death repel you."*, 4–7 = *"You are not yet ready…"*, ≤3 = *"You almost understand…"*) and
+the step is cancelled. Test with `!lvl <N>` (the bring-up character is L1, so every cave refuses until levelled).
+
+**More scripted tiles: fall-rooms & foraging — WORKING (2026-07-25).** RTK's `onScriptedTile` runs a stack of
+per-walk handlers (`onScriptedTiles/`); `Session.OnScriptedTileStep` (fired at the END of a completed step, when
+the player stands on the new tile) ports the two that are self-contained **and** live entirely on renderable 4.x
+maps:
+- **Mythic fall-rooms** (`onScriptedTilesMythicFallRooms.lua`) — inside a zodiac cave, every step has a **1/500
+  chance to drop through the floor** to a fixed landing tile in a lower sub-room (e.g. Ox `177/178 → 180 (22,7)`,
+  Monkey `167/168 → 169 (23,3)`; +3000/+4000 for cave tiers 2/3; plus the Iron lab `1302-1306 → 1307`). All ~90
+  source and destination maps render. `TryMythicFallRoom` (table `FallRooms`, built from `FallGroups`) warps via
+  `EnterMap`; it no-ops if the destination isn't renderable, so it can never strand a player.
+- **Bush/tree foraging** (`onScriptedTilesBushTree.lua`) — standing adjacent to an **apple tree** (object ids
+  `860-864`) or a **rose bush** (`876-889`), each step has a **1/50 chance** to pick an *apple* (`10001`) / *rose*
+  (`21001`). `TryForage` scans the 3×3 object layer around the player (`MapData.Obj`) — the `.map` object word IS
+  RTK's object id, verified: apple trees appear on 37 renderable maps (Kugnae 685×, Vale 905×, Mythic Nexus 161×),
+  rose bushes on 24 (Kugnae 555×, Buya 214×, Wilderness 562×), so it fires against real map data.
+
+Other `onScriptedTiles/` handlers were surveyed and **skipped**: subpath-trial entrances (most destination maps
+absent from the 4.95 client — only diviner `3540` / druid `3632` render), Tutor's Haven / Elixir Hall / Mount
+Baekdu / Nagnang-shield / generic quest halls (host maps not renderable = 7.x content), and the Tower Arena /
+Carnage Hall minigames (maps render but need a full event-manager). See memory `nexustk-495-scripted-tile-warps`.
 
 **GM commands:** `!items [filter]` (browse registry), `!item <name/id> [amount]` (summon into bag),
 `!clearinv` (reset bag + gear).

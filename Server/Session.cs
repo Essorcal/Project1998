@@ -774,7 +774,7 @@ public sealed class Session
         //   [2]=face  [3]=armor/coat  [4]=? (no visible change 0..8)  [5]=weapon  [6]=shield
         // NOTE the old code put "Hair" in [1] = the FORM byte — that's what blanked the character.
         //   ... [5]=weapon (Honor sword/Flame blade/…), [6]=shield
-        var app = new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, (byte)_char.Armor, 0, WeaponLook(), ShieldLook() };
+        var app = new byte[] { (byte)_char.Sex, MountForm(), (byte)_char.Face, (byte)_char.Armor, 0, WeaponLook(), ShieldLook() };
         SendLook(_char.Id, _char.X, _char.Y, dir: _facing, app, renderKind: 1, _char.Name, "self(0x33)");
     }
 
@@ -782,6 +782,10 @@ public sealed class Session
     // so an EMPTY slot must send 0xFF ("-1", proven live and matching RTK clif.c, which sends 0xFFFF for
     // weapon/shield when !pc_isequip). The slot is "occupied" iff a matching item is actually worn — a worn
     // weapon whose Look happens to be 0 (e.g. Novice sword) still shows sprite 0, only a bare slot is 0xFF.
+    // Form/state byte for appearance[1]: 3 = mounted (horse+rider composite), 0 = normal human. Other
+    // documented values (1 ghost, 5 invisible-spell) aren't driven from here.
+    private byte MountForm() => _char.Mounted ? (byte)3 : (byte)0;
+
     private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; !weapon GM override
     private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
     private byte EquippedLook(int itmType, byte none)
@@ -1179,6 +1183,11 @@ public sealed class Session
             return;
         }
 
+        // Mythic Nexus (map 41) zodiac cave entrances are RTK Lua tile-scripts (onScriptedTilesMythic ->
+        // mythic_cave_selector), NOT SQL warps — so they need their own handler. Stepping on a zodiac tile
+        // warps to the deepest cave tier the player's level/vitals unlock (or refuses, under-levelled).
+        if (!offMap && _char.Map == 41 && TryMythicCaveEntrance((ushort)nx, (ushort)ny)) return;
+
         if (blocked)
         {
             _char.X = (ushort)fromX; _char.Y = (ushort)fromY;   // hold at the from-tile
@@ -1328,6 +1337,10 @@ public sealed class Session
             SendXy();
         }
         Log.Info($"   -> walk dir={dir} ({fromX},{fromY})->({_char.X},{_char.Y}) obj={obj}");
+
+        // The step is complete and the player stands on the new tile — run the after-step scripted tiles
+        // (foraging, mythic fall-rooms). A fall-room warps, so this must come last (nothing follows it).
+        OnScriptedTileStep();
     }
 
     // 5.33 turn (0x11 = "side"): the client reports a new facing but does NOT move. We update facing and
@@ -1633,6 +1646,7 @@ public sealed class Session
         if (text.StartsWith("!mob", StringComparison.OrdinalIgnoreCase)) { MobOne(text); return; }       // spawn one creature
         if (text.StartsWith("!kill", StringComparison.OrdinalIgnoreCase)) { KillMobs(); return; }         // despawn all mobs
         if (text.StartsWith("!weapon", StringComparison.OrdinalIgnoreCase)) { SetWeapon(text); return; }  // equip weapon sprite
+        if (text.StartsWith("!ride", StringComparison.OrdinalIgnoreCase) || text.StartsWith("!mount", StringComparison.OrdinalIgnoreCase)) { ToggleMount(text); return; } // get on/off the horse (form byte 3)
         if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("level", text); return; }   // set base level (test wear reqs)
         if (text.StartsWith("!might", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("might", text); return; } // set base might (test wear reqs)
         if (text.StartsWith("!class", StringComparison.OrdinalIgnoreCase)) { SetClass(text); return; }  // set the profile class/path line
@@ -1774,10 +1788,11 @@ public sealed class Session
     // the world's authoritative HP in HandleAttack. This is the gameplay-mob path (!rabbit / !summon);
     // the debug lab (!cre/!mob/!crow/look-lab) still uses the session-local SpawnMonster/SpawnMob.
     private Mob SummonWorldMob(ushort look, ushort x, ushort y, string name, int hp, byte dir, byte color,
-                               int exp = 0, int moveTime = 2500)
+                               int exp = 0, int moveTime = 2500, string key = "")
     {
         var mob = new Mob(_world.AllocateMobId(), look, x, y, name, hp)
         {
+            Key = key,   // MobDef identifier (for quest kill-matching); empty for keyless debug summons
             Dir = dir, Color = color, Exp = exp, HomeX = x, HomeY = y, Wander = true,
             MoveTime = moveTime, MoveTimer = Random.Shared.Next(moveTime),
         };
@@ -1787,6 +1802,181 @@ public sealed class Session
     }
 
     // ===== navigation: warp + map/mob listing + data-driven summon ==========================
+
+    // ---- Mythic Nexus zodiac cave entrances (map 41) ----
+    // RTK gates each of the 12 zodiac caves behind a level/vitals check (Scripts/mythicCaveReqCheck.lua) and
+    // an easy/dangerous/deadly tier picker (NPCs/mythic/mythic_cave_selector.lua). With the picker menu off
+    // (the default — it's GM/Config-only), RTK auto-warps to the DEEPEST tier the player qualifies for, so we
+    // reproduce that: tier 1 -> base map, tier 2 -> base+3000, tier 3 -> base+4000. The two-tile entrance
+    // footprints and destinations are copied verbatim from onScriptedTilesMythic.lua + mythic_cave_selector.lua.
+    private readonly record struct CaveDest(ushort Map, ushort X, ushort Y);
+    private readonly record struct CaveReq(byte Level, uint Health, uint Magic);
+
+    private static readonly Dictionary<(ushort x, ushort y), string> MythicTiles = new()
+    {
+        [(49, 12)] = "Rabbit",  [(50, 12)] = "Rabbit",
+        [(43, 48)] = "Monkey",  [(44, 48)] = "Monkey",
+        [(18, 25)] = "Dog",     [(19, 25)] = "Dog",
+        [(48, 30)] = "Rooster", [(49, 30)] = "Rooster",
+        [(9, 12)]  = "Rat",     [(10, 12)] = "Rat",
+        [(15, 48)] = "Horse",   [(16, 48)] = "Horse",
+        [(29, 45)] = "Ox",      [(30, 45)] = "Ox",
+        [(17, 39)] = "Pig",     [(18, 39)] = "Pig",
+        [(40, 25)] = "Snake",   [(41, 25)] = "Snake",
+        [(41, 39)] = "Sheep",   [(42, 39)] = "Sheep",
+        [(10, 30)] = "Tiger",   [(11, 30)] = "Tiger",
+        [(29, 19)] = "Dragon",  [(30, 19)] = "Dragon",
+    };
+
+    // animal -> cave-1 base map + the arrival tile inside it (same coords for every tier). +3000 = cave 2, +4000 = cave 3.
+    private static readonly Dictionary<string, CaveDest> MythicDest = new()
+    {
+        ["Rabbit"] = new(201, 13, 19), ["Monkey"] = new(160, 1, 1),  ["Dog"]    = new(191, 11, 27),
+        ["Rooster"] = new(214, 9, 58), ["Rat"]    = new(151, 12, 18), ["Horse"]  = new(246, 7, 22),
+        ["Ox"]     = new(170, 2, 27),  ["Pig"]    = new(181, 26, 22), ["Snake"]  = new(231, 17, 1),
+        ["Sheep"]  = new(470, 14, 12), ["Tiger"]  = new(100, 30, 4),  ["Dragon"] = new(257, 17, 10),
+    };
+
+    // Per-animal tier requirements [tier1, tier2, tier3]. A tier is met when level >= Level AND
+    // (baseMaxHP >= Health OR baseMaxMP >= Magic). Tier-1 has no HP/MP floor, so level alone unlocks it.
+    private static readonly Dictionary<string, CaveReq[]> MythicReqs = new()
+    {
+        ["Rabbit"]  = new[] { new CaveReq(25, 0, 0),     new CaveReq(70, 0, 0),           new CaveReq(99, 20000, 10000) },
+        ["Monkey"]  = new[] { new CaveReq(32, 0, 0),     new CaveReq(77, 0, 0),           new CaveReq(99, 40000, 20000) },
+        ["Dog"]     = new[] { new CaveReq(39, 0, 0),     new CaveReq(84, 0, 0),           new CaveReq(99, 60000, 30000) },
+        ["Rooster"] = new[] { new CaveReq(46, 0, 0),     new CaveReq(91, 0, 0),           new CaveReq(99, 100000, 50000) },
+        ["Rat"]     = new[] { new CaveReq(53, 0, 0),     new CaveReq(98, 0, 0),           new CaveReq(99, 140000, 70000) },
+        ["Horse"]   = new[] { new CaveReq(60, 0, 0),     new CaveReq(99, 30000, 15000),   new CaveReq(99, 180000, 90000) },
+        ["Ox"]      = new[] { new CaveReq(67, 0, 0),     new CaveReq(99, 50000, 25000),   new CaveReq(99, 220000, 110000) },
+        ["Pig"]     = new[] { new CaveReq(74, 0, 0),     new CaveReq(99, 80000, 40000),   new CaveReq(99, 260000, 130000) },
+        ["Snake"]   = new[] { new CaveReq(81, 0, 0),     new CaveReq(99, 110000, 55000),  new CaveReq(99, 300000, 150000) },
+        ["Sheep"]   = new[] { new CaveReq(88, 0, 0),     new CaveReq(99, 140000, 70000),  new CaveReq(99, 340000, 170000) },
+        ["Tiger"]   = new[] { new CaveReq(95, 0, 0),     new CaveReq(99, 170000, 85000),  new CaveReq(99, 380000, 190000) },
+        ["Dragon"]  = new[] { new CaveReq(99, 0, 0),     new CaveReq(99, 200000, 100000), new CaveReq(99, 420000, 210000) },
+    };
+
+    // Deepest tier (1..3) the player unlocks for `animal`, or a negative "how close" code when locked out:
+    // 0 = within 3 levels, -1 = within 4-7, -2 = 8+ levels short. Mirrors mythicCaveReqCheck.lua exactly.
+    private int MythicCaveTier(string animal)
+    {
+        var reqs = MythicReqs[animal];
+        for (int i = 2; i >= 0; i--)   // check tier 3 -> 1, return the first satisfied
+        {
+            var r = reqs[i];
+            if (_char.Level >= r.Level && (_char.MaxHp >= r.Health || _char.MaxMp >= r.Magic))
+                return i + 1;
+        }
+        int levelsUntil = reqs[0].Level - _char.Level;
+        if (levelsUntil >= 8) return -2;
+        if (levelsUntil >= 4) return -1;
+        return 0;
+    }
+
+    // Handle a step onto a zodiac entrance tile on map 41: warp into the deepest unlocked cave tier, or
+    // refuse (snap back + flavour line) when under-levelled. Returns false if (x,y) isn't an entrance tile.
+    private bool TryMythicCaveEntrance(ushort x, ushort y)
+    {
+        if (!MythicTiles.TryGetValue((x, y), out var animal)) return false;
+        int tier = MythicCaveTier(animal);
+        if (tier < 1)
+        {
+            SendMessage(tier switch
+            {
+                -2 => "Nightmarish visions of your own death repel you.",
+                0  => "You almost understand the secrets of this entrance.",
+                _  => "You are not yet ready to enter here.",
+            });
+            SendXy();   // cancel the client's step prediction — the entrance holds them out
+            Log.Info($"   -> MYTHIC {animal} entrance REFUSED (tier {tier}, level {_char.Level})");
+            return true;
+        }
+
+        var d = MythicDest[animal];
+        ushort destMap = (ushort)(d.Map + (tier == 3 ? 4000 : tier == 2 ? 3000 : 0));
+        if (!Content.TryMap(destMap, out var dm)) { destMap = d.Map; Content.TryMap(destMap, out dm); }
+        if (dm is null) { SendXy(); return true; }   // map data missing — don't strand the player
+        Log.Info($"   -> MYTHIC {animal} cave {tier} -> map {destMap} '{dm.Name}' ({d.X},{d.Y}) [level {_char.Level}]");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, d.X, d.Y, dm.Name);
+        return true;
+    }
+
+    // ---- After-step scripted tiles (fire once the step has completed, i.e. standing on the new tile) ----
+    // RTK runs these from onScriptedTile on every walk. We only port the two that are self-contained AND live
+    // entirely on maps the 4.95 client can render: mythic-cave fall-rooms and bush/tree foraging.
+    private void OnScriptedTileStep()
+    {
+        TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
+        if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
+    }
+
+    // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
+    // to a fixed landing tile in a lower sub-room (onScriptedTilesMythicFallRooms.lua). The three depth tiers
+    // mirror each other (+3000 = cave 2, +4000 = cave 3), so the tier-1 groups below are expanded to all three.
+    private const int FallRate = 500;
+    private static readonly (ushort dest, ushort dx, ushort dy, ushort[] src)[] FallGroups =
+    {
+        (169, 23, 3,  new ushort[] { 167, 168 }),        // Monkey
+        (217, 10, 17, new ushort[] { 212, 216, 218 }),   // Rooster
+        (208, 15, 18, new ushort[] { 203, 205, 208 }),   // Rabbit
+        (479, 23, 3,  new ushort[] { 482, 484 }),        // Sheep
+        (180, 22, 7,  new ushort[] { 177, 178 }),        // Ox
+        (183, 2, 9,   new ushort[] { 186, 187, 190 }),   // Pig
+        (244, 15, 25, new ushort[] { 243, 245, 247 }),   // Horse
+        (196, 11, 38, new ushort[] { 192, 194, 199 }),   // Dog
+        (255, 12, 34, new ushort[] { 253, 254, 258 }),   // Dragon
+        (235, 1, 4,   new ushort[] { 233, 236, 237 }),   // Snake
+    };
+    // map -> landing (destMap, x, y). Built once from FallGroups (all three tiers) + the tier-less Iron lab.
+    private static readonly Dictionary<ushort, (ushort map, ushort x, ushort y)> FallRooms = BuildFallRooms();
+    private static Dictionary<ushort, (ushort, ushort, ushort)> BuildFallRooms()
+    {
+        var m = new Dictionary<ushort, (ushort, ushort, ushort)>();
+        foreach (var g in FallGroups)
+            for (ushort off = 0; off <= 4000; off += 3000)   // 0 = cave 1, +3000 = cave 2, +4000 = cave 3
+                foreach (var s in g.src)
+                    m[(ushort)(s + off)] = ((ushort)(g.dest + off), g.dx, g.dy);
+        foreach (var s in new ushort[] { 1302, 1303, 1304, 1305, 1306 })   // Iron lab -> Treasure Room (no tiers)
+            m[s] = (1307, 4, 5);
+        return m;
+    }
+
+    private bool TryMythicFallRoom()
+    {
+        if (!FallRooms.TryGetValue(_char.Map, out var f)) return false;
+        if (Random.Shared.Next(FallRate) != 0) return false;
+        if (!Content.TryMap(f.map, out var dm)) return false;   // dest not renderable -> no fall (don't strand)
+        Log.Info($"   -> FALL through map {_char.Map} -> {f.map} '{dm.Name}' ({f.x},{f.y})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, f.x, f.y, dm.Name);
+        return true;
+    }
+
+    // Bush/tree foraging (onScriptedTilesBushTree.lua): standing next to an apple tree (object ids 860-864)
+    // or a rose bush (876-889), each step has a 1/50 chance to pick an apple / rose. Objects are read from the
+    // map's OWN object layer (same ids RTK's checkProximityObjects uses), scanned in the 3x3 around the player.
+    private const int ForageRate = 50;
+    private void TryForage()
+    {
+        var map = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        if (map is null) return;
+
+        string? item = null;
+        for (int dy = -1; dy <= 1 && item is null; dy++)
+        for (int dx = -1; dx <= 1 && item is null; dx++)
+        {
+            int tx = _char.X + dx, ty = _char.Y + dy;
+            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
+            ushort o = map.Obj(tx, ty);
+            if (o >= 860 && o <= 864) item = "apple";
+            else if (o >= 876 && o <= 889) item = "rose";
+        }
+        if (item is null) return;
+        if (Random.Shared.Next(ForageRate) != 0) return;
+
+        var def = Content.FindItem(item);
+        if (def is null || !GiveItem(def)) return;
+        SendMessage(item == "apple" ? "You found an apple." : "You find a beautiful rose!");
+        Log.Info($"   -> FORAGE {item} on map {_char.Map} @({_char.X},{_char.Y})");
+    }
 
     // Move the player to another map (or a far tile) and redraw. On 4.95 the client loads its OWN local
     // Maps\TK<id>.map from the 0x15 mapId, so a warp is just: update tracked position, then re-send the
@@ -1874,7 +2064,7 @@ public sealed class Session
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
-        SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color, exp: mob.Exp, moveTime: mob.MoveTime);
+        SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color, exp: mob.Exp, moveTime: mob.MoveTime, key: mob.Key);
         SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp).");
     }
 
@@ -1920,6 +2110,98 @@ public sealed class Session
         foreach (var it in _char.Inventory.OrderBy(i => i.Slot)) SendAddItem(it);
         foreach (var e in _char.Equipment) SendEquip(e);
     }
+
+    /// <summary>Persist the character if it has actually entered the world (mirrors the inline guard used at the
+    /// other save sites). Cheap best-effort; the store swallows IO errors so a save never crashes a session.</summary>
+    private void SaveChar() { if (_enteredWorld) _store.Save(_char); }
+
+    // ===== quests (see Server/Quests.cs, NpcContext quest helpers) ================================
+    // Quest state lives in _char.Quests (a flat key->int map, persisted): a quest's stage under its key, its
+    // progress tallies under composite counter keys. These internal helpers are the whole surface the quest
+    // scripts (via NpcContext) and the kill hook touch, so quest logic never reaches into session internals.
+    internal int  QuestStage(string questKey) => _char.Quests.GetValueOrDefault(questKey);
+    internal void SetQuestStage(string questKey, int stage) { _char.Quests[questKey] = stage; SaveChar(); }
+    internal int  QuestCounter(string counterKey) => _char.Quests.GetValueOrDefault(counterKey);
+
+    /// <summary>Award experience (refresh the HUD exp bar + persist). Quest EXP rewards funnel through here.</summary>
+    internal void AwardExp(uint amount)  { if (amount == 0) return; _char.Exp   += amount; SendStats(); SaveChar(); }
+    /// <summary>Award coin (refresh the HUD + persist).</summary>
+    internal void AwardGold(uint amount) { if (amount == 0) return; _char.Coins += amount; SendStats(); SaveChar(); }
+
+    /// <summary>How many of an item (by content key) the player is carrying, summed across stacks.</summary>
+    internal int CountItem(string itemKey)
+    {
+        var def = Content.ItemByKey(itemKey);
+        return def is null ? 0 : _char.Inventory.Where(i => i.ItemId == def.Id).Sum(i => i.Amount);
+    }
+
+    /// <summary>Consume <paramref name="amount"/> of an item by key (across stacks, low slots first), redrawing
+    /// each touched slot. Returns false and takes nothing if the player doesn't have that many.</summary>
+    internal bool TakeItem(string itemKey, int amount)
+    {
+        var def = Content.ItemByKey(itemKey);
+        if (def is null || amount <= 0 || CountItem(itemKey) < amount) return false;
+        int remaining = amount;
+        foreach (var it in _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList())
+        {
+            if (remaining <= 0) break;
+            int take = Math.Min(remaining, it.Amount);
+            it.Amount -= take; remaining -= take;
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 1); }   // reason 1 = removed
+            else SendAddItem(it);
+        }
+        SaveChar();
+        return true;
+    }
+
+    /// <summary>Give a reward item by key (stacking; one call per unit for non-stackables). False if the item is
+    /// unknown or the pack filled mid-give (GiveItem already told the player).</summary>
+    internal bool GiveRewardItem(string itemKey, int amount)
+    {
+        var def = Content.ItemByKey(itemKey);
+        if (def is null || amount <= 0) return false;
+        if (def.Stackable) { if (!GiveItem(def, amount)) return false; }
+        else for (int i = 0; i < amount; i++) if (!GiveItem(def)) return false;
+        SaveChar();
+        return true;
+    }
+
+    /// <summary>Called on every world-mob kill: bump the lifetime kill tally for that mob key (RTK's
+    /// per-mob kill count). Quests read a delta of this — kills since they were accepted — so nothing else is
+    /// needed here. Keyless kills (debug summons) are ignored.</summary>
+    private void TallyKill(Mob m)
+    {
+        if (string.IsNullOrEmpty(m.Key)) return;
+        _char.Kills[m.Key] = _char.Kills.GetValueOrDefault(m.Key) + 1;
+        SaveChar();
+    }
+
+    /// <summary>Lifetime kills recorded for a mob key (RTK's <c>player:killCount</c>).</summary>
+    internal int KillCount(string mobKey) => _char.Kills.GetValueOrDefault(mobKey);
+
+    // ---- string quest registry (RTK registryString): the active minor-quest key, etc. -----------
+    internal string QuestStr(string key) => _char.QuestStrings.GetValueOrDefault(key, "");
+    internal void   SetQuestStr(string key, string value) { _char.QuestStrings[key] = value; SaveChar(); }
+
+    // ---- legends by internal name (add/replace/remove/query) -------------------------------------
+    // A quest owns a legend by its Name key, so it can update or clear its own line without matching text.
+    internal bool HasLegend(string name) => _char.Legends.Any(l => l.Name == name);
+    internal void RemoveLegend(string name) { if (_char.Legends.RemoveAll(l => l.Name == name) > 0) SaveChar(); }
+    internal void AddLegend(string text, string name, byte icon, byte color)
+    {
+        if (!string.IsNullOrEmpty(name)) _char.Legends.RemoveAll(l => l.Name == name);   // replace-by-name
+        _char.Legends.Add(new Legend(icon, color, text, name));
+        SaveChar();
+    }
+
+    // ---- player facts quests read (level / a stat total / random / wall-clock) -------------------
+    internal int  CharLevel => _char.Level;
+    /// <summary>A single "power" number quests gate on (RTK's baseMagic*2 + baseHealth analog).</summary>
+    internal int  CharStat  => (int)(_char.MaxMp * 2 + _char.MaxHp);
+    /// <summary>Subpath mark count (0 — subpath marks aren't modelled yet; keeps min/maxMark gates working).</summary>
+    internal int  CharMark  => 0;
+    internal int  QuestRandom(int maxInclusive) => Random.Shared.Next(1, Math.Max(1, maxInclusive) + 1);
+    internal long NowUnix   => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     // ===== spells / skills ======================================================================
     // Spellbook wire = RTK 7.x clif_sendmagic, opcode 0x17: slot(u8=idx+1) type(u8) [name u8len+txt]
@@ -2903,6 +3185,19 @@ public sealed class Session
         Log.Info($"   -> WEAPON set to {_char.Weapon}");
     }
 
+    // "!ride" / "!mount [0|1]" — toggle (or set) the mounted-on-horse state. Flips appearance[1] to the
+    // form byte 3, which makes the client draw the horse+rider composite (SPR 344/345) instead of the human
+    // sprite. Re-draws self and every co-located peer in place (same path ApplyAppearance uses for gear).
+    private void ToggleMount(string text)
+    {
+        var a = ParseInts(text);
+        _char.Mounted = a.Length > 0 ? a[0] != 0 : !_char.Mounted;
+        SendSelfLook();                                                    // redraw self on the horse
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this); // and for everyone watching
+        SendMessage(_char.Mounted ? "You climb onto the horse." : "You dismount.");
+        Log.Info($"   -> MOUNT {( _char.Mounted ? "on" : "off")}");
+    }
+
     // "!lvl N" / "!might N" — set a BASE character stat so wear-requirements can be exercised on the
     // fabricated bring-up character (default is level 1 / might 3, which gates out most real gear).
     private void SetBaseStat(string which, string text)
@@ -3108,6 +3403,7 @@ public sealed class Session
                     SendStats();
                     SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
                     Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
+                    TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
                 }
             }
             return;
@@ -4030,13 +4326,13 @@ public sealed class Session
 
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
-        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Name);
+        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, _char.Name);
 
     /// <summary>Draw player <paramref name="other"/> on our client (0x33 player look form).</summary>
     public void ShowPlayer(Session other)
     {
         var s = other.Snapshot();
-        var app = new byte[] { s.Sex, 0, s.Face, s.Armor, 0, s.Weapon, s.Shield };   // same layout as SendSelfLook
+        var app = new byte[] { s.Sex, (byte)(s.Mounted ? 3 : 0), s.Face, s.Armor, 0, s.Weapon, s.Shield };   // same layout as SendSelfLook ([1]=form: 3=mounted)
         SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
     }
 

@@ -6,7 +6,7 @@ namespace Server;
 /// session's mutable state. Built under no lock (fields are only written by the owning session's
 /// read-loop; a torn read at worst mis-places a peer by one tile until its next move packet).</summary>
 public readonly record struct PlayerSnapshot(
-    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, string Name);
+    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, bool Mounted, string Name);
 
 /// <summary>A stack of an item lying on the map floor, drawn to every client on that map via 0x16
 /// (Item.epf frame = <see cref="Graphic"/>). <see cref="Id"/> is the entity id (find/despawn key). Carries
@@ -193,6 +193,7 @@ public sealed class World
         {
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
             // rendered every mob green — so we use RTK's per-mob colour, which matches for most creatures.)
+            Key = d.Key,   // carry the MobDef identifier so quest kill-matching can key on it
             Color = d.Color, Exp = d.Exp, Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
         };

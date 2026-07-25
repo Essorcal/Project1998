@@ -11,6 +11,7 @@ public sealed class Mob
 {
     public uint   Id;
     public string Name   = "";
+    public string Key    = "";  // MobDef identifier ("squirrel", "white_rabbit") — used for quest kill-matching
     public ushort Sprite;      // creature graphic id — wire as u16 BE in the 0x33 type-1 appearance
     public byte   Extra;       // the trailing appearance byte (state/variant; 0 = default)
     public byte   Color;       // 0x07 palette/recolor byte (world mobs carry their registry colour)

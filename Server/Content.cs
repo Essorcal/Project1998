@@ -6,6 +6,13 @@ public sealed record MapInfo(ushort Id, string Name, ushort Xs, ushort Ys);
 /// <summary>A summonable creature definition (name, sprite look, palette colour, HP, reward, move pace).</summary>
 public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime);
 
+/// <summary>One "slay-one-of" quest target from RTK MinorQuest.lua (extracted to MinorQuests.csv). A quest is
+/// picked at random among those whose Level/Stat/Mark ranges the player falls in; the objective is met by
+/// killing any one of <see cref="Mobs"/>. <see cref="Tier"/> is "Minor"/"Major"/"Epic".</summary>
+public sealed record MinorQuestDef(
+    string Tier, string Key, string DisplayName, IReadOnlyList<string> Mobs,
+    int MinLevel, int MaxLevel, long MinStat, long MaxStat, int MinMark, int MaxMark);
+
 /// <summary>A fixed spawn point from the RTK spawn table: a mob id placed on a map tile. The world
 /// materializes one live mob per point and, on its death, respawns another after a delay.</summary>
 public sealed record SpawnDef(int MobId, ushort Map, ushort X, ushort Y);
@@ -260,6 +267,10 @@ public static class Content
     private static IReadOnlyDictionary<int, NpcDef> _npcById = new Dictionary<int, NpcDef>();
     public static NpcDef? NpcById(int id) => _npcById.TryGetValue(id, out var n) ? n : null;
 
+    // "Slay one X" quest targets (RTK MinorQuest.lua -> MinorQuests.csv), grouped by tier for the trainer
+    // minor-quest ability. See Server/MinorQuest.cs.
+    public static IReadOnlyList<MinorQuestDef> MinorQuests { get; private set; } = new List<MinorQuestDef>();
+
     // 4.95 client Monster.tbl "Palette" per look id (0..326), decoded from the client PAK (see
     // re/monster-matcher). This is the palette the CLIENT draws a given monster with — a DIFFERENT index
     // space than RTK's MobLookColor. The 0x07 spawn color byte must carry THIS value (not RTK's) or the
@@ -289,13 +300,14 @@ public static class Content
         AreaSpawns = LoadAreaSpawns(ResolvePath("NEXUS_AREASPAWNS", "re", "rtk-data", "AreaSpawns.csv"));
         Npcs = LoadNpcs(ResolvePath("NEXUS_NPCS", "re", "rtk-data", "NPCs0.csv"));   // needs Maps
         _npcById = Npcs.ToDictionary(n => n.Id);
+        MinorQuests = LoadMinorQuests(ResolvePath("NEXUS_MINORQUESTS", "re", "rtk-data", "MinorQuests.csv"));
         Paths = LoadPaths(ResolvePath("NEXUS_PATHS", "re", "rtk-data", "Paths.csv"));
         Spells = LoadSpells(ResolvePath("NEXUS_SPELLS", "re", "rtk-data", "Spells.csv"));
         SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "re", "rtk-data", "spell_effects.csv"));
         LookPalettes = LoadLookPalettes(ResolvePath("NEXUS_MOB_PALETTES", "re", "rtk-data", "MobLookPalettes.csv"));
         MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "re", "rtk-data", "Maps.csv"));   // region + warpOut for Gateway
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check re/monster-matcher/rtk_mobs.csv)"
                      : ""));
@@ -760,6 +772,23 @@ public static class Content
             mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move));
         }
         return mobs;
+    }
+
+    private static List<MinorQuestDef> LoadMinorQuests(string? path)
+    {
+        var quests = new List<MinorQuestDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("Key", ""));
+            if (string.IsNullOrEmpty(key)) continue;
+            long L(string k) { long.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
+            int  I(string k) { int.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
+            var mobs = Clean(col.GetValueOrDefault("Mobs", "")).Split('|', StringSplitOptions.RemoveEmptyEntries);
+            quests.Add(new MinorQuestDef(
+                Clean(col.GetValueOrDefault("Tier", "Minor")), key, Clean(col.GetValueOrDefault("DisplayName", key)),
+                mobs, I("MinLevel"), I("MaxLevel"), L("MinStat"), L("MaxStat"), I("MinMark"), I("MaxMark")));
+        }
+        return quests;
     }
 
     private static List<ItemDef> LoadItems(string? path)
