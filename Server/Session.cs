@@ -613,16 +613,24 @@ public sealed class Session
     //   [36..39]=coins u32BE
     private void SendStats()
     {
+        // Effective = base (_char.*) + worn-gear bonuses. Clamp current HP/MP to the effective caps so an
+        // unequip that lowers max Vita/Mana can't leave the bar reading over 100%.
+        var eq = EquipTotals();
+        uint maxHp = (uint)Math.Max(1, (int)_char.MaxHp + eq.hp);
+        uint maxMp = (uint)Math.Max(0, (int)_char.MaxMp + eq.mp);
+        if (_char.Hp > maxHp) _char.Hp = maxHp;
+        if (_char.Mp > maxMp) _char.Mp = maxMp;
+
         var d = new byte[58];
         d[0] = 0x78;                        // flags: full-stats form
         d[1] = _char.Nation;
         d[2] = _char.Totem;
         d[4] = _char.Level;
-        WriteBe32(d, 5, _char.MaxHp);       // maxHP  (offset [5] confirmed via !hp bar-fill test)
-        WriteBe32(d, 9, _char.MaxMp);       // maxMP  (offset [9] confirmed)
-        d[13] = _char.Might;
-        d[14] = _char.Will;
-        d[17] = _char.Grace;
+        WriteBe32(d, 5, maxHp);             // maxHP  (offset [5] confirmed via !hp bar-fill test) — base + gear
+        WriteBe32(d, 9, maxMp);             // maxMP  (offset [9] confirmed) — base + gear
+        d[13] = (byte)Math.Clamp(_char.Might + eq.might, 0, 255);
+        d[14] = (byte)Math.Clamp(_char.Will  + eq.will,  0, 255);
+        d[17] = (byte)Math.Clamp(_char.Grace + eq.grace, 0, 255);
         WriteBe32(d, 24, _char.Hp);         // current HP (confirmed)
         WriteBe32(d, 28, _char.Mp);         // current MP (confirmed)
         WriteBe32(d, 32, _char.Exp);        // experience (confirmed)
@@ -1258,6 +1266,7 @@ public sealed class Session
         if (text.StartsWith("!crow", StringComparison.OrdinalIgnoreCase)) { CreatureRow(text); return; }  // sweep monster look ids
         if (text.StartsWith("!cre", StringComparison.OrdinalIgnoreCase)) { CreatureOne(text); return; }    // spawn one real monster [look] [hp] [color]
         // ---- navigation + data-driven content (registries loaded at startup from external data) ----
+        if (text.StartsWith("!music", StringComparison.OrdinalIgnoreCase)) { PlayMusicCmd(text); return; } // play a specific track (0x19)
         if (text.StartsWith("!warp", StringComparison.OrdinalIgnoreCase)) { Warp(text); return; }        // warp to a map by name/id [x y]
         if (text.StartsWith("!maps", StringComparison.OrdinalIgnoreCase)) { ListMaps(text); return; }    // list/fuzzy-search maps
         if (text.StartsWith("!mobs", StringComparison.OrdinalIgnoreCase)) { ListMobs(text); return; }    // list/fuzzy-search mobs (BEFORE !mob*)
@@ -1273,6 +1282,9 @@ public sealed class Session
         if (text.StartsWith("!mob", StringComparison.OrdinalIgnoreCase)) { MobOne(text); return; }       // spawn one creature
         if (text.StartsWith("!kill", StringComparison.OrdinalIgnoreCase)) { KillMobs(); return; }         // despawn all mobs
         if (text.StartsWith("!weapon", StringComparison.OrdinalIgnoreCase)) { SetWeapon(text); return; }  // equip weapon sprite
+        if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("level", text); return; }   // set base level (test wear reqs)
+        if (text.StartsWith("!might", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("might", text); return; } // set base might (test wear reqs)
+        if (text.StartsWith("!class", StringComparison.OrdinalIgnoreCase)) { SetClass(text); return; }  // set the profile class/path line
         if (text.StartsWith("!spawn", StringComparison.OrdinalIgnoreCase)) { SpawnCritters(text); return; } // squirrel/rabbit pack
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
         if (text.StartsWith("!batch", StringComparison.OrdinalIgnoreCase)) { StatBatch(text); return; }
@@ -1716,20 +1728,50 @@ public sealed class Session
         SendAction(_char.Id, 8, 40, 0);
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
         bool healed = false;
-        if (def.Vita > 0) { _char.Hp = (uint)Math.Min(_char.MaxHp, _char.Hp + def.Vita); healed = true; }
-        if (def.Mana > 0) { _char.Mp = (uint)Math.Min(_char.MaxMp, _char.Mp + def.Mana); healed = true; }
+        if (def.Vita > 0) { _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)def.Vita); healed = true; }
+        if (def.Mana > 0) { _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)def.Mana); healed = true; }
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, (byte)(eat ? 2 : 6)); }
         else SendAddItem(it);
         if (healed) SendStats();
     }
 
+    // Sum of every stat line across all worn gear. Equipment NEVER writes back into the character's base
+    // stats (those stay in _char.*); the effective values the client sees are base + these, recomputed on
+    // every SendStats / profile / attack. That keeps a relog — which reloads Equipment and redraws it via
+    // RefreshInventory — from drifting or double-counting, since nothing was ever baked into the base.
+    private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) EquipTotals()
+    {
+        int hp = 0, mp = 0, mt = 0, wl = 0, gr = 0, ar = 0, ht = 0, dm = 0;
+        foreach (var e in _char.Equipment)
+        {
+            var def = Content.ItemById(e.ItemId); if (def is null) continue;
+            hp += def.Vita; mp += def.Mana; mt += def.Might; wl += def.Will; gr += def.Grace;
+            ar += def.Armor; ht += def.Hit; dm += def.Dam;
+        }
+        return (hp, mp, mt, wl, gr, ar, ht, dm);
+    }
+
+    // Effective (base + gear) caps/attributes used by the HUD, heals and melee. AC is signed and LOWER is
+    // better in TK, so armor SUBTRACTS from it.
+    private uint EffMaxHp => (uint)Math.Max(1, (int)_char.MaxHp + EquipTotals().hp);
+    private uint EffMaxMp => (uint)Math.Max(0, (int)_char.MaxMp + EquipTotals().mp);
+    private int  EffMight => Math.Clamp(_char.Might + EquipTotals().might, 0, 255);
+
     // Move a bag item onto the body: bumps any item already in that gear slot back to the bag first.
     private void EquipFromSlot(int slot)
     {
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
-        if (def.Sex != 0 && def.Sex != _char.Sex) { SendLog($"You can't wear {def.Name}."); return; }
+        // Wear requirements (RTK item_data): sex-locked gear, a minimum level, and a minimum MIGHT (checked
+        // against effective might so already-worn +might gear counts). Path/class restriction (ItmPthId) is
+        // parsed by the client too, but this bring-up character has no path id yet, so it isn't enforced.
+        // ItmSex: 0 = male-only, 1 = female-only, 2 = UNISEX (the common case — 1944/2545 items, incl. most
+        // weapons). Character.Sex uses the same 0=M/1=F encoding, so a sex-locked item (0 or 1) must match;
+        // anything >= 2 is unrestricted. (The old `!= 0` test wrongly blocked every unisex item.)
+        if (def.Sex < 2 && def.Sex != _char.Sex) { SendLog($"You can't wear {def.Name}."); return; }
+        if (def.Level > _char.Level) { SendLog($"You must be level {def.Level} to wear {def.Name}."); return; }
+        if (def.MightReq > EffMight) { SendLog($"You need {def.MightReq} might to wear {def.Name}."); return; }
         byte wire = def.EquipSlot;
 
         _char.Inventory.Remove(it);
@@ -1748,6 +1790,7 @@ public sealed class Session
         _char.Equipment.Add(worn);
         SendEquip(worn);
         ApplyAppearance(def, equip: true);
+        SendStats();                                  // push the new gear bonuses to the HUD
         SendLog($"Equipped {def.Name}.");
     }
 
@@ -1762,6 +1805,7 @@ public sealed class Session
         SendUnequip(wire);
         var def = Content.ItemById(worn.ItemId);
         if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, worn.Dura, worn.CustomName); }
+        SendStats();                                  // drop the gear bonuses from the HUD
     }
 
     // 0x24 drop gold: dec[0..3]=amount(u32BE). Spill coins onto my tile as a pickup-able gold pile.
@@ -1972,6 +2016,34 @@ public sealed class Session
         Log.Info($"   -> WEAPON set to {_char.Weapon}");
     }
 
+    // "!lvl N" / "!might N" — set a BASE character stat so wear-requirements can be exercised on the
+    // fabricated bring-up character (default is level 1 / might 3, which gates out most real gear).
+    private void SetBaseStat(string which, string text)
+    {
+        var a = ParseInts(text);
+        int v = a.Length > 0 ? a[0] : 0;
+        if (which == "level") _char.Level = (byte)Math.Clamp(v, 1, 99);
+        else                  _char.Might = (byte)Math.Clamp(v, 0, 255);
+        if (_enteredWorld) _store.Save(_char);
+        SendStats();
+        SendMessage($"{which} set to {(which == "level" ? _char.Level : _char.Might)}");
+        Log.Info($"   -> {which.ToUpper()} set to {(which == "level" ? _char.Level : _char.Might)}");
+    }
+
+    // "!class <name>" — set the class/path line shown in the self-profile ("Mind's Eye", 0x39). This is a
+    // display string only; path/class WEAR restrictions (ItmPthId) aren't enforced (no path-id concept yet).
+    // Re-pushes the profile so an open window updates immediately.
+    private void SetClass(string text)
+    {
+        string name = text.Length > "!class".Length ? text["!class".Length..].Trim() : "";
+        if (name.Length == 0) { SendLog($"class is '{_char.ClassName}' (usage: !class <name>)"); return; }
+        _char.ClassName = name;
+        if (_enteredWorld) _store.Save(_char);
+        SendSelfProfile();
+        SendMessage($"class set to {name}");
+        Log.Info($"   -> CLASS set to '{name}'");
+    }
+
     // ---- stats/HUD probe lab ----
     // The 4.95 self-stats opcode is unknown (0x08 is a no-op here, unlike 7.x). Static RE narrowed
     // the candidates but can't confirm which opcode drives the persistent HUD. So we probe live:
@@ -2126,7 +2198,7 @@ public sealed class Session
         // so two players can't double-kill and both claim the reward — then fall back to session-local
         // debug dummies (look-lab / !cre / !mob sweeps, visible only to us).
         var (fx, fy) = FrontTile();
-        int dmg = Math.Max(1, _char.Might + (_char.Weapon > 0 ? 3 : 0));   // might + a flat weapon bonus
+        int dmg = Math.Max(1, EffMight + (_char.Weapon > 0 ? 3 : 0) + EquipTotals().dam);   // effective might + weapon + gear Dam
 
         var wmob = _world.MobAt(_char.Map, fx, fy);
         if (wmob is not null)
@@ -2226,6 +2298,25 @@ public sealed class Session
         Log.Info($"   -> music map {mapId} -> {bgm}.mid (0x19)");
     }
 
+    // "!music <id> [vol]" — play a specific track. id is 1..12 (the stock client ships 12 midis, type 2).
+    // vol is the raw volume byte the client log-scales: 100 is nominal "full", but the midi path compresses
+    // it, so values ABOVE 100 (up to 255) push it louder. "!music 0" / "!music stop" stops the music.
+    private void PlayMusicCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            SendLog("usage: !music <1-12> [vol 0-255, default 100]   (!music 0 or !music stop = stop)");
+            return;
+        }
+        if (parts[1].Equals("stop", StringComparison.OrdinalIgnoreCase)) { SendMusic(0); SendLog("music stopped"); return; }
+        if (!ushort.TryParse(parts[1], out var bgm)) { SendLog($"'{parts[1]}' is not a track number"); return; }
+        byte vol = parts.Length > 2 && byte.TryParse(parts[2], out var v) ? v : (byte)100;
+        SendMusic(bgm, type: 2, volume: vol);
+        SendLog(bgm == 0 ? "music stopped" : $"playing track {bgm} (vol {vol})");
+        Log.Info($"   -> !music bgm={bgm} vol={vol}");
+    }
+
     // ---- profile window (the "Mind's Eye") ----
     // The client opens the self-profile window when the profile key is pressed by sending 0x2D. Byte 0
     // == 0 is the self-profile request (byte != 0 is group status in 7.x). We reply with 0x39, the
@@ -2296,10 +2387,11 @@ public sealed class Session
     //   legendCount × { icon u8, color u8, textLen u8, text bytes }
     private void SendSelfProfile()
     {
+        var eq = EquipTotals();               // fold worn-gear bonuses into the displayed AC/dam/hit
         var d = new List<byte>();
-        d.Add((byte)_char.Ac);
-        d.Add(_char.Dam);
-        d.Add(_char.Hit);
+        d.Add((byte)(sbyte)Math.Clamp(_char.Ac - eq.armor, -128, 127));   // AC: lower is better, armor subtracts
+        d.Add((byte)Math.Clamp(_char.Dam + eq.dam, 0, 255));
+        d.Add((byte)Math.Clamp(_char.Hit + eq.hit, 0, 255));
         AddLenStr(d, _char.ClanName);
         AddLenStr(d, _char.ClanTitle);
         AddLenStr(d, _char.Title);

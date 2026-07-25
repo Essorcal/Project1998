@@ -314,6 +314,21 @@ entity's action vtable method `[vtbl+0x78]`). `type`: 0=stand, 1=attack, 2=throw
 13=shame, 14=affection, 15=boredom, 16=sleepiness, 17=surprise, 18=rage, 19=sarcasm, 20=shrug,
 21=annoyed, **22=dance**, 23=strange, 24=kiss, 27=charge, 28=attack-after-charge. (See §11 for `0x1d`.)
 
+**`0x19` — background music.**
+```
+type(u8) pad(u8=0) bgm(u16BE) volume(u8)
+```
+Handler `0x450ad0` (dispatch-table stub `0x44bb06` → real handler): `type` selects the audio backend
+inside the play fn `0x4798c0` — **2 = MIDI** (the stock `1.mid`..`12.mid` in `NexusTK.snd`, played via the
+single-instance MIDI player `[0x4fd3ac]`), 1 = `%03d.MP3`, 0 = a wav/sfx channel. `bgm 0` stops the music.
+`volume` is a raw byte the client **log-scales**: the handler computes `dB = 2000·log10(vol/100)` (so
+`vol=100` = 0 dB = nominal full, `vol>0` audible, `vol=0` silent), and the MIDI path then compresses it
+further against a base at `[snd+0x270]` — so the audible range is narrow and `>100` (up to 255) is the knob
+to push louder. The client dedups (`cmp bgm,[midi+8]`) so re-sending the playing track is a no-op. Send it
+on map entry / change (the server picks the track per map — `Content.BgmFor`); there is no original
+map→track table in the client files, so the assignments are the server's own. Songs are numbered `N.mid`;
+some tracks may reference instrument samples a given install lacks, but that only manifests at high volume.
+
 **`0x33` type-1 form** (parser `0x4361b0`): `… type(=01) app0 app1 spriteId(u16) extra(u8) renderKind nameLen name`
 (5 appearance bytes; `app0`/`app1` are clobbered by the `u16` at +2). **⚠ This does NOT draw creatures.**
 The `0x33` sprite ctor (`0x463380`, *any* renderKind 1/2/3) always builds from the **player sprite archive
@@ -912,9 +927,24 @@ maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
 
 **Semantics.** Equipping a **weapon** (`Type 3`) or **armor** (`Type 4`) is the only thing that changes the
 4.95 look — it writes the item's `Look` into the 7-byte type-0 form (slot [5]=weapon, [3]=armor) and
-re-draws self + peers; other gear slots have no 4.95 appearance. Stat bonuses are carried in `ItemDef` but
-**not yet applied** to combat/AC (a follow-up). Floor items broadcast to everyone on the map and survive
-until picked up; gold drops as a sentinel ground pile (`ItemId = -1`) that refills the purse on pickup.
+re-draws self + peers; other gear slots have no 4.95 appearance. Floor items broadcast to everyone on the map
+and survive until picked up; gold drops as a sentinel ground pile (`ItemId = -1`) that refills the purse on
+pickup.
+
+**Equip stat bonuses + wear requirements — SOLVED (2026-07-25).** Worn gear now feeds the HUD/profile and
+combat. The character's `_char.*` stats stay the **base**; the effective values are `base + Σ(worn-gear
+lines)`, recomputed on every send by `Session.EquipTotals()` — nothing is ever baked into the base, so a
+relog (which reloads `Equipment` and redraws it) can't drift or double-count. Mapping: `Vita→maxHP`,
+`Mana→maxMP`, `Might/Will/Grace→` those stats (`0x08`), and `Armor→AC`, `Hit`, `Dam→` the profile (`0x39`).
+**AC is signed and lower is better**, so armor **subtracts**. `EquipFromSlot`/`HandleUnequip` push a fresh
+`0x08` immediately; current HP/MP are clamped to the (possibly reduced) effective cap after an unequip. Melee
+(`HandleAttack`) uses effective Might + gear `Dam` + the flat weapon bonus. **Wear requirements** (checked in
+`EquipFromSlot`, from `ItemDef`): sex-lock (`ItmSex` — **`0`=male-only, `1`=female-only, `2`=unisex**; the
+unisex `2` is the common case at 1944/2545 items, so the gate only fires when `ItmSex < 2` and mismatches
+`Character.Sex`, which uses the same `0`=M/`1`=F encoding), minimum **level** (`ItmLevel`), and minimum
+**might** (`ItmMightRequired`, tested against *effective* might so already-worn +might gear counts). The
+client also parses a **path/class** restriction (`ItmPthId`), but the bring-up character has no path id yet,
+so it is not enforced. GM setters `!lvl <n>` / `!might <n>` adjust the base stats to exercise the gates.
 
 **Item action animations (0x1A) — each item verb plays its bend-down pose + sound, on self AND peers.**
 Every item handler broadcasts a `0x1A` action (§13, builder `Session.SendAction` / peer `ActionOver`) so the
