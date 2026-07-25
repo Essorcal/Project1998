@@ -33,6 +33,7 @@ that is called out too.
 &nbsp;&nbsp;&nbsp;&nbsp;11b.1 [Persistent spawns, mob AI, collision & viewport streaming](#11b1-persistent-spawns-mob-ai-collision--viewport-streaming-)
 11c. [Items — bag, gear, ground, combat](#11c-items--bag-gear-ground-and-combat--built-awaiting-live-495-verification)
 11d. [Spells & skills](#11d-spells--skills--built-awaiting-live-495-verification)
+11e. [NPCs & dialog](#11e-npcs--dialog--live-confirmed-on-495)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -251,7 +252,8 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
 | `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` (see §11). |
-| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. Reply with the click-profile `0x34` (see §9.5). |
+| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. If the id is an **NPC** → open its dialog (`0x30`, §11e); otherwise reply with the click-profile `0x34` (§9.5). |
+| `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
@@ -1183,6 +1185,61 @@ clear the book.
 
 ---
 
+## 11e. NPCs & dialog ✅ (live-confirmed on 4.95)
+
+NPCs are **stationary "mobs that don't fight."** They're placed from RTK `NPCs0.csv` (`Content.Npcs` →
+`World.PopulateNpcs`) as `Mob`s with `IsNpc = true`, so they reuse the entire creature pipeline for free:
+`0x07` render (portrait/look = `0x8000|look`, §11a), viewport streaming (`SyncMobs`), and tile collision.
+Differences from a real mob: `World.TryDamage` rejects them (indestructible), they never respawn, and a
+click opens a dialog instead of a profile. NPCs with an RTK `NpcMoveTime`+`NpcReturnDistance` pace, leashed
+to `Mob.Leash` (others stand still).
+
+**Click → dialog.** The click (`0x43`, §7.1) resolves the entity via `World.MobById`; if it's an NPC, the
+server runs its behaviour instead of the click-profile.
+
+### `0x30` server → client — the dialog packet (three sub-kinds)
+
+Same frame + graphic-head as everything else (RTK `WFIFO(fd,N)` ↔ this server's `body[N-5]`; ported from
+RTK `clif_scriptmes` / `clif_scriptmenuseq` / `clif_inputseq`). The head is shared; the **kind bytes**
+`body[0..1]` and the tail differ:
+
+| Sub-kind | `body[0..1]` | Tail after the prompt | Purpose |
+|---|---|---|---|
+| Text | `00 01` | — (a close/next box) | plain message |
+| Menu | `02 02` | `count(u8)` then each item = `len(u8)+ASCII` | button list |
+| Input | `04 04` | `0`(dialog2 len) `*`(0x2a sep) `0`(dialog3 len) `00 00` pad | free-text entry |
+
+Shared head/prompt layout (all three): `body[2..5]` npc id(u32BE) · `[6]` head kind (0 none / 1 npc gfx /
+2 item gfx, classified from the graphic like RTK) · `[7]=1` · `[8..9]` gfx(u16BE) · `[10]` color · `[11]=1`
+· `[12..13]` gfx · `[14]` color · `[15..18]`=1 · `[19]` prev-button · `[20]` next-button · `[21..22]` prompt
+len(u16BE) · `[23..]` prompt (ASCII). **Portrait gfx = `0x8000|look`** (creature sprite from Monster.epf,
+same encoding as the on-map spawn — RTK `clif.c:3190`); `0` → no portrait.
+
+### `0x3a` client → server — the reply
+
+`body[0]` kind (`01` text next/close · `02` menu · `04` input) · `[8]` step · `[10]` menu index (**1-based**;
+0 = cancel) **or** input length · `[11..]` input text. For input, RTK requires `step==2` to count as a real
+submit (else it's a cancel). `HandleNpcDialog` just completes the awaited `TaskCompletionSource` — see below.
+
+### Server-side design — async dialog + composable abilities
+
+There are no Lua coroutines, so the flow is **async/await**: each `Dlg*` primitive sends a `0x30` and awaits
+a `DialogReply`; the `0x3a` handler completes that task, resuming the behaviour **inline on the read thread**
+(no cross-thread state races). Behaviours therefore read as linear script — `var c = await ctx.Menu(...)`,
+a `while` loop for a shop that stays open — instead of callback trees.
+
+An NPC is a **composition of reusable abilities** (`INpcAbility` in `Server/NpcAbility.cs`): `ShopAbility`,
+`BankAbility`, `TransportAbility`, `TimeAbility`, `RepairAbility`, plus `InlineAbility` for one-off options.
+`Server/NpcScripts.cs` maps NPC identifier → its abilities; unregistered NPCs derive abilities from their
+data flags (so a plain stocked shop is zero-config). Each NPC declares only what's unique to it.
+
+- **Shop** (`ShopAbility` → `DlgBuy`/`DlgSell`): Buy/Sell menus; catalogue in `Server/Shops.cs` keyed by NPC
+  id (smith, inn), prices from `Items.csv` (`BuyPrice`/`SellPrice`). Uses menus, **not** the `0x2f` grid.
+- **Bank** (`BankAbility` → `DlgBank`): deposit/withdraw coin (via the input box, capped 100M) and items;
+  stored on `Character.BankMoney`/`BankItems`, persisted in the character JSON. Joint accounts out of scope.
+
+---
+
 ## 12. Maps
 
 Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`). They are:
@@ -1238,8 +1295,8 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x26` | `0x44fb80` (main) → **`0x4903d0`** (pre-dispatch) | **Self-walk — WORKS.** Main-table handler is a no-op, but `0x26` is pre-dispatched via the self-entity vtable (`+0x38` @ `0x4cf038` → `0x48eb40` → `handlerB`). This is the 4.95 self-walk primitive (§10.3). |
 | `0x29` | `0x4504b0` | ✓ **effect animation** over entity: `id(u32) effectId(u8, 1-based) A/B/C(u16)`; u8 indexes `Effect.tbl` (128 fx). **Not a damage number** — §11d |
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
-| `0x2f` | `0x44f490` | ? |
-| `0x30` | `0x44f530` | ? |
+| `0x2f` | `0x44f490` | **buy/shop grid window** (RTK `clif_buydialog`) — identified, not implemented (shops use `0x30` menus instead — §11e) |
+| `0x30` | `0x44f530` | ✓ **NPC dialog** (server→client): text box / menu / input, `body[0..1]` kind = `00 01`/`02 02`/`04 04`. Live-confirmed on 4.95. Reply = `0x3a`. See §11e |
 | `0x31` | `0x451080` | ? |
 | `0x33` | `0x44fef0` | ✓ self/entity spawn (appearance) |
 | `0x34` | `0x450270` | ✓ **click-profile** window (UI `0x198`); body parsed by widget `0x48b6a0`. See §9.5 |
@@ -1399,8 +1456,13 @@ magnitude faster for "what does this byte mean" questions.
   colour → client-palette mapping (§11b.1).
 - **Other players / NPCs.** Rendering + movement broadcast are proven and shared-world is live (§11b). Peers
   are **not** viewport-streamed yet (only mobs are), so distant players may not appear until close; add the
-  same `SyncMobs`-style streaming for players. NPCs (stationary, dialog) are not built.
-- **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x30, 0x31, 0x35, 0x36, 0x39, 0x3b,
+  same `SyncMobs`-style streaming for players.
+- **NPCs — built (§11e).** Stationary NPCs from RTK `NPCs0` render + stream like mobs, pace when RTK gives
+  them a move timer, and open dialogs on click. Dialog (`0x30` text/menu/input + `0x3a` reply) is live on
+  4.95; NPCs are composed from reusable abilities (Shop, Bank, Transport, Time, Repair). **Remaining:** the
+  authentic buy/sell grid window (`0x2f`, currently menu-based); Transport/Waypoints; per-NPC quest/crafting
+  scripts (RTK Lua); joint bank accounts; and the flat item-price data isn't tracked (`re/rtk-data/` ignored).
+- **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x31, 0x35, 0x36, 0x39, 0x3b,
   0x42, 0x44, 0x46, 0x4a, 0x4b, 0x66, 0x67, 0x68`.
 
 ---
