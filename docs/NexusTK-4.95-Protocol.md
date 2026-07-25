@@ -250,7 +250,8 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. Reply with the click-profile `0x34` (see §9.5). |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
-| `0x11` | (view/heartbeat) | `01 00` / `02 00` | Sent periodically; no reply needed for basic play. |
+| `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
+| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | Client toggle. `0x07` = realm-center (F4, §10.5); `0x09` = fast-move (§10.1). |
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
 ### 7.2 Server → client
@@ -538,27 +539,64 @@ player's own words + drawing.
 
 ## 10. Movement model
 
-**The client is server-authoritative for self-walk, and 4.95's model differs from 7.x.**
+**The movement model is chosen by the client's FAST-MOVE setting — this is the master switch.** This was
+established by RE + live Frida probing and matches RTK's `clif_parsewalk` (which gates its walk response
+on `FLAG_FASTMOVE`). Getting this right is what makes 4.95 self-walk smooth.
 
 Per step the client sends **`0x32`** (or **`0x06`** every few steps — handle both identically):
 ```
 dir(u8) stepCounter(u8) X(u16) Y(u16) pad
 ```
-Direction map: **0 = North (y−1), 1 = East (x+1), 2 = South (y+1), 3 = West (x−1).**
+Direction map: **0 = North (y−1), 1 = East (x+1), 2 = South (y+1), 3 = West (x−1).** `X,Y` is the client's
+believed **current** tile (where it is walking *from*) — step from it (client-authoritative resync) so
+collision runs on the cell the client is really on.
 
-The server computes the new tile and replies with **two** packets, in order:
+### 10.1 Fast-move flag — read it PER WALK, do not track the toggle
 
-1. **`0x0C`** (move/animate) — starts the walk animation. *Animation only* — it does **not** advance
-   the client's logical tile.
-2. **`0x04`** (coords) — **commits** the step (handler calls `0x44b140` on the self, advancing the
-   logical tile) **and** scrolls the camera. Send `X, Y, anchorX, anchorY, 00` with the anchor held
-   constant at the spawn's screen tile so the camera follows the player.
+The client marks each walk with its mode in the **high bit of the step counter** (`dec[1] & 0x80`):
+* **set** → fast-move ON (client-authoritative)
+* **clear** → fast-move OFF (server-authoritative)
 
-Sending only `0x0C` makes the character animate one step and then get stuck — you **must** follow with
-`0x04`. This 2-packet-per-step dance is the 4.95 way.
+Read this per-packet. Do **not** try to track the `0x1b`/`09` toggle notification and a startup default —
+the client boots fast-move OFF, persists its state across launches, and never reports state on connect, so
+any default guess plus a toggle can invert and you end up sending corrections into a client-authoritative
+walk (→ the character "slides" with no animation). The per-walk bit is authoritative and self-correcting.
 
-> **Version gap:** 7.x (Mithia) drives self-walk with opcode `0x26`. In 4.95, `0x26`'s handler
-> (`0x44fb80`) is a **no-op** — do not use it. Normal walk speed constant is 80.
+### 10.2 Fast-move ON = client-authoritative (the smooth path) ✅
+
+The client moves, animates the leg cycle, AND scrolls its own camera locally. **Send the walker NOTHING on
+a good step.** Reserve `0x04` for *corrections only* (blocked tile or a position the server rejects — snap
+the client back). This is the smooth, self-paced walk; realm-center (§10.5) works in this mode. Confirmed
+live: fast-move-ON walks play a full `frameCtr 0→3` animation with zero server packets.
+
+### 10.3 Fast-move OFF = server-authoritative (known-limited)
+
+The client will **not** move until the server assigns the tile, and it does **not** animate locally. Answer
+each walk with **`0x04`** (`X, Y, anchorX, anchorY, 00`) to assign the step + scroll the camera. The
+character moves but **slides with no leg animation** — this is inherent to the mode on 4.95 and is a known
+limitation. (RTK sends `0x26` here, but 4.95's `0x26` handler `0x44fb80` is a **no-op**, so `0x04` is the
+only packet 4.95 honors for the assign.)
+
+> **Do NOT use `0x0C` for self-walk on 4.95.** Its handler (`0x462320` start-walk → `0x44b140` walk-render)
+> renders `screen = logical(dest) + forward_step*(frameCtr/4)` — a mathematically-guaranteed forward
+> OVERSHOOT (sprite lands on the destination then slides *past* it, then snaps back). `0x0C` is for
+> animating *other* entities. Normal walk speed constant is 80.
+
+### 10.4 Turn (`0x11`) — first press turns, second press walks
+
+In NexusTK the **first** key press in a new direction turns you in place (no step); only the **second**
+press walks. The client sends **`0x11`** (`side(u8) pad`) for the turn. Echo it back with the entity id so
+the client turns: the recv handler `0x450350` reads `id(u32)@+1, side(u8)@+5`, looks the entity up, and
+calls its turn method `0x462410`. Build `Be32(id), side, 00` (same as `SendSide`). Dropping `0x11` leaves
+facing unconfirmed until the next walk ("press a new direction, first step goes the OLD way").
+
+### 10.5 Realm-center camera lock (F4 / `0x1b` sub-cmd `0x07`)
+
+A client-side camera mode. The client sends **`0x1b`** with body `07 00 00` (F4). The server signals the
+state via a byte in the `0x15` mapinfo packet (our `SendMapInfo` body[7]; the client's `0x15` handler
+`0x44f8b0` reads it and feeds `(realm==0)` to the view rebuild `0x44c570`, storing it at `view+0x400`). A
+second gate `entity+0x1dd` (from a settings bitfield) must also be set for the camera-clamp block to run.
+Works together with fast-move ON. `0x1b` also carries other toggles: sub-cmd `0x09` = fast-move.
 
 ---
 
