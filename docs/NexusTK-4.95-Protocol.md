@@ -30,6 +30,7 @@ that is called out too.
 10. [Movement model](#10-movement-model)
 11. [Speech & actions](#11-speech--actions)
 11b. [Shared world (multiplayer)](#11b-shared-world-multiplayer--players-see-each-other--the-same-mobs-)
+11c. [Items — bag, gear, ground, combat](#11c-items--bag-gear-ground-and-combat--built-awaiting-live-495-verification)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -252,6 +253,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
 | `0x1b` | Setting toggle | `subCmd(u8) pad pad` | Client toggle. `0x07` = realm-center (F4, §10.5); `0x09` = fast-move (§10.1). |
+| `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
 ### 7.2 Server → client
@@ -569,18 +571,44 @@ a good step.** Reserve `0x04` for *corrections only* (blocked tile or a position
 the client back). This is the smooth, self-paced walk; realm-center (§10.5) works in this mode. Confirmed
 live: fast-move-ON walks play a full `frameCtr 0→3` animation with zero server packets.
 
-### 10.3 Fast-move OFF = server-authoritative (known-limited)
+### 10.3 Fast-move OFF = server-authoritative — answer with `0x26` self-walk ✅
 
-The client will **not** move until the server assigns the tile, and it does **not** animate locally. Answer
-each walk with **`0x04`** (`X, Y, anchorX, anchorY, 00`) to assign the step + scroll the camera. The
-character moves but **slides with no leg animation** — this is inherent to the mode on 4.95 and is a known
-limitation. (RTK sends `0x26` here, but 4.95's `0x26` handler `0x44fb80` is a **no-op**, so `0x04` is the
-only packet 4.95 honors for the assign.)
+The client will **not** move until the server assigns the tile. Answer each walk with **one `0x26`
+self-walk packet** — the *same primitive 5.33 uses* — sent from the tile being confirmed:
+```
+0x26  dir(u8)  X(u16BE)  Y(u16BE)  viewX(u16BE)  viewY(u16BE)  flag(u8)
+```
+This gives smooth legs, continuous movement, and a correct camera (realm-center honored) — matching
+fast-move ON. Server code: `SendSelfWalk(dir, fromX, fromY)`.
 
-> **Do NOT use `0x0C` for self-walk on 4.95.** Its handler (`0x462320` start-walk → `0x44b140` walk-render)
-> renders `screen = logical(dest) + forward_step*(frameCtr/4)` — a mathematically-guaranteed forward
-> OVERSHOOT (sprite lands on the destination then slides *past* it, then snaps back). `0x0C` is for
-> animating *other* entities. Normal walk speed constant is 80.
+> **`0x26` is NOT dead on 4.95 — the "no-op" belief was wrong.** Its *main dispatch-table* handler
+> `0x44fb80` really is `mov al,1; ret` (a no-op), but that is not the whole story — exactly like the `0x08`
+> stats opcode. The client **pre-dispatches** `0x26` through the self-entity **vtable** (slot `+0x38` at
+> `0x4cf038` → self-move dispatch `0x48eb40`) to **`handlerB` `0x4903d0`**, which:
+> 1. **move-commits** the pending step (`0x48f160`) to `(X,Y)` — completing it **without** the camera
+>    scroll a `0x04` forces; move-commit stores the packet's `viewX/viewY` as the camera anchor, so
+>    realm-center is respected exactly like the fast-move-ON local path; and
+> 2. starts the next step's leg cycle (`selfWalkAnim 0x48f2c0`) and sets **`entity+0x65f3 = 1`** — the
+>    "complete locally, don't wait" flag — so the animation runs `0→3→0` and finishes on its own.
+>
+> This is why `0x26` works where `0x04` fights the client. The self-walk state machine (`0x48eef4`)
+> advances `frameCtr` each tick; **at `frameCtr == 2`, if `entity+0x65f3 == 0` it sets the "waiting"
+> flag `entity+0x65f4 = 1` and freezes** until the server unblocks it — that freeze is what made every
+> `0x04`-based approach stall or jerk. `0x26` sets `0x65f3 = 1`, so it never waits. Confirmed live
+> (`handlerB(0x26)` + `moveCommit` fire per step; the same dispatch also handles the client's *own* local
+> walk commands as sub-op `0x0b` → `handlerA` — so **`0x26` is literally the server-side sibling of the
+> client's local walk command**).
+
+> **Do NOT use `0x04` or `0x0C` to *drive* self-walk on 4.95.**
+> * `0x04` is the **re-anchor / teleport** primitive (§10.6): its handler *always* runs the camera-scroll
+>   (`0x44c660` writes a decaying settle-offset even when the origin is unchanged = a jerk) and it cannot
+>   complete a step without that scroll. Reserve it for corrections and hard refresh.
+> * `0x0C` (`0x462320` start-walk → `0x44b140` walk-render) renders
+>   `screen = logical(dest) + forward_step*(frameCtr/4)` — a guaranteed forward OVERSHOOT for the self. It
+>   is for animating *other* entities. Normal walk speed constant is 80.
+>
+> (Legacy `0x0C`/`0x04` walk attempts survive only behind `NEXUS_V495_SLOW_MOVE` (0–4) for comparison;
+> the default `5` is the `0x26` path above.)
 
 ### 10.4 Turn (`0x11`) — first press turns, second press walks
 
@@ -597,6 +625,21 @@ state via a byte in the `0x15` mapinfo packet (our `SendMapInfo` body[7]; the cl
 `0x44f8b0` reads it and feeds `(realm==0)` to the view rebuild `0x44c570`, storing it at `view+0x400`). A
 second gate `entity+0x1dd` (from a settings bitfield) must also be set for the camera-clamp block to run.
 Works together with fast-move ON. `0x1b` also carries other toggles: sub-cmd `0x09` = fast-move.
+
+### 10.6 Hard refresh (`0x38`, Ctrl+R) — this is what `0x04` is *for*
+
+Ctrl+R sends **`0x38`** (`38 00`) and grays the screen while the client waits for the server to re-assert
+authoritative state. Mirror RTK's `clif_refresh`: re-send **`0x15` mapinfo** (on 4.95 this triggers a
+client **map reload**, which clears the gray mask) + **`0x04` xy** + **`0x33` self** + re-draw nearby
+entities. Server code: `HandleRefresh` (same in-place refresh the F4 toggle performs).
+
+`0x04` is the **re-anchor primitive**: `X, Y, anchorX, anchorY, 00` → authoritative position + a fresh
+camera origin `(X−anchorX, Y−anchorY)`. RTK's `clif_sendxy` always computes a **centered / edge-aware**
+anchor (`x<8 → x`, `x ≥ xs−8 → x−xs+17`, else `8`; y analogous), with **no** realm-center handling — so a
+refresh **recenters** the player even if realm-center had them parked off-center. We match this: if realm is
+on, `HandleRefresh` re-locks the freeze at the new centered origin so it recenters *and* stays locked. RTK
+also emits a trailing `0x22 03` terminator, but `0x22` is the default no-op on 4.95 (remap slot `0x2a`), so
+it is not needed to end the refresh.
 
 ---
 
@@ -774,6 +817,84 @@ session); `!kill` clears the current map's world mobs for everyone.
 
 ---
 
+## 11c. Items — bag, gear, ground, and combat ⏳ (built; awaiting live 4.95 verification)
+
+The full item system: an item registry, a per-character bag + worn gear (persisted), floor items, and the
+pickup/drop/throw/use/equip handlers. Opcodes + wire layouts were translated from RTK 7.x `clif.c`
+(`clif_sendadditem` / `clif_senddelitem` / `clif_equipit` / `clif_unequipit` and the `parse*` recv path).
+Builders/handlers live in `Session.cs` (`SendAddItem`/`SendDelItem`/`SendEquip`/`SendUnequip`,
+`HandlePickup`/`HandleDropItem`/`HandleThrow`/`HandleUseItem`/`HandleUnequip`/`HandleDropGold`); floor
+items live in `World.cs` (`DropItem`/`PickUp`/`ItemsOn`, id pool `500000+`); the registry is `Content.Items`
+(`ItemDef`) loaded from the gitignored `re/rtk-data/Items.csv` (2545 items — id, name, type, icon, look,
+stat lines), same logic-only pattern as maps/mobs.
+
+**Confidence.** The **recv** opcodes are trustworthy — 4.95's walk/turn/chat/attack/setting opcodes already
+match this same RTK recv table exactly, so the item recv numbers align too. The **send** opcodes work on
+the real 4.x client too (verified live: the bag populates + eat works), **but the 4.95 window layouts differ
+from 5.x by one byte** (below).
+
+**⚠ 4.95 `0x0F`/`0x37` drop the `iconColor` byte (proven live 2026-07-25).** 5.x (V533) carries an
+`iconColor(u8)` byte right after the `icon(u16)`; **4.95 (V495) does NOT** — the name length follows the
+icon directly. Sending the 5.x layout to 4.95 made the client read the name one byte early: **Apple**
+(`iconColor=0`) → length 0 → empty name (`"You ate ."`); **Poison apple** (`iconColor=12`) → length 12 → a
+12-char garble `"⊥Poison appl"` (the `⊥` is the real length byte 0x0C, then 11 of "Poison apple"). The wrong
+*count* was the same off-by-one — everything after the name shifted by one. `SendAddItem`/`SendEquip`
+branch on `_ver`; the tables below show the **V533** shape (V495 = same minus the `iconColor` byte).
+
+**⚠ Binary note.** The RE reference binary `NexusTK_local.exe` **no-ops** `0x0A/0x0F/0x10/0x37/0x38` in its
+world dispatcher (`remap[op-3]` → jump-table entry `0x2a` = the `xor al,al;ret` default at `0x44bbcd`), yet
+the real 4.x client renders them — so the running 4.x client is a **different build** than
+`NexusTK_local.exe`. Disassembly of that binary is NOT authoritative for the item opcodes; the layouts here
+are driven by live behavior. (Identify the running exe to RE the exact layout: icon-id space still unmapped.)
+
+**Icons — SOLVED (encoding, not a mapping).** The client's item-sprite resolver (`0x435ab0`) does
+`spriteId = iconField + 0x4000`, then the frame indexer (`0x431450`) bounds-checks the **low 16 bits**
+against the Item.epf frame count (**1310**). Sending a frame `N` raw makes `N+0x4000 ≥ 1310` → out of range →
+blank icon (the `descriptor[0xc 0xc 0xc 0xc]` in Frida is the caller's `0x424280(out,0xc,0xc)` default written
+*after* the failed lookup, not the frame). **Fix:** the packet icon field must be `(N - 0x4000) & 0xFFFF`,
+which wraps back to `N` after the client's `+0x4000` (`Session.IconWire`). Item.epf has exactly 1310 frames ==
+`Item.tbl`'s 1310 items, so **frame index == client item id**, and — confirmed live (frame 10 renders as an
+apple, RTK apple `ItmIcon=10`) — **RTK's `ItmIcon` already equals the client frame**, so `IconWire(def.Icon)`
+is all that's needed; no mapping table. `SendAddItem`/`SendEquip`/ground `0x16` all encode through `IconWire`.
+(RTK icons ≥ 1310 are 7.x-only items and render blank — acceptable.) Debug: `!icons [start]` fills the bag
+with frames `start..start+26`.
+
+**Server → client (draw the bag / gear):** all multi-byte big-endian; body offsets are from the first body
+byte (= raw frame `+5`).
+| Op | Meaning | Body |
+|---|---|---|
+| `0x0F` | add item to bag slot | `slot(u8=idx+1) icon(u16) iconColor(u8) [dispName u8len+txt] [baseName u8len+txt] amount(u32) [stack/0(u8) dura(u32) protected(u8)] [owner u8len+txt] 00 00 00` |
+| `0x10` | remove from bag slot | `slot(u8=idx+1) reason(u8) 00 00` — reason `0`=Remove `1`=Drop `2`=Eat `4`=Throw `6`=Used … |
+| `0x37` | equip-window entry | `equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00` |
+| `0x38` | unequip-window | `spot(u8) 00` |
+| `0x16` | ground item (§7.2) | reused for floor items — graphic = item's `Icon` (Item.epf frame) |
+
+`equipType`/`spot` wire bytes (client `clif_getequiptype`): WEAP=1 ARMOR=2 SHIELD=3 HELM=4 NECKLACE=6
+LEFT=7 RIGHT=8 BOOTS=13 MANTLE=14 COAT=16 SUBLEFT=20 SUBRIGHT=21 FACEACC=22 CROWN=23. Item `Type` (ITM_*)
+maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
+
+**Client → server (handled in `Session.Handle`):**
+| Op | Action | Body |
+|---|---|---|
+| `0x07` | pick up | (targets my tile) |
+| `0x08` | drop | `slot(u8=idx+1) [amount]` |
+| `0x17` | throw | `confirm(u8) slot(u8=idx+1)` |
+| `0x1A` | eat | `slot(u8=idx+1)` (ITM_EAT only) |
+| `0x1C` | use / equip | `slot(u8=idx+1)` — equipment → wear, else consume |
+| `0x1F` | unequip | `wireSlot(u8)` |
+| `0x24` | drop gold | `amount(u32)` |
+
+**Semantics.** Equipping a **weapon** (`Type 3`) or **armor** (`Type 4`) is the only thing that changes the
+4.95 look — it writes the item's `Look` into the 7-byte type-0 form (slot [5]=weapon, [3]=armor) and
+re-draws self + peers; other gear slots have no 4.95 appearance. Stat bonuses are carried in `ItemDef` but
+**not yet applied** to combat/AC (a follow-up). Floor items broadcast to everyone on the map and survive
+until picked up; gold drops as a sentinel ground pile (`ItemId = -1`) that refills the purse on pickup.
+
+**GM commands:** `!items [filter]` (browse registry), `!item <name/id> [amount]` (summon into bag),
+`!clearinv` (reset bag + gear).
+
+---
+
 ## 12. Maps
 
 Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`). They are:
@@ -811,6 +932,8 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x0c` | `0x4502c0` | ✓ move / animate entity |
 | `0x0d` | `0x450170` | ✓ over-head speech |
 | `0x0e` | `0x450440` | ✓ **despawn list** (server→client): `count(u8)` + `id(u32)`× (client→server = chat) |
+| `0x0f` | — | ⏳ **add item to bag slot** (server→client) — §11c. (client→server = magic) |
+| `0x10` | — | ⏳ **remove item from bag slot** (server→client) — §11c |
 | `0x11` | `0x450350` | entity + 1 byte |
 | `0x12` | `0x4509a0` | entity + 2 bytes |
 | `0x13` | `0x4508f0` | ✓ attack-recv (anim `0x8f − a`; **death at a=0**) |
@@ -823,7 +946,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x1f` | `0x450f40` | 3-state set (thresholds 0x0b/0x63/0x65 → `[world+0x401]`) |
 | `0x20` | `0x44f820` | ✓ time-of-day |
 | `0x21` | `0x450f90` | UI window (`0x174`) |
-| `0x26` | `0x44fb80` | **no-op** (7.x self-walk; dead in 4.95) |
+| `0x26` | `0x44fb80` (main) → **`0x4903d0`** (pre-dispatch) | **Self-walk — WORKS.** Main-table handler is a no-op, but `0x26` is pre-dispatched via the self-entity vtable (`+0x38` @ `0x4cf038` → `0x48eb40` → `handlerB`). This is the 4.95 self-walk primitive (§10.3). |
 | `0x29` | `0x4504b0` | ✓ **floating number** over entity: `id(u32) number(u8) A/B/C(u16)`; the u8 is the text (0–255) |
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
 | `0x2f` | `0x44f490` | ? |
@@ -833,6 +956,8 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x34` | `0x450270` | ✓ **click-profile** window (UI `0x198`); body parsed by widget `0x48b6a0`. See §9.5 |
 | `0x35` | `0x450890` | ? |
 | `0x36` | `0x4515d0` | ? |
+| `0x37` | — | ⏳ **equip-window entry** (server→client) — §11c |
+| `0x38` | — | ⏳ **unequip-window** (server→client) — §11c |
 | `0x39` | `0x4510f0` | ✓ **self-profile** ("Mind's Eye", UI `0x198`): AC/clan/title/class/legend. See §9.5 |
 | `0x3b` | `0x450fe0` | ? (client heartbeat companion) |
 | `0x42` | `0x451120` | ? |
@@ -890,7 +1015,7 @@ on.
 **Movement**
 - **One `0x0C` only animates; it does not advance the tile.** You must also send `0x04` to commit the
   step, or the character animates once and freezes. (§10)
-- Don't use `0x26` for self-walk in 4.95 — it's a no-op. (7.x uses it.)
+- **Use `0x26` for self-walk in 4.95** — its main-table handler is a no-op, but it is pre-dispatched to the real self-walk handler (§10.3). A no-op in the dispatch table is NOT proof an opcode is unhandled (cf. `0x08`).
 
 **Combat**
 - **Never reply to `0x13` (attack) with `0x13`.** Its handler plays anim `0x8f − a`; `a=0` → `0x8f` =
@@ -1031,7 +1156,7 @@ generated locally and kept out of git.
 
 **Confirmed 7.x ≠ 4.95 gaps:**
 - **Cipher:** 7.x = name-derived table cipher + 3 trailer bytes; 4.95 = simple NexonInc XOR, no trailer.
-- **Self-walk:** 7.x = `0x26`; 4.95 = `0x0C` + `0x04` (its `0x26` is a no-op).
+- **Self-walk:** 7.x = `0x26`; 4.95 = **also `0x26`** (fast-move OFF) — pre-dispatched past the no-op main-table handler to the real self-walk handler (§10.3). Fast-move ON: send nothing.
 - **Stats:** 7.x = `0x08` (`OUT_STATUS`); 6.x = `0x08`; **4.95 = `0x08` too** (SOLVED — see the Stats
   packet reference). The field *layout* differs from 6.x/7.x, so decode offsets per-version.
 - **Appearance:** 7.x `create_user` sends a rich equipment block (face, hairstyle, hair_color,
