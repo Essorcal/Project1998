@@ -692,8 +692,20 @@ public sealed class Session
         //   [2]=face  [3]=armor/coat  [4]=? (no visible change 0..8)  [5]=weapon  [6]=shield
         // NOTE the old code put "Hair" in [1] = the FORM byte — that's what blanked the character.
         //   ... [5]=weapon (Honor sword/Flame blade/…), [6]=shield
-        var app = new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, (byte)_char.Armor, 0, _char.Weapon, 0 };
+        var app = new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, (byte)_char.Armor, 0, WeaponLook(), ShieldLook() };
         SendLook(_char.Id, _char.X, _char.Y, dir: _facing, app, renderKind: 1, _char.Name, "self(0x33)");
+    }
+
+    // Weapon/shield look bytes for the 0x33 appearance. CRITICAL: look 0 is a REAL weapon/shield sprite,
+    // so an EMPTY slot must send 0xFF ("-1", proven live and matching RTK clif.c, which sends 0xFFFF for
+    // weapon/shield when !pc_isequip). The slot is "occupied" iff a matching item is actually worn — a worn
+    // weapon whose Look happens to be 0 (e.g. Novice sword) still shows sprite 0, only a bare slot is 0xFF.
+    private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; !weapon GM override
+    private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
+    private byte EquippedLook(int itmType, byte none)
+    {
+        var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == itmType);
+        return e is null ? none : (byte)(Content.ItemById(e.ItemId)?.Look ?? 0);
     }
 
     // General 0x33 "create/look" for ANY entity (self or a test dummy). Type=0 = the 7-byte player
@@ -1327,22 +1339,25 @@ public sealed class Session
         Log.Info($"   -> LOOK dummy id={id} @({x},{y}) app=[{string.Join(" ", app)}]");
     }
 
-    // "!row i lo hi": sweep appearance byte [i] from lo..hi across a west->east row of dummies, all
-    // other bytes 0. One screenshot then maps that byte's entire id space.
+    // "!row i lo hi [body]": sweep appearance byte [i] from lo..hi across a west->east row of dummies, all
+    // other bytes 0. One screenshot then maps that byte's entire id space. Optional 4th arg sets appearance
+    // byte [0] (the BODY/sex) for the whole row — default 1 (female, the historically-swept base); pass 0 to
+    // sweep the MALE body (its weapon/shield defaults differ from female — male frame 0 was never mapped).
     private void LookRow(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         int idx = parts.Length > 1 && int.TryParse(parts[1], out var pi) ? Math.Clamp(pi, 0, 6) : 0;
         int lo = parts.Length > 2 && int.TryParse(parts[2], out var pl) ? pl : 0;
         int hi = parts.Length > 3 && int.TryParse(parts[3], out var ph) ? ph : lo + 7;
+        int body = parts.Length > 4 && int.TryParse(parts[4], out var pb) ? pb : 1;
         ushort y = (ushort)Math.Clamp(_char.Y - 2, 0, _char.MapYs - 1);
         int col = 0;
         for (int v = lo; v <= hi && col < 12; v++, col++)
         {
-            // Base = valid body (0)=1, normal form (1)=0, so sweeping [2..6] reads cleanly instead of
+            // Base = valid body (0)=body, normal form (1)=0, so sweeping [2..6] reads cleanly instead of
             // being blanked by the form/state byte. appearance[1] itself is the form table (0/4 normal,
             // 1 ghost, 3 mounted, 5 invisible-spell, most others = no sprite).
-            var app = new byte[] { 1, 0, 0, 0, 0, 0, 0 };
+            var app = new byte[] { (byte)body, 0, 0, 0, 0, 0, 0 };
             app[idx] = (byte)v;
             uint id = ++_probeId;
             ushort x = (ushort)Math.Clamp(_char.X - 4 + col, 0, _char.MapXs - 1);
@@ -1618,13 +1633,14 @@ public sealed class Session
     public void ShowGroundItem(GroundItem gi) =>
         SendCreatureList(new[] { (gi.Id, IconWire(gi.Graphic), gi.X, gi.Y, (byte)0, (byte)0) });
 
-    // Equipping a weapon/armor is the ONLY thing that changes the 4.95 look (the 7-byte type-0 form has a
-    // weapon slot [5] and an armor slot [3]); other gear slots have no appearance in 4.95. Re-draw self + peers.
+    // The 4.95 type-0 form has three gear-driven look bytes: weapon [5], armor [3] and shield [6]. Weapon/
+    // shield are derived live from Equipment by WeaponLook()/ShieldLook() (0xFF = bare), so equipping any of
+    // the three must re-draw self + peers; only armor still needs its cached _char.Armor byte written here.
     private void ApplyAppearance(ItemDef def, bool equip)
     {
-        if (def.Type == 3) _char.Weapon = equip ? (byte)def.Look : (byte)0;       // ITM_WEAP
-        else if (def.Type == 4) _char.Armor = equip ? (byte)def.Look : (byte)0;   // ITM_ARMOR
-        else return;
+        if (def.Type == 4) _char.Armor = equip ? (byte)def.Look : (byte)0;        // ITM_ARMOR (cached in [3])
+        else if (def.Type == 3) _char.Weapon = equip ? (byte)def.Look : (byte)0;  // ITM_WEAP (kept for combat/GM)
+        else if (def.Type != 5) return;                                           // not weapon/armor/shield -> no look change
         SendSelfLook();
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
     }
@@ -2198,7 +2214,7 @@ public sealed class Session
         // so two players can't double-kill and both claim the reward — then fall back to session-local
         // debug dummies (look-lab / !cre / !mob sweeps, visible only to us).
         var (fx, fy) = FrontTile();
-        int dmg = Math.Max(1, EffMight + (_char.Weapon > 0 ? 3 : 0) + EquipTotals().dam);   // effective might + weapon + gear Dam
+        int dmg = Math.Max(1, EffMight + (WeaponLook() != 0xFF ? 3 : 0) + EquipTotals().dam);   // effective might + weapon + gear Dam
 
         var wmob = _world.MobAt(_char.Map, fx, fy);
         if (wmob is not null)
@@ -2400,8 +2416,25 @@ public sealed class Session
         d.AddRange(Be32(_char.Tnl));    // experience to next level
         AddLenStr(d, _char.ClassName);
 
-        for (int i = 0; i < 14; i++)    // 14 equipment slots, empty = 10 zero bytes each
-            d.AddRange(new byte[10]);
+        // 14 equipment slots, indexed by EQ index = ITM_type - 3 (EQ_WEAP=0 … EQ_COAT=13; see RTK itemdb.h).
+        // Empty slot = 10 zero bytes. Occupied slot (RTK clif_mystaytus): icon(u16BE) iconColor(u8)
+        // dispName(u8len+txt) baseName(u8len+txt) dura(u32BE) protected(u8). This is what fills the
+        // character-window paperdoll + item-name list. The iconColor byte IS present here on 4.95 (unlike the
+        // 0x0F/0x37 windows) — proven because our all-zero (10-byte) empty slots leave the trailing legends
+        // correctly aligned, which only holds if the client reads 10 bytes per empty slot.
+        for (int i = 0; i < 14; i++)
+        {
+            var worn = _char.Equipment.FirstOrDefault(e => (Content.ItemById(e.ItemId)?.Type ?? 0) - 3 == i);
+            var wdef = worn is null ? null : Content.ItemById(worn.ItemId);
+            if (worn is null || wdef is null) { d.AddRange(new byte[10]); continue; }
+            string disp = string.IsNullOrEmpty(worn.CustomName) ? wdef.Name : worn.CustomName;
+            d.AddRange(Be(IconWire(wdef.Icon)));
+            d.Add(wdef.IconColor);
+            AddLenStr(d, disp);
+            AddLenStr(d, wdef.Name);
+            d.AddRange(Be32(worn.Dura));
+            d.Add(0);                   // protection flag
+        }
 
         d.Add(0);                       // exchange flag
 
@@ -2482,7 +2515,7 @@ public sealed class Session
         // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
         // which already renders this character correctly): [sex, form, face, armor, 0, 0, 0]
         d.Add(0);
-        d.AddRange(new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, _char.Armor, 0, 0, 0 });
+        d.AddRange(new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, _char.Armor, 0, WeaponLook(), ShieldLook() });
 
         // three portrait/face graphic ids (feed FACE.EPF). 0 = default face for now.
         d.AddRange(Be(0)); d.AddRange(Be(0)); d.AddRange(Be(0));
@@ -2629,13 +2662,13 @@ public sealed class Session
 
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
-        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, _char.Weapon, _char.Name);
+        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Name);
 
     /// <summary>Draw player <paramref name="other"/> on our client (0x33 player look form).</summary>
     public void ShowPlayer(Session other)
     {
         var s = other.Snapshot();
-        var app = new byte[] { s.Sex, 0, s.Face, s.Armor, 0, s.Weapon, 0 };   // same layout as SendSelfLook
+        var app = new byte[] { s.Sex, 0, s.Face, s.Armor, 0, s.Weapon, s.Shield };   // same layout as SendSelfLook
         SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
     }
 

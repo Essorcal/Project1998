@@ -6,7 +6,7 @@ namespace Server;
 /// session's mutable state. Built under no lock (fields are only written by the owning session's
 /// read-loop; a torn read at worst mis-places a peer by one tile until its next move packet).</summary>
 public readonly record struct PlayerSnapshot(
-    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, string Name);
+    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, string Name);
 
 /// <summary>A stack of an item lying on the map floor, drawn to every client on that map via 0x16
 /// (Item.epf frame = <see cref="Graphic"/>). <see cref="Id"/> is the entity id (find/despawn key). Carries

@@ -18,7 +18,7 @@ public sealed record ItemDef(
     ushort Icon, byte IconColor, ushort Look, byte LookColor,
     byte Sex, byte Level, ushort Durability, int StackAmount, int MaxAmount,
     int Armor, int Hit, int Dam, int Vita, int Mana, int Might, int Will, int Grace,
-    bool NoDrop, bool Thrown, int BuyPrice, int SellPrice)
+    bool NoDrop, bool Thrown, int BuyPrice, int SellPrice, int MightReq = 0)
 {
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
@@ -282,7 +282,7 @@ public static class Content
                 I("ItmArmor"), I("ItmHit"), I("ItmDam"), I("ItmVita"), I("ItmMana"),
                 I("ItmMight"), I("ItmWill"), I("ItmGrace"),
                 NoDrop: I("ItmDroppable") != 0, Thrown: I("ItmThrown") != 0,
-                I("ItmBuyPrice"), I("ItmSellPrice")));
+                I("ItmBuyPrice"), I("ItmSellPrice"), I("ItmMightRequired")));
         }
         return items;
     }

@@ -408,8 +408,14 @@ layout:**
 | `[2]` | **Face** | Distinct faces; range is larger than 8 (accepts values ≥ 0x34). |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
 | `[4]` | ? | No visible change for 0..8; likely hair/color/skin, untested at higher values. |
-| `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… |
-| `[6]` | **Shield** | Distinct shields. |
+| `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
+| `[6]` | **Shield** | Distinct shields. **`0` is a REAL shield — "no shield" is `0xFF` (`-1`).** |
+
+> **⚠ Weapon/shield "empty" = `0xFF`, not `0` (proven live 2026-07-25 + RTK `clif.c`).** A row-sweep of `[5]`/`[6]`
+> showed every value `0..15` renders a distinct blade/shield for **both** sexes; only `-1` (byte `0xFF`) is bare
+> hands. RTK sends `0xFFFF` for weapon/shield look when `!pc_isequip(slot)`. `SendSelfLook`/`ShowPlayer`/click-
+> profile therefore emit the worn item's `Look` when a weapon (`Type 3`)/shield (`Type 5`) is actually equipped,
+> else `0xFF` — keyed on slot occupancy (a worn weapon with `Look == 0`, e.g. Novice sword, still shows sprite 0).
 
 **There is no hair slot** in this form. In 4.95, hair is not renderable via `0x33` (it was set by
 in-game stylist NPCs). This is a hard limit of the packet, not a server bug.
@@ -925,9 +931,10 @@ maps to a gear slot for `Type ∈ 3..16` (EQ index = `Type-3`).
 | `0x1F` | unequip | `wireSlot(u8)` |
 | `0x24` | drop gold | `amount(u32)` |
 
-**Semantics.** Equipping a **weapon** (`Type 3`) or **armor** (`Type 4`) is the only thing that changes the
-4.95 look — it writes the item's `Look` into the 7-byte type-0 form (slot [5]=weapon, [3]=armor) and
-re-draws self + peers; other gear slots have no 4.95 appearance. Floor items broadcast to everyone on the map
+**Semantics.** Equipping a **weapon** (`Type 3`), **armor** (`Type 4`) or **shield** (`Type 5`) changes the
+4.95 look — the item's `Look` goes into the 7-byte type-0 form (slot [5]=weapon, [3]=armor, [6]=shield) and
+re-draws self + peers; other gear slots have no 4.95 appearance. Weapon/shield use the `0xFF`-when-bare rule
+(see §8). Floor items broadcast to everyone on the map
 and survive until picked up; gold drops as a sentinel ground pile (`ItemId = -1`) that refills the purse on
 pickup.
 
