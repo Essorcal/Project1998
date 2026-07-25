@@ -248,6 +248,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x06` | Walk + view refresh | same as `0x32` + `x0 y0 x1 y1 checksum` | Sent every few steps instead of `0x32`; handle identically for movement. |
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
+| `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` (see §11). |
 | `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. Reply with the click-profile `0x34` (see §9.5). |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
@@ -306,8 +307,11 @@ Handler `0x450170`: shows `msg` in a bubble over the entity.
 ```
 entityId(u32) type(u8) time(u16) param(u8)
 ```
-Handler `0x4503a0`: plays the action (client scales `time` ×10). `type`: 0=stand, 1=attack, 2=throw,
-3=shot, 4=sit, 6=magic, 8=eat.
+Handler `0x4503a0`: plays the action (client scales `time` ×10; `param` @+8 is the 3rd arg to the
+entity's action vtable method `[vtbl+0x78]`). `type`: 0=stand, 1=attack, 2=throw, 3=shot, 4=sit,
+6=magic, 8=eat. **Emotes are actions too** — `type` 9=respect, 10=triumph, 11=laughter, 12=grief,
+13=shame, 14=affection, 15=boredom, 16=sleepiness, 17=surprise, 18=rage, 19=sarcasm, 20=shrug,
+21=annoyed, **22=dance**, 23=strange, 24=kiss, 27=charge, 28=attack-after-charge. (See §11 for `0x1d`.)
 
 **`0x33` type-1 form** (parser `0x4361b0`): `… type(=01) app0 app1 spriteId(u16) extra(u8) renderKind nameLen name`
 (5 appearance bytes; `app0`/`app1` are clobbered by the `u16` at +2). **⚠ This does NOT draw creatures.**
@@ -652,6 +656,13 @@ over their head.
 **Attack:** client sends `0x13` (bare `13 00`) on spacebar. **Reply with `0x1A` (action), type=1** —
 **not** `0x13`. (The `0x13` receive-handler `0x4508f0` computes animation `0x8f − a`; with `a=0` that
 is `0x8f` = the **death** animation, which makes the character flash "dead". This bit us — §14.)
+
+**Emotes (`:` wheel).** Client sends `0x1d` = `idx(u8) 00`. The emote plays as an action:
+`type = idx + 11`, broadcast as `0x1A` to the emoter **and every peer on the map** (RTK
+`clif_parseemotion`: `sendaction(&bl, RFIFOB(5)+11, 0x4E, 0)`). So `:` `l` = `idx 0x0b → type 22 =
+dance`. The index sits at `dec[0]` — **not** `dec[1]`; 4.95 has no ordinal byte after the opcode, so
+RTK's 6.x `RFIFOB(5)` offset is one byte later than ours (the same shift seen on every 4.95 handler).
+The dance/emote sound rides along with the client's action sprite; no separate sound packet is sent.
 
 **Weapon.** `Character.Weapon` renders in the player's `0x33` type-0 appearance slot `[5]` (the sword/blade
 slot — see §8), persists in the store, and drives the melee damage bonus. This works (it draws on the
