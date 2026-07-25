@@ -123,6 +123,27 @@ public static class Content
         Line(ok ? "SELFTEST: PASS" : "SELFTEST: FAIL (empty registry or missing expected entry)");
     }
 
+    // ---- background music (0x19) --------------------------------------------------------------
+    // The stock 4.95 client keeps its audio in NexusTK.snd, which ships exactly 12 background tracks
+    // (1.mid .. 12.mid); the 0x19 music packet plays one by id with type 2 = MIDI. There is no original
+    // map->track table in the client files, so we assign them: a few iconic hubs get a fixed theme, and
+    // every other map gets a stable pick from its id (so neighbouring maps tend to differ). Tune freely.
+    private static readonly Dictionary<ushort, byte> BgmByMap = new()
+    {
+        [0]   = 1,    // Kugnae (town)
+        [330] = 2,    // Buya (town)
+        [41]  = 5,    // Mythic Nexus
+        [24]  = 6,    // Kugnae Donjon (dungeon)
+    };
+
+    /// <summary>The background track for a map: (bgm id 1..12, type 2 = MIDI). Iconic hubs are fixed;
+    /// anything else maps deterministically onto one of the 12 stock midis via its id.</summary>
+    public static (ushort bgm, byte type) BgmFor(ushort mapId)
+    {
+        byte bgm = BgmByMap.TryGetValue(mapId, out var pick) ? pick : (byte)((mapId % 12) + 1);
+        return (bgm, 2);
+    }
+
     // ---- lookups (used by the !warp / !maps / !mobs / !summon commands) ----
 
     public static bool TryMap(ushort id, out MapInfo map) => Maps.TryGetValue(id, out map!);

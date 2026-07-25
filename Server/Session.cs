@@ -586,6 +586,7 @@ public sealed class Session
         SendSelfLook();
         SendXy();
         SendMap(0x22, 3, Array.Empty<byte>(), "map-done(0x22)");
+        PlayMapMusic(_char.Map);   // 0x19: start this map's background track
 
         Log.Info("   == burst sent; watching for client packets (walk/request = progress, disconnect = a packet was rejected) ==");
     }
@@ -1431,6 +1432,7 @@ public sealed class Session
         SendMapInfo(mapId, xs, ys, mapName, 232, _gameInc++);   // 0x15 (light arg ignored; uses LightValue)
         SendXy();                                                // 0x04 coords + camera anchor
         SendSelfLook();                                          // 0x33 draw self on the new map
+        PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
 
         // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
         var (peers, mobs) = _world.EnterMap(this, mapId);
@@ -2179,6 +2181,31 @@ public sealed class Session
         d.AddRange(Be(time));
         d.Add(param);
         SendMap(0x1A, _gameInc++, d.ToArray(), $"action(0x1A) type={type} time={time}");
+    }
+
+    // 0x19 = background music. Handler 0x450ad0 reads: type(u8 @+1) pad(u8 @+2) bgm(u16BE @+3)
+    // volume(u8 @+5, 0..100, client log-scales it). type 2 = MIDI (the stock 1.mid..12.mid in
+    // NexusTK.snd); type 1 = mp3/lsr (the stock client has none). bgm 0 stops the music.
+    private ushort _bgm = 0xFFFF;   // last track sent, so we don't restart the same song on a refresh
+    private void SendMusic(ushort bgm, byte type = 2, byte volume = 100)
+    {
+        var d = new List<byte>();
+        d.Add(type);            // +1 type/channel (2 = midi)
+        d.Add(0);               // +2 reserved
+        d.AddRange(Be(bgm));    // +3 track id (u16 BE)
+        d.Add(volume);          // +5 volume 0..100
+        SendMap(0x19, _gameInc++, d.ToArray(), $"music(0x19) bgm={bgm} type={type} vol={volume}");
+        _bgm = bgm;
+    }
+
+    // Play the track assigned to a map, but only if it differs from what's already playing — re-sending
+    // the same id would restart the song (jarring on a Ctrl+R refresh or a same-map re-entry).
+    private void PlayMapMusic(ushort mapId)
+    {
+        var (bgm, type) = Content.BgmFor(mapId);
+        if (bgm == _bgm) return;
+        SendMusic(bgm, type);
+        Log.Info($"   -> music map {mapId} -> {bgm}.mid (0x19)");
     }
 
     // ---- profile window (the "Mind's Eye") ----
