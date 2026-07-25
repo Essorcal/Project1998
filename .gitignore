@@ -25,6 +25,10 @@ re/monster.tbl
 re/monster.pal
 re/monster0.pal
 re/item.tbl
+re/Item.epf
+re/Item.pal
+re/Item.tbl
+re/items_*.png
 re/monsfrm.tbl
 re/str_eng.res
 re/nexustk_dat_list.txt

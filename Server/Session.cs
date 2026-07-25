@@ -103,6 +103,32 @@ public sealed class Session
     private static readonly int V495AckMs =
         int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_ACK_MS"), out var am) ? am : 360;
 
+    // FAST-MOVE OFF (server-authoritative) response strategy for 4.95. When fast-move is off the client
+    // makes NO local prediction — it sends the walk request and waits for the server to assign the step
+    // before moving/animating. The old behavior (0x04 only) slides with no legs because 0x04's handler
+    // (0x44faf0 -> move-commit) teleports the sprite and never runs the leg cycle. But 0x0C runs the SAME
+    // start-walk (0x462320) a PEER uses: it sets walk-active(+0x18c)=1, frameCtr(+0x18e)=0, REGISTERS the
+    // anim list (0x41b5d0), moves logical->dest, and sets up the source->dest screen interpolation
+    // (0x44b090) — a full animated step with legs. And 0x0C does NOT branch self-vs-peer, so the self
+    // animates exactly like the peers we already drive smoothly. Strategies:
+    // The render (0x44b140) draws  screen = screen(entity.logical) + FORWARD_unit*(frameCtr/4)  where
+    // FORWARD_unit is the dir delta (0x44aad0) and start-walk (0x462320) sets logical=DEST at frame 0 —
+    // BUT ONLY IF the 0x0C tile != current logical (the reposition guard). So the tile we put in the 0x0C
+    // decides the anchor:  0x0C(DEST) -> logical jumps to dest, sprite starts ON dest and drifts to +2
+    // (OVERSHOOT); 0x0C(SOURCE) -> guard trips, logical stays at source, sprite animates source->dest
+    // correctly, and the delayed 0x04(dest) commits the landing. Strategies:
+    //   0 = 0x04 only            -> legacy: assigns tile + camera, but SLIDES (no legs).
+    //   1 = 0x0C(dest) only      -> legs but OVERSHOOTS to +2 then needs a commit to snap back.
+    //   2 = 0x0C(SOURCE)+delayed 0x04(dest) -> DEFAULT: source-anchored legs (no overshoot); the delayed
+    //                               0x04 commits logical=dest AFTER the legs finish so it can't cancel them.
+    //   3 = 0x0C(dest)+delayed 0x04 -> the overshoot variant (kept to compare against 2).
+    //   4 = 0x0C(SOURCE) only    -> source-anchored legs but no commit -> may snap back to source.
+    //   5 = 0x26 self-walk (DEFAULT) -> the real smooth primitive: routes to handlerB (0x4903d0) which
+    //       move-commits the step + starts the next locally ([+0x65f3]=1, no wait, no 0x04, no forced
+    //       scroll). Same packet 5.33 uses; respects realm-center. See HandleWalk for the full RE trail.
+    private static readonly int V495SlowMove =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_SLOW_MOVE"), out var slm) ? slm : 5;
+
     // "Realm center" (F4 in RTK) — a CLIENT camera mode signalled by a flag byte in the 0x15 mapinfo
     // packet (RTK clif_sendmapinfo byte +12; our SendMapInfo body[7]). When ON the client locks the camera
     // dead-center on the character (the world scrolls under a fixed sprite); when OFF the camera uses the
@@ -234,11 +260,26 @@ public sealed class Session
             case 0x06:
                 HandleWalk(dec);
                 break;
+            // 0x38 = hard refresh (Ctrl+R): the client grays the screen and asks the server to re-assert
+            // authoritative state. RTK's clif_refresh replies with sendmapinfo + sendxy + re-drawn entities
+            // (0x04 is the re-anchor primitive here — authoritative position + recentered camera). See §refresh.
+            case 0x38:
+                HandleRefresh(dec);
+                break;
             case 0x0E:                    HandleChat(dec); break;   // client chat -> echo as over-head speech
             case 0x13:                    HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
             case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
             case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile/inspect
             case 0x4F:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
+            // ---- items (opcode numbers from RTK 7.x recv dispatch; confirmed to align with 4.95 by the
+            // walk/turn/chat/attack/setting opcodes already matching). See §11c. ----
+            case 0x07:                    HandlePickup(dec); break;    // pick up the floor item under me
+            case 0x08:                    HandleDropItem(dec); break;  // drop a bag slot to the floor
+            case 0x17:                    HandleThrow(dec); break;     // throw a bag slot (flies ahead)
+            case 0x1A:                    HandleUseItem(dec, eat: true); break;   // eat/consume a slot
+            case 0x1C:                    HandleUseItem(dec, eat: false); break;  // use/equip a slot
+            case 0x1F:                    HandleUnequip(dec); break;   // remove a worn item back to the bag
+            case 0x24:                    HandleDropGold(dec); break;  // drop a gold amount
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
@@ -403,6 +444,8 @@ public sealed class Session
         var (peers, mobs) = _world.EnterMap(this, _char.Map);
         foreach (var p in peers) ShowPlayer(p);   // existing players -> draw on our client (0x33)
         foreach (var m in mobs) ShowMob(m);       // existing shared mobs -> draw on our client (0x07)
+        foreach (var gi in _world.ItemsOn(_char.Map)) ShowGroundItem(gi);  // floor items (0x16)
+        RefreshInventory();                       // fill the bag + equipment windows (0x0F / 0x37)
         Log.Info($"   == world join: map {_char.Map} has {peers.Length} other player(s), {mobs.Length} mob(s) ==");
     }
 
@@ -502,6 +545,7 @@ public sealed class Session
     private uint _nextMobId = 5000;      // entity-id pool for spawned creatures (well above the self id)
     private byte _facing = 0;            // last direction the player faced (0=N 1=E 2=S 3=W); drives melee
     private byte _realm = RealmCenter;   // realm-center camera lock; toggled live by F4 (0x1b sub-cmd 0x07)
+    private int _lockOx, _lockOy;        // camera origin frozen when realm-center turned ON (map top-left tile)
     // Fast-move = the client's movement model (RTK clif_parsewalk gates on FLAG_FASTMOVE):
     //   ON  = client-authoritative: the client moves/animates freely and is only corrected on desync.
     //         The server must send the walker NOTHING on a good step (0x26 self-walk is skipped).
@@ -781,9 +825,24 @@ public sealed class Session
     // Default mid-anchor (8,7) matches a 17-wide x 15-tall viewport, same as 5.33's SendSelfWalk.
     private (ushort vx, ushort vy) ViewAnchor()
     {
+        // Realm-center (F4) FREEZES the camera: the client stops scrolling and the character walks across a
+        // static view. The 0x04 handler writes the map origin as (X - vx, Y - vy) [0x44c660], so to keep the
+        // origin pinned at the value captured when F4 was pressed (_lockOx,_lockOy) we draw the self at screen
+        // (X - Ox, Y - Oy). That makes (X-vx, Y-vy) == (Ox,Oy) every step -> no scroll. If a step carries the
+        // anchor outside the viewport, the client's scroll-gate (0x44c8f0 bounds check) rejects it, which ALSO
+        // leaves the origin frozen — so the camera never moves regardless. Without realm-center, use the normal
+        // edge-aware anchor (self centered, clamped near map borders).
+        if (_realm != 0)
+            return ((ushort)(_char.X - _lockOx), (ushort)(_char.Y - _lockOy));
+        return EdgeAwareAnchor(_char.X, _char.Y);
+    }
+
+    // The normal follow-camera anchor: the screen tile the self is drawn at (mid-view, clamped near borders).
+    private (ushort vx, ushort vy) EdgeAwareAnchor(int cx, int cy)
+    {
         int xs = _char.MapXs, ys = _char.MapYs;
-        int vx = _char.X < 8 ? _char.X : (_char.X >= xs - 8 ? _char.X - xs + 17 : 8);
-        int vy = _char.Y < 7 ? _char.Y : (_char.Y >= ys - 7 ? _char.Y - ys + 15 : 7);
+        int vx = cx < 8 ? cx : (cx >= xs - 8 ? cx - xs + 17 : 8);
+        int vy = cy < 7 ? cy : (cy >= ys - 7 ? cy - ys + 15 : 7);
         return ((ushort)Math.Clamp(vx, 0, 16), (ushort)Math.Clamp(vy, 0, 14));
     }
 
@@ -803,6 +862,26 @@ public sealed class Session
         d.Add(0);
         SendMap(0x04, _gameInc++, d.ToArray(),
                 $"xy(0x04) pos=({x},{y}) scroll=({x - vx},{y - vy})");
+    }
+
+    // Complete/unblock a server-authoritative walk WITHOUT scrolling the camera. The 0x04 handler
+    // (0x44faf0) always calls the camera fn (0x44c660) THEN the walk-completion (0x44b140). 0x44c660
+    // skips its ENTIRE scroll block — settle-offset, origin write, viewport rebuild — when the bounds-gate
+    // 0x44c8f0 fails, and that gate rejects any view anchor outside the viewport. So sending vx/vy way
+    // out of range makes the camera code a no-op (zero jerk) while 0x44b140 still runs: it advances the
+    // self's logical to the walk destination and clears the walk-active gate so the next step is allowed.
+    // This is how realm-center (frozen camera) coexists with fast-move OFF (which REQUIRES the 0x04 to
+    // unblock — 0x0C commits the tile but never clears the gate, proven live: the client freezes at
+    // frameCtr 2 until a 0x04 arrives).
+    private void SendXyCommitNoScroll()
+    {
+        var d = new List<byte>();
+        d.AddRange(Be(_char.X));
+        d.AddRange(Be(_char.Y));
+        d.AddRange(Be(0xFFFF));   // vx: out of viewport -> scroll-gate (0x44c8f0) fails -> camera untouched
+        d.AddRange(Be(0xFFFF));   // vy: out of viewport
+        d.Add(0);
+        SendMap(0x04, _gameInc++, d.ToArray(), $"xy-commit(0x04 no-scroll) pos=({_char.X},{_char.Y})");
     }
 
     // ---- live world interaction (client is in-world, sending its own packets) ----
@@ -944,12 +1023,63 @@ public sealed class Session
                 // a good step (RTK skips the self-walk packet here). 0x04 stays reserved for corrections
                 // (desync/block, handled above). This is the smooth, self-paced walk.
             }
+            else if (V495SlowMove == 5)
+            {
+                // 4.95 DEFAULT (fast-move OFF): the 0x26 self-walk packet — the SAME primitive 5.33 uses.
+                // Proven by RE that 0x26 is NOT dead on 4.95 (the no-op 0x44fb80 in the main opcode table
+                // fooled us, exactly like the 0x08 stats case): the client pre-dispatches 0x26 through the
+                // self-entity vtable (+0x38 @0x4cf038 -> 0x48eb40) to handlerB @0x4903d0, which
+                //   (a) move-commits (0x48f160) the pending step to (destX,destY) — completing it WITHOUT
+                //       the camera-scroll a 0x04 forces (move-commit stores the passed view anchor and
+                //       respects realm-center, identical to the fast-move-ON local path), and
+                //   (b) starts the next step's leg anim (selfWalkAnim 0x48f2c0) with [+0x65f3]=1 = the
+                //       "complete locally, don't wait" flag, so it animates 0->3->0 and finishes on its own
+                //       (no frameCtr-2 freeze, no 0x04 needed to unblock).
+                // So one 0x26 per step = smooth legs + continuous movement + correct camera (incl. realm).
+                // Send the SOURCE tile (the step being confirmed as complete) exactly like 5.33.
+                SendSelfWalk(dir, (ushort)fromX, (ushort)fromY);
+            }
             else
             {
-                // Server-authoritative: the client will NOT move until we assign the tile. Answer the walk
-                // with the position packet so it can advance. (0x26 self-walk — RTK's choice — is a no-op
-                // on 4.95, so we use 0x04, which the 4.95 client honors, to assign the step + camera.)
-                SendXy();
+                // ---- legacy fallbacks (NEXUS_V495_SLOW_MOVE != 5), kept for comparison ----
+                // Realm-center ON: camera FROZEN. These paths REQUIRE a 0x04 to unblock the next step
+                // (0x0C commits the tile but never clears the walk gate — the client freezes at frameCtr 2
+                // awaiting a 0x04). Animate legs source-anchored (0x0C from-tile, no scroll) then complete
+                // with a NO-SCROLL 0x04 (out-of-bounds anchor => camera fn no-ops, completion still runs).
+                if (_realm != 0)
+                {
+                    SendMove(_char.Id, (ushort)fromX, (ushort)fromY, dir);
+                    if (V495AckMs > 0) Thread.Sleep(V495AckMs);
+                    SendXyCommitNoScroll();
+                }
+                else
+                // Server-authoritative (fast-move OFF): the client makes NO local prediction — it waits for
+                // us to assign the step. Drive it the same way peers are driven: 0x0C runs start-walk
+                // (0x462320) => legs + logical->dest + source->dest interpolation (NOT a slide). See
+                // V495SlowMove. (0x26 self-walk — RTK's choice — is a genuine no-op on 4.95: 0x44fb80 is
+                // `mov al,1; ret`, so it cannot drive the step; 0x0C is what the 4.95 client honors.)
+                switch (V495SlowMove)
+                {
+                    case 1:  // 0x0C(DEST): legs but overshoots to +2 (logical jumps to dest at frame 0)
+                        SendMove(_char.Id, _char.X, _char.Y, dir);
+                        break;
+                    case 2:  // DEFAULT: 0x0C(SOURCE) anchors the legs at the from-tile (no overshoot)...
+                        SendMove(_char.Id, (ushort)fromX, (ushort)fromY, dir);
+                        if (V495AckMs > 0) Thread.Sleep(V495AckMs);  // ...let the legs animate source->dest...
+                        SendXy();                                    // ...then 0x04 commits logical=dest (lands the step)
+                        break;
+                    case 3:  // overshoot variant: 0x0C(DEST) + delayed commit (compare against 2)
+                        SendMove(_char.Id, _char.X, _char.Y, dir);
+                        if (V495AckMs > 0) Thread.Sleep(V495AckMs);
+                        SendXy();
+                        break;
+                    case 4:  // 0x0C(SOURCE) only: source-anchored legs, no commit (may snap back)
+                        SendMove(_char.Id, (ushort)fromX, (ushort)fromY, dir);
+                        break;
+                    default: // 0 = legacy 0x04-only slide (no legs)
+                        SendXy();
+                        break;
+                }
             }
         }
         else
@@ -983,6 +1113,15 @@ public sealed class Session
         if (setting == 0x07)
         {
             _realm ^= 1;
+            if (_realm != 0)
+            {
+                // Freeze the camera at the origin it's showing RIGHT NOW. The follow-camera keeps the map
+                // top-left at (X - vx, Y - vy) with the edge-aware anchor, so that's the current origin —
+                // capture it, and ViewAnchor() will hold the origin there while realm-center stays on.
+                var (cvx, cvy) = EdgeAwareAnchor(_char.X, _char.Y);
+                _lockOx = _char.X - cvx;
+                _lockOy = _char.Y - cvy;
+            }
             // Re-send the entry trio in place so the 0x15 realm byte reconfigures the camera at the
             // current position (no map change; same map/coords).
             SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
@@ -1000,6 +1139,31 @@ public sealed class Session
         {
             Log.Info($"   -> setting 0x{setting:X2} (not handled)");
         }
+    }
+
+    // 0x38 = HARD REFRESH (Ctrl+R). The client dims the screen (gray mask) and asks the server to re-assert
+    // authoritative state. We mirror RTK's clif_refresh: re-send mapinfo (0x15 — on 4.95 this triggers a
+    // client map RELOAD, which is what clears the gray mask) + xy (0x04 — the re-anchor primitive: authoritative
+    // position + recentered camera) + self look (0x33) + re-draw nearby entities. This is the SAME in-place
+    // refresh the F4 realm-center toggle performs. (RTK also emits a trailing 0x22 03 terminator, but 0x22 is
+    // the default no-op on 4.95 — remap slot 0x2a — so it is not needed to end the refresh here.)
+    private void HandleRefresh(byte[] dec)
+    {
+        // RTK's clif_refresh always RECENTERS (clif_sendxy uses the edge-aware centered anchor, with no
+        // realm-center handling) — a hard refresh is a "reset to the authoritative centered view". So if
+        // realm-center is on and we're parked off-center, re-lock the freeze at the NEW centered origin so
+        // the recenter takes effect AND realm-center keeps working afterward (re-anchored at center).
+        if (_realm != 0)
+        {
+            var (cvx, cvy) = EdgeAwareAnchor(_char.X, _char.Y);
+            _lockOx = _char.X - cvx;
+            _lockOy = _char.Y - cvy;
+        }
+        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
+        SendXy();          // 0x04: authoritative (X,Y) + recentered camera (now centered even under realm)
+        SendSelfLook();    // 0x33: redraw self on the reloaded map
+        RedrawWorld();     // re-assert peers + mobs + ground items the 0x15 reload dropped
+        Log.Info($"   -> refresh (0x38, Ctrl+R) — recentered at ({_char.X},{_char.Y}){(_realm != 0 ? " (realm re-locked at center)" : "")}");
     }
 
     // 0x26 self-walk (moving player's OWN client): dir(u8) oldX(u16BE) oldY(u16BE) viewX(u16BE)
@@ -1090,6 +1254,11 @@ public sealed class Session
         if (text.StartsWith("!maps", StringComparison.OrdinalIgnoreCase)) { ListMaps(text); return; }    // list/fuzzy-search maps
         if (text.StartsWith("!mobs", StringComparison.OrdinalIgnoreCase)) { ListMobs(text); return; }    // list/fuzzy-search mobs (BEFORE !mob*)
         if (text.StartsWith("!summon", StringComparison.OrdinalIgnoreCase)) { Summon(text); return; }    // spawn a named mob from the registry
+        // ---- items (check !items before !item) ----
+        if (text.StartsWith("!icons", StringComparison.OrdinalIgnoreCase)) { IconSweep(text); return; }  // fill bag with client Item.epf frames N..N+26 (icon RE)
+        if (text.StartsWith("!items", StringComparison.OrdinalIgnoreCase)) { ListItems(text); return; }  // list/fuzzy-search the item registry
+        if (text.StartsWith("!item", StringComparison.OrdinalIgnoreCase)) { GiveItemCmd(text); return; } // summon a named item into the bag
+        if (text.StartsWith("!clearinv", StringComparison.OrdinalIgnoreCase)) { ClearInventory(); return; } // empty the bag + gear
         // ---- mobs / combat (check !mobrow before !mob, !spawn before the catch-all !s) ----
         if (text.StartsWith("!rabbit", StringComparison.OrdinalIgnoreCase)) { SpawnRabbit(); return; }  // MVP: one wandering, killable rabbit
         if (text.StartsWith("!mobrow", StringComparison.OrdinalIgnoreCase)) { MobRow(text); return; }   // sweep graphic ids
@@ -1260,6 +1429,7 @@ public sealed class Session
         var (peers, mobs) = _world.EnterMap(this, mapId);
         foreach (var p in peers) ShowPlayer(p);
         foreach (var m in mobs) ShowMob(m);
+        foreach (var gi in _world.ItemsOn(mapId)) ShowGroundItem(gi);   // floor items on the new map (0x16)
         Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y}) — {peers.Length} player(s), {mobs.Length} mob(s) here");
     }
 
@@ -1319,6 +1489,327 @@ public sealed class Session
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color);
         SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp).");
+    }
+
+    // ===== items ================================================================================
+    // Wire layouts translated from RTK 7.x clif.c (clif_sendadditem/senddelitem/equipit/unequipit and
+    // the parse* handlers). Multi-byte ints are big-endian, same as every other packet here. The
+    // send-side opcodes (0x0F/0x10/0x37/0x38) are the historically-stable TK inventory opcodes; the
+    // recv-side (0x07/0x08/0x17/0x1A/0x1C/0x1F/0x24) are confirmed to line up with 4.95 because the
+    // walk/turn/chat/attack/setting opcodes already do. See docs §11c.
+
+    private static byte[] Ascii(string s) => Encoding.ASCII.GetBytes(s ?? "");
+
+    private InvItem? InvAt(int slot) => _char.Inventory.FirstOrDefault(i => i.Slot == slot);
+
+    private int FreeSlot()
+    {
+        for (int i = 0; i < _char.MaxInv; i++)
+            if (_char.Inventory.All(it => it.Slot != i)) return i;
+        return -1;
+    }
+
+    /// <summary>Put <paramref name="amount"/> of <paramref name="def"/> into the bag (stacking if the item
+    /// stacks and a stack already exists), draw the slot (0x0F), and return false if the pack is full.</summary>
+    private bool GiveItem(ItemDef def, int amount = 1, ushort dura = 0, string customName = "")
+    {
+        if (dura == 0 && def.IsEquip) dura = def.Durability;
+        if (def.Stackable)
+        {
+            var stack = _char.Inventory.FirstOrDefault(i => i.ItemId == def.Id && i.CustomName == customName);
+            if (stack is not null) { stack.Amount += amount; SendAddItem(stack); return true; }
+        }
+        int slot = FreeSlot();
+        if (slot < 0) { SendLog("Your pack is full."); return false; }
+        var it = new InvItem((byte)slot, def.Id, amount, dura) { CustomName = customName };
+        _char.Inventory.Add(it);
+        SendAddItem(it);
+        return true;
+    }
+
+    // Redraw the whole bag + worn gear (on world entry / warp): one 0x0F per bag slot, one 0x37 per gear slot.
+    private void RefreshInventory()
+    {
+        foreach (var it in _char.Inventory.OrderBy(i => i.Slot)) SendAddItem(it);
+        foreach (var e in _char.Equipment) SendEquip(e);
+    }
+
+    // 0x0F add-item-to-slot: slot(u8=idx+1) icon(u16) iconColor(u8) [dispName u8len+txt] [baseName u8len+txt]
+    //   amount(u32) [block: stack/0(u8) dura(u32) protected(u8)] [owner u8len+txt] 00 00 00.
+    private void SendAddItem(InvItem it)
+    {
+        var def = Content.ItemById(it.ItemId);
+        if (def is null) return;
+        string name = string.IsNullOrEmpty(it.CustomName) ? def.Name : it.CustomName;
+        string disp = it.Amount > 1 ? $"{name} ({it.Amount})" : name;
+
+        var d = new List<byte> { (byte)(it.Slot + 1) };
+        d.AddRange(Be(IconWire(def.Icon)));   // RTK ItmIcon == client Item.epf frame; encode for the +0x4000 resolver
+        // 5.x (V533) carries an icon-color byte here; 4.95 (V495) does NOT — it reads the name length
+        // right after the icon. Proven live: on 4.95 an extra byte here made the client read the name
+        // one byte early (Apple iconColor=0 → empty name "You ate ."; Poison apple iconColor=12 → 12-char
+        // garbled "⊥Poison appl"). See docs §11c.
+        if (_ver == ClientVersion.V533) d.Add(def.IconColor);
+        var dn = Ascii(disp); d.Add((byte)dn.Length); d.AddRange(dn);
+        var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
+        d.AddRange(Be32((uint)it.Amount));
+        if (def.IsEquip) { d.Add(0); d.AddRange(Be32(it.Dura)); d.Add(0); }
+        else { d.Add((byte)(def.Stackable ? 1 : 0)); d.AddRange(Be32(0)); d.Add(0); }
+        d.Add(0);                 // owner name length (0 = unowned)
+        d.AddRange(Be(0));        // trailing u16
+        d.Add(0);                 // trailing u8
+        SendMap(0x0F, _gameInc++, d.ToArray(), $"additem(0x0F) slot={it.Slot} '{name}' x{it.Amount}");
+    }
+
+    // 0x10 remove-from-slot: slot(u8=idx+1) reason(u8) 00 00. reason: 0=Remove 1=Drop 2=Eat 4=Throw 6=Used …
+    private void SendDelItem(byte slot, byte reason) =>
+        SendMap(0x10, _gameInc++, new byte[] { (byte)(slot + 1), reason, 0, 0 }, $"delitem(0x10) slot={slot} r={reason}");
+
+    // 0x37 equip-window: equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00.
+    private void SendEquip(InvItem worn)
+    {
+        var def = Content.ItemById(worn.ItemId);
+        if (def is null) return;
+        string name = string.IsNullOrEmpty(worn.CustomName) ? def.Name : worn.CustomName;
+        var d = new List<byte> { worn.Slot };     // worn.Slot holds the wire equip-slot byte
+        d.AddRange(Be(IconWire(def.Icon)));        // +0x4000 resolver encoding (see SendAddItem / IconWire)
+        if (_ver == ClientVersion.V533) d.Add(def.IconColor);   // 4.95 omits the icon-color byte (see SendAddItem)
+        var nn = Ascii(name); d.Add((byte)nn.Length); d.AddRange(nn);
+        var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
+        d.AddRange(Be32(worn.Dura));
+        d.AddRange(Be(0));
+        SendMap(0x37, _gameInc++, d.ToArray(), $"equip(0x37) slot={worn.Slot} '{name}'");
+    }
+
+    // 0x38 unequip-window: spot(u8) 00.
+    private void SendUnequip(byte wireSlot) =>
+        SendMap(0x38, _gameInc++, new byte[] { wireSlot, 0 }, $"unequip(0x38) slot={wireSlot}");
+
+    /// <summary>Draw a floor item on OUR client via the 0x16 ground-item path (Item.epf frame). The 0x16
+    /// object uses the SAME item resolver (0x435ab0, +0x4000) as the bag, so encode the frame via IconWire.</summary>
+    public void ShowGroundItem(GroundItem gi) =>
+        SendCreature(gi.Id, IconWire(gi.Graphic), gi.X, gi.Y, 0, $"grounditem(0x16) id={gi.Id} #{gi.ItemId} frame={gi.Graphic}");
+
+    // Equipping a weapon/armor is the ONLY thing that changes the 4.95 look (the 7-byte type-0 form has a
+    // weapon slot [5] and an armor slot [3]); other gear slots have no appearance in 4.95. Re-draw self + peers.
+    private void ApplyAppearance(ItemDef def, bool equip)
+    {
+        if (def.Type == 3) _char.Weapon = equip ? (byte)def.Look : (byte)0;       // ITM_WEAP
+        else if (def.Type == 4) _char.Armor = equip ? (byte)def.Look : (byte)0;   // ITM_ARMOR
+        else return;
+        SendSelfLook();
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+    }
+
+    // ---- recv handlers (client -> server) ----
+
+    // 0x07 pick up: grab whatever floor item sits on my tile; coins (sentinel ItemId<0) go to the purse.
+    private void HandlePickup(byte[] dec)
+    {
+        var gi = _world.PickUp(_char.Map, _char.X, _char.Y);
+        if (gi is null) return;                       // nothing underfoot
+        if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); return; }   // coins -> purse
+        var def = Content.ItemById(gi.ItemId);
+        if (def is null) return;
+        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+        {
+            // pack full — put it straight back on the floor so it isn't lost
+            _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
+                X = _char.X, Y = _char.Y, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+        }
+    }
+
+    // 0x08 drop: dec[0]=slot(1-based). Drop the whole stack onto my tile.
+    private void HandleDropItem(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        int slot = dec[0] - 1;
+        // dec[1] = the "all" flag: 'd' (drop one) sends 0, 'D'/Shift+d (drop whole stack) sends 1.
+        // Confirmed live: client emits `08 <slot+1> 00 00` for d and `08 <slot+1> 01 00` for D.
+        bool dropAll = dec.Length > 1 && dec[1] != 0;
+        var it = InvAt(slot); if (it is null) return;
+        var def = Content.ItemById(it.ItemId); if (def is null) return;
+        if (def.NoDrop) { SendLog($"You can't drop {def.Name}."); return; }
+
+        int count = dropAll ? it.Amount : 1;
+        int remaining = it.Amount - count;
+        if (remaining <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 1); }  // reason 1 = Drop
+        else { it.Amount = remaining; SendAddItem(it); }   // stack shrinks: redraw the slot with the new count
+        _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
+            X = _char.X, Y = _char.Y, Amount = count, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
+    }
+
+    // 0x17 throw: dec[0]=confirm, dec[1]=slot(1-based). Throw one, land it a few tiles ahead.
+    private void HandleThrow(byte[] dec)
+    {
+        if (dec.Length < 2) return;
+        int slot = dec[1] - 1;
+        var it = InvAt(slot); if (it is null) return;
+        var def = Content.ItemById(it.ItemId); if (def is null) return;
+        SendAction(_char.Id, 2, 20, 0);               // throw animation
+        it.Amount -= 1;
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 4); }  // reason 4 = Throw
+        else SendAddItem(it);
+        int tx = _char.X, ty = _char.Y;
+        switch (_facing & 3) { case 0: ty -= 3; break; case 1: tx += 3; break; case 2: ty += 3; break; case 3: tx -= 3; break; }
+        _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
+            X = (ushort)Math.Clamp(tx, 0, _char.MapXs - 1), Y = (ushort)Math.Clamp(ty, 0, _char.MapYs - 1),
+            Amount = 1, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
+    }
+
+    // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> consume (+ any heal).
+    private void HandleUseItem(byte[] dec, bool eat)
+    {
+        if (dec.Length < 1) return;
+        int slot = dec[0] - 1;
+        var it = InvAt(slot); if (it is null) return;
+        var def = Content.ItemById(it.ItemId); if (def is null) return;
+        if (def.IsEquip) { if (eat) { SendLog($"You can't eat {def.Name}."); return; } EquipFromSlot(slot); return; }
+        if (eat && def.Type != 0) { SendLog("That is not edible."); return; }   // ITM_EAT only
+        // Play the eat animation on self + peers (0x1A action type 8 = eat on 4.95; the client shows its
+        // own "You ate <name>" status line from the slot name, so DON'T also speak it as 0x0D chat).
+        SendAction(_char.Id, 8, 40, 0);
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+        bool healed = false;
+        if (def.Vita > 0) { _char.Hp = (uint)Math.Min(_char.MaxHp, _char.Hp + def.Vita); healed = true; }
+        if (def.Mana > 0) { _char.Mp = (uint)Math.Min(_char.MaxMp, _char.Mp + def.Mana); healed = true; }
+        it.Amount -= 1;
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, (byte)(eat ? 2 : 6)); }
+        else SendAddItem(it);
+        if (healed) SendStats();
+    }
+
+    // Move a bag item onto the body: bumps any item already in that gear slot back to the bag first.
+    private void EquipFromSlot(int slot)
+    {
+        var it = InvAt(slot); if (it is null) return;
+        var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
+        if (def.Sex != 0 && def.Sex != _char.Sex) { SendLog($"You can't wear {def.Name}."); return; }
+        byte wire = def.EquipSlot;
+
+        _char.Inventory.Remove(it);
+        SendDelItem((byte)slot, 0);                   // reason 0 = Remove (moved to gear)
+
+        var prev = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
+        if (prev is not null)
+        {
+            _char.Equipment.Remove(prev);
+            SendUnequip(wire);
+            var pdef = Content.ItemById(prev.ItemId);
+            if (pdef is not null) { ApplyAppearance(pdef, equip: false); GiveItem(pdef, 1, prev.Dura, prev.CustomName); }
+        }
+
+        var worn = new InvItem(wire, def.Id, 1, it.Dura == 0 ? def.Durability : it.Dura) { CustomName = it.CustomName };
+        _char.Equipment.Add(worn);
+        SendEquip(worn);
+        ApplyAppearance(def, equip: true);
+        SendLog($"Equipped {def.Name}.");
+    }
+
+    // 0x1F unequip: dec[0]=wire equip-slot byte. Take the worn item off and return it to the bag.
+    private void HandleUnequip(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        byte wire = dec[0];
+        var worn = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
+        if (worn is null) return;
+        _char.Equipment.Remove(worn);
+        SendUnequip(wire);
+        var def = Content.ItemById(worn.ItemId);
+        if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, worn.Dura, worn.CustomName); }
+    }
+
+    // 0x24 drop gold: dec[0..3]=amount(u32BE). Spill coins onto my tile as a pickup-able gold pile.
+    private void HandleDropGold(byte[] dec)
+    {
+        if (dec.Length < 4) return;
+        uint amt = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
+        if (amt > _char.Coins) amt = _char.Coins;
+        if (amt == 0) { SendLog("You have no coins to drop."); return; }
+        _char.Coins -= amt;
+        SendStats();
+        ushort gfx = amt < 2 ? (ushort)22 : amt < 100 ? (ushort)73 : (ushort)72;   // coins_1 / _2_99 / _100_999 icons
+        _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = -1,
+            X = _char.X, Y = _char.Y, Amount = (int)amt, Graphic = gfx });
+    }
+
+    // ---- item GM commands ----
+
+    // "!items [filter]": browse the item registry, fuzzy-ranked by name.
+    private void ListItems(string text)
+    {
+        string q = text.Length > "!items".Length ? text["!items".Length..].Trim() : "";
+        var found = Content.SearchItems(q, 15);
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check re/rtk-data/Items.csv)" : $"no items match \"{q}\""); return; }
+        SendLog($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Items.Count}):");
+        foreach (var i in found)
+            SendLog($"  #{i.Id} {i.Name} — {(i.IsEquip ? $"equip(dam {i.Dam}/ac {i.Armor})" : i.IsConsumable ? "use" : "etc")}   (!item {i.Name})");
+    }
+
+    // "!item <name or id> [amount]": summon an item into the bag (equip items keep a single copy per slot).
+    private void GiveItemCmd(string text)
+    {
+        string q = text.Length > "!item".Length ? text["!item".Length..].Trim() : "";
+        if (q.Length == 0) { SendLog("usage: !item <name or id> [amount]   (browse with  !items <name>)"); return; }
+        int amount = 1;
+        var parts = q.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length > 1 && int.TryParse(parts[^1], out var n) && n > 0) { amount = n; q = string.Join(' ', parts[..^1]); }
+        var def = Content.FindItem(q);
+        if (def is null) { SendLog($"no item matches \"{q}\" — try  !items {q}"); return; }
+        if (def.Stackable) GiveItem(def, amount);
+        else for (int i = 0; i < amount; i++) if (!GiveItem(def)) break;
+        SendLog($"Gave {def.Name}{(amount > 1 ? $" x{amount}" : "")} (#{def.Id}, {(def.IsEquip ? $"equip slot {def.EquipSlot}" : def.IsConsumable ? "use" : "etc")}).");
+    }
+
+    // "!clearinv": empty the bag + gear (test reset).
+    private void ClearInventory()
+    {
+        foreach (var it in _char.Inventory.ToList()) SendDelItem(it.Slot, 0);
+        _char.Inventory.Clear();
+        foreach (var e in _char.Equipment.ToList()) SendUnequip(e.Slot);
+        _char.Equipment.Clear();
+        if (_char.Weapon != 0 || _char.Armor != 0)
+        {
+            _char.Weapon = 0; _char.Armor = 0;
+            SendSelfLook();
+            _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        }
+        SendLog("Cleared your pack and gear.");
+    }
+
+    // "!icons [start]": ICON-ID RE. Fill every bag slot with a raw 0x0F whose icon id = start+slot, named
+    // "f<icon>", so a screenshot shows which client Item.epf frames render (frame index == client item id;
+    // this is a DIFFERENT space from the RTK ItmIcon). Sweep with !icons 0, !icons 27, 54, 81, … and match
+    // the rendered icons to re/render_items.py's contact sheet to build the RTK-item -> client-frame map.
+    private void IconSweep(string text)
+    {
+        var a = ParseInts(text);
+        int start = a.Length > 0 ? a[0] : 0;
+        _char.Inventory.Clear();
+        for (int i = 0; i < _char.MaxInv; i++)
+            SendRawIcon((byte)i, (ushort)(start + i), $"f{start + i}");
+        SendLog($"icons {start}..{start + _char.MaxInv - 1} in bag (match vs render_items.py sheet)");
+    }
+
+    // The client's item-sprite resolver (0x435ab0) does `spriteId = iconField + 0x4000`, then the frame
+    // indexer (0x431450) bounds-checks the LOW 16 BITS against the Item.epf frame count (1310) — so to
+    // render Item.epf frame N (== client item id), the packet icon field must be (N - 0x4000) & 0xFFFF,
+    // which wraps back to N after the client's +0x4000. Sending N raw overflows (N+0x4000 >= 1310 → blank).
+    private static ushort IconWire(int clientFrame) => (ushort)((clientFrame - 0x4000) & 0xFFFF);
+
+    // Build a 0x0F for a raw client-frame + label with no registry item behind it — for the !icons sweep.
+    private void SendRawIcon(byte slot, ushort frame, string label)
+    {
+        var d = new List<byte> { (byte)(slot + 1) };
+        d.AddRange(Be(IconWire(frame)));
+        if (_ver == ClientVersion.V533) d.Add(0);          // 5.x icon-color byte (4.95 omits, see SendAddItem)
+        var nn = Ascii(label);
+        d.Add((byte)nn.Length); d.AddRange(nn);            // display name
+        d.Add((byte)nn.Length); d.AddRange(nn);            // base name
+        d.AddRange(Be32(1));                               // amount
+        d.Add(0); d.AddRange(Be32(0)); d.Add(0);           // stack/dura/protected block
+        d.Add(0); d.AddRange(Be(0)); d.Add(0);             // owner len 0 + trailing u16 + u8
+        SendMap(0x0F, _gameInc++, d.ToArray(), $"rawicon(0x0F) slot={slot} frame={frame} wire=0x{IconWire(frame):x4}");
     }
 
     // "!crecol <lookId> [loColor] [hiColor] [step]": spawn the SAME look id across a GRID (12 cols/row,
@@ -1983,6 +2474,7 @@ public sealed class Session
         var (peers, mobs) = _world.View(this, _char.Map);
         foreach (var p in peers) ShowPlayer(p);
         foreach (var m in mobs) ShowMob(m);
+        foreach (var gi in _world.ItemsOn(_char.Map)) ShowGroundItem(gi);
     }
 
     public void MoveEntity(uint id, ushort x, ushort y, byte dir) => SendMove(id, x, y, dir);      // 0x0C

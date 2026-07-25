@@ -7,6 +7,47 @@ public sealed record MapInfo(ushort Id, string Name, ushort Xs, ushort Ys);
 public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level);
 
 /// <summary>
+/// An item definition from the RTK item db (Items.csv). Field names mirror the client's item_data
+/// (see RTK itemdb.h). <c>Icon</c> is the inventory-window / ground (Item.epf) frame; <c>Look</c> is the
+/// worn-appearance sprite. <c>Type</c> is ITM_* (0=eat,1=use,2=smoke,3=weap,4=armor,5=shield,6=helm,
+/// 7=left,8=right,9=subleft,10=subright,11=faceacc,12=crown,13=mantle,14=necklace,15=boots,16=coat,
+/// 18=etc/junk…). Stat lines feed the equip bonuses.
+/// </summary>
+public sealed record ItemDef(
+    int Id, string Key, string Name, byte Type,
+    ushort Icon, byte IconColor, ushort Look, byte LookColor,
+    byte Sex, byte Level, ushort Durability, int StackAmount, int MaxAmount,
+    int Armor, int Hit, int Dam, int Vita, int Mana, int Might, int Will, int Grace,
+    bool NoDrop, bool Thrown, int BuyPrice, int SellPrice)
+{
+    /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
+    public bool IsEquip => Type is >= 3 and <= 16;
+    public bool IsConsumable => Type is 0 or 1 or 2;     // EAT / USE / SMOKE
+    public bool Stackable => StackAmount > 1 || MaxAmount > 1;
+
+    /// <summary>Wire equip-slot byte for the 0x37/0x38 window + 0x1F unequip (client's clif_getequiptype).
+    /// EQ index = Type-3; this maps that index to the byte the client expects. 0 = not equippable.</summary>
+    public byte EquipSlot => Type switch
+    {
+        3  => 1,   // WEAP     4  => 2,   // ARMOR   5 => 3, // SHIELD  6 => 4, // HELM
+        4  => 2,
+        5  => 3,
+        6  => 4,
+        7  => 7,   // LEFT ring
+        8  => 8,   // RIGHT ring
+        9  => 20,  // SUBLEFT
+        10 => 21,  // SUBRIGHT
+        11 => 22,  // FACEACC
+        12 => 23,  // CROWN
+        13 => 14,  // MANTLE
+        14 => 6,   // NECKLACE
+        15 => 13,  // BOOTS
+        16 => 16,  // COAT
+        _  => 0,
+    };
+}
+
+/// <summary>
 /// In-memory game-content registries loaded ONCE at startup from EXTERNAL, gitignored data
 /// (RTK-derived — see docs §17.1). The loader lives in the repo; the data does not, keeping this a
 /// logic-only server. Everything here is read-only after <see cref="Load"/>, so it is safe to share
@@ -19,6 +60,7 @@ public static class Content
     public static IReadOnlyDictionary<ushort, MapInfo> Maps { get; private set; } =
         new Dictionary<ushort, MapInfo>();
     public static IReadOnlyList<MobDef> Mobs { get; private set; } = new List<MobDef>();
+    public static IReadOnlyList<ItemDef> Items { get; private set; } = new List<ItemDef>();
 
     // Portals/doors: (sourceMap, x, y) -> (destMap, x, y). Only warps whose DESTINATION is a renderable
     // client map are kept (a warp to a 7.x-only map would strand the player on a black screen).
@@ -29,8 +71,9 @@ public static class Content
     {
         Maps = LoadMaps(ResolvePath("NEXUS_MAP_INDEX", "re", "rtk-data", "map_index.csv"));
         Mobs = LoadMobs(ResolvePath("NEXUS_MOBS", "re", "monster-matcher", "rtk_mobs.csv"));
+        Items = LoadItems(ResolvePath("NEXUS_ITEMS", "re", "rtk-data", "Items.csv"));
         Warps = LoadWarps(ResolvePath("NEXUS_WARPS", "re", "rtk-data", "Warps.csv"));   // needs Maps
-        Log.Info($"content: {Maps.Count} maps, {Mobs.Count} mobs, {Warps.Count} warps loaded" +
+        Log.Info($"content: {Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check re/monster-matcher/rtk_mobs.csv)"
                      : ""));
@@ -60,12 +103,23 @@ public static class Content
             Line($"  !summon {q,-14} -> " + (mob is null ? "(no match)" : $"'{mob.Name}' look {mob.Look} c{mob.Color} {mob.Hp}hp {mob.Exp}xp"));
         }
 
+        Line("--- FindItem (name / key / id) ---");
+        foreach (var q in new[] { "apple", "stick", "leather", "sword", "0" })
+        {
+            var it = FindItem(q);
+            Line($"  !item {q,-12} -> " + (it is null ? "(no match)"
+                : $"#{it.Id} '{it.Name}' type{it.Type} icon{it.Icon} look{it.Look} {(it.IsEquip ? $"EQUIP slot{it.EquipSlot}" : "use")}"));
+        }
+
         Line("--- SearchMaps(\"buya\", 5) ---");
         foreach (var m in SearchMaps("buya", 5)) Line($"    {m.Id}: {m.Name} ({m.Xs}x{m.Ys})");
         Line("--- SearchMobs(\"wolf\", 5) ---");
         foreach (var m in SearchMobs("wolf", 5)) Line($"    {m.Name} look {m.Look} c{m.Color} {m.Hp}hp");
+        Line("--- SearchItems(\"sword\", 5) ---");
+        foreach (var i in SearchItems("sword", 5)) Line($"    #{i.Id} {i.Name} type{i.Type} dam{i.Dam} icon{i.Icon}");
 
-        bool ok = Maps.Count > 0 && Mobs.Count > 0 && FindMap("kugnae") is not null && FindMob("rabbit") is not null;
+        bool ok = Maps.Count > 0 && Mobs.Count > 0 && Items.Count > 0
+                  && FindMap("kugnae") is not null && FindMob("rabbit") is not null;
         Line(ok ? "SELFTEST: PASS" : "SELFTEST: FAIL (empty registry or missing expected entry)");
     }
 
@@ -98,6 +152,22 @@ public static class Content
 
     public static List<MobDef> SearchMobs(string query, int limit) =>
         RankByName(Mobs, query, m => m.Name).Take(limit).ToList();
+
+    public static ItemDef? FindItem(string query)
+    {
+        query = query.Trim();
+        if (int.TryParse(query, out var id))
+        {
+            var byId = Items.FirstOrDefault(i => i.Id == id);
+            if (byId is not null) return byId;
+        }
+        return BestByName(Items, query, i => i.Name) ?? BestByName(Items, query, i => i.Key);
+    }
+
+    public static ItemDef? ItemById(int id) => Items.FirstOrDefault(i => i.Id == id);
+
+    public static List<ItemDef> SearchItems(string query, int limit) =>
+        RankByName(Items, query, i => i.Name).Take(limit).ToList();
 
     // ---- fuzzy ranking (shared by maps + mobs) ----
 
@@ -168,6 +238,32 @@ public static class Content
             mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl));
         }
         return mobs;
+    }
+
+    private static List<ItemDef> LoadItems(string? path)
+    {
+        var items = new List<ItemDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!col.TryGetValue("ItmId", out var sid) || !int.TryParse(sid, out var id)) continue;
+            byte  B(string k)  { byte.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
+            ushort U(string k) { ushort.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
+            int  I(string k)   { int.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
+
+            var name = Clean(col.GetValueOrDefault("ItmDescription", ""));
+            var key  = Clean(col.GetValueOrDefault("ItmIdentifier", ""));
+            if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"item{id}" : key;
+
+            items.Add(new ItemDef(
+                id, key, name, B("ItmType"),
+                U("ItmIcon"), B("ItmIconColor"), U("ItmLook"), B("ItmLookColor"),
+                B("ItmSex"), B("ItmLevel"), U("ItmDurability"), I("ItmStackAmount"), I("ItmMaximumAmount"),
+                I("ItmArmor"), I("ItmHit"), I("ItmDam"), I("ItmVita"), I("ItmMana"),
+                I("ItmMight"), I("ItmWill"), I("ItmGrace"),
+                NoDrop: I("ItmDroppable") != 0, Thrown: I("ItmThrown") != 0,
+                I("ItmBuyPrice"), I("ItmSellPrice")));
+        }
+        return items;
     }
 
     private static Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)> LoadWarps(string? path)

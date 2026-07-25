@@ -8,6 +8,20 @@ namespace Server;
 public readonly record struct PlayerSnapshot(
     uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, string Name);
 
+/// <summary>A stack of an item lying on the map floor, drawn to every client on that map via 0x16
+/// (Item.epf frame = <see cref="Graphic"/>). <see cref="Id"/> is the entity id (find/despawn key). Carries
+/// enough to reconstruct an <see cref="Shared.InvItem"/> when a player picks it up.</summary>
+public sealed class GroundItem
+{
+    public uint   Id;
+    public int    ItemId;
+    public ushort X, Y;
+    public int    Amount = 1;
+    public ushort Dura;
+    public ushort Graphic;       // Item.epf frame (item's Icon) — the 0x16 graphic id
+    public string CustomName = "";
+}
+
 /// <summary>
 /// The single shared game world: every connected player and every live mob, grouped by map. One
 /// instance is created in <see cref="TkListener"/> and handed to every <see cref="Session"/>, so all
@@ -29,6 +43,7 @@ public sealed class World
     {
         public readonly List<Session> Players = new();
         public readonly List<Mob> Mobs = new();
+        public readonly List<GroundItem> Items = new();
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
 
@@ -36,13 +51,16 @@ public sealed class World
     //   players:     1 ..            (bound to each client's camera via 0x05)
     //   world mobs:  100000 ..       (session-local debug dummies use their own 5000+ pool, invisible
     //                                 to other clients, so those ranges never need to be globally unique)
+    //   ground items: 500000 ..    (disjoint from players + mobs so a floor-item id never collides)
     private uint _nextPlayerId = 1;
     private uint _nextMobId = 100_000;
+    private uint _nextItemId = 500_000;
 
     public World() => _ = Task.Run(TickLoop);   // start the shared mob-AI heartbeat
 
     public uint AllocatePlayerId() { lock (_lock) return _nextPlayerId++; }
     public uint AllocateMobId()    { lock (_lock) return _nextMobId++; }
+    public uint AllocateItemId()   { lock (_lock) return _nextItemId++; }
 
     private MapState Map(ushort id)
     {
@@ -142,6 +160,40 @@ public sealed class World
             if (died && _maps.TryGetValue(mapId, out var m)) m.Mobs.Remove(mob);
         }
         return true;
+    }
+
+    // ---- ground items (dropped/thrown stacks lying on the floor) -------------------------------
+
+    /// <summary>Drop <paramref name="gi"/> onto <paramref name="mapId"/> and draw it for everyone there.</summary>
+    public void DropItem(ushort mapId, GroundItem gi)
+    {
+        lock (_lock) Map(mapId).Items.Add(gi);
+        Broadcast(mapId, p => p.ShowGroundItem(gi));
+    }
+
+    /// <summary>Read-only snapshot of the floor items on a map (for drawing to a newcomer / on redraw).</summary>
+    public GroundItem[] ItemsOn(ushort mapId)
+    {
+        lock (_lock)
+            return _maps.TryGetValue(mapId, out var m) ? m.Items.ToArray() : Array.Empty<GroundItem>();
+    }
+
+    /// <summary>Remove the topmost (last-dropped) floor item on (x,y) under the lock — so two players
+    /// grabbing the same tile can't both win — and despawn it for everyone. Null if the tile is empty.</summary>
+    public GroundItem? PickUp(ushort mapId, int x, int y)
+    {
+        GroundItem? gi = null;
+        lock (_lock)
+        {
+            if (_maps.TryGetValue(mapId, out var m))
+            {
+                // last match = most recently dropped (drawn on top)
+                for (int i = m.Items.Count - 1; i >= 0; i--)
+                    if (m.Items[i].X == x && m.Items[i].Y == y) { gi = m.Items[i]; m.Items.RemoveAt(i); break; }
+            }
+        }
+        if (gi is not null) Broadcast(mapId, p => p.DespawnEntity(gi.Id));
+        return gi;
     }
 
     /// <summary>Despawn every mob on a map for all its players (the shared !kill).</summary>

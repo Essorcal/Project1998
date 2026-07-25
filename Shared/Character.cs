@@ -54,6 +54,12 @@ public sealed class Character
     public byte Armor    = 0;
     public byte MaxInv   = 27;
 
+    // Bag + worn gear. Inventory slots are 0-based (0..MaxInv-1); Equipment entries carry the EQ index
+    // (Item.EquipSlot's source) in their Slot field. Both persist in the character JSON so a relog keeps
+    // the bag. Resolved against Content.Items (Server) by id — Shared holds only the per-character state.
+    public List<InvItem> Inventory = new();
+    public List<InvItem> Equipment = new();
+
     // profile / "Mind's Eye" self-profile (0x39 = clif_mystaytus). These populate the profile window
     // the client opens on the profile key (client sends 0x2D, byte 0). AC is signed in TK (lower is
     // better); Dam/Hit are the melee bonus lines. Tnl = experience "to next level".
@@ -85,6 +91,25 @@ public sealed class Character
     // Raw body of the creation packet (0x04), kept verbatim until its appearance-byte layout is
     // decoded from the logged dump and mapped onto the fields above. Null for the default spawn.
     public byte[]? CreationBlob = null;
+}
+
+/// <summary>
+/// One stack of a held item: which slot it sits in, the item-db id, how many, and current durability.
+/// The definition (name/icon/stats) is looked up from the item registry by <see cref="ItemId"/>; only
+/// the mutable per-character bits live here. CustomName overrides the display name when non-empty
+/// (renamed/quest items). Used for both the bag (Slot = inventory index) and worn gear (Slot = EQ index).
+/// </summary>
+public sealed class InvItem
+{
+    public byte   Slot       = 0;
+    public int    ItemId     = 0;
+    public int    Amount     = 1;
+    public ushort Dura       = 0;
+    public string CustomName = "";
+
+    public InvItem() { }
+    public InvItem(byte slot, int itemId, int amount, ushort dura = 0)
+    { Slot = slot; ItemId = itemId; Amount = amount; Dura = dura; }
 }
 
 /// <summary>One legend-mark line in the profile window: an icon id, a text color, and the text.</summary>
