@@ -54,7 +54,13 @@ public sealed class TkListener
         Log.Info($"listening on 0.0.0.0:{port}");
         while (true)
         {
-            var client = await listener.AcceptTcpClientAsync();
+            // Guard the accept loop: a transient AcceptTcpClientAsync throw (e.g. a connection reset
+            // between the SYN and accept, or a per-socket resource hiccup) must NOT fault this task and
+            // unwind the whole process. Log and keep accepting. One bad connection can't take the server
+            // down; the per-session try/finally in Session.RunAsync isolates everything after accept.
+            TcpClient client;
+            try { client = await listener.AcceptTcpClientAsync(); }
+            catch (Exception e) { Log.Info($"!! accept on :{port} failed: {e.Message}"); continue; }
             _ = new Session(client, port, _store, _world).RunAsync();   // fire-and-forget per connection
         }
     }

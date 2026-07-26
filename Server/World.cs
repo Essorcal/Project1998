@@ -460,6 +460,15 @@ public sealed class World
                                 .FirstOrDefault(p => string.Equals(p.Snapshot().Name, name, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
+    /// Used by channels that reach beyond one map, like subpath chat (RTK clif_sendsubpathmessage loops
+    /// every session, not just one map's block list).</summary>
+    public List<Session> AllPlayers()
+    {
+        lock (_lock)
+            return _maps.Values.SelectMany(m => m.Players).ToList();
+    }
+
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
     /// first. Used to route a player's speech to a nearby NPC's say-handler (RTK onSayClick).</summary>
     public List<Mob> NpcsNear(ushort mapId, int x, int y, int radius)

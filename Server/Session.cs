@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Channels;
 using Protocol.Tk495;
 using Shared;
 
@@ -19,6 +20,27 @@ public sealed class Session
     private readonly World _world;   // the shared world (players + mobs); every broadcast goes through it
     private string _user = "?";
     private bool _enteredWorld;   // true once world entry loaded _char; gates the disconnect save
+
+    // Party/trade (§11 party+trade): transient, session-owned, never persisted — matches RTK, where both
+    // "groups" and "exchange" live only in the in-memory USER struct, not the DB.
+    private Party? _party;
+    private Trade? _trade;
+
+    // Outbound decoupling (DDoS / tick-stall defense). Every Send() ENQUEUES onto this bounded channel;
+    // a single dedicated writer task (WriterLoop) drains it and does the actual blocking socket write.
+    // This is the fix for the worst availability bug: peer broadcasts and mob AI run on the shared
+    // World.TickLoop thread and used to call a SYNCHRONOUS _stream.Write here — so one client whose TCP
+    // receive buffer was full (slow, or deliberately not reading) would block that write and freeze mob
+    // movement/combat for EVERYONE on the map. Now the tick thread only does an O(1) TryWrite and moves on;
+    // if a client's queue backs up past OutboundCapacity it is the SLOW CLIENT that gets dropped, not the
+    // world. The single-reader channel also guarantees packets never interleave mid-frame on the wire, which
+    // is what the old _sendLock protected.
+    private const int OutboundCapacity = 2048;   // ~a burst of world-entry packets is well under this; a
+                                                 // truly stuck socket hits it and we drop the connection.
+    private readonly Channel<byte[]> _outbound = Channel.CreateBounded<byte[]>(
+        new BoundedChannelOptions(OutboundCapacity) { SingleReader = true, SingleWriter = false,
+                                                      FullMode = BoundedChannelFullMode.Wait });
+    private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
 
     // --- client version, tagged by the port the connection arrived on (unified dual-client server) ---
     // 4.95 speaks the original protocol (local map files; incoming 0x06 = walk-sync). 5.33 streams
@@ -166,11 +188,15 @@ public sealed class Session
     public async Task RunAsync()
     {
         Log.Info($"++ CONNECT from {_remote} on port {_port} [{_ver}]");
+        // Start the dedicated outbound writer BEFORE any Send() so the very first packet (the welcome) is
+        // enqueued and flushed in order. All socket writes happen on this one task; the read loop below never
+        // writes to the stream directly.
+        var writer = Task.Run(WriterLoop);
         try
         {
             if (IsLoginPort)   // login channel: send the 0x7E welcome
             {
-                await _stream.WriteAsync(Welcome);
+                Send(Welcome);
                 Log.Info($"   -> sent welcome ({Welcome.Length}B)");
             }
             else                 // game channel: the client speaks first (sends 0x10). Send NOTHING now.
@@ -207,6 +233,12 @@ public sealed class Session
         catch (Exception e) { Log.Info($"!! {_remote} error: {e.Message}"); }
         finally
         {
+            // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's
+            // gone (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is
+            // exactly what a disconnect does here too — the difference is we also say so in chat).
+            if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
+            if (_party is not null) RemoveFromParty(this);
+
             // Leave the shared world: despawn us for the other players on our map. World mobs persist
             // (they belong to the map, not this session), so they keep wandering for whoever remains.
             if (_enteredWorld) _world.LeaveMap(this, _char.Map);
@@ -218,9 +250,34 @@ public sealed class Session
                 _store.Save(_char);
                 Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
             }
-            _client.Close();
+            CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
+            try { await writer; } catch { /* writer logs its own errors */ }
             Log.Info($"-- CLOSE {_remote}");
         }
+    }
+
+    // Drains the outbound queue and performs the ONLY socket writes for this session. Runs on its own task
+    // so a slow/blocked WriteAsync can never stall the World tick thread or this session's read loop.
+    private async Task WriterLoop()
+    {
+        try
+        {
+            await foreach (var buf in _outbound.Reader.ReadAllAsync())
+                await _stream.WriteAsync(buf);
+        }
+        catch (Exception e) { Log.Info($"!! {_remote} writer stopped: {e.Message}"); }
+        finally { CloseConnection("writer exit"); }   // e.g. client closed the socket -> unblock the reader
+    }
+
+    // Idempotent teardown: completes the outbound channel (so WriterLoop finishes after draining) and closes
+    // the socket (which unblocks the read loop's ReadAsync). Safe to call from the reader, the writer, or a
+    // Send() that found the queue full — whichever gets here first wins; the rest are no-ops.
+    private void CloseConnection(string reason)
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+        _outbound.Writer.TryComplete();
+        try { _client.Close(); } catch { /* already closing */ }
+        Log.Info($"   -> connection teardown ({reason})");
     }
 
     private void Handle(TkPacket pkt)
@@ -232,9 +289,12 @@ public sealed class Session
         switch (pkt.Opcode)
         {
             case Opcode.Arrival:          HandleArrival(pkt); break;
-            case Opcode.NameCheck:        NameAvailable(dec); break;
-            case Opcode.CreateAppearance: HandleCreate(dec); break;
-            case Opcode.Login:            HandleLogin(dec); break;
+            // NameCheck (0x02) and CreateAppearance (0x04) are account-creation opcodes handled by the
+            // separate LoginServer process and never arrive on the game port. Login (0x03) DOES arrive here:
+            // when the client exits to the select screen (Alt+X) it re-sends 0x03 on the still-open game
+            // connection, so the game server must answer it (re-auth + hand back) like the old unified
+            // server did — otherwise re-login hangs. See HandleReLogin.
+            case Opcode.Login:            HandleReLogin(dec); break;
             case 0x32:                    HandleWalk(dec); break;   // client walk step -> confirm move
             // 0x11 = "side" (turn to face a direction, NO movement) for BOTH clients. The 4.95 client's
             // 0x11 recv handler (@0x450350) reads id(u32)@+1, side(u8)@+5, looks the entity up and calls
@@ -315,134 +375,110 @@ public sealed class Session
             // ("Show Board"). Matches RTK's clif_parse dispatch exactly (clif.c:11613: `case 0x3B:
             // clif_handle_boards(sd);`). See HandleBoard.
             case 0x3B:                    HandleBoard(dec); break;
+            // 0x2E = RTK's party-invite opcode (clif_addgroup: body = nameLen(u8) name[nameLen], same shape
+            // as 0x19 whisper above). Unlike the items/0x0F/whisper opcodes this one has never been seen in
+            // a live 4.95 capture, so it's wired defensively (bad/garbage bytes just fail the name lookup —
+            // no risky reply is ever sent back). "!party <name>" is the confirmed-safe primary entry point.
+            case 0x2E:                    HandlePartyInvite(dec); break;
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
 
-    // ---- login flow ----
-    private string _pendingName = "";   // name from the availability check, fallback for creation
+    // ---- game server ----
+    // NOTE: account creation (name-check 0x02, appearance 0x04) lives in the separate LoginServer process.
+    // The game server handles world-entry arrival (0x10) and RE-LOGIN (0x03, below); shared
+    // appearance/placement helpers moved to Shared/CharacterFactory so both processes decode the same way.
 
-    // Create step 1 (0x02): the client asks whether a name is free. Body is the length-prefixed name.
-    // We stash it so creation (0x04) can key the record even if that packet omits the name.
-    private void NameAvailable(byte[] dec)
-    {
-        try
-        {
-            int nlen = dec.Length > 0 ? dec[0] : 0;
-            if (nlen > 0 && 1 + nlen <= dec.Length)
-                _pendingName = Encoding.ASCII.GetString(dec, 1, nlen);
-        }
-        catch { /* leave _pendingName as-is */ }
-
-        Send(new byte[] { 0xAA, 0x00, 0x06, 0x02, 0x01, 0x4F, 0x64, 0x79, 0x6E });
-        Log.Info($"   -> name available (pending='{_pendingName}')");
-    }
-
-    // Create step 2 (0x04): the client sends the chosen name + appearance (gender, etc.) after the
-    // availability check. Persist it so world entry uses the player's real choices instead of the
-    // hardcoded spawn. The exact byte layout is confirmed from the annotated dump below on first use;
-    // we reliably read the length-prefixed name and store the raw appearance bytes alongside it.
-    private void HandleCreate(byte[] dec)
-    {
-        Log.Info($"   -> CREATE raw({dec.Length}B): {Log.Hex(dec)}");
-
-        string name = _pendingName;
-        try
-        {
-            int nlen = dec.Length > 0 ? dec[0] : 0;
-            if (nlen > 0 && 1 + nlen <= dec.Length)
-                name = Encoding.ASCII.GetString(dec, 1, nlen);
-        }
-        catch { /* fall back to _pendingName */ }
-        if (string.IsNullOrEmpty(name)) name = _user;
-
-        var existing = _store.Load(name);
-        var c = existing ?? new Character();
-        c.Name = name;
-        c.CreationBlob = dec;      // keep the raw body for future re-decoding if the mapping changes
-        ApplyAppearance(c);        // decode gender/face/nation/totem/hair so the real picks take effect
-        if (existing is null) PlaceNewCharacter(c);   // brand new -> home city NOW MATCHES the picked nation
-        _store.Save(c);
-        Log.Info($"   -> CREATE persisted '{name}' (sex={c.Sex} face={c.Face} nation={Character.NationName(c.Nation)} totem={c.Totem}) -> {_store.Directory}");
-        SendMessage("Account created.");
-    }
-
-    // Map the raw 0x04 creation body onto Character fields.
-    //
-    // Layout confirmed against the REAL RTK char-server source (RTK-Server/rtk/src/char/logif.c
-    // logif_parse_newchar, which is authoritative — its call `char_db_newchar(name, pass, totem=B39,
-    // sex=B37%2, country=B38, face=B36, hair=B40, faceColor=B42, hairColor=B41)` shows the field ORDER
-    // right after the (there, fixed-width) name+pass block is: face, sex, nation, totem, hair, then
-    // hair/face color. Our 4.95 blob is a 5-byte tail in that same relative order, just without the two
-    // color bytes: [0]=face [1]=sex [2]=nation [3]=totem [4]=hair. This was previously mis-read as
-    // "[2]=near-constant misc, [3]/[4]=nation/totem" — that guess never had a sample where nation was
-    // deliberately varied; re-decoding under the corrected order lines up perfectly (e.g. "newbie"/
-    // "newbieb": 29/3d 00 02 00 00 -> nation=2 Buya, totem=0 JuJak — exactly the picks reported live).
-    //   [0]=face  [1]=SEX(0=male,1=female)  [2]=NATION(Character.Nations index)  [3]=TOTEM(0-4)  [4]=hair
-    //
-    // Render caveat (still true): the 0x33 appearance bytes are a DIFFERENT id space than these creation
-    // bytes — appearance[2] (face) uses creation byte[0] directly (proven: faceone=00/facetwo=23/
-    // facethree=34 gave three distinct correct faces), but hair has no slot in the 4.95 type-0 render
-    // form, so Character.Hair is persisted (creation byte[4]) without being drawn anywhere yet.
-    private static void ApplyAppearance(Character c)
-    {
-        var b = c.CreationBlob;
-        if (b is null || b.Length < 2) return;
-        c.Sex  = b[1];   // gender: 0=male, 1=female
-        c.Face = b[0];   // -> render appearance[2]
-        if (b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
-        if (b.Length > 3 && b[3] <= 4) c.Totem = b[3];
-        if (b.Length > 4) c.Hair = b[4];   // persisted; no 4.95 render slot yet
-    }
-
-    private void HandleLogin(byte[] dec)
+    // Re-login on the game port. When the client exits to the select screen (Alt+X) it does NOT drop the
+    // game connection — it re-sends the login packet (0x03) on it and waits for a handoff redirect, exactly
+    // as it would on the login channel. The old single-process server answered 0x03 on every port; after
+    // the split the game server must still answer it or the client hangs. Re-authenticate (shared rule)
+    // and hand the client back to THIS game server with a fresh single-use token.
+    private void HandleReLogin(byte[] dec)
     {
         int ulen = dec[0];
-        _user = Encoding.ASCII.GetString(dec, 1, ulen);
-        Log.Info($"   -> LOGIN accepted for user='{_user}'");
+        var user = Encoding.ASCII.GetString(dec, 1, ulen);
+        var pass = LoginAuth.ReadPassword(dec, 1 + ulen);
+        if (!LoginAuth.Authenticate(user, pass))
+        {
+            Log.Info($"   -> RE-LOGIN REJECTED (incorrect password) for user='{user}'");
+            SendMessage("Incorrect password.");
+            return;   // no handoff; the client stays on the login screen
+        }
 
-        // handoff: send the client to the game server (reversed IP octets + port). Keep the version's
-        // channel together: a V533 login (port 2001) hands off to the V533 game port 2006, so the game
-        // session is tagged V533 too; V495 stays on 2005.
-        byte[] ip = { 127, 0, 0, 1 };
-        int gport = _ver == ClientVersion.V533 ? 2006 : 2005;
+        var nonce = HandoffTokens.Mint(user);
+        var host = ParseGameHost();
+        int gport = _port;   // redirect back to this same game port (2005 V495 / 2006 V533)
         var p = new List<byte>
         {
             0xAA, 0, 0, Opcode.Login,
-            ip[3], ip[2], ip[1], ip[0],
+            host[3], host[2], host[1], host[0],
             (byte)(gport >> 8), (byte)(gport & 0xFF),
             23, 0, 9
         };
         p.AddRange(TkCrypt.LoginKey);
-        var uname = Encoding.ASCII.GetBytes(_user);
+        var uname = Encoding.ASCII.GetBytes(user);
         p.Add((byte)uname.Length);
         p.AddRange(uname);
-        p.AddRange(new byte[] { 0, 1, 18, 17, 0 });   // handoff token echoed back by 0x10
+        p.AddRange(nonce);   // 5-byte single-use token; validated on the next 0x10 arrival
         p[2] = (byte)(p.Count - 3);
         Send(p.ToArray());
-        Log.Info($"   -> game handoff -> 127.0.0.1:{gport}");
+        Log.Info($"   -> RE-LOGIN ok for '{user}' — handoff back to {host[0]}.{host[1]}.{host[2]}.{host[3]}:{gport} (token minted)");
     }
 
-    // ---- game server ----
+    // Game host the re-login handoff redirects to (must match how the client reached this game server).
+    // Defaults to loopback; set NEXUS_GAME_HOST for a split-box deployment (same var the login server uses).
+    private static byte[] ParseGameHost()
+    {
+        var def = new byte[] { 127, 0, 0, 1 };
+        var h = Environment.GetEnvironmentVariable("NEXUS_GAME_HOST");
+        if (string.IsNullOrWhiteSpace(h)) return def;
+        var parts = h.Split('.');
+        if (parts.Length != 4) return def;
+        var o = new byte[4];
+        for (int i = 0; i < 4; i++) if (!byte.TryParse(parts[i], out o[i])) return def;
+        return o;
+    }
+
     private void HandleArrival(TkPacket pkt)
     {
         // plaintext body: <klen> "NexonInc." <ulen> "<user>" <token>
         var body = pkt.Body;
+        byte[] token = Array.Empty<byte>();
         try
         {
             int klen = body[0];
             int ulen = body[1 + klen];
             _user = Encoding.ASCII.GetString(body, 2 + klen, ulen);
+            int tokenStart = 2 + klen + ulen;
+            if (tokenStart < body.Length) token = body[tokenStart..];   // the 5-byte handoff nonce
         }
         catch { /* keep default */ }
+
+        // Validate the single-use handoff token the login server minted for this username (see
+        // Shared/HandoffTokens). This is what stops a client from connecting straight to the game port and
+        // claiming ANY username — identity now rests on a login-verified secret, not the client's claim.
+        // Safety valve: NEXUS_ENFORCE_HANDOFF=0 downgrades a failure to a warning (fallback only if a
+        // deployment hits a token problem); the default is to enforce.
+        if (!HandoffTokens.Consume(token, _user))
+        {
+            bool enforce = (Environment.GetEnvironmentVariable("NEXUS_ENFORCE_HANDOFF") ?? "1").Trim() != "0";
+            if (enforce)
+            {
+                Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' (token {Log.Hex(token)}) — closing connection");
+                _client.Close();
+                return;
+            }
+            Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (NEXUS_ENFORCE_HANDOFF=0)");
+        }
 
         // Load the persisted character (created on the login channel, or saved at last logout).
         // Fall back to a fresh default spawn for an account we've never seen.
         var loaded = _store.Load(_user);
         _char = loaded ?? new Character();
         _char.Name = _user;
-        ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
-        if (loaded is null) PlaceNewCharacter(_char);   // no saved character -> home city matching the picked nation
+        CharacterFactory.ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
+        if (loaded is null) CharacterFactory.PlaceNewCharacter(_char);   // no saved character -> home city matching the picked nation
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
         // collide on the shared-world broadcast key). This id binds the client's camera (0x05/SendId) and
@@ -604,15 +640,11 @@ public sealed class Session
     private static readonly bool FastMoveDefault =
         Environment.GetEnvironmentVariable("NEXUS_V495_FASTMOVE_DEFAULT") == "0" ? false : true;
 
-    // Serializes socket writes so the World's mob-AI thread and peer broadcasts can't interleave bytes
-    // with this session's own read-loop on the shared stream.
-    private readonly object _sendLock = new();
-
     // Viewport-streamed world mobs: the set of shared-mob ids currently drawn on THIS client. The client's
     // 0x07 spawn silently drops entities outside the camera rect, so a 400-mob map can't be blanket-sent —
     // instead SyncMobs spawns mobs as they enter view and despawns them as they leave, keeping the client to
-    // a screenful. Guarded by _viewLock (touched by both this read-loop and the World tick thread). Lock
-    // order is always _viewLock -> _sendLock (never the reverse) so the two can't deadlock.
+    // a screenful. Guarded by _viewLock (touched by both this read-loop and the World tick thread). Send()
+    // no longer takes a lock (it's a lock-free channel enqueue), so _viewLock can't participate in a deadlock.
     private readonly HashSet<uint> _shownMobs = new();
     private readonly object _viewLock = new();
     // The pads MUST hug the real 17x15 viewport. The client's 0x07 spawn is viewport-gated: a spawn sent
@@ -1029,69 +1061,36 @@ public sealed class Session
         if (IsDead) Die();
     }
 
-    // How long a defeated player spends as a ghost before waking back up in their home city (simplified
-    // death penalty — no monk/temple revival flow yet, just a beat to read the message before the warp).
-    private const int ReviveDelayMs = 3000;
-
-    // Defeated by a mob: redraw as a ghost (appearance[1]=1 via MountForm(), see IsDead/Snapshot/ShowPlayer),
-    // then after a short beat wake back up at full HP/MP in the player's home city. Matches the documented
-    // "players die to ghost form" design (§8) without a full temple/monk revival system.
+    // Defeated by a mob: redraw as a ghost (appearance[1]=1 via MountForm(), see IsDead/Snapshot/ShowPlayer)
+    // and STAY that way — RTK has no auto-revive timer at all. A ghost wakes up only by pressing F1 and
+    // picking "Silver Thread" (RunF1MenuAsync/SilverThread, §11k), which offers a choice of Shaman to warp
+    // to and revives on arrival. Matches "players die to ghost form" (§8) with the real RTK revival gate,
+    // replacing the earlier simplified fixed-timer/home-city stand-in.
     private void Die()
     {
         Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
-        SendMessage("You have been defeated!");
+        SendMessage("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
         _char.Mounted = false;                                            // a horse doesn't carry a ghost
         SendSelfLook();                                                   // redraw self as a ghost
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);   // and for everyone watching
-        _ = Task.Run(async () => { try { await Task.Delay(ReviveDelayMs); Revive(); } catch { } });
     }
 
-    // Restore full HP/MP and send the player back to their home city (see PlaceNewCharacter for the same
-    // Ironheart/Jadespear coordinates a fresh character starts at).
-    private void Revive()
+    // Leave ghost state: full heal (gear/buffs included) + warp to (map,x,y). Used by Silver Thread to
+    // revive at the chosen Shaman; also reachable as a fresh-character/GM fallback via HomeCityFor.
+    private void ReviveAt(ushort map, ushort x, ushort y, string arrivalMsg)
     {
-        _char.Hp = (uint)Math.Max(1, (int)_char.MaxHp + Totals().hp);
-        _char.Mp = (uint)Math.Max(0, (int)_char.MaxMp + Totals().mp);
-        var (map, x, y) = HomeCityFor(_char.Nation);
+        _char.Hp = EffMaxHp;
+        _char.Mp = EffMaxMp;
         if (Content.Maps.TryGetValue(map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, x, y, mi.Name);
-        else SendSelfLook();   // fallback: just heal in place if the home map isn't loaded
+        else SendSelfLook();   // fallback: just heal in place if the map isn't loaded
         SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
-        SendMessage("You awaken back in town.");
+        SendMessage(arrivalMsg);
         Log.Info($"   -> REVIVED: {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
     }
 
-    // A character's home city — INSIDE the nation's home (RTK Warps.csv door-arrival tiles, not GmWarp's
-    // outdoor GM-teleport spot): Buya-aligned characters (Nation==2) start/revive just inside Jadespear's
-    // Home (map 351); every other nation just inside Ironheart's Home (map 36). Both are 12x12 (valid
-    // tiles 0..11) with an entirely open PASSABLE floor (verified against the real TK351.map/TK36.map
-    // pass data — no solid tiles at all), but the OBJECT layer still draws walls/furniture that are only
-    // collision-free, not invisible — so a tile can be "walkable" and still look like you're standing
-    // inside a wall.
-    //
-    // Jadespear's tile went through two bad picks before landing on (3,6):
-    //   (7,12): the raw Warps.csv door-arrival Y — one past map 351's last valid row (11). The 4.95
-    //     client's self-placement check (0x424310) silently bails on an out-of-bounds tile: the
-    //     game-world object gets created but the self entity is never placed, so the screen stays black
-    //     and movement keys do nothing (GUI still works — it doesn't depend on the world entity).
-    //   (7,11): in-bounds, but that row is the bottom wall/threshold strip in TK351.map's object layer
-    //     (object ids 636-643) — visually "in a wall" even though it's collision-free. Confirmed clear via
-    //     the real map's object grid: (3,6) sits in the empty interior, away from every wall/furniture id.
-    //
-    // Shared by a fresh character's starting spawn (PlaceNewCharacter) and a defeated character's revive
-    // point (Revive) so both stay in lock-step.
-    private static (ushort map, ushort x, ushort y) HomeCityFor(byte nation) =>
-        nation == 2 ? ((ushort)351, (ushort)3, (ushort)6) : ((ushort)36, (ushort)5, (ushort)10);
-
-    // Place a BRAND NEW character (never persisted before) at their home city instead of Character's
-    // compiled-in fallback. MUST run after ApplyAppearance has decoded the real Nation pick (creation
-    // byte[2] — see ApplyAppearance) or every character would route by the compiled-in default instead
-    // of what they actually chose on the creation screen.
-    private static void PlaceNewCharacter(Character c)
-    {
-        var (map, x, y) = HomeCityFor(c.Nation);
-        c.Map = map; c.X = x; c.Y = y;
-        c.MapXs = 12; c.MapYs = 12;   // both home interiors (36, 351) are 12x12
-    }
+    // Home-city placement (HomeCityFor / PlaceNewCharacter) moved to Shared/CharacterFactory so the login
+    // server (account creation) and this game server (world entry for never-seen accounts) agree on the
+    // spawn. Revive points that reused HomeCityFor call CharacterFactory.HomeCityFor.
 
     // Broadcast a corpse despawn (0x0E) to the map after `ms`, so the death beat is visible first. The mob is
     // already gone from the world's mob list (World.TryDamage removed it), so nothing ticks it in the meantime,
@@ -1349,7 +1348,21 @@ public sealed class Session
         if (!offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var dest)
             && Content.TryMap(dest.m, out var dm))
         {
-            if (!TryWarpGate(dest.m, out var denyMsg)) { SendLog(denyMsg); return; }
+            if (!TryWarpGate(dest.m, out var denyMsg))
+            {
+                // Rejected. In 4.95 self-walk is client-local: the client already stepped onto the warp
+                // tile AND is now blocked awaiting a 0x04 ack to release its next step. If we just return,
+                // that gate never clears — the player freezes and "can't move/turn." RTK handles this by
+                // calling clif_pushback(sd) (a re-warp back off the tile) BEFORE the reject text (clif.c:5190).
+                // Our 4.95-correct equivalent is the same snap-back the `blocked` branch uses: hold at the
+                // from-tile and re-assert with 0x04. The denial goes to the STATUS box (RTK clif_sendminitext),
+                // not the chat bubble.
+                _char.X = (ushort)fromX; _char.Y = (ushort)fromY;
+                SendXy();
+                SendMiniText(denyMsg);
+                Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {dest.m} DENIED: {denyMsg} — held at ({fromX},{fromY})");
+                return;
+            }
             Log.Info($"   -> WARP ({nx},{ny}) on map {_char.Map} -> map {dest.m} '{dm.Name}' ({dest.x},{dest.y})");
             EnterMap(dm.Id, dm.Xs, dm.Ys, dest.x, dest.y, dm.Name);
             return;
@@ -1838,6 +1851,13 @@ public sealed class Session
         // ---- whisper/tell: a private line to one online player (RTK clif_parsewisp) ----
         if (text.StartsWith("!whisper ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[9..]); return; }
         if (text.StartsWith("!w ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[3..]); return; }
+        // ---- party (RTK clif_addgroup/clif_leavegroup, §11) + trade (RTK clif_handitem &c., §11) ----
+        if (text.StartsWith("!leaveparty", StringComparison.OrdinalIgnoreCase)) { LeaveParty(); return; }
+        if (text.StartsWith("!party", StringComparison.OrdinalIgnoreCase)) { HandlePartyCommand(text); return; }  // "!party <name>" invite/kick, "!party" list
+        if (text.StartsWith("!trade", StringComparison.OrdinalIgnoreCase)) { HandleTradeCommand(text); return; } // "!trade <name>" open the trade menu
+        // Real RTK typed chat commands (client-native, not our "!" debug prefix) — see speech.lua's /help list.
+        if (text.StartsWith("/subpathchat ", StringComparison.OrdinalIgnoreCase)) { DoSubpathChat(text[13..].Trim()); return; }
+        if (text.StartsWith("/sp ", StringComparison.OrdinalIgnoreCase)) { DoSubpathChat(text[4..].Trim()); return; }
         if (text.StartsWith("!warp", StringComparison.OrdinalIgnoreCase)) { Warp(text); return; }        // warp to a map by name/id [x y]
         if (text.StartsWith("!maps", StringComparison.OrdinalIgnoreCase)) { ListMaps(text); return; }    // list/fuzzy-search maps
         if (text.StartsWith("!mobs", StringComparison.OrdinalIgnoreCase)) { ListMobs(text); return; }    // list/fuzzy-search mobs (BEFORE !mob*)
@@ -1880,9 +1900,20 @@ public sealed class Session
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
         // Real chat (not a ! command): everyone on the map hears it. Broadcast the over-head bubble (0x0D)
-        // to all co-located players INCLUDING us, so we see our own bubble too.
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(chatType, _char.Id, msg));
-        Log.Info($"   -> speech type={chatType}: \"{text}\" -> map {_char.Map}");
+        // to all co-located players INCLUDING us, so we see our own bubble too. Prefix with who said it
+        // (client keybind help, re/str_eng.res:102/105, documents dedicated Say ''' and Shout '!' hotkeys —
+        // this is the server-side text the client shows in both the bubble and the chat-log line for either).
+        // chatType is passed through UNCHANGED from the client's own byte: whatever mode it used to pick the
+        // hotkey ('=say vs !=shout) is presumably also what the client uses to pick bubble/log color on
+        // playback, so relaying its own value back should already render correctly without us inventing a
+        // color scheme. UNCONFIRMED which raw byte value means shout — logged below so a live '!' test can
+        // pin it down (say=0 is confirmed by every chat message that has worked so far).
+        bool shout = chatType != 0;
+        string formatted = shout ? $"{_char.Name}! {text}" : $"{_char.Name}: {text}";
+        if (formatted.Length > 250) formatted = formatted[..250];
+        var outMsg = Encoding.ASCII.GetBytes(formatted);
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(chatType, _char.Id, outMsg));
+        Log.Info($"   -> speech type={chatType}{(shout ? " (presumed SHOUT)" : "")}: \"{text}\" -> map {_char.Map}");
 
         // …and let a nearby NPC react to it (RTK onSayClick: "i'd like to fish", a tutor's name, …).
         DispatchSpeech(text);
@@ -1891,13 +1922,10 @@ public sealed class Session
     // ---- whisper/tell (RTK clif_parsewisp, clif.c:7644-7790) ---------------------------------------------
     // Native client input: Shift+' opens the whisper prompt, then a name + Enter, then a message + Enter.
     // LIVE-confirmed 2026-07-26 (real capture): op=0x19 body = dstlen(u8) dst_name[dstlen] msglen(u8)
-    // msg[msglen] 00 — exactly RTK's wire layout. RTK's own delivery uses a generic system-message packet
-    // (type 0, "Wisp/blue text") rather than the over-head speech opcode; that reply shape hasn't been
-    // captured live, so delivery rides the already-proven self-facing chat-bubble channel (SendLog) instead
-    // of gambling on an unconfirmed packet. The "!whisper"/"!w" chat commands are kept as a fallback entry
-    // point (same DoWhisper core) for anyone who'd rather type it. Message TEXT is RTK's real wording
-    // wherever portable (not-found, map-silenced, the whisper/echo shapes). Not modelled: per-player
-    // whisper on/off, silence/mute, and ignore lists — none of those exist yet.
+    // msg[msglen] 00 — exactly RTK's wire layout. The "!whisper"/"!w" chat commands are kept as a fallback
+    // entry point (same DoWhisper core) for anyone who'd rather type it. Message TEXT is RTK's real wording
+    // wherever portable (not-found, map-silenced). Not modelled: per-player whisper on/off, silence/mute,
+    // and ignore lists — none of those exist yet.
     private void HandleWhisperPacket(byte[] dec)
     {
         if (dec.Length < 1) return;
@@ -1930,17 +1958,285 @@ public sealed class Session
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK's literal wording
 
-        target.ReceiveWhisper(_char.Name, CharClassId, msg);
-        SendLog($"{target.Snapshot().Name}> {msg}");   // RTK clif_retrwisp: "<TargetName>> <message>"
+        target.ReceiveWhisper(_char.Name, msg);
+        SendMiniText($"{_char.Name}: {msg}", type: 0);   // sender's own echo — same line the receiver sees
     }
 
-    /// <summary>Deliver a whisper's text to THIS session (the recipient). RTK clif_sendwisp's exact shape —
-    /// <c>"SenderName" (ClassName) message</c> — adapted to our self-facing chat-bubble channel since we
-    /// don't reuse RTK's raw system-message opcode for delivery.</summary>
-    internal void ReceiveWhisper(string fromName, int fromClassId, string msg)
+    /// <summary>Deliver a whisper's text to THIS session (the recipient), via the non-entity 0x0A channel
+    /// (SendMiniText, type 0 = RTK's "Wisp/blue text") rather than 0x0D over-head speech: a whisper must
+    /// reach the chat log with NO head bubble and work cross-map, and 0x0D is entity-bound (bubble always
+    /// shown; delivering via our own entity would misattribute it as self-speech, delivering via the
+    /// sender's entity id would silently vanish whenever sender/recipient aren't on the same map — the
+    /// common case). 0x0A itself is already proven live (look-at names, item-pickup text both use it via
+    /// SendMiniText's type=3); only the type=0/"blue chat window, not the status box" routing is unconfirmed.</summary>
+    internal void ReceiveWhisper(string fromName, string msg) => SendMiniText($"{fromName}: {msg}", type: 0);
+
+    /// <summary>Same status line as the existing <see cref="Notify"/> (used for trade's cross-session
+    /// messages below) but on RTK's type=11 "group" minitext channel (see SendMiniText's type-table
+    /// comment) — used for party join/leave/kick/disband broadcasts specifically.</summary>
+    internal void NotifyGroup(string text) => SendMiniText(text, type: 11);
+
+    // ---- party / group (RTK clif_addgroup / clif_leavegroup / clif_updategroup, clif.c:13993-14148) -------
+    // Ported rules, RTK's literal minitext wording where it has one. Not modelled: RTK's per-map "canGroup"
+    // gate (no server-side concept of a no-group map here) and RTK's ghost-can-invite-others allowance (we
+    // don't special-case a dead inviter either way — nothing here stops a ghost from typing "!party").
+
+    /// <summary>"!party &lt;name&gt;" invites (or, from the leader onto an existing member of their OWN
+    /// party, KICKS — RTK's own self-referential special case in clif_addgroup) another player. "!party"
+    /// alone lists the roster. The chat command is the primary trigger; the 0x2E opcode case above is wired
+    /// defensively as a bonus since 4.95 has never been captured actually sending it.</summary>
+    private void HandlePartyCommand(string text)
     {
-        string cls = fromClassId >= 0 ? Content.PathName(fromClassId) : "";
-        SendLog(string.IsNullOrEmpty(cls) ? $"\"{fromName}\" () {msg}" : $"\"{fromName}\" ({cls}) {msg}");
+        string rest = text.Length > "!party".Length ? text["!party".Length..].Trim() : "";
+        if (rest.Length == 0) { ShowPartyRoster(); return; }
+        TryPartyInvite(rest);
+    }
+
+    private void HandlePartyInvite(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        int nameLen = dec[0];
+        if (nameLen <= 0 || 1 + nameLen > dec.Length) return;
+        TryPartyInvite(Encoding.ASCII.GetString(dec, 1, nameLen));
+    }
+
+    private void TryPartyInvite(string name)
+    {
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK: silent nullpo_ret bail; we give feedback like whisper does
+        if (ReferenceEquals(target, this)) { SendMiniText("You can't group yourself...", type: 11); return; }
+
+        // RTK special case: the LEADER re-"inviting" someone already in their own party kicks them.
+        if (_party is not null && ReferenceEquals(target._party, _party) && ReferenceEquals(_party.Leader, this))
+        {
+            RemoveFromParty(target);
+            return;
+        }
+
+        if (_party is not null && _party.IsFull) { SendMiniText("Your group is already full.", type: 11); return; }
+        if (target.IsDead) { SendMiniText("They are unable to join your party.", type: 11); return; }
+        if (!target.WantsGroup) { SendMiniText("They have refused to join your party.", type: 11); return; }
+        if (target._party is not null) { SendMiniText("They have refused to join your party.", type: 11); return; }
+
+        if (_party is null) _party = new Party(this, target);
+        else _party.Add(target);
+        target._party = _party;
+
+        _party.Broadcast($"{target.Snapshot().Name} is joining the group.");
+    }
+
+    /// <summary>Removes <paramref name="member"/> from their party — used for "!leaveparty", the leader-kick
+    /// special case above, and disconnect cleanup. Promotes the next member to leader (Party.Remove: the
+    /// leader is always Members[0]) and disbands (notifying the last straggler) if that drops the party to
+    /// one person. RTK sends the exact same "You have left the group." text whether you left or were kicked
+    /// (clif_addgroup's kick branch just calls clif_leavegroup(tsd) — no separate "removed" wording exists).</summary>
+    private static void RemoveFromParty(Session member)
+    {
+        var party = member._party;
+        if (party is null) return;
+        string name = member.Snapshot().Name;
+        bool disband = party.Remove(member);
+        member._party = null;
+        member.NotifyGroup("You have left the group.");
+        party.Broadcast($"{name} is leaving the group.");
+        if (disband && party.Members.Count == 1)
+        {
+            var last = party.Members[0];
+            last._party = null;
+            last.NotifyGroup("Your group has disbanded.");
+        }
+    }
+
+    private void LeaveParty()
+    {
+        if (_party is null) { SendMiniText("You are not in a group.", type: 11); return; }
+        RemoveFromParty(this);
+    }
+
+    private void ShowPartyRoster()
+    {
+        if (_party is null) { SendMiniText("You are not in a group.", type: 11); return; }
+        SendMiniText($"Party ({_party.Members.Count}/{Party.MaxMembers}):", type: 11);
+        foreach (var m in _party.Members)
+            SendMiniText($"{(ReferenceEquals(m, _party.Leader) ? "* " : "  ")}{m.Snapshot().Name} - HP {m.CharHp}/{m.CharMaxHp}", type: 11);
+    }
+
+    // ---- trade / exchange (RTK clif_handitem / clif_handgold / clif_parse_exchange, clif.c:14548-15250) ---
+    // See Trade.cs's doc comment for why this is dialog-driven instead of guessing RTK's real binary
+    // exchange window. Rules ported: FLAG_EXCHANGE gate on both sides, same map, not already trading, not
+    // dead; any offer change un-confirms both sides (needed so a stale confirm can't sneak a changed offer
+    // through — RTK's own two-step clif_exchange_sendok confirm dance depends on the same invariant); finalize
+    // re-validates each item is still actually held (TransferItems) since nothing is escrowed at offer time.
+
+    // A virtual "npc" purely for the dialog packet header (id/sprite/name) — never spawned or looked up.
+    // Distinct sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) — see HandleClickInfo.
+    private static readonly Mob TradeVirtualNpc = new(0xFFFFFFFD, 0, 0, 0, "Trade", 1);
+
+    /// <summary>"!trade &lt;name&gt;" — the confirmed-safe trigger. RTK's real hand-item/hand-gold gesture
+    /// (opcodes 0x29/0x2A, face the target and press h/H) has never been seen in a 4.95 capture, so it isn't
+    /// wired as an opcode the way party's 0x2E is.</summary>
+    private void HandleTradeCommand(string text)
+    {
+        string name = text.Length > "!trade".Length ? text["!trade".Length..].Trim() : "";
+        if (name.Length == 0) { SendLog("Trade with whom? Try: !trade <name>"); return; }
+        if (IsDead) { SendMiniText("Spirits can't do that."); return; }
+        if (_trade is not null) { SendMiniText("You are already trading."); return; }
+
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
+        if (ReferenceEquals(target, this)) { SendMiniText("You can't trade with yourself..."); return; }
+        if (target.CharMap != CharMap) { SendLog($"{name} is nowhere to be found."); return; }
+        if (target._trade is not null || target.IsDead || !target.WantsExchange)
+        { SendMiniText("They have refused to exchange with you"); return; }   // RTK's literal wording
+
+        var trade = new Trade(this, target);
+        _trade = trade;
+        target._trade = trade;
+        SendMiniText($"You offer to trade with {target.Snapshot().Name}.");
+        target.Notify($"{Snapshot().Name} wants to trade with you.");
+        _ = RunTradeMenuAsync(trade);
+        _ = target.RunTradeMenuAsync(trade);
+    }
+
+    /// <summary>The per-player trade menu loop — runs independently on EACH side's own Session, same
+    /// pattern as every other Dlg* flow (this session's own async dialog state; a shared Trade object is
+    /// the only cross-talk). Exits as soon as the trade is cancelled/finalized or this player dismisses the
+    /// menu (0 = cancel, matching every other DlgMenu loop in this file).</summary>
+    private async Task RunTradeMenuAsync(Trade trade)
+    {
+        var npc = TradeVirtualNpc;
+        while (!trade.Ended)
+        {
+            bool theirsConfirmed = trade.OfferOf(trade.Other(this)).Confirmed;
+            var opts = new List<string>
+            {
+                "Offer an item", "Offer gold", "Review offer",
+                trade.OfferOf(this).Confirmed ? "Un-confirm" : "Confirm trade",
+                "Cancel trade",
+            };
+            int choice = await DlgMenu(npc,
+                $"Trading with {trade.Other(this).Snapshot().Name} - they have {(theirsConfirmed ? "" : "NOT ")}confirmed.",
+                opts);
+            if (trade.Ended) return;
+
+            switch (choice)
+            {
+                case 1: await TradeOfferItem(trade); break;
+                case 2: await TradeOfferGold(trade); break;
+                case 3: await TradeReview(trade); break;
+                case 4: TradeToggleConfirm(trade); break;
+                default: EndTrade(trade, "Exchange cancelled."); return;   // 5, or 0 = dismissed the menu
+            }
+        }
+    }
+
+    private async Task TradeOfferItem(Trade trade)
+    {
+        var npc = TradeVirtualNpc;
+        var mine = trade.OfferOf(this);
+        var bag = _char.Inventory.OrderBy(i => i.Slot).ToList();
+        if (bag.Count == 0) { await DlgSay(npc, "You have nothing to offer."); return; }
+
+        int i = await DlgMenu(npc, "Which item will you offer?",
+            bag.Select(it => $"{Content.ItemById(it.ItemId)?.Name ?? "?"} x{it.Amount}").ToList());
+        if (trade.Ended || i < 1 || i > bag.Count) return;
+        var chosen = bag[i - 1];
+
+        int amount = 1;
+        if (chosen.Amount > 1)
+        {
+            var s = await DlgInput(npc, $"You have {chosen.Amount}. How many will you offer?");
+            if (trade.Ended || !int.TryParse(s, out amount) || amount <= 0) return;
+            amount = Math.Min(amount, chosen.Amount);
+        }
+
+        mine.Items.RemoveAll(x => x.ItemId == chosen.ItemId && x.Dura == chosen.Dura && x.CustomName == chosen.CustomName);
+        mine.Items.Add(new InvItem(0, chosen.ItemId, amount, chosen.Dura) { CustomName = chosen.CustomName });
+        UnconfirmBoth(trade);
+        string itemName = Content.ItemById(chosen.ItemId)?.Name ?? "?";
+        trade.Other(this).Notify($"{Snapshot().Name} offers {itemName} x{amount}.");
+        await DlgSay(npc, $"You offer {itemName} x{amount}.");
+    }
+
+    private async Task TradeOfferGold(Trade trade)
+    {
+        var npc = TradeVirtualNpc;
+        var mine = trade.OfferOf(this);
+        var s = await DlgInput(npc, $"You carry {_char.Coins} coins. How much will you offer?");
+        if (trade.Ended || !uint.TryParse(s, out uint amount)) return;
+        if (amount > _char.Coins) amount = _char.Coins;
+        mine.Gold = amount;
+        UnconfirmBoth(trade);
+        trade.Other(this).Notify($"{Snapshot().Name} offers {amount} gold.");
+        await DlgSay(npc, $"You offer {amount} gold.");
+    }
+
+    private async Task TradeReview(Trade trade)
+    {
+        var npc = TradeVirtualNpc;
+        await DlgSay(npc, $"You offer: {DescribeOffer(trade.OfferOf(this))}");
+        if (!trade.Ended) await DlgSay(npc, $"{trade.Other(this).Snapshot().Name} offers: {DescribeOffer(trade.OfferOf(trade.Other(this)))}");
+    }
+
+    private static string DescribeOffer(TradeOffer o)
+    {
+        var parts = o.Items.Select(it => $"{Content.ItemById(it.ItemId)?.Name ?? "?"} x{it.Amount}").ToList();
+        if (o.Gold > 0) parts.Add($"{o.Gold} gold");
+        return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+    }
+
+    private static void UnconfirmBoth(Trade trade) { trade.OfferA.Confirmed = false; trade.OfferB.Confirmed = false; }
+
+    private void TradeToggleConfirm(Trade trade)
+    {
+        var mine = trade.OfferOf(this);
+        mine.Confirmed = !mine.Confirmed;
+        trade.Other(this).Notify(mine.Confirmed ? $"{Snapshot().Name} has confirmed the trade." : $"{Snapshot().Name} has un-confirmed.");
+        if (trade.OfferA.Confirmed && trade.OfferB.Confirmed) FinalizeTrade(trade);
+    }
+
+    private static void FinalizeTrade(Trade trade)
+    {
+        var a = trade.A; var b = trade.B;
+        uint goldA = Math.Min(trade.OfferA.Gold, a._char.Coins);
+        uint goldB = Math.Min(trade.OfferB.Gold, b._char.Coins);
+        a._char.Coins = a._char.Coins - goldA + goldB;
+        b._char.Coins = b._char.Coins - goldB + goldA;
+
+        TransferItems(trade.OfferA.Items, a, b);
+        TransferItems(trade.OfferB.Items, b, a);
+
+        a.SendStats(); b.SendStats();
+        a.SaveChar(); b.SaveChar();
+        EndTrade(trade, "You exchanged, and gave away ownership of the items.");
+    }
+
+    /// <summary>Moves each offered stack from <paramref name="from"/> to <paramref name="to"/>, re-checking
+    /// live inventory (items aren't escrowed at offer time here — see Trade.cs) so a stale offer, where the
+    /// sender dropped/sold/used the item mid-negotiation, can only under-deliver, never duplicate or destroy
+    /// anything.</summary>
+    private static void TransferItems(List<InvItem> offered, Session from, Session to)
+    {
+        foreach (var snap in offered)
+        {
+            var have = from._char.Inventory.FirstOrDefault(i => i.ItemId == snap.ItemId && i.Dura == snap.Dura && i.CustomName == snap.CustomName);
+            if (have is null) continue;
+            int amount = Math.Min(have.Amount, snap.Amount);
+            if (amount <= 0) continue;
+            var def = Content.ItemById(snap.ItemId);
+            if (def is null) continue;
+            have.Amount -= amount;
+            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 0); }
+            to.GiveItem(def, amount, snap.Dura, snap.CustomName);
+        }
+    }
+
+    private static void EndTrade(Trade trade, string message)
+    {
+        if (trade.Ended) return;
+        trade.Ended = true;
+        if (ReferenceEquals(trade.A._trade, trade)) { trade.A._trade = null; trade.A.Notify(message); }
+        if (ReferenceEquals(trade.B._trade, trade)) { trade.B._trade = null; trade.B.Notify(message); }
     }
 
     // ---- bulletin boards (RTK clif_handle_boards, clif.c:11156-11201; wire shapes cross-checked against
@@ -2320,13 +2616,13 @@ public sealed class Session
         int tier = MythicCaveTier(animal);
         if (tier < 1)
         {
-            SendMessage(tier switch
+            SendXy();   // cancel the client's step prediction / unblock the next step — the entrance holds them out
+            SendMiniText(tier switch   // status box (RTK clif_sendminitext), not the login message box
             {
                 -2 => "Nightmarish visions of your own death repel you.",
                 0  => "You almost understand the secrets of this entrance.",
                 _  => "You are not yet ready to enter here.",
             });
-            SendXy();   // cancel the client's step prediction — the entrance holds them out
             Log.Info($"   -> MYTHIC {animal} entrance REFUSED (tier {tier}, level {_char.Level})");
             return true;
         }
@@ -2637,10 +2933,97 @@ public sealed class Session
     internal void SetQuestStage(string questKey, int stage) { _char.Quests[questKey] = stage; SaveChar(); }
     internal int  QuestCounter(string counterKey) => _char.Quests.GetValueOrDefault(counterKey);
 
-    /// <summary>Award experience (refresh the HUD exp bar + persist). Quest EXP rewards funnel through here.</summary>
-    internal void AwardExp(uint amount)  { if (amount == 0) return; _char.Exp   += amount; SendStats(); SaveChar(); }
+    /// <summary>Award experience: add exp, then run RTK's pc_checklevel loop (0+ level-ups — a single big
+    /// reward can carry a low-level character through several levels at once), refresh TNL, push the HUD exp
+    /// bar, and persist. Every exp source (quests, melee/spell kills) funnels through here so leveling happens
+    /// the same way regardless of who granted it. See LevelUp for the per-level stat/HP/MP gain formulas.</summary>
+    internal void AwardExp(uint amount)
+    {
+        if (amount == 0) return;
+        _char.Exp += amount;
+        int path = CharClassId;
+        while (_char.Level < 99)
+        {
+            uint need = Content.ExpToNext(path, _char.Level);
+            if (need == 0 || _char.Exp < need) break;   // no table entry, or not enough exp yet -> done
+            // RTK onLevel.lua: Peasants (path 0) cap at level 5 until they choose a real path at a path hall
+            // (see PathHalls/TryPathHallEntrance) — enough exp banks up but doesn't auto-level past the wall.
+            if (path == 0 && _char.Level >= 5)
+            {
+                SendMiniText("You cannot increase your level without choosing a path first.");
+                break;
+            }
+            LevelUp(path);
+        }
+        uint tnlNext = Content.ExpToNext(path, _char.Level);
+        _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
+        SendStats();
+        SaveChar();
+    }
+
     /// <summary>Award coin (refresh the HUD + persist).</summary>
     internal void AwardGold(uint amount) { if (amount == 0) return; _char.Coins += amount; SendStats(); SaveChar(); }
+
+    // One level-up: RTK onLevel.lua, ported verbatim. `secondary`/`tertiary` are the "does this level also
+    // bump a non-primary stat" flags — non-Peasant paths roll them off (level+1)%2 and %3 (both on every 6th
+    // level); Peasants (no primary stat until they pick a path) roll a different %2/%3/%5 combo that instead
+    // decides whether THIS level's single point goes to might (primary) or grace+will (secondary+tertiary).
+    // Might/Grace/Will are bytes and RTK's own calc caps them at 255 elsewhere (SendStats clamps on send), so
+    // no clamp needed here. HP/MP gains are RTK's per-path random ranges (inclusive both ends).
+    private void LevelUp(int path)
+    {
+        int nextLevel = _char.Level + 1;
+        int secondary = 0, tertiary = 0, primary = 0;
+        if (path != 0)
+        {
+            if (nextLevel % 2 == 0 && nextLevel % 3 == 0) { secondary = 1; tertiary = 1; }
+            else if (nextLevel % 2 == 0) secondary = 1;
+            else if (nextLevel % 3 == 0) tertiary = 1;
+        }
+        else
+        {
+            if (nextLevel % 2 == 0) primary = 1;
+            else if (nextLevel % 3 == 0 || nextLevel % 5 == 0) { secondary = 1; tertiary = 1; }
+        }
+
+        int hpGain, mpGain;
+        switch (path)
+        {
+            case 1:   // Warrior: might primary, high HP / low MP
+                _char.Might += 1; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary;
+                hpGain = Random.Shared.Next(72, 82); mpGain = Random.Shared.Next(8, 10);
+                break;
+            case 2:   // Rogue: grace primary, moderate HP / moderate MP
+                _char.Might += (byte)secondary; _char.Grace += 1; _char.Will += (byte)tertiary;
+                hpGain = Random.Shared.Next(56, 64); mpGain = Random.Shared.Next(24, 28);
+                break;
+            case 3:   // Mage: will primary, low HP / highest MP
+                _char.Might += (byte)tertiary; _char.Grace += (byte)secondary; _char.Will += 1;
+                hpGain = Random.Shared.Next(40, 46); mpGain = Random.Shared.Next(40, 46);
+                break;
+            case 4:   // Poet: will primary, moderate HP / high MP
+                _char.Might += (byte)tertiary; _char.Grace += (byte)tertiary; _char.Will += 1;
+                hpGain = Random.Shared.Next(48, 55); mpGain = Random.Shared.Next(32, 37);
+                break;
+            default:  // Peasant (path 0): generalist, capped at level 5 by the caller above
+                _char.Might += (byte)primary; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary;
+                hpGain = Random.Shared.Next(45, 56); mpGain = Random.Shared.Next(32, 37);
+                break;
+        }
+
+        _char.MaxHp = (uint)((int)_char.MaxHp + hpGain);
+        _char.MaxMp = (uint)((int)_char.MaxMp + mpGain);
+        _char.Level = (byte)nextLevel;
+        _char.Ac = (sbyte)Math.Max(_char.Ac - 1, sbyte.MinValue);   // AC is signed/lower-is-better; RTK: baseArmor -= 1 per level
+        if (_char.Level >= 99) _char.Ac = 1;                        // RTK's explicit level-99 cap value
+
+        // Full heal on level-up (RTK: health = maxHealth; magic = maxMagic), including gear/buff bonuses.
+        _char.Hp = EffMaxHp;
+        _char.Mp = EffMaxMp;
+
+        SendMiniText("You have gained new insight.");
+        Log.Info($"   -> LEVEL UP: {_char.Name} is now level {_char.Level} ({Content.PathName(path)}) HP+{hpGain} MP+{mpGain}");
+    }
 
     /// <summary>How many of an item (by content key) the player is carrying, summed across stacks.</summary>
     internal int CountItem(string itemKey)
@@ -2721,6 +3104,13 @@ public sealed class Session
     internal int  CharX      => _char.X;
     internal int  CharY      => _char.Y;
     internal uint CharCoins  => _char.Coins;
+    internal ushort CharMap  => _char.Map;
+    internal uint CharHp     => _char.Hp;
+    internal uint CharMaxHp  => _char.MaxHp;
+    // Willingness flags a peer's party/trade request is gated on (RTK settingFlags FLAG_GROUP/FLAG_EXCHANGE;
+    // §9.5 profile status cells, toggled by 0x1b sub-cmd 0x02/0x08).
+    internal bool WantsGroup    => _char.Grouped;
+    internal bool WantsExchange => _char.Exchange;
 
     /// <summary>Spend coin if the player can afford it (refresh HUD + persist); false, unchanged, if they can't.</summary>
     internal bool SpendGold(uint amount)
@@ -3078,7 +3468,7 @@ public sealed class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                _char.Exp += reward;
+                AwardExp(reward);
                 SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
             }
             else SendMessage($"Your {sp.Name} hits {mob.Name} for {power}.");
@@ -3246,7 +3636,7 @@ public sealed class Session
                     if (died)
                     {
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                        _char.Exp += reward;
+                        AwardExp(reward);
                         SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
                     }
                     else SendMessage($"Your {sp.Name} hits {mob.Name} for {power}.");
@@ -3496,29 +3886,31 @@ public sealed class Session
 
     // 0x09 ';' Look: name whatever occupies the tile we're facing, RTK's PC -> mob/NPC -> item order
     // (clif_parselookat_sub / commented clif_parselookat_scriptsub give the exact text shape per entity
-    // kind — bare name, stack count in parens for a floor item). NPCs are stationary mobs (IsNpc-tagged)
-    // in the same shared list, so the mob check already covers them; an empty tile gets no reply, same
-    // as RTK (no clif_sendminitext call when nothing's found).
+    // kind — bare name, stack count in parens for a floor item). The reply goes to the STATUS/MINI-TEXT
+    // box below the inventory (SendMiniText / 0x0A), NOT the chat bubble — matching RTK, whose look-at
+    // ends in clif_sendminitext. NPCs are stationary mobs (IsNpc-tagged) in the same shared list, so the
+    // mob check already covers them; an empty tile gets no reply, same as RTK (no clif_sendminitext call
+    // when nothing's found).
     private void HandleLookAt(byte[] dec)
     {
         int tx = _char.X, ty = _char.Y;
         switch (_facing & 3) { case 0: ty--; break; case 1: tx++; break; case 2: ty++; break; case 3: tx--; break; }
 
         var peer = _world.PeerAt(_char.Map, tx, ty);
-        if (peer is not null) { SendLog(peer.Snapshot().Name); return; }
+        if (peer is not null) { SendMiniText(peer.Snapshot().Name); return; }
 
         var mob = _world.MobAt(_char.Map, tx, ty);
-        if (mob is not null) { SendLog(mob.Name); return; }
+        if (mob is not null) { SendMiniText(mob.Name); return; }
 
         // Session-local debug dummies (!cre/!mob/!crow/!crecol/look-lab) never join the shared world, so
         // they're invisible to _world.MobAt — check our own dummy list too (e.g. !crecol's "col<N>" labels).
         var dummy = MobAt(tx, ty);
-        if (dummy is not null) { SendLog(dummy.Name); return; }
+        if (dummy is not null) { SendMiniText(dummy.Name); return; }
 
         var gi = _world.ItemsOn(_char.Map).LastOrDefault(i => i.X == tx && i.Y == ty);
         if (gi is null) return;
         string name = gi.ItemId < 0 ? "coins" : string.IsNullOrEmpty(gi.CustomName) ? Content.ItemById(gi.ItemId)?.Name ?? "an item" : gi.CustomName;
-        SendLog(gi.Amount > 1 ? $"{name} ({gi.Amount})" : name);
+        SendMiniText(gi.Amount > 1 ? $"{name} ({gi.Amount})" : name);
     }
 
     // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> consume (+ any heal).
@@ -4136,6 +4528,7 @@ public sealed class Session
         SendMap(0x0D, _gameInc++, d.ToArray(), "speech(0x0D)");
     }
 
+
     // Client attack (0x13, spacebar) = just a trigger ("13 00"). Reply with an ACTION packet 0x1A
     // so the entity plays the swing. (0x13 was WRONG — its handler 0x4508f0 computes anim = 0x8f-a,
     // and a=0 -> anim 0x8f = the DEATH animation, which is why the character flashed "dead".)
@@ -4173,8 +4566,7 @@ public sealed class Session
                 if (died)
                 {
                     uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
-                    _char.Exp += reward;                                          // reward to the killer only
-                    SendStats();
+                    AwardExp(reward);                                             // reward to the killer only (levels too)
                     SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
                     Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
                     TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
@@ -4196,8 +4588,7 @@ public sealed class Session
             uint deadId = mob.Id;
             if (DeathDespawnMs <= 0) SendDespawn(deadId);   // 0x0E: remove the corpse from our client
             else _ = Task.Run(async () => { try { await Task.Delay(DeathDespawnMs); SendDespawn(deadId); } catch { } });   // after the death beat
-            _char.Exp += (uint)mob.MaxHp;              // reward: exp equal to the mob's max HP
-            SendStats();                               // refresh the HUD exp bar
+            AwardExp((uint)mob.MaxHp);                 // reward: exp equal to the mob's max HP (levels too)
             SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
             Log.Info($"   -> dummy {mob.Id} '{mob.Name}' defeated");
         }
@@ -4392,21 +4783,71 @@ public sealed class Session
         if (sub == 0) SendSelfProfile();
     }
 
-    // The client clicks an entity to inspect it: 0x43 = 01 entityId(u32BE) 00. For our own id we show
-    // the self-profile; other ids would use the other-player profile (0x34) once other entities exist.
+    // The F2 key is NOT a menu — it's bound to "Subpath Chat" (RTK rtklua/.../welcomeNmail.lua: "F2 - Turn
+    // Subpath Chat On/Off!"). It fires through the SAME 0x43 click-info packet as a real entity click, but
+    // with the sentinel id 0xFFFFFFFE instead of a real entity id (RTK clif.c clif_handle_clickgetinfo:
+    // `if (RFIFOL(...) == 0xFFFFFFFE) { toggle subpath_chat; sendminitext; return; }`, checked BEFORE the
+    // normal map_id2bl lookup). Subpath chat is a server-wide channel to every other player of your same
+    // class who also has it toggled on (clif_sendsubpathmessage) — see DoSubpathChat.
+    private const uint SubpathChatSentinel = 0xFFFFFFFE;
+
+    // F1 is the adjacent sentinel: RTK map.h `#define F1_NPC 4294967295` (0xFFFFFFFF). Clicking it opens
+    // "Central Functions" — a virtual NPC dialog with no physical map presence (RTK clif.c bypasses the
+    // usual click proximity check for it: `nd->bl.m == 0` — it exists on every map at once). See
+    // RunF1MenuAsync / §11k.
+    private const uint F1MenuSentinel = 0xFFFFFFFF;
+
+    // The client clicks an entity to inspect it: 0x43 = 01 entityId(u32BE) 00.
     private void HandleClickInfo(byte[] dec)
     {
         uint id = 0;
         if (dec.Length >= 5) id = (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]);
         Log.Info($"   -> CLICK-INFO (0x43) id={id}");
 
+        if (id == SubpathChatSentinel) { ToggleSubpathChat(); return; }
+        if (id == F1MenuSentinel) { OpenF1Menu(); return; }
+
+        // id 0 (or explicitly our own id, e.g. "!click") -> our own public profile.
+        if (id == 0 || id == _char.Id) { SendClickProfile(_char.Id); return; }
+
         // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
         // non-fighting mobs), so MobById finds them; the IsNpc flag distinguishes them from a real creature.
-        if (id != 0 && _world.MobById(_char.Map, id) is { IsNpc: true } npc) { OpenNpcDialog(npc); return; }
+        if (_world.MobById(_char.Map, id) is { IsNpc: true } npc) { OpenNpcDialog(npc); return; }
 
-        // Otherwise -> the public "profile" view (0x34): portrait + writable blurb, NOT the stats/legend
-        // window (0x39). id 0 (or a plain creature/self) falls back to our own profile.
-        SendClickProfile(id == 0 ? _char.Id : id);
+        // Clicking a real (non-NPC) mob is intentionally a no-op for regular players. RTK's real handler
+        // (clif.c clif_handle_clickgetinfo, BL_MOB case) runs "onLook", and onLook's player-facing branch
+        // only sends a minitext readout when player.gmLevel > 0 -- everyone else gets nothing back, which
+        // is why the 4.95 client shows no popup when you click a monster. SendClickProfile has no concept
+        // of "another entity's data" (it always serializes our OWN _char), so falling through to it here
+        // used to render your own profile mislabeled with the mob's id -- fixed by just returning.
+        // (Clicking another real PLAYER should show THEIR profile via RTK's clif_clickonplayer, but that
+        // needs SendClickProfile to serialize an arbitrary target Character, which doesn't exist yet -- so
+        // an id that isn't self/NPC/mob is also a no-op for now rather than showing the wrong data.)
+    }
+
+    // F2: flip the subpath-chat toggle and confirm via mini-text (RTK: "Subpath Chat: ON"/"OFF" — same
+    // wording, same channel used elsewhere for status confirmations). Persisted so it survives a relog.
+    private void ToggleSubpathChat()
+    {
+        _char.SubpathChat = !_char.SubpathChat;
+        SendMiniText($"Subpath Chat: {(_char.SubpathChat ? "ON" : "OFF")}");
+        SaveChar();
+        Log.Info($"   -> subpath chat {(_char.SubpathChat ? "ON" : "OFF")} for {_char.Name}");
+    }
+
+    // "/subpathchat <msg>" (alias "/sp") — RTK clif_sendsubpathmessage: broadcast to every OTHER ONLINE
+    // player who shares your class AND has subpath chat toggled on (not map-scoped — this is a server-wide
+    // channel, unlike say/shout). Formatted "<@Name> (ClassName) message" per RTK, rendered via the same
+    // mini-text channel as whisper/status text.
+    private void DoSubpathChat(string msg)
+    {
+        if (!_char.SubpathChat) { SendMiniText("Turn on Subpath Chat first (F2)."); return; }
+        if (!Content.CanTalk(_char.Map)) { SendMiniText("Your voice is swept away by a strange wind."); return; }
+        string line = $"<@{_char.Name}> ({_char.ClassName}) {msg}";
+        foreach (var p in _world.AllPlayers())
+            if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
+                p.SendMiniText(line);
+        Log.Info($"   -> subpath chat: \"{line}\"");
     }
 
     // ===== NPC dialog =============================================================================
@@ -4449,6 +4890,87 @@ public sealed class Session
             if (choice >= 1 && choice <= entries.Count) await entries[choice - 1].run(ctx);
         }
         catch (Exception e) { Log.Info($"!! NPC dialog error ('{npc.Name}'): {e.Message}"); }
+    }
+
+    // ===== F1: "Central Functions" menu ===========================================================
+    // RTK's f1npc.lua has ~15 entries (GM tools, Kan donations, tutor management, minigame stats, webpage
+    // profile settings…) that depend on systems this server doesn't model. Trimmed to what's real here:
+    // Silver Thread (shaman resurrection — RTK's actual answer to "how do you get un-ghosted", replacing
+    // the old fixed-timer auto-revive), the Subpath Chat toggle (also on F2, but RTK's own menu repeats it
+    // here), and Choose a Path (the same Peasant-level-5 guild warp §11j's Peasant wall points at, offered
+    // as a menu shortcut instead of walking to the physical hall).
+
+    // A virtual "npc" for the F1 dialog wire format — portrait/menu framing only. It's never spawned or
+    // looked up; SendNpcMenu/SendScriptMessage just need an id+sprite for the packet header. Sprite 0 ->
+    // NpcPortrait renders no portrait icon, matching "this isn't a real character".
+    private static readonly Mob F1VirtualNpc = new(F1MenuSentinel, 0, 0, 0, "F1Npc", 1);
+
+    private void OpenF1Menu() => _ = RunF1MenuAsync();
+
+    private async Task RunF1MenuAsync()
+    {
+        var npc = F1VirtualNpc;
+        var opts = new List<string>();
+        if (IsDead) opts.Add("Silver Thread");
+        opts.Add("Toggles");
+        if (CharClassId == 0 && _char.Level >= 5) opts.Add("Choose a Path");
+
+        int choice = await DlgMenu(npc, $"Hello {_char.Name}! How can I help you today?", opts);
+        if (choice < 1 || choice > opts.Count) return;
+
+        switch (opts[choice - 1])
+        {
+            case "Silver Thread": await SilverThread(npc); break;
+            case "Toggles":       await F1Toggles(npc); break;
+            case "Choose a Path": await ChoosePathMenu(npc); break;
+        }
+    }
+
+    // "Silver Thread": only reachable while dead (matches RTK's own gate — picking it while alive says so
+    // and does nothing). Offers a Shaman by nation (RTK's country branches collapse to our two home
+    // nations); picking one revives (full heal) at that Shaman's map. See ReviveAt.
+    private async Task SilverThread(Mob npc)
+    {
+        if (!IsDead)
+        {
+            await DlgSay(npc, "This is for the dead of the land to find a path to the shaman. You are not dead, so you have no path with me.");
+            return;
+        }
+
+        var shamans = _char.Nation == 2
+            ? new (string label, ushort map, ushort x, ushort y)[]
+              { ("Felis, to the West of Buya.", 338, 4, 4), ("Storm, to the East of Buya.", 339, 3, 5) }
+            : new (string label, ushort map, ushort x, ushort y)[]
+              { ("Dusk, to the West of Kugnae.", 8, 6, 4), ("Dawn, to the East of Kugnae.", 9, 3, 5) };
+
+        int choice = await DlgMenu(npc, "Which Shaman would you like to visit?", shamans.Select(s => s.label).ToList());
+        if (choice < 1 || choice > shamans.Length) return;
+        var s = shamans[choice - 1];
+        ReviveAt(s.map, s.x, s.y, "The Shaman calls your spirit home. You awaken anew.");
+    }
+
+    // "Toggles" submenu — currently just Subpath Chat (F2's own binding, exposed here too per RTK's menu).
+    private async Task F1Toggles(Mob npc)
+    {
+        int choice = await DlgMenu(npc, "Choose a toggle to change.",
+            new List<string> { $"Subpath Chat: {(_char.SubpathChat ? "On" : "Off")}" });
+        if (choice == 1) ToggleSubpathChat();
+    }
+
+    // "Choose a Path": warp to the guild-entrance map for the chosen class (per-nation, PathHalls' outer map
+    // ids) — a menu shortcut for the same Peasant-level-5 milestone the physical path halls gate on
+    // (TryPathHallWarp). Doesn't assign the class itself; a Guildmaster NPC inside does that (NpcAbility's
+    // path-choice ability, SetCharClass) — matches RTK's own level5popupDialog, which only warps too.
+    private async Task ChoosePathMenu(Mob npc)
+    {
+        var guilds = _char.Nation == 2
+            ? new (string name, ushort map)[] { ("Warrior's Guild", 341), ("Rogue's Guild", 343), ("Mage's Guild", 342), ("Poet's Guild", 344) }
+            : new (string name, ushort map)[] { ("Warrior's Guild", 11), ("Rogue's Guild", 15), ("Mage's Guild", 13), ("Poet's Guild", 17) };
+
+        int choice = await DlgMenu(npc, "Please select a guild that you'd like to visit.", guilds.Select(g => g.name).ToList());
+        if (choice < 1 || choice > guilds.Length) return;
+        var g = guilds[choice - 1];
+        if (Content.Maps.TryGetValue(g.map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, 8, 7, mi.Name);
     }
 
     // ---- async dialog primitives (used by NpcContext, which abilities call) ---------------------
@@ -5227,6 +5749,22 @@ public sealed class Session
         SendSpeech(0, _char.Id, Encoding.ASCII.GetBytes(text));
     }
 
+    // The client's STATUS / MINI-TEXT box — the scrolling log pane that sits below the inventory (where
+    // "item dropped", "experience gained", look-at names, etc. belong). This is a DIFFERENT channel from
+    // both the 0x0D chat bubble (SendLog) and the 0x02 login message box (SendMessage). RTK drives it via
+    // clif_sendminitext → clif_sendmsg(sd, 3, msg): opcode 0x0A, body = `type(u16 LE) len(u8) text`.
+    // type: 0=wisp(blue) · 3=mini/status text · 5=system · 11=group · 12=clan. 0x0A is one of the opcodes
+    // the RE reference binary no-ops but the live 4.95 client renders — same group as the 0x0F/0x37 item
+    // opcodes we already use (see protocol doc §"Binary note"). ASCII, clamped to the u8 length field.
+    private void SendMiniText(string text, ushort type = 3)
+    {
+        if (text.Length > 255) text = text[..255];
+        var t = Encoding.ASCII.GetBytes(text);
+        var body = new List<byte> { (byte)(type & 0xFF), (byte)(type >> 8), (byte)t.Length };
+        body.AddRange(t);
+        SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type}");
+    }
+
     // ---- helpers ----
     private void SendMessage(string text)
     {
@@ -5350,8 +5888,17 @@ public sealed class Session
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
     public void DespawnEntity(uint id) { lock (_viewLock) _shownMobs.Remove(id); SendDespawn(id); }  // 0x0E
 
-    // Locked so the World's mob-AI thread and peer broadcasts can't interleave bytes mid-packet with this
-    // session's own read-loop on the shared stream. (The `_gameInc++` at call sites is a benign nonce and
-    // not guarded; a rare duplicate is harmless since each packet carries its own inc in the header.)
-    private void Send(byte[] data) { lock (_sendLock) _stream.Write(data, 0, data.Length); }
+    // Non-blocking enqueue. Peer broadcasts and mob AI call this ON the shared World.TickLoop thread, so it
+    // must never block: it just hands the frame to the outbound channel (WriterLoop does the socket write).
+    // If the queue is full the client can't keep up with the world — drop IT, not the tick thread. The
+    // single-reader channel preserves frame order, so bytes never interleave mid-packet (what _sendLock did).
+    // (The `_gameInc++` at call sites is a benign nonce and not guarded; a rare duplicate is harmless since
+    // each packet carries its own inc in the header.)
+    private void Send(byte[] data)
+    {
+        if (Volatile.Read(ref _closed) != 0) return;
+        if (_outbound.Writer.TryWrite(data)) return;
+        Log.Info($"!! {_remote} outbound queue full ({OutboundCapacity}) — dropping slow client");
+        CloseConnection("slow client (outbound queue full)");
+    }
 }

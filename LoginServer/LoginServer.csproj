@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\Shared.csproj" />
+    <ProjectReference Include="..\Protocol.Tk495\Protocol.Tk495.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Deliberately does NOT reference the game core (World/Content/MapData). The login server is the
+         lightweight, internet-facing front door; keeping it free of the heavy game state means it starts
+         fast, has a tiny attack surface, and can restart independently of the game process. -->
+  </PropertyGroup>
+
+</Project>

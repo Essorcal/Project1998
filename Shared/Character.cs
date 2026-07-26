@@ -117,6 +117,11 @@ public sealed class Character
     public bool   Grouped   = false;
     public bool   Exchange  = true;
 
+    // Subpath chat (F2 toggle, RTK clif_handle_clickgetinfo's 0xFFFFFFFE sentinel + clif_sendsubpathmessage):
+    // a server-wide chat channel reaching every OTHER online player who shares this character's ClassName and
+    // also has it on. Off by default, like RTK. See Session.ToggleSubpathChat / DoSubpathChat.
+    public bool   SubpathChat = false;
+
     // The writable "profile" page shown when someone clicks you (0x34): a free-text blurb the player
     // writes about their character, plus an optional drawn portrait bitmap. ProfilePic is the raw
     // bitmap bytes WITHOUT the size prefix (null/empty = no picture). Edited via the client's

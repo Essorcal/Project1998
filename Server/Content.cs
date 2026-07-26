@@ -315,12 +315,13 @@ public static class Content
         MinorQuests = LoadMinorQuests(ResolvePath("NEXUS_MINORQUESTS", "re", "rtk-data", "MinorQuests.csv"));
         ShopStock = LoadShopStock(ResolvePath("NEXUS_SHOPSTOCK", "re", "rtk-data", "ShopStock.csv"));
         Paths = LoadPaths(ResolvePath("NEXUS_PATHS", "re", "rtk-data", "Paths.csv"));
+        LevelExp = LoadLevelExp(ResolvePath("NEXUS_LEVELEXP", "re", "rtk-data", "LevelExp.csv"));
         Spells = LoadSpells(ResolvePath("NEXUS_SPELLS", "re", "rtk-data", "Spells.csv"));
         SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "re", "rtk-data", "spell_effects.csv"));
         LookPalettes = LoadLookPalettes(ResolvePath("NEXUS_MOB_PALETTES", "re", "rtk-data", "MobLookPalettes.csv"));
         MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "re", "rtk-data", "Maps.csv"));   // region + warpOut for Gateway
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check re/monster-matcher/rtk_mobs.csv)"
                      : ""));
@@ -994,6 +995,35 @@ public static class Content
             if (int.TryParse(col.GetValueOrDefault("PthId"), out var id))
                 paths[id] = Clean(col.GetValueOrDefault("PthMark0", ""));
         return paths;
+    }
+
+    // Per-path cumulative-exp-to-level table (RTK rtk/db/level_db.txt, classdb_level): LevelExp[path][level] =
+    // total exp needed to LEAVE `level` (i.e. reach level+1). Long-format CSV (re/rtk-data/LevelExp.csv,
+    // generated from the RTK file — see awk one-liner in git history) with one row per (Path, Level). Path ids
+    // match PathIdForClass (0 Peasant/1 Warrior/2 Rogue/3 Mage/4 Poet); level 99 is the cap and has no entry.
+    private static Dictionary<int, Dictionary<int, uint>> LevelExp = new();
+
+    private static Dictionary<int, Dictionary<int, uint>> LoadLevelExp(string? path)
+    {
+        var table = new Dictionary<int, Dictionary<int, uint>>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!int.TryParse(col.GetValueOrDefault("Path"), out var p)) continue;
+            if (!int.TryParse(col.GetValueOrDefault("Level"), out var lvl)) continue;
+            if (!uint.TryParse(col.GetValueOrDefault("CumExp"), out var exp)) continue;
+            if (!table.TryGetValue(p, out var byLevel)) table[p] = byLevel = new Dictionary<int, uint>();
+            byLevel[lvl] = exp;
+        }
+        return table;
+    }
+
+    /// <summary>Total exp required to advance past <paramref name="level"/> on <paramref name="pathId"/>
+    /// (0 at the level-99 cap or on a lookup miss — treated as "no further threshold").</summary>
+    public static uint ExpToNext(int pathId, int level)
+    {
+        if (level >= 99) return 0;
+        if (!LevelExp.TryGetValue(pathId, out var byLevel) && !LevelExp.TryGetValue(0, out byLevel)) return 0;
+        return byLevel.GetValueOrDefault(level, 0u);
     }
 
     // Spells/skills. Rows that are section headers (name/ident begins with '=') or inactive (SplActive=0)

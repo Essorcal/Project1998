@@ -1,9 +1,12 @@
 using Server;
 
-// 2000/2005 = 4.95 login/game (V495); 2001/2006 = 5.33 login/game (V533). One process serves both;
-// Session tags the client version by the port it arrived on. Each client's Connaddr points at its
-// own login port (4.95 -> 2000, 5.33 -> 2001).
-int[] ports = { 2000, 2005, 2001, 2006 };
+// GAME server. Handles the world (movement, combat, items, NPCs) for both client versions:
+//   2005 = 4.95 game (V495)   2006 = 5.33 game (V533)
+// The LOGIN channel (account creation + login + game handoff) is a SEPARATE process (LoginServer,
+// ports 2000/2001) so the two can crash and restart independently. The client reaches this process
+// because the login server's handoff packet redirects it here (reversed IP + game port). Session tags
+// the client version by the port it arrived on.
+int[] ports = { 2005, 2006 };
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--ports" && i + 1 < args.Length)
@@ -20,4 +23,5 @@ if (Array.Exists(args, a => a == "--selftest")) { Content.SelfTest(); return; }
 Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers !warp/!maps/!mobs/!summon)
+Boards.MigrateFromJsonIfNeeded();   // one-time import of any legacy data/boards.json into the shared DB
 await new TkListener(ports).RunAsync();

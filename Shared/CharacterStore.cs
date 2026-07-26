@@ -1,39 +1,43 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace Shared;
 
 /// <summary>
-/// File-backed character persistence: one JSON file per account, keyed by (lowercased) username.
-/// Replaces the hardcoded spawn so the name/appearance chosen at creation and the last position/stats
-/// survive a logout.
+/// Character persistence, keyed by (lowercased) username. Backed by the shared SQLite database
+/// (<see cref="Db"/>): the whole <see cref="Character"/> is stored as a JSON blob in the `characters`
+/// table. The object is a deep graph (inventory/equipment/bank/spells/quests/legends/portrait) that is
+/// always loaded whole by key, so a JSON column keeps the exact prior semantics while gaining WAL crash-
+/// safety and safe concurrent access from the two processes.
 ///
-/// Why file-backed and not in-memory: the login channel (creation, port 2000) and the game channel
-/// (world entry, port 2005) are SEPARATE TCP connections — different Session objects — so the record
-/// written at creation must round-trip through disk before world entry can read it.
+/// Why shared storage: the login channel (creation) and the game channel (world entry) are SEPARATE
+/// processes, so the record written at creation must be visible to the game process at world entry.
+///
+/// The constructor still takes the legacy JSON directory — now used only as the ONE-TIME migration source
+/// (and left in place afterwards as a backup). Existing data/chars/*.json are imported on first run.
 /// </summary>
 public sealed class CharacterStore
 {
-    private readonly string _dir;
+    private readonly string _jsonDir;   // legacy per-file store: migration source + on-disk backup
 
     // Character exposes public FIELDS (not properties); System.Text.Json ignores fields unless told.
     private static readonly JsonSerializerOptions Json = new()
     {
-        WriteIndented = true,
+        WriteIndented = false,
         IncludeFields = true,
     };
 
     public CharacterStore(string dir)
     {
-        _dir = dir;
-        System.IO.Directory.CreateDirectory(_dir);
+        _jsonDir = dir;
+        Db.EnsureInitialized();
+        MigrateFromJsonIfNeeded();
     }
 
-    /// <summary>Absolute path of the store directory (logged at startup so records are findable).</summary>
-    public string Directory => _dir;
+    /// <summary>The backing database file path (logged at startup so records are findable).</summary>
+    public string Directory => Db.Path;
 
-    private string PathFor(string name) => Path.Combine(_dir, Key(name) + ".json");
-
-    // Normalize to a safe, case-insensitive filename so "Snuggle" and "snuggle" are one account.
+    // Normalize to a safe, case-insensitive key so "Snuggle" and "snuggle" are one account.
     private static string Key(string name)
     {
         var s = new string((name ?? string.Empty).ToLowerInvariant()
@@ -41,19 +45,82 @@ public sealed class CharacterStore
         return string.IsNullOrEmpty(s) ? "_" : s;
     }
 
-    public bool Exists(string name) => File.Exists(PathFor(name));
+    public bool Exists(string name)
+    {
+        try
+        {
+            using var cn = Db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM characters WHERE username=$u LIMIT 1;";
+            cmd.Parameters.AddWithValue("$u", Key(name));
+            return cmd.ExecuteScalar() is not null;
+        }
+        catch { return false; }
+    }
 
     public Character? Load(string name)
     {
-        var p = PathFor(name);
-        if (!File.Exists(p)) return null;
-        try { return JsonSerializer.Deserialize<Character>(File.ReadAllText(p), Json); }
-        catch { return null; }   // corrupt/legacy file -> treat as absent, caller falls back to a fresh char
+        try
+        {
+            using var cn = Db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "SELECT json FROM characters WHERE username=$u LIMIT 1;";
+            cmd.Parameters.AddWithValue("$u", Key(name));
+            if (cmd.ExecuteScalar() is not string s) return null;
+            return JsonSerializer.Deserialize<Character>(s, Json);
+        }
+        catch { return null; }   // corrupt/legacy row -> treat as absent, caller falls back to a fresh char
     }
 
     public void Save(Character c)
     {
-        try { File.WriteAllText(PathFor(c.Name), JsonSerializer.Serialize(c, Json)); }
+        try
+        {
+            var json = JsonSerializer.Serialize(c, Json);
+            using var cn = Db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = @"INSERT INTO characters(username, json, updated_utc) VALUES($u, $j, $t)
+                                ON CONFLICT(username) DO UPDATE SET json=$j, updated_utc=$t;";
+            cmd.Parameters.AddWithValue("$u", Key(c.Name));
+            cmd.Parameters.AddWithValue("$j", json);
+            cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            cmd.ExecuteNonQuery();
+        }
         catch { /* best effort; persistence must never crash a session */ }
+    }
+
+    // One-time import of the legacy data/chars/*.json into the DB. Idempotent: each record is inserted
+    // only if that username is absent (INSERT OR IGNORE), so it never clobbers newer DB state and is safe
+    // to run from both processes and on every startup. The JSON files are left in place as a backup.
+    private void MigrateFromJsonIfNeeded()
+    {
+        try
+        {
+            if (!System.IO.Directory.Exists(_jsonDir)) return;
+            var files = System.IO.Directory.GetFiles(_jsonDir, "*.json");
+            if (files.Length == 0) return;
+
+            int migrated = 0;
+            foreach (var f in files)
+            {
+                Character? c;
+                try { c = JsonSerializer.Deserialize<Character>(File.ReadAllText(f), Json); }
+                catch { continue; }   // skip corrupt/legacy files
+                if (c is null || string.IsNullOrEmpty(c.Name)) continue;
+
+                using var cn = Db.Open();
+                using var cmd = cn.CreateCommand();
+                cmd.CommandText = @"INSERT OR IGNORE INTO characters(username, json, updated_utc)
+                                    VALUES($u, $j, $t);";
+                cmd.Parameters.AddWithValue("$u", Key(c.Name));
+                cmd.Parameters.AddWithValue("$j", JsonSerializer.Serialize(c, Json));
+                cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                if (cmd.ExecuteNonQuery() > 0) migrated++;
+            }
+            if (migrated > 0)
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] migrated {migrated} character(s) " +
+                                  $"from {_jsonDir} into {Db.Path} (JSON files kept as backup)");
+        }
+        catch { /* migration is best-effort; a fresh DB still works */ }
     }
 }

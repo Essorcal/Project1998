@@ -36,6 +36,10 @@ that is called out too.
 11e. [NPCs & dialog](#11e-npcs--dialog--live-confirmed-on-495)
 11g. [Durability, warp gating, whisper, spell resist](#11g-durability-warp-gating-whisper-and-spell-resist-added-2026-07-25)
 11h. [Bulletin boards](#11h-bulletin-boards-added-2026-07-26--unverified-reply-shapes)
+11i. [F2 / Subpath chat](#11i-f2--subpath-chat-added-2026-07-25--awaiting-live-confirmation)
+11j. [Experience & leveling](#11j-experience--leveling-added-2026-07-25--awaiting-live-confirmation)
+11k. [F1 / Central Functions menu & Silver Thread revival](#11k-f1--central-functions-menu--silver-thread-revival-added-2026-07-25--awaiting-live-confirmation)
+11l. [Party & trade](#11l-party--trade-added-2026-07-26--awaiting-live-confirmation)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -144,7 +148,12 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 
 ## 4. Connection lifecycle
 
-### 4.1 Login channel (port 2000)
+> **Process split (2026-07-27):** the login channel (2000/2001) and game channel (2005/2006) now run as
+> **two separate processes** (`LoginServer` and the game `Server`) sharing one SQLite DB (`data/nexus.db`).
+> They can crash/restart independently. The login server is the internet-facing front door and does not load
+> the game world/content.
+
+### 4.1 Login channel (port 2000) — handled by the LoginServer process
 
 1. **Server → client, on connect:** a plaintext welcome banner.
    ```
@@ -160,7 +169,11 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 4. Then either **account creation** (§9) or **login**:
 
    **Login — client → server `0x03`:** body = `nameLen name pwLen pw 00`. Example decrypted:
-   `03 04 "test" 07 "dragon5" 00`.
+   `03 04 "test" 07 "dragon5" 00`. **The client DOES send a password** (3–8 chars); the server verifies it
+   with **BCrypt** against the `accounts` table. A never-registered / legacy-migrated account has no hash →
+   **trust-on-first-use**: the first login sets the password to what was sent (so pre-auth characters aren't
+   locked out). On a wrong password the server replies with a `0x02` message box ("Incorrect password.") and
+   does **not** hand off. (Creation `0x02` carries `nameLen name pwLen pw 00 00 00` — same password field.)
 
    **Server → client `0x03` (handoff):** tell the client where the game server is. Body layout
    (as implemented and confirmed working):
@@ -170,9 +183,20 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    17 00 09                       // (constants observed in the working handoff)
    "NexonInc."                    // the 9-byte key string, echoed
    nameLen name                   // the username
-   00 01 12 11 00                 // handoff token (echoed back by the client in 0x10)
+   <token: 5 bytes>               // handoff token, echoed back by the client in 0x10
    ```
    On receiving this the client opens a new TCP connection to the game port.
+
+   **Handoff token — single-use nonce (2026-07-27).** The 5-byte token slot was a static constant
+   (`00 01 12 11 00`); it is now a **server-minted, single-use, 60s-TTL nonce** bound to the username
+   (SHA-256 stored in `handoff_tokens`), so the game port can't be reached by claiming any username.
+   **Two hard wire facts, learned live:**
+   - **Do NOT grow the token past 5 bytes** — the client parses the `0x03` reply as a fixed-size redirect
+     struct; a 16-byte token corrupts the parse and breaks login.
+   - The client preserves only the **first 4 bytes** of the slot and **forces the 5th to 0** (a minted
+     `xx xx xx xx <rand>` comes back `xx xx xx xx 00`). So the nonce is **4 significant (non-zero) bytes +
+     a trailing 0**, and only those 4 bytes are hashed/validated. 32 bits — safe given single-use + short
+     TTL + rate limiting.
 
 ### 4.2 Game channel (port 2005)
 
@@ -182,8 +206,21 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    10 | 09 "NexonInc." | nameLen "name" | <handoff token bytes>
    ```
    Parse the username from it: `klen = body[0]; ulen = body[1+klen]; user = body[2+klen .. +ulen]`.
+   The trailing bytes are the **handoff token** (`body[2+klen+ulen ..]`); the game server
+   **validates and single-use-consumes** it against the username (must exist, be unexpired, unconsumed,
+   and bound to this user) — otherwise it **closes the connection**. This is what stops a client from
+   connecting straight to the game port and claiming any username. (`NEXUS_ENFORCE_HANDOFF=0` downgrades a
+   failure to a warning as a fallback.)
 
 2. The server now drives the **world-entry burst** (§5, §6).
+
+3. **Re-login on the game port (Alt+X).** Exiting to the select screen does **not** drop the game socket —
+   the client re-sends **`0x03`** (login, full credentials) on the still-open game connection and waits for
+   a handoff redirect, exactly as on the login channel. The game server therefore also handles `0x03`
+   (`Session.HandleReLogin`): re-authenticate, mint a fresh single-use token, and redirect back to its own
+   game port. Without this the re-login hangs (the client never reconnects to the login server, so that
+   process shows no new activity). The original single-process server answered `0x03` on every port; the
+   split had to restore it on the game side.
 
 ---
 
@@ -254,7 +291,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
 | `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` (see §11). |
-| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. If the id is an **NPC** → open its dialog (`0x30`, §11e); otherwise reply with the click-profile `0x34` (§9.5). |
+| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → no reply (matches RTK, §11e). |
 | `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
@@ -700,8 +737,11 @@ Gotchas that cost real debugging time:
   the same source or they disagree (self showed OFF while other showed ON when only `0x34` was wired). Toggled
   by the `0x1b` setting opcode — **`0x02` = group (Shift+G), `0x08` = exchange** — and persisted on the
   character (`Character.Grouped` / `Character.Exchange`) so they survive reopening the profile and a relog.
-  NOTE this is only the joinable/tradeable *flag* + its display; real party/trade **request** flows (the
-  client's `0x2e` / `0x4a` packets, seen but unhandled) are a separate, unbuilt feature.
+  NOTE this is only the joinable/tradeable *flag* + its display; the actual party/trade **request** flows
+  are built now — see §11l. The client's `0x2e` / `0x4a` packets seen in earlier captures are exactly RTK's
+  party-invite (`0x2e`) and an undecoded opcode respectively; §11l wires `0x2e` defensively but leans on
+  chat commands as the confirmed-safe interface (real binary trade/party windows are still unconfirmed on
+  4.95).
 
 **Editing — client `0x4f`.** Saving the profile edit sends
 `4f | picSize(u16BE) | pic[] | blurbLen(u8) | blurb[] | 00`. Parse both (mirrors the client's own
@@ -820,6 +860,21 @@ it is not needed to end the refresh.
 **Speech:** client sends `0x0E` = `chatType(u8) msgLen(u8) msg`. Echo it back as `0x0D` =
 `chatType(u8) entityId(u32) msgLen(u8) msg` attributed to the speaker's entity id → bubble appears
 over their head.
+
+**Name-prefixed text + shout — LIVE-CONFIRMED 2026-07-27.** `Session.HandleChat` prefixes the broadcast
+text server-side before it goes out over `0x0D`, since the client renders exactly the bytes it's given in
+both the bubble and the chat-log line (there's no separate "speaker name" field for the client to prepend
+itself): `"Name: message"` for ordinary speech, `"Name! message"` for shout. The client's own keybind help
+(extracted `Str_Eng.res`, `re/str_eng.res:102/105`) documents dedicated single-key hotkeys — **`'`** = Say,
+**`!`** = Shout — confirming shout is a real, distinct native input mode and not a private-server invention.
+`chatType` (the `0x0E` byte the client sends) is forwarded to `0x0D` **unchanged**: the hypothesis was that
+whatever value the client uses internally to pick the Say/Shout hotkey is also what it uses to pick the
+bubble/chat-log color on playback, so echoing it back would render correctly without the server inventing
+its own color scheme — **confirmed live**: ordinary speech renders as plain "Name: message", and shout
+renders red in the chat box with a yellow over-head bubble, using nothing but the passthrough `chatType`
+byte + the server-side text prefix. The code treats any nonzero `chatType` as shout (`bool shout = chatType
+!= 0`) rather than hardcoding a specific value, since that's what was tested and works. Whisper (`"`,
+Shift+`'`) is a fully separate native opcode (`0x19`, see below) — not a `chatType` value on `0x0E`.
 
 **Attack:** client sends `0x13` (bare `13 00`) on spacebar. The swing is a **`0x1A` action, type=1**. The
 server→client `0x13` is a *different* packet — the combat **damage / over-head HP bar** (§7.2) — sent at the
@@ -1228,12 +1283,26 @@ types with their own slots, so they need no such handling.)
 
 **Look (`0x09`, added 2026-07-26).** The client sends this with an empty body whenever `;` is pressed — no
 coordinates, always the tile immediately in front of the player (facing direction), matching RTK's
-`clif_parselookat_2` (there's a separate `0x0A` for an explicit-coordinate look that we don't receive from this
-client). `HandleLookAt` checks that tile in RTK's PC → mob/NPC → item order (`clif_parselookat_sub`'s per-type
-branches) and echoes the name as a plain chat-log line (`SendLog`) — a floor item gets `"name (amount)"` when
-stacked, same shape as RTK's commented reference formatter. NPCs are stationary mobs (`IsNpc`) in the same
-shared per-map list, so the mob check already covers them; an empty tile gets no reply at all, matching RTK
-(no `clif_sendminitext` call when nothing's found).
+`clif_parselookat_2` (the client→server `0x09` here is unrelated to the server→client `0x0A` status opcode
+below). `HandleLookAt` checks that tile in RTK's PC → mob/NPC → item order (`clif_parselookat_sub`'s per-type
+branches) and echoes the name to the **status / mini-text box below the inventory** via `SendMiniText`
+(server→client `0x0A`, see below) — a floor item gets `"name (amount)"` when stacked, same shape as RTK's
+commented reference formatter. This matches RTK exactly: its look-at ends in `clif_sendminitext`, NOT a chat
+bubble (the earlier `SendLog`/`0x0D` routing spoke the name out loud over the player's head — wrong channel,
+fixed 2026-07-27). NPCs are stationary mobs (`IsNpc`) in the same shared per-map list, so the mob check
+already covers them; an empty tile gets no reply at all, matching RTK (no `clif_sendminitext` call when
+nothing's found).
+
+**Status / mini-text box — server→client `0x0A` (`SendMiniText`).** The scrolling log pane beneath the
+inventory (look-at names, item pickup/drop, "experience gained", map-entry rejections, whisper text). A
+distinct channel from both the `0x0D` chat bubble (`SendLog`) and the `0x02` login message box
+(`SendMessage`). Mirrors RTK `clif_sendmsg(sd, type, msg)` (clif.c:6484) byte-for-byte: body after the
+opcode+inc is `type(u16 LE) · len(u8) · text[len]` (ASCII, `len` clamped to the u8). `type`: **0** = wisp
+(blue), **3** = mini/status text (the default, `clif_sendminitext`), **5** = system, **11** = group, **12** =
+clan. `0x0A` is one of the opcodes the RE reference binary `NexusTK_local.exe` no-ops in its dispatch table
+yet the **live 4.95 client renders** — same group as the `0x0F`/`0x37` item opcodes we already rely on (see
+the "Binary note" above); the `type=3` routing is live-proven, `type=0`'s exact pane is RTK's documented
+intent (see the whisper-delivery note).
 
 **State guards on item actions (added 2026-07-26).** RTK gates every one of drop/throw/drop-gold/equip on
 player state before doing anything else — dead (`Hp==0`, "Spirit") or mounted can't perform them. Ours now
@@ -1481,6 +1550,16 @@ to `Mob.Leash` (others stand still).
 **Click → dialog.** The click (`0x43`, §7.1) resolves the entity via `World.MobById`; if it's an NPC, the
 server runs its behaviour instead of the click-profile.
 
+**Click a real (non-NPC) mob → nothing.** RTK's own handler (`clif.c` `clif_handle_clickgetinfo`, `BL_MOB`
+case) runs an `onLook` script whose player-facing branch is gated on `player.gmLevel > 0` — a GM gets a
+minitext readout (name/id/level/HP/AC), everyone else gets no packet at all. This server has no GM concept
+yet, so `HandleClickInfo` just returns for any id that resolves to a real mob (fixed 2026-07-25 — it used to
+fall through to `SendClickProfile`, which unconditionally serializes **your own** `_char`, so clicking a
+monster rendered your own profile mislabeled with the mob's id). Clicking another real **player** should
+show *their* profile (RTK `clif_clickonplayer`, same `0x34` opcode, populated from the target session) —
+not implemented, since `SendClickProfile` has no way to serialize an arbitrary target yet; an unmatched id
+is a no-op rather than showing the wrong data.
+
 ### `0x30` server → client — the dialog packet (three sub-kinds)
 
 Same frame + graphic-head as everything else (RTK `WFIFO(fd,N)` ↔ this server's `body[N-5]`; ported from
@@ -1573,9 +1652,11 @@ mob's home tile. Both melee (`Session.HandleAttack`) and spell damage (`CastDama
 hit/HP-bar packet (`DamageOver`) a mob shows when hit, aimed at the player's own entity id. Hp reaching 0
 calls `Die()`: the player is redrawn as a **ghost** (appearance form `1` — `MountForm()` returns
 `_char.Hp==0 ? 1 : (Mounted?3:0)`; `PlayerSnapshot`/`ShowPlayer` carry a `Dead` flag so peers see it too),
-attacking/casting is blocked ("Spirits cannot attack/cast spells"), and after a 3s beat (`ReviveDelayMs`)
-`Revive()` restores full HP/MP and warps the player to their home city. This is a deliberately simplified
-death penalty — no monk/temple click-to-revive flow (see the real RTK totem-shrine system below).
+attacking/casting is blocked ("Spirits cannot attack/cast spells"), and **stays that way** — RTK has no
+auto-revive timer at all. **Changed 2026-07-25** (was a fixed 3s timer + auto-warp to the home city, a
+deliberate simplification made before the F1 menu was understood): a ghost now revives only by pressing
+**F1** and choosing **"Silver Thread"** — RTK's real answer, ported in §11k — which offers a Shaman by
+nation and revives (`ReviveAt`: full heal + warp) on arrival.
 
 **Home city** (`Session.HomeCityFor`/`PlaceNewCharacter`): a fresh character spawns, and a defeated one
 revives, **just inside their nation's home**, near the real RTK door-arrival tile (`re/rtk-data/
@@ -1606,8 +1687,10 @@ used to run first, silently always landing new characters at Ironheart regardles
 **Real RTK note:** in the Lua gameplay layer, totem is normally *re-worshipped* later at one of four
 totem-animal shrine NPCs in the Wilderness (`totem_npc.lua`: `JuJakNpc`/`BaekhoNpc`/`HyunMooNpc`/
 `ChungRyongNpc`), and those same NPCs are also the resurrection point for a dead player (`_resurrect`,
-gated on `player.state==1`). This server doesn't have that shrine/worship system yet — `Revive()` is a
-stand-in that just warps + heals directly.
+gated on `player.state==1`). This server doesn't have that shrine/worship system yet. As of §11k, revival
+itself IS the real RTK flow (F1 → Silver Thread → pick a Shaman) — the one remaining simplification is
+that `ReviveAt` heals on arrival at the Shaman's map instead of requiring a second click on a standalone
+Shaman NPC actor once there (we don't have those placed as real map NPCs).
 
 **The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `re/rtk-data/Warps.csv` ids 56-59) is
 a *separate* code path from the hardcoded home-city spawn above — walking onto Buya's door tile
@@ -1660,22 +1743,49 @@ diff value, so the mark/path-specific text is only reachable when `ReqLvl` equal
 exactly and a mark/path check also fails. `CharMark` is still hardcoded to 0 (subpath marks aren't
 modelled — see `MinorQuest.cs`), so any `ReqMark > 0` map stays locked for everyone until that lands.
 
+**Reject = snap-back + status text, fixed 2026-07-27.** When the gate denies entry, RTK does two things
+in order (clif.c:5188-5204): **(1)** `clif_pushback(sd)` (clif.c:15617) — a `pc_warp` that shoves the
+player 2 tiles opposite their facing, re-asserting position so the client isn't left standing on the warp
+tile; **(2)** `clif_sendminitext(sd, msg)` — the denial to the status box. Our reject path was missing
+BOTH: it did `SendLog(denyMsg); return;`, which (a) spoke the line as a `0x0D` chat bubble and (b) sent no
+`0x04`. In 4.95 self-walk is client-local — the client had already stepped onto the warp tile and was
+**blocked awaiting a `0x04` ack** to release its next step; the bare `return` never cleared that gate, so
+the player **froze and could not move or turn** (live-reported on the "Nightmarish visions…" entrance). Fix
+mirrors RTK with our proven 4.95 primitives, identical to what `HandleWalk`'s normal `blocked` branch
+already does: hold `_char.X/Y` at the from-tile, `SendXy()` (the `0x04` that both snaps the client off the
+warp tile AND unblocks the next step), then `SendMiniText(denyMsg)` (status box, RTK `clif_sendminitext`).
+The sibling scripted-tile rejection `TryMythicCaveEntrance` already snapped back with `SendXy()` but was
+using `SendMessage` (the `0x02` login box); switched to `SendMiniText` so both rejection paths land in the
+same status pane. User-confirmed working 2026-07-27.
+
 **Whisper / tell** (RTK `clif_parsewisp`, clif.c:7644-7790). Native input: **Shift+'** opens the whisper
 prompt, then a target name + Enter, then the message + Enter. LIVE-CONFIRMED 2026-07-26 by real capture —
 op `0x19`, body `dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00`, e.g. `07 'destine' 01 'd' 00` —
 matching RTK's wire layout exactly (`clif.c:7644`: `dstlen = RFIFOB(fd,5); msglen = RFIFOB(fd,6+dstlen)`).
-Dispatched to `Session.HandleWhisperPacket`. RTK's own delivery uses a generic system-message packet (type
-0) rather than a speech bubble; that reply shape hasn't itself been captured live, so delivery rides the
-already-proven self-facing chat-bubble channel (`SendLog`) instead of gambling on an unconfirmed packet —
-if that turns out not to render distinctly enough in-game, the fix is isolated to `Session.ReceiveWhisper`.
-Chat commands `!whisper <name> <message>` / `!w <name> <message>` (over `0x0E`) remain as a fallback entry
-point into the same `DoWhisper` core. Text is RTK's real wording where it's portable: not-found is
-verbatim (`"<name> is nowhere to be found."`), the echo-to-sender is verbatim (`"<TargetName>> <message>"`),
-and the map-silence gate (`MapChat`/RTK `cantalk`, 2/9850 maps) uses RTK's exact line. The target-received
-line adapts RTK's `"SenderName" (ClassName) message` shape (RTK's version has a client-side leading-quote
-convention we can't rely on, so the server composes the full quoted string itself). Not modelled:
-per-player whisper-on/off, silence/mute, ignore lists — none of those systems exist yet.
-`World.FindPlayer(name)` is the new case-insensitive online-lookup this needed.
+Dispatched to `Session.HandleWhisperPacket`. Chat commands `!whisper <name> <message>` / `!w <name>
+<message>` (over `0x0E`) remain as a fallback entry point into the same `DoWhisper` core. `Content.CanTalk`
+(RTK `cantalk`, 2/9850 maps) and the not-found message (`"<name> is nowhere to be found."`) are RTK's exact
+wording. `World.FindPlayer(name)` is the case-insensitive online-lookup this needed.
+
+**Delivery, fixed + LIVE-CONFIRMED 2026-07-27 — was a same-head self-bubble, now rides the `0x0A` mini-text
+channel.** Originally delivery rode `SendLog` (`0x0D`, chatType 0, attributed to the *recipient's own*
+entity), because RTK's real delivery packet (`clif_sendmsg` type 0, "Wisp/blue text" — clif.c:6484) is a
+dedicated non-entity system-message opcode with no proven 4.95 equivalent at the time. Live user testing
+found this looked wrong: it showed as a bubble over the recipient's own head reading `"SenderName" ()
+message"`, not a chat-log line attributed to the sender. Root cause: `0x0D` always draws a 3-second head
+bubble (handler `0x450170`) — there's no way to suppress it, and attributing the packet to the *sender's*
+entity id instead would silently vanish whenever sender and recipient aren't on the same map (the common
+case, since whisper has no range limit). Fixed by switching delivery to **`Session.SendMiniText`** (`0x0A`,
+the client's mini-text/status channel below the inventory, RTK `clif_sendmsg`/`clif_sendminitext` — already
+proven live via the look-at-name and item-pickup-name fixes earlier this session) with **`type = 0`**,
+matching RTK's own `clif_sendwisp`/`clif_retrwisp` type value for "Wisp" text. Both directions now send the
+literal line `"SenderName: message"` — the sender's own echo (`DoWhisper`) and the recipient's copy
+(`ReceiveWhisper`) are the same string, no RTK-style class-name suffix (dropped; it added no information
+the player didn't already have and doesn't match the plain "Name: message" shape used elsewhere).
+**Live-confirmed:** with `type = 0`, the line lands in the main chat window in blue with no head bubble,
+exactly matching RTK's "Wisp" intent — so `0x0A`'s `type` field really does route to a different pane/color
+per value (`type = 3`, used elsewhere for look-at/item names, renders in the mini-status box instead). Not
+modelled: per-player whisper-on/off, silence/mute, ignore lists — none of those systems exist yet.
 
 **Spell resist / deflect** (RTK `clif_parsemagic`'s deflect roll, clif.c:8910-8934). Only spells flagged
 `SplCanFail` (317/905) roll it. `Session.RollDeflect`: `willDiff = max(0, target.Will - caster.Will)`,
@@ -1739,6 +1849,245 @@ different board list is wanted, it's a one-line edit to `Boards.All`.
 posts collapse into one server-wide JSON file (`data/boards.json`, `Server/Boards.cs`) instead — same
 "RTK's shape, our storage" choice already made for characters (`Shared/CharacterStore.cs`). Delete is
 author-only (RTK's broader GM/tutor `CAN_DEL` grant isn't modelled).
+
+---
+
+## 11i. F2 / Subpath chat (added 2026-07-25 — awaiting live confirmation)
+
+**F2 is not a menu — it's a chat-channel toggle.** Pressing it was producing a garbage click-profile
+(`0x34`) reply with a nonsense target id, because the client routes F2 through the *same* click-info
+packet as a real entity click (`0x43 01 entityId(u32BE) 00`), just with a magic sentinel id instead of a
+real one. RTK's `clif_handle_clickgetinfo` (`clif.c:11010`) checks for this **before** the normal
+`map_id2bl` entity lookup:
+
+```c
+if (SWAP32(RFIFOL(sd->fd, 6)) == 0xFFFFFFFE) {   // subpath chat
+    sd->status.subpath_chat = !sd->status.subpath_chat;
+    clif_sendminitext(sd, sd->status.subpath_chat ? "Subpath Chat: ON" : "Subpath Chat: OFF");
+    return 0;
+}
+```
+
+Confirmed as the real F2 binding (not a guess) by `rtklua/Accepted/Scripts/welcomeNmail.lua`: *"F2 - Turn
+'Subpath Chat' On/Off!"*. `Session.HandleClickInfo` now special-cases `id == 0xFFFFFFFE`
+(`SubpathChatSentinel`) and calls `ToggleSubpathChat()` — flips `Character.SubpathChat` and confirms via
+the same `0x0A` mini-text channel whisper uses (§11g), **before** falling through to the NPC/click-profile
+paths. **Not yet live-tested against the 4.95 client** — the packet shape (id `0xFFFFFFFE` on `0x43`) is
+taken on faith from the RTK 7.x source; if F2 still misbehaves, capture the raw `0x43` body to confirm
+this 4.95 client sends the same sentinel.
+
+**Delivery — `/subpathchat <msg>` (alias `/sp`).** RTK's `clif_sendsubpathmessage` (`clif.c:7402`) is a
+**server-wide, not map-scoped** channel: every *other* online player whose `class` matches the sender's
+AND who also has subpath chat on receives `<@Name> (ClassName) message`. `Session.DoSubpathChat` ports
+this: gated on the sender's own `SubpathChat` flag and the map's `cantalk` flag (same `Content.CanTalk`
+gate whisper uses), it iterates `World.AllPlayers()` (new — a server-wide roster, unlike the map-scoped
+`World.Broadcast`) and compares `ClassName` (our single string stands in for RTK's finer-grained numeric
+`class`/mark). Rendered via `SendMiniText` at the default `type=3` (proven-live mini/status pane) rather
+than RTK's literal `type=11` (its "group" channel, reused for subpath) — **unconfirmed** whether 4.95
+renders `type=11` distinctly from `type=3`; if it turns out to matter, this is a one-line change.
+
+---
+
+## 11j. Experience & leveling (added 2026-07-25 — awaiting live confirmation)
+
+**There was no leveling system at all before this.** Exp was already being added to `Character.Exp` on
+every mob kill (melee, spell) and shown on the HUD bar, but nothing ever read it back — `Character.Level`
+never changed and `Character.Tnl` (experience-to-next-level, sent in the self-profile `0x39`, §9.5) sat at
+0 forever. Ported wholesale from RTK's real level-up path: `pc.c`'s `pc_givexp`/`pc_checklevel`
+(exp-gain + level-up-loop driver), `class_db.c`'s `classdb_level` (per-path cumulative exp table, backed
+by `rtk/db/level_db.txt`), and `rtklua/Accepted/Scripts/onLevel.lua` (the actual stat/HP/MP gain formulas
+run on every level).
+
+**Exp table.** `rtk/db/level_db.txt` is `path,cumExpLvl1,cumExpLvl2,…,cumExpLvl98` — one row per path,
+`classdb_level(path, level)` = total exp needed to leave `level` (i.e. reach `level+1`). Paths 0-4 map
+1:1 onto this server's existing `Content.PathIdForClass`/`Paths.csv` scheme (`PthType` column: 0 Peasant /
+1 Warrior / 2 Rogue / 3 Mage / 4 Poet — RTK's own `Paths` table, already in use for spell-book gating).
+Extracted (awk one-liner over the RTK file) into a long-format `re/rtk-data/LevelExp.csv`
+(`Path,Level,CumExp`), loaded by `Content.LoadLevelExp` into `Content.ExpToNext(pathId, level)`.
+
+**`Session.AwardExp(amount)`** is now the single funnel every exp source goes through (quest rewards,
+melee kills, spell kills — the three raw `_char.Exp += reward` sites were replaced with calls to this):
+add the exp, then loop `while (Level < 99) { need = ExpToNext(path, Level); if not enough, stop; LevelUp(); }`
+so one big reward (e.g. a quest turn-in) can carry a low-level character through several levels in one
+call — matches RTK's `pc_checklevel` loop shape exactly. Recomputes `Character.Tnl` afterward so the
+self-profile window shows the right remaining amount.
+
+**Peasant level-5 wall.** `onLevel.lua` blocks Peasants (path 0) from leveling past 5 until they choose a
+real path: `if player.class == 0 and player.level >= 5 then sendMinitext(...); return end`. Ported
+verbatim — exp keeps banking up past the level-5 threshold but `AwardExp` stops calling `LevelUp` and
+sends the same message, matching the existing path-hall warp gate (§"Class path-hall interior warps",
+`Session.cs` ~line 2365) that already required leaving Peasant to progress further.
+
+**`Session.LevelUp(path)`** ports `onLevel.lua`'s stat-gain formula exactly: a `secondary`/`tertiary`
+bonus-point flag pair rolled off `(level+1) % 2` / `% 3` (both trip together every 6th level) for the four
+real paths, or a different `% 2` / `% 3` / `% 5` combo for Peasants (who have no primary stat yet — their
+roll instead decides whether the level's point goes to Might or to Grace+Will). Per-path Might/Grace/Will
+assignment and HP/MP gain ranges (`Random.Shared.Next`, inclusive both ends) are RTK's literal numbers:
+
+| Path | Primary stat | HP gain | MP gain |
+|---|---|---|---|
+| 0 Peasant | Might (conditional) | 45-55 | 32-36 |
+| 1 Warrior | Might (always +1) | 72-81 | 8-9 |
+| 2 Rogue | Grace (always +1) | 56-63 | 24-27 |
+| 3 Mage | Will (always +1) | 40-45 | 40-45 |
+| 4 Poet | Will (always +1) | 48-54 | 32-36 |
+
+Also matches RTK's `Ac -= 1` per level (AC is signed/lower-is-better in this server, §9.5 — RTK's
+`baseArmor` decrement is the same direction) and the level-99 special case (`Ac` snaps to `1`), and does
+a full heal (`Hp`/`Mp` set to the post-gain max, gear/buffs included) exactly like `onLevel.lua`'s
+`health = maxHealth; magic = maxMagic`. Confirmed via `SendMiniText` ("You have gained new insight.") —
+RTK's `onLevel.lua` also plays a sound (`playSound(123)`) and a `sendAnimation(2, 0)` visual flash that
+aren't ported (no calibrated opcode for a generic non-spell animation/sound pair yet; low priority next
+step if the level-up feels too quiet in-game).
+
+**Not yet live-tested.** The exp math, the level-up stat/HP/MP gains, and the Peasant wall are all
+ported from RTK source with no live 4.95 combat session behind them yet — kill a mob and watch the level
+counter / minitext to confirm before trusting the numbers for real balance decisions.
+
+---
+
+## 11k. F1 / Central Functions menu & Silver Thread revival (added 2026-07-25 — awaiting live confirmation)
+
+**F1 is the sentinel right next to F2's.** RTK's `map.h` defines `#define F1_NPC 4294967295`
+(`0xFFFFFFFF`) — one less than F2's `0xFFFFFFFE` (§11i). Clicking it fires the same `0x43` click-info
+packet as any entity click, and RTK's `clif_parseclick` (`clif.c:11061`) special-cases it: the proximity
+check that normally gates an NPC click is skipped outright when `nd->bl.m == 0` — the F1 NPC has no real
+map, so it's reachable from anywhere. It opens **`F1Npc.click`**
+(`rtklua/Accepted/NPCs/CentralFunctions/f1npc.lua`) — a normal NPC dialog (menu strings, `player:warp`,
+etc.), just triggered by a hotkey instead of walking up to a placed sprite. `Session.HandleClickInfo` now
+matches `id == 0xFFFFFFFF` (`F1MenuSentinel`) → `OpenF1Menu()`, reusing the SAME async dialog machinery
+(`DlgMenu`/`DlgSay`, §11e) real NPCs use, fed a synthetic `Mob` (`F1VirtualNpc`, sprite 0 → no portrait,
+never spawned/looked-up — it only exists to fill the `0x30` packet header).
+
+**Real RTK's menu has ~15 entries**, most gated on systems this server doesn't model: a GM-only submenu,
+Kan (cash-shop currency) donations toward "Wisdom Star," tutor appointment, minigame win/loss stats, an
+RTK-hosted character webpage's visibility toggles, "Faerie Light," "AFK Message." **Trimmed to three real
+entries:**
+
+- **Silver Thread** — only offered while dead (`IsDead`; picking it alive echoes RTK's own line: *"This
+  is for the dead of the land to find a path to the shaman. You are not dead, so you have no path with
+  me."*). RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
+  server only has two home nations modeled, so it collapses to `_char.Nation`: Buya (`2`) offers **Felis**
+  (map 338) / **Storm** (339), everyone else **Dusk** (map 8) / **Dawn** (map 9) — all four are real RTK
+  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `re/rtk-data/map_index.csv`. Picking one
+  calls `ReviveAt` (new — factored out of the old `Revive()`): full heal (gear/buffs included) + warp,
+  replacing the fixed-timer auto-revive §11f used to do. RTK's own flow only *warps near* a physical Shaman
+  NPC (revival happens on a second click there); this server skips that actor and revives directly on
+  arrival, since no standalone Shaman NPCs are placed.
+- **Toggles** — RTK's submenu covers Clan Chat + Subpath Chat; only Subpath Chat exists here (§11i), so
+  the submenu is a single toggle line for now. Same flag/toggle as F2 — this is just RTK's menu exposing
+  the same switch a second way.
+- **Choose a Path** — RTK's `F1Npc.level5popupDialog`, offered once a Peasant (path 0) reaches level 5
+  (the same threshold `AwardExp`'s Peasant wall enforces, §11j). Warps to the guild-entrance map for the
+  chosen class at `(8,7)` — RTK's own coordinate — reusing `PathHalls`' existing outer map ids (§11f's
+  neighbor, "Class path-hall interior warps"). Only warps; a Guildmaster NPC inside is what actually calls
+  `SetCharClass` (`NpcAbility`'s path-choice ability) — matches RTK, whose `level5popupDialog` also only
+  warps.
+
+**Not yet live-tested.** The `0xFFFFFFFF` sentinel, the trimmed menu, and the Silver Thread shaman list are
+all ported from RTK source with no live 4.95 client session behind them — confirm F1 actually opens the
+menu (and that ghosts can no longer wake up on their own) before relying on it.
+
+---
+
+## 11l. Party & trade (added 2026-07-26 — awaiting live confirmation)
+
+Neither existed before this: the `0x1b` sub-`0x02`/`0x08` toggles (§9.5) only ever set a *willingness*
+flag (`Character.Grouped`/`Exchange`) with no request/accept logic behind them. Both are now ported from
+RTK (`rtk/src/map/clif.c`) — rules faithfully, presentation deliberately NOT (see below).
+
+### Party (RTK "group" — `clif_addgroup`/`clif_leavegroup`/`clif_updategroup`, clif.c:13993-14148)
+
+A `Party` (`Server/Party.cs`) is a plain in-memory leader+members list, never persisted — matches RTK's own
+`groups[MAX_GROUPS][MAX_GROUP_MEMBERS]`, which is session-table state, not a DB row. The leader is always
+`Members[0]`; leaving/kicking removes from the list, which naturally promotes the next member (RTK:
+`group_leader = groups[groupid][0]` after a removal). **Cap is 6**, NexusTK's real historical party size —
+RTK's own `MAX_GROUP_MEMBERS` (256) is just an oversized array bound for its static table, not a gameplay
+rule, so it isn't copied.
+
+Ported rules (`Session.TryPartyInvite`, RTK's literal minitext wording where it has one):
+
+1. Target not found → *"X is nowhere to be found."* (RTK's `clif_addgroup` just `nullpo_ret`s silently on a
+   bad name; this server gives feedback here, matching how whisper already handles the same case — §11.)
+2. Inviting yourself → *"You can't group yourself..."*
+3. **Special case:** the leader "inviting" someone already in their OWN party **kicks** them — RTK's own
+   self-referential branch (`tsd->group_leader == sd->group_leader && sd->group_leader == sd->bl.id` →
+   `clif_leavegroup(tsd)`).
+4. Your party already at the 6-member cap → *"Your group is already full."*
+5. Target is dead → *"They are unable to join your party."*
+6. Target's "sociable" flag (`Character.Grouped`, Shift+G / `0x1b` sub-`0x02`) is off → *"They have refused
+   to join your party."*
+7. Target already in a group (even a different one) → the same *"They have refused to join your party."*
+   text (RTK collapses both refusal reasons to the identical line).
+8. Otherwise: join (creating a new party if you had none), then broadcast *"X is joining the group."* to
+   the whole party on RTK's dedicated **type=11 "group"** minitext channel (`Session.NotifyGroup` —
+   see the `SendMiniText` type table, §9.5).
+
+**Not modelled:** RTK's per-map `canGroup` gate (no such per-map concept exists here) and RTK's explicit
+allowance for a *dead* player to invite others (a ghost isn't specifically blocked from grouping here
+either — it just isn't specifically un-blocked, since nothing in `TryPartyInvite` checks the inviter's own
+state at all, matching RTK, which also only checks the TARGET's state).
+
+Leaving (`RemoveFromParty`) sends the exact same *"You have left the group."* text whether you left
+voluntarily or were kicked — RTK's kick branch literally calls `clif_leavegroup(tsd)`, so there is no
+separate "you were removed" wording to port. Dropping to one member disbands the party (*"Your group has
+disbanded."* to the straggler). Disconnecting mid-party runs the same cleanup (`Session`'s read-loop
+`finally` block).
+
+**Triggers:**
+- `!party <name>` — invite/kick (primary, confirmed-safe).
+- `!party` (no name) — list the roster (`* `-prefixed leader, each member's live HP).
+- `!leaveparty` — leave/disband.
+- Client opcode **`0x2e`** (`HandlePartyInvite`) — RTK's real `clif_addgroup` wire shape, `nameLen(u8)
+  name[nameLen]` (identical shape to `0x19` whisper, §11). Wired defensively: 4.95 has never been captured
+  actually sending this, so a garbage/unexpected body just fails the name lookup — no reply this server
+  sends back depends on the body being well-formed, so there's no crash risk either way.
+
+### Trade (RTK "exchange" — `clif_handitem`/`clif_handgold`/`clif_parse_exchange`, clif.c:14548-15250)
+
+RTK's real exchange is a dedicated **binary trade window**: hand an item/gold to the player you're facing
+(`0x29`/`0x2A`, resolved via the SAME front-tile lookup this server's melee already uses), which opens a
+two-sided add-item/add-gold/confirm/cancel window (a further sub-opcode dispatch keyed off a `type` byte).
+None of that window's 4.95 wire format has ever been captured live — and after the profile system (§9.5)
+and the password-length client crash (see memory), guessing a new binary UI packet's shape and being wrong
+is a real way to crash the client, not just get an ignored packet.
+
+So this server's trade reuses the **same async dialog primitives** NPC shops/the bank already drive
+(`DlgMenu`/`DlgSay`/`DlgInput`, built on the live-confirmed `0x30`/`0x3a` NPC dialog packets — §11e) instead
+of inventing a new opcode. The RULES are still ported straight from RTK; only the presentation is a menu
+instead of a window (the exact same tradeoff already made for the buy/sell grid, §11e's "Remaining"
+note). `Server/Trade.cs` holds the plain data (`Trade`: two `Session`s + two `TradeOffer`s of items/gold/
+confirmed; `TradeOffer`).
+
+Ported rules (`Session.HandleTradeCommand` / `RunTradeMenuAsync`):
+
+- Both sides must have the "exchange" flag on (`Character.Exchange`, `0x1b` sub-`0x08`), be alive, on the
+  same map, and not already in another trade — any failure replies with RTK's literal *"They have refused
+  to exchange with you"*.
+- Offering an item or gold **un-confirms both sides** — needed so a stale confirm can't sneak a changed
+  offer through; RTK's own two-step `clif_exchange_sendok` confirm dance depends on the same invariant even
+  though RTK's source doesn't show an explicit reset (its escrow model makes it structurally impossible to
+  change an offer post-confirm, which this server doesn't replicate — see next point).
+- **Deliberate simplification:** RTK escrows an item out of your bag the instant you offer it. This server
+  does **not** — offering just records a snapshot (item id/durability/custom name/amount); finalize
+  (`TransferItems`) re-checks you still actually hold it, and can only transfer LESS than promised (skipped
+  silently) if you spent it elsewhere mid-negotiation, never more. This trades one authentic behavior
+  (you can keep using an offered item until the trade actually closes) for ruling out an entire class of
+  dupe/loss bug from an unescrowed, dialog-driven reimplementation.
+- Finalizing (both sides confirm) moves gold and items in one `FinalizeTrade` call and sends RTK's literal
+  closing line, *"You exchanged, and gave away ownership of the items."*, to both sides.
+- Cancelling (either side) or disconnecting mid-trade ends it for both with RTK's *"Exchange cancelled."*
+  and nothing moves (nothing was ever escrowed, so there's nothing to roll back).
+
+**Trigger:** `!trade <name>` only. RTK's real hand-item/hand-gold gesture (face the target, opcodes
+`0x29`/`0x2A`) is NOT wired as a client opcode here — those opcode numbers were never seen in a 4.95
+capture the way `0x2e`/`0x4a` were, so there was nothing to defensively hook.
+
+**Not yet live-tested.** Both features are ported from RTK source with no live 4.95 client session behind
+them. Confirm: `!party`/`!leaveparty`/`!trade` all produce visible chat-log/status-box text (they're built
+entirely on already-proven `SendMiniText`/dialog primitives, so the main open question is UX — does the
+type=11 "group" channel actually render distinctly? — not wire-format risk); and, if `0x2e` turns out to be
+real on 4.95, that a live party invite actually reaches `HandlePartyInvite` with the expected body shape.
 
 ---
 
