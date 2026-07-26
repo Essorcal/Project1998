@@ -26,6 +26,13 @@ public sealed class LoginSession
     private string _pendingName = "";   // name from the availability check, fallback for creation
     private string _pendingPass = "";   // password from the availability check (0x02), used at creation (0x04)
 
+    // Slow-loris defense (the login port is the internet-facing front door): a connection must send its first
+    // valid framed packet within this budget or it is dropped. Only the first packet is gated. Env-tunable,
+    // shared with the game server's NEXUS_HANDSHAKE_MS; 15s is far more than a real client needs.
+    private static readonly int HandshakeMs =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+    private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
+
     // AA 00 13 7E 1B "CONNECTED SERVER\n"  (plaintext welcome, as the 6.x reference sends on connect)
     private static readonly byte[] Welcome = BuildWelcome();
 
@@ -52,6 +59,16 @@ public sealed class LoginSession
             await _stream.WriteAsync(Welcome);
             Log.Info($"   -> sent welcome ({Welcome.Length}B)");
 
+            // Handshake watchdog: drop a connection that sends no valid packet within HandshakeMs. Gated on
+            // _established so it can only ever close a still-silent connection; closing makes ReadAsync throw.
+            using var handshake = new CancellationTokenSource(HandshakeMs);
+            handshake.Token.Register(() =>
+            {
+                if (Volatile.Read(ref _established) != 0) return;
+                Log.Info($"!! {_remote} handshake timeout ({HandshakeMs}ms) — no valid packet, dropping");
+                try { _client.Close(); } catch { /* already gone */ }
+            });
+
             var buf = new List<byte>();
             var tmp = new byte[4096];
             while (true)
@@ -69,7 +86,11 @@ public sealed class LoginSession
                     off += consumed;
                     Handle(pkt);
                 }
-                if (off > 0) buf.RemoveRange(0, off);
+                if (off > 0)
+                {
+                    buf.RemoveRange(0, off);
+                    Volatile.Write(ref _established, 1);   // first valid frame parsed -> handshake satisfied
+                }
                 if (buf.Count > 0)
                     Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
             }

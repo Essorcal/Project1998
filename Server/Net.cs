@@ -10,6 +10,7 @@ public sealed class TkListener
     private readonly int[] _ports;
     private readonly CharacterStore _store;
     private readonly World _world = new();   // the one shared world every session broadcasts through
+    private readonly ConnGuard _guard = ConnGuard.FromEnv("GAME");   // per-IP/global/rate admission control
 
     public TkListener(int[] ports)
     {
@@ -61,7 +62,25 @@ public sealed class TkListener
             TcpClient client;
             try { client = await listener.AcceptTcpClientAsync(); }
             catch (Exception e) { Log.Info($"!! accept on :{port} failed: {e.Message}"); continue; }
-            _ = new Session(client, port, _store, _world).RunAsync();   // fire-and-forget per connection
+
+            // Admission control BEFORE spawning a session: shed load / throttle floods at the cheapest point.
+            var ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
+            if (!_guard.TryAdmit(ip, out var reason))
+            {
+                Log.Info($"!! REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
+                try { client.Close(); } catch { /* already gone */ }
+                continue;
+            }
+            _ = RunAndReleaseAsync(client, port, ip);   // fire-and-forget; releases the admission slot on exit
         }
+    }
+
+    // Runs one session and guarantees the admission slot is released exactly once when it ends (however it
+    // ends — clean disconnect, error, or slow-client drop).
+    private async Task RunAndReleaseAsync(TcpClient client, int port, IPAddress ip)
+    {
+        try { await new Session(client, port, _store, _world).RunAsync(); }
+        catch (Exception e) { Log.Info($"!! session {ip} on :{port} faulted: {e.Message}"); }
+        finally { _guard.Release(ip); }
     }
 }

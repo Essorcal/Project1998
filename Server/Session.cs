@@ -42,6 +42,16 @@ public sealed class Session
                                                       FullMode = BoundedChannelFullMode.Wait });
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
 
+    // Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10 world
+    // arrival, or 0x03 re-login) within this budget or it is dropped. A client that connects and then holds
+    // the socket open sending nothing costs us a session slot for free otherwise. Only the FIRST packet is
+    // gated — once established there is no read timeout, so an in-world player standing AFK (or an Alt+X
+    // connection idling between world-exit and re-login) is never disconnected. Env-tunable; 15s is far more
+    // than a real client needs (it speaks in milliseconds) yet kills a hold.
+    private static readonly int HandshakeMs =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+    private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
+
     // --- client version, tagged by the port the connection arrived on (unified dual-client server) ---
     // 4.95 speaks the original protocol (local map files; incoming 0x06 = walk-sync). 5.33 streams
     // terrain from the server (incoming 0x05/0x06 = map-data requests -> reply 0x06). Rather than sniff
@@ -208,6 +218,17 @@ public sealed class Session
                 Log.Info("   == game connect: waiting for client 0x10 arrival (no pre-arrival sends) ==");
             }
 
+            // Handshake watchdog: fires once if no valid packet arrives within HandshakeMs. Gated on
+            // _established so a late fire can never drop a connection that has already spoken; closing the
+            // socket makes the pending ReadAsync below throw and unwind into the finally cleanup.
+            using var handshake = new CancellationTokenSource(HandshakeMs);
+            handshake.Token.Register(() =>
+            {
+                if (Volatile.Read(ref _established) != 0) return;
+                Log.Info($"!! {_remote} handshake timeout ({HandshakeMs}ms) — no valid packet, dropping");
+                CloseConnection("handshake timeout");
+            });
+
             var buf = new List<byte>();
             var tmp = new byte[4096];
             while (true)
@@ -225,7 +246,11 @@ public sealed class Session
                     off += consumed;
                     Handle(pkt);
                 }
-                if (off > 0) buf.RemoveRange(0, off);
+                if (off > 0)
+                {
+                    buf.RemoveRange(0, off);
+                    Volatile.Write(ref _established, 1);   // first valid frame parsed -> handshake satisfied
+                }
                 if (buf.Count > 0)
                     Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
             }
