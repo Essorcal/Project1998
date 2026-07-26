@@ -222,6 +222,36 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    process shows no new activity). The original single-process server answered `0x03` on every port; the
    split had to restore it on the game side.
 
+### 4.3 Robustness / DDoS hardening (app-layer, 2026-07-27)
+
+App-layer defenses on both front doors (they complement — do not replace — infra-layer defense: upstream
+scrubbing, OS SYN-flood protection, a firewall restricting the game ports to post-handshake traffic).
+
+- **Guarded accept loops** — a transient `AcceptTcpClientAsync` throw is logged and skipped, never faulting
+  the listener task.
+- **Connection admission (`Shared/ConnGuard.cs`)**, checked on every accept before a session is spawned:
+  - **Global cap** (load-shed): past `NEXUS_<GAME|LOGIN>_MAXCONN` (default 2000) accept-then-close.
+  - **Per-IP concurrent cap**: `NEXUS_<…>_PERIP` (default **8** — sized to reliably support ~2 players/IP
+    incl. the brief login→game socket overlap and a lingering half-open "ghost" socket; it is **not** a hard
+    player quota — enforce that in login logic if wanted).
+  - **Per-IP open-rate limit** (fixed window): `NEXUS_<…>_RATE` opens per `_RATEWIN_MS` (default 30 / 10 s),
+    catching connect/disconnect churn floods the concurrent cap wouldn't.
+  - **Loopback is exempt** from the per-IP + rate gates (local dev, the client test box, and the same-box
+    login→game hop all originate from 127.0.0.1) but still counts toward the global cap. Rate table is
+    soft-capped (fails **open** past 100k distinct IPs) so it can't itself become a memory-DoS.
+- **Handshake watchdog** — a freshly-accepted connection must send its first **valid framed** packet within
+  `NEXUS_HANDSHAKE_MS` (default 15 s) or it is dropped (slow-loris defense). Only the first packet is gated
+  (via an `_established` flag), so an in-world / AFK / Alt+X-idle player is never disconnected. Reads after
+  the handshake are untimed. The watchdog **closes the socket** (unblocking the pending read) rather than
+  relying on `NetworkStream`'s unreliable read-cancellation.
+- **Non-blocking writes (the tick-stall fix — most important).** `Session.Send` no longer does a synchronous
+  `_stream.Write` on the shared 600 ms `World.TickLoop` thread. It enqueues onto a **bounded per-session
+  channel** (cap 2048) drained by one dedicated writer task that owns the only socket writes. A client whose
+  TCP receive buffer is full (slow, or deliberately not reading) used to **block that write and freeze mob
+  AI for everyone on the map**; now the tick thread does an O(1) `TryWrite` and moves on, and a client whose
+  queue overflows is dropped — the world never stalls. The single-reader channel also guarantees frames
+  never interleave mid-packet (what the old per-session send lock did).
+
 ---
 
 ## 5. The "enter world" trigger — the crux
