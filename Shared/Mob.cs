@@ -47,6 +47,20 @@ public sealed class Mob
     // frozen and won't wander. 0 = not debuffed. World.Tick skips movement while frozen.
     public long FrozenUntil;
 
+    // Combat AI (RTK's threat/target model, mob_ai_normal.lua: on_attacked sets the target, move/attack
+    // chase and swing at it): 0 = passive wander. World.TryDamage sets this to the attacker's player id on a
+    // landed hit; World.Tick then has the mob abandon wandering to path toward and melee that player instead,
+    // until it dies, logs off, or strays past ChaseLeash — mirroring "fights back" rather than unprovoked
+    // aggro (nothing here attacks a player who never hit it first, matching every normal-mob AI reviewed).
+    public uint TargetId;
+    public int  Level;         // copied from MobDef.Level at spawn — drives its melee damage (World.Tick)
+    public int  AttackTime = 2000;   // ms between swings once adjacent to its target
+    public int  AttackTimer;
+
+    // Copied from MobDef.Will at spawn — RTK's per-mob magic-resist stat (Session.RollDeflect). RTK's mob
+    // struct also carries a separate "protection" stat we have no source data for, so it's treated as 0.
+    public int Will;
+
     public Mob() { }
 
     public Mob(uint id, ushort sprite, ushort x, ushort y, string name, int hp, byte extra = 0)

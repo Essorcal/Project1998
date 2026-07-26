@@ -3,8 +3,9 @@ namespace Server;
 /// <summary>
 /// A single-giver quest: its identity plus the NPC conversation that offers / nudges / turns it in. The whole
 /// quest reads as linear script through <see cref="NpcContext"/> (menu/say + the quest helpers on it),
-/// branching on the player's stage (<see cref="NotStarted"/> / … the quest owns the meaning). Stages persist in
-/// <see cref="Shared.Character.Quests"/>. Bind a quest to its giver by NPC id in <see cref="Quests.ByNpc"/> and
+/// branching on the player's stage — a plain int the quest owns the meaning of (the tutorial chain runs 0..14).
+/// Stages persist in <see cref="Shared.Character.Quests"/>. Bind a quest to its giver by NPC id in
+/// <see cref="Quests.ByNpc"/> and
 /// the NPC gains a <see cref="QuestAbility"/> menu automatically (see <see cref="NpcScripts.For"/>).
 ///
 /// This models a per-NPC stage-machine quest (like the RTK tutorial chain). Self-contained multi-entry quests
@@ -13,10 +14,6 @@ namespace Server;
 /// </summary>
 public sealed class QuestDef
 {
-    public const int NotStarted = 0;
-    public const int Active     = 1;
-    public const int Done       = 2;
-
     /// <summary>Unique quest id + the base key for its progress state (never shown to the player).</summary>
     public required string Key { get; init; }
     /// <summary>Display name for the NPC menu entry.</summary>
@@ -32,8 +29,13 @@ public sealed class QuestDef
 /// </summary>
 public static class Quests
 {
-    // giver NpcId -> the quests it offers. (The tutorial chain — Jadespear #49 / Ironheart #20 — lands here.)
-    private static readonly Dictionary<int, QuestDef[]> ByNpc = new();
+    // giver NpcId -> the quests it offers. Jadespear #49 and Ironheart #20 share the tutorial chain (both are
+    // MainTutorialNpc in the RTK data), so the same QuestDef is listed under both.
+    private static readonly Dictionary<int, QuestDef[]> ByNpc = new()
+    {
+        [20] = new[] { TutorialQuest.Def },   // Ironheart
+        [49] = new[] { TutorialQuest.Def },   // Jadespear
+    };
 
     /// <summary>The quests a given NPC offers (empty if none).</summary>
     public static IReadOnlyList<QuestDef> ForNpc(int npcId) =>

@@ -4,7 +4,7 @@ namespace Server;
 public sealed record MapInfo(ushort Id, string Name, ushort Xs, ushort Ys);
 
 /// <summary>A summonable creature definition (name, sprite look, palette colour, HP, reward, move pace).</summary>
-public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime);
+public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime, int Will = 0);
 
 /// <summary>One "slay-one-of" quest target from RTK MinorQuest.lua (extracted to MinorQuests.csv). A quest is
 /// picked at random among those whose Level/Stat/Mark ranges the player falls in; the objective is met by
@@ -48,7 +48,8 @@ public sealed record ItemDef(
     ushort Icon, byte IconColor, ushort Look, byte LookColor,
     byte Sex, byte Level, ushort Durability, int StackAmount, int MaxAmount,
     int Armor, int Hit, int Dam, int Vita, int Mana, int Might, int Will, int Grace,
-    bool NoDrop, bool Thrown, int BuyPrice, int SellPrice, int MightReq = 0, int Sound = 0)
+    bool NoDrop, bool Thrown, int BuyPrice, int SellPrice, int MightReq = 0, int Sound = 0,
+    bool Indestructible = false)
 {
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
@@ -90,7 +91,7 @@ public sealed record ItemDef(
 /// sends a target entity id), <b>5</b> = self / no-target. The client renders type 1/2 in the Spell book and
 /// type 5 in the Skill book (both populate through the same 0x17 packet, keyed on this type).
 /// </summary>
-public sealed record SpellDef(int Id, string Key, string Name, byte Type, int PathId, int Level, int Alignment, string Question)
+public sealed record SpellDef(int Id, string Key, string Name, byte Type, int PathId, int Level, int Alignment, string Question, bool CanFail = false)
 {
     public bool NeedsTarget => Type == 2;   // client sends a target entity id (u32) when casting
     public bool NeedsPrompt => Type == 1;   // client sends the typed answer string when casting
@@ -271,6 +272,12 @@ public static class Content
     // minor-quest ability. See Server/MinorQuest.cs.
     public static IReadOnlyList<MinorQuestDef> MinorQuests { get; private set; } = new List<MinorQuestDef>();
 
+    // NPC identifier -> its buy stock (item keys), auto-extracted from the RTK NPC scripts
+    // (re/extract_shops.py -> ShopStock.csv). A fallback behind the curated Shops.cs catalogues, so every
+    // shop-flagged NPC has something to sell without hand-authoring each. See Shops.For.
+    public static IReadOnlyDictionary<string, string[]> ShopStock { get; private set; } =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
     // 4.95 client Monster.tbl "Palette" per look id (0..326), decoded from the client PAK (see
     // re/monster-matcher). This is the palette the CLIENT draws a given monster with — a DIFFERENT index
     // space than RTK's MobLookColor. The 0x07 spawn color byte must carry THIS value (not RTK's) or the
@@ -286,9 +293,14 @@ public static class Content
     // Per-map region + warp-out flag (RTK Maps table: MapRegion / MapWarpout). Region groups maps into
     // kingdoms (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …) and is what the Gateway spell keys off to pick
     // the destination city; warpOut==false is a map that blocks Gateway/Return ("It doesn't work here").
+    // Also carries the warp-entry gate (RTK map_data.reqlvl/reqvita/reqmana/reqmark/reqpath/*max/rejectmsg,
+    // map.c:1102) and the PvP flag (MapPvP — durability loss is disabled on PvP maps, RTK clif.c:6650).
     // Loaded from the full RTK Maps.csv (map_index.csv, the renderable subset, doesn't carry these columns).
-    public static IReadOnlyDictionary<ushort, (int region, bool warpOut)> MapMeta { get; private set; } =
-        new Dictionary<ushort, (int, bool)>();
+    public sealed record MapMetaInfo(int Region, bool WarpOut, bool Pvp, bool CanTalk, int ReqLvl, int ReqPath, int ReqMark,
+        long ReqVita, long ReqMana, int LvlMax, long VitaMax, long ManaMax, string RejectMsg);
+
+    public static IReadOnlyDictionary<ushort, MapMetaInfo> MapMeta { get; private set; } =
+        new Dictionary<ushort, MapMetaInfo>();
 
     public static void Load()
     {
@@ -301,13 +313,14 @@ public static class Content
         Npcs = LoadNpcs(ResolvePath("NEXUS_NPCS", "re", "rtk-data", "NPCs0.csv"));   // needs Maps
         _npcById = Npcs.ToDictionary(n => n.Id);
         MinorQuests = LoadMinorQuests(ResolvePath("NEXUS_MINORQUESTS", "re", "rtk-data", "MinorQuests.csv"));
+        ShopStock = LoadShopStock(ResolvePath("NEXUS_SHOPSTOCK", "re", "rtk-data", "ShopStock.csv"));
         Paths = LoadPaths(ResolvePath("NEXUS_PATHS", "re", "rtk-data", "Paths.csv"));
         Spells = LoadSpells(ResolvePath("NEXUS_SPELLS", "re", "rtk-data", "Spells.csv"));
         SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "re", "rtk-data", "spell_effects.csv"));
         LookPalettes = LoadLookPalettes(ResolvePath("NEXUS_MOB_PALETTES", "re", "rtk-data", "MobLookPalettes.csv"));
         MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "re", "rtk-data", "Maps.csv"));   // region + warpOut for Gateway
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check re/monster-matcher/rtk_mobs.csv)"
                      : ""));
@@ -319,11 +332,19 @@ public static class Content
 
     /// <summary>The RTK region a map belongs to (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …), or -1 if the
     /// map has no region row. Used by the Gateway spell to resolve the caster's kingdom.</summary>
-    public static int RegionOf(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) ? m.region : -1;
+    public static int RegionOf(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) ? m.Region : -1;
 
     /// <summary>Whether a map allows warp-out spells (Gateway/Return). Unknown maps default to true (only an
     /// explicit MapWarpout==0 blocks); RTK shows "It doesn't work here" when this is false.</summary>
-    public static bool WarpOut(ushort mapId) => !MapMeta.TryGetValue(mapId, out var m) || m.warpOut;
+    public static bool WarpOut(ushort mapId) => !MapMeta.TryGetValue(mapId, out var m) || m.WarpOut;
+
+    /// <summary>Whether a map is flagged PvP (RTK MapPvP) — disables equipment durability loss there
+    /// (clif_deductdura, clif.c:6650: "disable dura loss from mobs on pvp map").</summary>
+    public static bool IsPvpMap(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) && m.Pvp;
+
+    /// <summary>Whether speech (incl. whisper) is allowed on this map (RTK cantalk). False on the rare
+    /// silenced map — RTK: "Your voice is swept away by a strange wind." (clif_parsewisp, clif.c:7666).</summary>
+    public static bool CanTalk(ushort mapId) => !MapMeta.TryGetValue(mapId, out var m) || m.CanTalk;
 
     /// <summary>Offline check of the registries + fuzzy lookups (run via <c>--selftest</c>).</summary>
     public static void SelfTest()
@@ -738,17 +759,29 @@ public static class Content
         return maps;
     }
 
-    // id -> (region, warpOut) from the full RTK Maps table. Only the three columns we need; unknown/blank
-    // region defaults to -1 (no kingdom), warpOut to true (allow) so only an explicit 0 blocks warp-outs.
-    private static Dictionary<ushort, (int region, bool warpOut)> LoadMapMeta(string? path)
+    // id -> MapMetaInfo from the full RTK Maps table. unknown/blank region defaults to -1 (no kingdom),
+    // warpOut to true (allow) so only an explicit 0 blocks warp-outs; the req*/max*/rejectmsg columns
+    // default to 0/"" (no gate) when absent.
+    private static Dictionary<ushort, MapMetaInfo> LoadMapMeta(string? path)
     {
-        var meta = new Dictionary<ushort, (int, bool)>();
+        var meta = new Dictionary<ushort, MapMetaInfo>();
         foreach (var col in ReadCsv(path))
         {
             if (!col.TryGetValue("MapId", out var sid) || !ushort.TryParse(sid, out var id)) continue;
+            int Rd(string k) { int.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
+            // Vita/mana caps are stored as unsigned 32-bit in RTK; "no cap" is the sentinel 4294967295, which
+            // overflows int.TryParse (silently yielding 0 -- looks like "no vita/mana at all" instead of
+            // "unbounded"). Parse as long so the sentinel round-trips correctly.
+            long Rl(string k) { long.TryParse(col.GetValueOrDefault(k, "0"), out var v); return v; }
             if (!int.TryParse(col.GetValueOrDefault("MapRegion", "-1"), out var region)) region = -1;
             bool warpOut = col.GetValueOrDefault("MapWarpout", "1") != "0";
-            meta[id] = (region, warpOut);
+            bool pvp = col.GetValueOrDefault("MapPvP", "0") == "1";
+            // MapChat is RTK's "cantalk" flag (map.c sscanf column order matches): 1 = talk is BLOCKED on
+            // this map (only 2/9850 maps set it), not "chat allowed" despite the name.
+            bool canTalk = col.GetValueOrDefault("MapChat", "0") != "1";
+            meta[id] = new MapMetaInfo(region, warpOut, pvp, canTalk,
+                Rd("MapReqLvl"), Rd("MapReqPath"), Rd("MapReqMark"), Rl("MapReqVita"), Rl("MapReqMana"),
+                Rd("MapLvlMax"), Rl("MapVitaMax"), Rl("MapManaMax"), Clean(col.GetValueOrDefault("MapRejectMsg", "")));
         }
         return meta;
     }
@@ -764,14 +797,28 @@ public static class Content
             int.TryParse(col.GetValueOrDefault("Vita", "0"), out var hp);
             int.TryParse(col.GetValueOrDefault("Exp", "0"), out var exp);
             int.TryParse(col.GetValueOrDefault("Level", "0"), out var lvl);
+            int.TryParse(col.GetValueOrDefault("Will", "0"), out var will);
             // MobMoveTime (ms between move attempts). Absent/0 in older exports -> a calm default.
             int move = int.TryParse(col.GetValueOrDefault("MobMoveTime", "0"), out var mv) && mv > 0 ? mv : 2500;
             var name = Clean(col.GetValueOrDefault("Description", ""));
             var key = Clean(col.GetValueOrDefault("Identifier", ""));
             if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"mob{id}" : key;
-            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move));
+            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will));
         }
         return mobs;
+    }
+
+    private static Dictionary<string, string[]> LoadShopStock(string? path)
+    {
+        var stock = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var id = Clean(col.GetValueOrDefault("NpcIdentifier", ""));
+            if (string.IsNullOrEmpty(id)) continue;
+            var keys = Clean(col.GetValueOrDefault("ItemKeys", "")).Split('|', StringSplitOptions.RemoveEmptyEntries);
+            if (keys.Length > 0) stock[id] = keys;
+        }
+        return stock;
     }
 
     private static List<MinorQuestDef> LoadMinorQuests(string? path)
@@ -812,10 +859,21 @@ public static class Content
                 I("ItmArmor"), I("ItmHit"), I("ItmDam"), I("ItmVita"), I("ItmMana"),
                 I("ItmMight"), I("ItmWill"), I("ItmGrace"),
                 NoDrop: I("ItmDroppable") != 0, Thrown: I("ItmThrown") != 0,
-                I("ItmBuyPrice"), I("ItmSellPrice"), I("ItmMightRequired"), Sound: I("ItmSound")));
+                I("ItmBuyPrice"), I("ItmSellPrice"), I("ItmMightRequired"), Sound: I("ItmSound"),
+                Indestructible: I("ItmIndestructible") != 0));
         }
         return items;
     }
+
+    // Map ranges removed as "not classic": whole regions that are RTK-authored reskins of existing classic
+    // dungeons rather than original NexusTK content, cut out of the warp graph (not deleted from the CSVs) so
+    // they're simply unreachable — revertable by trimming this list.
+    // 410-419 "Buya Scorpion Cave": a scorpion-reskinned clone of the Kugnae Spider Cave (90-96) — same
+    // level-42 gate, same shared mob-id pool (carrion_raven/pale_scorpion/massive_scorpion) with the spider
+    // ids swapped for scorpion ids (giant_spider->vile_scorpion, radiant_spider->radiant_scorpion, plus an
+    // extra scorpion_lurker/crimson_scorpion boss). Entrance was Buya (68,93)/(69,93).
+    private static readonly (ushort lo, ushort hi)[] ExcludedMapRanges = { (410, 419) };
+    private static bool IsExcludedMap(ushort map) => Array.Exists(ExcludedMapRanges, r => map >= r.lo && map <= r.hi);
 
     private static Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)> LoadWarps(string? path)
     {
@@ -828,7 +886,8 @@ public static class Content
                 && ushort.TryParse(col.GetValueOrDefault("DestinationMapId"), out var dm)
                 && ushort.TryParse(col.GetValueOrDefault("DestinationX"), out var dx)
                 && ushort.TryParse(col.GetValueOrDefault("DestinationY"), out var dy)
-                && Maps.ContainsKey(dm))          // don't warp to a map the client can't render
+                && Maps.ContainsKey(dm)            // don't warp to a map the client can't render
+                && !IsExcludedMap(sm) && !IsExcludedMap(dm))
             {
                 warps[(sm, sx, sy)] = (dm, dx, dy);   // last write wins on duplicate source tiles
             }
@@ -853,6 +912,13 @@ public static class Content
         return pals;
     }
 
+    // Spawns dropped as NOT CLASSIC: content whose only purpose is a questline we don't (and won't yet) model,
+    // left standing would just be a mute, purposeless mob wandering the map — worse than not spawning at all.
+    // 729 spy_hwan "Hwan" (Buya 330 @38,99): captive NPC for the Spy subpath's interrogation storyline
+    // (NPCs/subpaths/spy/hwan.lua) — the whole player-subpath system is unbuilt, so he can never be interacted
+    // with as designed. Revisit if/when subpaths are ported.
+    private static readonly HashSet<int> ExcludedSpawnMobIds = new() { 729 };
+
     private static List<SpawnDef> LoadSpawns(string? path)
     {
         var spawns = new List<SpawnDef>();
@@ -861,7 +927,8 @@ public static class Content
             if (int.TryParse(col.GetValueOrDefault("SpnMobId"), out var mob)
                 && ushort.TryParse(col.GetValueOrDefault("SpnMapId"), out var map)
                 && ushort.TryParse(col.GetValueOrDefault("SpnX"), out var x)
-                && ushort.TryParse(col.GetValueOrDefault("SpnY"), out var y))
+                && ushort.TryParse(col.GetValueOrDefault("SpnY"), out var y)
+                && !ExcludedSpawnMobIds.Contains(mob))
             {
                 spawns.Add(new SpawnDef(mob, map, x, y));
             }
@@ -947,7 +1014,8 @@ public static class Content
             if (!int.TryParse(col.GetValueOrDefault("SplAlignment", "-1"), out var align)) align = -1;
             var q = Clean(col.GetValueOrDefault("SplQuestion", ""));
             if (q.Equals("NO", StringComparison.OrdinalIgnoreCase)) q = "";
-            spells.Add(new SpellDef(id, key, name, type, pth, lvl, align, q));
+            bool canFail = col.GetValueOrDefault("SplCanFail", "0") == "1";   // RTK magicdb_canfail — gates the deflect roll
+            spells.Add(new SpellDef(id, key, name, type, pth, lvl, align, q, canFail));
         }
         return spells;
     }

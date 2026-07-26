@@ -34,6 +34,8 @@ that is called out too.
 11c. [Items — bag, gear, ground, combat](#11c-items--bag-gear-ground-and-combat--built-awaiting-live-495-verification)
 11d. [Spells & skills](#11d-spells--skills--built-awaiting-live-495-verification)
 11e. [NPCs & dialog](#11e-npcs--dialog--live-confirmed-on-495)
+11g. [Durability, warp gating, whisper, spell resist](#11g-durability-warp-gating-whisper-and-spell-resist-added-2026-07-25)
+11h. [Bulletin boards](#11h-bulletin-boards-added-2026-07-26--unverified-reply-shapes)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -257,7 +259,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
-| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | Client toggle. `0x07` = realm-center (F4, §10.5); `0x09` = fast-move (§10.1). |
+| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | Client toggle. `0x00` = the 'r' Ride key (RTK `clif_changestatus` case 0x00 → `clif_findmount`; `Session.TryRideHorse` — mounts by despawning a real nearby "horse" world mob, dismounts by spawning one back in front of you, §8); `0x02` = group/sociable (Shift+G, §9.5); `0x07` = realm-center (F4, §10.5); `0x08` = exchange/trade (§9.5); `0x09` = fast-move (§10.1). Group/exchange are persisted profile status flags; the others are session/camera state. |
 | `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
@@ -497,6 +499,20 @@ layout:**
 **There is no hair slot** in this form. In 4.95, hair is not renderable via `0x33` (it was set by
 in-game stylist NPCs). This is a hard limit of the packet, not a server bug.
 
+**The 'r' Ride key vs. `!ride`/`!mount` (fixed 2026-07-26).** These now do different things. `!ride`/
+`!mount [0|1]` (`Session.ToggleMount`) is a plain GM/debug toggle — flips `Character.Mounted` unconditionally,
+no world state involved. The **'r' key** (`0x1b` setting `0x00` → `Session.TryRideHorse`) is the real RTK
+mechanic (`clif_findmount`): mounting requires an actual `Mob` with `MobDef.Key == "horse"` (the plain
+wandering "Horse" — id 8 — spawned in Buya/Horse Valley by `Content.AreaSpawns`; combat mobs that merely
+share the word, e.g. `wild_horse`/`horse_guardsman`, don't count) standing on the **single tile the player
+is facing** (`FrontTile()`, checked via `World.MobNear(..., radius: 0)` — cardinal only, same reach as the
+player's own melee attack; diagonal doesn't count, corrected same day after the user caught it working
+diagonally) — and **despawns that mob** (`World.DespawnMob`: no loot/exp, and if it was a spawn-point mob
+the point is freed to respawn normally, like a kill). With no horse faced, 'r' just replies "There is no
+horse to ride here." and does nothing. **Dismounting spawns a fresh "horse" mob back onto the tile in
+front of the player, facing them** (`SummonWorldMob`, same path as `!summon`) — so the horse you rode away
+is physically set back down when you get off, instead of just vanishing.
+
 **Minimum visible self:** `appearance = [sex, 0, face, 0, 0, 0, 0]`, `renderKind = 1`. Any nonzero
 value in `[1]` (the form byte) risks blanking the whole sprite — that was the root cause of the
 "invisible character" saga (§14).
@@ -515,29 +531,46 @@ Creation is two login-channel packets:
 
 1. **`0x02` NameCheck** — `nameLen name pwLen pw 00 00 00` (name + password). Server replies `0x02`
    with payload `00` = "available / OK".
-2. **`0x04` CreateAppearance** — **5 bytes**. Decoded by **controlled experiment** (create characters
-   literally named after the attribute varied):
+2. **`0x04` CreateAppearance** — **5 bytes**: `[0]=face [1]=sex [2]=nation [3]=totem [4]=hair`.
+   Field ORDER confirmed against the real RTK char-server source (`RTK-Server/rtk/src/char/logif.c`,
+   `logif_parse_newchar`): its call `char_db_newchar(name, pass, totem=RFIFOB(39), sex=RFIFOB(37)%2,
+   country=RFIFOB(38), face=RFIFOB(36), hair=RFIFOB(40), faceColor=RFIFOB(42), hairColor=RFIFOB(41))`
+   shows the appearance tail (right after that server's fixed-width name+pass block) is laid out
+   face, sex, nation, totem, hair, hairColor, faceColor. Our 4.95 blob is the same 5-byte prefix of
+   that order, minus the two color bytes. (An earlier pass mis-read `[2]` as "near-constant misc" and
+   `[3]`/`[4]` as an undecoded nation/totem pair — that guess never had a sample where nation was
+   deliberately varied; re-reading with the corrected order lines up perfectly, e.g. a character
+   created with Totem=JuJak + Nation=Buya logs `... 02 00 00` → `[2]=2 (Buya) [3]=0 (JuJak)`.)
 
    | Byte | Meaning | Evidence |
    |---|---|---|
    | `[0]` | **Face** | chars "faceone/two/three" gave `[0]` = `00/23/34` → three distinct correct faces. |
-   | `[1]` | **Gender** | `0` = male, `1` = female. Char "male" → `[1]=00`; every female → `[1]=01`. |
-   | `[2]` | near-constant (nation/totem/misc) | mostly `02`. |
-   | `[3]` / `[4]` | **nation / totem** | These are **stats**, not appearance (see §16). |
+   | `[1]` | **Sex** | `0` = male, `1` = female. Char "male" → `[1]=00`; every female → `[1]=01`. |
+   | `[2]` | **Nation** (`Character.Nations` index) | live report + RTK `logif.c` field order. |
+   | `[3]` | **Totem** (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None) | same; matches RTK's `Player.getTotemName`. |
+   | `[4]` | **Hair** | never observed non-zero in these samples; persisted, no 4.95 render slot yet. |
 
-   Sample blobs:
+   Sample blobs (re-decoded — name, sex, **nation**, **totem**):
    ```
-   male:      55 00 02 02 00
-   female:    12 01 02 01 00
-   faceone:   00 00 02 02 00
-   facetwo:   23 00 01 02 00
-   facethree: 34 00 01 02 00
+   male:      55 00 02 02 00   M, Buya,    HyunMoo
+   female:    12 01 02 01 00   F, Buya,    Baekho
+   faceone:   00 00 02 02 00   M, Buya,    HyunMoo
+   facetwo:   23 00 01 02 00   M, Koguryo, HyunMoo
+   facethree: 34 00 01 02 00   M, Koguryo, HyunMoo
+   newbie:    29 00 02 00 00   M, Buya,    JuJak      (live pick: "JuJak + Buya")
+   newbiea:   32 00 02 03 00   M, Buya,    ChungRyong
+   newbieb:   3d 00 02 00 00   M, Buya,    JuJak      (live pick: "JuJak + Buya")
    ```
 
-**Creation → render mapping** (server-side): render `appearance[0]` (sex) = creation `[1]`;
-render `appearance[2]` (face) = creation `[0]`. Gender and face then persist and render correctly.
-Hair is unmapped (no render slot). Nation/totem are stats, deferred until the stats/HUD packet is
-solved.
+**Creation → render mapping** (server-side, `Session.ApplyAppearance`): render `appearance[0]` (sex) =
+creation `[1]`; render `appearance[2]` (face) = creation `[0]`. `Character.Nation`/`Character.Totem`
+are set directly from creation `[2]`/`[3]` (validated against range). Hair (`[4]`) is persisted but has
+no 4.95 render slot. `Session.PlaceNewCharacter` (run AFTER `ApplyAppearance` so it sees the real
+nation) then routes a brand-new character to their home city — see §11f.
+
+Real RTK note: in the *Lua* gameplay layer (`totem_npc.lua`), totem is normally re-assigned later by
+worshipping a totem-animal shrine in the Wilderness, not fixed forever at creation — this server
+currently only implements the creation-time pick, not the worship system.
 
 > **Critical caveat:** the creation-packet byte space and the render-packet byte space are **different
 > id spaces** with different field *orders* (creation `[0]`=face but render `[2]`=face; creation
@@ -601,11 +634,11 @@ profile dispatcher `0x424820`; vtable `0x4cdf88`, method +0x5c). Body:
 [clanTitle : u8 len + bytes]
 [title : u8 len + bytes]
 [spouse : u8 len + bytes]
-[group u8][TNL u32BE]
+[group u8][TNL u32BE]             ← group u8 = the "sociable/group" status cell (Shift+G, 0x1b/0x02)
 [className : u8 len + bytes]
 [helmIcon u16BE][leftRingIcon u16BE][rightRingIcon u16BE]   ← the 3 equip-icon cells beside the doll
 [buff box : u8 len + text]        ← multi-line; client maps TAB(0x09)→CR(0x0d), one line per active buff
-[flag u8]                         (client field +0x935; 0 in captures)
+[exchange u8]                     ← the "exchange/trade" status cell (0x1b/0x08); client field +0x935
 [legendCount u8]                  ← a single u8 (NOT u16)
 legendCount × { icon u8, color u8, textLen u8, text }
 ```
@@ -630,7 +663,7 @@ appearance: tag u8 (=0) + 7 look bytes                (same 7-byte form as 0x33 
 [helmIcon u16BE][leftRingIcon u16BE][rightRingIcon u16BE]  ← 3 equip-icon cells (SAME as 0x39; NOT portraits)
 gear/item list (u8 len + text)                        PAGE 1; item names TAB-separated (client → CR)
 scalar (u32BE)                                        (unknown; 0)
-look-selector A (u8), look-selector B (u8)            (0xff = none)
+group (u8), exchange (u8)                             the two status cells; 0/1 = off/on, 0xff = blank WHITE box
 nation (u8)                                           PAGE 2; drawn via NATION_E.EPF
 picture (u16BE len + bitmap bytes)                    PAGE 2; empty = 00 00
 writable blurb (u8 len + text)                        PAGE 2; the free-text box
@@ -643,6 +676,14 @@ Gotchas that cost real debugging time:
   the legend count** (the parser eats the legend-count byte as the blurb length) → empty legend.
 - Legend **text color `0x80`** (from the real capture); color `0` renders the text invisible (icon
   still shows).
+- **Dated legend text** (fixed 2026-07-26): several RTK legends stamp the in-game date, e.g.
+  `player:addLegend("Aided Chu Rua (" .. curT() .. ")", ...)` (`chu_rua.lua`) and the "born" legend
+  (`login_map_tile.lua`: `"Born in " .. curT()`, `curT()` = `"Yuri <year>, <season>"`). We don't model
+  RTK's in-game calendar (no server-side clock tick), so `Character.GameDate` is a fixed constant —
+  `"Hyul 31, Winter"`, matching the live-captured self-profile reference above (§9.5's "Born in Hyul 31,
+  Winter"; the live text says "Hyul", not RTK's own "Yuri" — the live capture wins where they diverge) —
+  reused everywhere a legend needs "the current date". `ChuRuaAbility` (`NpcAbility.cs`) now grants
+  `$"Aided Chu Rua ({Character.GameDate})"` instead of the undated string it shipped with.
 - 4.95's click popup has **no totem slot** (`TOTEM.EPF` is unreferenced in the client) — totem only
   appears on the HUD/self-profile, not here.
 - The **3 icon cells** (helm / left ring / right ring) are shared by BOTH views as three `u16BE` fields.
@@ -652,6 +693,15 @@ Gotchas that cost real debugging time:
   helm box) proved they take an `IconWire` value. Order confirmed live: helm, left ring, right ring.
   Wire slots come from the client's own `0x1F` unequip captures: **helm=4, left ring=7, right ring=8**.
   Fed by `Session.ProfileCellIcon(wireSlot)`.
+- **Group / exchange status cells.** Both views show a **group** (sociable) and **exchange** (trade)
+  indicator. In `0x34` they're the two `u8` cells after the scalar (were briefly guessed as "look-selectors");
+  in `0x39` they're the `group` byte (after `spouse`) and the `exchange` byte (the trailing flag before the
+  legend count). **`0xff` renders a blank WHITE box** — send a real `0`/`1` (off/on). The two views MUST read
+  the same source or they disagree (self showed OFF while other showed ON when only `0x34` was wired). Toggled
+  by the `0x1b` setting opcode — **`0x02` = group (Shift+G), `0x08` = exchange** — and persisted on the
+  character (`Character.Grouped` / `Character.Exchange`) so they survive reopening the profile and a relog.
+  NOTE this is only the joinable/tradeable *flag* + its display; real party/trade **request** flows (the
+  client's `0x2e` / `0x4a` packets, seen but unhandled) are a separate, unbuilt feature.
 
 **Editing — client `0x4f`.** Saving the profile edit sends
 `4f | picSize(u16BE) | pic[] | blurbLen(u8) | blurb[] | 00`. Parse both (mirrors the client's own
@@ -967,6 +1017,25 @@ The world is populated automatically from **two** RTK spawn sources, not just by
 — one live mob per point. This is only **1175 points across 19 maps** (Kugnae 526, Buya 408, a few specials): it
 covers the towns and little else. RTK's `Spawns0` SQL table genuinely has nothing for the hunting maps.
 
+**Excluded as "not classic" (`Content.ExcludedSpawnMobIds`).** A handful of `Spawns0` points exist only to host a
+scripted storyline for a subsystem we haven't built, so spawning them is worse than not — a mute, purposeless mob
+standing in for content that can never trigger. Currently: **729 `spy_hwan` "Hwan"** (Buya 330 @38,99) — a captive
+NPC for the Spy subpath's interrogation questline (`NPCs/subpaths/spy/hwan.lua`); the player-subpath system doesn't
+exist yet, so he's filtered out of `LoadSpawns` rather than left to wander aimlessly. Revisit if subpaths are ever
+ported; add future finds of the same shape to that set rather than editing `Spawns0.csv` directly.
+
+**Excluded map range: "Buya Scorpion Cave" (`Content.ExcludedMapRanges`, maps 410-419).** RTK-authored reskin of
+the classic **Kugnae Spider Cave** (maps 90-96), not original NexusTK content — same level-42 gate, same shared
+generic mob pool (`carrion_raven` 99 / `pale_scorpion` 104 / `massive_scorpion` 105), with the spider-flavoured
+ids swapped for scorpion ones (`giant_spider`→`vile_scorpion`, `radiant_spider`→`radiant_scorpion`, plus an extra
+`scorpion_lurker`/`crimson_scorpion` boss room). Entrance was Buya `(68,93)/(69,93)`, a 10-room linear chain
+(Sand Glen → Sand Edge → Scorpion Tail → Sting → Venom Den → Stream Sands → Sand Den → Desert Claw → South Sand
+Den → Green's End) looping back out to Buya. Cut at the **warp-graph level**: `LoadWarps` drops any warp whose
+source or destination map falls in an excluded range, so the entrance, every internal room-to-room link, and the
+exit are all gone in one place — the maps/mobs/warps stay in the source CSVs untouched (lazy materialization means
+nothing for them even loads), so trimming `ExcludedMapRanges` fully restores the cave. Same "flag, don't delete"
+pattern as the Hwan exclusion above; add further RTK-only reskin dungeons here if found.
+
 **Area spawns (`Content.AreaSpawns` ← `re/rtk-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
 mobs.* RTK spawns hunting-map populations from a Lua "spawner NPC" (`mobSpawnHandler.lua`), not the SQL table, via
 `handleSpawn(npc, map, {mobIds}, {counts}, timer [,minX,minY,maxX,maxY])`. `re/extract_lua_spawns.py` parses those
@@ -1002,12 +1071,14 @@ ambles a hop every few seconds and turns far more often than it moves — not a 
 
 **Collision (matches the player).** A step is rejected unless the target tile is in-bounds, within
 `WanderRadius` (Chebyshev **2**) of `Home`, not on a player tile, **not on another mob**, and not solid.
-Solidity is **`MapData.Solid` = `Pass != 0`** — the **ground passability flag only**, the same test
-`Session.Blocked` uses, so mobs respect the same walls/water/cliffs the player does. The **object layer is
-NOT a collision source** (see §12 "stuck on shadows"): walls are baked into the ground pass flag; objects are
-visual. Mob-vs-mob uses a per-tick `mobTiles` set kept current as each mob moves, so two mobs can't
-share a tile or swap through each other in one tick. Players are also blocked from stepping onto a live mob
-(`_world.MobAt` in `HandleWalk`; warp tiles still take precedence).
+Solidity is **`MapData.BlockedMove(x,y,dir)` = ground pass flag (`Solid`) OR the `SObj.tbl` directional
+object-wall for that heading** — the SAME two-layer test `Session.HandleWalk` uses, so mobs respect the same
+walls/water/cliffs/buildings the player and the client do (see §12). Passing the step direction matters:
+object walls are directional (`UP/DOWN/RIGHT/LEFT`), and it's this layer — not the ground pass flag — that
+stops a mob walking through a building's thin side wall (fixed 2026-07-26, "rabbits through Jadespear's hut
+wall"; user-confirmed). Mob-vs-mob uses a per-tick `mobTiles` set kept current as each mob moves, so two mobs
+can't share a tile or swap through each other in one tick. Players are also blocked from stepping onto a live
+mob (`_world.MobAt` in `HandleWalk`; warp tiles still take precedence).
 
 **Viewport streaming (`Session.SyncMobs`).** The `0x07` spawn is viewport-gated (§14): an off-screen spawn is
 silently dropped, and the client culls entities that move off-screen. So mobs are streamed per player:
@@ -1023,6 +1094,28 @@ map. This is what lets the full spawn roster render without blanket-sending hund
 `Monster.tbl` palette instead rendered every mob green — RTK's per-mob colour matches the client for the common
 critters, so we kept it. A proper RTK-colour → client-palette mapping is future work; the decoded table lives in
 `re/rtk-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
+
+**`rabbit` (MobId 1) had the wrong Look/Color — fixed live 2026-07-26.** The extracted `rtk_mobs.csv` row
+for the base overworld `rabbit` mob (used by 242 fixed spawn points + 22 area spawns — the everyday wild
+critter, not a debug spawn) carried `look 21, color 3`, which shares its sprite shape with the "Hare" family
+(`look 21`, e.g. `hare` id 116 `color 37`) and visibly rendered like a hare, not a rabbit. Cross-referencing
+RTK's own Lua spawn scripts (`rtklua/Accepted/NPCs/mobSpawnHandler.lua`) turned up a themed "Rabbit Warren"
+dungeon (maps `4201-4208`: *Golden Warren*, *Rabbit Hole*, *Hare Depression*, *Mythic Owsla* — a Watership
+Down homage) whose 3 progressive tiers are all built from **look 125** (`golden_rabbit`, `mad_hare`,
+`giant_rabbit`, `hop`/`thump`/`fluff`, …) — confirming 125 is RTK's real "rabbit family" sprite, distinct
+from 21's hare. Visually confirmed live via `re/monster-matcher/monster_matcher.py` (the sprite-matcher
+tool, `http://localhost:8777`) plus in-game `!crecol 125 0 40` (spawns one of every color 0-40, each
+labeled `col<N>` so `;`/look can read the exact number back — see the `HandleLookAt` fix below): the correct
+plain-rabbit palette is **color 11**, not any of the named dungeon-tier colors. `rabbit`'s CSV row is now
+`look 125, color 11`; since `Session.SpawnRabbit` (`!rabbit`) and every persistent spawn both read this one
+registry row, the single data edit fixed the debug command and the whole overworld population at once — no
+code change needed. **Lesson:** a `rtk_mobs.csv` row's Look/Color can be individually wrong even when the
+extraction is right for the rest of the table; when a sprite looks off, verify visually (matcher tool or
+`!crecol`) rather than trusting the row.
+
+**Look-key gap found + fixed alongside this:** `HandleLookAt` (`;` key, §11) only checked `_world.MobAt`
+(shared-world mobs), never the session-local debug-dummy list (`Session.MobAt`) that `!cre`/`!mob`/`!crow`/
+`!crecol`/the look-lab spawn into — so pressing `;` at a `!crecol` row silently did nothing. Now checks both.
 
 **Player HP/MP regen (`Session.RegenTick`).** The same heartbeat also heals **every connected player** — a
 separate `World.Tick` pass, *not* gated on mobs or viewport like the steps above. This ports RTK's
@@ -1098,6 +1191,14 @@ byte (= raw frame `+5`).
 |---|---|---|
 | `0x0F` | add item to bag slot | `slot(u8=idx+1) icon(u16) iconColor(u8) [dispName u8len+txt] [baseName u8len+txt] amount(u32) [stack/0(u8) dura(u32) protected(u8)] [owner u8len+txt] 00 00 00` |
 | `0x10` | remove from bag slot | `slot(u8=idx+1) reason(u8) 00 00` — reason `0`=Remove `1`=Drop `2`=Eat `4`=Throw `6`=Used … |
+
+**⚠ Reason `1` is Drop-only, not a generic "removed" (found live 2026-07-26).** The `0x10` body carries no item
+name — the client renders its status line ("You dropped your `X`") from whatever it already has drawn in
+that slot, keyed purely off `reason`. Several removal paths were reusing reason `1` for non-drop cases —
+`TakeItem` (quest turn-ins), `DlgSell`/`SellItemToNpcByName` (selling), `DepositItemToBank`/`BankDepositItem`
+(banking) — so selling or turning in an item falsely announced "You dropped your `X`". Fixed: all of those now
+send reason `0` (Remove, silent/generic), matching RTK's own `pc_dropitemmap` (`clif.c`), which is the ONLY
+call site that ever passes reason `1`.
 | `0x37` | equip-window entry | `equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00` |
 | `0x38` | unequip-window | `spot(u8) 00` |
 | `0x07` | ground item (§7.2) | floor items go through the **`0x07` static base-object** path (below), NOT `0x16` — graphic = item's `Icon` (Item.epf frame), encoded via `IconWire` |
@@ -1122,6 +1223,24 @@ types with their own slots, so they need no such handling.)
 | `0x1C` | use / equip | `slot(u8=idx+1)` — equipment → wear, else consume |
 | `0x1F` | unequip | `wireSlot(u8)` |
 | `0x24` | drop gold | `amount(u32)` |
+| `0x09` | look (`;` key) | *(no body — always the facing tile; RTK `clif_parselookat_2`)* |
+| `0x19` | whisper (Shift+`'`) | `dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00` — LIVE-confirmed 2026-07-26 |
+
+**Look (`0x09`, added 2026-07-26).** The client sends this with an empty body whenever `;` is pressed — no
+coordinates, always the tile immediately in front of the player (facing direction), matching RTK's
+`clif_parselookat_2` (there's a separate `0x0A` for an explicit-coordinate look that we don't receive from this
+client). `HandleLookAt` checks that tile in RTK's PC → mob/NPC → item order (`clif_parselookat_sub`'s per-type
+branches) and echoes the name as a plain chat-log line (`SendLog`) — a floor item gets `"name (amount)"` when
+stacked, same shape as RTK's commented reference formatter. NPCs are stationary mobs (`IsNpc`) in the same
+shared per-map list, so the mob check already covers them; an empty tile gets no reply at all, matching RTK
+(no `clif_sendminitext` call when nothing's found).
+
+**State guards on item actions (added 2026-07-26).** RTK gates every one of drop/throw/drop-gold/equip on
+player state before doing anything else — dead (`Hp==0`, "Spirit") or mounted can't perform them. Ours now
+matches: `HandleDropItem`/`HandleThrow`/`HandleDropGold` reply `"Spirits can't do that."` / `"You cannot do
+that while riding a mount."`; `EquipFromSlot` uses RTK's (differently-worded, verbatim-preserved) equip-specific
+pair `"Spirit's can't do that."` / `"You can't do that while riding a mount."`. `HandleThrow` also now rejects
+`NoDrop` items (`"You can't throw this item."`) — previously throw had no restriction at all, unlike drop.
 
 **Semantics.** Equipping a **weapon** (`Type 3`), **armor** (`Type 4`) or **shield** (`Type 5`) changes the
 4.95 look — the item's `Look` goes into the 7-byte type-0 form (slot [5]=weapon, [3]=armor, [6]=shield) and
@@ -1145,6 +1264,12 @@ unisex `2` is the common case at 1944/2545 items, so the gate only fires when `I
 client also parses a **path/class** restriction (`ItmPthId`), but the bring-up character has no path id yet,
 so it is not enforced. GM setters `!lvl <n>` / `!might <n>` adjust the base stats to exercise the gates.
 
+**Cursed/malus gear gate (added 2026-07-26, RTK `pc_canequipstats`).** 14/19 items in the registry carry a
+*negative* `ItmVita`/`ItmMana` line (a stat penalty, not a bonus). RTK blocks equipping one if the penalty's
+magnitude would exceed your current effective max — it'd zero the pool out entirely — replying `"You lack the
+health required to wield that."` (Vita) or `"You lack the wisdom required to wield that."` (Mana, RTK's own
+wording). Checked against `EffMaxHp`/`EffMaxMp` (before this item's own effect), same as the might gate above.
+
 **Item action animations (0x1A) — each item verb plays its bend-down pose + sound, on self AND peers.**
 Every item handler broadcasts a `0x1A` action (§13, builder `Session.SendAction` / peer `ActionOver`) so the
 character visibly stoops and the client plays the baked-in sound. The `(type, time)` pairs are RTK's
@@ -1155,14 +1280,14 @@ the action **unconditionally** (even on an empty tile — the crouch fires on th
 only **after** the `NoDrop`/valid-slot guard passes. `<` (pick-up-all) plays the action once, then loops the
 tile until empty.
 
-**Throw collision — SOLVED (2026-07-25).** `HandleThrow` walks the item **tile-by-tile** from the player in
-the faced direction (0=N 1=E 2=S 3=W, capped at 3 tiles) and stops at the last *passable* tile, so items
-never come to rest on a wall or an unreachable tile. Passability uses the **ground passability flag only**
-(§12): the **top 2 bits of the ground `u16`** — value **`3` = solid**, `0` = walkable (`1`/`2` never occur in
-real maps); `Session.Blocked` = `map.Pass(x,y) != 0`. The **object layer is NOT consulted** — see §12
-("stuck on shadows"): walls are baked into the ground flag, so real maps (TK0/Kugnae) gate thousands of cells
-by it; objects are visual. Enforcement is `NEXUS_PASS` (default on; set `0` to disable); the same `Blocked`
-gates player walk/turn.
+**Throw collision — SOLVED (2026-07-25; object-wall aware 2026-07-26).** `HandleThrow` walks the item
+**tile-by-tile** from the player in the faced direction (0=N 1=E 2=S 3=W, capped at 3 tiles) and stops at the
+last *passable* tile, so items never come to rest on a wall or an unreachable tile. Passability is the **same
+two-layer test the walk uses** (§12): the **ground pass flag** (`Blocked` = `map.Pass(x,y) != 0`; top 2 bits
+of the ground `u16`, `3` = solid, `0` = walkable, `1`/`2` never occur) **OR** the **`SObj.tbl` directional
+object-wall** for the throw heading (`ObjectFlags.Blocks`) — so a thrown item halts at a building's side
+wall, not only at water/cliffs. Enforcement is `NEXUS_PASS` (default on; set `0` to disable); the walk
+(`HandleWalk`) applies the identical two-layer check.
 
 **Doors ('o' key / `0x20`) — WORKING (2026-07-25).** A door is an object drawn over the map. Pressing 'o'
 facing a door **toggles its open/closed graphic in place** — RTK `openDoors` (`open.lua`) does
@@ -1205,6 +1330,24 @@ maps:
   (`21001`). `TryForage` scans the 3×3 object layer around the player (`MapData.Obj`) — the `.map` object word IS
   RTK's object id, verified: apple trees appear on 37 renderable maps (Kugnae 685×, Vale 905×, Mythic Nexus 161×),
   rose bushes on 24 (Kugnae 555×, Buya 214×, Wilderness 562×), so it fires against real map data.
+
+**Class path-hall doorways — WORKING (2026-07-25).** Same SQL-vs-Lua split, caught live: inside a class hall the
+north (path-leader) and south (guild) doors did nothing because only the *map-exit* warp is in `Warps.csv` — the
+two interior doors are scripted (`onScriptedTilesPathHalls.lua`). Each of the **8 halls** (Kugnae Warrior Tebaek
+`11` · Rogue Maro `15` · Mage Haedu `13` · Poet Jinsun `17`; Buya Warrior Yebaek `341` · Rogue Maso `343` · Mage
+Eldritch `342` · Poet Song `344`) has:
+- **South edge** `(x 1-2, y 23)` → that class's **guild hall** (Kugnae `3701-3704` / Buya `3705-3708`), arriving
+  `(x+6, 3)`. **Class-gated**: only members of the hall's base class pass (`CharClassId == BaseClass`); RTK also
+  admits a `player.tutor` (a staff role we don't model), so wrong-class = minitext *"You are not the right class
+  to enter here."* + `SendXy` hold.
+- **North edge** `(x 8-9, y 1)` → the player's **alignment sanctum** (path-leader room), indexed by
+  `Character.Alignment` 0-3 (Unaligned / Kwisin / Mingken / Ohaeng), arriving `(x-3, 18)`. Mage Eldritch, e.g.,
+  maps to `{367, 309, 310, 311}`.
+
+`Session.TryPathHallWarp(x,y)` + static `PathHalls` table (`record PathHall{BaseClass, Hall, Sanctum[4]}`), called
+in `HandleWalk` right after the Mythic check and **before** the collision test (these doors sit on edge tiles that
+read as solid). Every one of the 24 destinations is renderable; `WarpHall` no-ops (holds) if a dest map is missing,
+so it can never strand a player. Live-confirmed working 2026-07-25.
 
 Other `onScriptedTiles/` handlers were surveyed and **skipped**: subpath-trial entrances (most destination maps
 absent from the 4.95 client — only diviner `3540` / druid `3632` render), Tutor's Haven / Elixir Hall / Mount
@@ -1379,6 +1522,224 @@ data flags (so a plain stocked shop is zero-config). Each NPC declares only what
 - **Bank** (`BankAbility` → `DlgBank`): deposit/withdraw coin (via the input box, capped 100M) and items;
   stored on `Character.BankMoney`/`BankItems`, persisted in the character JSON. Joint accounts out of scope.
 
+**Spoken shortcuts** (`ShopAbility`/`BankAbility` also implement `INpcSayHandler`, so these skip the menu
+entirely — real NexusTK commands, not an RTK-Lua invention; RTK's own NPC scripts have no buy/sell/deposit
+speech grammar at all, click-menu only, which is exactly why these live in this server's own ability code
+rather than being ported from a `*.lua` file):
+- `"buy [my] all <item>"` — sell every one of a fuzzy-matched item to a nearby shop NPC
+  (`SellItemToNpcByName`, amount = whole stack). `"all"` always needs an item after it — bare `"buy my all"`
+  isn't a command and falls through as ordinary chat.
+- `"buy [my] N <item>"` — sell exactly `N` of the item.
+- `"buy [my] <item>"` (no quantifier) — sell one.
+- Item-name matching tries the spoken word as typed, then singularized (`Content.FindItem` matches on the
+  registry's singular names, e.g. `"acorn"`, while players usually say `"acorns"`). Independent of this NPC's
+  own Buy catalogue — any shop-flagged NPC buys anything sellable, same set `DlgSell`'s menu offers.
+- `"take my [all] <item|coin> [N]"` — **deposit** into the vault (`DepositItemToBank`); the bank "takes"
+  from you. `"give my [all] <item|coin> [N]"` — **withdraw** (`WithdrawItemFromBank`); the bank "gives" to
+  you. `"coin"`/`"coins"` targets money instead of an item. Note the word order is the *opposite* of the
+  shop command above: `"all"` is always a prefix (`"take my all coin"`), but a specific count is a *suffix*
+  after the item (`"give my coin 500"`, not `"give my 500 coin"`) — confirmed live, not a typo. No
+  quantifier at all (`"take my acorn"`) moves exactly one.
+- Confirmation reply is a **`0x0D` over-head bubble** (`Session.NpcBubble`), same channel a PC's own speech
+  uses — **not** a `0x30` dialog box. Speech triggered these without opening a dialog, so the response
+  shouldn't pop one open either; `SellItemToNpcByName`/`DepositItemToBank`/`WithdrawItemFromBank` all reply
+  via `NpcBubble`, unlike the click-menu `DlgBuy`/`DlgSell`/`BankDeposit*`/`BankWithdraw*` paths, which
+  correctly keep replying inside the `0x30` box the player already has open.
+
+(An earlier draft of this also added a waypoint fast-travel network ported from RTK's `Waypoint.lua`,
+reachable by saying `"transport"` or a destination keyword. That was reverted — it's an RTK-only addition
+with no evidence of existing in original 4.x/5.x NexusTK, so `TransportAbility` is back to being a stub.)
+
+---
+
+## 11f. Monster combat AI, death/revive, and the home-city spawn
+
+**Combat AI** (`World.Tick`, `Mob.TargetId`/`Level`/`AttackTime`) mirrors RTK's actual `mob_ai_normal.lua`
+threat model — nothing attacks unprovoked; a mob only fights back once hit. `World.TryDamage` now takes
+an `attackerId` and, on a non-lethal hit, sets `mob.TargetId` to the attacker. Each tick, a targeted mob
+abandons wandering to path toward that player (greedy step, respecting walls/other entities) and, once
+**cardinally adjacent** (fixed 2026-07-26 — was `Math.Max(|dx|,|dy|)<=1`, Chebyshev, which let a mob swing
+at a player standing diagonally; user: "The horse can also attack me (melee) diagonally... not sure if
+that's related" — it was the same bug as the horse-mount range below, both traced to Chebyshev distance.
+Now `(dx==0 && |dy|==1) || (dy==0 && |dx|==1)` only, matching the player's own melee, which only ever
+checks its single `FrontTile()` — a diagonal target falls through to the chase step instead, which moves
+one axis at a time and closes to cardinal within a tick), swings on a cooldown (`AttackTime`, default 2s)
+for `Level/2 + 0-2` damage. It gives up and resumes wandering if the target dies, disconnects, or strays
+more than `ChaseLeash` (8) tiles from the
+mob's home tile. Both melee (`Session.HandleAttack`) and spell damage (`CastDamage`/the `Damage` case in
+`ApplyCast`) pass `_char.Id` as the attacker, so either can provoke a fight.
+
+**Taking a hit** (`Session.ApplyMobHit`): docks HP, pushes `SendStats()`, and broadcasts the same over-head
+hit/HP-bar packet (`DamageOver`) a mob shows when hit, aimed at the player's own entity id. Hp reaching 0
+calls `Die()`: the player is redrawn as a **ghost** (appearance form `1` — `MountForm()` returns
+`_char.Hp==0 ? 1 : (Mounted?3:0)`; `PlayerSnapshot`/`ShowPlayer` carry a `Dead` flag so peers see it too),
+attacking/casting is blocked ("Spirits cannot attack/cast spells"), and after a 3s beat (`ReviveDelayMs`)
+`Revive()` restores full HP/MP and warps the player to their home city. This is a deliberately simplified
+death penalty — no monk/temple click-to-revive flow (see the real RTK totem-shrine system below).
+
+**Home city** (`Session.HomeCityFor`/`PlaceNewCharacter`): a fresh character spawns, and a defeated one
+revives, **just inside their nation's home**, near the real RTK door-arrival tile (`re/rtk-data/
+Warps.csv`) rather than GmWarp's outdoor GM-teleport spot:
+- Nation `2` (Buya): map **351** (Jadespear's Home) at `(3,6)`.
+- every other nation: map **36** (Ironheart's Home) at `(5,10)` — the door tile from Kugnae's
+  `0:(87/88,146)`.
+
+Jadespear's tile took two corrections before landing on `(3,6)`:
+- `(7,12)` — Warps.csv's raw door-arrival Y (from Buya's `330:(55/56,121)`), but map 351 is only 12 rows
+  tall (valid `0..11`) — `y=12` is one past the edge. The 4.95 client's self-placement check (`0x424310`)
+  silently bails on an out-of-bounds tile: the game-world object gets constructed (`0x02` handshake all
+  succeeds) but the self entity is never placed, so the screen stays **black and movement keys do
+  nothing** (the GUI still works — it doesn't depend on the world entity). Live symptom trace: `>>33
+  0x33 handler ENTER ... place/validate 0x424310 -> al=0 <<< BAIL (placement failed) >>>`.
+- `(7,11)` — in bounds, but that row is `TK351.map`'s bottom wall/threshold strip in the OBJECT layer
+  (ids 636-643). At the time, passability (`Solid`) was pass-flag only, so this tile was never *blocked* —
+  just visually "standing in a wall." (Since the 2026-07-26 §12 object-wall fix, movement now also honors
+  `SObj.tbl` object flags, so those wall ids would additionally impede stepping off — reinforcing that an
+  open interior tile, not a wall-strip tile, was the correct choice.) `TK351.map`/`TK36.map` were both checked against
+  the real client install: entirely open PASSABLE floor (no solid tiles at all), but Jadespear's object
+  layer draws a walled room, so a merely in-bounds tile isn't enough — it also needs to dodge every
+  nonzero object id. `(3,6)` sits in the empty interior clear of all of them.
+
+`PlaceNewCharacter` MUST run after `ApplyAppearance` has decoded the real creation-time nation (§9) — it
+used to run first, silently always landing new characters at Ironheart regardless of what they picked.
+
+**Real RTK note:** in the Lua gameplay layer, totem is normally *re-worshipped* later at one of four
+totem-animal shrine NPCs in the Wilderness (`totem_npc.lua`: `JuJakNpc`/`BaekhoNpc`/`HyunMooNpc`/
+`ChungRyongNpc`), and those same NPCs are also the resurrection point for a dead player (`_resurrect`,
+gated on `player.state==1`). This server doesn't have that shrine/worship system yet — `Revive()` is a
+stand-in that just warps + heals directly.
+
+**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `re/rtk-data/Warps.csv` ids 56-59) is
+a *separate* code path from the hardcoded home-city spawn above — walking onto Buya's door tile
+(`330:(55/56,121)`) drives the normal warp system (`Session.HandleWalk` → `EnterMap`).
+
+**Fixed (2026-07-26).** The raw Warps.csv data had two bugs, reported by the user as "warps in jadespears
+home don't work: can't go further in, and going back outside works but nothing warps you back":
+- The entry destination (`351:(7/8,12)`) was one row past map 351's bottom edge (12-row map, valid
+  `0..11`) — `EnterMap`'s bounds clamp silently pulled it up to `y=11`, which is `TK351.map`'s bottom
+  wall/threshold strip in the OBJECT layer (every column solid-looking except columns 5-6, the actual door
+  gap — confirmed by dumping the row). Landing there technically "worked" (object-layer isn't a collision
+  source, see §12) but put the player standing ON the door's own trigger tile.
+- The **return trip's source tile** (`351:(7/8,13)`) was flat-out off-map (row 13 doesn't exist on a
+  12-row map), so stepping "back outside" could never fire — that's the warp the user found dead.
+
+Both are now explicit, in-bounds coordinates instead of relying on the clamp: entry lands one row *above*
+the door at **`351:(5/6,10)`**, and the door-gap tiles **`351:(5/6,11)`** are the return-trip source,
+matching the real gap in the object-layer wall. The return destination was also corrected to land directly
+below the Buya door instead of shifted 2 tiles west (`330:(53/54,122)` → **`330:(55/56,122)`**, user:
+"exiting jadespears home should be 55 122 and 56 122") — same columns as the entry trigger `(55/56,121)`,
+one row south. Round trip: Buya `330:(55/56,121)` → Jadespear's `(5/6,10)` → walk south onto `(5/6,11)` →
+back to Buya `330:(55/56,122)`.
+
+---
+
+## 11g. Durability, warp gating, whisper, and spell resist (added 2026-07-25)
+
+Four RTK subsystems ported in one pass, each cross-checked against `RTK-Server/rtk/src/map/clif.c`.
+
+**Item durability & breakage** (RTK `clif_deductweapon`/`clif_deductarmor`/`clif_checkdura`, clif.c:6646-6844).
+`InvItem.Repair` (0-5) tracks which threshold warnings have already fired, mirroring RTK's
+`sd->status.equip[x].repair`. On a landed melee hit, the weapon (EQ slot 1) has a ~49% chance
+(`rnd(100) > 50`) to lose 1 durability (`Session.HandleAttack` → `DeductDura`); on TAKING a hit
+(`Session.ApplyMobHit`), every worn slot rolls independently (RTK's `clif_deductarmor` checks the weapon
+slot too — preserved, not "fixed"). Warnings fire once each at 50/25/10/5/1% ("Your X is at 50%.", …);
+at 0 the item is destroyed ("Your X was destroyed!"), unequipped, and stats recalculated. Indestructible
+items (`ItmIndestructible`) and durability-less items never decay; disabled entirely on `MapPvP` maps
+(`Content.IsPvpMap`). RTK's BoD "protected" restore-instead-of-break branch isn't modelled — no item in
+the live registry currently sets `ItmProtected`, so it would never fire anyway.
+
+**Warp level/mark/path gating** (RTK clif.c:5187-5203). `Content.MapMetaInfo` now also carries
+`ReqLvl/ReqPath/ReqMark/ReqVita/ReqMana/LvlMax/VitaMax/ManaMax/RejectMsg`, loaded from the (previously
+ignored) `Maps.csv` columns — 1107/9850 maps set a real req, and vita/mana caps are stored as unsigned
+32-bit with `4294967295` as the "no cap" sentinel (parsed as `long`, not `int`, or the sentinel overflows
+to 0 and silently locks every map). `Session.TryWarpGate`, called only from `HandleWalk`'s step-onto-warp
+path (NOT from the internal `Warp()` used by quests/Gateway/GM teleports — RTK's check lives in the walk
+handler, not in `pc_warp` itself), reproduces RTK's denial-message cascade verbatim, including its dead
+branches: because almost every gated map sets `ReqLvl`, the level-difference messages already cover every
+diff value, so the mark/path-specific text is only reachable when `ReqLvl` equals the player's level
+exactly and a mark/path check also fails. `CharMark` is still hardcoded to 0 (subpath marks aren't
+modelled — see `MinorQuest.cs`), so any `ReqMark > 0` map stays locked for everyone until that lands.
+
+**Whisper / tell** (RTK `clif_parsewisp`, clif.c:7644-7790). Native input: **Shift+'** opens the whisper
+prompt, then a target name + Enter, then the message + Enter. LIVE-CONFIRMED 2026-07-26 by real capture —
+op `0x19`, body `dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00`, e.g. `07 'destine' 01 'd' 00` —
+matching RTK's wire layout exactly (`clif.c:7644`: `dstlen = RFIFOB(fd,5); msglen = RFIFOB(fd,6+dstlen)`).
+Dispatched to `Session.HandleWhisperPacket`. RTK's own delivery uses a generic system-message packet (type
+0) rather than a speech bubble; that reply shape hasn't itself been captured live, so delivery rides the
+already-proven self-facing chat-bubble channel (`SendLog`) instead of gambling on an unconfirmed packet —
+if that turns out not to render distinctly enough in-game, the fix is isolated to `Session.ReceiveWhisper`.
+Chat commands `!whisper <name> <message>` / `!w <name> <message>` (over `0x0E`) remain as a fallback entry
+point into the same `DoWhisper` core. Text is RTK's real wording where it's portable: not-found is
+verbatim (`"<name> is nowhere to be found."`), the echo-to-sender is verbatim (`"<TargetName>> <message>"`),
+and the map-silence gate (`MapChat`/RTK `cantalk`, 2/9850 maps) uses RTK's exact line. The target-received
+line adapts RTK's `"SenderName" (ClassName) message` shape (RTK's version has a client-side leading-quote
+convention we can't rely on, so the server composes the full quoted string itself). Not modelled:
+per-player whisper-on/off, silence/mute, ignore lists — none of those systems exist yet.
+`World.FindPlayer(name)` is the new case-insensitive online-lookup this needed.
+
+**Spell resist / deflect** (RTK `clif_parsemagic`'s deflect roll, clif.c:8910-8934). Only spells flagged
+`SplCanFail` (317/905) roll it. `Session.RollDeflect`: `willDiff = max(0, target.Will - caster.Will)`,
+`prot = round(willDiff / 10)`, `failChance = 100 - 0.9^prot * 100` — an exponential curve, not a flat
+percent. `Mob.Will` is now populated from `MobDef.Will` (the RTK `Will` column, real but previously
+unwired — mobs had no Will at all before this). RTK's mob struct also carries a separate per-mob
+`protection` stat; our mob registry has no source column for it, so it's treated as 0 for every mob — a
+real but incomplete port, not an invented number, and it means our mobs resist somewhat less than genuine
+RTK ones with nonzero protection would. Wired into `CastDamage` and `CastDebuff` (the only two PvE-target
+archetypes we have — there is still no PvP cast path at all) right after target resolution and BEFORE the
+mana debit, matching RTK: a deflected cast spends no mana (RTK returns before ever calling into the Lua
+"cast" script that would debit it). Message is RTK's exact line, caster-facing only: "The magic has been
+deflected." — RTK sends nothing to the target on a resist.
+
+---
+
+## 11h. Bulletin boards (added 2026-07-26 — unverified reply shapes)
+
+**Request: LIVE-confirmed.** Pressing **b** sends op `0x3B` — matches RTK's dispatch exactly
+(`clif.c:11613`, `case 0x3B: clif_handle_boards(sd);`). Body `dec[0]` is a sub-command, then u16-BE
+board/post ids: `1`=show board list, `2 board`=show a board's posts, `3 board post`=read one post,
+`4 board topicLen topic bodyLen body`=make a post, `5 board post`=delete a post. `Session.HandleBoard`
+decodes all five; 6/7/8/9 (nmail, GM postcolor, GM special-write) aren't implemented — no nmail or GM-level
+concept exists in this server.
+
+**Reply: NOT live-confirmed.** RTK's real board storage lives in a *separate char-server process*
+talking its own SQL database (`Boards` table: `BrdBnmId/BrdPosition/BrdChaName/BrdTopic/BrdMonth/BrdDay`,
+confirmed by reading `rtk/src/char/mapif.c`'s `mapif_parse_showposts`/`boardpost`/`deletepost`), which then
+replies to the map-server (`rtk/src/map/intif.c`), which THEN builds the actual client packet. Three hops
+of reference material were needed to reconstruct the final client-facing `0x31` reply shapes (list /
+show-posts / read-post) below — but none of them have been captured live off the 4.95 client the way the
+board-open *request* was, so treat these as "best-effort from source, awaiting confirmation," the same
+status this doc gives other built-but-unverified systems (§11c, §11d). If the board window doesn't render
+right in-game, this is the first place to check — paste a capture and the offsets get corrected.
+
+Evidence byte 4 (this server's `inc`) isn't client-meaningful for op `0x31`: RTK's own
+`intif_parse_readpost` never writes it at all (`//WFIFOB(sd->fd,4)=0x03;` is commented out), so these
+replies use the normal `SendMap(0x31, _gameInc++, data)` convention like every other opcode in this
+codebase, rather than copying RTK's literal (and inconsistent) byte-4 values.
+
+- **Show board list** (`SendBoardList`): `1 titlelen title[...] boardCount` then per board
+  `id(u16BE) nameLen name[...]`.
+- **Show a board's posts** (`SendBoardPosts`): `flags2(=2) flags1(=3) board(u16BE) boardNameLen boardName[...]
+  postCount` then per post, newest first, `color(=0) postId(u16BE) authorLen author[...] month day topicLen
+  topic[...]`. `flags2=2`/`flags1=3` are RTK's own literal values for "a normal board, always writable" —
+  the only case modelled here (no GM/tutor/popup gating exists).
+- **Read one post** (`SendBoardReadPost`): `type(=3) buttons(=3) nmailFlag(=0) postId(u16BE) authorLen
+  author[...] month day topicLen topic[...] bodyLen(u16BE) body[...]`.
+
+**Board list content.** RTK's actual board list (`db/board_db.txt`) is server-instance config not present
+in the reference tree — there's no real seed data to port, unlike every other feature this session (items,
+mobs, maps, spells all had real CSVs). `Boards.All` (`Server/Boards.cs`) instead reuses REAL RTK board
+identifiers pulled straight from RTK's own board Lua scripts (`rtklua/Developers/Boards/*.lua`): **Lore**,
+**Map**, **Poetry**, **Minigames & Carnages** — the ones that don't depend on unmodelled concepts (GM
+level, tutor rank, clans/subpaths block the rest: `bugs_board`/`devs_board` are GM-only, `pathBoards.lua`'s
+per-class boards gate posting on "tutor" status, `subpath_public_boards.lua` needs a subpath system). Every
+board here is open to read + post by any player. This is a judgment call, not RTK ground truth — if a
+different board list is wanted, it's a one-line edit to `Boards.All`.
+
+**Storage.** RTK's posts live in a separate char-server's SQL database; this server is single-process, so
+posts collapse into one server-wide JSON file (`data/boards.json`, `Server/Boards.cs`) instead — same
+"RTK's shape, our storage" choice already made for characters (`Shared/CharacterStore.cs`). Delete is
+author-only (RTK's broader GM/tutor `CAN_DEL` grant isn't modelled).
+
 ---
 
 ## 12. Maps
@@ -1393,20 +1754,48 @@ The server's `0x15` (enter-map) tells the client which map id + dimensions to lo
 the `.map` file itself. Pick a map that actually has content: `TK27` is a uniform "void" tile (renders
 black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.
 
-**Passability — the ground flag ONLY; objects are visual ("stuck on shadows" fix, 2026-07-25).** A cell is
-solid iff the **top 2 bits of the ground `u16`** are set (value **`3` = solid**, `0` = walkable; `1`/`2`
-never occur). The **object `u16` is NOT a collision source.** The object word carries no passability bits of
-its own (its top 2 bits are always 0 across every map), and it indexes `SObj.tbl` (object id < the table's
-7608 entries) whose flags are **height / draw-order, not passability** — they don't predict blocking (the
-heaviest wall objects `1519`-`1522`, ~2000 placements each, have flag high-byte `0x00`, while many `0x0f`-
-flagged objects sit on fully-walkable ground). Instead, **map authors bake every wall's footprint into the
-ground pass flag**: those same wall objects sit on `pass=3` ground 100% of the time. So `pass` alone is
-authoritative and matches the client. The **authoritative RTK reference server agrees exactly**:
-`map_canmove()` has `if(obj) return 1;` **commented out** and collides on the pass layer only, and
-`object_flag_init()` parses `SObj.tbl` but leaves `objectFlags[z]=flag;` commented out. The old server
-checked `Obj != 0` too, which wrongly blocked decorative objects on walkable ground — shadows, flat rugs,
-ground decor — hence "**stuck on shadows**". (Doors are handled separately — the **'o' key (`0x20`)**
-toggles a door's graphic; see "Doors" below.)
+**Passability — ground pass flag PLUS `SObj.tbl` directional object-walls (corrected 2026-07-26).** Two
+layers combine:
+
+1. **Ground pass flag.** A cell is pass-solid iff the **top 2 bits of the ground `u16`** are set (value
+   **`3` = solid**, `0` = walkable; `1`/`2` never occur). Water, cliffs, out-of-bounds, and *some* wall
+   footprints are baked here.
+2. **`SObj.tbl` directional object flags.** The object `u16` indexes `SObj.tbl`; each object has a 1-byte
+   **directional wall flag** — `UP=1 DOWN=2 RIGHT=4 LEFT=8` (RTK `map.h`). A move that *enters* a cell while
+   heading a given way is blocked if the destination object has that side's bit (`clif_object_canmove`:
+   N→UP, E→RIGHT, S→DOWN, W→LEFT). A solid wall piece = `0x0F` (all four sides ⇒ impassable). Decorative
+   objects (shadows, rugs, ground decor) have flag `0x00` ⇒ never block. This is the layer that stops you
+   walking through a **building's thin side wall**, where the ground pass flag is `0` (only the door graphic
+   itself gets `pass=3`).
+
+**Why the earlier "objects are purely visual" note was wrong.** A prior pass concluded collision was
+pass-only after mis-reading `SObj.tbl` (it thought wall objects `1519`-`1522` were `0x00` "walls with no
+flag"). Re-derived correctly, `1519`-`1522` are *ground decor* (genuinely `0x00`), while the actual Buya
+Jadespear-hut wall footprints are objects `505`-`508` = `0x0F` (solid) and the doorway is `372`/`373` =
+`0x00` (open). Decisive proof the client uses these flags: a player **cannot** walk through the hut wall
+even though its ground `pass=0` — only the object flag can be blocking it. The old `Obj != 0` collision was
+still wrong (it blocked flag-`0` decor → "**stuck on shadows**"); the fix is to block on the object's
+**directional flag**, not on `Obj != 0`.
+
+**Server implementation.** `Server/ObjectFlags.cs` parses `SObj.tbl` (format below) into a per-object flag
+byte; `MapData.BlockedMove(x,y,dir) = Solid(x,y) || ObjectFlags.Blocks(obj,dir)`. Both the **mob AI**
+(`World.Tick` chase + wander steps) and the **player walk** (`Session.HandleWalk`) now use it, so mobs
+respect the same walls the client draws (fixes "rabbits walked through the wall near Jadespear's hut, 2026-07-26").
+Note this **diverges from RTK's own mob AI**, which is pass-only (`map_canmove` has `if(obj) return 1;`
+commented out) — RTK mobs clip these walls too; we match the *client's* collision instead, which is what the
+player sees. RTK's player path (`clif_canmove`→`clif_object_canmove`) does use the directional flags, but
+`object_flag_init()` leaves `objectFlags[z]=flag;` commented out, so even RTK's own server never populates
+the table — the live client is the only thing enforcing it there. (Doors are separate — the **'o' key
+(`0x20`)** toggles a door's graphic; see "Doors" below.)
+
+**`SObj.tbl` format** (confirmed: the record walk consumes the file to the exact byte AND yields exactly the
+header object count; then validated tile-by-tile against the hut geometry): `u32 count` header, **1 lead
+byte**, then `count` records each = `u8 tileCount` · `tileCount × u16` frame ids · **5-byte separator
+`FF FF FF FF 00`** · `u8 flag`. `flag[objId]` (1-based) is indexed directly by the map's object id; id `0` =
+no object = flag `0`. The **client's** table (`NexusTK.dat` → `SObj.tbl`, 7608 objects) is authoritative for
+the object-id space the `.map` files use; RTK's copy (`RTK-Server/rtk/SObj.tbl`, 18954 objects) is a superset
+that agrees on every in-range id. Extract the client copy with
+`python re/pak_extract.py "<install>/NexusTK.dat" SObj.tbl data/SObj.tbl`.
 
 The **spawn coordinate must lie inside the camera viewport** at the moment `0x33` is processed, or the
 placement check bails and the character never renders (§14). With scroll `(0,0)` the initial viewport
@@ -1598,6 +1987,9 @@ magnitude faster for "what does this byte mean" questions.
   read each value off the HUD). Level/might/will/grace/HP/MP/exp/coins now populate the always-on HUD and
   round-trip through the character store. `maxHP`/`maxMP` offsets (`[5]`/`[9]`) and the `nation` id table
   (0=Neutral 1=Koguryo 2=Buya 3=Nagnang 4=Shilla 5=Jinhan 6=Paekjae 7=Kaya) are confirmed empirically (`!hp`, `!nat`).
+  The `totem` id table (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None) is confirmed the same way (a live
+  `!totem 0`-`!totem 3` sweep) and matches RTK's own `Player.getTotemName` — both fields are now decoded
+  straight from the creation packet (§9) rather than compiled-in defaults.
 - **Hair** is not renderable via `0x33` in 4.95 (no slot in the 7-byte form). Likely requires a
   different mechanism (stylist NPC / equipment), if at all.
 - **Creation screen auto-close.** After `0x04`, our "Account created" message shows but doesn't dismiss
@@ -1619,9 +2011,12 @@ magnitude faster for "what does this byte mean" questions.
   same `SyncMobs`-style streaming for players.
 - **NPCs — built (§11e).** Stationary NPCs from RTK `NPCs0` render + stream like mobs, pace when RTK gives
   them a move timer, and open dialogs on click. Dialog (`0x30` text/menu/input + `0x3a` reply) is live on
-  4.95; NPCs are composed from reusable abilities (Shop, Bank, Transport, Time, Repair). **Remaining:** the
-  authentic buy/sell grid window (`0x2f`, currently menu-based); Transport/Waypoints; per-NPC quest/crafting
-  scripts (RTK Lua); joint bank accounts; and the flat item-price data isn't tracked (`re/rtk-data/` ignored).
+  4.95; NPCs are composed from reusable abilities (Shop, Bank, Transport [stub — see below], Time, Repair).
+  Buy/Sell and the bank's take/give also have spoken shortcuts (real NexusTK commands, not RTK-ported — see
+  §11e's spoken shortcuts note). **Remaining:** the authentic buy/sell grid window (`0x2f`, currently menu-based); per-NPC
+  quest/crafting scripts (RTK Lua); joint bank accounts; and the flat item-price data isn't tracked
+  (`re/rtk-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
+  has no evidence of existing in original 4.x/5.x NexusTK, so it isn't ported.
 - **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x31, 0x35, 0x36, 0x39, 0x3b,
   0x42, 0x44, 0x46, 0x4a, 0x4b, 0x66, 0x67, 0x68`.
 

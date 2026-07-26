@@ -24,12 +24,30 @@ public static class NpcScripts
         // inn_npc2.lua: the non-shop tavern hand — Transport / Date & Time only.
         ["InnNpc2"] = new INpcAbility[] { TransportAbility.Instance, TimeAbility.Instance },
 
-        // Class trainers (warrior_trainer.lua &c.) offer the repeatable minor quest. Their path-advancement
-        // menus (Become a Warrior, star/moon/sun armor, …) aren't ported yet — just the minor-quest ability.
-        ["WarriorTrainerNpc"] = new INpcAbility[] { MinorQuestAbility.Instance },
-        ["RogueTrainerNpc"]   = new INpcAbility[] { MinorQuestAbility.Instance },
-        ["MageTrainerNpc"]    = new INpcAbility[] { MinorQuestAbility.Instance },
-        ["PoetTrainerNpc"]    = new INpcAbility[] { MinorQuestAbility.Instance },
+        // fishnpc.lua: Bate / Wim teach beginner fishing (tutorial stage 4 minnow). Triggered by clicking OR
+        // by saying "I'd like to fish" (INpcSayHandler).
+        ["FishNpc"] = new INpcAbility[] { FishAbility.Instance },
+
+        // librarian.lua: say the tutor's name ("ironheart"/"jadespear") on tutorial stage 5 -> talked_to_tutor.
+        // Also a "Talk to Librarian" click option so it works without voice.
+        ["LibrarianNpc"] = new INpcAbility[] { LibrarianAbility.Instance },
+
+        // chu_rua.lua: tutorial stage 7 — turn in young_ginseng for the aided_chu_rua legend + sea ring.
+        ["ChuRuaNpc"] = new INpcAbility[] { ChuRuaAbility.Instance },
+
+        // The Guol "magic animals" that hint at / gate the ginseng (all speech-triggered, INpcSayHandler):
+        // the rabbit (hints), the Ancient dolmen (the tiger hint), the tiger (say "rabbit" -> Forest -> 1117).
+        ["ChuRuaRabbitNpc"] = new INpcAbility[] { ChuRuaRabbitAbility.Instance },
+        ["ChuRuaRockNpc"]   = new INpcAbility[] { ChuRuaRockAbility.Instance },
+        ["ChuRuaTigerNpc"]  = new INpcAbility[] { ChuRuaTigerAbility.Instance },
+
+        // Class trainers (warrior_trainer.lua &c.): Become a <Class> at lvl 5 (starter kit + path change),
+        // Learn/Divine/Forget Secret (spell teaching), Become Noble (lvl-75 title) — see ClassTrainerAbility —
+        // plus the repeatable Minor Quest. The lvl-66+ star/moon/sun armor chains + nagnang trials aren't ported.
+        ["WarriorTrainerNpc"] = new INpcAbility[] { ClassTrainerAbility.Warrior, MinorQuestAbility.Instance },
+        ["RogueTrainerNpc"]   = new INpcAbility[] { ClassTrainerAbility.Rogue,   MinorQuestAbility.Instance },
+        ["MageTrainerNpc"]    = new INpcAbility[] { ClassTrainerAbility.Mage,    MinorQuestAbility.Instance },
+        ["PoetTrainerNpc"]    = new INpcAbility[] { ClassTrainerAbility.Poet,    MinorQuestAbility.Instance },
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition if registered, else derived

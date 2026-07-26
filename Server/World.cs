@@ -6,7 +6,7 @@ namespace Server;
 /// session's mutable state. Built under no lock (fields are only written by the owning session's
 /// read-loop; a torn read at worst mis-places a peer by one tile until its next move packet).</summary>
 public readonly record struct PlayerSnapshot(
-    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, bool Mounted, string Name);
+    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, bool Mounted, bool Dead, string Name);
 
 /// <summary>A stack of an item lying on the map floor, drawn to every client on that map via 0x16
 /// (Item.epf frame = <see cref="Graphic"/>). <see cref="Id"/> is the entity id (find/despawn key). Carries
@@ -75,6 +75,27 @@ public sealed class World
     // How far a mob may wander from its spawn tile (Chebyshev). Kept small so town critters hug their
     // spawn points instead of clustering into a dense knot that constantly overlaps on screen.
     private const int WanderRadius = 2;
+    // Farthest (Chebyshev, from its home tile) a provoked mob will chase an attacker before giving up and
+    // resuming normal wandering — bigger than WanderRadius so a fight can range beyond the idle-hop leash,
+    // but still bounded so a player can outrun pursuit rather than being chased across the whole map.
+    private const int ChaseLeash = 8;
+
+    // Ground-item forage spawns (RTK itemspawner.lua): keep up to Max stacks of a gatherable item scattered on
+    // passable tiles within a box, topped up periodically. Chestnuts fill the Kugnae farm (map 0) and a Buya
+    // patch (map 330) — the tutorial's stage-3 gather. A stack is MinQty..MaxQty items on one tile.
+    private sealed record ForageArea(string ItemKey, ushort Map, int MinX, int MaxX, int MinY, int MaxY,
+                                     int Max, int MinQty, int MaxQty);
+    private static readonly ForageArea[] ForageAreas =
+    {
+        new("chestnut", 0,   102, 115, 132, 155, 20, 1, 3),   // Kugnae farm  (kugnaeFarmChestnutSpawn)
+        new("chestnut", 330,  20,  27,  37,  47, 20, 1, 3),   // Buya NW      (buyaChestnutSpawn)
+    };
+    private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
+
+    // Facing (0=N 1=E 2=S 3=W) toward a delta, preferring the larger axis — used to turn a mob to face
+    // whatever it's about to melee.
+    private static byte FaceDelta(int dx, int dy) =>
+        Math.Abs(dx) >= Math.Abs(dy) ? (dx >= 0 ? (byte)1 : (byte)3) : (dy >= 0 ? (byte)2 : (byte)0);
 
     // Disjoint entity-id pools so a player id can never collide with a shared-mob id.
     //   players:     1 ..            (bound to each client's camera via 0x05)
@@ -194,7 +215,7 @@ public sealed class World
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
             // rendered every mob green — so we use RTK's per-mob colour, which matches for most creatures.)
             Key = d.Key,   // carry the MobDef identifier so quest kill-matching can key on it
-            Color = d.Color, Exp = d.Exp, Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
+            Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
         };
         Map(mapId).Mobs.Add(mob);
@@ -234,6 +255,43 @@ public sealed class World
     /// <summary>Pick a random walkable home tile for an area spawn: inside its box, or anywhere on the map
     /// when the box is zero (RTK's "no bounds" form). Samples a handful of random tiles and takes the first
     /// walkable one; falls back to the box centre if the patch is dense/unloaded. Caller holds <c>_lock</c>.</summary>
+    // Refill every forage box to its target stack count on random passable tiles (RTK itemspawner.lua:
+    // count existing stacks of the item in the box, drop the shortfall). Runs under _lock; returns the new
+    // drops (with their map) so the caller can broadcast them once the lock is released.
+    private List<(ushort map, GroundItem gi)>? TopUpForageLocked()
+    {
+        List<(ushort, GroundItem)>? drops = null;
+        foreach (var area in ForageAreas)
+        {
+            if (!_maps.TryGetValue(area.Map, out var m) || m.Players.Count == 0) continue;   // no one watching
+            var def = Content.ItemByKey(area.ItemKey);
+            if (def is null) continue;
+
+            int have = m.Items.Count(gi => gi.ItemId == def.Id &&
+                                           gi.X >= area.MinX && gi.X <= area.MaxX &&
+                                           gi.Y >= area.MinY && gi.Y <= area.MaxY);
+            int need = area.Max - have;
+            if (need <= 0) continue;
+
+            var (xs, ys) = Content.Maps.TryGetValue(area.Map, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
+            var terrain = xs > 0 ? MapData.For(area.Map, xs, ys) : null;
+            for (int i = 0; i < need; i++)
+            {
+                int tx = Random.Shared.Next(area.MinX, area.MaxX + 1);
+                int ty = Random.Shared.Next(area.MinY, area.MaxY + 1);
+                if (terrain is not null && terrain.Solid(tx, ty)) continue;   // passable tiles only (getPass==0)
+                var gi = new GroundItem
+                {
+                    Id = _nextItemId++, ItemId = def.Id, X = (ushort)tx, Y = (ushort)ty,
+                    Amount = Random.Shared.Next(area.MinQty, area.MaxQty + 1), Graphic = def.Icon,
+                };
+                m.Items.Add(gi);
+                (drops ??= new()).Add((area.Map, gi));
+            }
+        }
+        return drops;
+    }
+
     private (ushort x, ushort y) PickAreaHome(ushort mapId, Spawn sp)
     {
         var (xs, ys) = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
@@ -345,6 +403,77 @@ public sealed class World
         }
     }
 
+    /// <summary>The nearest living, non-NPC mob within <paramref name="radius"/> tiles (Chebyshev) of a
+    /// point matching <paramref name="match"/>, or null. Used by the 'r' ride key (RTK clif_findmount) to
+    /// locate a rideable "horse" mob — called with <c>radius 0</c> at the player's <c>FrontTile()</c> so it
+    /// only matches the exact tile faced (cardinal only, matching the player's own melee reach).</summary>
+    public Mob? MobNear(ushort mapId, int x, int y, int radius, Func<Mob, bool> match)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return null;
+            return m.Mobs.Where(mo => mo.Alive && !mo.IsNpc && match(mo)
+                                       && Math.Max(Math.Abs(mo.X - x), Math.Abs(mo.Y - y)) <= radius)
+                          .OrderBy(mo => Math.Max(Math.Abs(mo.X - x), Math.Abs(mo.Y - y)))
+                          .FirstOrDefault();
+        }
+    }
+
+    /// <summary>Remove a live mob from the map WITHOUT a kill (no loot roll, no exp) — used when a player
+    /// rides it away ('r' key). If it's a spawn point's mob, the point is freed to respawn like a normal
+    /// death; an ad-hoc mob (e.g. one summoned by a dismount) is just dropped. Broadcasts the despawn.</summary>
+    public bool DespawnMob(ushort mapId, Mob mob)
+    {
+        lock (_lock)
+        {
+            if (!mob.Alive || mob.IsNpc) return false;
+            if (!_maps.TryGetValue(mapId, out var m)) return false;
+            m.Mobs.Remove(mob);
+            if (_mobSpawn.TryGetValue(mob.Id, out var sp))
+            {
+                sp.Live = null;
+                sp.RespawnTick = _tick + RespawnTicks;
+                _mobSpawn.Remove(mob.Id);
+            }
+        }
+        Broadcast(mapId, p => p.DespawnEntity(mob.Id));
+        return true;
+    }
+
+    /// <summary>The player standing on (x,y) of <paramref name="mapId"/>, or null. Used by the ';' look key
+    /// (RTK clif_parselookat checks PC before mob/item/NPC).</summary>
+    public Session? PeerAt(ushort mapId, int x, int y)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return null;
+            return m.Players.FirstOrDefault(p => p.PlayerX == x && p.PlayerY == y);
+        }
+    }
+
+    /// <summary>The connected player with this character name (case-insensitive, any map), or null if
+    /// they're offline. Used by whisper/tell (RTK clif_parsewisp's target lookup).</summary>
+    public Session? FindPlayer(string name)
+    {
+        lock (_lock)
+            return _maps.Values.SelectMany(m => m.Players)
+                                .FirstOrDefault(p => string.Equals(p.Snapshot().Name, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
+    /// first. Used to route a player's speech to a nearby NPC's say-handler (RTK onSayClick).</summary>
+    public List<Mob> NpcsNear(ushort mapId, int x, int y, int radius)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return new();
+            return m.Mobs.Where(mo => mo.IsNpc &&
+                                      Math.Max(Math.Abs(mo.X - x), Math.Abs(mo.Y - y)) <= radius)
+                         .OrderBy(mo => Math.Max(Math.Abs(mo.X - x), Math.Abs(mo.Y - y)))
+                         .ToList();
+        }
+    }
+
     /// <summary>The live world mob with this entity id on the map, or null (used by targeted spell casts,
     /// where the client sends the target's entity id rather than a tile).</summary>
     public Mob? MobById(ushort mapId, uint id)
@@ -359,8 +488,10 @@ public sealed class World
     /// <summary>Apply damage under the lock (so concurrent attackers can't double-kill). Returns
     /// false if the mob was already dead; otherwise sets <paramref name="died"/> and, on death,
     /// removes it from the map, schedules its spawn point to respawn, and rolls floor loot (which this
-    /// method drops + broadcasts). The caller still broadcasts the damage number / corpse despawn.</summary>
-    public bool TryDamage(ushort mapId, Mob mob, int dmg, out bool died)
+    /// method drops + broadcasts). The caller still broadcasts the damage number / corpse despawn.
+    /// <paramref name="attackerId"/> (0 = none, e.g. a session-local debug hit) marks the mob as targeting
+    /// that player — <see cref="Tick"/> then has it chase and fight back instead of just wandering.</summary>
+    public bool TryDamage(ushort mapId, Mob mob, int dmg, out bool died, uint attackerId = 0)
     {
         died = false;
         List<GroundItem>? drops = null;
@@ -369,6 +500,7 @@ public sealed class World
             if (!mob.Alive || mob.IsNpc) return false;   // NPCs are indestructible (a click talks to them, not fights)
             mob.Hp -= dmg;
             died = !mob.Alive;
+            if (!died && attackerId != 0) mob.TargetId = attackerId;   // provoked -> fight back (mob_ai_normal on_attacked)
             if (died && _maps.TryGetValue(mapId, out var m))
             {
                 m.Mobs.Remove(mob);
@@ -463,15 +595,19 @@ public sealed class World
         }
     }
 
-    // One heartbeat: (1) refill dead spawn points that are due, (2) wander every live mob, (3) stream the
-    // moves to observers who can see them, (4) reconcile each player's viewport (mobs that wandered in/out
-    // of view, plus this tick's respawns, appear/disappear). All map mutation happens under the lock; no
-    // socket I/O does. Only maps with at least one player are processed — an empty map's roster stays put.
+    // One heartbeat: (1) refill dead spawn points that are due, (2) wander every live mob OR, if provoked,
+    // chase and swing at its target instead (queuing any landed swings), (3) reconcile each player's
+    // viewport (mobs that moved in/out of view, plus this tick's respawns, appear/disappear), (4) stream
+    // moves/turns to observers, (4.5) apply this tick's queued mob swings. All map mutation happens under
+    // the lock; no socket I/O does. Only maps with at least one player are processed — an empty map's
+    // roster stays put.
     private void Tick()
     {
         _tick++;
         var moves = new List<(ushort map, uint id, ushort x, ushort y, byte dir)>();
         var turns = new List<(ushort map, uint id, byte dir)>();
+        var hits = new List<(Mob mob, Session target)>();
+        List<(ushort map, GroundItem gi)>? forage = null;
         lock (_lock)
         {
             // (1) respawns: refill any due spawn point on a map someone is watching.
@@ -482,6 +618,9 @@ public sealed class World
                     if (sp.Live is null && sp.RespawnTick != 0 && _tick >= sp.RespawnTick)
                         Materialize(mapId, sp);
             }
+
+            // (1.5) forage top-up: on a slow cadence, refill each forage box (chestnuts &c.) to its target count.
+            if (_tick % ForageTicks == 0) forage = TopUpForageLocked();
 
             // (2) wander: each mob acts only when its own MoveTime has elapsed (RTK MobMoveTime), and even
             // then usually just turns instead of stepping — mirroring RTK mob_ai_normal (checkmove: pick a
@@ -499,8 +638,64 @@ public sealed class World
 
                 foreach (var mob in m.Mobs)
                 {
-                    if (!mob.Wander || !mob.Alive) continue;
+                    if (!mob.Alive) continue;
                     if (mob.FrozenUntil > Environment.TickCount64) continue;   // paralyzed/asleep — hold still
+
+                    // Combat AI (RTK mob_ai_normal: on_attacked sets the target; move/attack chase + swing at
+                    // it): a provoked mob (World.TryDamage set TargetId) abandons wandering to path toward and
+                    // melee its attacker instead, until the target dies/leaves/logs off or strays past
+                    // ChaseLeash tiles from the mob's home — then it falls back to normal wandering below.
+                    if (mob.TargetId != 0)
+                    {
+                        var target = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId);
+                        bool inRange = target is not null && !target.IsDead
+                                       && Math.Max(Math.Abs(target.PlayerX - mob.HomeX), Math.Abs(target.PlayerY - mob.HomeY)) <= ChaseLeash;
+                        if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; }
+                        else
+                        {
+                            int tdx = target!.PlayerX - mob.X, tdy = target.PlayerY - mob.Y;
+                            // Cardinal adjacency ONLY (matches the player's own melee, which only ever checks
+                            // its single FrontTile — a diagonal target is neither attackable by the player nor,
+                            // now, by a mob; RTK has no 8-way reach either). A diagonal target falls through to
+                            // the chase step below, which moves on a single axis and closes to cardinal in ~1 tick.
+                            bool adjacent = (tdx == 0 && Math.Abs(tdy) == 1) || (tdy == 0 && Math.Abs(tdx) == 1);
+                            if (adjacent)
+                            {
+                                byte face = FaceDelta(tdx, tdy);
+                                if (face != mob.Dir) { mob.Dir = face; turns.Add((mapId, mob.Id, face)); }
+                                mob.AttackTimer += TickMs;
+                                if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; hits.Add((mob, target)); }
+                                continue;   // adjacent: swing instead of stepping
+                            }
+
+                            mob.MoveTimer += TickMs;
+                            if (mob.MoveTimer < mob.MoveTime) continue;   // not this mob's turn yet
+                            mob.MoveTimer -= mob.MoveTime;
+
+                            // Greedy step toward the target: close the larger axis first (diagonal-ish chase).
+                            int sx = Math.Abs(tdx) >= Math.Abs(tdy) ? Math.Sign(tdx) : 0;
+                            int sy = sx == 0 ? Math.Sign(tdy) : 0;
+                            byte chaseDir = sx > 0 ? (byte)1 : sx < 0 ? (byte)3 : (sy > 0 ? (byte)2 : (byte)0);
+                            if (mob.Dir != chaseDir) { mob.Dir = chaseDir; turns.Add((mapId, mob.Id, chaseDir)); }
+
+                            int cnx = mob.X + sx, cny = mob.Y + sy;
+                            bool cok = cnx >= 0 && cny >= 0
+                                       && (dims.Item1 == 0 || (cnx < dims.Item1 && cny < dims.Item2))
+                                       && !occupied.Contains(((ushort)cnx, (ushort)cny))          // don't step onto a player
+                                       && !mobTiles.Contains((cnx, cny))                            // or another mob
+                                       && (terrain is null || !terrain.BlockedMove(cnx, cny, chaseDir));  // pass flag OR SObj object-wall
+                            if (!cok) continue;   // blocked — already turned to face the target
+
+                            ushort cox = mob.X, coy = mob.Y;
+                            mobTiles.Remove((mob.X, mob.Y));
+                            mob.X = (ushort)cnx; mob.Y = (ushort)cny;
+                            mobTiles.Add((cnx, cny));
+                            moves.Add((mapId, mob.Id, cox, coy, chaseDir));
+                            continue;
+                        }
+                    }
+
+                    if (!mob.Wander) continue;
                     mob.MoveTimer += TickMs;
                     if (mob.MoveTimer < mob.MoveTime) continue;   // not this mob's turn yet
                     mob.MoveTimer -= mob.MoveTime;                // carry the remainder (steady cadence)
@@ -525,7 +720,7 @@ public sealed class World
                               && Math.Abs(ny - mob.HomeY) <= mob.Leash                             // leash to spawn
                               && !occupied.Contains(((ushort)nx, (ushort)ny))                     // not onto a player
                               && !mobTiles.Contains((nx, ny))                                      // not onto another mob
-                              && (terrain is null || !terrain.Solid(nx, ny));                     // walls + water/cliffs (obj|pass)
+                              && (terrain is null || !terrain.BlockedMove(nx, ny, stepDir));       // pass flag OR SObj object-wall
                     if (!ok) continue;   // blocked/leashed: hold position (already facing stepDir)
 
                     ushort ox = mob.X, oy = mob.Y;                   // SOURCE tile (see the move broadcast below)
@@ -553,6 +748,20 @@ public sealed class World
             Broadcast(mv.map, p => p.MoveMob(mv.id, mv.x, mv.y, mv.dir));
         foreach (var tn in turns)
             Broadcast(tn.map, p => p.SideMob(tn.id, tn.dir));
+
+        // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
+        if (forage is not null)
+            foreach (var (map, gi) in forage)
+                Broadcast(map, p => p.ShowGroundItem(gi));
+
+        // (4.5) Resolve this tick's mob swings (queued above while still under the lock) — applying player
+        // damage runs Session-side (HUD update + broadcast + possible death), so it happens out here like
+        // every other socket-touching step.
+        foreach (var h in hits)
+        {
+            int dmg = Math.Max(1, h.mob.Level / 2 + Random.Shared.Next(0, 3));
+            Try(() => h.target.ApplyMobHit(h.mob, dmg));
+        }
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
         // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a

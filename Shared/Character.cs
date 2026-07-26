@@ -9,18 +9,17 @@ public sealed class Character
     public uint   Id     = 1;
     public string Name   = "snuggle";
 
-    // location — map 32 is a real 33x33 area (180 distinct tiles, 270 objects) that actually
-    // renders, unlike TK27 which is a uniform void tile. Square avoids width/height ambiguity.
-    //
-    // X/Y must be SMALL: the 0x33 self-placement passes only if (X,Y) is inside the camera
-    // viewport rect (handler 0x424310). SendXy's 0x04 sets scroll = (A-C, B-D) = (0,0) here, so
-    // the viewport starts at map origin (~0..14). (16,16) fell OUTSIDE it -> placement bailed ->
-    // invisible character. (5,5) sits well inside the initial viewport. (Reference spawns at 1,3.)
-    public ushort Map    = 32;
+    // location — defaults to just inside Ironheart's Home in Kugnae (map 36), the home-city coordinates a
+    // brand new character actually starts at (see Session.PlaceNewCharacter/HomeCityFor — the door-arrival
+    // tile from RTK's Warps.csv, map 0 (87/88,146) -> map 36 (5/6,10)). This compiled-in default only
+    // matters if a Character is ever built without going through PlaceNewCharacter; both real entry points
+    // (account creation, and world-entry with no saved character) call it explicitly, and a Buya-nation
+    // character is placed at Jadespear (map 351) instead.
+    public ushort Map    = 36;
     public ushort X      = 5;
-    public ushort Y      = 5;
-    public ushort MapXs  = 33;
-    public ushort MapYs  = 33;
+    public ushort Y      = 10;
+    public ushort MapXs  = 12;
+    public ushort MapYs  = 12;
 
     // appearance
     public ushort Sex    = 1;
@@ -112,6 +111,12 @@ public sealed class Character
     public string ClanTitle = "";          // rank within the clan
     public string Spouse    = "";           // marriage line ("" = none)
 
+    // Profile status toggles shown as the group/exchange indicator cells (self 0x39 + other-view 0x34).
+    // Grouped = "sociable" (Shift+G, 0x1b/0x02); Exchange = trade allowed (0x1b/0x08). Persisted so they
+    // survive reopening the profile and a relog. Group defaults off, exchange on.
+    public bool   Grouped   = false;
+    public bool   Exchange  = true;
+
     // The writable "profile" page shown when someone clicks you (0x34): a free-text blurb the player
     // writes about their character, plus an optional drawn portrait bitmap. ProfilePic is the raw
     // bitmap bytes WITHOUT the size prefix (null/empty = no picture). Edited via the client's
@@ -119,12 +124,19 @@ public sealed class Character
     public string ProfileText = "This character has not written a profile yet.";
     public byte[]? ProfilePic = null;
 
+    // RTK's in-game calendar (Scripts/scripts.lua curT(): "Yuri <year>, <season>") isn't modeled — no clock
+    // ticks server-side — so every legend that would normally stamp "the current date" uses this fixed
+    // constant instead. Value matches the live-captured self-profile reference below ("Hyul", not RTK's own
+    // "Yuri" text — the two diverge and the live capture wins). Reused anywhere else a legend needs a date
+    // (e.g. ChuRuaAbility's "Aided Chu Rua (...)").
+    public const string GameDate = "Hyul 31, Winter";
+
     // Legend marks: the scrollable list at the bottom of the profile. Each = icon + color + text.
     // Seeded with a "born" entry (mirrors the real 6.x capture) so the window has visible content.
     public List<Legend> Legends = new()
     {
         // color 0x80 matches the real 6.x capture (`01 00 80 17 "Born…"`); color 0 renders invisible.
-        new Legend(icon: 0, color: 0x80, text: "Born in Hyul 31, Winter"),
+        new Legend(icon: 0, color: 0x80, text: $"Born in {GameDate}"),
     };
 
     // Raw body of the creation packet (0x04), kept verbatim until its appearance-byte layout is
@@ -145,6 +157,11 @@ public sealed class InvItem
     public int    Amount     = 1;
     public ushort Dura       = 0;
     public string CustomName = "";
+
+    // Durability warning-threshold stage (RTK sd->status.equip[x].repair): 0 = full/no warning sent yet,
+    // 1..5 = the 50/25/10/5/1% warnings already sent, so each only fires once as Dura counts down. Only
+    // meaningful for worn equipment (Session.CheckDura); bag items stay at 0.
+    public byte Repair = 0;
 
     public InvItem() { }
     public InvItem(byte slot, int itemId, int amount, ushort dura = 0)

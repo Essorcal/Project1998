@@ -304,6 +304,17 @@ public sealed class Session
             // build that reply until its wire format is known — for now decode+log the request so labelled
             // right-clicks map body[1] -> which item. See HandleItemInfoRequest / issue #3.
             case 0x66:                    HandleItemInfoRequest(dec); break;
+            // 0x09 = the ';' Look key (RTK clif_parselookat_2). No coordinates in the body — it always
+            // inspects the tile immediately in front of us (facing direction). See HandleLookAt.
+            case 0x09:                    HandleLookAt(dec); break;
+            // 0x19 = whisper (Shift+' , type a name, Enter, type the message, Enter). LIVE-confirmed
+            // 2026-07-26: body = dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00 — exactly RTK
+            // clif_parsewisp's wire layout (clif.c:7644). See HandleWhisperPacket.
+            case 0x19:                    HandleWhisperPacket(dec); break;
+            // 0x3B = the 'b' key (Board). LIVE-confirmed 2026-07-26: body `01 00` = sub-command 1
+            // ("Show Board"). Matches RTK's clif_parse dispatch exactly (clif.c:11613: `case 0x3B:
+            // clif_handle_boards(sd);`). See HandleBoard.
+            case 0x3B:                    HandleBoard(dec); break;
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
@@ -345,40 +356,43 @@ public sealed class Session
         catch { /* fall back to _pendingName */ }
         if (string.IsNullOrEmpty(name)) name = _user;
 
-        var c = _store.Load(name) ?? new Character();
+        var existing = _store.Load(name);
+        var c = existing ?? new Character();
         c.Name = name;
         c.CreationBlob = dec;      // keep the raw body for future re-decoding if the mapping changes
-        ApplyAppearance(c);        // decode gender/hair/face so world entry renders the real choices
+        ApplyAppearance(c);        // decode gender/face/nation/totem/hair so the real picks take effect
+        if (existing is null) PlaceNewCharacter(c);   // brand new -> home city NOW MATCHES the picked nation
         _store.Save(c);
-        Log.Info($"   -> CREATE persisted '{name}' (sex={c.Sex} hair={c.Hair} face={c.Face}) -> {_store.Directory}");
+        Log.Info($"   -> CREATE persisted '{name}' (sex={c.Sex} face={c.Face} nation={Character.NationName(c.Nation)} totem={c.Totem}) -> {_store.Directory}");
         SendMessage("Account created.");
     }
 
-    // Map the raw 0x04 creation body onto the renderable 0x33 appearance bytes.
-    // Creation body layout (live captures): [0]=hairStyle [1]=hairColor [2]=face [3]=gender [4]=skin.
+    // Map the raw 0x04 creation body onto Character fields.
     //
-    // IMPORTANT (learned the hard way): the 0x33 render appearance bytes are a DIFFERENT id space
-    // than the creation bytes. Copying creation hair/face into 0x33 appearance[1]/[2] blanks the
-    // composed sprite (character invisible though the entity still exists). The only known-good 0x33
-    // appearance is [0]=<bodyForm>, [1..6]=0. So we translate ONLY gender -> bodyForm here, via a
-    // whitelist of body values known to render, and leave hair/face at 0 until the render id space
-    // for those layers is decoded. Unknown gender codes fall back to the safe default.
+    // Layout confirmed against the REAL RTK char-server source (RTK-Server/rtk/src/char/logif.c
+    // logif_parse_newchar, which is authoritative — its call `char_db_newchar(name, pass, totem=B39,
+    // sex=B37%2, country=B38, face=B36, hair=B40, faceColor=B42, hairColor=B41)` shows the field ORDER
+    // right after the (there, fixed-width) name+pass block is: face, sex, nation, totem, hair, then
+    // hair/face color. Our 4.95 blob is a 5-byte tail in that same relative order, just without the two
+    // color bytes: [0]=face [1]=sex [2]=nation [3]=totem [4]=hair. This was previously mis-read as
+    // "[2]=near-constant misc, [3]/[4]=nation/totem" — that guess never had a sample where nation was
+    // deliberately varied; re-decoding under the corrected order lines up perfectly (e.g. "newbie"/
+    // "newbieb": 29/3d 00 02 00 00 -> nation=2 Buya, totem=0 JuJak — exactly the picks reported live).
+    //   [0]=face  [1]=SEX(0=male,1=female)  [2]=NATION(Character.Nations index)  [3]=TOTEM(0-4)  [4]=hair
+    //
+    // Render caveat (still true): the 0x33 appearance bytes are a DIFFERENT id space than these creation
+    // bytes — appearance[2] (face) uses creation byte[0] directly (proven: faceone=00/facetwo=23/
+    // facethree=34 gave three distinct correct faces), but hair has no slot in the 4.95 type-0 render
+    // form, so Character.Hair is persisted (creation byte[4]) without being drawn anywhere yet.
     private static void ApplyAppearance(Character c)
     {
-        // Creation blob (login-channel 0x04), decoded from CONTROLLED captures — a char named "male"
-        // gave 55 00 02 02 00 and one named "female" gave 12 01 02 01 00; byte[1] is the ONLY byte that
-        // tracks gender across every sample (male=00, every female=01):
-        //   [0]=hair(style|color nibbles)  [1]=GENDER(0=male,1=female)  [2]=face  [3]/[4]=nation/totem
-        // Gender maps straight onto render body/sex (appearance[0] is also 0=male/1=female). Face maps
-        // onto render face (appearance[2]). Hair has no slot in the 4.95 type-0 render form. nation/totem
-        // are STATS (profile/HUD), not appearance.
         var b = c.CreationBlob;
         if (b is null || b.Length < 2) return;
-        c.Sex  = b[1];   // gender: 0=male, 1=female (proven by the "male"/"female" creations)
-        // Face: creation byte[0] is what varies across distinct face picks (faceone=00, facetwo=23,
-        // facethree=34); byte[2] only had 2 values for 3 faces, so it was the wrong byte.
+        c.Sex  = b[1];   // gender: 0=male, 1=female
         c.Face = b[0];   // -> render appearance[2]
-        c.Hair = 0;      // not renderable in this form
+        if (b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
+        if (b.Length > 3 && b[3] <= 4) c.Totem = b[3];
+        if (b.Length > 4) c.Hair = b[4];   // persisted; no 4.95 render slot yet
     }
 
     private void HandleLogin(byte[] dec)
@@ -427,7 +441,8 @@ public sealed class Session
         var loaded = _store.Load(_user);
         _char = loaded ?? new Character();
         _char.Name = _user;
-        ApplyAppearance(_char);   // re-derive appearance for records saved before the mapping existed
+        ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
+        if (loaded is null) PlaceNewCharacter(_char);   // no saved character -> home city matching the picked nation
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
         // collide on the shared-world broadcast key). This id binds the client's camera (0x05/SendId) and
@@ -460,8 +475,9 @@ public sealed class Session
         SendXy();
         SendSelfLook();
         SendStats();
+        PlayMapMusic(_char.Map);   // 0x19: start this map's background track — SendWorldEntry() had this, ARRIVAL didn't
 
-        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats ==");
+        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 0x19 music ==");
 
         // Join the shared world: register on this map, draw everyone/everything already here for us, and
         // let EnterMap broadcast US to them. From now on peers see our moves/speech and we see theirs.
@@ -583,6 +599,7 @@ public sealed class Session
     // 0x1b/09 notification flips it to stay in sync. (If a fresh client actually boots OFF, one toggle
     // re-syncs; NEXUS_V495_FASTMOVE_DEFAULT can override the assumed startup state.)
     private bool _fastMove = FastMoveDefault;
+
 
     private static readonly bool FastMoveDefault =
         Environment.GetEnvironmentVariable("NEXUS_V495_FASTMOVE_DEFAULT") == "0" ? false : true;
@@ -743,6 +760,23 @@ public sealed class Session
         Log.Info($"   -> NATION probe: sent nation={n}; read the HUD nation name/crest");
     }
 
+    // "!totem <n>" — same idea as !nat, for the totem crest: send stats with totem byte = n and read which
+    // name/graphic the HUD shows. Our documented table (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None) was
+    // NEVER actually swept like nation was (§9/§16) — a live report showed a fresh character (Totem defaults
+    // to 4, "None" per that table) rendering as ChungRyong, so the table is probably wrong. Sweep 0..4 here
+    // to pin the real mapping before wiring totem selection up from the creation packet.
+    private void StatTotem(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        byte n = 0;
+        if (parts.Length > 1) byte.TryParse(parts[1], out n);
+        byte save = _char.Totem;
+        _char.Totem = n;
+        SendStats();
+        _char.Totem = save;
+        Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
+    }
+
     // "!hp <cur> <max>" — send stats with HP=cur, maxHP=max (and the same for MP) to PIN the maxHP/maxMP
     // offsets: if [5]/[9] are really maxHP/maxMP, the HP/MP bar fill becomes cur/max (e.g. 100/1000 = 10%
     // full) and any "cur/max" text shows those numbers. If the bar stays full, the offset is wrong.
@@ -782,9 +816,14 @@ public sealed class Session
     // so an EMPTY slot must send 0xFF ("-1", proven live and matching RTK clif.c, which sends 0xFFFF for
     // weapon/shield when !pc_isequip). The slot is "occupied" iff a matching item is actually worn — a worn
     // weapon whose Look happens to be 0 (e.g. Novice sword) still shows sprite 0, only a bare slot is 0xFF.
-    // Form/state byte for appearance[1]: 3 = mounted (horse+rider composite), 0 = normal human. Other
-    // documented values (1 ghost, 5 invisible-spell) aren't driven from here.
-    private byte MountForm() => _char.Mounted ? (byte)3 : (byte)0;
+    // Form/state byte for appearance[1]: 1 = ghost (Hp==0, see Die()), 3 = mounted (horse+rider composite),
+    // 0 = normal human. Dead outranks mounted — a horse doesn't survive its rider's death. Other documented
+    // values (5 invisible-spell) aren't driven from here.
+    private byte MountForm() => _char.Hp == 0 ? (byte)1 : (_char.Mounted ? (byte)3 : (byte)0);
+
+    /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
+    /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
+    public bool IsDead => _char.Hp == 0;
 
     private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; !weapon GM override
     private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
@@ -964,6 +1003,96 @@ public sealed class Session
         if (died) ScheduleDespawn(_char.Map, mobId, DeathDespawnMs);
     }
 
+    // Remaining-HP percent for OUR OWN over-head bar (mirrors HpPercent(Mob) above), reflecting worn-gear
+    // bonuses like SendStats does. 0 only when actually dead (Hp==0) — a live player's bar never reads empty.
+    private byte PlayerHpPercent()
+    {
+        uint maxHp = (uint)Math.Max(1, (int)_char.MaxHp + Totals().hp);
+        uint cur = Math.Min(_char.Hp, maxHp);
+        if (cur == 0) return 0;
+        return (byte)Math.Clamp((int)(cur * 100 / maxHp), 1, 100);
+    }
+
+    // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
+    // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
+    // mob takes, just aimed at our own entity id) — dying (Hp hits 0) triggers Die() below.
+    public void ApplyMobHit(Mob mob, int dmg)
+    {
+        if (IsDead) return;   // already down — don't re-trigger Die() while the revive delay is pending
+        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
+        // RTK clif_deductarmor: taking a hit rolls durability loss on every worn slot (not just armor —
+        // the reference implementation checks the weapon slot here too).
+        foreach (var worn in _char.Equipment.ToArray()) DeductDura(worn);
+        SendStats();
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, PlayerHpPercent(), HitCritByte));
+        Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
+        if (IsDead) Die();
+    }
+
+    // How long a defeated player spends as a ghost before waking back up in their home city (simplified
+    // death penalty — no monk/temple revival flow yet, just a beat to read the message before the warp).
+    private const int ReviveDelayMs = 3000;
+
+    // Defeated by a mob: redraw as a ghost (appearance[1]=1 via MountForm(), see IsDead/Snapshot/ShowPlayer),
+    // then after a short beat wake back up at full HP/MP in the player's home city. Matches the documented
+    // "players die to ghost form" design (§8) without a full temple/monk revival system.
+    private void Die()
+    {
+        Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
+        SendMessage("You have been defeated!");
+        _char.Mounted = false;                                            // a horse doesn't carry a ghost
+        SendSelfLook();                                                   // redraw self as a ghost
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);   // and for everyone watching
+        _ = Task.Run(async () => { try { await Task.Delay(ReviveDelayMs); Revive(); } catch { } });
+    }
+
+    // Restore full HP/MP and send the player back to their home city (see PlaceNewCharacter for the same
+    // Ironheart/Jadespear coordinates a fresh character starts at).
+    private void Revive()
+    {
+        _char.Hp = (uint)Math.Max(1, (int)_char.MaxHp + Totals().hp);
+        _char.Mp = (uint)Math.Max(0, (int)_char.MaxMp + Totals().mp);
+        var (map, x, y) = HomeCityFor(_char.Nation);
+        if (Content.Maps.TryGetValue(map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, x, y, mi.Name);
+        else SendSelfLook();   // fallback: just heal in place if the home map isn't loaded
+        SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
+        SendMessage("You awaken back in town.");
+        Log.Info($"   -> REVIVED: {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
+    }
+
+    // A character's home city — INSIDE the nation's home (RTK Warps.csv door-arrival tiles, not GmWarp's
+    // outdoor GM-teleport spot): Buya-aligned characters (Nation==2) start/revive just inside Jadespear's
+    // Home (map 351); every other nation just inside Ironheart's Home (map 36). Both are 12x12 (valid
+    // tiles 0..11) with an entirely open PASSABLE floor (verified against the real TK351.map/TK36.map
+    // pass data — no solid tiles at all), but the OBJECT layer still draws walls/furniture that are only
+    // collision-free, not invisible — so a tile can be "walkable" and still look like you're standing
+    // inside a wall.
+    //
+    // Jadespear's tile went through two bad picks before landing on (3,6):
+    //   (7,12): the raw Warps.csv door-arrival Y — one past map 351's last valid row (11). The 4.95
+    //     client's self-placement check (0x424310) silently bails on an out-of-bounds tile: the
+    //     game-world object gets created but the self entity is never placed, so the screen stays black
+    //     and movement keys do nothing (GUI still works — it doesn't depend on the world entity).
+    //   (7,11): in-bounds, but that row is the bottom wall/threshold strip in TK351.map's object layer
+    //     (object ids 636-643) — visually "in a wall" even though it's collision-free. Confirmed clear via
+    //     the real map's object grid: (3,6) sits in the empty interior, away from every wall/furniture id.
+    //
+    // Shared by a fresh character's starting spawn (PlaceNewCharacter) and a defeated character's revive
+    // point (Revive) so both stay in lock-step.
+    private static (ushort map, ushort x, ushort y) HomeCityFor(byte nation) =>
+        nation == 2 ? ((ushort)351, (ushort)3, (ushort)6) : ((ushort)36, (ushort)5, (ushort)10);
+
+    // Place a BRAND NEW character (never persisted before) at their home city instead of Character's
+    // compiled-in fallback. MUST run after ApplyAppearance has decoded the real Nation pick (creation
+    // byte[2] — see ApplyAppearance) or every character would route by the compiled-in default instead
+    // of what they actually chose on the creation screen.
+    private static void PlaceNewCharacter(Character c)
+    {
+        var (map, x, y) = HomeCityFor(c.Nation);
+        c.Map = map; c.X = x; c.Y = y;
+        c.MapXs = 12; c.MapYs = 12;   // both home interiors (36, 351) are 12x12
+    }
+
     // Broadcast a corpse despawn (0x0E) to the map after `ms`, so the death beat is visible first. The mob is
     // already gone from the world's mob list (World.TryDamage removed it), so nothing ticks it in the meantime,
     // and mob ids are monotonic so the id can't be reused before this fires. 0 ms = despawn immediately.
@@ -1131,6 +1260,43 @@ public sealed class Session
     // We step from THAT tile (when in-bounds), not just our tracked one, so the collision check runs on
     // the cell the client is actually standing on and the server re-syncs to the client each step. This
     // is what stops rapid direction-changes from desyncing us and walking through walls.
+    // Warp-destination gate (RTK clif.c:5187-5203, checked only when a player steps onto a warp tile —
+    // scripted/quest/GM warps call EnterMap directly via Warp() above and are NOT gated, matching RTK where
+    // the check lives in the walk handler, not in pc_warp itself). Denial text mirrors RTK's cascade exactly,
+    // including its dead branches: since almost every gated map sets a nonzero ReqLvl, the level-difference
+    // messages (cases 1-3) already cover every diff value, so the mark/path-specific text below them is only
+    // reachable when ReqLvl equals the player's level exactly and a mark/path check also fails — an RTK
+    // inconsistency preserved here rather than "fixed".
+    private bool TryWarpGate(ushort destMap, out string denyMsg)
+    {
+        denyMsg = "";
+        if (!Content.MapMeta.TryGetValue(destMap, out var meta)) return true;   // no Maps.csv row -> unrestricted
+
+        bool lvlFail  = _char.Level < meta.ReqLvl;
+        bool statFail = (long)_char.MaxHp < meta.ReqVita && (long)_char.MaxMp < meta.ReqMana;
+        bool markFail = CharMark < meta.ReqMark;
+        bool pathFail = meta.ReqPath > 0 && CharClassId != meta.ReqPath;
+        if (lvlFail || statFail || markFail || pathFail)
+        {
+            if (!string.IsNullOrEmpty(meta.RejectMsg)) { denyMsg = meta.RejectMsg; return false; }
+            int diff = Math.Abs(meta.ReqLvl - _char.Level);
+            denyMsg = diff >= 10 ? "Nightmarish visions of your own death repel you."
+                    : diff >= 5  ? "You're not quite ready to enter yet."
+                    : diff < 5   ? "You almost understand the secrets to this entrance."
+                    : markFail   ? "You do not understand the secrets to enter."
+                    : pathFail   ? "Your path forbids it."
+                    : "A powerful force repels you.";
+            return false;
+        }
+
+        if (meta.LvlMax > 0 && (_char.Level > meta.LvlMax || ((long)_char.MaxHp > meta.VitaMax && (long)_char.MaxMp > meta.ManaMax)))
+        {
+            denyMsg = "A magical barrier prevents you from entering.";
+            return false;
+        }
+        return true;
+    }
+
     private void HandleWalk(byte[] dec)
     {
         byte dir = dec.Length > 0 ? dec[0] : (byte)0;
@@ -1171,13 +1337,19 @@ public sealed class Session
         // A living mob occupies its tile too (the client also self-blocks on creatures — enforce it
         // server-side so a desync can't let a player stand on one). Warp tiles still win (checked below).
         bool mobHere = !offMap && _world.MobAt(_char.Map, nx, ny) is not null;
-        bool blocked = offMap || mobHere || (PassEnforce && map != null && Blocked(map, nx, ny));
+        // Collision = ground pass flag (Blocked, honors the passtest diag) OR the client's SObj.tbl directional
+        // object-wall for this heading (ObjectFlags) — the layer that stops you walking through a hut's thin
+        // side wall (pass=0 under it). Warp tiles still win: the warp check below returns before `blocked` is
+        // consulted, so doorways sitting on object tiles keep working.
+        bool blocked = offMap || mobHere
+            || (PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3)));
 
         // Doors/portals take precedence over collision: if the tile we're stepping toward is a warp
         // source, take it — even if that tile is otherwise "solid" (many doorways sit on object tiles).
         if (!offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var dest)
             && Content.TryMap(dest.m, out var dm))
         {
+            if (!TryWarpGate(dest.m, out var denyMsg)) { SendLog(denyMsg); return; }
             Log.Info($"   -> WARP ({nx},{ny}) on map {_char.Map} -> map {dest.m} '{dm.Name}' ({dest.x},{dest.y})");
             EnterMap(dm.Id, dm.Xs, dm.Ys, dest.x, dest.y, dm.Name);
             return;
@@ -1187,6 +1359,10 @@ public sealed class Session
         // mythic_cave_selector), NOT SQL warps — so they need their own handler. Stepping on a zodiac tile
         // warps to the deepest cave tier the player's level/vitals unlock (or refuses, under-levelled).
         if (!offMap && _char.Map == 41 && TryMythicCaveEntrance((ushort)nx, (ushort)ny)) return;
+
+        // Class path-hall interior doorways (onScriptedTilesPathHalls.lua) are scripted tiles, not SQL warps —
+        // only the "outside" warp is in Warps.csv, which is why the leader/arena doors felt dead.
+        if (!offMap && TryPathHallWarp((ushort)nx, (ushort)ny)) return;
 
         if (blocked)
         {
@@ -1500,12 +1676,40 @@ public sealed class Session
             SendXy();
             SendSelfLook();
             RedrawWorld();   // 0x15 rebuild drops FOREIGN entities — re-assert peers + mobs so they don't vanish
+            SendMessage(_realm != 0 ? "Realm-centered   :ON" : "Realm-centered   :OFF");   // RTK clif_changestatus case 0x07 (verbatim text)
             Log.Info($"   -> setting 0x07 Realm-center = {(_realm != 0 ? "ON" : "OFF")} (refreshed in place)");
         }
         else if (setting == 0x09)
         {
             _fastMove = !_fastMove;   // client toggled fast-move; keep our model in sync
+            SendMessage(_fastMove ? "Fast Move        :ON" : "Fast Move        :OFF");   // RTK clif_changestatus case 0x09 (verbatim text)
             Log.Info($"   -> setting 0x09 Fast-move = {(_fastMove ? "ON (client-authoritative)" : "OFF (server-authoritative)")}");
+        }
+        else if (setting == 0x00)
+        {
+            // 0x00 = the 'r' Ride key (RTK clif_changestatus case 0x00 -> clif_findmount). Unlike !ride/
+            // !mount (a plain GM toggle), this one is tied to a real world "horse" mob (MobDef key "horse",
+            // e.g. the wild horses roaming Buya/Horse Valley): mounting rides one away (despawns it) and
+            // dismounting sets it back down in front of you.
+            if (_char.Hp == 0) SendMessage("Spirits can't do that.");
+            else TryRideHorse();
+        }
+        else if (setting == 0x02)
+        {
+            // Shift+G — toggle "sociable/group" (whether others may group with you). Persisted; the profile
+            // window (0x39 group byte / 0x34 status cell) reads it, so reopening the profile shows the change.
+            _char.Grouped = !_char.Grouped;
+            SaveChar();
+            SendMessage(_char.Grouped ? "You are now sociable." : "You are no longer sociable.");
+            Log.Info($"   -> setting 0x02 Group/sociable = {(_char.Grouped ? "ON" : "OFF")}");
+        }
+        else if (setting == 0x08)
+        {
+            // Toggle "exchange/trade" (whether others may exchange with you). Same profile cells; persisted.
+            _char.Exchange = !_char.Exchange;
+            SaveChar();
+            SendMessage(_char.Exchange ? "You will now exchange." : "You will no longer exchange.");
+            Log.Info($"   -> setting 0x08 Exchange = {(_char.Exchange ? "ON" : "OFF")}");
         }
         else
         {
@@ -1631,6 +1835,9 @@ public sealed class Session
         if (text.StartsWith("!cre", StringComparison.OrdinalIgnoreCase)) { CreatureOne(text); return; }    // spawn one real monster [look] [hp] [color]
         // ---- navigation + data-driven content (registries loaded at startup from external data) ----
         if (text.StartsWith("!music", StringComparison.OrdinalIgnoreCase)) { PlayMusicCmd(text); return; } // play a specific track (0x19)
+        // ---- whisper/tell: a private line to one online player (RTK clif_parsewisp) ----
+        if (text.StartsWith("!whisper ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[9..]); return; }
+        if (text.StartsWith("!w ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[3..]); return; }
         if (text.StartsWith("!warp", StringComparison.OrdinalIgnoreCase)) { Warp(text); return; }        // warp to a map by name/id [x y]
         if (text.StartsWith("!maps", StringComparison.OrdinalIgnoreCase)) { ListMaps(text); return; }    // list/fuzzy-search maps
         if (text.StartsWith("!mobs", StringComparison.OrdinalIgnoreCase)) { ListMobs(text); return; }    // list/fuzzy-search mobs (BEFORE !mob*)
@@ -1668,6 +1875,7 @@ public sealed class Session
         if (text.StartsWith("!ckm", StringComparison.OrdinalIgnoreCase)) { SendClickMarker(); return; }             // 0x34 with marker strings
         if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { SendClickProfile(_char.Id); return; }  // native 0x34 click-profile
         if (text.StartsWith("!nat", StringComparison.OrdinalIgnoreCase)) { StatNation(text); return; }              // sweep nation id -> HUD name
+        if (text.StartsWith("!totem", StringComparison.OrdinalIgnoreCase)) { StatTotem(text); return; }             // sweep totem id -> HUD name
         if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 
@@ -1675,6 +1883,233 @@ public sealed class Session
         // to all co-located players INCLUDING us, so we see our own bubble too.
         _world.Broadcast(_char.Map, p => p.SpeakEntity(chatType, _char.Id, msg));
         Log.Info($"   -> speech type={chatType}: \"{text}\" -> map {_char.Map}");
+
+        // …and let a nearby NPC react to it (RTK onSayClick: "i'd like to fish", a tutor's name, …).
+        DispatchSpeech(text);
+    }
+
+    // ---- whisper/tell (RTK clif_parsewisp, clif.c:7644-7790) ---------------------------------------------
+    // Native client input: Shift+' opens the whisper prompt, then a name + Enter, then a message + Enter.
+    // LIVE-confirmed 2026-07-26 (real capture): op=0x19 body = dstlen(u8) dst_name[dstlen] msglen(u8)
+    // msg[msglen] 00 — exactly RTK's wire layout. RTK's own delivery uses a generic system-message packet
+    // (type 0, "Wisp/blue text") rather than the over-head speech opcode; that reply shape hasn't been
+    // captured live, so delivery rides the already-proven self-facing chat-bubble channel (SendLog) instead
+    // of gambling on an unconfirmed packet. The "!whisper"/"!w" chat commands are kept as a fallback entry
+    // point (same DoWhisper core) for anyone who'd rather type it. Message TEXT is RTK's real wording
+    // wherever portable (not-found, map-silenced, the whisper/echo shapes). Not modelled: per-player
+    // whisper on/off, silence/mute, and ignore lists — none of those exist yet.
+    private void HandleWhisperPacket(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        int dstLen = dec[0];
+        if (dstLen <= 0 || 1 + dstLen + 1 > dec.Length) return;
+        string name = Encoding.ASCII.GetString(dec, 1, dstLen);
+        int msgLen = dec[1 + dstLen];
+        int msgStart = 1 + dstLen + 1;
+        if (msgLen < 0 || msgStart + msgLen > dec.Length) return;
+        string msg = Encoding.ASCII.GetString(dec, msgStart, msgLen);
+        DoWhisper(name, msg);
+    }
+
+    // "!whisper <name> <message>" / "!w <name> <message>" — chat-command fallback for the same feature.
+    private void HandleWhisper(string rest)
+    {
+        rest = rest.Trim();
+        int sp = rest.IndexOf(' ');
+        if (sp < 0) { SendLog("Whisper what to whom? Try: !whisper <name> <message>"); return; }
+        DoWhisper(rest[..sp].Trim(), rest[(sp + 1)..].Trim());
+    }
+
+    private void DoWhisper(string name, string msg)
+    {
+        if (name.Length == 0 || msg.Length == 0) return;
+
+        // RTK: map[sd->bl.m].cantalk == 1 blocks whisper with this exact line (only 2 maps set it).
+        if (!Content.CanTalk(_char.Map)) { SendLog("Your voice is swept away by a strange wind."); return; }
+
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK's literal wording
+
+        target.ReceiveWhisper(_char.Name, CharClassId, msg);
+        SendLog($"{target.Snapshot().Name}> {msg}");   // RTK clif_retrwisp: "<TargetName>> <message>"
+    }
+
+    /// <summary>Deliver a whisper's text to THIS session (the recipient). RTK clif_sendwisp's exact shape —
+    /// <c>"SenderName" (ClassName) message</c> — adapted to our self-facing chat-bubble channel since we
+    /// don't reuse RTK's raw system-message opcode for delivery.</summary>
+    internal void ReceiveWhisper(string fromName, int fromClassId, string msg)
+    {
+        string cls = fromClassId >= 0 ? Content.PathName(fromClassId) : "";
+        SendLog(string.IsNullOrEmpty(cls) ? $"\"{fromName}\" () {msg}" : $"\"{fromName}\" ({cls}) {msg}");
+    }
+
+    // ---- bulletin boards (RTK clif_handle_boards, clif.c:11156-11201; wire shapes cross-checked against
+    // the char-server hop, rtk/src/char/mapif.c, and the map-server's reply builder, rtk/src/map/intif.c,
+    // since RTK splits board storage into a separate process this single-process server doesn't have).
+    // Sub-command byte is dec[0]; board/post ids that follow are u16 BIG-ENDIAN (RTK SWAP16). RTK's own
+    // 0x31 reply code sometimes leaves the "inc" byte (its byte 4) unwritten entirely (intif_parse_readpost
+    // comments it out) — good evidence that byte isn't client-meaningful for this opcode, just RTK's own
+    // framing detail, so these replies use our normal SendMap(op, inc, data) convention like every other
+    // packet in this codebase rather than copying RTK's literal byte-4 values.
+    private void HandleBoard(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        switch (dec[0])
+        {
+            case 1: SendBoardList(); break;                                                  // Show Board
+            case 2: if (dec.Length >= 3) SendBoardPosts(U16(dec, 1)); break;                  // Show posts from board #
+            case 3: if (dec.Length >= 5) SendBoardReadPost(U16(dec, 1), U16(dec, 3)); break;  // Read post
+            case 4: HandleBoardMakePost(dec); break;                                          // Make post
+            case 5: if (dec.Length >= 5) HandleBoardDelete(U16(dec, 1), U16(dec, 3)); break;   // Delete post
+            // 6 (nmail) / 7 (GM postcolor) / 8 (special write) / 9 (nmail) aren't modelled — no nmail or
+            // GM-level concept exists in this server yet.
+        }
+    }
+
+    private static int U16(byte[] d, int i) => (d[i] << 8) | d[i + 1];
+
+    // Sub-1 "Show Board": the board list. RTK clif_showboards: type(1) titlelen(u8) title[titlelen]
+    // boardCount(u8) then per board [id(u16BE) nameLen(u8) name[nameLen]]. RTK's own board list
+    // (db/board_db.txt) is server-instance config not present in the reference tree — see Boards.All's
+    // doc comment for what's seeded instead and why. UNVERIFIED against a live capture (no client-side
+    // confirmation yet that this reply shape renders correctly) — flag any visual issue and this is the
+    // first place to check.
+    private void SendBoardList()
+    {
+        var d = new List<byte> { 1, 13 };
+        d.AddRange(Ascii("NexusTKBoards"));
+        d.Add((byte)Boards.All.Count);
+        foreach (var b in Boards.All)
+        {
+            d.AddRange(Be((ushort)b.Id));
+            var n = Ascii(b.Name);
+            d.Add((byte)n.Length);
+            d.AddRange(n);
+        }
+        SendMap(0x31, _gameInc++, d.ToArray(), "boardlist(0x31)");
+    }
+
+    // Sub-2 "Show posts from board #": flags2(u8) flags1(u8) board(u16BE) boardNameLen(u8) boardName[...]
+    // postCount(u8) then per post [color(u8) postId(u16BE) nameLen(u8) name[...] month(u8) day(u8)
+    // topicLen(u8) topic[...]], newest first. flags2=2/flags1=3 are RTK's literal values for "a normal
+    // (non-nmail) board, always writable" — the only case we model (no GM/tutor/popup gating exists here).
+    // UNVERIFIED against a live capture.
+    private void SendBoardPosts(int boardId)
+    {
+        string name = Boards.Find(boardId)?.Name ?? "";
+        var posts = Boards.PostsFor(boardId);
+
+        var d = new List<byte> { 2, 3 };
+        d.AddRange(Be((ushort)boardId));
+        var bn = Ascii(name);
+        d.Add((byte)bn.Length);
+        d.AddRange(bn);
+        d.Add((byte)posts.Count);
+        foreach (var p in posts)
+        {
+            d.Add(0);   // color/highlighted (BrdHighlighted) — not modelled, always 0
+            d.AddRange(Be((ushort)p.Id));
+            var an = Ascii(p.Author);
+            d.Add((byte)an.Length);
+            d.AddRange(an);
+            d.Add(p.Month);
+            d.Add(p.Day);
+            var tn = Ascii(p.Topic);
+            d.Add((byte)tn.Length);
+            d.AddRange(tn);
+        }
+        SendMap(0x31, _gameInc++, d.ToArray(), $"boardposts(0x31) board={boardId} n={posts.Count}");
+    }
+
+    // Sub-3 "Read post": type(u8=3) buttons(u8=3, always writable) nmailFlag(u8=0) postId(u16BE)
+    // authorLen(u8) author[...] month(u8) day(u8) topicLen(u8) topic[...] bodyLen(u16BE) body[...].
+    // UNVERIFIED against a live capture.
+    private void SendBoardReadPost(int boardId, int postId)
+    {
+        var post = Boards.Get(boardId, postId);
+        if (post is null) { SendLog("That post no longer exists."); return; }
+
+        var d = new List<byte> { 3, 3, 0 };
+        d.AddRange(Be((ushort)postId));
+        var an = Ascii(post.Author);
+        d.Add((byte)an.Length);
+        d.AddRange(an);
+        d.Add(post.Month);
+        d.Add(post.Day);
+        var tn = Ascii(post.Topic);
+        d.Add((byte)tn.Length);
+        d.AddRange(tn);
+        var bn = Ascii(post.Body);
+        d.AddRange(Be((ushort)bn.Length));
+        d.AddRange(bn);
+        SendMap(0x31, _gameInc++, d.ToArray(), $"boardread(0x31) board={boardId} post={postId}");
+    }
+
+    // Sub-4 "Make post": board(u16BE) topicLen(u8) topic[...] bodyLen(u16BE) body[...]. RTK's own denial
+    // wording ("Post must contain subject."/"...body.") is kept verbatim; confirmation text adapts RTK's
+    // ("Your message has been posted.") to our SendLog channel since we don't reuse the raw system-message
+    // opcode (same reasoning as whisper delivery).
+    private void HandleBoardMakePost(byte[] dec)
+    {
+        if (dec.Length < 4) return;
+        int boardId = U16(dec, 1);
+        int topicLen = dec[3];
+        if (4 + topicLen + 2 > dec.Length) return;
+        string topic = Encoding.ASCII.GetString(dec, 4, topicLen);
+        int bodyLen = U16(dec, 4 + topicLen);
+        int bodyStart = 4 + topicLen + 2;
+        if (bodyStart + bodyLen > dec.Length) return;
+        string body = Encoding.ASCII.GetString(dec, bodyStart, bodyLen);
+
+        if (topic.Trim().Length == 0) { SendLog("Post must contain subject."); return; }
+        if (body.Trim().Length == 0) { SendLog("Post must contain a body."); return; }
+
+        var now = DateTime.UtcNow;
+        Boards.Post(boardId, _char.Name, topic, body, (byte)now.Month, (byte)now.Day);
+        SendLog("Your message has been posted.");
+    }
+
+    // Sub-5 "Delete post": board(u16BE) postId(u16BE). RTK only lets a post's own author delete it here
+    // (the broader GM/tutor CAN_DEL grant isn't modelled).
+    private void HandleBoardDelete(int boardId, int postId)
+    {
+        SendLog(Boards.Delete(boardId, postId, _char.Name)
+            ? "The message has been deleted."
+            : "You can only delete your own messages.");
+    }
+
+    // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
+    // handler that consumes the speech (runs a dialog) wins, so unrelated chatter just falls through. Async
+    // (dialog awaits replies), so fire-and-forget like OpenNpcDialog. See INpcSayHandler / RTK onSayClick.
+    private const int SpeechRange = 8;   // tiles (Chebyshev) an NPC will "hear" the player from
+    private void DispatchSpeech(string text)
+    {
+        string say = text.Trim().ToLowerInvariant();
+        if (say.Length == 0 || say[0] == '!') return;   // empty / GM command -> not NPC speech
+
+        var candidates = new List<(Mob npc, NpcDef def, List<INpcSayHandler> handlers)>();
+        foreach (var npc in _world.NpcsNear(_char.Map, _char.X, _char.Y, SpeechRange))
+        {
+            var def = Content.NpcById(npc.NpcDefId);
+            if (def is null) continue;
+            var handlers = NpcScripts.For(def).OfType<INpcSayHandler>().ToList();
+            if (handlers.Count > 0) candidates.Add((npc, def, handlers));
+        }
+        if (candidates.Count > 0) _ = RunNpcSayAsync(candidates, say);
+    }
+
+    private async Task RunNpcSayAsync(List<(Mob npc, NpcDef def, List<INpcSayHandler> handlers)> candidates, string speech)
+    {
+        try
+        {
+            foreach (var (npc, def, handlers) in candidates)
+            {
+                var ctx = new NpcContext(this, npc, def);
+                foreach (var h in handlers)
+                    if (await h.OnSay(ctx, speech)) return;   // first NPC to consume the speech ends dispatch
+            }
+        }
+        catch (Exception e) { Log.Info($"!! NPC say error: {e.Message}"); }
     }
 
     private uint _probeId = 1000;
@@ -1779,7 +2214,12 @@ public sealed class Session
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         byte dir = (byte)((_facing + 2) & 3);   // face the player on arrival
-        SummonWorldMob(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0, exp: 5, moveTime: 3000);
+        // Real registry entry (rtk_mobs.csv id 1, key "rabbit"): look 21 color 3, 10hp, 5xp. This used to
+        // hardcode color 0, which for look 21 renders like the "Hare" family (id 116+, same look, color
+        // 37+) instead of the actual Rabbit — reported live 2026-07-26.
+        var def = Content.FindMob("rabbit");
+        if (def is not null) SummonWorldMob(def.Look, x, y, def.Name, hp: def.Hp, dir: dir, color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key);
+        else SummonWorldMob(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0, exp: 5, moveTime: 3000);   // registry missing -> old fallback
         SendLog("A rabbit appears. Face it and press space to attack.");
     }
 
@@ -1900,13 +2340,87 @@ public sealed class Session
         return true;
     }
 
+    // Class path-hall interior warps (onScriptedTilesPathHalls.lua). Each Kugnae/Buya path hall (Warrior/Rogue/
+    // Mage/Poet, both cities) has two scripted-tile doorways that are NOT in the SQL warp table: the SOUTH edge
+    // (x 1-2, y 23) into that class's guild hall — class-gated to members of that base class (RTK also lets a
+    // Tutor in, a staff role we don't model) — and the NORTH edge (x 8-9, y 1) into the player's alignment
+    // sanctum (Unaligned/Kwisin/Mingken/Ohaeng, indexed by Character.Alignment 0-3). Only the map-exit warp is
+    // in Warps.csv, so before this the leader-room and hall doors did nothing (or read as solid).
+    private readonly record struct PathHall(int BaseClass, ushort Hall, ushort[] Sanctum);
+    private static readonly Dictionary<ushort, PathHall> PathHalls = new()
+    {
+        // Kugnae halls
+        [11]  = new(1, 3701, new ushort[] { 12,  300, 301, 302 }),   // Warrior Tebaek
+        [15]  = new(2, 3702, new ushort[] { 16,  312, 313, 314 }),   // Rogue Maro
+        [13]  = new(3, 3703, new ushort[] { 14,  306, 307, 308 }),   // Mage Haedu
+        [17]  = new(4, 3704, new ushort[] { 18,  318, 319, 320 }),   // Poet Jinsun
+        // Buya halls
+        [341] = new(1, 3705, new ushort[] { 366, 303, 304, 305 }),   // Warrior Yebaek
+        [343] = new(2, 3706, new ushort[] { 368, 315, 316, 317 }),   // Rogue Maso
+        [342] = new(3, 3707, new ushort[] { 367, 309, 310, 311 }),   // Mage Eldritch
+        [344] = new(4, 3708, new ushort[] { 369, 321, 322, 323 }),   // Poet Song
+    };
+
+    private bool TryPathHallWarp(ushort x, ushort y)
+    {
+        if (!PathHalls.TryGetValue(_char.Map, out var hall)) return false;
+
+        // South doorway -> class guild hall (members of that base class only).
+        if ((x == 1 || x == 2) && y == 23)
+        {
+            if (CharClassId != hall.BaseClass)
+            {
+                SendMessage("You are not the right class to enter here.");
+                SendXy();   // refuse: hold at the from-tile (RTK bumps 2 tiles north — same net effect)
+                return true;
+            }
+            return WarpHall(hall.Hall, (ushort)(x + 6), 3);
+        }
+
+        // North doorway -> the player's alignment sanctum (the path-leader room).
+        if ((x == 8 || x == 9) && y == 1)
+        {
+            byte a = _char.Alignment <= 3 ? _char.Alignment : (byte)0;
+            return WarpHall(hall.Sanctum[a], (ushort)(x - 3), 18);
+        }
+        return false;
+    }
+
+    private bool WarpHall(ushort destMap, ushort dx, ushort dy)
+    {
+        if (!Content.TryMap(destMap, out var dm)) { SendXy(); return true; }   // dest not renderable -> don't strand
+        Log.Info($"   -> PATHHALL map {_char.Map} -> {destMap} '{dm.Name}' ({dx},{dy})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, dx, dy, dm.Name);
+        return true;
+    }
+
     // ---- After-step scripted tiles (fire once the step has completed, i.e. standing on the new tile) ----
     // RTK runs these from onScriptedTile on every walk. We only port the two that are self-contained AND live
     // entirely on maps the 4.95 client can render: mythic-cave fall-rooms and bush/tree foraging.
     private void OnScriptedTileStep()
     {
         TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
+        TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
         if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
+    }
+
+    // Chu Rua's young ginseng (onScriptedTilesQuest.lua, "Guol Tiger Pass" = map 1116): the rocks at x 5-6,
+    // y 2-4 hold one young_ginseng. The tiger guards them until you distract him (say "rabbit" -> Forest, which
+    // sets chu_rua_tiger_gone); until then it's "too dangerous". (RTK warps to a tiger-free copy, map 1117, but
+    // that map isn't renderable here, so we gate on the flag instead and keep you on 1116.)
+    private void TryGinseng()
+    {
+        if (_char.Map != 1116) return;
+        if (!((_char.X == 5 || _char.X == 6) && _char.Y >= 2 && _char.Y <= 4)) return;
+        if (CountItem("young_ginseng") > 0) return;
+        if (_char.Quests.GetValueOrDefault("chu_rua_tiger_gone") != 1)
+        {
+            SendMessage("With the tiger nearby, it is too dangerous to climb up to the root.");
+            return;
+        }
+        var def = Content.ItemByKey("young_ginseng");
+        if (def is null || !GiveItem(def, 1)) return;
+        SendMessage("Snuggled between the rocks is a young root of ginseng. Was this what Chu Rua meant?");
     }
 
     // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
@@ -2147,7 +2661,7 @@ public sealed class Session
             if (remaining <= 0) break;
             int take = Math.Min(remaining, it.Amount);
             it.Amount -= take; remaining -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 1); }   // reason 1 = removed
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }   // reason 0 = Remove (not a drop — this client-side text is otherwise "You dropped your X")
             else SendAddItem(it);
         }
         SaveChar();
@@ -2202,6 +2716,115 @@ public sealed class Session
     internal int  CharMark  => 0;
     internal int  QuestRandom(int maxInclusive) => Random.Shared.Next(1, Math.Max(1, maxInclusive) + 1);
     internal long NowUnix   => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    internal int  CharSex    => _char.Sex;
+    internal int  CharNation => _char.Nation;
+    internal int  CharX      => _char.X;
+    internal int  CharY      => _char.Y;
+    internal uint CharCoins  => _char.Coins;
+
+    /// <summary>Spend coin if the player can afford it (refresh HUD + persist); false, unchanged, if they can't.</summary>
+    internal bool SpendGold(uint amount)
+    {
+        if (amount > 0 && _char.Coins < amount) return false;
+        _char.Coins -= amount;
+        SendStats();
+        SaveChar();
+        return true;
+    }
+
+    // ---- class / path + title + trainer spell-learning (RTK warrior_trainer.lua &c.) -------------
+    // The character's path is stored as the ClassName string ("Peasant"/"Warrior"/…) — the same field
+    // !class/!spells already read — so there's one source of truth; CharClassId maps it to the numeric
+    // path id (0 Peasant / 1 Warrior / 2 Rogue / 3 Mage / 4 Poet). RTK's separate class/baseClass split
+    // (for 5+ subpaths) isn't modelled: base paths only, so ClassName fully captures it.
+    internal int CharClassId => Content.PathIdForClass(_char.ClassName);
+    internal string CharTitle => _char.Title;
+
+    /// <summary>Set the player's path (RTK <c>updatePath</c>): change the profile class line + persist. We
+    /// don't model class-based stat growth, so there's no calcStat step — HP/MP are unchanged.</summary>
+    internal void SetCharClass(int pathId) { _char.ClassName = Content.PathName(pathId); SaveChar(); }
+
+    /// <summary>Set the noble title shown above the name / in the profile (RTK <c>setTitle</c>). Persisted;
+    /// the new title shows next time the profile is opened.</summary>
+    internal void SetCharTitle(string title) { _char.Title = title ?? ""; SaveChar(); }
+
+    /// <summary>Spells this class can learn AT or below the player's level that aren't already known —
+    /// the "Learn Secret" menu (RTK <c>learnSpell</c>). Empty if the player has no class.</summary>
+    internal List<SpellDef> LearnableClassSpells()
+    {
+        int p = CharClassId;
+        if (p < 0) return new();
+        return Content.SpellsForClass(p, _char.Level, _char.Alignment)
+                      .Where(s => !_char.Spells.Contains(s.Id)).ToList();
+    }
+
+    /// <summary>Spells this class will unlock at a HIGHER level (RTK "Divine Secret" preview) — not yet
+    /// learnable. Ordered by level; capped so the preview dialog stays readable.</summary>
+    internal List<SpellDef> FutureClassSpells()
+    {
+        int p = CharClassId;
+        if (p < 0) return new();
+        return Content.SpellsForClass(p, 999, _char.Alignment)
+                      .Where(s => s.Level > _char.Level && !_char.Spells.Contains(s.Id))
+                      .OrderBy(s => s.Level).Take(12).ToList();
+    }
+
+    /// <summary>Spells the player currently knows, for the "Forget Secret" menu.</summary>
+    internal List<SpellDef> KnownSpellList() =>
+        _char.Spells.Select(Content.SpellById).Where(s => s is not null).Select(s => s!).ToList();
+
+    /// <summary>Teach one spell via a trainer (Learn Secret). False if the book is full.</summary>
+    internal bool LearnSpellFromNpc(SpellDef sp)
+    {
+        if (_char.Spells.Contains(sp.Id)) return true;
+        if (_char.Spells.Count >= SpellBookCap) return false;
+        _char.Spells.Add(sp.Id);
+        SendAddSpell(_char.Spells.Count - 1, sp);
+        SaveChar();
+        return true;
+    }
+
+    /// <summary>Forget a single spell (Forget Secret). Removing a mid-book entry shifts every later slot,
+    /// so we resync the whole client book to the new list rather than trying to patch one slot.</summary>
+    internal void ForgetOneSpell(int spellId)
+    {
+        int old = _char.Spells.Count;
+        if (!_char.Spells.Remove(spellId)) return;
+        for (int slot = old - 1; slot >= 0; slot--)
+            SendMap(0x18, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
+        for (int i = 0; i < _char.Spells.Count; i++)
+        {
+            var sp = Content.SpellById(_char.Spells[i]);
+            if (sp is not null) SendAddSpell(i, sp);
+        }
+        SaveChar();
+    }
+
+    /// <summary>Send the player a status/minitext line (RTK sendMinitext).</summary>
+    internal void Notify(string text) => SendMessage(text);
+
+    /// <summary>Make an NPC speak an over-head bubble to everyone on its map (RTK npc:talk).</summary>
+    internal void NpcBubble(Mob npc, string text) =>
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(0, npc.Id, Encoding.ASCII.GetBytes(text)));
+
+    /// <summary>Is an item (by content key) currently worn?</summary>
+    internal bool HasEquipped(string itemKey)
+    {
+        var def = Content.ItemByKey(itemKey);
+        return def is not null && _char.Equipment.Any(e => e.ItemId == def.Id);
+    }
+
+    /// <summary>Display name of an item by key (for quest dialog), or the key if unknown.</summary>
+    internal string ItemName(string itemKey) => Content.ItemByKey(itemKey)?.Name ?? itemKey;
+
+    /// <summary>Warp the player to a map/tile (RTK player:warp). False (and a gentle note) if the destination
+    /// map isn't one the 4.95 client can render, so a quest can't strand the player on a black screen.</summary>
+    internal bool Warp(ushort map, ushort x, ushort y)
+    {
+        if (!Content.TryMap(map, out var dm) || dm is null) { SendLog("You can't reach that place yet."); return false; }
+        EnterMap(dm.Id, dm.Xs, dm.Ys, x, y, dm.Name);
+        return true;
+    }
 
     // ===== spells / skills ======================================================================
     // Spellbook wire = RTK 7.x clif_sendmagic, opcode 0x17: slot(u8=idx+1) type(u8) [name u8len+txt]
@@ -2324,6 +2947,7 @@ public sealed class Session
     // buffs, teleports, summons) are a follow-up — RTK implements those as ~900 Lua scripts.
     private void HandleCast(byte[] dec)
     {
+        if (_char.Hp == 0) { SendMessage("Spirits cannot cast spells."); return; }
         if (dec.Length < 1) return;
         int slot = dec[0] - 1;
         if (slot < 0 || slot >= _char.Spells.Count)
@@ -2422,16 +3046,32 @@ public sealed class Session
         };
     }
 
+    // RTK magic-deflect roll (clif_parsemagic, clif.c:8910-8934): resist grows with the target's Will
+    // advantage over the caster (in 10-point steps) plus its Protection, via exponential decay (0.9^prot).
+    // Only spells flagged SplCanFail roll this at all. RTK's mob struct also carries a separate per-mob
+    // "protection" stat our registry has no source column for, so it's treated as 0 — a real but partial
+    // port, not an invented number. No mana is spent on a deflected cast (RTK returns before the Lua "cast"
+    // script — which is where mana is actually debited — ever runs).
+    private bool RollDeflect(Mob target)
+    {
+        int casterWill = _char.Will + Totals().will;
+        int willDiff = Math.Max(0, target.Will - casterWill);
+        int prot = Math.Max(0, (int)(willDiff / 10.0 + 0.5));
+        int failChance = (int)(100 - Math.Pow(0.9, prot) * 100 + 0.5);
+        return Random.Shared.Next(100) < failChance;
+    }
+
     // Damage: evaluate the spell's real RTK damage formula, spend mana, apply to the faced/targeted mob.
     private bool CastDamage(SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
         var mob = ResolveCastTarget(targetId);
         if (mob is null) { SendMessage($"{sp.Name} finds no target."); return false; }
+        if (sp.CanFail && RollDeflect(mob)) { SendMessage("The magic has been deflected."); return true; }
 
         int power = Math.Max(1, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(mob))));
         _char.Mp -= (uint)mana;
-        if (_world.TryDamage(_char.Map, mob, power, out bool died))
+        if (_world.TryDamage(_char.Map, mob, power, out bool died, _char.Id))
         {
             BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // graphic + sound
             ShowDamageResult(mob.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
@@ -2497,6 +3137,7 @@ public sealed class Session
         if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
         var mob = ResolveCastTarget(targetId);
         if (mob is null) { SendMessage($"{sp.Name} finds no target."); return false; }
+        if (sp.CanFail && RollDeflect(mob)) { SendMessage("The magic has been deflected."); return true; }
 
         double chance = string.IsNullOrEmpty(fx.Chance) ? 100 : Formula.Eval(fx.Chance, SpellVars(mob));
         _char.Mp -= (uint)mana;
@@ -2598,7 +3239,7 @@ public sealed class Session
                 var mob = ResolveCastTarget(targetId);
                 if (mob is null) { SendMessage($"{sp.Name} finds no target."); return false; }
                 _char.Mp -= cost;
-                if (_world.TryDamage(_char.Map, mob, power, out bool died))
+                if (_world.TryDamage(_char.Map, mob, power, out bool died, _char.Id))
                 {
                     BroadcastFx(mob.Id, 4, 56);   // generic unaligned zap graphic + sound
                     ShowDamageResult(mob.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
@@ -2792,6 +3433,9 @@ public sealed class Session
     private void HandleDropItem(byte[] dec)
     {
         if (dec.Length < 1) return;
+        // RTK clif_parsedropitem gates on player state first (dead/mounted can't drop).
+        if (_char.Hp == 0) { SendMessage("Spirits can't do that."); return; }
+        if (_char.Mounted) { SendMessage("You cannot do that while riding a mount."); return; }
         int slot = dec[0] - 1;
         // dec[1] = the "all" flag: 'd' (drop one) sends 0, 'D'/Shift+d (drop whole stack) sends 1.
         // Confirmed live: client emits `08 <slot+1> 00 00` for d and `08 <slot+1> 01 00` for D.
@@ -2817,9 +3461,13 @@ public sealed class Session
     private void HandleThrow(byte[] dec)
     {
         if (dec.Length < 2) return;
+        // RTK clif_parsethrowitem gates on player state first (dead/mounted can't throw).
+        if (_char.Hp == 0) { SendMessage("Spirits can't do that."); return; }
+        if (_char.Mounted) { SendMessage("You cannot do that while riding a mount."); return; }
         int slot = dec[1] - 1;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
+        if (def.NoDrop) { SendLog("You can't throw this item."); return; }   // same restriction as dropping (RTK itemdb_droppable)
         SendAction(_char.Id, 2, 20, 0);                                                    // throw animation (self)
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 2, 20, 0), except: this);   // peers see the throw too
         it.Amount -= 1;
@@ -2836,11 +3484,41 @@ public sealed class Session
         {
             int cx = tx + dx, cy = ty + dy;
             if (cx < 0 || cy < 0 || cx >= _char.MapXs || cy >= _char.MapYs) break;   // off the tile grid
-            if (PassEnforce && tmap != null && Blocked(tmap, cx, cy)) break;         // wall/object -> stop short
+            // Same two-layer collision the walk uses: ground pass flag OR the SObj.tbl directional object-wall
+            // for the throw heading — a thrown item halts at a building wall, not just at water/cliffs.
+            if (PassEnforce && tmap != null
+                && (Blocked(tmap, cx, cy) || ObjectFlags.Blocks(tmap.Obj(cx, cy), _facing & 3))) break;
             tx = cx; ty = cy;
         }
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
             X = (ushort)tx, Y = (ushort)ty, Amount = 1, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
+    }
+
+    // 0x09 ';' Look: name whatever occupies the tile we're facing, RTK's PC -> mob/NPC -> item order
+    // (clif_parselookat_sub / commented clif_parselookat_scriptsub give the exact text shape per entity
+    // kind — bare name, stack count in parens for a floor item). NPCs are stationary mobs (IsNpc-tagged)
+    // in the same shared list, so the mob check already covers them; an empty tile gets no reply, same
+    // as RTK (no clif_sendminitext call when nothing's found).
+    private void HandleLookAt(byte[] dec)
+    {
+        int tx = _char.X, ty = _char.Y;
+        switch (_facing & 3) { case 0: ty--; break; case 1: tx++; break; case 2: ty++; break; case 3: tx--; break; }
+
+        var peer = _world.PeerAt(_char.Map, tx, ty);
+        if (peer is not null) { SendLog(peer.Snapshot().Name); return; }
+
+        var mob = _world.MobAt(_char.Map, tx, ty);
+        if (mob is not null) { SendLog(mob.Name); return; }
+
+        // Session-local debug dummies (!cre/!mob/!crow/!crecol/look-lab) never join the shared world, so
+        // they're invisible to _world.MobAt — check our own dummy list too (e.g. !crecol's "col<N>" labels).
+        var dummy = MobAt(tx, ty);
+        if (dummy is not null) { SendLog(dummy.Name); return; }
+
+        var gi = _world.ItemsOn(_char.Map).LastOrDefault(i => i.X == tx && i.Y == ty);
+        if (gi is null) return;
+        string name = gi.ItemId < 0 ? "coins" : string.IsNullOrEmpty(gi.CustomName) ? Content.ItemById(gi.ItemId)?.Name ?? "an item" : gi.CustomName;
+        SendLog(gi.Amount > 1 ? $"{name} ({gi.Amount})" : name);
     }
 
     // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> consume (+ any heal).
@@ -2923,6 +3601,9 @@ public sealed class Session
     // Move a bag item onto the body: bumps any item already in that gear slot back to the bag first.
     private void EquipFromSlot(int slot)
     {
+        // RTK pc_equipitem gates on player state before anything else (dead/mounted can't change gear).
+        if (_char.Hp == 0) { SendMessage("Spirit's can't do that."); return; }
+        if (_char.Mounted) { SendMessage("You can't do that while riding a mount."); return; }
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
         // Wear requirements (RTK item_data): sex-locked gear, a minimum level, and a minimum MIGHT (checked
@@ -2934,6 +3615,11 @@ public sealed class Session
         if (def.Sex < 2 && def.Sex != _char.Sex) { SendLog($"You can't wear {def.Name}."); return; }
         if (def.Level > _char.Level) { SendLog($"You must be level {def.Level} to wear {def.Name}."); return; }
         if (def.MightReq > EffMight) { SendLog($"You need {def.MightReq} might to wear {def.Name}."); return; }
+        // Cursed/malus gear (negative Vita/Mana): RTK pc_canequipstats blocks it if the penalty would exceed
+        // your current effective max — it'd zero out the pool entirely. 14/19 items in the registry carry a
+        // negative Vita/Mana line, so this is reachable, not theoretical.
+        if (def.Vita < 0 && -def.Vita > EffMaxHp) { SendLog("You lack the health required to wield that."); return; }
+        if (def.Mana < 0 && -def.Mana > EffMaxMp) { SendLog("You lack the wisdom required to wield that."); return; }
         byte wire = def.EquipSlot;
         // Rings/gauntlets are all Type 7 (wire slot 7 = left ring) but share TWO interchangeable slots — 7 and
         // 8 (right ring). Wear the second one in the free right slot instead of replacing the left. Only when
@@ -2977,10 +3663,55 @@ public sealed class Session
         SendStats();                                  // drop the gear bonuses from the HUD
     }
 
+    // ---- durability decay / breakage (RTK clif_deductweapon/deductarmor/checkdura, clif.c:6646-6844) -----
+    // On landing or taking a hit, each relevant equipped slot has a ~49% chance (rnd(100) > 50) to lose 1
+    // point of durability. Indestructible gear and gear with no Durability rating never decays. Durability
+    // loss is disabled entirely on PvP maps (RTK: "disable dura loss from mobs on pvp map").
+
+    /// <summary>Roll durability loss for one worn item, warning at 50/25/10/5/1% and destroying it at 0.</summary>
+    private void DeductDura(InvItem worn)
+    {
+        if (Content.IsPvpMap(_char.Map)) return;
+        var def = Content.ItemById(worn.ItemId);
+        if (def is null || def.Indestructible || def.Durability == 0) return;
+        if (worn.Dura == 0) worn.Dura = def.Durability;   // lazily fill (equip already does this; belt-and-suspenders)
+        if (Random.Shared.Next(100) <= 50) return;        // RTK: rnd(100) > 50 triggers the deduction
+        worn.Dura = (ushort)Math.Max(0, worn.Dura - 1);
+        CheckDura(worn, def);
+    }
+
+    /// <summary>RTK clif_checkdura: fire each threshold warning at most once (tracked by worn.Repair), then
+    /// destroy the item once its durability bottoms out.</summary>
+    private void CheckDura(InvItem worn, ItemDef def)
+    {
+        double pct = (double)worn.Dura / def.Durability;
+        if (pct <= .50 && worn.Repair == 0) { SendMessage($"Your {def.Name} is at 50%."); worn.Repair = 1; }
+        if (pct <= .25 && worn.Repair == 1) { SendMessage($"Your {def.Name} is at 25%."); worn.Repair = 2; }
+        if (pct <= .10 && worn.Repair == 2) { SendMessage($"Your {def.Name} is at 10%."); worn.Repair = 3; }
+        if (pct <= .05 && worn.Repair == 3) { SendMessage($"Your {def.Name} is at 5%.");  worn.Repair = 4; }
+        if (pct <= .01 && worn.Repair == 4) { SendMessage($"Your {def.Name} is at 1%.");  worn.Repair = 5; }
+        if (worn.Dura <= 0) BreakItem(worn, def);
+    }
+
+    /// <summary>RTK clif.c:6805 onward: the item is gone for good — unequipped, appearance reverted, stats
+    /// recalculated. (RTK's BoD "protected" restore-instead-of-break branch isn't modelled: no item in the
+    /// live registry currently sets ItmProtected, so it would never fire.)</summary>
+    private void BreakItem(InvItem worn, ItemDef def)
+    {
+        SendMessage($"Your {def.Name} was destroyed!");
+        _char.Equipment.Remove(worn);
+        SendUnequip(worn.Slot);
+        ApplyAppearance(def, equip: false);
+        SendStats();
+    }
+
     // 0x24 drop gold: dec[0..3]=amount(u32BE). Spill coins onto my tile as a pickup-able gold pile.
     private void HandleDropGold(byte[] dec)
     {
         if (dec.Length < 4) return;
+        // RTK clif_parsedropgold gates on player state first (dead/mounted can't drop gold).
+        if (_char.Hp == 0) { SendMessage("Spirits can't do that."); return; }
+        if (_char.Mounted) { SendMessage("You cannot do that while riding a mount."); return; }
         uint amt = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
         if (amt > _char.Coins) amt = _char.Coins;
         if (amt == 0) { SendLog("You have no coins to drop."); return; }
@@ -3198,6 +3929,46 @@ public sealed class Session
         Log.Info($"   -> MOUNT {( _char.Mounted ? "on" : "off")}");
     }
 
+    // The 'r' Ride key (HandleSetting case 0x00): a real RTK-shaped find-a-horse mount, distinct from the
+    // !ride/!mount GM toggle above. Mounting requires an actual "horse" mob (MobDef key "horse" — the plain
+    // wild horse wandering Buya/Horse Valley, not a combat mob like "wild_horse"/"horse_guardsman" that just
+    // shares the word) standing on the SINGLE tile you're facing (cardinal only, same FrontTile() the melee
+    // attack uses — RTK has no 8-way/diagonal reach and neither does the player's own swing) and despawns it
+    // (ridden away, no loot/exp — see World.DespawnMob). Dismounting sets a fresh horse back down in front.
+    private void TryRideHorse()
+    {
+        if (!_char.Mounted)
+        {
+            var (hx, hy) = FrontTile();
+            var horse = _world.MobNear(_char.Map, hx, hy, 0, mo => mo.Key == "horse");   // radius 0 = exact tile
+            if (horse is null) { SendMessage("There is no horse to ride here."); return; }
+            _world.DespawnMob(_char.Map, horse);
+            _char.Mounted = true;
+            SendSelfLook();
+            _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+            SendMessage("You climb onto the horse.");
+            Log.Info($"   -> MOUNT on (rode away world horse {horse.Id})");
+        }
+        else
+        {
+            _char.Mounted = false;
+            SendSelfLook();
+            _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+            SendMessage("You dismount.");
+
+            var def = Content.Mobs.FirstOrDefault(m => m.Key == "horse");
+            if (def is not null)
+            {
+                var (fx, fy) = FrontTile();
+                ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+                ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+                SummonWorldMob(def.Look, x, y, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3),
+                                color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key);
+            }
+            Log.Info("   -> MOUNT off (set horse down in front)");
+        }
+    }
+
     // "!lvl N" / "!might N" — set a BASE character stat so wear-requirements can be exercised on the
     // fabricated bring-up character (default is level 1 / might 3, which gates out most real gear).
     private void SetBaseStat(string which, string text)
@@ -3372,6 +4143,7 @@ public sealed class Session
     // (client scales time x10). type: 0=stand,1=attack,2=throw,3=shot,4=sit,6=magic,8=eat.
     private void HandleAttack(byte[] dec)
     {
+        if (_char.Hp == 0) { SendMessage("Spirits cannot attack."); return; }
         SendAction(_char.Id, type: 1, time: 8, param: 0);                                 // our own swing anim
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);  // peers see us swing
 
@@ -3392,8 +4164,10 @@ public sealed class Session
         var wmob = _world.MobAt(_char.Map, fx, fy);
         if (wmob is not null)
         {
-            if (_world.TryDamage(_char.Map, wmob, dmg, out bool died))
+            if (_world.TryDamage(_char.Map, wmob, dmg, out bool died, _char.Id))
             {
+                var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);   // EQ_WEAP: deductWeapon(rage) on a landed swing
+                if (weapon is not null) DeductDura(weapon);
                 ShowDamageResult(wmob.Id, wmob, died);   // 0x13: over-head HP bar + hit anim (empty bar + delayed despawn on death)
                 Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg} -> {wmob.Hp}/{wmob.MaxHp}");
                 if (died)
@@ -3661,8 +4435,15 @@ public sealed class Session
         try
         {
             var ctx = new NpcContext(this, npc, def);
-            var entries = NpcScripts.For(def).SelectMany(a => a.Entries(ctx)).ToList();
-            if (entries.Count == 0) { await ctx.Say("Greetings, traveller."); return; }
+            var abilities = NpcScripts.For(def);
+            var entries = abilities.SelectMany(a => a.Entries(ctx)).ToList();
+            if (entries.Count == 0)
+            {
+                // A speech-only NPC (only INpcSayHandler, no click options) does nothing on click — you
+                // interact by speaking to it. Only a truly featureless NPC gives the generic greeting.
+                if (!abilities.OfType<INpcSayHandler>().Any()) await ctx.Say("Greetings, traveller.");
+                return;
+            }
 
             int choice = await ctx.Menu($"{def.Name}: How can I help you today?", entries.Select(e => e.label).ToList());
             if (choice >= 1 && choice <= entries.Count) await entries[choice - 1].run(ctx);
@@ -3681,8 +4462,10 @@ public sealed class Session
 
     internal async Task DlgSay(Mob npc, string text)
     {
-        SendScriptMessage(npc.Id, text, NpcPortrait(npc), npc.Color);
-        await AwaitReply();   // hold the script until the player closes the box
+        // next:true gives the box a "continue" affordance — the click the client answers with a 0x3A that
+        // resumes this await. A prev/next-less box has "nothing to do": dismissing it sends no reply and hangs.
+        SendScriptMessage(npc.Id, text, NpcPortrait(npc), npc.Color, next: true);
+        await AwaitReply();   // hold the script until the player advances the box
     }
 
     // Free-text input box. Returns the typed string, or null if the player cancelled. The client confirms a
@@ -3749,12 +4532,46 @@ public sealed class Session
             if (i < 1 || i > sellable.Count) return;
             var (inv, def) = sellable[i - 1];
             _char.Coins += (uint)def!.SellPrice;
-            if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 1); }   // reason 1 = removed
+            if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); }   // reason 0 = Remove (sold, not dropped)
             else SendAddItem(inv);
             SendStats();
             await DlgSay(npc, $"You sold {def.Name} for {def.SellPrice} gold.");
         }
     }
+
+    // ---- spoken shop shortcut ("buy [my] [all|N] <item>") — see ShopAbility.OnSay ----------------
+    // Spoken "buy [all|N] <item>": sell up to `amount` (whole stack if <= 0) of a fuzzy-matched
+    // item, by name, from the bag. Tries the plural form as typed, then singularized (item names in the
+    // registry are singular, e.g. "acorn", while the spoken word is often plural, "acorns"). Returns false
+    // (not a dialog line) when nothing matches, so unrelated speech still falls through to normal chat.
+    internal async Task<bool> SellItemToNpcByName(Mob npc, string name, int amount)
+    {
+        var def = Content.FindItem(name) ?? Content.FindItem(Singularize(name));
+        if (def is null || def.SellPrice <= 0 || def.NoDrop) return false;
+
+        var stack = _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList();
+        if (stack.Count == 0) { NpcBubble(npc, $"You don't have any {def.Name} to sell."); return true; }
+
+        int remaining = amount > 0 ? amount : stack.Sum(i => i.Amount);
+        int sold = 0; uint earned = 0;
+        foreach (var inv in stack)
+        {
+            if (remaining <= 0) break;
+            int take = Math.Min(remaining, inv.Amount);
+            earned += (uint)def.SellPrice * (uint)take;
+            sold += take;
+            remaining -= take;
+            inv.Amount -= take;
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); }   // reason 0 = Remove (sold, not dropped)
+            else SendAddItem(inv);
+        }
+        _char.Coins += earned;
+        SendStats();
+        NpcBubble(npc, $"You sold {sold} {def.Name} for {earned} gold.");
+        return true;
+    }
+
+    private static string Singularize(string s) => s.Length > 1 && s.EndsWith('s') ? s[..^1] : s;
 
     // ---- bank ability implementation (vault: coin + item storage) ------------------------------
     // Looped like the shop: each action returns to the vault menu until the player cancels. Storage lives on
@@ -3792,6 +4609,83 @@ public sealed class Session
         await DlgSay(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
     }
 
+    private static bool IsCoinWord(string s) => s.Equals("coin", StringComparison.OrdinalIgnoreCase) || s.Equals("coins", StringComparison.OrdinalIgnoreCase);
+
+    // Spoken "take my <item|coin> [count]" (BankAbility.OnSay) — deposits `amount` (whole stack if <= 0) of a
+    // fuzzy-matched item, or coin if the word is "coin"/"coins", straight into the vault, no menu round trip.
+    internal async Task<bool> DepositItemToBank(Mob npc, string name, int amount)
+    {
+        if (IsCoinWord(name))
+        {
+            long amt = Math.Min(Math.Min(amount > 0 ? amount : _char.Coins, _char.Coins), BankMax - _char.BankMoney);
+            if (amt <= 0) { NpcBubble(npc, "You deposit nothing."); return true; }
+            _char.Coins -= (uint)amt;
+            _char.BankMoney += (uint)amt;
+            SendStats();
+            NpcBubble(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
+            return true;
+        }
+
+        var def = Content.FindItem(name) ?? Content.FindItem(Singularize(name));
+        if (def is null) return false;
+
+        var stack = _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList();
+        if (stack.Count == 0) { NpcBubble(npc, $"You don't have any {def.Name} to store."); return true; }
+
+        int remaining = amount > 0 ? amount : stack.Sum(i => i.Amount);
+        int moved = 0;
+        foreach (var inv in stack)
+        {
+            if (remaining <= 0) break;
+            int take = Math.Min(remaining, inv.Amount);
+            moved += take;
+            remaining -= take;
+            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); _char.BankItems.Add(inv); }   // reason 0 = Remove (stored, not dropped)
+            else { inv.Amount -= take; SendAddItem(inv); _char.BankItems.Add(new InvItem(0, def.Id, take, inv.Dura)); }
+        }
+        SaveChar();
+        NpcBubble(npc, $"You store {moved} {def.Name} in your vault.");
+        return true;
+    }
+
+    // Spoken "give my <item|coin> [count]" — the withdraw mirror of the above.
+    internal async Task<bool> WithdrawItemFromBank(Mob npc, string name, int amount)
+    {
+        if (IsCoinWord(name))
+        {
+            long amt = Math.Min(amount > 0 ? amount : _char.BankMoney, _char.BankMoney);
+            if (amt <= 0) { NpcBubble(npc, "You withdraw nothing."); return true; }
+            _char.BankMoney -= (uint)amt;
+            _char.Coins += (uint)amt;
+            SendStats();
+            NpcBubble(npc, $"Here are your {amt} coins. Your vault now holds {_char.BankMoney}.");
+            return true;
+        }
+
+        var def = Content.FindItem(name) ?? Content.FindItem(Singularize(name));
+        if (def is null) return false;
+
+        var stack = _char.BankItems.Where(i => i.ItemId == def.Id).ToList();
+        if (stack.Count == 0) { NpcBubble(npc, $"Your vault has no {def.Name}."); return true; }
+
+        int remaining = amount > 0 ? amount : stack.Sum(i => i.Amount);
+        int moved = 0;
+        foreach (var bi in stack)
+        {
+            if (remaining <= 0) break;
+            int slot = FreeSlot();
+            if (slot < 0) { if (moved == 0) NpcBubble(npc, "Your pack is full."); break; }
+            int take = Math.Min(remaining, bi.Amount);
+            moved += take;
+            remaining -= take;
+            if (take >= bi.Amount) { _char.BankItems.Remove(bi); bi.Slot = (byte)slot; _char.Inventory.Add(bi); SendAddItem(bi); }
+            else { bi.Amount -= take; var give = new InvItem((byte)slot, def.Id, take, bi.Dura); _char.Inventory.Add(give); SendAddItem(give); }
+        }
+        SaveChar();
+        if (moved > 0) NpcBubble(npc, $"You withdraw {moved} {def.Name} from your vault.");
+        return true;
+    }
+
     private async Task BankWithdrawMoney(Mob npc)
     {
         var s = await DlgInput(npc, $"Your vault holds {_char.BankMoney} coins. How much will you withdraw?");
@@ -3817,7 +4711,7 @@ public sealed class Session
         if (i < 1 || i > items.Count) return;
         var (inv, def) = items[i - 1];
         _char.Inventory.Remove(inv);
-        SendDelItem((byte)inv.Slot, 1);         // reason 1 = removed from the bag
+        SendDelItem((byte)inv.Slot, 0);         // reason 0 = Remove (stored, not dropped)
         _char.BankItems.Add(inv);               // whole stack goes to the vault
         await DlgSay(npc, $"You store {def!.Name} in your vault.");
     }
@@ -3939,23 +4833,66 @@ public sealed class Session
         // Head kind, classified from the graphic id exactly as RTK does (clif_scriptmes): 0 -> none,
         // >=49152 -> item gfx (kind 2), else -> npc/creature gfx (kind 1).
         byte head = gfx == 0 ? (byte)0 : gfx >= 49152 ? (byte)2 : (byte)1;
+        SendScriptMessageP(npcId, msg, new DialogPortrait(head, gfx, color), prev, next);
+    }
+
+    // A dialog portrait: the head-kind byte (0 none / 1 creature-look / 2 item-icon) plus the graphic id and
+    // palette carried in the 0x30 head. The client reads head kind from the byte directly, so — unlike the
+    // range-derived helper above — this lets a script pick an item-icon portrait (kind 2) whose small Item.epf
+    // frame would otherwise be misread as a creature look. RTK: convertGraphic(look,"monster") = 0x8000|look.
+    private readonly record struct DialogPortrait(byte Head, ushort Gfx, byte Color)
+    {
+        public static readonly DialogPortrait None = new(0, 0, 0);
+        public static DialogPortrait Npc(Mob npc)  => npc.Sprite == 0 ? None : new(1, (ushort)(0x8000 | npc.Sprite), npc.Color);
+        public static DialogPortrait Look(int look, int color) => look <= 0 ? None : new(1, (ushort)(0x8000 | look), (byte)color);
+        public static DialogPortrait Item(ItemDef d) => new(2, d.Icon, d.IconColor);
+    }
+
+    // Core 0x30 text-box sender with an EXPLICIT portrait (head kind not re-derived). Same frame as
+    // SendScriptMessage; only the head bytes carry the caller's portrait.
+    private void SendScriptMessageP(uint npcId, string msg, DialogPortrait p, bool prev, bool next)
+    {
         var m = Encoding.ASCII.GetBytes(msg);
         var d = new List<byte>();
         d.AddRange(Be(1));                 // [0..1] type/count = 1
         d.AddRange(Be32(npcId));           // [2..5] npc entity id
-        d.Add(head);                       // [6]   head kind
+        d.Add(p.Head);                     // [6]   head kind
         d.Add(1);                          // [7]
-        d.AddRange(Be(gfx));               // [8..9] portrait graphic
-        d.Add(color);                      // [10]  portrait palette
+        d.AddRange(Be(p.Gfx));             // [8..9] portrait graphic
+        d.Add(p.Color);                    // [10]  portrait palette
         d.Add(1);                          // [11]
-        d.AddRange(Be(gfx));               // [12..13]
-        d.Add(color);                      // [14]
+        d.AddRange(Be(p.Gfx));             // [12..13]
+        d.Add(p.Color);                    // [14]
         d.AddRange(Be32(1));               // [15..18]
         d.Add((byte)(prev ? 1 : 0));       // [19] prev button
         d.Add((byte)(next ? 1 : 0));       // [20] next button
         d.AddRange(Be((ushort)m.Length));  // [21..22] message length
         d.AddRange(m);                     // [23..] message text
-        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-dialog(0x30) id={npcId} {m.Length}B");
+        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-dialog(0x30) id={npcId} {m.Length}B head={p.Head}");
+    }
+
+    // ---- multi-page dialog (RTK dialogSeq): one portrait, N text pages the player clicks through. Non-final
+    // pages show the "next" affordance; the last is a plain close. Each page awaits the client's 0x3A so the
+    // whole sequence reads as linear script. The three public wrappers pick the portrait (NPC / creature / item).
+    private async Task DlgSeq(Mob npc, DialogPortrait p, IReadOnlyList<string> pages)
+    {
+        if (pages.Count == 0) return;
+        // Every page carries the "next" affordance (next:true) — the click the client answers with a 0x3A that
+        // resumes the await and drives the next page. A button-less box (prev/next both off) can't be advanced:
+        // dismissing it sends no reply, so the sequence hangs on page one. RTK drives multi-page dialog the same
+        // way (moreFlag -> the next arrow). The last page's "next" click simply ends the sequence.
+        foreach (var page in pages)
+        {
+            SendScriptMessageP(npc.Id, page, p, prev: false, next: true);
+            await AwaitReply();
+        }
+    }
+    internal Task DlgSayNpc(Mob npc, IReadOnlyList<string> pages)  => DlgSeq(npc, DialogPortrait.Npc(npc), pages);
+    internal Task DlgSayLook(Mob npc, int look, int color, IReadOnlyList<string> pages) => DlgSeq(npc, DialogPortrait.Look(look, color), pages);
+    internal Task DlgSayItem(Mob npc, string itemKey, IReadOnlyList<string> pages)
+    {
+        var def = Content.ItemByKey(itemKey);
+        return DlgSeq(npc, def is null ? DialogPortrait.Npc(npc) : DialogPortrait.Item(def), pages);
     }
 
     // 0x3A = the client's reply to a 0x30 we sent (RTK clif_parsenpcdialog). body[0]=kind (01 text/close,
@@ -4053,7 +4990,7 @@ public sealed class Session
         AddLenStr(d, _char.ClanTitle);
         AddLenStr(d, _char.Title);
         AddLenStr(d, _char.Spouse);
-        d.Add(0);                       // group flag (not grouped)
+        d.Add((byte)(_char.Grouped ? 1 : 0));   // group/sociable flag (Shift+G)
         d.AddRange(Be32(_char.Tnl));    // experience to next level
         AddLenStr(d, _char.ClassName);
 
@@ -4068,7 +5005,7 @@ public sealed class Session
         // names + remaining seconds. Empty when nothing is active. (The other-view 0x34 puts the GEAR list here
         // instead; self-view = buffs, other-view = gear, exactly as requested.)
         AddLenStr(d, BuffBoxText());
-        d.Add(0);                       // trailing flag before the legend list (client field +0x935; 0 in captures)
+        d.Add((byte)(_char.Exchange ? 1 : 0));   // trailing flag = exchange/trade status (client field +0x935)
 
         var legs = _char.Legends ?? new List<Legend>();
         d.Add((byte)Math.Min(legs.Count, 255));   // legend count is a single u8 in 4.95 (NOT u16)
@@ -4179,8 +5116,11 @@ public sealed class Session
         AddLenStr(d, GearListText());
 
         d.AddRange(Be32(0));      // numeric scalar — unknown, 0 for now
-        d.Add(0xFF);              // look-selector A (0xff = none)
-        d.Add(0xFF);              // look-selector B (0xff = none)
+        // The two status cells beside the name — group (sociable) and exchange (trade). 0xff rendered as blank
+        // WHITE boxes; a real 0/1 shows the off/on indicator. (Which cell is which, and the exact on/off glyph,
+        // want a live check — swap if reversed.)
+        d.Add((byte)(_char.Grouped  ? 1 : 0));   // group / sociable status
+        d.Add((byte)(_char.Exchange ? 1 : 0));   // exchange / trade status
         d.Add(_char.Nation);      // nation index -> NATION_E.EPF
 
         // FIELD #15 — profile PICTURE bitmap: u16BE size + bytes (empty = 00 00)
@@ -4326,13 +5266,13 @@ public sealed class Session
 
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
-        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, _char.Name);
+        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name);
 
     /// <summary>Draw player <paramref name="other"/> on our client (0x33 player look form).</summary>
     public void ShowPlayer(Session other)
     {
         var s = other.Snapshot();
-        var app = new byte[] { s.Sex, (byte)(s.Mounted ? 3 : 0), s.Face, s.Armor, 0, s.Weapon, s.Shield };   // same layout as SendSelfLook ([1]=form: 3=mounted)
+        var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : (s.Mounted ? 3 : 0)), s.Face, s.Armor, 0, s.Weapon, s.Shield };   // same layout as SendSelfLook ([1]=form: 1=ghost, 3=mounted)
         SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
     }
 

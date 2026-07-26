@@ -14,7 +14,7 @@ namespace Server;
 /// curve (RTK's engine <c>getXPforLevel</c> isn't in the scripts, so the reward uses a documented
 /// approximation) and karma (not modelled here).
 /// </summary>
-public sealed class MinorQuestAbility : INpcAbility
+public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
 {
     public static readonly MinorQuestAbility Instance = new();
 
@@ -41,6 +41,18 @@ public sealed class MinorQuestAbility : INpcAbility
     {
         yield return ("Minor Quest",          Quest);
         yield return ("Complete Minor Quest", Complete);
+    }
+
+    // Spoken shortcuts, verbatim from RTK's four class-trainer scripts (warrior/rogue/mage/poet_trainer.lua):
+    // "quest"/"minor"/"minor quest" requests one; "complete"/"complete quest" turns it in.
+    public async Task<bool> OnSay(NpcContext ctx, string speech)
+    {
+        switch (speech)
+        {
+            case "quest" or "minor" or "minor quest":     await Quest(ctx);    return true;
+            case "complete" or "complete quest":          await Complete(ctx); return true;
+            default:                                      return false;
+        }
     }
 
     private static bool Between(long v, long lo, long hi) => v >= lo && v <= hi;

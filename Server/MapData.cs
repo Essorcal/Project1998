@@ -51,6 +51,15 @@ public sealed class MapData
     public bool Solid(int x, int y) =>
         x < 0 || y < 0 || x >= Xs || y >= Ys || _pass[y * Xs + x] != 0;
 
+    /// <summary>Is a move INTO (x,y) while heading <paramref name="dir"/> (0=N 1=E 2=S 3=W) blocked? Combines
+    /// the ground pass flag (<see cref="Solid"/>) with the client's <c>SObj.tbl</c> directional object-wall
+    /// flags (<see cref="ObjectFlags"/>). Object walls sit on walkable ground (the pass flag is 0 under many
+    /// building walls — only the door graphic itself gets pass=3), so the object layer is what stops you from
+    /// walking through a hut's side; the 4.x client enforces this locally, and this makes server-side movement
+    /// (mob AI + the player walk) agree. Out-of-range short-circuits to solid before the object read.</summary>
+    public bool BlockedMove(int x, int y, int dir) =>
+        Solid(x, y) || ObjectFlags.Blocks(_obj[y * Xs + x], dir);
+
     private static readonly Dictionary<ushort, MapData?> Cache = new();
 
     /// <summary>Load (and cache) map <paramref name="id"/> at the given dims, or null if the file is missing/short.</summary>

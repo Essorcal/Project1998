@@ -47,13 +47,22 @@ public static class Shops
                              "soup_bowl", "comb", "rice_wine", "root_liquor" }),
     };
 
+    // Curated overrides only. Every other shop NPC (butcher, Nogh, potion shop, tailor, …) is served
+    // automatically from the auto-extracted RTK stock (Content.ShopStock) via For(), so it needs no entry here.
     private static readonly Dictionary<string, Category[]> Catalogues = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["SmithNpc"] = Smith,
+        ["SmithNpc"] = Smith,   // kept for the hand-authored sub-category menu
         ["InnNpc"]   = Inn,
     };
 
-    /// <summary>The buy catalogue for an NPC identifier, or null if that NPC has no stock list yet.</summary>
-    public static Category[]? For(string npcKey) =>
-        Catalogues.TryGetValue(npcKey, out var c) ? c : null;
+    /// <summary>The buy catalogue for an NPC identifier. Curated catalogues above win (nice sub-categories,
+    /// hand-tuned stock); otherwise fall back to the auto-extracted RTK stock (<see cref="Content.ShopStock"/>,
+    /// a single flat "Goods" category) so any shop-flagged NPC has something to sell. Null if neither has it.</summary>
+    public static Category[]? For(string npcKey)
+    {
+        if (Catalogues.TryGetValue(npcKey, out var c)) return c;
+        if (Content.ShopStock.TryGetValue(npcKey, out var keys) && keys.Length > 0)
+            return new[] { new Category("Goods", keys) };
+        return null;
+    }
 }
