@@ -1,0 +1,8 @@
+# ---- Live runtime state (per-player saves + shared SQLite DB) — NOT content, stays untracked ----
+# Character store: one JSON file per player (Server/Net.cs CharacterStore), churns on every login/save.
+chars/
+# Shared SQLite DB (Shared/Db.cs): accounts, sessions, board posts. WAL mode, hence the sidecar files.
+nexus.db
+nexus.db-wal
+nexus.db-shm
+nexus.db-journal
