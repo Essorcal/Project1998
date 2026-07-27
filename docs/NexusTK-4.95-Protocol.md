@@ -40,6 +40,7 @@ that is called out too.
 11j. [Experience & leveling](#11j-experience--leveling-added-2026-07-25--awaiting-live-confirmation)
 11k. [F1 / Central Functions menu & Silver Thread revival](#11k-f1--central-functions-menu--silver-thread-revival-added-2026-07-25--awaiting-live-confirmation)
 11l. [Party & trade](#11l-party--trade-added-2026-07-26--awaiting-live-confirmation)
+11m. [Inter-continent travel (world map)](#11m-inter-continent-travel-world-map-added-2026-07-26--native-screen-confirmed-broken-dialog-fallback-is-primary)
 12. [Maps](#12-maps)
 13. [Full opcode → client-handler table](#13-full-opcode--client-handler-table)
 14. [Learnings, gotchas, things tried & failed](#14-learnings-gotchas-things-tried--failed)
@@ -321,7 +322,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
 | `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` (see §11). |
-| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | Clicking a character. If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → no reply (matches RTK, §11e). |
+| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e). |
 | `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
@@ -553,7 +554,7 @@ layout:**
 | `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `!ride`/`!mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
 | `[2]` | **Face** | Distinct faces; range is larger than 8 (accepts values ≥ 0x34). |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
-| `[4]` | ? | No visible change for 0..8; likely hair/color/skin, untested at higher values. |
+| `[4]` | **Armor color / dye palette index** (RTK `player.armorColor`) | No visible change for `0..8` (all render as the base/undyed color — the earlier sweep's range was too narrow to catch it). LIVE-confirmed 2026-07-27 via a real-time Frida byte-sweep during a weapon toggle: `16`/`32`/`64`/`128`/`255` visibly recolor the worn armor. Exact palette mapping not yet catalogued. **Now driven by `Character.ArmorColor`** — persisted, carried in `PlayerSnapshot` so peers see it too, and set by the Arena Master's war paint (§11e, `WarPaintAbility`). Sweep/calibrate the real index→color map with the `!dye <n>` GM command. |
 | `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
 | `[6]` | **Shield** | Distinct shields. **`0` is a REAL shield — "no shield" is `0xFF` (`-1`).** |
 
@@ -585,10 +586,44 @@ value in `[1]` (the form byte) risks blanking the whole sprite — that was the 
 "invisible character" saga (§14).
 
 The parser `0x436120` stores the 7 bytes into an entity sub-struct at offsets +4,+5,+7,+8,+9,+A,+B
-(with a special case: if byte[3]==0 it defaults to `byte[0]!=0`). The sprite build path is
-`0x44d7d0` (create-entity) → `0x43fd80` (alloc 0x17C) → `0x463380` → `0x460760`; the appearance
-pointer is stashed at `[entity+0x108]`. The byte→sprite-layer resolution lives deep in the sprite
-archives and was **not** cheaply static-RE-able — it was faster to decode by observation.
+(with a special case: if byte[3]==0 it defaults to `byte[0]!=0`). The core entity/body is built by
+`0x44d7d0` (create-entity) directly (ctor `0x462ec0`/reposition `0x44c660` for self — see below); the
+appearance pointer is stashed at `[entity+0x108]`. The byte→sprite-layer resolution lives deep in the
+sprite archives and was **not** cheaply static-RE-able — it was faster to decode by observation.
+
+### 8.1 The floating nameplate marker — leaked every appearance refresh, patched out (2026-07-27)
+
+**Not classic content.** The always-on inverted-triangle marker above every player (turns into their
+name on hover) does not appear in real 4.x screenshots — confirmed by the user. It comes from a
+**separate decoration/marker sprite** the client builds on top of the entity, distinct from the body:
+after `0x44d7d0` returns, the SAME `0x33` handler (`0x44fef0`) — for **any** player packet
+(`renderKind=1`) — unconditionally does `0x43fd80` (alloc `0x17c` bytes) → **`0x463380`** (ctor, player
+archive `0x4f2a84`) → **`0x462050`** (attach the new sprite to the entity) → `0x45c830` (register into the
+id-keyed entity hashmap also used for lookup by `0x45cb80`/removal by `0x45c8f0`). Crucially: this
+**never frees whatever marker was already attached from the entity's previous `0x33`.** Every appearance
+refresh (equip/unequip weapon or armor/shield, `Type` 3/4/5 in `Content.ItemById`; mount/dismount) leaks
+one marker object, self or peer alike — confirmed live via Frida (two consecutive self-refreshes
+registered two different sprite pointers, the first never freed). A real despawn (`0x0E` → `0x44d9f0`,
+the same path `SyncMobs`/`World.LeaveMap` already use) destructs the entity **and** its currently-attached
+marker as a pair, which is why walking out of view and back (or the peer-side despawn-before-reshow now
+sent by `Session.RefreshAppearance`) clears accumulated litter — but a bare appearance resend never
+destructs anything.
+
+No server-side disable flag exists: appearance byte `[4]` (see the color-index note above) was
+live-swept across its full range during real weapon toggles hunting for a hide-nameplate bit — it only
+ever affects armor dye, the marker never changed.
+
+**Fix shipped as a permanent on-disk patch** (not a server workaround — there's no packet-level lever).
+Live-verified first via Frida (forcing `0x463380`'s return value to `NULL`, so the caller's existing
+"ctor failed → skip attach/register" fallback fires — the same path already taken outside renderKind
+1/2/3): characters render **fully normally** with the marker ctor suppressed, proving it's purely
+decorative. `re/patch_no_nametag.py` overwrites the first 5 bytes of `0x463380` from
+`55 8B EC 6A FF` (`push ebp; mov ebp,esp; push -1`) to `33 C0 C2 14 00` (`xor eax,eax; ret 0x14` — the
+`ret 0x14` matches the real function's own epilogue, so the 5-dword call-site stack stays balanced).
+File offset == RVA == `0x63380` for this exe. Requires an elevated terminal (`Program Files` write);
+backs up the original exe first (`re/*.prenametagpatch.bak`, gitignored — never commit a full client
+binary). `--check`/`--revert` also supported. See `memory/nexustk-495-nametag-litter.md` (session memory)
+for the full investigation trail and the Frida tracer (`re/frida_nametag.py`) used to find it.
 
 ---
 
@@ -1031,7 +1066,8 @@ objects captured outside the `setExceptionHandler` callback read back as `0x0` i
 
 Names/stats are **not** in the client (audit above) — they come from the **RTK reference server DB** (§17.1)
 and the **Nexus Atlas** scrape (pre-6.5 exp values). Extract these **locally** with the tools in `re/` — the
-data itself is **kept out of this repo** (logic-only server; the generated CSVs are gitignored). RTK look-ids
+data itself is **kept out of this repo** (logic-only server; the generated CSVs land in `data/rtk-data/`,
+which is gitignored). RTK look-ids
 validate against our own EPF shape-matching (rat=91, mouse=120, bull=27, rabbit=21, fox=22, wolf=23, bear=24,
 squirrel=25). Colours ≤19 map to our `Monster.pal`; RTK colours >19 are 7.x-only and must be re-picked for
 4.95 via `!crecol`.
@@ -1098,7 +1134,7 @@ near each other, the common case. Only **mobs** are viewport-streamed; see §11b
 
 The world is populated automatically from **two** RTK spawn sources, not just by commands.
 
-**Static spawn table (`Content.Spawns` ← `re/rtk-data/Spawns0.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
+**Static spawn table (`Content.Spawns` ← `data/rtk-data/Spawns0.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
 — one live mob per point. This is only **1175 points across 19 maps** (Kugnae 526, Buya 408, a few specials): it
 covers the towns and little else. RTK's `Spawns0` SQL table genuinely has nothing for the hunting maps.
 
@@ -1121,7 +1157,7 @@ exit are all gone in one place — the maps/mobs/warps stay in the source CSVs u
 nothing for them even loads), so trimming `ExcludedMapRanges` fully restores the cave. Same "flag, don't delete"
 pattern as the Hwan exclusion above; add further RTK-only reskin dungeons here if found.
 
-**Area spawns (`Content.AreaSpawns` ← `re/rtk-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
+**Area spawns (`Content.AreaSpawns` ← `data/rtk-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
 mobs.* RTK spawns hunting-map populations from a Lua "spawner NPC" (`mobSpawnHandler.lua`), not the SQL table, via
 `handleSpawn(npc, map, {mobIds}, {counts}, timer [,minX,minY,maxX,maxY])`. `re/extract_lua_spawns.py` parses those
 617 calls into `AreaSpawnDef (mobId, map, count, box)` — **2371 rows, ~21.5k mobs across 767 maps** (Mythic Nexus
@@ -1142,10 +1178,14 @@ stack. An area spawn's home tile is fixed on first materialize (respawns hug the
 (~18 s), and rolls loot. `World.Tick` refills any due point (only on maps with a player watching) via
 `Materialize`, minting a fresh mob id.
 
-**Drops (`Content.RollDrops`).** RTK's per-mob drop tables weren't exported, so a small themed table lives in
-`Content`: rabbit → rabbit meat (45 %), squirrel → green squirrel pelt (40 %), deer/doe → antler (50 %), fox →
-fox fur (60 %); others drop nothing. Rolled under the world lock, added to the map's floor-item list, and
-broadcast as `0x07` ground items (§11c) so anyone can pick them up.
+**Drops (`Content.RollDrops`).** RTK's real per-mob drop tables, extracted from the server-side Lua
+(`RTK-Server/rtklua/Accepted/Mobs/MobDrops.lua`) by `re/extract_mob_drops.py` into `data/rtk-data/MobDrops.csv`
+and loaded into `Content.MobDrops` (382 mobs; a mob absent from the table drops nothing, matching RTK). Each
+mob has independent `loot` lines (its own item/amount-range/percent, several can hit on one kill) and at most
+one `rareLoot` line (rolled in listed order, only the first hit drops). A `GOLD` item key means a gold pile
+(dropped as a `GroundItem` with `ItemId = -1`, same convention as a player's own `!` gold drop) rather than a
+real item. Rolled under the world lock, added to the map's floor-item list, and broadcast as `0x07` ground
+items (§11c) so anyone can pick them up.
 
 **AI pacing (RTK-faithful).** `World.Tick` runs every 600 ms but a mob only *acts* when its own
 **`MobMoveTime`** (ms, from the mob DB — rabbit/squirrel 3000, cat/fox/rat 2000) has accumulated in
@@ -1178,7 +1218,7 @@ map. This is what lets the full spawn roster render without blanket-sending hund
 **Colours.** The `0x07` colour byte uses RTK's **`MobLookColor`**. (An experiment sending the client's decoded
 `Monster.tbl` palette instead rendered every mob green — RTK's per-mob colour matches the client for the common
 critters, so we kept it. A proper RTK-colour → client-palette mapping is future work; the decoded table lives in
-`re/rtk-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
+`data/rtk-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
 
 **`rabbit` (MobId 1) had the wrong Look/Color — fixed live 2026-07-26.** The extracted `rtk_mobs.csv` row
 for the base overworld `rabbit` mob (used by 242 fixed spawn points + 22 area spawns — the everyday wild
@@ -1224,7 +1264,7 @@ pickup/drop/throw/use/equip handlers. Opcodes + wire layouts were translated fro
 Builders/handlers live in `Session.cs` (`SendAddItem`/`SendDelItem`/`SendEquip`/`SendUnequip`,
 `HandlePickup`/`HandleDropItem`/`HandleThrow`/`HandleUseItem`/`HandleUnequip`/`HandleDropGold`); floor
 items live in `World.cs` (`DropItem`/`PickUp`/`ItemsOn`, id pool `500000+`); the registry is `Content.Items`
-(`ItemDef`) loaded from the gitignored `re/rtk-data/Items.csv` (2545 items — id, name, type, icon, look,
+(`ItemDef`) loaded from the gitignored `data/rtk-data/Items.csv` (2545 items — id, name, type, icon, look,
 stat lines), same logic-only pattern as maps/mobs.
 
 **Confidence.** The **recv** opcodes are trustworthy — 4.95's walk/turn/chat/attack/setting opcodes already
@@ -1284,6 +1324,14 @@ that slot, keyed purely off `reason`. Several removal paths were reusing reason 
 (banking) — so selling or turning in an item falsely announced "You dropped your `X`". Fixed: all of those now
 send reason `0` (Remove, silent/generic), matching RTK's own `pc_dropitemmap` (`clif.c`), which is the ONLY
 call site that ever passes reason `1`.
+
+**⚠ Reason `0` is NOT silent either (found live 2026-07-26) — it renders "`X` removed."** `EquipFromSlot` was
+sending reason `0` when moving an item from bag to gear, which showed the misleading "removed" line for an
+item that wasn't actually removed from the character. RTK's real `pc_equipscript` (`pc.c:1668`,
+`pc_delitem(sd, sd->invslot, 1, 6)`) uses reason `6` for equipping — the same code `ITM_USE` consumption uses
+(`pc.c:2085`) — not reason `0`. Fixed to send reason `6` on equip. `0` remains correct for genuine
+remove-without-a-line cases (sell/bank/quest-turn-in/GM-delete), which is what it was already used for
+elsewhere.
 | `0x37` | equip-window entry | `equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00` |
 | `0x38` | unequip-window | `spot(u8) 00` |
 | `0x07` | ground item (§7.2) | floor items go through the **`0x07` static base-object** path (below), NOT `0x16` — graphic = item's `Icon` (Item.epf frame), encoded via `IconWire` |
@@ -1472,9 +1520,19 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   per-rank titles). `Character.ClassName` (set with `!class`) resolves to a path id via `PathIdForClass`.
 - **`Level`** = the character level required. Most advanced-class spells in this dump are level 0 (gated by
   path/subpath, not base level); Peasant has a 0/1/25 spread. `!spells` teaches every class spell with
-  `Level ≤ Character.Level` — **plus the path-0 "peasant commons"** (Soothe, Gateway, Return, Mentor, Approach,
-  Summon), which every class keeps after subpathing. `Content.SpellsForClass` unions `PathId == yourClass` with
-  `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway are level 1, so `!lvl ≥ 1`).
+  `Level ≤ Character.Level` — **plus the path-0 spells that are TRULY universal** (Soothe, Gateway, Mentor,
+  Propose), which every class keeps after subpathing. `Content.SpellsForClass` unions `PathId == yourClass`
+  with `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway are level 1, so
+  `!lvl ≥ 1`).
+  > **Return/Approach/Summon are NOT part of that peasant-commons union (corrected 2026-07-27)** — the CSV's
+  > `SplPthId=0` makes them look identical to Soothe/Gateway/Mentor/Propose, and none of the four scripts
+  > (`return.lua`/`approach.lua`/`summon.lua`) contain a class check either, so this was genuinely
+  > undecidable from the extracted data or the Lua source alone. Confirmed against the user's own play
+  > knowledge: all three are **Rogue/Mage/Poet only, never Warrior**, each at a *different* level per class
+  > (impossible to express in the single CSV row's one `Level` field) — Return 32/32/32, Approach
+  > Mage 20/Poet 29/Rogue 35, Summon Mage 30/Poet 38/Rogue 53. `Content.RestrictedCommonsLevel` carries this
+  > as a `key -> {pathId -> level}` table that `SpellsForClass` consults before falling back to the
+  > universal-PathId-0 rule.
 - **`Alignment`** (`SplAlignment`) = the sub-alignment: **-1** universal · **0** base/unaligned · **1** Kwisin ·
   **2** Mingken · **3** Ohaeng. Each class's spells split roughly evenly across 0/1/2/3 (e.g. Warrior ~21 each),
   and the four variants often **share a display name** (Rogue's "Maro's Remedy" ×4) — so teaching all of them
@@ -1508,7 +1566,7 @@ packet-supplied target.
 
 `HandleCast` plays the cast animation (`0x1A` **type 6 = magic**) for the caster + peers, then applies the
 spell's effect via a **data-driven magic engine** (`Session.ApplyCast`). The effect data is extracted straight
-from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `re/rtk-data/spell_effects.csv` (gitignored),
+from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `data/rtk-data/spell_effects.csv` (gitignored),
 loaded into `Content.SpellFx` and joined to each spell by identifier (the Lua table name == `SplIdentifier`).
 Each row carries an **archetype** + the spell's **real RTK numbers**: the damage/heal *formula string*, the true
 mana cost, buff stat+amount+duration, debuff kind+duration+chance, cooldown ("aether"). 621 of the ~841 spells
@@ -1580,15 +1638,31 @@ to `Mob.Leash` (others stand still).
 **Click → dialog.** The click (`0x43`, §7.1) resolves the entity via `World.MobById`; if it's an NPC, the
 server runs its behaviour instead of the click-profile.
 
-**Click a real (non-NPC) mob → nothing.** RTK's own handler (`clif.c` `clif_handle_clickgetinfo`, `BL_MOB`
-case) runs an `onLook` script whose player-facing branch is gated on `player.gmLevel > 0` — a GM gets a
-minitext readout (name/id/level/HP/AC), everyone else gets no packet at all. This server has no GM concept
-yet, so `HandleClickInfo` just returns for any id that resolves to a real mob (fixed 2026-07-25 — it used to
-fall through to `SendClickProfile`, which unconditionally serializes **your own** `_char`, so clicking a
-monster rendered your own profile mislabeled with the mob's id). Clicking another real **player** should
-show *their* profile (RTK `clif_clickonplayer`, same `0x34` opcode, populated from the target session) —
-not implemented, since `SendClickProfile` has no way to serialize an arbitrary target yet; an unmatched id
-is a no-op rather than showing the wrong data.
+**Left-click vs. right-click (live-confirmed 2026-07-26).** `0x43` is a **left-click-only** packet. Right-
+click in this client never reaches the server as an entity click at all — it's pure client-local walk-to-
+click pathing (§10.3's self-walk primitive), and the "bumping into the mob" visual when you right-click
+onto its tile is the client obstructing its own path locally (`0x69`, a documented no-op even in real RTK's
+`clif.c` — commented out except for a GM debug branch). The server has **no way to intercept or suppress**
+that walk animation; the only server-controllable feedback for "what IS that" is the left-click `0x43` path
+below.
+
+**Click a real (non-NPC) mob → name-only mini-text (changed 2026-07-26, user request).** RTK's own handler
+(`clif.c` `clif_handle_clickgetinfo`, `BL_MOB` case) runs an `onLook` script whose player-facing branch is
+gated on `player.gmLevel > 0` — a GM gets a minitext readout (name/id/level/HP/AC), everyone else gets no
+packet at all (this was matched as-is from 2026-07-25 to 2026-07-26). We now deliberately diverge from that:
+`HandleClickInfo` sends `"It's a/an {mob.Name}."` via mini-text for any regular player who left-clicks a real
+mob, since right-click-to-walk can't be intercepted (above) and this is the only server-side lever available.
+Previously (2026-07-25 fix) it used to fall through to `SendClickProfile`, which unconditionally serializes
+**your own** `_char`, so clicking a monster rendered your own profile mislabeled with the mob's id.
+
+**Click another real player → their real profile (fixed 2026-07-26).** RTK's `clif_clickonplayer` — same
+`0x34` opcode, populated from the TARGET's own data, not the clicker's. `SendClickProfile` now takes a
+target `Session` (found via `World.PlayerById`) instead of implicitly using `_char`; its helpers
+(`WeaponLook`/`ShieldLook`/`ProfileCellIcon`/`GearListText`) are called ON that target session, which works
+because they're private instance methods of the same `Session` class — legal to call cross-instance. This
+is more than cosmetic: the group/exchange status cells in that packet (§9.5) are what the client reads to
+decide whether the "Group"/"Exchange" buttons on the window are enabled, which is the REAL way a player
+starts a party or trade (§11l) — not a chat command. An id matching nobody at all is still a no-op.
 
 ### `0x30` server → client — the dialog packet (three sub-kinds)
 
@@ -1622,7 +1696,8 @@ a `DialogReply`; the `0x3a` handler completes that task, resuming the behaviour 
 a `while` loop for a shop that stays open — instead of callback trees.
 
 An NPC is a **composition of reusable abilities** (`INpcAbility` in `Server/NpcAbility.cs`): `ShopAbility`,
-`BankAbility`, `TransportAbility`, `TimeAbility`, `RepairAbility`, plus `InlineAbility` for one-off options.
+`BankAbility`, `TransportAbility`, `TimeAbility`, `RepairAbility`, `AppearanceAbility`, `WarPaintAbility`,
+`ClassTrainerAbility`, `ShadowStatsAbility`, `ChapelAbility`, … plus `InlineAbility` for one-off options.
 `Server/NpcScripts.cs` maps NPC identifier → its abilities; unregistered NPCs derive abilities from their
 data flags (so a plain stocked shop is zero-config). Each NPC declares only what's unique to it.
 
@@ -1630,6 +1705,12 @@ data flags (so a plain stocked shop is zero-config). Each NPC declares only what
   id (smith, inn), prices from `Items.csv` (`BuyPrice`/`SellPrice`). Uses menus, **not** the `0x2f` grid.
 - **Bank** (`BankAbility` → `DlgBank`): deposit/withdraw coin (via the input box, capped 100M) and items;
   stored on `Character.BankMoney`/`BankItems`, persisted in the character JSON. Joint accounts out of scope.
+- **War paint** (`WarPaintAbility`, RTK `arena_master.lua` → `general_npc_funcs.warPaint`): the Arena Master's
+  (`ArenaMasterNpc` — "Mountain"/"Tower") *only* service, an armor dye. Bleach back to base (10g) when dyed;
+  else pick 1 of 8 team-battle colors (20g); level-99 characters are also offered special dyes (Brown/Wasabi/
+  Super Wasabi, gated on base Vita/Mana) before the team menu. Writes `Character.ArmorColor` → appearance `[4]`
+  (§8), redrawn on self + peers. Color values are RTK's palette indices — the 4.95 index→color map isn't
+  calibrated yet (see the `!dye` note in §8), so team colors may need adjusting once swept.
 
 **Spoken shortcuts** (`ShopAbility`/`BankAbility` also implement `INpcSayHandler`, so these skip the menu
 entirely — real NexusTK commands, not an RTK-Lua invention; RTK's own NPC scripts have no buy/sell/deposit
@@ -1664,8 +1745,23 @@ with no evidence of existing in original 4.x/5.x NexusTK, so `TransportAbility` 
 ## 11f. Monster combat AI, death/revive, and the home-city spawn
 
 **Combat AI** (`World.Tick`, `Mob.TargetId`/`Level`/`AttackTime`) mirrors RTK's actual `mob_ai_normal.lua`
-threat model — nothing attacks unprovoked; a mob only fights back once hit. `World.TryDamage` now takes
+threat model for the *fights-back* half — a mob only chases once hit. `World.TryDamage` takes
 an `attackerId` and, on a non-lethal hit, sets `mob.TargetId` to the attacker. Each tick, a targeted mob
+
+**Unprovoked aggro** (fixed 2026-07-26 — "monster aggro is not working as expected, some monsters should
+default to attacking the player, but they aren't"): the fights-back model above is only HALF of RTK's mob
+AI, and it's the Lua half. RTK's C engine (`mob.c`) gates a mob's per-tick `move`/`attack` script call on
+`mob->data->type` — `0=Normal, 1=Aggressive, 2=Stationary` (RTK SQL column `MobBehavior`) — and for
+`type==1` it calls `mob_find_target` (a full-screen-ish area scan for the nearest `BL_PC`) UNPROVOKED,
+*before* `mob_ai_normal.lua` ever runs. `mob_ai_normal.lua` itself never attacks first — so reviewing only
+the Lua scripts (as the original port did) makes every mob look purely reactive, when most are actually
+engine-level aggressive. Real data backs this up: of 713 mobs in the CTK reference dump, 603 have
+`MobBehavior=1` (aggressive) and only 109 are `0` (passive — mostly herd/prey critters: rabbit, deer,
+squirrel, doe, …). `MobDef.Aggressive` (`Content.cs`, parsed from `rtk_mobs.csv`'s merged-in `MobBehavior`
+column) and `Mob.Aggressive` carry this through to a live mob. `World.Tick` now scans, for every mob with
+`TargetId==0` and `Aggressive==true`, for the nearest living player within `AggroRadius` (8 tiles,
+Chebyshev, from the mob's current tile — roughly the player's own 17x15 viewport) and locks onto them
+exactly as if they'd just landed a hit; the existing chase/attack branch immediately takes over. A targeted mob
 abandons wandering to path toward that player (greedy step, respecting walls/other entities) and, once
 **cardinally adjacent** (fixed 2026-07-26 — was `Math.Max(|dx|,|dy|)<=1`, Chebyshev, which let a mob swing
 at a player standing diagonally; user: "The horse can also attack me (melee) diagonally... not sure if
@@ -1673,10 +1769,328 @@ that's related" — it was the same bug as the horse-mount range below, both tra
 Now `(dx==0 && |dy|==1) || (dy==0 && |dx|==1)` only, matching the player's own melee, which only ever
 checks its single `FrontTile()` — a diagonal target falls through to the chase step instead, which moves
 one axis at a time and closes to cardinal within a tick), swings on a cooldown (`AttackTime`, default 2s)
-for `Level/2 + 0-2` damage. It gives up and resumes wandering if the target dies, disconnects, or strays
-more than `ChaseLeash` (8) tiles from the
+for `World.MobSwingDamage(mob.MinDam, mob.MaxDam)` damage (see below). It gives up and resumes wandering if
+the target dies, disconnects, or strays more than `ChaseLeash` (8) tiles from the
 mob's home tile. Both melee (`Session.HandleAttack`) and spell damage (`CastDamage`/the `Damage` case in
 `ApplyCast`) pass `_char.Id` as the attacker, so either can provoke a fight.
+
+**Mob damage was massively under-tuned (fixed 2026-07-26 — user: "Going into Dragon 1 as a newbie with
+250HP, I should not be surviving even a single hit... 50 damage or something. REALLY off"):** the original
+swing formula was `Level/2 + 0-2` — a level-99 dragon hit for ~50, when it should one-shot a newbie. Root
+cause: `Content.LoadMobs` parsed `rtk_mobs.csv`'s `MinDmg`/`MaxDmg` columns into... nothing — `MobDef`
+never carried them, so the REAL per-mob damage data (e.g. `dragon_hatchling` = 2500-3500, `old_dragon` =
+146250-183750) was silently discarded in favor of a synthetic Level-based stand-in with no basis in RTK.
+This turned out to be the first of several "the CSV column was right there, just never parsed" gaps — see
+the full combat pass below, done in the same sitting once the user asked to "check spells, my melee, mob
+melee, backstab, flank, etc — let's get it right."
+
+**The full combat pass (2026-07-26).** Everything here is ported from RTK's REAL, LIVE combat engine —
+`rtklua/Accepted/Scripts/hitCritChance.lua` (crit/hit rolls) and `swingDamage.lua` (the actual damage
+pipeline) — NOT the commented-out/dead damage math sitting in the C engine's `mob.c` (which looks like the
+"real" formula at first glance but is entirely inert; the live path is 100% Lua). Shared, stateless math
+lives in `Server/Combat.cs` so both attack directions use one verified implementation.
+
+- **Mob→player** (`World.MobSwingDamage` + `Session.ApplyMobHit`): raw swing = 3 independent uniform draws
+  over `[MinDam/3, MaxDam/3]`, summed and floored +1 (RTK `_getMobSwingDamage`; concentrates near the
+  midpoint, not a flat roll edge-to-edge). Then `Combat.ApplyArmor` — `floor(raw * (1 + max(armor,-80)/100))`
+  against the player's effective AC (`_char.Ac - Totals().armor`; AC is signed/lower-is-better, armor
+  SUBTRACTS from it) — floored at -80, so armor can reduce a hit to as little as 20% but never fully negate
+  it. THEN the positional 2x (below). Mobs also roll a crit chance (`Combat.RollCritChance`, hit/5 once past
+  the base hitchance window) purely for the 0x13 visual byte (255 vs the calibratable normal byte) — real
+  RTK never multiplies MOB damage by its own crit, only a player's (see below), so this doesn't scale `dmg`.
+
+- **Player→mob** (`Session.PlayerSwingDamage`, replacing the old flat `EffMight`-based stand-in): another
+  "CSV column parsed nowhere" bug — `Items.csv` has always carried `ItmMinimumSDamage/MaximumSDamage/
+  MinimumLDamage/MaximumLDamage` (a weapon's REAL swing range) but `ItemDef` never read them, so player
+  melee had no damage-range component at all. Now: `s = random(weapon's Small range)`, or its Large range
+  if the target is a boss mob (`MobDef.IsBoss`, merged from CTK `MobIsBoss` — RTK's actual Large-damage
+  condition) and the weapon carries one. `swing = (s/2 + dam*2.5 + might/8 + classFactor) * critical`
+  (`dam`/`might` floored at 1; `classFactor` is RTK's flat per-class bonus, 9 Warrior / 7.5 Rogue / 0
+  everyone else; `critical` = 3 on a genuine player crit, via `Combat.RollCritChance`'s player-attacker
+  branch — 55+(grace+level)*0.75+hit-(targetGrace+targetLevel)*0.5 hitchance, flat 3% crit-within-window).
+  Then `Combat.ApplyArmor` against the mob's `Ac` (RTK SQL `MobArmor`, merged in — floor -95 for a mob
+  target), then the positional 2x. `rage`/`invisible` multipliers are hardcoded to 1 — no rage buff or
+  stealth state exists in this server yet, matching RTK's own unbuffed default.
+
+- **The positional "attacked from behind" 2x** (`Combat.IsBehindTarget`) applies to BOTH directions,
+  UNCONDITIONALLY: RTK `swingDamage.lua`'s base `side==target.side` rule (attacker and target facing the
+  SAME direction, attacker on the target's blind side) — every swing gets this check regardless of class.
+  Dir 0=N/1=E/2=S/3=W already matched RTK's own numbering with no translation needed.
+
+- **Backstab/Flank (fixed 2026-07-26, corrected after initial mis-scoping — user: "Flank and Backstab come
+  from the warrior spells that provide those abilities. I think only warriors ever get them"):** these were
+  first assumed to be rare legendary-weapon procs (several `Items/Weapons/*.lua` scripts DO read
+  `player.backstab`/`player.flank` to gate a bonus proc) and descoped as "no data to drive it." Wrong —
+  they're real Warrior-only skills (`Spells.csv`: `backstab_warrior`/`flank_warrior` + 3 aligned variants
+  each, all `SplPthId=1`, level 15/20 per their Lua `requirements()`), timed self-cast stances (625s) whose
+  `recast`/`uncast` hooks just flip `player.backstab`/`player.flank` — this IS the data the weapon scripts
+  read, not a separate system. `Content.LoadSpellFx` now parses `cureCat` (previously dropped entirely,
+  despite tagging all 4 aliases of each skill "backstabs"/"flanks" — a clean, data-driven way to catch every
+  alignment variant without hardcoding 8 identifiers); `Session.ApplyCast` intercepts that `CureCat` before
+  the generic archetype dispatch (the old path fell into `CastBuff`, which no-ops on an empty `BuffStat` —
+  it was spending mana and saying "You cast Backstab" with zero effect) and routes to `Session.CastStance`,
+  which just arms `_backstabUntil`/`_flankUntil`. `Session.PlayerSwingDamage` then applies
+  `Combat.IsBackstabAngle`/`Combat.IsFlankAngle` (RTK's literal position tables — OPPOSITE facings for
+  backstab, PERPENDICULAR for flank, each with their own per-angle position condition) as additional
+  independent 2x multipliers on top of the base positional bonus, exactly mirroring `swingDamage.lua`'s own
+  three sequential (and in principle stackable) if-blocks. Mob attackers never have either stance (RTK mobs
+  don't cast Warrior skills), so both checks are player-attacker only.
+
+- **`Session.RollDeflect`** (magic resist) now folds in `target.Protection` (RTK SQL `MobProtection`, a
+  DIFFERENT stat from `MobArmor`/`Ac` above — RTK melee and magic defense don't share a stat) — previously
+  hardcoded to 0 for lack of a source column, now `prot = target.Protection + (willDiff/10 + 0.5)`, matching
+  RTK clif.c's real deflect roll exactly.
+
+- **Data merged in from the CTK reference SQL dump** (`RTK-Server/database/references/CTK - closing -
+  08-31-2019.sql`, same source as `MobBehavior` — see §11f's aggro fix above) into `rtk_mobs.csv`:
+  `MobIsBoss`, `MobProtection`, `MobArmor`, `MobHit`. Plus `Grace`, which was already a plain column in the
+  CSV but — like `MinDmg`/`MaxDmg` before it — simply never parsed into `MobDef` until this pass.
+
+- **Rage tiers and Rogue stealth (fixed 2026-07-26 — user: "Did we also implement warrior/rogue damage
+  multiplier spells? they get `rage` spells until 99 I think (rogue invis also has a damage multiplier)"):**
+  `swingDamage.lua`'s `rage`/`invisible` terms (previously hardcoded to 1, i.e. no-ops) are the two BIGGEST
+  multipliers in the whole formula and were completely unwired, same silent-no-op failure mode as
+  Backstab/Flank (a `CastBuff` call with no numeric `BuffStat` to apply). Real spells, found in
+  `RTK-Server/rtklua/Accepted/Spells/{warrior,rogue}/`:
+  - **Rage progression** (`player.rage`, a flat multiplier on the ENTIRE swing): Wolf's Fury (rage 2 — Warrior
+    lvl 7 / Rogue lvl 34) → Tiger's Fury (rage 3 — Warrior lvl 24 / Rogue lvl 56) → Dragon's Fury (rage 4 —
+    Warrior lvl 45 only) → Baekho's Rage (rage 5 — Rogue lvl 99 only, the endgame tier the user recalled).
+    `Content.RageAmountFor`/`Session.CastRage` (625s duration, 90-150 mana per tier). Real RTK REJECTS
+    re-casting any fury while one is already active rather than letting a stronger tier overwrite a weaker
+    one — ported faithfully (`EffRage > 1` guard), not "fixed" into a friendlier overwrite.
+  - **Rogue stealth** (`player.state==2` → `invisible=9`, Rogue-only, lvl 30): Invisible + 3 same-mechanic
+    aliases (Spirit's Form/Life's Cloak/Glass Form). A one-shot 9x sneak-attack burst — landing the boosted
+    hit immediately strips the stealth (RTK `removeDuras(invis)` after a nonzero hit), ported in
+    `Session.PlayerSwingDamage` (reads `Stealthed` once, applies the 9x, then clears `_stealthUntil` — so
+    only the NEXT swing gets the bonus, not every swing for the whole duration). `Content.IsStealthSpell`/
+    `Session.CastStealth`. **Damage multiplier only** — RTK's `PC_INVIS` state also hides the player's
+    sprite from other clients (`clif.c`), which would need viewport/`ShowPlayer` changes this pass doesn't
+    touch; casting Invisible here does NOT make you invisible to other players, only boosts your next hit.
+  - Both families had `SplLevel=0` in the CSV export (their real level lives in each spell's Lua
+    `requirements()` function, which the extractor never captures for Type-5 skills) — overridden with the
+    real values above in `Content.SpellLevelOverrides`, scoped to just these 7 identifiers. Every OTHER
+    Type-5 skill likely has the same `SplLevel=0` problem; this pass does not fix that generally.
+
+- **Full spell-functionality audit (2026-07-26 — user: "Have we not implemented all spell functionality?
+  ...rogues and mages have 'shapeshifting' spells. They don't seem to work. I want all spell functionality
+  to work as expected"):** cross-referencing every spell archetype our CSV export tags against
+  `Session.ApplyCast`'s dispatch found the same class of gap repeated across ~120 spells: anything tagged
+  `Utility`/`Summon`/`Teleport` (no numeric `BuffStat`/damage `AmountExpr` the generic archetypes can
+  express) falls into `CastMisc`, a pure stub that spends mana and prints "You cast X." with **no real
+  effect** — the same silent-no-op failure mode as the earlier Backstab/Flank/Rage/Stealth fixes, just at
+  much greater scale (29 Rogue + 24 Warrior "skill" spells, 46 Poet spells including a whole pet-summon
+  family, and ~29 Rogue/Mage/Druid/Merchant/Chongun shapeshift ("morph") identifiers). Rather than fix all
+  ~120 at once, tackled in priority chunks (user chose "cheap wins first, then work up"); chunks 1-3 (below)
+  fixed 138 of ~145 real candidates. Still pending: `magis_bane`'s curse dependencies (1 + 4 unmapped). The
+  gold-drop gambling stance (`chance_rogue` + 3 aliases) was explicitly descoped at the user's request (high
+  complexity, low value).
+
+  **Shapeshifting — RESOLVED as a peer-visible illusion (chunk 3, 2026-07-26), overturning the chunk-2
+  "confirmed blocked" verdict.** RTK groups `feral_rogue`/`rodent_rogue`/`gangrel_rogue`/`beast_rogue` (+
+  their Kwisin/Ming-Ken/Ohaeng alignment aliases, Mage's `beast_mage`/`gangrel_mage`, and standalone costume
+  morphs like `dagger_uniform`/`marketer_guise`/`wilderness_guise`) in a Lua table literally named `morphs` —
+  29 real castable identifiers total (not ~14 — the earlier estimate missed the mage/Druid/Merchant/Chongun/
+  Barbarian side of the table). Casting one sets `player.disguise` to an animal/NPC look id + `player.state=4`
+  for a fixed duration; purely cosmetic in RTK's own Lua, no stat/combat effect anywhere.
+  - **CORRECTED 2026-07-26 — the "caster's own screen can't render it" verdict was wrong; it only proved
+    `0x33` specifically can't.** `0x33`'s handler (`0x44fef0`) really does hit a hard wall: it calls the shared
+    entity factory `0x44d7d0`, which for a PEER id correctly builds a real creature entity (`0x461a50`, vtable
+    `0x4cd098`, `[ent+0x178]`/`[+0x17c]` set from the packet's own look value), but then EVERY renderKind branch
+    (1/2/3: `0x4500ba`/`0x4500e8`/`0x4500a7`) makes one more, LATER, unconditional call —
+    `push 0x4f2a84 (literal); call 0x463380` — a hardcoded player-archive constant, never read from the
+    packet, for every entity `0x33` ever builds. That part still stands: `0x33` cannot draw a monster sprite,
+    full stop. Where the earlier pass went wrong was assuming this was the ONLY path into the self entity.
+    Deeper tracing of `0x44d7d0` found a THIRD branch, taken whenever the incoming entity id equals the
+    client's own self id (`mov ecx,[ebx+0x40c]; cmp edi,[ecx+0x108]`, `ebx+0x40c` = pointer to the self-id
+    holder): it skips BOTH the peer ctor and `0x33`'s hardcoded-archive draw call entirely, instead calling
+    `0x44c660` (camera recenter to the packet's x/y — a no-op when it's already your own position) followed by
+    `0x461e30`, which writes the look descriptor straight into the SELF entity's own struct fields
+    (`self+0x178/0x17c/0x180`) — the identical fields a real monster entity carries. Critically, this self-id
+    branch is reachable from `0x07` too (`0x44fdb0` passes discriminator 1 for any look in the monster range
+    `0x8000..0xBFFF`, which lands in the very same `0x44d7d0` branch `0x33`'s kind 0/1 uses) — so sending the
+    CASTER their own `0x07` creature-spawn, addressed to their own id, drives the self entity down this
+    self-only path and updates its look descriptor for real, with no player-archive override anywhere in
+    the way. Matches actual RTK behavior (the caster does see themselves transform).
+  - **Fix:** `Session.ShowPlayer` — the single choke point every peer re-sync path already funnels through
+    (join, map-change, equip/mount refresh) — reroutes a morphed player's entry to the real `0x07` Monster.epf
+    creature-spawn builder (the SAME one `ShowMob` uses for actual mobs, `0x8000|look`), for BOTH peers' views
+    AND the caster's own (`CastMorph`/`RevertMorph` now call `ShowPlayer(this)` directly on top of the
+    `except:this` peer broadcast, rather than skipping self). The target id is still the caster's own
+    persistent player id — never added to `World`'s mob list — so `HandleClickInfo` (which checks `MobById`
+    before `PlayerById`) keeps resolving clicks to the real player profile/party/trade flow unchanged.
+    `Content.MorphSpells`/`MorphDispatchSpells`, `Session.CastMorph`/`RevertMorph`, `PlayerSnapshot.MorphLook`,
+    `Session.ShowPlayer`'s branch, `World.Tick`'s expiry sweep. Also added: a synthetic zero-stat entry in
+    `_buffs` for the active morph, so the self-profile's buff/duration box (`BuffBoxText`, issue #6) actually
+    shows the remaining time — it was silently missing before, since morphs never touched `_buffs` at all.
+    Deliberately accepted tradeoffs: a `0x07` entity carries no name field (§7.2), so a morphed player shows
+    no floating nametag to others. Mutual exclusion simplified to one slot (any morph replaces any other;
+    re-casting the same one toggles it off) rather than RTK's per-identifier duration quirk (casting a second
+    morph while one is active leaves both timers ticking in real RTK — a bug with no gameplay purpose, not
+    reproduced).
+
+  **Chunk 1 ("cheap wins") — fixed:**
+  - **Self-sacrifice strike family** (Rogue Lethal Strike/Afterlife's Embrace/Ming-Ken's Judgement/
+    Calculating Blow; Desperate Attack/The Void's Measure/Beastly Frenzy/Tilting the Balance; Warrior
+    Berserk/No Fear/Tiger's Pounce/Wind's Blast; Whirlwind/Death's Angel/Nature's Own/Bladedance — 16 spells,
+    4 base mechanics × 4 alignment aliases each). Ported verbatim from `rogue/lethal_strike.lua`,
+    `rogue/desperate_attack.lua`, `warrior/berserk.lua`, `warrior/whirlwind.lua` (+ `rogue/backflow.lua`,
+    `warrior/overflow.lua`): a facing-tile physical attack (not a targeted cast) computed from the CASTER's
+    OWN pre-cast HP/MP, armor-netted the same way melee is (`Combat.ApplyArmor`) to find any overkill. The
+    Rogue pair "backflows" overkill — up to half refunds to the caster as HP+MP, each capped at half their
+    pre-cast values; the Warrior pair "overflows" instead — splashes overkill recursively onto up to 4
+    adjacent mobs. Landing the hit ALWAYS costs the caster a big chunk of their own HP (halved/thirded/
+    nearly wiped, family-dependent) regardless of overkill. Whirlwind's damage factor AND post-hit HP cost
+    differ by the caster's own `_char.Alignment` (RTK reads the caster's real alignment stat directly, not
+    which of the 4 aliases was cast — matches since a player would only ever be granted the alias matching
+    their own alignment). Baekho's Rage specifically (rage tier 5, checked via `_rageAmount==5`, not any
+    lesser Fury) adds a further 1.5x to Berserk/Whirlwind. `Content.SacrificeFamilyFor`/
+    `Session.CastSacrificeStrike`/`ApplyBackflow`/`ApplyOverflow`. PC targets are skipped — no PvP damage
+    path exists (same precedent as `CastDebuff`'s existing PC-immune mob-only crowd control).
+  - **Poet mana-transfer families** (8 spells): Draw Energy/Harness Power/Combine Focus/Inspiration drain a
+    **group member's** entire current mana into the caster (`Content.IsManaStealSpell`/`CastManaSteal`, party
+    check via the existing `Party` object); Inspire/Share Energy/Bestow Power/Release Focus top off **any
+    other player's** mana from the caster's own, capped by whichever pool is smaller, gated on the caster
+    holding ≥30 mana to attempt it (`Content.IsManaGiftSpell`/`CastManaGift`). Neither reuses the pre-existing
+    `CastManaBattery` (Invoke/Spirit's Power/Life Force/Gather Magic) — that's a different, self-only
+    HP↔MP-conversion mechanic; these are direct two-player MP transfers with no HP cost at all.
+  - **Poet cleanse family** (Dispell/Remove Magic/Return Natural/Restore Balance, 4 spells): a chance-based
+    FULL buff/debuff wipe (RTK `flushDuration`) on a targeted player (self-castable too). Success chance is
+    RTK's literal formula — target's effective armor (clamped [-60,70]) minus a will-scaled protection term,
+    folded into `(120+armor)/2`, floored at 10%. Fixed 200 mana, no cooldown. `Content.IsCleanseSpell`/
+    `Session.CastCleanse`/`FlushDurations` (clears `_buffs`, rage, stealth, AND the Backstab/Flank stances —
+    RTK's wipe is total). Player `Protection` isn't modeled (only mobs carry it), so that term is 0 for a PC
+    target — a known, minor simplification.
+  - **Poet revive family** (Resurrect/Return Spirit/Ming-Ken Blessing/Death Undone, 4 spells): heals a dead/
+    ghost player back to full in place, reusing the existing `ReviveAt` (same code path Silver Thread uses).
+    Fixed 3000 mana, 8s cooldown. `Content.IsReviveSpell`/`Session.CastRevive`. RTK also blocks reviving a
+    currently-hostile PvP target (`player:canPK`) — not modeled since this server has no PvP/hostility-flag
+    system yet, so that guard is simply absent, not faked.
+  - **Rogue short-leap family** (Race/Spiritual Jump/Leap of Faith/Transport, 4 independently-authored
+    copies of the identical mechanic in RTK's own Lua — not alias-delegated like the others): jump up to 3
+    tiles in the faced direction, stopping at the last passable tile (reuses `MapData.BlockedMove`, the same
+    collision test normal movement uses). 1 mana, 80s cooldown. `Content.IsLeapSpell`/`Session.CastLeap`,
+    re-anchors the viewport via the same `EnterMap` call `!warp` already uses for same-map jumps.
+  - All of the above had `SplLevel=0` in the CSV export (same known gap as the rage/stealth pass) —
+    overridden with their real Lua-sourced levels in `Content.SpellLevelOverrides` (63/45/40/63 for the four
+    strike families, 35/45/88/99/99 for the Poet and leap families).
+
+  **Chunk 2 — fixed 2026-07-26:**
+  - **Enchant weapon-multiplier family** (16 ids, 7 tiers 1.2x/1.5x/2x/2.25x/3x/4x/6x by level 28-99): a
+    toggle STANCE (`player.enchant`) — RTK's shared `enchants` mutual-exclusion group means casting any one
+    while another (or itself) is already active just re-prints "This spell is already active.", never
+    stacks/upgrades. Unlike rage (which multiplies the WHOLE swing), `swingDamage.lua` multiplies ONLY the
+    raw weapon-swing term (s/2) by `enchant`. `Content.EnchantFor`/`Session.CastEnchant`/`EffEnchant`, folded
+    into `PlayerSwingDamage` as `s/2.0*EffEnchant`. Mana/level hardcoded from each spell's own Lua (not
+    trusted from the CSV, same Type-5-skill gap as rage/stealth) since one tier (`tigers_fortitude_rogue`)
+    is genuinely mana-FREE (item components only).
+  - **Directional ground-loot family** (Filch/Spirit's Hand/Quick Fingers/Light Touch, 4 ids, level 65): grabs
+    coins/an item stack from the ONE tile directly ahead — despite the in-game description's "up to 4 tiles"
+    claim, the Lua's own loop only ever runs `i=1`. Skipped entirely (silently, no message) if a player is
+    standing on that tile; RTK's "someone's deathpile" protection isn't modeled since this server has no
+    per-item ownership at all, so every other ground stack is fair game. `Content.IsGroundLootSpell`/
+    `Session.CastGroundLoot`, reusing `World.PeerAt`/`PickUp`/`DropItem` (the same primitives `HandlePickup`
+    already used for the native '0x07' walk-over pickup).
+  - **Divination popup family** (Judge/Spiritual Advisor/Natural Talent/Appraise + Spy/Spiritual Guide/
+    Nature's Handiwork/Judgement Day, 8 ids, level 17/28): a text popup of a target player's class/name/
+    level/title/might/will/grace; the spy half also lists their full inventory. Sent via the pre-existing
+    0x30 NPC-dialog sender (`SendScriptMessageP`, portrait-less) rather than the 0x34 click-profile packet —
+    0x34 has no numeric level/might/will/grace fields at all (see the profile-packet entry above), so it
+    can't express this. The judge family requires the target STRICTLY lower level (`target.level >=
+    player.level` fails in the Lua); the spy family allows an EQUAL level too (`target.level > player.level`
+    fails) — a genuine, deliberate difference in the source, not a typo. `Content.IsDivinationSpell`/
+    `Session.CastDivination`, target resolved via the pre-existing `ResolvePcCastTarget` (same helper the
+    mana-transfer/cleanse/revive families use).
+  - **Trap-placement subsystem** (9 real castable ids — `set_trap`, the dispatcher with `SplQuestion` "What
+    trap? >", plus the 8 `set_X_trap` spells Dart/Snare/RepeatingDart/Flash/Spear/Poison/Death/Sleep,
+    level-gated 26/33/44/55/66/77/88/99): an entirely NEW hidden-hazard-entity subsystem, `World.Trap`
+    (id/x/y/kind/ownerId) held per-map alongside `GroundItem`s but NEVER broadcast/drawn (invisible until
+    triggered). `World.PlaceTrap`/`TrapsNear` are the public API; triggering is wired into `World.Tick`'s
+    EXISTING mob-movement loop (both the chase-toward-target branch and the normal wander-step branch) — the
+    instant a mob's new tile matches a live trap, the trap is removed and `TriggerTrapLocked` fires its
+    effect. **PC-triggering was deliberately left out** (mobs only) — same "no PvP damage path" precedent as
+    every debuff/sacrifice-strike spell earlier in this audit; flagged here rather than silently narrowed.
+    Effects: Dart/RepeatingDart/Spear/Death (500/500/3500/11650 flat damage — RepeatingDart is, despite the
+    name, byte-for-byte the same single-hit script as Dart in the real Lua) go through a new deferred
+    `trapDamage` queue processed after `Tick`'s lock releases (`World.ApplyTrapDamage`, mirroring the
+    pre-existing mob-swing `hits` queue — a kill still credits the trap's owner with exp via the existing
+    `Session.AwardExp`). Snare/Sleep/Flash are simplified to a `Mob.FrozenUntil` hold (75s/38s/10s) — RTK's
+    real snare is a +20 armor debuff and flash is a `blind.cast`, neither of which this server models as a
+    distinct mechanic, a deliberate simplification rather than an oversight. Poison is a REAL
+    damage-over-time (`Mob.PoisonUntil`/`PoisonNextTick`/`PoisonTickDam`/`PoisonOwnerId`, new fields on
+    `Shared.Mob`), ticking every 1500ms inside `World.Tick` for 1% of max HP (capped [1,1000]) — and, matching
+    RTK exactly, a tick is skipped rather than allowed to land the kill (poison alone can never finish a
+    mob off). **`spot_traps` (the trap-reveal spell) turned out to be a DOG/companion-pet spell**
+    (`Spells.csv` `SplPthId=99`, `rtklua/Accepted/Spells/dog/spot_traps.lua`) that a player character never
+    learns directly — out of scope here, not silently dropped; revisit only if pets ever cast their own
+    spells.
+  - **Poet "Call of the Wild" pet-summon system** (28 of ~29 ids — 7 tiers `companion`/`assistant`/
+    `protector`/`fighter`/`warrior`/`champion`/`avatar` x 4 alignment reskins each, level 68-99): spawns a
+    real, correctly-statted shared-world `Mob` (via the pre-existing `Session.SummonWorldMob` — the same
+    helper `!summon` uses, so it already copies the full combat block) one tile ahead of the caster, falling
+    back to the caster's own tile if that's blocked/occupied by a mob or player — matching RTK
+    `cotw_SpawnSetThreat`'s exact fallback. Tagged `Mob.OwnerId` + `Mob.PetExpiresAt` (300s after cast, then a
+    plain `World.DespawnMob` — no kill/loot/exp, same as riding a mob away), and capped at 4 concurrently
+    alive pets (6 at level 90+, 8 at level 99 — `Content.PetCapFor`, RTK's `cotw_spawnCheck`), counted PER MAP
+    via the new `World.PetCountFor` (matching RTK's own `getObjectsInMap` scope). The level-99 "avatar" tier
+    is the one real outlier: `cotw_wind_warrior.lua` has no `player.magic` check at all — RTK charges GOLD (via
+    `requirements()`) plus an 8-minute cooldown instead, ported via the pre-existing `OnCooldown`/
+    `SetCooldown` plumbing (0 mana). **NOT ported:** RTK's `cotw_controller_poet` threat-transfer — pets fight
+    independently via the normal wander/aggro `Mob` AI rather than sharing the owner's combat target, since
+    this server has no multi-entity threat-table concept to hook into. The 29th id,
+    `cotw_giasomo_bird_poet` (mob 807), has NO matching row anywhere in `rtk_mobs.csv` — even RTK's own Lua
+    flags it broken ("I know this doesn't belong here, but the COTW structure is so terrible already") — so
+    it's skipped, not silently miscounted.
+
+  **Chunk 3 — fixed 2026-07-26** (user: "we need to fix shape shifting and add the position-directed
+  attacks"):
+  - **Shapeshift/morph family** (29 real castable identifiers — see the "Shapeshifting" writeup earlier in
+    this section for the full disassembly trace that overturned chunk 2's "confirmed blocked" verdict): a
+    peer-visible-only illusion. `Content.MorphSpells` (21 fixed-look reskins) + `Content.MorphDispatchFor` (8
+    question-dispatched: `feral_rogue`/`gangrel_rogue`/`gangrel_mage`/`rodent_rogue`/`beast_rogue`/
+    `beast_mage`/`druids_rodent`/`wilderness_guise` — `wilderness_guise`'s real RTK menu chains into 5
+    separate `recast`-only sub-spells with no `cast()` of their own and no independent SplId path reachable by
+    a player; folded directly into `wilderness_guise`'s own answer table instead of modeling that
+    indirection). `Session.CastMorph` sets `_morphLook`/`_morphUntil` and immediately broadcasts
+    `ShowPlayer` to current peers; `Session.ShowPlayer` checks `PlayerSnapshot.MorphLook` and, when set, calls
+    the SAME `SendCreatureList` builder `ShowMob` uses instead of the normal `SendLook` — so every future
+    re-sync (join, map-change, equip refresh) keeps rendering the correct form with zero extra plumbing.
+    `World.Tick` gained a `expiredMorphs` deferred-revert sweep (same shape as `expiredPets`/`trapDamage`) so
+    the disguise reverts on its own once the duration lapses, not just on a toggle-off recast.
+  - **`bladestorm_trap` family** (4 real ids, not 8 as first estimated — `set_bladestorm_trap`/
+    `set_swords_dance_trap`/`set_tigers_ambush_trap`/`set_cutting_edge_trap` are 4 byte-for-byte-identical
+    alignment reskins of ONE spell, confirmed by reading `bladestorm_trap.lua` directly; there's no separate
+    Warrior variant). Despite the similar name, a completely different mechanic from the `set_X_trap` hazard
+    family: a VISIBLE, step-triggered decoy that detonates a facing-cone AoE off the TRIGGER's own facing
+    (RTK `block.side` → a 4-tile fan, `World.BladestormFan`), dealing ONE shared HP-percent damage number
+    (not flat) to both the trigger and every mob the cone catches. The first spell in this whole audit where
+    a PLAYER stepping on a trap also triggers it, not just a mob — wired into `Session.HandleWalk` right
+    after a step commits its new tile (`World.CheckPlayerTrapTrigger`), alongside the existing mob-only path
+    in `World.Tick` (`TriggerTrapLocked`'s new `"bladestorm"` case). RTK's cone-AoE only hits OTHER players if
+    `block.pvp > 0` (a toggle this server doesn't model) — simplified to "cone hits mobs only", the
+    established no-PvP-damage-path precedent from every debuff/sacrifice-strike spell earlier in this audit.
+    The trigger's OWN self-damage is kept when the trigger is a player (tripping a trap isn't "PvP" the way
+    hitting another player would be) via `Session.ApplyBladestormSelfDamage` — `floor(health*0.5) +
+    calculateDamage(35000)`, where RTK's `calculateDamage` armor-deduction formula turned out to be
+    IDENTICAL to this codebase's existing `Combat.ApplyArmor` (both `1 + max(armor,floor)/100`), so it's
+    reused verbatim rather than reimplemented — capped to leave at least 1 HP (a trap tripped mid-walk has no
+    death-flow of its own to hook, same "self-cost, never actually lethal" precedent as
+    `CastSacrificeStrike`). Level 99, 1520 mana, 125s cooldown, the decoy auto-expires 21s after placement if
+    never triggered (`Trap.ExpiresAt`, swept silently in `World.Tick` — traps have no ground graphic, so no
+    broadcast is needed either way). **NOT ported:** the Lua's NPC heartbeat implies a 5000-mana/tick
+    owner-upkeep drain while the decoy is alive — the exact drain/early-deletion formula wasn't in the
+    captured source, so this is a documented gap (flat 1520 upfront cost only), not a guess.
+
+- **Still NOT ported, explicitly out of scope:** RTK's equipment "Miss" stat (a rare cursed-item flat-miss
+  chance — no Miss column in our item data, so every swing here always lands for at least 1 damage, matching
+  RTK's non-cursed common case).
+
+- **Debug/GM summon commands carried none of this** (a separate, pre-existing gap found while testing the
+  fix): `!rabbit`, `!summon <mob>`, and the ridden-horse re-spawn all resolve a real `MobDef` but only ever
+  forwarded Look/Name/Hp/Color/Exp/MoveTime into the spawned `Mob` — Level/Will/MinDam/MaxDam/Ac/Grace/Hit/
+  IsBoss/Aggressive were silently dropped, so summoning a named mob for testing would never show its real
+  numbers. `Session.SummonWorldMob` now takes an optional `MobDef? def` and copies the full combat block
+  when given one. (The unrelated sprite-only debug lab — `!cre`/`!crecol`/`!crow`/look-lab, which spawn by
+  raw look id with no mob name at all — has no `MobDef` to pull from and is untouched, working as designed.)
 
 **Taking a hit** (`Session.ApplyMobHit`): docks HP, pushes `SendStats()`, and broadcasts the same over-head
 hit/HP-bar packet (`DamageOver`) a mob shows when hit, aimed at the player's own entity id. Hp reaching 0
@@ -1689,7 +2103,7 @@ deliberate simplification made before the F1 menu was understood): a ghost now r
 nation and revives (`ReviveAt`: full heal + warp) on arrival.
 
 **Home city** (`Session.HomeCityFor`/`PlaceNewCharacter`): a fresh character spawns, and a defeated one
-revives, **just inside their nation's home**, near the real RTK door-arrival tile (`re/rtk-data/
+revives, **just inside their nation's home**, near the real RTK door-arrival tile (`data/rtk-data/
 Warps.csv`) rather than GmWarp's outdoor GM-teleport spot:
 - Nation `2` (Buya): map **351** (Jadespear's Home) at `(3,6)`.
 - every other nation: map **36** (Ironheart's Home) at `(5,10)` — the door tile from Kugnae's
@@ -1722,7 +2136,7 @@ itself IS the real RTK flow (F1 → Silver Thread → pick a Shaman) — the one
 that `ReviveAt` heals on arrival at the Shaman's map instead of requiring a second click on a standalone
 Shaman NPC actor once there (we don't have those placed as real map NPCs).
 
-**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `re/rtk-data/Warps.csv` ids 56-59) is
+**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `data/rtk-data/Warps.csv` ids 56-59) is
 a *separate* code path from the hardcoded home-city spawn above — walking onto Buya's door tile
 (`330:(55/56,121)`) drives the normal warp system (`Session.HandleWalk` → `EnterMap`).
 
@@ -1787,6 +2201,28 @@ warp tile AND unblocks the next step), then `SendMiniText(denyMsg)` (status box,
 The sibling scripted-tile rejection `TryMythicCaveEntrance` already snapped back with `SendXy()` but was
 using `SendMessage` (the `0x02` login box); switched to `SendMiniText` so both rejection paths land in the
 same status pane. User-confirmed working 2026-07-27.
+
+**Full `SendMessage`→`SendMiniText` audit, 2026-07-26.** The class-gate path-hall doorway (§ above,
+`TryPathHallWarp`) turned out to be one instance of a systemic mislabeling: `SendMessage` is specifically
+RTK's `0x02` **login-box** packet (`TkCrypt.LoginKey`-encrypted), reserved for the pre-world / re-login
+flow — not a general in-world chat channel. Cross-referenced against RTK's actual sources (`clif.c:6484`
+`clif_sendmsg(sd, type, buf)` — one function, one `0x0A` packet, dispatched by `type`: `0`=wisp, `3`=mini/
+status **(RTK's `clif_sendminitext` is just `clif_sendmsg(sd, 3, ...)`)**, `5`=system, `11`=group, `12`=clan
+— plus a wide sample of Lua spell/quest/NPC scripts: mana checks, cooldowns, "no target", cast confirmations
+("You cast X."), and target-side cast notices ("X casts Y on you.") are *all* `player:sendMinitext(...)` in
+every RTK script checked (`ExpSeller.lua`, `harden_armor.lua` family, `spark.lua`/`global_zap.lua`/
+`global_heal.lua`, `dart_trap.lua`, `onScriptedTilesBushTree.lua`, `onScriptedTilesPathHalls.lua`, RTK's own
+`player.lua:3717` "Spirits can't do that."). Our port had defaulted most of these to `SendMessage` instead,
+so ~90 call sites across `Session.cs`'s spell-casting, quest, mount, trap, and status-toggle code were
+silently landing on the wrong (or no-op-looking) channel. Converted all of them to `SendMiniText`, **except**:
+the four `clif_changestatus` status-line toggles (Realm-centered/Fast-Move/Sociable/Exchange — a different
+RTK function, verbatim chat text), the re-login "Incorrect password." and profile-save confirmation (both
+documented, intentional `0x02` uses — see §9.5/§11k above), and our own invented combat-kill flavor lines
+("Your Fireball destroys Rat! (+50 exp)") which have no RTK equivalent at all (real RTK conveys a kill purely
+via the HP-bar/hit-animation, no text) and were kept as a deliberate enhancement. Durability warnings
+(`clif_checkdura`/`clif_deductduraequip`) are a special case: RTK tags them `type 5` ("System") rather than
+the default `type 3` — same `0x0A` minitext packet, different client-rendered style — so those became
+`SendMiniText(text, type: 5)` rather than the default-typed calls used everywhere else.
 
 **Whisper / tell** (RTK `clif_parsewisp`, clif.c:7644-7790). Native input: **Shift+'** opens the whisper
 prompt, then a target name + Enter, then the message + Enter. LIVE-CONFIRMED 2026-07-26 by real capture —
@@ -1932,7 +2368,7 @@ run on every level).
 `classdb_level(path, level)` = total exp needed to leave `level` (i.e. reach `level+1`). Paths 0-4 map
 1:1 onto this server's existing `Content.PathIdForClass`/`Paths.csv` scheme (`PthType` column: 0 Peasant /
 1 Warrior / 2 Rogue / 3 Mage / 4 Poet — RTK's own `Paths` table, already in use for spell-book gating).
-Extracted (awk one-liner over the RTK file) into a long-format `re/rtk-data/LevelExp.csv`
+Extracted (awk one-liner over the RTK file) into a long-format `data/rtk-data/LevelExp.csv`
 (`Path,Level,CumExp`), loaded by `Content.LoadLevelExp` into `Content.ExpToNext(pathId, level)`.
 
 **`Session.AwardExp(amount)`** is now the single funnel every exp source goes through (quest rewards,
@@ -1999,7 +2435,7 @@ entries:**
   me."*). RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
   server only has two home nations modeled, so it collapses to `_char.Nation`: Buya (`2`) offers **Felis**
   (map 338) / **Storm** (339), everyone else **Dusk** (map 8) / **Dawn** (map 9) — all four are real RTK
-  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `re/rtk-data/map_index.csv`. Picking one
+  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/rtk-data/map_index.csv`. Picking one
   calls `ReviveAt` (new — factored out of the old `Revive()`): full heal (gear/buffs included) + warp,
   replacing the fixed-timer auto-revive §11f used to do. RTK's own flow only *warps near* a physical Shaman
   NPC (revival happens on a second click there); this server skips that actor and revives directly on
@@ -2023,8 +2459,11 @@ menu (and that ghosts can no longer wake up on their own) before relying on it.
 ## 11l. Party & trade (added 2026-07-26 — awaiting live confirmation)
 
 Neither existed before this: the `0x1b` sub-`0x02`/`0x08` toggles (§9.5) only ever set a *willingness*
-flag (`Character.Grouped`/`Exchange`) with no request/accept logic behind them. Both are now ported from
-RTK (`rtk/src/map/clif.c`) — rules faithfully, presentation deliberately NOT (see below).
+flag (`Character.Grouped`/`Exchange`) with no request/accept logic behind them, AND clicking another player
+showed nothing at all (§9.5/§11e — `SendClickProfile` could only ever serialize your own character). Both
+gaps are fixed together here, since the real trigger for party/trade turns out to be buttons on that same
+profile window: rules are ported from RTK (`rtk/src/map/clif.c`) faithfully, presentation (the trade window
+specifically) deliberately NOT — see below.
 
 ### Party (RTK "group" — `clif_addgroup`/`clif_leavegroup`/`clif_updategroup`, clif.c:13993-14148)
 
@@ -2064,14 +2503,15 @@ separate "you were removed" wording to port. Dropping to one member disbands the
 disbanded."* to the straggler). Disconnecting mid-party runs the same cleanup (`Session`'s read-loop
 `finally` block).
 
-**Triggers:**
-- `!party <name>` — invite/kick (primary, confirmed-safe).
-- `!party` (no name) — list the roster (`* `-prefixed leader, each member's live HP).
-- `!leaveparty` — leave/disband.
-- Client opcode **`0x2e`** (`HandlePartyInvite`) — RTK's real `clif_addgroup` wire shape, `nameLen(u8)
-  name[nameLen]` (identical shape to `0x19` whisper, §11). Wired defensively: 4.95 has never been captured
-  actually sending this, so a garbage/unexpected body just fails the name lookup — no reply this server
-  sends back depends on the body being well-formed, so there's no crash risk either way.
+**Real trigger: the "Group" button on another player's profile window.** Clicking a player now shows
+*their* real click-profile (`0x34`, fixed alongside this — see §9.5/§11e), whose group/exchange status
+cells are exactly what the client reads to enable those two buttons. Clicking "Group" fires **`0x2e`**
+(`HandlePartyInvite`) — RTK's real `clif_addgroup` wire shape, `nameLen(u8) name[nameLen]` (identical shape
+to `0x19` whisper, §11; the client already has the target's name from the profile it's showing). This is a
+CONFIRMED-real 4.95 opcode (seen in an earlier capture, unlike the untested `0x29`/`0x2A`), so it's wired as
+the primary path, not a defensive guess. `!party <name>` / `!party` (roster) / `!leaveparty` remain as
+name-based chat-command fallbacks for testing or when a button isn't available (there's no profile-window
+equivalent for "leave"/"list roster" to trigger from).
 
 ### Trade (RTK "exchange" — `clif_handitem`/`clif_handgold`/`clif_parse_exchange`, clif.c:14548-15250)
 
@@ -2109,15 +2549,233 @@ Ported rules (`Session.HandleTradeCommand` / `RunTradeMenuAsync`):
 - Cancelling (either side) or disconnecting mid-trade ends it for both with RTK's *"Exchange cancelled."*
   and nothing moves (nothing was ever escrowed, so there's nothing to roll back).
 
-**Trigger:** `!trade <name>` only. RTK's real hand-item/hand-gold gesture (face the target, opcodes
-`0x29`/`0x2A`) is NOT wired as a client opcode here — those opcode numbers were never seen in a 4.95
-capture the way `0x2e`/`0x4a` were, so there was nothing to defensively hook.
+**Real trigger: the "Exchange" button on another player's profile window.** Same click-profile window as
+party above; clicking "Exchange" fires **`0x4a`** — RTK's `clif_parse_exchange` sub-protocol dispatcher.
+Only its `type=0` ("initiate", body `00 targetId(u32BE)`) sub-case is handled (`HandleExchangeRequest`):
+that's the one sub-message that means "open a trade with this id," which is all the button click needs to
+say once this server takes over with dialogs instead of RTK's real trade window. RTK's other sub-types
+(1 amount-ask, 2 add-item, 3 add-gold, 4 quit, 5 finish) all belong to that window and are never sent by a
+client that never saw the window opened, so they're intentionally not handled. Like `0x2e`, **`0x4a` is a
+CONFIRMED-real 4.95 opcode** (also seen in an earlier capture), not a speculative wiring — RTK's real
+hand-item/hand-gold gesture (face the target, opcodes `0x29`/`0x2A`) is a separate, never-captured path and
+still isn't wired. `!trade <name>` remains as a name-based chat-command fallback for testing.
 
 **Not yet live-tested.** Both features are ported from RTK source with no live 4.95 client session behind
-them. Confirm: `!party`/`!leaveparty`/`!trade` all produce visible chat-log/status-box text (they're built
-entirely on already-proven `SendMiniText`/dialog primitives, so the main open question is UX — does the
-type=11 "group" channel actually render distinctly? — not wire-format risk); and, if `0x2e` turns out to be
-real on 4.95, that a live party invite actually reaches `HandlePartyInvite` with the expected body shape.
+them. Confirm: clicking another player renders their real profile with the Group/Exchange buttons enabled
+per their flags, that clicking either button actually sends `0x2e`/`0x4a` with the expected body shape (both
+opcodes are confirmed real, but their exact trigger — is it really "click a button on the profile window,"
+or some other gesture? — hasn't been pinned down live), and that `!party`/`!leaveparty`/`!trade` all produce
+visible chat-log/status-box text as a fallback (built entirely on already-proven `SendMiniText`/dialog
+primitives, so their main open question is UX, not wire-format risk).
+
+---
+
+## 11m. Inter-continent travel (world map) (added 2026-07-26 — native 0x2e screen WORKS; earlier "broken client" conclusion was our own one-byte framing bug)
+
+Going from Mythic Nexus (the Vale) to Buya, Kugnae, and the other towns isn't a normal tile-to-tile warp —
+in real NexusTK it's a special "world map" screen you reach by walking to a town's edge.
+
+**RTK source (`RTK-Server/rtklua/Accepted/onScriptedTiles/onScriptedTilesMap.lua` +
+`Scripts/sendWorldMap.lua`, `RTK-Server/rtk/src/map/clif.c:15402 clif_mapselect`):** every walk step
+re-checks the player's current map name + x/y against a hardcoded per-town edge region
+(`onScriptedTile`, fired unconditionally after every completed move — the same hook RTK also uses for
+foraging/fall-rooms, ported here as `OnScriptedTileStep`). Stepping onto one of those tiles opens a
+full-screen destination picker (`clif_mapselect`, outgoing opcode `0x2e`) listing every other continent,
+built from a hardcoded table in `sendWorldMap.lua`. Clicking a destination just makes the client echo the
+ordinary map-change packet (`clif.c` `case 0x3F`) with the `(map,x,y)` triple it was handed —
+**`pc_warp` applies zero validation and zero level/quest/req gate** to that request; RTK's only "gate" is
+that Mount Baekdu is omitted from the list entirely unless `quest["instance"] == 8`. This is a trusted,
+cosmetic-only gate, not a real anti-cheat boundary — consistent with this codebase's existing trust model
+for map-change requests.
+
+**Outgoing `0x2e` — native screen, wire format re-derived from the CLIENT's own receive parser (2026-07-26).**
+The format is taken from the 4.95 client itself (the only authoritative spec — **not** RTK 7.x, whose
+`clif_mapselect` has a different shape). The real receive dispatch is a two-level jump table at `0x44b9c0`:
+`sel = byte[0x44bc80 + (opcode-3)]`, then `jmp dword[0x44bbd4 + sel*4]`; opcode `0x2e` -> sel 22 -> stub
+`0x44bac4` -> `call 0x450580` (the world-map handler). Disassembling `0x450580` (`re/disx.py 0x450580`)
+gives the EXACT field-by-field parse. Body (bytes AFTER the opcode byte):
+
+```
+bgNameLen   u8        <- payload[0] IS the length. There is NO leading "kind" byte (an earlier version of
+                          this doc invented one; the client reads payload[0] straight into the string length).
+bgName      bgNameLen bytes
+destCount   u8
+?           u8        -- read by the parser (stored, [ebp-0x20]) but not referenced further; sent as 0
+-- destCount times:
+  x0        u16BE     -- dot position on the background art (hand-placed per destination; NOT a warp coord)
+  y0        u16BE
+  nameLen   u8
+  name      nameLen bytes    -- the destination's display label (converted to wide via MultiByteToWideChar)
+  mapId     u32BE     -- the actual destination map (client reads it across two u16 slots)
+  x1        u16BE     -- the actual landing tile
+  y1        u16BE
+```
+
+`Session.SendWorldMap(bgName)` builds exactly this. **The background is `field10` = "Map of the Kingdom":**
+`Inter.dat` holds `field10.epf`..`field18.epf` (640x480 single-frame backgrounds — `field10` is the whole-
+kingdom overview, `field11`-`field18` are the per-region maps Koguryo/Buya/Kaya/Jinhan/Nagnang/Paekjae/Shilla/
+Sonhi), identified by rendering them and reading each image's baked-in title banner. `NATION_E` is only a 20KB
+flag icon — too small for a 640x480 background, which is why it rendered black. Default `bgName = "field10"`.
+**The `x0,y0` dot coordinates and `x1,y1` landing tiles are RTK `sendWorldMap.lua`'s real hand-placed values**
+(`WorldDest.X0/Y0`), not an invented grid. RTK's coords target its 1024x768 `WMkru` canvas; 4.95's `field10`
+is 640x480, so `SendWorldMap` scales `x0,y0` by **0.625** (640/1024 = 480/768). LIVE-CONFIRMED: unscaled,
+every dot with `x0 > 640` fell off the right edge (only Mythic Nexus @380 and KaMing's @280 were visible);
+scaled, all seven land on-screen.
+
+**The crashes were OUR one-byte framing bug, not a client bug (corrected 2026-07-26).** For a while this
+was written up as a confirmed "client memory-lifetime / dangling-pointer bug, dead end" — complete with a
+fabricated `"File not found .EPF"` log line that never appeared in any capture, and two other inferred
+theories ("wrong archive", "heap corruption"). All of that was wrong. The retail 4.95 client is not buggy;
+this screen worked for millions of real sessions. The bug was entirely on our side.
+
+**What was actually happening:** `Session.SendWorldMap` prepended a spurious leading `kind = 0` byte before
+the length-prefixed background name. But the client's parser (`0x450580`, above) reads `payload[0]` **as the
+bgName length**. So the client read our `00` as `bgNameLen = 0` -> empty name -> a `%s.epf` path builder
+produced `"."` -> `catlookup2(".")`, and — critically — **every subsequent field was then shifted one byte**,
+so `destCount` and the per-entry offsets became garbage, the handler computed a bogus huge allocation, the
+raw allocator (`0x4adc38`) returned NULL, and the uncaught `_CxxThrowException` (`0x4abfa0`) killed the
+process. The Frida capture that had looked like proof of a client bug —
+
+```
+DECR  op=0x2e ... 2e 00 04 49 74 65 6d 07 ...        <- our body: [00]=kind, [04 "Item"]=len+name
+>>SPR catlookup2(".")                                 <- client read [00] as bgNameLen=0 -> "" -> "."
+>>SPR *** _CxxThrowException reached ***
+```
+
+— is exactly what a one-byte-too-long packet looks like: `"Item"` never "failed to survive," it was simply
+never where the client was told to look, because our first byte lied about the name length. **Fix: remove
+the leading byte.** `SendWorldMap` now starts the body directly with `AddLenStr(d, bgName)`.
+
+**How it was found:** by disassembling the client's OWN receive dispatch (`0x44b9c0` two-level jump table)
+to confirm `0x2e -> 0x450580`, then reading `0x450580`'s parse field-by-field — which immediately showed
+`payload[0]` being consumed as the string length with no preceding byte. This is the lesson: when a
+shipped, retail client crashes on our packet, derive the format from the client's own parser and assume the
+framing error is ours; do not trust a different-version reference (RTK 7.x) or a `!wmtest` test path as
+ground truth, and never write an inferred narrative into the docs as observed fact.
+
+**Response: the native screen is RE-ENABLED at the real trigger tiles.** `TryWorldMapTravel` now calls
+`SendWorldMap("field10")` directly. `!travel` (`RunWorldMapMenuAsync`) is kept as a dialog fallback in case
+the native screen ever regresses live; `!wmtest [name]` remains for trying alternate background graphics.
+**Still to verify live:** that the corrected packet renders end-to-end and that destination clicks warp
+(the `0x3F` reply shape below is still a guess).
+
+**Incoming `0x3F` — click AND ESC reply, LIVE-CONFIRMED (2026-07-26).** Captured body (after the opcode):
+`mapId(u32BE) x(u16BE) y(u16BE) 00` — e.g. clicking Kugnae sent `00 00 03 f3 00 12 00 0e 00` (`0x3f3`=1011,
+x=18, y=14). This is exactly RTK's `case 0x3F` map-change (`pc_warp` with the client-supplied map/x/y,
+clif.c:11619). **Note `mapId` is a u32, not the u16 an earlier guess assumed** — reading it as u16 gave 0 and
+matched nothing, so clicks silently did nothing until this was fixed. **There is no separate cancel opcode:**
+opening the map makes the client "leave the world", and BOTH a destination click and **ESC** send this same
+`0x3F` — ESC just carries the player's ORIGINAL map/x/y. So `Session.HandleWorldMapSelect` warps to the
+destination when the triple matches a `WorldDest`, and otherwise (ESC, or any unrecognized coords) returns
+the player to the origin it stored when the map opened (`_worldMapReturnMap/X/Y`) — the player can never be
+stranded on the map screen or mis-warped to arbitrary client-chosen coordinates. A `_worldMapPending` flag
+(cleared on any map change) guards against a stray `0x3F` outside a world-map session.
+
+**`!travel` — dialog fallback.** Opens the same destination list through the async dialog primitives
+(`DlgMenu`, live-confirmed `0x30`/`0x3a`, §11e). No longer the primary path (the native screen is now
+wired to the trigger tiles), but kept as a manual fallback independent of the `0x2e`/`0x3F` native path in
+case that ever regresses live.
+
+**`!wmtest [name]` — native screen with an explicit background name.** Calls `SendWorldMap(name)`, defaulting
+to `field10` when no name is given, for trying alternate backgrounds (`field1`, `title`, other `fieldNN`).
+The framing bug that used to crash this is fixed.
+
+**Destinations** (`Session.cs` `WorldDests`) — 7 of RTK's 9 real destinations; Hamgyong Nam-Do (map 99,
+RTK's own display-name mismatch against its actual map title) and Mount Baekdu (map 4259, the one
+quest-gated entry) are both omitted because neither has renderable map data in this project's
+`data/rtk-data/map_index.csv`:
+
+| Destination | Map | Landing (x,y) |
+|---|---|---|
+| Kugnae | 1011 | (18,14) |
+| Buya | 1012 | (1,11) |
+| Mythic Nexus | 41 | (30,4) |
+| Nagnang | 2520 | (8,8) |
+| Arctic Land | 1013 | (9,9) |
+| Hausson | 1025 | (10,8) |
+| KaMing's Encampment | 3800 | (31,3) |
+
+**Trigger tiles** (`Session.cs` `WorldMapTriggers`, keyed by the town map the player is standing in — each
+of the 7 towns above is also a trigger source, so the picker is reachable from any of them): Kugnae
+Gathering `x=19, y∈{12,13}`; Buya Gathering `x=0, y∈8..12`; Mythic Nexus `y=1, x∈28..32`; Nagnang Gathering
+`y=5, x∈7..9`; Haeng Tavern `x=10, y∈{7,8}`; Kafas Tavern `x=11, y∈7..9`; KaMing's Encampment `y∈{0,1},
+x∈30..34`. All seven fit inside their map's real dimensions per `map_index.csv`.
+
+**Live status (2026-07-26).** The trigger tiles are confirmed live. The framing bug that made the native
+`0x2e` screen crash (a spurious leading byte — see above) is fixed and the corrected packet builds clean,
+but the fixed native screen has **not yet been re-tested live** (the earlier "3 crashes / two different
+bugs" writeup was all downstream of that same one-byte error, now understood, not a real client fault). The
+native screen is re-enabled at the trigger tiles (`SendWorldMap("field10")`); `!travel` remains as a dialog
+fallback. Still open once tested live: whether the picker renders correctly, and the `0x3F` click-reply
+shape (still a guess, validated against `WorldDests` so a wrong guess is inert).
+
+---
+
+## 11n. Mail/parcels, friend & ignore lists, weather, day-night, ambush & spot-traps (added 2026-07-26 — closing the RTK feature-gap audit)
+
+Six independent additions from a single pass, each ported at a different confidence level — see each
+sub-entry for what's grounded vs. original.
+
+**Mail (`Server/Mail.cs`, `Session.HandleMailCommand`/`HandleBoard` sub-9).** RTK's nmail reuses the SAME
+`boards_showposts`/`boards_readpost` machinery as a normal bulletin board (§11h), just addressed at board id
+0 (a player's own mailbox). Confirmed the real `nmail_write`/`boards_post`/`boards_showposts`/
+`boards_readpost`/`boards_delete` implementations don't survive anywhere in the reference tree (checked
+`rtk/src/map/board_db.c` and `clif.c` both — only the `clif_handle_boards` dispatcher does), so there's no
+wire evidence at all for how mail gets COMPOSED (no recipient field visible in the dispatcher). Reading an
+existing mailbox reuses the same (already-`§11h`-unverified) `0x31` sub-2/sub-3 reply builders, now sourced
+from a new `mail_posts` SQLite table when `boardId==0` instead of `board_posts`; composing is chat-command
+only (`!mail send <name> | <subject> | <body>`, `!mail sendItem <name> <item> [amount] | <subject> | <body>`
+— the "parcel" half, pulling straight from the caster's bag and removing it same as handing it over in
+person). RTK gates nmail at level 10 (`clif_handle_boards` case 6's exact wording, kept verbatim); claiming
+an attached item is one-shot (`Mail.ClaimItem`) regardless of whether it's read via `!mail read` or (if a
+client ever sends it) the native `0x31` sub-3 path — both funnel through `Session.ReadMail`.
+
+**Friend & ignore lists (`Character.Friends`/`IgnoreList`, `Session.HandleFriendCommand`/`HandleIgnoreCommand`).**
+Ignore is real RTK (`map.h sd_ignorelist`, `clif.c` `ignorelist_add`/`ignorelist_remove`/`clif_isignore`) —
+ported behaviorally (mutual: a whisper is blocked if EITHER side has the other listed, RTK's exact
+`canwhisper` failure wording "They cannot hear you right now." kept verbatim in `DoWhisper`) but via chat
+command (`!ignore add|remove <name>`) rather than the raw client packet (`clif_parseignore`, opcode `0x0D`
+sub-dispatch) — that packet is itself a sub-switch of some other outer receive opcode never pinned down for
+4.95, so wiring it blind would risk misrouting a real 4.95 client packet. **Friends has no RTK source at
+all** — no such struct/feature exists anywhere in the C engine — so `!friend add|remove|list` is a pure
+original addition: a saved name list plus a live online check on `!friend` (list), nothing more (no
+login/logout push notification).
+
+**Weather (`World` `MapState.Weather`/`GetWeather`/`SetWeather`, `Session.SendWeather`, opcode `0x1F`).**
+RTK's `clif_sendweather` (`clif.c:4565`) is a real, complete wire format — a single byte, 0=clear/1=WRAIN/
+2=WSNOW (`map.h`) — but it's gated by `sd->status.settingFlags & FLAG_WEATHER`, a per-player options toggle
+with no evidence either way that the 4.95 client's older UI even has it. Ported at face value (best real
+number on record, same precedent as this file's still-uncalibrated sound ids); **UNVERIFIED against a live
+4.95 client** — `!weather <0-2>` lets it be audited directly. No automatic RTK scheduler exists to port for
+WHEN weather changes (`setWeatherM`/`getWeatherM` are pure admin/quest-script levers, never called on a
+timer anywhere in the C engine) — `World.Tick` rolls a 20% chance per populated map every ~15 real minutes
+as our own substitute, clearly not an RTK-sourced cadence.
+
+**Day-night clock (`World.Time`/`_hour`/`_year`, `Session.SendTime`, opcode `0x20`).** Fully grounded: RTK's
+`clif_sendtime` (`clif.c:4524`, `hour(u8 0..23) year(u8)`) and `change_time_char`'s real timer
+(`timer_insert(450000, 450000, ...)` — one in-game hour per 7.5 real minutes, broadcast server-wide to every
+connected session on each tick) are both complete C-engine code, ported 1:1 in `World.Tick`. This server had
+sent a hardcoded placeholder here since before this session (`0x10`/`0x32` at one entry path, `0x00`/`0x00`
+at another) — the starting values were kept as the live clock's initial state so deploying this doesn't jump
+the clock for anyone already playing. Day/season aren't tracked — the wire packet itself doesn't carry them.
+
+**Ambush (`Content.IsAmbushSpell`, `Session.CastAmbush`).** RTK `rogue/ambush.lua` ("Leap over your enemy to
+face their back while attacking") has no mana cost in the Lua at all. Ported as a real reposition: teleports
+the caster to the tile directly behind the FACED mob (relative to the target's own facing, re-facing the
+caster to match) — which lines up exactly with `Combat.IsBehindTarget`'s existing unconditional positional-
+backstab bonus, so the follow-up swing gets its x2 "for free" the same way a genuine sneak-up would. Only
+targets world mobs (no PvP melee path exists in this server — §"no PvP damage path" elsewhere). RTK paces
+reuse with `player.ambushTimer` (attack-speed-derived, not modeled here) — substituted with a flat 3s
+cooldown.
+
+**Watchful Eye / Spot Traps (`Content.IsSpotTrapsSpell`, `Session.CastSpotTraps`, `World.TrapsNear`).** RTK's
+`seeSpotTraps()` (`Scripts/spotTraps.lua`) reveals nearby hidden rogue-trap NPCs by dropping a marker item
+(id 99) at each trap's tile, tagged so only the caster sees it (`addTrapSpotters`/`getTrapSpotters`). Ported
+via `Session.ShowGroundItem` called directly (not `World.DropItem`) so the marker never broadcasts to the
+map — matching that same caster-only visibility without needing a new per-player-visibility concept. The
+warrior family (`watchful_eye_warrior` + 3 reskins) has a real RTK cooldown (`player:setAether(key, 25000)`)
+that never made it into the CSV export — 25000ms is hardcoded to match the Lua; the Rogue-side `spot_traps`
+already had a correct exported `aether` (6000ms) and mana (100), used as-is.
 
 ---
 
@@ -2394,7 +3052,7 @@ magnitude faster for "what does this byte mean" questions.
   Buy/Sell and the bank's take/give also have spoken shortcuts (real NexusTK commands, not RTK-ported — see
   §11e's spoken shortcuts note). **Remaining:** the authentic buy/sell grid window (`0x2f`, currently menu-based); per-NPC
   quest/crafting scripts (RTK Lua); joint bank accounts; and the flat item-price data isn't tracked
-  (`re/rtk-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
+  (`data/rtk-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
   has no evidence of existing in original 4.x/5.x NexusTK, so it isn't ported.
 - **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x31, 0x35, 0x36, 0x39, 0x3b,
   0x42, 0x44, 0x46, 0x4a, 0x4b, 0x66, 0x67, 0x68`.
@@ -2445,7 +3103,7 @@ Clans, Friends, Legends, Mail, Kills, SpellBook, Registry, Auctions, Boards, Par
 ids/colours need 4.95 validation); stats are 7.x-balanced (structure correct, numbers a design choice); the
 non-overlapping maps/warps/NPCs are 7.x-added content and are filtered out of the extracts.
 **Reproduce:** clone `RTK-Server` (gitignored), then `python re/rtk_extract.py` writes the CSVs to
-`re/rtk-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
+`data/rtk-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
 tables with row counts. ²`AreaSpawns.csv` isn't an SQL table — it's generated from the Lua spawner by
 `python re/extract_lua_spawns.py` (parses `mobSpawnHandler.lua`'s `handleSpawn(...)` calls). **None of
 this data is committed** — this repo is logic-only; the CSVs are generated locally and kept out of git.
@@ -2471,7 +3129,7 @@ This repo is **logic-only**. All game *data* lives outside it and is regenerated
 | **Nexus Atlas** via Wayback (pre-6.5, ~2005-10) | monster names, exp, type; monster art GIFs | `re/monster-matcher/` scrapers (Wayback CDX + `im_` raw fetch) |
 | **DizzyThermal/TKViewer** | later-client DAT/DNA format docs (e.g. `MONSTER.DNA` struct) | GitHub (reference only) |
 | **jeedee/TkServer** (6.x), **darkalucard/StarterTK** (7.x) | packet-builder concepts (§17) | GitHub (reference only) |
-| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `re/rtk-data/map_index.csv` |
+| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `data/rtk-data/map_index.csv` |
 
 ### 17.3 Runtime content registry (`Server/Content.cs`) — how the data is consumed
 
@@ -2539,6 +3197,13 @@ client map set (no warping to a map the client can't render).
 | `0x4503a0` | `0x1A` action |
 | `0x4508f0` | `0x13` combat damage / over-head HP bar (+ hit anim `0x8f−crit`) |
 | `0x424310` | spawn placement / viewport containment check |
+| `0x463380` | **nameplate/marker decoration ctor (player archive) — PATCHED to `xor eax,eax; ret 0x14` (see §8.1), always leaked one per appearance refresh** |
+| `0x462050` | attach a built decoration/sprite to an entity |
+| `0x425350` | conditional decoration-detach on entity destroy (gated on `[entity+0x104]!=5`, called from `0x44da40`) |
+| `0x44da40` | full entity destroy: spatial-unlink + hashmap-unlink (`0x45c8f0`) + `0x425350` + dtor (peer/mob `0x33`+`0x07` path) |
+| `0x44d9f0` | despawn-by-id destroy (real `0x0E` path, `0x450440`) — no self/peer distinction, destroys whatever the id hashmap resolves to |
+| `0x45c830` / `0x45c8f0` / `0x45cb80` | id-keyed entity hashmap: register / remove / lookup |
+| `0x44c660` | self camera/viewport refresh (called from `0x44d7d0`'s self-id branch; repositions the persistent self entity in place, no realloc) |
 | `0x44d7d0` → `0x43fd80` → `0x463380` → `0x460760` | sprite build path |
 
 ---
