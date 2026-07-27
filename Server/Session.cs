@@ -2095,6 +2095,7 @@ public sealed class Session
         if (text.StartsWith("!kill", StringComparison.OrdinalIgnoreCase)) { KillMobs(); return; }         // despawn all mobs
         if (text.StartsWith("!weapon", StringComparison.OrdinalIgnoreCase)) { SetWeapon(text); return; }  // equip weapon sprite
         if (text.StartsWith("!ride", StringComparison.OrdinalIgnoreCase) || text.StartsWith("!mount", StringComparison.OrdinalIgnoreCase)) { ToggleMount(text); return; } // get on/off the horse (form byte 3)
+        if (text.StartsWith("!coins", StringComparison.OrdinalIgnoreCase) || text.StartsWith("!gold", StringComparison.OrdinalIgnoreCase)) { GiveCoinsCmd(text); return; }  // add coins to the purse
         if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("level", text); return; }   // set base level (test wear reqs)
         if (text.StartsWith("!might", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("might", text); return; } // set base might (test wear reqs)
         if (text.StartsWith("!class", StringComparison.OrdinalIgnoreCase)) { SetClass(text); return; }  // set the profile class/path line
@@ -6224,6 +6225,26 @@ public sealed class Session
     }
 
     // "!item <name or id> [amount]": summon an item into the bag (equip items keep a single copy per slot).
+    // "!coins <n>" (alias "!gold <n>") — add n coins to the purse (updates the HUD + persists). A negative n
+    // removes that many, floored at 0; "!coins" alone defaults to +10000. Coins aren't in the item registry
+    // (they're a negative item id on the wire), so !item can't grant them — this is the direct GM path.
+    private void GiveCoinsCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        int amount = 10000;
+        if (parts.Length > 1 && !int.TryParse(parts[1], out amount))
+        { SendLog("usage: !coins <n>   (n may be negative to remove; default +10000)"); return; }
+
+        if (amount >= 0) AwardGold((uint)amount);
+        else
+        {
+            uint take = Math.Min(_char.Coins, (uint)(-(long)amount));
+            _char.Coins -= take;
+            SendStats(); SaveChar();
+        }
+        SendLog($"Coins: {_char.Coins:N0} (changed by {amount:+#;-#;0}).");
+    }
+
     private void GiveItemCmd(string text)
     {
         string q = text.Length > "!item".Length ? text["!item".Length..].Trim() : "";
