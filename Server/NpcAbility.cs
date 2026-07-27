@@ -104,6 +104,28 @@ public sealed class NpcContext
     public long NowUnix => _s.NowUnix;
     /// <summary>The player's sex byte (RTK player.sex; used to pick sex-specific quest items).</summary>
     public int  Sex => _s.CharSex;
+    /// <summary>The player's current face id (RTK player.face).</summary>
+    public int  Face => _s.CharFace;
+    /// <summary>Live-preview a candidate face — redraws self immediately, not yet persisted.</summary>
+    public void PreviewFace(int face) => _s.PreviewFace(face);
+    /// <summary>Keep a previewed face (persists + redraws self).</summary>
+    public void CommitFace(int face) => _s.CommitFace(face);
+    /// <summary>Is anything currently equipped (RTK player:isEquipped()).</summary>
+    public bool IsEquipped => _s.IsEquipped;
+
+    // ---- war paint / armor dye (WarPaintAbility; RTK arena_master.lua / general_npc_funcs.warPaint) ---
+    /// <summary>The current armor-dye palette index (RTK player.armorColor; 0 = undyed).</summary>
+    public int ArmorColor => _s.CharArmorColor;
+    /// <summary>Is a visible armor/coat worn (RTK's "you need armor or a coat equipped to see your war paint")?</summary>
+    public bool HasVisibleArmor => _s.HasVisibleArmor;
+    /// <summary>Dye (or bleach, with 0) the worn armor — persists + redraws self &amp; peers (RTK player:refresh).</summary>
+    public void SetArmorColor(int color) => _s.SetArmorColor((byte)color);
+    /// <summary>Free bag slots remaining.</summary>
+    public int  FreeSlotCount => _s.FreeSlotCount;
+    /// <summary>Unequip everything back into the bag; false (unchanged) if the bag lacks room for it all.</summary>
+    public bool StripAllEquipment() => _s.StripAllEquipment();
+    /// <summary>Flip sex, persist, and redraw self + peers.</summary>
+    public void CommitSexChange() => _s.CommitSexChange();
     /// <summary>The player's nation/kingdom id (RTK player.country; 1 = Koguryo/Kugnae).</summary>
     public int  Nation => _s.CharNation;
 
@@ -111,6 +133,24 @@ public sealed class NpcContext
     public uint Coins => _s.CharCoins;
     /// <summary>Spend coin if the player can afford it; false (no change) if they can't.</summary>
     public bool SpendGold(uint amount) => _s.SpendGold(amount);
+
+    // ---- shadow-stat vendors (ShadowStatsAbility; RTK ExpSeller.lua) ------------------------------
+    /// <summary>Banked experience (RTK player.exp) — spendable currency for the shadow-stat vendors once
+    /// leveling itself stops consuming it (level 99, or a Peasant walled at 5).</summary>
+    public uint Exp => _s.CharExp;
+    /// <summary>Spend banked exp if the player has enough; false (no change) if they can't.</summary>
+    public bool SpendExp(uint amount) => _s.SpendExp(amount);
+    public int  Might => _s.CharMight;
+    public int  Grace => _s.CharGrace;
+    public int  Will  => _s.CharWill;
+    public uint MaxHp => _s.CharMaxHp;
+    public uint MaxMp => _s.CharMaxMp;
+    /// <summary>Permanently raise a base stat/pool (RTK baseMight/baseGrace/baseWill/baseHealth/baseMagic).</summary>
+    public void RaiseMight(int by) => _s.RaiseMight(by);
+    public void RaiseGrace(int by) => _s.RaiseGrace(by);
+    public void RaiseWill(int by)  => _s.RaiseWill(by);
+    public void RaiseMaxHp(uint by) => _s.RaiseMaxHp(by);
+    public void RaiseMaxMp(uint by) => _s.RaiseMaxMp(by);
 
     /// <summary>Does the player carry at least <paramref name="n"/> of an item (by key)?</summary>
     public bool HasItem(string itemKey, int n = 1) => _s.CountItem(itemKey) >= n;
@@ -152,6 +192,30 @@ public sealed class NpcContext
     public bool LearnSpell(SpellDef sp) => _s.LearnSpellFromNpc(sp);
     /// <summary>Forget one spell (resyncs the book so later slots realign).</summary>
     public void ForgetSpell(int spellId) => _s.ForgetOneSpell(spellId);
+
+    // ---- marriage (ChapelAbility; RTK NPCs/Common/chapel_npc.lua + Spells/common/propose.lua) -----
+    /// <summary>Is the player currently engaged (not yet married)?</summary>
+    public bool IsEngaged => !string.IsNullOrEmpty(_s.CharFiance);
+    /// <summary>Did THIS player accept the proposal (RTK's "only the proposee may start the ceremony")?</summary>
+    public bool IsProposee => _s.CharIsProposee;
+    /// <summary>The player's spouse's name ("" if unmarried).</summary>
+    public string SpouseName => _s.CharSpouseName;
+    /// <summary>Wall-clock seconds until the wedding ceremony may run (RTK's 3-day post-engagement cool-down); 0/negative = ready now.</summary>
+    public long MarriageWaitSeconds => _s.CharMarriageTimer - _s.NowUnix;
+    /// <summary>Wall-clock seconds until another engagement ring may be bought; 0/negative = ready now.</summary>
+    public long RingWaitSeconds => _s.CharRingCooldown - _s.NowUnix;
+    /// <summary>Set the 24h cooldown after buying an engagement ring.</summary>
+    public void SetRingCooldown(long seconds) => _s.SetRingCooldown(_s.NowUnix + seconds);
+    /// <summary>Break off the current engagement on both sides (persists).</summary>
+    public void BreakEngagement() => _s.BreakOffEngagement();
+    /// <summary>Run the wedding ceremony against the player's current fiancé — asks the fiancé for their
+    /// "I do", then marries both on accept. Returns the message to show, or null if already messaged.</summary>
+    public Task<string?> Marry() => _s.RunMarriageCeremony();
+    /// <summary>End the current marriage on both sides (persists).</summary>
+    public void Divorce() => _s.FinishDivorce();
+    /// <summary>Permanently lower a base pool as a divorce sacrifice (RTK baseHealth/baseMagic -= penalty).</summary>
+    public void LowerMaxHp(uint by) => _s.LowerMaxHp(by);
+    public void LowerMaxMp(uint by) => _s.LowerMaxMp(by);
 }
 
 /// <summary>
@@ -289,14 +353,11 @@ public sealed class TransportAbility : INpcAbility
 /// <summary>Fishing (RTK fishnpc.lua / Bate &amp; Wim). Ports the beginner branch: a chance per cast at a
 /// minnow + the <c>learned_to_fish</c> flag (the tutorial's stage-4 requirement). The level-15+ pole/bait/skill
 /// system, magical fish, and stuck-line death aren't modelled. While the player is on tutorial stage 4 the
-/// catch is guaranteed, so the tutorial doesn't hinge on the 10% roll.</summary>
+/// catch is guaranteed, so the tutorial doesn't hinge on the 25% roll. No click menu — say "fish" instead.</summary>
 public sealed class FishAbility : INpcAbility, INpcSayHandler
 {
     public static readonly FishAbility Instance = new();
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
-    {
-        yield return ("I'd like to fish", Fish);
-    }
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
 
     // Spoken trigger (RTK: "i'd like to fish"). The tutorial tells the player to say it out loud.
     public async Task<bool> OnSay(NpcContext ctx, string speech)
@@ -311,10 +372,10 @@ public sealed class FishAbility : INpcAbility, INpcSayHandler
         await ctx.Say("You're still a youngin'! If you take up fishing now, you'll never amount to anything. " +
                       "Oh, why not? Here's some string and worms for you to try with, good luck!");
 
-        // RTK beginner odds are 5/50 (10%). Guarantee it while the player is on the tutorial's fishing stage so
-        // completing the quest isn't a grind.
+        // 25% catch rate. Guarantee it while the player is on the tutorial's fishing stage so completing the
+        // quest isn't a grind.
         bool guaranteed = ctx.Stage("tutorial_quest") == 4;
-        bool caught = guaranteed || ctx.Random(50) <= 5;
+        bool caught = guaranteed || ctx.Random(100) <= 25;
 
         if (caught)
         {
@@ -691,6 +752,439 @@ public sealed class ChuRuaTigerAbility : INpcAbility, INpcSayHandler
             default:
                 return false;
         }
+    }
+}
+
+/// <summary>Change Face / Change Gender (RTK rogue_guild_shaman.lua: <c>general_npc_funcs.changeFace</c> /
+/// <c>changeGender</c> — the third option, Eyes, isn't ported). Both are genuinely visible on this client:
+/// Face is a real byte in the 4.95 7-byte appearance form (§8 of the protocol doc), unlike hair/beard which
+/// that form has no slot for at all — see docs/NexusTK-4.95-Protocol.md §8 for why those two aren't offered
+/// here. Face browsing live-previews each candidate on the player's own screen (mirrors RTK's clone.equip
+/// preview loop) before it's paid for and committed.</summary>
+public sealed class AppearanceAbility : INpcAbility
+{
+    public static readonly AppearanceAbility Instance = new();
+    private const uint FaceCost = 3000;
+    private const uint GenderCost = 12000;
+    // RTK changeFace: faces 200..216, permanent, cycled with Next/Previous.
+    private static readonly int[] Faces = Enumerable.Range(200, 17).ToArray();
+
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ("Change Face", ChangeFace);
+        yield return ("Change Gender", ChangeGender);
+    }
+
+    private static async Task ChangeFace(NpcContext ctx)
+    {
+        int crime = await ctx.Menu("You're not wanted for a crime, are you?", new[] { "Yes", "No" });
+        if (crime != 2) { await ctx.Say("Ah, I see. Appear as thou wilt."); return; }
+
+        if (ctx.Coins < FaceCost) { await ctx.Say($"It will cost you {FaceCost:N0} coins. Come back when you have that."); return; }
+        int pay = await ctx.Menu($"It will cost you {FaceCost:N0} coins. Do you wish to pay?", new[] { "Yes", "No" });
+        if (pay != 1) { await ctx.Say("Ah, I see. Appear as thou wilt."); return; }
+
+        await ctx.Say("Choose the face you like. Please be careful as the change is permanent. Use 'Next face'/'Previous face' to browse.");
+
+        int original = ctx.Face;
+        int index = 0;
+        while (true)
+        {
+            ctx.PreviewFace(Faces[index]);
+            int choice = await ctx.Menu("Do you like this face?", new[] { "I want this one", "Next face", "Previous face", "Nevermind" });
+            if (choice == 1)
+            {
+                if (ctx.Coins < FaceCost)
+                {
+                    ctx.PreviewFace(original);   // restore — can't afford it after all (money spent mid-browse elsewhere)
+                    await ctx.Say($"It will cost you {FaceCost:N0} coins. Come back when you have that.");
+                    return;
+                }
+                ctx.SpendGold(FaceCost);
+                ctx.CommitFace(Faces[index]);
+                await ctx.Say("It's tricky to mold this flesh. Let's see how it looks.");
+                return;
+            }
+            if (choice == 2) index = Math.Min(index + 1, Faces.Length - 1);
+            else if (choice == 3) index = Math.Max(index - 1, 0);
+            else { ctx.PreviewFace(original); return; }   // Nevermind or cancel (0) — restore
+        }
+    }
+
+    private static async Task ChangeGender(NpcContext ctx)
+    {
+        if (ctx.IsEquipped)
+        {
+            int strip = await ctx.Menu(
+                "You must remove everything you are wearing before you can change your gender. Remove your items now?",
+                new[] { "Yes, strip me", "No, I can strip myself" });
+            if (strip != 1) { await ctx.Say("Come back once you've stripped down, then."); return; }
+            if (!ctx.StripAllEquipment())
+            { await ctx.Say("Your pack doesn't have room to hold everything you're wearing — make some space first."); return; }
+        }
+
+        if (ctx.Coins < GenderCost) { await ctx.Say($"You need {GenderCost:N0} gold to change your gender, come back when you have the cash."); return; }
+
+        int confirm = await ctx.Menu("You realize you won't be able to wear the clothes that you normally do, do you not?", new[] { "Yes", "No" });
+        if (confirm != 1) { await ctx.Say("Ok. Maybe you're better off as you are."); return; }
+
+        string ask = ctx.Sex == 0 ? "Do you wish to become a woman?" : "Do you wish to become a man?";
+        int confirmSex = await ctx.Menu(ask, new[] { "Yes", "No" });
+        if (confirmSex != 1) { await ctx.Say("Ok. Maybe you're better off as you are."); return; }
+
+        if (ctx.Coins < GenderCost) { await ctx.Say($"You need {GenderCost:N0} gold to change your gender, come back when you have the cash."); return; }
+        ctx.SpendGold(GenderCost);
+        ctx.CommitSexChange();
+        await ctx.Say("There, wow that was hard work.");
+    }
+}
+
+/// <summary>The Arena Master's war-paint dye (RTK NPCs/arena/arena_master.lua → general_npc_funcs.warPaint) —
+/// this NPC's ONE and only service ("Mountain" at the Mountain Arena, "Tower" at the Kugnae one). Colors the
+/// worn armor/coat via the 0x33 appearance[4] palette byte (<see cref="Character.ArmorColor"/>). Three
+/// branches, exactly as RTK: already dyed → <b>Bleach</b> back to base (10 gold); not dyed → pick 1 of 8
+/// <b>team-battle</b> colors (20 gold); and at <b>level 99</b> an optional "special" dye (Brown / Wasabi /
+/// Super Wasabi, gated on base Vita/Mana) offered before the team menu.
+/// <para>The color values are RTK's own palette indices. On the 4.95 client the index→visible-color map isn't
+/// fully catalogued (the look-lab confirmed 16/32/64/128/255 recolor and 0..8 stay base; the 9..36 range these
+/// live in was never swept), so some may need adjusting once swept with the <c>!dye &lt;n&gt;</c> GM command —
+/// the numbers here are the faithful RTK starting point.</para></summary>
+public sealed class WarPaintAbility : INpcAbility
+{
+    public static readonly WarPaintAbility Instance = new();
+
+    // RTK team-battle dyes (general_npc_funcs.warPaint): 8 teams, 20 gold, one armorColor each.
+    private static readonly (string Name, byte Color)[] Teams =
+    {
+        ("Hyun moo", 10), ("Ju jak", 21), ("Chung ryong", 24), ("Baekho", 11),
+        ("Ash", 28), ("River", 17), ("Fire", 31), ("Snow", 29),
+    };
+
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ("War paint", WarPaint);
+    }
+
+    private static async Task WarPaint(NpcContext ctx)
+    {
+        // RTK warns (but still lets you proceed) if there's no armor/coat to show the color on.
+        if (!ctx.HasVisibleArmor)
+            await ctx.Say("You need to have an armor or a coat equipped to see your war paint. You may continue but you will be unable to see your new colors until then.");
+
+        // Already dyed → offer to bleach back to base (10 gold).
+        if (ctx.ArmorColor != 0)
+        {
+            int c = await ctx.Menu("You wish me to bleach your war paint for 10 gold?", new[] { "Bleach me", "No" });
+            if (c == 1)
+            {
+                if (!ctx.SpendGold(10)) { await ctx.Say("Return to me when you have enough gold."); return; }
+                ctx.SetArmorColor(0);
+                await ctx.Say("It is done.");
+            }
+            else await ctx.Say("As you wish.");
+            return;
+        }
+
+        // Not dyed. The level-99 special dyes come first (optional); declining falls through to the team menu.
+        if (ctx.Level >= 99 && await OfferSpecialDye(ctx)) return;
+
+        // The everyone dye: pick a team color for 20 gold.
+        int join = await ctx.Menu("To engage in team battles you need a dye. It will cost you 20 coins, you want to do it?",
+            new[] { "Yes", "No" });
+        if (join != 1)
+        {
+            await ctx.Say("You are not saying that 20 coins is too expensive, are you? I can't make it any less expensive than that.");
+            return;
+        }
+
+        int pick = await ctx.Menu("Which team do you wish to join?", Teams.Select(t => t.Name).ToList());
+        if (pick < 1 || pick > Teams.Length) return;
+        if (!ctx.SpendGold(20)) { await ctx.Say("Return to me when you have enough gold."); return; }
+
+        ctx.SetArmorColor(Teams[pick - 1].Color);
+        await ctx.Say(
+            "May the heavens favor a painless death.",
+            "(Be sure to be able to group with your team. Press 'SHIFT G' to allow your Champion to group you.)",
+            "(If you are the Champion, press 'g' to add or remove someone from your group.)");
+    }
+
+    // RTK level-99 "special dye" branch: Brown always; Wasabi if baseHealth ≥ 50000 OR baseMagic ≥ 25000;
+    // Super Wasabi if baseHealth ≥ 160000 OR baseMagic ≥ 80000 (MaxHp/MaxMp are our baseHealth/baseMagic
+    // analog). Returns true if the player bought one (flow ends); false if they declined — the caller then
+    // falls through to the team menu, matching RTK.
+    private static async Task<bool> OfferSpecialDye(NpcContext ctx)
+    {
+        var dyes = new List<(string Label, uint Cost, byte Color)> { ("Brown (1000 gold)", 1000, 12) };
+        if (ctx.MaxHp >= 50000  || ctx.MaxMp >= 25000) dyes.Add(("Wasabi (5000 gold)", 5000, 16));
+        if (ctx.MaxHp >= 160000 || ctx.MaxMp >= 80000) dyes.Add(("Super Wasabi (12000 gold)", 12000, 36));
+
+        int consider = await ctx.Menu("Do you wish to consider a special dye, Great one?",
+            new[] { "Yes, please", "No, I am special enough without such dyes." });
+        if (consider != 1) return false;
+
+        int pick = await ctx.Menu("Which dye would you like, Great one?", dyes.Select(d => d.Label).ToList());
+        if (pick < 1 || pick > dyes.Count) return false;   // cancelled — RTK falls through to the team menu
+        var dye = dyes[pick - 1];
+
+        if (!ctx.SpendGold(dye.Cost))
+        { await ctx.Say("If you cannot afford it, perhaps you are not so great afterall..."); return true; }
+
+        ctx.SetArmorColor(dye.Color);
+        await ctx.Say("It is done.");
+        return true;
+    }
+}
+
+/// <summary>Trade banked experience for permanent stat growth once you're too high-level for exp to matter
+/// otherwise (RTK NPCs/Common/ExpSeller.lua — "Shady"/"Sunset"/"Midnight", the identical <c>ExpSeller</c>
+/// vendors sitting at the "…Weaver" map camps). Gated at level 90. Three offers: Might/Grace/Will up to a
+/// flat 130 base (10,000,000 exp each), or a permanent Vitality/Mana pool increase whose cost per purchase
+/// climbs with your current pool (RTK's escalating cost curve, config defaults expSellFactor1=0/factor2=2 —
+/// see config.lua). Below level 99 a lower interim cap applies to Vitality/Mana, same as RTK.
+/// <para>The higher, rebirth-rank-gated caps ("Bon-Hwa", RTK's <c>npcIsBonHwa</c> branch) aren't ported —
+/// that reads <c>player.mark</c>, which we don't model yet (<see cref="NpcContext.Mark"/> is a stub 0).</para></summary>
+public sealed class ShadowStatsAbility : INpcAbility
+{
+    public static readonly ShadowStatsAbility Instance = new();
+    private const int LevelGate = 90;
+    private const uint StatCost = 10_000_000;
+    private const int  StatCap  = 130;
+    private const uint MinPoolCost = 20_000_000;
+    private const int  ExpSellFactor2 = 2;   // RTK config.lua default (factor1=0 drops out of the formula)
+
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ($"Talk to {ctx.Def.Name}", Talk);
+    }
+
+    private static async Task Talk(NpcContext ctx)
+    {
+        if (ctx.Level < LevelGate)
+        { await ctx.Say("There is nothing I can do for you, young one. Come back when you have achieved the 90th insight."); return; }
+
+        int choice = await ctx.Menu("Welcome, great one. How may I be of service?",
+            new[] { "Shadow Stats", "Shadow Vitality", "Shadow Mana" });
+
+        if (choice == 1) await ShadowStats(ctx);
+        else if (choice == 2) await ShadowPool(ctx, vitality: true);
+        else if (choice == 3) await ShadowPool(ctx, vitality: false);
+    }
+
+    private static async Task ShadowStats(NpcContext ctx)
+    {
+        if (ctx.Exp < StatCost)
+        { await ctx.Say($"You do not understand enough of your true nature to unleash your potential any further. Please return when you possess at least {StatCost:N0} experience."); return; }
+
+        var opts = new List<(string Label, int Base, Action<int> Raise)>();
+        if (ctx.Might < StatCap) opts.Add(("Might", ctx.Might, ctx.RaiseMight));
+        if (ctx.Grace < StatCap) opts.Add(("Grace", ctx.Grace, ctx.RaiseGrace));
+        if (ctx.Will  < StatCap) opts.Add(("Will",  ctx.Will,  ctx.RaiseWill));
+
+        if (opts.Count == 0)
+        { await ctx.Say("There is nothing more I can do for you. Perhaps you can find another who can guide you further."); return; }
+
+        int pick = await ctx.Menu("Which aspect of your potential do you seek to unleash?", opts.Select(o => o.Label).ToList());
+        if (pick == 0) return;
+        var (label, baseVal, raise) = opts[pick - 1];
+
+        int maxShadows = Math.Min((int)(ctx.Exp / StatCost), StatCap - baseVal);
+        if (maxShadows <= 0)
+        { await ctx.Say("It is impossible to exceed one's own potential."); return; }
+
+        string? input = await ctx.Input(
+            $"Your natural {label} is {baseVal}.\n\nYou can unleash your shadow potential up to {maxShadows} times.\n\nHow many times do you choose?");
+        if (!int.TryParse(input, out int count) || count <= 0) return;
+        if (count > maxShadows) { await ctx.Say("It is impossible to exceed one's own potential."); return; }
+
+        int newVal = baseVal + count;
+        uint cost = (uint)count * StatCost;
+        int confirm = await ctx.Menu(
+            $"Your {label} will permanently increase to {newVal}.\n\n{cost:N0} experience will be irrevocably sacrificed.\n\nAre you sure?",
+            new[] { "Yes", "No" });
+        if (confirm != 1) return;
+
+        if (!ctx.SpendExp(cost)) { await ctx.Say("It is impossible to exceed one's own potential."); return; }
+        raise(count);
+        await ctx.Say("It is done.");
+    }
+
+    /// <summary>RTK <c>_getVitaOrManaCost</c>: cost of the NEXT point of pool starting from <paramref name="currentValue"/>,
+    /// statIndex 1=Vitality/2=Mana (folded into the interval elsewhere — the divisor here just mirrors the source).</summary>
+    private static uint PoolCost(uint currentValue, int statIndex)
+    {
+        long calculated = (long)currentValue * statIndex / 20_000 * 2_000_000 * ExpSellFactor2 + MinPoolCost;
+        return (uint)Math.Max(MinPoolCost, calculated);
+    }
+
+    private static async Task ShadowPool(NpcContext ctx, bool vitality)
+    {
+        int statIndex = vitality ? 1 : 2;
+        uint interval = (uint)(100 / statIndex);              // 100 per step for Vitality, 50 for Mana
+        uint current = vitality ? ctx.MaxHp : ctx.MaxMp;
+        string label = vitality ? "Vitality" : "Mana";
+        bool minor = ctx.Level < 99;
+        uint cap = (uint)(10000 / statIndex);                 // interim cap while not yet level 99
+
+        // Walk forward from the current pool, pricing each successive point, to find how many the player's
+        // CURRENT banked exp can afford right now (escalating marginal cost — RTK's own simulation loop).
+        long exp = ctx.Exp;
+        uint val = current;
+        int possible = 0;
+        while (exp > 0)
+        {
+            uint next = val + interval;
+            if (minor && next > cap) break;
+            uint cost = PoolCost(val, statIndex);
+            if (exp >= cost) possible++;
+            exp -= cost;
+            val = next;
+        }
+
+        if (possible < 1)
+        {
+            if (minor && cap - current < interval)
+            { await ctx.Say("You have reached your limit for now, young one. Return to me when you have achieved the final insight."); return; }
+            await ctx.Say($"You do not understand enough of your true nature to unleash your potential any further. Please return when you possess at least {PoolCost(current, statIndex):N0} experience.");
+            return;
+        }
+
+        string? input = await ctx.Input(
+            $"Your natural {label} is {current:N0}.\n\nYou can unleash your shadow potential up to {possible} times.\n\nHow many times do you choose?");
+        if (!int.TryParse(input, out int count) || count <= 0) return;
+        if (count > possible) { await ctx.Say("It is impossible to exceed one's own potential."); return; }
+
+        uint expCost = 0; uint newVal = current;
+        for (int i = 0; i < count; i++) { expCost += PoolCost(newVal, statIndex); newVal += interval; }
+
+        int confirm = await ctx.Menu(
+            $"Your {label} will permanently increase to {newVal:N0}.\n\n{expCost:N0} experience will be irrevocably sacrificed.\n\nAre you sure?",
+            new[] { "Yes", "No" });
+        if (confirm != 1) return;
+
+        if (!ctx.SpendExp(expCost)) { await ctx.Say("It is impossible to exceed one's own potential."); return; }
+        if (vitality) ctx.RaiseMaxHp(newVal - current); else ctx.RaiseMaxMp(newVal - current);
+        await ctx.Say("It is done.");
+    }
+}
+
+/// <summary>The Chapel (RTK NPCs/Common/chapel_npc.lua — "Lotus"/"Peach"/"Fen" in Kugnae/Buya/Nagnang): Buy/Sell
+/// (its <see cref="Shops"/> catalogue — love/cooked_fish/rose_petals, matching RTK's own buyItems) plus the
+/// marriage feature set. <b>Buy Engagement Ring</b> grants the companion spell "propose" (see
+/// <c>Session.CastPropose</c> — cast it near your beloved, who must already be holding a ring you gave them,
+/// to send the accept/decline prompt). <b>Break Off Engagement</b>/<b>Marriage</b>/<b>Divorce</b> are
+/// conditionally shown per the player's own engagement/marriage state, mirroring the lua's own menu gating
+/// (both Break/Marriage show for EITHER side of an engagement — Marriage itself then blocks the proposer
+/// with a message, matching RTK's "only the proposee starts the ceremony" rule). NOT ported: RTK's
+/// <c>Config.shotgunWeddingEnabled</c> (no config system here — the 3-day wait always applies) and
+/// <c>Config.bossDropSalesEnabled</c> (Sell always shows nothing extra, matching the lua's own "else return
+/// {}" branch).</summary>
+public sealed class ChapelAbility : INpcAbility
+{
+    public static readonly ChapelAbility Instance = new();
+
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ("Buy Engagement Ring", BuyRing);
+        if (ctx.IsEngaged)
+        {
+            yield return ("Break Off Engagement", BreakOffEngagement);
+            yield return ("Marriage", RunCeremony);
+        }
+        if (!string.IsNullOrEmpty(ctx.SpouseName)) yield return ("Divorce", Divorce);
+    }
+
+    private static async Task BuyRing(NpcContext ctx)
+    {
+        if (ctx.RingWaitSeconds > 0)
+        { await ctx.Say("Whoa! Weren't you just here? Let your heart cool a bit from your last love."); return; }
+        if (ctx.IsEngaged || !string.IsNullOrEmpty(ctx.SpouseName))
+        { await ctx.Say("Whoa! Your heart is already committed to someone else."); return; }
+
+        int c1 = await ctx.Menu("Have you met one you hope to one day marry?",
+            new[] { "Yes, I am very much in love!", "You mean I'm expected to LOVE them?" });
+        if (c1 != 1) { await ctx.Say("Come back when your heart is ready."); return; }
+
+        int price = Content.ItemByKey("engagement_ring")?.BuyPrice ?? 4000;
+        int c2 = await ctx.Menu($"The engagement ring will cost you {price} gold. Do you wish to buy one?",
+            new[] { "No price is too high for my love.", "That much?!? Forget it!" });
+        if (c2 != 1) { await ctx.Say("Come back when your heart is ready."); return; }
+
+        if (ctx.Coins < (uint)price)
+        { await ctx.Say("Come back when you can afford to make the commitment."); return; }
+
+        ctx.SpendGold((uint)price);
+        ctx.GiveItem("engagement_ring", 1);
+        var propose = Content.SpellByKey("propose");
+        if (propose is not null) ctx.LearnSpell(propose);
+        ctx.SetRingCooldown(86400);   // RTK: 24h before another ring
+        await ctx.Say("To propose, cast this spell near your beloved. Then follow the directions. Make sure you have your ring with you!");
+    }
+
+    private static async Task BreakOffEngagement(NpcContext ctx)
+    {
+        await ctx.Say("How sad this is necessary. At least you reached this decision before marriage.");
+        int c = await ctx.Menu("Are you sure you want to end the engagement?",
+            new[] { "Yes, it is necessary (You will lose some XP)", "No, I need to consider further." });
+        if (c != 1) { await ctx.Say("I hope you can salvage your relationship."); return; }
+
+        uint penalty = ctx.MaxMp * 1000;   // RTK: player.baseMagic * 1000
+        ctx.SpendExp(Math.Min(ctx.Exp, penalty));
+        ctx.BreakEngagement();
+        await ctx.Say("It is done.");
+    }
+
+    private static async Task RunCeremony(NpcContext ctx)
+    {
+        if (ctx.MarriageWaitSeconds > 0)
+        { await ctx.Say("You have engaged too recently. Let your hearts settle a while longer."); return; }
+        if (!ctx.IsProposee)
+        { await ctx.Say("The proposee should start the marriage ceremony."); return; }
+
+        int confirm = await ctx.Menu("Are you certain you wish to devote yourself to this man or woman for life?",
+            new[] { "Yes", "No" });
+        if (confirm != 1) { await ctx.Say("Come back when you are firm in your resolve to marry."); return; }
+
+        string? result = await ctx.Marry();
+        if (!string.IsNullOrEmpty(result)) await ctx.Say(result);
+    }
+
+    private static async Task Divorce(NpcContext ctx)
+    {
+        await ctx.Say("Oh no! You made a horrible mistake!", "However, I can help you get that divorce you want.");
+        uint expCost = ctx.MaxHp * 2550;   // RTK: player.baseHealth * 2550
+        int choice = await ctx.Menu($"It will cost {expCost:N0} experience. Are you sure you want this divorce?",
+            new[] { "Yes", "No" });
+        if (choice != 1)
+        { await ctx.Say("Patience and love will save your marriage.\n\nDivorce is not something to take lightly."); return; }
+
+        if (ctx.Exp >= expCost)
+        {
+            ctx.SpendExp(expCost);
+            ctx.Divorce();
+            await ctx.Say("You are now divorced.");
+            return;
+        }
+
+        await ctx.Say("Hmmm.. you don't have the experience to divorce, but there is something else you can offer.");
+        const uint vitaPenalty = 8000, manaPenalty = 4000;
+        int c2 = await ctx.Menu("Perhaps some physical suffering would be sufficient?",
+            new[] { $"Sacrifice {vitaPenalty} Vita", $"Sacrifice {manaPenalty} Mana", "I'd rather not." });
+        if (c2 != 1 && c2 != 2) return;
+
+        uint penalty = c2 == 1 ? vitaPenalty : manaPenalty;
+        string stat = c2 == 1 ? "Vita" : "Mana";
+        int confirm = await ctx.Menu($"It will cost you {penalty} base {stat} as a penalty. Continue?",
+            new[] { "Yes, do it", "No, nevermind" });
+        if (confirm != 1) return;
+
+        if (c2 == 1 && ctx.MaxHp < vitaPenalty)
+        { await ctx.Say("You need to gain more experience in your health before you can make this sacrifice."); return; }
+        if (c2 == 2 && ctx.MaxMp < manaPenalty)
+        { await ctx.Say("You need to gain more experience in your magic before you can make this sacrifice."); return; }
+
+        if (c2 == 1) ctx.LowerMaxHp(penalty); else ctx.LowerMaxMp(penalty);
+        ctx.Divorce();
+        await ctx.Say("You are now divorced.");
     }
 }
 

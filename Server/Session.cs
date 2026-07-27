@@ -52,6 +52,28 @@ public sealed class Session
         int.TryParse(Environment.GetEnvironmentVariable("NEXUS_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
     private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
 
+    // --- robust persistence (dirty-flag autosave, see MarkDirty/FlushNow) ---
+    // Bounds worst-case data loss on a hard server-process crash (OOM / kill / power loss, none of which
+    // can run the graceful-shutdown flush hook) to roughly AutoSaveMs, without rewriting the whole
+    // multi-KB character blob on every single mutation. A mutation site calls MarkDirty(); the session's
+    // own read-loop thread flushes it (FlushIfDue, race-free — mutations and the flush both run on this
+    // same thread) at most once per AutoSaveMs, and World's periodic sweep (AutoSaveLoop) catches an IDLE
+    // dirty player (one who mutated state, then stopped sending packets) on the same cadence.
+    // Internal (not private) so World.AutoSaveLoop ticks on the exact same cadence as this session's own
+    // FlushIfDue, instead of duplicating the env-var parsing and risking the two drifting apart.
+    internal static readonly int AutoSaveMs =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_AUTOSAVE_MS"), out var asv) && asv > 0 ? asv : 15_000;
+    private volatile bool _dirty;
+    private long _lastSaveAtMs;
+    // Set once this session has been superseded by a newer login for the same account (duplicate-login
+    // guard, see World.RegisterOnline/Session.KickForReplacement). Gates the read-loop's disconnect save
+    // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
+    private int _replaced;
+    // Serializes concurrent Save attempts for THIS session (the on-thread FlushIfDue vs. World's
+    // background sweep vs. a duplicate-login kick) — never held across a mutation, so it can't deadlock
+    // or stall the read loop.
+    private readonly object _saveGate = new();
+
     // --- client version, tagged by the port the connection arrived on (unified dual-client server) ---
     // 4.95 speaks the original protocol (local map files; incoming 0x06 = walk-sync). 5.33 streams
     // terrain from the server (incoming 0x05/0x06 = map-data requests -> reply 0x06). Rather than sniff
@@ -253,6 +275,8 @@ public sealed class Session
                 }
                 if (buf.Count > 0)
                     Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
+
+                FlushIfDue();   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
             }
         }
         catch (Exception e) { Log.Info($"!! {_remote} error: {e.Message}"); }
@@ -267,12 +291,16 @@ public sealed class Session
             // Leave the shared world: despawn us for the other players on our map. World mobs persist
             // (they belong to the map, not this session), so they keep wandering for whoever remains.
             if (_enteredWorld) _world.LeaveMap(this, _char.Map);
-            // Persist the last state (position/stats) only for a session that actually entered the
-            // world. The login-channel session never populates _char, so saving it would clobber the
-            // real record with defaults.
-            if (_enteredWorld)
+            if (_enteredWorld) _world.Unregister(UserKey, this);
+            // Persist the last state (position/stats) only for a session that actually entered the world
+            // AND wasn't superseded by a newer login for the same account (KickForReplacement already
+            // flushed the freshest state; saving again here from this now-stale session would clobber it —
+            // see the duplicate-login guard, World.RegisterOnline). The login-channel session never
+            // populates _char, so saving it would clobber the real record with defaults.
+            if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
             {
-                _store.Save(_char);
+                _dirty = true;
+                FlushNow();
                 Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
             }
             CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
@@ -405,6 +433,15 @@ public sealed class Session
             // a live 4.95 capture, so it's wired defensively (bad/garbage bytes just fail the name lookup —
             // no risky reply is ever sent back). "!party <name>" is the confirmed-safe primary entry point.
             case 0x2E:                    HandlePartyInvite(dec); break;
+            // 0x4A = RTK's exchange sub-protocol (clif_parse_exchange). Only sub-type 0 ("initiate exchange
+            // with this target id") is handled — the click that opens a trade from another player's profile
+            // window (§11l); RTK's other sub-types (1-5) belong to its real trade WINDOW, which this server
+            // doesn't render (dialogs drive the rest instead). Like 0x2E, this is a real opcode 4.95 has
+            // been seen sending before, not a speculative wiring.
+            case 0x4A:                    HandleExchangeRequest(dec); break;
+            // 0x3F = world-map click / ESC reply (§11m). LIVE-CONFIRMED 2026-07-26: body =
+            // mapId(u32BE) x(u16BE) y(u16BE) 00 -- RTK's case 0x3F map-change. See HandleWorldMapSelect.
+            case 0x3F:                    HandleWorldMapSelect(dec); break;
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
     }
@@ -497,6 +534,18 @@ public sealed class Session
             Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (NEXUS_ENFORCE_HANDOFF=0)");
         }
 
+        // Duplicate-login guard: if this account is already connected (stale client + a fresh reconnect
+        // after a network blip, or someone else with the password), force the OLD session out and flush it
+        // FIRST — otherwise its eventual disconnect save could clobber THIS session with stale data, since
+        // CharacterStore.Save is a blind last-write-wins upsert. Must run BEFORE _store.Load below so the
+        // kicked session's flush (if any) is visible to our own load.
+        _world.RegisterOnline(CharacterStore.Key(_user), this, out var oldSession);
+        if (oldSession is not null)
+        {
+            Log.Info($"   -> ARRIVAL: '{_user}' already online — kicking previous session");
+            oldSession.KickForReplacement();
+        }
+
         // Load the persisted character (created on the login channel, or saved at last logout).
         // Fall back to a fresh default spawn for an account we've never seen.
         var loaded = _store.Load(_user);
@@ -529,7 +578,7 @@ public sealed class Session
         //   0x05 = YOUR entity id (binds camera/input to the self player)  <-- the missing piece
         //   0x15 = enter-map (loads Maps\TK<mapId>.map), 0x04 = coords, 0x33 = our appearance
         SendMap(0x1E, _gameInc++, new byte[] { 0x06, 0x00, 0x00 }, "ack(0x1E)");
-        SendMap(0x20, _gameInc++, new byte[] { 0x10, 0x32 }, "time(0x20)");
+        { var (h, y) = _world.Time; SendTime(h, y); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
         Log.Info("   -> mapinfo(0x15)");
@@ -537,8 +586,10 @@ public sealed class Session
         SendSelfLook();
         SendStats();
         PlayMapMusic(_char.Map);   // 0x19: start this map's background track — SendWorldEntry() had this, ARRIVAL didn't
+        SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
+        SendSound(412, _char.Id);  // "successfully logging in" sfx, confirmed live 2026-07-27
 
-        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 0x19 music ==");
+        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 0x19 music + 412 login sfx ==");
 
         // Join the shared world: register on this map, draw everyone/everything already here for us, and
         // let EnterMap broadcast US to them. From now on peers see our moves/speech and we see theirs.
@@ -548,6 +599,8 @@ public sealed class Session
         foreach (var gi in _world.ItemsOn(_char.Map)) ShowGroundItem(gi);  // floor items (0x16)
         RefreshInventory();                       // fill the bag + equipment windows (0x0F / 0x37)
         RefreshSpells();                          // fill the spell/skill book (0x17) with learned spells
+        int unreadMail = Mail.UnreadCount(_char.Name);   // RTK's own reward-mail flow always nudges "please visit your post office" — this is our login-time equivalent
+        if (unreadMail > 0) SendMiniText($"You have {unreadMail} unread letter{(unreadMail == 1 ? "" : "s")}. Try !mail.");
         Log.Info($"   == world join: map {_char.Map} has {peers.Length} other player(s), {mobs.Length} mob(s) ==");
     }
 
@@ -690,7 +743,7 @@ public sealed class Session
         Log.Info($"   == WORLD ENTRY burst for '{_char.Name}' (map={_char.Map} @ {_char.X},{_char.Y}) ==");
 
         SendMap(0x1E, 0, new byte[] { 0x06, 0x00 }, "ack(0x1E)");
-        SendMap(0x20, 3, new byte[] { 0x00, 0x00 }, "time(0x20)");
+        { var (h, y) = _world.Time; SendMap(0x20, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232);
         Log.Info("   -> mapinfo(0x15)");
@@ -699,6 +752,7 @@ public sealed class Session
         SendXy();
         SendMap(0x22, 3, Array.Empty<byte>(), "map-done(0x22)");
         PlayMapMusic(_char.Map);   // 0x19: start this map's background track
+        SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
 
         Log.Info("   == burst sent; watching for client packets (walk/request = progress, disconnect = a packet was rejected) ==");
     }
@@ -834,6 +888,21 @@ public sealed class Session
         Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
     }
 
+    // "!dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n
+    // and redraws, so we can catalogue which palette index renders as which visible color on THIS 4.95 client
+    // (the look-lab confirmed 16/32/64/128/255 recolor and 0..8 stay base, but 9..31 — the range RTK's team
+    // colors live in — was never swept). Wear an armor/coat first, or there's nothing to recolor. "!dye" with
+    // no number resets to 0 (undyed). Feeds the real color values back into WarPaintAbility's team table.
+    private void DyeProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        byte n = 0;
+        if (parts.Length > 1) byte.TryParse(parts[1], out n);
+        SetArmorColor(n);
+        SendMiniText($"dye = {n}" + (HasVisibleArmor ? "" : "  (no armor/coat worn — nothing to recolor)"), type: 3);
+        Log.Info($"   -> DYE probe: appearance[4] = {n}");
+    }
+
     // "!hp <cur> <max>" — send stats with HP=cur, maxHP=max (and the same for MP) to PIN the maxHP/maxMP
     // offsets: if [5]/[9] are really maxHP/maxMP, the HP/MP bar fill becomes cur/max (e.g. 100/1000 = 10%
     // full) and any "cur/max" text shows those numbers. If the bar stays full, the offset is wrong.
@@ -862,10 +931,12 @@ public sealed class Session
     {
         // 4.95 type-0 appearance layout (decoded via the look-lab sweeps):
         //   [0]=body/sex(0=M,1=F)  [1]=form/state(0=normal; 1 ghost, 3 mount, 5 invisible-spell)
-        //   [2]=face  [3]=armor/coat  [4]=? (no visible change 0..8)  [5]=weapon  [6]=shield
+        //   [2]=face  [3]=armor/coat  [4]=armor dye/palette index (0..8 all render as base color; 16/32/64/
+        //   128/255 visibly recolor it, LIVE-confirmed 2026-07-27 -- exact mapping not catalogued, hardcoded
+        //   0 for now)  [5]=weapon  [6]=shield
         // NOTE the old code put "Hair" in [1] = the FORM byte — that's what blanked the character.
         //   ... [5]=weapon (Honor sword/Flame blade/…), [6]=shield
-        var app = new byte[] { (byte)_char.Sex, MountForm(), (byte)_char.Face, (byte)_char.Armor, 0, WeaponLook(), ShieldLook() };
+        var app = new byte[] { (byte)_char.Sex, MountForm(), (byte)_char.Face, (byte)_char.Armor, _char.ArmorColor, WeaponLook(), ShieldLook() };
         SendLook(_char.Id, _char.X, _char.Y, dir: _facing, app, renderKind: 1, _char.Name, "self(0x33)");
     }
 
@@ -877,6 +948,25 @@ public sealed class Session
     // 0 = normal human. Dead outranks mounted — a horse doesn't survive its rider's death. Other documented
     // values (5 invisible-spell) aren't driven from here.
     private byte MountForm() => _char.Hp == 0 ? (byte)1 : (_char.Mounted ? (byte)3 : (byte)0);
+
+    /// <summary>Redraw self + broadcast to every co-located peer after an appearance change (equip/unequip,
+    /// mount/dismount, ghost/revive, morph, gender). RE'd root cause (2026-07-27) of the "abandoned red
+    /// triangle nametag" litter bug: a peer's client renders us via its own 0x33 handler (0x44fef0 ->
+    /// entity factory 0x44d7d0), which is SUPPOSED to look up our existing entity by id and destroy it
+    /// before building the new one — but that destroy-before-create branch doesn't reliably fire for a
+    /// bare re-send of 0x33 with an unchanged id (unlike a real 0x0E despawn, which walks a distinct,
+    /// always-thorough teardown path — confirmed by disassembling both `0x44da40`/`0x44d9f0` destroy
+    /// helpers). When it's skipped, the OLD entity (and its floating nameplate marker) is orphaned
+    /// alongside the new one — exactly the "walk away and back" repro, since leaving view fully despawns
+    /// (0x0E) before anything re-spawns. Fix: force the proven-reliable despawn ourselves before every
+    /// peer redraw, instead of trusting the client to replace in place. Self's own view isn't affected —
+    /// SendSelfLook updates the persistent self entity directly rather than destroying/recreating it.</summary>
+    private void RefreshAppearance()
+    {
+        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
+        SendSelfLook();
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+    }
 
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
     /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
@@ -890,12 +980,28 @@ public sealed class Session
         return e is null ? none : (byte)(Content.ItemById(e.ItemId)?.Look ?? 0);
     }
 
-    // The swing sfx of the weapon currently in hand (RTK ItmSound). 0 if unarmed or the weapon has no sound.
+    // The swing sfx of the weapon currently in hand, by weapon CATEGORY (see IsStaffWeapon) rather than
+    // RTK's own ItmSound field. That field turned out to be nearly useless for this: 331 ("most swords") is
+    // shared not just by Maxcaliber/Wooden Saber/Novice Sword but by EVERY staff too (augury_staff,
+    // staff_of_defense, wand_of_fire, the whole ju_jak/hsiao_chu/staff_of_chi families, …) — checked directly
+    // against Items.csv. Remapping by that field (331 -> 002.wav) therefore made every weapon of every
+    // category share one swing sound, which is exactly the "everything sounds like Maxcaliber" bug reported
+    // live 2026-07-27. 0 if unarmed or the weapon has no sound.
     private int EquippedWeaponSound()
     {
         var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == 3);
-        return e is null ? 0 : (Content.ItemById(e.ItemId)?.Sound ?? 0);
+        var def = e is null ? null : Content.ItemById(e.ItemId);
+        if (def is null) return 0;
+        return IsStaffWeapon(def.Key) ? 335 : 2;   // both confirmed live 2026-07-27
     }
+
+    // Staff/wand/rod-category weapons swing differently (335.wav, confirmed live via a staff) than blades
+    // (002.wav, confirmed live via Maxcaliber/Spike). Every Items.csv row actually named "staff" or "wand"
+    // (augury_staff, staff_of_power, wand_of_fire, the ju_jak/hsiao_chu/staff_of_chi upgrade chains, …) is a
+    // genuine caster weapon, so a plain identifier match is reliable here — unlike ItmSound (see
+    // EquippedWeaponSound's doc), Items.csv actually differentiates these by name consistently.
+    private static bool IsStaffWeapon(string key) =>
+        key.Contains("staff", StringComparison.OrdinalIgnoreCase) || key.Contains("wand", StringComparison.OrdinalIgnoreCase);
 
     // General 0x33 "create/look" for ANY entity (self or a test dummy). Type=0 = the 7-byte player
     // appearance form (parser 0x436120). renderKind (byte after the 7 appearance bytes) MUST be 1/2/3
@@ -1053,10 +1159,10 @@ public sealed class Session
 
     // Show the result of a hit that already resolved in the world: draw the over-head HP bar for everyone on the
     // map, and on death run the death beat (empty bar + delayed despawn). `mob` is read for its remaining HP%.
-    private void ShowDamageResult(uint mobId, Mob mob, bool died)
+    private void ShowDamageResult(uint mobId, Mob mob, bool died, byte critical = 0, byte hitSound = 0)
     {
         byte pct = died ? (byte)0 : HpPercent(mob);
-        _world.Broadcast(_char.Map, p => p.DamageOver(mobId, pct, HitCritByte));
+        _world.Broadcast(_char.Map, p => p.DamageOver(mobId, pct, critical != 0 ? critical : HitCritByte, hitSound));
         if (died) ScheduleDespawn(_char.Map, mobId, DeathDespawnMs);
     }
 
@@ -1073,16 +1179,38 @@ public sealed class Session
     // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
     // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
     // mob takes, just aimed at our own entity id) — dying (Hp hits 0) triggers Die() below.
-    public void ApplyMobHit(Mob mob, int dmg)
+    public void ApplyMobHit(Mob mob, int rawDmg)
     {
         if (IsDead) return;   // already down — don't re-trigger Die() while the revive delay is pending
+
+        // RTK hitCritChance.lua: mobs DO roll a crit chance, but real swingDamage.lua's _getMobSwingDamage
+        // never multiplies mob damage by it — only a PLAYER's own swing gets the x3 (see
+        // Combat.RollCritChance's doc). We still roll it here purely for the wire-visual crit byte below.
+        int critChance = Combat.RollCritChance(attackerIsMob: true,
+            atkGrace: 0 /* unused on the mob-attacker branch */, atkLevel: mob.Level, atkHit: mob.Hit,
+            tgtGrace: _char.Grace + Totals().grace, tgtLevel: _char.Level);
+
+        // RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is signed and
+        // LOWER is better (armor SUBTRACTS from it, same convention as SendStats/EffMight elsewhere), so a
+        // well-armored (very negative effective AC) player takes as little as 20% of the raw swing, while a
+        // naked/positive-AC player takes MORE than raw — armor can't fully negate a hit (-80 floor = min 20%).
+        int effectiveAc = _char.Ac - Totals().armor;
+        int dmg = Combat.ApplyArmor(rawDmg, effectiveAc, floor: -80);
+
+        // Positional "attacked from behind while both face the same way" 2x (RTK swingDamage.lua's
+        // side==target.side rule; applied AFTER armor, matching the Lua's own order). NOT ported: the
+        // item-flag-gated backstab/flank abilities a handful of legendary weapons grant (see Combat.cs).
+        bool behind = Combat.IsBehindTarget(mob.Dir, _facing, mob.X, mob.Y, _char.X, _char.Y);
+        if (behind) dmg *= 2;
+
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         // RTK clif_deductarmor: taking a hit rolls durability loss on every worn slot (not just armor —
         // the reference implementation checks the weapon slot here too).
         foreach (var worn in _char.Equipment.ToArray()) DeductDura(worn);
         SendStats();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, PlayerHpPercent(), HitCritByte));
-        Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
+        byte critByte = critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, PlayerHpPercent(), critByte));
+        Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
     }
 
@@ -1094,10 +1222,9 @@ public sealed class Session
     private void Die()
     {
         Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
-        SendMessage("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
+        SendMiniText("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
         _char.Mounted = false;                                            // a horse doesn't carry a ghost
-        SendSelfLook();                                                   // redraw self as a ghost
-        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);   // and for everyone watching
+        RefreshAppearance();                                              // redraw self as a ghost + everyone watching
     }
 
     // Leave ghost state: full heal (gear/buffs included) + warp to (map,x,y). Used by Silver Thread to
@@ -1109,7 +1236,7 @@ public sealed class Session
         if (Content.Maps.TryGetValue(map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, x, y, mi.Name);
         else SendSelfLook();   // fallback: just heal in place if the map isn't loaded
         SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
-        SendMessage(arrivalMsg);
+        SendMiniText(arrivalMsg);
         Log.Info($"   -> REVIVED: {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
     }
 
@@ -1412,6 +1539,11 @@ public sealed class Session
 
         _char.X = (ushort)nx;
         _char.Y = (ushort)ny;
+        MarkDirty();   // position, unlike most mutations, is only ever picked up by the autosave/disconnect flush
+
+        // Bladestorm is the one trap kind a PLAYER can trigger (see Content.IsBladestormTrap) — the hazard
+        // family (dart/snare/…) stays mob-only, checked separately in World.Tick.
+        _world.CheckPlayerTrapTrigger(this, _char.Map, (ushort)nx, (ushort)ny, (byte)(dir & 3));
 
         // Shared world: everyone ELSE on this map watches us step (0x0C animates our entity to the new
         // tile on their clients). Our OWN client is handled by the self-walk modes below (mode 7 stays
@@ -1571,9 +1703,16 @@ public sealed class Session
 
     // 0x20 = the 'o' / Open key. In NexusTK this TOGGLES the door object I'm facing between its closed and open
     // graphic in place (RTK open.lua `openDoors`: setObject(m,x,y, closed<->open) — e.g. Buya door 342<->364;
-    // some doors are 3 tiles wide). It is purely COSMETIC (passability is untouched — collision is the ground
-    // pass flag only) and shared world state: everyone on the map is told to redraw. Entering a building is
-    // done by WALKING onto its warp tile (HandleWalk warp-precedence) — NOT by 'o', so 'o' never warps.
+    // some doors are 3 tiles wide). The graphic swap itself is shared world state (everyone on the map is told
+    // to redraw); whether it actually changes PASSABILITY is downstream, via ObjectFlags reading the door's
+    // (now-mutated) object id off the shared map — CORRECTED 2026-07-26: an older version of this comment said
+    // "collision is the ground pass flag only," which predates the SObj object-wall layer (see
+    // MapData.BlockedMove) that later made object graphics collision-relevant too. Some RTK doors have no
+    // open-graphic pair defined anywhere in openDoors at all (nothing to toggle to), so those are configured
+    // Doors.ForceOpen instead of faking a swap — see Server/Doors.cs. Locking is a separate, optional gate in
+    // front of the toggle (Doors config: Locked + an optional required item Key, RTK's own iron_key precedent)
+    // — checked here before the swap runs. Entering a building is done by WALKING onto its warp tile
+    // (HandleWalk warp-precedence) — NOT by 'o', so 'o' never warps.
     //
     // Rendering the swap uses the server->client 0x06 CELL-PATCH packet (client handler 0x44fb90, RE'd via disx):
     //   body = startX(u16BE) startY(u16BE) width(u8) height(u8) then width*height cells, each = ground(u16BE)
@@ -1588,6 +1727,24 @@ public sealed class Session
         int fx = _char.X + dx, fy = _char.Y + dy;
         var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
         if (fx < 0 || fy < 0 || fx >= _char.MapXs || fy >= _char.MapYs || md is null) return;
+
+        // Locked doors (Doors config): gate the toggle on a key before falling through to the normal RTK
+        // open/close swap below. A configured-but-unlocked or not-configured-at-all tile just toggles as usual.
+        var cfg = Doors.For(_char.Map, (ushort)fx, (ushort)fy);
+        if (cfg is { Locked: true } && !Doors.IsUnlocked(_char.Map, (ushort)fx, (ushort)fy))
+        {
+            if (cfg.Key is not null && CountItem(cfg.Key) > 0)
+            {
+                if (cfg.ConsumeKey) TakeItem(cfg.Key, 1);
+                Doors.Unlock(_char.Map, (ushort)fx, (ushort)fy);
+                SendMiniText("You unlock the door.");
+            }
+            else
+            {
+                SendMiniText("The door is locked.");
+                return;
+            }
+        }
 
         ushort obj = md.Obj(fx, fy);
         var door = DoorToggle(obj);
@@ -1729,7 +1886,7 @@ public sealed class Session
             // !mount (a plain GM toggle), this one is tied to a real world "horse" mob (MobDef key "horse",
             // e.g. the wild horses roaming Buya/Horse Valley): mounting rides one away (despawns it) and
             // dismounting sets it back down in front of you.
-            if (_char.Hp == 0) SendMessage("Spirits can't do that.");
+            if (_char.Hp == 0) SendMiniText("Spirits can't do that.");
             else TryRideHorse();
         }
         else if (setting == 0x02)
@@ -1876,10 +2033,48 @@ public sealed class Session
         // ---- whisper/tell: a private line to one online player (RTK clif_parsewisp) ----
         if (text.StartsWith("!whisper ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[9..]); return; }
         if (text.StartsWith("!w ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[3..]); return; }
+        // "!ignore [add|remove] <name>" (RTK ignorelist_add/remove — blocks whispers both ways, see
+        // DoWhisper) / "!friend [add|remove] <name>" (no RTK equivalent — see Character.Friends' doc).
+        if (text.StartsWith("!ignore", StringComparison.OrdinalIgnoreCase)) { HandleIgnoreCommand(text); return; }
+        if (text.StartsWith("!friend", StringComparison.OrdinalIgnoreCase)) { HandleFriendCommand(text); return; }
+        // "!mail" — RTK nmail (see HandleMailCommand's doc for why compose is chat-command-only).
+        if (text.StartsWith("!mail", StringComparison.OrdinalIgnoreCase)) { HandleMailCommand(text); return; }
         // ---- party (RTK clif_addgroup/clif_leavegroup, §11) + trade (RTK clif_handitem &c., §11) ----
         if (text.StartsWith("!leaveparty", StringComparison.OrdinalIgnoreCase)) { LeaveParty(); return; }
         if (text.StartsWith("!party", StringComparison.OrdinalIgnoreCase)) { HandlePartyCommand(text); return; }  // "!party <name>" invite/kick, "!party" list
         if (text.StartsWith("!trade", StringComparison.OrdinalIgnoreCase)) { HandleTradeCommand(text); return; } // "!trade <name>" open the trade menu
+        if (text.StartsWith("!travel", StringComparison.OrdinalIgnoreCase)) { _ = RunWorldMapMenuAsync(); return; }   // dialog fallback for §11m if the native screen ever regresses
+        // "!wmpos <i> <x> <y>" -- place destination i's clickable dot at field10 pixel (x,y) and re-open the
+        // map so you can eyeball it against the real town on the map. i is the index in WorldDests (0=Kugnae,
+        // 1=Buya, 2=Mythic Nexus, 3=Arctic Land, 4=KaMing's). "!wmpos" with no args lists the current
+        // positions so you can copy the final set back into WorldDotPos. See §11m.
+        if (text.StartsWith("!wmpos", StringComparison.OrdinalIgnoreCase))
+        {
+            var p = text["!wmpos".Length..].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length >= 3 && int.TryParse(p[0], out var wi) && int.TryParse(p[1], out var wx)
+                && int.TryParse(p[2], out var wy) && wi >= 0 && wi < WorldDotPos.Length)
+            {
+                WorldDotPos[wi] = (Math.Clamp(wx, 0, 639), Math.Clamp(wy, 0, 479));
+                SendMiniText($"{wi} {WorldDests[wi].Name} -> ({WorldDotPos[wi].X},{WorldDotPos[wi].Y})");
+                SendWorldMap("field10");
+            }
+            else
+            {
+                for (int k = 0; k < WorldDotPos.Length; k++)
+                    SendMiniText($"{k} {WorldDests[k].Name}: ({WorldDotPos[k].X},{WorldDotPos[k].Y})");
+            }
+            return;
+        }
+        // "!wmtest [name]" -- native world-map screen (§11m) with an explicit background name (defaults to
+        // field10 = "Map of the Kingdom", the overview world-map art. The framing bug that used to crash
+        // this is fixed; this stays as a way to try alternate backgrounds (field1, title, other fieldNN).
+        if (text.StartsWith("!wmtest", StringComparison.OrdinalIgnoreCase))
+        {
+            string bg = text.Length > "!wmtest".Length ? text["!wmtest".Length..].Trim() : "";
+            if (bg.Length == 0) bg = "field10";
+            SendWorldMap(bg);
+            return;
+        }
         // Real RTK typed chat commands (client-native, not our "!" debug prefix) — see speech.lua's /help list.
         if (text.StartsWith("/subpathchat ", StringComparison.OrdinalIgnoreCase)) { DoSubpathChat(text[13..].Trim()); return; }
         if (text.StartsWith("/sp ", StringComparison.OrdinalIgnoreCase)) { DoSubpathChat(text[4..].Trim()); return; }
@@ -1887,6 +2082,7 @@ public sealed class Session
         if (text.StartsWith("!maps", StringComparison.OrdinalIgnoreCase)) { ListMaps(text); return; }    // list/fuzzy-search maps
         if (text.StartsWith("!mobs", StringComparison.OrdinalIgnoreCase)) { ListMobs(text); return; }    // list/fuzzy-search mobs (BEFORE !mob*)
         if (text.StartsWith("!summon", StringComparison.OrdinalIgnoreCase)) { Summon(text); return; }    // spawn a named mob from the registry
+        if (text.StartsWith("!reload", StringComparison.OrdinalIgnoreCase)) { ReloadContent(); return; } // hot-reload file-backed content (no restart)
         // ---- items (check !items before !item) ----
         if (text.StartsWith("!icons", StringComparison.OrdinalIgnoreCase)) { IconSweep(text); return; }  // fill bag with client Item.epf frames N..N+26 (icon RE)
         if (text.StartsWith("!items", StringComparison.OrdinalIgnoreCase)) { ListItems(text); return; }  // list/fuzzy-search the item registry
@@ -1907,8 +2103,12 @@ public sealed class Session
         if (text.StartsWith("!forgetspells", StringComparison.OrdinalIgnoreCase)) { ForgetSpells(); return; }    // clear the spellbook
         if (text.StartsWith("!align", StringComparison.OrdinalIgnoreCase)) { SetAlignment(text); return; }        // set sub-alignment (Kwisin/Mingken/Ohaeng) for !spells
         if (text.StartsWith("!swingsnd", StringComparison.OrdinalIgnoreCase)) { SetSwingSound(text); return; }  // set + audition the melee swing sfx id
+        if (text.StartsWith("!fistsnd", StringComparison.OrdinalIgnoreCase)) { SetFistSound(text); return; }  // set + audition the UNARMED swing sfx id
+        if (text.StartsWith("!hitsnd", StringComparison.OrdinalIgnoreCase)) { SetHitSound(text); return; }  // set + audition the on-connect impact sfx id (0x13 hitSound byte)
         if (text.StartsWith("!snd", StringComparison.OrdinalIgnoreCase)) { SoundProbe(text); return; }   // play raw client sound ids (calibrate the NexusTK.snd id space)
         if (text.StartsWith("!efx", StringComparison.OrdinalIgnoreCase)) { EffectProbe(text); return; }  // play raw Effect.tbl animation ids over self (calibrate the effect id space)
+        if (text.StartsWith("!mtx", StringComparison.OrdinalIgnoreCase)) { MiniTextProbe(text); return; }  // audition a raw SendMiniText type (0=wisp,3=mini/status,5=system,11=group,12=clan)
+        if (text.StartsWith("!weather", StringComparison.OrdinalIgnoreCase)) { WeatherProbe(text); return; }  // force this map's weather (0=clear,1=rain,2=snow) — UNVERIFIED wire format, see SendWeather's doc
         if (text.StartsWith("!hit", StringComparison.OrdinalIgnoreCase)) { HitProbe(text); return; }      // 0x13 over-head HP bar + hit anim on the faced mob (calibrate NEXUS_HIT_CRIT)
         if (text.StartsWith("!spawn", StringComparison.OrdinalIgnoreCase)) { SpawnCritters(text); return; } // squirrel/rabbit pack
         if (text.StartsWith("!sweep", StringComparison.OrdinalIgnoreCase)) { StatSweep(text); return; }
@@ -1918,11 +2118,17 @@ public sealed class Session
         if (text.StartsWith("!leg", StringComparison.OrdinalIgnoreCase)) { SendProfileReplay6x(); return; }   // exact 6.x 0x39 replay
         if (text.StartsWith("!self", StringComparison.OrdinalIgnoreCase)) { SendSelfProfile(); return; }        // native 0x39 builder
         if (text.StartsWith("!ckm", StringComparison.OrdinalIgnoreCase)) { SendClickMarker(); return; }             // 0x34 with marker strings
-        if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { SendClickProfile(_char.Id); return; }  // native 0x34 click-profile
+        if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { ClickProfileCmd(text); return; }  // native 0x34 click-profile: self, or "!click <name>" for another player
         if (text.StartsWith("!nat", StringComparison.OrdinalIgnoreCase)) { StatNation(text); return; }              // sweep nation id -> HUD name
         if (text.StartsWith("!totem", StringComparison.OrdinalIgnoreCase)) { StatTotem(text); return; }             // sweep totem id -> HUD name
+        if (text.StartsWith("!dye", StringComparison.OrdinalIgnoreCase)) { DyeProbe(text); return; }                // calibrate the war-paint dye: !dye <n> sets appearance[4]
         if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
+
+        // "A" (uppercase, exact) — remove ALL equipped items at once, same effect as clicking every worn
+        // slot's 0x1F unequip in a row. Case-sensitive so ordinary chat ("a", "aww", …) still speaks
+        // normally; nothing else in this client sends a bare capital letter as a message.
+        if (text == "A") { UnequipAll(); return; }
 
         // Real chat (not a ! command): everyone on the map hears it. Broadcast the over-head bubble (0x0D)
         // to all co-located players INCLUDING us, so we see our own bubble too. Prefix with who said it
@@ -1983,8 +2189,100 @@ public sealed class Session
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK's literal wording
 
+        // RTK clif_isignore: a whisper is blocked if EITHER side has the other on their ignore list — not
+        // just the recipient blocking the sender, but also the sender's own list (so you can't be pestered
+        // by someone you've muted even if THEY never muted you). canwhisper's real wording on failure.
+        if (IsIgnoring(target._char.Name) || target.IsIgnoring(_char.Name))
+        { SendLog("They cannot hear you right now."); return; }
+
         target.ReceiveWhisper(_char.Name, msg);
         SendMiniText($"{_char.Name}: {msg}", type: 0);   // sender's own echo — same line the receiver sees
+    }
+
+    // Case-insensitive membership check against THIS character's own ignore list (RTK strcmpi).
+    private bool IsIgnoring(string name) => _char.IgnoreList.Any(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    // "!ignore" (list) / "!ignore add <name>" / "!ignore remove <name>" — RTK's ignorelist_add/remove
+    // (clif.c:7523/7551), ported as a chat command rather than the raw 0x0D-sub-opcode client packet
+    // (clif_parseignore) since that's a UI-driven right-click action from a later client's context menu —
+    // no evidence the 4.95 client has it at all (same "chat command primary" precedent as !party).
+    private void HandleIgnoreCommand(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { ListNames("Ignoring", _char.IgnoreList); return; }
+        string sub = parts[1].ToLowerInvariant();
+        if ((sub is "add" or "remove") && parts.Length < 3)
+        { SendLog($"usage: !ignore {sub} <name>"); return; }
+
+        switch (sub)
+        {
+            case "add":
+                string addName = parts[2];
+                if (addName.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { SendLog("You can't ignore yourself."); return; }
+                if (IsIgnoring(addName)) { SendLog($"{addName} is already on your ignore list."); return; }
+                _char.IgnoreList.Add(addName);
+                SaveChar();
+                SendLog($"Ignoring {addName}.");
+                break;
+            case "remove":
+                string remName = parts[2];
+                int removed = _char.IgnoreList.RemoveAll(n => n.Equals(remName, StringComparison.OrdinalIgnoreCase));
+                if (removed == 0) { SendLog($"{remName} isn't on your ignore list."); return; }
+                SaveChar();
+                SendLog($"No longer ignoring {remName}.");
+                break;
+            default:
+                ListNames("Ignoring", _char.IgnoreList);
+                break;
+        }
+    }
+
+    // "!friend" (list, shows who's currently online) / "!friend add <name>" / "!friend remove <name>". No
+    // RTK equivalent exists at all (see Character.Friends' doc) — a saved name list plus an online check,
+    // nothing more; there's no cross-session login/logout notification, just a live lookup when listed.
+    private void HandleFriendCommand(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { ListFriends(); return; }
+        string sub = parts[1].ToLowerInvariant();
+        if ((sub is "add" or "remove") && parts.Length < 3)
+        { SendLog($"usage: !friend {sub} <name>"); return; }
+
+        switch (sub)
+        {
+            case "add":
+                string addName = parts[2];
+                if (addName.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { SendLog("You can't friend yourself."); return; }
+                if (_char.Friends.Any(n => n.Equals(addName, StringComparison.OrdinalIgnoreCase))) { SendLog($"{addName} is already on your friend list."); return; }
+                _char.Friends.Add(addName);
+                SaveChar();
+                SendLog($"Added {addName} to your friend list.");
+                break;
+            case "remove":
+                string remName = parts[2];
+                int removed = _char.Friends.RemoveAll(n => n.Equals(remName, StringComparison.OrdinalIgnoreCase));
+                if (removed == 0) { SendLog($"{remName} isn't on your friend list."); return; }
+                SaveChar();
+                SendLog($"Removed {remName} from your friend list.");
+                break;
+            default:
+                ListFriends();
+                break;
+        }
+    }
+
+    private void ListFriends()
+    {
+        if (_char.Friends.Count == 0) { SendLog("Your friend list is empty. Try: !friend add <name>"); return; }
+        var online = _char.Friends.Where(n => _world.FindPlayer(n) is not null).ToList();
+        ListNames("Friends", _char.Friends);
+        SendLog(online.Count == 0 ? "(none online right now)" : $"Online now: {string.Join(", ", online)}");
+    }
+
+    private void ListNames(string label, List<string> names)
+    {
+        if (names.Count == 0) { SendLog($"{label} list is empty."); return; }
+        SendLog($"{label}: {string.Join(", ", names)}");
     }
 
     /// <summary>Deliver a whisper's text to THIS session (the recipient), via the non-entity 0x0A channel
@@ -2097,20 +2395,41 @@ public sealed class Session
     // Distinct sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) — see HandleClickInfo.
     private static readonly Mob TradeVirtualNpc = new(0xFFFFFFFD, 0, 0, 0, "Trade", 1);
 
-    /// <summary>"!trade &lt;name&gt;" — the confirmed-safe trigger. RTK's real hand-item/hand-gold gesture
-    /// (opcodes 0x29/0x2A, face the target and press h/H) has never been seen in a 4.95 capture, so it isn't
-    /// wired as an opcode the way party's 0x2E is.</summary>
+    /// <summary>"!trade &lt;name&gt;" — a name-based fallback trigger for testing/manual use. The REAL
+    /// trigger is the "Exchange" button on another player's profile window (see HandleExchangeRequest,
+    /// opcode 0x4A), which addresses the target by id since the client already has it from the click.</summary>
     private void HandleTradeCommand(string text)
     {
         string name = text.Length > "!trade".Length ? text["!trade".Length..].Trim() : "";
         if (name.Length == 0) { SendLog("Trade with whom? Try: !trade <name>"); return; }
-        if (IsDead) { SendMiniText("Spirits can't do that."); return; }
-        if (_trade is not null) { SendMiniText("You are already trading."); return; }
-
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
+        TryStartTrade(target);
+    }
+
+    // 0x4A = RTK's exchange sub-protocol dispatch (clif_parse_exchange, clif.c:14647-14754): a type(u8)
+    // byte then per-type args. Only type 0 ("initiate", body: 00 targetId(u32BE)) is wired — that's the
+    // "Exchange" button click on a profile window (§11l), which is the only sub-message the client would
+    // ever send while THIS server is driving the rest of the negotiation through dialogs instead of RTK's
+    // real trade-window sub-opcodes (types 1-5: amount-ask, add-item, add-gold, quit, finish all belong to
+    // that window, which this server never opens). CONFIRMED wire-real: 4.95 has been captured actually
+    // sending 0x4A before (see docs §9.5), unlike the untested 0x29/0x2A hand-item/hand-gold gesture.
+    private void HandleExchangeRequest(byte[] dec)
+    {
+        if (dec.Length < 5 || dec[0] != 0) return;   // only "initiate" is handled; other sub-types are no-ops
+        uint targetId = (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]);
+        var target = _world.PlayerById(targetId);
+        if (target is not null) TryStartTrade(target);
+    }
+
+    /// <summary>Shared start-of-trade path for both triggers above: RTK's gates (alive, same map, not
+    /// already trading, target's FLAG_EXCHANGE on) then hands off to the dialog-driven negotiation.</summary>
+    private void TryStartTrade(Session target)
+    {
+        if (IsDead) { SendMiniText("Spirits can't do that."); return; }
+        if (_trade is not null) { SendMiniText("You are already trading."); return; }
         if (ReferenceEquals(target, this)) { SendMiniText("You can't trade with yourself..."); return; }
-        if (target.CharMap != CharMap) { SendLog($"{name} is nowhere to be found."); return; }
+        if (target.CharMap != CharMap) { SendMiniText("They have refused to exchange with you"); return; }
         if (target._trade is not null || target.IsDead || !target.WantsExchange)
         { SendMiniText("They have refused to exchange with you"); return; }   // RTK's literal wording
 
@@ -2278,12 +2597,16 @@ public sealed class Session
         switch (dec[0])
         {
             case 1: SendBoardList(); break;                                                  // Show Board
-            case 2: if (dec.Length >= 3) SendBoardPosts(U16(dec, 1)); break;                  // Show posts from board #
-            case 3: if (dec.Length >= 5) SendBoardReadPost(U16(dec, 1), U16(dec, 3)); break;  // Read post
-            case 4: HandleBoardMakePost(dec); break;                                          // Make post
-            case 5: if (dec.Length >= 5) HandleBoardDelete(U16(dec, 1), U16(dec, 3)); break;   // Delete post
-            // 6 (nmail) / 7 (GM postcolor) / 8 (special write) / 9 (nmail) aren't modelled — no nmail or
-            // GM-level concept exists in this server yet.
+            case 2: if (dec.Length >= 3) SendBoardPosts(U16(dec, 1)); break;                  // Show posts from board # (board 0 -> own mailbox)
+            case 3: if (dec.Length >= 5) SendBoardReadPost(U16(dec, 1), U16(dec, 3)); break;  // Read post (board 0 -> own mailbox)
+            case 4: HandleBoardMakePost(dec); break;                                          // Make post (board 0 rejected — see its own doc)
+            case 5: if (dec.Length >= 5) HandleBoardDelete(U16(dec, 1), U16(dec, 3)); break;   // Delete post (board 0 -> own mailbox)
+            case 9: SendBoardPosts(0); break;   // "Nmail": RTK's own case 9 is just boards_showposts(sd, 0) — open the mailbox
+            // 6 (nmail compose UI) / 7 (GM postcolor) / 8 (special write) aren't modelled: 6's real wire
+            // format for naming a RECIPIENT has no surviving source anywhere in this reference tree (see
+            // Mail.cs's doc) — compose mail with "!mail send <name> | <subject> | <body>" instead (same
+            // "chat command primary" precedent as !party/!ignore/!friend). 7/8 need a GM-level concept this
+            // server doesn't have.
         }
     }
 
@@ -2314,9 +2637,38 @@ public sealed class Session
     // postCount(u8) then per post [color(u8) postId(u16BE) nameLen(u8) name[...] month(u8) day(u8)
     // topicLen(u8) topic[...]], newest first. flags2=2/flags1=3 are RTK's literal values for "a normal
     // (non-nmail) board, always writable" — the only case we model (no GM/tutor/popup gating exists here).
-    // UNVERIFIED against a live capture.
+    // UNVERIFIED against a live capture. Board id 0 is the player's OWN mailbox (RTK case 9 == this same
+    // builder called with board 0 — see Mail.cs): "name" per post becomes the sender, and an unread letter's
+    // topic gets a "* " prefix so a native mailbox listing shows what's new without a separate flag byte.
     private void SendBoardPosts(int boardId)
     {
+        if (boardId == 0)
+        {
+            var inbox = Mail.InboxFor(_char.Name);
+            var d0 = new List<byte> { 2, 3 };
+            d0.AddRange(Be((ushort)0));
+            var mbn = Ascii("Mailbox");
+            d0.Add((byte)mbn.Length);
+            d0.AddRange(mbn);
+            d0.Add((byte)inbox.Count);
+            foreach (var m in inbox)
+            {
+                d0.Add(0);
+                d0.AddRange(Be((ushort)m.Position));
+                var sn = Ascii(m.Sender);
+                d0.Add((byte)sn.Length);
+                d0.AddRange(sn);
+                d0.Add(m.Month);
+                d0.Add(m.Day);
+                var topic = (m.IsRead ? "" : "* ") + m.Topic;
+                var tn0 = Ascii(topic);
+                d0.Add((byte)tn0.Length);
+                d0.AddRange(tn0);
+            }
+            SendMap(0x31, _gameInc++, d0.ToArray(), $"boardposts(0x31) mailbox n={inbox.Count}");
+            return;
+        }
+
         string name = Boards.Find(boardId)?.Name ?? "";
         var posts = Boards.PostsFor(boardId);
 
@@ -2344,9 +2696,13 @@ public sealed class Session
 
     // Sub-3 "Read post": type(u8=3) buttons(u8=3, always writable) nmailFlag(u8=0) postId(u16BE)
     // authorLen(u8) author[...] month(u8) day(u8) topicLen(u8) topic[...] bodyLen(u16BE) body[...].
-    // UNVERIFIED against a live capture.
+    // UNVERIFIED against a live capture. Board id 0 -> the mailbox: marks the letter read and auto-claims
+    // any attached parcel (see Mail.ClaimItem) the same way reading it via "!mail read" does, so a native
+    // mailbox UI and the chat-command fallback behave identically regardless of which one the player uses.
     private void SendBoardReadPost(int boardId, int postId)
     {
+        if (boardId == 0) { ReadMail(postId); return; }
+
         var post = Boards.Get(boardId, postId);
         if (post is null) { SendLog("That post no longer exists."); return; }
 
@@ -2369,11 +2725,13 @@ public sealed class Session
     // Sub-4 "Make post": board(u16BE) topicLen(u8) topic[...] bodyLen(u16BE) body[...]. RTK's own denial
     // wording ("Post must contain subject."/"...body.") is kept verbatim; confirmation text adapts RTK's
     // ("Your message has been posted.") to our SendLog channel since we don't reuse the raw system-message
-    // opcode (same reasoning as whisper delivery).
+    // opcode (same reasoning as whisper delivery). Board id 0 is rejected outright — see Mail.cs's doc on
+    // why composing mail natively isn't wired (no recipient field survives anywhere in the reference tree).
     private void HandleBoardMakePost(byte[] dec)
     {
         if (dec.Length < 4) return;
         int boardId = U16(dec, 1);
+        if (boardId == 0) { SendLog("Use \"!mail send <name> | <subject> | <body>\" to send mail."); return; }
         int topicLen = dec[3];
         if (4 + topicLen + 2 > dec.Length) return;
         string topic = Encoding.ASCII.GetString(dec, 4, topicLen);
@@ -2391,12 +2749,168 @@ public sealed class Session
     }
 
     // Sub-5 "Delete post": board(u16BE) postId(u16BE). RTK only lets a post's own author delete it here
-    // (the broader GM/tutor CAN_DEL grant isn't modelled).
+    // (the broader GM/tutor CAN_DEL grant isn't modelled). Board id 0 -> delete from your OWN mailbox
+    // (ownership there is "whose mailbox it's sitting in", not authorship — see Mail.Delete).
     private void HandleBoardDelete(int boardId, int postId)
     {
+        if (boardId == 0)
+        {
+            SendLog(Mail.Delete(_char.Name, postId) ? "The letter has been deleted." : "That letter no longer exists.");
+            return;
+        }
         SendLog(Boards.Delete(boardId, postId, _char.Name)
             ? "The message has been deleted."
             : "You can only delete your own messages.");
+    }
+
+    // ---- mail (RTK nmail — see Mail.cs's doc for why compose is chat-command-only) -------------
+
+    private const int MailMinLevel = 10;   // RTK clif_handle_boards case 6: "You must be at least level 10 to view/send nmail."
+
+    // Shared read path: RTK case 3 aimed at board 0 (SendBoardReadPost) and "!mail read <id>" both funnel
+    // through here so reading behaves identically either way — marks it read, and if it's carrying an
+    // unclaimed parcel, gives the item now (pack-full falls back to dropping it at your feet, same recovery
+    // as CastGroundLoot). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
+    // shape is unverified (see SendBoardReadPost's doc), so the chat log stays the one channel guaranteed
+    // to actually show the player what they got.
+    private void ReadMail(int position)
+    {
+        var mail = Mail.Get(_char.Name, position);
+        if (mail is null) { SendLog("That letter no longer exists."); return; }
+
+        Mail.MarkRead(_char.Name, position);
+        string attachNote = "";
+        var claim = Mail.ClaimItem(_char.Name, position);
+        if (claim is (int itemId, int amount, int dura))
+        {
+            var def = Content.ItemById(itemId);
+            if (def is not null)
+            {
+                bool gotIt = GiveItem(def, amount, (ushort)Math.Max(0, dura), "");
+                if (!gotIt)
+                    _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = itemId,
+                        X = _char.X, Y = _char.Y, Amount = amount, Dura = (ushort)Math.Max(0, dura), Graphic = def.Icon });
+                attachNote = gotIt ? $" [Parcel: {def.Name} x{amount} added to your bag]"
+                                    : $" [Parcel: {def.Name} x{amount} — your bag was full, dropped at your feet]";
+            }
+        }
+
+        var d = new List<byte> { 3, 3, 0 };
+        d.AddRange(Be((ushort)position));
+        var sn = Ascii(mail.Sender);
+        d.Add((byte)sn.Length);
+        d.AddRange(sn);
+        d.Add(mail.Month);
+        d.Add(mail.Day);
+        var tn = Ascii(mail.Topic);
+        d.Add((byte)tn.Length);
+        d.AddRange(tn);
+        var bn = Ascii(mail.Body);
+        d.AddRange(Be((ushort)bn.Length));
+        d.AddRange(bn);
+        SendMap(0x31, _gameInc++, d.ToArray(), $"boardread(0x31) mailbox post={position}");
+
+        SendLog($"From {mail.Sender} ({mail.Month}/{mail.Day}): {mail.Topic} — {mail.Body}{attachNote}");
+    }
+
+    // "!mail" (inbox list) / "!mail read <id>" / "!mail delete <id>" / "!mail send <name> | <subject> | <body>"
+    // / "!mail sendItem <name> <itemKey> [amount] | <subject> | <body>". RTK gates nmail at level 10 (see
+    // MailMinLevel); everything else is our own design — the real nmail_write/boards_post wire format has no
+    // surviving source anywhere in this reference tree (Mail.cs's doc), so there's no RTK literal to port
+    // for composing. sendItem pulls straight from the caster's own bag (by inventory slot number, or by the
+    // item's Content key/display name — whichever matches) and removes it from their inventory immediately,
+    // same as handing it over in person.
+    private void HandleMailCommand(string text)
+    {
+        var rest = text.Length > "!mail".Length ? text["!mail".Length..].Trim() : "";
+        if (rest.Length == 0) { ListMail(); return; }
+
+        int sp = rest.IndexOf(' ');
+        string sub = (sp < 0 ? rest : rest[..sp]).ToLowerInvariant();
+        string arg = sp < 0 ? "" : rest[(sp + 1)..].Trim();
+
+        switch (sub)
+        {
+            case "read":
+                if (!int.TryParse(arg, out var readId)) { SendLog("usage: !mail read <id>"); return; }
+                ReadMail(readId);
+                break;
+            case "delete":
+                if (!int.TryParse(arg, out var delId)) { SendLog("usage: !mail delete <id>"); return; }
+                SendLog(Mail.Delete(_char.Name, delId) ? "The letter has been deleted." : "That letter no longer exists.");
+                break;
+            case "send":
+                SendMailCommand(arg, itemArg: null);
+                break;
+            case "senditem":
+                {
+                    int isp = arg.IndexOf(' ');
+                    if (isp < 0) { SendLog("usage: !mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
+                    string toName = arg[..isp];
+                    SendMailCommand($"{toName} | {arg[(isp + 1)..]}", itemArg: arg[(isp + 1)..]);
+                }
+                break;
+            default:
+                ListMail();
+                break;
+        }
+    }
+
+    private void ListMail()
+    {
+        var inbox = Mail.InboxFor(_char.Name);
+        if (inbox.Count == 0) { SendLog("Your mailbox is empty."); return; }
+        foreach (var m in inbox)
+            SendLog($"[{m.Position}]{(m.IsRead ? "" : " *NEW*")} From {m.Sender} ({m.Month}/{m.Day}): {m.Topic}{(m.ItemId >= 0 && !m.Claimed ? " [parcel attached]" : "")}");
+        SendLog("!mail read <id> to open one, !mail delete <id> to remove it.");
+    }
+
+    // "<name> | <subject> | <body>" — pipe-delimited since names/subjects can contain spaces. itemArg, when
+    // set, is "<item> [amount] | <subject> | <body>" (senditem's own dispatch already stripped the name).
+    private void SendMailCommand(string spec, string? itemArg)
+    {
+        if (_char.Level < MailMinLevel) { SendMiniText($"You must be at least level {MailMinLevel} to view/send nmail."); return; }
+
+        var parts = spec.Split('|');
+        if (parts.Length < 3) { SendLog("usage: !mail send <name> | <subject> | <body>"); return; }
+        string toName = parts[0].Trim();
+        string subject = parts[1].Trim();
+        string body = parts[2].Trim();
+        if (toName.Length == 0 || subject.Length == 0 || body.Length == 0) { SendLog("Post must contain subject."); return; }
+        if (toName.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { SendLog("You can't mail yourself."); return; }
+
+        int itemId = -1, amount = 0, dura = 0;
+        if (itemArg is not null)
+        {
+            var iparts = itemArg.Split('|')[0].Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (iparts.Length < 1) { SendLog("usage: !mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
+            int amt = iparts.Length > 1 && int.TryParse(iparts[1], out var a) ? Math.Max(1, a) : 1;
+
+            InvItem? slot = null;
+            ItemDef? def = null;
+            if (int.TryParse(iparts[0], out var slotNum)) slot = InvAt(slotNum - 1);   // 1-based, matching the bag UI (same convention as HandleDropItem)
+            if (slot is not null) def = Content.ItemById(slot.ItemId);
+            if (def is null)
+            {
+                slot = _char.Inventory.FirstOrDefault(i =>
+                    (Content.ItemById(i.ItemId)?.Key.Equals(iparts[0], StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (Content.ItemById(i.ItemId)?.Name.Equals(iparts[0], StringComparison.OrdinalIgnoreCase) ?? false));
+                def = slot is null ? null : Content.ItemById(slot.ItemId);
+            }
+            if (slot is null || def is null) { SendLog($"You don't have '{iparts[0]}' to send."); return; }
+            amt = Math.Min(amt, slot.Amount);
+
+            // Same removal shape as HandleDropItem: shrink the stack or clear the slot outright.
+            int remaining = slot.Amount - amt;
+            if (remaining <= 0) { _char.Inventory.Remove(slot); SendDelItem(slot.Slot, 1); }
+            else { slot.Amount = remaining; SendAddItem(slot); }
+            MarkDirty();
+            itemId = def.Id; amount = amt; dura = slot.Dura;
+        }
+
+        var now = DateTime.UtcNow;
+        Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, itemId, amount, dura);
+        SendLog(itemId >= 0 ? $"Mailed {subject} to {toName} (with {amount}x parcel)." : $"Mailed {subject} to {toName}.");
     }
 
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
@@ -2539,7 +3053,7 @@ public sealed class Session
         // hardcode color 0, which for look 21 renders like the "Hare" family (id 116+, same look, color
         // 37+) instead of the actual Rabbit — reported live 2026-07-26.
         var def = Content.FindMob("rabbit");
-        if (def is not null) SummonWorldMob(def.Look, x, y, def.Name, hp: def.Hp, dir: dir, color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key);
+        if (def is not null) SummonWorldMob(def.Look, x, y, def.Name, hp: def.Hp, dir: dir, color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
         else SummonWorldMob(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0, exp: 5, moveTime: 3000);   // registry missing -> old fallback
         SendLog("A rabbit appears. Face it and press space to attack.");
     }
@@ -2548,17 +3062,26 @@ public sealed class Session
     // player on the map. World.Tick then wanders it (leashed to its spawn tile); combat resolves against
     // the world's authoritative HP in HandleAttack. This is the gameplay-mob path (!rabbit / !summon);
     // the debug lab (!cre/!mob/!crow/look-lab) still uses the session-local SpawnMonster/SpawnMob.
+    // `def`, when given, is the real registry entry — its full combat stat block (MinDam/MaxDam/Ac/Grace/
+    // Hit/IsBoss/Protection/Will/Aggressive) rides along, exactly like World.Materialize's real spawns.
+    // Without it (the `!rabbit` no-registry fallback), a summon defaults to a harmless vanilla mob (1-1
+    // damage, 0 AC) rather than silently under-tuned — previously EVERY debug/GM summon (!rabbit/!summon/
+    // the ridden-horse re-spawn) dropped these fields entirely, so testing a fix like this one via !summon
+    // would never have shown the real numbers.
     private Mob SummonWorldMob(ushort look, ushort x, ushort y, string name, int hp, byte dir, byte color,
-                               int exp = 0, int moveTime = 2500, string key = "")
+                               int exp = 0, int moveTime = 2500, string key = "", MobDef? def = null)
     {
         var mob = new Mob(_world.AllocateMobId(), look, x, y, name, hp)
         {
             Key = key,   // MobDef identifier (for quest kill-matching); empty for keyless debug summons
             Dir = dir, Color = color, Exp = exp, HomeX = x, HomeY = y, Wander = true,
             MoveTime = moveTime, MoveTimer = Random.Shared.Next(moveTime),
+            Level = def?.Level ?? 0, Will = def?.Will ?? 0, Aggressive = def?.Aggressive ?? false,
+            MinDam = def?.MinDam ?? 1, MaxDam = def?.MaxDam ?? 1, Hit = def?.Hit ?? 0,
+            IsBoss = def?.IsBoss ?? false, Protection = def?.Protection ?? 0, Ac = def?.Ac ?? 0, Grace = def?.Grace ?? 0,
         };
         _world.AddMob(_char.Map, mob);   // broadcasts the 0x07 spawn to every player on the map (incl. us)
-        Log.Info($"   -> world spawn mob {mob.Id} '{name}' look={look} c{color} @({x},{y}) hp={hp} on map {_char.Map}");
+        Log.Info($"   -> world spawn mob {mob.Id} '{name}' look={look} c{color} @({x},{y}) hp={hp} dmg={mob.MinDam}-{mob.MaxDam} on map {_char.Map}");
         return mob;
     }
 
@@ -2616,6 +3139,10 @@ public sealed class Session
         ["Dragon"]  = new[] { new CaveReq(99, 0, 0),     new CaveReq(99, 200000, 100000), new CaveReq(99, 420000, 210000) },
     };
 
+    // Plural form for the mythic-cave denial line ("Mythic Oxen dwell here"). Every zodiac animal takes a
+    // plain "s" except Ox, whose plural is irregular.
+    private static string PluralAnimal(string animal) => animal == "Ox" ? "oxen" : animal.ToLowerInvariant() + "s";
+
     // Deepest tier (1..3) the player unlocks for `animal`, or a negative "how close" code when locked out:
     // 0 = within 3 levels, -1 = within 4-7, -2 = 8+ levels short. Mirrors mythicCaveReqCheck.lua exactly.
     private int MythicCaveTier(string animal)
@@ -2644,7 +3171,7 @@ public sealed class Session
             SendXy();   // cancel the client's step prediction / unblock the next step — the entrance holds them out
             SendMiniText(tier switch   // status box (RTK clif_sendminitext), not the login message box
             {
-                -2 => "Nightmarish visions of your own death repel you.",
+                -2 => $"That would be unwise. Mythic {PluralAnimal(animal)} dwell here.",
                 0  => "You almost understand the secrets of this entrance.",
                 _  => "You are not yet ready to enter here.",
             });
@@ -2691,7 +3218,8 @@ public sealed class Session
         {
             if (CharClassId != hall.BaseClass)
             {
-                SendMessage("You are not the right class to enter here.");
+                // RTK onScriptedTilesPathHalls.lua: player:sendMinitext(str) — the status box, not chat.
+                SendMiniText("You are not the right class to enter here.");
                 SendXy();   // refuse: hold at the from-tile (RTK bumps 2 tiles north — same net effect)
                 return true;
             }
@@ -2723,6 +3251,177 @@ public sealed class Session
         TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
         TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
         if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
+        TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
+    }
+
+    // ---- Inter-continent travel ("world map" screen) ----
+    // RTK triggers this from onScriptedTile on EVERY step (onScriptedTilesMap.lua checks the current
+    // map's title + x/y against hardcoded edge coordinates), then opens a destination picker via
+    // clif_mapselect (sendWorldMap.lua) — a full-screen "click a location on a map graphic" UI, NOT an
+    // NPC/ferry menu. The real click-a-destination flow applies NO level/quest/req gate at all: pc_warp
+    // doesn't validate the (map,x,y) the client echoes back, so every listed destination is always usable
+    // (RTK gates only one entry, Mount Baekdu, by simply omitting it from the list pre-quest).
+    //
+    // SendWorldMap's body was recovered by statically disassembling THIS project's own 4.95 client (not
+    // guessed, and NOT trusting RTK 7.x, whose clif_mapselect has a different shape): opcode 0x2e's receive
+    // handler is 0x450580 (verified via the real two-level dispatch table at 0x44bc80/0x44bbd4:
+    // sel = idx[opcode-3], jmp jumptab[sel]; opcode 0x2e -> sel 22 -> stub 0x44bac4 -> call 0x450580).
+    // The 0x450580 parser reads, in order, straight off the packet body (payload = bytes AFTER the opcode):
+    //   bgNameLen(u8)  <- payload[0] IS the length; there is NO leading "kind" byte
+    //   bgName[bgNameLen]
+    //   destCount(u8)
+    //   one still-unexplained byte
+    //   per-destination:  x0(u16BE) y0(u16BE)  name(u8 len + bytes)  mapId(u32BE)  x1(u16BE) y1(u16BE)
+    // (each entry is exactly 2 u16 + name + 4 u16; the client reads mapId as two of those u16 slots.)
+    // The background is "field10" = "Map of the Kingdom" (the overview world-map art in Inter.dat, one of
+    // field10..field18 = the whole-kingdom + per-region maps; NATION_E is only a 20KB flag icon, too small
+    // to be a 640x480 background -- that's why it rendered black). Confirmed by rendering the candidate EPFs
+    // to a grayscale contact sheet and reading their baked-in title banners. An earlier version of
+    // this code sent a spurious leading kind=0 byte, which the client read as bgNameLen=0 -> empty name ->
+    // a "%s.epf" path builder produced "." -> catlookup2(".") -> and every later field was shifted one byte,
+    // so destCount/offsets became garbage and the handler eventually made a bogus huge allocation and threw.
+    // That was OUR one-byte framing error, not a client bug (the client is retail-shipped and works). The
+    // client's click/ESC reply is LIVE-CONFIRMED (opcode 0x3F, body mapId(u32BE) x(u16BE) y(u16BE) 00 --
+    // RTK's case 0x3F map-change); HandleWorldMapSelect below decodes it and either warps to the clicked
+    // destination or, for ESC/unrecognized coords, back to the origin. Two of RTK's nine destinations
+    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (data/rtk-data/map_index.csv)
+    // and are omitted outright.
+    // X,Y = landing tile on the destination map.
+    private readonly record struct WorldDest(string Name, ushort Map, ushort X, ushort Y);
+    private static readonly WorldDest[] WorldDests =
+    {
+        new("Kugnae",             1011, 18, 14),
+        new("Buya",                1012,  1, 11),
+        new("Mythic Nexus",         41, 30,  4),
+        new("Arctic Land",         1013,  9,  9),
+        new("KaMing's Encampment", 3800, 31,  3),
+    };
+
+    // Screen position (native 640x480 pixels) of each destination's clickable dot ON THE field10 background,
+    // parallel to WorldDests. NOT derived by scaling RTK's sendWorldMap.lua coords: RTK's coords are for its
+    // own 1024x768 "WMkru" art, a DIFFERENT map image than 4.95's field10 "Map of the Kingdom", so no uniform
+    // scale maps one onto the other -- each dot must sit on field10's own labeled town. Seed values are rough
+    // reads off the field10 grayscale render (re/ scratch); fine-tune live in-client with "!wmpos <i> <x> <y>"
+    // against the real colour display, then bake the final numbers here.
+    private static readonly (int X, int Y)[] WorldDotPos =
+    {
+        (300, 235),  // 0 Kugnae      -- "Kugnae" label, centre
+        (300, 130),  // 1 Buya        -- "Buya" label, centre-upper
+        (200, 300),  // 2 Mythic Nexus
+        (400,  60),  // 3 Arctic Land -- north
+        (450, 390),  // 4 KaMing's Encampment -- lower-right
+    };
+
+    // Trigger tiles (onScriptedTilesMap.lua), keyed by the town map the player is standing in.
+    private static readonly Dictionary<ushort, Func<int, int, bool>> WorldMapTriggers = new()
+    {
+        [1011] = (x, y) => x == 19 && (y == 12 || y == 13),          // Kugnae Gathering
+        [1012] = (x, y) => x == 0 && y >= 8 && y <= 12,              // Buya Gathering
+        [41]   = (x, y) => y == 1 && x >= 28 && x <= 32,             // Mythic Nexus
+        [1013] = (x, y) => x == 10 && (y == 7 || y == 8),            // Haeng Tavern (Arctic Land)
+        [3800] = (x, y) => (y == 0 || y == 1) && x >= 30 && x <= 34, // KaMing's Encampment
+        // Nagnang (2520) and Hausson (1025) intentionally removed as world-map hubs (2026-07-26).
+    };
+
+    // True while a world-map screen we sent is (as far as we know) still open on the client, so a stray
+    // 0x3F that happens to coincide with a real destination can't be mistaken for a real click.
+    private bool _worldMapPending;
+    // Where the player was standing when the world map opened. Opening the map makes the client "leave the
+    // world" (full-screen modal); pressing ESC sends a 0x3F carrying these origin coords, and we warp back
+    // here to restore the view (RTK exits the same way -- see HandleWorldMapSelect).
+    private ushort _worldMapReturnMap, _worldMapReturnX, _worldMapReturnY;
+
+    // Fires the native full-screen world-map screen at the real trigger tiles (re-enabled 2026-07-26 after
+    // the one-byte framing bug was found and fixed -- see SendWorldMap). Falls back to nothing if bgName
+    // resolution fails client-side; if a fresh crash ever recurs, revert this to RunWorldMapMenuAsync().
+    private void TryWorldMapTravel()
+    {
+        if (!WorldMapTriggers.TryGetValue(_char.Map, out var onTile) || !onTile(_char.X, _char.Y)) return;
+        SendWorldMap("field10");
+    }
+
+    // The earlier "crashes regardless of content / client memory-lifetime bug" conclusion was WRONG: the
+    // crash was a one-byte framing error in the packet BELOW (a spurious leading kind=0 byte that the client
+    // read as bgNameLen=0, misaligning every field -- see the class comment above SendWorldMap). Once that
+    // byte is removed and a real background name is used (field10 = "Map of the Kingdom"), the packet parses
+    // correctly. The retail client is not buggy. "!wmtest <name>" tries alternate background graphics.
+    private void SendWorldMap(string bgName)
+    {
+        var d = new List<byte>();       // NO leading kind byte: payload[0] IS the bgName length (see comment)
+        AddLenStr(d, bgName);
+        d.Add((byte)WorldDests.Length);
+        d.Add(0);                        // unexplained byte after the count -- see class-comment note above
+        for (int i = 0; i < WorldDests.Length; i++)
+        {
+            var dest = WorldDests[i];
+            // Dot position is field10's own pixel coordinate (see WorldDotPos) -- placed directly on the
+            // displayed map, not scaled from RTK. Clamp defensively to the 640x480 art.
+            int sx = Math.Clamp(WorldDotPos[i].X, 0, 639);
+            int sy = Math.Clamp(WorldDotPos[i].Y, 0, 479);
+            d.AddRange(Be((ushort)sx));   // x0 (field10 pixel)
+            d.AddRange(Be((ushort)sy));   // y0 (field10 pixel)
+            AddLenStr(d, dest.Name);
+            d.AddRange(Be32(dest.Map));
+            d.AddRange(Be(dest.X));
+            d.AddRange(Be(dest.Y));
+        }
+        _worldMapPending = true;
+        _worldMapReturnMap = _char.Map;
+        _worldMapReturnX   = _char.X;
+        _worldMapReturnY   = _char.Y;
+        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {WorldDests.Length} dests");
+    }
+
+    // Parses the client's world-map click / ESC reply. LIVE-CONFIRMED format (2026-07-26): the client sends
+    // opcode 0x3F with body  mapId(u32BE) x(u16BE) y(u16BE) 00  -- exactly RTK's case 0x3F map-change
+    // (clif.c:11619, pc_warp with the client-supplied map/x/y). There is NO separate cancel opcode: opening
+    // the map makes the client "leave the world", and BOTH a destination click and ESC send this same 0x3F --
+    // ESC just carries the player's ORIGINAL map/x/y. So: warp to the destination if it's a known one;
+    // otherwise (ESC, or any unrecognized coords) return the player to where they opened the map from, so
+    // they can never be stranded on the map screen or mis-warped to arbitrary client-chosen coords.
+    private void HandleWorldMapSelect(byte[] dec)
+    {
+        if (!_worldMapPending) return;
+        _worldMapPending = false;
+        if (dec.Length < 8) return;
+        uint   map = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
+        ushort x   = (ushort)((dec[4] << 8) | dec[5]);
+        ushort y   = (ushort)((dec[6] << 8) | dec[7]);
+        foreach (var dest in WorldDests)
+        {
+            if (dest.Map != map || dest.X != x || dest.Y != y) continue;
+            if (!Content.TryMap(dest.Map, out var dm)) return;
+            Log.Info($"   -> WORLDMAP (native) {_char.Map} -> {dest.Map} '{dm.Name}' ({dest.X},{dest.Y})");
+            EnterMap(dm.Id, dm.Xs, dm.Ys, dest.X, dest.Y, dm.Name);
+            return;
+        }
+        // Not a known destination -> treat as ESC/cancel: restore the player to their origin.
+        if (Content.TryMap(_worldMapReturnMap, out var om))
+        {
+            Log.Info($"   -> WORLDMAP (esc/cancel) back to {_worldMapReturnMap} '{om.Name}' ({_worldMapReturnX},{_worldMapReturnY}) [reply map={map} ({x},{y})]");
+            EnterMap(om.Id, om.Xs, om.Ys, _worldMapReturnX, _worldMapReturnY, om.Name);
+        }
+    }
+
+    // "!travel" — chat-command fallback using the already-proven async dialog primitives, so travel keeps
+    // working end-to-end even before the native screen's click-reply format (above) is confirmed live.
+    private static readonly Mob WorldMapVirtualNpc = new(0xFFFFFFFC, 0, 0, 0, "WorldMap", 1);
+
+    private async Task RunWorldMapMenuAsync()
+    {
+        // The menu await can suspend for as long as the player takes to answer, during which something
+        // else entirely could move them (a GM !warp, death+revive, another dialog, disconnect). Re-verify
+        // they're still on the same map when the reply comes back -- same "don't trust state from before
+        // the await" discipline as the trade flow re-validating live inventory at finalize.
+        ushort startMap = _char.Map;
+        int choice = await DlgMenu(WorldMapVirtualNpc, "Where would you like to travel?",
+            WorldDests.Select(d => d.Name).ToList());
+        if (choice < 1 || choice > WorldDests.Length) return;
+        if (_char.Map != startMap) return;   // moved on since we opened the menu
+        var d = WorldDests[choice - 1];
+        if (!Content.TryMap(d.Map, out var dm)) return;   // dest not renderable here -- silently ignore
+        Log.Info($"   -> WORLDMAP (menu) {_char.Map} -> {d.Map} '{dm.Name}' ({d.X},{d.Y})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, d.X, d.Y, dm.Name);
     }
 
     // Chu Rua's young ginseng (onScriptedTilesQuest.lua, "Guol Tiger Pass" = map 1116): the rocks at x 5-6,
@@ -2736,12 +3435,12 @@ public sealed class Session
         if (CountItem("young_ginseng") > 0) return;
         if (_char.Quests.GetValueOrDefault("chu_rua_tiger_gone") != 1)
         {
-            SendMessage("With the tiger nearby, it is too dangerous to climb up to the root.");
+            SendMiniText("With the tiger nearby, it is too dangerous to climb up to the root.");
             return;
         }
         var def = Content.ItemByKey("young_ginseng");
         if (def is null || !GiveItem(def, 1)) return;
-        SendMessage("Snuggled between the rocks is a young root of ginseng. Was this what Chu Rua meant?");
+        SendMiniText("Snuggled between the rocks is a young root of ginseng. Was this what Chu Rua meant?");
     }
 
     // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
@@ -2809,7 +3508,7 @@ public sealed class Session
 
         var def = Content.FindItem(item);
         if (def is null || !GiveItem(def)) return;
-        SendMessage(item == "apple" ? "You found an apple." : "You find a beautiful rose!");
+        SendMiniText(item == "apple" ? "You found an apple." : "You find a beautiful rose!");   // RTK onScriptedTilesBushTree.lua: sendMinitext, exact wording
         Log.Info($"   -> FORAGE {item} on map {_char.Map} @({_char.X},{_char.Y})");
     }
 
@@ -2819,11 +3518,17 @@ public sealed class Session
     // our entity id (0x05) are already established this session, so those are NOT resent.
     private void EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName)
     {
+        // Warn on crossing INTO a PvP realm (RTK MapPvP flag — Content.IsPvpMap) from a non-PvP one, e.g.
+        // stepping through an arena door into Sire Pit/Yusa Pit. Skipped when already in a PvP map (tier
+        // warps within the same arena chain shouldn't re-nag every hop).
+        bool warnPvp = Content.IsPvpMap(mapId) && !Content.IsPvpMap(_char.Map);
+
         // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
         // clear our session-local debug dummies (the client drops all foreign entities on a map change).
         _world.LeaveMap(this, _char.Map);
         _mobs.Clear();
         _dlgReply = null;    // orphan any NPC prompt awaiting a reply — its NPC is on the old map
+        _worldMapPending = false;   // any open world-map screen is meaningless once we've already warped
         ForgetShownMobs();   // new map -> the client wiped every foreign entity; re-stream from scratch
 
         _char.Map = mapId;
@@ -2831,18 +3536,45 @@ public sealed class Session
         _char.MapYs = ys;
         _char.X = (ushort)Math.Clamp((int)x, 0, xs - 1);
         _char.Y = (ushort)Math.Clamp((int)y, 0, ys - 1);
+        MarkDirty();   // map + position, same reasoning as HandleWalk
 
         SendMapInfo(mapId, xs, ys, mapName, 232, _gameInc++);   // 0x15 (light arg ignored; uses LightValue)
         SendXy();                                                // 0x04 coords + camera anchor
         SendSelfLook();                                          // 0x33 draw self on the new map
         PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
+        SendWeather(_world.GetWeather(mapId));                   // 0x1F whatever the new map's weather already is
 
         // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
         var (peers, mobs) = _world.EnterMap(this, mapId);
         foreach (var p in peers) ShowPlayer(p);
         SyncMobs(mobs);   // stream the in-view mobs of the new map
         foreach (var gi in _world.ItemsOn(mapId)) ShowGroundItem(gi);   // floor items on the new map (0x16)
+        SyncForceOpenDoors(mapId);
+        if (warnPvp)
+        {
+            SendScriptMessageP(_char.Id,
+                "Be careful, you may be slain by another player within this realm and items on the floor " +
+                "can be destroyed by bombs!", DialogPortrait.None, prev: false, next: false);
+        }
         Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y}) — {peers.Length} player(s), {mobs.Length} mob(s) here");
+    }
+
+    // A ForceOpen door (Doors.cs) only changes OUR server's own collision bookkeeping — it does nothing to
+    // what the client sees, because the 4.95 client loads its own local .map file for everything except the
+    // narrow 0x06 cell-patch mechanism (the same one door toggles use). Without this, the client's own local
+    // copy of the tile is untouched, so it keeps refusing the step client-side (self-walk is client-local —
+    // see [[nexustk-495-selfwalk-turn]]) regardless of what the server thinks. Clears the object outright
+    // (no real "open" sprite exists for these — see Doors.cs) and pushes the same patch our own MapData mirror
+    // gets, so a later HandleOpen/BlockedMove read agrees with what the client was actually told.
+    private void SyncForceOpenDoors(ushort mapId)
+    {
+        var md = MapData.For(mapId, _char.MapXs, _char.MapYs);
+        if (md is null) return;
+        foreach (var (x, y) in Doors.ForceOpenTiles(mapId))
+        {
+            md.SetObj(x, y, 0);
+            PatchObjRow(x, y, new ushort[] { 0 });
+        }
     }
 
     // "!warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
@@ -2881,7 +3613,7 @@ public sealed class Session
     {
         string q = text.Length > "!mobs".Length ? text["!mobs".Length..].Trim() : "";
         var found = Content.SearchMobs(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check re/monster-matcher/rtk_mobs.csv)" : $"no mobs match \"{q}\""); return; }
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check data/rtk-data/rtk_mobs.csv)" : $"no mobs match \"{q}\""); return; }
         SendLog($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Mobs.Count}):");
         foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (!summon {m.Name})");
     }
@@ -2899,8 +3631,29 @@ public sealed class Session
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
-        SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color, exp: mob.Exp, moveTime: mob.MoveTime, key: mob.Key);
-        SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp).");
+        SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color, exp: mob.Exp, moveTime: mob.MoveTime, key: mob.Key, def: mob);
+        SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp, dmg {mob.MinDam}-{mob.MaxDam}).");
+    }
+
+    // !reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
+    // NPC placements, map metadata) WITHOUT restarting the server, so content fixes ship live. Re-reads the
+    // CSVs, clears the map-terrain cache, and refreshes already-spawned world mobs in place (new MaxHp/Exp/
+    // Level, current HP clamped to the new max — see World.ReloadContent). A load error keeps the OLD content.
+    // NOT reloadable (compile-time tables in Content.cs → need a restart): mob drop tables and map BGM.
+    private void ReloadContent()
+    {
+        string summary;
+        try { summary = Content.Reload(); }
+        catch (Exception e)
+        {
+            SendLog($"!reload FAILED: {e.Message}  (previous content kept)");
+            Log.Info($"!! !reload by '{_char.Name}' failed: {e}");
+            return;
+        }
+        MapData.Invalidate();
+        int refreshed = _world.ReloadContent();
+        SendLog($"Reloaded: {summary}. Refreshed {refreshed} live mob(s); map cache cleared.");
+        Log.Info($"   -> !reload by '{_char.Name}': {summary}; {refreshed} live mobs refreshed");
     }
 
     // ===== items ================================================================================
@@ -2929,13 +3682,14 @@ public sealed class Session
         if (def.Stackable)
         {
             var stack = _char.Inventory.FirstOrDefault(i => i.ItemId == def.Id && i.CustomName == customName);
-            if (stack is not null) { stack.Amount += amount; SendAddItem(stack); return true; }
+            if (stack is not null) { stack.Amount += amount; SendAddItem(stack); MarkDirty(); return true; }
         }
         int slot = FreeSlot();
         if (slot < 0) { SendLog("Your pack is full."); return false; }
         var it = new InvItem((byte)slot, def.Id, amount, dura) { CustomName = customName };
         _char.Inventory.Add(it);
         SendAddItem(it);
+        MarkDirty();
         return true;
     }
 
@@ -2946,9 +3700,69 @@ public sealed class Session
         foreach (var e in _char.Equipment) SendEquip(e);
     }
 
-    /// <summary>Persist the character if it has actually entered the world (mirrors the inline guard used at the
-    /// other save sites). Cheap best-effort; the store swallows IO errors so a save never crashes a session.</summary>
-    private void SaveChar() { if (_enteredWorld) _store.Save(_char); }
+    /// <summary>Immediate save for a discrete high-value event (level-up, quest completion, trade, profile
+    /// edit, GM command). Routes through the same MarkDirty+FlushNow path as the throttled autosave so it
+    /// gets the same failure-retry and cross-thread-safety guarantees, just without waiting for the next
+    /// AutoSaveMs tick.</summary>
+    private void SaveChar() { if (_enteredWorld) { _dirty = true; FlushNow(); } }
+
+    /// <summary>Mark this session's character dirty without an immediate save — the mutation sites that
+    /// used to be entirely unpersisted (pickup/drop/equip/durability/shop/bank/movement, see the
+    /// persistence audit) call this instead. Picked up by this session's own FlushIfDue (active player) or
+    /// World's periodic AutoSaveLoop sweep (idle player), whichever comes first — at most AutoSaveMs later.</summary>
+    internal void MarkDirty() { if (_enteredWorld) _dirty = true; }
+
+    /// <summary>Called once per read-loop iteration, after the packets received in this chunk are handled.
+    /// Runs on the session's OWN thread — the same thread every MarkDirty() mutation runs on — so this is
+    /// race-free by construction and is the primary autosave path for an ACTIVE player. It only needs
+    /// World.AutoSaveLoop as a backstop for an IDLE dirty player (mutated, then stopped sending packets).</summary>
+    private void FlushIfDue()
+    {
+        if (!_dirty || !_enteredWorld) return;
+        if (Environment.TickCount64 - _lastSaveAtMs < AutoSaveMs) return;
+        FlushNow();
+    }
+
+    /// <summary>Force-save now if dirty, ignoring the AutoSaveMs throttle. Used by SaveChar's immediate
+    /// high-value saves, World's periodic sweep (idle players), the graceful-shutdown flush
+    /// (World.SaveAllPlayers), and KickForReplacement. Safe to call from a thread other than this
+    /// session's own read loop: _saveGate serializes concurrent callers for this one session.
+    ///
+    /// _dirty is cleared BEFORE the write (not after), so a mutation that lands on the session's own
+    /// thread WHILE a save from another thread is in flight re-dirties us and is guaranteed to be picked
+    /// up by the next flush — it can never be silently treated as "saved" without actually being captured.
+    /// If the write itself fails (a bad disk, or a collection mutated mid-serialize racing this exact
+    /// scenario — CharacterStore.Save returns false), _dirty is restored so the next flush retries.</summary>
+    internal void FlushNow()
+    {
+        if (!_enteredWorld) return;
+        lock (_saveGate)
+        {
+            if (!_dirty) return;
+            _dirty = false;
+            if (_store.Save(_char)) _lastSaveAtMs = Environment.TickCount64;
+            else _dirty = true;
+        }
+    }
+
+    /// <summary>Normalized account identity (matches CharacterStore's DB key), used as the key into
+    /// World's online-session registry for the duplicate-login guard. Only meaningful once _enteredWorld.</summary>
+    internal string UserKey => CharacterStore.Key(_char.Name);
+
+    /// <summary>Force this session out because the same account just logged in elsewhere (World.RegisterOnline
+    /// detected the collision in HandleArrival). Flushes any pending mutation FIRST so the new session's
+    /// upcoming _store.Load sees our latest state, marks us _replaced (so the read-loop's own disconnect
+    /// save — which could otherwise fire moments later with now-stale data — is skipped), then tears the
+    /// connection down. Safe to call from the NEW session's thread: FlushNow's _saveGate serializes against
+    /// anything this (old) session's own thread might concurrently be doing, and CloseConnection is
+    /// idempotent either way.</summary>
+    internal void KickForReplacement()
+    {
+        Volatile.Write(ref _replaced, 1);
+        FlushNow();
+        SendMiniText("You have logged in from another location.");
+        CloseConnection("replaced by new login");
+    }
 
     // ===== quests (see Server/Quests.cs, NpcContext quest helpers) ================================
     // Quest state lives in _char.Quests (a flat key->int map, persisted): a quest's stage under its key, its
@@ -2965,6 +3779,9 @@ public sealed class Session
     internal void AwardExp(uint amount)
     {
         if (amount == 0) return;
+        // RTK player.lua giveXPStacked: every exp grant pops a status-box message, not just combat —
+        // quest/tutorial/NPC rewards get the same notice retail players see on a kill.
+        SendMiniText($"{amount:N0} experience!");
         _char.Exp += amount;
         int path = CharClassId;
         while (_char.Level < 99)
@@ -2983,6 +3800,7 @@ public sealed class Session
         uint tnlNext = Content.ExpToNext(path, _char.Level);
         _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
         SendStats();
+        SendSelfProfile();   // AC/Dam/Hit/Tnl live there, not in SendStats' HUD packet — refresh on every level-up
         SaveChar();
     }
 
@@ -3039,13 +3857,28 @@ public sealed class Session
         _char.MaxHp = (uint)((int)_char.MaxHp + hpGain);
         _char.MaxMp = (uint)((int)_char.MaxMp + mpGain);
         _char.Level = (byte)nextLevel;
-        _char.Ac = (sbyte)Math.Max(_char.Ac - 1, sbyte.MinValue);   // AC is signed/lower-is-better; RTK: baseArmor -= 1 per level
-        if (_char.Level >= 99) _char.Ac = 1;                        // RTK's explicit level-99 cap value
+        // AC is signed/lower-is-better. RTK-Server/rtklua's onLevel.lua decrements baseArmor unconditionally
+        // every level, Peasant included — but user live-checked the REAL retail game (2026-07-26) and their
+        // Peasant's AC held flat at 98 across levels 2/3/4, not the 98/97/96 that formula predicts. The
+        // rtklua tree is a community reimplementation, not retail source, so it's wrong here: a generalist
+        // Peasant's armor doesn't improve from leveling at all (matching the level-5 path-hall wall's own
+        // "you're not a real class yet" theme) — only path != 0 (Warrior/Rogue/Mage/Poet) gets the per-level
+        // -1, presumably starting once a real path is chosen.
+        if (path != 0)
+        {
+            _char.Ac = (sbyte)Math.Max(_char.Ac - 1, sbyte.MinValue);
+            if (_char.Level >= 99) _char.Ac = 1;                    // RTK's explicit level-99 cap value
+        }
 
         // Full heal on level-up (RTK: health = maxHealth; magic = maxMagic), including gear/buff bonuses.
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
 
+        // RTK onLevel.lua: sendAnimation(2, 0) + playSound(123) — anim 2 is the same Effect.tbl id Harden
+        // Armor uses (confirmed live), but RTK's raw sound numbering is known not to map cleanly onto the
+        // 4.95 client (see docs §7.3) — 123 here is the same unverified best-effort port as Harden Armor's
+        // 5; both want a correct id from `!snd <id>` before this is right.
+        BroadcastFx(_char.Id, 2, 123);
         SendMiniText("You have gained new insight.");
         Log.Info($"   -> LEVEL UP: {_char.Name} is now level {_char.Level} ({Content.PathName(path)}) HP+{hpGain} MP+{mpGain}");
     }
@@ -3095,7 +3928,10 @@ public sealed class Session
     {
         if (string.IsNullOrEmpty(m.Key)) return;
         _char.Kills[m.Key] = _char.Kills.GetValueOrDefault(m.Key) + 1;
-        SaveChar();
+        // Was SaveChar() (a full-blob rewrite per kill — the dominant write-amplification source while
+        // grinding). MarkDirty lets the throttled autosave coalesce a whole grinding session into one
+        // save every AutoSaveMs instead of one per kill.
+        MarkDirty();
     }
 
     /// <summary>Lifetime kills recorded for a mob key (RTK's <c>player:killCount</c>).</summary>
@@ -3125,6 +3961,7 @@ public sealed class Session
     internal int  QuestRandom(int maxInclusive) => Random.Shared.Next(1, Math.Max(1, maxInclusive) + 1);
     internal long NowUnix   => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     internal int  CharSex    => _char.Sex;
+    internal int  CharFace   => _char.Face;
     internal int  CharNation => _char.Nation;
     internal int  CharX      => _char.X;
     internal int  CharY      => _char.Y;
@@ -3132,10 +3969,49 @@ public sealed class Session
     internal ushort CharMap  => _char.Map;
     internal uint CharHp     => _char.Hp;
     internal uint CharMaxHp  => _char.MaxHp;
+    internal uint CharMaxMp  => _char.MaxMp;
+    internal uint CharExp    => _char.Exp;
+    internal int  CharMight  => _char.Might;
+    internal int  CharGrace  => _char.Grace;
+    internal int  CharWill   => _char.Will;
     // Willingness flags a peer's party/trade request is gated on (RTK settingFlags FLAG_GROUP/FLAG_EXCHANGE;
     // §9.5 profile status cells, toggled by 0x1b sub-cmd 0x02/0x08).
     internal bool WantsGroup    => _char.Grouped;
     internal bool WantsExchange => _char.Exchange;
+
+    // ---- marriage state (ChapelAbility; RTK propose.lua / chapel_npc.lua) -------------------------
+    internal string CharFiance        => _char.Fiance;
+    internal bool   CharIsProposee    => _char.IsProposee;
+    internal long   CharMarriageTimer => _char.MarriageTimer;
+    internal long   CharRingCooldown  => _char.RingCooldown;
+    internal string CharSpouseName    => _char.Spouse;
+    internal void SetRingCooldown(long unixSeconds) { _char.RingCooldown = unixSeconds; SaveChar(); }
+    internal void SetSpouse(string name) { _char.Spouse = name; SaveChar(); }
+    internal void SetEngaged(string fianceName, bool isProposee, long timerUnix)
+    {
+        _char.Fiance = fianceName; _char.IsProposee = isProposee; _char.MarriageTimer = timerUnix;
+        SaveChar();
+    }
+    internal void ClearEngagement() { _char.Fiance = ""; _char.IsProposee = false; _char.MarriageTimer = 0; SaveChar(); }
+
+    /// <summary>Break off an engagement on BOTH sides, if the fiancé is reachable — RTK's own script only
+    /// clears the clicking player's registry, leaving the other party's "engaged" legend dangling forever if
+    /// they never separately visit a Chapel; clearing both sides avoids that permanently-stuck state.</summary>
+    internal void BreakOffEngagement()
+    {
+        var fiance = _world.FindPlayer(_char.Fiance);
+        RemoveLegend("engaged"); ClearEngagement();
+        if (fiance is not null) { fiance.RemoveLegend("engaged"); fiance.ClearEngagement(); }
+    }
+
+    /// <summary>Finalize a divorce on BOTH sides (same "don't dangle the other party" reasoning as
+    /// <see cref="BreakOffEngagement"/>).</summary>
+    internal void FinishDivorce()
+    {
+        var spouse = _world.FindPlayer(_char.Spouse);
+        RemoveLegend("married"); SetSpouse(""); TakeItem("love", 1);
+        if (spouse is not null) { spouse.RemoveLegend("married"); spouse.SetSpouse(""); spouse.TakeItem("love", 1); }
+    }
 
     /// <summary>Spend coin if the player can afford it (refresh HUD + persist); false, unchanged, if they can't.</summary>
     internal bool SpendGold(uint amount)
@@ -3145,6 +4021,79 @@ public sealed class Session
         SendStats();
         SaveChar();
         return true;
+    }
+
+    // ---- shadow-stat vendors (ShadowStatsAbility; RTK NPCs/Common/ExpSeller.lua) — trade banked exp for
+    // permanent stat growth once leveling itself no longer spends it (the vendor gates at level 90). Tnl is
+    // recomputed the same way AwardExp does, since Exp changed (rarely matters at these levels, but keeps
+    // the HUD's "to next level" honest if a Peasant-capped or sub-99 character somehow gets here).
+    /// <summary>Spend banked exp if the player has enough (refresh HUD + persist); false, unchanged, if not.</summary>
+    internal bool SpendExp(uint amount)
+    {
+        if (amount > 0 && _char.Exp < amount) return false;
+        _char.Exp -= amount;
+        uint tnlNext = Content.ExpToNext(CharClassId, _char.Level);
+        _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
+        SendStats();
+        SaveChar();
+        return true;
+    }
+
+    internal void RaiseMight(int by) { _char.Might = (byte)Math.Clamp(_char.Might + by, 0, 255); SendStats(); SaveChar(); }
+    internal void RaiseGrace(int by) { _char.Grace = (byte)Math.Clamp(_char.Grace + by, 0, 255); SendStats(); SaveChar(); }
+    internal void RaiseWill(int by)  { _char.Will  = (byte)Math.Clamp(_char.Will  + by, 0, 255); SendStats(); SaveChar(); }
+    internal void RaiseMaxHp(uint by) { _char.MaxHp += by; SendStats(); SaveChar(); }
+    internal void RaiseMaxMp(uint by) { _char.MaxMp += by; SendStats(); SaveChar(); }
+    // ---- Chapel divorce's physical-sacrifice penalty (RTK player.baseHealth/baseMagic -= penalty) --------
+    internal void LowerMaxHp(uint by) { _char.MaxHp = _char.MaxHp > by ? _char.MaxHp - by : 0; SendStats(); SaveChar(); }
+    internal void LowerMaxMp(uint by) { _char.MaxMp = _char.MaxMp > by ? _char.MaxMp - by : 0; SendStats(); SaveChar(); }
+
+    // ---- appearance change (AppearanceAbility; RTK rogue_guild_shaman.lua changeFace/changeGender —
+    // "Eyes" isn't ported, out of scope). Face IS a real byte in the 4.95 7-byte appearance form (§8), so
+    // unlike hair/beard this is genuinely visible: live-preview mutates _char.Face directly and redraws via
+    // SendSelfLook (no save), so a cancelled browse just restores the original value with one more redraw;
+    // only a confirmed pick calls SaveChar. Sex change reuses the same pattern, then also re-broadcasts to
+    // peers (Snapshot()/ShowPlayer already read _char.Sex/_char.Face live, so no separate wire format needed
+    // the way the morph workaround required).
+    internal void PreviewFace(int face) { _char.Face = (ushort)face; SendSelfLook(); }
+    internal void CommitFace(int face) { _char.Face = (ushort)face; SendSelfLook(); SaveChar(); }
+
+    // War-paint dye (RTK arena_master.lua / general_npc_funcs.warPaint). ArmorColor is the 0x33 appearance[4]
+    // palette byte; HasVisibleArmor mirrors RTK's "you need armor or a coat equipped to see your war paint"
+    // check (app[3] is the combined armor/coat slot on 4.95, so a non-zero _char.Armor means something is
+    // drawn there to recolor). Setting it redraws self + peers (RTK player:refresh) and persists.
+    internal byte CharArmorColor => _char.ArmorColor;
+    internal bool HasVisibleArmor => _char.Armor != 0;
+    internal void SetArmorColor(byte color) { _char.ArmorColor = color; RefreshAppearance(); SaveChar(); }
+
+    internal bool IsEquipped => _char.Equipment.Count > 0;
+    internal int FreeSlotCount => _char.MaxInv - _char.Inventory.Count;
+
+    /// <summary>Unequip everything back into the bag (gender change requires a bare paperdoll — RTK
+    /// player:isEquipped() gate). False, unchanged, if the bag doesn't have room for all of it.</summary>
+    internal bool StripAllEquipment()
+    {
+        if (_char.Equipment.Count > FreeSlotCount) return false;
+        foreach (var e in _char.Equipment.ToList())
+        {
+            _char.Equipment.Remove(e);
+            SendUnequip(e.Slot);
+            var def = Content.ItemById(e.ItemId);
+            if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, e.Dura, e.CustomName); }
+        }
+        SendStats();
+        MarkDirty();
+        return true;
+    }
+
+    /// <summary>Flip sex, persist, and redraw self + every co-located peer (same broadcast convention as the
+    /// other appearance-affecting flows — equip refresh, mount toggle, morph — all `except: this` since our
+    /// own view is refreshed directly above).</summary>
+    internal void CommitSexChange()
+    {
+        _char.Sex = (ushort)(_char.Sex == 0 ? 1 : 0);
+        RefreshAppearance();
+        SaveChar();
     }
 
     // ---- class / path + title + trainer spell-learning (RTK warrior_trainer.lua &c.) -------------
@@ -3216,7 +4165,7 @@ public sealed class Session
     }
 
     /// <summary>Send the player a status/minitext line (RTK sendMinitext).</summary>
-    internal void Notify(string text) => SendMessage(text);
+    internal void Notify(string text) => SendMiniText(text);
 
     /// <summary>Make an NPC speak an over-head bubble to everyone on its map (RTK npc:talk).</summary>
     internal void NpcBubble(Mob npc, string text) =>
@@ -3362,7 +4311,7 @@ public sealed class Session
     // buffs, teleports, summons) are a follow-up — RTK implements those as ~900 Lua scripts.
     private void HandleCast(byte[] dec)
     {
-        if (_char.Hp == 0) { SendMessage("Spirits cannot cast spells."); return; }
+        if (_char.Hp == 0) { SendMiniText("Spirits cannot cast spells."); return; }
         if (dec.Length < 1) return;
         int slot = dec[0] - 1;
         if (slot < 0 || slot >= _char.Spells.Count)
@@ -3411,6 +4360,38 @@ public sealed class Session
         // archetype and would otherwise degrade to CastMisc's "spend mana + acknowledge" no-op).
         if (Content.BaseKey(sp) == "gateway") return CastGateway(sp, answer);
 
+        // Return (common/return.lua): another peasant-commons teleport with no damage/heal archetype --
+        // same interception reason as Gateway above, or it would degrade to CastMisc's no-op.
+        if (sp.Key.Equals("return_spell", StringComparison.OrdinalIgnoreCase)) return CastReturn();
+
+        // Propose (common/propose.lua): a skill-type spell (SplType 5 — no native typed-answer/target wire
+        // arg at all) whose real interaction is entirely a scripted dialog (RTK inputSeq/menuSeq), same class
+        // of primitive as an NPC's. Intercept before the fx dispatch — it has no export row and would
+        // otherwise silently no-op via CastMisc.
+        if (sp.Key.Equals("propose", StringComparison.OrdinalIgnoreCase)) return CastPropose(sp);
+
+        // set_trap dispatcher (RTK rogue/set_trap.lua, SplQuestion "What trap? >"): re-runs the SAME level
+        // gate + mana cost as casting the specific set_X_trap spell directly (see Content.TrapSpellFor),
+        // keyed off the typed answer. Costs no mana itself — CastTrap below spends the real per-kind amount.
+        if (Content.IsTrapDispatcher(sp))
+        {
+            var trapKey = Content.TrapKeyForAnswer(answer ?? "");
+            var trapSpell = trapKey is null ? null : Content.SpellByKey(trapKey);
+            var trapInfo = trapSpell is null ? null : Content.TrapSpellFor(trapSpell);
+            if (trapInfo is null)
+            {
+                SendMiniText("Select: Dart trap, Snare trap, Repeating dart, Flash trap, Spear trap, Poison trap, Death trap, Sleep trap");
+                return false;
+            }
+            if (_char.Level < trapInfo.Value.Level) { SendMiniText($"You must be level {trapInfo.Value.Level} to set that trap."); return false; }
+            return CastTrap(trapSpell!, trapInfo.Value.Kind, Content.FxFor(trapSpell!), trapInfo.Value.Mana);
+        }
+        if (Content.TrapSpellFor(sp) is (Content.TrapKind directKind, int _, int directMana))
+            return CastTrap(sp, directKind, Content.FxFor(sp), directMana);
+        if (Content.IsBladestormTrap(sp)) return CastBladestormTrap(sp);
+        if (Content.PetSpellFor(sp) is (string petMobKey, int _, int petMana, int petCooldown))
+            return CastPetSummon(sp, petMobKey, petMana, petCooldown);
+
         var fx = Content.FxFor(sp);
         string arch = fx?.Archetype ?? "";
 
@@ -3423,9 +4404,58 @@ public sealed class Session
 
         // Cooldown (RTK "aether"), if this spell has one and it's still ticking.
         if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait))
-        { SendMessage($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
 
         int mana = fx.Mana > 0 ? fx.Mana : 5;   // real per-spell cost; 5 only if the export had none
+
+        // Backstab/Flank (Warrior-only skills — RTK Spells.csv has both at SplPthId=1, no other class learns
+        // either; user: "Flank and Backstab come from the warrior spells that provide those abilities. I
+        // think only warriors ever get them"): a boolean combat STANCE (RTK player.backstab/player.flank),
+        // not a numeric stat — CastBuff's generic BuffStat/BuffAmt loop can't express it (this spell's export
+        // row has neither set), so it silently no-opped before. RTK tags every alignment variant of both
+        // (backstab_warrior/back_battle_warrior/back_attack_warrior/back_damage_warrior, and the flank
+        // equivalents) with CureCat "backstabs"/"flanks" — a clean, data-driven way to catch all 4 aliases of
+        // each without hardcoding 8 identifiers.
+        if (fx.CureCat == "backstabs") return CastStance(sp, fx, mana, isBackstab: true);
+        if (fx.CureCat == "flanks")    return CastStance(sp, fx, mana, isBackstab: false);
+
+        // Rage tiers (Wolf's/Tiger's/Dragon's Fury, Baekho's Rage — Warrior AND Rogue; user: "they get rage
+        // spells until 99 I think") and Rogue's Invisible/Spirit's Form/Life's Cloak/Glass Form (sneak-attack
+        // multiplier — user: "rogue invis also has a damage multiplier"): same class of gap as Backstab/Flank
+        // above — neither has a numeric BuffStat/BuffAmt the generic CastBuff loop can express, so both
+        // silently no-opped (spent mana, printed a message, did nothing) before this pass.
+        if (Content.RageAmountFor(sp) is int rageAmt) return CastRage(sp, fx, mana, rageAmt);
+        if (Content.IsStealthSpell(sp)) return CastStealth(sp, fx, mana);
+        if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return CastEnchant(sp, fx, enchantAmt, enchantMana);
+
+        // The rest of this pass (self-sacrifice strikes, mana steal/gift, cleanse, revive, short leap): none
+        // of these have a numeric BuffStat/BuffAmt or a damage amountExpr the generic archetypes can express
+        // either (their CSV rows are all bare "Utility"), and each manages its own real RTK mana cost/cooldown
+        // internally rather than trusting the generic `mana`/`fx.Aether` values above (which are blank for
+        // all of them in the export — see each method's own hardcoded RTK constant).
+        if (Content.SacrificeFamilyFor(sp) is Content.SacrificeFamily fam) return CastSacrificeStrike(sp, fam);
+        if (Content.IsManaStealSpell(sp)) return CastManaSteal(sp, targetId);
+        if (Content.IsManaGiftSpell(sp)) return CastManaGift(sp, targetId);
+        if (Content.IsCleanseSpell(sp)) return CastCleanse(sp, targetId);
+        if (Content.IsReviveSpell(sp)) return CastRevive(sp, targetId);
+        if (Content.IsLeapSpell(sp)) return CastLeap(sp);
+        if (Content.IsAmbushSpell(sp)) return CastAmbush(sp);
+        if (Content.IsSpotTrapsSpell(sp)) return CastSpotTraps(sp, fx, mana);
+        if (Content.IsGroundLootSpell(sp)) return CastGroundLoot(sp, fx, mana);
+        if (Content.IsDivinationSpell(sp)) return CastDivination(sp, fx, targetId, Content.IsDivinationSpySpell(sp));
+
+        // Morph family (see Content.MorphSpells/MorphDispatchSpells): question-dispatched ones (feral_rogue,
+        // gangrel_rogue/mage, rodent_rogue, beast_rogue/mage, druids_rodent, wilderness_guise) resolve their
+        // look from the typed answer; the rest are fixed alignment reskins.
+        if (Content.MorphDispatchFor(sp) is (Dictionary<string, ushort> morphAnswers, int mdMana, int mdDur))
+        {
+            if (!morphAnswers.TryGetValue((answer ?? "").Trim().ToLowerInvariant(), out var mLook))
+            { SendMiniText("Become what?"); return false; }
+            return CastMorph(sp, fx, mLook, 0, mdMana, mdDur);
+        }
+        if (Content.MorphFor(sp) is (ushort morphLook, ushort morphLookF, int morphMana, int morphDur))
+            return CastMorph(sp, fx, morphLook, morphLookF, morphMana, morphDur);
+
         bool ok = arch switch
         {
             "Damage" => CastDamage(sp, fx, targetId, mana),
@@ -3440,8 +4470,9 @@ public sealed class Session
     }
 
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective
-    // (base + gear + buff) values, so a buffed caster hits harder. enchant/rage/fury default to 1 (we don't model
-    // those multipliers yet). Passed to Formula.Eval.
+    // (base + gear + buff) values, so a buffed caster hits harder. enchant/rage/invis reflect the real armed
+    // multiplier now (EffEnchant/EffRage/Stealthed) in case any Damage-archetype formula ever reads them; fury
+    // has no separate tracked state (player.rage covers every fury tier) so it stays a no-op 1.
     private Dictionary<string, double> SpellVars(Mob? target)
     {
         var t = Totals();
@@ -3455,23 +4486,23 @@ public sealed class Session
             ["player.maxMagic"]   = EffMaxMp,
             ["player.health"]     = _char.Hp,
             ["player.maxHealth"]  = EffMaxHp,
-            ["player.enchant"]    = 1, ["player.rage"] = 1, ["player.fury"] = 1, ["player.invis"] = 1,
+            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? 9 : 1,
             ["target.health"]     = target?.Hp ?? 0,
             ["target.baseHealth"] = target?.MaxHp ?? 0,
         };
     }
 
-    // RTK magic-deflect roll (clif_parsemagic, clif.c:8910-8934): resist grows with the target's Will
-    // advantage over the caster (in 10-point steps) plus its Protection, via exponential decay (0.9^prot).
-    // Only spells flagged SplCanFail roll this at all. RTK's mob struct also carries a separate per-mob
-    // "protection" stat our registry has no source column for, so it's treated as 0 — a real but partial
-    // port, not an invented number. No mana is spent on a deflected cast (RTK returns before the Lua "cast"
-    // script — which is where mana is actually debited — ever runs).
+    // RTK magic-deflect roll (clif_parsemagic, clif.c:8910-8934): resist = target.Protection + the target's
+    // Will advantage over the caster (in 10-point steps), then exponential decay (0.9^prot) turns that into a
+    // fail chance. Only spells flagged SplCanFail roll this at all. `target.Protection` now comes from the
+    // merged-in CTK `MobProtection` column (Content.cs) — previously always 0 for lack of a source column.
+    // No mana is spent on a deflected cast (RTK returns before the Lua "cast" script — which is where mana is
+    // actually debited — ever runs).
     private bool RollDeflect(Mob target)
     {
         int casterWill = _char.Will + Totals().will;
         int willDiff = Math.Max(0, target.Will - casterWill);
-        int prot = Math.Max(0, (int)(willDiff / 10.0 + 0.5));
+        int prot = Math.Max(0, target.Protection + (int)(willDiff / 10.0 + 0.5));
         int failChance = (int)(100 - Math.Pow(0.9, prot) * 100 + 0.5);
         return Random.Shared.Next(100) < failChance;
     }
@@ -3479,10 +4510,10 @@ public sealed class Session
     // Damage: evaluate the spell's real RTK damage formula, spend mana, apply to the faced/targeted mob.
     private bool CastDamage(SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
-        if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMessage($"{sp.Name} finds no target."); return false; }
-        if (sp.CanFail && RollDeflect(mob)) { SendMessage("The magic has been deflected."); return true; }
+        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
 
         int power = Math.Max(1, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(mob))));
         _char.Mp -= (uint)mana;
@@ -3506,14 +4537,14 @@ public sealed class Session
     // us). A pure heal at full HP still "works" (mana spent) — matches casting a heal you don't strictly need.
     private bool CastHeal(SpellDef sp, SpellFx fx, int mana)
     {
-        if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         int amount = Math.Max(0, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null))));
         _char.Mp -= (uint)mana;
         uint before = _char.Hp;
         _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amount);
         uint gain = _char.Hp - before;
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // heal sparkle + sound
-        SendMessage(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
+        SendMiniText(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
         return true;
     }
 
@@ -3523,7 +4554,7 @@ public sealed class Session
     // silently dead.
     private bool CastBuff(SpellDef sp, SpellFx fx, int mana)
     {
-        if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         _char.Mp -= (uint)mana;
 
         int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
@@ -3539,9 +4570,736 @@ public sealed class Session
 
         SendStats();   // reflect the boosted caps/attributes on the HUD immediately
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // buff aura + sound
-        SendMessage(applied > 0
+        SendMiniText(applied > 0
             ? $"You cast {sp.Name} — you feel its power ({durMs / 1000}s)."
             : $"You cast {sp.Name}.");
+        return true;
+    }
+
+    // Backstab/Flank stance timers (RTK player.backstab/player.flank, set true by these Warrior skills'
+    // "recast" hook and cleared by "uncast" when the duration lapses — we just track expiry directly, same
+    // pattern as Mob.FrozenUntil). Read by Session.PlayerSwingDamage via the properties below to apply RTK
+    // swingDamage.lua's backstab/flank positional 2x (Combat.IsBackstabAngle/IsFlankAngle) on top of the
+    // base same-facing positional bonus every swing already gets.
+    private long _backstabUntil, _flankUntil;
+    private bool BackstabStance => Environment.TickCount64 < _backstabUntil;
+    private bool FlankStance    => Environment.TickCount64 < _flankUntil;
+
+    // Backstab/Flank (RTK Spells.csv SplPthId=1 — Warrior-only, both at type 5/self-cast): a timed STANCE,
+    // not a stat buff or an attack — casting it just arms the positional bonus for the buff's duration (RTK
+    // 625s / ~10.4min per the Lua's `setDuration(..., 625000)`). Refreshing while already active just
+    // extends it (RTK's own recast semantics), matching CastBuff's "refresh, don't stack" behavior.
+    private bool CastStance(SpellDef sp, SpellFx fx, int mana, bool isBackstab)
+    {
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
+        long expires = Environment.TickCount64 + durMs;
+        if (isBackstab) _backstabUntil = expires; else _flankUntil = expires;
+        SendStats();
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText($"You cast {sp.Name} — you'll strike harder from the {(isBackstab ? "back" : "side")} for {durMs / 1000}s.");
+        Log.Info($"      {sp.Name} -> {(isBackstab ? "backstab" : "flank")} stance armed for {durMs}ms");
+        return true;
+    }
+
+    // Rage-tier timer (RTK player.rage — Wolf's/Tiger's/Dragon's Fury, Baekho's Rage): swingDamage.lua
+    // multiplies the ENTIRE player swing by max(player.rage,1), so this is the single biggest melee
+    // multiplier a Warrior/Rogue can stack (up to 5x at the level-99 tier). Expires back to the RTK
+    // baseline of 1 (not 0) automatically once _rageUntil lapses — see EffRage.
+    private long _rageUntil;
+    private int  _rageAmount = 1;
+    private int  EffRage => Environment.TickCount64 < _rageUntil ? _rageAmount : 1;
+
+    // Real RTK rejects re-casting ANY fury while one is already active (`player:checkIfCast(lesserFuries) or
+    // player.rage > 1`) — you can't skip straight to a stronger tier by overwriting; you wait the current one
+    // out. Content.RageAmountFor's level gate (via SpellLevelOverrides) already keeps a low-level character
+    // off the higher tiers; this just blocks stacking/re-triggering once any tier is up.
+    private bool CastRage(SpellDef sp, SpellFx fx, int mana, int rageAmount)
+    {
+        if (EffRage > 1) { SendMiniText("You are already benefiting from a fury."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
+        _rageUntil = Environment.TickCount64 + durMs;
+        _rageAmount = rageAmount;
+        SendStats();
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText($"You cast {sp.Name} — your attacks hit {rageAmount}x harder for {durMs / 1000}s!");
+        Log.Info($"      {sp.Name} -> rage x{rageAmount} armed for {durMs}ms");
+        return true;
+    }
+
+    // Stealth timer (RTK player.state==2 — Rogue Invisible/Spirit's Form/Life's Cloak/Glass Form): a flat 9x
+    // damage multiplier on the swing that follows (swingDamage.lua: `if player.state==2 then invisible=9
+    // end`), meant as a one-shot sneak-attack burst — landing that hit strips the stealth immediately
+    // (RTK `block:removeDuras(invis)` after a nonzero hit), so Session.PlayerSwingDamage clears _stealthUntil
+    // itself once it applies the multiplier. ONLY the damage multiplier is ported here — real RTK's
+    // PC_INVIS also hides the player's sprite from other clients (clif.c), which isn't touched by this pass.
+    private long _stealthUntil;
+    private bool Stealthed => Environment.TickCount64 < _stealthUntil;
+
+    private bool CastStealth(SpellDef sp, SpellFx fx, int mana)
+    {
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
+        _stealthUntil = Environment.TickCount64 + durMs;
+        SendStats();
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText($"You cast {sp.Name} — your next strike will land with brutal force ({durMs / 1000}s).");
+        Log.Info($"      {sp.Name} -> stealth (9x next hit) armed for {durMs}ms");
+        return true;
+    }
+
+    // Enchant-tier timer (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua
+    // multiplies ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingDamage).
+    // Expires back to the RTK baseline of 1 (not 0) once _enchantUntil lapses, same shape as EffRage.
+    private long _enchantUntil;
+    private double _enchantAmount = 1;
+    private double EffEnchant => Environment.TickCount64 < _enchantUntil ? _enchantAmount : 1;
+
+    // Real RTK rejects casting ANY enchant while one (including itself) is already active — the shared
+    // "enchants" checkIfCast group in spellTables.lua — rather than letting a stronger tier overwrite a
+    // weaker one. Mana is the per-spell hardcoded amount from Content.EnchantFor, not the generic dispatch
+    // `mana` (unreliable in the CSV export for these Type-5 skills — tigers_fortitude_rogue is genuinely free).
+    private bool CastEnchant(SpellDef sp, SpellFx fx, double amount, int mana)
+    {
+        if (EffEnchant > 1) { SendMiniText("This spell is already active."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
+        _enchantUntil = Environment.TickCount64 + durMs;
+        _enchantAmount = amount;
+        SendStats();
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText($"Your weapon shines with holy light — enchanted for {durMs / 1000}s.");
+        Log.Info($"      {sp.Name} -> enchant x{amount} armed for {durMs}ms");
+        return true;
+    }
+
+    // RTK "morphs" duration group (see Content.MorphSpells/MorphDispatchFor) — purely cosmetic disguise.
+    // CORRECTED 2026-07-26: an earlier pass concluded self-view was client-engine blocked, based on 0x33's
+    // handler (0x44fef0) always forcing the player sprite archive (0x4f2a84) via 0x463380. That's real, but
+    // it only proves 0x33 can't draw a monster — it does NOT apply to self. Fresh disassembly of the shared
+    // entity factory (0x44d7d0) shows a THIRD path: when a packet's entity id equals the client's own self
+    // id (checked via `cmp edi,[[ebx+0x40c]+0x108]`), the factory never touches the peer/monster ctor OR
+    // 0x33's hardcoded-archive draw call at all — it reroutes to 0x461e30, which writes the look descriptor
+    // straight into the self entity's OWN struct fields (self+0x178/0x17c/0x180), the identical fields a
+    // real monster entity carries. That path is reachable the exact same way the peer workaround already
+    // reaches it: send a real 0x07 Monster.epf creature-spawn, just addressed to the caster's own id instead
+    // of a peer's. So Session.ShowPlayer — the single choke point every peer re-sync path already funnels
+    // through — now updates the CASTER's own view too (World.Broadcast with no `except`, including a
+    // self-call). The caster's own id never enters World's mob list, so click/party/trade resolution
+    // (HandleClickInfo checks MobById before PlayerById) is unaffected either way.
+    private ushort _morphLook;     // 0 = not morphed; else the Monster.tbl index peers see us as (0x8000|this)
+    private byte   _morphColor;
+    private long   _morphUntil;
+    private string _morphKey = "";
+    public bool IsMorphed => _morphLook != 0 && Environment.TickCount64 < _morphUntil;
+    /// <summary>Read by World.Tick (outside the lock) to know when to fire the revert broadcast.</summary>
+    public bool IsMorphExpired => _morphLook != 0 && Environment.TickCount64 >= _morphUntil;
+
+    // Real RTK lets EVERY morph identifier keep its OWN independent duration timer (hasDuration(OWN_NAME)),
+    // so casting a second morph while a different one is active leaves both ticking — whichever lapses LAST
+    // wins the visual, a genuine RTK quirk with no gameplay purpose. Simplified to one consistent slot:
+    // casting a DIFFERENT morph replaces the old one outright; re-casting the SAME one un-morphs (toggle),
+    // matching every morph script's own `if hasDuration(OWN_NAME) then removeDuras(morphs); return`.
+    private bool CastMorph(SpellDef sp, SpellFx? fx, ushort look, ushort lookFemale, int mana, int durationMs)
+    {
+        if (IsMorphed && string.Equals(_morphKey, sp.Key, StringComparison.OrdinalIgnoreCase)) { RevertMorph(); return true; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        _buffs.RemoveAll(b => b.Key == _morphKey);   // drop the OLD morph's timer entry (if switching morphs)
+        _morphLook = (lookFemale != 0 && _char.Sex == 1) ? lookFemale : look;
+        _morphColor = 0;   // RTK ties this to disguiseColor = player.armorColor, a per-item dye this server doesn't track
+        _morphUntil = Environment.TickCount64 + durationMs;
+        _morphKey = sp.Key;
+        _buffs.Add(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
+        SendStats();
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        // Force-clear the old entity (incl. its nameplate) on PEERS before re-showing — see RefreshAppearance
+        // doc comment. Deliberately NOT sent to ourselves: unlike a peer's copy of us, our own client's self
+        // entity is a persistent singleton the 0x33 self-id path updates in place (never destroys), and an
+        // explicit 0x0E despawn of our own id risks tearing down that same object instead (untested, and not
+        // needed — self's view was already correct before this fix).
+        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        ShowPlayer(this);   // + our own view too, via the same 0x07 self-id path — see doc comment above
+        SendMiniText($"You feel your body twist and change! ({durationMs / 1000}s)");
+        Log.Info($"      {sp.Name} -> morph look={_morphLook} for {durationMs}ms (self + peer visible via 0x07, see Content.MorphSpells)");
+        return true;
+    }
+
+    /// <summary>Clears morph state and re-broadcasts our real human look to everyone, including ourselves.
+    /// Called from the toggle-off cast above, and from World.Tick (via IsMorphExpired) when the duration
+    /// lapses on its own.</summary>
+    public void RevertMorph()
+    {
+        if (_morphLook == 0) return;
+        _buffs.RemoveAll(b => b.Key == _morphKey);
+        _morphLook = 0; _morphColor = 0; _morphUntil = 0; _morphKey = "";
+        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        ShowPlayer(this);   // restore our own view too (same 0x07-self-id path we used to morph)
+    }
+
+    // The rogue/warrior "self-sacrifice strike" family (Lethal Strike/Afterlife's Embrace/Ming-Ken's
+    // Judgement/Calculating Blow; Desperate Attack/The Void's Measure/Beastly Frenzy/Tilting the Balance;
+    // Berserk/No Fear/Tiger's Pounce/Wind's Blast; Whirlwind/Death's Angel/Nature's Own/Bladedance). Ported
+    // verbatim from RTK rogue/lethal_strike.lua, rogue/desperate_attack.lua, warrior/berserk.lua,
+    // warrior/whirlwind.lua (+ rogue/backflow.lua, warrior/overflow.lua):
+    //   - damage is computed from the CASTER's OWN pre-cast HP/MP, not target stats — a facing-tile physical
+    //     attack (not a targeted cast) that hits whatever mob is directly in front of the caster
+    //   - the raw damage is armor-netted the same way melee is (Combat.ApplyArmor) to find any OVERKILL
+    //   - Rogue pair (Lethal Strike/Desperate Attack): overkill "backflows" — up to half returns to the
+    //     caster as HP and MP, each capped at half whatever HP/MP the caster had before casting
+    //   - Warrior pair (Berserk/Whirlwind): overkill "overflows" instead — splashes recursively onto up to
+    //     4 adjacent-tile mobs rather than refunding the caster
+    //   - landing the hit ALWAYS costs the caster a big chunk of their own HP, regardless of overkill
+    //   - Baekho's Rage specifically (rage tier 5, not any lesser Fury) adds a further 1.5x to Berserk/Whirlwind
+    //   - Whirlwind's damage factor AND post-hit HP cost differ by the caster's OWN alignment stat (RTK reads
+    //     player.alignment directly, not which of the 4 aliases was actually cast — Unaligned/Kwisin get the
+    //     milder tier, Ming-Ken/Ohaeng the harsher one)
+    // PC targets are skipped entirely — no PvP damage path exists yet (same precedent as CastDebuff below).
+    private bool CastSacrificeStrike(SpellDef sp, Content.SacrificeFamily fam)
+    {
+        var (mana, aetherMs) = fam switch
+        {
+            Content.SacrificeFamily.LethalStrike    => (120, 23000),
+            Content.SacrificeFamily.DesperateAttack => (60, 11000),
+            Content.SacrificeFamily.Berserk         => (60, 12000),
+            Content.SacrificeFamily.Whirlwind       => (120, _char.Alignment == 0 ? 30000 : 25000),
+            _ => (60, 60000),
+        };
+        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+
+        uint preHealth = _char.Hp, preMagic = _char.Mp;
+        bool baekho = _rageAmount == 5 && EffRage > 1;   // Baekho's Rage specifically, not any lesser Fury tier
+
+        int damage = fam switch
+        {
+            Content.SacrificeFamily.LethalStrike    => (int)Math.Ceiling(preHealth / 2.0) + (int)Math.Ceiling(preMagic * 2.5),
+            Content.SacrificeFamily.DesperateAttack => (int)(preHealth + preMagic),
+            Content.SacrificeFamily.Berserk         => (int)Math.Ceiling(preHealth * 0.75),
+            Content.SacrificeFamily.Whirlwind       => (int)Math.Ceiling(preHealth * (_char.Alignment >= 2 ? 1.525 : 1.75)),
+            _ => 0,
+        };
+        if ((fam is Content.SacrificeFamily.Berserk or Content.SacrificeFamily.Whirlwind) && baekho)
+            damage = (int)Math.Ceiling(damage * 1.5);
+
+        _char.Mp -= (uint)mana;
+        SetCooldown(sp.Key, aetherMs);
+
+        var (fx, fy) = FrontTile();
+        var mob = _world.MobAt(_char.Map, fx, fy);
+        bool landed = false;
+        if (mob is not null && mob.Alive)
+        {
+            int netDamage = Combat.ApplyArmor(damage, mob.Ac, floor: -95);
+            int overkill = netDamage - mob.Hp;
+            _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
+            BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
+            ShowDamageResult(mob.Id, mob, died);
+            landed = true;
+            if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward); SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)"); }
+            else SendMessage($"Your {sp.Name} hits {mob.Name} for {netDamage}.");
+
+            if (overkill > 0)
+            {
+                if (fam is Content.SacrificeFamily.LethalStrike or Content.SacrificeFamily.DesperateAttack)
+                    ApplyBackflow(overkill, preHealth, preMagic);
+                else
+                    ApplyOverflow(overkill, fx, fy, fam);
+            }
+        }
+        else SendMiniText($"{sp.Name} finds no target.");
+
+        if (landed)
+        {
+            _char.Hp = fam switch
+            {
+                Content.SacrificeFamily.LethalStrike    => (uint)Math.Ceiling(_char.Hp / 2.0),
+                Content.SacrificeFamily.DesperateAttack => (uint)Math.Ceiling(_char.Hp / 2.0),
+                Content.SacrificeFamily.Berserk         => (uint)Math.Ceiling(_char.Hp / 3.0),
+                Content.SacrificeFamily.Whirlwind       => _char.Alignment >= 2 ? (uint)Math.Ceiling(_char.Hp * 0.10) : 10,
+                _ => _char.Hp,
+            };
+            if (fam == Content.SacrificeFamily.DesperateAttack) _char.Mp = 0;
+        }
+        SendStats();
+        Log.Info($"      {sp.Name} -> sacrifice strike ({fam}) landed={landed} hp->{_char.Hp}/{EffMaxHp}");
+        return true;
+    }
+
+    // RTK's spellFX local (201/120/119/125 for lethal_strike/desperate_attack/berserk/whirlwind) indexes the
+    // SAME shared pcalign->(anim,sound) ladder Content.ZapEffect already carries (rows 119-127/200-204).
+    private static (int anim, int sound) SacrificeFx(Content.SacrificeFamily fam) => fam switch
+    {
+        Content.SacrificeFamily.LethalStrike    => Content.ZapEffect(201, 2),
+        Content.SacrificeFamily.DesperateAttack => Content.ZapEffect(120, 2),
+        Content.SacrificeFamily.Berserk         => Content.ZapEffect(119, 1),
+        Content.SacrificeFamily.Whirlwind       => Content.ZapEffect(125, 1),
+        _ => (-1, -1),
+    };
+    private static int SacrificeAnim(Content.SacrificeFamily fam) => SacrificeFx(fam).anim;
+    private static int SacrificeSound(Content.SacrificeFamily fam) => SacrificeFx(fam).sound;
+
+    // RTK rogue/backflow.lua: half the OVERKILL (post-armor damage beyond what was needed to kill) refunds
+    // to the caster as HP and as MP, each capped at half of whatever HP/MP the caster had BEFORE this cast.
+    private void ApplyBackflow(int overkill, uint preHealth, uint preMagic)
+    {
+        if (overkill < 1) return;
+        int refund = (int)Math.Ceiling(overkill / 2.0);
+        int hpCap = (int)Math.Ceiling(preHealth / 2.0);
+        int mpCap = (int)Math.Ceiling(preMagic / 2.0);
+        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)Math.Min(refund, hpCap));
+        _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)Math.Min(refund, mpCap));
+    }
+
+    // RTK warrior/overflow.lua: overkill splashes onto up to 4 adjacent-tile mobs (N/S/E/W of the point),
+    // evenly split; each further net-armored hit's own overkill recursively re-splashes outward — a rare
+    // but real chain-kill cleave. Only mobs are valid splash targets in RTK's own Lua (no PC branch here).
+    private void ApplyOverflow(int baseDamage, int srcX, int srcY, Content.SacrificeFamily fam)
+    {
+        if (baseDamage < 1) return;
+        int total = (int)Math.Ceiling(baseDamage * 1.05);
+        var offsets = new (int dx, int dy)[] { (0, 1), (0, -1), (1, 0), (-1, 0) };
+        var targets = new List<(Mob mob, int x, int y)>();
+        foreach (var (dx, dy) in offsets)
+        {
+            var m = _world.MobAt(_char.Map, srcX + dx, srcY + dy);
+            if (m is not null && m.Alive) targets.Add((m, srcX + dx, srcY + dy));
+        }
+        if (targets.Count == 0) return;
+        int share = (int)Math.Ceiling((double)total / targets.Count);
+        foreach (var (mob, x, y) in targets)
+        {
+            int net = Combat.ApplyArmor(share, mob.Ac, floor: -95);
+            int overkill = net - mob.Hp;
+            _world.TryDamage(_char.Map, mob, net, out bool died, _char.Id);
+            BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
+            ShowDamageResult(mob.Id, mob, died);
+            if (died) AwardExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp));
+            if (overkill > 0) ApplyOverflow(overkill, x, y, fam);
+        }
+    }
+
+    // Resolve a spell's PLAYER target: an explicit targetId (client-supplied entity id, same convention as
+    // ResolveCastTarget's mob lookup) or else whoever's standing on the tile directly faced.
+    private Session? ResolvePcCastTarget(uint? targetId)
+    {
+        if (targetId is uint id && id != 0)
+        {
+            var byId = _world.PlayerById(id);
+            if (byId is not null) return byId;
+        }
+        var (fx, fy) = FrontTile();
+        return _world.PeerAt(_char.Map, fx, fy);
+    }
+
+    // RTK poet/inspiration.lua family (Draw Energy/Harness Power/Combine Focus/Inspiration — 4 reskins, one
+    // mechanic): drains a GROUP MEMBER's entire current mana into the caster's own pool (capped at the
+    // caster's max). No separate cast cost — the "cost" IS taking the target's mana. Target must be in the
+    // caster's own party and not a ghost (RTK: "That cannot save them now").
+    private bool CastManaSteal(SpellDef sp, uint? targetId)
+    {
+        var target = ResolvePcCastTarget(targetId);
+        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (target.IsDead) { SendMiniText("That cannot save them now."); return false; }
+        if (_party is null || !ReferenceEquals(target._party, _party)) { SendMiniText("They must be in your group."); return false; }
+
+        uint mana = target._char.Mp;
+        target._char.Mp = 0;
+        target.SendStats();
+        target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
+
+        _char.Mp = Math.Min(EffMaxMp, _char.Mp + mana);
+        BroadcastFx(_char.Id, 6, 22);   // player:sendAction(6,20) + playSound(22) — no explicit Effect.tbl id in the Lua, action-only
+        SendStats();
+        SendMiniText($"You cast {sp.Name}.");
+        Log.Info($"      {sp.Name} -> stole {mana} mana from '{target._char.Name}'");
+        return true;
+    }
+
+    // RTK poet/inspire.lua family (Inspire/Share Energy/Bestow Power/Release Focus — 4 reskins): tops off
+    // ANY other player's mana using the caster's own — no group requirement, but requires the caster hold at
+    // least 30 mana to attempt it at all, then gives up to (target's missing mana), capped by whatever the
+    // caster actually has (draining the caster to 0 rather than failing outright if they're short).
+    private bool CastManaGift(SpellDef sp, uint? targetId)
+    {
+        const int magicCost = 30;
+        var target = ResolvePcCastTarget(targetId);
+        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (ReferenceEquals(target, this)) { SendMiniText("It doesn't work."); return false; }
+        if (target.IsDead) { SendMiniText("That cannot save them now."); return false; }
+        if (_char.Mp < magicCost) { SendMiniText("Not enough mana."); return false; }
+
+        uint missing = target.EffMaxMp - target._char.Mp;
+        uint give = Math.Min(_char.Mp, missing);
+        _char.Mp -= give;
+        target._char.Mp = Math.Min(target.EffMaxMp, target._char.Mp + give);
+
+        target.SendStats();
+        target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
+        SendStats();
+        BroadcastFx(_char.Id, 6, 22);
+        SendMiniText($"You cast {sp.Name}.");
+        Log.Info($"      {sp.Name} -> gave {give} mana to '{target._char.Name}'");
+        return true;
+    }
+
+    // RTK's `player:flushDuration()` — strips every active timed spell effect in one shot, buffs and
+    // debuffs alike. We don't yet track true player-targeted debuffs (only mob-targeted freezes), so this
+    // clears every timed mechanic that exists PC-side: stat buffs, rage tiers, the stealth burst, and the
+    // Warrior Backstab/Flank stances.
+    private void FlushDurations()
+    {
+        _buffs.Clear();
+        _rageUntil = 0;
+        _stealthUntil = 0;
+        _backstabUntil = 0;
+        _flankUntil = 0;
+    }
+
+    // RTK poet/dispell.lua family (Dispell/Remove Magic/Return Natural/Restore Balance — 4 reskins): a
+    // chance-based full buff/debuff wipe on a targeted player (self-castable too). Success chance is RTK's
+    // literal formula: target's effective armor (clamped to [-60,70]) minus a will-scaled protection term,
+    // folded into (120+armor)/2, floored at 10%. Fixed 200 mana; no cooldown in the Lua. Player Protection
+    // isn't modeled yet (only mobs carry it — see MobProtection), so the term defaults to 0 for a PC target.
+    private bool CastCleanse(SpellDef sp, uint? targetId)
+    {
+        const int cost = 200;
+        if (_char.Mp < cost) { SendMiniText("You do not have enough mana."); return false; }
+        var target = ResolvePcCastTarget(targetId);
+        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+
+        int targetArmor = Math.Clamp(target._char.Ac - target.Totals().armor, -60, 70);
+        int prot = (int)Math.Floor(((target._char.Will + target.Totals().will) - (_char.Will + Totals().will)) / 10.0);
+        int armor = targetArmor - prot;
+        int successRate = Math.Max(10, (int)Math.Ceiling((120 + armor) / 2.0));
+
+        _char.Mp -= cost;
+        SendStats();
+        if (Random.Shared.Next(1, 101) > successRate) { SendMiniText("Something went wrong."); return true; }
+
+        target.FlushDurations();
+        target.SendStats();
+        if (!ReferenceEquals(target, this)) target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
+        BroadcastFx(_char.Id, 6, 34);
+        SendMiniText($"You cast {sp.Name}.");
+        Log.Info($"      {sp.Name} -> cleansed '{target._char.Name}' (rate {successRate}%)");
+        return true;
+    }
+
+    // RTK poet/resurrect.lua family (Resurrect/Return Spirit/Ming-Ken Blessing/Death Undone — 4 reskins):
+    // revives a dead/ghost player to full health in place. Fixed 3000 mana, 8s cooldown. RTK also blocks
+    // reviving a currently-hostile PvP target (player:canPK) — not modeled since this server has no PvP
+    // combat/hostility-flag system yet, so that guard is simply absent rather than faked.
+    private bool CastRevive(SpellDef sp, uint? targetId)
+    {
+        const int cost = 3000;
+        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (_char.Mp < cost) { SendMiniText("Your will is too weak."); return false; }
+        var target = ResolvePcCastTarget(targetId);
+        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (!target.IsDead) { SendMiniText($"{sp.Name} has no effect on the living."); return true; }
+
+        _char.Mp -= cost;
+        SetCooldown(sp.Key, 8000);
+        target.ReviveAt(target._char.Map, target._char.X, target._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
+        BroadcastFx(_char.Id, 6, 20);
+        SendMiniText($"You cast {sp.Name}.");
+        SendStats();
+        Log.Info($"      {sp.Name} -> revived '{target._char.Name}'");
+        return true;
+    }
+
+    // RTK rogue/race.lua family (Race/Spiritual Jump/Leap of Faith/Transport — 4 independently-authored
+    // copies of the same mechanic): jump up to 3 tiles in the faced direction, stopping at the last passable
+    // tile (same collision test normal movement uses — BlockedMove folds in both the ground pass flag and
+    // SObj.tbl directional object-walls). 1 mana, 80s cooldown.
+    private bool CastLeap(SpellDef sp)
+    {
+        const int cost = 1;
+        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (_char.Mp < cost) { SendMiniText("You do not have enough mana."); return false; }
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        if (md is null) { SendMiniText("It doesn't work here."); return false; }
+
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
+        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        int dist = 0;
+        for (int step = 1; step <= 3; step++)
+        {
+            int nx = _char.X + dx * step, ny = _char.Y + dy * step;
+            if (nx < 0 || ny < 0 || nx >= _char.MapXs || ny >= _char.MapYs || md.BlockedMove(nx, ny, _facing)) break;
+            dist = step;
+        }
+        if (dist == 0) { SendMiniText("There's nowhere to go."); return false; }
+
+        _char.Mp -= (uint)cost;
+        SetCooldown(sp.Key, 80000);
+        ushort nx2 = (ushort)(_char.X + dx * dist), ny2 = (ushort)(_char.Y + dy * dist);
+        string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
+        EnterMap(_char.Map, _char.MapXs, _char.MapYs, nx2, ny2, mapName);   // re-anchor viewport/redraw at the new spot (same convention as !warp)
+        SendStats();
+        SendMiniText($"You cast {sp.Name}.");
+        Log.Info($"      {sp.Name} -> leapt {dist} tile(s) dir {_facing}");
+        return true;
+    }
+
+    // RTK rogue/ambush.lua (+ displacement/waylay/reflect reskins, see Content.IsAmbushSpell): "Leap over
+    // your enemy to face their back while attacking." No mana cost in the Lua — the caster teleports to the
+    // tile directly behind the faced target (relative to the TARGET's own facing, not the caster's) and
+    // re-faces to match it, which lines up exactly with Combat.IsBehindTarget's existing unconditional
+    // positional-backstab bonus (attacker/target facing the same way, attacker on the target's blind side)
+    // — so the follow-up swing below gets that x2 "for free", same as a real sneak-up. Only ever targets a
+    // world mob (RTK's own getTargetFacing prioritizes BL_MOB first; PC/NPC targets aren't meaningful here
+    // — this server has no PvP melee path yet). RTK paces reuse with player.ambushTimer (attackSpeed-
+    // derived, not modeled) — a short fixed cooldown substitutes so it can't be chain-spammed.
+    private bool CastAmbush(SpellDef sp)
+    {
+        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        var (fx, fy) = FrontTile();
+        var mob = _world.MobAt(_char.Map, fx, fy);
+        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        byte behindDir = (byte)((mob.Dir + 2) & 3);
+        var (bx, by) = StepDir(mob.X, mob.Y, behindDir);
+        bool blocked = bx < 0 || by < 0 || bx >= _char.MapXs || by >= _char.MapYs ||
+                       (md?.BlockedMove(bx, by, behindDir) ?? false) || _world.PeerAt(_char.Map, bx, by) is not null;
+        if (blocked) { SendMiniText($"{sp.Name} finds no opening."); return false; }
+
+        SetCooldown(sp.Key, 3000);
+        _facing = mob.Dir;
+        string mapName2 = Content.Maps.TryGetValue(_char.Map, out var mi2) ? mi2.Name : "";
+        EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)bx, (ushort)by, mapName2);   // re-anchor viewport at the target's back
+        SendAction(_char.Id, type: 1, time: 8, param: 0);
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);
+
+        var (dmg, crit) = PlayerSwingDamage(mob);
+        if (_world.TryDamage(_char.Map, mob, dmg, out bool died, _char.Id))
+        {
+            var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);
+            if (weapon is not null) DeductDura(weapon);
+            ShowDamageResult(mob.Id, mob, died, crit ? (byte)0xFF : HitCritByte, (byte)Math.Clamp(_hitSfx, 0, 255));
+            Log.Info($"      {sp.Name} -> leapt behind '{mob.Name}' and struck for {dmg}{(crit ? " (CRIT)" : "")}");
+            if (died)
+            {
+                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                AwardExp(reward);
+                SendMessage($"You defeated {mob.Name}. (+{reward} exp)");
+                TallyKill(mob);
+            }
+        }
+        return true;
+    }
+
+    // One step from (x,y) in direction dir (0=N/1=E/2=S/3=W — same convention as FrontTile/_facing/Mob.Dir).
+    private static (int x, int y) StepDir(int x, int y, int dir) => (dir & 3) switch
+    {
+        0 => (x, y - 1),
+        1 => (x + 1, y),
+        2 => (x, y + 1),
+        _ => (x - 1, y),
+    };
+
+    // RTK rogue/filch.lua family (see Content.IsGroundLootSpell): mana is spent and the "I'll take that"
+    // bark plays regardless of what's on the tile (RTK does both unconditionally, before ever looking at
+    // the floor) — only the actual grab is conditional on the tile being empty of other players.
+    private bool CastGroundLoot(SpellDef sp, SpellFx fx, int mana)
+    {
+        if (_char.Mp < (uint)mana) { SendMiniText("Your will is too weak."); return false; }
+        _char.Mp -= (uint)mana;
+        SendStats();
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText("I'll take that.");
+
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
+        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        int tx = _char.X + dx, ty = _char.Y + dy;
+        if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) return true;
+
+        if (_world.PeerAt(_char.Map, tx, ty) is not null) return true;   // someone's standing on it — hands off
+
+        var gi = _world.PickUp(_char.Map, tx, ty);
+        if (gi is null) return true;
+        if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); return true; }   // coins -> purse
+        var def = Content.ItemById(gi.ItemId);
+        if (def is null) return true;
+        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+            // pack full — put it straight back rather than losing it (same recovery as HandlePickup)
+            _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
+                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+        Log.Info($"      {sp.Name} -> grabbed item {gi.ItemId} from ({tx},{ty})");
+        return true;
+    }
+
+    // RTK warrior/watchful_eye.lua family + dog/spot_traps.lua (see Content.IsSpotTrapsSpell): reveals every
+    // hidden rogue-trap NPC (dart/snare/repeating/flash/spear/poison/death/sleep) within 15 tiles (RTK
+    // seeSpotTraps: distanceSquare(player, npc, 15)) by drawing item 99 ("wooden sword" — RTK's own marker,
+    // its Lua comment calls it a "steel dagger" but the actual dropped id is 99 either way) on each trap's
+    // tile — via ShowGroundItem directly (not World.DropItem), so only the caster's own client ever sees it,
+    // matching RTK's addTrapSpotters/getTrapSpotters per-player visibility tagging. No removal call exists
+    // yet (RTK's own removeSpotTraps is a separate GM-style command) — same "stays until you leave/re-enter
+    // the map" behaviour the Lua describes ("will remain on screen for as long as you want").
+    private bool CastSpotTraps(SpellDef sp, SpellFx fx, int mana)
+    {
+        if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+
+        _char.Mp -= (uint)mana;
+        SendStats();
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SetCooldown(sp.Key, fx.Aether > 0 ? fx.Aether : 25000);   // RTK setAether(key, 25000) for the warrior family — missing from the export, spot_traps' own row already has a real aether
+
+        var traps = _world.TrapsNear(_char.Map, _char.X, _char.Y, 15);
+        ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
+        foreach (var t in traps)
+            ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
+
+        SendMiniText(traps.Length > 0 ? $"You sense {traps.Length} hidden trap{(traps.Length == 1 ? "" : "s")} nearby." : "You sense nothing nearby.");
+        Log.Info($"      {sp.Name} -> revealed {traps.Length} trap(s) near ({_char.X},{_char.Y})");
+        return true;
+    }
+
+    // RTK rogue/judge.lua + spy.lua (see Content.IsDivinationSpell): a text popup showing another player's
+    // class/name/level/title/might/will/grace — the spy variant appends their full inventory. 30 mana flat,
+    // no cooldown in the Lua. Sent to the CASTER (this session), not the target — it's an inspect, not a
+    // debuff, so the target isn't notified.
+    private bool CastDivination(SpellDef sp, SpellFx fx, uint? targetId, bool showInventory)
+    {
+        const int mana = 30;
+        if (_char.Mp < mana) { SendMiniText("You do not have enough mana."); return false; }
+        var target = ResolvePcCastTarget(targetId);
+        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+
+        // Judge family: target must be STRICTLY lower level. Spy family: equal level is also allowed.
+        // (`target.level >= player.level` fails vs `target.level > player.level` fails — a real distinction
+        // in the Lua, not a typo.)
+        bool allowed = showInventory ? target._char.Level <= _char.Level : target._char.Level < _char.Level;
+        if (!allowed) { SendMiniText("Target player must be lower level than you for you to use this spell."); return false; }
+
+        _char.Mp -= mana;
+        SendStats();
+
+        var tc = target._char;
+        var text = new System.Text.StringBuilder();
+        text.Append(tc.ClassName).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
+        text.Append(tc.Title ?? "").Append('\n');
+        text.Append("Might: ").Append(target.EffMight)
+            .Append(" Will: ").Append(tc.Will + target.Totals().will)
+            .Append(" Grace: ").Append(tc.Grace + target.Totals().grace).Append('\n');
+        if (showInventory)
+        {
+            text.Append("Items: ");
+            foreach (var it in tc.Inventory)
+            {
+                var def = Content.ItemById(it.ItemId);
+                if (def is not null) text.Append(def.Name).Append(' ');
+            }
+        }
+
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendScriptMessageP(tc.Id, text.ToString(), DialogPortrait.None, prev: false, next: false);
+        Log.Info($"      {sp.Name} -> divined '{tc.Name}' (inventory={showInventory})");
+        return true;
+    }
+
+    // RTK rogue/set_X_trap.lua family (see Content.TrapSpellFor/IsTrapDispatcher): places a hidden hazard
+    // on the caster's OWN current tile (RTK: player.x/player.y at cast time, never the faced tile) that
+    // fires once a mob steps onto it (World.Tick's movement pass). Bark + sound play unconditionally, same
+    // as every other trap spell in the source.
+    private bool CastTrap(SpellDef sp, Content.TrapKind kind, SpellFx? fx, int mana)
+    {
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        _world.PlaceTrap(_char.Map, _char.X, _char.Y, Content.TrapWireKind(kind), _char.Id);
+        SendStats();
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText("You set a trap!");   // RTK dart_trap.lua: sendMinitext, exact wording
+        Log.Info($"      {sp.Name} -> placed {kind} trap at ({_char.X},{_char.Y})");
+        return true;
+    }
+
+    // RTK rogue/bladestorm_trap.lua (see Content.IsBladestormTrap): places a visible step-triggered decoy on
+    // the caster's OWN tile that detonates a facing-cone AoE the instant ANYTHING steps onto it — a mob
+    // triggers it from World.Tick's movement loop (TriggerTrapLocked's "bladestorm" case); a player triggers
+    // it from HandleWalk via World.CheckPlayerTrapTrigger. Real RTK also drains the owner 5000 mana/tick via
+    // the decoy's own heartbeat for up to 21s — NOT ported (the exact drain/early-deletion formula isn't in
+    // the captured Lua), so this is the flat 1520 upfront cost only; flagged, not silently dropped.
+    private bool CastBladestormTrap(SpellDef sp)
+    {
+        const int mana = 1520, cooldownMs = 125000, lifetimeMs = 21000;
+        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        SetCooldown(sp.Key, cooldownMs);
+        _world.PlaceTrap(_char.Map, _char.X, _char.Y, "bladestorm", _char.Id, Environment.TickCount64 + lifetimeMs);
+        SendStats();
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText("You set a devastating trap!");
+        Log.Info($"      {sp.Name} -> bladestorm trap placed at ({_char.X},{_char.Y}), expires in {lifetimeMs}ms");
+        return true;
+    }
+
+    /// <summary>Called by World.CheckPlayerTrapTrigger when WE step on our own (or anyone's) bladestorm decoy.
+    /// RTK's damage is ONE number — floor(health*0.5) + calculateDamage(35000 netted against our own armor,
+    /// Combat.ApplyArmor mirrors calculateDamage's identical deduction formula) — applied both to us and to
+    /// every mob the facing cone catches. Capped here to leave at least 1 HP on OURSELVES only: a trap
+    /// tripped mid-walk has no death-flow of its own to hook (unlike a real melee/spell kill), same
+    /// "self-cost, never actually lethal" precedent as CastSacrificeStrike. Returns the UNCAPPED value so the
+    /// cone's mob targets take the real RTK number, not our clamped one.</summary>
+    public int ApplyBladestormSelfDamage()
+    {
+        int effectiveAc = _char.Ac - Totals().armor;
+        int raw = (int)(_char.Hp * 0.5) + Combat.ApplyArmor(35000, effectiveAc, floor: -80);
+        int applied = Math.Min(raw, (int)_char.Hp - 1);
+        if (applied > 0) _char.Hp -= (uint)applied;
+        SendStats();
+        SendMiniText("AIEE~! A trap goes off right beneath you!");
+        return raw;
+    }
+
+    // RTK Poet "Call of the Wild" pet family (see Content.PetSpellFor/PetCapFor): spawns a real, correctly
+    // statted shared-world Mob owned by the caster (SummonWorldMob — same helper !summon uses), one tile
+    // ahead if that tile is free, else on the caster's own tile (RTK cotw_SpawnSetThreat's exact fallback).
+    // Expires 300s later (World.Tick), uncapped duration extension on recast — just another pet, subject to
+    // the same live-pet cap. Combat-assist/threat-transfer isn't ported (see Mob.OwnerId's doc).
+    private bool CastPetSummon(SpellDef sp, string mobKey, int mana, int cooldownMs)
+    {
+        var def = Content.MobByKey(mobKey);
+        if (def is null) { SendMiniText("Something went wrong."); return false; }
+        if (cooldownMs > 0 && OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (mana > 0 && _char.Mp < (uint)mana) { SendMiniText("Not enough mana."); return false; }
+
+        int cap = Content.PetCapFor(_char.Level);
+        if (_world.PetCountFor(_char.Map, _char.Id) >= cap) { SendMiniText("You cannot summon any more creatures right now."); return false; }
+
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
+        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        int fx2 = _char.X + dx, fy2 = _char.Y + dy;
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        bool frontFree = fx2 >= 0 && fy2 >= 0 && fx2 < _char.MapXs && fy2 < _char.MapYs
+                          && (md is null || !md.BlockedMove(fx2, fy2, _facing))
+                          && _world.MobAt(_char.Map, fx2, fy2) is null
+                          && _world.PeerAt(_char.Map, fx2, fy2) is null;
+        ushort sx = frontFree ? (ushort)fx2 : _char.X, sy = frontFree ? (ushort)fy2 : _char.Y;
+
+        if (mana > 0) _char.Mp -= (uint)mana;
+        if (cooldownMs > 0) SetCooldown(sp.Key, cooldownMs);
+        SendStats();
+
+        var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3), color: def.Color,
+                                  exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
+        mob.OwnerId = _char.Id;
+        mob.PetExpiresAt = Environment.TickCount64 + 300_000;
+        SendMiniText($"You summon a {mob.Name}.");
+        Log.Info($"      {sp.Name} -> summoned pet '{mob.Name}' ({mob.Id}) for player {_char.Id} at ({sx},{sy})");
         return true;
     }
 
@@ -3549,19 +5307,19 @@ public sealed class Session
     // hit chance. PC targets are immune here (no PvP). Damage-less crowd control.
     private bool CastDebuff(SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
-        if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMessage($"{sp.Name} finds no target."); return false; }
-        if (sp.CanFail && RollDeflect(mob)) { SendMessage("The magic has been deflected."); return true; }
+        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
 
         double chance = string.IsNullOrEmpty(fx.Chance) ? 100 : Formula.Eval(fx.Chance, SpellVars(mob));
         _char.Mp -= (uint)mana;
-        if (chance < 100 && Random.Shared.Next(100) >= chance) { SendMessage($"{sp.Name} fails to take hold."); return true; }
+        if (chance < 100 && Random.Shared.Next(100) >= chance) { SendMiniText($"{sp.Name} fails to take hold."); return true; }
 
         int durMs = fx.DurationMs > 0 ? fx.DurationMs : 20000;
         mob.FrozenUntil = Environment.TickCount64 + durMs;
         BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // debuff graphic + sound
-        SendMessage($"Your {sp.Name} holds {mob.Name} for {durMs / 1000}s.");
+        SendMiniText($"Your {sp.Name} holds {mob.Name} for {durMs / 1000}s.");
         Log.Info($"      {sp.Name} -> mob {mob.Id} '{mob.Name}' frozen {durMs}ms ({fx.Debuff})");
         return true;
     }
@@ -3570,9 +5328,9 @@ public sealed class Session
     // (we don't yet carry negative status), so functionally it's a "dispel my timers" + mana spend.
     private bool CastCure(SpellDef sp, SpellFx fx, int mana)
     {
-        if (_char.Mp < (uint)mana) { SendMessage("You do not have enough mana."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         _char.Mp -= (uint)mana;
-        SendMessage($"You cast {sp.Name}.");
+        SendMiniText($"You cast {sp.Name}.");
         return true;
     }
 
@@ -3580,9 +5338,9 @@ public sealed class Session
     // cast isn't a silent no-op. These get bespoke cases later as they're wanted.
     private bool CastMisc(SpellDef sp, int mana)
     {
-        if (_char.Mp < (uint)mana) { SendMessage($"Not enough mana to cast {sp.Name}."); return false; }
+        if (_char.Mp < (uint)mana) { SendMiniText($"Not enough mana to cast {sp.Name}."); return false; }
         _char.Mp -= (uint)mana;
-        SendMessage($"You cast {sp.Name}.");
+        SendMiniText($"You cast {sp.Name}.");
         return true;
     }
 
@@ -3604,28 +5362,151 @@ public sealed class Session
     // cast, warp-locked maps say "It doesn't work here", non-kingdom maps "Cannot find any gates!") and the
     // per-gate random landing spread. No mana cost — RTK's gateway only calls canCast (a state check), not a
     // mana debit. On success we re-run the full map-entry sequence via EnterMap so the client redraws.
+    // A virtual "npc" purely for the propose/marriage dialog headers (never spawned or looked up). Distinct
+    // sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) / Trade (0xFFFFFFFD) / WorldMap (0xFFFFFFFC).
+    private static readonly Mob MarriageVirtualNpc = new(0xFFFFFFFB, 0, 0, 0, "Cupid", 1);
+
+    // Propose (RTK Spells/common/propose.lua): a skill-type spell (SplType 5 — no native typed-answer/target
+    // wire arg) whose real interaction is entirely a scripted dialog (RTK inputSeq/menuSeq), the same class
+    // of primitive an NPC uses. CastPropose just validates + kicks the async flow off; RunProposeAsync does
+    // the actual asking, and PromptProposal (below) runs on the TARGET's own session once found.
+    private bool CastPropose(SpellDef sp)
+    {
+        if (HasLegend("engaged") || HasLegend("married"))
+        {
+            ForgetOneSpell(sp.Id);   // RTK: a stray cast of a spell you shouldn't have anymore just cleans it up
+            SendMiniText("You are already committed to someone else!");
+            return false;
+        }
+        _ = RunProposeAsync(sp);
+        return true;   // the cast anim plays regardless; the real outcome resolves async below
+    }
+
+    private async Task RunProposeAsync(SpellDef sp)
+    {
+        string? name = await DlgInput(MarriageVirtualNpc, "What is the name of your beloved?");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        if (string.Equals(name, _char.Name, StringComparison.OrdinalIgnoreCase))
+        { SendMiniText("You can't marry yourself."); return; }
+
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendMiniText("Player is not valid or not online."); return; }
+        // RTK checks the beloved is physically nearby (getObjectsInArea); same-map is our practical proxy
+        // for "nearby", matching the gate Trade already uses for its own "must be present" check.
+        if (target.CharMap != CharMap)
+        { SendMiniText("Your beloved must be near you when you make this commitment."); return; }
+        if (target.HasLegend("engaged") || target.HasLegend("married"))
+        { SendMiniText($"{target.Snapshot().Name} is already committed to someone else!"); return; }
+        if (target.CountItem("engagement_ring") < 1)
+        { SendMiniText("You have not given them an engagement ring yet."); return; }
+
+        ForgetOneSpell(sp.Id);
+        _ = target.PromptProposal(this);
+    }
+
+    /// <summary>Runs on the PROPOSEE's own session (called cross-session — same pattern as Trade/Party):
+    /// shows the accept/decline prompt and, on accept, engages both parties.</summary>
+    internal async Task PromptProposal(Session proposer)
+    {
+        int choice = await DlgMenu(MarriageVirtualNpc,
+            $"{proposer.Snapshot().Name} proposes marriage. Do you accept?",
+            new[] { "Yes! I am madly in love.", "I must decline." });
+
+        string me = Snapshot().Name, them = proposer.Snapshot().Name;
+        if (choice == 1)
+        {
+            AddLegend($"Engaged to {them} ({Character.GameDate})", "engaged", 6, 1);
+            proposer.AddLegend($"Engaged to {me} ({Character.GameDate})", "engaged", 6, 1);
+            TakeItem("engagement_ring", 1);
+            long timer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200;   // RTK: 3-day cool-down
+            SetEngaged(them, isProposee: true, timer);
+            proposer.SetEngaged(me, isProposee: false, timer);
+            proposer.SendMiniText($"{me} accepts!");
+            SendMiniText($"You are now engaged to {them}!");
+        }
+        else
+        {
+            proposer.SendMiniText($"{me} regretably must decline.");
+            SendMiniText("What but love can last forever?");
+        }
+    }
+
+    /// <summary>Runs the wedding ceremony against this player's current fiancé (RTK
+    /// <c>ChapelNpc.marriageprompt</c>): asks the FIANCÉ (the original proposer) for their "I do", then
+    /// marries both on accept. Returns the message the Chapel should show, or null if the outcome was
+    /// already messaged directly (a decline).</summary>
+    internal async Task<string?> RunMarriageCeremony()
+    {
+        var fiance = _world.FindPlayer(_char.Fiance);
+        if (fiance is null) return "Both parties must be present for the ceremony to commence";
+        if (fiance.HasLegend("married")) return "The person is already married.";
+
+        string me = _char.Name, them = fiance.Snapshot().Name;
+        int choice = await fiance.DlgMenu(MarriageVirtualNpc,
+            $"Do you, {them} take {me} as your partner?",
+            new[] { "I do. (you will lose much xp if you divorce)", "I don't." });
+
+        if (choice != 1)
+        {
+            SendMiniText($"{them} regretably must decline.");
+            fiance.SendMiniText("What but love can last forever?");
+            return null;
+        }
+
+        string date = Character.GameDate;
+        AddLegend($"Married to {them} ({date})", "married", 6, 1);
+        fiance.AddLegend($"Married to {me} ({date})", "married", 6, 1);
+        RemoveLegend("engaged"); fiance.RemoveLegend("engaged");
+        ClearEngagement(); fiance.ClearEngagement();
+        SetSpouse(them); fiance.SetSpouse(me);
+        GiveRewardItem("love", 1); fiance.GiveRewardItem("love", 1);
+        SendMiniText("I now pronounce you (married)");
+        fiance.SendMiniText("I now pronounce you (married)");
+        return "Congratulations! You are both now married.";
+    }
+
     private bool CastGateway(SpellDef sp, string? answer)
     {
-        if (_char.Hp == 0) { SendMessage("Spirits cannot use Gateway."); return false; }
-        if (!Content.WarpOut(_char.Map)) { SendMessage("It doesn't work here."); return false; }
+        if (_char.Hp == 0) { SendMiniText("Spirits cannot use Gateway."); return false; }
+        if (!Content.WarpOut(_char.Map)) { SendMiniText("It doesn't work here."); return false; }
 
         int region = Content.RegionOf(_char.Map);
         if (!GatewayRegions.TryGetValue(region, out var r) || !Content.Maps.TryGetValue(r.map, out var map))
-        { SendMessage("Cannot find any gates!"); return false; }
+        { SendMiniText("Cannot find any gates!"); return false; }
 
         // RTK keys on the answer's first letter (string.sub(q,1,1)). Take the first ASCII letter so a stray
         // framing byte or leading space can't swallow the direction.
         char dir = (answer ?? "").ToLowerInvariant().FirstOrDefault(char.IsLetter);
         if (!r.gates.TryGetValue(dir, out var box))
-        { SendMessage("Which gate? Answer North, East, South or West."); return false; }
+        { SendMiniText("Which gate? Answer North, East, South or West."); return false; }
 
         ushort x = (ushort)Random.Shared.Next(box.xlo, box.xhi + 1);
         ushort y = (ushort)Random.Shared.Next(box.ylo, box.yhi + 1);
         string gate = dir switch { 'n' => "North", 'e' => "East", 'w' => "West", 's' => "South", _ => "" };
 
         EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
-        SendMessage($"You have arrived at {gate} Gate of {r.city}.");
+        SendSound(708, _char.Id);   // confirmed live 2026-07-27; self-only, teleport isn't visible to peers anyway
+        SendMiniText($"You have arrived at {gate} Gate of {r.city}.");
         Log.Info($"      Gateway -> region {region} {r.city} {gate} gate: map {map.Id} ({x},{y})");
+        return true;
+    }
+
+    // Return (common/return.lua): warps home to the same destination as the yellow_scroll/qui_hyang item's
+    // "warphome" effect (CharacterFactory.HomeCityFor -- see ApplyItemEffect's "warphome" case). RTK's script
+    // costs 30 mana and checks warpOut before warping ("That does not work here" verbatim); its handful of
+    // hardcoded per-map "Fizzle." checks (arena/instance ids like 3010/3011/3034-39/3042/666) aren't ported --
+    // Content.WarpOut already carries the real RTK per-map warp-out flag those would largely duplicate, and
+    // this server never loads those unrenderable instance maps in the first place (see Content.Warps' doc).
+    private bool CastReturn()
+    {
+        const uint cost = 30;
+        if (_char.Mp < cost) { SendMiniText("You do not have enough mana."); return false; }
+        if (!Content.WarpOut(_char.Map)) { SendMiniText("That does not work here."); return false; }
+
+        _char.Mp -= cost;
+        var (map, x, y) = CharacterFactory.HomeCityFor(_char.Nation);
+        if (Content.TryMap(map, out var hm)) EnterMap(hm.Id, hm.Xs, hm.Ys, x, y, hm.Name);
+        SendStats();
         return true;
     }
 
@@ -3634,7 +5515,7 @@ public sealed class Session
     private bool ApplyCastGeneric(SpellDef sp, uint? targetId)
     {
         const uint cost = 5;
-        if (_char.Mp < cost) { SendMessage($"Not enough mana to cast {sp.Name}."); return false; }
+        if (_char.Mp < cost) { SendMiniText($"Not enough mana to cast {sp.Name}."); return false; }
         var eq = Totals();
         int power = Math.Max(1, 1 + (_char.Will + eq.will) * 4 + (_char.Grace + eq.grace) * 3);
         switch (Content.EffectOf(sp))
@@ -3646,13 +5527,13 @@ public sealed class Session
                 _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)power);
                 uint gain = _char.Hp - before;
                 BroadcastFx(_char.Id, 5, 4);   // generic unaligned heal graphic + sound
-                SendMessage(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
+                SendMiniText(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
                 return true;
             }
             case Content.SpellEffect.Damage:
             {
                 var mob = ResolveCastTarget(targetId);
-                if (mob is null) { SendMessage($"{sp.Name} finds no target."); return false; }
+                if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
                 _char.Mp -= cost;
                 if (_world.TryDamage(_char.Map, mob, power, out bool died, _char.Id))
                 {
@@ -3670,11 +5551,11 @@ public sealed class Session
             }
             case Content.SpellEffect.Buff:
                 _char.Mp -= cost;
-                SendMessage($"You invoke {sp.Name} — you feel its power.");
+                SendMiniText($"You invoke {sp.Name} — you feel its power.");
                 return true;
             default:
                 _char.Mp -= cost;
-                SendMessage($"You cast {sp.Name}.");
+                SendMiniText($"You cast {sp.Name}.");
                 return true;
         }
     }
@@ -3697,8 +5578,8 @@ public sealed class Session
     private bool CastManaBattery(SpellDef sp)
     {
         const uint MinMana = 30;
-        if (OnCooldown(sp.Key, out int wait)) { SendMessage($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < MinMana) { SendMessage("Not enough mana."); return false; }
+        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
+        if (_char.Mp < MinMana) { SendMiniText("Not enough mana."); return false; }
 
         uint healthCost = (uint)(EffMaxMp * 0.4);
         uint before = _char.Hp;
@@ -3709,7 +5590,7 @@ public sealed class Session
         uint lost = before > _char.Hp ? before - _char.Hp : 0;
         if (Content.FxFor(sp) is { } fx)
             BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // Invoke graphic + sound
-        SendMessage($"You cast {sp.Name}.");
+        SendMiniText($"You cast {sp.Name}.");
         Log.Info($"      {sp.Name}: -{lost} HP (cost {healthCost}, floor 100), MP -> full {_char.Mp}/{EffMaxMp}");
         return true;
     }
@@ -3810,8 +5691,7 @@ public sealed class Session
         if (def.Type == 4) _char.Armor = equip ? (byte)def.Look : (byte)0;        // ITM_ARMOR (cached in [3])
         else if (def.Type == 3) _char.Weapon = equip ? (byte)def.Look : (byte)0;  // ITM_WEAP (kept for combat/GM)
         else if (def.Type != 5) return;                                           // not weapon/armor/shield -> no look change
-        SendSelfLook();
-        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        RefreshAppearance();
     }
 
     // ---- recv handlers (client -> server) ----
@@ -3831,7 +5711,7 @@ public sealed class Session
         {
             var gi = _world.PickUp(_char.Map, _char.X, _char.Y);
             if (gi is null) return;                       // tile empty (or now cleared)
-            if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); continue; }   // coins -> purse
+            if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); continue; }   // coins -> purse
             var def = Content.ItemById(gi.ItemId);
             if (def is null) continue;
             if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
@@ -3849,8 +5729,8 @@ public sealed class Session
     {
         if (dec.Length < 1) return;
         // RTK clif_parsedropitem gates on player state first (dead/mounted can't drop).
-        if (_char.Hp == 0) { SendMessage("Spirits can't do that."); return; }
-        if (_char.Mounted) { SendMessage("You cannot do that while riding a mount."); return; }
+        if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+        if (_char.Mounted) { SendMiniText("You cannot do that while riding a mount."); return; }
         int slot = dec[0] - 1;
         // dec[1] = the "all" flag: 'd' (drop one) sends 0, 'D'/Shift+d (drop whole stack) sends 1.
         // Confirmed live: client emits `08 <slot+1> 00 00` for d and `08 <slot+1> 01 00` for D.
@@ -3868,6 +5748,7 @@ public sealed class Session
         int remaining = it.Amount - count;
         if (remaining <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 1); }  // reason 1 = Drop
         else { it.Amount = remaining; SendAddItem(it); }   // stack shrinks: redraw the slot with the new count
+        MarkDirty();
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
             X = _char.X, Y = _char.Y, Amount = count, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
     }
@@ -3877,8 +5758,8 @@ public sealed class Session
     {
         if (dec.Length < 2) return;
         // RTK clif_parsethrowitem gates on player state first (dead/mounted can't throw).
-        if (_char.Hp == 0) { SendMessage("Spirits can't do that."); return; }
-        if (_char.Mounted) { SendMessage("You cannot do that while riding a mount."); return; }
+        if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+        if (_char.Mounted) { SendMiniText("You cannot do that while riding a mount."); return; }
         int slot = dec[1] - 1;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
@@ -3888,6 +5769,7 @@ public sealed class Session
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 4); }  // reason 4 = Throw
         else SendAddItem(it);
+        MarkDirty();
         // Fly up to 3 tiles in the facing direction, but STOP at the last passable tile — a thrown item
         // must not land past a wall/off the map into an unreachable spot. Step tile-by-tile and halt before
         // the first blocked/off-map cell (same collision the player walk uses). If the tile directly ahead is
@@ -3938,7 +5820,8 @@ public sealed class Session
         SendMiniText(gi.Amount > 1 ? $"{name} ({gi.Amount})" : name);
     }
 
-    // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> consume (+ any heal).
+    // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> run its RTK use-script
+    // effect (see ApplyItemEffect / Content.ItemEffects).
     private void HandleUseItem(byte[] dec, bool eat)
     {
         if (dec.Length < 1) return;
@@ -3947,18 +5830,107 @@ public sealed class Session
         var def = Content.ItemById(it.ItemId); if (def is null) return;
         if (def.IsEquip) { if (eat) { SendLog($"You can't eat {def.Name}."); return; } EquipFromSlot(slot); return; }
         if (eat && def.Type != 0) { SendLog("That is not edible."); return; }   // ITM_EAT only
-        // Play the eat animation on self + peers (0x1A action type 8 = eat on 4.95; the client shows its
-        // own "You ate <name>" status line from the slot name, so DON'T also speak it as 0x0D chat).
-        SendAction(_char.Id, 8, 40, 0);
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
-        bool healed = false;
-        if (def.Vita > 0) { _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)def.Vita); healed = true; }
-        if (def.Mana > 0) { _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)def.Mana); healed = true; }
+        if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+
+        if (!ApplyItemEffect(def)) return;   // gate refused (e.g. ward already active) -> not consumed, RTK's own early-return
+
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, (byte)(eat ? 2 : 6)); }
         else SendAddItem(it);
-        if (healed) SendStats();
+        MarkDirty();
     }
+
+    // Runs one consumable's real RTK use-script effect (Content.ItemEffects), falling back to the item DB's
+    // own Vita/Mana columns for the rare item that actually carries them (almost none do — see
+    // ItemUseEffect's doc). Plays the shared eat/use animation (0x1A action type 8 on self + peers) for every
+    // effect that actually changes something; gate kinds (status/hardenbody) check FIRST and skip it entirely
+    // on refusal, matching every reviewed script's own guard-before-sendAction order. Returns false — without
+    // consuming the item — only when a gate blocked the effect.
+    private bool ApplyItemEffect(ItemDef def)
+    {
+        if (!Content.ItemEffects.TryGetValue(def.Key, out var fx))
+        {
+            bool healed = false;
+            if (def.Vita > 0) { _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)def.Vita); healed = true; }
+            if (def.Mana > 0) { _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)def.Mana); healed = true; }
+            if (healed) { SendAction(_char.Id, 8, 40, 0); _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this); SendStats(); }
+            return true;
+        }
+
+        switch (fx.Kind)
+        {
+            case "heal":
+                SendAction(_char.Id, 8, 40, 0);
+                _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+                _char.Hp = Math.Min(EffMaxHp, _char.Hp + (fx.Full ? EffMaxHp : (uint)fx.Amount));
+                if (_char.Hp == EffMaxHp) SendMiniText("You feel satiated.");   // RTK: fires whether already full or capped there by this heal
+                SendStats();
+                return true;
+
+            case "fatal":   // poison_apple: RTK removeHealthExtend(999999999) -- an always-lethal joke item
+                SendAction(_char.Id, 8, 40, 0);
+                _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+                _char.Hp = 0;
+                SendStats();
+                Die();
+                return true;
+
+            case "mana":   // drinks/smoke: trade a little HP for a lot of MP
+                SendAction(_char.Id, 8, 40, 0);
+                _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+                _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)fx.Amount);
+                if (fx.HpCost > 0) _char.Hp = (uint)Math.Max(1, (int)_char.Hp - fx.HpCost);
+                SendStats();
+                return true;
+
+            case "status":   // timed ward flag (curse_protection/sanctuary/harden_armor/...) -- no numeric stat, see doc
+                // An empty AlreadyActiveMessage means the real script has no checkIfCast guard at all (e.g.
+                // black_potion) -- it just always (re)sets the duration, consumed every time. Only the
+                // guarded potions/scrolls refuse a re-use while their flag is still up.
+                if (fx.AlreadyActiveMessage.Length > 0 && HasStatusFlag(fx.StatusKey))
+                {
+                    SendMiniText(fx.AlreadyActiveMessage);
+                    return false;
+                }
+                SetStatusFlag(fx.StatusKey, fx.DurationMs);
+                return true;
+
+            case "hardenbody":   // scroll_of_immortality: armor-scaled success roll before granting the ward (RTK's own formula)
+            {
+                if (HasStatusFlag(fx.StatusKey)) { SendMiniText(fx.AlreadyActiveMessage); return false; }
+                int armor = Math.Clamp(_char.Ac - Totals().armor, -80, 70);
+                int successRate = (int)Math.Ceiling((120 + armor) / 2.0);
+                if (Random.Shared.Next(1, 101) > successRate) { SendMiniText("Something went wrong."); return false; }
+                SetStatusFlag(fx.StatusKey, fx.DurationMs);
+                SendAction(_char.Id, 6, 40, 0);
+                SendMiniText("You cast Harden Body.");
+                return true;
+            }
+
+            case "cure":   // indigo_potion / clear_water_song -- no player poison/curse model exists yet to clear (see doc)
+                return true;
+
+            case "warphome":   // yellow_scroll / qui_hyang (menu collapsed to its always-available Home branch)
+            {
+                var (map, x, y) = CharacterFactory.HomeCityFor(_char.Nation);
+                if (Content.TryMap(map, out var hm)) EnterMap(hm.Id, hm.Xs, hm.Ys, x, y, hm.Name);
+                return true;
+            }
+
+            default:
+                return true;
+        }
+    }
+
+    // Timed status flags set by USE items whose RTK effect is a plain ward/marker rather than a numeric stat
+    // delta (Content.ItemEffects "status"/"hardenbody" kinds) -- key -> Environment.TickCount64 expiry.
+    // Separate from _buffs (which models spell buffs with real Stat/Amount deltas): these carry no stat mod
+    // of their own in RTK either (e.g. Spells/common/curse_protection.lua has no recast function at all,
+    // just the duration flag), so tracking presence + honoring the re-cast guard IS the full faithful
+    // behavior, not a placeholder. Not persisted across a relog, same as _buffs.
+    private readonly Dictionary<string, long> _statusFlags = new();
+    private bool HasStatusFlag(string key) => _statusFlags.TryGetValue(key, out var exp) && exp > Environment.TickCount64;
+    private void SetStatusFlag(string key, int durationMs) => _statusFlags[key] = Environment.TickCount64 + durationMs;
 
     // Sum of every stat line across all worn gear. Equipment NEVER writes back into the character's base
     // stats (those stay in _char.*); the effective values the client sees are base + these, recomputed on
@@ -3974,6 +5946,78 @@ public sealed class Session
             ar += def.Armor; ht += def.Hit; dm += def.Dam;
         }
         return (hp, mp, mt, wl, gr, ar, ht, dm);
+    }
+
+    // A weapon's real swing range, summed across worn gear like EquipTotals (RTK pc_calcstat sums
+    // itemdb_minSdam/maxSdam/minLdam/maxLdam over every equip slot, same loop as Armor/Hit/Dam — it isn't
+    // weapon-slot-only, though in practice only weapons carry nonzero values). Bare-handed is (0,0,0,0):
+    // matches RTK, where an unarmed player still swings via the dam/might/class terms in PlayerSwingDamage,
+    // just weaker. Previously unparsed entirely — Items.csv carries these columns but ItemDef never read
+    // them, so player melee had no real damage-range component at all (see PlayerSwingDamage).
+    private (int minSDam, int maxSDam, int minLDam, int maxLDam) WeaponTotals()
+    {
+        int minS = 0, maxS = 0, minL = 0, maxL = 0;
+        foreach (var e in _char.Equipment)
+        {
+            var def = Content.ItemById(e.ItemId); if (def is null) continue;
+            minS += def.MinSDam; maxS += def.MaxSDam; minL += def.MinLDam; maxL += def.MaxLDam;
+        }
+        return (minS, maxS, minL, maxL);
+    }
+
+    // RTK swingDamage.lua's per-class flat bonus (_classFactors, 1-indexed by baseClass+1): only Warrior
+    // and Rogue get one; Peasant/Mage/Poet don't (magic users deal their real damage through spells, not
+    // melee). pathId -1 (no class chosen yet) falls through to the Peasant case.
+    private static double ClassFactor(int pathId) => pathId switch { 1 => 9, 2 => 7.5, _ => 0 };
+
+    // The player's real melee formula (RTK swingDamage.lua _getPlayerSwingDamage + the shared armor/
+    // positional resolution in swingDamage() itself), replacing the old flat EffMight-based stand-in.
+    // Returns the final damage AND whether it crit (for the 0x13 visual byte at the call site).
+    //   s               = weapon's Small swing range, or Large if the target is a boss AND the weapon
+    //                      actually carries an L-range (RTK: minLDam>0 && maxLDam>0)
+    //   dam/might        = gear/buff Dam total and effective Might, each floored at 1
+    //   classFactor      = ClassFactor above
+    //   enchant          = EffEnchant — multiplies ONLY the raw weapon-swing term (s/2), 1 normally, up to
+    //                      6x while an enchant tier is active (Session.CastEnchant)
+    //   rage             = EffRage — 1 normally, up to 5x while a Fury tier is active (Session.CastRage)
+    //   invisible        = 9 while Stealthed (Session.CastStealth), else 1 — a one-shot sneak-attack burst;
+    //                      landing this hit strips the stealth immediately after (RTK "attacking breaks it")
+    //   critical         = 3 on a crit (Combat.RollCritChance), else 1
+    // Then: armor deduction against the TARGET's Ac (mob-target floor -95), then the positional multipliers
+    // in the same order swingDamage.lua applies them (armor BEFORE position): the base "attacked from
+    // behind while both face the same way" 2x (Combat.IsBehindTarget, always live), then — independently,
+    // and only while that stance is armed via CastStance — the Warrior Backstab 2x (Combat.IsBackstabAngle)
+    // and Flank 2x (Combat.IsFlankAngle). RTK's own Lua runs these as separate sequential if-blocks, so in
+    // principle more than one COULD apply to the same swing; that's a faithful port, not a bug.
+    private (int dmg, bool crit) PlayerSwingDamage(Mob target)
+    {
+        var w = WeaponTotals();
+        int lo = w.minSDam, hi = w.maxSDam;
+        if (target.IsBoss && w.maxLDam > 0) { lo = w.minLDam; hi = w.maxLDam; }
+        int s = lo >= hi ? lo : Random.Shared.Next(lo, hi + 1);
+
+        var eq = Totals();
+        double dam = Math.Max(eq.dam, 1);
+        double might = Math.Max(EffMight, 1);
+        double classFactor = ClassFactor(Content.PathIdForClass(_char.ClassName));
+
+        int critChance = Combat.RollCritChance(attackerIsMob: false,
+            atkGrace: _char.Grace + eq.grace, atkLevel: _char.Level, atkHit: _char.Hit + eq.hit,
+            tgtGrace: target.Grace, tgtLevel: target.Level);
+        bool crit = critChance == 2;
+        bool wasStealthed = Stealthed;   // read once — landing the hit clears it below
+
+        double swing = (s / 2.0 * EffEnchant + dam * 2.5 + might / 8.0 + classFactor) * EffRage * (wasStealthed ? 9 : 1) * (crit ? 3 : 1);
+        int dmg = Math.Max(1, (int)swing);
+
+        dmg = Combat.ApplyArmor(dmg, target.Ac, floor: -95);   // RTK minimumArmor for a mob target
+        if (Combat.IsBehindTarget(_facing, target.Dir, _char.X, _char.Y, target.X, target.Y)) dmg *= 2;
+        if (BackstabStance && Combat.IsBackstabAngle(_facing, target.Dir, _char.X, _char.Y, target.X, target.Y)) dmg *= 2;
+        if (FlankStance && Combat.IsFlankAngle(_facing, target.Dir, _char.X, _char.Y, target.X, target.Y)) dmg *= 2;
+
+        if (wasStealthed) _stealthUntil = 0;   // RTK: landing a hit strips stealth (swingDamage.lua removeDuras(invis))
+
+        return (dmg, crit);
     }
 
     // Active timed stat buffs (from casting Buff spells). Session-local, like cooldowns — they clear on relog.
@@ -4019,8 +6063,11 @@ public sealed class Session
     private void EquipFromSlot(int slot)
     {
         // RTK pc_equipitem gates on player state before anything else (dead/mounted can't change gear).
-        if (_char.Hp == 0) { SendMessage("Spirit's can't do that."); return; }
-        if (_char.Mounted) { SendMessage("You can't do that while riding a mount."); return; }
+        // Every refusal below is RTK clif_sendminitext (system message) -- pc_equipitem's state checks
+        // (line ~1551/1557), pc_canequipitem's sex/level/might via map_msg[ret].message (line ~1575), and
+        // pc_canequipstats's cursed-stat check (line ~1585) -- never a spoken clif_sendmsg chat bubble.
+        if (_char.Hp == 0) { SendMiniText("Spirit's can't do that."); return; }
+        if (_char.Mounted) { SendMiniText("You can't do that while riding a mount."); return; }
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
         // Wear requirements (RTK item_data): sex-locked gear, a minimum level, and a minimum MIGHT (checked
@@ -4029,14 +6076,14 @@ public sealed class Session
         // ItmSex: 0 = male-only, 1 = female-only, 2 = UNISEX (the common case — 1944/2545 items, incl. most
         // weapons). Character.Sex uses the same 0=M/1=F encoding, so a sex-locked item (0 or 1) must match;
         // anything >= 2 is unrestricted. (The old `!= 0` test wrongly blocked every unisex item.)
-        if (def.Sex < 2 && def.Sex != _char.Sex) { SendLog($"You can't wear {def.Name}."); return; }
-        if (def.Level > _char.Level) { SendLog($"You must be level {def.Level} to wear {def.Name}."); return; }
-        if (def.MightReq > EffMight) { SendLog($"You need {def.MightReq} might to wear {def.Name}."); return; }
+        if (def.Sex < 2 && def.Sex != _char.Sex) { SendMiniText($"You can't wear {def.Name}."); return; }
+        if (def.Level > _char.Level) { SendMiniText($"You must be level {def.Level} to wear {def.Name}."); return; }
+        if (def.MightReq > EffMight) { SendMiniText($"You need {def.MightReq} might to wear {def.Name}."); return; }
         // Cursed/malus gear (negative Vita/Mana): RTK pc_canequipstats blocks it if the penalty would exceed
         // your current effective max — it'd zero out the pool entirely. 14/19 items in the registry carry a
         // negative Vita/Mana line, so this is reachable, not theoretical.
-        if (def.Vita < 0 && -def.Vita > EffMaxHp) { SendLog("You lack the health required to wield that."); return; }
-        if (def.Mana < 0 && -def.Mana > EffMaxMp) { SendLog("You lack the wisdom required to wield that."); return; }
+        if (def.Vita < 0 && -def.Vita > EffMaxHp) { SendMiniText("You lack the health required to wield that."); return; }
+        if (def.Mana < 0 && -def.Mana > EffMaxMp) { SendMiniText("You lack the wisdom required to wield that."); return; }
         byte wire = def.EquipSlot;
         // Rings/gauntlets are all Type 7 (wire slot 7 = left ring) but share TWO interchangeable slots — 7 and
         // 8 (right ring). Wear the second one in the free right slot instead of replacing the left. Only when
@@ -4046,7 +6093,7 @@ public sealed class Session
             wire = 8;
 
         _char.Inventory.Remove(it);
-        SendDelItem((byte)slot, 0);                   // reason 0 = Remove (moved to gear)
+        SendDelItem((byte)slot, 6);                   // reason 6 = Used (RTK pc_equipscript: pc_delitem(..., 1, 6) — same code as ITM_USE, not a "removed" reason 0)
 
         var prev = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
         if (prev is not null)
@@ -4062,6 +6109,7 @@ public sealed class Session
         SendEquip(worn);
         ApplyAppearance(def, equip: true);
         SendStats();                                  // push the new gear bonuses to the HUD
+        MarkDirty();
         // (No "Equipped X" over-head bubble — the paperdoll + gear stats are feedback enough; SendLog here
         // spoke it as 0x0D chat over the character, which the player didn't want.)
     }
@@ -4078,6 +6126,25 @@ public sealed class Session
         var def = Content.ItemById(worn.ItemId);
         if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, worn.Dura, worn.CustomName); }
         SendStats();                                  // drop the gear bonuses from the HUD
+        MarkDirty();
+    }
+
+    // Typed-"A" bulk unequip: strips every worn slot back into the bag, same per-item plumbing as
+    // HandleUnequip (SendUnequip + appearance revert + GiveItem). Stops the moment the bag can't take the
+    // next item back — GiveItem already sends "Your pack is full." and leaves that item (and everything
+    // after it) equipped, rather than dropping it on the ground or destroying it.
+    private void UnequipAll()
+    {
+        foreach (var worn in _char.Equipment.ToList())
+        {
+            var def = Content.ItemById(worn.ItemId);
+            if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName)) break;   // bag full — stop, leave the rest equipped
+            _char.Equipment.Remove(worn);
+            SendUnequip(worn.Slot);
+            if (def is not null) ApplyAppearance(def, equip: false);
+        }
+        SendStats();
+        MarkDirty();
     }
 
     // ---- durability decay / breakage (RTK clif_deductweapon/deductarmor/checkdura, clif.c:6646-6844) -----
@@ -4094,6 +6161,7 @@ public sealed class Session
         if (worn.Dura == 0) worn.Dura = def.Durability;   // lazily fill (equip already does this; belt-and-suspenders)
         if (Random.Shared.Next(100) <= 50) return;        // RTK: rnd(100) > 50 triggers the deduction
         worn.Dura = (ushort)Math.Max(0, worn.Dura - 1);
+        MarkDirty();   // covers CheckDura's own equipment mutations too (a Repair-threshold flag, or BreakItem)
         CheckDura(worn, def);
     }
 
@@ -4102,11 +6170,13 @@ public sealed class Session
     private void CheckDura(InvItem worn, ItemDef def)
     {
         double pct = (double)worn.Dura / def.Durability;
-        if (pct <= .50 && worn.Repair == 0) { SendMessage($"Your {def.Name} is at 50%."); worn.Repair = 1; }
-        if (pct <= .25 && worn.Repair == 1) { SendMessage($"Your {def.Name} is at 25%."); worn.Repair = 2; }
-        if (pct <= .10 && worn.Repair == 2) { SendMessage($"Your {def.Name} is at 10%."); worn.Repair = 3; }
-        if (pct <= .05 && worn.Repair == 3) { SendMessage($"Your {def.Name} is at 5%.");  worn.Repair = 4; }
-        if (pct <= .01 && worn.Repair == 4) { SendMessage($"Your {def.Name} is at 1%.");  worn.Repair = 5; }
+        // RTK clif_checkdura sends these through clif_sendmsg(sd, 5, buf) -- type 5 "System", the same
+        // 0x0A minitext packet as clif_sendminitext (type 3) just tagged differently -- not the chat log.
+        if (pct <= .50 && worn.Repair == 0) { SendMiniText($"Your {def.Name} is at 50%.", type: 5); worn.Repair = 1; }
+        if (pct <= .25 && worn.Repair == 1) { SendMiniText($"Your {def.Name} is at 25%.", type: 5); worn.Repair = 2; }
+        if (pct <= .10 && worn.Repair == 2) { SendMiniText($"Your {def.Name} is at 10%.", type: 5); worn.Repair = 3; }
+        if (pct <= .05 && worn.Repair == 3) { SendMiniText($"Your {def.Name} is at 5%.",  type: 5); worn.Repair = 4; }
+        if (pct <= .01 && worn.Repair == 4) { SendMiniText($"Your {def.Name} is at 1%.",  type: 5); worn.Repair = 5; }
         if (worn.Dura <= 0) BreakItem(worn, def);
     }
 
@@ -4115,7 +6185,7 @@ public sealed class Session
     /// live registry currently sets ItmProtected, so it would never fire.)</summary>
     private void BreakItem(InvItem worn, ItemDef def)
     {
-        SendMessage($"Your {def.Name} was destroyed!");
+        SendMiniText($"Your {def.Name} was destroyed!", type: 5);   // RTK clif_checkdura: type 5 "System"
         _char.Equipment.Remove(worn);
         SendUnequip(worn.Slot);
         ApplyAppearance(def, equip: false);
@@ -4127,13 +6197,14 @@ public sealed class Session
     {
         if (dec.Length < 4) return;
         // RTK clif_parsedropgold gates on player state first (dead/mounted can't drop gold).
-        if (_char.Hp == 0) { SendMessage("Spirits can't do that."); return; }
-        if (_char.Mounted) { SendMessage("You cannot do that while riding a mount."); return; }
+        if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+        if (_char.Mounted) { SendMiniText("You cannot do that while riding a mount."); return; }
         uint amt = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
         if (amt > _char.Coins) amt = _char.Coins;
         if (amt == 0) { SendLog("You have no coins to drop."); return; }
         _char.Coins -= amt;
         SendStats();
+        MarkDirty();
         ushort gfx = amt < 2 ? (ushort)22 : amt < 100 ? (ushort)73 : (ushort)72;   // coins_1 / _2_99 / _100_999 icons
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = -1,
             X = _char.X, Y = _char.Y, Amount = (int)amt, Graphic = gfx });
@@ -4146,7 +6217,7 @@ public sealed class Session
     {
         string q = text.Length > "!items".Length ? text["!items".Length..].Trim() : "";
         var found = Content.SearchItems(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check re/rtk-data/Items.csv)" : $"no items match \"{q}\""); return; }
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check data/rtk-data/Items.csv)" : $"no items match \"{q}\""); return; }
         SendLog($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Items.Count}):");
         foreach (var i in found)
             SendLog($"  #{i.Id} {i.Name} — {(i.IsEquip ? $"equip(dam {i.Dam}/ac {i.Armor})" : i.IsConsumable ? "use" : "etc")}   (!item {i.Name})");
@@ -4177,8 +6248,7 @@ public sealed class Session
         if (_char.Weapon != 0 || _char.Armor != 0)
         {
             _char.Weapon = 0; _char.Armor = 0;
-            SendSelfLook();
-            _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+            RefreshAppearance();
         }
         SendLog("Cleared your pack and gear.");
     }
@@ -4340,9 +6410,8 @@ public sealed class Session
     {
         var a = ParseInts(text);
         _char.Mounted = a.Length > 0 ? a[0] != 0 : !_char.Mounted;
-        SendSelfLook();                                                    // redraw self on the horse
-        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this); // and for everyone watching
-        SendMessage(_char.Mounted ? "You climb onto the horse." : "You dismount.");
+        RefreshAppearance();                                              // redraw self on the horse + everyone watching
+        SendMiniText(_char.Mounted ? "You climb onto the horse." : "You dismount.");
         Log.Info($"   -> MOUNT {( _char.Mounted ? "on" : "off")}");
     }
 
@@ -4358,20 +6427,18 @@ public sealed class Session
         {
             var (hx, hy) = FrontTile();
             var horse = _world.MobNear(_char.Map, hx, hy, 0, mo => mo.Key == "horse");   // radius 0 = exact tile
-            if (horse is null) { SendMessage("There is no horse to ride here."); return; }
+            if (horse is null) { SendMiniText("There is no horse to ride here."); return; }
             _world.DespawnMob(_char.Map, horse);
             _char.Mounted = true;
-            SendSelfLook();
-            _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
-            SendMessage("You climb onto the horse.");
+            RefreshAppearance();
+            SendMiniText("You climb onto the horse.");
             Log.Info($"   -> MOUNT on (rode away world horse {horse.Id})");
         }
         else
         {
             _char.Mounted = false;
-            SendSelfLook();
-            _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
-            SendMessage("You dismount.");
+            RefreshAppearance();
+            SendMiniText("You dismount.");
 
             var def = Content.Mobs.FirstOrDefault(m => m.Key == "horse");
             if (def is not null)
@@ -4380,7 +6447,7 @@ public sealed class Session
                 ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
                 ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
                 SummonWorldMob(def.Look, x, y, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3),
-                                color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key);
+                                color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
             }
             Log.Info("   -> MOUNT off (set horse down in front)");
         }
@@ -4496,11 +6563,12 @@ public sealed class Session
         Log.Info($"   -> REPLAY 6.x stats on op=0x{op:x2} (expect HUD: level 1, HP 51, MP 33, might/will/grace 3)");
     }
 
-    // "!sweep" is DISABLED. Blind-sweeping unknown opcodes crashes the client: several handlers do real
-    // resource loads from the packet body (e.g. 0x2e = the skills/spells list loads an .EPF sprite archive
-    // per entry — garbage bytes -> bogus filename -> "File not found .EPF" -> crash). Find the stats opcode
+    // "!sweep" is DISABLED. Blind-sweeping unknown opcodes can crash the client by feeding a real handler a
+    // mis-framed body (exactly how 0x2e/the world-map screen "crashed" until a one-byte framing bug in our
+    // OWN packet was found -- see SendWorldMap §11m; that was never a client bug). Find the stats opcode
     // deterministically instead (self player object is [world+0x40c]); only fire "!s <op>" once a specific
-    // opcode is confirmed safe by reading its handler.
+    // opcode is confirmed safe by reading its
+    // handler.
     private void StatSweep(string text)
     {
         SendMessage("!sweep is disabled (crashes the client on resource-loading opcodes). Use !s <hexop>.");
@@ -4561,15 +6629,17 @@ public sealed class Session
     // (client scales time x10). type: 0=stand,1=attack,2=throw,3=shot,4=sit,6=magic,8=eat.
     private void HandleAttack(byte[] dec)
     {
-        if (_char.Hp == 0) { SendMessage("Spirits cannot attack."); return; }
+        if (_char.Hp == 0) { SendMiniText("Spirits cannot attack."); return; }
         SendAction(_char.Id, type: 1, time: 8, param: 0);                                 // our own swing anim
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);  // peers see us swing
 
-        // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 when
-        // a weapon is in hand (bare-handed swings stay quiet). The sound is the weapon's own ItmSound (RTK's
-        // per-weapon mapping — most swords 331, Sword of power 337, …); !swingsnd overrides it for calibration.
-        // Everyone on the map hears it, bound to us.
-        int swing = _swingSfx > 0 ? _swingSfx : EquippedWeaponSound();
+        // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 on
+        // EVERY swing, armed or not — weapon in hand -> its own ItmSound (RTK's per-weapon mapping — most
+        // swords 331, Sword of power 337, …); bare hands -> the calibratable fist fallback (_fistSfx, see its
+        // doc — no real RTK id exists to port for "no weapon"). !swingsnd overrides either case for
+        // calibration. Everyone on the map hears it, bound to us.
+        int weaponSwing = EquippedWeaponSound();
+        int swing = _swingSfx > 0 ? _swingSfx : weaponSwing > 0 ? weaponSwing : _fistSfx;
         if (swing > 0) _world.Broadcast(_char.Map, p => p.SoundAt(swing, _char.Id));
 
         // Melee resolves against whatever creature stands on the tile directly in front of us (facing
@@ -4577,17 +6647,17 @@ public sealed class Session
         // so two players can't double-kill and both claim the reward — then fall back to session-local
         // debug dummies (look-lab / !cre / !mob sweeps, visible only to us).
         var (fx, fy) = FrontTile();
-        int dmg = Math.Max(1, EffMight + (WeaponLook() != 0xFF ? 3 : 0) + Totals().dam);   // effective might + weapon + gear/buff Dam
 
         var wmob = _world.MobAt(_char.Map, fx, fy);
         if (wmob is not null)
         {
+            var (dmg, crit) = PlayerSwingDamage(wmob);
             if (_world.TryDamage(_char.Map, wmob, dmg, out bool died, _char.Id))
             {
                 var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);   // EQ_WEAP: deductWeapon(rage) on a landed swing
                 if (weapon is not null) DeductDura(weapon);
-                ShowDamageResult(wmob.Id, wmob, died);   // 0x13: over-head HP bar + hit anim (empty bar + delayed despawn on death)
-                Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg} -> {wmob.Hp}/{wmob.MaxHp}");
+                ShowDamageResult(wmob.Id, wmob, died, crit ? (byte)0xFF : HitCritByte, (byte)Math.Clamp(_hitSfx, 0, 255));   // 0x13: over-head HP bar + hit anim + on-connect impact sfx (empty bar + delayed despawn on death)
+                Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg}{(crit ? " (CRIT)" : "")} -> {wmob.Hp}/{wmob.MaxHp}");
                 if (died)
                 {
                     uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
@@ -4603,10 +6673,11 @@ public sealed class Session
         var mob = MobAt(fx, fy);
         if (mob is null) return;
 
-        mob.Hp -= dmg;
+        var (dummyDmg, dummyCrit) = PlayerSwingDamage(mob);
+        mob.Hp -= dummyDmg;
         bool dummyDied = !mob.Alive;
-        SendDamage(mob.Id, dummyDied ? (byte)0 : HpPercent(mob), HitCritByte);   // 0x13: over-head HP bar + hit anim (dummy is session-local)
-        Log.Info($"   -> hit dummy {mob.Id} '{mob.Name}' for {dmg} -> {mob.Hp}/{mob.MaxHp}");
+        SendDamage(mob.Id, dummyDied ? (byte)0 : HpPercent(mob), dummyCrit ? (byte)0xFF : HitCritByte, (byte)Math.Clamp(_hitSfx, 0, 255));   // 0x13: over-head HP bar + hit anim + on-connect impact sfx (dummy is session-local)
+        Log.Info($"   -> hit dummy {mob.Id} '{mob.Name}' for {dummyDmg}{(dummyCrit ? " (CRIT)" : "")} -> {mob.Hp}/{mob.MaxHp}");
         if (dummyDied)
         {
             _mobs.Remove(mob);
@@ -4665,6 +6736,54 @@ public sealed class Session
     // NO sound (like magic/type 6 -> 0), so a weapon swing is silent unless we play one explicitly over 0x19.
     // Calibrate the id live with "!swingsnd <id>" (auditions it), then it rides every armed swing; 0 = silent.
     private int _swingSfx = 0;
+
+    // Unarmed ("bare fist") swing sfx fallback, used only when no weapon is equipped (EquippedWeaponSound()
+    // returns 0). RTK's own C engine special-cases this by sending the swing action with a hardcoded param
+    // (pc.c: clif_sendaction(..., 1, attackspeed, 9) when itemdb_sound(weapon)==0) — but that relies on a
+    // fixed action-type->sound table baked into the 6.x/7.x client; our own live testing already proved the
+    // 4.95 client's action-param byte is ignored for the swing (see the comment above _swingSfx), so we can't
+    // reuse that trick here either. There's no RTK item row for "fists" to port a real id from. Defaults to
+    // 709.wav: confirmed live 2026-07-27 ("empty handed swing that hits nothing"); "!fistsnd <id>"
+    // recalibrates or mutes it (0).
+    private int _fistSfx = 709;
+
+    // On-connect impact sfx, played ONLY when a swing actually lands (stacks with the swing sfx above, which
+    // plays on every swing attempt regardless of hit/miss). Rides the 0x13 damage packet's own hitSound byte
+    // (SendDamage/ShowDamageResult) rather than a separate 0x19 broadcast — that field was already
+    // live-verified (docs §7.2: "played through the sound manager if nonzero") but no call site ever passed a
+    // nonzero value. RTK's matching per-weapon field (ItmSoundHit / itemdb_soundhit) is dead in the reference
+    // server — itemdb_read's SQL SELECT never fetches `sound_hit`, so there's no real per-weapon number to
+    // port. Defaults to 008.wav (confirmed live 2026-07-27, swinging a Maxcaliber/Spike — see
+    // EquippedWeaponSound's doc for the paired 002 swing/miss sound). OPEN QUESTION: 349.wav was separately
+    // reported as the hit sound for Wooden Saber "and similar swords" — i.e. hit sound may be weapon-category
+    // specific like the swing sfx now is, not a single global value. Not yet split out pending confirmation
+    // of the actual grouping; "!hitsnd <id>" recalibrates or mutes (0) the single global value in the meantime.
+    private int _hitSfx = 8;
+
+    // "!fistsnd <id>" — set the unarmed swing sfx (see _fistSfx). "!fistsnd 0" mutes it again.
+    private void SetFistSound(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var id) || id < 0)
+        { SendLog($"usage: !fistsnd <id>   (current: {_fistSfx}; 0 = silent)"); return; }
+        _fistSfx = id;
+        if (id > 0) SendSound(id, _char.Id);
+        SendLog($"fist swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Log.Info($"   -> !fistsnd {id}");
+    }
+
+    // "!hitsnd <id>" — set the on-connect impact sfx (see _hitSfx). "!hitsnd 0" mutes it again.
+    private void SetHitSound(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var id) || id < 0)
+        { SendLog($"usage: !hitsnd <id>   (current: {_hitSfx}; 0 = silent)"); return; }
+        _hitSfx = id;
+        if (id > 0) SendSound(id, _char.Id);
+        SendLog($"hit sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Log.Info($"   -> !hitsnd {id}");
+    }
+
     private void SendMusic(ushort bgm, byte type = 2, byte volume = 100)
     {
         var d = new List<byte>();
@@ -4675,6 +6794,24 @@ public sealed class Session
         SendMap(0x19, _gameInc++, d.ToArray(), $"music(0x19) bgm={bgm} type={type} vol={volume}");
         _bgm = bgm;
     }
+
+    // 0x20 = time-of-day (RTK clif_sendtime, clif.c:4524): hour(u8 0..23) year(u8). This server sent a
+    // hardcoded placeholder here forever (0x10/0x32 at world-entry, 0x00/0x00 on the ARRIVAL path) — now
+    // fed by World's real hour/year clock (World.Time, ticked by World.Tick — see its HourTicks doc) so the
+    // client's day/night overlay actually advances, server-wide, exactly like RTK's own broadcast-to-every-
+    // session change_time_char.
+    internal void SendTime(byte hour, byte year) =>
+        SendMap(0x20, _gameInc++, new byte[] { hour, year }, $"time(0x20) hour={hour} year={year}");
+
+    // 0x1F = weather (RTK clif_sendweather, clif.c:4565): a single byte, 0=clear/1=WRAIN/2=WSNOW (map.h).
+    // UNVERIFIED against the real 4.95 client — RTK's own send only fires this opcode when
+    // `settingFlags & FLAG_WEATHER` (a later-client options toggle we have no record of on 4.95, and no
+    // existing RE evidence either way that 4.95 even renders rain/snow at all); ported at face value since
+    // it's the only real wire format on record, same "best real number available, flag it, let it be
+    // live-checked" precedent as the still-uncalibrated sound ids elsewhere in this file. "!weather <0-2>"
+    // lets the caster audition it directly.
+    internal void SendWeather(byte weather) =>
+        SendMap(0x1F, _gameInc++, new byte[] { weather }, $"weather(0x1F) {weather}");
 
     // Play the track assigned to a map, but only if it differs from what's already playing — re-sending
     // the same id would restart the song (jarring on a Ctrl+R refresh or a same-map re-entry).
@@ -4723,6 +6860,33 @@ public sealed class Session
             played++;
         }
         if (played == 0) SendLog("no valid sound ids (want positive integers)");
+    }
+
+    // "!mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
+    // renders each one (0=wisp/blue, 3=mini/status — the default everything else uses, 5=system — what
+    // durability warnings use, 11=group, 12=clan). No text -> a canned "test type N" line.
+    private void MiniTextProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var type))
+        { SendLog("usage: !mtx <type> [text...]   (0=wisp 3=mini/status 5=system 11=group 12=clan)"); return; }
+        string msg = parts.Length > 2 ? string.Join(' ', parts[2..]) : $"test type {type}";
+        SendMiniText(msg, (ushort)type);
+        SendLog($"sent minitext type={type}: \"{msg}\"");
+        Log.Info($"   -> !mtx type={type} \"{msg}\"");
+    }
+
+    // "!weather <0-2>" — force THIS map's weather and broadcast it to everyone already standing on it
+    // (0=clear, 1=rain/WRAIN, 2=snow/WSNOW). See SendWeather's doc: the 0x1F wire format is ported from RTK
+    // at face value but has no live confirmation yet against the real 4.95 client — this is how to check it.
+    private void WeatherProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var w) || w is < 0 or > 2)
+        { SendLog($"usage: !weather <0-2>   (0=clear 1=rain 2=snow; current: {_world.GetWeather(_char.Map)})"); return; }
+        _world.SetWeather(_char.Map, (byte)w);
+        SendLog($"map {_char.Map} weather set to {w}");
+        Log.Info($"   -> !weather {w} (map {_char.Map})");
     }
 
     // "!swingsnd <id>" — set the melee swing sfx (and play it once so you can audition it in place). Use with
@@ -4833,22 +6997,37 @@ public sealed class Session
         if (id == F1MenuSentinel) { OpenF1Menu(); return; }
 
         // id 0 (or explicitly our own id, e.g. "!click") -> our own public profile.
-        if (id == 0 || id == _char.Id) { SendClickProfile(_char.Id); return; }
+        if (id == 0 || id == _char.Id) { SendClickProfile(this); return; }
 
         // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
         // non-fighting mobs), so MobById finds them; the IsNpc flag distinguishes them from a real creature.
         if (_world.MobById(_char.Map, id) is { IsNpc: true } npc) { OpenNpcDialog(npc); return; }
 
-        // Clicking a real (non-NPC) mob is intentionally a no-op for regular players. RTK's real handler
-        // (clif.c clif_handle_clickgetinfo, BL_MOB case) runs "onLook", and onLook's player-facing branch
-        // only sends a minitext readout when player.gmLevel > 0 -- everyone else gets nothing back, which
-        // is why the 4.95 client shows no popup when you click a monster. SendClickProfile has no concept
-        // of "another entity's data" (it always serializes our OWN _char), so falling through to it here
-        // used to render your own profile mislabeled with the mob's id -- fixed by just returning.
-        // (Clicking another real PLAYER should show THEIR profile via RTK's clif_clickonplayer, but that
-        // needs SendClickProfile to serialize an arbitrary target Character, which doesn't exist yet -- so
-        // an id that isn't self/NPC/mob is also a no-op for now rather than showing the wrong data.)
+        // Clicking a real (non-NPC) mob: RTK's own handler (clif.c clif_handle_clickgetinfo, BL_MOB case)
+        // runs "onLook", whose player-facing branch is gated on player.gmLevel > 0 -- stock RTK gives
+        // regular players nothing back here. We deliberately diverge from that (2026-07-26, user request):
+        // right-click-to-walk is client-local pathing we can't intercept (see §11 self-walk note), so the
+        // only server-controllable feedback for "what IS that" is this click-info reply -- a name-only
+        // mini-text readout, short of the GM-only name/id/level/HP/AC dump onLook does.
+        if (_world.MobById(_char.Map, id) is { } mob)
+        {
+            SendMiniText($"It's {(StartsWithVowel(mob.Name) ? "an" : "a")} {mob.Name}.");
+            return;
+        }
+
+        // Otherwise, if the id resolves to another connected PLAYER, show THEIR real profile (RTK
+        // clif_clickonplayer, same 0x34 opcode, populated from the target's own data via the SendClickProfile
+        // overload above). This is the real "view others" window — its Group/Exchange status cells are what
+        // the client uses to enable those buttons, which is how a real player actually starts a party/trade
+        // (§11l), not a chat command. An id matching nobody at all (stale/disconnected) is a no-op.
+        var target = _world.PlayerById(id);
+        if (target is not null) SendClickProfile(target);
     }
+
+    // Cheap "a"/"an" article check for mob-name mini-text (HandleClickInfo). Good enough for our mob
+    // roster (no silent-letter edge cases like "hour").
+    private static bool StartsWithVowel(string s) =>
+        s.Length > 0 && "AEIOUaeiou".IndexOf(s[0]) >= 0;
 
     // F2: flip the subpath-chat toggle and confirm via mini-text (RTK: "Subpath Chat: ON"/"OFF" — same
     // wording, same channel used elsewhere for status confirmations). Persisted so it survives a relog.
@@ -5059,6 +7238,7 @@ public sealed class Session
             if (!GiveItem(it)) return;                 // pack full — GiveItem already told the player
             _char.Coins -= (uint)it.BuyPrice;
             SendStats();
+            MarkDirty();
             Log.Info($"   -> BUY '{it.Name}' -{it.BuyPrice}g (coins now {_char.Coins})");
             await DlgSay(npc, $"You bought {it.Name} for {it.BuyPrice} gold.");
         }
@@ -5082,6 +7262,7 @@ public sealed class Session
             if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); }   // reason 0 = Remove (sold, not dropped)
             else SendAddItem(inv);
             SendStats();
+            MarkDirty();
             await DlgSay(npc, $"You sold {def.Name} for {def.SellPrice} gold.");
         }
     }
@@ -5114,6 +7295,7 @@ public sealed class Session
         }
         _char.Coins += earned;
         SendStats();
+        MarkDirty();
         NpcBubble(npc, $"You sold {sold} {def.Name} for {earned} gold.");
         return true;
     }
@@ -5153,6 +7335,7 @@ public sealed class Session
         _char.Coins -= (uint)amt;
         _char.BankMoney += (uint)amt;
         SendStats();
+        MarkDirty();
         await DlgSay(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
     }
 
@@ -5169,6 +7352,7 @@ public sealed class Session
             _char.Coins -= (uint)amt;
             _char.BankMoney += (uint)amt;
             SendStats();
+            MarkDirty();
             NpcBubble(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
             return true;
         }
@@ -5205,6 +7389,7 @@ public sealed class Session
             _char.BankMoney -= (uint)amt;
             _char.Coins += (uint)amt;
             SendStats();
+            MarkDirty();
             NpcBubble(npc, $"Here are your {amt} coins. Your vault now holds {_char.BankMoney}.");
             return true;
         }
@@ -5242,6 +7427,7 @@ public sealed class Session
         _char.BankMoney -= (uint)amt;
         _char.Coins += (uint)amt;
         SendStats();
+        MarkDirty();
         await DlgSay(npc, $"Here are your {amt} coins. Your vault now holds {_char.BankMoney}.");
     }
 
@@ -5260,6 +7446,7 @@ public sealed class Session
         _char.Inventory.Remove(inv);
         SendDelItem((byte)inv.Slot, 0);         // reason 0 = Remove (stored, not dropped)
         _char.BankItems.Add(inv);               // whole stack goes to the vault
+        MarkDirty();
         await DlgSay(npc, $"You store {def!.Name} in your vault.");
     }
 
@@ -5281,6 +7468,7 @@ public sealed class Session
         bi.Slot = (byte)slot;                   // assign a fresh bag slot (vault slots are meaningless)
         _char.Inventory.Add(bi);
         SendAddItem(bi);
+        MarkDirty();
         await DlgSay(npc, $"You withdraw {def!.Name} from your vault.");
     }
 
@@ -5636,54 +7824,62 @@ public sealed class Session
     //   profile PICTURE (u16BE len + bytes)
     //   legend count (u8) + legends { icon u8, color u8, textLen u8, text }
     // NOTE: 4.95's click popup has NO totem slot (TOTEM.EPF is unreferenced in the client).
-    private void SendClickProfile(uint targetId)
+    // <paramref name="target"/> is whoever the profile is ABOUT (self, for your own "!click"/profile key;
+    // another connected player for a real click — RTK clif_clickonplayer). The packet always goes out over
+    // THIS session's own socket (Send()/SendMap() are instance methods of the VIEWER); the DATA comes from
+    // the target's own character/equipment, which is legal to read cross-instance here since WeaponLook,
+    // ShieldLook, ProfileCellIcon and GearListText are all private instance methods of this same Session
+    // class — calling target.WeaponLook() runs them against the target's own _char, not the viewer's.
+    private void SendClickProfile(Session target)
     {
+        var tc = target._char;
         var d = new List<byte>();
 
         // header strings — order pinned by the marker test (each renders in its labeled slot)
-        AddLenStr(d, _char.Title);
-        AddLenStr(d, _char.ClanName);
-        AddLenStr(d, _char.ClanTitle);
-        AddLenStr(d, _char.ClassName);
-        AddLenStr(d, _char.Name);
+        AddLenStr(d, tc.Title);
+        AddLenStr(d, tc.ClanName);
+        AddLenStr(d, tc.ClanTitle);
+        AddLenStr(d, tc.ClassName);
+        AddLenStr(d, tc.Name);
 
         // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
         // which already renders this character correctly): [sex, form, face, armor, 0, 0, 0]
         d.Add(0);
-        d.AddRange(new byte[] { (byte)_char.Sex, 0, (byte)_char.Face, _char.Armor, 0, WeaponLook(), ShieldLook() });
+        d.AddRange(new byte[] { (byte)tc.Sex, 0, (byte)tc.Face, tc.Armor, 0, target.WeaponLook(), target.ShieldLook() });
 
         // three equipment ICON cells beside the doll: helm, left ring, right ring (no sprite layer for these
         // in 4.95, so they render as ground-icon boxes). Same IconWire encoding as the 0x37 equip window.
-        d.AddRange(Be(ProfileCellIcon(4)));   // helm  (wire slot 4)
-        d.AddRange(Be(ProfileCellIcon(7)));   // left ring  (wire slot 7)
-        d.AddRange(Be(ProfileCellIcon(8)));   // right ring (wire slot 8)
+        d.AddRange(Be(target.ProfileCellIcon(4)));   // helm  (wire slot 4)
+        d.AddRange(Be(target.ProfileCellIcon(7)));   // left ring  (wire slot 7)
+        d.AddRange(Be(target.ProfileCellIcon(8)));   // right ring (wire slot 8)
 
         // FIELD #10 — PAGE-1 gear/item list (u8 len + text). Item names are TAB-separated (client
         // converts 0x09 -> CR for multiline). Empty until inventory/equipment exists.
-        AddLenStr(d, GearListText());
+        AddLenStr(d, target.GearListText());
 
         d.AddRange(Be32(0));      // numeric scalar — unknown, 0 for now
         // The two status cells beside the name — group (sociable) and exchange (trade). 0xff rendered as blank
-        // WHITE boxes; a real 0/1 shows the off/on indicator. (Which cell is which, and the exact on/off glyph,
-        // want a live check — swap if reversed.)
-        d.Add((byte)(_char.Grouped  ? 1 : 0));   // group / sociable status
-        d.Add((byte)(_char.Exchange ? 1 : 0));   // exchange / trade status
-        d.Add(_char.Nation);      // nation index -> NATION_E.EPF
+        // WHITE boxes; a real 0/1 shows the off/on indicator. THIS is what the client reads to decide whether
+        // the "Group"/"Exchange" buttons on this window are enabled — so a self-view always shows your own
+        // flags, and (now that this takes a real target) another player's view shows THEIRS, matching RTK.
+        d.Add((byte)(tc.Grouped  ? 1 : 0));   // group / sociable status
+        d.Add((byte)(tc.Exchange ? 1 : 0));   // exchange / trade status
+        d.Add(tc.Nation);      // nation index -> NATION_E.EPF
 
         // FIELD #15 — profile PICTURE bitmap: u16BE size + bytes (empty = 00 00)
-        var pic = _char.ProfilePic ?? Array.Empty<byte>();
+        var pic = tc.ProfilePic ?? Array.Empty<byte>();
         d.AddRange(Be((ushort)pic.Length));
         d.AddRange(pic);
 
         // FIELD #16 — PAGE-2 writable profile BLURB (u8 len + text). This is the free-text box, a
         // SEPARATE field from the page-1 gear list. Omitting it desyncs the legend count.
-        var blurb = Encoding.ASCII.GetBytes(_char.ProfileText ?? "");
+        var blurb = Encoding.ASCII.GetBytes(tc.ProfileText ?? "");
         if (blurb.Length > 255) blurb = blurb[..255];
         d.Add((byte)blurb.Length);
         d.AddRange(blurb);
 
         // FIELD #17/#18 — legends: count u8, then each { icon u8, color u8, textLen u8, text }
-        var legs = _char.Legends ?? new List<Legend>();
+        var legs = tc.Legends ?? new List<Legend>();
         d.Add((byte)Math.Min(legs.Count, 255));
         foreach (var lg in legs)
         {
@@ -5695,13 +7891,14 @@ public sealed class Session
             d.AddRange(t);
         }
 
-        SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={targetId} nation={_char.Nation} blurb={blurb.Length}B legends={legs.Count}");
+        SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={tc.Id} nation={tc.Nation} blurb={blurb.Length}B legends={legs.Count}");
     }
 
     // Page-1 gear/item list for the click profile (the "inspect another player" view): the names of every
     // worn item, TAB-separated (the client turns 0x09 -> CR, one per line). This is the equipment list that
     // shows below the portrait when you click a character. Ordered by the canonical equip-slot byte so the
-    // list reads weapon → armour → shield → helm → … regardless of the order items were put on.
+    // list reads weapon → armour → shield → helm → … regardless of the order items were put on. Called on
+    // whichever Session the profile is ABOUT (see SendClickProfile), so this always reads ITS OWN _char.
     private string GearListText()
     {
         var names = _char.Equipment
@@ -5710,6 +7907,18 @@ public sealed class Session
             .OrderBy(x => x.def!.EquipSlot)
             .Select(x => string.IsNullOrEmpty(x.worn.CustomName) ? x.def!.Name : x.worn.CustomName);
         return string.Join('\t', names);
+    }
+
+    // "!click" (self) / "!click <name>" (another connected player) — the debug entry point for the same
+    // 0x34 packet a real click sends (HandleClickInfo). Useful for eyeballing the "view others" window
+    // (and its Group/Exchange buttons, §11l) without needing a second live client to click you.
+    private void ClickProfileCmd(string text)
+    {
+        string name = text.Length > "!click".Length ? text["!click".Length..].Trim() : "";
+        if (name.Length == 0) { SendClickProfile(this); return; }
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
+        SendClickProfile(target);
     }
 
     // "!ckm" — send a 0x34 click-profile with DISTINCT MARKER strings in every text field, so we can
@@ -5725,7 +7934,7 @@ public sealed class Session
         _char.Name      = "NAME";
         _char.ProfileText = "BLURBTEXT";
         _char.Legends   = new List<Legend> { new Legend(0, 0, "LEGEND") };
-        SendClickProfile(_char.Id);
+        SendClickProfile(this);
         (_char.Title, _char.ClanName, _char.ClanTitle, _char.ClassName, _char.Name, _char.ProfileText, _char.Legends) = save;
         Log.Info("   -> MARKER click-profile sent (TTL/CLAN/CRANK/CLASS/NAME/BLURBTEXT/LEGEND)");
     }
@@ -5829,13 +8038,20 @@ public sealed class Session
 
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
-        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name);
+        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
+            _char.ArmorColor, _morphLook, _morphColor);
 
-    /// <summary>Draw player <paramref name="other"/> on our client (0x33 player look form).</summary>
+    /// <summary>Draw player <paramref name="other"/> on our client. Normally the 0x33 player-look form; while
+    /// morphed (see CastMorph/Content.MorphSpells), reroutes to the SAME 0x07 Monster.epf creature-spawn a
+    /// real mob uses — the confirmed client wall is 0x33-specific (every renderKind hardcodes the player
+    /// archive), so this is the one packet shape that can actually show peers an animal sprite for us. The
+    /// target id is still our real player id (never added to World's mob list), so clicking it keeps
+    /// resolving through PlayerById, not the mob no-op path. Tradeoff: a 0x07 entity carries no name field.</summary>
     public void ShowPlayer(Session other)
     {
         var s = other.Snapshot();
-        var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : (s.Mounted ? 3 : 0)), s.Face, s.Armor, 0, s.Weapon, s.Shield };   // same layout as SendSelfLook ([1]=form: 1=ghost, 3=mounted)
+        if (s.MorphLook != 0) { SendCreatureList(new[] { (s.Id, (ushort)(0x8000 | s.MorphLook), s.X, s.Y, s.MorphColor, s.Dir) }); return; }
+        var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : (s.Mounted ? 3 : 0)), s.Face, s.Armor, s.ArmorColor, s.Weapon, s.Shield };   // same layout as SendSelfLook ([1]=form, [4]=war-paint dye)
         SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
     }
 

@@ -48,6 +48,29 @@ public static class NpcScripts
         ["RogueTrainerNpc"]   = new INpcAbility[] { ClassTrainerAbility.Rogue,   MinorQuestAbility.Instance },
         ["MageTrainerNpc"]    = new INpcAbility[] { ClassTrainerAbility.Mage,    MinorQuestAbility.Instance },
         ["PoetTrainerNpc"]    = new INpcAbility[] { ClassTrainerAbility.Poet,    MinorQuestAbility.Instance },
+
+        // rogue_guild_shaman.lua: Face / Gender change (real, visible on this client — see AppearanceAbility).
+        // "Eyes" and the level-50+ Rogue "white_moon_axe" speech quest aren't ported.
+        ["RogueGuildShamanNpc"] = new INpcAbility[] { AppearanceAbility.Instance },
+
+        // salon.lua: real RTK puts Face/Gender on a separate Rogue Guild Shaman NPC, not the barber — but
+        // players expect the appearance-change service at "the salon" they walked into, so Serge (+ Seme/
+        // Sarge) offers it too. Haircut/hairdye/shave/beard aren't ported (can't render on this client — see
+        // AppearanceAbility's doc comment / docs/NexusTK-4.95-Protocol.md §8).
+        ["SalonNpc"] = new INpcAbility[] { AppearanceAbility.Instance },
+
+        // arena_master.lua: "Mountain"/"Tower" — the Arena Masters. Their whole service is one option, "War
+        // paint" (the team/special armor dye — see WarPaintAbility). No shop/bank/repair, exactly as RTK.
+        ["ArenaMasterNpc"] = new INpcAbility[] { WarPaintAbility.Instance },
+
+        // ExpSeller.lua: "Shady"/"Sunset"/"Midnight" — the shadow-stat vendors (see ShadowStatsAbility).
+        // Bon-Hwa (its own NpcIdentifier, higher rebirth-rank-gated caps + the Kawlana item quest) isn't ported.
+        ["ExpSeller"] = new INpcAbility[] { ShadowStatsAbility.Instance },
+
+        // chapel_npc.lua: "Lotus"/"Peach"/"Fen" in Kugnae/Buya/Nagnang — Buy/Sell (its own ShopStock.csv
+        // catalogue: love/cooked_fish/rose_petals) plus the full marriage feature set (see ChapelAbility).
+        // Registered explicitly (not flag-derived) so ChapelAbility's entries sit alongside Buy/Sell.
+        ["ChapelNpc"] = new INpcAbility[] { ShopAbility.Instance, ChapelAbility.Instance },
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition if registered, else derived

@@ -26,6 +26,11 @@ public sealed class Character
     public ushort Face   = 0;
     public ushort Hair   = 0;
 
+    // War-paint dye applied to the worn armor/coat — renders as the 0x33 type-0 appearance[4] palette byte
+    // (0 = undyed base color). Set by the Arena Master (WarPaintAbility, RTK arena_master.lua's "War paint").
+    // Persisted so the dye survives a relog, and re-broadcast to peers via PlayerSnapshot so they see it too.
+    public byte   ArmorColor = 0;
+
     // Mounted on a horse — renders as the 0x33 type-0 appearance[1] form byte = 3 (the client swaps the
     // human sprite for the horse+rider composite, SPR ids 344/345). Session-visual only; not persisted.
     public bool   Mounted = false;
@@ -44,11 +49,15 @@ public sealed class Character
     public static readonly string[] Nations =
         { "Neutral", "Koguryo", "Buya", "Nagnang", "Shilla", "Jinhan", "Paekjae", "Kaya" };
     public static string NationName(byte id) => id < Nations.Length ? Nations[id] : $"nation#{id}";
+    // MaxHp/MaxMp compiled-in fallback only matters if a Character is ever built without going through
+    // CharacterFactory.PlaceNewCharacter (see there): real RTK's Player.reset rolls baseHealth =
+    // random(45,55) and baseMagic = random(32,36) per new character, not a fixed 100/50 — PlaceNewCharacter
+    // does that same roll for genuinely new characters. These constants are just the midpoint of that range.
     public byte Level    = 1;
-    public uint MaxHp    = 100;
-    public uint MaxMp    = 50;
-    public uint Hp       = 100;
-    public uint Mp       = 50;
+    public uint MaxHp    = 50;
+    public uint MaxMp    = 34;
+    public uint Hp       = 50;
+    public uint Mp       = 34;
     public byte Might    = 3;
     public byte Will     = 3;
     public byte Grace    = 3;
@@ -101,7 +110,9 @@ public sealed class Character
     // profile / "Mind's Eye" self-profile (0x39 = clif_mystaytus). These populate the profile window
     // the client opens on the profile key (client sends 0x2D, byte 0). AC is signed in TK (lower is
     // better); Dam/Hit are the melee bonus lines. Tnl = experience "to next level".
-    public sbyte  Ac        = 0;
+    // Ac defaults to 99 (real RTK Player.reset: baseArmor = 99), NOT 0 — LevelUp's "-1 per level, floor 1
+    // at level 99" formula (99 - 98 = 1) only lands on the documented level-99 cap value starting from 99.
+    public sbyte  Ac        = 99;
     public byte   Dam       = 0;
     public byte   Hit       = 0;
     public uint   Tnl       = 0;
@@ -110,6 +121,25 @@ public sealed class Character
     public string ClanName  = "";          // guild/clan name ("" = clanless)
     public string ClanTitle = "";          // rank within the clan
     public string Spouse    = "";           // marriage line ("" = none)
+
+    // Marriage in progress (RTK Spells/common/propose.lua + NPCs/Common/chapel_npc.lua). Fiance holds the
+    // OTHER party's name while engaged ("" = not engaged); Spouse above takes over once actually married.
+    // IsProposee marks which side ACCEPTED the proposal — RTK gates "only the proposee may start the
+    // ceremony" on registry["partner2"]==self.ID, which this mirrors without needing a partner1/partner2
+    // pair. MarriageTimer is the unix-seconds "not yet" gate on starting the ceremony (RTK's 3-day cool-down
+    // after getting engaged); RingCooldown is the separate 24h gate on buying ANOTHER engagement ring.
+    public string Fiance        = "";
+    public bool   IsProposee    = false;
+    public long   MarriageTimer = 0;
+    public long   RingCooldown  = 0;
+
+    // Ignore list (RTK map.h sd_ignorelist / clif.c ignorelist_add/remove/clif_isignore): case-insensitive
+    // names. clif_isignore blocks a whisper if EITHER side has the other listed — see Session.DoWhisper.
+    // RTK never exposes an in-game "friend list" (no such struct/feature exists in the C engine at all);
+    // Friends is our own addition, purely a saved name list with an online/offline check on login — no RTK
+    // source to port from, so there's no wire packet or server behavior beyond that to replicate.
+    public List<string> IgnoreList = new();
+    public List<string> Friends    = new();
 
     // Profile status toggles shown as the group/exchange indicator cells (self 0x39 + other-view 0x34).
     // Grouped = "sociable" (Shift+G, 0x1b/0x02); Exchange = trade allowed (0x1b/0x08). Persisted so they

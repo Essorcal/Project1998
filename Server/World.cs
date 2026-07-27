@@ -6,7 +6,8 @@ namespace Server;
 /// session's mutable state. Built under no lock (fields are only written by the owning session's
 /// read-loop; a torn read at worst mis-places a peer by one tile until its next move packet).</summary>
 public readonly record struct PlayerSnapshot(
-    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, bool Mounted, bool Dead, string Name);
+    uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, bool Mounted, bool Dead, string Name,
+    byte ArmorColor = 0, ushort MorphLook = 0, byte MorphColor = 0);
 
 /// <summary>A stack of an item lying on the map floor, drawn to every client on that map via 0x16
 /// (Item.epf frame = <see cref="Graphic"/>). <see cref="Id"/> is the entity id (find/despawn key). Carries
@@ -20,6 +21,19 @@ public sealed class GroundItem
     public ushort Dura;
     public ushort Graphic;       // Item.epf frame (item's Icon) — the 0x16 graphic id
     public string CustomName = "";
+}
+
+/// <summary>A hidden hazard placed by a Rogue trap spell (RTK NPCs/trap/rogue_traps/*): invisible — no
+/// ground graphic is ever drawn for it (unlike <see cref="GroundItem"/>) — until a mob steps onto its
+/// tile, at which point its effect fires once and it's removed. See <see cref="World.PlaceTrap"/>/
+/// <see cref="World.TrapAt"/> and Session.CastTrap/CastSpotTraps.</summary>
+public sealed class Trap
+{
+    public uint   Id;
+    public ushort X, Y;
+    public string Kind = "";   // "dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep"/"bladestorm"
+    public uint   OwnerId;     // caster's player id — credited with any exp from a trap kill
+    public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
 
 /// <summary>
@@ -44,8 +58,22 @@ public sealed class World
         public readonly List<Session> Players = new();
         public readonly List<Mob> Mobs = new();
         public readonly List<GroundItem> Items = new();
+        public readonly List<Trap> Traps = new();
+        // RTK map[m].weather (map.h WRAIN=1/WSNOW=2, 0=clear) — sl.c's setWeatherM/getWeatherM Lua API is the
+        // only place RTK ever changes this itself (an admin/quest-script lever, no automatic scheduler exists
+        // anywhere in the C engine); see WeatherRollTicks below for our own periodic-drift substitute.
+        public byte Weather;
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
+
+    // Server-wide online-account registry (independent of the per-map Players lists above, which a session
+    // only joins AFTER its own arrival/load logic runs). Keyed by CharacterStore.Key(username). Exists
+    // solely for the duplicate-login guard: RegisterOnline lets HandleArrival atomically detect + evict a
+    // stale session for the same account BEFORE loading, so a slow-to-unwind old session can never clobber
+    // the new one's fresher save (SQLite's persistence is blind last-write-wins). Guarded by the same _lock
+    // as everything else here — registration/eviction is rare (once per login), so sharing the lock costs
+    // nothing measurable against the map operations.
+    private readonly Dictionary<string, Session> _online = new();
 
     /// <summary>A spawn point: one <see cref="Live"/> mob at a time, respawned <see cref="RespawnTick"/>
     /// ticks after it dies. Built once from <see cref="Content.Spawns"/> (fixed tile, <see cref="Placed"/>
@@ -79,6 +107,10 @@ public sealed class World
     // resuming normal wandering — bigger than WanderRadius so a fight can range beyond the idle-hop leash,
     // but still bounded so a player can outrun pursuit rather than being chased across the whole map.
     private const int ChaseLeash = 8;
+    // How far (Chebyshev, from the mob's CURRENT tile) an aggressive mob (MobDef.Aggressive, RTK MobBehavior==1)
+    // scans for an unprovoked target each move tick — RTK's mob_find_target runs over a full-screen-ish area;
+    // this is scoped to roughly what the player can see on their own screen (17x15 viewport, Session.InView).
+    private const int AggroRadius = 8;
 
     // Ground-item forage spawns (RTK itemspawner.lua): keep up to Max stacks of a gatherable item scattered on
     // passable tiles within a box, topped up periodically. Chestnuts fill the Kugnae farm (map 0) and a Buya
@@ -91,6 +123,26 @@ public sealed class World
         new("chestnut", 330,  20,  27,  37,  47, 20, 1, 3),   // Buya NW      (buyaChestnutSpawn)
     };
     private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
+
+    // ---- day/night clock (RTK map.c change_time_char, opcode 0x20) ----------------------------
+    // RTK: timer_insert(450000, 450000, change_time_char, ...) — every 450000ms (7.5min) real time, cur_time
+    // (hour, 0..23) ticks up by one and every connected session gets a fresh clif_sendtime broadcast; on
+    // hour rollover cur_day/cur_season/cur_year advance too (day 0..91, season 1..4, year unbounded). We
+    // only model hour+year (the two fields the wire packet actually carries — see Session.SendTime); day/
+    // season have no client-visible effect via this packet so they're not tracked.
+    private const int HourTicks = 750;    // 450000ms / TickMs(600) — one in-game hour per real 7.5 minutes
+    private int _hour = 16, _year = 50;   // starting values match what this server always sent before this
+                                           // was wired up live (the old hardcoded 0x10/0x32 placeholder), so
+                                           // deploying this doesn't jump the clock for anyone already playing
+    public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
+
+    // ---- weather (RTK map[m].weather / clif_sendweather, opcode 0x1F) --------------------------
+    // No automatic scheduler exists in the RTK C engine for this (setWeatherM/getWeatherM are pure admin/
+    // quest-script levers — see MapState.Weather's doc) so there's no real cadence/odds to port; this rolls
+    // a low-probability per-active-map change on a slow tick so weather occasionally drifts rather than
+    // sitting fixed at "clear" forever. 0=clear, 1=WRAIN, 2=WSNOW (RTK map.h enum).
+    private const int WeatherRollTicks = 1500;     // ~15 minutes real time (1500 * 600ms)
+    private const int WeatherChangePct = 20;       // 20% chance per eligible map each roll
 
     // Facing (0=N 1=E 2=S 3=W) toward a delta, preferring the larger axis — used to turn a mob to face
     // whatever it's about to melee.
@@ -112,6 +164,7 @@ public sealed class World
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
         _ = Task.Run(TickLoop);           // start the shared mob-AI + respawn heartbeat
+        _ = Task.Run(AutoSaveLoop);       // periodic crash-safety backstop (idle-dirty players); see AutoSaveLoop
     }
 
     // ---- persistent spawn roster --------------------------------------------------------------
@@ -215,7 +268,9 @@ public sealed class World
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
             // rendered every mob green — so we use RTK's per-mob colour, which matches for most creatures.)
             Key = d.Key,   // carry the MobDef identifier so quest kill-matching can key on it
-            Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
+            Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Aggressive = d.Aggressive,
+            MinDam = d.MinDam, MaxDam = d.MaxDam, Hit = d.Hit, IsBoss = d.IsBoss, Protection = d.Protection, Ac = d.Ac, Grace = d.Grace,
+            Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
         };
         Map(mapId).Mobs.Add(mob);
@@ -316,6 +371,130 @@ public sealed class World
     public uint AllocateMobId()    { lock (_lock) return _nextMobId++; }
     public uint AllocateItemId()   { lock (_lock) return _nextItemId++; }
 
+    private uint _nextTrapId = 1;
+
+    /// <summary>Place a hidden trap (see <see cref="Trap"/>). Never broadcast — traps have no ground
+    /// graphic; only <see cref="TrapsNear"/> (spot_traps) ever reveals one, and only to its caster.</summary>
+    public Trap PlaceTrap(ushort mapId, ushort x, ushort y, string kind, uint ownerId, long expiresAt = 0)
+    {
+        var t = new Trap { Id = _nextTrapId++, X = x, Y = y, Kind = kind, OwnerId = ownerId, ExpiresAt = expiresAt };
+        lock (_lock) Map(mapId).Traps.Add(t);
+        return t;
+    }
+
+    // RTK bladestorm_trap.lua's block.side -> {x[],y[]} table: 4 tiles fanned out AHEAD of the TRIGGER's own
+    // facing (0=N/1=E/2=S/3=W, this codebase's usual Dir convention) — not the caster's facing at cast time.
+    private static readonly (int dx, int dy)[][] BladestormFan =
+    {
+        new[] { (0,-1), (-1,-2), (0,-2), (1,-2) },   // dir 0 = north
+        new[] { (1,0), (2,-1), (2,0), (2,1) },       // dir 1 = east
+        new[] { (0,1), (-1,2), (0,2), (1,2) },       // dir 2 = south
+        new[] { (-1,0), (-2,1), (-2,0), (-2,-1) },   // dir 3 = west
+    };
+
+    /// <summary>Bladestorm's PC-trigger path (see Content.IsBladestormTrap) — the only trap kind a PLAYER can
+    /// set off; the hazard family (dart/snare/…) stays mob-only. Called from Session.HandleWalk right after a
+    /// successful step commits the new tile — HandleWalk holds no lock of its own, so the resulting damage
+    /// can be applied directly here with no deferred queue (unlike the mob-trigger case in
+    /// TriggerTrapLocked, which fires from inside World.Tick's own lock).</summary>
+    public void CheckPlayerTrapTrigger(Session player, ushort mapId, ushort x, ushort y, byte facing)
+    {
+        Trap? trap;
+        var coneTargets = new List<Mob>();
+        lock (_lock)
+        {
+            var m = Map(mapId);
+            trap = m.Traps.FirstOrDefault(t => t.Kind == "bladestorm" && t.X == x && t.Y == y);
+            if (trap is null) return;
+            m.Traps.Remove(trap);
+            foreach (var (dx, dy) in BladestormFan[facing & 3])
+            {
+                var t = m.Mobs.FirstOrDefault(o => o.Alive && o.X == x + dx && o.Y == y + dy);
+                if (t is not null) coneTargets.Add(t);
+            }
+        }
+        // ONE damage number, computed from the trigger (RTK applies it uniformly, not per-target) — Session
+        // owns the armor/HP math for a player trigger and caps its OWN loss to leave 1 HP; the cone targets
+        // it catches take the same (uncapped) value via the existing trap-damage pipeline.
+        int dmg = player.ApplyBladestormSelfDamage();
+        foreach (var t in coneTargets) Try(() => ApplyTrapDamage(mapId, t, dmg, player.PlayerId));
+    }
+
+    /// <summary>Every trap within <paramref name="radius"/> tiles (Chebyshev) of a point — spot_traps'
+    /// reveal, or a debug listing. Doesn't consume/remove anything.</summary>
+    public Trap[] TrapsNear(ushort mapId, int x, int y, int radius)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return Array.Empty<Trap>();
+            return m.Traps.Where(t => Math.Max(Math.Abs(t.X - x), Math.Abs(t.Y - y)) <= radius).ToArray();
+        }
+    }
+
+    // Flat damage for the four "instant hit" trap kinds (RTK NPCs/trap/rogue_traps/*.lua — dart/repeating
+    // are byte-for-byte the same script despite the name difference; only their spell-side level gate and
+    // mana cost differ).
+    private static readonly Dictionary<string, int> TrapDamage = new()
+        { ["dart"] = 500, ["repeating"] = 500, ["spear"] = 3500, ["death"] = 11650 };
+
+    // Caller holds _lock (called mid-movement-loop, mob has just stepped onto the trap's tile). Damage
+    // kinds are queued for World.Tick's deferred pass (needs Session-facing broadcasts, which mustn't run
+    // under the lock); status kinds (snare/sleep/flash — all simplified to the same "can't act" mechanic as
+    // a cast Debuff, since this server has no separate armor-debuff/blind stat) and poison (a real DOT,
+    // ticked every 1500ms by the poison check above) mutate the mob directly since that's lock-only state.
+    private void TriggerTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
+    {
+        long now = Environment.TickCount64;
+        switch (trap.Kind)
+        {
+            case "dart" or "repeating" or "spear" or "death":
+                damageQueue.Add((mapId, mob, TrapDamage[trap.Kind], trap.OwnerId));
+                break;
+            case "snare": mob.FrozenUntil = Math.Max(mob.FrozenUntil, now + 75000); break;   // RTK: armor+20 debuff, simplified to a hold
+            case "sleep": mob.FrozenUntil = Math.Max(mob.FrozenUntil, now + 38000); break;
+            case "flash": mob.FrozenUntil = Math.Max(mob.FrozenUntil, now + 10000); break;    // RTK: blind.cast, simplified to a hold
+            case "poison":
+                mob.PoisonUntil = now + 1 + Random.Shared.Next(1500, 30001);   // RTK: 1 + random(1500,30000) for a MOB target
+                mob.PoisonNextTick = now + 1500;
+                mob.PoisonTickDam = Math.Clamp((int)(mob.MaxHp * 0.01), 1, 1000);
+                mob.PoisonOwnerId = trap.OwnerId;
+                break;
+            case "bladestorm":
+            {
+                // ONE HP-percent damage number computed from the trigger (RTK block.health*0.75, or *0.05 on
+                // instance/high maps ids >= 60000), applied uniformly to the trigger itself AND every mob the
+                // facing cone catches — see Content.IsBladestormTrap. The PC-trigger case (World.
+                // CheckPlayerTrapTrigger) mirrors this but nets against the trigger's OWN armor instead.
+                var mm = Map(mapId);
+                int dmg = Math.Max(1, (int)(mob.Hp * (mapId < 60000 ? 0.75 : 0.05)));
+                foreach (var (dx, dy) in BladestormFan[mob.Dir & 3])
+                {
+                    var t = mm.Mobs.FirstOrDefault(o => o.Alive && !ReferenceEquals(o, mob) && o.X == mob.X + dx && o.Y == mob.Y + dy);
+                    if (t is not null) damageQueue.Add((mapId, t, dmg, trap.OwnerId));
+                }
+                damageQueue.Add((mapId, mob, dmg, mob.Id));   // the trigger takes it too (RTK block.health -= damage)
+                break;
+            }
+        }
+    }
+
+    /// <summary>Apply a trap hit / poison tick's damage (deferred out of the movement lock — see
+    /// <see cref="TriggerTrapLocked"/>): mutate HP via the normal <see cref="TryDamage"/> path, broadcast the
+    /// over-head damage number (and death despawn), and credit the trap owner with exp on a kill.</summary>
+    private void ApplyTrapDamage(ushort mapId, Mob mob, int dmg, uint ownerId)
+    {
+        if (!TryDamage(mapId, mob, dmg, out bool died, ownerId)) return;
+        byte pct = died ? (byte)0 : (byte)Math.Clamp(mob.Hp * 100 / Math.Max(1, mob.MaxHp), 1, 100);
+        Broadcast(mapId, p => p.DamageOver(mob.Id, pct, 33));
+        if (died)
+        {
+            uint mobId = mob.Id;
+            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch { } });
+            uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+            PlayerById(ownerId)?.AwardExp(reward);
+        }
+    }
+
     private MapState Map(ushort id)
     {
         if (!_maps.TryGetValue(id, out var m)) { m = new MapState(); _maps[id] = m; }
@@ -382,7 +561,63 @@ public sealed class World
         foreach (var p in peers) Try(() => send(p));
     }
 
+    /// <summary>Current weather for a map (0=clear/1=WRAIN/2=WSNOW), for a player entering/re-entering it —
+    /// see MapState.Weather. Unpopulated maps default to clear (never rolled — see the Tick's WeatherRollTicks
+    /// pass, which only touches maps with at least one player).</summary>
+    public byte GetWeather(ushort mapId) { lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.Weather : (byte)0; }
+
+    /// <summary>Force a map's weather (the "!weather" debug command — RTK's own setWeatherM is the same kind
+    /// of admin/quest-script lever). Broadcasts immediately to everyone already on that map.</summary>
+    public void SetWeather(ushort mapId, byte weather)
+    {
+        lock (_lock) Map(mapId).Weather = weather;
+        Broadcast(mapId, p => p.SendWeather(weather));
+    }
+
     // ---- mobs ---------------------------------------------------------------------------------
+
+    /// <summary>Hot-reload hook (the <c>!reload</c> command, after <see cref="Content.Reload"/> swaps the
+    /// registries): re-resolve every spawn point's <see cref="MobDef"/> against the new registry — so future
+    /// respawns use the new stats — and refresh already-spawned live mobs in place. A live mob gets the new
+    /// <c>MaxHp/Exp/Level/Will/MoveTime/Aggressive/MinDam/MaxDam/Hit/IsBoss/Protection/Ac/Grace</c>, with its current <c>Hp</c> clamped to the new max (a full mob
+    /// stays full; a wounded one keeps its wound but can't exceed the new cap). <c>Look/Name/Color</c> are NOT
+    /// touched on a live mob — changing the drawn sprite would need a client re-render (0x07 despawn+respawn),
+    /// so those apply on the next respawn instead. Iterates <c>_spawns</c> (the authoritative materialized
+    /// spawn roster), so summoned debug dummies and stationary NPCs — which aren't spawn-backed — are left
+    /// alone. Un-materialized maps have no spawns yet and will build fresh from the new registry on first
+    /// entry. Returns the number of live mobs updated.</summary>
+    public int ReloadContent()
+    {
+        int updated = 0;
+        lock (_lock)
+        {
+            foreach (var list in _spawns.Values)
+                foreach (var spawn in list)
+                {
+                    var def = Content.MobById(spawn.Def.Id);
+                    if (def is null) continue;   // this mob id was removed from the registry — keep the old def
+                    spawn.Def = def;             // future respawns from this point pick up the new stats
+                    var m = spawn.Live;
+                    if (m is null || !m.Alive) continue;
+                    m.MaxHp = def.Hp;
+                    if (m.Hp > m.MaxHp) m.Hp = m.MaxHp;   // clamp; otherwise keep the mob's current wound
+                    m.Exp = def.Exp;
+                    m.Level = def.Level;
+                    m.Will = def.Will;
+                    m.MoveTime = def.MoveTime;
+                    m.Aggressive = def.Aggressive;
+                    m.MinDam = def.MinDam;
+                    m.MaxDam = def.MaxDam;
+                    m.Hit = def.Hit;
+                    m.IsBoss = def.IsBoss;
+                    m.Protection = def.Protection;
+                    m.Ac = def.Ac;
+                    m.Grace = def.Grace;
+                    updated++;
+                }
+        }
+        return updated;
+    }
 
     /// <summary>Add a shared mob to a map and stream it to everyone whose viewport it falls in (players
     /// out of range receive it later, as they approach, via <see cref="Tick"/>'s per-player sync).</summary>
@@ -391,6 +626,18 @@ public sealed class World
         lock (_lock) Map(mapId).Mobs.Add(mob);
         var one = new[] { mob };
         Broadcast(mapId, p => p.SyncMobs(one));
+    }
+
+    /// <summary>How many of this owner's pets (RTK Poet "Call of the Wild" summons) are currently alive on
+    /// this map — the spawn cap in Content.PetCapFor is checked against this (RTK cotw_spawnCheck: same-map
+    /// only, matching <c>player:getObjectsInMap</c>).</summary>
+    public int PetCountFor(ushort mapId, uint ownerId)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return 0;
+            return m.Mobs.Count(mo => mo.Alive && mo.OwnerId == ownerId);
+        }
     }
 
     /// <summary>The first living mob on (x,y) of <paramref name="mapId"/>, or null.</summary>
@@ -460,6 +707,16 @@ public sealed class World
                                 .FirstOrDefault(p => string.Equals(p.Snapshot().Name, name, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>The connected player with this entity id (any map), or null. Used by click-profile's "view
+    /// another player" path (RTK <c>clif_clickonplayer</c>, §9.5/§11l) and the exchange-initiate opcode
+    /// <c>0x4A</c> (RTK <c>clif_parse_exchange</c> type 0), both of which address a player by id — the
+    /// client already knows it from the entity it rendered — rather than by name.</summary>
+    public Session? PlayerById(uint id)
+    {
+        lock (_lock)
+            return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+    }
+
     /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
     /// Used by channels that reach beyond one map, like subpath chat (RTK clif_sendsubpathmessage loops
     /// every session, not just one map's block list).</summary>
@@ -467,6 +724,65 @@ public sealed class World
     {
         lock (_lock)
             return _maps.Values.SelectMany(m => m.Players).ToList();
+    }
+
+    /// <summary>Duplicate-login guard: atomically register <paramref name="s"/> as the online session for
+    /// <paramref name="key"/> (CharacterStore.Key(username)), returning whatever session previously held
+    /// that slot via <paramref name="old"/> (null if this is a fresh login). Called from HandleArrival
+    /// BEFORE the character is loaded from disk, so a second concurrent arrival for the same account can
+    /// never both pass unnoticed — the dictionary write is atomic under _lock. The caller (HandleArrival)
+    /// is responsible for kicking <paramref name="old"/> (Session.KickForReplacement) so its state is
+    /// flushed before the new session's own Load runs.</summary>
+    public void RegisterOnline(string key, Session s, out Session? old)
+    {
+        lock (_lock)
+        {
+            _online.TryGetValue(key, out old);
+            _online[key] = s;
+        }
+    }
+
+    /// <summary>Remove <paramref name="s"/> from the online registry, but ONLY if it still owns that slot —
+    /// a compare-and-remove so a session that was already kicked/replaced (RegisterOnline overwrote its
+    /// slot with the newer session) can't accidentally evict the session that replaced it when its own
+    /// (now-stale) teardown finally runs.</summary>
+    public void Unregister(string key, Session s)
+    {
+        lock (_lock)
+        {
+            if (_online.TryGetValue(key, out var cur) && ReferenceEquals(cur, s))
+                _online.Remove(key);
+        }
+    }
+
+    /// <summary>Periodic crash-safety backstop (see AutoSaveLoop): flush every connected player's pending
+    /// mutation, regardless of the per-session AutoSaveMs throttle. Its unique job is an IDLE dirty player
+    /// (mutated, then stopped sending packets, so their own read-loop FlushIfDue never gets another
+    /// iteration to fire on) — an ACTIVE player is already covered by their own on-thread flush.</summary>
+    private void AutoSaveTick()
+    {
+        foreach (var s in AllPlayers()) s.FlushNow();
+    }
+
+    private async Task AutoSaveLoop()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Session.AutoSaveMs));
+        while (await timer.WaitForNextTickAsync())
+        {
+            try { AutoSaveTick(); }
+            catch (Exception e) { Log.Info($"!! autosave sweep error: {e.Message}"); }
+        }
+    }
+
+    /// <summary>Graceful-shutdown flush: force-save every connected player right now, ignoring the dirty
+    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Returns the
+    /// number of players swept (for the shutdown-hook log line). Cannot help against a hard crash/kill —
+    /// that's what the periodic AutoSaveLoop sweep + each session's own on-thread flush bound instead.</summary>
+    public int SaveAllPlayers()
+    {
+        var players = AllPlayers();
+        foreach (var s in players) s.FlushNow();
+        return players.Count;
     }
 
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
@@ -532,13 +848,20 @@ public sealed class World
     private List<GroundItem> RollDropsLocked(MapState m, Mob mob, MobDef def)
     {
         var drops = new List<GroundItem>();
-        foreach (var (item, amount) in Content.RollDrops(def, Random.Shared))
+        foreach (var roll in Content.RollDrops(def, Random.Shared))
         {
-            var gi = new GroundItem
+            GroundItem gi;
+            if (roll.Gold)
             {
-                Id = _nextItemId++, ItemId = item.Id, X = mob.X, Y = mob.Y,
-                Amount = amount, Graphic = item.Icon, Dura = item.Durability,
-            };
+                // Mirrors Session.HandleDropGold's icon tiering (coins_1 / _2_99 / _100_999).
+                ushort gfx = roll.Amount < 2 ? (ushort)22 : roll.Amount < 100 ? (ushort)73 : (ushort)72;
+                gi = new GroundItem { Id = _nextItemId++, ItemId = -1, X = mob.X, Y = mob.Y, Amount = roll.Amount, Graphic = gfx };
+            }
+            else
+            {
+                gi = new GroundItem { Id = _nextItemId++, ItemId = roll.Item!.Id, X = mob.X, Y = mob.Y,
+                    Amount = roll.Amount, Graphic = roll.Item.Icon, Dura = roll.Item.Durability };
+            }
             m.Items.Add(gi);
             drops.Add(gi);
         }
@@ -616,7 +939,14 @@ public sealed class World
         var moves = new List<(ushort map, uint id, ushort x, ushort y, byte dir)>();
         var turns = new List<(ushort map, uint id, byte dir)>();
         var hits = new List<(Mob mob, Session target)>();
+        // Real damage from a triggered trap (instant hit) or a poison tick — both need Session-facing
+        // broadcasts (damage number, death despawn, owner exp) that must run outside the lock, same as `hits`.
+        var trapDamage = new List<(ushort map, Mob mob, int dmg, uint ownerId)>();
+        var expiredPets = new List<(ushort map, Mob mob)>();
+        var expiredMorphs = new List<Session>();
         List<(ushort map, GroundItem gi)>? forage = null;
+        bool timeChanged = false;
+        List<(ushort map, byte weather)>? weatherChanges = null;
         lock (_lock)
         {
             // (1) respawns: refill any due spawn point on a map someone is watching.
@@ -628,8 +958,46 @@ public sealed class World
                         Materialize(mapId, sp);
             }
 
+            // (1.2) morph expiry (Session.CastMorph/RevertMorph): purely cosmetic per-player visual state
+            // with no server-side entity of its own — the revert broadcast is socket I/O, so it's deferred
+            // outside the lock same as trapDamage/expiredPets below.
+            foreach (var (_, pm) in _maps)
+                foreach (var p in pm.Players)
+                    if (p.IsMorphExpired) expiredMorphs.Add(p);
+
+            // (1.3) bladestorm auto-expiry: an untriggered decoy despawns silently after its 21s lifetime —
+            // traps have no ground graphic (same precedent as the hazard family), so this is a plain in-lock
+            // removal, no broadcast/deferral needed.
+            foreach (var (_, pm) in _maps)
+                pm.Traps.RemoveAll(t => t.ExpiresAt != 0 && Environment.TickCount64 >= t.ExpiresAt);
+
             // (1.5) forage top-up: on a slow cadence, refill each forage box (chestnuts &c.) to its target count.
             if (_tick % ForageTicks == 0) forage = TopUpForageLocked();
+
+            // (1.6) day/night clock (RTK change_time_char, ported 1:1 — see HourTicks doc): advance the
+            // shared hour/year and flag every connected session for a fresh 0x20 broadcast this tick.
+            if (_tick % HourTicks == 0)
+            {
+                _hour++;
+                if (_hour >= 24) { _hour = 0; _year++; }   // RTK also rolls day/season here; not tracked (see doc — the wire packet doesn't carry them)
+                timeChanged = true;
+            }
+
+            // (1.7) weather drift (see WeatherRollTicks doc — no real RTK scheduler exists to port): every
+            // active map gets a low chance to shift to a new state on this slow cadence.
+            if (_tick % WeatherRollTicks == 0)
+            {
+                weatherChanges = new List<(ushort, byte)>();
+                foreach (var (mapId, pm) in _maps)
+                {
+                    if (pm.Players.Count == 0) continue;
+                    if (Random.Shared.Next(100) >= WeatherChangePct) continue;
+                    byte w = (byte)Random.Shared.Next(3);   // 0 clear / 1 WRAIN / 2 WSNOW
+                    if (w == pm.Weather) continue;
+                    pm.Weather = w;
+                    weatherChanges.Add((mapId, w));
+                }
+            }
 
             // (2) wander: each mob acts only when its own MoveTime has elapsed (RTK MobMoveTime), and even
             // then usually just turns instead of stepping — mirroring RTK mob_ai_normal (checkmove: pick a
@@ -648,7 +1016,36 @@ public sealed class World
                 foreach (var mob in m.Mobs)
                 {
                     if (!mob.Alive) continue;
+
+                    // Poet "Call of the Wild" pet expiry (RTK cotw_SpawnSetThreat's spawnTime): a plain
+                    // despawn (no kill/loot/exp), same as riding a mob away — DespawnMob does socket I/O so
+                    // it must run outside this lock, hence the deferred list.
+                    if (mob.OwnerId != 0 && mob.PetExpiresAt != 0 && Environment.TickCount64 >= mob.PetExpiresAt)
+                    {
+                        expiredPets.Add((mapId, mob));
+                        continue;
+                    }
+
+                    // Poison trap DOT (RTK poison_dart_trap.lua while_cast_1500): ticks every 1500ms regardless
+                    // of freeze/wander state, and — per RTK — never fires a tick that would finish the kill.
+                    if (mob.PoisonUntil > Environment.TickCount64 && Environment.TickCount64 >= mob.PoisonNextTick && mob.Hp > mob.PoisonTickDam)
+                    {
+                        mob.PoisonNextTick = Environment.TickCount64 + 1500;
+                        trapDamage.Add((mapId, mob, mob.PoisonTickDam, mob.PoisonOwnerId));
+                    }
+
                     if (mob.FrozenUntil > Environment.TickCount64) continue;   // paralyzed/asleep — hold still
+
+                    // Unprovoked aggro (RTK mob.c mob_find_target, gated on MobBehavior==1 "type": engine-level,
+                    // separate from and runs before mob_ai_normal.lua): an aggressive mob with no target yet
+                    // locks onto the nearest living player within AggroRadius, same as if it had just been hit —
+                    // the chase/attack branch right below then takes over on this same tick.
+                    if (mob.TargetId == 0 && mob.Aggressive)
+                    {
+                        var victim = m.Players.FirstOrDefault(p => !p.IsDead
+                            && Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) <= AggroRadius);
+                        if (victim is not null) mob.TargetId = victim.PlayerId;
+                    }
 
                     // Combat AI (RTK mob_ai_normal: on_attacked sets the target; move/attack chase + swing at
                     // it): a provoked mob (World.TryDamage set TargetId) abandons wandering to path toward and
@@ -700,6 +1097,8 @@ public sealed class World
                             mob.X = (ushort)cnx; mob.Y = (ushort)cny;
                             mobTiles.Add((cnx, cny));
                             moves.Add((mapId, mob.Id, cox, coy, chaseDir));
+                            var chaseTrap = m.Traps.FirstOrDefault(t => t.X == cnx && t.Y == cny);
+                            if (chaseTrap is not null) { m.Traps.Remove(chaseTrap); TriggerTrapLocked(mapId, mob, chaseTrap, trapDamage); }
                             continue;
                         }
                     }
@@ -741,6 +1140,8 @@ public sealed class World
                     // live trace), and for a single-stepping mob there's no 0x04 commit to correct it. Sending
                     // source makes client_final = source + forward(dir) = the real destination.
                     moves.Add((mapId, mob.Id, ox, oy, stepDir));
+                    var wanderTrap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny);
+                    if (wanderTrap is not null) { m.Traps.Remove(wanderTrap); TriggerTrapLocked(mapId, mob, wanderTrap, trapDamage); }
                 }
             }
         }
@@ -768,9 +1169,22 @@ public sealed class World
         // every other socket-touching step.
         foreach (var h in hits)
         {
-            int dmg = Math.Max(1, h.mob.Level / 2 + Random.Shared.Next(0, 3));
+            int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
             Try(() => h.target.ApplyMobHit(h.mob, dmg));
         }
+
+        // Trap hits + poison ticks queued above (same reasoning as the mob-swing pass: Session-facing
+        // broadcasts/exp can't run under the lock).
+        foreach (var td in trapDamage)
+            Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId));
+
+        // Expired pets queued above — plain despawn, no kill/loot.
+        foreach (var ep in expiredPets)
+            Try(() => DespawnMob(ep.map, ep.mob));
+
+        // Expired morphs queued above — revert the peer-visible disguise back to our real human look.
+        foreach (var mp in expiredMorphs)
+            Try(() => mp.RevertMorph());
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
         // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a
@@ -778,6 +1192,17 @@ public sealed class World
         Session[] players2;
         lock (_lock) players2 = _maps.Values.SelectMany(m => m.Players).ToArray();
         foreach (var p in players2) Try(() => p.RegenTick(TickMs));
+
+        // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
+        // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
+        if (timeChanged)
+        {
+            var (h, y) = Time;
+            foreach (var p in players2) Try(() => p.SendTime(h, y));
+        }
+        if (weatherChanges is not null)
+            foreach (var (map, w) in weatherChanges)
+                Broadcast(map, p => p.SendWeather(w));
     }
 
     // Snapshot each populated map's (players, mobs) under the lock, then reconcile every player's viewport
@@ -800,5 +1225,18 @@ public sealed class World
     private static void Try(Action a)
     {
         try { a(); } catch { /* dead/closing socket — its own read-loop will clean it up */ }
+    }
+
+    /// <summary>A mob's raw melee swing (RTK <c>swingDamage.lua</c> <c>_getMobSwingDamage</c>): three
+    /// independent uniform draws over the range split into thirds, summed and floored, +1. This is NOT a
+    /// flat roll across [MinDam,MaxDam] — three thirded draws concentrate the result near the midpoint
+    /// (Irwin-Hall-ish), matching RTK's actual distribution. The target's armor is applied separately, by
+    /// the target itself (<see cref="Session.ApplyMobHit"/>), since AC/gear/buffs are session-local state.</summary>
+    private static int MobSwingDamage(int minDam, int maxDam)
+    {
+        double lo = minDam / 3.0, hi = maxDam / 3.0;
+        double sum = 0;
+        for (int i = 0; i < 3; i++) sum += lo + Random.Shared.NextDouble() * (hi - lo);
+        return 1 + (int)Math.Floor(sum);
     }
 }
