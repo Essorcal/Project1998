@@ -1529,10 +1529,37 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   > (`return.lua`/`approach.lua`/`summon.lua`) contain a class check either, so this was genuinely
   > undecidable from the extracted data or the Lua source alone. Confirmed against the user's own play
   > knowledge: all three are **Rogue/Mage/Poet only, never Warrior**, each at a *different* level per class
-  > (impossible to express in the single CSV row's one `Level` field) — Return 32/32/32, Approach
-  > Mage 20/Poet 29/Rogue 35, Summon Mage 30/Poet 38/Rogue 53. `Content.RestrictedCommonsLevel` carries this
-  > as a `key -> {pathId -> level}` table that `SpellsForClass` consults before falling back to the
-  > universal-PathId-0 rule.
+  > (impossible to express in the single CSV row's one `Level` field). `Content.RestrictedCommonsLevel`
+  > carries this as a `key -> {pathId -> level}` table that `SpellsForClass` consults before falling back to
+  > the universal-PathId-0 rule.
+  >
+  > **Return's levels were corrected again the same day (2026-07-27)** after cross-checking
+  > `C:\Users\brian\Desktop\scraped_nexus_data\` (tswolf.com + boards.nexustk.com tutor posts), which the
+  > user ranks above the RTK Lua for real game facts: **Return is Mage 13 / Rogue 45 / Poet 32**, not 32 for
+  > all three as first believed — tswolf's `mage.shtml` and a Mage tutor-board post independently agree on
+  > 13. Approach stayed **Mage 20 / Poet 29 / Rogue 35**; Summon stayed **Mage 30 / Poet 38 / Rogue 53** —
+  > both fully confirmed by the same archive. See the `nexustk-495-restricted-commons-spells` memory for
+  > the full reconciliation (including the Soothe/Propose conflicts that came up and were NOT folded into
+  > this table, since they resolved differently — see the learn-cost note below).
+  >
+  > **Real per-class learn COSTS (not just levels) are now enforced** for these 6 spells (Propose
+  > deliberately excluded — see below) via `Content.LearnCosts` (`Dictionary<string, Dictionary<int,
+  > LearnCost>>`), checked/charged in `ClassTrainerAbility.LearnSecret` (`NpcAbility.cs`) — NOT inside
+  > `Session.LearnSpellFromNpc` itself, so the debug `!spells`/`!learnspell` commands (which never call that
+  > method — they mutate `_char.Spells` directly) stay free, matching prior behavior:
+  > - Gateway (all): 10 acorn + 10 rabbit meat, free
+  > - Return: Mage 30 acorn + 50g · Rogue 100 acorn + 100g · Poet 1 yellow_scroll
+  > - Approach: Mage 50 acorn + 20 snake_meat · Rogue 100 acorn + 10 fox_fur + 100g · Poet 1 gold_acorn + 100g
+  > - Summon: Mage 80 acorn + 10 snake_meat + 50g · Rogue 100 acorn + 500g · Poet 70 acorn + 100g
+  > - Mentor (all): 1 class item (Warrior maxcaliber / Rogue moonblade / Mage deaths_head / Poet
+  >   wicked_staff) + 1000g
+  > - Soothe: intentionally NOT in `LearnCosts` — tswolf confirms it's a free Newbie Quest reward (5 acorn +
+  >   5 rabbit meat, no gold), matching the Lua exactly; conflicting tutor-board posts giving Mage-6/
+  >   Warrior-8 gold costs are presumably a later-era trainer fallback, not the base mechanic.
+  > - Propose: intentionally NOT in `LearnCosts` either — its `SplPthId=99` never matches any class's teach
+  >   filter, so it was never learnable via a trainer at all. Its real "cost" is the `engagement_ring`'s
+  >   shop price, already charged in the pre-existing `ChapelAbility.BuyRing` (§ marriage), which grants the
+  >   spell directly via `ctx.LearnSpell(propose)`.
 - **`Alignment`** (`SplAlignment`) = the sub-alignment: **-1** universal · **0** base/unaligned · **1** Kwisin ·
   **2** Mingken · **3** Ohaeng. Each class's spells split roughly evenly across 0/1/2/3 (e.g. Warrior ~21 each),
   and the four variants often **share a display name** (Rogue's "Maro's Remedy" ×4) — so teaching all of them
@@ -3142,13 +3169,113 @@ Paths are env-overridable: `NEXUS_MAP_INDEX` → `map_index.csv`, `NEXUS_MOBS` �
 
 **Map dims are client-authoritative** (`re/build_map_index.py`): every one of the client's ~1750
 `TK<id>.map` files is emitted — a map the client ships is warpable, period. The `.map` is headerless, so
-the only unknown is how to split `cells = filesize/4` into `(xs, ys)`. RTK's `rtkmaps/Accepted/<MapFile>`
-(first 4 bytes = `xs,ys` big-endian) merely *informs* the split when the product matches; otherwise the
-closest-aspect (or square) factor pair is picked. Any factor pair with the right **product** is safe — the
-client reads exactly the file bytes, so a wrong split only skews row-stride (map looks sheared), it never
-overruns or crashes. RTK dims never gate existence; a 7.x-resized map (e.g. JadeSpear's Home, RTK 17×15 vs
-client 12×12) is kept, not dropped. `Warps` are additionally filtered to destinations that exist in the
-client map set (no warping to a map the client can't render).
+the only unknown is how to split `cells = filesize/4` into `(xs, ys)`. Any factor pair with the right
+**product** is safe — the client reads exactly the file bytes, so a wrong split only skews row-stride (the
+map looks sheared: tiles land in the wrong screen position, but nothing overruns or crashes). RTK dims
+never gate existence; a 7.x-resized map (e.g. JadeSpear's Home, RTK 17×15 vs client 12×12) is kept, not
+dropped. `Warps` are additionally filtered to destinations that exist in the client map set (no warping to
+a map the client can't render). See §17.4 for how the split is actually chosen and why it matters — a wrong
+guess here isn't cosmetic, it's the single most impactful data bug found in this repo to date.
+
+### 17.4 Map-dimension mis-guessing — a real, high-impact bug, found & fixed (2026-07-27)
+
+**The bug reports that led here:** a user played through the Mythic Rabbit dungeon and reported, room by
+room: floating "black box" tiles in the middle of Mythic Owsla's corridor; Rabbit Leap "insanely broken"
+with the same black-box pattern repeated ~14 times; a lava field in Hare Summit speckled with disconnected
+patches of ordinary grass tile, looking like "tiles stacking with an offset"; and (separately) monster
+sprites intermittently rendering *behind* terrain objects. Rabbit Hole, right next door in the same
+dungeon, looked "perfect."
+
+**First theory (wrong):** individual bad tile-id typos baked into the original client `.map` files —
+i.e. real content corruption in `TK207.map` etc. This was investigated at length: RE'd the `.map` cell
+format (already documented above — 4 bytes/cell, `[ground u16][object u16]`, top 2 ground bits =
+passability), found specific cells whose ground-tile id broke an otherwise-perfectly-repeating decorative
+motif (e.g. a fence-post pair that sits on tile `2125` fourteen times across the room, but on `2077` — the
+room's own border-void filler tile — at exactly the two cells the user flagged as "black boxes"). This
+looked like solid, self-consistent proof of a data typo, and does explain *individual anomalous cells* —
+but it couldn't explain why entire *rooms* varied from "perfect" to "insanely broken," since a random
+typo-rate wouldn't cluster that way room-by-room.
+
+**Real root cause: wrong map dimensions sent to the client, not bad tile data.** The `.map` file is
+headerless — nothing in it says how many columns wide it is — so `re/build_map_index.py` has to *guess*
+`(xs, ys)` by factoring `cells = filesize/4` and picking the pair whose aspect ratio best matches RTK's
+reference dimension for that map id (RTK is a **different, 7.x game version** with many rooms resized, so
+its dims are only ever a hint, not authoritative). Our server then sends that guessed `(xs, ys)` straight
+to the client in the `0x15` map-info packet (`Session.SendMapInfo(_char.Map, _char.MapXs, _char.MapYs,
+...)`, sourced from `Content.Maps[id]` ⟵ `map_index.csv`). **The client's own `.map` file was never
+corrupted at all** — we were just telling it to slice the correct bytes into the wrong number of columns,
+which shears every row against the next by the wrong offset. A cell that's part of row *N*'s correct
+sequence gets displayed as if it belonged to a different row — which looks *exactly* like "the same real
+tile, just in the wrong place," because that's precisely what it is. Confirmed by checking RTK's dimension
+hint against the real cell count for the 8 Mythic Rabbit rooms: **7 of 8 had no exact match** (only the
+entrance, map 201, did) — RTK's own version had completely redesigned those rooms into different cell
+counts, so the aspect-ratio fallback had nothing reliable to anchor to and silently produced a plausible-
+looking but wrong guess for most of the dungeon. This one root cause explains every symptom reported: the
+"black boxes" (a real tile read at a sheared offset), the lava-field speckling (grass-tile bytes from a
+different logical row bleeding into what should be a solid lava block), and is the leading explanation for
+the monster-behind-terrain reports too (the client's draw-order logic likely keys off row/column
+adjacency, which a shear also breaks).
+
+**How the true dimensions were found (`re/build_map_index.py`, wall-connectivity scoring):** for each
+factor pair `(w, h)` of the cell count, read the ground-passability bit per cell and measure what fraction
+of solid ("wall") cells have **zero** orthogonal solid neighbor (`isolation_fraction`). A correctly-strided
+hand-built room draws walls as continuous lines/blobs — almost no isolated single wall pixels. A wrong
+stride statistically isolates a large fraction of them, because it's effectively splicing together pieces
+of unrelated rows. This needs no external reference data at all. Two extra guards were needed after the
+naive version produced false positives on sparse/open maps:
+- **Aspect-ratio cap (≤3.2:1) and a wall-density floor (≥5% of cells solid).** Very thin candidates
+  (e.g. `280×10`) can spuriously score *better* than the true shape simply because there are too few rows
+  for a wall cell to have a chance at a vertical neighbor — a metric artifact, not evidence.
+- **A required improvement margin over the prior guess (`IMPROVE_EPS`), not just "passes a minimum bar."**
+  An earlier, ungated version of this check flipped 440 of the 1750 maps — including dozens of *visually
+  unrelated* zones (Coal Cells, Undergrowth, Tiger Stretch, Bull's Song, Northern Hordes, …) all converging
+  on the same handful of dimension pairs (`50×18`, `25×36`, `18×50`). That convergence across unrelated
+  content is itself the signature of the connectivity metric being fooled by geometry rather than genuinely
+  reading room design — sparse/low-signal maps don't carry enough real evidence either way. Gating on a
+  clear win over the existing guess (not just a technically-lower score) discards those and keeps the
+  clean, high-confidence hits: e.g. the correct 20×20 render of Mythic Owsla is a strikingly symmetric,
+  obviously hand-built room (nested rectangle, mirrored bracket walls) with **zero** isolated wall cells,
+  vs. a messy, merely-plausible-looking 16×25 render under the old guess.
+- **`Warps.csv` coordinate lower-bounds.** A real warp destination like `(x=15, y=53)` proves the room must
+  be at least `16×54` — this resolves orientation ties (e.g. `20×60` vs `60×20`) that connectivity scoring
+  alone can't distinguish, since it's symmetric under transpose. If the *only* candidates satisfying every
+  warp on record is empty, the filter is dropped rather than vetoing every candidate outright — a single
+  bad `Warps.csv` row (see the Owsla `warp 1953 → (29,27)` case below) shouldn't be able to block the fix.
+
+**Result:** 8-of-8 Mythic Rabbit rooms resolved. 5 needed correction (all **live-verified in-game** after a
+`!reload`, user-confirmed "perfffeeect!!!"):
+
+| Room | Was sending | Corrected to |
+|---|---|---|
+| 201 Mythic Waters | 24×24 | *(already correct)* |
+| 202 Golden Warren | 25×25 | *(already correct)* |
+| 203 Rabbit Hole | 26×26 | *(already correct — matches the "looks perfect" report)* |
+| **204 Rabbit Leap** | 24×50 | **20×60** |
+| **205 Foraged Fields** | 26×45 | **30×39** |
+| **206 Hare Depression** | 25×36 | **30×30** |
+| **207 Mythic Owsla** | 16×25 | **20×20** |
+| **208 Hare Summit** | 25×32 | **20×40** |
+
+A full-client sweep (`re/build_map_index.py`, now using wall-connectivity as the *primary* method, RTK's
+exact-cell-count match second, aspect-ratio guess as the last resort) found **~90 more maps** across the
+whole game with the same class of bug — most memorably both city marketplaces (`Buya Marketplace` and
+`Kugnae Marketplace`, `44×48 → 48×44`, an striking, obviously-correct symmetric plaza layout once fixed)
+and several small named rooms (`Mhul's Chambers`, `Imperial Promenade`). These five plus the two
+marketplaces are the highest-confidence tier — individually visually inspected, unambiguous. The remaining
+~85 passed the same statistical gates (connectivity win + aspect/density/warp-bound filters) but were
+**not** each individually eyeballed — a couple of spot-checks in that tier (`Undergrowth`, `Lilac Walk`)
+looked *statistically* favored but visually ambiguous rather than a slam-dunk, so treat that broader batch
+as "probably right, worth an in-game glance if a specific room still looks off" rather than fully proven
+the way the dungeon rooms are.
+
+**Also found and set aside, not fixed:** `Warps.csv` row **1953** (`SourceMapId=205, x=6, y=6 →
+DestinationMapId=207, x=29, y=27`) has a destination that is *mathematically impossible* for any
+rectangular interpretation of Owsla's 400-cell file (no factor pair of 400 has both dimensions `>29`× `>27`
+simultaneously — the room simply isn't big enough in any orientation). This predates and is independent of
+the dimension bug above; it's bad data inherited verbatim from the RTK-Server SQL dump this table was
+extracted from (RTK's own `warps.txt` config doesn't even have a `205→207` connection at all, and the door
+has no matching reverse warp either — likely an orphaned/stale row). Left unfixed pending a decision on
+whether to redirect it or remove it outright (see `memory/nexustk-495-mythic-rabbit-dims.md`).
 
 ---
 
