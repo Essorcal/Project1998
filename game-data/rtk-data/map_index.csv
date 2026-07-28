@@ -192,11 +192,11 @@ id,name,xs,ys
 201,Mythic Waters 1,24,24
 202,Golden Warren 1,25,25
 203,*Rabbit Hole 1*,26,26
-204,Rabbit Leap 1,24,50
-205,*Foraged Fields 1*,26,45
-206,Hare Depression 1,25,36
-207,Mythic Owsla 1,16,25
-208,*Hare Summit 1*,25,32
+204,Rabbit Leap 1,20,60
+205,*Foraged Fields 1*,30,39
+206,Hare Depression 1,30,30
+207,Mythic Owsla 1,20,20
+208,*Hare Summit 1*,20,40
 210,Stained Isle 1,30,30
 211,Fox\'s Paradise 1,20,20
 212,Peck 1*,25,25
@@ -403,18 +403,18 @@ id,name,xs,ys
 458,Dagger Yard,24,24
 459,Wicked House,30,30
 460,Map 460,30,30
-461,Map 461,24,25
+461,Map 461,30,20
 462,Map 462,30,30
 463,Map 463,30,30
 464,Map 464,30,30
-465,Map 465,24,25
-466,Map 466,24,25
+465,Map 465,20,30
+466,Map 466,20,30
 467,Map 467,30,40
 468,Map 468,24,25
 469,Map 469,30,30
 470,Sheep Chasm 1,20,20
 471,Good Grazing 1,20,20
-472,Woolen Squeeze 1,12,25
+472,Woolen Squeeze 1,10,30
 473,Blood Wool 1,40,20
 474,Spinning 1,20,20
 475,Sheep Patrol 1,20,20
@@ -462,7 +462,7 @@ id,name,xs,ys
 534,Crumbling Steps,30,30
 535,Infested Granary,30,30
 536,Oak Pathway,30,30
-537,Meeting Field,30,30
+537,Meeting Field,25,36
 538,Pine Grove,30,30
 539,Open Pasture,30,30
 540,Tangled Thicket,30,30
@@ -617,9 +617,9 @@ id,name,xs,ys
 1613,Map 1613,27,45
 1614,Map 1614,64,64
 1615,Map 1615,32,40
-1616,Map 1616,32,40
+1616,Map 1616,20,64
 1617,Map 1617,32,40
-1618,Map 1618,32,40
+1618,Map 1618,20,64
 1619,Map 1619,48,48
 1620,Map 1620,36,40
 1621,Map 1621,32,33
@@ -627,9 +627,9 @@ id,name,xs,ys
 1623,Map 1623,27,45
 1624,Map 1624,64,64
 1625,Map 1625,32,40
-1626,Map 1626,32,40
+1626,Map 1626,20,64
 1627,Map 1627,32,40
-1628,Map 1628,32,40
+1628,Map 1628,20,64
 1629,Map 1629,48,48
 1630,Map 1630,36,40
 1631,Map 1631,32,33
@@ -637,9 +637,9 @@ id,name,xs,ys
 1633,Map 1633,27,45
 1634,Map 1634,64,64
 1635,Map 1635,32,40
-1636,Map 1636,32,40
+1636,Map 1636,20,64
 1637,Map 1637,32,40
-1638,Map 1638,32,40
+1638,Map 1638,20,64
 1639,Map 1639,48,48
 1640,Map 1640,36,40
 1641,Map 1641,32,33
@@ -647,9 +647,9 @@ id,name,xs,ys
 1643,Map 1643,27,45
 1644,Map 1644,64,64
 1645,Map 1645,32,40
-1646,Map 1646,32,40
+1646,Map 1646,20,64
 1647,Map 1647,32,40
-1648,Map 1648,32,40
+1648,Map 1648,20,64
 1649,Map 1649,48,48
 1650,Map 1650,36,40
 1651,Map 1651,32,33
@@ -657,9 +657,9 @@ id,name,xs,ys
 1653,Map 1653,27,45
 1654,Map 1654,64,64
 1655,Map 1655,32,40
-1656,Map 1656,32,40
+1656,Map 1656,20,64
 1657,Map 1657,32,40
-1658,Map 1658,32,40
+1658,Map 1658,20,64
 1659,Map 1659,48,48
 1661,Map 1661,10,10
 1662,Map 1662,10,10
@@ -683,7 +683,7 @@ id,name,xs,ys
 1706,Map 1706,30,40
 1707,Map 1707,32,32
 1708,Map 1708,32,48
-1709,Map 1709,34,40
+1709,Map 1709,40,34
 1710,Map 1710,32,48
 1711,Map 1711,18,18
 1712,Map 1712,32,36
@@ -697,7 +697,7 @@ id,name,xs,ys
 1726,Map 1726,30,40
 1727,Map 1727,32,32
 1728,Map 1728,32,48
-1729,Map 1729,34,40
+1729,Map 1729,40,34
 1730,Map 1730,32,48
 1731,Map 1731,18,18
 1732,Map 1732,32,36
@@ -711,7 +711,7 @@ id,name,xs,ys
 1746,Map 1746,30,40
 1747,Map 1747,32,32
 1748,Map 1748,32,48
-1749,Map 1749,34,40
+1749,Map 1749,40,34
 1750,Map 1750,32,48
 1751,Map 1751,18,18
 1752,Map 1752,32,36
@@ -725,7 +725,7 @@ id,name,xs,ys
 1766,Map 1766,30,40
 1767,Map 1767,32,32
 1768,Map 1768,32,48
-1769,Map 1769,34,40
+1769,Map 1769,40,34
 1770,Map 1770,32,48
 1771,Map 1771,18,18
 1772,Map 1772,32,36
@@ -739,14 +739,14 @@ id,name,xs,ys
 1786,Map 1786,30,40
 1787,Map 1787,32,32
 1788,Map 1788,32,48
-1789,Map 1789,34,40
+1789,Map 1789,40,34
 1790,Map 1790,32,48
 1791,Map 1791,18,18
 1792,Map 1792,32,36
 1793,Map 1793,28,31
 1794,Map 1794,50,54
 1799,Map 1799,20,20
-1801,Map 1801,24,32
+1801,Map 1801,32,24
 1802,Map 1802,24,32
 1803,Map 1803,24,32
 1804,Map 1804,24,30
@@ -754,8 +754,8 @@ id,name,xs,ys
 1806,Map 1806,30,36
 1807,Map 1807,30,30
 1808,Map 1808,16,24
-1809,Map 1809,10,16
-1811,Map 1811,24,32
+1809,Map 1809,16,10
+1811,Map 1811,32,24
 1812,Map 1812,24,32
 1813,Map 1813,24,32
 1814,Map 1814,24,30
@@ -763,8 +763,8 @@ id,name,xs,ys
 1816,Map 1816,30,36
 1817,Map 1817,30,30
 1818,Map 1818,16,24
-1819,Map 1819,10,16
-1821,Map 1821,24,32
+1819,Map 1819,16,10
+1821,Map 1821,32,24
 1822,Map 1822,24,32
 1823,Map 1823,24,32
 1824,Map 1824,24,30
@@ -772,8 +772,8 @@ id,name,xs,ys
 1826,Map 1826,30,36
 1827,Map 1827,30,30
 1828,Map 1828,16,24
-1829,Map 1829,10,16
-1831,Map 1831,24,32
+1829,Map 1829,16,10
+1831,Map 1831,32,24
 1832,Map 1832,24,32
 1833,Map 1833,24,32
 1834,Map 1834,24,30
@@ -781,8 +781,8 @@ id,name,xs,ys
 1836,Map 1836,30,36
 1837,Map 1837,30,30
 1838,Map 1838,16,24
-1839,Map 1839,10,16
-1841,Map 1841,24,32
+1839,Map 1839,16,10
+1841,Map 1841,32,24
 1842,Map 1842,24,32
 1843,Map 1843,24,32
 1844,Map 1844,24,30
@@ -790,8 +790,8 @@ id,name,xs,ys
 1846,Map 1846,30,36
 1847,Map 1847,30,30
 1848,Map 1848,16,24
-1849,Map 1849,10,16
-1851,Map 1851,24,32
+1849,Map 1849,16,10
+1851,Map 1851,32,24
 1852,Map 1852,24,32
 1853,Map 1853,24,32
 1854,Map 1854,24,30
@@ -799,8 +799,8 @@ id,name,xs,ys
 1856,Map 1856,30,36
 1857,Map 1857,30,30
 1858,Map 1858,16,24
-1859,Map 1859,10,16
-1861,Map 1861,24,32
+1859,Map 1859,16,10
+1861,Map 1861,32,24
 1862,Map 1862,24,32
 1863,Map 1863,24,32
 1864,Map 1864,24,30
@@ -808,7 +808,7 @@ id,name,xs,ys
 1866,Map 1866,30,36
 1867,Map 1867,30,30
 1868,Map 1868,16,24
-1869,Map 1869,10,16
+1869,Map 1869,16,10
 2000,Koguryo Gate,3,3
 2001,Buya Gate,3,3
 2002,Winds1 Gate,3,3
@@ -820,7 +820,7 @@ id,name,xs,ys
 2042,Snow Pass,50,40
 2043,Frozen Forest,100,60
 2044,Tundra Bridge,45,20
-2045,Freezing River,40,32
+2045,Freezing River,64,20
 2046,Snow Steppes,50,32
 2047,Onyx Castle,75,40
 2048,Dark Caverns,45,20
@@ -844,10 +844,10 @@ id,name,xs,ys
 2066,Frozen Folly,45,20
 2067,Slashed Ice,45,20
 2068,Frozen River\'s Way,45,20
-2069,Ice Crystal Lake,25,16
+2069,Ice Crystal Lake,20,20
 2070,Frost Island,40,32
 2071,Blizzard\'s Gauntlet,40,25
-2072,Frozen Lake Forest,45,20
+2072,Frozen Lake Forest,30,30
 2073,Winter\'s Grove,45,20
 2074,Thaw Grotto,25,16
 2075,River\'s End,30,18
@@ -1121,11 +1121,11 @@ id,name,xs,ys
 3201,Mythic Waters 2,24,24
 3202,Golden Warren 2,25,25
 3203,*Rabbit Hole 2*,26,26
-3204,Rabbit Leap 2,24,50
-3205,*Foraged Fields 2*,26,45
-3206,Hare Depression 2,25,36
-3207,Mythic Owsla 2,16,25
-3208,*Hare Summit 2*,25,32
+3204,Rabbit Leap 2,20,60
+3205,*Foraged Fields 2*,30,39
+3206,Hare Depression 2,30,30
+3207,Mythic Owsla 2,20,20
+3208,*Hare Summit 2*,20,40
 3210,Stained Isle 2,30,30
 3211,Fox\'s Paradise 2,20,20
 3212,Peck 2*,25,25
@@ -1163,7 +1163,7 @@ id,name,xs,ys
 3257,Dragon\'s Breath 2,20,20
 3258,Jeweled Dragon 2*,18,36
 3333,Slave Pits,17,21
-3334,Crossroads,36,20
+3334,Crossroads,30,24
 3335,Shangri-la,25,16
 3336,Divine Judgment,20,20
 3400,Pond\'s Library,31,16
@@ -1173,7 +1173,7 @@ id,name,xs,ys
 3411,Map 3411,15,15
 3470,Sheep Chasm 2,20,20
 3471,Good Grazing 2,20,20
-3472,Woolen Squeeze 2,12,25
+3472,Woolen Squeeze 2,10,30
 3473,Blood Wool 2,40,20
 3474,Spinning 2,20,20
 3475,Sheep Patrol 2,20,20
@@ -1428,11 +1428,11 @@ id,name,xs,ys
 4201,Mythic Waters 3,24,24
 4202,Golden Warren 3,25,25
 4203,*Rabbit Hole 3*,26,26
-4204,Rabbit Leap 3,24,50
-4205,*Foraged Fields 3*,26,45
-4206,Hare Depression 3,25,36
-4207,Mythic Owsla 3,16,25
-4208,*Hare Summit 3*,25,32
+4204,Rabbit Leap 3,20,60
+4205,*Foraged Fields 3*,30,39
+4206,Hare Depression 3,30,30
+4207,Mythic Owsla 3,20,20
+4208,*Hare Summit 3*,20,40
 4210,Stained Isle 3,30,30
 4211,Fox\'s Paradise 3,20,20
 4212,Peck 3*,25,25
@@ -1472,7 +1472,7 @@ id,name,xs,ys
 4444,Map 4444,30,30
 4470,Sheep Chasm 3,20,20
 4471,Good Grazing 3,20,20
-4472,Woolen Squeeze 3,12,25
+4472,Woolen Squeeze 3,10,30
 4473,Blood Wool 3,40,20
 4474,Spinning 3,20,20
 4475,Sheep Patrol 3,20,20
@@ -1486,7 +1486,7 @@ id,name,xs,ys
 4483,Shepherd\'s Crook 3,20,20
 4484,Shepherd\'s Nook 3*,15,17
 4500,Kugnae Market Entry,8,6
-4501,Kugnae Marketplace,44,48
+4501,Kugnae Marketplace,48,44
 4503,Koguryo Tribunal Hall,22,25
 4504,Koguryo Palace Courtyard,30,30
 4505,Royal Palace Mezzanine,14,15
@@ -1495,13 +1495,13 @@ id,name,xs,ys
 4508,Koguryo Royal Court,12,12
 4509,Koguryo Royal Ministry,12,12
 4510,KRA Training Area,32,42
-4511,Mhul\'s Chambers,10,12
+4511,Mhul\'s Chambers,12,10
 4513,Kugnae Palace Baths,40,30
 4514,Royal Palace Stairway,16,16
 4515,Royal Army Barracks,16,16
 4525,Backstage Event,16,16
 4600,Buya Market Entry,8,6
-4601,Buya Marketplace,44,48
+4601,Buya Marketplace,48,44
 4603,Buya Tribunal Hall,24,24
 4604,Buya Courtyard,31,31
 4606,Buya Throne Room,22,40
@@ -1509,7 +1509,7 @@ id,name,xs,ys
 4609,Buya Royal Court,12,12
 4610,Buya Training Hall,32,42
 4611,Lasahn\'s Chambers,12,10
-4612,Imperial Promenade,10,8
+4612,Imperial Promenade,8,10
 4613,Secret Garden,48,48
 4614,Map 4614,16,16
 4615,Buya Imperial Army,16,16
@@ -1566,20 +1566,20 @@ id,name,xs,ys
 5999,Forsaken Clan,10,10
 6300,Desert,40,40
 6301,Desert,20,20
-6302,Desert,45,20
+6302,Desert,30,30
 6303,Desert,70,40
 6304,Desert,50,40
 6305,Desert,100,60
 6306,Desert,16,16
 6307,Desert,40,32
 6308,Desert,50,32
-6309,Desert,45,20
+6309,Desert,30,30
 6310,Desert,40,32
 6311,Desert,50,32
 6312,Desert,50,32
 6313,Desert,30,30
 6314,Desert,30,30
-6315,Desert,25,40
+6315,Desert,10,100
 6316,Desert,45,20
 6317,Desert,45,20
 6318,Desert,45,20
@@ -1616,13 +1616,13 @@ id,name,xs,ys
 6352,Desert,40,40
 6353,Desert,30,30
 6354,Desert,30,30
-6355,Desert,25,40
+6355,Desert,10,100
 6356,Desert,45,20
 6357,Desert,45,20
 6358,Desert,45,20
 6359,Desert,45,20
 6360,Desert,45,20
-6361,Desert,32,18
+6361,Desert,24,24
 6362,Desert,45,20
 6363,Desert,45,20
 6364,Desert,30,18
@@ -1639,15 +1639,15 @@ id,name,xs,ys
 6375,Desert,20,20
 6376,Desert,16,16
 6380,Desert,50,32
-6381,Desert,25,16
-6382,Desert,45,20
+6381,Desert,20,20
+6382,Desert,30,30
 6383,Desert,70,40
 6384,Desert,50,40
 6385,Desert,100,60
 6386,Desert,16,16
 6387,Desert,40,32
 6388,Desert,50,32
-6389,Desert,45,20
+6389,Desert,30,30
 6390,Desert,40,32
 6391,Desert,50,32
 6392,Desert,50,32
@@ -1684,13 +1684,13 @@ id,name,xs,ys
 6426,Generals tent,16,16
 6427,Ogre kitchen,40,32
 6428,Ogre hall,40,40
-6429,Slave pen,36,25
+6429,Slave pen,30,30
 6430,Slave training area,40,32
 6431,South camp,50,32
 6432,Slave quarters,50,32
 6433,Prison,30,30
 6434,Cells,50,18
-6435,Mess hall,25,40
+6435,Mess hall,10,100
 6436,Ogre scribe,30,30
 6437,Ogre tailor,30,30
 6438,Ogre weaponry,30,30
@@ -1727,7 +1727,7 @@ id,name,xs,ys
 6472,Temple,40,40
 6473,Temple,30,30
 6474,Temple,30,30
-6475,Temple,25,40
+6475,Temple,10,100
 6476,Temple,30,30
 6477,Temple,30,30
 6478,Temple,30,30
