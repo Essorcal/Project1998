@@ -325,10 +325,12 @@ public static partial class Content
     // Per-spell TARGET flavor line (data/game-data/SpellText.csv), CANONICAL from LIVE NexusTK — supersedes RTK.
     // The caster always just sees "You cast <name>." (Session.HandleCast); the TARGET of a spell additionally
     // sees this line when present. On a self-cast you are both, so you see the flavor THEN the cast line.
-    public static IReadOnlyDictionary<string, string> SpellTexts { get; private set; } =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    /// <summary>The live target-flavor line for a spell key, or "" if none is recorded.</summary>
-    public static string TargetTextFor(string key) => SpellTexts.TryGetValue(key, out var t) ? t : "";
+    public static IReadOnlyDictionary<string, (string Target, string Fade)> SpellTexts { get; private set; } =
+        new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The live flavor shown to the TARGET when a spell is applied, or "" if none is recorded.</summary>
+    public static string TargetTextFor(string key) => SpellTexts.TryGetValue(key, out var t) ? t.Target : "";
+    /// <summary>The live flavor shown when a timed buff FADES (RTK uncast), or "" if none is recorded.</summary>
+    public static string FadeTextFor(string key) => SpellTexts.TryGetValue(key, out var t) ? t.Fade : "";
 
     // Fixed monster spawn points (data/game-data/Spawns.csv). One live mob per point; the world respawns it on death.
     public static IReadOnlyList<SpawnDef> Spawns { get; private set; } = new List<SpawnDef>();
@@ -2133,15 +2135,18 @@ public static partial class Content
     // Per-spell effect rows from re/extract_spell_formulas.py (spell_effects.csv). Keyed by identifier so it
     // joins to SpellDef.Key. A missing/short file just yields an empty map (every cast then uses the keyword
     // classifier). Numbers parse leniently — a blank cell is 0.
-    // SpellText.csv: key -> target flavor line (live-canonical). Only spells with a recorded line have a row.
-    private static Dictionary<string, string> LoadSpellTexts(string? path)
+    // SpellText.csv: key -> (targetText apply-line, fadeText expiry-line), both live-canonical. Only spells with
+    // a recorded line have a row; a spell may set just one of the two (e.g. Valor has a known fade but not apply).
+    private static Dictionary<string, (string, string)> LoadSpellTexts(string? path)
     {
-        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var d = new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in ReadCsv(path))
         {
             var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length == 0) continue;
             var t = c.GetValueOrDefault("targetText", "").Trim();
-            if (k.Length > 0 && t.Length > 0) d[k] = t;
+            var f = c.GetValueOrDefault("fadeText", "").Trim();
+            if (t.Length > 0 || f.Length > 0) d[k] = (t, f);
         }
         return d;
     }

@@ -995,8 +995,9 @@ public sealed partial class Session
     private string BuffBoxText()
     {
         long now = Environment.TickCount64;
-        _buffs.RemoveAll(b => b.Expires <= now);
+        // Skip lapsed buffs (Session.ExpireBuffs owns removal + the fade line); don't remove them here.
         var lines = _buffs
+            .Where(b => b.Expires > now)
             .GroupBy(b => b.Key)
             .Select(g =>
             {

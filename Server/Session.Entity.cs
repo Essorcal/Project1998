@@ -151,6 +151,8 @@ public sealed partial class Session
         _mailAccum += ms;
         if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
 
+        ExpireBuffs();   // send each faded buff's live "fade" line + drop it (runs even when dead/topped-off)
+
         if (_char.Hp == 0) return;   // dead: no natural regen (RTK bails on health==0 / state==1)
 
         var eq = Totals();
@@ -174,6 +176,27 @@ public sealed partial class Session
         _char.Hp = newHp;
         _char.Mp = newMp;
         SendStats();   // push the refreshed HP/MP to the always-on HUD
+    }
+
+    // When a timed buff in _buffs lapses by TIME, send its live "fade" line (Content.FadeTextFor, e.g. Might ->
+    // "Your strength returns to normal.") to the player and drop it. This is the SINGLE place expired buffs are
+    // removed (BuffTotals/BuffBoxText only skip them in-place), so the fade line fires exactly once. A recast's
+    // refresh (RemoveAll by Key) is a separate, silent removal — only genuine expiry narrates a fade. Morph
+    // timers ride _buffs too but have no fade text and revert independently (World.Tick -> RevertMorph), so
+    // dropping their marker here is harmless.
+    private void ExpireBuffs()
+    {
+        long now = Environment.TickCount64;
+        bool any = false;
+        for (int i = _buffs.Count - 1; i >= 0; i--)
+        {
+            if (_buffs[i].Expires > now) continue;
+            var fade = Content.FadeTextFor(_buffs[i].Key);
+            if (fade.Length > 0) SendMiniText(fade);
+            _buffs.RemoveAt(i);
+            any = true;
+        }
+        if (any) SendStats();   // effective caps/attributes dropped back -> refresh the HUD
     }
 
     // "!nat <n>" — send stats with nation byte = n so we can read which kingdom name/crest the HUD shows.

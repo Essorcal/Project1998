@@ -16,7 +16,13 @@ public sealed partial class Session
         var def = Content.ItemById(it.ItemId);
         if (def is null) return;
         string name = string.IsNullOrEmpty(it.CustomName) ? def.Name : it.CustomName;
-        string disp = it.Amount > 1 ? $"{name} ({it.Amount})" : name;
+        // RTK clif_sendadditem (clif.c:7096) bakes the count into the display NAME: a stack as "(N)", a
+        // charged consumable (ITM_SMOKE: wine/liquor/pipes) as "[N unit]" using ItmText -> "Wine [50 sips]".
+        // A charged item whose Dura is still 0 (older save, not yet seeded) shows its full charge count
+        // until first use lazily seeds it (see HandleUseItem), so the number never visibly jumps.
+        string disp = it.Amount > 1 ? $"{name} ({it.Amount})"
+                    : def.IsCharged ? $"{name} [{(it.Dura == 0 ? def.Durability : it.Dura)} {def.Text}]"
+                    : name;
 
         var d = new List<byte> { (byte)(it.Slot + 1) };
         d.AddRange(Be(IconWire(def.Icon)));   // RTK ItmIcon == client Item.epf frame; encode for the +0x4000 resolver
@@ -229,11 +235,25 @@ public sealed partial class Session
         int slot = dec[0] - 1;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
-        if (def.IsEquip) { if (eat) { SendLog($"You can't eat {def.Name}."); return; } EquipFromSlot(slot); return; }
-        if (eat && def.Type != 0) { SendLog("That is not edible."); return; }   // ITM_EAT only
+        if (def.IsEquip) { if (eat) { SendMiniText($"You can't eat {def.Name}."); return; } EquipFromSlot(slot); return; }
+        if (eat && def.Type != 0) { SendMiniText("That is not edible."); return; }   // ITM_EAT only
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
 
         if (!ApplyItemEffect(def)) return;   // gate refused (e.g. ward already active) -> not consumed, RTK's own early-return
+
+        // Charged consumables (RTK ITM_SMOKE: wine/liquor/cigarettes) hold N uses in their durability field
+        // with a unit label in ItmText ("sips"/"puffs"). A use spends ONE charge, not the whole item; it is
+        // removed only when charges reach 0 -- matching RTK pc_useitem's ITM_SMOKE path (pc.c:2281:
+        // dura-=1; dura==0 ? delitem : re-send additem). Old saves may carry an unseeded Dura=0 -> seed here.
+        if (def.IsCharged)
+        {
+            if (it.Dura == 0) it.Dura = def.Durability;
+            it.Dura = (ushort)(it.Dura - 1);
+            if (it.Dura == 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 6); }   // 6 = Used
+            else SendAddItem(it);   // re-send: the "[N unit]" charge count in the name updates in place (RTK: no minitext)
+            MarkDirty();
+            return;
+        }
 
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, (byte)(eat ? 2 : 6)); }
@@ -423,9 +443,10 @@ public sealed partial class Session
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) BuffTotals()
     {
         long now = Environment.TickCount64;
-        _buffs.RemoveAll(b => b.Expires <= now);
         int hp = 0, mp = 0, mt = 0, wl = 0, gr = 0, ar = 0, ht = 0, dm = 0;
-        foreach (var b in _buffs) switch (b.Stat)
+        // Don't remove expired buffs here — Session.ExpireBuffs (RegenTick) is the single removal point (so the
+        // fade line fires exactly once); just skip any that have lapsed but aren't swept yet.
+        foreach (var b in _buffs) { if (b.Expires <= now) continue; switch (b.Stat)
         {
             case "hp": case "maxhp": hp += b.Amount; break;
             case "mp": case "maxmp": mp += b.Amount; break;
@@ -435,7 +456,7 @@ public sealed partial class Session
             case "armor": ar += b.Amount; break;
             case "hit":   ht += b.Amount; break;
             case "dam":   dm += b.Amount; break;
-        }
+        } }
         return (hp, mp, mt, wl, gr, ar, ht, dm);
     }
 
