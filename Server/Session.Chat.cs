@@ -108,7 +108,7 @@ public sealed partial class Session
         if (text.StartsWith("!coins", StringComparison.OrdinalIgnoreCase) || text.StartsWith("!gold", StringComparison.OrdinalIgnoreCase)) { GiveCoinsCmd(text); return; }  // add coins to the purse
         if (text.StartsWith("!npc", StringComparison.OrdinalIgnoreCase)) { NpcToggleCmd(text); return; }   // show NPC on/off status (config file + !reload to change)
         if (text.StartsWith("!craft", StringComparison.OrdinalIgnoreCase)) { CraftToggleCmd(text); return; } // show crafting era-gate status (config file + !reload to change)
-        if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("level", text); return; }   // set base level (test wear reqs)
+        if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { var la = ParseInts(text); SetLevel(la.Length > 0 ? la[0] : _char.Level); return; }   // become level n with accurate stats (full HP/MP)
         if (text.StartsWith("!might", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("might", text); return; } // set base might (test wear reqs)
         if (text.StartsWith("!class", StringComparison.OrdinalIgnoreCase)) { SetClass(text); return; }  // set the profile class/path line
         if (text.StartsWith("!spells", StringComparison.OrdinalIgnoreCase)) { TeachClassSpells(); return; }      // learn ALL my class's spells up to my level

@@ -172,7 +172,7 @@ public sealed partial class Session
     // decides whether THIS level's single point goes to might (primary) or grace+will (secondary+tertiary).
     // Might/Grace/Will are bytes and RTK's own calc caps them at 255 elsewhere (SendStats clamps on send), so
     // no clamp needed here. HP/MP gains are RTK's per-path random ranges (inclusive both ends).
-    private void LevelUp(int path)
+    private void LevelUp(int path, bool announce = true)
     {
         int nextLevel = _char.Level + 1;
         int secondary = 0, tertiary = 0, primary = 0;
@@ -223,9 +223,44 @@ public sealed partial class Session
         // Armor uses (confirmed live), but RTK's raw sound numbering is known not to map cleanly onto the
         // 4.95 client (see docs §7.3) — 123 here is the same unverified best-effort port as Harden Armor's
         // 5; both want a correct id from `!snd <id>` before this is right.
-        BroadcastFx(_char.Id, 2, 123);
-        SendMiniText("You have gained new insight.");
-        Log.Info($"   -> LEVEL UP: {_char.Name} is now level {_char.Level} ({Content.PathName(path)}) HP+{hpGain} MP+{mpGain}");
+        if (announce)
+        {
+            BroadcastFx(_char.Id, 2, 123);
+            SendMiniText("You have gained new insight.");
+            Log.Info($"   -> LEVEL UP: {_char.Name} is now level {_char.Level} ({Content.PathName(path)}) HP+{hpGain} MP+{mpGain}");
+        }
+    }
+
+    // "!lvl <n>" — GM: become level n with stats accurate for that level. Resets to the RTK level-1 baseline
+    // (Player.reset / CharacterFactory) and applies real LevelUps up to n, so MaxHP/MaxMP, Might/Will/Grace and
+    // AC accumulate legitimately (same growth a natural progression uses) and HP/MP end full. Works both up and
+    // down. GM-only, so it bypasses the Peasant level-5 wall; growth follows the character's CURRENT path (a
+    // Peasant gets peasant HP/MP curves — pick a real path first for class-appropriate stats).
+    internal void SetLevel(int target)
+    {
+        target = Math.Clamp(target, 1, 99);
+        int path = CharClassId;
+
+        _char.Level = 1;
+        _char.Might = 3; _char.Grace = 3; _char.Will = 3;
+        _char.MaxHp = (uint)Random.Shared.Next(45, 56);   // RTK Player.reset baseline
+        _char.MaxMp = (uint)Random.Shared.Next(32, 37);
+        _char.Ac = (sbyte)(100 - 1);
+        for (int lvl = 1; lvl < target; lvl++) LevelUp(path, announce: false);
+
+        _char.Hp = EffMaxHp; _char.Mp = EffMaxMp;                       // full vitals for the new level
+        _char.Exp = target > 1 ? Content.ExpToNext(path, target - 1) : 0;   // exp at the start of this level
+        uint tnlNext = Content.ExpToNext(path, _char.Level);
+        _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
+
+        if (_enteredWorld) _store.Save(_char);
+        BroadcastFx(_char.Id, 2, 123);   // one level-up sparkle for the whole jump
+        SendStats();
+        SendSelfProfile();               // AC/Tnl live in the 0x39 profile, not the HUD packet
+        SendMessage($"Now level {_char.Level} ({Content.PathName(path)}) — HP {_char.MaxHp}, MP {_char.MaxMp}, " +
+                    $"might {_char.Might}, will {_char.Will}, grace {_char.Grace}, AC {_char.Ac}.");
+        Log.Info($"   -> !lvl {target}: reset+leveled ({Content.PathName(path)}) HP{_char.MaxHp} MP{_char.MaxMp} " +
+                 $"M{_char.Might}/W{_char.Will}/G{_char.Grace} AC{_char.Ac}");
     }
 
     /// <summary>How many of an item (by content key) the player is carrying, summed across stacks.</summary>
