@@ -1,0 +1,9 @@
+key,kind,level,mana
+set_dart_trap,Dart,26,20
+set_snare_trap,Snare,33,120
+set_repeating_dart_trap,RepeatingDart,44,120
+set_flash_trap,Flash,55,320
+set_spear_trap,Spear,66,520
+set_poison_dart_trap,Poison,77,620
+set_death_trap,Death,88,1520
+set_sleep_trap,Sleep,99,2500
