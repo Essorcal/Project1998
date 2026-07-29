@@ -1,0 +1,674 @@
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Channels;
+using Protocol.Tk495;
+using Shared;
+
+namespace Server;
+
+public sealed partial class Session
+{
+
+    // ---- mob / combat lab ----
+    // The 4.95 creature GRAPHIC id-space is unknown, so we discover it live (look-lab style) via 0x16.
+    //   "!mob <hi> <lo> [hp]"   spawn ONE creature on the tile in front of you (gfx = hi*256+lo) so you
+    //                           can see it and immediately whack it.
+    //   "!mobrow <lo> <hi> [step]"  spawn a W->E row sweeping graphic id lo..hi (step defaults to 1).
+    //                           The gfx id is a FRAME index into the monster archive (client adds
+    //                           0x4000, category "I"), and Monster.tbl's "Starting" column lists each
+    //                           monster's idle frame — the first ~19 monsters start at 0,20,40,...,360.
+    //                           So "!mobrow 0 360 20" shows one idle sprite per monster 0..18.
+    //   "!spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
+    //   "!kill"                 despawn every mob.
+
+    private static int[] ParseInts(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var vals = new List<int>();
+        for (int i = 1; i < parts.Length; i++) if (int.TryParse(parts[i], out var v)) vals.Add(v);
+        return vals.ToArray();
+    }
+
+    // "!cre <lookId> [hp] [color]": spawn ONE real monster (Monster.epf, via 0x07) on the tile in front
+    // of you, so you can see it AND immediately melee it (combat is unchanged — it hits any Mob on the
+    // tile). [color] is the 0x07 color byte we're trying to identify as a recolor/palette selector.
+    private void CreatureOne(string text)
+    {
+        var a = ParseInts(text);
+        int look = a.Length > 0 ? a[0] : 0;
+        int hp = a.Length > 1 ? a[1] : 6;
+        int color = a.Length > 2 ? a[2] : 0;
+        var (fx, fy) = FrontTile();
+        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+        SpawnMonster((ushort)look, x, y, $"c{look}", hp, dir: (byte)((_facing + 2) & 3), color: (byte)color);
+    }
+
+    // ===== MVP: spawn a rabbit, watch it wander, kill it =====================================
+    // The whole lifecycle end-to-end, kept deliberately hardcoded (one rabbit, look 21, 6 HP, random
+    // wander near its spawn) before generalizing into a real mob/AI/spawn system. It mirrors how the RTK
+    // map-server drives a mob: the server owns the entity + HP, ticks its AI on a timer, streams walk
+    // steps (0x0C) to the client, and despawns it (0x0E) on death. Combat is the EXISTING melee path —
+    // face the rabbit and press space; HandleAttack finds it on the front tile and deals damage.
+    private const ushort RabbitLook = 21;   // Monster.tbl look id — validated shape-match: rabbit = 21
+
+    // "!rabbit": drop a single wandering rabbit into the SHARED world on the tile in front of you.
+    // Everyone on the map sees it, everyone fights the SAME one, and World.Tick drives its wander — no
+    // per-session task anymore (that only moved the rabbit on the spawner's screen).
+    private void SpawnRabbit()
+    {
+        var (fx, fy) = FrontTile();
+        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+        byte dir = (byte)((_facing + 2) & 3);   // face the player on arrival
+        // Real registry entry (mobs.csv id 1, key "rabbit"): look 21 color 3, 10hp, 5xp. This used to
+        // hardcode color 0, which for look 21 renders like the "Hare" family (id 116+, same look, color
+        // 37+) instead of the actual Rabbit — reported live 2026-07-26.
+        var def = Content.FindMob("rabbit");
+        if (def is not null) SummonWorldMob(def.Look, x, y, def.Name, hp: def.Hp, dir: dir, color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
+        else SummonWorldMob(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0, exp: 5, moveTime: 3000);   // registry missing -> old fallback
+        SendLog("A rabbit appears. Face it and press space to attack.");
+    }
+
+    // Register a mob in the SHARED world (drawn via 0x07 = Monster.epf) and broadcast the spawn to every
+    // player on the map. World.Tick then wanders it (leashed to its spawn tile); combat resolves against
+    // the world's authoritative HP in HandleAttack. This is the gameplay-mob path (!rabbit / !summon);
+    // the debug lab (!cre/!mob/!crow/look-lab) still uses the session-local SpawnMonster/SpawnMob.
+    // `def`, when given, is the real registry entry — its full combat stat block (MinDam/MaxDam/Ac/Grace/
+    // Hit/IsBoss/Protection/Will/Aggressive) rides along, exactly like World.Materialize's real spawns.
+    // Without it (the `!rabbit` no-registry fallback), a summon defaults to a harmless vanilla mob (1-1
+    // damage, 0 AC) rather than silently under-tuned — previously EVERY debug/GM summon (!rabbit/!summon/
+    // the ridden-horse re-spawn) dropped these fields entirely, so testing a fix like this one via !summon
+    // would never have shown the real numbers.
+    private Mob SummonWorldMob(ushort look, ushort x, ushort y, string name, int hp, byte dir, byte color,
+                               int exp = 0, int moveTime = 2500, string key = "", MobDef? def = null)
+    {
+        var mob = new Mob(_world.AllocateMobId(), look, x, y, name, hp)
+        {
+            Key = key,   // MobDef identifier (for quest kill-matching); empty for keyless debug summons
+            Dir = dir, Color = color, Exp = exp, HomeX = x, HomeY = y, Wander = true,
+            MoveTime = moveTime, MoveTimer = Random.Shared.Next(moveTime),
+            Level = def?.Level ?? 0, Will = def?.Will ?? 0, Aggressive = def?.Aggressive ?? false,
+            MinDam = def?.MinDam ?? 1, MaxDam = def?.MaxDam ?? 1, Hit = def?.Hit ?? 0,
+            IsBoss = def?.IsBoss ?? false, Protection = def?.Protection ?? 0, Ac = def?.Ac ?? 0, Grace = def?.Grace ?? 0,
+        };
+        _world.AddMob(_char.Map, mob);   // broadcasts the 0x07 spawn to every player on the map (incl. us)
+        Log.Info($"   -> world spawn mob {mob.Id} '{name}' look={look} c{color} @({x},{y}) hp={hp} dmg={mob.MinDam}-{mob.MaxDam} on map {_char.Map}");
+        return mob;
+    }
+
+    // ===== navigation: warp + map/mob listing + data-driven summon ==========================
+
+    // ---- Mythic Nexus zodiac cave entrances (map 41) ----
+    // RTK gates each of the 12 zodiac caves behind a level/vitals check (Scripts/mythicCaveReqCheck.lua) and
+    // an easy/dangerous/deadly tier picker (NPCs/mythic/mythic_cave_selector.lua). With the picker menu off
+    // (the default — it's GM/Config-only), RTK auto-warps to the DEEPEST tier the player qualifies for, so we
+    // reproduce that: tier 1 -> base map, tier 2 -> base+3000, tier 3 -> base+4000. The two-tile entrance
+    // footprints and destinations are copied verbatim from onScriptedTilesMythic.lua + mythic_cave_selector.lua.
+    private readonly record struct CaveDest(ushort Map, ushort X, ushort Y);
+    private readonly record struct CaveReq(byte Level, uint Health, uint Magic);
+
+    private static readonly Dictionary<(ushort x, ushort y), string> MythicTiles = new()
+    {
+        [(49, 12)] = "Rabbit",  [(50, 12)] = "Rabbit",
+        [(43, 48)] = "Monkey",  [(44, 48)] = "Monkey",
+        [(18, 25)] = "Dog",     [(19, 25)] = "Dog",
+        [(48, 30)] = "Rooster", [(49, 30)] = "Rooster",
+        [(9, 12)]  = "Rat",     [(10, 12)] = "Rat",
+        [(15, 48)] = "Horse",   [(16, 48)] = "Horse",
+        [(29, 45)] = "Ox",      [(30, 45)] = "Ox",
+        [(17, 39)] = "Pig",     [(18, 39)] = "Pig",
+        [(40, 25)] = "Snake",   [(41, 25)] = "Snake",
+        [(41, 39)] = "Sheep",   [(42, 39)] = "Sheep",
+        [(10, 30)] = "Tiger",   [(11, 30)] = "Tiger",
+        [(29, 19)] = "Dragon",  [(30, 19)] = "Dragon",
+    };
+
+    // animal -> cave-1 base map + the arrival tile inside it (same coords for every tier). +3000 = cave 2, +4000 = cave 3.
+    private static readonly Dictionary<string, CaveDest> MythicDest = new()
+    {
+        ["Rabbit"] = new(201, 13, 19), ["Monkey"] = new(160, 1, 1),  ["Dog"]    = new(191, 11, 27),
+        ["Rooster"] = new(214, 9, 58), ["Rat"]    = new(151, 12, 18), ["Horse"]  = new(246, 7, 22),
+        ["Ox"]     = new(170, 2, 27),  ["Pig"]    = new(181, 26, 22), ["Snake"]  = new(231, 17, 1),
+        ["Sheep"]  = new(470, 14, 12), ["Tiger"]  = new(100, 30, 4),  ["Dragon"] = new(257, 17, 10),
+    };
+
+    // Per-animal tier requirements [tier1, tier2, tier3]. A tier is met when level >= Level AND
+    // (baseMaxHP >= Health OR baseMaxMP >= Magic). Tier-1 has no HP/MP floor, so level alone unlocks it.
+    private static readonly Dictionary<string, CaveReq[]> MythicReqs = new()
+    {
+        ["Rabbit"]  = new[] { new CaveReq(25, 0, 0),     new CaveReq(70, 0, 0),           new CaveReq(99, 20000, 10000) },
+        ["Monkey"]  = new[] { new CaveReq(32, 0, 0),     new CaveReq(77, 0, 0),           new CaveReq(99, 40000, 20000) },
+        ["Dog"]     = new[] { new CaveReq(39, 0, 0),     new CaveReq(84, 0, 0),           new CaveReq(99, 60000, 30000) },
+        ["Rooster"] = new[] { new CaveReq(46, 0, 0),     new CaveReq(91, 0, 0),           new CaveReq(99, 100000, 50000) },
+        ["Rat"]     = new[] { new CaveReq(53, 0, 0),     new CaveReq(98, 0, 0),           new CaveReq(99, 140000, 70000) },
+        ["Horse"]   = new[] { new CaveReq(60, 0, 0),     new CaveReq(99, 30000, 15000),   new CaveReq(99, 180000, 90000) },
+        ["Ox"]      = new[] { new CaveReq(67, 0, 0),     new CaveReq(99, 50000, 25000),   new CaveReq(99, 220000, 110000) },
+        ["Pig"]     = new[] { new CaveReq(74, 0, 0),     new CaveReq(99, 80000, 40000),   new CaveReq(99, 260000, 130000) },
+        ["Snake"]   = new[] { new CaveReq(81, 0, 0),     new CaveReq(99, 110000, 55000),  new CaveReq(99, 300000, 150000) },
+        ["Sheep"]   = new[] { new CaveReq(88, 0, 0),     new CaveReq(99, 140000, 70000),  new CaveReq(99, 340000, 170000) },
+        ["Tiger"]   = new[] { new CaveReq(95, 0, 0),     new CaveReq(99, 170000, 85000),  new CaveReq(99, 380000, 190000) },
+        ["Dragon"]  = new[] { new CaveReq(99, 0, 0),     new CaveReq(99, 200000, 100000), new CaveReq(99, 420000, 210000) },
+    };
+
+    // Plural form for the mythic-cave denial line ("Mythic Oxen dwell here"). Every zodiac animal takes a
+    // plain "s" except Ox, whose plural is irregular.
+    private static string PluralAnimal(string animal) => animal == "Ox" ? "oxen" : animal.ToLowerInvariant() + "s";
+
+    // Deepest tier (1..3) the player unlocks for `animal`, or a negative "how close" code when locked out:
+    // 0 = within 3 levels, -1 = within 4-7, -2 = 8+ levels short. Mirrors mythicCaveReqCheck.lua exactly.
+    private int MythicCaveTier(string animal)
+    {
+        var reqs = MythicReqs[animal];
+        for (int i = 2; i >= 0; i--)   // check tier 3 -> 1, return the first satisfied
+        {
+            var r = reqs[i];
+            if (_char.Level >= r.Level && (_char.MaxHp >= r.Health || _char.MaxMp >= r.Magic))
+                return i + 1;
+        }
+        int levelsUntil = reqs[0].Level - _char.Level;
+        if (levelsUntil >= 8) return -2;
+        if (levelsUntil >= 4) return -1;
+        return 0;
+    }
+
+    // Handle a step onto a zodiac entrance tile on map 41: warp into the deepest unlocked cave tier, or
+    // refuse (snap back + flavour line) when under-levelled. Returns false if (x,y) isn't an entrance tile.
+    private bool TryMythicCaveEntrance(ushort x, ushort y)
+    {
+        if (!MythicTiles.TryGetValue((x, y), out var animal)) return false;
+        int tier = MythicCaveTier(animal);
+        if (tier < 1)
+        {
+            SendXy();   // cancel the client's step prediction / unblock the next step — the entrance holds them out
+            SendMiniText(tier switch   // status box (RTK clif_sendminitext), not the login message box
+            {
+                -2 => $"That would be unwise. Mythic {PluralAnimal(animal)} dwell here.",
+                0  => "You almost understand the secrets of this entrance.",
+                _  => "You are not yet ready to enter here.",
+            });
+            Log.Info($"   -> MYTHIC {animal} entrance REFUSED (tier {tier}, level {_char.Level})");
+            return true;
+        }
+
+        var d = MythicDest[animal];
+        ushort destMap = (ushort)(d.Map + (tier == 3 ? 4000 : tier == 2 ? 3000 : 0));
+        if (!Content.TryMap(destMap, out var dm)) { destMap = d.Map; Content.TryMap(destMap, out dm); }
+        if (dm is null) { SendXy(); return true; }   // map data missing — don't strand the player
+        Log.Info($"   -> MYTHIC {animal} cave {tier} -> map {destMap} '{dm.Name}' ({d.X},{d.Y}) [level {_char.Level}]");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, d.X, d.Y, dm.Name);
+        return true;
+    }
+
+    // Class path-hall interior warps (onScriptedTilesPathHalls.lua). Each Kugnae/Buya path hall (Warrior/Rogue/
+    // Mage/Poet, both cities) has two scripted-tile doorways that are NOT in the SQL warp table: the SOUTH edge
+    // (x 1-2, y 23) into that class's guild hall — class-gated to members of that base class (RTK also lets a
+    // Tutor in, a staff role we don't model) — and the NORTH edge (x 8-9, y 1) into the player's alignment
+    // sanctum (Unaligned/Kwisin/Mingken/Ohaeng, indexed by Character.Alignment 0-3). Only the map-exit warp is
+    // in Warps.csv, so before this the leader-room and hall doors did nothing (or read as solid).
+    private readonly record struct PathHall(int BaseClass, ushort Hall, ushort[] Sanctum);
+    private static readonly Dictionary<ushort, PathHall> PathHalls = new()
+    {
+        // Kugnae halls
+        [11]  = new(1, 3701, new ushort[] { 12,  300, 301, 302 }),   // Warrior Tebaek
+        [15]  = new(2, 3702, new ushort[] { 16,  312, 313, 314 }),   // Rogue Maro
+        [13]  = new(3, 3703, new ushort[] { 14,  306, 307, 308 }),   // Mage Haedu
+        [17]  = new(4, 3704, new ushort[] { 18,  318, 319, 320 }),   // Poet Jinsun
+        // Buya halls
+        [341] = new(1, 3705, new ushort[] { 366, 303, 304, 305 }),   // Warrior Yebaek
+        [343] = new(2, 3706, new ushort[] { 368, 315, 316, 317 }),   // Rogue Maso
+        [342] = new(3, 3707, new ushort[] { 367, 309, 310, 311 }),   // Mage Eldritch
+        [344] = new(4, 3708, new ushort[] { 369, 321, 322, 323 }),   // Poet Song
+    };
+
+    private bool TryPathHallWarp(ushort x, ushort y)
+    {
+        if (!PathHalls.TryGetValue(_char.Map, out var hall)) return false;
+
+        // South doorway -> class guild hall (members of that base class only).
+        if ((x == 1 || x == 2) && y == 23)
+        {
+            if (CharClassId != hall.BaseClass)
+            {
+                // RTK onScriptedTilesPathHalls.lua: player:sendMinitext(str) — the status box, not chat.
+                SendMiniText("You are not the right class to enter here.");
+                SendXy();   // refuse: hold at the from-tile (RTK bumps 2 tiles north — same net effect)
+                return true;
+            }
+            return WarpHall(hall.Hall, (ushort)(x + 6), 3);
+        }
+
+        // North doorway -> the player's alignment sanctum (the path-leader room).
+        if ((x == 8 || x == 9) && y == 1)
+        {
+            byte a = _char.Alignment <= 3 ? _char.Alignment : (byte)0;
+            return WarpHall(hall.Sanctum[a], (ushort)(x - 3), 18);
+        }
+        return false;
+    }
+
+    private bool WarpHall(ushort destMap, ushort dx, ushort dy)
+    {
+        if (!Content.TryMap(destMap, out var dm)) { SendXy(); return true; }   // dest not renderable -> don't strand
+        Log.Info($"   -> PATHHALL map {_char.Map} -> {destMap} '{dm.Name}' ({dx},{dy})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, dx, dy, dm.Name);
+        return true;
+    }
+
+    // ---- After-step scripted tiles (fire once the step has completed, i.e. standing on the new tile) ----
+    // RTK runs these from onScriptedTile on every walk. We only port the two that are self-contained AND live
+    // entirely on maps the 4.95 client can render: mythic-cave fall-rooms and bush/tree foraging.
+    private void OnScriptedTileStep()
+    {
+        TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
+        TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
+        if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
+        TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
+    }
+
+    // ---- Inter-continent travel ("world map" screen) ----
+    // RTK triggers this from onScriptedTile on EVERY step (onScriptedTilesMap.lua checks the current
+    // map's title + x/y against hardcoded edge coordinates), then opens a destination picker via
+    // clif_mapselect (sendWorldMap.lua) — a full-screen "click a location on a map graphic" UI, NOT an
+    // NPC/ferry menu. The real click-a-destination flow applies NO level/quest/req gate at all: pc_warp
+    // doesn't validate the (map,x,y) the client echoes back, so every listed destination is always usable
+    // (RTK gates only one entry, Mount Baekdu, by simply omitting it from the list pre-quest).
+    //
+    // SendWorldMap's body was recovered by statically disassembling THIS project's own 4.95 client (not
+    // guessed, and NOT trusting RTK 7.x, whose clif_mapselect has a different shape): opcode 0x2e's receive
+    // handler is 0x450580 (verified via the real two-level dispatch table at 0x44bc80/0x44bbd4:
+    // sel = idx[opcode-3], jmp jumptab[sel]; opcode 0x2e -> sel 22 -> stub 0x44bac4 -> call 0x450580).
+    // The 0x450580 parser reads, in order, straight off the packet body (payload = bytes AFTER the opcode):
+    //   bgNameLen(u8)  <- payload[0] IS the length; there is NO leading "kind" byte
+    //   bgName[bgNameLen]
+    //   destCount(u8)
+    //   one still-unexplained byte
+    //   per-destination:  x0(u16BE) y0(u16BE)  name(u8 len + bytes)  mapId(u32BE)  x1(u16BE) y1(u16BE)
+    // (each entry is exactly 2 u16 + name + 4 u16; the client reads mapId as two of those u16 slots.)
+    // The background is "field10" = "Map of the Kingdom" (the overview world-map art in Inter.dat, one of
+    // field10..field18 = the whole-kingdom + per-region maps; NATION_E is only a 20KB flag icon, too small
+    // to be a 640x480 background -- that's why it rendered black). Confirmed by rendering the candidate EPFs
+    // to a grayscale contact sheet and reading their baked-in title banners. An earlier version of
+    // this code sent a spurious leading kind=0 byte, which the client read as bgNameLen=0 -> empty name ->
+    // a "%s.epf" path builder produced "." -> catlookup2(".") -> and every later field was shifted one byte,
+    // so destCount/offsets became garbage and the handler eventually made a bogus huge allocation and threw.
+    // That was OUR one-byte framing error, not a client bug (the client is retail-shipped and works). The
+    // client's click/ESC reply is LIVE-CONFIRMED (opcode 0x3F, body mapId(u32BE) x(u16BE) y(u16BE) 00 --
+    // RTK's case 0x3F map-change); HandleWorldMapSelect below decodes it and either warps to the clicked
+    // destination or, for ESC/unrecognized coords, back to the origin. Two of RTK's nine destinations
+    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (data/game-data/map_index.csv)
+    // and are omitted outright.
+    // X,Y = landing tile on the destination map.
+    private readonly record struct WorldDest(string Name, ushort Map, ushort X, ushort Y);
+    private static readonly WorldDest[] WorldDests =
+    {
+        new("Kugnae",             1011, 18, 14),
+        new("Buya",                1012,  1, 11),
+        new("Mythic Nexus",         41, 30,  4),
+        new("Arctic Land",         1013,  9,  9),
+        new("KaMing's Encampment", 3800, 31,  3),
+    };
+
+    // Screen position (native 640x480 pixels) of each destination's clickable dot ON THE field10 background,
+    // parallel to WorldDests. NOT derived by scaling RTK's sendWorldMap.lua coords: RTK's coords are for its
+    // own 1024x768 "WMkru" art, a DIFFERENT map image than 4.95's field10 "Map of the Kingdom", so no uniform
+    // scale maps one onto the other -- each dot must sit on field10's own labeled town. Seed values are rough
+    // reads off the field10 grayscale render (re/ scratch); fine-tune live in-client with "!wmpos <i> <x> <y>"
+    // against the real colour display, then bake the final numbers here.
+    private static readonly (int X, int Y)[] WorldDotPos =
+    {
+        (300, 235),  // 0 Kugnae      -- "Kugnae" label, centre
+        (300, 130),  // 1 Buya        -- "Buya" label, centre-upper
+        (200, 300),  // 2 Mythic Nexus
+        (400,  60),  // 3 Arctic Land -- north
+        (450, 390),  // 4 KaMing's Encampment -- lower-right
+    };
+
+    // Trigger tiles (onScriptedTilesMap.lua), keyed by the town map the player is standing in.
+    private static readonly Dictionary<ushort, Func<int, int, bool>> WorldMapTriggers = new()
+    {
+        [1011] = (x, y) => x == 19 && (y == 12 || y == 13),          // Kugnae Gathering
+        [1012] = (x, y) => x == 0 && y >= 8 && y <= 12,              // Buya Gathering
+        [41]   = (x, y) => y == 1 && x >= 28 && x <= 32,             // Mythic Nexus
+        [1013] = (x, y) => x == 10 && (y == 7 || y == 8),            // Haeng Tavern (Arctic Land)
+        [3800] = (x, y) => (y == 0 || y == 1) && x >= 30 && x <= 34, // KaMing's Encampment
+        // Nagnang (2520) and Hausson (1025) intentionally removed as world-map hubs (2026-07-26).
+    };
+
+    // True while a world-map screen we sent is (as far as we know) still open on the client, so a stray
+    // 0x3F that happens to coincide with a real destination can't be mistaken for a real click.
+    private bool _worldMapPending;
+    // Where the player was standing when the world map opened. Opening the map makes the client "leave the
+    // world" (full-screen modal); pressing ESC sends a 0x3F carrying these origin coords, and we warp back
+    // here to restore the view (RTK exits the same way -- see HandleWorldMapSelect).
+    private ushort _worldMapReturnMap, _worldMapReturnX, _worldMapReturnY;
+
+    // Fires the native full-screen world-map screen at the real trigger tiles (re-enabled 2026-07-26 after
+    // the one-byte framing bug was found and fixed -- see SendWorldMap). Falls back to nothing if bgName
+    // resolution fails client-side; if a fresh crash ever recurs, revert this to RunWorldMapMenuAsync().
+    private void TryWorldMapTravel()
+    {
+        if (!WorldMapTriggers.TryGetValue(_char.Map, out var onTile) || !onTile(_char.X, _char.Y)) return;
+        SendWorldMap("field10");
+    }
+
+    // The earlier "crashes regardless of content / client memory-lifetime bug" conclusion was WRONG: the
+    // crash was a one-byte framing error in the packet BELOW (a spurious leading kind=0 byte that the client
+    // read as bgNameLen=0, misaligning every field -- see the class comment above SendWorldMap). Once that
+    // byte is removed and a real background name is used (field10 = "Map of the Kingdom"), the packet parses
+    // correctly. The retail client is not buggy. "!wmtest <name>" tries alternate background graphics.
+    private void SendWorldMap(string bgName)
+    {
+        var d = new List<byte>();       // NO leading kind byte: payload[0] IS the bgName length (see comment)
+        AddLenStr(d, bgName);
+        d.Add((byte)WorldDests.Length);
+        d.Add(0);                        // unexplained byte after the count -- see class-comment note above
+        for (int i = 0; i < WorldDests.Length; i++)
+        {
+            var dest = WorldDests[i];
+            // Dot position is field10's own pixel coordinate (see WorldDotPos) -- placed directly on the
+            // displayed map, not scaled from RTK. Clamp defensively to the 640x480 art.
+            int sx = Math.Clamp(WorldDotPos[i].X, 0, 639);
+            int sy = Math.Clamp(WorldDotPos[i].Y, 0, 479);
+            d.AddRange(Be((ushort)sx));   // x0 (field10 pixel)
+            d.AddRange(Be((ushort)sy));   // y0 (field10 pixel)
+            AddLenStr(d, dest.Name);
+            d.AddRange(Be32(dest.Map));
+            d.AddRange(Be(dest.X));
+            d.AddRange(Be(dest.Y));
+        }
+        _worldMapPending = true;
+        _worldMapReturnMap = _char.Map;
+        _worldMapReturnX   = _char.X;
+        _worldMapReturnY   = _char.Y;
+        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {WorldDests.Length} dests");
+    }
+
+    // Parses the client's world-map click / ESC reply. LIVE-CONFIRMED format (2026-07-26): the client sends
+    // opcode 0x3F with body  mapId(u32BE) x(u16BE) y(u16BE) 00  -- exactly RTK's case 0x3F map-change
+    // (clif.c:11619, pc_warp with the client-supplied map/x/y). There is NO separate cancel opcode: opening
+    // the map makes the client "leave the world", and BOTH a destination click and ESC send this same 0x3F --
+    // ESC just carries the player's ORIGINAL map/x/y. So: warp to the destination if it's a known one;
+    // otherwise (ESC, or any unrecognized coords) return the player to where they opened the map from, so
+    // they can never be stranded on the map screen or mis-warped to arbitrary client-chosen coords.
+    private void HandleWorldMapSelect(byte[] dec)
+    {
+        if (!_worldMapPending) return;
+        _worldMapPending = false;
+        if (dec.Length < 8) return;
+        uint   map = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
+        ushort x   = (ushort)((dec[4] << 8) | dec[5]);
+        ushort y   = (ushort)((dec[6] << 8) | dec[7]);
+        foreach (var dest in WorldDests)
+        {
+            if (dest.Map != map || dest.X != x || dest.Y != y) continue;
+            if (!Content.TryMap(dest.Map, out var dm)) return;
+            Log.Info($"   -> WORLDMAP (native) {_char.Map} -> {dest.Map} '{dm.Name}' ({dest.X},{dest.Y})");
+            EnterMap(dm.Id, dm.Xs, dm.Ys, dest.X, dest.Y, dm.Name);
+            return;
+        }
+        // Not a known destination -> treat as ESC/cancel: restore the player to their origin.
+        if (Content.TryMap(_worldMapReturnMap, out var om))
+        {
+            Log.Info($"   -> WORLDMAP (esc/cancel) back to {_worldMapReturnMap} '{om.Name}' ({_worldMapReturnX},{_worldMapReturnY}) [reply map={map} ({x},{y})]");
+            EnterMap(om.Id, om.Xs, om.Ys, _worldMapReturnX, _worldMapReturnY, om.Name);
+        }
+    }
+
+    // "!travel" — chat-command fallback using the already-proven async dialog primitives, so travel keeps
+    // working end-to-end even before the native screen's click-reply format (above) is confirmed live.
+    private static readonly Mob WorldMapVirtualNpc = new(0xFFFFFFFC, 0, 0, 0, "WorldMap", 1);
+
+    private async Task RunWorldMapMenuAsync()
+    {
+        // The menu await can suspend for as long as the player takes to answer, during which something
+        // else entirely could move them (a GM !warp, death+revive, another dialog, disconnect). Re-verify
+        // they're still on the same map when the reply comes back -- same "don't trust state from before
+        // the await" discipline as the trade flow re-validating live inventory at finalize.
+        ushort startMap = _char.Map;
+        int choice = await DlgMenu(WorldMapVirtualNpc, "Where would you like to travel?",
+            WorldDests.Select(d => d.Name).ToList());
+        if (choice < 1 || choice > WorldDests.Length) return;
+        if (_char.Map != startMap) return;   // moved on since we opened the menu
+        var d = WorldDests[choice - 1];
+        if (!Content.TryMap(d.Map, out var dm)) return;   // dest not renderable here -- silently ignore
+        Log.Info($"   -> WORLDMAP (menu) {_char.Map} -> {d.Map} '{dm.Name}' ({d.X},{d.Y})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, d.X, d.Y, dm.Name);
+    }
+
+    // Chu Rua's young ginseng (onScriptedTilesQuest.lua, "Guol Tiger Pass" = map 1116): the rocks at x 5-6,
+    // y 2-4 hold one young_ginseng. The tiger guards them until you distract him (say "rabbit" -> Forest, which
+    // sets chu_rua_tiger_gone); until then it's "too dangerous". (RTK warps to a tiger-free copy, map 1117, but
+    // that map isn't renderable here, so we gate on the flag instead and keep you on 1116.)
+    private void TryGinseng()
+    {
+        if (_char.Map != 1116) return;
+        if (!((_char.X == 5 || _char.X == 6) && _char.Y >= 2 && _char.Y <= 4)) return;
+        if (CountItem("young_ginseng") > 0) return;
+        if (_char.Quests.GetValueOrDefault("chu_rua_tiger_gone") != 1)
+        {
+            SendMiniText("With the tiger nearby, it is too dangerous to climb up to the root.");
+            return;
+        }
+        var def = Content.ItemByKey("young_ginseng");
+        if (def is null || !GiveItem(def, 1)) return;
+        SendMiniText("Snuggled between the rocks is a young root of ginseng. Was this what Chu Rua meant?");
+    }
+
+    // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
+    // to a fixed landing tile in a lower sub-room (onScriptedTilesMythicFallRooms.lua). The three depth tiers
+    // mirror each other (+3000 = cave 2, +4000 = cave 3), so the tier-1 groups below are expanded to all three.
+    private const int FallRate = 500;
+    private static readonly (ushort dest, ushort dx, ushort dy, ushort[] src)[] FallGroups =
+    {
+        (169, 23, 3,  new ushort[] { 167, 168 }),        // Monkey
+        (217, 10, 17, new ushort[] { 212, 216, 218 }),   // Rooster
+        (208, 15, 18, new ushort[] { 203, 205, 208 }),   // Rabbit
+        (479, 23, 3,  new ushort[] { 482, 484 }),        // Sheep
+        (180, 22, 7,  new ushort[] { 177, 178 }),        // Ox
+        (183, 2, 9,   new ushort[] { 186, 187, 190 }),   // Pig
+        (244, 15, 25, new ushort[] { 243, 245, 247 }),   // Horse
+        (196, 11, 38, new ushort[] { 192, 194, 199 }),   // Dog
+        (255, 12, 34, new ushort[] { 253, 254, 258 }),   // Dragon
+        (235, 1, 4,   new ushort[] { 233, 236, 237 }),   // Snake
+    };
+    // map -> landing (destMap, x, y). Built once from FallGroups (all three tiers) + the tier-less Iron lab.
+    private static readonly Dictionary<ushort, (ushort map, ushort x, ushort y)> FallRooms = BuildFallRooms();
+    private static Dictionary<ushort, (ushort, ushort, ushort)> BuildFallRooms()
+    {
+        var m = new Dictionary<ushort, (ushort, ushort, ushort)>();
+        foreach (var g in FallGroups)
+            for (ushort off = 0; off <= 4000; off += 3000)   // 0 = cave 1, +3000 = cave 2, +4000 = cave 3
+                foreach (var s in g.src)
+                    m[(ushort)(s + off)] = ((ushort)(g.dest + off), g.dx, g.dy);
+        foreach (var s in new ushort[] { 1302, 1303, 1304, 1305, 1306 })   // Iron lab -> Treasure Room (no tiers)
+            m[s] = (1307, 4, 5);
+        return m;
+    }
+
+    private bool TryMythicFallRoom()
+    {
+        if (!FallRooms.TryGetValue(_char.Map, out var f)) return false;
+        if (Random.Shared.Next(FallRate) != 0) return false;
+        if (!Content.TryMap(f.map, out var dm)) return false;   // dest not renderable -> no fall (don't strand)
+        Log.Info($"   -> FALL through map {_char.Map} -> {f.map} '{dm.Name}' ({f.x},{f.y})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, f.x, f.y, dm.Name);
+        return true;
+    }
+
+    // Bush/tree foraging (onScriptedTilesBushTree.lua): standing next to an apple tree (object ids 860-864)
+    // or a rose bush (876-889), each step has a 1/50 chance to pick an apple / rose. Objects are read from the
+    // map's OWN object layer (same ids RTK's checkProximityObjects uses), scanned in the 3x3 around the player.
+    private const int ForageRate = 50;
+    private void TryForage()
+    {
+        var map = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        if (map is null) return;
+
+        string? item = null;
+        for (int dy = -1; dy <= 1 && item is null; dy++)
+        for (int dx = -1; dx <= 1 && item is null; dx++)
+        {
+            int tx = _char.X + dx, ty = _char.Y + dy;
+            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
+            ushort o = map.Obj(tx, ty);
+            if (o >= 860 && o <= 864) item = "apple";
+            else if (o >= 876 && o <= 889) item = "rose";
+        }
+        if (item is null) return;
+        if (Random.Shared.Next(ForageRate) != 0) return;
+
+        var def = Content.FindItem(item);
+        if (def is null || !GiveItem(def)) return;
+        SendMiniText(item == "apple" ? "You found an apple." : "You find a beautiful rose!");   // RTK onScriptedTilesBushTree.lua: sendMinitext, exact wording
+        Log.Info($"   -> FORAGE {item} on map {_char.Map} @({_char.X},{_char.Y})");
+    }
+
+    // Move the player to another map (or a far tile) and redraw. On 4.95 the client loads its OWN local
+    // Maps\TK<id>.map from the 0x15 mapId, so a warp is just: update tracked position, then re-send the
+    // entry trio — 0x15 (map) + 0x04 (coords + camera) + 0x33 (our sprite). The world object (0x02) and
+    // our entity id (0x05) are already established this session, so those are NOT resent.
+    private void EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName)
+    {
+        // Warn on crossing INTO a PvP realm (RTK MapPvP flag — Content.IsPvpMap) from a non-PvP one, e.g.
+        // stepping through an arena door into Sire Pit/Yusa Pit. Skipped when already in a PvP map (tier
+        // warps within the same arena chain shouldn't re-nag every hop).
+        bool warnPvp = Content.IsPvpMap(mapId) && !Content.IsPvpMap(_char.Map);
+
+        // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
+        // clear our session-local debug dummies (the client drops all foreign entities on a map change).
+        _world.LeaveMap(this, _char.Map);
+        _mobs.Clear();
+        _dlgReply = null;    // orphan any NPC prompt awaiting a reply — its NPC is on the old map
+        _worldMapPending = false;   // any open world-map screen is meaningless once we've already warped
+        ForgetShownMobs();   // new map -> the client wiped every foreign entity; re-stream from scratch
+
+        _char.Map = mapId;
+        _char.MapXs = xs;
+        _char.MapYs = ys;
+        _char.X = (ushort)Math.Clamp((int)x, 0, xs - 1);
+        _char.Y = (ushort)Math.Clamp((int)y, 0, ys - 1);
+        MarkDirty();   // map + position, same reasoning as HandleWalk
+
+        SendMapInfo(mapId, xs, ys, mapName, 232, _gameInc++);   // 0x15 (light arg ignored; uses LightValue)
+        SendXy();                                                // 0x04 coords + camera anchor
+        SendSelfLook();                                          // 0x33 draw self on the new map
+        PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
+        SendWeather(_world.GetWeather(mapId));                   // 0x1F whatever the new map's weather already is
+
+        // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
+        var (peers, mobs) = _world.EnterMap(this, mapId);
+        foreach (var p in peers) ShowPlayer(p);
+        SyncMobs(mobs);   // stream the in-view mobs of the new map
+        foreach (var gi in _world.ItemsOn(mapId)) ShowGroundItem(gi);   // floor items on the new map (0x16)
+        SyncForceOpenDoors(mapId);
+        if (warnPvp)
+        {
+            SendScriptMessageP(_char.Id,
+                "Be careful, you may be slain by another player within this realm and items on the floor " +
+                "can be destroyed by bombs!", DialogPortrait.None, prev: false, next: false);
+        }
+        Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y}) — {peers.Length} player(s), {mobs.Length} mob(s) here");
+    }
+
+    // A ForceOpen door (Doors.cs) only changes OUR server's own collision bookkeeping — it does nothing to
+    // what the client sees, because the 4.95 client loads its own local .map file for everything except the
+    // narrow 0x06 cell-patch mechanism (the same one door toggles use). Without this, the client's own local
+    // copy of the tile is untouched, so it keeps refusing the step client-side (self-walk is client-local —
+    // see [[nexustk-495-selfwalk-turn]]) regardless of what the server thinks. Clears the object outright
+    // (no real "open" sprite exists for these — see Doors.cs) and pushes the same patch our own MapData mirror
+    // gets, so a later HandleOpen/BlockedMove read agrees with what the client was actually told.
+    private void SyncForceOpenDoors(ushort mapId)
+    {
+        var md = MapData.For(mapId, _char.MapXs, _char.MapYs);
+        if (md is null) return;
+        foreach (var (x, y) in Doors.ForceOpenTiles(mapId))
+        {
+            md.SetObj(x, y, 0);
+            PatchObjRow(x, y, new ushort[] { 0 });
+        }
+    }
+
+    // "!warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
+    // Trailing "x y" integers are the destination tile; the rest is the map query. Defaults to map centre.
+    private void Warp(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { SendLog("usage: !warp <map name or id> [x y]"); return; }
+
+        int? cx = null, cy = null, end = parts.Length;
+        if (parts.Length >= 4 && int.TryParse(parts[^1], out var py) && int.TryParse(parts[^2], out var px))
+        { cx = px; cy = py; end = parts.Length - 2; }
+
+        string query = string.Join(' ', parts[1..end.Value]);
+        var map = Content.FindMap(query);
+        if (map is null) { SendLog($"no map matches \"{query}\" — try  !maps {query}"); return; }
+
+        ushort x = (ushort)(cx ?? map.Xs / 2);
+        ushort y = (ushort)(cy ?? map.Ys / 2);
+        EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
+        SendLog($"Warped to {map.Name} (map {map.Id}, {map.Xs}x{map.Ys}) at ({_char.X},{_char.Y}).");
+    }
+
+    // "!maps [filter]": list maps, fuzzy-ranked by name (blank = alphabetical). Capped so we don't flood.
+    private void ListMaps(string text)
+    {
+        string q = text.Length > "!maps".Length ? text["!maps".Length..].Trim() : "";
+        var found = Content.SearchMaps(q, 15);
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no maps loaded (run re/build_map_index.py)" : $"no maps match \"{q}\""); return; }
+        SendLog($"maps{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Maps.Count}):");
+        foreach (var m in found) SendLog($"  {m.Id}: {m.Name} ({m.Xs}x{m.Ys})");
+    }
+
+    // "!mobs [filter]": list summonable mobs, fuzzy-ranked by name.
+    private void ListMobs(string text)
+    {
+        string q = text.Length > "!mobs".Length ? text["!mobs".Length..].Trim() : "";
+        var found = Content.SearchMobs(q, 15);
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check data/game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
+        SendLog($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Mobs.Count}):");
+        foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (!summon {m.Name})");
+    }
+
+    // "!summon <mob name or id>": spawn a real, named creature from the registry on the tile in front of
+    // you — correct look + palette colour + HP + exp, all data-driven. Same 0x07 spawn + melee-kill loop
+    // as !rabbit, but any of the 700+ mobs by name. (No wander AI yet — that generalizes next.)
+    private void Summon(string text)
+    {
+        string q = text.Length > "!summon".Length ? text["!summon".Length..].Trim() : "";
+        if (q.Length == 0) { SendLog("usage: !summon <mob name or id>   (browse with  !mobs <name>)"); return; }
+        var mob = Content.FindMob(q);
+        if (mob is null) { SendLog($"no mob matches \"{q}\" — try  !mobs {q}"); return; }
+
+        var (fx, fy) = FrontTile();
+        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+        SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color, exp: mob.Exp, moveTime: mob.MoveTime, key: mob.Key, def: mob);
+        SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp, dmg {mob.MinDam}-{mob.MaxDam}).");
+    }
+
+    // !reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
+    // NPC placements + on/off toggles, crafting-skill toggles, map metadata) WITHOUT restarting the server,
+    // so content fixes ship live. Re-reads the CSVs, clears the map-terrain cache, refreshes already-spawned
+    // world mobs in place (new MaxHp/Exp/Level, current HP clamped to the new max — see
+    // World.ReloadContent), and re-syncs stationary-NPC placement against NpcToggles.csv (see
+    // World.ReconcileNpcToggles). A load error keeps the OLD content.
+    // NOT reloadable (compile-time tables in Content.cs → need a restart): mob drop tables and map BGM.
+    private void ReloadContent()
+    {
+        string summary;
+        try { summary = Content.Reload(); }
+        catch (Exception e)
+        {
+            SendLog($"!reload FAILED: {e.Message}  (previous content kept)");
+            Log.Info($"!! !reload by '{_char.Name}' failed: {e}");
+            return;
+        }
+        MapData.Invalidate();
+        int refreshed = _world.ReloadContent();
+        int npcChanged = _world.ReconcileNpcToggles();
+        SendLog($"Reloaded: {summary}. Refreshed {refreshed} live mob(s); {npcChanged} NPC(s) toggled; map cache cleared.");
+        Log.Info($"   -> !reload by '{_char.Name}': {summary}; {refreshed} live mobs refreshed; {npcChanged} NPCs toggled");
+    }
+
+}
