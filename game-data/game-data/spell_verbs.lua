@@ -26,3 +26,10 @@ end
 function verbs.restore_mana(ctx, row)
   ctx:restoreMana(row.amount or 0)
 end
+
+-- Timed self-buff: spend `mana`, then raise `stat` by `amount` for `duration` ms (default 60s). `stat` is one
+-- of the Totals() keys: might/will/grace/hp/mp/armor/hit/dam. Re-casting the same spell refreshes, not stacks.
+function verbs.buff(ctx, row)
+  if not ctx:spendMana(row.mana or 0) then return end
+  ctx:buff(row.stat, row.amount or 0, row.duration or 60000)
+end
