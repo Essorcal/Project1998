@@ -534,6 +534,10 @@ public sealed partial class Session
         bool behind = Combat.IsBehindTarget(mob.Dir, _facing, mob.X, mob.Y, _char.X, _char.Y);
         if (behind) dmg *= 2;
 
+        // RTK player.deduction: a flat damage-reduction multiplier from the sanctuary line / Baekho's Cunning
+        // (1.0 normally, down to 0.5/0.6 while active). Applied last, after armor + position.
+        if (EffDeduction < 1.0) dmg = (int)Math.Round(dmg * EffDeduction);
+
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         // RTK clif_deductarmor: taking a hit rolls durability loss on every worn slot (not just armor —
         // the reference implementation checks the weapon slot here too).

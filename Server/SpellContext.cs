@@ -72,4 +72,26 @@ public sealed class SpellContext
     public void say(string msg)         => _s.LuaSay(msg);
     /// <summary>Chat-log message.</summary>
     public void message(string msg)     => _s.LuaMessage(msg);
+
+    // ---- primitives for COMPOSED / stateful verbs (Baekho's Cunning) ----
+    /// <summary>Read a transient per-caster integer registry value (0 if unset). Resets on relog.</summary>
+    public int  reg(string key)                       => _s.LuaReg(key);
+    /// <summary>Set a transient per-caster integer registry value.</summary>
+    public void setReg(string key, double v)          => _s.LuaSetReg(key, (int)v);
+    /// <summary>Is a named duration (RTK setDuration) still running?</summary>
+    public bool hasDuration(string key)               => _s.LuaHasDuration(key);
+    /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds.</summary>
+    public void setDuration(string key, double ms)    => _s.LuaSetDuration(key, (int)ms);
+    /// <summary>Is a named cooldown (RTK aether) still ticking?</summary>
+    public bool onCooldown(string key)                => _s.LuaOnCooldown(key);
+    /// <summary>Start a named cooldown for <paramref name="ms"/> milliseconds.</summary>
+    public void setCooldown(string key, double ms)    => _s.LuaSetCooldown(key, (int)ms);
+    /// <summary>Arm the melee rage multiplier (whole-swing ×amount) for <paramref name="durMs"/> ms.</summary>
+    public void rage(double amount, double durMs)     => _s.LuaSetRage((int)amount, (int)durMs);
+    /// <summary>Arm a damage-reduction: <paramref name="mult"/> is the incoming-damage multiplier (0.5 = take half).</summary>
+    public void deduction(double mult, double durMs)  => _s.ApplyDeduction(mult, (int)durMs, _sp.Key);
+    /// <summary>Arm (on=true) or clear a positional stance ("backstab"/"flank") for <paramref name="durMs"/> ms.</summary>
+    public void stance(string name, bool on, double durMs) => _s.LuaStance(name, on, (int)durMs);
+    /// <summary>Play a cast animation + sound on the caster (Effect.tbl anim id, sound id).</summary>
+    public void fx(double anim, double sound)         => _s.LuaFx((int)anim, (int)sound);
 }

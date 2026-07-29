@@ -20,14 +20,19 @@ CSV = ROOT / "data/game-data/spell_effects.csv"
 MIGHT       = {"valor", "strengthen", "bless_muscles", "power_burst"}
 ARMOR_LONG  = {"harden_armor", "thicken_skin", "shield_of_life", "elemental_armor"}
 ARMOR_SHORT = {"bolster", "dark_armor", "life_armor", "armor_of_elements"}   # poet-only, shorter/weaker
+# Sanctuary line: RTK `target.deduction -= 0.5` = a 0.5 incoming-damage MULTIPLIER (take half), 300s, PC-only.
+# buffStat=deduction is fractional -> the amount is the final multiplier (0.5), NOT an int stat delta.
+DEDUCTION   = {"sanctuary", "magic_shield", "protect_soul", "guard_life"}
 
 def plan(key):
     for base in MIGHT:
-        if key in (f"{base}_mage", f"{base}_poet"): return ("might", 3, 300000)
+        if key in (f"{base}_mage", f"{base}_poet"): return ("might", "3", 300000)
     for base in ARMOR_LONG:
-        if key in (f"{base}_mage", f"{base}_poet"): return ("armor", 10, 300000)
+        if key in (f"{base}_mage", f"{base}_poet"): return ("armor", "10", 300000)
     for base in ARMOR_SHORT:
-        if key in (f"{base}_poet",): return ("armor", 4, 37000)
+        if key in (f"{base}_poet",): return ("armor", "4", 37000)
+    for base in DEDUCTION:
+        if key in (f"{base}_mage", f"{base}_poet"): return ("deduction", "0.5", 300000)
     return None
 
 rows = list(csv.DictReader(CSV.open(encoding="utf-8")))
@@ -39,7 +44,7 @@ for r in rows:
     stat, amt, dur = p
     r["archetype"]  = "TargetBuff"
     r["buffStat"]   = stat
-    r["buffAmt"]    = str(amt)
+    r["buffAmt"]    = amt
     r["durationMs"] = str(dur)
     r["debuff"]     = ""
     changed += 1

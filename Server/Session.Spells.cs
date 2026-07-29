@@ -413,6 +413,29 @@ public sealed partial class Session
     internal void LuaSay(string msg)     => SendMiniText(msg);
     internal void LuaMessage(string msg) => SendMessage(msg);
 
+    // ---- extra primitives for COMPOSED spell verbs (e.g. Baekho's Cunning: a stateful multi-tier stance that
+    // combines a rage multiplier + deduction + positional stances). A transient per-session int registry (NOT
+    // persisted — spell/combat state should reset on relog, unlike _char.Quests) and a named-duration map
+    // (mirrors RTK setDuration/hasDuration) let a verb hold its own state without any bespoke C# handler.
+    private readonly Dictionary<string, int>  _spellReg  = new();
+    private readonly Dictionary<string, long> _durations = new();
+    internal int  LuaReg(string key)                 => _spellReg.GetValueOrDefault(key, 0);
+    internal void LuaSetReg(string key, int v)       => _spellReg[key] = v;
+    internal bool LuaHasDuration(string key)         => _durations.TryGetValue(key, out var e) && Environment.TickCount64 < e;
+    internal void LuaSetDuration(string key, int ms) => _durations[key] = Environment.TickCount64 + ms;
+    internal bool LuaOnCooldown(string key)          => OnCooldown(key, out _);
+    internal void LuaSetCooldown(string key, int ms) => SetCooldown(key, ms);
+    // Directly arm the rage multiplier (bypasses CastRage's "already raging" guard — Cunning sets its own tier).
+    internal void LuaSetRage(int amount, int durMs)  { _rageAmount = amount; _rageUntil = Environment.TickCount64 + durMs; SendStats(); }
+    // Arm (on) or clear (off) a positional stance timer (backstab/flank) for durMs.
+    internal void LuaStance(string name, bool on, int durMs)
+    {
+        long exp = on ? Environment.TickCount64 + durMs : 0;
+        if (name == "backstab") _backstabUntil = exp;
+        else if (name == "flank") _flankUntil = exp;
+    }
+    internal void LuaFx(int anim, int sound) => BroadcastFx(_char.Id, anim, sound);
+
     // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.
     // Re-casting the SAME spell refreshes rather than stacks (matches C# CastBuff / RTK removeDuras-then-set).
     // Buffs flow through BuffTotals() (never cached), so no equip-cache invalidation is needed. Shares the exact
@@ -564,9 +587,28 @@ public sealed partial class Session
         }
         if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
 
-        _char.Mp -= (uint)mana;
         var anim = Content.EffectAnim(fx, sp.PathId);
         var snd  = Content.EffectSound(fx, sp.PathId);
+
+        // Deduction (the sanctuary line: sanctuary/magic_shield/protect_soul/guard_life) is a fractional
+        // damage-reduction MULTIPLIER on a PLAYER only (RTK BL_PC) — it uses the dedicated deduction slot, not
+        // the int ActiveBuff stat loop. buffAmt is the final multiplier (0.5 = take half damage).
+        if (stat == "deduction")
+        {
+            if (pc is null) { SendMiniText($"{sp.Name} has no effect on that."); return false; }   // PC-only
+            double mult = double.TryParse(fx.BuffAmt, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var dm) ? dm : 1.0;
+            _char.Mp -= (uint)mana;
+            pc.ApplyDeduction(mult, durMs, sp.Key);
+            BroadcastFx(pc._char.Id, anim, snd);
+            if (ReferenceEquals(pc, this)) SendMiniText($"You cast {sp.Name} — you'll take less damage for {durMs / 1000}s.");
+            else { SendMiniText($"You cast {sp.Name} on {pc._char.Name}."); pc.SendMiniText($"{_char.Name} shields you with {sp.Name}."); }
+            Log.Info($"      {sp.Name} -> deduction x{mult} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
+            SendStats();
+            return true;
+        }
+
+        _char.Mp -= (uint)mana;
 
         if (pc is not null)
         {
@@ -631,6 +673,24 @@ public sealed partial class Session
     private long _rageUntil;
     private int  _rageAmount = 1;
     private int  EffRage => Environment.TickCount64 < _rageUntil ? _rageAmount : 1;
+
+    // Damage-reduction "deduction" slot (RTK player.deduction — the sanctuary line + Baekho's Cunning): a
+    // fractional MULTIPLIER on incoming damage. 1.0 = full damage, lower = less (sanctuary 0.5 = take half,
+    // Cunning ramps to 0.6 = 40% off). Single-slot — RTK makes the sources mutually exclusive (checkIfCast),
+    // so last cast owns it; expires back to 1.0 automatically. Applied in Session.ApplyMobHit.
+    private double _deduction = 1.0;
+    private long   _deductionUntil;
+    internal double EffDeduction => Environment.TickCount64 < _deductionUntil ? _deduction : 1.0;
+
+    // Arm a timed damage-reduction on THIS player (a sanctuary-line buff cast on us/self, or a Cunning tier).
+    // `mult` is the incoming-damage multiplier (0.5 = take half); clamped to [0,1] so it can only ever help.
+    internal void ApplyDeduction(double mult, int durMs, string key)
+    {
+        if (durMs <= 0) return;
+        _deduction = Math.Clamp(mult, 0.0, 1.0);
+        _deductionUntil = Environment.TickCount64 + durMs;
+        SendStats();
+    }
 
     // Real RTK rejects re-casting ANY fury while one is already active (`player:checkIfCast(lesserFuries) or
     // player.rage > 1`) — you can't skip straight to a stronger tier by overwriting; you wait the current one
