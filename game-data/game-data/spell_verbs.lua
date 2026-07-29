@@ -9,6 +9,25 @@
 
 verbs = {}
 
+-- =========================================================================================================
+-- ARCHETYPE verbs (arch_*): the DEFAULT behaviour for a whole spell archetype, run for every spell of that
+-- archetype (see Session.ApplyCast). The engine has already evaluated the spell's real formula and mana cost
+-- from spell_effects.csv, so these read ctx.amount / ctx.mana rather than per-spell row params. A missing
+-- arch_* verb makes that archetype fall back to its C# handler, so migration is one archetype at a time.
+-- =========================================================================================================
+
+-- Damage archetype: the standard direct magic attack. ctx:magicDamage does the whole faithful sequence
+-- (mana check -> resolve target -> deflect roll, no mana on a deflect -> spend mana -> apply + XP). Returns
+-- false if the cast couldn't happen (no mana / no target) so the cast animation is suppressed, matching C#.
+function verbs.arch_damage(ctx, row)
+  return ctx:magicDamage(ctx.amount, ctx.mana)
+end
+
+-- =========================================================================================================
+-- PER-SPELL verbs: bound to one spell by a SpellParams.csv row whose `verb` column names it (these take
+-- precedence over the archetype path). Their numbers come from the row (row.coeff, row.base, ...).
+-- =========================================================================================================
+
 -- Direct magic damage to the current target: base + Will*coeff, costing `mana`.
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
 function verbs.magic_damage(ctx, row)
