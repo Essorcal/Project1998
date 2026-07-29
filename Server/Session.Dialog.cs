@@ -1003,7 +1003,18 @@ public sealed partial class Session
                 int secs = (int)Math.Max(0, (g.Max(x => x.Expires) - now + 999) / 1000);
                 var name = string.IsNullOrEmpty(g.First().Name) ? g.Key : g.First().Name;
                 return $"{name} ({secs}s)";
-            });
+            })
+            .ToList();
+
+        // The dedicated combat-stance slots (deduction / rage / backstab / flank) live OUTSIDE _buffs — they're
+        // scalar timers, not stat deltas — so surface them here too, or a spell like Sanctuary or Baekho's
+        // Cunning would show no duration at all. Each is "Label (Ns)".
+        static int Secs(long until, long now2) => (int)((until - now2 + 999) / 1000);
+        if (now < _deductionUntil)                lines.Add($"{(_deductionName.Length > 0 ? _deductionName : "Protection")} ({Secs(_deductionUntil, now)}s)");
+        if (now < _rageUntil && _rageAmount > 1)  lines.Add($"Fury x{_rageAmount} ({Secs(_rageUntil, now)}s)");
+        if (now < _backstabUntil)                 lines.Add($"Backstab ({Secs(_backstabUntil, now)}s)");
+        if (now < _flankUntil)                    lines.Add($"Flank ({Secs(_flankUntil, now)}s)");
+
         return string.Join('\t', lines);
     }
 
@@ -1208,10 +1219,22 @@ public sealed partial class Session
     // world message-manager at world+0x418). The 0x02 SendMessage path is a login-style message BOX that
     // doesn't stack for multi-line output (why !maps/!mobs showed nothing). So command results speak as
     // the player's own entity → one chat-log line each. ASCII, clamped to the 0x0D u8 length field.
+    // The 4.95 client's text boxes render a plain ASCII/codepage font, and Encoding.ASCII flattens anything
+    // outside 0x00-0x7F to '?'. We routinely write typographic punctuation in messages (em-dash, curly quotes,
+    // ellipsis), so transliterate those to ASCII first — otherwise "You cast Sanctuary — ..." shows as "?".
+    private static byte[] AsciiBytes(string s)
+    {
+        s = s.Replace('—', '-').Replace('–', '-')     // em / en dash -> hyphen
+             .Replace('‘', '\'').Replace('’', '\'')   // curly single quotes -> '
+             .Replace('“', '"').Replace('”', '"')     // curly double quotes -> "
+             .Replace("…", "...");                          // ellipsis -> ...
+        return Encoding.ASCII.GetBytes(s);
+    }
+
     private void SendLog(string text)
     {
         if (text.Length > 250) text = text[..250];
-        SendSpeech(0, _char.Id, Encoding.ASCII.GetBytes(text));
+        SendSpeech(0, _char.Id, AsciiBytes(text));
     }
 
     // The client's STATUS / MINI-TEXT box — the scrolling log pane that sits below the inventory (where
@@ -1224,7 +1247,7 @@ public sealed partial class Session
     private void SendMiniText(string text, ushort type = 3)
     {
         if (text.Length > 255) text = text[..255];
-        var t = Encoding.ASCII.GetBytes(text);
+        var t = AsciiBytes(text);
         var body = new List<byte> { (byte)(type & 0xFF), (byte)(type >> 8), (byte)t.Length };
         body.AddRange(t);
         SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type}");
@@ -1233,7 +1256,7 @@ public sealed partial class Session
     // ---- helpers ----
     private void SendMessage(string text)
     {
-        var t = Encoding.ASCII.GetBytes(text);
+        var t = AsciiBytes(text);
         var body = new List<byte> { 0x0F, (byte)t.Length };
         body.AddRange(t);
         body.Add(0);

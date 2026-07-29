@@ -599,7 +599,7 @@ public sealed partial class Session
             double mult = double.TryParse(fx.BuffAmt, System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out var dm) ? dm : 1.0;
             _char.Mp -= (uint)mana;
-            pc.ApplyDeduction(mult, durMs, sp.Key);
+            pc.ApplyDeduction(mult, durMs, sp.Name);
             BroadcastFx(pc._char.Id, anim, snd);
             if (ReferenceEquals(pc, this)) SendMiniText($"You cast {sp.Name} — you'll take less damage for {durMs / 1000}s.");
             else { SendMiniText($"You cast {sp.Name} on {pc._char.Name}."); pc.SendMiniText($"{_char.Name} shields you with {sp.Name}."); }
@@ -680,15 +680,18 @@ public sealed partial class Session
     // so last cast owns it; expires back to 1.0 automatically. Applied in Session.ApplyMobHit.
     private double _deduction = 1.0;
     private long   _deductionUntil;
+    private string _deductionName = "";   // spell display name, for the profile timer box (BuffBoxText)
     internal double EffDeduction => Environment.TickCount64 < _deductionUntil ? _deduction : 1.0;
 
     // Arm a timed damage-reduction on THIS player (a sanctuary-line buff cast on us/self, or a Cunning tier).
     // `mult` is the incoming-damage multiplier (0.5 = take half); clamped to [0,1] so it can only ever help.
-    internal void ApplyDeduction(double mult, int durMs, string key)
+    // `name` is the spell's display name, surfaced in the self-profile effect box.
+    internal void ApplyDeduction(double mult, int durMs, string name)
     {
         if (durMs <= 0) return;
         _deduction = Math.Clamp(mult, 0.0, 1.0);
         _deductionUntil = Environment.TickCount64 + durMs;
+        _deductionName = name ?? "";
         SendStats();
     }
 

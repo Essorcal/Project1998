@@ -136,6 +136,7 @@ public sealed partial class Session
         if (text.StartsWith("!totem", StringComparison.OrdinalIgnoreCase)) { StatTotem(text); return; }             // sweep totem id -> HUD name
         if (text.StartsWith("!time", StringComparison.OrdinalIgnoreCase))  { ShowTime(); return; }                  // report the game clock + totem-time status
         if (text.StartsWith("!dye", StringComparison.OrdinalIgnoreCase)) { DyeProbe(text); return; }                // calibrate the war-paint dye: !dye <n> sets appearance[4]
+        if (text.StartsWith("!hurt", StringComparison.OrdinalIgnoreCase)) { HurtSelfCmd(text); return; }             // take n damage (after deduction) to test Sanctuary/Cunning
         if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 

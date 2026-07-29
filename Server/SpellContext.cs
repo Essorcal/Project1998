@@ -89,7 +89,7 @@ public sealed class SpellContext
     /// <summary>Arm the melee rage multiplier (whole-swing ×amount) for <paramref name="durMs"/> ms.</summary>
     public void rage(double amount, double durMs)     => _s.LuaSetRage((int)amount, (int)durMs);
     /// <summary>Arm a damage-reduction: <paramref name="mult"/> is the incoming-damage multiplier (0.5 = take half).</summary>
-    public void deduction(double mult, double durMs)  => _s.ApplyDeduction(mult, (int)durMs, _sp.Key);
+    public void deduction(double mult, double durMs)  => _s.ApplyDeduction(mult, (int)durMs, _sp.Name);
     /// <summary>Arm (on=true) or clear a positional stance ("backstab"/"flank") for <paramref name="durMs"/> ms.</summary>
     public void stance(string name, bool on, double durMs) => _s.LuaStance(name, on, (int)durMs);
     /// <summary>Play a cast animation + sound on the caster (Effect.tbl anim id, sound id).</summary>

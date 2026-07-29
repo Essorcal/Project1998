@@ -299,6 +299,23 @@ public sealed partial class Session
 
     // "!lvl N" / "!might N" — set a BASE character stat so wear-requirements can be exercised on the
     // fabricated bring-up character (default is level 1 / might 3, which gates out most real gear).
+    // "!hurt <n>" — GM test tool: take n damage to yourself, applied AFTER the deduction damage-reduction, so
+    // you can verify Sanctuary / Baekho's Cunning actually reduce incoming damage. Pure reduction test: it skips
+    // armor + positional (unlike a real mob swing), so `actual` is exactly raw x deduction. Reports both.
+    private void HurtSelfCmd(string text)
+    {
+        var a = ParseInts(text);
+        int raw = a.Length > 0 ? Math.Max(1, a[0]) : 100;
+        int actual = EffDeduction < 1.0 ? Math.Max(1, (int)Math.Round(raw * EffDeduction)) : raw;
+        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - actual);
+        SendStats();
+        byte hpPct = PlayerHpPercent();
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
+        SendMiniText($"!hurt: {raw} raw -> {actual} taken (deduction x{EffDeduction:0.00}). HP {_char.Hp}/{EffMaxHp}");
+        Log.Info($"   -> !hurt {raw} -> {actual} (ded x{EffDeduction:0.00}) HP {_char.Hp}/{EffMaxHp}");
+        if (IsDead) Die();
+    }
+
     private void SetBaseStat(string which, string text)
     {
         var a = ParseInts(text);
