@@ -6,3 +6,6 @@ nexus.db
 nexus.db-wal
 nexus.db-shm
 nexus.db-journal
+# Server stdout capture — runtime artifact, not content.
+server.log
+*.log

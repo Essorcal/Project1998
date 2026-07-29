@@ -558,7 +558,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 4110,tossing_the_bones_poet,Tossing the Bones,2,4,1,0,0,Which target? >,0,0,0,1,1,1
 4111,natures_fury_poet,Nature\'s Fury,2,4,2,0,0,Which target? >,0,0,0,1,1,1
 4112,groundstrike_poet,Groundstrike,2,4,3,0,0,Which target? >,0,0,0,1,1,1
-4113,blockade_human_poet,Blockade Human,5,4,0,0,0,,0,0,0,1,0,1
+4113,blockade_human_poet,Human Barrier,5,4,0,0,0,,0,0,0,1,0,1
 4114,block_entry_poet,Block Entry,5,4,1,0,0,,0,0,0,1,0,1
 4115,distance_self_poet,Distance Self,5,4,2,0,0,,0,0,0,1,0,1
 4116,protect_sides_poet,Protect Sides,5,4,3,0,0,,0,0,0,1,0,1

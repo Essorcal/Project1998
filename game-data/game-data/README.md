@@ -10,11 +10,11 @@ The RTK creature-spawn packet is **byte-identical to our 4.95 `0x07`** (`look = 
 
 ## Files (regenerable via the `re/*.py` extractors — see `re/rtk_extract.py`, `re/build_map_index.py`,
 `re/extract_mob_drops.py`, `re/extract_shops.py`, `re/extract_lua_spawns.py`, `re/extract_minor_quests.py`,
-`re/extract_spell_formulas.py` — each writes here, to `data/rtk-data/`)
+`re/extract_spell_formulas.py` — each writes here, to `data/game-data/`)
 
 | File | Rows | Key columns |
 |---|---|---|
-| `rtk_mobs.csv` | 716 | `MobLook`, `MobLookColor`, `Vita`(HP), `Exp`, `Level`, might/grace/will, min/max dmg |
+| `mobs.csv` | 716 | `MobLook`, `MobLookColor`, `Vita`(HP), `Exp`, `Level`, might/grace/will, min/max dmg |
 | `Maps.csv` | 9850 | `MapId` (↔ our `0x15` mapId & `Maps\TK<MapId>.map`), `MapName`, BGM, indoor, light, PvP, warpout |
 | `Warps.csv` | 4476 | `SourceMapId/X/Y → DestinationMapId/X/Y` (portals) |
 | `Spawns0.csv` | 1175 | `SpnMobId`, `SpnMapId`, `SpnX/Y` (where mobs spawn) |
