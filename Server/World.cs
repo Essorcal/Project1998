@@ -730,6 +730,22 @@ public sealed class World
         Broadcast(mapId, p => p.SyncMobs(one));
     }
 
+    /// <summary>Apply a player's targeted timed stat buff (Session.CastTargetBuff — e.g. Valor/Harden Armor on a
+    /// pet) to a mob, refresh-not-stack by spell key. Taken under <c>_lock</c> so the mob.Buffs list mutation
+    /// can't race the Tick's expiry-revert pass (which runs the same list under the lock).</summary>
+    public void ApplyMobBuff(Mob mob, string stat, int amount, int durMs, string key)
+    {
+        if (string.IsNullOrEmpty(stat) || amount == 0 || durMs <= 0) return;
+        lock (_lock)
+        {
+            mob.Buffs ??= new();
+            for (int i = mob.Buffs.Count - 1; i >= 0; i--)   // refresh: revert + drop any prior cast of THIS spell
+                if (mob.Buffs[i].Key == key) { mob.AdjustBuffField(mob.Buffs[i].Stat, mob.Buffs[i].Amount, -1); mob.Buffs.RemoveAt(i); }
+            mob.AdjustBuffField(stat, amount, +1);
+            mob.Buffs.Add(new Mob.TimedBuff { Stat = stat, Amount = amount, ExpiresAt = Environment.TickCount64 + durMs, Key = key });
+        }
+    }
+
     /// <summary>How many of this owner's pets (RTK Poet "Call of the Wild" summons) are currently alive on
     /// this map — the spawn cap in Content.PetCapFor is checked against this (RTK cotw_spawnCheck: same-map
     /// only, matching <c>player:getObjectsInMap</c>).</summary>
@@ -1128,6 +1144,19 @@ public sealed class World
                 foreach (var mob in m.Mobs)
                 {
                     if (!mob.Alive) continue;
+
+                    // Targeted-buff expiry (Session.CastTargetBuff, e.g. Valor/Harden Armor on a pet): revert each
+                    // lapsed buff's stat delta off the mob's raw combat fields. Field-only, so it's safe in-lock.
+                    if (mob.Buffs is { Count: > 0 })
+                    {
+                        long bnow = Environment.TickCount64;
+                        for (int i = mob.Buffs.Count - 1; i >= 0; i--)
+                            if (mob.Buffs[i].ExpiresAt <= bnow)
+                            {
+                                mob.AdjustBuffField(mob.Buffs[i].Stat, mob.Buffs[i].Amount, -1);
+                                mob.Buffs.RemoveAt(i);
+                            }
+                    }
 
                     // Poet "Call of the Wild" pet expiry (RTK cotw_SpawnSetThreat's spawnTime): a plain
                     // despawn (no kill/loot/exp), same as riding a mob away — DespawnMob does socket I/O so

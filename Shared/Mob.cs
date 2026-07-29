@@ -111,6 +111,27 @@ public sealed class Mob
     // carries them separately and neither had a source column until the CTK SQL dump was merged in.
     public int Ac;
 
+    // Timed stat buffs applied to this mob by a player's targeted buff (Session.CastTargetBuff — e.g. casting
+    // Valor/Harden Armor on your pet). Each entry directly mutated a stat field on apply; World.Tick reverts the
+    // delta when ExpiresAt passes (so combat reads the raw fields, no per-hit "effective" recompute). Null until
+    // the first buff lands, to avoid an allocation on every mob. Refresh-not-stack is keyed by Key (spell key).
+    public sealed class TimedBuff { public string Stat = ""; public int Amount; public long ExpiresAt; public string Key = ""; }
+    public List<TimedBuff>? Buffs;
+
+    /// <summary>Apply (sign=+1) or revert (sign=-1) a targeted-buff stat delta onto this mob's raw combat fields.
+    /// <paramref name="amount"/> uses the player-side convention where a positive `armor` means BETTER defence;
+    /// a mob's <see cref="Ac"/> is signed lower-is-better, so armor improves it by subtracting. `might` has no mob
+    /// field, so it maps to the flat per-swing damage range. Shared by Session.CastTargetBuff and World.Tick so
+    /// apply and revert can never drift.</summary>
+    public void AdjustBuffField(string stat, int amount, int sign)
+    {
+        switch (stat)
+        {
+            case "armor": Ac -= amount * sign; break;                                  // +armor => lower (better) Ac
+            case "might": MinDam += amount * sign; MaxDam += amount * sign; break;      // no mob Might -> flat damage
+        }
+    }
+
     public Mob() { }
 
     public Mob(uint id, ushort sprite, ushort x, ushort y, string name, int hp, byte extra = 0)

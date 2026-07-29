@@ -37,7 +37,10 @@ Two layers, use whichever fits:
 1. **Data-only retune (most spells).** A spell's numbers live in CSVs joined by the spell **identifier**
    (`SplIdentifier`, e.g. `bolt_mage`):
    - `Spells.csv` — the roster (name, class, type, level, question prompt).
-   - `spell_effects.csv` — the archetype + formula the C# engine evaluates (damage/heal/buff/…).
+   - `spell_effects.csv` — the archetype + formula the C# engine evaluates. Archetypes: `Damage`, `Heal`,
+     `Buff` (self), `TargetBuff` (a beneficial `might`/`armor` buff cast on a target — another player, self, or a
+     mob/NPC such as your pet; `buffStat`+`buffAmt`+`durationMs` columns), `Debuff`, `Cure`, `ManaBattery`,
+     `Summon`, `Teleport`, `Utility`.
    - `SpellLearnCosts.csv` — per-class level + item/gold cost to learn it.
    - `SpellLevels.csv` — real level gate for Type-5 skills (overrides `Spells.csv`).
    - `Morphs.csv` / `Pets.csv` / `Traps.csv` / `SpellMods.csv` — params for morph / pet-summon / trap /

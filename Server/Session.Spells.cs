@@ -292,12 +292,13 @@ public sealed partial class Session
         // see docs/Modding.md); the others still dispatch straight to C#.
         bool ok = arch switch
         {
-            "Damage" => CastArch("arch_damage", sp, fx, targetId, mana) ?? CastDamage(sp, fx, targetId, mana),
-            "Heal"   => CastHeal(sp, fx, mana),
-            "Buff"   => CastBuff(sp, fx, mana),
-            "Debuff" => CastDebuff(sp, fx, targetId, mana),
-            "Cure"   => CastCure(sp, fx, mana),
-            _        => CastMisc(sp, mana),   // Utility / Summon / Teleport / Dialog — graceful
+            "Damage"     => CastArch("arch_damage", sp, fx, targetId, mana) ?? CastDamage(sp, fx, targetId, mana),
+            "Heal"       => CastHeal(sp, fx, mana),
+            "Buff"       => CastBuff(sp, fx, mana),
+            "TargetBuff" => CastTargetBuff(sp, fx, targetId, mana),
+            "Debuff"     => CastDebuff(sp, fx, targetId, mana),
+            "Cure"       => CastCure(sp, fx, mana),
+            _            => CastMisc(sp, mana),   // Utility / Summon / Teleport / Dialog — graceful
         };
         if (ok && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
         return ok;
@@ -531,6 +532,69 @@ public sealed partial class Session
             ? $"You cast {sp.Name} — you feel its power ({durMs / 1000}s)."
             : $"You cast {sp.Name}.");
         return true;
+    }
+
+    // TargetBuff: a beneficial timed stat buff (might/armor) cast ON a target — another player, yourself, or a
+    // mob/NPC (e.g. buffing your own summoned pet). RTK casts these on a PC only; per user design we also allow
+    // mob targets. These spells were reclassified from the extractor's bogus Debuff/slow (which sent Valor/Harden
+    // Armor hunting a mob to slow and failed with "finds no target") — see re/reclassify_target_buffs.py. The buff
+    // refreshes rather than stacks (RTK checkIfCast family guard, approximated per-spell by the spell Key).
+    private bool CastTargetBuff(SpellDef sp, SpellFx fx, uint? targetId, int mana)
+    {
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+
+        string stat = fx.BuffStat;
+        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 300000;
+        bool haveAmt = int.TryParse(fx.BuffAmt.Split('.')[0], out var amount) && !string.IsNullOrEmpty(stat) && amount != 0;
+
+        // Resolve the target explicitly (don't reuse ResolvePcCastTarget/ResolveCastTarget — their faced-tile
+        // fallbacks would cross wires, e.g. a mob-id lookup falling back to a random adjacent player). An explicit
+        // client target id picks a player OR a mob; with no id we buff whoever/whatever we face.
+        Session? pc = null; Mob? mob = null;
+        if (targetId is uint tid && tid != 0)
+        {
+            pc = _world.PlayerById(tid);
+            if (pc is null) mob = _world.MobById(_char.Map, tid);
+        }
+        else
+        {
+            var (fxT, fyT) = FrontTile();
+            pc = _world.PeerAt(_char.Map, fxT, fyT);
+            if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
+        }
+        if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+
+        _char.Mp -= (uint)mana;
+        var anim = Content.EffectAnim(fx, sp.PathId);
+        var snd  = Content.EffectSound(fx, sp.PathId);
+
+        if (pc is not null)
+        {
+            if (haveAmt) pc.ReceiveTimedBuff(stat, amount, durMs, sp.Key, sp.Name);
+            BroadcastFx(pc._char.Id, anim, snd);
+            if (ReferenceEquals(pc, this)) SendMiniText($"You cast {sp.Name}.");
+            else { SendMiniText($"You cast {sp.Name} on {pc._char.Name}."); pc.SendMiniText($"{_char.Name} casts {sp.Name} on you."); }
+            Log.Info($"      {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
+        }
+        else
+        {
+            if (haveAmt) _world.ApplyMobBuff(mob!, stat, amount, durMs, sp.Key);   // under World._lock (races Tick revert)
+            BroadcastFx(mob!.Id, anim, snd);
+            SendMiniText($"You cast {sp.Name} on {mob.Name}.");
+            Log.Info($"      {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on mob {mob.Id} '{mob.Name}' {durMs}ms");
+        }
+        SendStats();
+        return true;
+    }
+
+    // Apply a timed stat buff to THIS player — used for a buff another player casts on us AND our own self-cast.
+    // Refresh-not-stack by spell key; folds into Totals() -> HUD/melee live. The caster handles the cast fx/msg.
+    internal void ReceiveTimedBuff(string stat, int amount, int durMs, string key, string name)
+    {
+        if (string.IsNullOrEmpty(stat) || amount == 0 || durMs <= 0) return;
+        _buffs.RemoveAll(b => b.Key == key);   // refresh, don't stack
+        _buffs.Add(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durMs, Key = key, Name = name });
+        SendStats();
     }
 
     // Backstab/Flank stance timers (RTK player.backstab/player.flank, set true by these Warrior skills'
