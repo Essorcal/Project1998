@@ -322,8 +322,15 @@ public sealed partial class Session
     // stats (those stay in _char.*); the effective values the client sees are base + these, recomputed on
     // every SendStats / profile / attack. That keeps a relog — which reloads Equipment and redraws it via
     // RefreshInventory — from drifting or double-counting, since nothing was ever baked into the base.
+    // Cached so the ~10-slot sum isn't recomputed on every SendStats / RegenTick / ApplyMobHit (×3) / Lua stat
+    // read. Equipment changes rarely; InvalidateEquipTotals() clears it at each mutation site (equip/unequip/
+    // break). NOT keyed on durability — EquipTotals sums def stat lines, which dura decay never touches.
+    private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam)? _equipTotals;
+    private void InvalidateEquipTotals() => _equipTotals = null;
+
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) EquipTotals()
     {
+        if (_equipTotals is { } cached) return cached;
         int hp = 0, mp = 0, mt = 0, wl = 0, gr = 0, ar = 0, ht = 0, dm = 0;
         foreach (var e in _char.Equipment)
         {
@@ -331,7 +338,9 @@ public sealed partial class Session
             hp += def.Vita; mp += def.Mana; mt += def.Might; wl += def.Will; gr += def.Grace;
             ar += def.Armor; ht += def.Hit; dm += def.Dam;
         }
-        return (hp, mp, mt, wl, gr, ar, ht, dm);
+        var t = (hp, mp, mt, wl, gr, ar, ht, dm);
+        _equipTotals = t;
+        return t;
     }
 
     // A weapon's real swing range, summed across worn gear like EquipTotals (RTK pc_calcstat sums
@@ -492,6 +501,7 @@ public sealed partial class Session
 
         var worn = new InvItem(wire, def.Id, 1, it.Dura == 0 ? def.Durability : it.Dura) { CustomName = it.CustomName };
         _char.Equipment.Add(worn);
+        InvalidateEquipTotals();                      // gear changed (this add + any prev swap above)
         SendEquip(worn);
         ApplyAppearance(def, equip: true);
         SendStats();                                  // push the new gear bonuses to the HUD
@@ -508,6 +518,7 @@ public sealed partial class Session
         var worn = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
         if (worn is null) return;
         _char.Equipment.Remove(worn);
+        InvalidateEquipTotals();
         SendUnequip(wire);
         var def = Content.ItemById(worn.ItemId);
         if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, worn.Dura, worn.CustomName); }
@@ -526,6 +537,7 @@ public sealed partial class Session
             var def = Content.ItemById(worn.ItemId);
             if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName)) break;   // bag full — stop, leave the rest equipped
             _char.Equipment.Remove(worn);
+            InvalidateEquipTotals();
             SendUnequip(worn.Slot);
             if (def is not null) ApplyAppearance(def, equip: false);
         }
@@ -573,6 +585,7 @@ public sealed partial class Session
     {
         SendMiniText($"Your {def.Name} was destroyed!", type: 5);   // RTK clif_checkdura: type 5 "System"
         _char.Equipment.Remove(worn);
+        InvalidateEquipTotals();
         SendUnequip(worn.Slot);
         ApplyAppearance(def, equip: false);
         SendStats();

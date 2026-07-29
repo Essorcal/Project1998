@@ -458,6 +458,7 @@ public sealed partial class Session
                 }
             }
 
+            RefreshMailFlags();   // claiming a parcel may clear the HUD bag flag (SendStats above sent the stale cache)
             if (!Parcel.HasAny(_char.Name)) return;
             int more = await DlgMenu(npc, "You have more parcels waiting. Collect another?", new[] { "Yes", "No" });
             if (more != 1) return;
@@ -494,7 +495,7 @@ public sealed partial class Session
     {
         var p = _world.FindPlayer(name);
         if (p is null) return;
-        p.SendStats();
+        p.RefreshMailFlags();   // recompute + push the recipient's bag flag (SendStats alone would send the stale cache)
         p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
     }
 

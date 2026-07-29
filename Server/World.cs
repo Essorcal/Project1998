@@ -185,39 +185,47 @@ public sealed class World
     /// so the ~21k hunting-map mobs don't flood memory or stall boot. Dead points refill via <see cref="Tick"/>.</summary>
     private void PopulateSpawns()
     {
-        int points = 0, skipped = 0;
-        lock (_lock)
-        {
-            foreach (var sd in Content.Spawns)
-            {
-                if (!Content.Maps.ContainsKey(sd.Map)) { skipped++; continue; }   // map the client can't render
-                var def = Content.MobById(sd.MobId);
-                if (def is null) { skipped++; continue; }                           // unknown mob id
-
-                AddSpawn(sd.Map, new Spawn { Def = def, X = sd.X, Y = sd.Y });
-                points++;
-            }
-
-            foreach (var ad in Content.AreaSpawns)
-            {
-                if (!Content.Maps.ContainsKey(ad.Map)) { skipped += ad.Count; continue; }   // unrenderable map
-                var def = Content.MobById(ad.MobId);
-                if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
-
-                // RespawnSec > 0 ⇒ a rare trap-ambush boss: convert seconds → ticks for the per-point delay.
-                int respawnEvery = ad.RespawnSec > 0 ? Math.Max(1, ad.RespawnSec * 1000 / TickMs) : 0;
-                for (int i = 0; i < ad.Count; i++)
-                    AddSpawn(ad.Map, new Spawn
-                    {
-                        Def = def, Placed = false,
-                        MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
-                        RespawnEvery = respawnEvery, Rare = ad.RespawnSec > 0,
-                    });
-                points += ad.Count;
-            }
-        }
+        int points, skipped;
+        lock (_lock) (points, skipped) = BuildSpawnRosterLocked();
         Log.Info($"spawns: {points} spawn points (materialized lazily) across {_spawns.Count} map(s)" +
                  (skipped > 0 ? $" ({skipped} skipped — unknown map/mob)" : ""));
+    }
+
+    /// <summary>Build the <c>_spawns</c> roster from the current <see cref="Content.Spawns"/> +
+    /// <see cref="Content.AreaSpawns"/>. Caller holds <c>_lock</c> and has already cleared <c>_spawns</c> if
+    /// rebuilding. Returns (points, skipped). Shared by startup <see cref="PopulateSpawns"/> and the live
+    /// <see cref="RebuildPopulation"/>.</summary>
+    private (int points, int skipped) BuildSpawnRosterLocked()
+    {
+        int points = 0, skipped = 0;
+        foreach (var sd in Content.Spawns)
+        {
+            if (!Content.Maps.ContainsKey(sd.Map)) { skipped++; continue; }   // map the client can't render
+            var def = Content.MobById(sd.MobId);
+            if (def is null) { skipped++; continue; }                           // unknown mob id
+
+            AddSpawn(sd.Map, new Spawn { Def = def, X = sd.X, Y = sd.Y });
+            points++;
+        }
+
+        foreach (var ad in Content.AreaSpawns)
+        {
+            if (!Content.Maps.ContainsKey(ad.Map)) { skipped += ad.Count; continue; }   // unrenderable map
+            var def = Content.MobById(ad.MobId);
+            if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
+
+            // RespawnSec > 0 ⇒ a rare trap-ambush boss: convert seconds → ticks for the per-point delay.
+            int respawnEvery = ad.RespawnSec > 0 ? Math.Max(1, ad.RespawnSec * 1000 / TickMs) : 0;
+            for (int i = 0; i < ad.Count; i++)
+                AddSpawn(ad.Map, new Spawn
+                {
+                    Def = def, Placed = false,
+                    MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
+                    RespawnEvery = respawnEvery, Rare = ad.RespawnSec > 0,
+                });
+            points += ad.Count;
+        }
+        return (points, skipped);
     }
 
     /// <summary>When a dead point may next refill. Ordinary points use the short global <see cref="RespawnTicks"/>
@@ -664,47 +672,53 @@ public sealed class World
 
     // ---- mobs ---------------------------------------------------------------------------------
 
-    /// <summary>Hot-reload hook (the <c>!reload</c> command, after <see cref="Content.Reload"/> swaps the
-    /// registries): re-resolve every spawn point's <see cref="MobDef"/> against the new registry — so future
-    /// respawns use the new stats — and refresh already-spawned live mobs in place. A live mob gets the new
-    /// <c>MaxHp/Exp/Level/Will/MoveTime/Aggressive/MinDam/MaxDam/Hit/IsBoss/Protection/Ac/Grace</c>, with its current <c>Hp</c> clamped to the new max (a full mob
-    /// stays full; a wounded one keeps its wound but can't exceed the new cap). <c>Look/Name/Color</c> are NOT
-    /// touched on a live mob — changing the drawn sprite would need a client re-render (0x07 despawn+respawn),
-    /// so those apply on the next respawn instead. Iterates <c>_spawns</c> (the authoritative materialized
-    /// spawn roster), so summoned debug dummies and stationary NPCs — which aren't spawn-backed — are left
-    /// alone. Un-materialized maps have no spawns yet and will build fresh from the new registry on first
-    /// entry. Returns the number of live mobs updated.</summary>
-    public int ReloadContent()
+    /// <summary>Full population hot-reload (the <c>!reload</c> path, after <see cref="Content.Reload"/> swapped
+    /// the spawn/NPC registries): tear down every spawn-backed mob AND stationary NPC, rebuild the spawn roster
+    /// + NPC placement from the fresh <see cref="Content"/>, and re-materialize the maps that currently have
+    /// players (the rest build lazily on next entry). Unlike the old in-place re-stat, this picks up
+    /// ADDED / REMOVED / REPOSITIONED spawn rows and NPCs — editing <c>AreaSpawns.csv</c>/<c>Spawns.csv</c> or
+    /// an NPC's tile now takes effect on <c>!reload</c> without a restart. Cost is bounded: only populated maps
+    /// re-materialize; the ~23k lazy points elsewhere are cheap point objects again. Players on a populated map
+    /// briefly see mobs blink (despawn now, re-stream on the next <see cref="Tick"/>) — acceptable for an admin
+    /// reload; a wounded mob also resets to full, since area spawns have no stable identity to preserve.
+    /// Returns (mobs torn down, NPCs placed, maps re-materialized).</summary>
+    public (int mobs, int npcs, int maps) RebuildPopulation()
     {
-        int updated = 0;
+        var despawn = new List<(ushort map, uint id)>();
+        var populated = new List<ushort>();
+        int npcs = 0;
         lock (_lock)
         {
-            foreach (var list in _spawns.Values)
-                foreach (var spawn in list)
-                {
-                    var def = Content.MobById(spawn.Def.Id);
-                    if (def is null) continue;   // this mob id was removed from the registry — keep the old def
-                    spawn.Def = def;             // future respawns from this point pick up the new stats
-                    var m = spawn.Live;
-                    if (m is null || !m.Alive) continue;
-                    m.MaxHp = def.Hp;
-                    if (m.Hp > m.MaxHp) m.Hp = m.MaxHp;   // clamp; otherwise keep the mob's current wound
-                    m.Exp = def.Exp;
-                    m.Level = def.Level;
-                    m.Will = def.Will;
-                    m.MoveTime = def.MoveTime;
-                    m.Aggressive = def.Aggressive;
-                    m.MinDam = def.MinDam;
-                    m.MaxDam = def.MaxDam;
-                    m.Hit = def.Hit;
-                    m.IsBoss = def.IsBoss;
-                    m.Protection = def.Protection;
-                    m.Ac = def.Ac;
-                    m.Grace = def.Grace;
-                    updated++;
-                }
+            // 1. tear down every shared mob (spawn-backed AND stationary NPC) on every map, remembering which
+            //    maps have players so we know what to re-materialize. (Session-local debug dummies aren't in
+            //    _maps, so they're untouched.)
+            foreach (var (mapId, m) in _maps)
+            {
+                if (m.Players.Count > 0) populated.Add(mapId);
+                foreach (var g in m.Mobs) despawn.Add((mapId, g.Id));
+                m.Mobs.Clear();
+            }
+            // 2. rebuild the spawn roster + NPC placement from the just-reloaded Content (fresh defs, positions,
+            //    and any added/removed rows). NPCs are placed on every map (cheap, ~340); mobs stay lazy.
+            _spawns.Clear();
+            _materialized.Clear();
+            BuildSpawnRosterLocked();
+            foreach (var n in Content.Npcs) if (n.Enabled) { PlaceNpc(n); npcs++; }
+            // 3. re-materialize only the maps that currently have players; the rest build lazily on next entry.
+            foreach (var mapId in populated) EnsureMaterialized(mapId);
         }
-        return updated;
+        // Despawn the torn-down entities on clients (socket I/O outside the lock). The freshly placed NPCs +
+        // materialized mobs stream back to players via the next Tick's viewport sync (~one tick later).
+        foreach (var (map, id) in despawn) Broadcast(map, p => p.DespawnEntity(id));
+        return (despawn.Count, npcs, populated.Count);
+    }
+
+    /// <summary>Map ids that currently have at least one player — used by the !reload path to pre-warm the
+    /// terrain cache OUTSIDE this lock before <see cref="RebuildPopulation"/> re-materializes them (so the
+    /// .map re-reads don't happen under the world lock, per the reload-stall fix).</summary>
+    public List<ushort> PopulatedMapIds()
+    {
+        lock (_lock) return _maps.Where(kv => kv.Value.Players.Count > 0).Select(kv => kv.Key).ToList();
     }
 
     /// <summary>Add a shared mob to a map and stream it to everyone whose viewport it falls in (players

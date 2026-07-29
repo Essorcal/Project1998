@@ -651,60 +651,10 @@ public sealed class LibrarianAbility : INpcAbility, INpcSayHandler
     }
 }
 
-/// <summary>Chu Rua, the Dragon King's turtle (RTK tutorial/chu_rua.lua). Tutorial stage 7: he asks for a
-/// <c>young_ginseng</c> (a scripted-tile pickup on Guol Tiger Pass, map 1116); bring it and he grants the
-/// <c>aided_chu_rua</c> legend + a sea ring + experience, then warps you home. The Lost-Legend "mermaid song"
-/// branch of the script isn't ported.</summary>
-public sealed class ChuRuaAbility : INpcAbility
-{
-    public static readonly ChuRuaAbility Instance = new();
-
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
-    {
-        yield return ("Speak with Chu Rua", Talk);
-    }
-
-    private static async Task Talk(NpcContext ctx)
-    {
-        if (ctx.HasLegend("aided_chu_rua"))
-        {
-            await ctx.Say("Thank you again for your help! I will return you home now.");
-            WarpHome(ctx);
-            return;
-        }
-
-        if (ctx.HasItem("young_ginseng", 1))
-        {
-            await ctx.Say("Ginseng. What an odd looking root.", "The Dragon king shall live. Bless you, kind one.");
-            ctx.AwardExp(ctx.Stage("tutorial_quest") == 7 ? 600u : 400u);   // RTK: 400, +200 on the tutorial
-            ctx.TakeItem("young_ginseng", 1);
-            ctx.GiveItem("sea_ring", 1);
-            ctx.AddLegend($"Aided Chu Rua ({Character.GameDate})", "aided_chu_rua", 5, 128);   // RTK: "Aided Chu Rua (" .. curT() .. ")"
-            await ctx.SayItem("sea_ring", "Humbly, I offer one of the finest jewels from the sea.");
-            await ctx.Say("Thank you again for your help! I will return you home now.");
-            WarpHome(ctx);
-            return;
-        }
-
-        await ctx.Say(
-            "I have swum as hard as I could. Hey! hey you, honorable human. But a moment! I would that you would hear out an earnest request.",
-            "The Lord, Dragon King, is dying as we speak, beneath the waves in his palace. The finest physician has come and declared that he must have an item we cannot procure from within the sea.",
-            "I entreat you as a humble servant of the Dragon King, and the only servants who know of the land and the sea.",
-            "Please, his highness's health depends upon a root of Young ginseng.");
-        await ctx.SayItem("sea_ring", "Give this to me, and this ring of the Mermaid Princess I would, in return, give to thee.");
-        await ctx.Say(
-            "I... I wish I could point you in the way of the ginseng, but I know not where it grows. There is an old verse,",
-            "'Skip north, until rabbits nibbling grass you find, is a path to a king's health and harmony,'",
-            "The ginseng lies north, in the Tiger Pass — mind the tiger. Please get young ginseng for his highness's sake!");
-    }
-
-    // RTK: Koguryo (country 1) home = map 36 (7,6); otherwise Buya = map 351 (8,8).
-    private static void WarpHome(NpcContext ctx)
-    {
-        if (ctx.Nation == 1) ctx.Warp(36, 7, 6);
-        else                 ctx.Warp(351, 8, 8);
-    }
-}
+// Chu Rua the turtle (ChuRuaNpc) is now a Lua dialog script (data/game-data/npc_dialog.lua -> npcs.ChuRuaNpc),
+// so its C# ability was deleted — Session.RunNpcAsync gives the Lua script exclusive ownership when present
+// (see NpcScript.Has). Its speech-only companions below (rabbit/rock/tiger) stay in C# until the Lua NPC layer
+// grows an OnSay/speech-trigger hook (Phase 3).
 
 /// <summary>The talking rabbit of Guol Valley (chu_rua_rabbit.lua) — a "magic animal" that hints at the ginseng
 /// quest. Speech-triggered: "hello" / "tiger" / "ginseng".</summary>

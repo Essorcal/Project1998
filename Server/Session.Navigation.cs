@@ -542,12 +542,14 @@ public sealed partial class Session
     }
 
     // !reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
-    // NPC placements + on/off toggles, crafting-skill toggles, map metadata) WITHOUT restarting the server,
-    // so content fixes ship live. Re-reads the CSVs, clears the map-terrain cache, refreshes already-spawned
-    // world mobs in place (new MaxHp/Exp/Level, current HP clamped to the new max — see
-    // World.ReloadContent), and re-syncs stationary-NPC placement against the NPCs.csv Enabled flags (see
-    // World.ReconcileNpcToggles). A load error keeps the OLD content.
-    // NOT reloadable (compile-time tables in Content.cs → need a restart): mob drop tables and map BGM.
+    // NPC placements + on/off toggles, crafting-skill toggles, map metadata, mob drops, map BGM, and the Lua
+    // verb/dialog scripts) WITHOUT restarting the server, so content fixes ship live. Re-reads the CSVs +
+    // Lua, clears the map-terrain cache, and fully rebuilds the world population (World.RebuildPopulation) so
+    // ADDED/REMOVED/REPOSITIONED spawns and NPCs take effect — editing AreaSpawns.csv or an NPC's tile no
+    // longer needs a restart. The terrain cache for maps that currently have players is pre-warmed OUTSIDE the
+    // world lock first, so the .map re-reads don't stall the world under the lock. A load error keeps the OLD
+    // content. (Everything file-backed is reloadable now — no compile-time content tables remain that a
+    // restart would be needed for.)
     private void ReloadContent()
     {
         string summary;
@@ -559,10 +561,14 @@ public sealed partial class Session
             return;
         }
         MapData.Invalidate();
-        int refreshed = _world.ReloadContent();
-        int npcChanged = _world.ReconcileNpcToggles();
-        SendLog($"Reloaded: {summary}. Refreshed {refreshed} live mob(s); {npcChanged} NPC(s) toggled; map cache cleared.");
-        Log.Info($"   -> !reload by '{_char.Name}': {summary}; {refreshed} live mobs refreshed; {npcChanged} NPCs toggled");
+        // Pre-warm the terrain cache for populated maps outside World._lock, so RebuildPopulation's
+        // re-materialization (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading
+        // .map files from disk while holding the world lock (the old reload-stall).
+        foreach (var mapId in _world.PopulatedMapIds())
+            if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
+        var (mobs, npcs, maps) = _world.RebuildPopulation();
+        SendLog($"Reloaded: {summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, {maps} live map(s) re-materialized; map cache cleared.");
+        Log.Info($"   -> !reload by '{_char.Name}': {summary}; rebuilt pop ({mobs} mobs / {npcs} npcs / {maps} maps)");
     }
 
 }

@@ -352,8 +352,8 @@ public sealed partial class Session
             var now = DateTime.UtcNow;
             Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, -1, 0, 0);
             if (sendCopy)   // "keep a copy for myself" checkbox — RTK topics the copy "[To <name>] <topic>"
-                Mail.Send(_char.Name, _char.Name, $"[To {toName}] {subject}", body, (byte)now.Month, (byte)now.Day, -1, 0, 0);
-            _world.FindPlayer(toName)?.SendStats();   // light the recipient's HUD arrow now if they're online
+                { Mail.Send(_char.Name, _char.Name, $"[To {toName}] {subject}", body, (byte)now.Month, (byte)now.Day, -1, 0, 0); RefreshMailFlags(); }   // the self-copy lights my own arrow
+            _world.FindPlayer(toName)?.RefreshMailFlags();   // light the recipient's HUD arrow now if they're online
             SendBoardAck(6, true, "Your message has been sent.");   // RTK's exact success ack — closes the compose window
         }
         catch (Exception e)
@@ -547,7 +547,7 @@ public sealed partial class Session
         {
             bool gone = Mail.Delete(_char.Name, postId);
             SendBoardAck(7, gone, gone ? "The message has been deleted." : "That letter no longer exists.");
-            if (gone) SendStats();   // deleting unread mail / an unclaimed parcel may clear the HUD arrow
+            if (gone) RefreshMailFlags();   // deleting unread mail / an unclaimed parcel may clear the HUD arrow
             return;
         }
         bool ok = Boards.Delete(boardId, postId, _char.Name);
@@ -605,7 +605,7 @@ public sealed partial class Session
         SendMap(0x31, _gameInc++, d.ToArray(), $"boardread(0x31) mailbox post={position}");
 
         SendLog($"From {mail.Sender} ({mail.Month}/{mail.Day}): {mail.Topic} — {mail.Body}{attachNote}");
-        SendStats();   // reading (+ claiming any parcel) may clear the HUD mail/parcel arrow — refresh body[45]
+        RefreshMailFlags();   // reading (+ claiming any parcel) may clear the HUD mail/parcel arrow — refresh body[45]
     }
 
     // "!mail" (inbox list) / "!mail read <id>" / "!mail delete <id>" / "!mail send <name> | <subject> | <body>"
@@ -708,7 +708,7 @@ public sealed partial class Session
         SendLog(itemId >= 0 ? $"Mailed {subject} to {toName} (with {amount}x parcel)." : $"Mailed {subject} to {toName}.");
         // If the recipient is online, light their HUD arrow/bag right away (RTK's intif_parse_findmp does the
         // same — sets the flag and re-sends status the moment mail lands, no relog needed).
-        _world.FindPlayer(toName)?.SendStats();
+        _world.FindPlayer(toName)?.RefreshMailFlags();
     }
 
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first

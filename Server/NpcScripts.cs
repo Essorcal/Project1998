@@ -38,8 +38,8 @@ public static class NpcScripts
         // Also a "Talk to Librarian" click option so it works without voice.
         ["LibrarianNpc"] = new INpcAbility[] { LibrarianAbility.Instance },
 
-        // chu_rua.lua: tutorial stage 7 — turn in young_ginseng for the aided_chu_rua legend + sea ring.
-        ["ChuRuaNpc"] = new INpcAbility[] { ChuRuaAbility.Instance },
+        // chu_rua.lua (ChuRuaNpc) is a Lua dialog script now (npc_dialog.lua -> npcs.ChuRuaNpc), so it's not
+        // registered here — the Lua path owns it (Session.RunNpcAsync checks NpcScript.Has first).
 
         // The Guol "magic animals" that hint at / gate the ginseng (all speech-triggered, INpcSayHandler):
         // the rabbit (hints), the Ancient dolmen (the tiger hint), the tiger (say "rabbit" -> Forest -> 1117).
@@ -58,7 +58,7 @@ public static class NpcScripts
         // rogue_guild_shaman.lua: Face / Gender change (real, visible on this client — see AppearanceAbility).
         // "Eyes" and the level-50+ Rogue "white_moon_axe" speech quest aren't ported. This is the ONLY place
         // Face/Gender is offered — the SalonNpc rows (Seme/Serge/Sarge) that duplicated it are dropped
-        // entirely (see Content.DroppedNpcIds), per user direction to keep it Rogue-hall-only.
+        // entirely (Enabled=0 in NPCs.csv), per user direction to keep it Rogue-hall-only.
         ["RogueGuildShamanNpc"] = new INpcAbility[] { AppearanceAbility.Instance },
 
         // arena_master.lua: "Mountain"/"Tower" — the Arena Masters. Their whole service is one option, "War

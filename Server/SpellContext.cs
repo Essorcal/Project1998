@@ -21,7 +21,7 @@ public sealed class SpellContext
 
     internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
     {
-        _s = s; _sp = sp; _targetId = targetId; answer = answer ?? "";
+        _s = s; _sp = sp; _targetId = targetId; this.answer = answer ?? "";   // set the PROPERTY, not the param (was leaving ctx.answer null)
     }
 
     // ---- read-only caster stats (Lua: ctx.will, ctx.level, ...) ----

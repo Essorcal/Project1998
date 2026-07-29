@@ -77,15 +77,22 @@ public sealed partial class Session
         WriteBe32(d, 28, _char.Mp);         // current MP (confirmed)
         WriteBe32(d, 32, _char.Exp);        // experience (confirmed)
         WriteBe32(d, 36, _char.Coins);      // coins      (confirmed)
-        d[45] = MailParcelFlags();          // bottom-left HUD notify: 0x10=n-mail arrow, 0x01=parcel bag (body[45] confirmed live 2026-07-28)
+        if (!_mailFlagsSeeded) { _mailFlags = ComputeMailFlags(); _mailFlagsSeeded = true; }   // one SQLite read at first stats (login)
+        d[45] = _mailFlags;                 // bottom-left HUD notify: 0x10=n-mail arrow, 0x01=parcel bag (body[45] confirmed live 2026-07-28)
         SendMap(0x08, _gameInc++, d, "stats(0x08)");
     }
 
     // The 0x08 body[45] mail/parcel HUD-notification byte (RTK FLAG_MAIL=0x10 / FLAG_PARCEL=0x01, both=0x11).
     // Confirmed live: the 4.95 client draws the bottom-left arrow (unread n-mail) / bag (unclaimed parcel)
-    // straight off this byte. Driven from the persisted mailbox so it survives clean stats resends and
-    // relog, and self-clears when the mail is read / the parcel claimed. See docs §"Stats packet 0x08".
-    private byte MailParcelFlags()
+    // straight off this byte. CACHED (_mailFlags): computing it is two SQLite queries (Mail.InboxFor +
+    // Parcel.HasAny), and SendStats fires on every mob swing / heal / cast / regen — so it must NOT hit the DB
+    // each time. The cache is seeded on the first stats packet (login) and refreshed by RefreshMailFlags() on
+    // the events that can change it: this session's own read/delete, another player mailing/parcelling us (their
+    // session pokes ours), and a low-frequency backstop in RegenTick for any path we missed.
+    private byte _mailFlags;
+    private bool _mailFlagsSeeded;
+
+    private byte ComputeMailFlags()
     {
         byte f = 0;
         var inbox = Mail.InboxFor(_char.Name);
@@ -95,6 +102,18 @@ public sealed partial class Session
         if (Parcel.HasAny(_char.Name)
             || inbox.Any(m => m.ItemId >= 0 && !m.Claimed))  f |= 0x01;
         return f;
+    }
+
+    /// <summary>Recompute the mail/parcel HUD flag (the only place the two SQLite reads happen) and, if it
+    /// changed, push a fresh stats packet so the arrow updates now. Callable cross-session — the sender's
+    /// session invokes this on the recipient's when it mails/parcels them.</summary>
+    internal void RefreshMailFlags()
+    {
+        byte f = ComputeMailFlags();
+        _mailFlagsSeeded = true;
+        if (f == _mailFlags) return;
+        _mailFlags = f;
+        SendStats();   // the flag changed -> refresh body[45] on the HUD now
     }
 
     private static void WriteBe32(byte[] d, int off, uint v)
@@ -121,9 +140,17 @@ public sealed partial class Session
     // vanishingly rare and self-correcting on the next tick.
     private long _regenAccum;
     private const int RegenIntervalMs = 25_000;   // RTK regen period (timerTick%50 @ 0.5s/tick)
+    private long _mailAccum;
+    private const int MailBackstopMs = 30_000;   // defensive re-check of the mail/parcel HUD flag (event-driven otherwise)
 
     public void RegenTick(int ms)
     {
+        // Mail-flag backstop: runs BEFORE the dead/topped-off early-returns so a resting or ghosted player
+        // still notices mail that arrived via a path we forgot to poke. Event-driven refresh is the norm; this
+        // is one cheap DB re-check every 30s, vs the old two-queries-per-stats-packet.
+        _mailAccum += ms;
+        if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
+
         if (_char.Hp == 0) return;   // dead: no natural regen (RTK bails on health==0 / state==1)
 
         var eq = Totals();
@@ -513,7 +540,8 @@ public sealed partial class Session
         foreach (var worn in _char.Equipment.ToArray()) DeductDura(worn);
         SendStats();
         byte critByte = critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, PlayerHpPercent(), critByte));
+        byte hpPct = PlayerHpPercent();   // same for every peer — compute once, not inside the per-peer lambda
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, critByte));
         Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
     }
