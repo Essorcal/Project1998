@@ -45,6 +45,10 @@ public sealed class SpellContext
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
     /// <summary>Restore the caster's own mana (capped at max).</summary>
     public void restoreMana(double amt) => _s.LuaRestoreMana((int)System.Math.Round(amt));
+    /// <summary>Apply a timed stat buff (e.g. "might"/"dam"/"hit") of <paramref name="amount"/> for
+    /// <paramref name="durationMs"/> ms; re-casting the same spell refreshes it.</summary>
+    public void buff(string stat, double amount, double durationMs) =>
+        _s.LuaBuff(stat, (int)System.Math.Round(amount), (int)System.Math.Round(durationMs), _sp);
     /// <summary>Status-box text (RTK sendminitext).</summary>
     public void say(string msg)         => _s.LuaSay(msg);
     /// <summary>Chat-log message.</summary>

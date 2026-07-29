@@ -365,6 +365,20 @@ public sealed partial class Session
     internal void LuaSay(string msg)     => SendMiniText(msg);
     internal void LuaMessage(string msg) => SendMessage(msg);
 
+    // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.
+    // Re-casting the SAME spell refreshes rather than stacks (matches C# CastBuff / RTK removeDuras-then-set).
+    // Buffs flow through BuffTotals() (never cached), so no equip-cache invalidation is needed. Shares the exact
+    // ActiveBuff plumbing the C# archetype uses.
+    internal void LuaBuff(string stat, int amount, int durationMs, SpellDef sp)
+    {
+        if (string.IsNullOrEmpty(stat) || amount == 0 || durationMs <= 0) return;
+        _buffs.RemoveAll(b => b.Key == sp.Key);   // refresh, don't stack
+        _buffs.Add(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durationMs, Key = sp.Key, Name = sp.Name });
+        SendStats();
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+    }
+
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective
     // (base + gear + buff) values, so a buffed caster hits harder. enchant/rage/invis reflect the real armed
     // multiplier now (EffEnchant/EffRage/Stealthed) in case any Damage-archetype formula ever reads them; fury

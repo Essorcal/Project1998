@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using MoonSharp.Interpreter;
 
 namespace Server;
@@ -24,6 +25,12 @@ public sealed class LuaVerbHost
     private readonly string _name;      // the verb file's name, for log messages
     private Script? _script;
     private Table? _verbs;
+    // Cache the parsed Lua Table per row object, so a hot cast/use doesn't rebuild it + re-parse every CSV cell
+    // each call (matters once hundreds of spells route through here). Keyed by the row's IDENTITY: Content
+    // rebuilds every row object on !reload, so old entries fall out of this weak table naturally, and Load()
+    // clears it anyway (the cached Tables belong to the OLD Script and can't be reused by the new one). Verbs
+    // treat `row` as read-only, so sharing one Table across calls is safe.
+    private readonly ConditionalWeakTable<object, Table> _rowCache = new();
 
     public LuaVerbHost(string name) => _name = name;
 
@@ -35,6 +42,7 @@ public sealed class LuaVerbHost
         {
             _script = null;
             _verbs = null;
+            _rowCache.Clear();   // cached Tables belong to the old Script — drop them on reload
             if (path is null || !File.Exists(path)) return;
             try
             {
@@ -71,11 +79,15 @@ public sealed class LuaVerbHost
             var fn = _verbs.Get(verb);
             if (fn.Type != DataType.Function) return null;
 
-            var rowTable = new Table(_script);
-            foreach (var (k, val) in row)
+            if (!_rowCache.TryGetValue(row, out var rowTable))
             {
-                if (string.IsNullOrEmpty(val)) continue;   // empty cell -> nil, so `row.x or default` works
-                rowTable.Set(k, double.TryParse(val, out var d) ? DynValue.NewNumber(d) : DynValue.NewString(val));
+                rowTable = new Table(_script);
+                foreach (var (k, val) in row)
+                {
+                    if (string.IsNullOrEmpty(val)) continue;   // empty cell -> nil, so `row.x or default` works
+                    rowTable.Set(k, double.TryParse(val, out var d) ? DynValue.NewNumber(d) : DynValue.NewString(val));
+                }
+                _rowCache.Add(row, rowTable);
             }
 
             try
