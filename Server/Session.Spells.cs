@@ -293,7 +293,7 @@ public sealed partial class Session
         bool ok = arch switch
         {
             "Damage"     => CastArch("arch_damage", sp, fx, targetId, mana) ?? CastDamage(sp, fx, targetId, mana),
-            "Heal"       => CastHeal(sp, fx, mana),
+            "Heal"       => CastArch("arch_heal", sp, fx, null, mana) ?? CastHeal(sp, fx, mana),
             "Buff"       => CastBuff(sp, fx, mana),
             "TargetBuff" => CastTargetBuff(sp, fx, targetId, mana),
             "Debuff"     => CastDebuff(sp, fx, targetId, mana),
