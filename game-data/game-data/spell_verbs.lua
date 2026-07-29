@@ -44,6 +44,54 @@ function verbs.magic_damage(ctx, row)
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
 end
 
+-- =========================================================================================================
+-- Baekho's Cunning (RTK Spells/Subpaths/Baekho/baekhos_cunning.lua) — the showcase for COMPOSED verbs: a
+-- single spell that is simultaneously a rage MULTIPLIER, a damage-REDUCTION (deduction), and positional
+-- STANCE grants, plus a stateful tier machine. It fits NO single archetype; it just composes primitives.
+-- Recast to climb Cunning 1->6, each tier stronger and far pricier; each cast supersedes the lesser furies
+-- (ctx:rage overwrites the single rage slot). The tier TABLE is an RTK constant so it lives here in the verb.
+-- ded = incoming-damage multiplier (RTK target.deduction: tier1 -0.00 .. tier6 -0.40 off 1.0).
+local CUNNING = {
+  [1] = { mana = 3000,   rage = 6,  ded = 1.00, back = false, flank = false },
+  [2] = { mana = 4200,   rage = 7,  ded = 0.92, back = true,  flank = false },
+  [3] = { mana = 15634,  rage = 9,  ded = 0.84, back = false, flank = true  },
+  [4] = { mana = 46658,  rage = 10, ded = 0.76, back = true,  flank = true  },
+  [5] = { mana = 117667, rage = 12, ded = 0.68, back = true,  flank = true  },
+  [6] = { mana = 265000, rage = 14, ded = 0.60, back = true,  flank = true  },
+}
+local CUNNING_DURATION = 938000   -- ~15.6 min active window (RTK setDuration)
+local CUNNING_AETHER   = 150000   -- ~2.5 min cooldown between tier-ups (RTK setAether)
+
+function verbs.baekhos_cunning(ctx, row)
+  if ctx:onCooldown("baekhos_cunning") then
+    ctx:say("Baekho's power is not yet ready to grow.")
+    return false
+  end
+  -- Only continue the ladder if the stance is still active; if it lapsed, hasDuration is false -> start fresh.
+  local active = ctx:hasDuration("baekhos_cunning")
+  local tier = active and ctx:reg("baekhos_cunning") or 0
+  if tier < 0 or tier > 6 then tier = 0 end
+  if active and tier >= 6 then
+    ctx:say("You have reached your max potential.")
+    return false
+  end
+
+  local nt = tier + 1
+  local c = CUNNING[nt]
+  if not ctx:spendMana(c.mana) then return false end        -- huge, tier-scaled cost
+
+  ctx:setReg("baekhos_cunning", nt)
+  ctx:setDuration("baekhos_cunning", CUNNING_DURATION)
+  ctx:rage(c.rage, CUNNING_DURATION)                         -- whole-swing xN (supersedes lesser furies)
+  ctx:deduction(c.ded, CUNNING_DURATION)                     -- take less damage
+  ctx:stance("backstab", c.back, CUNNING_DURATION)           -- free positional crits
+  ctx:stance("flank",    c.flank, CUNNING_DURATION)
+  ctx:setCooldown("baekhos_cunning", CUNNING_AETHER)
+  ctx:fx(35, 705)                                            -- RTK sendAnimation(35) / playSound(705)
+  ctx:say("[Cunning "..nt.."] Baekho sharpens your instincts (x"..c.rage.." damage).")
+  return true
+end
+
 -- Restore the caster's own HP: flat `amount` plus optional Will scaling (`willcoeff`), costing `mana`.
 function verbs.heal(ctx, row)
   if not ctx:spendMana(row.mana or 0) then return end

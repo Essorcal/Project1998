@@ -2,3 +2,4 @@ key,verb,mana,base,coeff,amount,willcoeff,notes,Sources
 bolt_mage,magic_damage,4,2,1.5,,,Basic mage nuke: 2 + 1.5*Will,rtk-lua
 heal_mage,heal,6,,,20,1.0,Flat 20 + 1*Will HP,rtk-lua
 mend_wounds_mage,heal,3,,,10,0.5,Weaker heal sharing the same heal verb,rtk-lua
+baekhos_cunning,baekhos_cunning,,,,,,"Baekho's Cunning: stateful multi-tier stance (tier table in verb)",rtk-lua
