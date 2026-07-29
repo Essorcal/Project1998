@@ -1,0 +1,60 @@
+key,verb,amount,full,hpcost,statuskey,duration,activemsg,notes,Sources
+apple,heal,5
+watermelon,heal,800
+antler,heal,248
+bear_fur,heal,48
+bears_liver,heal,500
+beef,heal,20
+lean_beef,heal,500
+chicken_meat,heal,40
+cooked_fish,heal,20,,,,,,RTK doubles to 900 when eaten adjacent to partner (not ported)
+egg,heal,8
+ginseng,heal,2000
+young_ginseng,heal,40
+ginseng_piece,heal,60
+mountain_ginseng,heal,10000
+green_squirrel_pelt,heal,8
+horse_meat,heal,200
+meat_scrap,heal,5
+pork,heal,128
+rare_pork,heal,31
+rabbit_meat,heal,48
+fine_rabbit_meat,heal,200
+rat_meat,heal,8
+rose_petals,heal,20,,,,,,RTK doubles to 900 when eaten adjacent to partner (not ported)
+snake_meat,heal,100
+fine_snake_meat,heal,320
+tigers_heart,heal,1000
+wolf_meat,heal,48
+acorn,heal,8
+gold_acorn,heal,8
+blue_potion,heal,100
+violet_potion,heal,200
+yellow_potion,heal,50
+red_potion,heal,,1
+poison_apple,fatal
+aged_wine,drink,100,,5
+moon_wine,drink,100,,5
+ogre_cider,drink,100,,10
+ogre_drought,drink,325,,25
+root_liquor,drink,30,,1
+wine,drink,25,,5
+thick_wine,drink,40,,5
+rice_wine,drink,30
+herb_pipe,drink,300,,15
+sonhi_pipe,drink,450,,50
+iron_statue,drink,250
+aqua_potion,ward,,,,sanctuary,185000,Another spell of that type is already in effect.
+green_potion,ward,,,,sanctuary,300000,Another spell of that type is already in effect.
+lime_potion,ward,,,,sanctuary,900000,Another spell of that type is already in effect.
+brown_potion,ward,,,,harden_armor,185000,Another spell of that type is already in effect.
+muddy_potion,ward,,,,harden_armor,300000,Another spell of that type is already in effect.
+black_potion,ward,,,,chin_baek_ho_ryung,10000
+purple_potion,ward,,,,purple_potion,300000,This spell is already active.
+scroll_of_protection,ward,,,,curse_protection,250000,You are already protected.
+scroll_of_defense,ward,,,,curse_protection,350000,You are already protected.
+scroll_of_immortality,hardenbody,,,,harden_body,16000,You already cast that spell.
+indigo_potion,cure
+clear_water_song,cure
+yellow_scroll,warphome
+qui_hyang,warphome

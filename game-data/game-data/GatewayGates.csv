@@ -1,0 +1,17 @@
+Region,City,Map,Gate,Xlo,Xhi,Ylo,Yhi,Sources
+0,Kugnae,0,n,104,116,13,17,rtk-lua
+0,Kugnae,0,e,201,208,105,111,rtk-lua
+0,Kugnae,0,w,14,19,104,111,rtk-lua
+0,Kugnae,0,s,104,115,207,211,rtk-lua
+1,Buya,330,n,71,75,22,27,rtk-lua
+1,Buya,330,e,132,136,86,90,rtk-lua
+1,Buya,330,w,8,12,88,92,rtk-lua
+1,Buya,330,s,74,78,140,145,rtk-lua
+2,Mythic,41,n,27,36,10,15,rtk-lua
+2,Mythic,41,e,54,57,28,33,rtk-lua
+2,Mythic,41,w,3,5,28,33,rtk-lua
+2,Mythic,41,s,25,33,48,53,rtk-lua
+3,Nagnang,2500,n,37,39,23,25,rtk-lua
+3,Nagnang,2500,e,138,140,86,88,rtk-lua
+3,Nagnang,2500,w,4,6,92,94,rtk-lua
+3,Nagnang,2500,s,75,77,151,153,rtk-lua
