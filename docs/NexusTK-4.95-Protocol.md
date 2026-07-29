@@ -703,6 +703,27 @@ body offset  field            type
 ```
 Body length ~58 bytes (unused offsets zero-filled). See `Session.SendStats()`.
 
+**Mail/parcel HUD notification byte (in the `0x08` tail).** The real 4.x client shows a small **arrow**
+(bottom-left) when you have unread **n-mail**, and an **arrow + bag** when you have a **parcel** waiting —
+the cue to visit the postmaster NPC. RTK's `clif_sendstatus` (`rtk/src/map/clif.c`) proves the driver:
+its 6.x/7.x `0x08` is a *composite* packet (form byte at offset 5 is an `SFLAG_*` bitmask —
+`0x40`FULLSTATS `0x20`HPMP `0x10`XPMONEY `0x08`ALWAYSON; `0x78` = all of them), and its **always-on tail**
+carries `sd->flags` documented verbatim as **`1 = New parcel, 16 = New Message (n-mail), 17 = both`**
+(a bitmask: bit0 parcel, bit4 mail). That tail rides the SAME `0x78` "full" form we already send.
+
+**✅ CONFIRMED LIVE (2026-07-28): the 4.95 flag byte is `body[45]`.** Sending our full-stats `0x08` with
+`body[45]=0x11` (via `!mailflag 45 11`, `Session.MailFlagProbe`) made the real client draw **both** the
+mail arrow and the parcel bag in the bottom-left HUD cell; the decrypted wire packet showed `body[45]=0x11`
+exactly. Bit semantics match RTK: **`0x10` = n-mail arrow, `0x01` = parcel bag, `0x11` = both, `0x00` =
+clear.** So the 4.95 client IS network-wired for the notification (the render widget = vtable `0x4ce440`,
+ctor `0x47a230`, draw `0x469480`, loading `MAIL.EPF`/`PARCEL.EPF` from `Inter.dat`; state bytes
+`[+0x105]`=parcel-count, `[+0x106]`=hasMail). NOTE: our `SendStats` zero-fills `body[45]`, so any clean
+stats resend (movement/action) CLEARS the arrow — real wiring must set `body[45]` in `SendStats` from a
+persisted mail/parcel state, not one-shot. Retrieval is a plain `0x30` dialog: RTK's postmaster
+`MessengerNpc` (`rtklua/.../messenger.lua`) offers *Mailbox → Send/Receive Parcel* — already supported by
+our NPC dialog system. (Client-side `m` hotkey to open mail is a **dead key** in both 4.83 and 4.95 — see
+the client-versions memory — so the NPC + this HUD flag are the authentic access path.)
+
 **How this was found (methodology worth reusing):** static dispatch analysis wrongly "proved" `0x08`
 was unhandled — it's a no-op in the world dispatcher remap *and* the conn-state object `0x444de0`, yet
 the client processes it anyway via a pre-dispatch path. It was cracked by **replaying a real 6.x server
@@ -1066,7 +1087,7 @@ objects captured outside the `setExceptionHandler` callback read back as `0x0` i
 
 Names/stats are **not** in the client (audit above) — they come from the **RTK reference server DB** (§17.1)
 and the **Nexus Atlas** scrape (pre-6.5 exp values). Extract these **locally** with the tools in `re/` — the
-data itself is **kept out of this repo** (logic-only server; the generated CSVs land in `data/rtk-data/`,
+data itself is **kept out of this repo** (logic-only server; the generated CSVs land in `data/game-data/`,
 which is gitignored). RTK look-ids
 validate against our own EPF shape-matching (rat=91, mouse=120, bull=27, rabbit=21, fox=22, wolf=23, bear=24,
 squirrel=25). Colours ≤19 map to our `Monster.pal`; RTK colours >19 are 7.x-only and must be re-picked for
@@ -1134,7 +1155,7 @@ near each other, the common case. Only **mobs** are viewport-streamed; see §11b
 
 The world is populated automatically from **two** RTK spawn sources, not just by commands.
 
-**Static spawn table (`Content.Spawns` ← `data/rtk-data/Spawns0.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
+**Static spawn table (`Content.Spawns` ← `data/game-data/Spawns0.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
 — one live mob per point. This is only **1175 points across 19 maps** (Kugnae 526, Buya 408, a few specials): it
 covers the towns and little else. RTK's `Spawns0` SQL table genuinely has nothing for the hunting maps.
 
@@ -1157,7 +1178,7 @@ exit are all gone in one place — the maps/mobs/warps stay in the source CSVs u
 nothing for them even loads), so trimming `ExcludedMapRanges` fully restores the cave. Same "flag, don't delete"
 pattern as the Hwan exclusion above; add further RTK-only reskin dungeons here if found.
 
-**Area spawns (`Content.AreaSpawns` ← `data/rtk-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
+**Area spawns (`Content.AreaSpawns` ← `data/game-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
 mobs.* RTK spawns hunting-map populations from a Lua "spawner NPC" (`mobSpawnHandler.lua`), not the SQL table, via
 `handleSpawn(npc, map, {mobIds}, {counts}, timer [,minX,minY,maxX,maxY])`. `re/extract_lua_spawns.py` parses those
 617 calls into `AreaSpawnDef (mobId, map, count, box)` — **2371 rows, ~21.5k mobs across 767 maps** (Mythic Nexus
@@ -1179,7 +1200,7 @@ stack. An area spawn's home tile is fixed on first materialize (respawns hug the
 `Materialize`, minting a fresh mob id.
 
 **Drops (`Content.RollDrops`).** RTK's real per-mob drop tables, extracted from the server-side Lua
-(`RTK-Server/rtklua/Accepted/Mobs/MobDrops.lua`) by `re/extract_mob_drops.py` into `data/rtk-data/MobDrops.csv`
+(`RTK-Server/rtklua/Accepted/Mobs/MobDrops.lua`) by `re/extract_mob_drops.py` into `data/game-data/MobDrops.csv`
 and loaded into `Content.MobDrops` (382 mobs; a mob absent from the table drops nothing, matching RTK). Each
 mob has independent `loot` lines (its own item/amount-range/percent, several can hit on one kill) and at most
 one `rareLoot` line (rolled in listed order, only the first hit drops). A `GOLD` item key means a gold pile
@@ -1218,9 +1239,9 @@ map. This is what lets the full spawn roster render without blanket-sending hund
 **Colours.** The `0x07` colour byte uses RTK's **`MobLookColor`**. (An experiment sending the client's decoded
 `Monster.tbl` palette instead rendered every mob green — RTK's per-mob colour matches the client for the common
 critters, so we kept it. A proper RTK-colour → client-palette mapping is future work; the decoded table lives in
-`data/rtk-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
+`data/game-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
 
-**`rabbit` (MobId 1) had the wrong Look/Color — fixed live 2026-07-26.** The extracted `rtk_mobs.csv` row
+**`rabbit` (MobId 1) had the wrong Look/Color — fixed live 2026-07-26.** The extracted `mobs.csv` row
 for the base overworld `rabbit` mob (used by 242 fixed spawn points + 22 area spawns — the everyday wild
 critter, not a debug spawn) carried `look 21, color 3`, which shares its sprite shape with the "Hare" family
 (`look 21`, e.g. `hare` id 116 `color 37`) and visibly rendered like a hare, not a rabbit. Cross-referencing
@@ -1234,7 +1255,7 @@ labeled `col<N>` so `;`/look can read the exact number back — see the `HandleL
 plain-rabbit palette is **color 11**, not any of the named dungeon-tier colors. `rabbit`'s CSV row is now
 `look 125, color 11`; since `Session.SpawnRabbit` (`!rabbit`) and every persistent spawn both read this one
 registry row, the single data edit fixed the debug command and the whole overworld population at once — no
-code change needed. **Lesson:** a `rtk_mobs.csv` row's Look/Color can be individually wrong even when the
+code change needed. **Lesson:** a `mobs.csv` row's Look/Color can be individually wrong even when the
 extraction is right for the rest of the table; when a sprite looks off, verify visually (matcher tool or
 `!crecol`) rather than trusting the row.
 
@@ -1264,7 +1285,7 @@ pickup/drop/throw/use/equip handlers. Opcodes + wire layouts were translated fro
 Builders/handlers live in `Session.cs` (`SendAddItem`/`SendDelItem`/`SendEquip`/`SendUnequip`,
 `HandlePickup`/`HandleDropItem`/`HandleThrow`/`HandleUseItem`/`HandleUnequip`/`HandleDropGold`); floor
 items live in `World.cs` (`DropItem`/`PickUp`/`ItemsOn`, id pool `500000+`); the registry is `Content.Items`
-(`ItemDef`) loaded from the gitignored `data/rtk-data/Items.csv` (2545 items — id, name, type, icon, look,
+(`ItemDef`) loaded from the gitignored `data/game-data/Items.csv` (2545 items — id, name, type, icon, look,
 stat lines), same logic-only pattern as maps/mobs.
 
 **Confidence.** The **recv** opcodes are trustworthy — 4.95's walk/turn/chat/attack/setting opcodes already
@@ -1593,7 +1614,7 @@ packet-supplied target.
 
 `HandleCast` plays the cast animation (`0x1A` **type 6 = magic**) for the caster + peers, then applies the
 spell's effect via a **data-driven magic engine** (`Session.ApplyCast`). The effect data is extracted straight
-from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `data/rtk-data/spell_effects.csv` (gitignored),
+from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `data/game-data/spell_effects.csv` (gitignored),
 loaded into `Content.SpellFx` and joined to each spell by identifier (the Lua table name == `SplIdentifier`).
 Each row carries an **archetype** + the spell's **real RTK numbers**: the damage/heal *formula string*, the true
 mana cost, buff stat+amount+duration, debuff kind+duration+chance, cooldown ("aether"). 621 of the ~841 spells
@@ -1784,7 +1805,7 @@ AI, and it's the Lua half. RTK's C engine (`mob.c`) gates a mob's per-tick `move
 the Lua scripts (as the original port did) makes every mob look purely reactive, when most are actually
 engine-level aggressive. Real data backs this up: of 713 mobs in the CTK reference dump, 603 have
 `MobBehavior=1` (aggressive) and only 109 are `0` (passive — mostly herd/prey critters: rabbit, deer,
-squirrel, doe, …). `MobDef.Aggressive` (`Content.cs`, parsed from `rtk_mobs.csv`'s merged-in `MobBehavior`
+squirrel, doe, …). `MobDef.Aggressive` (`Content.cs`, parsed from `mobs.csv`'s merged-in `MobBehavior`
 column) and `Mob.Aggressive` carry this through to a live mob. `World.Tick` now scans, for every mob with
 `TargetId==0` and `Aggressive==true`, for the nearest living player within `AggroRadius` (8 tiles,
 Chebyshev, from the mob's current tile — roughly the player's own 17x15 viewport) and locks onto them
@@ -1804,7 +1825,7 @@ mob's home tile. Both melee (`Session.HandleAttack`) and spell damage (`CastDama
 **Mob damage was massively under-tuned (fixed 2026-07-26 — user: "Going into Dragon 1 as a newbie with
 250HP, I should not be surviving even a single hit... 50 damage or something. REALLY off"):** the original
 swing formula was `Level/2 + 0-2` — a level-99 dragon hit for ~50, when it should one-shot a newbie. Root
-cause: `Content.LoadMobs` parsed `rtk_mobs.csv`'s `MinDmg`/`MaxDmg` columns into... nothing — `MobDef`
+cause: `Content.LoadMobs` parsed `mobs.csv`'s `MinDmg`/`MaxDmg` columns into... nothing — `MobDef`
 never carried them, so the REAL per-mob damage data (e.g. `dragon_hatchling` = 2500-3500, `old_dragon` =
 146250-183750) was silently discarded in favor of a synthetic Level-based stand-in with no basis in RTK.
 This turned out to be the first of several "the CSV column was right there, just never parsed" gaps — see
@@ -1869,7 +1890,7 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   RTK clif.c's real deflect roll exactly.
 
 - **Data merged in from the CTK reference SQL dump** (`RTK-Server/database/references/CTK - closing -
-  08-31-2019.sql`, same source as `MobBehavior` — see §11f's aggro fix above) into `rtk_mobs.csv`:
+  08-31-2019.sql`, same source as `MobBehavior` — see §11f's aggro fix above) into `mobs.csv`:
   `MobIsBoss`, `MobProtection`, `MobArmor`, `MobHit`. Plus `Grace`, which was already a plain column in the
   CSV but — like `MinDmg`/`MaxDmg` before it — simply never parsed into `MobDef` until this pass.
 
@@ -2064,7 +2085,7 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     `SetCooldown` plumbing (0 mana). **NOT ported:** RTK's `cotw_controller_poet` threat-transfer — pets fight
     independently via the normal wander/aggro `Mob` AI rather than sharing the owner's combat target, since
     this server has no multi-entity threat-table concept to hook into. The 29th id,
-    `cotw_giasomo_bird_poet` (mob 807), has NO matching row anywhere in `rtk_mobs.csv` — even RTK's own Lua
+    `cotw_giasomo_bird_poet` (mob 807), has NO matching row anywhere in `mobs.csv` — even RTK's own Lua
     flags it broken ("I know this doesn't belong here, but the COTW structure is so terrible already") — so
     it's skipped, not silently miscounted.
 
@@ -2130,7 +2151,7 @@ deliberate simplification made before the F1 menu was understood): a ghost now r
 nation and revives (`ReviveAt`: full heal + warp) on arrival.
 
 **Home city** (`Session.HomeCityFor`/`PlaceNewCharacter`): a fresh character spawns, and a defeated one
-revives, **just inside their nation's home**, near the real RTK door-arrival tile (`data/rtk-data/
+revives, **just inside their nation's home**, near the real RTK door-arrival tile (`data/game-data/
 Warps.csv`) rather than GmWarp's outdoor GM-teleport spot:
 - Nation `2` (Buya): map **351** (Jadespear's Home) at `(3,6)`.
 - every other nation: map **36** (Ironheart's Home) at `(5,10)` — the door tile from Kugnae's
@@ -2163,7 +2184,7 @@ itself IS the real RTK flow (F1 → Silver Thread → pick a Shaman) — the one
 that `ReviveAt` heals on arrival at the Shaman's map instead of requiring a second click on a standalone
 Shaman NPC actor once there (we don't have those placed as real map NPCs).
 
-**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `data/rtk-data/Warps.csv` ids 56-59) is
+**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `data/game-data/Warps.csv` ids 56-59) is
 a *separate* code path from the hardcoded home-city spawn above — walking onto Buya's door tile
 (`330:(55/56,121)`) drives the normal warp system (`Session.HandleWalk` → `EnterMap`).
 
@@ -2295,14 +2316,28 @@ deflected." — RTK sends nothing to the target on a resist.
 
 ---
 
-## 11h. Bulletin boards (added 2026-07-26 — unverified reply shapes)
+## 11h. Bulletin boards + native nmail (reply shapes LIVE-VERIFIED 2026-07-28)
 
 **Request: LIVE-confirmed.** Pressing **b** sends op `0x3B` — matches RTK's dispatch exactly
 (`clif.c:11613`, `case 0x3B: clif_handle_boards(sd);`). Body `dec[0]` is a sub-command, then u16-BE
 board/post ids: `1`=show board list, `2 board`=show a board's posts, `3 board post`=read one post,
-`4 board topicLen topic bodyLen body`=make a post, `5 board post`=delete a post. `Session.HandleBoard`
-decodes all five; 6/7/8/9 (nmail, GM postcolor, GM special-write) aren't implemented — no nmail or GM-level
-concept exists in this server.
+`4 board topicLen topic bodyLen body`=make a post, `5 board post`=delete a post,
+`6 toLen to topicLen topic msgLen(u16BE) msg sendCopy`=**send nmail from the native compose window**
+(RTK `nmail_write`, level-10 gated), `9`=open the mailbox (== sub-2 with board 0). `Session.HandleBoard`
+decodes 1–6 + 9; 7/8 (GM postcolor, scripted special-write) aren't modelled.
+
+**Board 0 == the player's nmail mailbox** (RTK `boards_showposts`: "Board(0) == NMail"). The client's
+board window is MODE-SWITCHED by the reply's first byte (`flags2`, below): mode 4 turns it into the
+mailbox whose **Write button opens the recipient-field compose window** (emits sub-6); mode 2 is a
+normal board (Write emits sub-4, no recipient). All live-verified on the real 4.95 client.
+
+**Write/delete ACK (`SendBoardAck` — the reply the compose/board window BLOCKS on).** After any sub-4/
+5/6 action the client waits for a dedicated `0x31` ack (RTK `nmail_sendmessage`, map.c:164):
+`other(u8: 6=write ack, 7=delete ack) type(u8: 1=success — releases/closes the window, 0=failure —
+keeps it open) msgLen(u8) message[...] trailer(u8=7)`. Replying with only a 0x0D text line hangs the
+window ("Your post didn't go through due to an error"). RTK's canonical texts: "Your message has been
+posted." / "Your message has been sent." / "User does not exist." / "The message has been deleted." /
+"You can only delete your own messages.".
 
 **Reply: NOT live-confirmed.** RTK's real board storage lives in a *separate char-server process*
 talking its own SQL database (`Boards` table: `BrdBnmId/BrdPosition/BrdChaName/BrdTopic/BrdMonth/BrdDay`,
@@ -2320,13 +2355,42 @@ replies use the normal `SendMap(0x31, _gameInc++, data)` convention like every o
 codebase, rather than copying RTK's literal (and inconsistent) byte-4 values.
 
 - **Show board list** (`SendBoardList`): `1 titlelen title[...] boardCount` then per board
-  `id(u16BE) nameLen name[...]`.
-- **Show a board's posts** (`SendBoardPosts`): `flags2(=2) flags1(=3) board(u16BE) boardNameLen boardName[...]
+  `id(u16BE) nameLen name[...]`. This server appends **Mailbox** (board 0) as the LAST entry — the only
+  reachable way into the mailbox, since the 'm' hotkey is dead (below).
+- **Show a board's posts** (`SendBoardPosts`): `flags2(u8) flags1(u8) board(u16BE) boardNameLen boardName[...]
   postCount` then per post, newest first, `color(=0) postId(u16BE) authorLen author[...] month day topicLen
-  topic[...]`. `flags2=2`/`flags1=3` are RTK's own literal values for "a normal board, always writable" —
-  the only case modelled here (no GM/tutor/popup gating exists).
-- **Read one post** (`SendBoardReadPost`): `type(=3) buttons(=3) nmailFlag(=0) postId(u16BE) authorLen
-  author[...] month day topicLen topic[...] bodyLen(u16BE) body[...]`.
+  topic[...]`. **`flags2` is the window-mode byte: 2 = normal board, 4 = NMAIL MAILBOX** (RTK
+  char/mapif.c `mapif_parse_showposts`: `if (a.board == 0) flags2 = 4; else 2`) — mode 4 is what makes
+  Write compose WITH a recipient field (sub-6). `flags1` = rights: 1=read-only, 3=write+del, special
+  6="write sends a packet" for scripted boards (not modelled).
+- **Read one post** (`SendBoardReadPost`): `type(u8: 3=board post, 5=nmail letter) buttons(u8=3)
+  nmailFlag(u8: 1 when board 0) postId(u16BE) authorLen author[...] month day topicLen topic[...]
+  bodyLen(u16BE) body[...]` — per RTK `intif_parse_readpost`/`mapif_parse_readpost`.
+
+**The 'm' hotkey — DEAD IN THIS BUILD, proven at the dispatch table (client RE, 2026-07-28).** The
+in-world letter hotkeys are dispatched by a char switch @`0x48e625` (index = `char-0x0D`, byte-index
+table @`0x48eab0`, 50-case jump table @`0x48e9e8`). Full map decoded: 'b'=case 22 (board window ctor
+`0x406e80(1)` → sub-1 request via `0x407100`), 'i'=28, 's'=32, 'c'=23, 'o'=29, etc. **'m'/'M' sit in
+case 49 = the default do-nothing bucket** (alongside x/z/q/n) — so the "m = mailbox" help line is a
+stale NexusTK.dat string and the binding never shipped. This is the *same table* that dispatches every
+working hotkey, so it settles the question that the earlier VK-only search could not.
+
+The **mail-arrow click does exactly what 'b' does — LIVE-CONFIRMED 2026-07-28**: clicking the lit arrow
+puts `0x3B` sub-1 (board list) on the wire, nothing else. Its handler `0x469654` checks hasMail
+(`[widget+0x106]`) and calls the same board-window ctor `0x406e80(1)`. So the arrow needs no separate
+server support, and the client's own mail affordance lands in the board list — which is some evidence
+that a "Mailbox" entry there is the original design, not a workaround. The arrow's PARCEL branch
+(`0x469760`) instead sends **op `0x41`, empty body** = RTK `clif_parseparcel` — a "go see the
+messenger" minitext there, and the same here.
+
+> **Negative result (tested live 2026-07-28): an unsolicited mailbox `0x31` opens NO window.** Sending
+> the mode-4 posts view when the player hasn't opened the board window does nothing at all — the client
+> only renders a `0x31` into an ALREADY-OPEN board window. So there is no server-side way to jump
+> straight into the mailbox, and no packet the dead 'm' key could be pointed at without a client patch.
+> The mailbox is therefore reached via **b → Mailbox** (listed last in the board list).
+> `re/patches/patch_495_mail_key.py` implements the optional one-byte fix (byteTable['m'] 49→22, making
+> 'm' a second 'b') — written, verified against the build, **deliberately NOT applied**: patching the
+> client wasn't wanted, and it could only duplicate 'b' anyway, not open the mailbox directly.
 
 **Board list content.** RTK's actual board list (`db/board_db.txt`) is server-instance config not present
 in the reference tree — there's no real seed data to port, unlike every other feature this session (items,
@@ -2395,7 +2459,7 @@ run on every level).
 `classdb_level(path, level)` = total exp needed to leave `level` (i.e. reach `level+1`). Paths 0-4 map
 1:1 onto this server's existing `Content.PathIdForClass`/`Paths.csv` scheme (`PthType` column: 0 Peasant /
 1 Warrior / 2 Rogue / 3 Mage / 4 Poet — RTK's own `Paths` table, already in use for spell-book gating).
-Extracted (awk one-liner over the RTK file) into a long-format `data/rtk-data/LevelExp.csv`
+Extracted (awk one-liner over the RTK file) into a long-format `data/game-data/LevelExp.csv`
 (`Path,Level,CumExp`), loaded by `Content.LoadLevelExp` into `Content.ExpToNext(pathId, level)`.
 
 **`Session.AwardExp(amount)`** is now the single funnel every exp source goes through (quest rewards,
@@ -2462,7 +2526,7 @@ entries:**
   me."*). RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
   server only has two home nations modeled, so it collapses to `_char.Nation`: Buya (`2`) offers **Felis**
   (map 338) / **Storm** (339), everyone else **Dusk** (map 8) / **Dawn** (map 9) — all four are real RTK
-  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/rtk-data/map_index.csv`. Picking one
+  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/game-data/map_index.csv`. Picking one
   calls `ReviveAt` (new — factored out of the old `Revive()`): full heal (gear/buffs included) + warp,
   replacing the fixed-timer auto-revive §11f used to do. RTK's own flow only *warps near* a physical Shaman
   NPC (revival happens on a second click there); this server skips that actor and revives directly on
@@ -2710,7 +2774,7 @@ The framing bug that used to crash this is fixed.
 **Destinations** (`Session.cs` `WorldDests`) — 7 of RTK's 9 real destinations; Hamgyong Nam-Do (map 99,
 RTK's own display-name mismatch against its actual map title) and Mount Baekdu (map 4259, the one
 quest-gated entry) are both omitted because neither has renderable map data in this project's
-`data/rtk-data/map_index.csv`:
+`data/game-data/map_index.csv`:
 
 | Destination | Map | Landing (x,y) |
 |---|---|---|
@@ -2778,13 +2842,22 @@ WHEN weather changes (`setWeatherM`/`getWeatherM` are pure admin/quest-script le
 timer anywhere in the C engine) — `World.Tick` rolls a 20% chance per populated map every ~15 real minutes
 as our own substitute, clearly not an RTK-sourced cadence.
 
-**Day-night clock (`World.Time`/`_hour`/`_year`, `Session.SendTime`, opcode `0x20`).** Fully grounded: RTK's
-`clif_sendtime` (`clif.c:4524`, `hour(u8 0..23) year(u8)`) and `change_time_char`'s real timer
-(`timer_insert(450000, 450000, ...)` — one in-game hour per 7.5 real minutes, broadcast server-wide to every
-connected session on each tick) are both complete C-engine code, ported 1:1 in `World.Tick`. This server had
-sent a hardcoded placeholder here since before this session (`0x10`/`0x32` at one entry path, `0x00`/`0x00`
-at another) — the starting values were kept as the live clock's initial state so deploying this doesn't jump
-the clock for anyone already playing. Day/season aren't tracked — the wire packet itself doesn't carry them.
+**Day-night clock (`World.Time`/`_hour`/`_day`/`_season`/`_year`, `Session.SendTime`, opcode `0x20`).** Fully
+grounded: RTK's `clif_sendtime` (`clif.c:4524`, `hour(u8 0..23) year(u8)`) and `change_time_char`'s real timer
+(`map.c:1661`, `timer_insert(450000, 450000, ...)` — one in-game hour per 7.5 real minutes, broadcast
+server-wide to every connected session on each tick) are both complete C-engine code, ported 1:1 in
+`World.Tick`. This server had sent a hardcoded placeholder here since before this session (`0x10`/`0x32` at
+one entry path, `0x00`/`0x00` at another) — the starting hour/year values were kept as the live clock's
+initial state so deploying this doesn't jump the clock for anyone already playing.
+
+The wire packet itself only ever carries `hour`+`year`, but `_year`'s *cadence* depends on RTK's day/season
+rollover, so `World` tracks `_day`(1..91)/`_season`(1..4) internally purely to get that right, 1:1 with
+`change_time_char`: hour rolls to `_day++`, `_day==92` rolls to `_season++`, and only `_season==5` rolls
+`_year++` — i.e. one year is ~368 in-game days, not one in-game day. An earlier version of this port
+incremented `_year` on every 24-hour rollover instead (a bug, not an RTK deviation — fixed 2026-07-28), which
+would have made in-game years pass ~368x too fast. Cross-checked against the community "Time Chart" tutor
+post (`WiKiDWiND`, Poets board: "1 Yuri (365 days) ⟺ 41 days 18 hours" real time), which independently lands
+in the same ~41-46-real-day-per-year ballpark that RTK's actual 368-day cadence produces.
 
 **Ambush (`Content.IsAmbushSpell`, `Session.CastAmbush`).** RTK `rogue/ambush.lua` ("Leap over your enemy to
 face their back while attacking") has no mana cost in the Lua at all. Ported as a real reposition: teleports
@@ -3079,7 +3152,7 @@ magnitude faster for "what does this byte mean" questions.
   Buy/Sell and the bank's take/give also have spoken shortcuts (real NexusTK commands, not RTK-ported — see
   §11e's spoken shortcuts note). **Remaining:** the authentic buy/sell grid window (`0x2f`, currently menu-based); per-NPC
   quest/crafting scripts (RTK Lua); joint bank accounts; and the flat item-price data isn't tracked
-  (`data/rtk-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
+  (`data/game-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
   has no evidence of existing in original 4.x/5.x NexusTK, so it isn't ported.
 - **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x31, 0x35, 0x36, 0x39, 0x3b,
   0x42, 0x44, 0x46, 0x4a, 0x4b, 0x66, 0x67, 0x68`.
@@ -3130,7 +3203,7 @@ Clans, Friends, Legends, Mail, Kills, SpellBook, Registry, Auctions, Boards, Par
 ids/colours need 4.95 validation); stats are 7.x-balanced (structure correct, numbers a design choice); the
 non-overlapping maps/warps/NPCs are 7.x-added content and are filtered out of the extracts.
 **Reproduce:** clone `RTK-Server` (gitignored), then `python re/rtk_extract.py` writes the CSVs to
-`data/rtk-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
+`data/game-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
 tables with row counts. ²`AreaSpawns.csv` isn't an SQL table — it's generated from the Lua spawner by
 `python re/extract_lua_spawns.py` (parses `mobSpawnHandler.lua`'s `handleSpawn(...)` calls). **None of
 this data is committed** — this repo is logic-only; the CSVs are generated locally and kept out of git.
@@ -3156,7 +3229,7 @@ This repo is **logic-only**. All game *data* lives outside it and is regenerated
 | **Nexus Atlas** via Wayback (pre-6.5, ~2005-10) | monster names, exp, type; monster art GIFs | `re/monster-matcher/` scrapers (Wayback CDX + `im_` raw fetch) |
 | **DizzyThermal/TKViewer** | later-client DAT/DNA format docs (e.g. `MONSTER.DNA` struct) | GitHub (reference only) |
 | **jeedee/TkServer** (6.x), **darkalucard/StarterTK** (7.x) | packet-builder concepts (§17) | GitHub (reference only) |
-| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `data/rtk-data/map_index.csv` |
+| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `data/game-data/map_index.csv` |
 
 ### 17.3 Runtime content registry (`Server/Content.cs`) — how the data is consumed
 
@@ -3164,7 +3237,7 @@ The generated CSVs above are loaded once at startup by the static, load-once, re
 `Content` registry (`Content.Load()` in `Program.cs`; `--selftest` exercises it offline without opening
 ports). It powers the navigation commands (§11): fuzzy `FindMap`/`FindMob`/`SearchMaps`/`SearchMobs`
 (score: exact < prefix < substring < subsequence), `TryWarp((map,x,y)→(map,x,y))`, and `TryMap(id)`.
-Paths are env-overridable: `NEXUS_MAP_INDEX` → `map_index.csv`, `NEXUS_MOBS` → `rtk_mobs.csv`,
+Paths are env-overridable: `NEXUS_MAP_INDEX` → `map_index.csv`, `NEXUS_MOBS` → `mobs.csv`,
 `NEXUS_WARPS` → `Warps.csv`.
 
 **Map dims are client-authoritative** (`re/build_map_index.py`): every one of the client's ~1750
