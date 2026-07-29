@@ -286,9 +286,13 @@ public sealed partial class Session
         if (Content.MorphFor(sp) is (ushort morphLook, ushort morphLookF, int morphMana, int morphDur))
             return CastMorph(sp, fx, morphLook, morphLookF, morphMana, morphDur);
 
+        // Archetype dispatch. Each archetype first tries its data-driven Lua verb (`arch_<name>` in
+        // spell_verbs.lua), so the whole archetype's behaviour is scriptable + hot-reloadable; if the verb is
+        // absent it falls back to the C# handler unchanged. Migrating one archetype at a time (Damage done —
+        // see docs/Modding.md); the others still dispatch straight to C#.
         bool ok = arch switch
         {
-            "Damage" => CastDamage(sp, fx, targetId, mana),
+            "Damage" => CastArch("arch_damage", sp, fx, targetId, mana) ?? CastDamage(sp, fx, targetId, mana),
             "Heal"   => CastHeal(sp, fx, mana),
             "Buff"   => CastBuff(sp, fx, mana),
             "Debuff" => CastDebuff(sp, fx, targetId, mana),
@@ -297,6 +301,18 @@ public sealed partial class Session
         };
         if (ok && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
         return ok;
+    }
+
+    // Archetype Lua hook: if spell_verbs.lua defines `verb` (e.g. arch_damage), evaluate this spell's real
+    // formula (spell_effects.csv amountExpr — no target term exists in any formula, so SpellVars(null) matches
+    // what the C# archetype computed) and run the verb with the amount + mana pre-supplied. Returns the verb's
+    // success bool, or null if the verb isn't loaded so the caller falls back to the C# CastX handler. A verb
+    // that errors mid-run returns false (not null) so we don't double-apply via the fallback.
+    private bool? CastArch(string verb, SpellDef sp, SpellFx fx, uint? targetId, int mana)
+    {
+        if (!SpellScript.HasVerb(verb)) return null;
+        double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
+        return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, amount, mana));
     }
 
     // ---- Lua spell-verb primitives (called by SpellContext; see Server/SpellScript.cs) --------------------
@@ -339,6 +355,37 @@ public sealed partial class Session
             }
             else SendMessage($"Your {sp.Name} hits {mob.Name} for {amt}.");
             Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
+        }
+        return true;
+    }
+
+    // Full magic-attack sequence for the archetype Lua path (arch_damage) — a faithful port of CastDamage's body:
+    // mana check FIRST, then resolve target, then the deflect roll (which spends NO mana, RTK-correct), then debit
+    // mana, then apply. Takes a pre-evaluated amount (the engine already ran the spell_effects.csv formula) so the
+    // verb stays pure logic. Returns false only when the cast can't happen (no mana / no target); a deflect still
+    // returns true (the cast "happened", just resisted). Byte-identical to CastDamage so the Lua route can't drift.
+    internal bool LuaMagicDamage(int amt, int mana, SpellDef sp, uint? targetId)
+    {
+        if (mana < 0) mana = 0;
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        var mob = ResolveCastTarget(targetId);
+        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
+        if (amt < 1) amt = 1;
+        _char.Mp -= (uint)mana;
+        var fx = Content.FxFor(sp);
+        if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+        {
+            if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            ShowDamageResult(mob.Id, mob, died);
+            if (died)
+            {
+                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                AwardExp(reward, killExp: true);
+                SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
+            }
+            else SendMessage($"Your {sp.Name} hits {mob.Name} for {amt}.");
+            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
         }
         return true;
     }

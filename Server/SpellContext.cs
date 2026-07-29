@@ -24,6 +24,20 @@ public sealed class SpellContext
         _s = s; _sp = sp; _targetId = targetId; this.answer = answer ?? "";   // set the PROPERTY, not the param (was leaving ctx.answer null)
     }
 
+    /// <summary>Archetype-path ctor: the engine has already resolved this spell's mana cost and evaluated its
+    /// per-spell formula (spell_effects.csv <c>amountExpr</c>), so an archetype verb (arch_damage/arch_heal/…) can
+    /// stay pure logic — <c>ctx.amount</c> / <c>ctx.mana</c> carry the numbers, no formula duplicated into Lua.</summary>
+    internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer, double amount, double mana)
+        : this(s, sp, targetId, answer)
+    {
+        this.amount = amount; this.mana = mana;
+    }
+
+    /// <summary>Engine-evaluated effect amount for the archetype path (the spell's real formula result).</summary>
+    public double amount { get; }
+    /// <summary>Engine-resolved mana cost for the archetype path.</summary>
+    public double mana   { get; }
+
     // ---- read-only caster stats (Lua: ctx.will, ctx.level, ...) ----
     public double level     => _s.LuaLevel;
     public double will      => _s.LuaWill;
@@ -41,6 +55,11 @@ public sealed class SpellContext
     public bool spendMana(double amt)   => _s.LuaSpendMana((int)amt, _sp);
     /// <summary>Damage the resolved target mob (handles deflect/HP-bar/death/XP). False if no target.</summary>
     public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, _targetId);
+    /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → resolve target →
+    /// deflect roll (no mana spent on a deflect) → spend mana → apply. Returns false if the cast couldn't happen
+    /// (no mana / no target — a notice was sent), true otherwise (including a deflect). Used by arch_damage.</summary>
+    public bool magicDamage(double amt, double manaCost) =>
+        _s.LuaMagicDamage((int)System.Math.Round(amt), (int)manaCost, _sp, _targetId);
     /// <summary>Heal the caster's own HP (capped at max), with the spell's sparkle fx.</summary>
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
     /// <summary>Restore the caster's own mana (capped at max).</summary>

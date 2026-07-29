@@ -44,6 +44,14 @@ Two layers, use whichever fits:
      rage+enchant spells.
    Edit the number, `!reload`. Done.
 
+   **Archetype verbs (`arch_*`).** A whole archetype's *behaviour* is also scriptable: `spell_verbs.lua` may
+   define `arch_damage` (and, as they're migrated, `arch_heal`/`arch_buff`/…). When present, every spell of
+   that archetype runs the verb instead of the C# handler — the engine pre-evaluates the spell's formula and
+   mana cost and hands them in as `ctx.amount` / `ctx.mana`, so the verb stays pure logic
+   (`return ctx:magicDamage(ctx.amount, ctx.mana)`). Delete or rename the verb and the archetype falls straight
+   back to its built-in C# handler, so this is safe to experiment with live. A per-spell `SpellParams` row
+   (below) still wins over the archetype verb for that one spell.
+
 2. **New behavior (verb/row Lua).** For a spell whose logic isn't just a formula, use the **verb/row** model:
    - Add a row to `SpellParams.csv` keyed by the spell identifier, with a `verb` column naming a Lua verb and
      whatever numeric params that verb reads.
