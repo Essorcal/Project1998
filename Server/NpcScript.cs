@@ -27,7 +27,8 @@ public static class NpcScript
 {
     private static readonly object _lock = new();
     private static Script? _script;
-    private static Table? _npcs;
+    private static Table? _npcs;       // npcs[key]      = function(ctx)         -- click dialog
+    private static Table? _npcsSay;    // npcs_say[key]  = function(ctx, speech)  -- spoken trigger, returns consumed?
 
     /// <summary>(Re)load the NPC dialog script. On any error the Lua NPC path is simply disabled.</summary>
     public static void Load(string? path)
@@ -36,6 +37,7 @@ public static class NpcScript
         {
             _script = null;
             _npcs = null;
+            _npcsSay = null;
             if (path is null || !File.Exists(path)) return;
             try
             {
@@ -45,7 +47,12 @@ public static class NpcScript
                 s.DoString(File.ReadAllText(path), null, "npc_dialog");
                 var n = s.Globals.Get("npcs");
                 if (n.Type == DataType.Table && s.Globals.Get("__make_ctx").Type == DataType.Function)
-                { _script = s; _npcs = n.Table; }
+                {
+                    _script = s;
+                    _npcs = n.Table;
+                    var sy = s.Globals.Get("npcs_say");            // optional — speech-trigger handlers
+                    _npcsSay = sy.Type == DataType.Table ? sy.Table : null;
+                }
                 else Log.Info("!! npc_dialog.lua missing global `npcs` table or `__make_ctx` — Lua NPC path disabled");
             }
             catch (Exception e)
@@ -55,7 +62,7 @@ public static class NpcScript
         }
     }
 
-    /// <summary>Is there a Lua dialog script for this NPC identifier?</summary>
+    /// <summary>Is there a Lua CLICK dialog script for this NPC identifier?</summary>
     public static bool Has(string npcKey)
     {
         lock (_lock)
@@ -64,28 +71,59 @@ public static class NpcScript
         }
     }
 
+    /// <summary>Is there a Lua SPEECH-trigger script (npcs_say) for this NPC identifier?</summary>
+    public static bool HasSay(string npcKey)
+    {
+        lock (_lock)
+        {
+            return _npcsSay is not null && npcKey.Length > 0 && _npcsSay.Get(npcKey).Type == DataType.Function;
+        }
+    }
+
     /// <summary>Drive one Lua NPC conversation to completion. Creates the coroutine, then loops: resume it
     /// (locked), await the yielded dialog op via <paramref name="ctx"/> (unlocked), resume with the reply. A Lua
     /// error aborts just this conversation (logged); it can't crash the session (the caller wraps this in
     /// try/catch too).</summary>
-    public static async Task RunAsync(NpcContext ctx, string npcKey)
+    public static Task RunAsync(NpcContext ctx, string npcKey)
     {
         DynValue coro, ctxTable;
         lock (_lock)
         {
-            if (_script is null || _npcs is null || _npcs.Get(npcKey).Type != DataType.Function) return;
+            if (_script is null || _npcs is null || _npcs.Get(npcKey).Type != DataType.Function) return Task.CompletedTask;
             ctxTable = _script.Call(_script.Globals.Get("__make_ctx"));
             coro = _script.CreateCoroutine(_npcs.Get(npcKey));
         }
+        return Drive(ctx, coro, new[] { ctxTable });
+    }
 
+    /// <summary>Run a Lua SPEECH handler <c>npcs_say[key](ctx, speech)</c> to completion. Returns true if the
+    /// script CONSUMED the speech (explicit Lua <c>return true</c>) — the caller then stops dispatching; false
+    /// (or no return) lets other NPCs / the C# say-handlers have a go.</summary>
+    public static async Task<bool> RunSayAsync(NpcContext ctx, string npcKey, string speech)
+    {
+        DynValue coro, ctxTable;
+        lock (_lock)
+        {
+            if (_script is null || _npcsSay is null || _npcsSay.Get(npcKey).Type != DataType.Function) return false;
+            ctxTable = _script.Call(_script.Globals.Get("__make_ctx"));
+            coro = _script.CreateCoroutine(_npcsSay.Get(npcKey));
+        }
+        var ret = await Drive(ctx, coro, new[] { ctxTable, DynValue.NewString(speech) });
+        return ret.Type == DataType.Boolean && ret.Boolean;
+    }
+
+    // Drive a coroutine to completion: resume (locked), await the yielded dialog op (unlocked), repeat. Returns
+    // the coroutine's final return DynValue. Shared by the click and speech paths.
+    private static async Task<DynValue> Drive(NpcContext ctx, DynValue coro, DynValue[] firstArgs)
+    {
         DynValue yielded;
-        lock (_lock) { yielded = coro.Coroutine.Resume(ctxTable); }
-
+        lock (_lock) { yielded = coro.Coroutine.Resume(firstArgs); }
         while (coro.Coroutine.State == CoroutineState.Suspended)
         {
             var reply = await Dispatch(ctx, yielded);
             lock (_lock) { yielded = coro.Coroutine.Resume(reply); }
         }
+        return yielded;
     }
 
     // Map one yielded request table {op=..., ...} to the real NpcContext primitive. Suspending ops (say/menu/

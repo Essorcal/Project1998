@@ -486,6 +486,12 @@ public static partial class Content
     public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> ItemParams { get; private set; } =
         new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
+    // NPC composition (data/game-data/NpcAbilities.csv): NpcKey -> the ability NAMES it's built from (a
+    // pipe-list). NpcScripts.For resolves each name to its C# INpcAbility instance (NpcScripts.AbilityByName).
+    // The "which abilities" is data; the ability code stays code. Hot-reloads via !reload.
+    public static IReadOnlyDictionary<string, string[]> NpcCompositions { get; private set; } =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
     public static void Load()
     {
         Maps = LoadMaps(ResolvePath("NEXUS_MAP_INDEX", "data", "game-data", "map_index.csv"));
@@ -551,6 +557,7 @@ public static partial class Content
         TrapSpells = LoadTrapSpells(ResolvePath("NEXUS_TRAPS", "data", "game-data", "Traps.csv"));
         (MorphSpells, MorphDispatchSpells) = LoadMorphs(ResolvePath("NEXUS_MORPHS", "data", "game-data", "Morphs.csv"));
         (RageAmount, EnchantSpells) = LoadSpellMods(ResolvePath("NEXUS_SPELL_MODS", "data", "game-data", "SpellMods.csv"));
+        NpcCompositions = LoadNpcCompositions(ResolvePath("NEXUS_NPC_ABILITIES", "data", "game-data", "NpcAbilities.csv"));
         Doors.SetConfig(LoadDoors(ResolvePath("NEXUS_DOORS", "data", "game-data", "Doors.csv")));
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
                  $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms loaded" +
@@ -1521,6 +1528,19 @@ public static partial class Content
                 else
                     d[src] = (dest, dx, dy);
             }
+        }
+        return d;
+    }
+
+    // NpcAbilities.csv: NpcKey -> pipe-list of ability names (resolved to instances by NpcScripts.AbilityByName).
+    private static Dictionary<string, string[]> LoadNpcCompositions(string? path)
+    {
+        var d = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("NpcKey", "").Trim();
+            if (k.Length == 0) continue;
+            d[k] = c.GetValueOrDefault("Abilities", "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         }
         return d;
     }

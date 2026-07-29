@@ -726,7 +726,7 @@ public sealed partial class Session
             var def = Content.NpcById(npc.NpcDefId);
             if (def is null) continue;
             var handlers = NpcScripts.For(def).OfType<INpcSayHandler>().ToList();
-            if (handlers.Count > 0) candidates.Add((npc, def, handlers));
+            if (handlers.Count > 0 || NpcScript.HasSay(def.Key)) candidates.Add((npc, def, handlers));   // C# and/or Lua say-handler
         }
         if (candidates.Count > 0) _ = RunNpcSayAsync(candidates, say);
     }
@@ -738,8 +738,11 @@ public sealed partial class Session
             foreach (var (npc, def, handlers) in candidates)
             {
                 var ctx = new NpcContext(this, npc, def);
+                // Lua speech handler wins per-NPC (like the click path); C# handlers are the fallback for
+                // NPCs not yet migrated. First handler to CONSUME the speech ends dispatch.
+                if (NpcScript.HasSay(def.Key) && await NpcScript.RunSayAsync(ctx, def.Key, speech)) return;
                 foreach (var h in handlers)
-                    if (await h.OnSay(ctx, speech)) return;   // first NPC to consume the speech ends dispatch
+                    if (await h.OnSay(ctx, speech)) return;
             }
         }
         catch (Exception e) { Log.Info($"!! NPC say error: {e.Message}"); }

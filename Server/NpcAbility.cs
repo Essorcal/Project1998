@@ -656,93 +656,9 @@ public sealed class LibrarianAbility : INpcAbility, INpcSayHandler
 // (see NpcScript.Has). Its speech-only companions below (rabbit/rock/tiger) stay in C# until the Lua NPC layer
 // grows an OnSay/speech-trigger hook (Phase 3).
 
-/// <summary>The talking rabbit of Guol Valley (chu_rua_rabbit.lua) — a "magic animal" that hints at the ginseng
-/// quest. Speech-triggered: "hello" / "tiger" / "ginseng".</summary>
-public sealed class ChuRuaRabbitAbility : INpcAbility, INpcSayHandler
-{
-    public static readonly ChuRuaRabbitAbility Instance = new();
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
-    public async Task<bool> OnSay(NpcContext ctx, string speech)
-    {
-        switch (speech)
-        {
-            case "hello":
-                await ctx.Say("Hmmm..", "What is it you want?");
-                return true;
-            case "tiger":
-                ctx.Bubble("Fool was I to go north for ginseng. He almost ate me!");
-                return true;
-            case "ginseng":
-                await ctx.Say(
-                    "What a bitter root! It's as bad tasting as the mountains in which it grows.",
-                    "Some trickster cousin told me I should go up the left path and have some of the delicious root.",
-                    "Fool was I to go into the awful mountains. I followed this stream up to those horrid mountain's foot, and hopped up a dangerous path.");
-                return true;
-            default:
-                return false;
-        }
-    }
-}
-
-/// <summary>The Ancient dolmen of Guol Divide (chu_rua_rock.lua) — say "hello" and it gives the key hint: to
-/// pass the tiger, allude to one of the rabbits that tricked him.</summary>
-public sealed class ChuRuaRockAbility : INpcAbility, INpcSayHandler
-{
-    public static readonly ChuRuaRockAbility Instance = new();
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
-    public async Task<bool> OnSay(NpcContext ctx, string speech)
-    {
-        if (speech != "hello") return false;
-        await ctx.Say(
-            "O, it must be good to have feet.",
-            "You've been to the sea I'll bet from the smell of you.",
-            "That is where I have lived for so long until now; by the sea.",
-            "Thank you for spending a moment with this old soul. Be careful of the tiger to the north.",
-            "He only thinks of food, though you might distract him if you allude to one of the rabbits that tricked him");
-        return true;
-    }
-}
-
-/// <summary>The tiger guarding the ginseng on Guol Tiger Pass (chu_rua_tiger.lua). Say "rabbit" and pick the
-/// right place he ran off to (Forest) and he leaves — warping you to the tiger-free copy (map 1117) where you
-/// can finally take the ginseng.</summary>
-public sealed class ChuRuaTigerAbility : INpcAbility, INpcSayHandler
-{
-    public static readonly ChuRuaTigerAbility Instance = new();
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
-    public async Task<bool> OnSay(NpcContext ctx, string speech)
-    {
-        switch (speech)
-        {
-            case "hello":
-                ctx.Bubble("Hello, Dinner!");
-                return true;
-            case "ginseng":
-                ctx.Bubble("I'd rather eat you!");
-                return true;
-            case "rabbit":
-                await ctx.Say("What? Rabbit? Was it that foul hopping furre that trapped me in a pit?");
-                int choice = await ctx.Menu("I'd love to rend his neck. Where did you see him?",
-                    new[] { "Warrior's Guild", "Forest", "Town", "Mage's Guild" });
-                if (choice == 2)   // Forest = correct
-                {
-                    await ctx.Say("Mmm. Well then I guess I'll return him a favor with grinning teeth.");
-                    ctx.Notify("The tiger leaves to the south.");
-                    // RTK warps to a tiger-free copy (map 1117), but that map isn't renderable in our set, so
-                    // instead flag the tiger as distracted — TryGinseng then lets you take the root on 1116.
-                    ctx.SetReg("chu_rua_tiger_gone", 1);
-                }
-                else if (choice == 4)
-                    await ctx.Say("What, did someone pull him out of a hat?",
-                                  "So far? Oh well, I guess I'll have a snack beforehand... and you look tasty!");
-                else
-                    await ctx.Say("So far? Oh well, I guess I'll have a snack beforehand... and you look tasty!");
-                return true;
-            default:
-                return false;
-        }
-    }
-}
+// Chu Rua's speech companions (rabbit / rock / tiger) are now Lua speech scripts (npc_dialog.lua ->
+// npcs_say.ChuRua*Npc), driven by the OnSay hook in Session.RunNpcSayAsync (Lua wins per-NPC, C# falls back).
+// Their C# abilities were deleted along with the turtle's.
 
 /// <summary>Change Face / Change Gender (RTK rogue_guild_shaman.lua: <c>general_npc_funcs.changeFace</c> /
 /// <c>changeGender</c> — the third option, Eyes, isn't ported). Both are genuinely visible on this client:
