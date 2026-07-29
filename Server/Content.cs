@@ -501,6 +501,34 @@ public static partial class Content
     public static (int HpMin, int HpMax, int MpMin, int MpMax) PathGrowthFor(int path) =>
         PathGrowth.TryGetValue(path, out var g) ? g : PathGrowth.TryGetValue(0, out var p) ? p : (45, 56, 32, 37);
 
+    // Named engine scalars a deployment may retune without a rebuild (data/game-data/ServerTuning.csv, key,value).
+    // These sit on the tier-1/tier-3 line — real mechanics, but harmless to expose as hand-editable config. Typed
+    // accessors fall back to the historical hardcoded default if the key is absent, so a missing file is safe.
+    public static IReadOnlyDictionary<string, double> Tuning { get; private set; } =
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    private static double Tune(string key, double dflt) => Tuning.TryGetValue(key, out var v) ? v : dflt;
+    public static int MailMinLevel => (int)Tune("MailMinLevel", 10);   // min level to view/send nmail
+    public static int SpeechRange  => (int)Tune("SpeechRange", 8);     // tiles (Chebyshev) an NPC "hears" from
+    public static uint BankMax     => (uint)Tune("BankMax", 100_000_000);   // per-account coin cap
+
+    // Door-object graphic toggle table (data/game-data/DoorObjects.csv, transcribed from RTK open.lua `openDoors`).
+    // Two lookups: DoorSwaps maps a faced object id -> (startDx, new object ids) for the explicit doors (single-tile
+    // swings and 3-tile-wide runs where the faced piece tells us which corner we're on); DoorDeltas is the set of
+    // ranges whose open<->closed pair differs by a fixed signed delta (single tile). See Content.DoorToggleFor.
+    public static IReadOnlyDictionary<int, (int StartDx, ushort[] Objs)> DoorSwaps { get; private set; } =
+        new Dictionary<int, (int, ushort[])>();
+    public static IReadOnlyList<(int Lo, int Hi, int Delta)> DoorDeltas { get; private set; } =
+        new List<(int, int, int)>();
+    /// <summary>Given the object a player faces, return the swapped door run (startDx + new ids), or null if it
+    /// isn't a door. Mirrors the old Session.Movement.DoorToggle switch, now data-driven.</summary>
+    public static (int StartDx, ushort[] Objs)? DoorToggleFor(int obj)
+    {
+        if (DoorSwaps.TryGetValue(obj, out var s)) return s;
+        foreach (var (lo, hi, delta) in DoorDeltas)
+            if (obj >= lo && obj <= hi) return (0, new[] { (ushort)(obj + delta) });
+        return null;
+    }
+
     public static void Load()
     {
         Maps = LoadMaps(ResolvePath("NEXUS_MAP_INDEX", "data", "game-data", "map_index.csv"));
@@ -568,6 +596,8 @@ public static partial class Content
         (RageAmount, EnchantSpells) = LoadSpellMods(ResolvePath("NEXUS_SPELL_MODS", "data", "game-data", "SpellMods.csv"));
         NpcCompositions = LoadNpcCompositions(ResolvePath("NEXUS_NPC_ABILITIES", "data", "game-data", "NpcAbilities.csv"));
         PathGrowth = LoadPathGrowth(ResolvePath("NEXUS_PATH_GROWTH", "data", "game-data", "PathGrowth.csv"));
+        (DoorSwaps, DoorDeltas) = LoadDoorObjects(ResolvePath("NEXUS_DOOR_OBJECTS", "data", "game-data", "DoorObjects.csv"));
+        Tuning = LoadTuning(ResolvePath("NEXUS_SERVER_TUNING", "data", "game-data", "ServerTuning.csv"));
         Doors.SetConfig(LoadDoors(ResolvePath("NEXUS_DOORS", "data", "game-data", "Doors.csv")));
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
                  $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms loaded" +
@@ -1555,6 +1585,48 @@ public static partial class Content
             d[p] = (a, b, e, f);
         }
         return d;
+    }
+
+    // ServerTuning.csv: named scalar config, key -> double (typed accessors above apply per-key defaults).
+    private static Dictionary<string, double> LoadTuning(string? path)
+    {
+        var d = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length == 0) continue;
+            if (double.TryParse(c.GetValueOrDefault("value", ""), System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out var v))
+                d[k] = v;
+        }
+        return d;
+    }
+
+    // DoorObjects.csv: two row kinds. `map` rows are exact faced-object swaps (result = `;`-separated new ids at
+    // startDx); `delta` rows are single-tile [lo,hi] ranges whose result is a signed delta added to the faced id.
+    private static (Dictionary<int, (int, ushort[])>, List<(int, int, int)>) LoadDoorObjects(string? path)
+    {
+        var swaps = new Dictionary<int, (int, ushort[])>();
+        var deltas = new List<(int, int, int)>();
+        foreach (var c in ReadCsv(path))
+        {
+            var kind = c.GetValueOrDefault("kind", "").Trim();
+            if (!int.TryParse(c.GetValueOrDefault("lo"), out var lo)) continue;
+            if (!int.TryParse(c.GetValueOrDefault("hi"), out var hi)) continue;
+            var result = c.GetValueOrDefault("result", "").Trim();
+            if (kind == "map")
+            {
+                int.TryParse(c.GetValueOrDefault("startDx", "0"), out var dx);
+                var ids = result.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => ushort.TryParse(s, out var u) ? u : (ushort)0).ToArray();
+                if (ids.Length > 0) swaps[lo] = (dx, ids);   // map rows use lo == hi as the exact faced id
+            }
+            else if (kind == "delta" && int.TryParse(result, out var d))
+            {
+                deltas.Add((lo, hi, d));
+            }
+        }
+        return (swaps, deltas);
     }
 
     // NpcAbilities.csv: NpcKey -> pipe-list of ability names (resolved to instances by NpcScripts.AbilityByName).

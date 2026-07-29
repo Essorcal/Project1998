@@ -359,7 +359,7 @@ public sealed partial class Session
         }
 
         ushort obj = md.Obj(fx, fy);
-        var door = DoorToggle(obj);
+        var door = Content.DoorToggleFor(obj);
         Log.Info($"   -> OPEN('o') facing={_facing} front=({fx},{fy}) obj={obj} door={(door is null ? "no" : "yes")}");
         if (door is null) return;
 
@@ -372,69 +372,9 @@ public sealed partial class Session
         _world.Broadcast(_char.Map, p => p.PatchObjRow((ushort)sx, (ushort)fy, objs));
     }
 
-    // The door-object toggle table, transcribed from RTK open.lua `openDoors`. Given the object the player is
-    // facing, returns (startDx, newObjectIds left->right) — startDx is where the affected run begins relative to
-    // the faced tile (a 3-wide door reports which corner you're on), and the ids are the swapped graphics for
-    // that run. Mappings are symmetric (closed<->open) so pressing 'o' twice returns the door to its first state.
-    // Returns null if the faced object is not a door. (RTK's 17408+ range doors are for maps whose object ids
-    // exceed the 4.x 14-bit field and aren't served here, so they're omitted.)
-    private static (int startDx, ushort[] objs)? DoorToggle(ushort obj)
-    {
-        switch (obj)
-        {
-            // single-tile swinging doors
-            case 51:  return (0, new ushort[] { 114 });
-            case 114: return (0, new ushort[] { 51 });
-            case 57:  return (0, new ushort[] { 115 });
-            case 115: return (0, new ushort[] { 57 });
-            case 76:  return (0, new ushort[] { 116 });
-            case 116: return (0, new ushort[] { 76 });
-            case 82:  return (0, new ushort[] { 117 });
-            case 117: return (0, new ushort[] { 82 });
-            // 3-tile-wide doors — the faced piece tells us which of the three tiles we're standing at
-            case 53:  return (0,  new ushort[] { 102, 103, 104 });
-            case 54:  return (-1, new ushort[] { 102, 103, 104 });
-            case 55:  return (-2, new ushort[] { 102, 103, 104 });
-            case 102: return (0,  new ushort[] { 53, 54, 55 });
-            case 103: return (-1, new ushort[] { 53, 54, 55 });
-            case 104: return (-2, new ushort[] { 53, 54, 55 });
-            case 78:  return (0,  new ushort[] { 105, 106, 107 });
-            case 79:  return (-1, new ushort[] { 105, 106, 107 });
-            case 80:  return (0,  new ushort[] { 105, 106, 107 });
-            case 105: return (0,  new ushort[] { 78, 79, 80 });
-            case 106: return (-1, new ushort[] { 78, 79, 80 });
-            case 107: return (-2, new ushort[] { 78, 79, 80 });
-            case 97:  return (-1, new ushort[] { 108, 109, 110 });
-            case 109: return (-1, new ushort[] { 96, 97, 98 });
-            case 100: return (-1, new ushort[] { 111, 112, 113 });
-            case 112: return (-1, new ushort[] { 99, 100, 101 });
-        }
-        // range-based single-tile toggles: open<->closed differ by a fixed delta
-        int o = obj;
-        int? nn = obj switch
-        {
-            >= 340 and <= 341 => o + 20,
-            >= 342 and <= 343 => o + 22,   // Buya door 342 -> 364
-            >= 344 and <= 345 => o + 18,
-            >= 346 and <= 347 => o + 20,
-            >= 348 and <= 349 => o + 22,
-            >= 350 and <= 353 => o + 24,
-            >= 354 and <= 355 => o + 14,
-            >= 360 and <= 361 => o - 20,
-            >= 362 and <= 363 => o - 18,
-            >= 364 and <= 365 => o - 22,   // 364 -> 342 (close it again)
-            >= 366 and <= 367 => o - 20,
-            >= 368 and <= 369 => o - 14,
-            >= 370 and <= 371 => o - 22,
-            >= 374 and <= 377 => o - 24,
-            >= 378 and <= 379 => o + 16,
-            >= 380 and <= 381 => o + 107,
-            >= 394 and <= 395 => o - 16,
-            >= 487 and <= 488 => o - 107,
-            _ => (int?)null,
-        };
-        return nn is null ? null : (0, new ushort[] { (ushort)nn.Value });
-    }
+    // The door-object toggle table now lives in data/game-data/DoorObjects.csv (RTK open.lua `openDoors`), loaded
+    // into Content.DoorSwaps / Content.DoorDeltas and queried via Content.DoorToggleFor. RTK's 17408+ range doors
+    // (maps whose object ids exceed the 4.x 14-bit field) aren't served and were never in the table.
 
     // Server->client 0x06 CELL PATCH: redraw a horizontal run of cells starting at (startX, y), setting each
     // cell's object to objs[i] while keeping its ground word (tile + passability) unchanged. This is how doors

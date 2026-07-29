@@ -89,8 +89,12 @@ Add a row, pick/author a verb, `!reload`.
 - Shops: `ShopStock.csv` (flat stock) or `ShopCatalogues.csv` (sub-category menus).
 - Drops: `MobDrops.csv`.
 - Maps/warps: `map_index.csv`, `Maps.csv`, `Warps.csv`; location/warp geometry in `Inns.csv`,
-  `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `FallRooms.csv`, `Doors.csv`.
+  `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `FallRooms.csv`, `Doors.csv`
+  (lock/key), `DoorObjects.csv` (the 'o'-key open/close graphic swap: `map` rows are exact faced-object swaps,
+  `delta` rows are `[lo,hi]` ranges whose open/closed ids differ by a fixed delta).
 - Progression: `LevelExp.csv` (exp curve), `PathGrowth.csv` (per-class HP/MP gain per level).
+- Server scalars: `ServerTuning.csv` (`key,value`) — `MailMinLevel`, `SpeechRange` (NPC hearing radius),
+  `BankMax` (coin cap). A missing key falls back to its historical default, so the file is optional.
 
 ## Provenance & confidence
 
@@ -111,8 +115,8 @@ These are *mechanism*, not tunable content:
   could be Lua later; the per-tick baseline stays C#.)
 - **Spell/trap trigger effects welded to a mechanic** — e.g. the trap trigger switch in `World`, the family
   classification sets (which spells are "stealth"/"sacrifice"/…). These are *code that reads data*, not data.
-- **A few scalars** still in code: `MailMinLevel`, `SpeechRange`, `BankMax`, the door-object graphic table.
-  Candidates for a future `ServerTuning.csv`; not yet extracted.
+- **The family classification sets** (which spells are "stealth"/"sacrifice"/…) and the align-fx ladder are
+  code that *reads* data, not tunable content.
 
 ## Build & verify (for engine changes)
 

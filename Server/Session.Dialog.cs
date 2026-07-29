@@ -128,7 +128,6 @@ public sealed partial class Session
     // completes the TaskCompletionSource inline), so it never races the session's other state.
     private readonly record struct DialogReply(byte Kind, int Step, int MenuIndex, string Input);
     private TaskCompletionSource<DialogReply>? _dlgReply;   // the prompt currently awaiting a 0x3A reply
-    private const uint BankMax = 100_000_000;              // RTK per-account coin cap
 
     private void OpenNpcDialog(Mob npc)
     {
@@ -562,7 +561,7 @@ public sealed partial class Session
     {
         var s = await DlgInput(npc, $"You carry {_char.Coins} coins. How much will you deposit?");
         if (s is null) return;   // cancelled
-        long amt = Math.Min(Math.Min(ParseAmount(s), _char.Coins), BankMax - _char.BankMoney);
+        long amt = Math.Min(Math.Min(ParseAmount(s), _char.Coins), Content.BankMax - _char.BankMoney);
         if (amt <= 0) { await DlgSay(npc, "You deposit nothing."); return; }
         _char.Coins -= (uint)amt;
         _char.BankMoney += (uint)amt;
@@ -579,7 +578,7 @@ public sealed partial class Session
     {
         if (IsCoinWord(name))
         {
-            long amt = Math.Min(Math.Min(amount > 0 ? amount : _char.Coins, _char.Coins), BankMax - _char.BankMoney);
+            long amt = Math.Min(Math.Min(amount > 0 ? amount : _char.Coins, _char.Coins), Content.BankMax - _char.BankMoney);
             if (amt <= 0) { NpcBubble(npc, "You deposit nothing."); return true; }
             _char.Coins -= (uint)amt;
             _char.BankMoney += (uint)amt;
@@ -710,7 +709,7 @@ public sealed partial class Session
         long v = 0;
         if (s is not null)
             foreach (char ch in s)
-                if (char.IsDigit(ch)) { v = v * 10 + (ch - '0'); if (v > BankMax) return BankMax; }
+                if (char.IsDigit(ch)) { v = v * 10 + (ch - '0'); if (v > Content.BankMax) return Content.BankMax; }
         return v;
     }
 

@@ -327,7 +327,7 @@ public sealed partial class Session
     // whether the 4.95 client's compose UI actually emits this.
     private void HandleNmailSend(byte[] dec)
     {
-        if (_char.Level < MailMinLevel) { SendMiniText($"You must be at least level {MailMinLevel} to view/send nmail."); return; }
+        if (_char.Level < Content.MailMinLevel) { SendMiniText($"You must be at least level {Content.MailMinLevel} to view/send nmail."); return; }
         try
         {
             if (dec.Length < 4) { SendBoardAck(6, false, "That letter didn't go through."); return; }
@@ -556,7 +556,6 @@ public sealed partial class Session
 
     // ---- mail (RTK nmail — see Mail.cs's doc for why compose is chat-command-only) -------------
 
-    private const int MailMinLevel = 10;   // RTK clif_handle_boards case 6: "You must be at least level 10 to view/send nmail."
 
     // Shared read path: RTK case 3 aimed at board 0 (SendBoardReadPost) and "!mail read <id>" both funnel
     // through here so reading behaves identically either way — marks it read, and if it's carrying an
@@ -664,7 +663,7 @@ public sealed partial class Session
     // set, is "<item> [amount] | <subject> | <body>" (senditem's own dispatch already stripped the name).
     private void SendMailCommand(string spec, string? itemArg)
     {
-        if (_char.Level < MailMinLevel) { SendMiniText($"You must be at least level {MailMinLevel} to view/send nmail."); return; }
+        if (_char.Level < Content.MailMinLevel) { SendMiniText($"You must be at least level {Content.MailMinLevel} to view/send nmail."); return; }
 
         var parts = spec.Split('|');
         if (parts.Length < 3) { SendLog("usage: !mail send <name> | <subject> | <body>"); return; }
@@ -714,14 +713,13 @@ public sealed partial class Session
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
     // handler that consumes the speech (runs a dialog) wins, so unrelated chatter just falls through. Async
     // (dialog awaits replies), so fire-and-forget like OpenNpcDialog. See INpcSayHandler / RTK onSayClick.
-    private const int SpeechRange = 8;   // tiles (Chebyshev) an NPC will "hear" the player from
     private void DispatchSpeech(string text)
     {
         string say = text.Trim().ToLowerInvariant();
         if (say.Length == 0 || say[0] == '!') return;   // empty / GM command -> not NPC speech
 
         var candidates = new List<(Mob npc, NpcDef def, List<INpcSayHandler> handlers)>();
-        foreach (var npc in _world.NpcsNear(_char.Map, _char.X, _char.Y, SpeechRange))
+        foreach (var npc in _world.NpcsNear(_char.Map, _char.X, _char.Y, Content.SpeechRange))
         {
             var def = Content.NpcById(npc.NpcDefId);
             if (def is null) continue;
