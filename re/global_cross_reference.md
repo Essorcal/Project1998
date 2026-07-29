@@ -1,0 +1,151 @@
+# Global mob/drop cross-reference (zone-independent)
+
+Archive mobs checked: 427. Excluded vortex-era-only pages: ['anchorite', 'asmodi', 'assassin', 'bandit', 'dread', 'earth', 'events', 'gogoonisland', 'greyhand', 'hillmen', 'hunter', 'magus', 'shadow', 'water', 'wind'].
+
+
+## Archive mobs with NO matching Description in mobs.csv (61)
+
+- Admiral blaze
+- Aklak
+- Beach monkey
+- Black rabbit
+- Boar guardian
+- Brown hare
+- Brown rabbit
+- Crooked Bandit
+- Dark squirrel
+- Darting Seahorse
+- Devious Bandit
+- Engrossed grizzly
+- Flametongue General
+- Flametongue Private
+- Flametongue Sargeant
+- Flametongue captain
+- Flametongue colonel
+- Flametongue corporal
+- Flametongue master
+- Flametongue sergeant
+- Frenetic grizzly
+- Fresh butterfly
+- Frost bear
+- Furious saseum
+- Galled saseum
+- Green Gator
+- Gri-Yal
+- Hired hand
+- Hypnotic yamour
+- Iron macenary
+- Le Chipe
+- Magnetized grizzly
+- Mesmeric grizzly
+- Monstrous monkey
+- Moonscale Serpent
+- Mountain goat
+- Nettled saseum
+- Not Above
+- Not below
+- Omphalos
+- Overseer Sentry
+- Pheasant
+- Restless yamour
+- Rock snake
+- Sea lobster
+- Shady Bandit
+- Snow bear
+- Spitting Squid
+- Spurting Squid
+- Stealthy Bandit
+- Sun feather
+- Sunscale Serpent
+- Sweet Butterfly
+- Tan Gator
+- Turbulent saseum
+- Vitalizing yamour
+- Water snake
+- Wild snake
+- Wild yamour
+- Wood snake
+- Wood wolf
+
+## Archive-documented mobs that exist in mobs.csv but are NEVER spawned anywhere (AreaSpawns.csv + Spawns0.csv) (0)
+
+
+## Spawned mobs whose real drop table is missing an archive-documented item (77)
+
+- **Bear** (`bear`): missing ('bear s fur',) -- our current loot: ('bear fur',)
+- **Boar champion** (`boar_champion`): missing ('star helmet',) -- our current loot: ('amber', 'dark amber', 'dark staff', 'gold', 'magical dust', 'white amber')
+- **Dark mantis** (`dark_mantis`): missing ('angel s tear',) -- our current loot: ('dark amber', 'white amber')
+- **Death Wish** (`death_wish`): missing ('ice saber',) -- our current loot: ('dark amber', 'ice sabre', 'white amber')
+- **Dirt mantis** (`dirt_mantis`): missing ('titanium lance',) -- our current loot: ('sen glove', 'steelthorn')
+- **Divine ox** (`divine_ox`): missing ('magical dust',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to water', 'white amber')
+- **Divine pig** (`divine_pig`): missing ('moon helm',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to mountain', 'white amber')
+- **Divine rat** (`divine_rat`): missing ('coins', 'pearl charm') -- our current loot: ('amber', 'dark amber', 'gold', 'key to pond', 'white amber')
+- **Divine rooster** (`divine_rooster`): missing ('ambrosia',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to heaven', 'white amber')
+- **Divine sheep** (`divine_sheep`): missing ('electra',) -- our current loot: ('amber', 'dark amber', 'gold', 'ju jak key', 'white amber')
+- **Dog assassin** (`dog_assassin`): missing ('lucky coin',) -- our current loot: ('amber', 'cursed blade', 'dark amber', 'fragile rose', 'gold', 'white amber')
+- **Dog cutthroat** (`dog_cutthroat`): missing ('lucky coin',) -- our current loot: ('amber', 'corrupted blade', 'dark amber', 'fragile rose', 'gold', 'white amber')
+- **Dog guardian** (`dog_guardian`): missing ('battle helm',) -- our current loot: ('amber', 'corrupted blade', 'fragile rose', 'white amber')
+- **Dog sentry** (`dog_sentry`): missing ('battle helm', 'lucky coin') -- our current loot: ('amber', 'cursed blade', 'dark amber', 'fragile rose')
+- **Dragon avenger** (`dragon_avenger`): missing ('enchanted spike il san spike',) -- our current loot: ('amber', 'dark amber', 'dragon s liver', 'ee san spike', 'gold', 'white amber')
+- **Dragon defender** (`dragon_defender`): missing ('titanium glove',) -- our current loot: ('dark amber', 'dragon s liver', 'ee san spike', 'white amber')
+- **Dragon guardian** (`dragon_guardian`): missing ('titanium glove',) -- our current loot: ('dragon s liver', 'il san spike')
+- **Dragon sentry** (`dragon_sentry`): missing ('titanium glove',) -- our current loot: ('dragon s liver', 'spike')
+- **Dragon slayer** (`dragon_slayer`): missing ('enchanted spike',) -- our current loot: ('amber', 'dark amber', 'dragon s liver', 'gold', 'il san spike', 'white amber')
+- **Gim Yi** (`gimyi`): missing ('n a',) -- our current loot: ('iron statue', 'iron sword')
+- **Hare witch** (`hare_witch`): missing ('might spear',) -- our current loot: ('amber', 'dark amber', 'gold', 'lucky coin', 'star helm', 'white amber')
+- **Hooves** (`hooves`): missing ('hoof sabre', 'iron sword', 'long spear') -- our current loot: ('dark amber', 'flameblade', 'pearl charm')
+- **Horse avenger** (`horse_avenger`): missing ('faerie light',) -- our current loot: ('amber', 'dark amber', 'flameblade', 'gold', 'pearl charm', 'white amber')
+- **Horse chongun** (`horse_chongun`): missing ('fragile rose',) -- our current loot: ('amber', 'dark amber', 'gold', 'mythic sabre', 'pearl charm', 'white amber')
+- **Horse defender** (`horse_defender`): missing ('hoof sabre', 'long spear') -- our current loot: ('dark amber', 'flameblade', 'pearl charm')
+- **Horse do** (`horse_do`): missing ('flameblade',) -- our current loot: ('amber', 'dark amber', 'gold', 'hoof sabre', 'pearl charm', 'white amber')
+- **Horse guardian** (`horse_guardian`): missing ('fragile rose', 'hoof sabre', 'long spear') -- our current loot: ('amber', 'mythic sabre', 'pearl charm')
+- **Horse guardsman** (`horse_guardsman`): missing ('iron sword', 'long spear') -- our current loot: ('amber', 'hoof sabre', 'pearl charm')
+- **Horse sentry** (`horse_sentry`): missing ('long spear',) -- our current loot: ('amber', 'hoof sabre', 'pearl charm')
+- **Horse swordsman** (`horse_swordsman`): missing ('hoof sabre', 'iron sword', 'long spear') -- our current loot: ('amber', 'mythic sabre', 'pearl charm')
+- **Mighty mouse** (`mighty_mouse`): missing ('ambrosia', 'fragile rose', 'pearl charm') -- our current loot: ('amber', 'battle helm', 'cursed staff', 'dark amber', 'gold', 'white amber')
+- **Monkey avenger** (`monkey_avenger`): missing ('battle helm',) -- our current loot: ('amber', 'ambrosia', 'dark amber', 'gold', 'sun helmet', 'white amber')
+- **Monkey basher** (`monkey_basher`): missing ('battle helm',) -- our current loot: ('amber', 'ambrosia', 'dark amber', 'gold', 'moon helmet', 'white amber')
+- **Monkey defender** (`monkey_defender`): missing ('battle helm', 'fragile rose') -- our current loot: ('ambrosia', 'dark amber', 'sun helmet', 'white amber')
+- **Monkey guardian** (`monkey_guardian`): missing ('battle helm',) -- our current loot: ('ambrosia', 'dark amber', 'moon helmet', 'white amber')
+- **Monkey mauler** (`monkey_mauler`): missing ('battle helm', 'fragile rose') -- our current loot: ('amber', 'ambrosia', 'dark amber', 'gold', 'star helmet', 'white amber')
+- **Monkey sentry** (`monkey_sentry`): missing ('battle helm', 'fragile rose') -- our current loot: ('ambrosia', 'star helmet', 'white amber')
+- **Mouse** (`mouse`): missing ('ginseng piece',) -- our current loot: ('rat meat',)
+- **Muck ogre** (`muck_ogre`): missing ('steelthorn',) -- our current loot: ('titanium lance', 'whisper bracelet')
+- **Mythic boar** (`mythic_boar`): missing ('star helm',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to mountain', 'white amber')
+- **Mythic dog** (`mythic_dog`): missing ('tao stone',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to wind', 'white amber')
+- **Mythic hare** (`mythic_hare`): missing ('might spear',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to earth', 'white amber')
+- **Mythic horse** (`mythic_horse`): missing ('scribe s pen',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to thunder', 'white amber')
+- **Mythic rat** (`mythic_rat`): missing ('fragile rose',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to pond', 'white amber')
+- **Mythic rooster** (`mythic_rooster`): missing ('ambrosia',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to heaven', 'white amber')
+- **Ox avenger** (`ox_avenger`): missing ('military fork', 'scribe s pen') -- our current loot: ('amber', 'dark amber', 'gold', 'stone axe', 'tao stone', 'white amber')
+- **Ox charger** (`ox_charger`): missing ('scribe s pen', 'stone axe') -- our current loot: ('amber', 'dark amber', 'gold', 'might spear', 'tao stone', 'white amber')
+- **Ox defender** (`ox_defender`): missing ('long spear', 'scribe s pen') -- our current loot: ('stone axe', 'tao stone')
+- **Ox gorer** (`ox_gorer`): missing ('scribe s pen',) -- our current loot: ('amber', 'dark amber', 'gold', 'military fork', 'tao stone', 'white amber')
+- **Ox guardian** (`ox_guardian`): missing ('long spear', 'scribe s pen') -- our current loot: ('might spear', 'tao stone')
+- **Ox sentry** (`ox_sentry`): missing ('long spear', 'scribe s pen') -- our current loot: ('military fork', 'tao stone')
+- **Pig avenger** (`pig_avenger`): missing ('moon helmet', 'sun helmet') -- our current loot: ('amber', 'dark amber', 'gold', 'magical dust', 'white amber')
+- **Pig champion** (`pig_champion`): missing ('moon helmet',) -- our current loot: ('amber', 'dark amber', 'gold', 'magical dust', 'white amber')
+- **Polar bear** (`polar_bear`): missing ('stardrop',) -- our current loot: ('bear s liver',)
+- **Rabbit sentry** (`rabbit_sentry`): missing ('long spear',) -- our current loot: ('amber', 'fine rabbit meat', 'lucky coin', 'star helm')
+- **Rat avenger** (`rat_avenger`): missing ('ambrosia', 'flamefang') -- our current loot: ('amber', 'battle helm', 'dark amber', 'forsaken staff', 'gold', 'white amber')
+- **Rat defender** (`rat_defender`): missing ('ambrosia',) -- our current loot: ('battle helm', 'forsaken staff', 'white amber')
+- **Rat guardian** (`rat_guardian`): missing ('ambrosia', 'tao stone') -- our current loot: ('amber', 'battle helm', 'corrupted staff')
+- **Rat lord** (`rat_lord`): missing ('ambrosia', 'coins', 'tao stone') -- our current loot: ('amber', 'battle helm', 'corrupted staff', 'dark amber', 'gold', 'white amber')
+- **Rat sentry** (`rat_sentry`): missing ('ambrosia', 'tao stone') -- our current loot: ('amber', 'battle helm', 'cursed staff')
+- **Rooster swordsman** (`rooster_swordsman`): missing ('battle helm', 'tao stone') -- our current loot: ('amber', 'cursed ring', 'dark amber', 'gold', 'scribe s pen', 'white amber')
+- **Shadow mantis** (`shadow_mantis`): missing ('angel s tear', 'electra') -- our current loot: ('star staff', 'titanium glove', 'white amber')
+- **Sheep avenger** (`sheep_avenger`): missing ('enchanted surge il san surge',) -- our current loot: ('amber', 'dark amber', 'ee san surge', 'gold', 'lucky silver coin', 'white amber')
+- **Sheep defender** (`sheep_defender`): missing ('whisper bracelet',) -- our current loot: ('ee san surge', 'lucky silver coin')
+- **Sheep guardian** (`sheep_guardian`): missing ('whisper bracelet',) -- our current loot: ('il san surge', 'lucky silver coin')
+- **Sheep sentry** (`sheep_sentry`): missing ('whisper bracelet',) -- our current loot: ('lucky silver coin', 'surge')
+- **Sheep shepherd** (`sheep_shepherd`): missing ('enchanted surge',) -- our current loot: ('amber', 'dark amber', 'gold', 'il san surge', 'lucky silver coin', 'white amber')
+- **Skeleton je** (`skeleton_je`): missing ('bone', 'yellow amber') -- our current loot: ('dark amber',)
+- **Slime ogre** (`slime_ogre`): missing ('star staff',) -- our current loot: ('electra', 'holy ring')
+- **Snake avenger** (`snake_avenger`): missing ('enchanted charm',) -- our current loot: ('amber', 'dark amber', 'ee san charm', 'gold', 'scribe s book', 'white amber')
+- **Snake mage** (`snake_mage`): missing ('enchanted charm',) -- our current loot: ('amber', 'dark amber', 'gold', 'il san charm', 'scribe s book', 'white amber')
+- **Spirit dragon** (`spirit_dragon`): missing ('enchanted spike',) -- our current loot: ('amber', 'chung ryong key', 'dark amber', 'gold', 'white amber')
+- **Spirit pig** (`spirit_pig`): missing ('moon helm', 'sun helm') -- our current loot: ('amber', 'dark amber', 'gold', 'key to mountain', 'white amber')
+- **Spirit rooster** (`spirit_rooster`): missing ('ambrosia',) -- our current loot: ('amber', 'dark amber', 'gold', 'key to heaven', 'white amber')
+- **Spirit tiger** (`spirit_tiger`): missing ('enchanted blood',) -- our current loot: ('amber', 'baekho key', 'dark amber', 'gold', 'white amber')
+- **Tiger avenger** (`tiger_avenger`): missing ('enchanted blood il san blood',) -- our current loot: ('amber', 'dark amber', 'ee san blood', 'gold', 'purified water', 'white amber')
+- **Tiger slasher** (`tiger_slasher`): missing ('enchanted blood',) -- our current loot: ('amber', 'dark amber', 'gold', 'il san blood', 'purified water', 'white amber')

@@ -2,7 +2,7 @@
 """Extract RTK dynamic mob spawns from rtklua/Accepted/NPCs/mobSpawnHandler.lua.
 
 RTK spawns town/dungeon mobs two ways:
-  * a small static `Spawns0` SQL table (already exported to re/rtk-data/Spawns0.csv) —
+  * a small static `Spawns0` SQL table (already exported to data/game-data/Spawns0.csv) —
     covers only ~19 maps (Kugnae, Buya, a few specials);
   * a big Lua "spawner NPC" that calls, per hunting map:
         handleSpawn(npc, map, {mobIds...}, {counts...}, timer [, minX, minY, maxX, maxY])
@@ -25,7 +25,7 @@ from pathlib import Path
 LUA = Path(__file__).parent / "RTK-Server" / "rtklua" / "Accepted" / "NPCs" / "mobSpawnHandler.lua"
 if not LUA.exists():
     LUA = Path(__file__).parents[1] / "RTK-Server" / "rtklua" / "Accepted" / "NPCs" / "mobSpawnHandler.lua"
-OUT = Path(__file__).parent / "rtk-data" / "AreaSpawns.csv"
+OUT = Path(__file__).parent.parent / "data" / "game-data" / "AreaSpawns.csv"
 
 
 def balanced_args(text, open_idx):

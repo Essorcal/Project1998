@@ -1,4 +1,4 @@
-"""Extract every shop NPC's BUY list from the rtklua NPC scripts into re/rtk-data/ShopStock.csv, so any
+"""Extract every shop NPC's BUY list from the rtklua NPC scripts into data/game-data/ShopStock.csv, so any
 shop-flagged NPC has stock without hand-authoring each catalogue. The server loads this as a fallback behind
 the curated Shops.cs catalogues (which stay authoritative where present).
 
@@ -18,8 +18,9 @@ ROOT = Path(__file__).parent
 NPC_DIR = ROOT / "RTK-Server" / "rtklua" / "Accepted" / "NPCs"
 if not NPC_DIR.exists():
     NPC_DIR = ROOT.parent / "RTK-Server" / "rtklua" / "Accepted" / "NPCs"
-ITEMS = ROOT / "rtk-data" / "Items.csv"
-OUT = ROOT / "rtk-data" / "ShopStock.csv"
+DATA = ROOT.parent / "data" / "game-data"
+ITEMS = DATA / "Items.csv"
+OUT = DATA / "ShopStock.csv"
 
 def valid_item_keys() -> set[str]:
     keys = set()

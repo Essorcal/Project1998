@@ -31,13 +31,13 @@ Dim choice per map (cells = client filesize/4), in priority order:
 
 Name: RTK MapName if present, else "Map <id>" (still warpable by id / by that label).
 
-Output: data/rtk-data/map_index.csv (id,name,xs,ys) — gitignored (logic-only repo, docs §17.1).
+Output: data/game-data/map_index.csv (id,name,xs,ys) — gitignored (logic-only repo, docs §17.1).
 Env overrides: RTK_MAPS_CSV, RTK_MAPS_DIR, CLIENT_MAPS, OUT, RTK_WARPS_CSV.
 """
 import csv, os, struct, glob
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
-DATA       = os.path.join(HERE, '..', 'data', 'rtk-data')
+DATA       = os.path.join(HERE, '..', 'data', 'game-data')
 MAPS_CSV   = os.environ.get('RTK_MAPS_CSV', os.path.join(DATA, 'Maps.csv'))
 WARPS_CSV  = os.environ.get('RTK_WARPS_CSV', os.path.join(DATA, 'Warps.csv'))
 RTK_MAPS   = os.environ.get('RTK_MAPS_DIR', os.path.join(HERE, '..', 'RTK-Server', 'rtkmaps', 'Accepted'))

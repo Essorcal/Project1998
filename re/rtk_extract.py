@@ -10,7 +10,7 @@ import re, csv, os, glob
 
 SQL = os.environ.get('RTK_SQL', 'RTK-Server/database/2020-09-02-21-55-01_RTK.sql.bak')
 sql = open(SQL, encoding='latin1').read()
-OUT = os.environ.get('RTK_OUT', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rtk-data'))
+OUT = os.environ.get('RTK_OUT', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'game-data'))
 os.makedirs(OUT, exist_ok=True)
 
 def schema(tbl):

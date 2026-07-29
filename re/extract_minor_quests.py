@@ -18,7 +18,7 @@ from pathlib import Path
 LUA = Path(__file__).parent / "RTK-Server" / "rtklua" / "Accepted" / "Quests" / "MinorQuest.lua"
 if not LUA.exists():
     LUA = Path(__file__).parents[1] / "RTK-Server" / "rtklua" / "Accepted" / "Quests" / "MinorQuest.lua"
-OUT = Path(__file__).parent / "rtk-data" / "MinorQuests.csv"
+OUT = Path(__file__).parent.parent / "data" / "game-data" / "MinorQuests.csv"
 
 CONSTS = {"_maxLevel": 100, "_maxStat": 1000000000, "_maxMark": 5}
 

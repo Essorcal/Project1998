@@ -61,6 +61,9 @@ RVA = {
     "entmove":  0x062320,  # 0x462320 start-walk-animation(entity, X, Y, dir, speed); sets walking flags
     # ---- stats/HUD write-watch ----
     "dispatch": 0x04b9c0,  # world packet dispatcher: thiscall(ecx=world), arg0=pktObj, [pktObj+0xc]=buf, buf[0]=opcode
+    # ---- world-map (0x2e) crash investigation (2026-07-26) ----
+    "rawalloc": 0x0adc38,  # 0x4adc38 raw allocator (HeapAlloc/operator new wrapper); arg0=size, ret=ptr or NULL
+    "cxxthrow": 0x0abfa0,  # 0x4abfa0 _CxxThrowException-shaped call; only reached when rawalloc returns NULL
 }
 
 # The self player object is [world+0x40c]; world global is *(0x4fd3c8). We diff a generous slice of the
@@ -218,7 +221,11 @@ Interceptor.attach(at('mapload'), {
   }
 });
 
-// CreateFile: capture the actual map filename being opened AND whether the open succeeds.
+// CreateFile: capture the actual map filename being opened AND whether the open succeeds. Widened
+// 2026-07-26 to also catch .epf opens (world-map 0x2e crash investigation) -- this tells us the REAL
+// path/filename the client tries for a given bgName, settling whether it's even looking at the archive
+// we think it is, instead of inferring that from which category-loader function happened to be on the
+// crash backtrace.
 // Old client is ANSI (CreateFileA) but hook W too in case a shim/CRT routes there.
 function hookCreateFile(name, wide) {
   const a = findExport('kernel32.dll', name);
@@ -228,7 +235,7 @@ function hookCreateFile(name, wide) {
       let s = '<null>';
       try { s = wide ? args[0].readUtf16String() : args[0].readAnsiString(); } catch (e) {}
       this.name = s;
-      this.want = s && /\.map/i.test(s);
+      this.want = s && /\.(map|epf|dat)/i.test(s);
     },
     onLeave(ret) {
       if (!this.want) return;
@@ -433,11 +440,46 @@ Interceptor.attach(at('monresolve'), {
       (this.id+0x4000).toString(16) + '  descriptor[' + d + ']'});
   }
 });
-// Category loader: fires when the sprite manager loads/creates a named category.
+// Category loader: fires when the sprite manager loads/creates a named category. onLeave added
+// 2026-07-26 (world-map 0x2e crash investigation) -- previously we only saw the NAME being requested,
+// never whether the load actually succeeded, which meant every past "it must have failed to find the
+// file" theory was inference, not observation.
 Interceptor.attach(at('catload'), {
   onEnter(args) {
     let nm = '?'; try { nm = args[0].readCString(); } catch (e) {}
+    this.nm = nm;
     send({t:'SPR', m:'*** CATEGORY LOAD *** name="' + nm + '" (ptr=' + args[0] + ')'});
+  },
+  onLeave(ret) {
+    send({t:'SPR', m:'    catload("' + this.nm + '") -> ' + ret + (ret.isNull() ? '  <<< NULL (failed) >>>' : '  (ok)')});
+  }
+});
+
+// The raw allocator behind EVERY allocation in the world-map code path (per-entry name buffers, the
+// background CString, etc. -- re/disx.py 0x451b50 trace). We only log FAILURES (NULL return): a
+// successful call is one of thousands of routine small allocations per second and would drown the log,
+// but a failure here is never normal and is exactly the thing that turns into an uncaught C++ exception
+// a few instructions later (see 'cxxthrow' below). Captures a short backtrace so we know which call site
+// (bgName vs. a per-destination name vs. something else) actually failed.
+Interceptor.attach(at('rawalloc'), {
+  onEnter(args) { this.size = args[0].toInt32(); },
+  onLeave(ret) {
+    if (!ret.isNull()) return;
+    let bt = '<no backtrace>';
+    try {
+      bt = Thread.backtrace(this.context, Backtracer.ACCURATE)
+        .slice(0, 6).map(a => '0x' + a.toString(16) + ' (rva 0x' + a.sub(base).toString(16) + ')').join(' <- ');
+    } catch (e) {}
+    send({t:'SPR', m:'*** ALLOC FAILED *** size=' + this.size + '\n   backtrace: ' + bt});
+  }
+});
+
+// Only reached on the failure branch right after rawalloc returns NULL (see 0x451b50 trace: success
+// jumps straight past this call). Logging this confirms/denies that the crash really is an unhandled
+// C++ exception from an allocation failure, rather than a wild-pointer access violation somewhere else.
+Interceptor.attach(at('cxxthrow'), {
+  onEnter(args) {
+    send({t:'SPR', m:'*** _CxxThrowException reached (uncaught allocation-failure exception incoming) ***'});
   }
 });
 // Generic sprite lookup filtered to category "M" (Monster.epf) — the monster BODY draws from here.
@@ -676,7 +718,7 @@ setInterval(function () {
   pokeCur++;
 }, 1600);
 
-send({t:'info', m:'hooks installed (recv/send/decrypt/encrypt/0x33-trace/0x16-trace/crash-catcher/msgpump/walk-tick-poller' + (HEAVY ? '/statwatch/pokesweep' : ' — HEAVY stat-hunt OFF for speed') + ')'});
+send({t:'info', m:'hooks installed (recv/send/decrypt/encrypt/0x33-trace/0x16-trace/crash-catcher/msgpump/walk-tick-poller/catload-onLeave/rawalloc-failures/cxxthrow/createfile-epf' + (HEAVY ? '/statwatch/pokesweep' : ' — HEAVY stat-hunt OFF for speed') + ')'});
 """.replace("__RVA_JSON__", __import__("json").dumps(RVA)) \
    .replace("__SELF_OFF__", hex(SELF_OFF)) \
    .replace("__SELF_SNAP__", hex(SELF_SNAP))
