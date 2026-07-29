@@ -15,8 +15,26 @@ REM hardcoded location ever moves.
 set "DOTNET=C:\Users\brian\AppData\Local\Microsoft\dotnet\dotnet.exe"
 if not exist "%DOTNET%" set "DOTNET=dotnet"
 
+REM Build the whole solution ONCE, up front, before launching anything. Two reasons:
+REM   1. Fail-fast: if the code doesn't compile we stop here and show the errors, instead of opening two
+REM      server windows that each spew a build failure.
+REM   2. No build race: `dotnet run` builds on its own, so launching both windows at once had them BOTH
+REM      rebuild the shared `Shared` project in parallel and collide on its obj cache
+REM      ("Shared.AssemblyInfoInputs.cache ... being used by another process"). Building here once, then
+REM      launching with --no-build, removes that race entirely.
+echo Building NexusServer.sln ...
+"%DOTNET%" build "%~dp0NexusServer.sln" -v:m -nologo
+if errorlevel 1 (
+    echo.
+    echo *** BUILD FAILED -- server not started. Fix the errors above and re-run. ***
+    pause
+    exit /b 1
+)
+echo Build OK -- starting login + game servers.
+
 REM The command after `cmd /k` is wrapped in ONE extra outer pair of quotes: with the quoted dotnet path
 REM AND the quoted project path there are 4 quotes, and cmd /k otherwise strips the first+last quote and
 REM mangles both paths ("...volume label syntax is incorrect"). The outer pair absorbs that stripping.
-start "NexusTK LOGIN (2000/2001)" cmd /k ""%DOTNET%" run --project "%~dp0LoginServer" -- --ports 2000,2001"
-start "NexusTK GAME (2005/2006)"  cmd /k ""%DOTNET%" run --project "%~dp0Server" -- --ports 2005,2006"
+REM --no-build: we already built the solution above, so each window just runs the fresh binaries.
+start "NexusTK LOGIN (2000/2001)" cmd /k ""%DOTNET%" run --no-build --project "%~dp0LoginServer" -- --ports 2000,2001"
+start "NexusTK GAME (2005/2006)"  cmd /k ""%DOTNET%" run --no-build --project "%~dp0Server" -- --ports 2005,2006"
