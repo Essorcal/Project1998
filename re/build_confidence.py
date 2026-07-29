@@ -43,6 +43,12 @@ FILES = [
     ("data/game-data/ShopCatalogues.csv",   "Sources", "rtk-lua"),
     ("data/game-data/SpellParams.csv",       "Sources", "rtk-lua"),   # Lua verb/row spell params (spike)
     ("data/game-data/ItemParams.csv",        "Sources", "rtk-lua"),   # Lua verb/row item use-effect params
+    # Phase-1 spell-DATA tables (extracted from Content.cs literals; all rtk-lua-sourced balance numbers).
+    ("data/game-data/SpellLevels.csv",  "Sources", "rtk-lua"),
+    ("data/game-data/Morphs.csv",       "Sources", "rtk-lua"),
+    ("data/game-data/Pets.csv",         "Sources", "rtk-lua"),
+    ("data/game-data/Traps.csv",        "Sources", "rtk-lua"),
+    ("data/game-data/SpellMods.csv",    "Sources", "rtk-lua"),
 ]
 
 # ---- load the source registry ------------------------------------------------------------------------

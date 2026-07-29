@@ -508,6 +508,7 @@ public static partial class Content
         ShopStock = LoadShopStock(ResolvePath("NEXUS_SHOPSTOCK", "data", "game-data", "ShopStock.csv"));
         Paths = LoadPaths(ResolvePath("NEXUS_PATHS", "data", "game-data", "Paths.csv"));
         LevelExp = LoadLevelExp(ResolvePath("NEXUS_LEVELEXP", "data", "game-data", "LevelExp.csv"));
+        SpellLevelOverrides = LoadSpellLevels(ResolvePath("NEXUS_SPELL_LEVELS", "data", "game-data", "SpellLevels.csv"));   // BEFORE Spells: LoadSpells reads it
         Spells = LoadSpells(ResolvePath("NEXUS_SPELLS", "data", "game-data", "Spells.csv"));
         // O(1) lookup indexes (0.1) — rebuilt every Load()/!reload so they swap with the lists above. Nothing
         // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
@@ -545,6 +546,11 @@ public static partial class Content
         ItemParams = LoadKeyedRows(ResolvePath("NEXUS_ITEM_PARAMS", "data", "game-data", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
         ItemScript.Load(ResolvePath("NEXUS_ITEM_VERBS", "data", "game-data", "item_verbs.lua"));
         NpcScript.Load(ResolvePath("NEXUS_NPC_DIALOG", "data", "game-data", "npc_dialog.lua"));
+        // Phase-1 spell-DATA tables (extracted from Content.cs literals; see re/extract_spell_tables.py).
+        PetSpells = LoadPets(ResolvePath("NEXUS_PETS", "data", "game-data", "Pets.csv"));
+        TrapSpells = LoadTrapSpells(ResolvePath("NEXUS_TRAPS", "data", "game-data", "Traps.csv"));
+        (MorphSpells, MorphDispatchSpells) = LoadMorphs(ResolvePath("NEXUS_MORPHS", "data", "game-data", "Morphs.csv"));
+        (RageAmount, EnchantSpells) = LoadSpellMods(ResolvePath("NEXUS_SPELL_MODS", "data", "game-data", "SpellMods.csv"));
         Doors.SetConfig(LoadDoors(ResolvePath("NEXUS_DOORS", "data", "game-data", "Doors.csv")));
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
                  $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms loaded" +
@@ -1605,13 +1611,8 @@ public static partial class Content
     // overwrite a weaker one (Session.CastRage). Values/levels straight from the Lua source, since
     // SplLevel is 0 for these in the export (see SpellLevelOverrides below — the real gate lives in each
     // spell's Lua requirements() function, which the CSV export never captured for Type-5 skills).
-    private static readonly Dictionary<string, int> RageAmount = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["wolfs_fury_warrior"] = 2, ["wolfs_fury_rogue"] = 2,
-        ["tigers_fury_warrior"] = 3, ["tigers_fury_rogue"] = 3,
-        ["dragons_fury_warrior"] = 4,
-        ["baekhos_rage_rogue"] = 5,
-    };
+    // Loaded from data/game-data/SpellMods.csv (`rage` column) in Load() — see LoadSpellMods.
+    private static IReadOnlyDictionary<string, int> RageAmount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The rage multiplier this spell/skill arms, or null if it isn't a rage-tier spell. See
     /// <see cref="RageAmount"/>.</summary>
@@ -1626,22 +1627,8 @@ public static partial class Content
     // Mana/level are hardcoded straight from each spell's own Lua (not trusted from the CSV export — same
     // Type-5-skill gap as rage/stealth/sacrifice-strikes; tigers_fortitude_rogue genuinely costs 0 mana,
     // just consumes cast components via requirements()).
-    private static readonly Dictionary<string, (double Amt, int Mana)> EnchantSpells = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["enchant_warrior"] = (1.2, 60), ["spiritual_aid_warrior"] = (1.2, 60),
-        ["oneness_warrior"] = (1.2, 60), ["strengthen_weapon_warrior"] = (1.2, 60),
-
-        ["infuse_warrior"] = (2, 90), ["tincture_of_the_unknown_warrior"] = (2, 90),
-        ["tigers_claw_warrior"] = (2, 90), ["whetstone_warrior"] = (2, 90),
-
-        ["ingress_warrior"] = (3, 90), ["hand_of_darkness_warrior"] = (3, 90),
-        ["dragons_claw_warrior"] = (3, 90), ["razors_edge_warrior"] = (3, 90),
-
-        ["vipers_venom_warrior"] = (4, 5000),
-        ["dragons_flame_warrior"] = (6, 10000),
-        ["tigers_fortitude_rogue"] = (1.5, 0),
-        ["baekhos_blade_rogue"] = (2.25, 6000),
-    };
+    // Loaded from data/game-data/SpellMods.csv (`enchantAmt`/`enchantMana` columns) in Load() — see LoadSpellMods.
+    private static IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells = new Dictionary<string, (double, int)>(StringComparer.OrdinalIgnoreCase);
     public static (double Amt, int Mana)? EnchantFor(SpellDef sp) => EnchantSpells.TryGetValue(sp.Key, out var e) ? e : null;
 
     // Rogue Invisible (+3 same-mechanic aliases per alignment: Spirit's Form/Life's Cloak/Glass Form —
@@ -1764,17 +1751,9 @@ public static partial class Content
     // spell (rtklua/Accepted/Spells/dog/spot_traps.lua), not one a player character ever learns directly —
     // out of scope here, revisit alongside the Poet pet-summon system if pets ever cast their own spells.
     public enum TrapKind { Dart, Snare, RepeatingDart, Flash, Spear, Poison, Death, Sleep }
-    private static readonly Dictionary<string, (TrapKind Kind, int Level, int Mana)> TrapSpells = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["set_dart_trap"] = (TrapKind.Dart, 26, 20),
-        ["set_snare_trap"] = (TrapKind.Snare, 33, 120),
-        ["set_repeating_dart_trap"] = (TrapKind.RepeatingDart, 44, 120),
-        ["set_flash_trap"] = (TrapKind.Flash, 55, 320),
-        ["set_spear_trap"] = (TrapKind.Spear, 66, 520),
-        ["set_poison_dart_trap"] = (TrapKind.Poison, 77, 620),
-        ["set_death_trap"] = (TrapKind.Death, 88, 1520),
-        ["set_sleep_trap"] = (TrapKind.Sleep, 99, 2500),
-    };
+    // Loaded from data/game-data/Traps.csv (spell-side cast cost; kind = TrapKind enum name) in Load() — see
+    // LoadTrapSpells. The trigger-side effect (damage/durations) stays in World.TriggerTrapLocked.
+    private static IReadOnlyDictionary<string, (TrapKind Kind, int Level, int Mana)> TrapSpells = new Dictionary<string, (TrapKind, int, int)>(StringComparer.OrdinalIgnoreCase);
     public static (TrapKind Kind, int Level, int Mana)? TrapSpellFor(SpellDef sp) => TrapSpells.TryGetValue(sp.Key, out var t) ? t : null;
     public static bool IsTrapDispatcher(SpellDef sp) => sp.Key.Equals("set_trap", StringComparison.OrdinalIgnoreCase);
 
@@ -1845,26 +1824,9 @@ public static partial class Content
     //
     // (Look, LookFemale, Mana, DurationMs) — LookFemale=0 means every sex uses Look (only the two
     // "mingken_mask" reskins are sex-dependent buck/doe, per gangrel.lua's `if player.sex==1`).
-    public static readonly Dictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> MorphSpells =
-        new(StringComparer.OrdinalIgnoreCase)
-    {
-        // feral family (rogue, level 10) — base (feral_rogue) asks a question; these 3 reskins are fixed.
-        ["kwisin_cloak_rogue"] = (32, 0, 30, 185000), ["mingken_cloak_rogue"] = (153, 0, 30, 185000), ["ohaeng_cloak_rogue"] = (98, 0, 30, 185000),
-        // rodent family (rogue, level 25)
-        ["kwisin_disguise_rogue"] = (97, 0, 30, 185000), ["mingken_disguise_rogue"] = (183, 0, 30, 185000), ["ohaeng_disguise_rogue"] = (126, 0, 30, 185000),
-        // gangrel family (rogue, level 33)
-        ["kwisin_mask_rogue"] = (30, 0, 30, 185000), ["mingken_mask_rogue"] = (89, 88, 30, 185000), ["ohaeng_mask_rogue"] = (112, 0, 30, 185000),
-        // beast family (rogue, level 40)
-        ["kwisin_chameleon_rogue"] = (105, 0, 30, 185000), ["mingken_chameleon_rogue"] = (121, 0, 30, 185000), ["ohaeng_chameleon_rogue"] = (170, 0, 30, 185000),
-        // gangrel family (mage, level 40)
-        ["kwisin_mask_mage"] = (30, 0, 30, 185000), ["mingken_mask_mage"] = (89, 88, 30, 185000), ["ohaeng_mask_mage"] = (112, 0, 30, 185000),
-        // beast family (mage, level 50)
-        ["kwisin_chameleon_mage"] = (105, 0, 30, 185000), ["mingken_chameleon_mage"] = (121, 0, 30, 185000), ["ohaeng_chameleon_mage"] = (170, 0, 30, 185000),
-        // standalone costume morphs (not alignment reskins of a base spell)
-        ["dagger_uniform"] = (102, 0, 25, 162000),     // rogue lvl 1 — "Disguise you as Dagger"
-        ["chongun_uniform"] = (37, 0, 25, 162000),     // Chongun subpath lvl 99
-        ["marketer_guise"] = (52, 0, 125, 60000),      // Merchant subpath lvl 33
-    };
+    // Loaded from data/game-data/Morphs.csv (rows with an empty `answers` column) in Load() — see LoadMorphs.
+    public static IReadOnlyDictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> MorphSpells { get; private set; } =
+        new Dictionary<string, (ushort, ushort, int, int)>(StringComparer.OrdinalIgnoreCase);
     public static (ushort Look, ushort LookFemale, int Mana, int DurationMs)? MorphFor(SpellDef sp) =>
         MorphSpells.TryGetValue(sp.Key, out var m) ? m : null;
 
@@ -1876,18 +1838,10 @@ public static partial class Content
     // into separate recast()-only sub-spells (wolf_guise/rabbit_guise/deer_guise/sheep_guise/
     // thirsty_ogre_guise) that have no cast() of their own and are never independently castable — folded
     // directly into wilderness_guise's own answer table instead of modeling that indirection.
-    public static readonly Dictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells =
-        new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["feral_rogue"] = (new(StringComparer.OrdinalIgnoreCase) { ["pig"] = 19, ["piglet"] = 20, ["puppy"] = 18, ["mongrel"] = 103, ["cat"] = 182 }, 30, 185000),
-        ["gangrel_rogue"] = (new(StringComparer.OrdinalIgnoreCase) { ["fox"] = 22, ["wolf"] = 23 }, 30, 185000),
-        ["rodent_rogue"] = (new(StringComparer.OrdinalIgnoreCase) { ["rabbit"] = 21, ["squirrel"] = 25 }, 30, 185000),
-        ["beast_rogue"] = (new(StringComparer.OrdinalIgnoreCase) { ["tiger"] = 29, ["bear"] = 24 }, 30, 185000),
-        ["gangrel_mage"] = (new(StringComparer.OrdinalIgnoreCase) { ["fox"] = 22, ["wolf"] = 23 }, 30, 185000),
-        ["beast_mage"] = (new(StringComparer.OrdinalIgnoreCase) { ["tiger"] = 29, ["bear"] = 24 }, 30, 185000),
-        ["druids_rodent"] = (new(StringComparer.OrdinalIgnoreCase) { ["rabbit"] = 21, ["rat"] = 91 }, 30, 155000),
-        ["wilderness_guise"] = (new(StringComparer.OrdinalIgnoreCase) { ["wolf"] = 23, ["rabbit"] = 21, ["deer"] = 89, ["sheep"] = 173, ["thirsty ogre"] = 185, ["ogre"] = 185 }, 30, 300000),
-    };
+    // Loaded from data/game-data/Morphs.csv (rows with a non-empty `answers` column, "ans:look;ans:look") in
+    // Load() — see LoadMorphs.
+    public static IReadOnlyDictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells { get; private set; } =
+        new Dictionary<string, (Dictionary<string, ushort>, int, int)>(StringComparer.OrdinalIgnoreCase);
     public static (Dictionary<string, ushort> Answers, int Mana, int DurationMs)? MorphDispatchFor(SpellDef sp) =>
         MorphDispatchSpells.TryGetValue(sp.Key, out var m) ? m : null;
     public static bool IsMorphSpell(SpellDef sp) => MorphSpells.ContainsKey(sp.Key) || MorphDispatchSpells.ContainsKey(sp.Key);
@@ -1900,31 +1854,9 @@ public static partial class Content
     // capped by Content.PetCapFor and expiring 300s later (World.Tick). The top "avatar" tier is the one
     // real outlier: RTK charges GOLD (via requirements(), not mana) plus an 8-minute cooldown instead of the
     // flat 10-mana every other tier uses (cotw_wind_warrior.lua has no `player.magic` check at all).
-    private static readonly Dictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells =
-        new(StringComparer.OrdinalIgnoreCase)
-    {
-        // companion — level 68
-        ["cotw_caterpillar_poet"] = ("cotw_caterpillar", 68, 10, 0), ["kwisin_companion_poet"] = ("kwisin_companion", 68, 10, 0),
-        ["mingken_companion_poet"] = ("mingken_companion", 68, 10, 0), ["ohaeng_companion_poet"] = ("ohaeng_companion", 68, 10, 0),
-        // assistant — level 72
-        ["cotw_fluffy_dog_poet"] = ("cotw_fluffy_dog", 72, 10, 0), ["kwisin_assistant_poet"] = ("kwisin_assistant", 72, 10, 0),
-        ["mingken_assistant_poet"] = ("mingken_assistant", 72, 10, 0), ["ohaeng_assistant_poet"] = ("ohaeng_assistant", 72, 10, 0),
-        // protector — level 81
-        ["cotw_panda_bear_poet"] = ("cotw_panda_bear", 81, 10, 0), ["kwisin_protector_poet"] = ("kwisin_protector", 81, 10, 0),
-        ["mingken_protector_poet"] = ("mingken_protector", 81, 10, 0), ["ohaeng_protector_poet"] = ("ohaeng_protector", 81, 10, 0),
-        // fighter — level 90
-        ["cotw_wild_monkey_poet"] = ("cotw_wild_monkey", 90, 10, 0), ["kwisin_fighter_poet"] = ("kwisin_fighter", 90, 10, 0),
-        ["mingken_fighter_poet"] = ("mingken_fighter", 90, 10, 0), ["ohaeng_fighter_poet"] = ("ohaeng_fighter", 90, 10, 0),
-        // warrior — level 99
-        ["cotw_gorilla_poet"] = ("cotw_gorilla", 99, 10, 0), ["kwisin_warrior_poet"] = ("kwisin_warrior", 99, 10, 0),
-        ["mingken_warrior_poet"] = ("mingken_warrior", 99, 10, 0), ["ohaeng_warrior_poet"] = ("ohaeng_warrior", 99, 10, 0),
-        // champion — level 99
-        ["cotw_wind_dancer_poet"] = ("cotw_wind_dancer", 99, 10, 0), ["kwisin_champion_poet"] = ("kwisin_champion", 99, 10, 0),
-        ["mingken_champion_poet"] = ("mingken_champion", 99, 10, 0), ["ohaeng_champion_poet"] = ("ohaeng_champion", 99, 10, 0),
-        // avatar — level 99, gold+cooldown instead of mana
-        ["cotw_wind_warrior_poet"] = ("cotw_wind_warrior", 99, 0, 480000), ["kwisin_avatar_poet"] = ("kwisin_avatar", 99, 0, 480000),
-        ["mingken_avatar_poet"] = ("mingken_avatar", 99, 0, 480000), ["ohaeng_avatar_poet"] = ("ohaeng_avatar", 99, 0, 480000),
-    };
+    // Loaded from data/game-data/Pets.csv in Load() — see LoadPets.
+    private static IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells =
+        new Dictionary<string, (string, int, int, int)>(StringComparer.OrdinalIgnoreCase);
     public static (string MobKey, int Level, int Mana, int CooldownMs)? PetSpellFor(SpellDef sp) =>
         PetSpells.TryGetValue(sp.Key, out var p) ? p : null;
 
@@ -1937,58 +1869,106 @@ public static partial class Content
     // (only spells with a static formula). This overrides just the ones this pass wires up; the general
     // "skills learn at level 0" gap for every OTHER skill is a separate, broader export-completeness issue,
     // not fixed here.
-    private static readonly Dictionary<string, int> SpellLevelOverrides = new(StringComparer.OrdinalIgnoreCase)
+    // Loaded from data/game-data/SpellLevels.csv in Load() — see LoadSpellLevels. Assigned BEFORE Spells is
+    // loaded (LoadSpells reads it to override SplLevel for Type-5 skills whose export level is 0).
+    private static IReadOnlyDictionary<string, int> SpellLevelOverrides = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    // ---- Phase-1 spell-DATA loaders (Content.cs literals -> CSV; see re/extract_spell_tables.py) ----------
+
+    private static Dictionary<string, int> LoadSpellLevels(string? path)
     {
-        ["wolfs_fury_warrior"] = 7,  ["wolfs_fury_rogue"] = 34,
-        ["tigers_fury_warrior"] = 24, ["tigers_fury_rogue"] = 56,
-        ["dragons_fury_warrior"] = 45,
-        ["baekhos_rage_rogue"] = 99,
-        ["invisible_rogue"] = 30, ["spirits_form_rogue"] = 30, ["lifes_cloak_rogue"] = 30, ["glass_form_rogue"] = 30,
+        var d = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length > 0 && int.TryParse(c.GetValueOrDefault("level"), out var lvl)) d[k] = lvl;
+        }
+        return d;
+    }
 
-        ["lethal_strike_rogue"] = 63, ["afterlifes_embrace_rogue"] = 63, ["mingkens_judgement_rogue"] = 63, ["calculating_blow_rogue"] = 63,
-        ["desperate_attack_rogue"] = 45, ["the_voids_measure_rogue"] = 45, ["beastly_frenzy_rogue"] = 45, ["tilting_the_balance_rogue"] = 45,
-        ["berserk_warrior"] = 40, ["no_fear_warrior"] = 40, ["tigers_pounce_warrior"] = 40, ["winds_blast_warrior"] = 40,
-        ["whirlwind_warrior"] = 63, ["deaths_angel_warrior"] = 63, ["natures_own_warrior"] = 63, ["bladedance_warrior"] = 63,
+    private static Dictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> LoadPets(string? path)
+    {
+        var d = new Dictionary<string, (string, int, int, int)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length == 0) continue;
+            int.TryParse(c.GetValueOrDefault("level", "0"), out var lvl);
+            int.TryParse(c.GetValueOrDefault("mana", "0"), out var mana);
+            int.TryParse(c.GetValueOrDefault("cooldownMs", "0"), out var cd);
+            d[k] = (c.GetValueOrDefault("mobKey", "").Trim(), lvl, mana, cd);
+        }
+        return d;
+    }
 
-        ["draw_energy_poet"] = 35, ["harness_power_poet"] = 35, ["combine_focus_poet"] = 35, ["inspiration_poet"] = 35,
-        ["inspire_poet"] = 45, ["share_energy_poet"] = 45, ["bestow_power_poet"] = 45, ["release_focus_poet"] = 45,
-        ["dispell_poet"] = 88, ["remove_magic_poet"] = 88, ["return_natural_poet"] = 88, ["restore_balance_poet"] = 88,
-        ["resurrect_poet"] = 99, ["return_spirit_poet"] = 99, ["mingken_blessing_poet"] = 99, ["death_undone_poet"] = 99,
+    private static Dictionary<string, (TrapKind Kind, int Level, int Mana)> LoadTrapSpells(string? path)
+    {
+        var d = new Dictionary<string, (TrapKind, int, int)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length == 0 || !Enum.TryParse<TrapKind>(c.GetValueOrDefault("kind", ""), true, out var kind)) continue;
+            int.TryParse(c.GetValueOrDefault("level", "0"), out var lvl);
+            int.TryParse(c.GetValueOrDefault("mana", "0"), out var mana);
+            d[k] = (kind, lvl, mana);
+        }
+        return d;
+    }
 
-        ["race_rogue"] = 99, ["spiritual_jump_rogue"] = 99, ["leap_of_faith_rogue"] = 99, ["transport_rogue"] = 99,
+    // Morphs.csv holds BOTH fixed morphs (look/lookFemale set, answers empty) and question-dispatch morphs
+    // (answers = "ans:look;ans:look", look/lookFemale empty) — split back into the two dicts here.
+    private static (Dictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> Fixed,
+                    Dictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> Dispatch)
+        LoadMorphs(string? path)
+    {
+        var fx = new Dictionary<string, (ushort, ushort, int, int)>(StringComparer.OrdinalIgnoreCase);
+        var dp = new Dictionary<string, (Dictionary<string, ushort>, int, int)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length == 0) continue;
+            int.TryParse(c.GetValueOrDefault("mana", "0"), out var mana);
+            int.TryParse(c.GetValueOrDefault("durationMs", "0"), out var dur);
+            var answers = c.GetValueOrDefault("answers", "").Trim();
+            if (answers.Length > 0)
+            {
+                var ans = new Dictionary<string, ushort>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in answers.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = pair.Split(':', 2);
+                    if (kv.Length == 2 && ushort.TryParse(kv[1].Trim(), out var look)) ans[kv[0].Trim()] = look;
+                }
+                dp[k] = (ans, mana, dur);
+            }
+            else
+            {
+                ushort.TryParse(c.GetValueOrDefault("look", "0"), out var look);
+                ushort.TryParse(c.GetValueOrDefault("lookFemale", "0"), out var lookF);
+                fx[k] = (look, lookF, mana, dur);
+            }
+        }
+        return (fx, dp);
+    }
 
-        ["enchant_warrior"] = 28, ["spiritual_aid_warrior"] = 28, ["oneness_warrior"] = 28, ["strengthen_weapon_warrior"] = 28,
-        ["infuse_warrior"] = 55, ["tincture_of_the_unknown_warrior"] = 55, ["tigers_claw_warrior"] = 55, ["whetstone_warrior"] = 55,
-        ["ingress_warrior"] = 70, ["hand_of_darkness_warrior"] = 70, ["dragons_claw_warrior"] = 70, ["razors_edge_warrior"] = 70,
-        ["vipers_venom_warrior"] = 99, ["dragons_flame_warrior"] = 99,
-        ["tigers_fortitude_rogue"] = 99, ["baekhos_blade_rogue"] = 99,
-
-        ["filch_rogue"] = 65, ["spirits_hand_rogue"] = 65, ["quick_fingers_rogue"] = 65, ["light_touch_rogue"] = 65,
-
-        ["judge_rogue"] = 17, ["spiritual_advisor_rogue"] = 17, ["natural_talent_rogue"] = 17, ["appraise_rogue"] = 17,
-        ["spy_rogue"] = 28, ["spiritual_guide_rogue"] = 28, ["natures_handiwork_rogue"] = 28, ["judgement_day_rogue"] = 28,
-
-        ["set_dart_trap"] = 26, ["set_snare_trap"] = 33, ["set_repeating_dart_trap"] = 44, ["set_flash_trap"] = 55,
-        ["set_spear_trap"] = 66, ["set_poison_dart_trap"] = 77, ["set_death_trap"] = 88, ["set_sleep_trap"] = 99,
-
-        ["cotw_caterpillar_poet"] = 68, ["kwisin_companion_poet"] = 68, ["mingken_companion_poet"] = 68, ["ohaeng_companion_poet"] = 68,
-        ["cotw_fluffy_dog_poet"] = 72, ["kwisin_assistant_poet"] = 72, ["mingken_assistant_poet"] = 72, ["ohaeng_assistant_poet"] = 72,
-        ["cotw_panda_bear_poet"] = 81, ["kwisin_protector_poet"] = 81, ["mingken_protector_poet"] = 81, ["ohaeng_protector_poet"] = 81,
-        ["cotw_wild_monkey_poet"] = 90, ["kwisin_fighter_poet"] = 90, ["mingken_fighter_poet"] = 90, ["ohaeng_fighter_poet"] = 90,
-        ["cotw_gorilla_poet"] = 99, ["kwisin_warrior_poet"] = 99, ["mingken_warrior_poet"] = 99, ["ohaeng_warrior_poet"] = 99,
-        ["cotw_wind_dancer_poet"] = 99, ["kwisin_champion_poet"] = 99, ["mingken_champion_poet"] = 99, ["ohaeng_champion_poet"] = 99,
-        ["cotw_wind_warrior_poet"] = 99, ["kwisin_avatar_poet"] = 99, ["mingken_avatar_poet"] = 99, ["ohaeng_avatar_poet"] = 99,
-
-        ["feral_rogue"] = 10, ["kwisin_cloak_rogue"] = 10, ["mingken_cloak_rogue"] = 10, ["ohaeng_cloak_rogue"] = 10,
-        ["rodent_rogue"] = 25, ["kwisin_disguise_rogue"] = 25, ["mingken_disguise_rogue"] = 25, ["ohaeng_disguise_rogue"] = 25,
-        ["gangrel_rogue"] = 33, ["kwisin_mask_rogue"] = 33, ["mingken_mask_rogue"] = 33, ["ohaeng_mask_rogue"] = 33,
-        ["beast_rogue"] = 40, ["kwisin_chameleon_rogue"] = 40, ["mingken_chameleon_rogue"] = 40, ["ohaeng_chameleon_rogue"] = 40,
-        ["gangrel_mage"] = 40, ["kwisin_mask_mage"] = 40, ["mingken_mask_mage"] = 40, ["ohaeng_mask_mage"] = 40,
-        ["beast_mage"] = 50, ["kwisin_chameleon_mage"] = 50, ["mingken_chameleon_mage"] = 50, ["ohaeng_chameleon_mage"] = 50,
-        ["dagger_uniform"] = 1, ["chongun_uniform"] = 99, ["marketer_guise"] = 33, ["wilderness_guise"] = 99, ["druids_rodent"] = 33,
-
-        ["set_bladestorm_trap"] = 99, ["set_swords_dance_trap"] = 99, ["set_tigers_ambush_trap"] = 99, ["set_cutting_edge_trap"] = 99,
-    };
+    // SpellMods.csv: one row per spell, sparse — a `rage` value OR an `enchantAmt`+`enchantMana` pair.
+    private static (Dictionary<string, int> Rage, Dictionary<string, (double Amt, int Mana)> Enchant) LoadSpellMods(string? path)
+    {
+        var rage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var ench = new Dictionary<string, (double, int)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            if (k.Length == 0) continue;
+            if (int.TryParse(c.GetValueOrDefault("rage", ""), out var r)) rage[k] = r;
+            var ea = c.GetValueOrDefault("enchantAmt", "").Trim();
+            if (ea.Length > 0 && double.TryParse(ea, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var amt))
+            {
+                int.TryParse(c.GetValueOrDefault("enchantMana", "0"), out var em);
+                ench[k] = (amt, em);
+            }
+        }
+        return (rage, ench);
+    }
 
     // Spells/skills. Rows that are section headers (name/ident begins with '=') or inactive (SplActive=0)
     // are skipped — they're book dividers in the RTK data, not castable. SplQuestion "NO" means "no prompt".
