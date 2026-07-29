@@ -99,12 +99,20 @@ public sealed record ItemDef(
     // of bug as the mob MinDam/MaxDam gap). "L" (Large) replaces "S" (Small) as the roll when the target
     // is a boss mob. Protection (RTK ItmProtection) is the wearer's own magic-resist contribution,
     // folded into Session.RollDeflect the same way a mob's Protection is.
-    int MinSDam = 0, int MaxSDam = 0, int MinLDam = 0, int MaxLDam = 0, int Protection = 0)
+    int MinSDam = 0, int MaxSDam = 0, int MinLDam = 0, int MaxLDam = 0, int Protection = 0,
+    string Text = "")
 {
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
     public bool IsConsumable => Type is 0 or 1 or 2;     // EAT / USE / SMOKE
     public bool Stackable => StackAmount > 1 || MaxAmount > 1;
+
+    /// <summary>A charged consumable (RTK ITM_SMOKE: wine/liquor/cigarettes): N uses stored in the
+    /// durability field, with <see cref="Text"/> as the unit label ("sips"/"puffs"). Each use spends one
+    /// charge and the item is removed only at 0 (RTK pc_useitem ITM_SMOKE). The "indestructible" items carry
+    /// ItmDurability=1000000, which overflows the ushort parse to 0 and is thus already excluded by > 0;
+    /// requiring a unit label excludes ordinary food/potions.</summary>
+    public bool IsCharged => IsConsumable && !string.IsNullOrEmpty(Text) && Durability > 0;
 
     /// <summary>Wire equip-slot byte for the 0x37/0x38 window + 0x1F unequip (client's clif_getequiptype).
     /// EQ index = Type-3; this maps that index to the byte the client expects. 0 = not equippable.</summary>
@@ -313,6 +321,14 @@ public static partial class Content
     // cast falls back to the keyword classifier. Read-only after Load, shared lock-free.
     public static IReadOnlyDictionary<string, SpellFx> SpellFx { get; private set; } =
         new Dictionary<string, SpellFx>();
+
+    // Per-spell TARGET flavor line (data/game-data/SpellText.csv), CANONICAL from LIVE NexusTK — supersedes RTK.
+    // The caster always just sees "You cast <name>." (Session.HandleCast); the TARGET of a spell additionally
+    // sees this line when present. On a self-cast you are both, so you see the flavor THEN the cast line.
+    public static IReadOnlyDictionary<string, string> SpellTexts { get; private set; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The live target-flavor line for a spell key, or "" if none is recorded.</summary>
+    public static string TargetTextFor(string key) => SpellTexts.TryGetValue(key, out var t) ? t : "";
 
     // Fixed monster spawn points (data/game-data/Spawns.csv). One live mob per point; the world respawns it on death.
     public static IReadOnlyList<SpawnDef> Spawns { get; private set; } = new List<SpawnDef>();
@@ -565,6 +581,7 @@ public static partial class Content
         foreach (var kv in Paths) if (!string.IsNullOrEmpty(kv.Value)) pathIdByName.TryAdd(kv.Value, kv.Key);
         _pathIdByName = pathIdByName;
         SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "data", "game-data", "spell_effects.csv"));
+        SpellTexts = LoadSpellTexts(ResolvePath("NEXUS_SPELL_TEXT", "data", "game-data", "SpellText.csv"));
         SpellCosts = LoadSpellCosts(ResolvePath("NEXUS_SPELL_COSTS", "data", "game-data", "SpellLearnCosts.csv"));
         LookPalettes = LoadLookPalettes(ResolvePath("NEXUS_MOB_PALETTES", "data", "game-data", "MobLookPalettes.csv"));
         MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "data", "game-data", "Maps.csv"));   // region + warpOut for Gateway
@@ -1255,7 +1272,8 @@ public static partial class Content
                 Indestructible: I("ItmIndestructible") != 0,
                 MinSDam: I("ItmMinimumSDamage"), MaxSDam: I("ItmMaximumSDamage"),
                 MinLDam: I("ItmMinimumLDamage"), MaxLDam: I("ItmMaximumLDamage"),
-                Protection: I("ItmProtection")));
+                Protection: I("ItmProtection"),
+                Text: Clean(col.GetValueOrDefault("ItmText", ""))));
         }
         return items;
     }
@@ -2115,6 +2133,19 @@ public static partial class Content
     // Per-spell effect rows from re/extract_spell_formulas.py (spell_effects.csv). Keyed by identifier so it
     // joins to SpellDef.Key. A missing/short file just yields an empty map (every cast then uses the keyword
     // classifier). Numbers parse leniently — a blank cell is 0.
+    // SpellText.csv: key -> target flavor line (live-canonical). Only spells with a recorded line have a row.
+    private static Dictionary<string, string> LoadSpellTexts(string? path)
+    {
+        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var k = c.GetValueOrDefault("key", "").Trim();
+            var t = c.GetValueOrDefault("targetText", "").Trim();
+            if (k.Length > 0 && t.Length > 0) d[k] = t;
+        }
+        return d;
+    }
+
     private static Dictionary<string, SpellFx> LoadSpellFx(string? path)
     {
         var fx = new Dictionary<string, SpellFx>(StringComparer.OrdinalIgnoreCase);

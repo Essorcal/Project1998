@@ -155,7 +155,15 @@ public sealed partial class Session
         Log.Info($"   -> CAST '{sp.Name}' slot {slot} type {sp.Type} base '{Content.BaseKey(sp)}'" +
                  $"{(answer is null ? "" : $" answer '{answer}'")} by {_char.Name}");
 
+        _castNarrated = false;   // reset each cast; a self-narrating spell sets it to skip the generic line below
         if (!ApplyCast(sp, targetId, answer)) return;   // couldn't cast (no mana / too weak) — a message was already sent
+
+        // The ONE caster-facing line for every successful cast: just "You cast <name>." (live NexusTK style — no
+        // flavor). EXCEPTION: spells that narrate their own outcome (a teleport's "You have arrived...", an
+        // inspect's result) set _castNarrated so we don't tack a redundant "You cast X" onto them (e.g. Gateway).
+        // Any per-spell TARGET flavor (Content.SpellTexts) was already sent to the target INSIDE ApplyCast, so on
+        // a self-cast it prints first and this generic line second, matching live ordering.
+        if (!_castNarrated) SendMiniText($"You cast {sp.Name}.");
 
         // The cast's magic animation (0x1A type 6). Sound is NOT carried here — the client picks an action's sound
         // from a fixed type->sound table (magic/type 6 has none), so the 4th byte is ignored. The spell's sound is
@@ -351,10 +359,8 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);
-                SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
+                AwardExp(reward, killExp: true);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            else SendMessage($"Your {sp.Name} hits {mob.Name} for {amt}.");
             Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
         }
         return true;
@@ -382,10 +388,8 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);
-                SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
+                AwardExp(reward, killExp: true);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            else SendMessage($"Your {sp.Name} hits {mob.Name} for {amt}.");
             Log.Info($"      (lua-arch) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
         }
         return true;
@@ -393,14 +397,13 @@ public sealed partial class Session
 
     internal void LuaHeal(int amt, SpellDef sp)
     {
-        if (amt <= 0) { SendMiniText($"You cast {sp.Name}."); return; }
-        uint before = _char.Hp;
-        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
-        uint gain = _char.Hp - before;
-        var fx = Content.FxFor(sp);
-        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
-        SendStats();
+        if (amt > 0)
+        {
+            _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
+            var fx = Content.FxFor(sp);
+            if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        }
+        SendStats();   // caster message is the central "You cast <name>." — no "restores N HP" flavor
     }
 
     internal void LuaRestoreMana(int amt)
@@ -505,10 +508,8 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);
-                SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
+                AwardExp(reward, killExp: true);   // exp message only; no caster hit/kill flavor
             }
-            else SendMessage($"Your {sp.Name} hits {mob.Name} for {power}.");
             Log.Info($"      {sp.Name} -> mob {mob.Id} '{mob.Name}' for {power} (died={died})");
         }
         return true;
@@ -521,11 +522,9 @@ public sealed partial class Session
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         int amount = Math.Max(0, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null))));
         _char.Mp -= (uint)mana;
-        uint before = _char.Hp;
         _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amount);
-        uint gain = _char.Hp - before;
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // heal sparkle + sound
-        SendMiniText(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
+        SendStats();   // HP bar updates; caster message is the central "You cast <name>."
         return true;
     }
 
@@ -551,9 +550,11 @@ public sealed partial class Session
 
         SendStats();   // reflect the boosted caps/attributes on the HUD immediately
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // buff aura + sound
-        SendMiniText(applied > 0
-            ? $"You cast {sp.Name} — you feel its power ({durMs / 1000}s)."
-            : $"You cast {sp.Name}.");
+        // Self-buff: the caster IS the target, so surface the live target-flavor line here (before HandleCast's
+        // "You cast <name>."). e.g. Might -> "Your muscles develop." then "You cast Might."
+        var flavor = Content.TargetTextFor(sp.Key);
+        if (flavor.Length > 0) SendMiniText(flavor);
+        _ = applied;
         return true;
     }
 
@@ -601,8 +602,7 @@ public sealed partial class Session
             _char.Mp -= (uint)mana;
             pc.ApplyDeduction(mult, durMs, sp.Name);
             BroadcastFx(pc._char.Id, anim, snd);
-            if (ReferenceEquals(pc, this)) SendMiniText($"You cast {sp.Name} — you'll take less damage for {durMs / 1000}s.");
-            else { SendMiniText($"You cast {sp.Name} on {pc._char.Name}."); pc.SendMiniText($"{_char.Name} shields you with {sp.Name}."); }
+            TellTarget(pc, sp);   // target flavor (self: before central "You cast X"; other: their line)
             Log.Info($"      {sp.Name} -> deduction x{mult} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
             SendStats();
             return true;
@@ -614,19 +614,28 @@ public sealed partial class Session
         {
             if (haveAmt) pc.ReceiveTimedBuff(stat, amount, durMs, sp.Key, sp.Name);
             BroadcastFx(pc._char.Id, anim, snd);
-            if (ReferenceEquals(pc, this)) SendMiniText($"You cast {sp.Name}.");
-            else { SendMiniText($"You cast {sp.Name} on {pc._char.Name}."); pc.SendMiniText($"{_char.Name} casts {sp.Name} on you."); }
+            TellTarget(pc, sp);
             Log.Info($"      {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
         }
         else
         {
             if (haveAmt) _world.ApplyMobBuff(mob!, stat, amount, durMs, sp.Key);   // under World._lock (races Tick revert)
-            BroadcastFx(mob!.Id, anim, snd);
-            SendMiniText($"You cast {sp.Name} on {mob.Name}.");
+            BroadcastFx(mob!.Id, anim, snd);   // mobs don't read text; caster gets the central "You cast X"
             Log.Info($"      {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on mob {mob.Id} '{mob.Name}' {durMs}ms");
         }
         SendStats();
         return true;
+    }
+
+    // Send the live TARGET-flavor line for a spell to its target. On a self-cast (target == caster) it prints
+    // just before HandleCast's central "You cast <name>." (so you see flavor then cast line, like live NexusTK);
+    // when cast on ANOTHER player they get their flavor line (falling back to a generic "<caster> casts <X> on
+    // you." only if no live flavor is recorded). The caster themselves never gets flavor — only "You cast X".
+    private void TellTarget(Session target, SpellDef sp)
+    {
+        var flavor = Content.TargetTextFor(sp.Key);
+        if (ReferenceEquals(target, this)) { if (flavor.Length > 0) SendMiniText(flavor); }
+        else target.SendMiniText(flavor.Length > 0 ? flavor : $"{_char.Name} casts {sp.Name} on you.");
     }
 
     // Apply a timed stat buff to THIS player — used for a buff another player casts on us AND our own self-cast.
@@ -661,7 +670,7 @@ public sealed partial class Session
         if (isBackstab) _backstabUntil = expires; else _flankUntil = expires;
         SendStats();
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText($"You cast {sp.Name} — you'll strike harder from the {(isBackstab ? "back" : "side")} for {durMs / 1000}s.");
+        // caster sees only the central "You cast <name>." (HandleCast); no flavor
         Log.Info($"      {sp.Name} -> {(isBackstab ? "backstab" : "flank")} stance armed for {durMs}ms");
         return true;
     }
@@ -678,6 +687,10 @@ public sealed partial class Session
     // fractional MULTIPLIER on incoming damage. 1.0 = full damage, lower = less (sanctuary 0.5 = take half,
     // Cunning ramps to 0.6 = 40% off). Single-slot — RTK makes the sources mutually exclusive (checkIfCast),
     // so last cast owns it; expires back to 1.0 automatically. Applied in Session.ApplyMobHit.
+    // Set true by a handler that already sent the caster's outcome line (teleport arrival, inspect result), so
+    // HandleCast skips the generic "You cast <name>." for it (e.g. Gateway shows only "You have arrived...").
+    private bool _castNarrated;
+
     private double _deduction = 1.0;
     private long   _deductionUntil;
     private string _deductionName = "";   // spell display name, for the profile timer box (BuffBoxText)
@@ -709,7 +722,7 @@ public sealed partial class Session
         _rageAmount = rageAmount;
         SendStats();
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText($"You cast {sp.Name} — your attacks hit {rageAmount}x harder for {durMs / 1000}s!");
+        // caster sees only the central "You cast <name>." (HandleCast); no flavor
         Log.Info($"      {sp.Name} -> rage x{rageAmount} armed for {durMs}ms");
         return true;
     }
@@ -731,7 +744,7 @@ public sealed partial class Session
         _stealthUntil = Environment.TickCount64 + durMs;
         SendStats();
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText($"You cast {sp.Name} — your next strike will land with brutal force ({durMs / 1000}s).");
+        // caster sees only the central "You cast <name>." (HandleCast); no flavor
         Log.Info($"      {sp.Name} -> stealth (9x next hit) armed for {durMs}ms");
         return true;
     }
@@ -757,7 +770,7 @@ public sealed partial class Session
         _enchantAmount = amount;
         SendStats();
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText($"Your weapon shines with holy light — enchanted for {durMs / 1000}s.");
+        // caster sees only the central "You cast <name>." (HandleCast); no flavor
         Log.Info($"      {sp.Name} -> enchant x{amount} armed for {durMs}ms");
         return true;
     }
@@ -810,7 +823,7 @@ public sealed partial class Session
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
         ShowPlayer(this);   // + our own view too, via the same 0x07 self-id path — see doc comment above
-        SendMiniText($"You feel your body twist and change! ({durationMs / 1000}s)");
+        // caster sees only the central "You cast <name>." (HandleCast); no flavor
         Log.Info($"      {sp.Name} -> morph look={_morphLook} for {durationMs}ms (self + peer visible via 0x07, see Content.MorphSpells)");
         return true;
     }
@@ -887,8 +900,7 @@ public sealed partial class Session
             BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
             ShowDamageResult(mob.Id, mob, died);
             landed = true;
-            if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward, killExp: true); SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)"); }
-            else SendMessage($"Your {sp.Name} hits {mob.Name} for {netDamage}.");
+            if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward, killExp: true); }
 
             if (overkill > 0)
             {
@@ -1002,7 +1014,7 @@ public sealed partial class Session
         _char.Mp = Math.Min(EffMaxMp, _char.Mp + mana);
         BroadcastFx(_char.Id, 6, 22);   // player:sendAction(6,20) + playSound(22) — no explicit Effect.tbl id in the Lua, action-only
         SendStats();
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         Log.Info($"      {sp.Name} -> stole {mana} mana from '{target._char.Name}'");
         return true;
     }
@@ -1029,7 +1041,7 @@ public sealed partial class Session
         target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
         SendStats();
         BroadcastFx(_char.Id, 6, 22);
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         Log.Info($"      {sp.Name} -> gave {give} mana to '{target._char.Name}'");
         return true;
     }
@@ -1072,7 +1084,7 @@ public sealed partial class Session
         target.SendStats();
         if (!ReferenceEquals(target, this)) target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
         BroadcastFx(_char.Id, 6, 34);
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         Log.Info($"      {sp.Name} -> cleansed '{target._char.Name}' (rate {successRate}%)");
         return true;
     }
@@ -1094,7 +1106,7 @@ public sealed partial class Session
         SetCooldown(sp.Key, 8000);
         target.ReviveAt(target._char.Map, target._char.X, target._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
         BroadcastFx(_char.Id, 6, 20);
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         SendStats();
         Log.Info($"      {sp.Name} -> revived '{target._char.Name}'");
         return true;
@@ -1129,7 +1141,7 @@ public sealed partial class Session
         string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
         EnterMap(_char.Map, _char.MapXs, _char.MapYs, nx2, ny2, mapName);   // re-anchor viewport/redraw at the new spot (same convention as !warp)
         SendStats();
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         Log.Info($"      {sp.Name} -> leapt {dist} tile(s) dir {_facing}");
         return true;
     }
@@ -1174,8 +1186,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);
-                SendMessage($"You defeated {mob.Name}. (+{reward} exp)");
+                AwardExp(reward, killExp: true);   // exp message only; no caster kill flavor
                 TallyKill(mob);
             }
         }
@@ -1246,6 +1257,7 @@ public sealed partial class Session
             ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
 
         SendMiniText(traps.Length > 0 ? $"You sense {traps.Length} hidden trap{(traps.Length == 1 ? "" : "s")} nearby." : "You sense nothing nearby.");
+        _castNarrated = true;   // the sense-result IS the caster line — skip the generic "You cast X."
         Log.Info($"      {sp.Name} -> revealed {traps.Length} trap(s) near ({_char.X},{_char.Y})");
         return true;
     }
@@ -1289,6 +1301,7 @@ public sealed partial class Session
 
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
         SendScriptMessageP(tc.Id, text.ToString(), DialogPortrait.None, prev: false, next: false);
+        _castNarrated = true;   // the inspect popup IS the caster feedback — skip the generic "You cast X."
         Log.Info($"      {sp.Name} -> divined '{tc.Name}' (inventory={showInventory})");
         return true;
     }
@@ -1304,7 +1317,7 @@ public sealed partial class Session
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, Content.TrapWireKind(kind), _char.Id);
         SendStats();
         if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText("You set a trap!");   // RTK dart_trap.lua: sendMinitext, exact wording
+        // caster line centralized in HandleCast ("You cast <name>.")
         Log.Info($"      {sp.Name} -> placed {kind} trap at ({_char.X},{_char.Y})");
         return true;
     }
@@ -1326,7 +1339,7 @@ public sealed partial class Session
         SendStats();
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText("You set a devastating trap!");
+        // caster line centralized in HandleCast ("You cast <name>.")
         Log.Info($"      {sp.Name} -> bladestorm trap placed at ({_char.X},{_char.Y}), expires in {lifetimeMs}ms");
         return true;
     }
@@ -1382,7 +1395,7 @@ public sealed partial class Session
                                   exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
         mob.OwnerId = _char.Id;
         mob.PetExpiresAt = Environment.TickCount64 + 300_000;
-        SendMiniText($"You summon a {mob.Name}.");
+        // caster line centralized in HandleCast ("You cast <name>.")
         Log.Info($"      {sp.Name} -> summoned pet '{mob.Name}' ({mob.Id}) for player {_char.Id} at ({sx},{sy})");
         return true;
     }
@@ -1403,7 +1416,7 @@ public sealed partial class Session
         int durMs = fx.DurationMs > 0 ? fx.DurationMs : 20000;
         mob.FrozenUntil = Environment.TickCount64 + durMs;
         BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // debuff graphic + sound
-        SendMiniText($"Your {sp.Name} holds {mob.Name} for {durMs / 1000}s.");
+        // caster line centralized in HandleCast ("You cast <name>."); the mob visibly freezes
         Log.Info($"      {sp.Name} -> mob {mob.Id} '{mob.Name}' frozen {durMs}ms ({fx.Debuff})");
         return true;
     }
@@ -1414,7 +1427,7 @@ public sealed partial class Session
     {
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         _char.Mp -= (uint)mana;
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         return true;
     }
 
@@ -1424,7 +1437,7 @@ public sealed partial class Session
     {
         if (_char.Mp < (uint)mana) { SendMiniText($"Not enough mana to cast {sp.Name}."); return false; }
         _char.Mp -= (uint)mana;
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         return true;
     }
 
@@ -1563,6 +1576,7 @@ public sealed partial class Session
         EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
         SendSound(708, _char.Id);   // confirmed live 2026-07-27; self-only, teleport isn't visible to peers anyway
         SendMiniText($"You have arrived at {gate} Gate of {r.City}.");
+        _castNarrated = true;   // teleport narrates its own outcome — skip the generic "You cast Gateway."
         Log.Info($"      Gateway -> region {region} {r.City} {gate} gate: map {map.Id} ({x},{y})");
         return true;
     }
@@ -1630,9 +1644,9 @@ public sealed partial class Session
                 _char.Mp -= cost;
                 uint before = _char.Hp;
                 _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)power);
-                uint gain = _char.Hp - before;
+                _ = _char.Hp - before;
                 BroadcastFx(_char.Id, 5, 4);   // generic unaligned heal graphic + sound
-                SendMiniText(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
+                // caster line centralized in HandleCast ("You cast <name>.")
                 return true;
             }
             case Content.SpellEffect.Damage:
@@ -1647,20 +1661,18 @@ public sealed partial class Session
                     if (died)
                     {
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                        AwardExp(reward, killExp: true);
-                        SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
+                        AwardExp(reward, killExp: true);   // exp message only; no caster hit/kill flavor
                     }
-                    else SendMessage($"Your {sp.Name} hits {mob.Name} for {power}.");
                 }
                 return true;
             }
             case Content.SpellEffect.Buff:
                 _char.Mp -= cost;
-                SendMiniText($"You invoke {sp.Name} — you feel its power.");
+                // caster line centralized in HandleCast ("You cast <name>.")
                 return true;
             default:
                 _char.Mp -= cost;
-                SendMiniText($"You cast {sp.Name}.");
+                // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
                 return true;
         }
     }
@@ -1695,7 +1707,7 @@ public sealed partial class Session
         uint lost = before > _char.Hp ? before - _char.Hp : 0;
         if (Content.FxFor(sp) is { } fx)
             BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // Invoke graphic + sound
-        SendMiniText($"You cast {sp.Name}.");
+        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
         Log.Info($"      {sp.Name}: -{lost} HP (cost {healthCost}, floor 100), MP -> full {_char.Mp}/{EffMaxMp}");
         return true;
     }
