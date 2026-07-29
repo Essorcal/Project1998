@@ -110,8 +110,11 @@ public sealed class Character
     // profile / "Mind's Eye" self-profile (0x39 = clif_mystaytus). These populate the profile window
     // the client opens on the profile key (client sends 0x2D, byte 0). AC is signed in TK (lower is
     // better); Dam/Hit are the melee bonus lines. Tnl = experience "to next level".
-    // Ac defaults to 99 (real RTK Player.reset: baseArmor = 99), NOT 0 — LevelUp's "-1 per level, floor 1
-    // at level 99" formula (99 - 98 = 1) only lands on the documented level-99 cap value starting from 99.
+    // Ac is the NAKED base AC, held as a cache of the real NexusTK rule "base AC (naked) = 100 - level"
+    // (Warrior Tutor Yttribium, confirmed live). Default 99 = 100 - 1 for a fresh level-1 character. It is
+    // recomputed from level on world entry and on every level-up (Session.cs), never decremented in place,
+    // and reaches 1 at level 99 for every class. Gear/buffs modify it at display/combat time, where the
+    // -80 (human) / -95 (mob) damage-mitigation caps apply.
     public sbyte  Ac        = 99;
     public byte   Dam       = 0;
     public byte   Hit       = 0;

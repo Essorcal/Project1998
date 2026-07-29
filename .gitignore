@@ -5,9 +5,11 @@
 *.user
 *.suo
 
-# ---- Runtime state & logs ----
-# Character store is generated at runtime and churns during testing.
-data/
+# ---- Game data ----
+# data/ is its OWN git repo (submodule, local remote for now — see data/.gitignore), tracked separately
+# from this logic-only server repo. Content: data/rtk-data/ (regenerable via the re/ tools), maps, SObj.tbl.
+# Its own .gitignore keeps live runtime state (char store, nexus.db) out of that history too.
+
 *.log
 server_live.err
 server-err.log
@@ -16,10 +18,17 @@ server-err.log
 re/__pycache__/
 re/probe_log.txt
 re/probe_log_533.txt
+re/nametag_log.txt
 scratch_*.html
 
-# ---- Game DATA is kept OUT of this repo (logic-only server; see docs §11a.2/§17.1) ----
-# Extracted from the client PAK (regenerable via re/pak_extract.py):
+# ---- client exe backups made by re/patch_*.py before an on-disk binary patch (never commit a full game exe) ----
+re/*.exe
+re/*.exe.bak
+re/*.prenametagpatch.bak
+re/patches/backups/
+re/patches/**/__pycache__/
+
+# ---- RE-tool byproducts extracted from the client PAK (regenerable via re/pak_extract.py) ----
 re/monster.epf
 re/monster.tbl
 re/monster.pal
@@ -37,9 +46,8 @@ re/nexustk_dat_list.txt
 re/interdat_list.txt
 # Compiled/converted client maps (game data; e.g. from re/map2cmp.py):
 re/*.cmp
-# Extracted from the RTK reference server / Nexus Atlas (regenerable via the tools in re/):
-re/rtk-data/
-re/monster-matcher/rtk_mobs.csv
+# Extracted from the RTK reference server / Nexus Atlas (regenerable via the tools in re/; output now lands
+# in data/rtk-data/, covered by the blanket data/ rule above):
 re/monster-matcher/atlas_img/
 re/monster-matcher/atlas_ref.json
 re/monster-matcher/cdx_monsternpc.json

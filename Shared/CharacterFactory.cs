@@ -59,10 +59,17 @@ public static class CharacterFactory
     // Place a BRAND NEW character (never persisted before) at their home city instead of Character's
     // compiled-in fallback. MUST run after ApplyAppearance has decoded the real Nation pick (creation
     // byte[2]) or every character would route by the compiled-in default instead of the picked nation.
+    //
+    // Also rolls starting Vita/Mana here (RTK player.lua Player.reset: baseHealth = random(45,55),
+    // baseMagic = random(32,36) — Might/Grace/Will=3/3/3 and baseArmor=99 are already Character's compiled-in
+    // defaults, fixed values not rolls, so they don't need re-applying here).
     public static void PlaceNewCharacter(Character c)
     {
         var (map, x, y) = HomeCityFor(c.Nation);
         c.Map = map; c.X = x; c.Y = y;
         c.MapXs = 12; c.MapYs = 12;   // both home interiors (36, 351) are 12x12
+
+        c.MaxHp = c.Hp = (uint)Random.Shared.Next(45, 56);   // inclusive both ends, matches math.random(45,55)
+        c.MaxMp = c.Mp = (uint)Random.Shared.Next(32, 37);   // matches math.random(32,36)
     }
 }

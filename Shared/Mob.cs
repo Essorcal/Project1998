@@ -47,19 +47,69 @@ public sealed class Mob
     // frozen and won't wander. 0 = not debuffed. World.Tick skips movement while frozen.
     public long FrozenUntil;
 
+    // Set by a Rogue poison trap (RTK NPCs/trap/rogue_traps/poison_dart_trap.lua): a damage-over-time tick
+    // that fires every 1500ms until PoisonUntil, dealing PoisonTickDam each time — capped so it can never
+    // actually finish a kill (RTK: only ticks while current HP > the tick amount). World.Tick drives this.
+    public long PoisonUntil;
+    public long PoisonNextTick;
+    public int  PoisonTickDam;
+    public uint PoisonOwnerId;   // caster's player id — credited with a poison-DOT kill (mirrors Trap.OwnerId)
+
+    // Poet "Call of the Wild" pet-summon family (RTK Spells/poet/cotw_*.lua): a normal shared-world Mob,
+    // just tagged with who summoned it (World.PetCountFor's spawn cap) and when it auto-expires (World.Tick
+    // despawns it via World.DespawnMob, no kill/loot). 0 = not a pet. Combat-assist/threat-transfer (RTK
+    // cotw_controller_poet) isn't ported — the pet is a real, correctly-statted companion, but fights
+    // independently (normal Aggressive/wander AI) rather than sharing its owner's target.
+    public uint OwnerId;
+    public long PetExpiresAt;
+
     // Combat AI (RTK's threat/target model, mob_ai_normal.lua: on_attacked sets the target, move/attack
     // chase and swing at it): 0 = passive wander. World.TryDamage sets this to the attacker's player id on a
     // landed hit; World.Tick then has the mob abandon wandering to path toward and melee that player instead,
-    // until it dies, logs off, or strays past ChaseLeash — mirroring "fights back" rather than unprovoked
-    // aggro (nothing here attacks a player who never hit it first, matching every normal-mob AI reviewed).
+    // until it dies, logs off, or strays past ChaseLeash. Aggressive mobs ALSO get TargetId set unprovoked —
+    // World.Tick scans for a nearby player each move tick (RTK mob.c mob_find_target, gated on the engine-level
+    // MobBehavior==1 "type", which is separate from and runs before the mob_ai_normal.lua script ever executes).
     public uint TargetId;
-    public int  Level;         // copied from MobDef.Level at spawn — drives its melee damage (World.Tick)
+
+    // Copied from MobDef.Aggressive at spawn (RTK MobBehavior==1): scans for and locks onto any player within
+    // AggroRadius each move tick, rather than only fighting back once hit. Most real monsters are aggressive;
+    // herd/prey critters (rabbit, deer, squirrel, …) are the passive exception.
+    public bool Aggressive;
+    public int  Level;         // copied from MobDef.Level at spawn — exp/display only, NOT melee damage (see MinDam/MaxDam)
     public int  AttackTime = 2000;   // ms between swings once adjacent to its target
     public int  AttackTimer;
 
-    // Copied from MobDef.Will at spawn — RTK's per-mob magic-resist stat (Session.RollDeflect). RTK's mob
-    // struct also carries a separate "protection" stat we have no source data for, so it's treated as 0.
+    // Copied from MobDef.MinDam/MaxDam at spawn (RTK MobMinimumDamage/MobMaximumDamage) — the actual per-swing
+    // damage range, rolled via World.MobSwingDamage (RTK swingDamage.lua _getMobSwingDamage: three uniform
+    // draws over the thirded range, summed). Unrelated to Level — a level-99 dragon's real threat is here.
+    public int MinDam = 1, MaxDam = 1;
+
+    // Copied from MobDef.Hit at spawn (RTK MobHit) — as ATTACKER, feeds this mob's own crit-chance roll
+    // (RTK hitCritChance.lua: a mob's critical-hit odds are hit/5, on top of the base hit-chance roll that
+    // gates whether a crit can happen at all — though real RTK swingDamage.lua never actually multiplies
+    // MOB damage by its own crit, only a PLAYER's; see Combat.RollCritChance's doc for why).
+    public int Hit;
+
+    // Copied from MobDef.IsBoss at spawn (RTK MobIsBoss) — selects the attacking PLAYER's weapon Large-damage
+    // range (minLDam/maxLDam) instead of Small (minSDam/maxSDam), RTK swingDamage.lua _getPlayerSwingDamage.
+    public bool IsBoss;
+
+    // Copied from MobDef.Grace at spawn — read as the DEFENDER's grace in a player's crit-chance roll
+    // (Session.PlayerSwingDamage -> Combat.RollCritChance) when they attack this mob. Present in the source
+    // CSV all along but, like MinDam/MaxDam, never actually parsed until this pass.
+    public int Grace;
+
+    // Copied from MobDef.Will/Protection at spawn — RTK's per-mob magic-resist stats, both folded into
+    // Session.RollDeflect. Will has always been wired in; Protection previously had no source column.
     public int Will;
+    public int Protection;
+
+    // Copied from MobDef.Ac at spawn (RTK MobArmor) — the mob's OWN melee defense, signed/lower-is-better
+    // same as Character.Ac. This is a DIFFERENT stat from Protection above: Ac reduces an incoming melee
+    // swing (Session.HandleAttack's armor deduction, floored at -95 same as RTK's mob-target minimumArmor);
+    // Protection only affects magic resist. Both were 0 for every mob before this — RTK's mob struct
+    // carries them separately and neither had a source column until the CTK SQL dump was merged in.
+    public int Ac;
 
     public Mob() { }
 

@@ -40,6 +40,13 @@ public sealed class NpcContext
     /// <summary>Run the bank/vault flow (deposit &amp; withdraw coin and items).</summary>
     public Task Bank() => _s.DlgBank(_npc);
 
+    /// <summary>Does the player have any parcel waiting here (gates the "Receive Parcel" menu entry)?</summary>
+    public bool HasParcels => _s.HasWaitingParcels;
+    /// <summary>Run the send-a-parcel flow: gold or an item, to a named recipient (RTK sendParcelTo).</summary>
+    public Task SendParcel() => _s.ParcelSendFlow(_npc);
+    /// <summary>Run the collect-your-parcels flow (RTK receiveParcelFrom).</summary>
+    public Task ReceiveParcel() => _s.ParcelReceiveFlow(_npc);
+
     /// <summary>Spoken "buy [my] [all|N] &lt;item&gt;" shortcut: sell `amount` (or the whole stack, if &lt;= 0)
     /// of a fuzzy-matched item by name. False if nothing in the bag matched the name, so the speech falls
     /// through instead of being silently swallowed.</summary>
@@ -338,6 +345,22 @@ public sealed class BankAbility : INpcAbility, INpcSayHandler
     }
 }
 
+/// <summary>The kingdom messenger's parcel post (RTK MessengerNpc / messenger.lua + Parcel.lua): send gold
+/// or an item to another player, and collect parcels others have sent you. Parcels are separate from n-mail
+/// (see Parcel.cs) — the bottom-left HUD bag icon means "a parcel waits here". Buy/Sell come from ShopAbility,
+/// wired alongside this in NpcScripts; this ability adds only the two parcel entries. "Receive Parcel" is
+/// shown only when something is actually waiting (RTK gates its Mailbox option on getParcel()).</summary>
+public sealed class MessengerAbility : INpcAbility
+{
+    public static readonly MessengerAbility Instance = new();
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ("Send Parcel", c => c.SendParcel());
+        if (ctx.HasParcels)
+            yield return ("Receive Parcel", c => c.ReceiveParcel());
+    }
+}
+
 /// <summary>Waypoint fast-travel. Stub — RTK's Waypoint.lua network didn't exist in 4.x/5.x NexusTK, so it
 /// isn't ported; this only exists so InnNpc's composition (which has always offered "Transport") has
 /// something to show until a period-accurate travel feature is identified.</summary>
@@ -519,6 +542,22 @@ public sealed class ClassTrainerAbility : INpcAbility
         if (pick < 1 || pick > learn.Count) return;
 
         var sp = learn[pick - 1];
+
+        // Real per-class item/gold cost for the "peasant commons" spells (Gateway/Soothe/Return/Mentor/
+        // Approach/Summon) — most spells have no entry in Content.LearnCosts and stay free, unchanged from
+        // before (see that table's doc for the archive cross-check behind these six).
+        if (Content.LearnCostFor(sp, ctx.ClassId) is { } cost)
+        {
+            foreach (var (item, amount) in cost.Items)
+                if (!ctx.HasItem(item, amount))
+                { await ctx.Say($"You need {amount} {ctx.ItemName(item)} to learn {sp.Name}."); return; }
+            if (ctx.Coins < (uint)cost.Gold)
+            { await ctx.Say($"You need {cost.Gold} gold to learn {sp.Name}."); return; }
+
+            foreach (var (item, amount) in cost.Items) ctx.TakeItem(item, amount);
+            if (cost.Gold > 0) ctx.SpendGold((uint)cost.Gold);
+        }
+
         if (!ctx.LearnSpell(sp)) { await ctx.Say("Your mind cannot hold any more secrets right now."); return; }
         await ctx.Say($"You have learned {sp.Name}.");
     }

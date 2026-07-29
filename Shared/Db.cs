@@ -27,7 +27,10 @@ public static class Db
         var cn = new SqliteConnection($"Data Source={Path}");
         cn.Open();
         using var pragma = cn.CreateCommand();
-        pragma.CommandText = "PRAGMA busy_timeout=5000;";
+        // synchronous=NORMAL is per-connection (unlike journal_mode=WAL, which is a persistent DB-file
+        // setting) — reapply it on every connection, else this connection silently runs at SQLite's
+        // default FULL.
+        pragma.CommandText = "PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;";
         pragma.ExecuteNonQuery();
         return cn;
     }
@@ -78,7 +81,46 @@ CREATE TABLE IF NOT EXISTS board_posts (
   body     TEXT,
   month    INTEGER,
   day      INTEGER
-);";
+);
+
+-- RTK nmail (clif.c case 9/2/3 reuse boards_showposts/boards_readpost against board id 0 — a player's own
+-- mailbox is really just a board only they can see). One row per piece of mail; position is 1-based within
+-- the RECIPIENT's own mailbox (mirrors board_posts.position's per-board scoping). item_id<0 = no parcel
+-- attached (see Mail.cs).
+CREATE TABLE IF NOT EXISTS mail_posts (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipient TEXT NOT NULL COLLATE NOCASE,
+  position  INTEGER NOT NULL,
+  sender    TEXT,
+  topic     TEXT,
+  body      TEXT,
+  month     INTEGER,
+  day       INTEGER,
+  item_id     INTEGER NOT NULL DEFAULT -1,
+  item_amount INTEGER NOT NULL DEFAULT 0,
+  item_dura   INTEGER NOT NULL DEFAULT 0,
+  claimed     INTEGER NOT NULL DEFAULT 0,
+  is_read     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Parcels: item/gold sent player-to-player, collected from a MessengerNpc (RTK Parcels table +
+-- messenger.lua/Parcel.lua). SEPARATE from mail — RTK keeps them apart, and a gold parcel has no letter.
+-- Name-addressed like mail_posts (offline recipients resolve by CharacterStore). item_id<0 = a GOLD
+-- parcel (item_amount = the coin amount); item_id>=0 = an item stack (item_amount = count). position is
+-- 1-based within the recipient's own queue (FIFO claim). See Server/Parcel.cs.
+CREATE TABLE IF NOT EXISTS parcels (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipient TEXT NOT NULL COLLATE NOCASE,
+  position  INTEGER NOT NULL,
+  sender    TEXT,
+  item_id     INTEGER NOT NULL DEFAULT -1,
+  item_amount INTEGER NOT NULL DEFAULT 0,
+  item_dura   INTEGER NOT NULL DEFAULT 0,
+  engrave     TEXT,
+  month     INTEGER,
+  day       INTEGER
+);
+";
             cmd.ExecuteNonQuery();
             _initialized = true;
         }

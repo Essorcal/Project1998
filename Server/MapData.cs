@@ -14,15 +14,16 @@ namespace Server;
 /// </summary>
 public sealed class MapData
 {
+    public ushort Id { get; }
     public ushort Xs { get; }
     public ushort Ys { get; }
     private readonly ushort[] _tile;
     private readonly ushort[] _pass;
     private readonly ushort[] _obj;
 
-    private MapData(ushort xs, ushort ys, ushort[] tile, ushort[] pass, ushort[] obj)
+    private MapData(ushort id, ushort xs, ushort ys, ushort[] tile, ushort[] pass, ushort[] obj)
     {
-        Xs = xs; Ys = ys; _tile = tile; _pass = pass; _obj = obj;
+        Id = id; Xs = xs; Ys = ys; _tile = tile; _pass = pass; _obj = obj;
     }
 
     public ushort Tile(int x, int y) => _tile[y * Xs + x];
@@ -56,9 +57,12 @@ public sealed class MapData
     /// flags (<see cref="ObjectFlags"/>). Object walls sit on walkable ground (the pass flag is 0 under many
     /// building walls — only the door graphic itself gets pass=3), so the object layer is what stops you from
     /// walking through a hut's side; the 4.x client enforces this locally, and this makes server-side movement
-    /// (mob AI + the player walk) agree. Out-of-range short-circuits to solid before the object read.</summary>
+    /// (mob AI + the player walk) agree. Out-of-range short-circuits to solid before the object read.
+    /// A tile configured <see cref="Doors.IsForceOpen"/> bypasses both checks — see <see cref="Doors"/> for
+    /// why some RTK doors (no open-graphic pair defined anywhere) need this instead of a normal toggle.</summary>
     public bool BlockedMove(int x, int y, int dir) =>
-        Solid(x, y) || ObjectFlags.Blocks(_obj[y * Xs + x], dir);
+        !Doors.IsForceOpen(Id, (ushort)x, (ushort)y) &&
+        (Solid(x, y) || ObjectFlags.Blocks(_obj[y * Xs + x], dir));
 
     private static readonly Dictionary<ushort, MapData?> Cache = new();
 
@@ -72,6 +76,16 @@ public sealed class MapData
             Cache[id] = md;
             return md;
         }
+    }
+
+    /// <summary>Drop every cached map so the next <see cref="For"/> re-reads the <c>.map</c> file from disk.
+    /// Called by the hot-reload path (<c>!reload</c>): a changed <c>TK&lt;id&gt;.map</c> (terrain / object edits)
+    /// then takes effect for anyone who re-enters or re-requests the map, no server restart needed. Note a
+    /// door toggled via 0x20 lives in this cache too, so a reload also resets any open doors to their file
+    /// state — acceptable for a manual admin action.</summary>
+    public static void Invalidate()
+    {
+        lock (Cache) Cache.Clear();
     }
 
     private static MapData? Load(ushort id, ushort xs, ushort ys)
@@ -99,7 +113,7 @@ public sealed class MapData
             obj[i]  = (ushort)(o & 0x3FFF);           // object frame index
         }
         Log.Info($"   -> loaded map TK{id}.map ({xs}x{ys}, {cells} cells) from {path}");
-        return new MapData(xs, ys, tile, pass, obj);
+        return new MapData(id, xs, ys, tile, pass, obj);
     }
 
     private static string? Locate(ushort id)

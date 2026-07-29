@@ -428,6 +428,11 @@ public sealed class Session
             // ("Show Board"). Matches RTK's clif_parse dispatch exactly (clif.c:11613: `case 0x3B:
             // clif_handle_boards(sd);`). See HandleBoard.
             case 0x3B:                    HandleBoard(dec); break;
+            // 0x41 = the mail-arrow widget's PARCEL-bag click (empty body). RE'd 2026-07-28: the widget's
+            // parcel branch (0x469760) stages the single byte 0x41 and sends it. RTK maps it to
+            // clif_parseparcel (clif.c:15508) = a minitext pointing at the messenger — and that's exactly what
+            // a parcel needs (collect it from a MessengerNpc, see MessengerAbility), so we mirror it verbatim.
+            case 0x41:                    SendMiniText("You should go see your kingdom's messenger to collect this parcel."); break;
             // 0x2E = RTK's party-invite opcode (clif_addgroup: body = nameLen(u8) name[nameLen], same shape
             // as 0x19 whisper above). Unlike the items/0x0F/whisper opcodes this one has never been seen in
             // a live 4.95 capture, so it's wired defensively (bad/garbage bytes just fail the name lookup —
@@ -553,6 +558,7 @@ public sealed class Session
         _char.Name = _user;
         CharacterFactory.ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
         if (loaded is null) CharacterFactory.PlaceNewCharacter(_char);   // no saved character -> home city matching the picked nation
+        _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);   // naked base AC = 100-level; recompute on load so records saved under the old decrement/gate logic self-correct
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
         // collide on the shared-world broadcast key). This id binds the client's camera (0x05/SendId) and
@@ -801,7 +807,24 @@ public sealed class Session
         WriteBe32(d, 28, _char.Mp);         // current MP (confirmed)
         WriteBe32(d, 32, _char.Exp);        // experience (confirmed)
         WriteBe32(d, 36, _char.Coins);      // coins      (confirmed)
+        d[45] = MailParcelFlags();          // bottom-left HUD notify: 0x10=n-mail arrow, 0x01=parcel bag (body[45] confirmed live 2026-07-28)
         SendMap(0x08, _gameInc++, d, "stats(0x08)");
+    }
+
+    // The 0x08 body[45] mail/parcel HUD-notification byte (RTK FLAG_MAIL=0x10 / FLAG_PARCEL=0x01, both=0x11).
+    // Confirmed live: the 4.95 client draws the bottom-left arrow (unread n-mail) / bag (unclaimed parcel)
+    // straight off this byte. Driven from the persisted mailbox so it survives clean stats resends and
+    // relog, and self-clears when the mail is read / the parcel claimed. See docs §"Stats packet 0x08".
+    private byte MailParcelFlags()
+    {
+        byte f = 0;
+        var inbox = Mail.InboxFor(_char.Name);
+        if (inbox.Any(m => !m.IsRead))                       f |= 0x10;  // an unread letter -> arrow
+        // Bag icon = a parcel waiting: either a real messenger parcel (Parcel.cs) or a reward-mail's
+        // unclaimed attachment (RTK's own reward mail carries its parcel on the letter).
+        if (Parcel.HasAny(_char.Name)
+            || inbox.Any(m => m.ItemId >= 0 && !m.Claimed))  f |= 0x01;
+        return f;
     }
 
     private static void WriteBe32(byte[] d, int off, uint v)
@@ -886,6 +909,17 @@ public sealed class Session
         SendStats();
         _char.Totem = save;
         Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
+    }
+
+    // "!time" — report the shared world clock (hour 0-23, year) and whether YOU are in your totem's totem-time
+    // window (the +5% kill-exp bonus). The clock advances one game hour per 7.5 real minutes (World.HourTicks).
+    private void ShowTime()
+    {
+        var (h, y) = _world.Time;
+        bool totem = _world.IsTotemTime(_char.Totem);
+        string mine = Content.TotemName(_char.Totem);
+        SendLog($"Game time: hour {h}:00, year {y}. Your totem: {mine}. " +
+                (totem ? "TOTEM TIME — kill exp +5%." : "Not your totem time (no exp bonus)."));
     }
 
     // "!dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n
@@ -2037,6 +2071,8 @@ public sealed class Session
         // DoWhisper) / "!friend [add|remove] <name>" (no RTK equivalent — see Character.Friends' doc).
         if (text.StartsWith("!ignore", StringComparison.OrdinalIgnoreCase)) { HandleIgnoreCommand(text); return; }
         if (text.StartsWith("!friend", StringComparison.OrdinalIgnoreCase)) { HandleFriendCommand(text); return; }
+        // "!mailflag" MUST be checked before "!mail" (StartsWith("!mail") would otherwise swallow it).
+        if (text.StartsWith("!mailflag", StringComparison.OrdinalIgnoreCase)) { MailFlagProbe(text); return; }  // sweep the 0x08 tail mail/parcel notify byte
         // "!mail" — RTK nmail (see HandleMailCommand's doc for why compose is chat-command-only).
         if (text.StartsWith("!mail", StringComparison.OrdinalIgnoreCase)) { HandleMailCommand(text); return; }
         // ---- party (RTK clif_addgroup/clif_leavegroup, §11) + trade (RTK clif_handitem &c., §11) ----
@@ -2096,6 +2132,8 @@ public sealed class Session
         if (text.StartsWith("!weapon", StringComparison.OrdinalIgnoreCase)) { SetWeapon(text); return; }  // equip weapon sprite
         if (text.StartsWith("!ride", StringComparison.OrdinalIgnoreCase) || text.StartsWith("!mount", StringComparison.OrdinalIgnoreCase)) { ToggleMount(text); return; } // get on/off the horse (form byte 3)
         if (text.StartsWith("!coins", StringComparison.OrdinalIgnoreCase) || text.StartsWith("!gold", StringComparison.OrdinalIgnoreCase)) { GiveCoinsCmd(text); return; }  // add coins to the purse
+        if (text.StartsWith("!npc", StringComparison.OrdinalIgnoreCase)) { NpcToggleCmd(text); return; }   // show NPC on/off status (config file + !reload to change)
+        if (text.StartsWith("!craft", StringComparison.OrdinalIgnoreCase)) { CraftToggleCmd(text); return; } // show crafting era-gate status (config file + !reload to change)
         if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("level", text); return; }   // set base level (test wear reqs)
         if (text.StartsWith("!might", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("might", text); return; } // set base might (test wear reqs)
         if (text.StartsWith("!class", StringComparison.OrdinalIgnoreCase)) { SetClass(text); return; }  // set the profile class/path line
@@ -2122,6 +2160,7 @@ public sealed class Session
         if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { ClickProfileCmd(text); return; }  // native 0x34 click-profile: self, or "!click <name>" for another player
         if (text.StartsWith("!nat", StringComparison.OrdinalIgnoreCase)) { StatNation(text); return; }              // sweep nation id -> HUD name
         if (text.StartsWith("!totem", StringComparison.OrdinalIgnoreCase)) { StatTotem(text); return; }             // sweep totem id -> HUD name
+        if (text.StartsWith("!time", StringComparison.OrdinalIgnoreCase))  { ShowTime(); return; }                  // report the game clock + totem-time status
         if (text.StartsWith("!dye", StringComparison.OrdinalIgnoreCase)) { DyeProbe(text); return; }                // calibrate the war-paint dye: !dye <n> sets appearance[4]
         if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
@@ -2595,6 +2634,8 @@ public sealed class Session
     private void HandleBoard(byte[] dec)
     {
         if (dec.Length < 1) return;
+        // Log every board/nmail subcommand while we verify the native compose window (sub-6) live.
+        Log.Info($"   0x3B board packet: subcmd={dec[0]} len={dec.Length}: {BitConverter.ToString(dec)}");
         switch (dec[0])
         {
             case 1: SendBoardList(); break;                                                  // Show Board
@@ -2602,13 +2643,69 @@ public sealed class Session
             case 3: if (dec.Length >= 5) SendBoardReadPost(U16(dec, 1), U16(dec, 3)); break;  // Read post (board 0 -> own mailbox)
             case 4: HandleBoardMakePost(dec); break;                                          // Make post (board 0 rejected — see its own doc)
             case 5: if (dec.Length >= 5) HandleBoardDelete(U16(dec, 1), U16(dec, 3)); break;   // Delete post (board 0 -> own mailbox)
+            case 6: HandleNmailSend(dec); break;                                              // Send nmail — the NATIVE compose window's packet
             case 9: SendBoardPosts(0); break;   // "Nmail": RTK's own case 9 is just boards_showposts(sd, 0) — open the mailbox
-            // 6 (nmail compose UI) / 7 (GM postcolor) / 8 (special write) aren't modelled: 6's real wire
-            // format for naming a RECIPIENT has no surviving source anywhere in this reference tree (see
-            // Mail.cs's doc) — compose mail with "!mail send <name> | <subject> | <body>" instead (same
-            // "chat command primary" precedent as !party/!ignore/!friend). 7/8 need a GM-level concept this
-            // server doesn't have.
+            // 7 (GM postcolor) / 8 (special write) aren't modelled — they need a GM-level concept this server lacks.
         }
+    }
+
+    // Sub-6 "Send nmail" — the NATIVE compose window's send packet, decoded from RTK nmail_write (map.c).
+    // RTK reads the fields at raw fd offsets 8+; our `dec` begins at the subcmd byte (dec[i] == fd[i+5]), so:
+    //   dec[3]=toLen, dec[4..]=recipient, then topicLen(u8), topic, msgLen(u16 BE), body, sendCopy(u8).
+    // Level-10 gated exactly like RTK. This is the authentic in-game "compose a letter" path (vs our
+    // !mail-send chat fallback). The leading Log.Info in HandleBoard + the dump here let us confirm live
+    // whether the 4.95 client's compose UI actually emits this.
+    private void HandleNmailSend(byte[] dec)
+    {
+        if (_char.Level < MailMinLevel) { SendMiniText($"You must be at least level {MailMinLevel} to view/send nmail."); return; }
+        try
+        {
+            if (dec.Length < 4) { SendBoardAck(6, false, "That letter didn't go through."); return; }
+            int toLen = dec[3];
+            int p = 4;
+            string toName = Encoding.ASCII.GetString(dec, p, toLen).TrimEnd('\0').Trim(); p += toLen;
+            int topicLen = dec[p]; p += 1;
+            string subject = Encoding.ASCII.GetString(dec, p, topicLen).TrimEnd('\0').Trim(); p += topicLen;
+            int msgLen = (dec[p] << 8) | dec[p + 1]; p += 2;
+            string body = Encoding.ASCII.GetString(dec, p, msgLen).TrimEnd('\0').Trim(); p += msgLen;
+            bool sendCopy = p < dec.Length && dec[p] != 0;
+            Log.Info($"   -> NMAIL compose: to='{toName}' topic='{subject}' bodyLen={body.Length} sendCopy={sendCopy}");
+
+            // Failure acks use type=0 so the compose window stays open for the player to fix the field
+            // (RTK intif: "User does not exist." / nmail_write: "Mail must contain a subject."/"...body.").
+            if (toName.Length == 0)  { SendBoardAck(6, false, "Who is this letter for?"); return; }
+            if (subject.Length == 0) { SendBoardAck(6, false, "Mail must contain a subject."); return; }
+            if (body.Length == 0)    { SendBoardAck(6, false, "Mail must contain a body."); return; }
+            if (!_store.Exists(toName) && _world.FindPlayer(toName) is null)
+                { SendBoardAck(6, false, "User does not exist."); return; }
+
+            var now = DateTime.UtcNow;
+            Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, -1, 0, 0);
+            if (sendCopy)   // "keep a copy for myself" checkbox — RTK topics the copy "[To <name>] <topic>"
+                Mail.Send(_char.Name, _char.Name, $"[To {toName}] {subject}", body, (byte)now.Month, (byte)now.Day, -1, 0, 0);
+            _world.FindPlayer(toName)?.SendStats();   // light the recipient's HUD arrow now if they're online
+            SendBoardAck(6, true, "Your message has been sent.");   // RTK's exact success ack — closes the compose window
+        }
+        catch (Exception e)
+        {
+            Log.Info($"   -> NMAIL parse error: {e}");
+            SendBoardAck(6, false, "That letter didn't go through.");
+        }
+    }
+
+    // RTK nmail_sendmessage (map.c:164) — the ACK every board/nmail WRITE or DELETE action blocks on.
+    // 0x31 body = other(u8: 6=write ack, 7=delete ack) type(u8: 1=success, 0=failure — success releases/
+    // closes the client's compose window, failure leaves it open) msgLen(u8) message[...] trailer(u8=7).
+    // This — not a 0x0D text line or a posts refresh — is the reply the real server sends after
+    // posting/sending/deleting (intif.c: "Your message has been posted."/"...sent."/"...deleted.").
+    private void SendBoardAck(byte other, bool ok, string msg)
+    {
+        var d = new List<byte> { other, (byte)(ok ? 1 : 0) };
+        var mb = Ascii(msg);
+        d.Add((byte)mb.Length);
+        d.AddRange(mb);
+        d.Add(7);
+        SendMap(0x31, _gameInc++, d.ToArray(), $"boardack(0x31) other={other} ok={ok} '{msg}'");
     }
 
     private static int U16(byte[] d, int i) => (d[i] << 8) | d[i + 1];
@@ -2616,14 +2713,13 @@ public sealed class Session
     // Sub-1 "Show Board": the board list. RTK clif_showboards: type(1) titlelen(u8) title[titlelen]
     // boardCount(u8) then per board [id(u16BE) nameLen(u8) name[nameLen]]. RTK's own board list
     // (db/board_db.txt) is server-instance config not present in the reference tree — see Boards.All's
-    // doc comment for what's seeded instead and why. UNVERIFIED against a live capture (no client-side
-    // confirmation yet that this reply shape renders correctly) — flag any visual issue and this is the
-    // first place to check.
+    // doc comment for what's seeded instead and why. LIVE-CONFIRMED 2026-07-28 (the list renders and
+    // selecting an entry opens it).
     private void SendBoardList()
     {
         var d = new List<byte> { 1, 13 };
         d.AddRange(Ascii("NexusTKBoards"));
-        d.Add((byte)Boards.All.Count);
+        d.Add((byte)(Boards.All.Count + 1));   // +1 for the personal Mailbox
         foreach (var b in Boards.All)
         {
             d.AddRange(Be((ushort)b.Id));
@@ -2631,22 +2727,38 @@ public sealed class Session
             d.Add((byte)n.Length);
             d.AddRange(n);
         }
-        SendMap(0x31, _gameInc++, d.ToArray(), "boardlist(0x31)");
+        // Board 0 = the player's nmail mailbox, listed LAST. Per RTK ("Board(0) == NMail"), opening board 0
+        // switches the window into mailbox mode (reply flags2=4), where Write composes WITH a recipient
+        // field (sub-6) instead of a recipient-less board post (sub-4) — this menu entry IS how mail is
+        // sent natively. It sits at the end because the 'm' hotkey that would otherwise reach it directly
+        // is dead in this build (see the note on the 'm' key in docs §11h) and there's no way to open the
+        // mailbox without going through this list: an unsolicited mailbox 0x31 is IGNORED unless the board
+        // window is already open (tested live 2026-07-28 — the client opens no window from it).
+        d.AddRange(Be((ushort)0));
+        var mn = Ascii("Mailbox");
+        d.Add((byte)mn.Length);
+        d.AddRange(mn);
+        SendMap(0x31, _gameInc++, d.ToArray(), "boardlist(0x31) +Mailbox");
     }
 
     // Sub-2 "Show posts from board #": flags2(u8) flags1(u8) board(u16BE) boardNameLen(u8) boardName[...]
     // postCount(u8) then per post [color(u8) postId(u16BE) nameLen(u8) name[...] month(u8) day(u8)
-    // topicLen(u8) topic[...]], newest first. flags2=2/flags1=3 are RTK's literal values for "a normal
-    // (non-nmail) board, always writable" — the only case we model (no GM/tutor/popup gating exists here).
-    // UNVERIFIED against a live capture. Board id 0 is the player's OWN mailbox (RTK case 9 == this same
-    // builder called with board 0 — see Mail.cs): "name" per post becomes the sender, and an unread letter's
+    // topicLen(u8) topic[...]], newest first. flags2 is the WINDOW-MODE byte (RTK char/mapif.c):
+    // 2 = normal board, 4 = NMAIL MAILBOX (Write button becomes recipient-field compose emitting sub-6).
+    // flags1 = write/del rights (1=none? 3=write+del; special 6 = "write sends a packet" for scripted
+    // boards, not modelled). Board id 0 is the player's OWN mailbox (RTK case 9 == this same builder
+    // called with board 0 — see Mail.cs): "name" per post becomes the sender, and an unread letter's
     // topic gets a "* " prefix so a native mailbox listing shows what's new without a separate flag byte.
     private void SendBoardPosts(int boardId)
     {
         if (boardId == 0)
         {
             var inbox = Mail.InboxFor(_char.Name);
-            var d0 = new List<byte> { 2, 3 };
+            // flags2=4 is RTK's NMAIL marker (char/mapif.c mapif_parse_showposts: "if (a.board == 0)
+            // board_header.flags2 = 4; else = 2") — THE byte that flips the client's board window into
+            // mailbox mode, where Write composes WITH a recipient field (sub-6) instead of a board post
+            // (sub-4). flags1=3 = CAN_WRITE|CAN_DEL (board 0 always grants both in boards_showposts).
+            var d0 = new List<byte> { 4, 3 };
             d0.AddRange(Be((ushort)0));
             var mbn = Ascii("Mailbox");
             d0.Add((byte)mbn.Length);
@@ -2695,9 +2807,10 @@ public sealed class Session
         SendMap(0x31, _gameInc++, d.ToArray(), $"boardposts(0x31) board={boardId} n={posts.Count}");
     }
 
-    // Sub-3 "Read post": type(u8=3) buttons(u8=3, always writable) nmailFlag(u8=0) postId(u16BE)
-    // authorLen(u8) author[...] month(u8) day(u8) topicLen(u8) topic[...] bodyLen(u16BE) body[...].
-    // UNVERIFIED against a live capture. Board id 0 -> the mailbox: marks the letter read and auto-claims
+    // Sub-3 "Read post": type(u8: 3=board post, 5=nmail letter) buttons(u8=3, always writable)
+    // nmailFlag(u8: 1 when board==0) postId(u16BE) authorLen(u8) author[...] month(u8) day(u8)
+    // topicLen(u8) topic[...] bodyLen(u16BE) body[...] — per RTK intif_parse_readpost/mapif_parse_readpost.
+    // Board id 0 -> the mailbox: marks the letter read and auto-claims
     // any attached parcel (see Mail.ClaimItem) the same way reading it via "!mail read" does, so a native
     // mailbox UI and the chat-command fallback behave identically regardless of which one the player uses.
     private void SendBoardReadPost(int boardId, int postId)
@@ -2732,7 +2845,7 @@ public sealed class Session
     {
         if (dec.Length < 4) return;
         int boardId = U16(dec, 1);
-        if (boardId == 0) { SendLog("Use \"!mail send <name> | <subject> | <body>\" to send mail."); return; }
+        if (boardId == 0) { SendBoardAck(6, false, "Use the mailbox Write button to send mail."); return; }
         int topicLen = dec[3];
         if (4 + topicLen + 2 > dec.Length) return;
         string topic = Encoding.ASCII.GetString(dec, 4, topicLen);
@@ -2741,12 +2854,16 @@ public sealed class Session
         if (bodyStart + bodyLen > dec.Length) return;
         string body = Encoding.ASCII.GetString(dec, bodyStart, bodyLen);
 
-        if (topic.Trim().Length == 0) { SendLog("Post must contain subject."); return; }
-        if (body.Trim().Length == 0) { SendLog("Post must contain a body."); return; }
+        if (topic.Trim().Length == 0) { SendBoardAck(6, false, "Post must contain subject."); return; }
+        if (body.Trim().Length == 0) { SendBoardAck(6, false, "Post must contain a body."); return; }
 
         var now = DateTime.UtcNow;
         Boards.Post(boardId, _char.Name, topic, body, (byte)now.Month, (byte)now.Day);
-        SendLog("Your message has been posted.");
+        // The write ack (SendBoardAck other=6 type=1) is what the real server replies after a post — the
+        // client's compose window blocks on it ("didn't go through" error came from replying with only a
+        // 0x0D text line). The posts-refresh workaround that also un-hung it is superseded by this
+        // RTK-faithful ack (intif.c: nmail_sendmessage(sd, "Your message has been posted.", 6, 1)).
+        SendBoardAck(6, true, "Your message has been posted.");
     }
 
     // Sub-5 "Delete post": board(u16BE) postId(u16BE). RTK only lets a post's own author delete it here
@@ -2754,14 +2871,17 @@ public sealed class Session
     // (ownership there is "whose mailbox it's sitting in", not authorship — see Mail.Delete).
     private void HandleBoardDelete(int boardId, int postId)
     {
+        // Delete acks ride other=7 (RTK intif delete response: "The message has been deleted." type=1 /
+        // "You can only delete your own messages." type=0) — the board window blocks on this like writes.
         if (boardId == 0)
         {
-            SendLog(Mail.Delete(_char.Name, postId) ? "The letter has been deleted." : "That letter no longer exists.");
+            bool gone = Mail.Delete(_char.Name, postId);
+            SendBoardAck(7, gone, gone ? "The message has been deleted." : "That letter no longer exists.");
+            if (gone) SendStats();   // deleting unread mail / an unclaimed parcel may clear the HUD arrow
             return;
         }
-        SendLog(Boards.Delete(boardId, postId, _char.Name)
-            ? "The message has been deleted."
-            : "You can only delete your own messages.");
+        bool ok = Boards.Delete(boardId, postId, _char.Name);
+        SendBoardAck(7, ok, ok ? "The message has been deleted." : "You can only delete your own messages.");
     }
 
     // ---- mail (RTK nmail — see Mail.cs's doc for why compose is chat-command-only) -------------
@@ -2796,7 +2916,10 @@ public sealed class Session
             }
         }
 
-        var d = new List<byte> { 3, 3, 0 };
+        // type=5/buttons=3/nmailFlag=1 are RTK's nmail read-view values (map/intif.c intif_parse_readpost:
+        // body[2]=1 when board==0; char/mapif.c mapif_parse_readpost: type=5, buttons=3 for nmail) — the
+        // letter view (with Reply) rather than the plain board-post view (type=3, flag=0).
+        var d = new List<byte> { 5, 3, 1 };
         d.AddRange(Be((ushort)position));
         var sn = Ascii(mail.Sender);
         d.Add((byte)sn.Length);
@@ -2812,6 +2935,7 @@ public sealed class Session
         SendMap(0x31, _gameInc++, d.ToArray(), $"boardread(0x31) mailbox post={position}");
 
         SendLog($"From {mail.Sender} ({mail.Month}/{mail.Day}): {mail.Topic} — {mail.Body}{attachNote}");
+        SendStats();   // reading (+ claiming any parcel) may clear the HUD mail/parcel arrow — refresh body[45]
     }
 
     // "!mail" (inbox list) / "!mail read <id>" / "!mail delete <id>" / "!mail send <name> | <subject> | <body>"
@@ -2912,6 +3036,9 @@ public sealed class Session
         var now = DateTime.UtcNow;
         Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, itemId, amount, dura);
         SendLog(itemId >= 0 ? $"Mailed {subject} to {toName} (with {amount}x parcel)." : $"Mailed {subject} to {toName}.");
+        // If the recipient is online, light their HUD arrow/bag right away (RTK's intif_parse_findmp does the
+        // same — sets the flag and re-sends status the moment mail lands, no relog needed).
+        _world.FindPlayer(toName)?.SendStats();
     }
 
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
@@ -3050,7 +3177,7 @@ public sealed class Session
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         byte dir = (byte)((_facing + 2) & 3);   // face the player on arrival
-        // Real registry entry (rtk_mobs.csv id 1, key "rabbit"): look 21 color 3, 10hp, 5xp. This used to
+        // Real registry entry (mobs.csv id 1, key "rabbit"): look 21 color 3, 10hp, 5xp. This used to
         // hardcode color 0, which for look 21 renders like the "Hare" family (id 116+, same look, color
         // 37+) instead of the actual Rabbit — reported live 2026-07-26.
         var def = Content.FindMob("rabbit");
@@ -3285,7 +3412,7 @@ public sealed class Session
     // client's click/ESC reply is LIVE-CONFIRMED (opcode 0x3F, body mapId(u32BE) x(u16BE) y(u16BE) 00 --
     // RTK's case 0x3F map-change); HandleWorldMapSelect below decodes it and either warps to the clicked
     // destination or, for ESC/unrecognized coords, back to the origin. Two of RTK's nine destinations
-    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (data/rtk-data/map_index.csv)
+    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (data/game-data/map_index.csv)
     // and are omitted outright.
     // X,Y = landing tile on the destination map.
     private readonly record struct WorldDest(string Name, ushort Map, ushort X, ushort Y);
@@ -3614,7 +3741,7 @@ public sealed class Session
     {
         string q = text.Length > "!mobs".Length ? text["!mobs".Length..].Trim() : "";
         var found = Content.SearchMobs(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check data/rtk-data/rtk_mobs.csv)" : $"no mobs match \"{q}\""); return; }
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check data/game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
         SendLog($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Mobs.Count}):");
         foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (!summon {m.Name})");
     }
@@ -3637,9 +3764,11 @@ public sealed class Session
     }
 
     // !reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
-    // NPC placements, map metadata) WITHOUT restarting the server, so content fixes ship live. Re-reads the
-    // CSVs, clears the map-terrain cache, and refreshes already-spawned world mobs in place (new MaxHp/Exp/
-    // Level, current HP clamped to the new max — see World.ReloadContent). A load error keeps the OLD content.
+    // NPC placements + on/off toggles, crafting-skill toggles, map metadata) WITHOUT restarting the server,
+    // so content fixes ship live. Re-reads the CSVs, clears the map-terrain cache, refreshes already-spawned
+    // world mobs in place (new MaxHp/Exp/Level, current HP clamped to the new max — see
+    // World.ReloadContent), and re-syncs stationary-NPC placement against NpcToggles.csv (see
+    // World.ReconcileNpcToggles). A load error keeps the OLD content.
     // NOT reloadable (compile-time tables in Content.cs → need a restart): mob drop tables and map BGM.
     private void ReloadContent()
     {
@@ -3653,8 +3782,9 @@ public sealed class Session
         }
         MapData.Invalidate();
         int refreshed = _world.ReloadContent();
-        SendLog($"Reloaded: {summary}. Refreshed {refreshed} live mob(s); map cache cleared.");
-        Log.Info($"   -> !reload by '{_char.Name}': {summary}; {refreshed} live mobs refreshed");
+        int npcChanged = _world.ReconcileNpcToggles();
+        SendLog($"Reloaded: {summary}. Refreshed {refreshed} live mob(s); {npcChanged} NPC(s) toggled; map cache cleared.");
+        Log.Info($"   -> !reload by '{_char.Name}': {summary}; {refreshed} live mobs refreshed; {npcChanged} NPCs toggled");
     }
 
     // ===== items ================================================================================
@@ -3777,12 +3907,18 @@ public sealed class Session
     /// reward can carry a low-level character through several levels at once), refresh TNL, push the HUD exp
     /// bar, and persist. Every exp source (quests, melee/spell kills) funnels through here so leveling happens
     /// the same way regardless of who granted it. See LevelUp for the per-level stat/HP/MP gain formulas.</summary>
-    internal void AwardExp(uint amount)
+    internal void AwardExp(uint amount, bool killExp = false)
     {
         if (amount == 0) return;
+        // Totem time (RTK Scripts/exp.lua → Player.checkTotemTimeXP): kill exp earned during your totem's
+        // six-hour window is multiplied by 1.05. Only combat kills opt in via killExp — quest/tutorial/NPC
+        // rewards do NOT, matching RTK where the multiplier lives in the mob-kill exp split, not the generic
+        // grant. Totem 4 (None), or a clock hour outside the window, yields no bonus.
+        bool totem = killExp && _world.IsTotemTime(_char.Totem);
+        if (totem) amount = (uint)Math.Round(amount * 1.05, MidpointRounding.AwayFromZero);
         // RTK player.lua giveXPStacked: every exp grant pops a status-box message, not just combat —
         // quest/tutorial/NPC rewards get the same notice retail players see on a kill.
-        SendMiniText($"{amount:N0} experience!");
+        SendMiniText(totem ? $"{amount:N0} experience! (totem time)" : $"{amount:N0} experience!");
         _char.Exp += amount;
         int path = CharClassId;
         while (_char.Level < 99)
@@ -3858,18 +3994,15 @@ public sealed class Session
         _char.MaxHp = (uint)((int)_char.MaxHp + hpGain);
         _char.MaxMp = (uint)((int)_char.MaxMp + mpGain);
         _char.Level = (byte)nextLevel;
-        // AC is signed/lower-is-better. RTK-Server/rtklua's onLevel.lua decrements baseArmor unconditionally
-        // every level, Peasant included — but user live-checked the REAL retail game (2026-07-26) and their
-        // Peasant's AC held flat at 98 across levels 2/3/4, not the 98/97/96 that formula predicts. The
-        // rtklua tree is a community reimplementation, not retail source, so it's wrong here: a generalist
-        // Peasant's armor doesn't improve from leveling at all (matching the level-5 path-hall wall's own
-        // "you're not a real class yet" theme) — only path != 0 (Warrior/Rogue/Mage/Poet) gets the per-level
-        // -1, presumably starting once a real path is chosen.
-        if (path != 0)
-        {
-            _char.Ac = (sbyte)Math.Max(_char.Ac - 1, sbyte.MinValue);
-            if (_char.Level >= 99) _char.Ac = 1;                    // RTK's explicit level-99 cap value
-        }
+        // AC is signed/lower-is-better. Naked base AC = 100 - level, LINEAR and CLASS-INDEPENDENT — the real
+        // NexusTK rule, documented by Warrior Tutor Yttribium ("Armour Class and you": "Your base AC (naked)
+        // is +100 - level"; scraped_nexus_data boards_tutors/spells_formulas.md). Every class reaches AC 1 at
+        // level 99 (100-99). This supersedes both the earlier RTK onLevel.lua port (-1/level from a stored
+        // value) AND the brief Peasant-gate experiment — both wrong; the value is purely a function of the
+        // current level, so we recompute it rather than decrement. Gear/buffs modify it at display/combat
+        // time, where the -80 (human) / -95 (mob) mitigation caps also apply — NOT here. _char.Ac caches the
+        // naked base so cross-session readers (PvP, other-player profile) stay a simple field read.
+        _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);
 
         // Full heal on level-up (RTK: health = maxHealth; magic = maxMagic), including gear/buff bonuses.
         _char.Hp = EffMaxHp;
@@ -4525,7 +4658,7 @@ public sealed class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward);
+                AwardExp(reward, killExp: true);
                 SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
             }
             else SendMessage($"Your {sp.Name} hits {mob.Name} for {power}.");
@@ -4804,7 +4937,7 @@ public sealed class Session
             BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
             ShowDamageResult(mob.Id, mob, died);
             landed = true;
-            if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward); SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)"); }
+            if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward, killExp: true); SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)"); }
             else SendMessage($"Your {sp.Name} hits {mob.Name} for {netDamage}.");
 
             if (overkill > 0)
@@ -4882,7 +5015,7 @@ public sealed class Session
             _world.TryDamage(_char.Map, mob, net, out bool died, _char.Id);
             BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
             ShowDamageResult(mob.Id, mob, died);
-            if (died) AwardExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp));
+            if (died) AwardExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), killExp: true);
             if (overkill > 0) ApplyOverflow(overkill, x, y, fam);
         }
     }
@@ -5091,7 +5224,7 @@ public sealed class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward);
+                AwardExp(reward, killExp: true);
                 SendMessage($"You defeated {mob.Name}. (+{reward} exp)");
                 TallyKill(mob);
             }
@@ -5493,9 +5626,9 @@ public sealed class Session
     }
 
     // Return (common/return.lua): warps home to the same destination as the yellow_scroll/qui_hyang item's
-    // "warphome" effect (CharacterFactory.HomeCityFor -- see ApplyItemEffect's "warphome" case). RTK's script
-    // costs 30 mana and checks warpOut before warping ("That does not work here" verbatim); its handful of
-    // hardcoded per-map "Fizzle." checks (arena/instance ids like 3010/3011/3034-39/3042/666) aren't ported --
+    // "warphome" effect (ReturnToInn -- see ApplyItemEffect's "warphome" case). RTK's script costs 30 mana
+    // and checks warpOut before warping ("That does not work here" verbatim); its handful of hardcoded
+    // per-map "Fizzle." checks (arena/instance ids like 3010/3011/3034-39/3042/666) aren't ported --
     // Content.WarpOut already carries the real RTK per-map warp-out flag those would largely duplicate, and
     // this server never loads those unrenderable instance maps in the first place (see Content.Warps' doc).
     private bool CastReturn()
@@ -5505,10 +5638,39 @@ public sealed class Session
         if (!Content.WarpOut(_char.Map)) { SendMiniText("That does not work here."); return false; }
 
         _char.Mp -= cost;
-        var (map, x, y) = CharacterFactory.HomeCityFor(_char.Nation);
-        if (Content.TryMap(map, out var hm)) EnterMap(hm.Id, hm.Xs, hm.Ys, x, y, hm.Name);
+        ReturnToInn();
         SendStats();
         return true;
+    }
+
+    // RTK Player.returnToInn (player.lua:4607): "home" for Return / yellow_scroll / qui_hyang is a RANDOM
+    // tavern in your nation (each has a bed to wake up in), NOT the nation's home-city interior — that's
+    // CharacterFactory.HomeCityFor, which stays the fresh-character spawn + Silver-Thread revive point (it
+    // used to double as the return target, which is why Return dumped you at Jadespear). Country->tavern
+    // lists + the (4,5)/(4,6) arrival tiles are verbatim from RTK; nations without their own tavern set
+    // (Neutral/Shilla/Jinhan/Paekjae/Kaya) fall back to Kugnae's, matching RTK's own `country > 3 -> Ginger`.
+    private static readonly (ushort map, ushort x, ushort y)[] KugnaeInns =
+        { (38, 4, 5), (37, 4, 5), (2, 4, 5) };        // Ginger / Bamboo / Walsuk taverns
+    private static readonly (ushort map, ushort x, ushort y)[] BuyaInns =
+        { (362, 4, 5), (332, 4, 5), (361, 4, 5) };    // Yunsil / Spring / Pepper taverns
+    private static readonly (ushort map, ushort x, ushort y)[] NagnangInns =
+        { (2501, 4, 6), (2502, 4, 6), (2503, 4, 6), (2504, 4, 6), (2505, 4, 6) };   // Taverns of Fire/Water/Wind/Wood/Metal
+
+    private void ReturnToInn()
+    {
+        var inns = _char.Nation switch
+        {
+            2 => BuyaInns,      // Buya
+            3 => NagnangInns,   // Nagnang
+            _ => KugnaeInns,    // Kugnae + any nation without its own tavern set (RTK's country>3 default)
+        };
+        var (map, x, y) = inns[Random.Shared.Next(inns.Length)];
+        if (Content.TryMap(map, out var hm)) { EnterMap(hm.Id, hm.Xs, hm.Ys, x, y, hm.Name); return; }
+
+        // Safety net: if a nation's tavern map isn't loaded, fall back to the home city so the warp never
+        // silently no-ops (all six 4.95 tavern maps are present, so this only guards future data drift).
+        var (fm, fx, fy) = CharacterFactory.HomeCityFor(_char.Nation);
+        if (Content.TryMap(fm, out var fmap)) EnterMap(fmap.Id, fmap.Xs, fmap.Ys, fx, fy, fmap.Name);
     }
 
     // Fallback for spells with NO export row: the old keyword classifier over the name (Damage/Heal/Buff/Utility)
@@ -5543,7 +5705,7 @@ public sealed class Session
                     if (died)
                     {
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                        AwardExp(reward);
+                        AwardExp(reward, killExp: true);
                         SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
                     }
                     else SendMessage($"Your {sp.Name} hits {mob.Name} for {power}.");
@@ -5912,11 +6074,8 @@ public sealed class Session
                 return true;
 
             case "warphome":   // yellow_scroll / qui_hyang (menu collapsed to its always-available Home branch)
-            {
-                var (map, x, y) = CharacterFactory.HomeCityFor(_char.Nation);
-                if (Content.TryMap(map, out var hm)) EnterMap(hm.Id, hm.Xs, hm.Ys, x, y, hm.Name);
+                ReturnToInn();   // RTK returnFunc -> returnToInn: a random tavern in your nation, not the home-city interior
                 return true;
-            }
 
             default:
                 return true;
@@ -6218,7 +6377,7 @@ public sealed class Session
     {
         string q = text.Length > "!items".Length ? text["!items".Length..].Trim() : "";
         var found = Content.SearchItems(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check data/rtk-data/Items.csv)" : $"no items match \"{q}\""); return; }
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check data/game-data/Items.csv)" : $"no items match \"{q}\""); return; }
         SendLog($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Items.Count}):");
         foreach (var i in found)
             SendLog($"  #{i.Id} {i.Name} — {(i.IsEquip ? $"equip(dam {i.Dam}/ac {i.Armor})" : i.IsConsumable ? "use" : "etc")}   (!item {i.Name})");
@@ -6243,6 +6402,31 @@ public sealed class Session
             SendStats(); SaveChar();
         }
         SendLog($"Coins: {_char.Coins:N0} (changed by {amount:+#;-#;0}).");
+    }
+
+    // "!npc" / "!npc list" — show which NPCs are switched off. Read-only: toggling an NPC means editing
+    // data/game-data/NpcToggles.csv and running !reload (World.ReconcileNpcToggles spawns/despawns to
+    // match), not a live GM mutation command. The tavern-hand "small guy" NPCs (Ox/Taur) are off by default.
+    private void NpcToggleCmd(string text)
+    {
+        var off = Content.Npcs.Where(n => !NpcToggles.IsEnabled(n.Id))
+                              .OrderBy(n => n.Id)
+                              .Select(n => $"#{n.Id} {n.Name} (map {n.Map})").ToList();
+        SendLog((off.Count == 0 ? "No NPCs are switched off."
+                                : $"Switched-off NPCs ({off.Count}): " + string.Join(", ", off)) +
+                "  (edit data/game-data/NpcToggles.csv + !reload to change)");
+    }
+
+    // "!craft" / "!craft list" — show which crafting skills are era-gated on/off. Read-only: the toggle
+    // itself is config, not live GM state — edit data/game-data/CraftingToggles.csv and run !reload to
+    // change it (see Server/CraftingToggles.cs + docs/Crafting-Values.md for why Jewelry and Food
+    // Preparation/Chef default off).
+    private void CraftToggleCmd(string text)
+    {
+        var lines = CraftingToggles.AllSkills
+            .Select(s => $"{s}={(CraftingToggles.IsEnabled(s) ? "ON" : "off")}");
+        SendLog("Crafting skills (edit data/game-data/CraftingToggles.csv + !reload to change): " +
+                string.Join(", ", lines));
     }
 
     private void GiveItemCmd(string text)
@@ -6575,6 +6759,50 @@ public sealed class Session
         Log.Info("   -> STAT GRADIENT on 0x08 (body[i]=i); read each HUD number = that field's offset");
     }
 
+    // "!mailflag <off> [valHex]" — pin the 0x08 mail/parcel NOTIFICATION byte (the HUD arrow / arrow+bag
+    // the real 4.x client shows when you have n-mail / a parcel waiting at the postmaster).
+    //
+    // RTK's clif_sendstatus (map/clif.c) puts `sd->flags` in the ALWAYS-ON tail of the 0x08 status packet,
+    // documented in-source as: 1 = New parcel, 16 = New Message (n-mail), 17 = both. That tail rides the
+    // SAME 0x78 "full" form our SendStats already sends — it's just sitting in our currently-zero [40..]
+    // region. The exact 4.95 body offset differs from RTK 6.x/7.x (version-shifted ~1 byte), so sweep it:
+    // send our real full-stats body with byte[off]=val and watch the HUD. When the arrow (and bag, since
+    // 0x11 sets both bits) lights up, `off` is the notify byte. Default val 0x11 = mail+parcel.
+    //   !mailflag 51        -> set body[51]=0x11, look for the arrow+bag
+    //   !mailflag 51 10     -> body[51]=0x10 (n-mail only), 01 = parcel only, 00 = clear
+    // Move (which re-sends clean stats) or `!mailflag 51 00` to clear. Purely a client-render probe; sets
+    // one otherwise-unused byte, so it can't corrupt a real stat field.
+    private void MailFlagProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out int off) || off < 0 || off > 79)
+        {
+            SendMessage("!mailflag <off 0..79> [valHex]  — sweep the 0x08 mail/parcel notify byte (default 0x11=both). Try 40..57.");
+            return;
+        }
+        byte val = 0x11;
+        if (parts.Length > 2) byte.TryParse(parts[2], System.Globalization.NumberStyles.HexNumber, null, out val);
+
+        // Rebuild the exact full-stats body SendStats sends (so every real HUD field stays correct), just
+        // longer, then stamp the candidate notify byte.
+        var eq = Totals();
+        uint maxHp = (uint)Math.Max(1, (int)_char.MaxHp + eq.hp);
+        uint maxMp = (uint)Math.Max(0, (int)_char.MaxMp + eq.mp);
+        var d = new byte[Math.Max(58, off + 1)];
+        d[0] = 0x78;
+        d[1] = _char.Nation; d[2] = _char.Totem; d[4] = _char.Level;
+        WriteBe32(d, 5, maxHp); WriteBe32(d, 9, maxMp);
+        d[13] = (byte)Math.Clamp(_char.Might + eq.might, 0, 255);
+        d[14] = (byte)Math.Clamp(_char.Will  + eq.will,  0, 255);
+        d[17] = (byte)Math.Clamp(_char.Grace + eq.grace, 0, 255);
+        WriteBe32(d, 24, _char.Hp); WriteBe32(d, 28, _char.Mp);
+        WriteBe32(d, 32, _char.Exp); WriteBe32(d, 36, _char.Coins);
+        d[off] = val;
+        SendMap(0x08, _gameInc++, d, $"mailflag off={off} val=0x{val:x2}");
+        SendMessage($"0x08 with body[{off}]=0x{val:x2} (0x11=mail+parcel). See an arrow/bag on the HUD?");
+        Log.Info($"   -> MAILFLAG probe: 0x08 body[{off}]=0x{val:x2}");
+    }
+
     private void StatReplay6x(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
@@ -6682,7 +6910,7 @@ public sealed class Session
                 if (died)
                 {
                     uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
-                    AwardExp(reward);                                             // reward to the killer only (levels too)
+                    AwardExp(reward, killExp: true);                                             // reward to the killer only (levels too)
                     SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
                     Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
                     TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
@@ -6705,7 +6933,7 @@ public sealed class Session
             uint deadId = mob.Id;
             if (DeathDespawnMs <= 0) SendDespawn(deadId);   // 0x0E: remove the corpse from our client
             else _ = Task.Run(async () => { try { await Task.Delay(DeathDespawnMs); SendDespawn(deadId); } catch { } });   // after the death beat
-            AwardExp((uint)mob.MaxHp);                 // reward: exp equal to the mob's max HP (levels too)
+            AwardExp((uint)mob.MaxHp, killExp: true);  // reward: exp equal to the mob's max HP (levels too)
             SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
             Log.Info($"   -> dummy {mob.Id} '{mob.Name}' defeated");
         }
@@ -7111,6 +7339,12 @@ public sealed class Session
                 return;
             }
 
+            // One-option NPCs (the tutors Jadespear/Ironheart, a lone-service vendor) skip straight into that
+            // service — a "How can I help you today? -> [the only thing]" wrapper menu is pure friction and
+            // isn't how RTK scripts behave (they dive into their dialog on click). The picker only appears
+            // when there's a real choice to make.
+            if (entries.Count == 1) { await entries[0].run(ctx); return; }
+
             int choice = await ctx.Menu($"{def.Name}: How can I help you today?", entries.Select(e => e.label).ToList());
             if (choice >= 1 && choice <= entries.Count) await entries[choice - 1].run(ctx);
         }
@@ -7121,9 +7355,9 @@ public sealed class Session
     // RTK's f1npc.lua has ~15 entries (GM tools, Kan donations, tutor management, minigame stats, webpage
     // profile settings…) that depend on systems this server doesn't model. Trimmed to what's real here:
     // Silver Thread (shaman resurrection — RTK's actual answer to "how do you get un-ghosted", replacing
-    // the old fixed-timer auto-revive), the Subpath Chat toggle (also on F2, but RTK's own menu repeats it
-    // here), and Choose a Path (the same Peasant-level-5 guild warp §11j's Peasant wall points at, offered
-    // as a menu shortcut instead of walking to the physical hall).
+    // the old fixed-timer auto-revive) and Choose a Path (the same Peasant-level-5 guild warp §11j's Peasant
+    // wall points at, offered as a menu shortcut instead of walking to the physical hall). The old "Toggles"
+    // submenu (just the Subpath Chat flip) was removed — that toggle is F2's own binding (ToggleSubpathChat).
 
     // A virtual "npc" for the F1 dialog wire format — portrait/menu framing only. It's never spawned or
     // looked up; SendNpcMenu/SendScriptMessage just need an id+sprite for the packet header. Sprite 0 ->
@@ -7137,8 +7371,11 @@ public sealed class Session
         var npc = F1VirtualNpc;
         var opts = new List<string>();
         if (IsDead) opts.Add("Silver Thread");
-        opts.Add("Toggles");
         if (CharClassId == 0 && _char.Level >= 5) opts.Add("Choose a Path");
+
+        // With nothing to offer (a living, already-classed player) F1 has no function here — say so rather
+        // than pop an empty picker. (The Subpath Chat toggle that used to live under "Toggles" is F2's job.)
+        if (opts.Count == 0) { await DlgSay(npc, $"Hello {_char.Name}! There is nothing I can do for you right now."); return; }
 
         int choice = await DlgMenu(npc, $"Hello {_char.Name}! How can I help you today?", opts);
         if (choice < 1 || choice > opts.Count) return;
@@ -7146,7 +7383,6 @@ public sealed class Session
         switch (opts[choice - 1])
         {
             case "Silver Thread": await SilverThread(npc); break;
-            case "Toggles":       await F1Toggles(npc); break;
             case "Choose a Path": await ChoosePathMenu(npc); break;
         }
     }
@@ -7174,13 +7410,6 @@ public sealed class Session
         ReviveAt(s.map, s.x, s.y, "The Shaman calls your spirit home. You awaken anew.");
     }
 
-    // "Toggles" submenu — currently just Subpath Chat (F2's own binding, exposed here too per RTK's menu).
-    private async Task F1Toggles(Mob npc)
-    {
-        int choice = await DlgMenu(npc, "Choose a toggle to change.",
-            new List<string> { $"Subpath Chat: {(_char.SubpathChat ? "On" : "Off")}" });
-        if (choice == 1) ToggleSubpathChat();
-    }
 
     // "Choose a Path": warp to the guild-entrance map for the chosen class (per-nation, PathHalls' outer map
     // ids) — a menu shortcut for the same Peasant-level-5 milestone the physical path halls gate on
@@ -7286,6 +7515,164 @@ public sealed class Session
             MarkDirty();
             await DlgSay(npc, $"You sold {def.Name} for {def.SellPrice} gold.");
         }
+    }
+
+    // ---- parcels (MessengerAbility; RTK messenger.lua "Send Parcel"/"Receive Parcel" -> Parcel.lua) ----
+    // Parcels are item/gold sent player-to-player, queued at the messenger for pickup — SEPARATE from n-mail
+    // (see Parcel.cs). Both flows are ordinary 0x30 dialogs (menu/input/say), so unlike the mail compose
+    // window there's nothing client-side to reverse: this is fully server-driven.
+
+    /// <summary>Does the player have any parcel waiting (gates the messenger's "Receive Parcel" entry)?</summary>
+    internal bool HasWaitingParcels => Parcel.HasAny(_char.Name);
+
+    // RTK sendParcelTo: choose Gold or Item, name a recipient (offline OK — resolved against the char store),
+    // pay a seal, and it's queued at the messenger. Items must be tradeable (not NoDrop), non-food (Type 0),
+    // and fully repaired; a 5% seal fee (RTK item.price*.05) is charged per item parcel. Gold parcels are
+    // free to send, matching RTK. Coin/possession are RE-checked after each async prompt before committing.
+    internal async Task ParcelSendFlow(Mob npc)
+    {
+        int kind = await DlgMenu(npc, "What would you like to send?", new[] { "Gold", "Item" });
+        if (kind < 1) return;
+
+        if (kind == 1)   // ---- gold ----
+        {
+            var amtStr = await DlgInput(npc, "How much gold would you like to send?");
+            if (amtStr is null) return;
+            if (!int.TryParse(amtStr.Trim(), out int gold) || gold <= 0) { await DlgSay(npc, "That's not a valid amount."); return; }
+            if (_char.Coins < (uint)gold) { await DlgSay(npc, "You don't have that much gold."); return; }
+
+            var to = await DlgInput(npc, $"Who do you want to send this {gold:N0} gold to?");
+            if (to is null) return;
+            var recip = ResolveParcelRecipient(to.Trim());
+            if (recip is null) { await DlgSay(npc, "Character does not exist."); return; }
+            if (recip.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { await DlgSay(npc, "You can't send a parcel to yourself."); return; }
+            if (_char.Coins < (uint)gold) { await DlgSay(npc, "You don't have that much gold."); return; }
+
+            _char.Coins -= (uint)gold;
+            var g = DateTime.UtcNow;
+            Parcel.Send(recip, _char.Name, -1, gold, 0, "", (byte)g.Month, (byte)g.Day);
+            SendStats(); MarkDirty();
+            NotifyParcelRecipient(recip);
+            await DlgSay(npc, $"Your {gold:N0} gold has been sent in a parcel to {recip}.");
+            return;
+        }
+
+        // ---- item ----
+        var sendable = _char.Inventory.OrderBy(i => i.Slot)
+            .Select(inv => (inv, def: Content.ItemById(inv.ItemId)))
+            .Where(t => t.def is not null && t.def.Type != 0 && !t.def.NoDrop)   // no food (Type 0 EAT), no bound/no-drop
+            .ToList();
+        if (sendable.Count == 0) { await DlgSay(npc, "You have nothing you could send."); return; }
+
+        int pick = await DlgMenu(npc, "What would you like to send?", sendable.Select(t => t.def!.Name).ToList());
+        if (pick < 1 || pick > sendable.Count) return;
+        var (item, def) = sendable[pick - 1];
+
+        int amount = 1;
+        if (def!.Stackable && item.Amount > 1)
+        {
+            var aStr = await DlgInput(npc, $"How many {def.Name} do you want to send?");
+            if (aStr is null) return;
+            if (!int.TryParse(aStr.Trim(), out amount) || amount <= 0) { await DlgSay(npc, "That's not a valid amount."); return; }
+            amount = Math.Min(amount, item.Amount);
+        }
+
+        if (item.Dura != def.Durability) { await DlgSay(npc, "Item must be in perfect condition to send. Go and repair it first!"); return; }
+
+        var to2 = await DlgInput(npc, $"Who do you want to send this {amount} {def.Name} to?");
+        if (to2 is null) return;
+        var recip2 = ResolveParcelRecipient(to2.Trim());
+        if (recip2 is null) { await DlgSay(npc, "Character does not exist."); return; }
+        if (recip2.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { await DlgSay(npc, "You can't send a parcel to yourself."); return; }
+
+        int fee = Math.Max(1, (int)Math.Ceiling((def.BuyPrice > 0 ? def.BuyPrice : def.SellPrice) * 0.05 * amount));
+        if (_char.Coins < (uint)fee) { await DlgSay(npc, $"I need {fee:N0} gold for the seal. Come back when you can afford it."); return; }
+
+        // Re-verify possession AFTER the async prompts, then remove the stack and charge the seal.
+        if (!RemoveInventoryStack(item, amount)) { await DlgSay(npc, $"You no longer have {amount} {def.Name}."); return; }
+        _char.Coins -= (uint)fee;
+        var d = DateTime.UtcNow;
+        Parcel.Send(recip2, _char.Name, def.Id, amount, item.Dura, item.CustomName, (byte)d.Month, (byte)d.Day);
+        SendStats(); MarkDirty();
+        NotifyParcelRecipient(recip2);
+        await DlgSay(npc, "Your parcel has been sent.");
+    }
+
+    // RTK receiveParcelFrom: hand over the oldest waiting parcel — gold to the purse, an item to the bag (or
+    // dropped at the player's feet if the pack is full, the same recovery as reading a mail attachment). Loops
+    // one parcel at a time while more remain and the player wants to keep collecting.
+    internal async Task ParcelReceiveFlow(Mob npc)
+    {
+        while (true)
+        {
+            var list = Parcel.ListFor(_char.Name);
+            if (list.Count == 0) { await DlgSay(npc, "You have no parcels waiting."); return; }
+
+            var p = list[0];                                   // FIFO by position
+            var got = Parcel.Claim(_char.Name, p.Position);     // atomic remove-and-return (guards double-claim)
+            if (got is null) continue;                          // already taken by another path — re-list
+
+            if (got.IsGold)
+            {
+                _char.Coins += (uint)got.Amount;
+                SendStats(); MarkDirty();
+                await DlgSay(npc, $"You receive {got.Amount:N0} gold from {got.Sender}.");
+            }
+            else
+            {
+                var def = Content.ItemById(got.ItemId);
+                if (def is null) { await DlgSay(npc, "One of your parcels held something I no longer recognize; I've discarded it."); }
+                else
+                {
+                    bool gotIt = GiveItem(def, got.Amount, (ushort)Math.Max(0, got.Dura), got.Engrave);
+                    if (!gotIt)
+                        _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
+                            X = _char.X, Y = _char.Y, Amount = got.Amount, Dura = (ushort)Math.Max(0, got.Dura), Graphic = def.Icon });
+                    SendStats(); MarkDirty();
+                    await DlgSay(npc, gotIt
+                        ? $"You receive a parcel from {got.Sender}: {def.Name} x{got.Amount}."
+                        : $"A parcel from {got.Sender} held {def.Name} x{got.Amount}, but your pack was full — it's at your feet.");
+                }
+            }
+
+            if (!Parcel.HasAny(_char.Name)) return;
+            int more = await DlgMenu(npc, "You have more parcels waiting. Collect another?", new[] { "Yes", "No" });
+            if (more != 1) return;
+        }
+    }
+
+    /// <summary>Resolve a typed recipient name to a deliverable one: an online player, else an existing stored
+    /// character (offline delivery, like mail). Null if nobody by that name exists. The table is COLLATE
+    /// NOCASE so the exact casing stored here doesn't affect later lookups.</summary>
+    private string? ResolveParcelRecipient(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (_world.FindPlayer(name) is not null) return name;
+        return _store.Exists(name) ? name : null;
+    }
+
+    /// <summary>Remove <paramref name="amount"/> from a bag stack and update the client (whole stack removed
+    /// with reason 4 = "taken to parcel"). False without change if the stack is gone or too small — the
+    /// possession re-check after the async send prompts.</summary>
+    private bool RemoveInventoryStack(InvItem inv, int amount)
+    {
+        if (!_char.Inventory.Contains(inv) || inv.Amount < amount) return false;
+        inv.Amount -= amount;
+        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 4); }
+        else SendAddItem(inv);
+        MarkDirty();
+        return true;
+    }
+
+    /// <summary>Light an online recipient's HUD bag icon immediately and tell them a parcel arrived (RTK
+    /// msg(12, "[PARCEL]: You got a parcel from X!")). No-op if they're offline — they'll see the icon on
+    /// their next login, driven by MailParcelFlags.</summary>
+    private void NotifyParcelRecipient(string name)
+    {
+        var p = _world.FindPlayer(name);
+        if (p is null) return;
+        p.SendStats();
+        p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
     }
 
     // ---- spoken shop shortcut ("buy [my] [all|N] <item>") — see ShopAbility.OnSay ----------------

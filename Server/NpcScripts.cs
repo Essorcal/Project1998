@@ -17,9 +17,15 @@ public static class NpcScripts
         // smith.lua: Buy / Sell / Fix Item (+ crafting & quests, ported later).
         ["SmithNpc"] = new INpcAbility[] { ShopAbility.Instance, RepairAbility.Instance },
 
-        // inn_npc.lua: Buy / Sell / Banking / Transport / Date & Time. Note the inn does banking without a
-        // bank data-flag — composition captures that cleanly where flag-derivation couldn't.
-        ["InnNpc"]  = new INpcAbility[] { ShopAbility.Instance, BankAbility.Instance, TransportAbility.Instance, TimeAbility.Instance },
+        // messenger.lua: Buy / Sell / Send Parcel / Receive Parcel. The 5 MessengerNpc's (Redcap, Paryu,
+        // Sying, Tinbae, + a test) are already placed from NPCs0.csv; this composition gives them the parcel
+        // post (Parcel.cs) plus their shop stock. (RTK's Checks/Waypoint branches aren't modelled here.)
+        ["MessengerNpc"] = new INpcAbility[] { ShopAbility.Instance, MessengerAbility.Instance },
+
+        // inn_npc.lua: Buy / Sell / Banking / Date & Time. Note the inn does banking without a bank
+        // data-flag — composition captures that cleanly where flag-derivation couldn't. (Transport was
+        // dropped from the tavern banker per design — the ferry/transport service isn't offered here.)
+        ["InnNpc"]  = new INpcAbility[] { ShopAbility.Instance, BankAbility.Instance, TimeAbility.Instance },
 
         // inn_npc2.lua: the non-shop tavern hand — Transport / Date & Time only.
         ["InnNpc2"] = new INpcAbility[] { TransportAbility.Instance, TimeAbility.Instance },
@@ -50,14 +56,10 @@ public static class NpcScripts
         ["PoetTrainerNpc"]    = new INpcAbility[] { ClassTrainerAbility.Poet,    MinorQuestAbility.Instance },
 
         // rogue_guild_shaman.lua: Face / Gender change (real, visible on this client — see AppearanceAbility).
-        // "Eyes" and the level-50+ Rogue "white_moon_axe" speech quest aren't ported.
+        // "Eyes" and the level-50+ Rogue "white_moon_axe" speech quest aren't ported. This is the ONLY place
+        // Face/Gender is offered — the SalonNpc rows (Seme/Serge/Sarge) that duplicated it are dropped
+        // entirely (see Content.DroppedNpcIds), per user direction to keep it Rogue-hall-only.
         ["RogueGuildShamanNpc"] = new INpcAbility[] { AppearanceAbility.Instance },
-
-        // salon.lua: real RTK puts Face/Gender on a separate Rogue Guild Shaman NPC, not the barber — but
-        // players expect the appearance-change service at "the salon" they walked into, so Serge (+ Seme/
-        // Sarge) offers it too. Haircut/hairdye/shave/beard aren't ported (can't render on this client — see
-        // AppearanceAbility's doc comment / docs/NexusTK-4.95-Protocol.md §8).
-        ["SalonNpc"] = new INpcAbility[] { AppearanceAbility.Instance },
 
         // arena_master.lua: "Mountain"/"Tower" — the Arena Masters. Their whole service is one option, "War
         // paint" (the team/special armor dye — see WarPaintAbility). No shop/bank/repair, exactly as RTK.

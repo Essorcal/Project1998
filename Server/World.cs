@@ -87,6 +87,11 @@ public sealed class World
         public long   RespawnTick;   // tick at which a dead point may respawn (0 = not pending)
         public bool   Placed = true; // false ⇒ area spawn whose home tile isn't chosen yet (see Box)
         public ushort MinX, MinY, MaxX, MaxY;   // area-spawn bounding box; all-zero ⇒ anywhere walkable on the map
+        // RARE spawn (RTK trap-ambush bosses): RespawnEvery > 0 overrides the global ~18s cadence with a long
+        // per-point delay (ticks), and Rare makes the point start un-spawned + appear at a random hunt-time
+        // (a surprise rather than always-present). Both 0/false for ordinary spawns. See NextRespawnTick.
+        public int    RespawnEvery;  // 0 ⇒ use the global RespawnTicks; >0 ⇒ this point's own respawn delay
+        public bool   Rare;          // true ⇒ boss: delayed first appearance + jittered long respawn
     }
     private readonly Dictionary<ushort, List<Spawn>> _spawns = new();   // map -> its spawn points
     private readonly Dictionary<uint, Spawn> _mobSpawn = new();          // live mob id -> its spawn point
@@ -127,14 +132,23 @@ public sealed class World
     // ---- day/night clock (RTK map.c change_time_char, opcode 0x20) ----------------------------
     // RTK: timer_insert(450000, 450000, change_time_char, ...) — every 450000ms (7.5min) real time, cur_time
     // (hour, 0..23) ticks up by one and every connected session gets a fresh clif_sendtime broadcast; on
-    // hour rollover cur_day/cur_season/cur_year advance too (day 0..91, season 1..4, year unbounded). We
-    // only model hour+year (the two fields the wire packet actually carries — see Session.SendTime); day/
-    // season have no client-visible effect via this packet so they're not tracked.
+    // hour rollover cur_day advances (1..91), and only once cur_day wraps (every 92 days) does cur_season
+    // advance (1..4) — cur_year only ticks once every 4 seasons (~368 in-game days, matching the community
+    // "1 Yuri ⟺ ~41-46 real days" Time Chart, NOT once a day). We model day/season internally purely to get
+    // that real-world cadence right, even though the 0x20 packet only ever carries hour+year (see
+    // Session.SendTime) — day/season have no client-visible effect via this packet.
     private const int HourTicks = 750;    // 450000ms / TickMs(600) — one in-game hour per real 7.5 minutes
-    private int _hour = 16, _year = 50;   // starting values match what this server always sent before this
-                                           // was wired up live (the old hardcoded 0x10/0x32 placeholder), so
-                                           // deploying this doesn't jump the clock for anyone already playing
+    private int _hour = 16, _day, _season = 1, _year = 50;
+                                           // hour/year starting values match what this server always sent
+                                           // before this was wired up live (the old hardcoded 0x10/0x32
+                                           // placeholder), so deploying this doesn't jump the clock for
+                                           // anyone already playing; day/season start mid-cycle arbitrarily
+                                           // (RTK itself loads these from a DB Time table we don't persist)
     public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
+
+    /// <summary>Whether the shared world clock is currently in <paramref name="totem"/>'s totem time
+    /// (RTK isTotemTime) — the +5% kill-exp window. Reads the live hour; see <see cref="Content.IsTotemTime"/>.</summary>
+    public bool IsTotemTime(int totem) => Content.IsTotemTime(_hour, totem);
 
     // ---- weather (RTK map[m].weather / clif_sendweather, opcode 0x1F) --------------------------
     // No automatic scheduler exists in the RTK C engine for this (setWeatherM/getWeatherM are pure admin/
@@ -195,17 +209,29 @@ public sealed class World
                 var def = Content.MobById(ad.MobId);
                 if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
 
+                // RespawnSec > 0 ⇒ a rare trap-ambush boss: convert seconds → ticks for the per-point delay.
+                int respawnEvery = ad.RespawnSec > 0 ? Math.Max(1, ad.RespawnSec * 1000 / TickMs) : 0;
                 for (int i = 0; i < ad.Count; i++)
                     AddSpawn(ad.Map, new Spawn
                     {
                         Def = def, Placed = false,
                         MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
+                        RespawnEvery = respawnEvery, Rare = ad.RespawnSec > 0,
                     });
                 points += ad.Count;
             }
         }
         Log.Info($"spawns: {points} spawn points (materialized lazily) across {_spawns.Count} map(s)" +
                  (skipped > 0 ? $" ({skipped} skipped — unknown map/mob)" : ""));
+    }
+
+    /// <summary>When a dead point may next refill. Ordinary points use the short global <see cref="RespawnTicks"/>
+    /// cadence; a rare trap-ambush boss uses its own long <see cref="Spawn.RespawnEvery"/> plus up to +50%
+    /// jitter, so it comes back as an irregular surprise rather than on a predictable clock.</summary>
+    private long NextRespawnTick(Spawn sp)
+    {
+        if (sp.RespawnEvery <= 0) return _tick + RespawnTicks;
+        return _tick + sp.RespawnEvery + (sp.Rare ? Random.Shared.Next(sp.RespawnEvery / 2 + 1) : 0);
     }
 
     /// <summary>Append a spawn point to its map's roster. Caller holds <c>_lock</c>.</summary>
@@ -222,7 +248,14 @@ public sealed class World
     {
         if (!_materialized.Add(mapId)) return;              // already done
         if (!_spawns.TryGetValue(mapId, out var list)) return;
-        foreach (var sp in list) Materialize(mapId, sp);
+        foreach (var sp in list)
+        {
+            // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending
+            // with a random first-appearance somewhere in its respawn window; the Tick refill loop spawns it
+            // once due (and only while the map is being hunted, since that loop skips empty maps).
+            if (sp.Rare) { sp.RespawnTick = _tick + 1 + Random.Shared.Next(sp.RespawnEvery); continue; }
+            Materialize(mapId, sp);
+        }
     }
 
     /// <summary>Place every stationary NPC (Content.Npcs) into the world as a non-fighting mob. NPCs ride
@@ -237,20 +270,80 @@ public sealed class World
         {
             foreach (var n in Content.Npcs)
             {
-                var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y);   // don't stack on a mob spawn sharing the tile
-                // RTK gives some NPCs (animals, town dogs, roaming merchants) a MoveTime + ReturnDistance so
-                // they pace; the rest stand still. A leash of 0 means "don't stray", i.e. stationary.
-                bool paces = n.MoveTime > 0 && n.ReturnDistance > 0;
-                var npc = new Mob(_nextNpcId++, n.Look, nx, ny, n.Name, hp: 1)
-                {
-                    IsNpc = true, NpcDefId = n.Id, Color = n.Color, Dir = n.Dir,
-                    Wander = paces, MoveTime = paces ? n.MoveTime : 2500, Leash = n.ReturnDistance,
-                };
-                Map(n.Map).Mobs.Add(npc);
+                if (!NpcToggles.IsEnabled(n.Id)) continue;   // switched off (default-off tavern hand, or an NpcToggles.csv override)
+                PlaceNpc(n);
                 placed++;
             }
         }
         Log.Info($"npcs: {placed} stationary NPC(s) placed");
+    }
+
+    /// <summary>Instantiate one NPC def as a stationary (or pacing) non-fighting mob and add it to its map.
+    /// Shared by startup placement and the live <see cref="EnableNpc"/> toggle. Caller holds <c>_lock</c>.</summary>
+    private void PlaceNpc(NpcDef n)
+    {
+        var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y);   // don't stack on a mob spawn sharing the tile
+        // RTK gives some NPCs (animals, town dogs, roaming merchants) a MoveTime + ReturnDistance so they
+        // pace; the rest stand still. A leash of 0 means "don't stray", i.e. stationary.
+        bool paces = n.MoveTime > 0 && n.ReturnDistance > 0;
+        var npc = new Mob(_nextNpcId++, n.Look, nx, ny, n.Name, hp: 1)
+        {
+            IsNpc = true, NpcDefId = n.Id, Color = n.Color, Dir = n.Dir,
+            Wander = paces, MoveTime = paces ? n.MoveTime : 2500, Leash = n.ReturnDistance,
+        };
+        Map(n.Map).Mobs.Add(npc);
+    }
+
+    /// <summary>Remove every placed instance of NPC def <paramref name="npcId"/> from the world and despawn
+    /// it (0x0E) for everyone watching. Returns how many instances were removed. Called by
+    /// <see cref="ReconcileNpcToggles"/> on <c>!reload</c> — toggling is config (NpcToggles.csv), not a live
+    /// GM action, so this has no separate persistence step of its own.</summary>
+    public int DisableNpc(int npcId)
+    {
+        var removed = new List<(ushort map, uint id)>();
+        lock (_lock)
+        {
+            foreach (var (mapId, m) in _maps)
+            {
+                var gone = m.Mobs.Where(x => x.IsNpc && x.NpcDefId == npcId).ToList();
+                foreach (var g in gone) { m.Mobs.Remove(g); removed.Add((mapId, g.Id)); }
+            }
+        }
+        foreach (var (map, id) in removed)
+            Broadcast(map, p => p.DespawnEntity(id));   // socket I/O — outside the lock
+        return removed.Count;
+    }
+
+    /// <summary>Place NPC def <paramref name="npcId"/> back into the world (idempotent — a no-op if it's
+    /// already placed). The periodic viewport sync streams it to anyone in range. Returns true if it was
+    /// placed. See <see cref="DisableNpc"/>.</summary>
+    public bool EnableNpc(int npcId)
+    {
+        lock (_lock)
+        {
+            foreach (var (_, m) in _maps)
+                if (m.Mobs.Any(x => x.IsNpc && x.NpcDefId == npcId)) return false;   // already present
+            var def = Content.Npcs.FirstOrDefault(n => n.Id == npcId);
+            if (def is null) return false;
+            PlaceNpc(def);
+        }
+        return true;
+    }
+
+    /// <summary>Hot-reload hook (the <c>!reload</c> command, after <see cref="Content.Reload"/> re-reads
+    /// <c>NpcToggles.csv</c>): re-sync stationary-NPC placement against the just-reloaded
+    /// <see cref="NpcToggles"/> config — spawns any NPC newly enabled, despawns any newly disabled.
+    /// <see cref="EnableNpc"/>/<see cref="DisableNpc"/> are already no-ops when there's nothing to change,
+    /// so this is safe to run unconditionally on every reload. Returns how many NPCs' placement changed.</summary>
+    public int ReconcileNpcToggles()
+    {
+        int changed = 0;
+        foreach (var n in Content.Npcs)
+        {
+            if (NpcToggles.IsEnabled(n.Id)) { if (EnableNpc(n.Id)) changed++; }
+            else if (DisableNpc(n.Id) > 0) changed++;
+        }
+        return changed;
     }
 
     /// <summary>Create the live mob for a spawn point and register it. Caller holds <c>_lock</c>.</summary>
@@ -491,7 +584,7 @@ public sealed class World
             uint mobId = mob.Id;
             _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch { } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-            PlayerById(ownerId)?.AwardExp(reward);
+            PlayerById(ownerId)?.AwardExp(reward, killExp: true);
         }
     }
 
@@ -679,7 +772,7 @@ public sealed class World
             if (_mobSpawn.TryGetValue(mob.Id, out var sp))
             {
                 sp.Live = null;
-                sp.RespawnTick = _tick + RespawnTicks;
+                sp.RespawnTick = NextRespawnTick(sp);
                 _mobSpawn.Remove(mob.Id);
             }
         }
@@ -832,7 +925,7 @@ public sealed class World
                 if (_mobSpawn.TryGetValue(mob.Id, out var sp))
                 {
                     sp.Live = null;
-                    sp.RespawnTick = _tick + RespawnTicks;   // refill this point shortly
+                    sp.RespawnTick = NextRespawnTick(sp);    // refill shortly (rare bosses: long jittered delay)
                     _mobSpawn.Remove(mob.Id);
                     drops = RollDropsLocked(m, mob, sp.Def);  // adds to m.Items under the lock
                 }
@@ -979,7 +1072,17 @@ public sealed class World
             if (_tick % HourTicks == 0)
             {
                 _hour++;
-                if (_hour >= 24) { _hour = 0; _year++; }   // RTK also rolls day/season here; not tracked (see doc — the wire packet doesn't carry them)
+                if (_hour >= 24)
+                {
+                    _hour = 0;
+                    _day++;
+                    if (_day >= 92)   // RTK: cur_day == 92 -> cur_day = 1, cur_season++
+                    {
+                        _day = 1;
+                        _season++;
+                        if (_season >= 5) { _season = 1; _year++; }   // RTK: cur_season == 5 -> cur_season = 1, cur_year++
+                    }
+                }
                 timeChanged = true;
             }
 

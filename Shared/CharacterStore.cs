@@ -37,8 +37,9 @@ public sealed class CharacterStore
     /// <summary>The backing database file path (logged at startup so records are findable).</summary>
     public string Directory => Db.Path;
 
-    // Normalize to a safe, case-insensitive key so "Snuggle" and "snuggle" are one account.
-    private static string Key(string name)
+    // Normalize to a safe, case-insensitive key so "Snuggle" and "snuggle" are one account. Public so
+    // World's online-session registry (duplicate-login guard) can key on the same identity.
+    public static string Key(string name)
     {
         var s = new string((name ?? string.Empty).ToLowerInvariant()
             .Where(c => char.IsLetterOrDigit(c) || c == '_').ToArray());
@@ -72,7 +73,11 @@ public sealed class CharacterStore
         catch { return null; }   // corrupt/legacy row -> treat as absent, caller falls back to a fresh char
     }
 
-    public void Save(Character c)
+    /// <summary>Whole-graph upsert. Returns true on success, false if the write failed (a bad disk, or a
+    /// concurrent in-memory mutation racing the JSON serialize — see Session.FlushNow). A caller that cares
+    /// about durability (the dirty-flag autosave path) uses the return value to keep retrying instead of
+    /// silently dropping the mutation; everyone else can ignore it exactly as before.</summary>
+    public bool Save(Character c)
     {
         try
         {
@@ -85,8 +90,15 @@ public sealed class CharacterStore
             cmd.Parameters.AddWithValue("$j", json);
             cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             cmd.ExecuteNonQuery();
+            return true;
         }
-        catch { /* best effort; persistence must never crash a session */ }
+        catch (Exception e)
+        {
+            // Best effort; persistence must never crash a session — but a swallowed write failure is
+            // otherwise invisible, so surface it.
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! Save('{c.Name}') failed: {e.Message}");
+            return false;
+        }
     }
 
     // One-time import of the legacy data/chars/*.json into the DB. Idempotent: each record is inserted

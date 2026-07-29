@@ -20,6 +20,18 @@ for (int i = 0; i < args.Length; i++)
 // logic) and exits, WITHOUT opening ports — a quick offline check of the data layer.
 if (Array.Exists(args, a => a == "--selftest")) { Content.SelfTest(); return; }
 
+// Crash forensics. (1) Tee all logging into data/server.log — console output dies with the window,
+// and we lost the trace of the first native-mail-send failure exactly that way. (2) Catch-and-log
+// process-fatal exceptions from ANY thread, and unobserved Task faults, so a death always leaves a
+// stack in the file. Note the Ctrl+C handler in TkListener: pressing Ctrl+C in the console (e.g. to
+// copy text with nothing selected) triggers a CLEAN exit ("=== shutdown signal (Ctrl+C)"), which can
+// masquerade as a crash — the log file now shows which one happened.
+Log.AttachFile(Path.Combine(Path.GetDirectoryName(TkListener.RepoDataDir())!, "server.log"));
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
+TaskScheduler.UnobservedTaskException += (_, e) =>
+    { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
+
 Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers !warp/!maps/!mobs/!summon)

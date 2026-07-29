@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using Shared;
 
 namespace Server;
@@ -27,7 +28,7 @@ public sealed class TkListener
     // Find <repo>/data/chars by walking up from the executable location until we hit the directory that
     // holds the solution/project (marked by the Server\ folder or a .sln). Falls back to cwd if no
     // marker is found, preserving the old behavior for unusual layouts.
-    private static string RepoDataDir()
+    internal static string RepoDataDir()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
@@ -43,9 +44,32 @@ public sealed class TkListener
 
     public async Task RunAsync()
     {
+        // Graceful-shutdown flush hook (robust persistence, complements the per-session autosave in
+        // World.AutoSaveLoop/Session.FlushIfDue): on a clean stop, save every connected player's pending
+        // mutation before the process actually exits. This is the flush half of a graceful restart — it
+        // CANNOT help against a hard crash/kill -9/power loss, which is exactly what the periodic autosave
+        // sweep + each session's own on-thread flush already bound to ~AutoSaveMs instead.
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;   // we exit ourselves once the flush completes, not mid-write
+            Shutdown("Ctrl+C");
+            Environment.Exit(0);   // also re-raises ProcessExit below; the _shutdownOnce guard makes that a no-op
+        };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown("ProcessExit");
+
         var tasks = new List<Task>();
         foreach (var p in _ports) tasks.Add(ListenAsync(p));
         await Task.WhenAll(tasks);
+    }
+
+    private int _shutdownOnce;   // Interlocked guard: Environment.Exit(0) below re-raises ProcessExit, so
+                                  // both handlers can reach Shutdown -- make sure the flush runs exactly once.
+    private void Shutdown(string reason)
+    {
+        if (Interlocked.Exchange(ref _shutdownOnce, 1) != 0) return;
+        Log.Info($"=== shutdown signal ({reason}) — flushing connected players ===");
+        int n = _world.SaveAllPlayers();
+        Log.Info($"   -> flushed {n} player(s)");
     }
 
     private async Task ListenAsync(int port)
