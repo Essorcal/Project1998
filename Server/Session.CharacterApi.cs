@@ -188,30 +188,19 @@ public sealed partial class Session
             else if (nextLevel % 3 == 0 || nextLevel % 5 == 0) { secondary = 1; tertiary = 1; }
         }
 
-        int hpGain, mpGain;
+        // Which stat is PRIMARY per class stays here (mechanic); the HP/MP gain RANGES are tunable balance data
+        // in data/game-data/PathGrowth.csv (Content.PathGrowthFor) — max is the exclusive Random.Next arg.
         switch (path)
         {
-            case 1:   // Warrior: might primary, high HP / low MP
-                _char.Might += 1; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary;
-                hpGain = Random.Shared.Next(72, 82); mpGain = Random.Shared.Next(8, 10);
-                break;
-            case 2:   // Rogue: grace primary, moderate HP / moderate MP
-                _char.Might += (byte)secondary; _char.Grace += 1; _char.Will += (byte)tertiary;
-                hpGain = Random.Shared.Next(56, 64); mpGain = Random.Shared.Next(24, 28);
-                break;
-            case 3:   // Mage: will primary, low HP / highest MP
-                _char.Might += (byte)tertiary; _char.Grace += (byte)secondary; _char.Will += 1;
-                hpGain = Random.Shared.Next(40, 46); mpGain = Random.Shared.Next(40, 46);
-                break;
-            case 4:   // Poet: will primary, moderate HP / high MP
-                _char.Might += (byte)tertiary; _char.Grace += (byte)tertiary; _char.Will += 1;
-                hpGain = Random.Shared.Next(48, 55); mpGain = Random.Shared.Next(32, 37);
-                break;
-            default:  // Peasant (path 0): generalist, capped at level 5 by the caller above
-                _char.Might += (byte)primary; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary;
-                hpGain = Random.Shared.Next(45, 56); mpGain = Random.Shared.Next(32, 37);
-                break;
+            case 1:  _char.Might += 1; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary; break;   // Warrior: might primary
+            case 2:  _char.Might += (byte)secondary; _char.Grace += 1; _char.Will += (byte)tertiary; break;   // Rogue: grace primary
+            case 3:  _char.Might += (byte)tertiary; _char.Grace += (byte)secondary; _char.Will += 1; break;   // Mage: will primary
+            case 4:  _char.Might += (byte)tertiary; _char.Grace += (byte)tertiary; _char.Will += 1; break;    // Poet: will primary
+            default: _char.Might += (byte)primary; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary; break;   // Peasant
         }
+        var g = Content.PathGrowthFor(path);
+        int hpGain = Random.Shared.Next(g.HpMin, g.HpMax);
+        int mpGain = Random.Shared.Next(g.MpMin, g.MpMax);
 
         _char.MaxHp = (uint)((int)_char.MaxHp + hpGain);
         _char.MaxMp = (uint)((int)_char.MaxMp + mpGain);

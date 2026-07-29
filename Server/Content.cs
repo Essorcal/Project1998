@@ -492,6 +492,15 @@ public static partial class Content
     public static IReadOnlyDictionary<string, string[]> NpcCompositions { get; private set; } =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
 
+    // Per-class level-up HP/MP gain ranges (data/game-data/PathGrowth.csv), keyed by path id (0 Peasant / 1
+    // Warrior / 2 Rogue / 3 Mage / 4 Poet). Each is the pair of args to Random.Shared.Next(min, max) — max is
+    // EXCLUSIVE, matching the original C# switch. The which-stat-is-primary logic stays in Session.LevelUp.
+    public static IReadOnlyDictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> PathGrowth { get; private set; } =
+        new Dictionary<int, (int, int, int, int)>();
+    /// <summary>Level-up gain ranges for a path, falling back to Peasant (0) then a hardcoded default.</summary>
+    public static (int HpMin, int HpMax, int MpMin, int MpMax) PathGrowthFor(int path) =>
+        PathGrowth.TryGetValue(path, out var g) ? g : PathGrowth.TryGetValue(0, out var p) ? p : (45, 56, 32, 37);
+
     public static void Load()
     {
         Maps = LoadMaps(ResolvePath("NEXUS_MAP_INDEX", "data", "game-data", "map_index.csv"));
@@ -558,6 +567,7 @@ public static partial class Content
         (MorphSpells, MorphDispatchSpells) = LoadMorphs(ResolvePath("NEXUS_MORPHS", "data", "game-data", "Morphs.csv"));
         (RageAmount, EnchantSpells) = LoadSpellMods(ResolvePath("NEXUS_SPELL_MODS", "data", "game-data", "SpellMods.csv"));
         NpcCompositions = LoadNpcCompositions(ResolvePath("NEXUS_NPC_ABILITIES", "data", "game-data", "NpcAbilities.csv"));
+        PathGrowth = LoadPathGrowth(ResolvePath("NEXUS_PATH_GROWTH", "data", "game-data", "PathGrowth.csv"));
         Doors.SetConfig(LoadDoors(ResolvePath("NEXUS_DOORS", "data", "game-data", "Doors.csv")));
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
                  $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms loaded" +
@@ -1528,6 +1538,21 @@ public static partial class Content
                 else
                     d[src] = (dest, dx, dy);
             }
+        }
+        return d;
+    }
+
+    private static Dictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> LoadPathGrowth(string? path)
+    {
+        var d = new Dictionary<int, (int, int, int, int)>();
+        foreach (var c in ReadCsv(path))
+        {
+            if (!int.TryParse(c.GetValueOrDefault("path"), out var p)) continue;
+            int.TryParse(c.GetValueOrDefault("hpMin", "0"), out var a);
+            int.TryParse(c.GetValueOrDefault("hpMax", "0"), out var b);
+            int.TryParse(c.GetValueOrDefault("mpMin", "0"), out var e);
+            int.TryParse(c.GetValueOrDefault("mpMax", "0"), out var f);
+            d[p] = (a, b, e, f);
         }
         return d;
     }

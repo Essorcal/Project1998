@@ -49,6 +49,7 @@ FILES = [
     ("data/game-data/Pets.csv",         "Sources", "rtk-lua"),
     ("data/game-data/Traps.csv",        "Sources", "rtk-lua"),
     ("data/game-data/SpellMods.csv",    "Sources", "rtk-lua"),
+    ("data/game-data/PathGrowth.csv",   "Sources", "rtk-lua"),   # per-class level-up HP/MP gain ranges
 ]
 
 # ---- load the source registry ------------------------------------------------------------------------
