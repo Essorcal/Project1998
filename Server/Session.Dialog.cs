@@ -145,6 +145,13 @@ public sealed partial class Session
         try
         {
             var ctx = new NpcContext(this, npc, def);
+
+            // Data-driven Lua dialog (data/game-data/npc_dialog.lua): if this NPC identifier has a Lua script,
+            // it OWNS the conversation (run it, done). Strictly additive — only NPCs we've authored a script for
+            // take this path; every other NPC (and a broken/absent .lua) falls straight through to the C#
+            // abilities below, unchanged. Hot-reloads via !reload. See Server/NpcScript.cs.
+            if (NpcScript.Has(def.Key)) { await NpcScript.RunAsync(ctx, def.Key); return; }
+
             var abilities = NpcScripts.For(def);
             var entries = abilities.SelectMany(a => a.Entries(ctx)).ToList();
             if (entries.Count == 0)

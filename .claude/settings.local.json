@@ -27,7 +27,9 @@
       "Bash(taskkill //F //IM NexusTK_local.exe)",
       "Bash(taskkill //F //IM Server.exe)",
       "Bash(netstat -ano)",
-      "Bash(powershell -Command \"\\(Get-ItemProperty 'HKCU:\\\\Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\AppCompatFlags\\\\Layers'\\)['C:\\\\Program Files \\(x86\\)\\\\Nexon\\\\NextAeon\\\\NexusTK_local.exe']\")"
+      "Bash(powershell -Command \"\\(Get-ItemProperty 'HKCU:\\\\Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\AppCompatFlags\\\\Layers'\\)['C:\\\\Program Files \\(x86\\)\\\\Nexon\\\\NextAeon\\\\NexusTK_local.exe']\")",
+      "Bash(git submodule *)",
+      "Bash(git -C data status --short)"
     ]
   }
 }

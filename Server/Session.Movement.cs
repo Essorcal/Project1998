@@ -131,10 +131,11 @@ public sealed partial class Session
             return;
         }
 
-        // Mythic Nexus (map 41) zodiac cave entrances are RTK Lua tile-scripts (onScriptedTilesMythic ->
-        // mythic_cave_selector), NOT SQL warps — so they need their own handler. Stepping on a zodiac tile
-        // warps to the deepest cave tier the player's level/vitals unlock (or refuses, under-levelled).
-        if (!offMap && _char.Map == 41 && TryMythicCaveEntrance((ushort)nx, (ushort)ny)) return;
+        // Zodiac cave entrances (Mythic Nexus) are RTK Lua tile-scripts (onScriptedTilesMythic ->
+        // mythic_cave_selector), NOT SQL warps — so they need their own handler. Stepping on a configured
+        // entrance tile (data/game-data/MythicCaves.csv, keyed by map+x+y) warps to the deepest cave tier the
+        // player's level/vitals unlock (or refuses, under-levelled). Non-entrance tiles return immediately.
+        if (!offMap && TryMythicCaveEntrance((ushort)nx, (ushort)ny)) return;
 
         // Class path-hall interior doorways (onScriptedTilesPathHalls.lua) are scripted tiles, not SQL warps —
         // only the "outside" warp is in Warps.csv, which is why the leader/arena doors felt dead.

@@ -47,24 +47,31 @@ public sealed partial class Session
         if (text.StartsWith("!party", StringComparison.OrdinalIgnoreCase)) { HandlePartyCommand(text); return; }  // "!party <name>" invite/kick, "!party" list
         if (text.StartsWith("!trade", StringComparison.OrdinalIgnoreCase)) { HandleTradeCommand(text); return; } // "!trade <name>" open the trade menu
         if (text.StartsWith("!travel", StringComparison.OrdinalIgnoreCase)) { _ = RunWorldMapMenuAsync(); return; }   // dialog fallback for §11m if the native screen ever regresses
-        // "!wmpos <i> <x> <y>" -- place destination i's clickable dot at field10 pixel (x,y) and re-open the
-        // map so you can eyeball it against the real town on the map. i is the index in WorldDests (0=Kugnae,
-        // 1=Buya, 2=Mythic Nexus, 3=Arctic Land, 4=KaMing's). "!wmpos" with no args lists the current
-        // positions so you can copy the final set back into WorldDotPos. See §11m.
+        // "!wmpos <i> <x> <y>" -- live-tune destination i's clickable dot to field10 pixel (x,y) and re-open
+        // the map so you can eyeball it against the real town. i is the index in Content.WorldDests (0=Kugnae,
+        // 1=Buya, 2=Mythic Nexus, 3=Arctic Land, 4=KaMing's). The tweak is an ephemeral in-session override
+        // (WorldDotOverride); once happy, bake the number into data/game-data/WorldMapDests.csv (DotX/DotY) +
+        // !reload. "!wmpos" with no args lists the effective positions. See §11m.
         if (text.StartsWith("!wmpos", StringComparison.OrdinalIgnoreCase))
         {
+            var dests = Content.WorldDests;
+            (int X, int Y) DotOf(int i) => WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dests[i].DotX, dests[i].DotY);
             var p = text["!wmpos".Length..].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             if (p.Length >= 3 && int.TryParse(p[0], out var wi) && int.TryParse(p[1], out var wx)
-                && int.TryParse(p[2], out var wy) && wi >= 0 && wi < WorldDotPos.Length)
+                && int.TryParse(p[2], out var wy) && wi >= 0 && wi < dests.Count)
             {
-                WorldDotPos[wi] = (Math.Clamp(wx, 0, 639), Math.Clamp(wy, 0, 479));
-                SendMiniText($"{wi} {WorldDests[wi].Name} -> ({WorldDotPos[wi].X},{WorldDotPos[wi].Y})");
+                WorldDotOverride[wi] = (Math.Clamp(wx, 0, 639), Math.Clamp(wy, 0, 479));
+                var dot = DotOf(wi);
+                SendMiniText($"{wi} {dests[wi].Name} -> ({dot.X},{dot.Y})  [bake into WorldMapDests.csv + !reload]");
                 SendWorldMap("field10");
             }
             else
             {
-                for (int k = 0; k < WorldDotPos.Length; k++)
-                    SendMiniText($"{k} {WorldDests[k].Name}: ({WorldDotPos[k].X},{WorldDotPos[k].Y})");
+                for (int k = 0; k < dests.Count; k++)
+                {
+                    var dot = DotOf(k);
+                    SendMiniText($"{k} {dests[k].Name}: ({dot.X},{dot.Y})");
+                }
             }
             return;
         }

@@ -1,0 +1,36 @@
+{
+ "level": null,
+ "exp": null,
+ "tnl": null,
+ "curhp": null,
+ "ac": null,
+ "dam": null,
+ "hit": null,
+ "equipped": null,
+ "gear_bonus": {
+  "might": 0,
+  "grace": 1,
+  "will": 0,
+  "maxhp": 10,
+  "maxmana": 0
+ },
+ "base": null,
+ "levels_captured": [
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15
+ ],
+ "swings": 0,
+ "updated": "2026-07-29 00:31:53"
+}

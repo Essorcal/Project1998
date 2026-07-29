@@ -174,6 +174,17 @@ public sealed partial class Session
     // falls back to the keyword classifier (ApplyCastGeneric).
     private bool ApplyCast(SpellDef sp, uint? targetId, string? answer = null)
     {
+        // Data-driven Lua verb path (data/game-data/SpellParams.csv + spell_verbs.lua): if this spell has a
+        // params row naming a loaded Lua verb, run it and we're done. STRICTLY ADDITIVE — any spell without a
+        // row (the other ~600) falls straight through to the C# dispatch below, unchanged. A Lua error falls
+        // through too, so a broken verb can never take a spell offline. Both files hot-reload via !reload.
+        if (Content.SpellParams.TryGetValue(sp.Key, out var prow))
+        {
+            var verb = prow.GetValueOrDefault("verb", "");
+            if (SpellScript.HasVerb(verb) && SpellScript.Run(verb, new SpellContext(this, sp, targetId, answer), prow))
+                return true;
+        }
+
         // Gateway (common/gateway.lua): a teleport with its own bespoke logic — warp to a gate of the caster's
         // kingdom picked by the N/E/S/W answer. Intercept before the fx dispatch (a teleport has no damage/heal
         // archetype and would otherwise degrade to CastMisc's "spend mana + acknowledge" no-op).
@@ -287,6 +298,72 @@ public sealed partial class Session
         if (ok && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
         return ok;
     }
+
+    // ---- Lua spell-verb primitives (called by SpellContext; see Server/SpellScript.cs) --------------------
+    // Thin internal wrappers over the SAME plumbing the C# CastX methods use, so the Lua route can't drift into
+    // a second combat/heal implementation. Effective (base+gear+buff) stats, matching CastDamage/CastHeal.
+    internal int  LuaLevel => _char.Level;
+    internal int  LuaWill  => _char.Will + Totals().will;
+    internal int  LuaGrace => _char.Grace + Totals().grace;
+    internal int  LuaMight => EffMight;
+    internal uint LuaHp    => _char.Hp;
+    internal uint LuaMaxHp => EffMaxHp;
+    internal uint LuaMp    => _char.Mp;
+    internal bool LuaHasTarget(uint? targetId) => ResolveCastTarget(targetId) is not null;
+
+    internal bool LuaSpendMana(int amt, SpellDef sp)
+    {
+        if (amt < 0) amt = 0;
+        if (_char.Mp < (uint)amt) { SendMiniText($"Not enough mana to cast {sp.Name}."); return false; }
+        _char.Mp -= (uint)amt;
+        SendStats();
+        return true;
+    }
+
+    internal bool LuaDamageTarget(int amt, SpellDef sp, uint? targetId)
+    {
+        var mob = ResolveCastTarget(targetId);
+        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
+        if (amt < 1) amt = 1;
+        var fx = Content.FxFor(sp);
+        if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+        {
+            if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            ShowDamageResult(mob.Id, mob, died);
+            if (died)
+            {
+                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                AwardExp(reward, killExp: true);
+                SendMessage($"Your {sp.Name} destroys {mob.Name}! (+{reward} exp)");
+            }
+            else SendMessage($"Your {sp.Name} hits {mob.Name} for {amt}.");
+            Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
+        }
+        return true;
+    }
+
+    internal void LuaHeal(int amt, SpellDef sp)
+    {
+        if (amt <= 0) { SendMiniText($"You cast {sp.Name}."); return; }
+        uint before = _char.Hp;
+        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
+        uint gain = _char.Hp - before;
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText(gain > 0 ? $"{sp.Name} restores {gain} HP." : $"You cast {sp.Name} (already at full HP).");
+        SendStats();
+    }
+
+    internal void LuaRestoreMana(int amt)
+    {
+        if (amt <= 0) return;
+        _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)amt);
+        SendStats();
+    }
+
+    internal void LuaSay(string msg)     => SendMiniText(msg);
+    internal void LuaMessage(string msg) => SendMessage(msg);
 
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective
     // (base + gear + buff) values, so a buffed caster hits harder. enchant/rage/invis reflect the real armed
@@ -1163,18 +1240,10 @@ public sealed partial class Session
         return true;
     }
 
-    // Gateway destination table (ported verbatim from Accepted/Spells/common/gateway.lua): region -> the
-    // kingdom's city map + the four gate spawn boxes. Casting Gateway warps you to a RANDOM tile inside the
-    // box for the gate you answered (N/E/S/W), on the region's city map — regardless of which sub-map of the
-    // kingdom you cast from. Coords are 1:1 with RTK; only the four playable kingdoms (regions 0-3) have gates.
-    private static readonly Dictionary<int, (ushort map, string city,
-        Dictionary<char, (int xlo, int xhi, int ylo, int yhi)> gates)> GatewayRegions = new()
-    {
-        [0] = (0,    "Kugnae",  new() { ['n'] = (104, 116, 13, 17),  ['e'] = (201, 208, 105, 111), ['w'] = (14, 19, 104, 111),  ['s'] = (104, 115, 207, 211) }),
-        [1] = (330,  "Buya",    new() { ['n'] = (71, 75, 22, 27),    ['e'] = (132, 136, 86, 90),   ['w'] = (8, 12, 88, 92),     ['s'] = (74, 78, 140, 145) }),
-        [2] = (41,   "Mythic",  new() { ['n'] = (27, 36, 10, 15),    ['e'] = (54, 57, 28, 33),     ['w'] = (3, 5, 28, 33),      ['s'] = (25, 33, 48, 53) }),
-        [3] = (2500, "Nagnang", new() { ['n'] = (37, 39, 23, 25),    ['e'] = (138, 140, 86, 88),   ['w'] = (4, 6, 92, 94),      ['s'] = (75, 77, 151, 153) }),
-    };
+    // Gateway destinations are data-driven (data/game-data/GatewayGates.csv -> Content.GatewayRegions): region
+    // -> the kingdom's city map + the four gate spawn boxes. Casting Gateway warps you to a RANDOM tile inside
+    // the box for the gate you answered (N/E/S/W), on the region's city map. Coords are 1:1 with RTK
+    // (gateway.lua); only the four playable kingdoms (regions 0-3) have gates. Hot-reloads via !reload.
 
     // Gateway: teleport to a gate of the caster's kingdom. The N/E/S/W answer to the spell's question picks the
     // gate; the region (Content.RegionOf) picks the city. Faithful to gateway.lua incl. its guards (dead can't
@@ -1290,23 +1359,23 @@ public sealed partial class Session
         if (!Content.WarpOut(_char.Map)) { SendMiniText("It doesn't work here."); return false; }
 
         int region = Content.RegionOf(_char.Map);
-        if (!GatewayRegions.TryGetValue(region, out var r) || !Content.Maps.TryGetValue(r.map, out var map))
+        if (!Content.GatewayRegions.TryGetValue(region, out var r) || !Content.Maps.TryGetValue(r.Map, out var map))
         { SendMiniText("Cannot find any gates!"); return false; }
 
         // RTK keys on the answer's first letter (string.sub(q,1,1)). Take the first ASCII letter so a stray
         // framing byte or leading space can't swallow the direction.
         char dir = (answer ?? "").ToLowerInvariant().FirstOrDefault(char.IsLetter);
-        if (!r.gates.TryGetValue(dir, out var box))
+        if (!r.Gates.TryGetValue(dir, out var box))
         { SendMiniText("Which gate? Answer North, East, South or West."); return false; }
 
-        ushort x = (ushort)Random.Shared.Next(box.xlo, box.xhi + 1);
-        ushort y = (ushort)Random.Shared.Next(box.ylo, box.yhi + 1);
+        ushort x = (ushort)Random.Shared.Next(box.Xlo, box.Xhi + 1);
+        ushort y = (ushort)Random.Shared.Next(box.Ylo, box.Yhi + 1);
         string gate = dir switch { 'n' => "North", 'e' => "East", 'w' => "West", 's' => "South", _ => "" };
 
         EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
         SendSound(708, _char.Id);   // confirmed live 2026-07-27; self-only, teleport isn't visible to peers anyway
-        SendMiniText($"You have arrived at {gate} Gate of {r.city}.");
-        Log.Info($"      Gateway -> region {region} {r.city} {gate} gate: map {map.Id} ({x},{y})");
+        SendMiniText($"You have arrived at {gate} Gate of {r.City}.");
+        Log.Info($"      Gateway -> region {region} {r.City} {gate} gate: map {map.Id} ({x},{y})");
         return true;
     }
 
@@ -1334,23 +1403,23 @@ public sealed partial class Session
     // used to double as the return target, which is why Return dumped you at Jadespear). Country->tavern
     // lists + the (4,5)/(4,6) arrival tiles are verbatim from RTK; nations without their own tavern set
     // (Neutral/Shilla/Jinhan/Paekjae/Kaya) fall back to Kugnae's, matching RTK's own `country > 3 -> Ginger`.
-    private static readonly (ushort map, ushort x, ushort y)[] KugnaeInns =
-        { (38, 4, 5), (37, 4, 5), (2, 4, 5) };        // Ginger / Bamboo / Walsuk taverns
-    private static readonly (ushort map, ushort x, ushort y)[] BuyaInns =
-        { (362, 4, 5), (332, 4, 5), (361, 4, 5) };    // Yunsil / Spring / Pepper taverns
-    private static readonly (ushort map, ushort x, ushort y)[] NagnangInns =
-        { (2501, 4, 6), (2502, 4, 6), (2503, 4, 6), (2504, 4, 6), (2505, 4, 6) };   // Taverns of Fire/Water/Wind/Wood/Metal
-
+    // Tavern return tiles are data-driven (data/game-data/Inns.csv -> Content.Inns), grouped Kugnae/Buya/
+    // Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae default) stays here. Hot-reloads via
+    // !reload.
     private void ReturnToInn()
     {
-        var inns = _char.Nation switch
+        string group = _char.Nation switch
         {
-            2 => BuyaInns,      // Buya
-            3 => NagnangInns,   // Nagnang
-            _ => KugnaeInns,    // Kugnae + any nation without its own tavern set (RTK's country>3 default)
+            2 => "Buya",
+            3 => "Nagnang",
+            _ => "Kugnae",     // Kugnae + any nation without its own tavern set (RTK's country>3 default)
         };
-        var (map, x, y) = inns[Random.Shared.Next(inns.Length)];
-        if (Content.TryMap(map, out var hm)) { EnterMap(hm.Id, hm.Xs, hm.Ys, x, y, hm.Name); return; }
+        var inns = Content.Inns.GetValueOrDefault(group);
+        if (inns is { Count: > 0 })
+        {
+            var pick = inns[Random.Shared.Next(inns.Count)];
+            if (Content.TryMap(pick.Map, out var hm)) { EnterMap(hm.Id, hm.Xs, hm.Ys, pick.X, pick.Y, hm.Name); return; }
+        }
 
         // Safety net: if a nation's tavern map isn't loaded, fall back to the home city so the warp never
         // silently no-ops (all six 4.95 tavern maps are present, so this only guards future data drift).

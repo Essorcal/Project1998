@@ -18,7 +18,7 @@ public static class NpcScripts
         ["SmithNpc"] = new INpcAbility[] { ShopAbility.Instance, RepairAbility.Instance },
 
         // messenger.lua: Buy / Sell / Send Parcel / Receive Parcel. The 5 MessengerNpc's (Redcap, Paryu,
-        // Sying, Tinbae, + a test) are already placed from NPCs0.csv; this composition gives them the parcel
+        // Sying, Tinbae, + a test) are already placed from NPCs.csv; this composition gives them the parcel
         // post (Parcel.cs) plus their shop stock. (RTK's Checks/Waypoint branches aren't modelled here.)
         ["MessengerNpc"] = new INpcAbility[] { ShopAbility.Instance, MessengerAbility.Instance },
 

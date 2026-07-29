@@ -43,17 +43,17 @@ public sealed partial class Session
         SendLog($"Coins: {_char.Coins:N0} (changed by {amount:+#;-#;0}).");
     }
 
-    // "!npc" / "!npc list" — show which NPCs are switched off. Read-only: toggling an NPC means editing
-    // data/game-data/NpcToggles.csv and running !reload (World.ReconcileNpcToggles spawns/despawns to
-    // match), not a live GM mutation command. The tavern-hand "small guy" NPCs (Ox/Taur) are off by default.
+    // "!npc" / "!npc list" — show which NPCs are switched off. Read-only: toggling an NPC means setting the
+    // Enabled column in data/game-data/NPCs.csv and running !reload (World.ReconcileNpcToggles spawns/despawns
+    // to match), not a live GM mutation command. The tavern-hand "small guy" NPCs (Ox/Taur) are off by default.
     private void NpcToggleCmd(string text)
     {
-        var off = Content.Npcs.Where(n => !NpcToggles.IsEnabled(n.Id))
+        var off = Content.Npcs.Where(n => !n.Enabled)
                               .OrderBy(n => n.Id)
                               .Select(n => $"#{n.Id} {n.Name} (map {n.Map})").ToList();
         SendLog((off.Count == 0 ? "No NPCs are switched off."
                                 : $"Switched-off NPCs ({off.Count}): " + string.Join(", ", off)) +
-                "  (edit data/game-data/NpcToggles.csv + !reload to change)");
+                "  (edit the Enabled column in data/game-data/NPCs.csv + !reload to change)");
     }
 
     // "!craft" / "!craft list" — show which crafting skills are era-gated on/off. Read-only: the toggle

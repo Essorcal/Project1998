@@ -222,7 +222,7 @@ public sealed partial class Session
     }
 
     // 0x1C use / 0x1A eat: dec[0]=slot(1-based). Equipment -> wear it; consumable -> run its RTK use-script
-    // effect (see ApplyItemEffect / Content.ItemEffects).
+    // effect (see ApplyItemEffect + the ItemParams.csv/item_verbs.lua verb/row system).
     private void HandleUseItem(byte[] dec, bool eat)
     {
         if (dec.Length < 1) return;
@@ -241,87 +241,75 @@ public sealed partial class Session
         MarkDirty();
     }
 
-    // Runs one consumable's real RTK use-script effect (Content.ItemEffects), falling back to the item DB's
-    // own Vita/Mana columns for the rare item that actually carries them (almost none do — see
-    // ItemUseEffect's doc). Plays the shared eat/use animation (0x1A action type 8 on self + peers) for every
-    // effect that actually changes something; gate kinds (status/hardenbody) check FIRST and skip it entirely
-    // on refusal, matching every reviewed script's own guard-before-sendAction order. Returns false — without
-    // consuming the item — only when a gate blocked the effect.
+    // Runs one consumable's real RTK use-script effect via the data-driven verb/row Lua system
+    // (data/game-data/ItemParams.csv names each item's verb + params; data/game-data/item_verbs.lua is the
+    // logic; see Server/ItemScript.cs). The verb acts through ItemContext, whose primitives delegate to the
+    // Item* methods below — the SAME plumbing the old C# switch used. Gate verbs (ward/hardenbody) check FIRST
+    // and skip the eat animation on refusal, matching every reviewed script's guard-before-effect order.
+    // Returns false — WITHOUT consuming the item — only when a gate verb refused. Items with no ItemParams row
+    // fall back to the item DB's own Vita/Mana columns (almost none carry them). Both files hot-reload via !reload.
     private bool ApplyItemEffect(ItemDef def)
     {
-        if (!Content.ItemEffects.TryGetValue(def.Key, out var fx))
+        if (Content.ItemParams.TryGetValue(def.Key, out var row))
         {
-            bool healed = false;
-            if (def.Vita > 0) { _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)def.Vita); healed = true; }
-            if (def.Mana > 0) { _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)def.Mana); healed = true; }
-            if (healed) { SendAction(_char.Id, 8, 40, 0); _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this); SendStats(); }
-            return true;
+            var verb = row.GetValueOrDefault("verb", "");
+            var handled = ItemScript.Apply(verb, new ItemContext(this), row);
+            if (handled is not null) return handled.Value;   // Lua ran it; false = a gate refused (don't consume)
+            // verb missing / Lua error -> fall through to the DB Vita/Mana fallback below (never leaves a use inert-crashed)
         }
 
-        switch (fx.Kind)
-        {
-            case "heal":
-                SendAction(_char.Id, 8, 40, 0);
-                _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
-                _char.Hp = Math.Min(EffMaxHp, _char.Hp + (fx.Full ? EffMaxHp : (uint)fx.Amount));
-                if (_char.Hp == EffMaxHp) SendMiniText("You feel satiated.");   // RTK: fires whether already full or capped there by this heal
-                SendStats();
-                return true;
-
-            case "fatal":   // poison_apple: RTK removeHealthExtend(999999999) -- an always-lethal joke item
-                SendAction(_char.Id, 8, 40, 0);
-                _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
-                _char.Hp = 0;
-                SendStats();
-                Die();
-                return true;
-
-            case "mana":   // drinks/smoke: trade a little HP for a lot of MP
-                SendAction(_char.Id, 8, 40, 0);
-                _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
-                _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)fx.Amount);
-                if (fx.HpCost > 0) _char.Hp = (uint)Math.Max(1, (int)_char.Hp - fx.HpCost);
-                SendStats();
-                return true;
-
-            case "status":   // timed ward flag (curse_protection/sanctuary/harden_armor/...) -- no numeric stat, see doc
-                // An empty AlreadyActiveMessage means the real script has no checkIfCast guard at all (e.g.
-                // black_potion) -- it just always (re)sets the duration, consumed every time. Only the
-                // guarded potions/scrolls refuse a re-use while their flag is still up.
-                if (fx.AlreadyActiveMessage.Length > 0 && HasStatusFlag(fx.StatusKey))
-                {
-                    SendMiniText(fx.AlreadyActiveMessage);
-                    return false;
-                }
-                SetStatusFlag(fx.StatusKey, fx.DurationMs);
-                return true;
-
-            case "hardenbody":   // scroll_of_immortality: armor-scaled success roll before granting the ward (RTK's own formula)
-            {
-                if (HasStatusFlag(fx.StatusKey)) { SendMiniText(fx.AlreadyActiveMessage); return false; }
-                int armor = Math.Clamp(_char.Ac - Totals().armor, -80, 70);
-                int successRate = (int)Math.Ceiling((120 + armor) / 2.0);
-                if (Random.Shared.Next(1, 101) > successRate) { SendMiniText("Something went wrong."); return false; }
-                SetStatusFlag(fx.StatusKey, fx.DurationMs);
-                SendAction(_char.Id, 6, 40, 0);
-                SendMiniText("You cast Harden Body.");
-                return true;
-            }
-
-            case "cure":   // indigo_potion / clear_water_song -- no player poison/curse model exists yet to clear (see doc)
-                return true;
-
-            case "warphome":   // yellow_scroll / qui_hyang (menu collapsed to its always-available Home branch)
-                ReturnToInn();   // RTK returnFunc -> returnToInn: a random tavern in your nation, not the home-city interior
-                return true;
-
-            default:
-                return true;
-        }
+        // No effect row (or the Lua path was unavailable): the rare item that actually carries Vita/Mana in the
+        // item DB heals by those columns; anything else is an inert consume.
+        bool healed = false;
+        if (def.Vita > 0) { _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)def.Vita); healed = true; }
+        if (def.Mana > 0) { _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)def.Mana); healed = true; }
+        if (healed) { ItemEatAnim(); SendStats(); }
+        return true;
     }
 
+    // ---- Item-effect verb primitives (called by ItemContext; see Server/ItemScript.cs) --------------------
+    // Thin wrappers reusing the exact plumbing the old C# ApplyItemEffect switch used, so the Lua route can't
+    // drift into a second implementation. (Stat reads level/might/hp/maxHp/mp reuse the shared Lua* accessors
+    // defined in Session.Spells.cs; say/message/restoreMana reuse LuaSay/LuaMessage/LuaRestoreMana.)
+    internal int ItemArmor => Math.Clamp(_char.Ac - Totals().armor, -80, 70);   // RTK harden-body's clamped armor
+
+    internal void ItemEatAnim()   // the shared eat/use pose + sound, self and peers (RTK action 8)
+    {
+        SendAction(_char.Id, 8, 40, 0);
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+    }
+
+    internal void ItemCastPose() => SendAction(_char.Id, 6, 40, 0);   // harden-body cast pose (self only, as RTK)
+
+    internal void ItemHeal(int amt)
+    {
+        if (amt <= 0) return;
+        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
+        if (_char.Hp == EffMaxHp) SendMiniText("You feel satiated.");   // RTK: fires whether already full or capped here
+        SendStats();
+    }
+
+    internal void ItemLoseHp(int amt)   // drink/smoke's small HP cost — never below 1
+    {
+        if (amt <= 0) return;
+        _char.Hp = (uint)Math.Max(1, (int)_char.Hp - amt);
+        SendStats();
+    }
+
+    internal void ItemKill()   // poison_apple: always-lethal
+    {
+        _char.Hp = 0;
+        SendStats();
+        Die();
+    }
+
+    internal bool ItemHasStatus(string key)          => HasStatusFlag(key);
+    internal void ItemSetStatus(string key, int ms)  => SetStatusFlag(key, ms);
+    internal bool ItemChance(int pct)                => Random.Shared.Next(1, 101) <= pct;   // 1..100 <= pct = success
+    internal void ItemWarpHome()                     => ReturnToInn();   // RTK returnFunc -> a random tavern in your nation
+
     // Timed status flags set by USE items whose RTK effect is a plain ward/marker rather than a numeric stat
-    // delta (Content.ItemEffects "status"/"hardenbody" kinds) -- key -> Environment.TickCount64 expiry.
+    // delta (the item_verbs.lua "ward"/"hardenbody" verbs) -- key -> Environment.TickCount64 expiry.
     // Separate from _buffs (which models spell buffs with real Stat/Amount deltas): these carry no stat mod
     // of their own in RTK either (e.g. Spells/common/curse_protection.lua has no recast function at all,
     // just the duration flag), so tracking presence + honoring the re-cast guard IS the full faithful

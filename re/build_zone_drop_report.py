@@ -1,5 +1,5 @@
 """Build a consolidated per-zone mob roster + drop-table report from our live data
-(AreaSpawns.csv + Spawns0.csv + mobs.csv + MobDrops.csv + Items.csv + Maps.csv),
+(AreaSpawns.csv + Spawns.csv + mobs.csv + MobDrops.csv + Items.csv + Maps.csv),
 so it can be cross-referenced against the tswolf/nexusatlas/nexuswiki/fandom archives.
 
 Output: re/zone_drop_report.md — one section per map (zone) that has any spawns,
@@ -28,7 +28,7 @@ item_names = {r["ItmIdentifier"]: r["ItmDescription"] for r in read_csv("Items.c
 drops = {r["MobKey"]: r for r in read_csv("MobDrops.csv")}
 
 area_spawns = read_csv("AreaSpawns.csv")
-fixed_spawns = read_csv("Spawns0.csv")
+fixed_spawns = read_csv("Spawns.csv")
 
 zone_mobs = defaultdict(lambda: defaultdict(lambda: {"area_count": 0, "fixed_count": 0}))
 

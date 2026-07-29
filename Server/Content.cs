@@ -69,14 +69,15 @@ public sealed record SpawnDef(int MobId, ushort Map, ushort X, ushort Y);
 /// only by the trap-spawn supplement (<c>AreaSpawnsTrap.csv</c>); the base handleSpawn rows leave it 0.</param>
 public sealed record AreaSpawnDef(int MobId, ushort Map, int Count, ushort MinX, ushort MinY, ushort MaxX, ushort MaxY, int RespawnSec = 0);
 
-/// <summary>An NPC placement from the RTK NPCs0 table: a stationary being on a map tile. Nearly all
-/// (384/385) render via the creature path (0x07) exactly like a mob — <c>Look</c>/<c>Color</c> mirror
+/// <summary>An NPC placement from our NPC table (<c>data/game-data/NPCs.csv</c>): a stationary being on a map
+/// tile. Nearly all render via the creature path (0x07) exactly like a mob — <c>Look</c>/<c>Color</c> mirror
 /// <see cref="MobDef"/> — so the world spawns them as non-fighting mobs. <c>IsChar</c> marks the rare
-/// human-composite NPC (0x33). The shop/repair/bank flags select the dialog behaviour on click.</summary>
+/// human-composite NPC (0x33). The shop/repair/bank flags select the dialog behaviour on click. <c>Enabled</c>
+/// (the CSV's Enabled column) is the spawn on/off switch — a disabled NPC keeps its row but isn't placed.</summary>
 public sealed record NpcDef(
     int Id, string Key, string Name, ushort Map, ushort X, ushort Y, byte Dir,
     ushort Look, byte Color, bool IsChar, bool Shop, bool Repair, bool Bank,
-    int MoveTime, int ReturnDistance);
+    int MoveTime, int ReturnDistance, bool Enabled = true);
 
 /// <summary>
 /// An item definition from the RTK item db (Items.csv). Field names mirror the client's item_data
@@ -127,115 +128,11 @@ public sealed record ItemDef(
     };
 }
 
-/// <summary>The scripted effect of an EAT/USE/SMOKE item's "use" handler, ported from RTK's real per-item
-/// Lua (<c>RTK-Server/rtklua/Accepted/Items/Consumables/**/*.lua</c>). This exists because <see cref="ItemDef"/>'s
-/// own Vita/Mana/Healing DB columns are almost always 0 for these — of 404 EAT/USE/SMOKE rows in Items.csv,
-/// only 2 carry a nonzero stat. The real numbers (a food's heal amount, a drink's mana-for-HP trade, a
-/// potion's timed ward) live ONLY in the paired Lua script's body, e.g. <c>red_potion.lua</c>'s
-/// <c>addHealthExtend(player.maxHealth, ...)</c> — so <see cref="Session.HandleUseItem"/> was previously a
-/// near-total no-op for real game items despite looking complete. Keyed by <see cref="ItemDef.Key"/>.</summary>
-/// <param name="Kind">"heal" | "fatal" | "mana" | "status" | "hardenbody" | "cure" | "warphome".</param>
-/// <param name="Amount">Heal HP / restore MP amount (Kind="heal"/"mana").</param>
-/// <param name="Full">Kind="heal": ignore <see cref="Amount"/>, heal to max HP (red_potion's <c>player.maxHealth</c>).</param>
-/// <param name="HpCost">Kind="mana": HP spent alongside the MP restore (RTK's drinks/smoke all trade a little HP for a lot of MP).</param>
-/// <param name="StatusKey">Kind="status"/"hardenbody": the flag name tracked in <see cref="Session"/>'s status-flag table.</param>
-/// <param name="DurationMs">How long the status flag lasts.</param>
-/// <param name="AlreadyActiveMessage">Sent instead of (re)applying while <see cref="StatusKey"/> is already active (RTK's <c>checkIfCast</c> guard).</param>
-public sealed record ItemUseEffect(string Kind, int Amount = 0, bool Full = false, int HpCost = 0,
-    string StatusKey = "", int DurationMs = 0, string AlreadyActiveMessage = "");
-
-public static partial class Content
-{
-    /// <summary>Ported item -> effect table. See <see cref="ItemUseEffect"/> for the source-of-truth note.
-    /// Status-flag potions/scrolls (curse_protection/sanctuary/harden_armor/harden_body/chin_baek_ho_ryung/
-    /// purple_potion) carry NO numeric stat delta even in their own RTK spell scripts (e.g.
-    /// <c>Spells/common/curse_protection.lua</c> has no <c>recast</c> function at all, just the duration
-    /// flag) — same as this project's existing <c>Session.CastCure</c> "Cure" archetype stub, so tracking the
-    /// flag + honoring the re-cast guard is the full faithful behavior today, not a shortcut. "cure" (indigo_
-    /// potion / clear_water_song) is a likewise-faithful no-op: there's no player poison/curse DoT model yet
-    /// to clear (only <see cref="Shared.Mob.PoisonUntil"/> exists, mob-only). Not ported: cosmetic armor-dye
-    /// elixir potions (Items/Consumables/potions/elixir_potions.lua — a wardrobe feature, not a use-mechanic),
-    /// dragons_tooth (a full shapeshift morph with no matching entry in <see cref="Content.MorphSpells"/> yet),
-    /// kawlana_potion (single-quest-area logic), quest_paper (paper-popup UI), cloth/empty_water_jug
-    /// (on_drop crafting triggers, not "use" at all). qui_hyang's full menu (clan hall / subpath circle /
-    /// main inn) collapses to its always-available "Home" branch, same as yellow_scroll.</summary>
-    public static readonly Dictionary<string, ItemUseEffect> ItemEffects = new()
-    {
-        // ---- food (Items/Consumables/{fruit,meats,nuts}/*.lua): fixed HP heal, RTK's addHealthExtend amount ----
-        ["apple"] = new("heal", Amount: 5),
-        ["poison_apple"] = new("fatal"),
-        ["watermelon"] = new("heal", Amount: 800),
-        ["antler"] = new("heal", Amount: 248),
-        ["bear_fur"] = new("heal", Amount: 48),
-        ["bears_liver"] = new("heal", Amount: 500),
-        ["beef"] = new("heal", Amount: 20),
-        ["lean_beef"] = new("heal", Amount: 500),
-        ["chicken_meat"] = new("heal", Amount: 40),
-        ["cooked_fish"] = new("heal", Amount: 20),   // RTK doubles this to 900 when eaten adjacent to your partner — not ported
-        ["egg"] = new("heal", Amount: 8),
-        ["ginseng"] = new("heal", Amount: 2000),
-        ["young_ginseng"] = new("heal", Amount: 40),
-        ["ginseng_piece"] = new("heal", Amount: 60),
-        ["mountain_ginseng"] = new("heal", Amount: 10000),
-        ["green_squirrel_pelt"] = new("heal", Amount: 8),
-        ["horse_meat"] = new("heal", Amount: 200),
-        ["meat_scrap"] = new("heal", Amount: 5),
-        ["pork"] = new("heal", Amount: 128),
-        ["rare_pork"] = new("heal", Amount: 31),
-        ["rabbit_meat"] = new("heal", Amount: 48),
-        ["fine_rabbit_meat"] = new("heal", Amount: 200),
-        ["rat_meat"] = new("heal", Amount: 8),
-        ["rose_petals"] = new("heal", Amount: 20),   // RTK doubles this to 900 when eaten adjacent to your partner — not ported
-        ["snake_meat"] = new("heal", Amount: 100),
-        ["fine_snake_meat"] = new("heal", Amount: 320),
-        ["tigers_heart"] = new("heal", Amount: 1000),
-        ["wolf_meat"] = new("heal", Amount: 48),
-        ["acorn"] = new("heal", Amount: 8),
-        ["gold_acorn"] = new("heal", Amount: 8),
-
-        // ---- potions: plain heal (Items/Consumables/potions/*.lua) ----
-        ["blue_potion"] = new("heal", Amount: 100),
-        ["violet_potion"] = new("heal", Amount: 200),
-        ["yellow_potion"] = new("heal", Amount: 50),
-        ["red_potion"] = new("heal", Full: true),
-
-        // ---- drinks + smoke: restore mana at a small HP cost (Items/Consumables/{drinks,smoked}/*.lua) ----
-        ["aged_wine"] = new("mana", Amount: 100, HpCost: 5),
-        ["moon_wine"] = new("mana", Amount: 100, HpCost: 5),
-        ["ogre_cider"] = new("mana", Amount: 100, HpCost: 10),
-        ["ogre_drought"] = new("mana", Amount: 325, HpCost: 25),
-        ["root_liquor"] = new("mana", Amount: 30, HpCost: 1),
-        ["wine"] = new("mana", Amount: 25, HpCost: 5),
-        ["thick_wine"] = new("mana", Amount: 40, HpCost: 5),
-        ["rice_wine"] = new("mana", Amount: 30, HpCost: 0),
-        ["herb_pipe"] = new("mana", Amount: 300, HpCost: 15),
-        ["sonhi_pipe"] = new("mana", Amount: 450, HpCost: 50),
-        ["iron_statue"] = new("mana", Amount: 250, HpCost: 0),
-
-        // ---- status-flag potions/scrolls: a timed ward the item sets (see class doc for what is/isn't wired) ----
-        ["aqua_potion"] = new("status", StatusKey: "sanctuary", DurationMs: 185_000, AlreadyActiveMessage: "Another spell of that type is already in effect."),
-        ["green_potion"] = new("status", StatusKey: "sanctuary", DurationMs: 300_000, AlreadyActiveMessage: "Another spell of that type is already in effect."),
-        ["lime_potion"] = new("status", StatusKey: "sanctuary", DurationMs: 900_000, AlreadyActiveMessage: "Another spell of that type is already in effect."),
-        ["brown_potion"] = new("status", StatusKey: "harden_armor", DurationMs: 185_000, AlreadyActiveMessage: "Another spell of that type is already in effect."),
-        ["muddy_potion"] = new("status", StatusKey: "harden_armor", DurationMs: 300_000, AlreadyActiveMessage: "Another spell of that type is already in effect."),
-        ["black_potion"] = new("status", StatusKey: "chin_baek_ho_ryung", DurationMs: 10_000),
-        ["purple_potion"] = new("status", StatusKey: "purple_potion", DurationMs: 300_000, AlreadyActiveMessage: "This spell is already active."),
-        ["scroll_of_protection"] = new("status", StatusKey: "curse_protection", DurationMs: 250_000, AlreadyActiveMessage: "You are already protected."),
-        ["scroll_of_defense"] = new("status", StatusKey: "curse_protection", DurationMs: 350_000, AlreadyActiveMessage: "You are already protected."),
-
-        // scroll_of_immortality: RTK rolls ceil((120+clampedArmor)/2)% success before granting the buff — its
-        // own case in Session.ApplyItemEffect (needs the live armor roll, not just a fixed duration).
-        ["scroll_of_immortality"] = new("hardenbody", StatusKey: "harden_body", DurationMs: 16_000, AlreadyActiveMessage: "You already cast that spell."),
-
-        // ---- cure: see class doc — no player poison/curse model exists yet to actually clear ----
-        ["indigo_potion"] = new("cure"),
-        ["clear_water_song"] = new("cure"),
-
-        // ---- warp home (RTK yellow_scroll / qui_hyang.lua's "Home" option) ----
-        ["yellow_scroll"] = new("warphome"),
-        ["qui_hyang"] = new("warphome"),
-    };
-}
+// The old hard-coded item -> effect table (ItemUseEffect record + Content.ItemEffects dictionary) has moved
+// out of C# into the data-driven verb/row Lua system, exactly like spells: data/game-data/ItemParams.csv is
+// the "row" (each consumable's verb + numeric params), data/game-data/item_verbs.lua is the "verb" (the
+// logic), and Session.ApplyItemEffect runs them through ItemContext (see Server/ItemScript.cs). Both files
+// hot-reload via !reload, so a food's heal amount or a potion's ward duration is a CSV edit, not a rebuild.
 
 /// <summary>
 /// A spell/skill definition from the RTK <c>Spells</c> table. <c>Name</c> is the display name
@@ -417,14 +314,14 @@ public static partial class Content
     public static IReadOnlyDictionary<string, SpellFx> SpellFx { get; private set; } =
         new Dictionary<string, SpellFx>();
 
-    // Fixed monster spawn points (RTK Spawns0.csv). One live mob per point; the world respawns it on death.
+    // Fixed monster spawn points (data/game-data/Spawns.csv). One live mob per point; the world respawns it on death.
     public static IReadOnlyList<SpawnDef> Spawns { get; private set; } = new List<SpawnDef>();
 
     // Area spawns from RTK's Lua spawner (data/game-data/AreaSpawns.csv): the hunting-map mob populations
-    // (Mythic caves, wilderness, dungeons) that the static Spawns0 table doesn't cover. See AreaSpawnDef.
+    // (Mythic caves, wilderness, dungeons) that the static Spawns table doesn't cover. See AreaSpawnDef.
     public static IReadOnlyList<AreaSpawnDef> AreaSpawns { get; private set; } = new List<AreaSpawnDef>();
 
-    // Stationary NPCs (RTK NPCs0.csv), placed once by the world as non-fighting mobs. Keyed by NpcId for
+    // Stationary NPCs (data/game-data/NPCs.csv), placed once by the world as non-fighting mobs. Keyed by NpcId for
     // click-time dialog lookup.
     public static IReadOnlyList<NpcDef> Npcs { get; private set; } = new List<NpcDef>();
     private static IReadOnlyDictionary<int, NpcDef> _npcById = new Dictionary<int, NpcDef>();
@@ -475,11 +372,98 @@ public static partial class Content
     public static IReadOnlyDictionary<string, bool> CraftingToggleOverrides { get; private set; } =
         new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
-    // On/off overrides for individual NPCs, by NpcId (see Server/NpcToggles.cs). Same sparse-override
-    // shape as CraftingToggleOverrides: only ids listed here override NpcToggles.DefaultDisabled.
-    // Columns: NpcId,Enabled(0/1).
-    public static IReadOnlyDictionary<int, bool> NpcToggleOverrides { get; private set; } =
-        new Dictionary<int, bool>();
+
+    // ---- Mythic Nexus zodiac cave entrances (data/game-data/MythicCaves.csv) ------------------------------
+    // The 12 zodiac caves' entrance tiles, destination, and per-tier (cave 1/2/3) level+vita/mana gates.
+    // Requirement numbers are archival (cross-referenced against 4 tutor posts — see the row Sources and
+    // Sources.csv tutor-caves-*); the tile/destination geometry is RTK routing (onScriptedTilesMythic.lua).
+    // Consumed by Session.TryMythicCaveEntrance. A tier is met when level >= T{n}Level AND
+    // (baseMaxHP >= T{n}Vita OR baseMaxMP >= T{n}Mana); the deepest met tier wins.
+    public readonly record struct MythicTier(byte Level, uint Vita, uint Mana);
+    public sealed record MythicCaveDef(string Animal, ushort EntranceMap, (ushort X, ushort Y)[] Tiles,
+        ushort DestMap, ushort DestX, ushort DestY, MythicTier[] Tiers, string Sources);
+
+    public static IReadOnlyList<MythicCaveDef> MythicCaves { get; private set; } = new List<MythicCaveDef>();
+
+    // Derived (map,x,y) -> cave lookup so the per-step entrance check is a single hash probe on any map.
+    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), MythicCaveDef> MythicCaveTiles { get; private set; }
+        = new Dictionary<(ushort, ushort, ushort), MythicCaveDef>();
+
+    // ---- Location / warp geometry (Tier-1 extraction; data/game-data/*.csv) ------------------------------
+    // RTK/RE geometry that used to be hard-coded in the game logic, moved to flat files so it hot-reloads via
+    // !reload like every other registry. Consumers read these Content.* properties.
+
+    // Map -> BGM track override (BgmFor). A design assignment, not RTK data (the client files carry no
+    // map->track table); maps without a row get a stable id-derived pick. See MapBgm.csv.
+    public static IReadOnlyDictionary<ushort, byte> MapBgm { get; private set; } = new Dictionary<ushort, byte>();
+
+    // Nation tavern return tiles for Return / yellow_scroll / qui_hyang (Session.ReturnToInn). Grouped by
+    // Kugnae/Buya/Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae fallback) stays in code.
+    public sealed record InnDef(ushort Map, ushort X, ushort Y);
+    public static IReadOnlyDictionary<string, IReadOnlyList<InnDef>> Inns { get; private set; } =
+        new Dictionary<string, IReadOnlyList<InnDef>>(StringComparer.OrdinalIgnoreCase);
+
+    // Ground-item forage spawn boxes (World forage tick / RTK itemspawner.lua). See ForageAreas.csv.
+    public sealed record ForageAreaDef(string ItemKey, ushort Map, int MinX, int MaxX, int MinY, int MaxY,
+        int Max, int MinQty, int MaxQty);
+    public static IReadOnlyList<ForageAreaDef> ForageAreas { get; private set; } = new List<ForageAreaDef>();
+
+    // Class path-hall doorways (Session.TryPathHallWarp), keyed by the hall map. Sanctum[0..3] indexed by
+    // Character.Alignment (Unaligned/Kwisin/Mingken/Ohaeng). See PathHalls.csv.
+    public sealed record PathHallDef(int BaseClass, ushort GuildMap, ushort[] Sanctum);
+    public static IReadOnlyDictionary<ushort, PathHallDef> PathHalls { get; private set; } =
+        new Dictionary<ushort, PathHallDef>();
+
+    // Gateway spell gate-boxes per kingdom region 0-3 (Session.CastGateway). Gates keyed by 'n'/'e'/'s'/'w'.
+    // See GatewayGates.csv.
+    public sealed record GatewayDef(ushort Map, string City,
+        IReadOnlyDictionary<char, (int Xlo, int Xhi, int Ylo, int Yhi)> Gates);
+    public static IReadOnlyDictionary<int, GatewayDef> GatewayRegions { get; private set; } =
+        new Dictionary<int, GatewayDef>();
+
+    // Inter-continent world-map travel destinations (Session world-map), order-significant (the wire dots are
+    // sent in this order). DotX/DotY are field10 pixel coords. See WorldMapDests.csv.
+    public sealed record WorldDestDef(string Name, ushort Map, ushort X, ushort Y, int DotX, int DotY);
+    public static IReadOnlyList<WorldDestDef> WorldDests { get; private set; } = new List<WorldDestDef>();
+
+    // World-map trigger tiles, keyed by the source (town) map. Hits when the FixedAxis coord is in
+    // [FixedLo,FixedHi] AND the other axis is in [RangeLo,RangeHi]. See WorldMapTriggers.csv.
+    public sealed record WorldTriggerDef(char FixedAxis, int FixedLo, int FixedHi, int RangeLo, int RangeHi)
+    {
+        public bool Hits(int x, int y)
+        {
+            int fixedC = FixedAxis == 'x' ? x : y;
+            int rangeC = FixedAxis == 'x' ? y : x;
+            return fixedC >= FixedLo && fixedC <= FixedHi && rangeC >= RangeLo && rangeC <= RangeHi;
+        }
+    }
+    public static IReadOnlyDictionary<ushort, WorldTriggerDef> WorldMapTriggers { get; private set; } =
+        new Dictionary<ushort, WorldTriggerDef>();
+
+    // Mythic cave fall-room landings (Session.TryMythicFallRoom), keyed by the source sub-map, ALREADY
+    // tier-expanded (+0/+3000/+4000) at load. See FallRooms.csv.
+    public static IReadOnlyDictionary<ushort, (ushort Map, ushort X, ushort Y)> FallRooms { get; private set; } =
+        new Dictionary<ushort, (ushort, ushort, ushort)>();
+
+    // Curated shop catalogues (data/game-data/ShopCatalogues.csv) — hand-authored, ORDERED sub-category buy
+    // menus (e.g. SmithNpc's armor menus) that the auto-extracted flat ShopStock can't represent. Keyed by
+    // NpcDef.Key; consulted first by Shops.For, else it falls back to ShopStock. Hot-reloads via !reload.
+    public static IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues { get; private set; } =
+        new Dictionary<string, IReadOnlyList<(string, string[])>>(StringComparer.OrdinalIgnoreCase);
+
+    // Data-driven spell params (data/game-data/SpellParams.csv): per spell key, the raw CSV row its Lua verb
+    // reads (the `verb` column + numeric params like coeff/mana/amount). The "row" half of the verb/row spell
+    // model — the "verb" logic lives in spell_verbs.lua (see Server/SpellScript.cs + Session.ApplyCast). Sparse:
+    // only migrated spells have a row; everything else uses the C# CastX dispatch. Hot-reloads via !reload.
+    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> SpellParams { get; private set; } =
+        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
+    // Data-driven item use-effect params (data/game-data/ItemParams.csv): per item key, the raw CSV row its
+    // Lua verb reads (the `verb` column + params like amount/hpcost/statuskey/duration). The "row" half of the
+    // verb/row item-effect model — the "verb" logic lives in item_verbs.lua (see Server/ItemScript.cs +
+    // Session.ApplyItemEffect). Items without a row fall back to the item DB's Vita/Mana. Hot-reloads via !reload.
+    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> ItemParams { get; private set; } =
+        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
     public static void Load()
     {
@@ -487,14 +471,14 @@ public static partial class Content
         Mobs = LoadMobs(ResolvePath("NEXUS_MOBS", "data", "game-data", "mobs.csv"));
         Items = LoadItems(ResolvePath("NEXUS_ITEMS", "data", "game-data", "Items.csv"));
         Warps = LoadWarps(ResolvePath("NEXUS_WARPS", "data", "game-data", "Warps.csv"));   // needs Maps
-        Spawns = LoadSpawns(ResolvePath("NEXUS_SPAWNS", "data", "game-data", "Spawns0.csv"));
+        Spawns = LoadSpawns(ResolvePath("NEXUS_SPAWNS", "data", "game-data", "Spawns.csv"));
         AreaSpawns = LoadAreaSpawns(ResolvePath("NEXUS_AREASPAWNS", "data", "game-data", "AreaSpawns.csv"));
         // Trap-ambush populations (tiger cave, rabbit boss-tier, trapdoor spiders) that RTK spawns via
         // trap/mob_spawn.lua rather than handleSpawn — merged in as ordinary area spawns (rare-boss rows
         // carry RespawnSec). Generated by re/extract_trap_spawns.py. See that script for the calibration.
         AreaSpawns = AreaSpawns.Concat(
             LoadAreaSpawns(ResolvePath("NEXUS_AREASPAWNS_TRAP", "data", "game-data", "AreaSpawnsTrap.csv"))).ToList();
-        Npcs = LoadNpcs(ResolvePath("NEXUS_NPCS", "data", "game-data", "NPCs0.csv"));   // needs Maps
+        Npcs = LoadNpcs(ResolvePath("NEXUS_NPCS", "data", "game-data", "NPCs.csv"));   // needs Maps
         _npcById = Npcs.ToDictionary(n => n.Id);
         MinorQuests = LoadMinorQuests(ResolvePath("NEXUS_MINORQUESTS", "data", "game-data", "MinorQuests.csv"));
         ShopStock = LoadShopStock(ResolvePath("NEXUS_SHOPSTOCK", "data", "game-data", "ShopStock.csv"));
@@ -507,9 +491,27 @@ public static partial class Content
         MapMeta = LoadMapMeta(ResolvePath("NEXUS_MAPS_FULL", "data", "game-data", "Maps.csv"));   // region + warpOut for Gateway
         MobDrops = LoadMobDrops(ResolvePath("NEXUS_MOB_DROPS", "data", "game-data", "MobDrops.csv"));
         CraftingToggleOverrides = LoadCraftingToggles(ResolvePath("NEXUS_CRAFTING_TOGGLES", "data", "game-data", "CraftingToggles.csv"));
-        NpcToggleOverrides = LoadNpcToggles(ResolvePath("NEXUS_NPC_TOGGLES", "data", "game-data", "NpcToggles.csv"));
+        MythicCaves = LoadMythicCaves(ResolvePath("NEXUS_MYTHIC_CAVES", "data", "game-data", "MythicCaves.csv"));
+        MythicCaveTiles = MythicCaves
+            .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
+            .ToDictionary(e => e.key, e => e.cave);
+        MapBgm = LoadMapBgm(ResolvePath("NEXUS_MAP_BGM", "data", "game-data", "MapBgm.csv"));
+        Inns = LoadInns(ResolvePath("NEXUS_INNS", "data", "game-data", "Inns.csv"));
+        ForageAreas = LoadForageAreas(ResolvePath("NEXUS_FORAGE", "data", "game-data", "ForageAreas.csv"));
+        PathHalls = LoadPathHalls(ResolvePath("NEXUS_PATHHALLS", "data", "game-data", "PathHalls.csv"));
+        GatewayRegions = LoadGatewayGates(ResolvePath("NEXUS_GATEWAY", "data", "game-data", "GatewayGates.csv"));
+        WorldDests = LoadWorldDests(ResolvePath("NEXUS_WORLDMAP_DESTS", "data", "game-data", "WorldMapDests.csv"));
+        WorldMapTriggers = LoadWorldTriggers(ResolvePath("NEXUS_WORLDMAP_TRIGGERS", "data", "game-data", "WorldMapTriggers.csv"));
+        FallRooms = LoadFallRooms(ResolvePath("NEXUS_FALLROOMS", "data", "game-data", "FallRooms.csv"));
+        ShopCatalogues = LoadShopCatalogues(ResolvePath("NEXUS_SHOP_CATALOGUES", "data", "game-data", "ShopCatalogues.csv"));
+        SpellParams = LoadKeyedRows(ResolvePath("NEXUS_SPELL_PARAMS", "data", "game-data", "SpellParams.csv"));
+        SpellScript.Load(ResolvePath("NEXUS_SPELL_VERBS", "data", "game-data", "spell_verbs.lua"));
+        ItemParams = LoadKeyedRows(ResolvePath("NEXUS_ITEM_PARAMS", "data", "game-data", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
+        ItemScript.Load(ResolvePath("NEXUS_ITEM_VERBS", "data", "game-data", "item_verbs.lua"));
+        NpcScript.Load(ResolvePath("NEXUS_NPC_DIALOG", "data", "game-data", "npc_dialog.lua"));
+        Doors.SetConfig(LoadDoors(ResolvePath("NEXUS_DOORS", "data", "game-data", "Doors.csv")));
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {NpcToggleOverrides.Count} npc-toggle overrides loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check data/game-data/mobs.csv)"
                      : ""));
@@ -532,7 +534,7 @@ public static partial class Content
         Load();
         return $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
                $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
-               $"{CraftingToggleOverrides.Count} crafting-toggle overrides, {NpcToggleOverrides.Count} npc-toggle overrides";
+               $"{CraftingToggleOverrides.Count} crafting-toggle overrides";
     }
 
     /// <summary>The portal at (map, x, y), if the player just stepped on a door tile.</summary>
@@ -670,21 +672,14 @@ public static partial class Content
     // ---- background music (0x19) --------------------------------------------------------------
     // The stock 4.95 client keeps its audio in NexusTK.snd, which ships exactly 12 background tracks
     // (1.mid .. 12.mid); the 0x19 music packet plays one by id with type 2 = MIDI. There is no original
-    // map->track table in the client files, so we assign them: a few iconic hubs get a fixed theme, and
-    // every other map gets a stable pick from its id (so neighbouring maps tend to differ). Tune freely.
-    private static readonly Dictionary<ushort, byte> BgmByMap = new()
-    {
-        [0]   = 1,    // Kugnae (town)
-        [330] = 2,    // Buya (town)
-        [41]  = 5,    // Mythic Nexus
-        [24]  = 6,    // Kugnae Donjon (dungeon)
-    };
+    // map->track table in the client files, so we assign them (MapBgm.csv): a few iconic hubs get a fixed
+    // theme, and every other map gets a stable pick from its id (so neighbouring maps tend to differ).
 
-    /// <summary>The background track for a map: (bgm id 1..12, type 2 = MIDI). Iconic hubs are fixed;
-    /// anything else maps deterministically onto one of the 12 stock midis via its id.</summary>
+    /// <summary>The background track for a map: (bgm id 1..12, type 2 = MIDI). Iconic hubs are fixed
+    /// (<see cref="MapBgm"/>); anything else maps deterministically onto one of the 12 stock midis via its id.</summary>
     public static (ushort bgm, byte type) BgmFor(ushort mapId)
     {
-        byte bgm = BgmByMap.TryGetValue(mapId, out var pick) ? pick : (byte)((mapId % 12) + 1);
+        byte bgm = MapBgm.TryGetValue(mapId, out var pick) ? pick : (byte)((mapId % 12) + 1);
         return (bgm, 2);
     }
 
@@ -1272,48 +1267,25 @@ public static partial class Content
         return spawns;
     }
 
-    // NPCs whose NpcLook exceeds the 4.95 client's Monster.tbl ceiling (NumMonsters 327, ids 0..326) draw
-    // nothing — authored against a later RTK client's larger monster table. Of the 22 found this way, these
-    // 20 are abandoned/unreachable content with no feature behind them (the Abyssal Crystal zodiac puzzle +
-    // its questgivers/instance chests/jukeboxes — RTK's own team hid the crystals via a later migration
-    // rather than fix them; see [[nexustk-495-broken-npc-assets]]) so they're dropped outright rather than
-    // left as invisible clutter. Palace Concierge (335, a real Nagnang town NPC) is deliberately NOT in this
-    // list.
-    //
-    // The 3 SalonNpc rows (236 Seme/Kugnae, 237 Serge/Buya, 318 Sarge/Nagnang) are dropped per user direction:
-    // real RTK puts Face/Gender on the Rogue Guild Shaman (RogueGuildShamanNpc), not the salon barbers — we'd
-    // duplicated the service onto the salons too, but the user wants it Shaman-only, so these three go rather
-    // than stay as barbers with no haircut/dye feature behind them.
-    private static readonly HashSet<int> DroppedNpcIds = new()
-    {
-        266,                                                              // HealerOfDoomNpc (Mythic Nexus)
-        359, 363,                                                         // JukeboxNpc (Tower Arena, Carnage Hall)
-        364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375,       // *CrystalNpc (Abyssal Crystal x12)
-        376, 377, 378,                                                    // Librarian Reeves, Assistant Yan, Exorcist Layla
-        386, 387,                                                         // Baekdu Chest, Abyssal Chest
-        212,                                                               // PyungPetNpc, "Pyung's pet" scorpion (Buya arena/Pyung Shop map 359)
-        236, 237, 318,                                                    // SalonNpc x3 (Seme/Serge/Sarge) — Face/Gender stays Rogue-hall-only
-    };
+    // NOTE: NPCs.csv is OUR data now (no re-extraction), so former "override" decisions are baked straight into
+    // the rows rather than layered on at load. Historical record, in case a row looks surprising:
+    //   * ~24 rows were DELETED — NPCs whose NpcLook exceeds the 4.95 client's Monster.tbl ceiling (327) so they
+    //     render nothing (the Abyssal Crystal zodiac puzzle + its questgivers/instance chests/jukeboxes, which
+    //     RTK's own team hid via a later migration), PyungPetNpc, and the 3 SalonNpc barbers (Face/Gender stays
+    //     Rogue-hall-only per user direction). See [[nexustk-495-broken-npc-assets]].
+    //   * A few rows were CORRECTED, e.g. NpcId 51 Bagai (map 363) moved from (2,6) to (2,3).
+    //   * The Enabled column carries the on/off toggle (0 = keep the row but don't spawn; the retired tavern hands).
 
-    // Per-NPC corrections layered onto the raw CSV row (position and/or look), for NPCs we keep but whose RTK
-    // data is wrong for THIS client. NpcId 51 = Bagai, the "Bagai Shop" potion seller (map 363, a 12x12
-    // single-room instance): CSV placed him at (2,6); user (who knows the actual room layout) says the
-    // counter is at (2,3). Look (86) was already in-range, no swap needed.
-    private static readonly Dictionary<int, (ushort? X, ushort? Y, ushort? Look)> NpcOverrides = new()
-    {
-        [51]  = (2, 3, null), // Bagai, Bagai Shop
-    };
-
-    // Stationary NPCs (RTK NPCs0.csv). We keep only NPCs whose map the client can render and that sit on a
-    // real tile (skip the (0,0) placeholders — f1npc, treasure portals — which aren't placed beings). Look
-    // is the creature sprite; the world draws them via the same 0x07 path as a mob (see World.PopulateNpcs).
+    // Stationary NPCs (our data/game-data/NPCs.csv). We keep only NPCs whose map the client can render and that
+    // sit on a real tile (skip the (0,0) placeholders — f1npc, treasure portals — which aren't placed beings).
+    // Look is the creature sprite; the world draws them via the same 0x07 path as a mob (see World.PopulateNpcs).
+    // The Enabled column (default 1) is the spawn on/off switch — a disabled NPC keeps its row but World skips it.
     private static List<NpcDef> LoadNpcs(string? path)
     {
         var npcs = new List<NpcDef>();
         foreach (var col in ReadCsv(path))
         {
             if (!int.TryParse(col.GetValueOrDefault("NpcId"), out var id)) continue;
-            if (DroppedNpcIds.Contains(id)) continue;
             ushort.TryParse(col.GetValueOrDefault("NpcMapId", "0"), out var map);
             ushort.TryParse(col.GetValueOrDefault("NpcX", "0"), out var x);
             ushort.TryParse(col.GetValueOrDefault("NpcY", "0"), out var y);
@@ -1322,17 +1294,17 @@ public static partial class Content
             int.TryParse(col.GetValueOrDefault("NpcMoveTime", "0"), out var move);
             int.TryParse(col.GetValueOrDefault("NpcReturnDistance", "0"), out var leash);
             bool Flag(string k) => col.GetValueOrDefault(k, "0") == "1";
-            if (NpcOverrides.TryGetValue(id, out var ov))
-            { x = ov.X ?? x; y = ov.Y ?? y; look = ov.Look ?? look; }
             if (!Maps.ContainsKey(map)) continue;        // map the 4.95 client can't render
             if (x == 0 && y == 0) continue;              // (0,0) = unplaced placeholder / abstract NPC
             var name = Clean(col.GetValueOrDefault("NpcDescription", ""));
             var key = Clean(col.GetValueOrDefault("NpcIdentifier", ""));
             if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"npc{id}" : key;
+            // Enabled defaults ON: a blank/absent column means the NPC spawns (only an explicit 0 disables).
+            bool enabled = col.GetValueOrDefault("Enabled", "1").Trim() != "0";
             npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
                 IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
                 Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
-                MoveTime: move, ReturnDistance: leash));
+                MoveTime: move, ReturnDistance: leash, Enabled: enabled));
         }
         return npcs;
     }
@@ -1362,17 +1334,206 @@ public static partial class Content
         return overrides;
     }
 
-    // See NpcToggleOverrides above. Sparse by design — an id missing from the file (or the file missing
-    // entirely) just falls through to NpcToggles.DefaultDisabled.
-    private static Dictionary<int, bool> LoadNpcToggles(string? path)
+    // See MythicCaves above. One row per zodiac animal. EntranceTiles is a ';'-separated list of "x:y" pairs
+    // (2 per cave in retail). T{1,2,3}{Level,Vita,Mana} give the cave-1/2/3 gates; a 0 Vita/Mana means that
+    // tier is level-only. A malformed/absent file yields an empty registry (entrances then never gate — the
+    // player is held out only where a row exists), same fail-soft posture as every other loader here.
+    private static List<MythicCaveDef> LoadMythicCaves(string? path)
     {
-        var overrides = new Dictionary<int, bool>();
+        var list = new List<MythicCaveDef>();
         foreach (var col in ReadCsv(path))
         {
-            if (!int.TryParse(col.GetValueOrDefault("NpcId"), out var id)) continue;
-            if (int.TryParse(col.GetValueOrDefault("Enabled"), out var en)) overrides[id] = en != 0;
+            var animal = col.GetValueOrDefault("Animal", "").Trim();
+            if (animal.Length == 0) continue;
+            ushort U(string k) => ushort.TryParse(col.GetValueOrDefault(k), out var v) ? v : (ushort)0;
+            uint U32(string k) => uint.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0u;
+
+            var tiles = new List<(ushort X, ushort Y)>();
+            foreach (var pair in (col.GetValueOrDefault("EntranceTiles") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var xy = pair.Split(':');
+                if (xy.Length == 2 && ushort.TryParse(xy[0].Trim(), out var tx) && ushort.TryParse(xy[1].Trim(), out var ty))
+                    tiles.Add((tx, ty));
+            }
+
+            var tiers = new MythicTier[3];
+            for (int t = 1; t <= 3; t++)
+                tiers[t - 1] = new MythicTier((byte)U($"T{t}Level"), U32($"T{t}Vita"), U32($"T{t}Mana"));
+
+            list.Add(new MythicCaveDef(animal, U("EntranceMap"), tiles.ToArray(),
+                U("DestMap"), U("DestX"), U("DestY"), tiers, col.GetValueOrDefault("Sources", "")));
         }
-        return overrides;
+        return list;
+    }
+
+    // ---- Location / warp geometry loaders (see the Content.* registries near MythicCaves) ----------------
+
+    private static Dictionary<ushort, byte> LoadMapBgm(string? path)
+    {
+        var d = new Dictionary<ushort, byte>();
+        foreach (var col in ReadCsv(path))
+            if (ushort.TryParse(col.GetValueOrDefault("Map"), out var m) && byte.TryParse(col.GetValueOrDefault("Track"), out var t))
+                d[m] = t;
+        return d;
+    }
+
+    private static Dictionary<string, IReadOnlyList<InnDef>> LoadInns(string? path)
+    {
+        var acc = new Dictionary<string, List<InnDef>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var g = col.GetValueOrDefault("Group", "").Trim();
+            if (g.Length == 0 || !ushort.TryParse(col.GetValueOrDefault("Map"), out var m)) continue;
+            ushort.TryParse(col.GetValueOrDefault("X"), out var x);
+            ushort.TryParse(col.GetValueOrDefault("Y"), out var y);
+            if (!acc.TryGetValue(g, out var list)) acc[g] = list = new List<InnDef>();
+            list.Add(new InnDef(m, x, y));
+        }
+        return acc.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<InnDef>)kv.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static List<ForageAreaDef> LoadForageAreas(string? path)
+    {
+        var list = new List<ForageAreaDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            var key = col.GetValueOrDefault("ItemKey", "").Trim();
+            if (key.Length == 0) continue;
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            list.Add(new ForageAreaDef(key, (ushort)I("Map"), I("MinX"), I("MaxX"), I("MinY"), I("MaxY"),
+                I("Max"), I("MinQty"), I("MaxQty")));
+        }
+        return list;
+    }
+
+    private static Dictionary<ushort, PathHallDef> LoadPathHalls(string? path)
+    {
+        var d = new Dictionary<ushort, PathHallDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("HallMap"), out var hall)) continue;
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            ushort U(string k) => (ushort)I(k);
+            d[hall] = new PathHallDef(I("BaseClass"), U("GuildMap"),
+                new[] { U("SanctumUnaligned"), U("SanctumKwisin"), U("SanctumMingken"), U("SanctumOhaeng") });
+        }
+        return d;
+    }
+
+    private static Dictionary<int, GatewayDef> LoadGatewayGates(string? path)
+    {
+        var acc = new Dictionary<int, (ushort map, string city, Dictionary<char, (int Xlo, int Xhi, int Ylo, int Yhi)> gates)>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!int.TryParse(col.GetValueOrDefault("Region"), out var region)) continue;
+            var gate = col.GetValueOrDefault("Gate", "").Trim().ToLowerInvariant();
+            if (gate.Length == 0) continue;
+            ushort.TryParse(col.GetValueOrDefault("Map"), out var map);
+            var city = col.GetValueOrDefault("City", "").Trim();
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            if (!acc.TryGetValue(region, out var r)) acc[region] = r = (map, city, new());
+            r.gates[gate[0]] = (I("Xlo"), I("Xhi"), I("Ylo"), I("Yhi"));
+        }
+        return acc.ToDictionary(kv => kv.Key, kv => new GatewayDef(kv.Value.map, kv.Value.city,
+            (IReadOnlyDictionary<char, (int Xlo, int Xhi, int Ylo, int Yhi)>)kv.Value.gates));
+    }
+
+    private static List<WorldDestDef> LoadWorldDests(string? path)
+    {
+        var list = new List<WorldDestDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            var name = col.GetValueOrDefault("Name", "").Trim();
+            if (name.Length == 0) continue;
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            list.Add(new WorldDestDef(name, (ushort)I("Map"), (ushort)I("X"), (ushort)I("Y"), I("DotX"), I("DotY")));
+        }
+        return list;
+    }
+
+    private static Dictionary<ushort, WorldTriggerDef> LoadWorldTriggers(string? path)
+    {
+        var d = new Dictionary<ushort, WorldTriggerDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("Map"), out var m)) continue;
+            var axis = col.GetValueOrDefault("FixedAxis", "x").Trim().ToLowerInvariant();
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            d[m] = new WorldTriggerDef(axis.Length > 0 ? axis[0] : 'x', I("FixedLo"), I("FixedHi"), I("RangeLo"), I("RangeHi"));
+        }
+        return d;
+    }
+
+    private static Dictionary<ushort, (ushort Map, ushort X, ushort Y)> LoadFallRooms(string? path)
+    {
+        var d = new Dictionary<ushort, (ushort, ushort, ushort)>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("DestMap"), out var dest)) continue;
+            ushort.TryParse(col.GetValueOrDefault("DestX"), out var dx);
+            ushort.TryParse(col.GetValueOrDefault("DestY"), out var dy);
+            bool tiered = col.GetValueOrDefault("Tiered", "0") == "1";
+            foreach (var s in (col.GetValueOrDefault("SrcMaps") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!ushort.TryParse(s.Trim(), out var src)) continue;
+                if (tiered)
+                    for (ushort off = 0; off <= 4000; off += 3000)   // 0 = cave 1, +3000 = cave 2, +4000 = cave 3
+                        d[(ushort)(src + off)] = ((ushort)(dest + off), dx, dy);
+                else
+                    d[src] = (dest, dx, dy);
+            }
+        }
+        return d;
+    }
+
+    // Load a verb/row params CSV into "key -> whole row" — shared by SpellParams and ItemParams (both feed a Lua
+    // verb that reads whatever columns it needs). Rows are keyed by the `key` column; the `verb` column names
+    // the Lua verb.
+    private static Dictionary<string, IReadOnlyDictionary<string, string>> LoadKeyedRows(string? path)
+    {
+        var d = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var key = col.GetValueOrDefault("key", "").Trim();
+            if (key.Length == 0) continue;
+            d[key] = col;   // the whole row, verbatim — the Lua verb reads whatever columns it needs
+        }
+        return d;
+    }
+
+    private static Dictionary<string, IReadOnlyList<(string Name, string[] Keys)>> LoadShopCatalogues(string? path)
+    {
+        var acc = new Dictionary<string, List<(string Name, string[] Keys)>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var npc = col.GetValueOrDefault("NpcKey", "").Trim();
+            var cat = col.GetValueOrDefault("Category", "").Trim();
+            if (npc.Length == 0 || cat.Length == 0) continue;
+            var keys = (col.GetValueOrDefault("ItemKeys") ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
+            if (!acc.TryGetValue(npc, out var list)) acc[npc] = list = new();
+            list.Add((cat, keys));
+        }
+        return acc.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<(string, string[])>)kv.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<(ushort, ushort, ushort), Doors.DoorConfig> LoadDoors(string? path)
+    {
+        var d = new Dictionary<(ushort, ushort, ushort), Doors.DoorConfig>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("Map"), out var m)) continue;
+            ushort.TryParse(col.GetValueOrDefault("X"), out var x);
+            ushort.TryParse(col.GetValueOrDefault("Y"), out var y);
+            bool B(string k, bool def) { var v = col.GetValueOrDefault(k); return string.IsNullOrEmpty(v) ? def : v.Trim() == "1"; }
+            var key = col.GetValueOrDefault("Key", "");
+            d[(m, x, y)] = new Doors.DoorConfig(
+                Locked: B("Locked", false),
+                Key: string.IsNullOrWhiteSpace(key) ? null : key.Trim(),
+                ConsumeKey: B("ConsumeKey", true),
+                ForceOpen: B("ForceOpen", false));
+        }
+        return d;
     }
 
     // Per-path cumulative-exp-to-level table (RTK rtk/db/level_db.txt, classdb_level): LevelExp[path][level] =

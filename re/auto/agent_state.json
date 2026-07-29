@@ -1,0 +1,10 @@
+{
+ "gear": {
+  "might": 0,
+  "grace": 1,
+  "will": 0,
+  "maxhp": 10,
+  "maxmana": 0
+ },
+ "gear_known": true
+}

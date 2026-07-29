@@ -99,104 +99,61 @@ public sealed partial class Session
 
     // ===== navigation: warp + map/mob listing + data-driven summon ==========================
 
-    // ---- Mythic Nexus zodiac cave entrances (map 41) ----
+    // ---- Mythic Nexus zodiac cave entrances ----
     // RTK gates each of the 12 zodiac caves behind a level/vitals check (Scripts/mythicCaveReqCheck.lua) and
     // an easy/dangerous/deadly tier picker (NPCs/mythic/mythic_cave_selector.lua). With the picker menu off
     // (the default — it's GM/Config-only), RTK auto-warps to the DEEPEST tier the player qualifies for, so we
-    // reproduce that: tier 1 -> base map, tier 2 -> base+3000, tier 3 -> base+4000. The two-tile entrance
-    // footprints and destinations are copied verbatim from onScriptedTilesMythic.lua + mythic_cave_selector.lua.
-    private readonly record struct CaveDest(ushort Map, ushort X, ushort Y);
-    private readonly record struct CaveReq(byte Level, uint Health, uint Magic);
-
-    private static readonly Dictionary<(ushort x, ushort y), string> MythicTiles = new()
-    {
-        [(49, 12)] = "Rabbit",  [(50, 12)] = "Rabbit",
-        [(43, 48)] = "Monkey",  [(44, 48)] = "Monkey",
-        [(18, 25)] = "Dog",     [(19, 25)] = "Dog",
-        [(48, 30)] = "Rooster", [(49, 30)] = "Rooster",
-        [(9, 12)]  = "Rat",     [(10, 12)] = "Rat",
-        [(15, 48)] = "Horse",   [(16, 48)] = "Horse",
-        [(29, 45)] = "Ox",      [(30, 45)] = "Ox",
-        [(17, 39)] = "Pig",     [(18, 39)] = "Pig",
-        [(40, 25)] = "Snake",   [(41, 25)] = "Snake",
-        [(41, 39)] = "Sheep",   [(42, 39)] = "Sheep",
-        [(10, 30)] = "Tiger",   [(11, 30)] = "Tiger",
-        [(29, 19)] = "Dragon",  [(30, 19)] = "Dragon",
-    };
-
-    // animal -> cave-1 base map + the arrival tile inside it (same coords for every tier). +3000 = cave 2, +4000 = cave 3.
-    private static readonly Dictionary<string, CaveDest> MythicDest = new()
-    {
-        ["Rabbit"] = new(201, 13, 19), ["Monkey"] = new(160, 1, 1),  ["Dog"]    = new(191, 11, 27),
-        ["Rooster"] = new(214, 9, 58), ["Rat"]    = new(151, 12, 18), ["Horse"]  = new(246, 7, 22),
-        ["Ox"]     = new(170, 2, 27),  ["Pig"]    = new(181, 26, 22), ["Snake"]  = new(231, 17, 1),
-        ["Sheep"]  = new(470, 14, 12), ["Tiger"]  = new(100, 30, 4),  ["Dragon"] = new(257, 17, 10),
-    };
-
-    // Per-animal tier requirements [tier1, tier2, tier3]. A tier is met when level >= Level AND
-    // (baseMaxHP >= Health OR baseMaxMP >= Magic). Tier-1 has no HP/MP floor, so level alone unlocks it.
-    private static readonly Dictionary<string, CaveReq[]> MythicReqs = new()
-    {
-        ["Rabbit"]  = new[] { new CaveReq(25, 0, 0),     new CaveReq(70, 0, 0),           new CaveReq(99, 20000, 10000) },
-        ["Monkey"]  = new[] { new CaveReq(32, 0, 0),     new CaveReq(77, 0, 0),           new CaveReq(99, 40000, 20000) },
-        ["Dog"]     = new[] { new CaveReq(39, 0, 0),     new CaveReq(84, 0, 0),           new CaveReq(99, 60000, 30000) },
-        ["Rooster"] = new[] { new CaveReq(46, 0, 0),     new CaveReq(91, 0, 0),           new CaveReq(99, 100000, 50000) },
-        ["Rat"]     = new[] { new CaveReq(53, 0, 0),     new CaveReq(98, 0, 0),           new CaveReq(99, 140000, 70000) },
-        ["Horse"]   = new[] { new CaveReq(60, 0, 0),     new CaveReq(99, 30000, 15000),   new CaveReq(99, 180000, 90000) },
-        ["Ox"]      = new[] { new CaveReq(67, 0, 0),     new CaveReq(99, 50000, 25000),   new CaveReq(99, 220000, 110000) },
-        ["Pig"]     = new[] { new CaveReq(74, 0, 0),     new CaveReq(99, 80000, 40000),   new CaveReq(99, 260000, 130000) },
-        ["Snake"]   = new[] { new CaveReq(81, 0, 0),     new CaveReq(99, 110000, 55000),  new CaveReq(99, 300000, 150000) },
-        ["Sheep"]   = new[] { new CaveReq(88, 0, 0),     new CaveReq(99, 140000, 70000),  new CaveReq(99, 340000, 170000) },
-        ["Tiger"]   = new[] { new CaveReq(95, 0, 0),     new CaveReq(99, 170000, 85000),  new CaveReq(99, 380000, 190000) },
-        ["Dragon"]  = new[] { new CaveReq(99, 0, 0),     new CaveReq(99, 200000, 100000), new CaveReq(99, 420000, 210000) },
-    };
+    // reproduce that: tier 1 -> base map, tier 2 -> base+3000, tier 3 -> base+4000.
+    //
+    // The entrance tiles, destinations, and per-tier requirements are DATA-DRIVEN from
+    // data/game-data/MythicCaves.csv (Content.MythicCaves / Content.MythicCaveTiles), editable + hot-reloadable
+    // via !reload. The requirement numbers are archival — cross-referenced against 4 tutor posts (see the CSV
+    // Sources column + Sources.csv tutor-caves-*); the tile/destination geometry is RTK routing.
 
     // Plural form for the mythic-cave denial line ("Mythic Oxen dwell here"). Every zodiac animal takes a
     // plain "s" except Ox, whose plural is irregular.
     private static string PluralAnimal(string animal) => animal == "Ox" ? "oxen" : animal.ToLowerInvariant() + "s";
 
-    // Deepest tier (1..3) the player unlocks for `animal`, or a negative "how close" code when locked out:
+    // Deepest tier (1..3) the player unlocks for this cave, or a negative "how close" code when locked out:
     // 0 = within 3 levels, -1 = within 4-7, -2 = 8+ levels short. Mirrors mythicCaveReqCheck.lua exactly.
-    private int MythicCaveTier(string animal)
+    private int MythicCaveTier(Content.MythicCaveDef cave)
     {
-        var reqs = MythicReqs[animal];
         for (int i = 2; i >= 0; i--)   // check tier 3 -> 1, return the first satisfied
         {
-            var r = reqs[i];
-            if (_char.Level >= r.Level && (_char.MaxHp >= r.Health || _char.MaxMp >= r.Magic))
+            var r = cave.Tiers[i];
+            if (_char.Level >= r.Level && (_char.MaxHp >= r.Vita || _char.MaxMp >= r.Mana))
                 return i + 1;
         }
-        int levelsUntil = reqs[0].Level - _char.Level;
+        int levelsUntil = cave.Tiers[0].Level - _char.Level;
         if (levelsUntil >= 8) return -2;
         if (levelsUntil >= 4) return -1;
         return 0;
     }
 
-    // Handle a step onto a zodiac entrance tile on map 41: warp into the deepest unlocked cave tier, or
-    // refuse (snap back + flavour line) when under-levelled. Returns false if (x,y) isn't an entrance tile.
+    // Handle a step onto a zodiac entrance tile: warp into the deepest unlocked cave tier, or refuse (snap back
+    // + flavour line) when under-levelled. Returns false if (current map, x, y) isn't a configured entrance.
     private bool TryMythicCaveEntrance(ushort x, ushort y)
     {
-        if (!MythicTiles.TryGetValue((x, y), out var animal)) return false;
-        int tier = MythicCaveTier(animal);
+        if (!Content.MythicCaveTiles.TryGetValue((_char.Map, x, y), out var cave)) return false;
+        int tier = MythicCaveTier(cave);
         if (tier < 1)
         {
             SendXy();   // cancel the client's step prediction / unblock the next step — the entrance holds them out
             SendMiniText(tier switch   // status box (RTK clif_sendminitext), not the login message box
             {
-                -2 => $"That would be unwise. Mythic {PluralAnimal(animal)} dwell here.",
+                -2 => $"That would be unwise. Mythic {PluralAnimal(cave.Animal)} dwell here.",
                 0  => "You almost understand the secrets of this entrance.",
                 _  => "You are not yet ready to enter here.",
             });
-            Log.Info($"   -> MYTHIC {animal} entrance REFUSED (tier {tier}, level {_char.Level})");
+            Log.Info($"   -> MYTHIC {cave.Animal} entrance REFUSED (tier {tier}, level {_char.Level})");
             return true;
         }
 
-        var d = MythicDest[animal];
-        ushort destMap = (ushort)(d.Map + (tier == 3 ? 4000 : tier == 2 ? 3000 : 0));
-        if (!Content.TryMap(destMap, out var dm)) { destMap = d.Map; Content.TryMap(destMap, out dm); }
+        ushort destMap = (ushort)(cave.DestMap + (tier == 3 ? 4000 : tier == 2 ? 3000 : 0));
+        if (!Content.TryMap(destMap, out var dm)) { destMap = cave.DestMap; Content.TryMap(destMap, out dm); }
         if (dm is null) { SendXy(); return true; }   // map data missing — don't strand the player
-        Log.Info($"   -> MYTHIC {animal} cave {tier} -> map {destMap} '{dm.Name}' ({d.X},{d.Y}) [level {_char.Level}]");
-        EnterMap(dm.Id, dm.Xs, dm.Ys, d.X, d.Y, dm.Name);
+        Log.Info($"   -> MYTHIC {cave.Animal} cave {tier} -> map {destMap} '{dm.Name}' ({cave.DestX},{cave.DestY}) [level {_char.Level}]");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, cave.DestX, cave.DestY, dm.Name);
         return true;
     }
 
@@ -205,25 +162,11 @@ public sealed partial class Session
     // (x 1-2, y 23) into that class's guild hall — class-gated to members of that base class (RTK also lets a
     // Tutor in, a staff role we don't model) — and the NORTH edge (x 8-9, y 1) into the player's alignment
     // sanctum (Unaligned/Kwisin/Mingken/Ohaeng, indexed by Character.Alignment 0-3). Only the map-exit warp is
-    // in Warps.csv, so before this the leader-room and hall doors did nothing (or read as solid).
-    private readonly record struct PathHall(int BaseClass, ushort Hall, ushort[] Sanctum);
-    private static readonly Dictionary<ushort, PathHall> PathHalls = new()
-    {
-        // Kugnae halls
-        [11]  = new(1, 3701, new ushort[] { 12,  300, 301, 302 }),   // Warrior Tebaek
-        [15]  = new(2, 3702, new ushort[] { 16,  312, 313, 314 }),   // Rogue Maro
-        [13]  = new(3, 3703, new ushort[] { 14,  306, 307, 308 }),   // Mage Haedu
-        [17]  = new(4, 3704, new ushort[] { 18,  318, 319, 320 }),   // Poet Jinsun
-        // Buya halls
-        [341] = new(1, 3705, new ushort[] { 366, 303, 304, 305 }),   // Warrior Yebaek
-        [343] = new(2, 3706, new ushort[] { 368, 315, 316, 317 }),   // Rogue Maso
-        [342] = new(3, 3707, new ushort[] { 367, 309, 310, 311 }),   // Mage Eldritch
-        [344] = new(4, 3708, new ushort[] { 369, 321, 322, 323 }),   // Poet Song
-    };
-
+    // in Warps.csv, so before this the leader-room and hall doors did nothing (or read as solid). The hall/
+    // sanctum geometry is data-driven (data/game-data/PathHalls.csv -> Content.PathHalls); hot-reloads via !reload.
     private bool TryPathHallWarp(ushort x, ushort y)
     {
-        if (!PathHalls.TryGetValue(_char.Map, out var hall)) return false;
+        if (!Content.PathHalls.TryGetValue(_char.Map, out var hall)) return false;
 
         // South doorway -> class guild hall (members of that base class only).
         if ((x == 1 || x == 2) && y == 23)
@@ -235,7 +178,7 @@ public sealed partial class Session
                 SendXy();   // refuse: hold at the from-tile (RTK bumps 2 tiles north — same net effect)
                 return true;
             }
-            return WarpHall(hall.Hall, (ushort)(x + 6), 3);
+            return WarpHall(hall.GuildMap, (ushort)(x + 6), 3);
         }
 
         // North doorway -> the player's alignment sanctum (the path-leader room).
@@ -298,42 +241,15 @@ public sealed partial class Session
     // destination or, for ESC/unrecognized coords, back to the origin. Two of RTK's nine destinations
     // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (data/game-data/map_index.csv)
     // and are omitted outright.
-    // X,Y = landing tile on the destination map.
-    private readonly record struct WorldDest(string Name, ushort Map, ushort X, ushort Y);
-    private static readonly WorldDest[] WorldDests =
-    {
-        new("Kugnae",             1011, 18, 14),
-        new("Buya",                1012,  1, 11),
-        new("Mythic Nexus",         41, 30,  4),
-        new("Arctic Land",         1013,  9,  9),
-        new("KaMing's Encampment", 3800, 31,  3),
-    };
+    // X,Y = landing tile on the destination map. Destinations + their field10 dot pixels are data-driven
+    // (data/game-data/WorldMapDests.csv -> Content.WorldDests, order-significant); the trigger tiles that open
+    // the screen live in Content.WorldMapTriggers (WorldMapTriggers.csv). Both hot-reload via !reload.
+    // Fine-tune a dot live in-client with "!wmpos <i> <x> <y>", then bake the number into WorldMapDests.csv.
 
-    // Screen position (native 640x480 pixels) of each destination's clickable dot ON THE field10 background,
-    // parallel to WorldDests. NOT derived by scaling RTK's sendWorldMap.lua coords: RTK's coords are for its
-    // own 1024x768 "WMkru" art, a DIFFERENT map image than 4.95's field10 "Map of the Kingdom", so no uniform
-    // scale maps one onto the other -- each dot must sit on field10's own labeled town. Seed values are rough
-    // reads off the field10 grayscale render (re/ scratch); fine-tune live in-client with "!wmpos <i> <x> <y>"
-    // against the real colour display, then bake the final numbers here.
-    private static readonly (int X, int Y)[] WorldDotPos =
-    {
-        (300, 235),  // 0 Kugnae      -- "Kugnae" label, centre
-        (300, 130),  // 1 Buya        -- "Buya" label, centre-upper
-        (200, 300),  // 2 Mythic Nexus
-        (400,  60),  // 3 Arctic Land -- north
-        (450, 390),  // 4 KaMing's Encampment -- lower-right
-    };
-
-    // Trigger tiles (onScriptedTilesMap.lua), keyed by the town map the player is standing in.
-    private static readonly Dictionary<ushort, Func<int, int, bool>> WorldMapTriggers = new()
-    {
-        [1011] = (x, y) => x == 19 && (y == 12 || y == 13),          // Kugnae Gathering
-        [1012] = (x, y) => x == 0 && y >= 8 && y <= 12,              // Buya Gathering
-        [41]   = (x, y) => y == 1 && x >= 28 && x <= 32,             // Mythic Nexus
-        [1013] = (x, y) => x == 10 && (y == 7 || y == 8),            // Haeng Tavern (Arctic Land)
-        [3800] = (x, y) => (y == 0 || y == 1) && x >= 30 && x <= 34, // KaMing's Encampment
-        // Nagnang (2520) and Hausson (1025) intentionally removed as world-map hubs (2026-07-26).
-    };
+    // Ephemeral live-tuning overrides for the world-map dot pixels, set by "!wmpos <i> <x> <y>" (index into
+    // Content.WorldDests). Not persisted — you eyeball a dot live, then bake the final number into
+    // WorldMapDests.csv and !reload. Empty = every dot uses its CSV DotX/DotY.
+    private static readonly Dictionary<int, (int X, int Y)> WorldDotOverride = new();
 
     // True while a world-map screen we sent is (as far as we know) still open on the client, so a stray
     // 0x3F that happens to coincide with a real destination can't be mistaken for a real click.
@@ -348,7 +264,7 @@ public sealed partial class Session
     // resolution fails client-side; if a fresh crash ever recurs, revert this to RunWorldMapMenuAsync().
     private void TryWorldMapTravel()
     {
-        if (!WorldMapTriggers.TryGetValue(_char.Map, out var onTile) || !onTile(_char.X, _char.Y)) return;
+        if (!Content.WorldMapTriggers.TryGetValue(_char.Map, out var trig) || !trig.Hits(_char.X, _char.Y)) return;
         SendWorldMap("field10");
     }
 
@@ -359,17 +275,20 @@ public sealed partial class Session
     // correctly. The retail client is not buggy. "!wmtest <name>" tries alternate background graphics.
     private void SendWorldMap(string bgName)
     {
+        var dests = Content.WorldDests;
         var d = new List<byte>();       // NO leading kind byte: payload[0] IS the bgName length (see comment)
         AddLenStr(d, bgName);
-        d.Add((byte)WorldDests.Length);
+        d.Add((byte)dests.Count);
         d.Add(0);                        // unexplained byte after the count -- see class-comment note above
-        for (int i = 0; i < WorldDests.Length; i++)
+        for (int i = 0; i < dests.Count; i++)
         {
-            var dest = WorldDests[i];
-            // Dot position is field10's own pixel coordinate (see WorldDotPos) -- placed directly on the
-            // displayed map, not scaled from RTK. Clamp defensively to the 640x480 art.
-            int sx = Math.Clamp(WorldDotPos[i].X, 0, 639);
-            int sy = Math.Clamp(WorldDotPos[i].Y, 0, 479);
+            var dest = dests[i];
+            // Dot position is field10's own pixel coordinate (WorldMapDests.csv DotX/DotY), unless a live
+            // "!wmpos" tweak is overriding it this session -- placed directly on the displayed map, not scaled
+            // from RTK. Clamp defensively to the 640x480 art.
+            var (dotX, dotY) = WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dest.DotX, dest.DotY);
+            int sx = Math.Clamp(dotX, 0, 639);
+            int sy = Math.Clamp(dotY, 0, 479);
             d.AddRange(Be((ushort)sx));   // x0 (field10 pixel)
             d.AddRange(Be((ushort)sy));   // y0 (field10 pixel)
             AddLenStr(d, dest.Name);
@@ -381,7 +300,7 @@ public sealed partial class Session
         _worldMapReturnMap = _char.Map;
         _worldMapReturnX   = _char.X;
         _worldMapReturnY   = _char.Y;
-        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {WorldDests.Length} dests");
+        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {dests.Count} dests");
     }
 
     // Parses the client's world-map click / ESC reply. LIVE-CONFIRMED format (2026-07-26): the client sends
@@ -399,7 +318,7 @@ public sealed partial class Session
         uint   map = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
         ushort x   = (ushort)((dec[4] << 8) | dec[5]);
         ushort y   = (ushort)((dec[6] << 8) | dec[7]);
-        foreach (var dest in WorldDests)
+        foreach (var dest in Content.WorldDests)
         {
             if (dest.Map != map || dest.X != x || dest.Y != y) continue;
             if (!Content.TryMap(dest.Map, out var dm)) return;
@@ -427,10 +346,10 @@ public sealed partial class Session
         // the await" discipline as the trade flow re-validating live inventory at finalize.
         ushort startMap = _char.Map;
         int choice = await DlgMenu(WorldMapVirtualNpc, "Where would you like to travel?",
-            WorldDests.Select(d => d.Name).ToList());
-        if (choice < 1 || choice > WorldDests.Length) return;
+            Content.WorldDests.Select(d => d.Name).ToList());
+        if (choice < 1 || choice > Content.WorldDests.Count) return;
         if (_char.Map != startMap) return;   // moved on since we opened the menu
-        var d = WorldDests[choice - 1];
+        var d = Content.WorldDests[choice - 1];
         if (!Content.TryMap(d.Map, out var dm)) return;   // dest not renderable here -- silently ignore
         Log.Info($"   -> WORLDMAP (menu) {_char.Map} -> {d.Map} '{dm.Name}' ({d.X},{d.Y})");
         EnterMap(dm.Id, dm.Xs, dm.Ys, d.X, d.Y, dm.Name);
@@ -456,43 +375,18 @@ public sealed partial class Session
     }
 
     // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
-    // to a fixed landing tile in a lower sub-room (onScriptedTilesMythicFallRooms.lua). The three depth tiers
-    // mirror each other (+3000 = cave 2, +4000 = cave 3), so the tier-1 groups below are expanded to all three.
+    // to a fixed landing tile in a lower sub-room (onScriptedTilesMythicFallRooms.lua). The source->landing
+    // map is data-driven (data/game-data/FallRooms.csv -> Content.FallRooms, already tier-expanded); hot-reloads
+    // via !reload.
     private const int FallRate = 500;
-    private static readonly (ushort dest, ushort dx, ushort dy, ushort[] src)[] FallGroups =
-    {
-        (169, 23, 3,  new ushort[] { 167, 168 }),        // Monkey
-        (217, 10, 17, new ushort[] { 212, 216, 218 }),   // Rooster
-        (208, 15, 18, new ushort[] { 203, 205, 208 }),   // Rabbit
-        (479, 23, 3,  new ushort[] { 482, 484 }),        // Sheep
-        (180, 22, 7,  new ushort[] { 177, 178 }),        // Ox
-        (183, 2, 9,   new ushort[] { 186, 187, 190 }),   // Pig
-        (244, 15, 25, new ushort[] { 243, 245, 247 }),   // Horse
-        (196, 11, 38, new ushort[] { 192, 194, 199 }),   // Dog
-        (255, 12, 34, new ushort[] { 253, 254, 258 }),   // Dragon
-        (235, 1, 4,   new ushort[] { 233, 236, 237 }),   // Snake
-    };
-    // map -> landing (destMap, x, y). Built once from FallGroups (all three tiers) + the tier-less Iron lab.
-    private static readonly Dictionary<ushort, (ushort map, ushort x, ushort y)> FallRooms = BuildFallRooms();
-    private static Dictionary<ushort, (ushort, ushort, ushort)> BuildFallRooms()
-    {
-        var m = new Dictionary<ushort, (ushort, ushort, ushort)>();
-        foreach (var g in FallGroups)
-            for (ushort off = 0; off <= 4000; off += 3000)   // 0 = cave 1, +3000 = cave 2, +4000 = cave 3
-                foreach (var s in g.src)
-                    m[(ushort)(s + off)] = ((ushort)(g.dest + off), g.dx, g.dy);
-        foreach (var s in new ushort[] { 1302, 1303, 1304, 1305, 1306 })   // Iron lab -> Treasure Room (no tiers)
-            m[s] = (1307, 4, 5);
-        return m;
-    }
 
     private bool TryMythicFallRoom()
     {
-        if (!FallRooms.TryGetValue(_char.Map, out var f)) return false;
+        if (!Content.FallRooms.TryGetValue(_char.Map, out var f)) return false;
         if (Random.Shared.Next(FallRate) != 0) return false;
-        if (!Content.TryMap(f.map, out var dm)) return false;   // dest not renderable -> no fall (don't strand)
-        Log.Info($"   -> FALL through map {_char.Map} -> {f.map} '{dm.Name}' ({f.x},{f.y})");
-        EnterMap(dm.Id, dm.Xs, dm.Ys, f.x, f.y, dm.Name);
+        if (!Content.TryMap(f.Map, out var dm)) return false;   // dest not renderable -> no fall (don't strand)
+        Log.Info($"   -> FALL through map {_char.Map} -> {f.Map} '{dm.Name}' ({f.X},{f.Y})");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, f.X, f.Y, dm.Name);
         return true;
     }
 
@@ -651,7 +545,7 @@ public sealed partial class Session
     // NPC placements + on/off toggles, crafting-skill toggles, map metadata) WITHOUT restarting the server,
     // so content fixes ship live. Re-reads the CSVs, clears the map-terrain cache, refreshes already-spawned
     // world mobs in place (new MaxHp/Exp/Level, current HP clamped to the new max — see
-    // World.ReloadContent), and re-syncs stationary-NPC placement against NpcToggles.csv (see
+    // World.ReloadContent), and re-syncs stationary-NPC placement against the NPCs.csv Enabled flags (see
     // World.ReconcileNpcToggles). A load error keeps the OLD content.
     // NOT reloadable (compile-time tables in Content.cs → need a restart): mob drop tables and map BGM.
     private void ReloadContent()

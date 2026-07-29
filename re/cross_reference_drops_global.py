@@ -1,7 +1,7 @@
 """Global (zone-independent) cross-reference: for every mob named in the tswolf/nexusatlas/
 nexuswiki/fandom archives, check (1) whether a matching, real (non-training-dummy,
 non-companion-pet) mob definition exists in mobs.csv at all, (2) whether that mob is
-actually spawned anywhere in AreaSpawns.csv/Spawns0.csv, and (3) whether our MobDrops.csv
+actually spawned anywhere in AreaSpawns.csv/Spawns.csv, and (3) whether our MobDrops.csv
 loot table for it contains every item the archives agree it drops.
 
 This avoids the zone-name keyword-matching fragility of cross_reference_zones.py (many RTK
@@ -40,7 +40,7 @@ for r in mob_rows:
 
 area_mobids = set(r["MobId"] for r in read_csv("AreaSpawns.csv"))
 trap_mobids = set(r["MobId"] for r in read_csv("AreaSpawnsTrap.csv"))  # tiger/rabbit-boss/trapdoor trap spawns
-fixed_mobids = set(r["SpnMobId"] for r in read_csv("Spawns0.csv"))
+fixed_mobids = set(r["SpnMobId"] for r in read_csv("Spawns.csv"))
 all_spawned_ids = area_mobids | trap_mobids | fixed_mobids
 
 drops = {r["MobKey"]: r for r in read_csv("MobDrops.csv")}
@@ -155,7 +155,7 @@ out.append(f"\n## Archive mobs with NO matching Description in mobs.csv ({len(no
 for n in sorted(set(not_in_csv)):
     out.append(f"- {n}")
 
-out.append(f"\n## Archive-documented mobs that exist in mobs.csv but are NEVER spawned anywhere (AreaSpawns.csv + Spawns0.csv) ({len(never_spawned)})\n")
+out.append(f"\n## Archive-documented mobs that exist in mobs.csv but are NEVER spawned anywhere (AreaSpawns.csv + Spawns.csv) ({len(never_spawned)})\n")
 for n, key in sorted(set(never_spawned)):
     out.append(f"- {n} (key=`{key}`)")
 

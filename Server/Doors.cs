@@ -23,16 +23,16 @@ public static class Doors
 {
     public sealed record DoorConfig(bool Locked = false, string? Key = null, bool ConsumeKey = true, bool ForceOpen = false);
 
-    private static readonly Dictionary<(ushort map, ushort x, ushort y), DoorConfig> Config = new()
-    {
-        // Buya Salon entrance (map 330 Buya, tiles 118/119,133 -> map 365 "Buya Salon"): object ids 356/357
-        // aren't in RTK's openDoors table at all (checked against RTK-Server/rtklua/Accepted/open.lua line by
-        // line) yet data/SObj.tbl flags them solid on every side, so 'o' silently no-opped and the client's
-        // local collision permanently blocked the warp tile. "Locked open" per user direction — always
-        // walkable, no key, no toggle needed.
-        [(330, 118, 133)] = new(ForceOpen: true),
-        [(330, 119, 133)] = new(ForceOpen: true),
-    };
+    // Per-tile door config, loaded from data/game-data/Doors.csv by Content.Load (via SetConfig) and swapped on
+    // !reload. Starts empty; a missing file just means no configured doors (plain RTK open/close toggle, no lock).
+    // e.g. the Buya Salon entrance (map 330, tiles 118/119,133 -> "Buya Salon"): object ids 356/357 aren't in
+    // RTK's open.lua table yet SObj.tbl flags them solid on every side, so 'o' silently no-opped — "locked open"
+    // (ForceOpen) per user direction makes the warp tile always walkable.
+    private static Dictionary<(ushort map, ushort x, ushort y), DoorConfig> Config = new();
+
+    /// <summary>Replace the door config table (Content.Load / !reload). Reference assignment is atomic, so a
+    /// concurrent reader always sees a whole old-or-new table.</summary>
+    internal static void SetConfig(Dictionary<(ushort map, ushort x, ushort y), DoorConfig> config) => Config = config;
 
     private static readonly HashSet<(ushort map, ushort x, ushort y)> Unlocked = new();
     private static readonly object Lock = new();

@@ -1,0 +1,52 @@
+using MoonSharp.Interpreter;
+
+namespace Server;
+
+/// <summary>
+/// The Lua-facing facade a spell verb (<c>data/game-data/spell_verbs.lua</c>) uses to act on the game — the
+/// spell-cast analogue of <see cref="NpcContext"/>. Created per cast, bound to one caster + target. It exposes
+/// a small, safe set of engine primitives (spend mana, damage the target, heal, speak) plus read-only caster
+/// stats, so a verb reads as linear script:
+/// <code>if ctx:spendMana(row.mana) then ctx:damage(row.base + ctx.will * row.coeff) end</code>
+/// Member names are deliberately lower-cased to read naturally from Lua (<c>ctx.will</c>, <c>ctx:damage(n)</c>).
+/// Every primitive delegates to an existing <see cref="Session"/> path (e.g. <c>_world.TryDamage</c>), so the
+/// Lua route shares the exact same combat/heal plumbing as the C# <c>CastX</c> methods — no divergent logic.
+/// </summary>
+[MoonSharpUserData]
+public sealed class SpellContext
+{
+    private readonly Session _s;
+    private readonly SpellDef _sp;
+    private readonly uint? _targetId;
+
+    internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
+    {
+        _s = s; _sp = sp; _targetId = targetId; answer = answer ?? "";
+    }
+
+    // ---- read-only caster stats (Lua: ctx.will, ctx.level, ...) ----
+    public double level     => _s.LuaLevel;
+    public double will      => _s.LuaWill;
+    public double grace     => _s.LuaGrace;
+    public double might     => _s.LuaMight;
+    public double hp        => _s.LuaHp;
+    public double maxHp     => _s.LuaMaxHp;
+    public double mp        => _s.LuaMp;
+    public bool   hasTarget => _s.LuaHasTarget(_targetId);
+    /// <summary>The player's typed answer to the spell's question prompt (empty if none).</summary>
+    public string answer    { get; }
+
+    // ---- primitives (Lua: ctx:spendMana(n), ctx:damage(n), ...) ----
+    /// <summary>Check + debit the caster's mana; false (with a "not enough mana" notice) if short.</summary>
+    public bool spendMana(double amt)   => _s.LuaSpendMana((int)amt, _sp);
+    /// <summary>Damage the resolved target mob (handles deflect/HP-bar/death/XP). False if no target.</summary>
+    public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, _targetId);
+    /// <summary>Heal the caster's own HP (capped at max), with the spell's sparkle fx.</summary>
+    public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
+    /// <summary>Restore the caster's own mana (capped at max).</summary>
+    public void restoreMana(double amt) => _s.LuaRestoreMana((int)System.Math.Round(amt));
+    /// <summary>Status-box text (RTK sendminitext).</summary>
+    public void say(string msg)         => _s.LuaSay(msg);
+    /// <summary>Chat-log message.</summary>
+    public void message(string msg)     => _s.LuaMessage(msg);
+}

@@ -120,13 +120,8 @@ public sealed class World
     // Ground-item forage spawns (RTK itemspawner.lua): keep up to Max stacks of a gatherable item scattered on
     // passable tiles within a box, topped up periodically. Chestnuts fill the Kugnae farm (map 0) and a Buya
     // patch (map 330) — the tutorial's stage-3 gather. A stack is MinQty..MaxQty items on one tile.
-    private sealed record ForageArea(string ItemKey, ushort Map, int MinX, int MaxX, int MinY, int MaxY,
-                                     int Max, int MinQty, int MaxQty);
-    private static readonly ForageArea[] ForageAreas =
-    {
-        new("chestnut", 0,   102, 115, 132, 155, 20, 1, 3),   // Kugnae farm  (kugnaeFarmChestnutSpawn)
-        new("chestnut", 330,  20,  27,  37,  47, 20, 1, 3),   // Buya NW      (buyaChestnutSpawn)
-    };
+    // Forage spawn boxes are data-driven (data/game-data/ForageAreas.csv -> Content.ForageAreas); hot-reloads
+    // via !reload. See TopUpForageLocked.
     private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
 
     // ---- day/night clock (RTK map.c change_time_char, opcode 0x20) ----------------------------
@@ -270,7 +265,7 @@ public sealed class World
         {
             foreach (var n in Content.Npcs)
             {
-                if (!NpcToggles.IsEnabled(n.Id)) continue;   // switched off (default-off tavern hand, or an NpcToggles.csv override)
+                if (!n.Enabled) continue;   // switched off in NPCs.csv (Enabled=0, e.g. the retired tavern hands)
                 PlaceNpc(n);
                 placed++;
             }
@@ -296,8 +291,8 @@ public sealed class World
 
     /// <summary>Remove every placed instance of NPC def <paramref name="npcId"/> from the world and despawn
     /// it (0x0E) for everyone watching. Returns how many instances were removed. Called by
-    /// <see cref="ReconcileNpcToggles"/> on <c>!reload</c> — toggling is config (NpcToggles.csv), not a live
-    /// GM action, so this has no separate persistence step of its own.</summary>
+    /// <see cref="ReconcileNpcToggles"/> on <c>!reload</c> — toggling is config (the Enabled column of
+    /// NPCs.csv), not a live GM action, so this has no separate persistence step of its own.</summary>
     public int DisableNpc(int npcId)
     {
         var removed = new List<(ushort map, uint id)>();
@@ -331,16 +326,16 @@ public sealed class World
     }
 
     /// <summary>Hot-reload hook (the <c>!reload</c> command, after <see cref="Content.Reload"/> re-reads
-    /// <c>NpcToggles.csv</c>): re-sync stationary-NPC placement against the just-reloaded
-    /// <see cref="NpcToggles"/> config — spawns any NPC newly enabled, despawns any newly disabled.
-    /// <see cref="EnableNpc"/>/<see cref="DisableNpc"/> are already no-ops when there's nothing to change,
-    /// so this is safe to run unconditionally on every reload. Returns how many NPCs' placement changed.</summary>
+    /// <c>NPCs.csv</c>): re-sync stationary-NPC placement against the just-reloaded Enabled flags — spawns any
+    /// NPC newly enabled, despawns any newly disabled. <see cref="EnableNpc"/>/<see cref="DisableNpc"/> are
+    /// already no-ops when there's nothing to change, so this is safe to run unconditionally on every reload.
+    /// Returns how many NPCs' placement changed.</summary>
     public int ReconcileNpcToggles()
     {
         int changed = 0;
         foreach (var n in Content.Npcs)
         {
-            if (NpcToggles.IsEnabled(n.Id)) { if (EnableNpc(n.Id)) changed++; }
+            if (n.Enabled) { if (EnableNpc(n.Id)) changed++; }
             else if (DisableNpc(n.Id) > 0) changed++;
         }
         return changed;
@@ -409,7 +404,7 @@ public sealed class World
     private List<(ushort map, GroundItem gi)>? TopUpForageLocked()
     {
         List<(ushort, GroundItem)>? drops = null;
-        foreach (var area in ForageAreas)
+        foreach (var area in Content.ForageAreas)
         {
             if (!_maps.TryGetValue(area.Map, out var m) || m.Players.Count == 0) continue;   // no one watching
             var def = Content.ItemByKey(area.ItemKey);

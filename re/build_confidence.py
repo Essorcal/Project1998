@@ -30,6 +30,19 @@ REGISTRY = ROOT / "data/game-data/Sources.csv"
 FILES = [
     ("data/game-data/SpellLearnCosts.csv", "source", None),
     ("data/game-data/mobs.csv",        "Sources", "rtk-db"),   # pilot column not added yet -> skipped if absent
+    ("data/game-data/MythicCaves.csv", "Sources", None),       # zodiac cave reqs; 4 tutor-caves-* per row
+    # Tier-1 location/warp geometry (mostly rtk-lua fallback -> LOW, which is honest until independently verified)
+    ("data/game-data/Inns.csv",             "Sources", "rtk-lua"),
+    ("data/game-data/ForageAreas.csv",      "Sources", "rtk-lua"),
+    ("data/game-data/Doors.csv",            "Sources", None),
+    ("data/game-data/PathHalls.csv",        "Sources", "rtk-lua"),
+    ("data/game-data/GatewayGates.csv",     "Sources", "rtk-lua"),
+    ("data/game-data/WorldMapDests.csv",    "Sources", "binary-re"),
+    ("data/game-data/WorldMapTriggers.csv", "Sources", "rtk-lua"),
+    ("data/game-data/FallRooms.csv",        "Sources", "rtk-lua"),
+    ("data/game-data/ShopCatalogues.csv",   "Sources", "rtk-lua"),
+    ("data/game-data/SpellParams.csv",       "Sources", "rtk-lua"),   # Lua verb/row spell params (spike)
+    ("data/game-data/ItemParams.csv",        "Sources", "rtk-lua"),   # Lua verb/row item use-effect params
 ]
 
 # ---- load the source registry ------------------------------------------------------------------------

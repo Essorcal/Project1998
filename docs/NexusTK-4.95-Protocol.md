@@ -1155,7 +1155,7 @@ near each other, the common case. Only **mobs** are viewport-streamed; see §11b
 
 The world is populated automatically from **two** RTK spawn sources, not just by commands.
 
-**Static spawn table (`Content.Spawns` ← `data/game-data/Spawns0.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
+**Static spawn table (`Content.Spawns` ← `data/game-data/Spawns.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
 — one live mob per point. This is only **1175 points across 19 maps** (Kugnae 526, Buya 408, a few specials): it
 covers the towns and little else. RTK's `Spawns0` SQL table genuinely has nothing for the hunting maps.
 
@@ -1164,7 +1164,7 @@ scripted storyline for a subsystem we haven't built, so spawning them is worse t
 standing in for content that can never trigger. Currently: **729 `spy_hwan` "Hwan"** (Buya 330 @38,99) — a captive
 NPC for the Spy subpath's interrogation questline (`NPCs/subpaths/spy/hwan.lua`); the player-subpath system doesn't
 exist yet, so he's filtered out of `LoadSpawns` rather than left to wander aimlessly. Revisit if subpaths are ever
-ported; add future finds of the same shape to that set rather than editing `Spawns0.csv` directly.
+ported; add future finds of the same shape to that set rather than editing `Spawns.csv` directly.
 
 **Excluded map range: "Buya Scorpion Cave" (`Content.ExcludedMapRanges`, maps 410-419).** RTK-authored reskin of
 the classic **Kugnae Spider Cave** (maps 90-96), not original NexusTK content — same level-42 gate, same shared
@@ -1676,7 +1676,7 @@ clear the book.
 
 ## 11e. NPCs & dialog ✅ (live-confirmed on 4.95)
 
-NPCs are **stationary "mobs that don't fight."** They're placed from RTK `NPCs0.csv` (`Content.Npcs` →
+NPCs are **stationary "mobs that don't fight."** They're placed from RTK `NPCs.csv` (`Content.Npcs` →
 `World.PopulateNpcs`) as `Mob`s with `IsNpc = true`, so they reuse the entire creature pipeline for free:
 `0x07` render (portrait/look = `0x8000|look`, §11a), viewport streaming (`SyncMobs`), and tile collision.
 Differences from a real mob: `World.TryDamage` rejects them (indestructible), they never respawn, and a
