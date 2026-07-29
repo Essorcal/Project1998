@@ -87,3 +87,66 @@ function npcs.ChuRuaNpc(ctx)
     "'Skip north, until rabbits nibbling grass you find, is a path to a king's health and harmony,'",
     "The ginseng lies north, in the Tiger Pass — mind the tiger. Please get young ginseng for his highness's sake!")
 end
+
+-- Speech-trigger handlers: npcs_say.<Identifier> = function(ctx, speech). `speech` is already lowercased +
+-- trimmed. Return true to CONSUME the speech (stops dispatch); return false/nothing to let other NPCs or the
+-- C# say-handlers try it. Same ctx/coroutine model as the click handlers above.
+npcs_say = {}
+
+-- The talking rabbit of Guol Valley (chu_rua_rabbit.lua) — hints at the ginseng quest.
+function npcs_say.ChuRuaRabbitNpc(ctx, speech)
+  if speech == "hello" then
+    ctx:say("Hmmm..", "What is it you want?")
+    return true
+  elseif speech == "tiger" then
+    ctx:bubble("Fool was I to go north for ginseng. He almost ate me!")
+    return true
+  elseif speech == "ginseng" then
+    ctx:say(
+      "What a bitter root! It's as bad tasting as the mountains in which it grows.",
+      "Some trickster cousin told me I should go up the left path and have some of the delicious root.",
+      "Fool was I to go into the awful mountains. I followed this stream up to those horrid mountain's foot, and hopped up a dangerous path.")
+    return true
+  end
+  return false
+end
+
+-- The Ancient dolmen of Guol Divide (chu_rua_rock.lua) — say "hello" for the tiger hint.
+function npcs_say.ChuRuaRockNpc(ctx, speech)
+  if speech ~= "hello" then return false end
+  ctx:say(
+    "O, it must be good to have feet.",
+    "You've been to the sea I'll bet from the smell of you.",
+    "That is where I have lived for so long until now; by the sea.",
+    "Thank you for spending a moment with this old soul. Be careful of the tiger to the north.",
+    "He only thinks of food, though you might distract him if you allude to one of the rabbits that tricked him")
+  return true
+end
+
+-- The tiger guarding the ginseng (chu_rua_tiger.lua). Say "rabbit", pick Forest, and he leaves (sets the
+-- chu_rua_tiger_gone flag so TryGinseng lets you take the root on map 1116).
+function npcs_say.ChuRuaTigerNpc(ctx, speech)
+  if speech == "hello" then
+    ctx:bubble("Hello, Dinner!")
+    return true
+  elseif speech == "ginseng" then
+    ctx:bubble("I'd rather eat you!")
+    return true
+  elseif speech == "rabbit" then
+    ctx:say("What? Rabbit? Was it that foul hopping furre that trapped me in a pit?")
+    local choice = ctx:menu("I'd love to rend his neck. Where did you see him?",
+      {"Warrior's Guild", "Forest", "Town", "Mage's Guild"})
+    if choice == 2 then   -- Forest = correct
+      ctx:say("Mmm. Well then I guess I'll return him a favor with grinning teeth.")
+      ctx:notify("The tiger leaves to the south.")
+      ctx:setReg("chu_rua_tiger_gone", 1)
+    elseif choice == 4 then
+      ctx:say("What, did someone pull him out of a hat?",
+              "So far? Oh well, I guess I'll have a snack beforehand... and you look tasty!")
+    else
+      ctx:say("So far? Oh well, I guess I'll have a snack beforehand... and you look tasty!")
+    end
+    return true
+  end
+  return false
+end

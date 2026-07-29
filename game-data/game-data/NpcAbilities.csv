@@ -1,0 +1,15 @@
+NpcKey,Abilities
+SmithNpc,shop|repair
+MessengerNpc,shop|messenger
+InnNpc,shop|bank|time
+InnNpc2,transport|time
+FishNpc,fish
+LibrarianNpc,librarian
+WarriorTrainerNpc,warrior_trainer|minor_quest
+RogueTrainerNpc,rogue_trainer|minor_quest
+MageTrainerNpc,mage_trainer|minor_quest
+PoetTrainerNpc,poet_trainer|minor_quest
+RogueGuildShamanNpc,appearance
+ArenaMasterNpc,war_paint
+ExpSeller,shadow_stats
+ChapelNpc,shop|chapel
