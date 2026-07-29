@@ -65,6 +65,15 @@ Two layers, use whichever fits:
      falls through to the C# archetype handler unchanged. **Strictly additive — you can migrate one spell at a
      time, and a broken verb just falls back.**
 
+   **Composed / multi-effect spells.** A spell that is several things at once (a multiplier *and* a
+   damage-reduction *and* a stance, possibly with per-caster state) is **not** a new archetype — it's one verb
+   that composes primitives. The reference example is Baekho's Cunning (`verbs.baekhos_cunning`): a tier-1→6
+   state machine built from `ctx:rage(mult, ms)` (whole-swing multiplier), `ctx:deduction(mult, ms)`
+   (incoming-damage reduction), `ctx:stance("backstab"/"flank", on, ms)`, plus state via `ctx:reg/setReg`
+   (transient per-caster ints), `ctx:hasDuration/setDuration`, and `ctx:onCooldown/setCooldown`. Rule of thumb:
+   single effect → ride the archetype default; many effects → **compose primitives in one verb**. Never invent
+   combined archetypes (`DamageBuff`, `StanceControl`, …) — that path explodes combinatorially.
+
 ## Recipe: add or retune an **item effect**
 
 Item use-effects are fully verb/row (the old C# table is gone):
