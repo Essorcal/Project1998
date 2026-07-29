@@ -23,6 +23,15 @@ function verbs.arch_damage(ctx, row)
   return ctx:magicDamage(ctx.amount, ctx.mana)
 end
 
+-- Heal archetype: restore the caster's own HP by the engine-evaluated amount (spell_effects.csv formula).
+-- Mana is checked+spent first (return false on short mana so the cast animation is suppressed, matching C#);
+-- ctx:heal caps at max HP and plays the sparkle/message.
+function verbs.arch_heal(ctx, row)
+  if not ctx:spendMana(ctx.mana) then return false end
+  ctx:heal(ctx.amount)
+  return true
+end
+
 -- =========================================================================================================
 -- PER-SPELL verbs: bound to one spell by a SpellParams.csv row whose `verb` column names it (these take
 -- precedence over the archetype path). Their numbers come from the row (row.coeff, row.base, ...).
