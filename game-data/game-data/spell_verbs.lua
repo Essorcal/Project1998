@@ -250,6 +250,97 @@ function verbs.venom(ctx, row)
 end
 
 -- =========================================================================================================
+-- TIER-3 UTILITY / TARGET verbs (mana transfer, cleanse, revive, leap, mana battery). Classified in C#
+-- (Content.Is*Spell), so they run against an EMPTY row — RTK constants are the `row.x or <default>` fallbacks
+-- (add a SpellParams row later to tune). The target.* primitives all act on the PC resolved by ctx:pcTarget().
+-- =========================================================================================================
+
+-- Mana Steal (RTK poet inspiration): drain a GROUP member's entire mana into your own pool (capped at your max).
+-- No cast cost — the "cost" is taking their mana. Target must be in your party and not a ghost.
+function verbs.mana_steal(ctx, row)
+  if not ctx:pcTarget() then return false end
+  if ctx.targetIsDead then ctx:say("That cannot save them now."); return false end
+  if not ctx.targetInGroup then ctx:say("They must be in your group."); return false end
+  ctx:setMana(ctx.mp + ctx.targetMana)     -- setMana clamps to the caster's max
+  ctx:setTargetMana(0)
+  ctx:tellTarget()
+  ctx:fx(6, 22)
+  return true
+end
+
+-- Mana Gift (RTK poet inspire): top off ANOTHER player's mana from your own (drains you). Needs >= 30 mana to
+-- attempt; gives up to their missing mana, capped by whatever you actually have.
+function verbs.mana_gift(ctx, row)
+  local cost = row.mana or 30
+  if not ctx:pcTarget() then return false end
+  if ctx.targetIsSelf then ctx:say("It doesn't work."); return false end
+  if ctx.targetIsDead then ctx:say("That cannot save them now."); return false end
+  if ctx.mp < cost then ctx:say("Not enough mana."); return false end
+  local give = math.min(ctx.mp, ctx.targetMaxMana - ctx.targetMana)
+  ctx:setMana(ctx.mp - give)
+  ctx:setTargetMana(ctx.targetMana + give)
+  ctx:tellTarget()
+  ctx:fx(6, 22)
+  return true
+end
+
+-- Cleanse (RTK poet dispell): chance-based FULL buff/debuff wipe on a targeted player (self-castable). Success =
+-- (120 + clamp(targetAC,-60,70) - floor((targetWill-casterWill)/10)) / 2, floored at 10%. 200 mana, no cooldown.
+function verbs.cleanse(ctx, row)
+  local cost = row.mana or 200
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  if not ctx:pcTarget() then return false end
+  local armor = math.max(-60, math.min(70, ctx.targetArmor))
+  local prot  = math.floor((ctx.targetWill - ctx.will) / 10)
+  local rate  = math.max(10, math.ceil((120 + armor - prot) / 2))
+  ctx:setMana(ctx.mp - cost)
+  if not ctx:roll(rate) then ctx:say("Something went wrong."); return true end
+  ctx:flushTarget()
+  if not ctx.targetIsSelf then ctx:tellTarget() end
+  ctx:fx(6, 34)
+  return true
+end
+
+-- Revive (RTK poet resurrect): bring a dead/ghost player back to full health in place. 3000 mana, 8s cooldown.
+function verbs.revive(ctx, row)
+  local cost = row.mana or 3000
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.mp < cost then ctx:say("Your will is too weak."); return false end
+  if not ctx:pcTarget() then return false end
+  if not ctx.targetIsDead then ctx:say(ctx.spellName .. " has no effect on the living."); return true end
+  ctx:setMana(ctx.mp - cost)
+  ctx:setCooldown(ctx.spellKey, 8000)
+  ctx:reviveTarget()
+  ctx:fx(6, 20)
+  return true
+end
+
+-- Leap (RTK rogue race): jump up to 3 tiles in the faced direction, stopping at the last passable tile. 1 mana,
+-- 80s cooldown. ctx:leap does the collision walk + the actual move, returning tiles moved (0 = nowhere to go).
+function verbs.leap(ctx, row)
+  local cost = row.mana or 1
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  if ctx:leap(row.amount or 3) == 0 then ctx:say("There's nowhere to go."); return false end
+  ctx:setMana(ctx.mp - cost)
+  ctx:setCooldown(ctx.spellKey, 80000)
+  return true
+end
+
+-- Mana Battery (RTK invoke): trade HP for a full mana refill — costs 40% of max mana as HP (floored at 100 HP),
+-- refills mana to full. Needs >= 30 mana to invoke; 22s cooldown.
+function verbs.mana_battery(ctx, row)
+  local minMana = row.mana or 30
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.mp < minMana then ctx:say("Not enough mana."); return false end
+  ctx:setHp(math.max(100, ctx.hp - math.floor(ctx.maxMp * 0.4)))
+  ctx:setMana(ctx.maxMp)
+  ctx:setCooldown(ctx.spellKey, 22000)
+  ctx:fxSelf()
+  return true
+end
+
+-- =========================================================================================================
 -- CATEGORIZED STATUS layer (curses + wards). RTK's checkIfCast() cross-guards live in spellTables.lua: a cast is
 -- refused if the target already carries a status in its category's BLOCK list. These relationships are RTK
 -- CONSTANTS (not per-spell data), so they live here keyed by the casting status's category:
