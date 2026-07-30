@@ -545,7 +545,7 @@ public sealed partial class Session
     {
         ResolveTargetBuff(targetId, out var pc, out _);
         if (pc is null) return;   // verb guards player-only via targetKind, but stay safe
-        pc.ApplyDeduction(mult, durMs, sp.Name);
+        pc.ApplySanctuaryDeduction(mult, durMs, sp.Name);
         BroadcastFx(pc._char.Id, Content.EffectAnim(Content.FxFor(sp)!, sp.PathId), Content.EffectSound(Content.FxFor(sp)!, sp.PathId));
         TellTarget(pc, sp);
         SendStats();
@@ -805,7 +805,7 @@ public sealed partial class Session
             double mult = double.TryParse(fx.BuffAmt, System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out var dm) ? dm : 1.0;
             _char.Mp -= (uint)mana;
-            pc.ApplyDeduction(mult, durMs, sp.Name);
+            pc.ApplySanctuaryDeduction(mult, durMs, sp.Name);
             BroadcastFx(pc._char.Id, anim, snd);
             TellTarget(pc, sp);   // target flavor (self: before central "You cast X"; other: their line)
             Log.Info($"      {sp.Name} -> deduction x{mult} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
@@ -896,20 +896,38 @@ public sealed partial class Session
     // HandleCast skips the generic "You cast <name>." for it (e.g. Gateway shows only "You have arrived...").
     private bool _castNarrated;
 
-    private double _deduction = 1.0;
-    private long   _deductionUntil;
-    private string _deductionName = "";   // spell display name, for the profile timer box (BuffBoxText)
-    internal double EffDeduction => Environment.TickCount64 < _deductionUntil ? _deduction : 1.0;
+    // Damage-reduction (RTK "deduction": incoming damage x mult). TWO INDEPENDENT sources that do NOT stack and
+    // are NOT additive (classic NTK): the Sanctuary line and Baekho's Cunning. Precedence: while Sanctuary is
+    // active it OVERRIDES Cunning entirely — you get its 0.5 even when that's WORSE than a high Cunning tier
+    // (this is the classic "casting Sanctuary downgrades a high-Cunning rogue"). When Sanctuary lapses, the
+    // still-running Cunning value re-asserts on its own timer. Each clamps to [0,1] (can only ever reduce).
+    // See nexustk-495-curse-status-system + the Baekho's Cunning tutor chart.
+    private double _sancDeduct = 1.0;    private long _sancDeductUntil;   private string _sancDeductName = "";
+    private double _cunningDeduct = 1.0; private long _cunningDeductUntil;
+    internal bool SancDeductActive    => Environment.TickCount64 < _sancDeductUntil;
+    internal bool CunningDeductActive => Environment.TickCount64 < _cunningDeductUntil;
+    // Sanctuary overrides Cunning while active; else the still-active Cunning value; else no reduction.
+    internal double EffDeduction => SancDeductActive ? _sancDeduct : CunningDeductActive ? _cunningDeduct : 1.0;
+    internal long   SancDeductUntil    => _sancDeductUntil;
+    internal long   CunningDeductUntil => _cunningDeductUntil;
+    internal string SancDeductName     => _sancDeductName;
 
-    // Arm a timed damage-reduction on THIS player (a sanctuary-line buff cast on us/self, or a Cunning tier).
-    // `mult` is the incoming-damage multiplier (0.5 = take half); clamped to [0,1] so it can only ever help.
-    // `name` is the spell's display name, surfaced in the self-profile effect box.
-    internal void ApplyDeduction(double mult, int durMs, string name)
+    // Sanctuary-line deduction (sanctuary/protect_soul/magic_shield/guard_life) cast on us/self — overrides any
+    // active Cunning for its whole duration. `mult` is the incoming-damage multiplier (0.5 = take half).
+    internal void ApplySanctuaryDeduction(double mult, int durMs, string name)
     {
         if (durMs <= 0) return;
-        _deduction = Math.Clamp(mult, 0.0, 1.0);
-        _deductionUntil = Environment.TickCount64 + durMs;
-        _deductionName = name ?? "";
+        _sancDeduct = Math.Clamp(mult, 0.0, 1.0);
+        _sancDeductUntil = Environment.TickCount64 + durMs;
+        _sancDeductName = name ?? "";
+        SendStats();
+    }
+    // Baekho's Cunning tier deduction — its own slot, suppressed while Sanctuary is up, re-asserts when it lapses.
+    internal void ApplyCunningDeduction(double mult, int durMs)
+    {
+        if (durMs <= 0) return;
+        _cunningDeduct = Math.Clamp(mult, 0.0, 1.0);
+        _cunningDeductUntil = Environment.TickCount64 + durMs;
         SendStats();
     }
 

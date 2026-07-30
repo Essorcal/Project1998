@@ -509,7 +509,7 @@ public sealed partial class Session
         if (def is null || def.SellPrice <= 0 || def.NoDrop) return false;
 
         var stack = _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList();
-        if (stack.Count == 0) { NpcBubble(npc, $"You don't have any {def.Name} to sell."); return true; }
+        if (stack.Count == 0) { NpcBubble(npc, "You don't have enough."); return true; }   // RTK sellNoConfirm
 
         int remaining = amount > 0 ? amount : stack.Sum(i => i.Amount);
         int sold = 0; uint earned = 0;
@@ -527,11 +527,67 @@ public sealed partial class Session
         _char.Coins += earned;
         SendStats();
         MarkDirty();
-        NpcBubble(npc, $"You sold {sold} {def.Name} for {earned} gold.");
+        // RTK: "I bought <item> for <N> coins." — the count goes in parens before the item when > 1.
+        NpcBubble(npc, sold == 1 ? $"I bought {def.Name} for {earned} coins."
+                                 : $"I bought ({sold}) {def.Name} for {earned} coins.");
         return true;
     }
 
     private static string Singularize(string s) => s.Length > 1 && s.EndsWith('s') ? s[..^1] : s;
+
+    // ---- spoken buy shortcut ("i buy [all] <item> [number N]") — see ShopAbility.OnSay -------------
+    // Buy from THIS NPC's catalogue by name: `amount` units, or as many as gold + pack allow when <= 0 ("all").
+    // Only items this NPC actually stocks can be bought (unlike selling, which any shop accepts). Returns false
+    // when the name matches no known item at all, so unrelated speech falls through to normal chat.
+    internal async Task<bool> BuyItemFromNpcByName(Mob npc, string name, int amount)
+    {
+        await Task.CompletedTask;   // async for symmetry with the sell/deposit shortcuts; no awaits needed
+        var def = Content.FindItem(name) ?? Content.FindItem(Singularize(name));
+        if (def is null) return false;
+
+        var catalogue = Shops.For(Content.NpcById(npc.NpcDefId)?.Key ?? "");
+        bool stocked = catalogue is not null &&
+                       catalogue.Any(cat => cat.Keys.Any(k => Content.ItemByKey(k)?.Id == def.Id));
+        if (!stocked || def.BuyPrice <= 0) { NpcBubble(npc, $"I do not sell {def.Name} here, please check elsewhere."); return true; }
+
+        int want = amount > 0 ? amount : (int)(_char.Coins / (uint)Math.Max(1, def.BuyPrice));   // "all" = as many as affordable
+        if (amount > 0 && _char.Coins < (long)def.BuyPrice * amount)   // explicit N you can't fully afford — RTK refuses the whole buy
+        {
+            NpcBubble(npc, amount == 1 ? $"You do not have enough coins to buy {def.Name}"
+                                       : $"You do not have enough coins to buy ({amount}) {def.Name}");
+            return true;
+        }
+        if (want <= 0) { NpcBubble(npc, $"You do not have enough coins to buy {def.Name}"); return true; }
+
+        int bought = 0; uint spent = 0;
+        for (int i = 0; i < want; i++)
+        {
+            if (_char.Coins < (uint)def.BuyPrice) break;
+            if (!GiveItem(def, quiet: true)) { NpcBubble(npc, "You can't carry anymore."); break; }   // pack full — NPC says so
+            _char.Coins -= (uint)def.BuyPrice;
+            spent += (uint)def.BuyPrice;
+            bought++;
+        }
+        if (bought > 0)
+        {
+            SendStats();
+            MarkDirty();
+            // RTK: "I sold <item> for <N> coins." — the count goes in parens before the item when > 1.
+            NpcBubble(npc, bought == 1 ? $"I sold {def.Name} for {spent} coins."
+                                       : $"I sold ({bought}) {def.Name} for {spent} coins.");
+        }
+        return true;
+    }
+
+    // ---- spoken vault query ("what have i deposited?") — see BankAbility.OnSay ---------------------
+    // RTK checkBank answers with the COUNT of stored item stacks (coin isn't counted here): "I am keeping N of
+    // your things." / "I am not keeping any of your things."
+    internal void ShowBankContents(Mob npc)
+    {
+        int stacks = _char.BankItems.Count(bi => Content.ItemById(bi.ItemId) is not null);
+        NpcBubble(npc, stacks == 0 ? "I am not keeping any of your things."
+                                   : $"I am keeping {stacks} of your things.");
+    }
 
     // ---- bank ability implementation (vault: coin + item storage) ------------------------------
     // Looped like the shop: each action returns to the vault menu until the player cancels. Storage lives on
@@ -584,7 +640,7 @@ public sealed partial class Session
             _char.BankMoney += (uint)amt;
             SendStats();
             MarkDirty();
-            NpcBubble(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
+            NpcBubble(npc, $"You deposit {amt} coins.");
             return true;
         }
 
@@ -594,7 +650,27 @@ public sealed partial class Session
         var stack = _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList();
         if (stack.Count == 0) { NpcBubble(npc, $"You don't have any {def.Name} to store."); return true; }
 
-        int remaining = amount > 0 ? amount : stack.Sum(i => i.Amount);
+        int intended = amount > 0 ? Math.Min(amount, stack.Sum(i => i.Amount)) : stack.Sum(i => i.Amount);
+
+        // RTK refuses used/damaged goods for storage: gear below full durability, or a charged consumable with
+        // spent charges (e.g. a sipped wine). Dura holds current durability for gear and remaining charges for
+        // charged items; Durability is the full value, so Dura < Durability means it's been used. (Dura == 0 is
+        // an unseeded legacy stack — treated as full.) Scan only the items this deposit would actually move.
+        int need = intended;
+        foreach (var inv in stack)
+        {
+            if (need <= 0) break;
+            if ((def.IsEquip || def.IsCharged) && inv.Dura != 0 && inv.Dura < def.Durability)
+            { NpcBubble(npc, "I don't want your junk. Ask a smith to fix it."); return true; }
+            need -= Math.Min(need, inv.Amount);
+        }
+
+        // RTK charges a safe-keeping fee of 10% of the item's sell value per unit (rtklua depositNoConfirm);
+        // the coin must be in hand up front or the deposit is refused.
+        long fee = (long)Math.Ceiling(def.SellPrice * 0.10 * intended);
+        if (fee > _char.Coins) { NpcBubble(npc, $"Excuse me you didn't give me enough. It's {fee} coins."); return true; }
+
+        int remaining = intended;
         int moved = 0;
         foreach (var inv in stack)
         {
@@ -605,8 +681,10 @@ public sealed partial class Session
             if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); _char.BankItems.Add(inv); }   // reason 0 = Remove (stored, not dropped)
             else { inv.Amount -= take; SendAddItem(inv); _char.BankItems.Add(new InvItem(0, def.Id, take, inv.Dura)); }
         }
+        if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
         SaveChar();
-        NpcBubble(npc, $"You store {moved} {def.Name} in your vault.");
+        NpcBubble(npc, $"I'll take your {def.Name}. {moved} of them.");
+        if (fee > 0) NpcBubble(npc, $"The fee is {fee} coins.");
         return true;
     }
 
@@ -621,7 +699,7 @@ public sealed partial class Session
             _char.Coins += (uint)amt;
             SendStats();
             MarkDirty();
-            NpcBubble(npc, $"Here are your {amt} coins. Your vault now holds {_char.BankMoney}.");
+            NpcBubble(npc, $"Here's your {amt} coins.");
             return true;
         }
 
@@ -629,7 +707,7 @@ public sealed partial class Session
         if (def is null) return false;
 
         var stack = _char.BankItems.Where(i => i.ItemId == def.Id).ToList();
-        if (stack.Count == 0) { NpcBubble(npc, $"Your vault has no {def.Name}."); return true; }
+        if (stack.Count == 0) { NpcBubble(npc, $"You didn't give me any {def.Name}."); return true; }   // RTK withdrawNoConfirm
 
         int remaining = amount > 0 ? amount : stack.Sum(i => i.Amount);
         int moved = 0;
@@ -637,7 +715,7 @@ public sealed partial class Session
         {
             if (remaining <= 0) break;
             int slot = FreeSlot();
-            if (slot < 0) { if (moved == 0) NpcBubble(npc, "Your pack is full."); break; }
+            if (slot < 0) { if (moved == 0) NpcBubble(npc, "You can't carry anymore."); break; }
             int take = Math.Min(remaining, bi.Amount);
             moved += take;
             remaining -= take;
@@ -645,7 +723,9 @@ public sealed partial class Session
             else { bi.Amount -= take; var give = new InvItem((byte)slot, def.Id, take, bi.Dura); _char.Inventory.Add(give); SendAddItem(give); }
         }
         SaveChar();
-        if (moved > 0) NpcBubble(npc, $"You withdraw {moved} {def.Name} from your vault.");
+        // RTK: "Here's your <item>." — count in parens when > 1.
+        if (moved == 1) NpcBubble(npc, $"Here's your {def.Name}.");
+        else if (moved > 1) NpcBubble(npc, $"Here's your {def.Name} ({moved}).");
         return true;
     }
 
@@ -1011,7 +1091,11 @@ public sealed partial class Session
         // scalar timers, not stat deltas — so surface them here too, or a spell like Sanctuary or Baekho's
         // Cunning would show no duration at all. Each is "Label (Ns)".
         static int Secs(long until, long now2) => (int)((until - now2 + 999) / 1000);
-        if (now < _deductionUntil)                lines.Add($"{(_deductionName.Length > 0 ? _deductionName : "Protection")} ({Secs(_deductionUntil, now)}s)");
+        // Deduction has two independent sources (Sanctuary line + Baekho's Cunning). Show each active timer with
+        // the % reduction it currently grants; Sanctuary overrides Cunning while both run, but both timers are
+        // real (Cunning re-asserts when Sanctuary lapses), so surface both so the player can see the ladder.
+        if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} -{(int)Math.Round((1 - EffDeduction) * 100)}% ({Secs(SancDeductUntil, now)}s)");
+        if (CunningDeductActive)  lines.Add($"Cunning {(SancDeductActive ? "(suppressed) " : "")}({Secs(CunningDeductUntil, now)}s)");
         if (now < _rageUntil && _rageAmount > 1)  lines.Add($"Fury x{_rageAmount} ({Secs(_rageUntil, now)}s)");
         if (now < _backstabUntil)                 lines.Add($"Backstab ({Secs(_backstabUntil, now)}s)");
         if (now < _flankUntil)                    lines.Add($"Flank ({Secs(_flankUntil, now)}s)");
