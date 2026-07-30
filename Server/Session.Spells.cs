@@ -302,10 +302,10 @@ public sealed partial class Session
         {
             "Damage"     => CastArch("arch_damage", sp, fx, targetId, mana) ?? CastDamage(sp, fx, targetId, mana),
             "Heal"       => CastArch("arch_heal", sp, fx, null, mana) ?? CastHeal(sp, fx, mana),
-            "Buff"       => CastBuff(sp, fx, mana),
-            "TargetBuff" => CastTargetBuff(sp, fx, targetId, mana),
-            "Debuff"     => CastDebuff(sp, fx, targetId, mana),
-            "Cure"       => CastCure(sp, fx, mana),
+            "Buff"       => CastArch("arch_buff", sp, fx, null, mana) ?? CastBuff(sp, fx, mana),
+            "TargetBuff" => CastArch("arch_targetbuff", sp, fx, targetId, mana) ?? CastTargetBuff(sp, fx, targetId, mana),
+            "Debuff"     => CastArch("arch_debuff", sp, fx, targetId, mana) ?? CastDebuff(sp, fx, targetId, mana),
+            "Cure"       => CastArch("arch_cure", sp, fx, null, mana) ?? CastCure(sp, fx, mana),
             _            => CastMisc(sp, mana),   // Utility / Summon / Teleport / Dialog — graceful
         };
         if (ok && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
@@ -321,7 +321,7 @@ public sealed partial class Session
     {
         if (!SpellScript.HasVerb(verb)) return null;
         double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
-        return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, amount, mana));
+        return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
     }
 
     // ---- Lua spell-verb primitives (called by SpellContext; see Server/SpellScript.cs) --------------------
@@ -451,6 +451,124 @@ public sealed partial class Session
         SendStats();
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+    }
+
+    // ---- primitives for the Buff / TargetBuff / Debuff / Cure archetype verbs (Tier-1 Lua migration) --------
+    // Each is a thin wrapper over the SAME plumbing the C# CastBuff/CastTargetBuff/CastDebuff/CastCure use, so the
+    // Lua route can't diverge. The verb (spell_verbs.lua arch_buff/arch_targetbuff/arch_debuff/arch_cure) owns the
+    // LOGIC — mana ordering, the multi-stat loop, self/player/mob routing, the deflect+chance sequence — while
+    // these do the mechanical apply. See CastBuff etc. for the faithful reference each mirrors.
+
+    // Mana check WITHOUT debit (message matches CastBuff/CastDamage) — the verb debits later via LuaDebitMana, so
+    // a no-target/no-effect abort spends nothing (RTK-correct: mana is only spent once the cast commits).
+    internal bool LuaEnoughMana(int amt)
+    {
+        if (amt < 0) amt = 0;
+        if (_char.Mp < (uint)amt) { SendMiniText("You do not have enough mana."); return false; }
+        return true;
+    }
+    internal void LuaDebitMana(int amt)
+    {
+        if (amt < 0) amt = 0;
+        _char.Mp = _char.Mp > (uint)amt ? _char.Mp - (uint)amt : 0;
+        SendStats();
+    }
+
+    // Buff archetype pieces (mirror CastBuff): clear-then-add per stat, then one fx, then the self-flavor line.
+    internal void LuaClearBuff(SpellDef sp) => _buffs.RemoveAll(b => b.Key == sp.Key);   // refresh, don't stack
+    internal void LuaAddBuff(string stat, int amount, int durMs, SpellDef sp)
+    {
+        if (string.IsNullOrEmpty(stat) || amount == 0 || durMs <= 0) return;
+        _buffs.Add(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durMs, Key = sp.Key, Name = sp.Name });
+        SendStats();
+    }
+    internal void LuaFxSelf(SpellDef sp)
+    {
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+    }
+    internal void LuaFlavorSelf(SpellDef sp)
+    {
+        var flavor = Content.TargetTextFor(sp.Key);
+        if (flavor.Length > 0) SendMiniText(flavor);
+    }
+
+    // TargetBuff resolution + apply (mirror CastTargetBuff): resolve the explicit target (id -> player else mob;
+    // no id -> faced tile: peer else mob), classify for the verb, and apply the buff/deduction the verb chose.
+    private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob)
+    {
+        pc = null; mob = null;
+        if (targetId is uint tid && tid != 0)
+        {
+            pc = _world.PlayerById(tid);
+            if (pc is null) mob = _world.MobById(_char.Map, tid);
+        }
+        else
+        {
+            var (fxT, fyT) = FrontTile();
+            pc = _world.PeerAt(_char.Map, fxT, fyT);
+            if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
+        }
+    }
+    internal string LuaTargetBuffKind(uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        return pc is not null ? "player" : mob is not null ? "mob" : "none";
+    }
+    internal void LuaBuffTarget(string stat, int amount, int durMs, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        var anim = Content.EffectAnim(Content.FxFor(sp)!, sp.PathId);
+        var snd  = Content.EffectSound(Content.FxFor(sp)!, sp.PathId);
+        bool haveAmt = !string.IsNullOrEmpty(stat) && amount != 0;
+        if (pc is not null)
+        {
+            if (haveAmt) pc.ReceiveTimedBuff(stat, amount, durMs, sp.Key, sp.Name);
+            BroadcastFx(pc._char.Id, anim, snd);
+            TellTarget(pc, sp);
+            Log.Info($"      (lua) {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
+        }
+        else if (mob is not null)
+        {
+            if (haveAmt) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);   // under World._lock (races Tick revert)
+            BroadcastFx(mob.Id, anim, snd);   // mobs don't read text; caster gets the central "You cast X"
+            Log.Info($"      (lua) {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on mob {mob.Id} '{mob.Name}' {durMs}ms");
+        }
+        SendStats();
+    }
+    internal void LuaDeductionTarget(double mult, int durMs, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out _);
+        if (pc is null) return;   // verb guards player-only via targetKind, but stay safe
+        pc.ApplyDeduction(mult, durMs, sp.Name);
+        BroadcastFx(pc._char.Id, Content.EffectAnim(Content.FxFor(sp)!, sp.PathId), Content.EffectSound(Content.FxFor(sp)!, sp.PathId));
+        TellTarget(pc, sp);
+        SendStats();
+        Log.Info($"      (lua) {sp.Name} -> deduction x{mult} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
+    }
+
+    // Debuff pieces (mirror CastDebuff): deflect roll, chance-to-hold, freeze.
+    internal bool LuaDeflected(SpellDef sp, uint? targetId)
+    {
+        var mob = ResolveCastTarget(targetId);
+        return mob is not null && sp.CanFail && RollDeflect(mob);
+    }
+    internal bool LuaRoll(double pct) => Random.Shared.Next(100) < pct;
+    internal double LuaDebuffChance(SpellDef sp, uint? targetId)
+    {
+        var fx = Content.FxFor(sp);
+        if (fx is null || string.IsNullOrEmpty(fx.Chance)) return 100;
+        var mob = ResolveCastTarget(targetId);
+        return Formula.Eval(fx.Chance, SpellVars(mob));
+    }
+    internal void LuaFreezeTarget(int durMs, SpellDef sp, uint? targetId)
+    {
+        var mob = ResolveCastTarget(targetId);
+        if (mob is null) return;
+        mob.FrozenUntil = Environment.TickCount64 + durMs;
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' frozen {durMs}ms");
     }
 
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective

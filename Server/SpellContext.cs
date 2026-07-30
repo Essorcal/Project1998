@@ -18,6 +18,7 @@ public sealed class SpellContext
     private readonly Session _s;
     private readonly SpellDef _sp;
     private readonly uint? _targetId;
+    private readonly SpellFx? _fx;   // the spell's export row (buff stats / duration / chance) for archetype verbs
 
     internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
     {
@@ -26,17 +27,32 @@ public sealed class SpellContext
 
     /// <summary>Archetype-path ctor: the engine has already resolved this spell's mana cost and evaluated its
     /// per-spell formula (spell_effects.csv <c>amountExpr</c>), so an archetype verb (arch_damage/arch_heal/…) can
-    /// stay pure logic — <c>ctx.amount</c> / <c>ctx.mana</c> carry the numbers, no formula duplicated into Lua.</summary>
-    internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer, double amount, double mana)
+    /// stay pure logic — <c>ctx.amount</c> / <c>ctx.mana</c> carry the numbers, no formula duplicated into Lua.
+    /// <paramref name="fx"/> is the spell's export row so buff/debuff verbs can read buffStat/buffAmt/duration/chance.</summary>
+    internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer, double amount, double mana, SpellFx? fx = null)
         : this(s, sp, targetId, answer)
     {
-        this.amount = amount; this.mana = mana;
+        this.amount = amount; this.mana = mana; _fx = fx;
     }
 
     /// <summary>Engine-evaluated effect amount for the archetype path (the spell's real formula result).</summary>
     public double amount { get; }
     /// <summary>Engine-resolved mana cost for the archetype path.</summary>
     public double mana   { get; }
+
+    // ---- archetype-row fields (Lua: ctx.buffStat, ctx.durationMs, …) for the Buff/TargetBuff/Debuff verbs ----
+    /// <summary>The spell's display name (for "&lt;name&gt; finds no target." style notices).</summary>
+    public string spellName  => _sp.Name;
+    /// <summary>Buff stat key(s), '|'-separated for multi-stat buffs (e.g. "might" or "might|hit"). "" if none.</summary>
+    public string buffStat   => _fx?.BuffStat ?? "";
+    /// <summary>Buff amount(s), '|'-separated, parallel to <see cref="buffStat"/> (deduction uses a fractional
+    /// multiplier here, e.g. "0.5"). Split/parse in Lua so the per-stat loop is scriptable.</summary>
+    public string buffAmt    => _fx?.BuffAmt ?? "";
+    /// <summary>Buff/debuff duration in ms from the export (0 if unset — the verb supplies its archetype default).</summary>
+    public int    durationMs => _fx?.DurationMs ?? 0;
+    /// <summary>Debuff take-hold chance as a percent, evaluated against the resolved target's stats (100 if the
+    /// export has no chance formula). Read-only; re-resolves the target each access (deterministic within a cast).</summary>
+    public double chance     => _s.LuaDebuffChance(_sp, _targetId);
 
     // ---- read-only caster stats (Lua: ctx.will, ctx.level, ...) ----
     public double level     => _s.LuaLevel;
@@ -94,4 +110,42 @@ public sealed class SpellContext
     public void stance(string name, bool on, double durMs) => _s.LuaStance(name, on, (int)durMs);
     /// <summary>Play a cast animation + sound on the caster (Effect.tbl anim id, sound id).</summary>
     public void fx(double anim, double sound)         => _s.LuaFx((int)anim, (int)sound);
+
+    // ---- primitives for the Buff / TargetBuff / Debuff / Cure archetype verbs -------------------------------
+    /// <summary>Does the caster have at least <paramref name="amt"/> mana? Sends "You do not have enough mana."
+    /// and returns false if not (a check only — <see cref="debitMana"/> does the actual debit later, matching the
+    /// C# handlers which check up front but debit only once the cast is committed).</summary>
+    public bool enoughMana(double amt)  => _s.LuaEnoughMana((int)amt);
+    /// <summary>Debit the caster's mana with no re-check and no message (guarded by an earlier <see cref="enoughMana"/>).</summary>
+    public void debitMana(double amt)   => _s.LuaDebitMana((int)amt);
+    /// <summary>Remove any active buff from THIS spell before re-applying (refresh, don't stack).</summary>
+    public void clearBuff()             => _s.LuaClearBuff(_sp);
+    /// <summary>Add one timed stat buff to the caster (no fx/refresh — call <see cref="clearBuff"/> once first,
+    /// then <see cref="fxSelf"/> once after the loop). <paramref name="stat"/> is a Totals() key (might/hit/dam/…).</summary>
+    public void addBuff(string stat, double amount, double durMs) =>
+        _s.LuaAddBuff(stat, (int)System.Math.Round(amount), (int)durMs, _sp);
+    /// <summary>Play this spell's cast anim/sound on the caster.</summary>
+    public void fxSelf()                => _s.LuaFxSelf(_sp);
+    /// <summary>Show this spell's live TARGET-flavor line to the caster (self-cast: flavor before "You cast X").</summary>
+    public void flavorSelf()            => _s.LuaFlavorSelf(_sp);
+
+    /// <summary>What the TargetBuff cast is aimed at, resolved from the client target id or the faced tile:
+    /// "player" (incl. a self-cast), "mob" (a mob/NPC/pet), or "none". The verb branches on this.</summary>
+    public string targetKind            => _s.LuaTargetBuffKind(_targetId);
+    /// <summary>Apply a timed stat buff to the resolved TargetBuff target (player or mob), with fx + the target's
+    /// flavor line. Call after branching on <see cref="targetKind"/>.</summary>
+    public void buffTarget(string stat, double amount, double durMs) =>
+        _s.LuaBuffTarget(stat, (int)System.Math.Round(amount), (int)durMs, _sp, _targetId);
+    /// <summary>Apply a damage-reduction (deduction) to the resolved TargetBuff target — PLAYER only. <paramref
+    /// name="mult"/> is the incoming-damage multiplier (0.5 = take half). Plays fx + the target's flavor line.</summary>
+    public void deductionTarget(double mult, double durMs) =>
+        _s.LuaDeductionTarget(mult, (int)durMs, _sp, _targetId);
+
+    /// <summary>Roll the RTK magic-deflect check against the resolved mob (only if the spell can fail); true if
+    /// the cast was deflected (no mana is spent — the verb should return true without applying).</summary>
+    public bool deflected()             => _s.LuaDeflected(_sp, _targetId);
+    /// <summary>Uniform percent roll: true with probability <paramref name="pct"/>% (RTK Random.Next(100) &lt; pct).</summary>
+    public bool roll(double pct)        => _s.LuaRoll(pct);
+    /// <summary>Freeze the resolved mob target for <paramref name="durMs"/> ms (RTK debuff hold) + debuff fx.</summary>
+    public void freezeTarget(double durMs) => _s.LuaFreezeTarget((int)durMs, _sp, _targetId);
 }
