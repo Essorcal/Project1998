@@ -573,6 +573,25 @@ public sealed partial class Session
         if (IsDead) Die();
     }
 
+    // Take incoming SPELL damage from another player (PvP) or from yourself (self-cast, e.g. sparking yourself
+    // in an arena). Physical AC does NOT apply to magic (the caster's deflect roll already gates a spell); the
+    // deduction damage-reduction (sanctuary line / Baekho's Cunning) DOES, applied the same as a melee hit. The
+    // over-head HP bar goes to the whole map; a hit BY someone else prints "<name> hits you with <spell>."; dying
+    // drops you to ghost form via Die(), exactly like a mob kill. attacker==this on a self-cast (no "hits you").
+    public void ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
+    {
+        if (IsDead) return;   // already down — don't re-trigger Die() while the revive gate is pending
+        if (rawDmg < 1) rawDmg = 1;
+        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
+        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
+        SendStats();
+        byte hpPct = PlayerHpPercent();
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
+        if (!ReferenceEquals(attacker, this)) SendMiniText($"{attacker._char.Name} hits you with {spellName}.");
+        Log.Info($"   -> {(ReferenceEquals(attacker, this) ? "self" : attacker._char.Name)} '{spellName}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
+        if (IsDead) Die();
+    }
+
     // Defeated by a mob: redraw as a ghost (appearance[1]=1 via MountForm(), see IsDead/Snapshot/ShowPlayer)
     // and STAY that way — RTK has no auto-revive timer at all. A ghost wakes up only by pressing F1 and
     // picking "Silver Thread" (RunF1MenuAsync/SilverThread, §11k), which offers a choice of Shaman to warp

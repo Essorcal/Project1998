@@ -350,21 +350,22 @@ public sealed partial class Session
 
     internal bool LuaDamageTarget(int amt, SpellDef sp, uint? targetId)
     {
-        var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
+        var (mob, pc) = ResolveDamageTarget(targetId);
+        if (mob is null && pc is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (pc is not null) return HitPlayerWithSpell(pc, amt, 0, sp);   // PvP / self-cast (verb already spent mana)
+        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
-        if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+        if (_world.TryDamage(_char.Map, mob!, amt, out bool died, _char.Id))
         {
-            if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-            ShowDamageResult(mob.Id, mob, died);
+            if (fx is not null) BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            ShowDamageResult(mob!.Id, mob, died);
             if (died)
             {
-                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardExp(reward, killExp: true);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
+            Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
         }
         return true;
     }
@@ -378,22 +379,23 @@ public sealed partial class Session
     {
         if (mana < 0) mana = 0;
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
+        var (mob, pc) = ResolveDamageTarget(targetId);
+        if (mob is null && pc is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (pc is not null) return HitPlayerWithSpell(pc, amt, mana, sp);   // PvP / self-cast
+        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         _char.Mp -= (uint)mana;
         var fx = Content.FxFor(sp);
-        if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+        if (_world.TryDamage(_char.Map, mob!, amt, out bool died, _char.Id))
         {
-            if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-            ShowDamageResult(mob.Id, mob, died);
+            if (fx is not null) BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            ShowDamageResult(mob!.Id, mob, died);
             if (died)
             {
-                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardExp(reward, killExp: true);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob.Id} '{mob.Name}' for {amt} (died={died})");
+            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
         }
         return true;
     }
@@ -696,22 +698,24 @@ public sealed partial class Session
     private bool CastDamage(SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
+        var (mob, pc) = ResolveDamageTarget(targetId);
+        if (mob is null && pc is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (pc is not null)   // PvP / self-cast — no mob for target-var formulas, so evaluate with none
+            return HitPlayerWithSpell(pc, Math.Max(1, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)))), mana, sp);
+        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
 
         int power = Math.Max(1, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(mob))));
         _char.Mp -= (uint)mana;
-        if (_world.TryDamage(_char.Map, mob, power, out bool died, _char.Id))
+        if (_world.TryDamage(_char.Map, mob!, power, out bool died, _char.Id))
         {
-            BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // graphic + sound
-            ShowDamageResult(mob.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
+            BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // graphic + sound
+            ShowDamageResult(mob!.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
             if (died)
             {
-                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardExp(reward, killExp: true);   // exp message only; no caster hit/kill flavor
             }
-            Log.Info($"      {sp.Name} -> mob {mob.Id} '{mob.Name}' for {power} (died={died})");
+            Log.Info($"      {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {power} (died={died})");
         }
         return true;
     }
@@ -1924,6 +1928,45 @@ public sealed partial class Session
         }
         var (fx, fy) = FrontTile();
         return _world.MobAt(_char.Map, fx, fy);
+    }
+
+    // Resolve a DAMAGE spell's target as either a mob OR a player (yourself or another) — the damage archetype
+    // can hit both (PvP + self, e.g. sparking yourself in an arena). An explicit target id resolves DIRECTLY to a
+    // mob or a player (no faced-tile fallback, so a client-targeted player is never hijacked by a mob you happen
+    // to face); with no id we hit the faced tile, mob first then a peer. At most one of (mob, pc) is non-null.
+    private (Mob? mob, Session? pc) ResolveDamageTarget(uint? targetId)
+    {
+        if (targetId is uint id && id != 0)
+        {
+            var m = _world.MobById(_char.Map, id);
+            if (m is not null) return (m, null);
+            return (null, _world.PlayerById(id));   // player id (incl. your own on a self-cast) — may be null
+        }
+        var (fx, fy) = FrontTile();
+        var fm = _world.MobAt(_char.Map, fx, fy);
+        return fm is not null ? (fm, null) : (null, _world.PeerAt(_char.Map, fx, fy));
+    }
+
+    // Apply a damage spell to a PC target — the PvP / self path. Self-cast is allowed anywhere (it only hurts
+    // you); hitting ANOTHER player requires a PvP map (Content.IsPvpMap, RTK canPK approximation). Spends `mana`
+    // here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns false with a
+    // notice (mana NOT spent) if disallowed. No magic-deflect roll on PC targets yet (a follow-up).
+    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp)
+    {
+        bool isSelf = ReferenceEquals(pc, this);
+        if (!isSelf && !Content.IsPvpMap(_char.Map)) { SendMiniText("You cannot attack that target."); return false; }
+        if (mana > 0)
+        {
+            if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+            _char.Mp -= (uint)mana;
+        }
+        if (amt < 1) amt = 1;
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(pc._char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        pc.ReceiveSpellDamage(amt, this, sp.Name);
+        SendStats();
+        Log.Info($"      {sp.Name} -> player {pc._char.Id} '{pc._char.Name}' for {amt} (pvp{(isSelf ? "/self" : "")})");
+        return true;
     }
 
 }
