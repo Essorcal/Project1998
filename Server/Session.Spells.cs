@@ -1947,14 +1947,29 @@ public sealed partial class Session
         return fm is not null ? (fm, null) : (null, _world.PeerAt(_char.Map, fx, fy));
     }
 
+    // PvP magic-deflect: the same RTK formula as RollDeflect(mob), but the defender is a PLAYER — resist scales
+    // with the target's effective-Will advantage over the caster (PCs carry no innate Protection stat, so that
+    // term is 0 and a caster whose Will >= the target's can never be deflected). No mana is spent on a deflect
+    // (the caller rolls this BEFORE debiting). A self-cast never deflects (willDiff 0), so callers skip it there.
+    private bool RollDeflectPvp(Session target)
+    {
+        int casterWill = _char.Will + Totals().will;
+        int willDiff = Math.Max(0, target.LuaWill - casterWill);
+        int prot = Math.Max(0, (int)(willDiff / 10.0 + 0.5));
+        int failChance = (int)(100 - Math.Pow(0.9, prot) * 100 + 0.5);
+        return Random.Shared.Next(100) < failChance;
+    }
+
     // Apply a damage spell to a PC target — the PvP / self path. Self-cast is allowed anywhere (it only hurts
     // you); hitting ANOTHER player requires a PvP map (Content.IsPvpMap, RTK canPK approximation). Spends `mana`
     // here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns false with a
-    // notice (mana NOT spent) if disallowed. No magic-deflect roll on PC targets yet (a follow-up).
+    // notice (mana NOT spent) if disallowed. Rolls the PvP magic-deflect (SplCanFail spells only) before the
+    // debit — a deflected cast spends no mana but still "happened" (returns true), matching the mob path.
     private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp)
     {
         bool isSelf = ReferenceEquals(pc, this);
         if (!isSelf && !Content.IsPvpMap(_char.Map)) { SendMiniText("You cannot attack that target."); return false; }
+        if (!isSelf && sp.CanFail && RollDeflectPvp(pc)) { SendMiniText("The magic has been deflected."); return true; }
         if (mana > 0)
         {
             if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
