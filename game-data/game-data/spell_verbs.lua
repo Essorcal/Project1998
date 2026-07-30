@@ -119,17 +119,21 @@ end
 -- STANCE grants, plus a stateful tier machine. It fits NO single archetype; it just composes primitives.
 -- Recast to climb Cunning 1->6, each tier stronger and far pricier; each cast supersedes the lesser furies
 -- (ctx:rage overwrites the single rage slot). The tier TABLE is an RTK constant so it lives here in the verb.
--- ded = incoming-damage multiplier (RTK target.deduction: tier1 -0.00 .. tier6 -0.40 off 1.0).
+-- CLASSIC (4.95-era) Cunning chart, from the Rogue Tutor Melalye "Baekho's Cunning" board post in the scraped
+-- archive (canonical, > RTK per user). Per tier: mana, duration (DECREASES each tier), damage multiplier (rage),
+-- deduction (incoming-damage mult), and cumulative special grants (Cun2 = Backstab, Cun3 adds Flank). ded goes
+-- 0/15/30/55/85% reduction -> mult 1.00/0.85/0.70/0.45/0.15; at Cun4-5 this EXCEEDS Sanctuary's 50%, so casting
+-- Sanctuary DOWNGRADES a high-Cunning rogue (Sanctuary overrides Cunning's slot; see ApplyCunningDeduction). The
+-- 6th cunning (~262k mana) is "no better than the 5th" in the archive, so 5 is the real cap.
 local CUNNING = {
-  [1] = { mana = 3000,   rage = 6,  ded = 1.00, back = false, flank = false },
-  [2] = { mana = 4200,   rage = 7,  ded = 0.92, back = true,  flank = false },
-  [3] = { mana = 15634,  rage = 9,  ded = 0.84, back = false, flank = true  },
-  [4] = { mana = 46658,  rage = 10, ded = 0.76, back = true,  flank = true  },
-  [5] = { mana = 117667, rage = 12, ded = 0.68, back = true,  flank = true  },
-  [6] = { mana = 265000, rage = 14, ded = 0.60, back = true,  flank = true  },
+  [1] = { mana = 3000,   dur = 938000, rage = 4, ded = 1.00, back = false, flank = false },  --  0% reduction
+  [2] = { mana = 4200,   dur = 788000, rage = 5, ded = 0.85, back = true,  flank = false },  -- 15%, +Backstab
+  [3] = { mana = 15634,  dur = 638000, rage = 6, ded = 0.70, back = true,  flank = true  },  -- 30%, +Flank
+  [4] = { mana = 46658,  dur = 488000, rage = 7, ded = 0.45, back = true,  flank = true  },  -- 55%
+  [5] = { mana = 117667, dur = 338000, rage = 8, ded = 0.15, back = true,  flank = true  },  -- 85% (max)
 }
-local CUNNING_DURATION = 938000   -- ~15.6 min active window (RTK setDuration)
-local CUNNING_AETHER   = 150000   -- ~2.5 min cooldown between tier-ups (RTK setAether)
+local CUNNING_MAX    = 5
+local CUNNING_AETHER = 150000   -- ~2.5 min cooldown between tier-ups (RTK/archive setAether)
 
 function verbs.baekhos_cunning(ctx, row)
   if ctx:onCooldown("baekhos_cunning") then
@@ -139,8 +143,8 @@ function verbs.baekhos_cunning(ctx, row)
   -- Only continue the ladder if the stance is still active; if it lapsed, hasDuration is false -> start fresh.
   local active = ctx:hasDuration("baekhos_cunning")
   local tier = active and ctx:reg("baekhos_cunning") or 0
-  if tier < 0 or tier > 6 then tier = 0 end
-  if active and tier >= 6 then
+  if tier < 0 or tier > CUNNING_MAX then tier = 0 end
+  if active and tier >= CUNNING_MAX then
     ctx:say("You have reached your max potential.")
     return false
   end
@@ -150,11 +154,11 @@ function verbs.baekhos_cunning(ctx, row)
   if not ctx:spendMana(c.mana) then return false end        -- huge, tier-scaled cost
 
   ctx:setReg("baekhos_cunning", nt)
-  ctx:setDuration("baekhos_cunning", CUNNING_DURATION)
-  ctx:rage(c.rage, CUNNING_DURATION)                         -- whole-swing xN (supersedes lesser furies)
-  ctx:deduction(c.ded, CUNNING_DURATION)                     -- take less damage
-  ctx:stance("backstab", c.back, CUNNING_DURATION)           -- free positional crits
-  ctx:stance("flank",    c.flank, CUNNING_DURATION)
+  ctx:setDuration("baekhos_cunning", c.dur)                  -- per-tier window (shrinks as the tier climbs)
+  ctx:rage(c.rage, c.dur)                                    -- whole-swing xN (supersedes lesser furies)
+  ctx:deduction(c.ded, c.dur)                                -- take less damage (own slot; Sanc overrides it)
+  ctx:stance("backstab", c.back, c.dur)                      -- free positional crits
+  ctx:stance("flank",    c.flank, c.dur)
   ctx:setCooldown("baekhos_cunning", CUNNING_AETHER)
   ctx:fx(35, 705)                                            -- RTK sendAnimation(35) / playSound(705)
   ctx:say("[Cunning "..nt.."] Baekho sharpens your instincts (x"..c.rage.." damage).")
