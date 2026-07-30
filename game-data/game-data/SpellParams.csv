@@ -1,5 +1,6 @@
-key,verb,mana,base,coeff,amount,willcoeff,notes,Sources
-bolt_mage,magic_damage,4,2,1.5,,,Basic mage nuke: 2 + 1.5*Will,rtk-lua
-heal_mage,heal,6,,,20,1.0,Flat 20 + 1*Will HP,rtk-lua
-mend_wounds_mage,heal,3,,,10,0.5,Weaker heal sharing the same heal verb,rtk-lua
-baekhos_cunning,baekhos_cunning,,,,,,"Baekho's Cunning: stateful multi-tier stance (tier table in verb)",rtk-lua
+key,verb,mana,base,coeff,amount,willcoeff,category,stat,duration,notes,Sources
+bolt_mage,magic_damage,4,2,1.5,,,,,,Basic mage nuke: 2 + 1.5*Will,rtk-lua
+heal_mage,heal,6,,,20,1.0,,,,Flat 20 + 1*Will HP,rtk-lua
+mend_wounds_mage,heal,3,,,10,0.5,,,,Weaker heal sharing the same heal verb,rtk-lua
+baekhos_cunning,baekhos_cunning,,,,,,,,,"Baekho's Cunning: stateful multi-tier stance (tier table in verb)",rtk-lua
+pestilence_mage,curse,20,,,-5,,curses,armor,200000,"Pestilence: curses-category curse; armor -5 raises effective AC so the victim takes MORE damage (our inverted-AC form of RTK's armor+5); 200s; self-cast legal in a PvP map to block a worse curse",rtk-lua

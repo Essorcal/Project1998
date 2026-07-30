@@ -90,11 +90,13 @@ function verbs.arch_debuff(ctx, row)
   return true
 end
 
--- Cure archetype: RTK removes a category of durations from the target; we don't yet carry negative status, so
--- functionally this is a mana spend (parity with C# CastCure). Kept as a verb so it's scriptable when we do.
+-- Cure archetype: RTK removes a whole CATEGORY of durations from the target (the cure's CureCat, e.g. a
+-- 'curses' cure like Atone clears pestilence; a 'venoms' cure clears poisons). Now that curses are real
+-- categorized statuses (see the `curse` verb), this actually dispels them from the caster, not just spends mana.
 function verbs.arch_cure(ctx, row)
   if not ctx:enoughMana(ctx.mana) then return false end
   ctx:debitMana(ctx.mana)
+  ctx:cureCategory(ctx.cureCat)
   return true
 end
 
@@ -106,8 +108,9 @@ end
 -- Direct magic damage to the current target: base + Will*coeff, costing `mana`.
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
 function verbs.magic_damage(ctx, row)
-  if not ctx:spendMana(row.mana or 0) then return end
+  if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
+  return true
 end
 
 -- =========================================================================================================
@@ -160,18 +163,37 @@ end
 
 -- Restore the caster's own HP: flat `amount` plus optional Will scaling (`willcoeff`), costing `mana`.
 function verbs.heal(ctx, row)
-  if not ctx:spendMana(row.mana or 0) then return end
+  if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
   ctx:heal((row.amount or 0) + ctx.will * (row.willcoeff or 0))
+  return true
 end
 
 -- Restore the caster's own mana by a flat `amount` (no mana cost, obviously).
 function verbs.restore_mana(ctx, row)
   ctx:restoreMana(row.amount or 0)
+  return true
 end
 
 -- Timed self-buff: spend `mana`, then raise `stat` by `amount` for `duration` ms (default 60s). `stat` is one
 -- of the Totals() keys: might/will/grace/hp/mp/armor/hit/dam. Re-casting the same spell refreshes, not stacks.
 function verbs.buff(ctx, row)
-  if not ctx:spendMana(row.mana or 0) then return end
+  if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
   ctx:buff(row.stat, row.amount or 0, row.duration or 60000)
+  return true
+end
+
+-- Curse (RTK Spells/*/pestilence.lua & kin): apply a MUTUALLY-EXCLUSIVE categorized status to a curse target.
+-- Blocked if the target already carries a status of the same category (checkIfCast) or a protection — which is
+-- what makes self-pestilence a real defense: occupy your own 'curses' slot with a mild curse (row.amount is the
+-- stat effect, e.g. armor -5 -> raises effective AC -> take MORE damage) so an enemy can't land a worse curse.
+-- Row: mana, category (curses/venoms/...), stat, amount, duration. Removed later by a Cure of the same category.
+function verbs.curse(ctx, row)
+  local mana = row.mana or 0
+  if not ctx:enoughMana(mana) then return false end
+  if not ctx:canCurse() then return false end                                    -- PvP-legal PC (incl self) or a mob
+  if ctx:hasStatus(row.category) then ctx:say("Another spell of this type is in effect."); return false end
+  if ctx:hasStatus("protections") then ctx:say("The target is already protected."); return false end
+  ctx:debitMana(mana)
+  ctx:applyCurse(row.category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 200000)
+  return true
 end
