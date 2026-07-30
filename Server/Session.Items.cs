@@ -437,7 +437,12 @@ public sealed partial class Session
 
     // Active timed stat buffs (from casting Buff spells). Session-local, like cooldowns — they clear on relog.
     // Each carries the stat it boosts, the amount, and the tick it expires at. Expired ones are pruned on read.
-    private sealed class ActiveBuff { public string Stat = ""; public int Amount; public long Expires; public string Key = ""; public string Name = ""; }
+    // Category groups a status into a MUTUALLY-EXCLUSIVE family (RTK spellTables.lua: curses/venoms/minorcurses/
+    // protections). Positive buffs leave it "". Only one status per non-empty category can be active at once — a
+    // curse spell is blocked if the target already has one of the same category (that guard is the whole point of
+    // self-pestilence: occupy your own 'curses' slot with a mild curse so an enemy can't land a worse one). Cure
+    // spells remove statuses BY category. See nexustk-495-curse-status-system.
+    private sealed class ActiveBuff { public string Stat = ""; public int Amount; public long Expires; public string Key = ""; public string Name = ""; public string Category = ""; }
     private readonly List<ActiveBuff> _buffs = new();
 
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) BuffTotals()

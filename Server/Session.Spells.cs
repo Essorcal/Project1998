@@ -189,8 +189,11 @@ public sealed partial class Session
         if (Content.SpellParams.TryGetValue(sp.Key, out var prow))
         {
             var verb = prow.GetValueOrDefault("verb", "");
-            if (SpellScript.HasVerb(verb) && SpellScript.Run(verb, new SpellContext(this, sp, targetId, answer), prow))
-                return true;
+            // Tri-state: null = no verb / Lua error -> fall through to C# below; true = cast succeeded; false = the
+            // verb ran but declined (no mana / blocked / no target) and already messaged, so return that verdict
+            // straight up (a false must NOT trigger the central "You cast X." or the C# fallback).
+            var r = SpellScript.RunResult(verb, new SpellContext(this, sp, targetId, answer), prow);
+            if (r.HasValue) return r.Value;
         }
 
         // Gateway (common/gateway.lua): a teleport with its own bespoke logic — warp to a gate of the caster's
@@ -569,6 +572,86 @@ public sealed partial class Session
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
         Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' frozen {durMs}ms");
+    }
+
+    // ---- CURSE / categorized-status primitives (the `curse` verb + arch_cure category removal) ---------------
+    // A curse is a mutually-exclusive categorized status (RTK spellTables.lua): applying one is blocked if the
+    // target already carries a status of that category (checkIfCast) — which is exactly why self-pestilence in a
+    // PvP map is a real defense (occupy your own 'curses' slot with a harmless curse). Cures remove by category.
+    // See nexustk-495-curse-status-system. Curse statuses ride the same _buffs list (with Category set) so they
+    // fold into Totals()/AC, expire+fade via ExpireBuffs, and revert automatically — no separate bookkeeping.
+
+    // Is a status of this category active on THIS player? (Reused across sessions to check any curse target.)
+    internal bool HasStatusCategory(string category)
+    {
+        if (string.IsNullOrEmpty(category)) return false;
+        long now = Environment.TickCount64;
+        return _buffs.Any(b => b.Category == category && b.Expires > now);
+    }
+
+    // Validate a curse target the way RTK pestilence.lua does: a PC (incl. YOURSELF) is only a legal curse target
+    // in a PvP map (approximates RTK canPK); a mob is always fair game; nothing faced -> "finds no target". NPCs
+    // aren't distinguished from mobs on 4.95 (stationary mobs), so curse-on-NPC isn't specifically blocked yet.
+    internal bool LuaCanCurseTarget(SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (pc is not null && !Content.IsPvpMap(_char.Map)) { SendMiniText("You cannot attack that target."); return false; }
+        return true;
+    }
+
+    // Does the resolved curse target already carry a status of this category? (PC only; mob curse-exclusivity is
+    // a follow-up — a mob can currently take a curse regardless.)
+    internal bool LuaCurseHasCategory(string category, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out _);
+        return pc is not null && pc.HasStatusCategory(category);
+    }
+
+    // Apply a categorized status to the resolved curse target (PC via _buffs+Category; mob via the timed-buff
+    // path). stat/amount is the mechanical effect (e.g. armor -5 -> raises effective AC -> victim takes MORE
+    // damage, our inverted-AC equivalent of RTK's cursing "armor += 5"); amount may be 0 for a pure blocker.
+    internal void LuaApplyCurse(string category, string stat, int amount, int durMs, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+        if (pc is not null)
+        {
+            pc.ReceiveCurse(stat, amount, durMs, sp.Key, sp.Name, category);
+            if (fx is not null) BroadcastFx(pc._char.Id, anim, snd);
+            TellTarget(pc, sp);   // other PC: "<caster> casts <X> on you."; self: any flavor line (else nothing)
+            Log.Info($"      (lua) {sp.Name} -> curse [{category}] {stat}{amount:+0;-0} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
+        }
+        else if (mob is not null)
+        {
+            if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);
+            if (fx is not null) BroadcastFx(mob.Id, anim, snd);
+            Log.Info($"      (lua) {sp.Name} -> curse [{category}] {stat}{amount:+0;-0} on mob {mob.Id} '{mob.Name}' {durMs}ms");
+        }
+        SendStats();
+    }
+
+    // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
+    // Unlike ReceiveTimedBuff this keeps a zero-amount entry (a curse's category slot matters even with no stat
+    // effect) and records the Category so checkIfCast / cure-by-category work.
+    internal void ReceiveCurse(string stat, int amount, int durMs, string key, string name, string category)
+    {
+        if (durMs <= 0) return;
+        _buffs.RemoveAll(b => b.Key == key);   // refresh, don't stack
+        _buffs.Add(new ActiveBuff { Stat = stat ?? "", Amount = amount, Expires = Environment.TickCount64 + durMs, Key = key, Name = name, Category = category ?? "" });
+        SendStats();
+    }
+
+    // Cure: remove every active status of this category from the caster (RTK removes durations by category). No
+    // fade line (a cure is a deliberate cleanse, not a lapse). Returns how many were cleared.
+    internal int LuaCureCategory(string category)
+    {
+        if (string.IsNullOrEmpty(category)) return 0;
+        int n = _buffs.RemoveAll(b => b.Category == category);
+        if (n > 0) SendStats();
+        return n;
     }
 
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective

@@ -36,8 +36,16 @@ public static class SpellScript
         return ret.Type != DataType.Boolean || ret.Boolean;     // non-boolean return = ran = success
     }
 
-    /// <summary>Run the spell verb. Returns true if the verb actually ran (whatever its in-game result); false
-    /// if there was no such verb or it raised a Lua error — the caller then falls back to the C# dispatch.</summary>
-    public static bool Run(string verb, SpellContext ctx, IReadOnlyDictionary<string, string> row) =>
-        _host.Invoke(verb, ctx, row) is not null;
+    /// <summary>Run a per-spell verb (bound via a SpellParams row). Tri-state, mirroring <see cref="RunArch"/>:
+    /// null = no such verb OR a Lua error (the caller falls through to the C# dispatch); true = the cast succeeded
+    /// (a non-boolean return counts as success, so a verb needn't bother returning true); false = the verb ran
+    /// but DECLINED (no mana / blocked / no target — it already sent its own notice). A false result must NOT
+    /// print the central "You cast X." or fall through to C#, so the caller returns it straight to HandleCast.</summary>
+    public static bool? RunResult(string verb, SpellContext ctx, IReadOnlyDictionary<string, string> row)
+    {
+        if (!_host.HasVerb(verb)) return null;
+        var ret = _host.Invoke(verb, ctx, row);
+        if (ret is null) return null;                          // Lua error -> fall through to the C# path
+        return ret.Type != DataType.Boolean || ret.Boolean;    // non-boolean return = ran = success
+    }
 }

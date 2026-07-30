@@ -148,4 +148,21 @@ public sealed class SpellContext
     public bool roll(double pct)        => _s.LuaRoll(pct);
     /// <summary>Freeze the resolved mob target for <paramref name="durMs"/> ms (RTK debuff hold) + debuff fx.</summary>
     public void freezeTarget(double durMs) => _s.LuaFreezeTarget((int)durMs, _sp, _targetId);
+
+    // ---- curse / categorized-status primitives (the `curse` verb + arch_cure) ------------------------------
+    /// <summary>The category this Cure removes (SpellFx.CureCat: "curses"/"venoms"/"minorcurses"). "" if none.</summary>
+    public string cureCat               => _fx?.CureCat ?? "";
+    /// <summary>Is the resolved curse target a legal one (a PC only in a PvP map — incl. yourself — or a mob)?
+    /// Sends the RTK notice and returns false otherwise ("finds no target." / "You cannot attack that target.").</summary>
+    public bool canCurse()              => _s.LuaCanCurseTarget(_sp, _targetId);
+    /// <summary>Does the resolved curse target already carry a status of <paramref name="category"/>? (The
+    /// checkIfCast guard — a same-category curse is then blocked, which is what makes self-pestilence a defense.)</summary>
+    public bool hasStatus(string category) => _s.LuaCurseHasCategory(category, _targetId);
+    /// <summary>Apply a categorized status to the resolved curse target: <paramref name="category"/> occupies the
+    /// exclusivity slot; <paramref name="stat"/>/<paramref name="amount"/> is the effect (e.g. armor -5 → take more
+    /// damage). Plays fx + the target's flavor line.</summary>
+    public void applyCurse(string category, string stat, double amount, double durMs) =>
+        _s.LuaApplyCurse(category, stat, (int)System.Math.Round(amount), (int)durMs, _sp, _targetId);
+    /// <summary>Remove every active status of <paramref name="category"/> from the caster (RTK cure-by-category).</summary>
+    public void cureCategory(string category) => _s.LuaCureCategory(category);
 }
