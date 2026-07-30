@@ -430,7 +430,7 @@ public sealed partial class Session
         if (BackstabStance && Combat.IsBackstabAngle(_facing, target.Dir, _char.X, _char.Y, target.X, target.Y)) dmg *= 2;
         if (FlankStance && Combat.IsFlankAngle(_facing, target.Dir, _char.X, _char.Y, target.X, target.Y)) dmg *= 2;
 
-        if (wasStealthed) _stealthUntil = 0;   // RTK: landing a hit strips stealth (swingDamage.lua removeDuras(invis))
+        if (wasStealthed) { _stealthUntil = 0; RevertStealth(); }   // RTK: landing a hit strips stealth (removeDuras(invis)) — drop the faded look now
 
         return (dmg, crit);
     }

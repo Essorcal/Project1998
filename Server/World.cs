@@ -7,7 +7,7 @@ namespace Server;
 /// read-loop; a torn read at worst mis-places a peer by one tile until its next move packet).</summary>
 public readonly record struct PlayerSnapshot(
     uint Id, ushort X, ushort Y, byte Dir, byte Sex, byte Face, byte Armor, byte Weapon, byte Shield, bool Mounted, bool Dead, string Name,
-    byte ArmorColor = 0, ushort MorphLook = 0, byte MorphColor = 0);
+    byte ArmorColor = 0, ushort MorphLook = 0, byte MorphColor = 0, bool Faded = false);
 
 /// <summary>A stack of an item lying on the map floor, drawn to every client on that map via 0x16
 /// (Item.epf frame = <see cref="Graphic"/>). <see cref="Id"/> is the entity id (find/despawn key). Carries
@@ -1081,6 +1081,7 @@ public sealed class World
         var trapDamage = new List<(ushort map, Mob mob, int dmg, uint ownerId)>();
         var expiredPets = new List<(ushort map, Mob mob)>();
         var expiredMorphs = new List<Session>();
+        var expiredStealth = new List<Session>();
         List<(ushort map, GroundItem gi)>? forage = null;
         bool timeChanged = false;
         List<(ushort map, byte weather)>? weatherChanges = null;
@@ -1101,6 +1102,9 @@ public sealed class World
             foreach (var (_, pm) in _maps)
                 foreach (var p in pm.Players)
                     if (p.IsMorphExpired) expiredMorphs.Add(p);
+            foreach (var (_, pm) in _maps)
+                foreach (var p in pm.Players)
+                    if (p.IsStealthExpired) expiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
 
             // (1.3) bladestorm auto-expiry: an untriggered decoy despawns silently after its 21s lifetime —
             // traps have no ground graphic (same precedent as the hazard family), so this is a plain in-lock
@@ -1345,6 +1349,10 @@ public sealed class World
         // Expired morphs queued above — revert the peer-visible disguise back to our real human look.
         foreach (var mp in expiredMorphs)
             Try(() => mp.RevertMorph());
+
+        // Expired stealth queued above — restore the normal look once the invisible-spell timer lapses w/o a hit.
+        foreach (var sp in expiredStealth)
+            Try(() => sp.RevertStealth());
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
         // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a

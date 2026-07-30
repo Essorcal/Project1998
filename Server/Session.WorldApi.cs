@@ -22,7 +22,7 @@ public sealed partial class Session
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
         new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, (byte)_char.Face, _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
-            _char.ArmorColor, _morphLook, _morphColor);
+            _char.ArmorColor, _morphLook, _morphColor, Stealthed);
 
     /// <summary>Draw player <paramref name="other"/> on our client. Normally the 0x33 player-look form; while
     /// morphed (see CastMorph/Content.MorphSpells), reroutes to the SAME 0x07 Monster.epf creature-spawn a
@@ -34,7 +34,7 @@ public sealed partial class Session
     {
         var s = other.Snapshot();
         if (s.MorphLook != 0) { SendCreatureList(new[] { (s.Id, (ushort)(0x8000 | s.MorphLook), s.X, s.Y, s.MorphColor, s.Dir) }); return; }
-        var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : (s.Mounted ? 3 : 0)), s.Face, s.Armor, s.ArmorColor, s.Weapon, s.Shield };   // same layout as SendSelfLook ([1]=form, [4]=war-paint dye)
+        var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : s.Faded ? 5 : s.Mounted ? 3 : 0), s.Face, s.Armor, s.ArmorColor, s.Weapon, s.Shield };   // [1]=form (5=invisible-spell/faded), [4]=war-paint dye
         SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
     }
 

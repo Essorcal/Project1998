@@ -290,8 +290,21 @@ public sealed partial class Session
         // look from the typed answer; the rest are fixed alignment reskins.
         if (Content.MorphDispatchFor(sp) is (Dictionary<string, ushort> morphAnswers, int mdMana, int mdDur))
         {
-            if (!morphAnswers.TryGetValue((answer ?? "").Trim().ToLowerInvariant(), out var mLook))
-            { SendMiniText("Become what?"); return false; }
+            var morphChoice = (answer ?? "").Trim();
+            if (!morphAnswers.TryGetValue(morphChoice.ToLowerInvariant(), out var mLook))
+            {
+                // Nothing typed -> just re-prompt (client also shows its own SplQuestion). A wrong choice was
+                // typed -> list the acceptable forms in the minitext box, one per line (RTK feral.lua itself
+                // just silently return()s on a bad answer; this is a friendlier server-side addition).
+                if (morphChoice.Length == 0) SendMiniText("Become what?");
+                else
+                {
+                    SendMiniText("Selectable animals...");
+                    var ti = System.Globalization.CultureInfo.InvariantCulture.TextInfo;
+                    foreach (var name in morphAnswers.Keys) SendMiniText(ti.ToTitleCase(name));
+                }
+                return false;
+            }
             return CastMorph(sp, fx, mLook, 0, mdMana, mdDur);
         }
         if (Content.MorphFor(sp) is (ushort morphLook, ushort morphLookF, int morphMana, int morphDur))
@@ -471,7 +484,7 @@ public sealed partial class Session
     // (above) cover rage + backstab/flank; these add the "already active" guards + the stealth/enchant setters.
     internal bool LuaRageActive    => EffRage > 1;      // RTK blocks casting a fury while one is up (checkIfCast(lesserFuries))
     internal bool LuaEnchantActive => EffEnchant > 1;   // RTK blocks re-casting an enchant while one is up
-    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; SendStats(); }
+    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; _stealthShown = true; SendStats(); RefreshAppearance(); }
     internal void LuaSetEnchant(double amount, int durMs)  { _enchantAmount = amount; _enchantUntil = Environment.TickCount64 + durMs; SendStats(); }
 
     // Venom DoT (the `venom` verb): resolve the faced/targeted MOB (venoms are mob-only in RTK — a PC/no target
@@ -1121,6 +1134,14 @@ public sealed partial class Session
     // PC_INVIS also hides the player's sprite from other clients (clif.c), which isn't touched by this pass.
     private long _stealthUntil;
     private bool Stealthed => Environment.TickCount64 < _stealthUntil;
+    // The faded (form-5) sprite is a peer-visible state with no server entity of its own — same shape as morph.
+    // _stealthShown tracks whether we're currently drawn faded so the revert fires exactly once, whether stealth
+    // ends by a hit (redrawn inline), a timer lapse, or a Cleanse/flush (both caught by World.Tick's IsStealthExpired).
+    private bool _stealthShown;
+    /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
+    public bool IsStealthExpired => _stealthShown && !Stealthed;
+    /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
+    public void RevertStealth() { if (!_stealthShown) return; _stealthShown = false; RefreshAppearance(); }
 
     private bool CastStealth(SpellDef sp, SpellFx fx, int mana)
     {
@@ -1128,8 +1149,10 @@ public sealed partial class Session
         _char.Mp -= (uint)mana;
         int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
         _stealthUntil = Environment.TickCount64 + durMs;
+        _stealthShown = true;
         SendStats();
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        RefreshAppearance();   // draw self + peers faded (form 5) — the invisible-spell see-through look
         // caster sees only the central "You cast <name>." (HandleCast); no flavor
         Log.Info($"      {sp.Name} -> stealth (9x next hit) armed for {durMs}ms");
         return true;

@@ -301,7 +301,7 @@ public sealed partial class Session
     // Form/state byte for appearance[1]: 1 = ghost (Hp==0, see Die()), 3 = mounted (horse+rider composite),
     // 0 = normal human. Dead outranks mounted — a horse doesn't survive its rider's death. Other documented
     // values (5 invisible-spell) aren't driven from here.
-    private byte MountForm() => _char.Hp == 0 ? (byte)1 : (_char.Mounted ? (byte)3 : (byte)0);
+    private byte MountForm() => _char.Hp == 0 ? (byte)1 : Stealthed ? (byte)5 : _char.Mounted ? (byte)3 : (byte)0;   // 5 = invisible-spell (faded/see-through)
 
     /// <summary>Redraw self + broadcast to every co-located peer after an appearance change (equip/unequip,
     /// mount/dismount, ghost/revive, morph, gender). RE'd root cause (2026-07-27) of the "abandoned red
