@@ -4,3 +4,21 @@ heal_mage,heal,6,,,20,1.0,,,,Flat 20 + 1*Will HP,rtk-lua
 mend_wounds_mage,heal,3,,,10,0.5,,,,Weaker heal sharing the same heal verb,rtk-lua
 baekhos_cunning,baekhos_cunning,,,,,,,,,"Baekho's Cunning: stateful multi-tier stance (tier table in verb)",rtk-lua
 pestilence_mage,curse,20,,,-5,,curses,armor,200000,"Pestilence: curses-category curse; armor -5 raises effective AC so the victim takes MORE damage (our inverted-AC form of RTK's armor+5); 200s; self-cast legal in a PvP map to block a worse curse",rtk-lua
+ju_jak_curse_mage,curse,2000,,,-45,,curses,armor,6000,"Ju Jak Curse (L99): curses-category; RTK armor+45 -> our -45 (victim takes much more dmg); 6s",rtk-lua
+hindrance_mage,curse,1000,,,-40,,curses,armor,6000,"Hindrance: curses-category; RTK armor+40 -> -40; 6s",rtk-lua
+vex_mage,curse,60,,,-30,,minorcurses,armor,425000,"Vex: minorcurses (curable by remove_curse AND atone); RTK armor+30 -> -30; ~7min",rtk-lua
+deaths_face_mage,curse,60,,,-30,,minorcurses,armor,425000,"Death's Face: vex clone (differs only in cast animation)",rtk-lua
+unnatural_selection_mage,curse,60,,,-30,,minorcurses,armor,425000,"Unnatural Selection: vex clone",rtk-lua
+flaw_mage,curse,60,,,-30,,minorcurses,armor,425000,"Flaw: vex clone",rtk-lua
+scourge_poet,curse,90,,,-50,,curses,armor,425000,"Scourge: curses-category (curable only by atone, not remove_curse); RTK armor+50 -> -50; ~7min",rtk-lua
+damage_will_poet,curse,90,,,-50,,curses,armor,425000,"Damage Will: scourge clone",rtk-lua
+drop_guard_poet,curse,90,,,-50,,curses,armor,425000,"Drop Guard: scourge clone",rtk-lua
+unalign_armor_poet,curse,90,,,-50,,curses,armor,425000,"Unalign Armor: scourge clone",rtk-lua
+dishearten_poet,curse,1000,,,-6,,disheartens,armor,18000,"Dishearten: disheartens-family (own exclusivity slot); RTK armor+6 -> -6; 18s",rtk-lua
+dark_fear_poet,curse,1000,,,-6,,disheartens,armor,18000,"Dark Fear: dishearten clone",rtk-lua
+break_will_poet,curse,1000,,,-6,,disheartens,armor,18000,"Break Will: dishearten clone",rtk-lua
+harshen_attack_poet,curse,1000,,,-6,,disheartens,armor,18000,"Harshen Attack: dishearten clone",rtk-lua
+venom_mage,venom,60,3000,,2000,,venoms,,,"Venom: DoT MaxHp*1%/1.5s, tick cap 2000, dur 1+rand(3000,30000)ms; mob-only",rtk-lua
+spirits_leech_mage,venom,60,1500,,1000,,venoms,,,"Spirit's Leech: DoT tick cap 1000, dur 1+rand(1500,30000)ms; mob-only",rtk-lua
+snake_bite_mage,venom,60,1500,,1000,,venoms,,,"Snake Bite: venom clone (cap 1000)",rtk-lua
+corruption_mage,venom,60,1500,,1000,,venoms,,,"Corruption: venom clone (cap 1000)",rtk-lua

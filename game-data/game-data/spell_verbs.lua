@@ -186,6 +186,69 @@ function verbs.buff(ctx, row)
   return true
 end
 
+-- =========================================================================================================
+-- TIER-2 COMBAT STANCES (rage / enchant / stealth / backstab / flank): each just ARMS a timed melee modifier
+-- on the caster, so they share the CastArch-style dispatch (Session.CastStanceArch): the C# classifier
+-- (Content.RageAmountFor / EnchantFor / IsStealthSpell / fx.CureCat) still identifies the spell and pre-computes
+-- the RTK numbers into ctx.amount / ctx.mana / ctx.durationMs; the LOGIC (guard, debit, arm, fx) lives here.
+-- No SpellParams row needed — these run for every spell the classifier recognises, falling back to the C#
+-- CastRage / CastEnchant / CastStealth / CastStance handler if the verb is absent (migrate-one-at-a-time).
+-- =========================================================================================================
+
+-- Rage tier: a whole-swing damage MULTIPLIER (Wolf's/Tiger's/Dragon's Fury, Baekho's Rage). RTK blocks casting
+-- ANY fury while one is already active — you wait it out, no overwrite to a stronger tier. amount = the tier's xN.
+function verbs.stance_rage(ctx, row)
+  if ctx.rageActive then ctx:say("You are already benefiting from a fury."); return false end
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:rage(math.floor(ctx.amount), ctx.durationMs > 0 and ctx.durationMs or 60000)
+  ctx:fxSelf()
+  return true
+end
+
+-- Enchant tier: multiplies ONLY the raw weapon-swing term (not the whole swing). Also blocked while one is active.
+function verbs.stance_enchant(ctx, row)
+  if ctx.enchantActive then ctx:say("This spell is already active."); return false end
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:armEnchant(ctx.amount, ctx.durationMs > 0 and ctx.durationMs or 60000)
+  ctx:fxSelf()
+  return true
+end
+
+-- Stealth (Rogue Invisible/Spirit's Form/…): arms a one-shot 9x sneak-attack burst; landing the next swing
+-- strips it (handled engine-side in PlayerSwingDamage). Here we just spend mana and arm the timer.
+function verbs.stance_stealth(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:armStealth(ctx.durationMs > 0 and ctx.durationMs or 60000)
+  ctx:fxSelf()
+  return true
+end
+
+-- Backstab / Flank (Warrior positional stances): arm the free positional-crit angle for the duration.
+local function arm_positional(ctx, which)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:stance(which, true, ctx.durationMs > 0 and ctx.durationMs or 60000)
+  ctx:fxSelf()
+  return true
+end
+function verbs.stance_backstab(ctx, row) return arm_positional(ctx, "backstab") end
+function verbs.stance_flank(ctx, row)    return arm_positional(ctx, "flank")    end
+
+-- Venom (RTK mage/venom.lua & kin): a MOB-only damage-over-time poison — ticks MaxHp*1% every 1.5s for a random
+-- window, capped so it can never land the killing blow (RTK while_cast_1500). Reuses the SAME poison engine the
+-- Rogue poison-dart trap already drives (World.PoisonMob). row.amount = per-tick cap, row.base = random lower
+-- bound (ms); blocked if the target is already venomed (checkIfCast(venoms)) or isn't a mob ("It doesn't work").
+function verbs.venom(ctx, row)
+  local mana = row.mana or 60
+  if not ctx:enoughMana(mana) then return false end
+  if not ctx:applyVenom(row.amount or 1000, row.base or 1500, 30000) then return false end
+  ctx:debitMana(mana)
+  return true
+end
+
 -- Curse (RTK Spells/*/pestilence.lua & kin): apply a MUTUALLY-EXCLUSIVE categorized status to a curse target.
 -- Blocked if the target already carries a status of the same category (checkIfCast) or a protection — which is
 -- what makes self-pestilence a real defense: occupy your own 'curses' slot with a mild curse (row.amount is the
