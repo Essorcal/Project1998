@@ -32,6 +32,72 @@ function verbs.arch_heal(ctx, row)
   return true
 end
 
+-- Split a '|'-separated CSV field into a list ("might|hit" -> {"might","hit"}; "" -> {}).
+local function split_bar(s)
+  local out = {}
+  if s == nil or s == "" then return out end
+  for part in string.gmatch(s, "([^|]+)") do out[#out + 1] = part end
+  return out
+end
+
+-- Buff archetype: a timed SELF buff (the caster is the target). Spend mana, refresh (don't stack), then apply
+-- each stat|amount pair from the export row for the spell's duration, play the aura fx once, and show the live
+-- target-flavor line to yourself (e.g. Might -> "Your muscles develop." then the central "You cast Might.").
+function verbs.arch_buff(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:clearBuff()
+  local dur = ctx.durationMs > 0 and ctx.durationMs or 60000
+  local stats, amts = split_bar(ctx.buffStat), split_bar(ctx.buffAmt)
+  for i = 1, #stats do
+    local amt = math.floor(tonumber(amts[i]) or 0)      -- "3" or "3.0" -> 3; missing/0 -> skipped by addBuff
+    if amt ~= 0 then ctx:addBuff(stats[i], amt, dur) end
+  end
+  ctx:fxSelf()
+  ctx:flavorSelf()
+  return true
+end
+
+-- TargetBuff archetype: a beneficial timed buff cast ON a target (another player, yourself, or a mob/NPC/pet).
+-- Mana is CHECKED up front but DEBITED only once the cast commits, so a no-target abort spends nothing. The
+-- verb owns the routing: deduction (a damage-reduction multiplier) is player-only; a plain stat buff applies to
+-- a player (with their flavor line) or a mob. buffAmt is a fraction for deduction, an integer otherwise.
+function verbs.arch_targetbuff(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  if ctx.targetKind == "none" then ctx:say(ctx.spellName .. " finds no target."); return false end
+  local dur = ctx.durationMs > 0 and ctx.durationMs or 300000
+  if ctx.buffStat == "deduction" then
+    if ctx.targetKind ~= "player" then ctx:say(ctx.spellName .. " has no effect on that."); return false end
+    ctx:debitMana(ctx.mana)
+    ctx:deductionTarget(tonumber(ctx.buffAmt) or 1.0, dur)
+    return true
+  end
+  ctx:debitMana(ctx.mana)
+  ctx:buffTarget(ctx.buffStat, math.floor(tonumber(ctx.buffAmt) or 0), dur)
+  return true
+end
+
+-- Debuff archetype: a hostile crowd-control freeze. Check mana, require a target, roll the magic-deflect (no
+-- mana on a deflect), debit, roll the take-hold chance, then freeze the mob for the duration.
+function verbs.arch_debuff(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  if not ctx.hasTarget then ctx:say(ctx.spellName .. " finds no target."); return false end
+  if ctx:deflected() then ctx:say("The magic has been deflected."); return true end
+  ctx:debitMana(ctx.mana)
+  local ch = ctx.chance
+  if ch < 100 and not ctx:roll(ch) then ctx:say(ctx.spellName .. " fails to take hold."); return true end
+  ctx:freezeTarget(ctx.durationMs > 0 and ctx.durationMs or 20000)
+  return true
+end
+
+-- Cure archetype: RTK removes a category of durations from the target; we don't yet carry negative status, so
+-- functionally this is a mana spend (parity with C# CastCure). Kept as a verb so it's scriptable when we do.
+function verbs.arch_cure(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  return true
+end
+
 -- =========================================================================================================
 -- PER-SPELL verbs: bound to one spell by a SpellParams.csv row whose `verb` column names it (these take
 -- precedence over the archetype path). Their numbers come from the row (row.coeff, row.base, ...).
