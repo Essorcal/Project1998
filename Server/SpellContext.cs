@@ -105,7 +105,7 @@ public sealed class SpellContext
     /// <summary>Start a named cooldown for <paramref name="ms"/> milliseconds.</summary>
     public void setCooldown(string key, double ms)    => _s.LuaSetCooldown(key, (int)ms);
     /// <summary>Arm the melee rage multiplier (whole-swing ×amount) for <paramref name="durMs"/> ms.</summary>
-    public void rage(double amount, double durMs)     => _s.LuaSetRage((int)amount, (int)durMs);
+    public void rage(double amount, double durMs)     => _s.LuaSetRage((int)amount, (int)durMs, _sp.Name);
     /// <summary>Arm Baekho's Cunning damage-reduction (its own slot, independent of the Sanctuary line — Sanctuary
     /// overrides it while up, then it re-asserts). <paramref name="mult"/> is the incoming-damage multiplier.</summary>
     public void deduction(double mult, double durMs)  => _s.ApplyCunningDeduction(mult, (int)durMs);

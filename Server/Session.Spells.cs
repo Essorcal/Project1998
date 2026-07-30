@@ -456,7 +456,7 @@ public sealed partial class Session
     internal bool LuaOnCooldown(string key)          => OnCooldown(key, out _);
     internal void LuaSetCooldown(string key, int ms) => SetCooldown(key, ms);
     // Directly arm the rage multiplier (bypasses CastRage's "already raging" guard — Cunning sets its own tier).
-    internal void LuaSetRage(int amount, int durMs)  { _rageAmount = amount; _rageUntil = Environment.TickCount64 + durMs; SendStats(); }
+    internal void LuaSetRage(int amount, int durMs, string name)  { _rageAmount = amount; _rageUntil = Environment.TickCount64 + durMs; _rageName = name ?? ""; SendStats(); }
     // Arm (on) or clear (off) a positional stance timer (backstab/flank) for durMs.
     internal void LuaStance(string name, bool on, int durMs)
     {
@@ -1047,6 +1047,7 @@ public sealed partial class Session
     // baseline of 1 (not 0) automatically once _rageUntil lapses — see EffRage.
     private long _rageUntil;
     private int  _rageAmount = 1;
+    internal string _rageName = "";   // the arming spell's display name, for the buff box (else a bare "Fury")
     private int  EffRage => Environment.TickCount64 < _rageUntil ? _rageAmount : 1;
 
     // Damage-reduction "deduction" slot (RTK player.deduction — the sanctuary line + Baekho's Cunning): a
@@ -1104,6 +1105,7 @@ public sealed partial class Session
         int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
         _rageUntil = Environment.TickCount64 + durMs;
         _rageAmount = rageAmount;
+        _rageName = sp.Name;
         SendStats();
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
         // caster sees only the central "You cast <name>." (HandleCast); no flavor

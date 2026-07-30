@@ -1096,7 +1096,7 @@ public sealed partial class Session
         // real (Cunning re-asserts when Sanctuary lapses), so surface both so the player can see the ladder.
         if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} -{(int)Math.Round((1 - EffDeduction) * 100)}% ({Secs(SancDeductUntil, now)}s)");
         if (CunningDeductActive)  lines.Add($"Cunning {(SancDeductActive ? "(suppressed) " : "")}({Secs(CunningDeductUntil, now)}s)");
-        if (now < _rageUntil && _rageAmount > 1)  lines.Add($"Fury x{_rageAmount} ({Secs(_rageUntil, now)}s)");
+        if (now < _rageUntil && _rageAmount > 1)  lines.Add($"{(_rageName.Length > 0 ? _rageName : "Fury")} ({Secs(_rageUntil, now)}s)");
         if (now < _backstabUntil)                 lines.Add($"Backstab ({Secs(_backstabUntil, now)}s)");
         if (now < _flankUntil)                    lines.Add($"Flank ({Secs(_flankUntil, now)}s)");
 
