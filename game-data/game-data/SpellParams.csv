@@ -22,3 +22,19 @@ venom_mage,venom,60,3000,,2000,,venoms,,,"Venom: DoT MaxHp*1%/1.5s, tick cap 200
 spirits_leech_mage,venom,60,1500,,1000,,venoms,,,"Spirit's Leech: DoT tick cap 1000, dur 1+rand(1500,30000)ms; mob-only",rtk-lua
 snake_bite_mage,venom,60,1500,,1000,,venoms,,,"Snake Bite: venom clone (cap 1000)",rtk-lua
 corruption_mage,venom,60,1500,,1000,,venoms,,,"Corruption: venom clone (cap 1000)",rtk-lua
+bolster_poet,ward,1000,,,4,,bolsters,armor,37000,"Bolster: ward, armor +4 (better AC); bolsters family (blocks + blocked by disheartens); 37s",rtk-lua
+dark_armor_poet,ward,1000,,,4,,bolsters,armor,37000,"Dark Armor: bolster clone",rtk-lua
+life_armor_poet,ward,1000,,,4,,bolsters,armor,37000,"Life Armor: bolster clone",rtk-lua
+armor_of_elements_poet,ward,1000,,,4,,bolsters,armor,37000,"Armor of Elements: bolster clone",rtk-lua
+harden_armor_mage,ward,30,,,10,,hardarmors,armor,300000,"Harden Armor: ward, armor +10; hardarmors family (independent of bolster); 300s; PC or mob",rtk-lua
+thicken_skin_mage,ward,30,,,10,,hardarmors,armor,300000,"Thicken Skin: harden clone",rtk-lua
+shield_of_life_mage,ward,30,,,10,,hardarmors,armor,300000,"Shield of Life: harden clone",rtk-lua
+elemental_armor_mage,ward,30,,,10,,hardarmors,armor,300000,"Elemental Armor: harden clone",rtk-lua
+harden_armor_poet,ward,30,,,10,,hardarmors,armor,300000,"Harden Armor (poet): harden clone",rtk-lua
+thicken_skin_poet,ward,30,,,10,,hardarmors,armor,300000,"Thicken Skin (poet): harden clone",rtk-lua
+shield_of_life_poet,ward,30,,,10,,hardarmors,armor,300000,"Shield of Life (poet): harden clone",rtk-lua
+elemental_armor_poet,ward,30,,,10,,hardarmors,armor,300000,"Elemental Armor (poet): harden clone",rtk-lua
+hoche_warrior,ward,5000,,,0,,protections,,60000,"Hoche: protection ward, no stat (occupies the protections slot so curses bounce); self-cast; 60s; 180s cooldown",rtk-lua
+immunity_warrior,ward,5000,,,0,,protections,,60000,"Immunity: protection clone",rtk-lua
+forest_blessing_warrior,ward,5000,,,0,,protections,,60000,"Forest Blessing: protection clone",rtk-lua
+magics_shield_warrior,ward,5000,,,0,,protections,,60000,"Magic's Shield: protection clone",rtk-lua

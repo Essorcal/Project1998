@@ -249,18 +249,72 @@ function verbs.venom(ctx, row)
   return true
 end
 
+-- =========================================================================================================
+-- CATEGORIZED STATUS layer (curses + wards). RTK's checkIfCast() cross-guards live in spellTables.lua: a cast is
+-- refused if the target already carries a status in its category's BLOCK list. These relationships are RTK
+-- CONSTANTS (not per-spell data), so they live here keyed by the casting status's category:
+--   curses/minorcurses : own family + protections  (a protection makes you immune to curses)
+--   disheartens        : own + bolsters + protections   (bolster blocks dishearten and vice-versa)
+--   bolsters           : own + disheartens
+--   hardarmors         : own only (independent of bolster — you CAN stack harden + bolster)
+--   protections        : NONE — RTK hoche/immunity/... have no checkIfCast guard, so re-cast just refreshes
+-- minorcurses collapses into curses inside ctx:hasStatus (see Session.CatFamily), so listing "curses" catches it.
+local BLOCKS = {
+  curses      = { "curses", "protections" },
+  minorcurses = { "curses", "protections" },
+  disheartens = { "disheartens", "bolsters", "protections" },
+  bolsters    = { "bolsters", "disheartens" },
+  hardarmors  = { "hardarmors" },
+  protections = {},
+}
+-- Return the FIRST blocking category present on the target (via `hasFn`), or nil. Unknown categories default to
+-- own-category exclusivity. `hasFn` is the caller's status check (curses check the curse target; wards their own).
+local function blockedBy(hasFn, category)
+  local list = BLOCKS[category]
+  if list == nil then list = { category } end
+  for _, cat in ipairs(list) do
+    if hasFn(cat) then return cat end
+  end
+  return nil
+end
+local function blockMsg(cat)
+  if cat == "protections" then return "The target is already protected." end
+  return "Another spell of this type is in effect."
+end
+
 -- Curse (RTK Spells/*/pestilence.lua & kin): apply a MUTUALLY-EXCLUSIVE categorized status to a curse target.
--- Blocked if the target already carries a status of the same category (checkIfCast) or a protection — which is
--- what makes self-pestilence a real defense: occupy your own 'curses' slot with a mild curse (row.amount is the
--- stat effect, e.g. armor -5 -> raises effective AC -> take MORE damage) so an enemy can't land a worse curse.
--- Row: mana, category (curses/venoms/...), stat, amount, duration. Removed later by a Cure of the same category.
+-- Blocked if the target already carries a status in this category's BLOCK list (checkIfCast) — which is what
+-- makes self-pestilence a real defense (occupy your own 'curses' slot with a mild curse; row.amount is the stat
+-- effect, e.g. armor -5 -> raises effective AC -> take MORE damage) AND what makes a protection curse-immune.
+-- Row: mana, category (curses/disheartens/...), stat, amount, duration. Removed later by a Cure of that category.
 function verbs.curse(ctx, row)
   local mana = row.mana or 0
   if not ctx:enoughMana(mana) then return false end
   if not ctx:canCurse() then return false end                                    -- PvP-legal PC (incl self) or a mob
-  if ctx:hasStatus(row.category) then ctx:say("Another spell of this type is in effect."); return false end
-  if ctx:hasStatus("protections") then ctx:say("The target is already protected."); return false end
+  local by = blockedBy(function(c) return ctx:hasStatus(c) end, row.category)
+  if by then ctx:say(blockMsg(by)); return false end
   ctx:debitMana(mana)
   ctx:applyCurse(row.category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 200000)
+  return true
+end
+
+-- Ward (RTK bolster/harden_armor/hoche & kin): the BENEFICIAL twin of curse — a mutually-exclusive categorized
+-- status cast on yourself or an ally (never PvP-gated; a bolster raises AC via positive `amount` in our inverted
+-- convention). Protections (hoche family) carry NO stat (amount 0) — they exist only to occupy the 'protections'
+-- slot so curses bounce off. Same _buffs storage + category exclusivity as curse, so a warded ally shows up when
+-- an enemy's curse checks hasStatus. category -> self vs ally target and any cooldown are RTK constants (below).
+local WARD_SELF     = { protections = true }        -- hoche/immunity/... are self-cast (no target arg)
+local WARD_COOLDOWN = { protections = 180000 }      -- RTK setAether("hoche_warrior", 180000)
+function verbs.ward(ctx, row)
+  local mana = row.mana or 0
+  local cd = WARD_COOLDOWN[row.category]
+  if cd and ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if not ctx:enoughMana(mana) then return false end
+  if not ctx:wardTarget(WARD_SELF[row.category] and "self" or "ally") then return false end
+  local by = blockedBy(function(c) return ctx:wardHasStatus(c) end, row.category)
+  if by then ctx:say(blockMsg(by)); return false end
+  ctx:debitMana(mana)
+  ctx:applyWard(row.category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 60000)
+  if cd then ctx:setCooldown(ctx.spellKey, cd) end
   return true
 end
