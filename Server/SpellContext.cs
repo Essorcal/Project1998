@@ -43,6 +43,8 @@ public sealed class SpellContext
     // ---- archetype-row fields (Lua: ctx.buffStat, ctx.durationMs, …) for the Buff/TargetBuff/Debuff verbs ----
     /// <summary>The spell's display name (for "&lt;name&gt; finds no target." style notices).</summary>
     public string spellName  => _sp.Name;
+    /// <summary>The spell's stable key (for keying its own cooldown/duration, e.g. a ward's aether).</summary>
+    public string spellKey   => _sp.Key;
     /// <summary>Buff stat key(s), '|'-separated for multi-stat buffs (e.g. "might" or "might|hit"). "" if none.</summary>
     public string buffStat   => _fx?.BuffStat ?? "";
     /// <summary>Buff amount(s), '|'-separated, parallel to <see cref="buffStat"/> (deduction uses a fractional
@@ -182,4 +184,15 @@ public sealed class SpellContext
         _s.LuaApplyCurse(category, stat, (int)System.Math.Round(amount), (int)durMs, _sp, _targetId);
     /// <summary>Remove every active status of <paramref name="category"/> from the caster (RTK cure-by-category).</summary>
     public void cureCategory(string category) => _s.LuaCureCategory(category);
+
+    // ---- ward primitives (the `ward` verb: bolster / harden / protections — the beneficial categorized status) ----
+    /// <summary>Resolve + validate the ward target: "self" (protections) or "ally" (self/ally PC, or a mob for
+    /// harden-on-a-pet). No PvP gate. False (with "It doesn't work.") if nothing is found.</summary>
+    public bool wardTarget(string mode)      => _s.LuaWardTarget(mode, _targetId);
+    /// <summary>Does the resolved ward target already carry a status of <paramref name="category"/>? (PC only.)</summary>
+    public bool wardHasStatus(string category) => _s.LuaWardHasStatus(category);
+    /// <summary>Apply the ward to the resolved target: a PC gets the categorized status (shares curse storage,
+    /// folds into AC); a mob gets just the stat buff. <paramref name="amount"/> may be 0 (a protection slot).</summary>
+    public void applyWard(string category, string stat, double amount, double durMs) =>
+        _s.LuaApplyWard(category, stat, (int)System.Math.Round(amount), (int)durMs, _sp);
 }

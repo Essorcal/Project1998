@@ -693,6 +693,48 @@ public sealed partial class Session
         SendStats();
     }
 
+    // ---- WARD primitives (the `ward` verb: bolster / harden_armor / hoche protections) --------------------------
+    // A ward is the BENEFICIAL twin of a curse — the SAME categorized-status storage (ReceiveCurse) and family
+    // exclusivity, but cast on yourself/an ally (never PvP-gated) and applying a positive armor (better AC) or, for
+    // protections, no stat at all (a pure category-slot occupier that makes curses bounce). Resolved once per cast.
+    private Session? _wardPc;   // the ward's resolved PC target for the current cast (self or ally)
+    private Mob?     _wardMob;  // …or a mob (harden on a pet); mobs don't track categories (no exclusivity there)
+
+    // Resolve + validate the ward target. "self" -> the caster (protections, which take no target arg). "ally" ->
+    // an explicit id or the faced tile: a PC (self or ally) or a mob (harden on a pet). No PvP gate — wards are
+    // beneficial. "It doesn't work." on nothing found (RTK bolster/harden's own no-target line).
+    internal bool LuaWardTarget(string mode, uint? targetId)
+    {
+        _wardPc = null; _wardMob = null;
+        if (mode == "self") { _wardPc = this; return true; }
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (pc is null && mob is null) { SendMiniText("It doesn't work."); return false; }
+        _wardPc = pc; _wardMob = mob;
+        return true;
+    }
+    // Category check for the ward's own target (PC only — mobs don't carry categories, matching the curse side).
+    internal bool LuaWardHasStatus(string category) => _wardPc?.HasStatusCategory(category) ?? false;
+    // Apply the ward: a PC gets the categorized status (ReceiveCurse — shared curse/ward storage, folds into
+    // Totals()/AC and expires+reverts on its own); a mob gets just the stat buff (no category). Plays fx + flavor.
+    internal void LuaApplyWard(string category, string stat, int amount, int durMs, SpellDef sp)
+    {
+        var fx = Content.FxFor(sp);
+        if (_wardPc is not null)
+        {
+            _wardPc.ReceiveCurse(stat, amount, durMs, sp.Key, sp.Name, category);   // zero-amount ok (a protection slot has no stat)
+            if (fx is not null) BroadcastFx(_wardPc._char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            TellTarget(_wardPc, sp);   // self: flavor before "You cast X"; ally: "<caster> casts <X> on you."
+            Log.Info($"      (lua) {sp.Name} -> ward [{category}] {stat}{amount:+0;-0} on player {_wardPc._char.Id} '{_wardPc._char.Name}' {durMs}ms");
+        }
+        else if (_wardMob is not null)
+        {
+            if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(_wardMob, stat, amount, durMs, sp.Key);
+            if (fx is not null) BroadcastFx(_wardMob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            Log.Info($"      (lua) {sp.Name} -> ward [{category}] {stat}{amount:+0;-0} on mob {_wardMob.Id} '{_wardMob.Name}' {durMs}ms");
+        }
+        SendStats();
+    }
+
     // Cure: remove every active status of this category from the caster (RTK removes durations by category). No
     // fade line (a cure is a deliberate cleanse, not a lapse). Returns how many were cleared.
     internal int LuaCureCategory(string category)
