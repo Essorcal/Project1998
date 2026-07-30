@@ -746,6 +746,25 @@ public sealed class World
         }
     }
 
+    /// <summary>Apply a venom/poison damage-over-time to a mob (RTK mage venom.lua family — the SAME engine the
+    /// Rogue poison-dart trap drives, see <see cref="TriggerTrapLocked"/>'s "poison" case): ticks MaxHp*1% every
+    /// 1500ms for a random window (1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>)), the per-tick
+    /// damage clamped to [1, <paramref name="tickCap"/>] so it can never itself land the killing blow (World.Tick
+    /// only ticks while Hp > the tick amount). Returns false if the mob is already venomed (checkIfCast(venoms)).</summary>
+    public bool PoisonMob(Mob mob, int tickCap, int lowMs, int highMs, uint ownerId)
+    {
+        lock (_lock)
+        {
+            long now = Environment.TickCount64;
+            if (mob.PoisonUntil > now) return false;                        // already venomed — RTK checkIfCast(venoms)
+            mob.PoisonUntil     = now + 1 + Random.Shared.Next(lowMs, highMs + 1);
+            mob.PoisonNextTick  = now + 1500;
+            mob.PoisonTickDam   = Math.Clamp((int)(mob.MaxHp * 0.01), 1, tickCap);
+            mob.PoisonOwnerId   = ownerId;
+            return true;
+        }
+    }
+
     /// <summary>How many of this owner's pets (RTK Poet "Call of the Wild" summons) are currently alive on
     /// this map — the spawn cap in Content.PetCapFor is checked against this (RTK cotw_spawnCheck: same-map
     /// only, matching <c>player:getObjectsInMap</c>).</summary>

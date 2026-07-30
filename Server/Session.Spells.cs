@@ -257,17 +257,17 @@ public sealed partial class Session
         // (backstab_warrior/back_battle_warrior/back_attack_warrior/back_damage_warrior, and the flank
         // equivalents) with CureCat "backstabs"/"flanks" — a clean, data-driven way to catch all 4 aliases of
         // each without hardcoding 8 identifiers.
-        if (fx.CureCat == "backstabs") return CastStance(sp, fx, mana, isBackstab: true);
-        if (fx.CureCat == "flanks")    return CastStance(sp, fx, mana, isBackstab: false);
+        if (fx.CureCat == "backstabs") return CastStanceArch("stance_backstab", sp, fx, mana, 0) ?? CastStance(sp, fx, mana, isBackstab: true);
+        if (fx.CureCat == "flanks")    return CastStanceArch("stance_flank",    sp, fx, mana, 0) ?? CastStance(sp, fx, mana, isBackstab: false);
 
         // Rage tiers (Wolf's/Tiger's/Dragon's Fury, Baekho's Rage — Warrior AND Rogue; user: "they get rage
         // spells until 99 I think") and Rogue's Invisible/Spirit's Form/Life's Cloak/Glass Form (sneak-attack
         // multiplier — user: "rogue invis also has a damage multiplier"): same class of gap as Backstab/Flank
         // above — neither has a numeric BuffStat/BuffAmt the generic CastBuff loop can express, so both
         // silently no-opped (spent mana, printed a message, did nothing) before this pass.
-        if (Content.RageAmountFor(sp) is int rageAmt) return CastRage(sp, fx, mana, rageAmt);
-        if (Content.IsStealthSpell(sp)) return CastStealth(sp, fx, mana);
-        if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return CastEnchant(sp, fx, enchantAmt, enchantMana);
+        if (Content.RageAmountFor(sp) is int rageAmt) return CastStanceArch("stance_rage", sp, fx, mana, rageAmt) ?? CastRage(sp, fx, mana, rageAmt);
+        if (Content.IsStealthSpell(sp)) return CastStanceArch("stance_stealth", sp, fx, mana, 0) ?? CastStealth(sp, fx, mana);
+        if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return CastStanceArch("stance_enchant", sp, fx, enchantMana, enchantAmt) ?? CastEnchant(sp, fx, enchantAmt, enchantMana);
 
         // The rest of this pass (self-sacrifice strikes, mana steal/gift, cleanse, revive, short leap): none
         // of these have a numeric BuffStat/BuffAmt or a damage amountExpr the generic archetypes can express
@@ -325,6 +325,17 @@ public sealed partial class Session
         if (!SpellScript.HasVerb(verb)) return null;
         double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
         return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
+    }
+
+    // Stance Lua hook (Tier-2 migration): rage / enchant / stealth / backstab / flank all just ARM a timed melee
+    // modifier on the caster, so — like CastArch — try the Lua verb first, falling back to the C# handler if it
+    // isn't loaded. The C# classifier has already picked the spell + its RTK numbers, passed via ctx: `amount`
+    // carries the rage/enchant multiplier (0 for the flag-only stealth/backstab/flank), `mana` the resolved cost,
+    // and `fx` the export row (ctx.durationMs). No per-spell formula to evaluate (unlike CastArch's amountExpr).
+    private bool? CastStanceArch(string verb, SpellDef sp, SpellFx fx, int mana, double amount)
+    {
+        if (!SpellScript.HasVerb(verb)) return null;
+        return SpellScript.RunArch(verb, new SpellContext(this, sp, null, null, amount, mana, fx));
     }
 
     // ---- Lua spell-verb primitives (called by SpellContext; see Server/SpellScript.cs) --------------------
@@ -443,6 +454,28 @@ public sealed partial class Session
         else if (name == "flank") _flankUntil = exp;
     }
     internal void LuaFx(int anim, int sound) => BroadcastFx(_char.Id, anim, sound);
+
+    // ---- Tier-2 stance primitives (rage/enchant/stealth verbs) — thin wrappers over the SAME timer fields the
+    // C# CastRage/CastEnchant/CastStealth handlers arm, so the Lua route can't diverge. LuaSetRage/LuaStance
+    // (above) cover rage + backstab/flank; these add the "already active" guards + the stealth/enchant setters.
+    internal bool LuaRageActive    => EffRage > 1;      // RTK blocks casting a fury while one is up (checkIfCast(lesserFuries))
+    internal bool LuaEnchantActive => EffEnchant > 1;   // RTK blocks re-casting an enchant while one is up
+    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; SendStats(); }
+    internal void LuaSetEnchant(double amount, int durMs)  { _enchantAmount = amount; _enchantUntil = Environment.TickCount64 + durMs; SendStats(); }
+
+    // Venom DoT (the `venom` verb): resolve the faced/targeted MOB (venoms are mob-only in RTK — a PC/no target
+    // gets "It doesn't work") and hand it to World.PoisonMob (the shared poison engine). False if no mob or the
+    // mob is already venomed (checkIfCast(venoms)); the verb then spends no mana. Plays the spell's debuff fx.
+    internal bool LuaApplyVenom(int tickCap, int lowMs, int highMs, SpellDef sp, uint? targetId)
+    {
+        var mob = ResolveCastTarget(targetId);
+        if (mob is null) { SendMiniText("It doesn't work."); return false; }
+        if (!_world.PoisonMob(mob, tickCap, lowMs, highMs, _char.Id)) { SendMiniText("Another spell of this type is in effect."); return false; }
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        Log.Info($"      (lua) {sp.Name} -> venom mob {mob.Id} '{mob.Name}' tickCap {tickCap}");
+        return true;
+    }
 
     // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.
     // Re-casting the SAME spell refreshes rather than stacks (matches C# CastBuff / RTK removeDuras-then-set).
@@ -583,12 +616,26 @@ public sealed partial class Session
     // See nexustk-495-curse-status-system. Curse statuses ride the same _buffs list (with Category set) so they
     // fold into Totals()/AC, expire+fade via ExpireBuffs, and revert automatically — no separate bookkeeping.
 
-    // Is a status of this category active on THIS player? (Reused across sessions to check any curse target.)
+    // The ONE category containment in RTK spellTables.lua: minorcurses ⊂ curses. It has two asymmetric views:
+    //  - EXCLUSIVITY (checkIfCast): SYMMETRIC — a minor curse (vex) and a full curse (pestilence) block each
+    //    other, because every curse spell's cast() guards on the BROAD `curses` table. CatFamily collapses
+    //    minorcurses→curses so both sides compare equal.
+    //  - CURE (removeDuras): ONE-WAY — atone (cureCat "curses") clears minor curses too, but remove_curse
+    //    (cureCat "minorcurses") does NOT clear a full curse. CureMatches encodes that direction only.
+    // Every other category (venoms/paras/blinds/disheartens/…) is disjoint, so both helpers reduce to equality.
+    private static string CatFamily(string cat) => cat == "minorcurses" ? "curses" : cat;
+    private static bool CureMatches(string statusCat, string cureCat) =>
+        statusCat == cureCat || (cureCat == "curses" && statusCat == "minorcurses");
+
+    // Is a status of this category (or its broader family) active on THIS player? Used for the checkIfCast
+    // exclusivity guard, so it uses the SYMMETRIC family collapse (a minor curse blocks a full curse and vice
+    // versa). (Reused across sessions to check any curse target.)
     internal bool HasStatusCategory(string category)
     {
         if (string.IsNullOrEmpty(category)) return false;
         long now = Environment.TickCount64;
-        return _buffs.Any(b => b.Category == category && b.Expires > now);
+        string fam = CatFamily(category);
+        return _buffs.Any(b => b.Category.Length > 0 && CatFamily(b.Category) == fam && b.Expires > now);
     }
 
     // Validate a curse target the way RTK pestilence.lua does: a PC (incl. YOURSELF) is only a legal curse target
@@ -651,7 +698,7 @@ public sealed partial class Session
     internal int LuaCureCategory(string category)
     {
         if (string.IsNullOrEmpty(category)) return 0;
-        int n = _buffs.RemoveAll(b => b.Category == category);
+        int n = _buffs.RemoveAll(b => b.Category.Length > 0 && CureMatches(b.Category, category));   // curing `curses` also clears minor curses
         if (n > 0) SendStats();
         return n;
     }

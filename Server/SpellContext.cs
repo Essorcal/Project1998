@@ -112,6 +112,22 @@ public sealed class SpellContext
     /// <summary>Play a cast animation + sound on the caster (Effect.tbl anim id, sound id).</summary>
     public void fx(double anim, double sound)         => _s.LuaFx((int)anim, (int)sound);
 
+    // ---- Tier-2 combat-stance primitives (rage / enchant / stealth verbs) ----
+    /// <summary>Is a fury/rage tier already active? (RTK blocks casting another while one runs.)</summary>
+    public bool rageActive                            => _s.LuaRageActive;
+    /// <summary>Is an enchant tier already active? (RTK blocks re-casting while one runs.)</summary>
+    public bool enchantActive                         => _s.LuaEnchantActive;
+    /// <summary>Arm the Rogue stealth burst (next swing ×9, then strips) for <paramref name="durMs"/> ms.</summary>
+    public void armStealth(double durMs)              => _s.LuaSetStealth((int)durMs);
+    /// <summary>Arm an enchant tier (multiplies only the raw weapon-swing term) for <paramref name="durMs"/> ms.</summary>
+    public void armEnchant(double amount, double durMs) => _s.LuaSetEnchant(amount, (int)durMs);
+
+    /// <summary>Apply a mob-only venom DoT (MaxHp×1% per 1.5s, per-tick clamped to <paramref name="tickCap"/>,
+    /// for 1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>) ms). False if no mob target or it's
+    /// already venomed (a notice was sent) — the verb then spends no mana.</summary>
+    public bool applyVenom(double tickCap, double lowMs, double highMs) =>
+        _s.LuaApplyVenom((int)tickCap, (int)lowMs, (int)highMs, _sp, _targetId);
+
     // ---- primitives for the Buff / TargetBuff / Debuff / Cure archetype verbs -------------------------------
     /// <summary>Does the caster have at least <paramref name="amt"/> mana? Sends "You do not have enough mana."
     /// and returns false if not (a check only — <see cref="debitMana"/> does the actual debit later, matching the
