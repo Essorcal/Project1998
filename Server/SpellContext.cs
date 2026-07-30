@@ -195,4 +195,41 @@ public sealed class SpellContext
     /// folds into AC); a mob gets just the stat buff. <paramref name="amount"/> may be 0 (a protection slot).</summary>
     public void applyWard(string category, string stat, double amount, double durMs) =>
         _s.LuaApplyWard(category, stat, (int)System.Math.Round(amount), (int)durMs, _sp);
+
+    // ---- Tier-3 utility/target primitives (mana_steal/mana_gift/cleanse/revive/leap/mana_battery) ----
+    /// <summary>The caster's effective max mana.</summary>
+    public double maxMp           => _s.LuaMaxMp;
+    /// <summary>Set the caster's HP (clamped to [0, maxHp]). For a raw set (e.g. mana_battery's HP cost).</summary>
+    public void setHp(double n)   => _s.LuaSetHp((int)System.Math.Round(n));
+    /// <summary>Set the caster's mana (clamped to [0, maxMp]).</summary>
+    public void setMana(double n) => _s.LuaSetMana((int)System.Math.Round(n));
+
+    /// <summary>Resolve the targeted PLAYER (explicit id incl. self, else the faced peer) for this cast; all the
+    /// target.* members below then act on it. False (with "&lt;name&gt; finds no target.") if none.</summary>
+    public bool   pcTarget()      => _s.LuaResolvePcTarget(_sp, _targetId);
+    /// <summary>Resolved target's current mana.</summary>
+    public double targetMana      => _s.LuaTargetMana;
+    /// <summary>Resolved target's effective max mana.</summary>
+    public double targetMaxMana   => _s.LuaTargetMaxMana;
+    /// <summary>Is the resolved target a ghost/dead?</summary>
+    public bool   targetIsDead    => _s.LuaTargetIsDead;
+    /// <summary>Is the resolved target the caster themselves?</summary>
+    public bool   targetIsSelf    => _s.LuaTargetIsSelf;
+    /// <summary>Is the resolved target in the caster's own party?</summary>
+    public bool   targetInGroup   => _s.LuaTargetInGroup;
+    /// <summary>Resolved target's effective AC (lower = better; for the cleanse success formula).</summary>
+    public double targetArmor     => _s.LuaTargetArmor;
+    /// <summary>Resolved target's effective Will.</summary>
+    public double targetWill      => _s.LuaTargetWill;
+    /// <summary>Set the resolved target's mana (clamped to their [0, maxMp]).</summary>
+    public void   setTargetMana(double n) => _s.LuaSetTargetMana((int)System.Math.Round(n));
+    /// <summary>Send the resolved target this spell's "&lt;caster&gt; casts &lt;name&gt; on you." (or flavor) line.</summary>
+    public void   tellTarget()    => _s.LuaTellTarget(_sp);
+    /// <summary>Strip every timed effect (buffs + debuffs) from the resolved target (RTK flushDuration).</summary>
+    public void   flushTarget()   => _s.LuaFlushTarget();
+    /// <summary>Revive the resolved (dead) target in place at full health.</summary>
+    public void   reviveTarget()  => _s.LuaReviveTarget(_sp);
+    /// <summary>Leap up to <paramref name="maxDist"/> tiles in the faced direction (collision-stopped); returns
+    /// the number of tiles actually moved (0 = blocked, nothing happened).</summary>
+    public double leap(double maxDist) => _s.LuaLeap((int)maxDist);
 }

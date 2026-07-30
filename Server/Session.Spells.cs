@@ -239,7 +239,7 @@ public sealed partial class Session
         // Mana-battery family (Invoke / Spirit's Power / …) always runs the verbatim RTK formula, whether the
         // export tagged it ManaBattery or we recognise its base identifier (belt-and-suspenders for export gaps).
         if (arch == "ManaBattery" || Content.BaseKey(sp) is "invoke" or "spirits_power" or "life_force" or "gather_magic")
-            return CastManaBattery(sp);
+            return CastUtilArch("mana_battery", sp, null) ?? CastManaBattery(sp);
 
         if (fx is null) return ApplyCastGeneric(sp, targetId);   // no export row — keyword classifier fallback
 
@@ -275,11 +275,11 @@ public sealed partial class Session
         // internally rather than trusting the generic `mana`/`fx.Aether` values above (which are blank for
         // all of them in the export — see each method's own hardcoded RTK constant).
         if (Content.SacrificeFamilyFor(sp) is Content.SacrificeFamily fam) return CastSacrificeStrike(sp, fam);
-        if (Content.IsManaStealSpell(sp)) return CastManaSteal(sp, targetId);
-        if (Content.IsManaGiftSpell(sp)) return CastManaGift(sp, targetId);
-        if (Content.IsCleanseSpell(sp)) return CastCleanse(sp, targetId);
-        if (Content.IsReviveSpell(sp)) return CastRevive(sp, targetId);
-        if (Content.IsLeapSpell(sp)) return CastLeap(sp);
+        if (Content.IsManaStealSpell(sp)) return CastUtilArch("mana_steal", sp, targetId) ?? CastManaSteal(sp, targetId);
+        if (Content.IsManaGiftSpell(sp)) return CastUtilArch("mana_gift", sp, targetId) ?? CastManaGift(sp, targetId);
+        if (Content.IsCleanseSpell(sp)) return CastUtilArch("cleanse", sp, targetId) ?? CastCleanse(sp, targetId);
+        if (Content.IsReviveSpell(sp)) return CastUtilArch("revive", sp, targetId) ?? CastRevive(sp, targetId);
+        if (Content.IsLeapSpell(sp)) return CastUtilArch("leap", sp, null) ?? CastLeap(sp);
         if (Content.IsAmbushSpell(sp)) return CastAmbush(sp);
         if (Content.IsSpotTrapsSpell(sp)) return CastSpotTraps(sp, fx, mana);
         if (Content.IsGroundLootSpell(sp)) return CastGroundLoot(sp, fx, mana);
@@ -336,6 +336,17 @@ public sealed partial class Session
     {
         if (!SpellScript.HasVerb(verb)) return null;
         return SpellScript.RunArch(verb, new SpellContext(this, sp, null, null, amount, mana, fx));
+    }
+
+    // Tier-3 utility Lua hook (mana_steal/mana_gift/cleanse/revive/leap/mana_battery): these spells are classified
+    // in C# (Content.IsManaStealSpell etc.), not by a SpellParams row, so the verb runs against an empty row and
+    // reads its RTK constants as `row.x or <default>` (fully tunable later by adding a row). targetId reaches the
+    // verb through ctx (its target primitives). Returns null only if the verb isn't loaded -> C# fallback; a Lua
+    // error returns false (no fallback) so a half-applied mana transfer can't be re-run and duplicated.
+    private bool? CastUtilArch(string verb, SpellDef sp, uint? targetId)
+    {
+        if (!SpellScript.HasVerb(verb)) return null;
+        return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, 0, 0, null));
     }
 
     // ---- Lua spell-verb primitives (called by SpellContext; see Server/SpellScript.cs) --------------------
@@ -743,6 +754,67 @@ public sealed partial class Session
         int n = _buffs.RemoveAll(b => b.Category.Length > 0 && CureMatches(b.Category, category));   // curing `curses` also clears minor curses
         if (n > 0) SendStats();
         return n;
+    }
+
+    // ---- Tier-3 utility/target primitives (mana_steal/mana_gift/cleanse/revive/leap/mana_battery verbs) --------
+    // Thin wrappers so the LOGIC (guards, formulas, ordering, messages) lives in the Lua verbs while these do the
+    // mechanical act, each mirroring the C# CastManaSteal/CastManaGift/CastCleanse/CastRevive/CastLeap/
+    // CastManaBattery they replace (kept as fallback). Self HP/MP setters clamp to the effective caps.
+    internal uint LuaMaxMp        => EffMaxMp;
+    internal void LuaSetHp(int n)   { _char.Hp = (uint)Math.Clamp(n, 0, (int)EffMaxHp); SendStats(); }
+    internal void LuaSetMana(int n) { _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp); SendStats(); }
+
+    // Resolve the targeted PLAYER for a Tier-3 utility cast (explicit id -> that player incl. self, else faced
+    // peer). Stored for the rest of the cast so the target getters/setters below all act on the same session.
+    private Session? _pcSpellTarget;
+    internal bool LuaResolvePcTarget(SpellDef sp, uint? targetId)
+    {
+        _pcSpellTarget = ResolvePcCastTarget(targetId);
+        if (_pcSpellTarget is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        return true;
+    }
+    internal uint LuaTargetMana    => _pcSpellTarget?._char.Mp ?? 0;
+    internal uint LuaTargetMaxMana => _pcSpellTarget?.EffMaxMp ?? 0;
+    internal bool LuaTargetIsDead  => _pcSpellTarget?.IsDead ?? false;
+    internal bool LuaTargetIsSelf  => _pcSpellTarget is not null && ReferenceEquals(_pcSpellTarget, this);
+    internal bool LuaTargetInGroup => _pcSpellTarget is not null && _party is not null && ReferenceEquals(_pcSpellTarget._party, _party);
+    internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac - _pcSpellTarget.Totals().armor;  // effective AC (lower=better)
+    internal int  LuaTargetWill    => _pcSpellTarget?.LuaWill ?? 0;
+    internal void LuaSetTargetMana(int n)
+    {
+        if (_pcSpellTarget is null) return;
+        _pcSpellTarget._char.Mp = (uint)Math.Clamp(n, 0, (int)_pcSpellTarget.EffMaxMp);
+        _pcSpellTarget.SendStats();
+    }
+    internal void LuaTellTarget(SpellDef sp) { if (_pcSpellTarget is not null) TellTarget(_pcSpellTarget, sp); }
+    internal void LuaFlushTarget()           { if (_pcSpellTarget is null) return; _pcSpellTarget.FlushDurations(); _pcSpellTarget.SendStats(); }
+    internal void LuaReviveTarget(SpellDef sp)
+    {
+        if (_pcSpellTarget is null) return;
+        _pcSpellTarget.ReviveAt(_pcSpellTarget._char.Map, _pcSpellTarget._char.X, _pcSpellTarget._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
+    }
+
+    // Leap (RTK race): step up to maxDist tiles in the faced direction, stopping at the last passable tile (same
+    // BlockedMove collision as movement), then re-anchor the viewport there. Returns tiles moved (0 = blocked, no
+    // move). A faithful port of CastLeap's movement half; the verb owns the mana/cooldown around it.
+    internal int LuaLeap(int maxDist)
+    {
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        if (md is null) return 0;
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
+        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        int dist = 0;
+        for (int step = 1; step <= maxDist; step++)
+        {
+            int nx = _char.X + dx * step, ny = _char.Y + dy * step;
+            if (nx < 0 || ny < 0 || nx >= _char.MapXs || ny >= _char.MapYs || md.BlockedMove(nx, ny, _facing)) break;
+            dist = step;
+        }
+        if (dist == 0) return 0;
+        ushort nx2 = (ushort)(_char.X + dx * dist), ny2 = (ushort)(_char.Y + dy * dist);
+        string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
+        EnterMap(_char.Map, _char.MapXs, _char.MapYs, nx2, ny2, mapName);
+        return dist;
     }
 
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective
