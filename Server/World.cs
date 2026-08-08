@@ -21,6 +21,24 @@ public sealed class GroundItem
     public ushort Dura;
     public ushort Graphic;       // Item.epf frame (item's Icon) — the 0x16 graphic id
     public string CustomName = "";
+
+    // LOOTER LOCK (RTK flooritem_data.looters[] + .timer, gated by player.lua's canLoot/isYours). 0 = ordinary
+    // free-for-all floor loot, which is almost everything. Non-zero means this stack was torn off a corpse and
+    // belongs to that player id until LockedUntil passes — nobody else can pick it up, filch it, or grab it out
+    // from under them, and the owner can pull it back from two tiles away via F1 "Recover Death Pile" even with
+    // a would-be thief parked on top of it. RTK stores the drop time and adds 300s at every read; an absolute
+    // Environment.TickCount64 deadline is the same rule with the arithmetic done once.
+    public uint LooterId;
+    public long LockedUntil;
+
+    /// <summary>True while this stack is still reserved for someone other than <paramref name="pickerId"/>.</summary>
+    public bool LockedAgainst(uint pickerId)
+        => LooterId != 0 && LooterId != pickerId && Environment.TickCount64 < LockedUntil;
+
+    /// <summary>True if this stack is <paramref name="pickerId"/>'s own death pile and the lock is still live —
+    /// the only thing "Recover Death Pile" will pick up (RTK <c>isYours</c>, which tests <c>looters[1]</c>).</summary>
+    public bool BelongsTo(uint pickerId)
+        => LooterId != 0 && LooterId == pickerId && Environment.TickCount64 < LockedUntil;
 }
 
 /// <summary>A hidden hazard placed by a Rogue trap spell (RTK NPCs/trap/rogue_traps/*): invisible — no
@@ -116,6 +134,27 @@ public sealed class World
     // scans for an unprovoked target each move tick — RTK's mob_find_target runs over a full-screen-ish area;
     // this is scoped to roughly what the player can see on their own screen (17x15 viewport, Session.InView).
     private const int AggroRadius = 8;
+    // The mirror of AggroRadius for PREY (MobDef.Flees — rabbit, blue rooster): how close (Chebyshev) a player
+    // gets before the creature starts backing away. Deliberately much shorter than the aggro scan — a rabbit
+    // notices you when you're nearly on top of it, not from across the screen, otherwise a town full of them
+    // would evaporate the moment anyone walked in. Doubled while the creature is panicking (see PanicMs), so a
+    // swing sends it running from further off than a stroll past does.
+    private const int FleeRadius = 2;
+    // A retreating prey creature moves at DOUBLE its usual pace, spooked or not — running is not the same
+    // motion as browsing, and at its idle MoveTime a rabbit (3000ms) simply cannot get away from a walking
+    // player. RTK expresses this as an absolute (mysterious_merchant's on_attacked sets `mob.newMove = 500`);
+    // a multiplier says the same thing against whatever pace the creature actually has.
+    //
+    // CEILING: the world steps a mob at most once per Tick, so nothing can exceed one tile per TickMs (600ms)
+    // however small this makes the interval. A rabbit genuinely doubles (3000 -> 1500). The blue rooster's
+    // 500ms MoveTime is already under the heartbeat, so it is ALREADY moving as fast as this server can render
+    // and cannot speed up further — its flee shows as direction, not pace.
+    private const int FleeSpeedup = 2;
+    // How long a prey creature stays spooked after a player swings at it or damages it (World.Spook /
+    // TryDamage), refreshed by each further hit. Panic doesn't add speed on top of FleeSpeedup — it widens the
+    // notice radius and keeps the creature running after you stop chasing, so a swing sends it properly away
+    // instead of it settling down the moment you step back.
+    private const int PanicMs = 4000;
 
     // Ground-item forage spawns (RTK itemspawner.lua): keep up to Max stacks of a gatherable item scattered on
     // passable tiles within a box, topped up periodically. Chestnuts fill the Kugnae farm (map 0) and a Buya
@@ -273,7 +312,7 @@ public sealed class World
         {
             foreach (var n in Content.Npcs)
             {
-                if (!n.Enabled) continue;   // switched off in NPCs.csv (Enabled=0, e.g. the retired tavern hands)
+                if (!n.Enabled) continue;   // switched off in NPCs.csv (Enabled=0)
                 PlaceNpc(n);
                 placed++;
             }
@@ -364,7 +403,7 @@ public sealed class World
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
             // rendered every mob green — so we use RTK's per-mob colour, which matches for most creatures.)
             Key = d.Key,   // carry the MobDef identifier so quest kill-matching can key on it
-            Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Aggressive = d.Aggressive,
+            Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Aggressive = d.Aggressive, Flees = d.Flees,
             MinDam = d.MinDam, MaxDam = d.MaxDam, Hit = d.Hit, IsBoss = d.IsBoss, Protection = d.Protection, Ac = d.Ac, Grace = d.Grace,
             Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
@@ -591,6 +630,241 @@ public sealed class World
         }
     }
 
+    /// <summary>A pet's swing landing on another mob. Same shape as <see cref="ApplyTrapDamage"/> — damage,
+    /// over-head bar, delayed corpse despawn, exp to the human who owns the attacker — plus the melee
+    /// swing/impact sfx a mob-on-mob hit should make, and retaliation.
+    /// <para><b>attackerId stays 0 into TryDamage on purpose.</b> That parameter marks a PLAYER as the
+    /// victim's new target, and routing the pet's owner in there would make every pet swing pull the mob
+    /// straight onto its owner — the opposite of what a pet is for. Retaliation is handled below instead,
+    /// and only when the victim isn't already busy with a player, so a pet can't soak a fight that was never
+    /// aimed at it.</para></summary>
+    private void ApplyMobOnMobHit(ushort mapId, Mob attacker, Mob victim, int dmg)
+    {
+        // Either side can have died to an earlier entry in this same batch — don't play a dead pet's swing.
+        if (!attacker.Alive || !victim.Alive) return;
+        Broadcast(mapId, p => p.SoundAt(Session.MobSwingSfx, attacker.Id));   // 009.wav on the swing itself
+        if (!TryDamage(mapId, victim, dmg, out bool died)) return;
+        Broadcast(mapId, p => p.DamageOver(victim.Id, died ? (byte)0 : (byte)Math.Clamp(victim.Hp * 100 / Math.Max(1, victim.MaxHp), 1, 100),
+                                            0, Session.MobHitSfx));
+        if (died)
+        {
+            uint victimId = victim.Id;
+            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(victimId)); } catch { } });
+            // The owner gets the kill: RTK credits a mob's damage to map_id2sd(mob->owner) the same way
+            // (clif.c's `tmob->owner < MOB_START_NUM` lookup), so a pet kill counts as yours.
+            uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
+            PlayerById(attacker.OwnerId)?.AwardExp(reward, killExp: true);
+            return;
+        }
+        lock (_lock) if (victim.Alive && victim.TargetId == 0) victim.TargetMobId = attacker.Id;
+    }
+
+    /// <summary>One step of a chase toward <c>(tx,ty)</c> — a port of RTK's <c>FindCoords</c>
+    /// (<c>rtklua/Accepted/Mobs/mob.lua:299</c>), which is the real 4.95 chase step. Caller holds
+    /// <c>_lock</c>. True if the mob moved.
+    /// <para>The single chase-movement path in the world: the provoked-mob chase, both pet movers (closing on
+    /// the foe it is assisting against, and heeling back to its owner), and pet retaliation all run through
+    /// here, so obstacle handling can't differ between them.</para>
+    ///
+    /// <para><b>This is deliberately, permanently stupid. Do not make it smarter.</b> No A*, no map search, no
+    /// lookahead, no wall-following, no memory of where it has been. RTK's version tries ONLY the one or two
+    /// directions that close on the target — vertical then horizontal, or horizontal then vertical, on a
+    /// coin flip (<c>checkmove = math.random(0, 2)</c>, ≥1 picks vertical-first) — and takes the first that
+    /// isn't blocked. That coin flip is the entire cleverness of 4.95 mob pathing.</para>
+    ///
+    /// <para>What that produces, and what it's SUPPOSED to produce: a mob diagonal from you rounds an
+    /// ordinary corner by itself, because when one axis is blocked the other one is still "toward" you. A mob
+    /// squared up against a wall with you straight behind it has no toward-step left, and shuffles sideways
+    /// instead — one tile out, one tile back, because next tick the step back is the one that closes on you.
+    /// <see cref="Mob.DetourDir"/>/<see cref="Mob.DetourLeft"/> exist only to stretch that shuffle to a
+    /// random 1-3 tiles so it isn't metronomic. It <b>never steps directly away</b>, so a mob in a pit with
+    /// you on the near side will never find the stairs on the far side — it will pace at the bottom forever.
+    /// That is correct 4.95 behaviour, not a bug to fix.</para>
+    ///
+    /// <para>Two deliberate departures from RTK's <c>FindCoords</c>, both in its "nothing worked" branch:
+    /// RTK flails at up to 11 fully random sides (which lets it walk straight away from you), and it re-rolls
+    /// <c>mob.target</c> to a random other player standing nearby. The sideways-only shuffle replaces the
+    /// first; the second is just dropped — target acquisition belongs to the aggro scan, not to being stuck
+    /// behind a rock.</para></summary>
+    private bool StepMobToward(ushort mapId, MapState m, Mob mob, int tx, int ty,
+                               (ushort Xs, ushort Ys) dims, MapData? terrain,
+                               HashSet<(ushort, ushort)> occupied, HashSet<(int, int)> mobTiles,
+                               List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                               List<(ushort map, uint id, byte dir)> turns,
+                               List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
+        => StepMobToward(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage, out _);
+
+    /// <param name="towardBlocked">True when NOTHING that closes the gap was open this step — the mob is
+    /// walled off from its target rather than merely taking a longer route. RTK's <c>canmove == false</c>.
+    /// Callers use it to decide whether to go looking for a target they can actually reach.</param>
+    /// <inheritdoc cref="StepMobToward(ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}})"/>
+    private bool StepMobToward(ushort mapId, MapState m, Mob mob, int tx, int ty,
+                               (ushort Xs, ushort Ys) dims, MapData? terrain,
+                               HashSet<(ushort, ushort)> occupied, HashSet<(int, int)> mobTiles,
+                               List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                               List<(ushort map, uint id, byte dir)> turns,
+                               List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage,
+                               out bool towardBlocked)
+    {
+        towardBlocked = false;
+        int dx = tx - mob.X, dy = ty - mob.Y;
+        if (dx == 0 && dy == 0) { mob.DetourDir = NoDetour; mob.DetourLeft = 0; return false; }
+
+        // Take one cardinal step if that tile is free (bounds + no player + no other mob + the two-layer
+        // terrain test), turning onto it first and springing any trap it lands on. RTK's mob:move().
+        bool Step(byte dir)
+        {
+            int nx = mob.X + (dir == 1 ? 1 : dir == 3 ? -1 : 0);
+            int ny = mob.Y + (dir == 2 ? 1 : dir == 0 ? -1 : 0);
+            if (nx < 0 || ny < 0) return false;
+            if (dims.Xs != 0 && (nx >= dims.Xs || ny >= dims.Ys)) return false;
+            if (occupied.Contains(((ushort)nx, (ushort)ny))) return false;      // never onto a player
+            if (mobTiles.Contains((nx, ny))) return false;                      // nor another creature
+            if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) return false;   // pass flag OR SObj wall
+            if (mob.Dir != dir) { mob.Dir = dir; turns.Add((mapId, mob.Id, dir)); }
+            return StepMobTo(mapId, m, mob, nx, ny, dir, mobTiles, moves, trapDamage);
+        }
+
+        // A sideways shuffle already under way keeps going for its remaining tiles. Without this the step
+        // that closes on the target always wins the next tick, so every shuffle would be exactly one tile
+        // out and one tile back — right most of the time, but too regular to look alive.
+        if (mob.DetourDir != NoDetour && mob.DetourLeft > 0)
+        {
+            if (Step(mob.DetourDir)) { if (--mob.DetourLeft == 0) mob.DetourDir = NoDetour; return true; }
+            mob.DetourDir = NoDetour; mob.DetourLeft = 0;   // that way is blocked too — abandon the run
+        }
+
+        // RTK FindCoords proper: only the directions that close the gap, on a coin-flipped axis order.
+        var toward = new List<byte>(2);
+        byte? vert = dy > 0 ? (byte)2 : dy < 0 ? (byte)0 : null;
+        byte? horz = dx > 0 ? (byte)1 : dx < 0 ? (byte)3 : null;
+        if (Random.Shared.Next(3) >= 1) { if (vert is byte a) toward.Add(a); if (horz is byte b) toward.Add(b); }
+        else                            { if (horz is byte c) toward.Add(c); if (vert is byte d) toward.Add(d); }
+
+        foreach (byte dir in toward)
+            if (Step(dir)) { mob.DetourDir = NoDetour; mob.DetourLeft = 0; return true; }
+
+        // Nothing that closes the gap is open.
+        towardBlocked = true;
+
+        // Shuffle sideways — and ONLY sideways: the two directions perpendicular to the axis we're stuck on,
+        // never the one straight back. If the target is diagonal there is no purely-sideways option at all
+        // (both remaining sides retreat on one axis), so the mob just stands there facing you, which is
+        // exactly what a cornered 4.95 mob does.
+        var sides = new List<byte>(2);
+        if (dx == 0) { sides.Add(1); sides.Add(3); }        // stuck on the vertical -> try east/west
+        else if (dy == 0) { sides.Add(0); sides.Add(2); }   // stuck on the horizontal -> try north/south
+        if (sides.Count == 2 && Random.Shared.Next(2) == 1) sides.Reverse();
+
+        foreach (byte dir in sides)
+            if (Step(dir))
+            {
+                // Run length: 1-3 tiles most of the time, occasionally stretching to 6. Long runs are fine —
+                // it's the DIRECTION that has to stay honest. (RTK's flail is 11 tries at any of the four
+                // sides, which lets a stuck mob walk 11 tiles straight away from you; that never happens in
+                // the real game, so the away side simply isn't a candidate here.)
+                int run = Random.Shared.Next(1, 4);
+                if (Random.Shared.Next(4) == 0) run += Random.Shared.Next(1, 4);
+                mob.DetourLeft = (byte)(run - 1);            // this step, plus the rest of the run
+                mob.DetourDir = mob.DetourLeft == 0 ? NoDetour : dir;
+                return true;
+            }
+
+        // Boxed in. Face the target so it at least reads as wanting to reach you.
+        mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+        if (toward.Count > 0 && mob.Dir != toward[0]) { mob.Dir = toward[0]; turns.Add((mapId, mob.Id, toward[0])); }
+        return false;
+    }
+
+    /// <summary>No sideways shuffle in progress — see <see cref="Mob.DetourDir"/>.</summary>
+    private const byte NoDetour = 0xFF;
+
+    /// <summary>Commit a validated one-tile move: update the tile index, queue the broadcast, spring a trap.</summary>
+    /// <summary>One step of a RETREAT from <c>(tx,ty)</c> — the mirror image of <see cref="StepMobToward"/>, and
+    /// a port of RTK's <c>RunAway</c> (<c>rtklua/Accepted/Mobs/mob.lua:427</c>). Caller holds <c>_lock</c>.
+    /// True if the mob moved.
+    /// <para>RTK's routine has two cases and this keeps both. Standing right next to the player
+    /// (<c>moveIntent == 1</c>): turn 180° and go, which is the bolt when you close to melee range. Otherwise:
+    /// try each direction that increases the gap, coin-flipping whether the vertical or the horizontal one is
+    /// attempted first, and take the first that isn't blocked — the away-mirror of FindCoords' axis flip.</para>
+    /// <para>The last resort differs. RTK, having nowhere to run, picks a random nearby player as its new target
+    /// and flails at up to 10 random sides; a prey creature has no target to pick, so a cornered one takes any
+    /// open SIDEWAYS step instead (never back toward what is chasing it) and simply stands still if even that is
+    /// walled off. Cornering a rabbit against a cliff is supposed to be how you catch it.</para>
+    /// <para>Home moves with the mob on every retreat step. The wander leash below tests the DESTINATION against
+    /// Home, so a creature that fled past its leash could never step anywhere again — it would freeze the moment
+    /// you walked away. Re-homing keeps it wandering wherever it ends up, which is also what a spooked animal
+    /// looks like: it doesn't run back to the exact tile it was born on.</para></summary>
+    private bool StepMobAway(ushort mapId, MapState m, Mob mob, int tx, int ty,
+                             (ushort Xs, ushort Ys) dims, MapData? terrain,
+                             HashSet<(ushort, ushort)> occupied, HashSet<(int, int)> mobTiles,
+                             List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                             List<(ushort map, uint id, byte dir)> turns,
+                             List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
+    {
+        int dx = tx - mob.X, dy = ty - mob.Y;
+
+        bool Step(byte dir)
+        {
+            int nx = mob.X + (dir == 1 ? 1 : dir == 3 ? -1 : 0);
+            int ny = mob.Y + (dir == 2 ? 1 : dir == 0 ? -1 : 0);
+            if (nx < 0 || ny < 0) return false;
+            if (dims.Xs != 0 && (nx >= dims.Xs || ny >= dims.Ys)) return false;
+            if (occupied.Contains(((ushort)nx, (ushort)ny))) return false;
+            if (mobTiles.Contains((nx, ny))) return false;
+            if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) return false;
+            if (mob.Dir != dir) { mob.Dir = dir; turns.Add((mapId, mob.Id, dir)); }
+            if (!StepMobTo(mapId, m, mob, nx, ny, dir, mobTiles, moves, trapDamage)) return false;
+            mob.HomeX = mob.X; mob.HomeY = mob.Y;   // see the doc note on re-homing
+            return true;
+        }
+
+        // Cornered by an adjacent player (RTK's moveIntent branch): about-face and bolt.
+        bool adjacent = (dx == 0 && Math.Abs(dy) == 1) || (dy == 0 && Math.Abs(dx) == 1);
+        if (adjacent && Step((byte)((mob.Dir + 2) & 3))) return true;
+
+        // Otherwise: the directions that open the gap, vertical-or-horizontal first on a coin flip.
+        var away = new List<byte>(2);
+        byte? vert = dy > 0 ? (byte)0 : dy < 0 ? (byte)2 : null;   // player south of us -> run north
+        byte? horz = dx > 0 ? (byte)3 : dx < 0 ? (byte)1 : null;   // player east of us  -> run west
+        if (Random.Shared.Next(3) >= 1) { if (vert is byte a) away.Add(a); if (horz is byte b) away.Add(b); }
+        else                            { if (horz is byte c) away.Add(c); if (vert is byte d) away.Add(d); }
+        foreach (byte dir in away) if (Step(dir)) return true;
+
+        // Nowhere to retreat: slip sideways rather than back into them.
+        var sides = new List<byte>(2);
+        if (dx == 0) { sides.Add(1); sides.Add(3); }
+        else if (dy == 0) { sides.Add(0); sides.Add(2); }
+        if (sides.Count == 2 && Random.Shared.Next(2) == 1) sides.Reverse();
+        foreach (byte dir in sides) if (Step(dir)) return true;
+        return false;
+    }
+
+    /// <summary>A player swung at <paramref name="mob"/> — hit OR miss. A prey creature (<see cref="Mob.Flees"/>)
+    /// bolts: it moves on half its usual timer for <see cref="PanicMs"/>, refreshed by each further swing (RTK
+    /// Instances/mysterious_merchant.lua <c>on_attacked</c>: <c>mob.newMove = 500</c>). No effect on anything
+    /// else — an ordinary mob is provoked by <see cref="TryDamage"/>, which needs damage to have landed.</summary>
+    public void Spook(Mob mob)
+    {
+        if (!mob.Flees) return;
+        lock (_lock) mob.PanicUntil = Environment.TickCount64 + PanicMs;
+    }
+
+    private bool StepMobTo(ushort mapId, MapState m, Mob mob, int nx, int ny, byte dir,
+                           HashSet<(int, int)> mobTiles,
+                           List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                           List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
+    {
+        ushort ox = mob.X, oy = mob.Y;
+        mobTiles.Remove((mob.X, mob.Y));
+        mob.X = (ushort)nx; mob.Y = (ushort)ny;
+        mobTiles.Add((nx, ny));
+        moves.Add((mapId, mob.Id, ox, oy, dir));
+        var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny);
+        if (trap is not null) { m.Traps.Remove(trap); TriggerTrapLocked(mapId, mob, trap, trapDamage); }
+        return true;
+    }
+
     private MapState Map(ushort id)
     {
         if (!_maps.TryGetValue(id, out var m)) { m = new MapState(); _maps[id] = m; }
@@ -750,8 +1024,12 @@ public sealed class World
     /// Rogue poison-dart trap drives, see <see cref="TriggerTrapLocked"/>'s "poison" case): ticks MaxHp*1% every
     /// 1500ms for a random window (1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>)), the per-tick
     /// damage clamped to [1, <paramref name="tickCap"/>] so it can never itself land the killing blow (World.Tick
-    /// only ticks while Hp > the tick amount). Returns false if the mob is already venomed (checkIfCast(venoms)).</summary>
-    public bool PoisonMob(Mob mob, int tickCap, int lowMs, int highMs, uint ownerId)
+    /// only ticks while Hp > the tick amount). Returns false if the mob is already venomed (checkIfCast(venoms)).
+    /// <para><paramref name="flatTick"/> &gt; 0 replaces the proportional MaxHp*1% with a FLAT per-tick amount —
+    /// RTK's Burn (Spells/NPCs/burn.lua) is the one member of this family whose while_cast deals a hardcoded
+    /// 1000 rather than a percentage, and clamping a flat 1000 through <paramref name="tickCap"/> would silently
+    /// weaken it against anything under 100k HP.</para></summary>
+    public bool PoisonMob(Mob mob, int tickCap, int lowMs, int highMs, uint ownerId, int flatTick = 0)
     {
         lock (_lock)
         {
@@ -759,7 +1037,7 @@ public sealed class World
             if (mob.PoisonUntil > now) return false;                        // already venomed — RTK checkIfCast(venoms)
             mob.PoisonUntil     = now + 1 + Random.Shared.Next(lowMs, highMs + 1);
             mob.PoisonNextTick  = now + 1500;
-            mob.PoisonTickDam   = Math.Clamp((int)(mob.MaxHp * 0.01), 1, tickCap);
+            mob.PoisonTickDam   = flatTick > 0 ? flatTick : Math.Clamp((int)(mob.MaxHp * 0.01), 1, tickCap);
             mob.PoisonOwnerId   = ownerId;
             return true;
         }
@@ -962,7 +1240,16 @@ public sealed class World
             if (!mob.Alive || mob.IsNpc) return false;   // NPCs are indestructible (a click talks to them, not fights)
             mob.Hp -= dmg;
             died = !mob.Alive;
-            if (!died && attackerId != 0) mob.TargetId = attackerId;   // provoked -> fight back (mob_ai_normal on_attacked)
+            // Provoked -> fight back (mob_ai_normal on_attacked). Getting hit ALWAYS wins: it drops whatever
+            // mob it was scrapping with (a pet) and re-points it at the player, and it overrides the
+            // stuck-mob retarget in Tick — so zapping something always drags its aggro onto you, wall or no
+            // wall, however unreachable you are.
+            if (!died && attackerId != 0) { mob.TargetId = attackerId; mob.TargetMobId = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+            // …unless it's PREY, which has no fight in it: being hurt by anything (a spell, a trap, a swing)
+            // panics it instead. Tick clears the TargetId set just above before it can ever be acted on; this
+            // is what makes a spell as alarming as a sword. A pure MISS never reaches here — Session.ResolveSwing
+            // calls Spook directly for that case.
+            if (!died && mob.Flees) mob.PanicUntil = Environment.TickCount64 + PanicMs;
             if (died && _maps.TryGetValue(mapId, out var m))
             {
                 m.Mobs.Remove(mob);
@@ -1022,20 +1309,36 @@ public sealed class World
     }
 
     /// <summary>Remove the topmost (last-dropped) floor item on (x,y) under the lock — so two players
-    /// grabbing the same tile can't both win — and despawn it for everyone. Null if the tile is empty.</summary>
-    public GroundItem? PickUp(ushort mapId, int x, int y)
+    /// grabbing the same tile can't both win — and despawn it for everyone. Null if the tile is empty.
+    /// <para><paramref name="pickerId"/> is who is grabbing (0 = an anonymous/system grab, which ignores locks).
+    /// Death-pile stacks reserved for someone else are SKIPPED rather than taken, and
+    /// <paramref name="blocked"/> comes back true so the caller can say why nothing happened — RTK
+    /// <c>canLoot</c>'s "That item does not belong to you." Set <paramref name="ownOnly"/> to take ONLY the
+    /// picker's own still-locked pile and pass over everything else (RTK <c>isYours</c>, the F1 recovery).</para></summary>
+    public GroundItem? PickUp(ushort mapId, int x, int y, uint pickerId = 0, bool ownOnly = false)
+        => PickUp(mapId, x, y, pickerId, ownOnly, out _);
+
+    /// <inheritdoc cref="PickUp(ushort, int, int, uint, bool)"/>
+    public GroundItem? PickUp(ushort mapId, int x, int y, uint pickerId, bool ownOnly, out bool blocked)
     {
         GroundItem? gi = null;
+        blocked = false;
         lock (_lock)
         {
             if (_maps.TryGetValue(mapId, out var m))
             {
                 // last match = most recently dropped (drawn on top)
                 for (int i = m.Items.Count - 1; i >= 0; i--)
-                    if (m.Items[i].X == x && m.Items[i].Y == y) { gi = m.Items[i]; m.Items.RemoveAt(i); break; }
+                {
+                    var it = m.Items[i];
+                    if (it.X != x || it.Y != y) continue;
+                    if (ownOnly) { if (!it.BelongsTo(pickerId)) continue; }
+                    else if (pickerId != 0 && it.LockedAgainst(pickerId)) { blocked = true; continue; }
+                    gi = it; m.Items.RemoveAt(i); break;
+                }
             }
         }
-        if (gi is not null) Broadcast(mapId, p => p.DespawnEntity(gi.Id));
+        if (gi is not null) { blocked = false; Broadcast(mapId, p => p.DespawnEntity(gi.Id)); }
         return gi;
     }
 
@@ -1075,7 +1378,10 @@ public sealed class World
         _tick++;
         var moves = new List<(ushort map, uint id, ushort x, ushort y, byte dir)>();
         var turns = new List<(ushort map, uint id, byte dir)>();
-        var hits = new List<(Mob mob, Session target)>();
+        var hits = new List<(ushort map, Mob mob, Session target)>();
+        // A pet's swing at another mob (mob-on-mob, the only place that happens) — deferred out of the lock
+        // for the same reason as `hits`: applying it broadcasts and can award the owner exp.
+        var mobHits = new List<(ushort map, Mob attacker, Mob victim)>();
         // Real damage from a triggered trap (instant hit) or a poison tick — both need Session-facing
         // broadcasts (damage number, death despawn, owner exp) that must run outside the lock, same as `hits`.
         var trapDamage = new List<(ushort map, Mob mob, int dmg, uint ownerId)>();
@@ -1181,13 +1487,23 @@ public sealed class World
                             }
                     }
 
-                    // Poet "Call of the Wild" pet expiry (RTK cotw_SpawnSetThreat's spawnTime): a plain
-                    // despawn (no kill/loot/exp), same as riding a mob away — DespawnMob does socket I/O so
-                    // it must run outside this lock, hence the deferred list.
+                    // Ownership expiry — two DIFFERENT endings, keyed on Mob.Summoned:
+                    //   conjured (CotW pet, Giasomo bird)  -> plain despawn, no kill/loot/exp, same as riding a
+                    //     mob away (RTK cotw_SpawnSetThreat's spawnTime). DespawnMob does socket I/O so it must
+                    //     run outside this lock, hence the deferred list.
+                    //   mind-controlled (Endear & kin)     -> the creature was always a real world mob, so it
+                    //     just stops being yours: RTK endear's `uncast` is exactly `mob.owner = 0; mob.target = 0`.
+                    //     Clearing TargetId means it forgets whoever it was fighting FOR you and re-acquires
+                    //     normally next tick — including you.
                     if (mob.OwnerId != 0 && mob.PetExpiresAt != 0 && Environment.TickCount64 >= mob.PetExpiresAt)
                     {
-                        expiredPets.Add((mapId, mob));
-                        continue;
+                        if (mob.Summoned) { expiredPets.Add((mapId, mob)); continue; }
+                        mob.OwnerId = 0; mob.TargetId = 0; mob.TargetMobId = 0; mob.PetExpiresAt = 0;
+                        // Re-home it where it actually is. A creature that followed you across the map is
+                        // now nowhere near the Home it spawned at, and the wander step below leashes on
+                        // ABSOLUTE distance from Home — so without this it would fail every candidate step
+                        // and stand frozen forever. (Doesn't arise in RTK, which has no follow behaviour.)
+                        mob.HomeX = mob.X; mob.HomeY = mob.Y;
                     }
 
                     // Poison trap DOT (RTK poison_dart_trap.lua while_cast_1500): ticks every 1500ms regardless
@@ -1200,11 +1516,152 @@ public sealed class World
 
                     if (mob.FrozenUntil > Environment.TickCount64) continue;   // paralyzed/asleep — hold still
 
+                    // Blind (RTK's `target.blind = true`): a blinded mob can't SEE, so it drops whoever it was
+                    // fighting and its aggro scan below is skipped — it falls through to plain wandering until
+                    // the duration lapses. Unlike FrozenUntil it does NOT stop movement; blind is an aiming
+                    // debuff, not a hold, which is why the two stack usefully.
+                    if (mob.BlindUntil > Environment.TickCount64) mob.TargetId = 0;
+
+                    // ---- PET AI: a mob with an OWNER (a Poet's Call of the Wild summon, or an Endear'd
+                    // captive) does not behave like a wild one. Three rules, applied in order:
+                    //   1. never fight your owner,
+                    //   2. fight whatever is fighting your owner,
+                    //   3. otherwise stay at their heel.
+                    // Before this, Mob.OwnerId existed but drove NO behaviour at all, which is why both halves
+                    // looked broken from the outside: a CotW pet (every cotw_* MobDef is MobBehavior 0) just
+                    // wandered off on its spawn leash and never swung at anything, and Endear on an aggressive
+                    // creature handed it to you for a fraction of a second before the unprovoked-aggro scan
+                    // below re-acquired the nearest player — you — and it turned right back around.
+                    //
+                    // NOT ported from RTK, because RTK has none of it: its mob_find_target only ever scans
+                    // BL_PC and has no owner check, and its cotw_controller (the threat-redirect half) is
+                    // later-server and ships disabled. What RTK does establish is that a mob's damage is
+                    // credited to `mob->owner` when that id is a player (clif.c) — that part is honoured by
+                    // ApplyMobOnMobHit.
+                    if (mob.OwnerId != 0)
+                    {
+                        if (mob.TargetId == mob.OwnerId) mob.TargetId = 0;   // rule 1, every tick
+                        // Off a PK map a pet has no business fighting PEOPLE at all (RTK cotw: `blType ==
+                        // BL_PC -> return`), so drop any player target it picked up — from a PvP map it was
+                        // just led off, say. On a PK map it keeps them until they die or leave, exactly like
+                        // any other mob, so a pet being beaten on can still fight back.
+                        if (mob.TargetId != 0 && !Content.IsPvpMap(mapId)) mob.TargetId = 0;
+                        var owner = m.Players.FirstOrDefault(p => p.PlayerId == mob.OwnerId && !p.IsDead);
+
+                        if (owner is null)
+                        {
+                            mob.TargetMobId = 0;
+                            // A CONJURED pet with no owner here vanishes — RTK mob_ai_cotw.move opens with
+                            // exactly this (`owner == nil` or `owner.m ~= mob.m` -> `mob:vanish()`), and it
+                            // also saves us a stranded summon wandering a map its poet left. A merely
+                            // mind-controlled creature is a real world mob and stays put, wandering until its
+                            // charm lapses (RTK routes those through mob_ai_normal, which has no vanish).
+                            if (mob.Summoned) { expiredPets.Add((mapId, mob)); continue; }
+                        }
+                        else
+                        {
+                            // Rule 2a — PvP. On a PK map a pet also fights PEOPLE: whoever its owner is
+                            // currently trading blows with (Session.PvpFoeId, set on both sides of a player
+                            // spell exchange and expiring after 15s so nobody is chased across the map over a
+                            // stale grudge). This is a deliberate departure — RTK's cotw AI refuses player
+                            // targets outright (`if attacker.blType == BL_PC then return`), which is right for
+                            // the open world and wrong for an arena — so it is scoped to maps already flagged
+                            // MapPvP, the same gate that lets a player's own spell damage land at all.
+                            // Setting TargetId and NOT continuing hands the pet to the ordinary player-chase
+                            // branch below, which already knows how to close on a Session and swing at it.
+                            if (Content.IsPvpMap(mapId) && owner.PvpFoeId != 0 && owner.PvpFoeId != mob.OwnerId
+                                && m.Players.Any(p => p.PlayerId == owner.PvpFoeId && !p.IsDead))
+                            {
+                                mob.TargetId = owner.PvpFoeId;
+                                mob.TargetMobId = 0;
+                            }
+                        }
+
+                        if (owner is not null && mob.TargetId == 0)   // no person to fight — serve the owner
+                        {
+                            // Rule 2, re-evaluated every tick so the pet picks up a new attacker the moment
+                            // its current one dies, leashes off, or loses interest in the owner. Only wild
+                            // mobs qualify: never an NPC, never another player's pet, never a sibling of ours.
+                            var foe = mob.TargetMobId == 0 ? null : m.Mobs.FirstOrDefault(o => o.Alive && o.Id == mob.TargetMobId);
+                            if (foe is null || foe.TargetId != owner.PlayerId)
+                                foe = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.OwnerId == 0 && o.TargetId == owner.PlayerId)
+                                             .OrderBy(o => Math.Max(Math.Abs(o.X - mob.X), Math.Abs(o.Y - mob.Y)))
+                                             .FirstOrDefault();
+                            mob.TargetMobId = foe?.Id ?? 0;
+
+                            // A pet steps EVERY heartbeat rather than on its own MobMoveTime. That cadence is a
+                            // wander timer (a panda's is 2s); pacing a follower by it would leave it hopelessly
+                            // behind a walking player. One tile per 600ms tick is the most this heartbeat can
+                            // express, so a pet still trails you while you're moving and closes up when you stop.
+                            if (foe is not null)
+                            {
+                                int fdx = foe.X - mob.X, fdy = foe.Y - mob.Y;
+                                if ((fdx == 0 && Math.Abs(fdy) == 1) || (fdy == 0 && Math.Abs(fdx) == 1))
+                                {
+                                    byte face = FaceDelta(fdx, fdy);
+                                    if (face != mob.Dir) { mob.Dir = face; turns.Add((mapId, mob.Id, face)); }
+                                    mob.AttackTimer += TickMs;
+                                    if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; mobHits.Add((mapId, mob, foe)); }
+                                }
+                                else StepMobToward(mapId, m, mob, foe.X, foe.Y, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                                continue;
+                            }
+
+                            // Rule 3: heel. Stop once cardinally adjacent so the pet doesn't shove itself into
+                            // the owner's tile or jitter around them; standing still is the correct idle pose.
+                            if (Math.Abs(owner.PlayerX - mob.X) + Math.Abs(owner.PlayerY - mob.Y) > 1)
+                                StepMobToward(mapId, m, mob, owner.PlayerX, owner.PlayerY, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                            continue;
+                        }
+                    }
+
+                    // ---- PREY AI (MobDef.Flees, data/game-data/MobFlees.csv): a rabbit or a blue rooster does
+                    // not fight and does not stand there. It backs away at double its wander pace from anyone
+                    // who gets within FleeRadius, and a swing (PanicMs) widens that radius and keeps it running
+                    // after you back off. This runs BEFORE everything below because
+                    // TryDamage sets TargetId on any landed hit — without this intercept, hitting a rabbit
+                    // would drop it straight into the ordinary chase-and-swing branch and it would fight back.
+                    // Clearing the target every tick is what "no attacking" actually means here: the attack
+                    // branch is reached only via TargetId/TargetMobId, so a prey creature can never enter it.
+                    // An OWNED prey creature (Endear'd) is exempt — it's a pet now, and the pet block above
+                    // already returned for every case where it has an owner to serve.
+                    if (mob.Flees && mob.OwnerId == 0)
+                    {
+                        mob.TargetId = 0; mob.TargetMobId = 0; mob.AttackTimer = 0;
+                        bool panicking = mob.PanicUntil > Environment.TickCount64;
+                        int notice = panicking ? FleeRadius * 2 : FleeRadius;
+                        Session? scare = null;
+                        int nearest = int.MaxValue;
+                        foreach (var p in m.Players)
+                        {
+                            if (p.IsDead) continue;   // a ghost doesn't frighten anything
+                            int d = Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y));
+                            if (d <= notice && d < nearest) { nearest = d; scare = p; }
+                        }
+                        if (scare is not null)
+                        {
+                            // Retreat pace: FleeSpeedup times the idle wander rate, whether it was startled by
+                            // a swing or merely by someone walking up. Floored at one heartbeat because the
+                            // tick is the hard ceiling on how often anything can step (see FleeSpeedup).
+                            int pace = Math.Max(TickMs, mob.MoveTime / FleeSpeedup);
+                            mob.MoveTimer += TickMs;
+                            if (mob.MoveTimer < pace) continue;
+                            mob.MoveTimer -= pace;
+                            StepMobAway(mapId, m, mob, scare.PlayerX, scare.PlayerY,
+                                        dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                            continue;
+                        }
+                        // Nobody near enough to spook it: fall through to the ordinary wander below.
+                    }
+
                     // Unprovoked aggro (RTK mob.c mob_find_target, gated on MobBehavior==1 "type": engine-level,
                     // separate from and runs before mob_ai_normal.lua): an aggressive mob with no target yet
                     // locks onto the nearest living player within AggroRadius, same as if it had just been hit —
                     // the chase/attack branch right below then takes over on this same tick.
-                    if (mob.TargetId == 0 && mob.Aggressive)
+                    // OWNED mobs are excluded outright: a charmed creature must not re-acquire the poet who
+                    // just charmed it (the pet block above already returned for every case where it has an
+                    // owner it can serve, so this only skips the "owner isn't here" leftovers).
+                    if (mob.TargetId == 0 && mob.Aggressive && mob.OwnerId == 0 && mob.BlindUntil <= Environment.TickCount64)
                     {
                         var victim = m.Players.FirstOrDefault(p => !p.IsDead
                             && Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) <= AggroRadius);
@@ -1218,9 +1675,12 @@ public sealed class World
                     if (mob.TargetId != 0)
                     {
                         var target = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId);
+                        // An OWNED creature has no leash: it belongs to a player, not to a spawn point, so
+                        // tethering it to the tile it was summoned on would make it quit mid-fight.
                         bool inRange = target is not null && !target.IsDead
-                                       && Math.Max(Math.Abs(target.PlayerX - mob.HomeX), Math.Abs(target.PlayerY - mob.HomeY)) <= ChaseLeash;
-                        if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; }
+                                       && (mob.OwnerId != 0
+                                           || Math.Max(Math.Abs(target.PlayerX - mob.HomeX), Math.Abs(target.PlayerY - mob.HomeY)) <= ChaseLeash);
+                        if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
                         else
                         {
                             int tdx = target!.PlayerX - mob.X, tdy = target.PlayerY - mob.Y;
@@ -1234,7 +1694,7 @@ public sealed class World
                                 byte face = FaceDelta(tdx, tdy);
                                 if (face != mob.Dir) { mob.Dir = face; turns.Add((mapId, mob.Id, face)); }
                                 mob.AttackTimer += TickMs;
-                                if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; hits.Add((mob, target)); }
+                                if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; hits.Add((mapId, mob, target)); }
                                 continue;   // adjacent: swing instead of stepping
                             }
 
@@ -1242,27 +1702,64 @@ public sealed class World
                             if (mob.MoveTimer < mob.MoveTime) continue;   // not this mob's turn yet
                             mob.MoveTimer -= mob.MoveTime;
 
-                            // Greedy step toward the target: close the larger axis first (diagonal-ish chase).
-                            int sx = Math.Abs(tdx) >= Math.Abs(tdy) ? Math.Sign(tdx) : 0;
-                            int sy = sx == 0 ? Math.Sign(tdy) : 0;
-                            byte chaseDir = sx > 0 ? (byte)1 : sx < 0 ? (byte)3 : (sy > 0 ? (byte)2 : (byte)0);
-                            if (mob.Dir != chaseDir) { mob.Dir = chaseDir; turns.Add((mapId, mob.Id, chaseDir)); }
+                            // Step toward the target — the direction(s) that close the gap first, then a
+                            // sideways shuffle. See StepMobToward: this used to be an inline greedy step that
+                            // gave up when blocked, i.e. "mob stands on one tile facing you through a wall".
+                            StepMobToward(mapId, m, mob, target.PlayerX, target.PlayerY,
+                                          dims, terrain, occupied, mobTiles, moves, turns, trapDamage,
+                                          out bool towardBlocked);
 
-                            int cnx = mob.X + sx, cny = mob.Y + sy;
-                            bool cok = cnx >= 0 && cny >= 0
-                                       && (dims.Item1 == 0 || (cnx < dims.Item1 && cny < dims.Item2))
-                                       && !occupied.Contains(((ushort)cnx, (ushort)cny))          // don't step onto a player
-                                       && !mobTiles.Contains((cnx, cny))                            // or another mob
-                                       && (terrain is null || !terrain.BlockedMove(cnx, cny, chaseDir));  // pass flag OR SObj object-wall
-                            if (!cok) continue;   // blocked — already turned to face the target
+                            // Can't get at them at all? Look for somebody it CAN reach. This is RTK's own
+                            // FindCoords fallback (`tList = mob:getObjectsInArea(BL_PC)` then a random pick,
+                            // skipping GMs) — usually a no-op, since there's usually only one player nearby.
+                            // Gated on Aggressive: a creature that only fights because you provoked it should
+                            // keep pacing after YOU, not go find someone else. Note this can only ever hand a
+                            // stuck mob a NEW victim — landing a hit re-points it at whoever hit it
+                            // (World.TryDamage), so zapping something always drags its aggro back to you,
+                            // wall or no wall.
+                            if (towardBlocked && mob.Aggressive)
+                            {
+                                var reachable = m.Players.Where(p => !p.IsDead && p.PlayerId != mob.TargetId
+                                        && Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) <= AggroRadius)
+                                    .ToList();
+                                if (reachable.Count > 0)
+                                {
+                                    mob.TargetId = reachable[Random.Shared.Next(reachable.Count)].PlayerId;
+                                    mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+                                }
+                            }
+                            continue;
+                        }
+                    }
 
-                            ushort cox = mob.X, coy = mob.Y;
-                            mobTiles.Remove((mob.X, mob.Y));
-                            mob.X = (ushort)cnx; mob.Y = (ushort)cny;
-                            mobTiles.Add((cnx, cny));
-                            moves.Add((mapId, mob.Id, cox, coy, chaseDir));
-                            var chaseTrap = m.Traps.FirstOrDefault(t => t.X == cnx && t.Y == cny);
-                            if (chaseTrap is not null) { m.Traps.Remove(chaseTrap); TriggerTrapLocked(mapId, mob, chaseTrap, trapDamage); }
+                    // Retaliation against a PET. ApplyMobOnMobHit points a mob at whatever pet just hit it,
+                    // but only when it wasn't already busy with a player — so this is purely the "a pet can't
+                    // beat on something with total impunity" case, not a general mob-vs-mob war. Same leash as
+                    // the player chase: stray too far from home and it gives up and goes back to wandering.
+                    if (mob.TargetId == 0 && mob.TargetMobId != 0)
+                    {
+                        var foe = m.Mobs.FirstOrDefault(o => o.Alive && o.Id == mob.TargetMobId);
+                        if (foe is null || Math.Max(Math.Abs(foe.X - mob.HomeX), Math.Abs(foe.Y - mob.HomeY)) > ChaseLeash)
+                        { mob.TargetMobId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+                        else
+                        {
+                            int rdx = foe.X - mob.X, rdy = foe.Y - mob.Y;
+                            if ((rdx == 0 && Math.Abs(rdy) == 1) || (rdy == 0 && Math.Abs(rdx) == 1))
+                            {
+                                byte face = FaceDelta(rdx, rdy);
+                                if (face != mob.Dir) { mob.Dir = face; turns.Add((mapId, mob.Id, face)); }
+                                mob.AttackTimer += TickMs;
+                                if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; mobHits.Add((mapId, mob, foe)); }
+                            }
+                            else
+                            {
+                                mob.MoveTimer += TickMs;
+                                if (mob.MoveTimer >= mob.MoveTime)
+                                {
+                                    mob.MoveTimer -= mob.MoveTime;
+                                    StepMobToward(mapId, m, mob, foe.X, foe.Y, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                                }
+                            }
                             continue;
                         }
                     }
@@ -1333,9 +1830,17 @@ public sealed class World
         // every other socket-touching step.
         foreach (var h in hits)
         {
+            // 009.wav on the SWING itself, hit or miss — this is the point where the mob commits to the attack.
+            // The landed-hit sound (001.wav) is layered on separately by ApplyMobHit. Mobs play no swing ACTION
+            // (0x1A) today, so this sound is the only cue a bystander gets that a mob took a swing at someone.
+            Broadcast(h.map, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
             Try(() => h.target.ApplyMobHit(h.mob, dmg));
         }
+
+        // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.
+        foreach (var ph in mobHits)
+            Try(() => ApplyMobOnMobHit(ph.map, ph.attacker, ph.victim, MobSwingDamage(ph.attacker.MinDam, ph.attacker.MaxDam)));
 
         // Trap hits + poison ticks queued above (same reasoning as the mob-swing pass: Session-facing
         // broadcasts/exp can't run under the lock).

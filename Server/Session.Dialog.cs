@@ -194,6 +194,10 @@ public sealed partial class Session
         var opts = new List<string>();
         if (IsDead) opts.Add("Silver Thread");
         if (CharClassId == 0 && _char.Level >= 5) opts.Add("Choose a Path");
+        // Always offered, exactly as RTK does it: the branch itself is what TEACHES the ability, explaining the
+        // facing/two-step rule when there's nothing to recover. Hiding it until a pile happens to be underfoot
+        // would mean nobody ever discovers it exists.
+        opts.Add("Recover Death Pile");
 
         // With nothing to offer (a living, already-classed player) F1 has no function here — say so rather
         // than pop an empty picker. (The Subpath Chat toggle that used to live under "Toggles" is F2's job.)
@@ -206,12 +210,46 @@ public sealed partial class Session
         {
             case "Silver Thread": await SilverThread(npc); break;
             case "Choose a Path": await ChoosePathMenu(npc); break;
+            case "Recover Death Pile": await RecoverDeathPileMenu(npc); break;
         }
     }
 
+    // "Recover Death Pile" (RTK f1npc.lua's branch of the same name + player.lua recoverDeathPile): pull your
+    // own looter-locked death pile back from up to two tiles in front of you — the point being that it works
+    // even when someone is standing on it, which an ordinary ',' pickup can't do. Only YOUR still-locked stacks
+    // move; unlocked floor loot and other people's piles are untouched (Session.RecoverDeathPile).
+    // The gates and both refusal texts are RTK's own, including the help text that doubles as the tutorial.
+    private async Task RecoverDeathPileMenu(Mob npc)
+    {
+        if (!DeathPileInReach())
+        {
+            await DlgSay(npc, "This ability allows you to recover your lost items when an unscrupulous player is standing over them. " +
+                              "To use this ability you must first face the items you dropped upon death. You must be only one or two steps away from them.");
+            await DlgSay(npc, "Then press F1 and select \"Recover Death Pile\". Your items will be recovered even if a would-be thief is standing on them! " +
+                              "To use this ability, you must be alive. If you do not have enough room in your inventory, you will be unable to recover all of your items.");
+            return;
+        }
+        if (IsDead) { await DlgSay(npc, "You cannot recover your death pile while you are dead."); return; }
+
+        int taken = RecoverDeathPile();
+        if (taken == 0) return;   // pack was already full on the first stack — GiveItem said so
+        // RTK: sendAction(6, 20) then talk(2, "I'll take that.") — the reach-out pose, then a PUBLIC bubble
+        // (chatType 2, the same line Filch speaks), so anyone loitering over the pile sees who took it back.
+        SendAction(_char.Id, 6, 20, 0);
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 6, 20, 0), except: this);
+        var line = AsciiBytes("I'll take that.");
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, line));
+        Log.Info($"   -> death pile recovered: {taken} stack(s) by {_char.Name} @({_char.X},{_char.Y}) facing {_facing}");
+    }
+
     // "Silver Thread": only reachable while dead (matches RTK's own gate — picking it while alive says so
-    // and does nothing). Offers a Shaman by nation (RTK's country branches collapse to our two home
-    // nations); picking one revives (full heal) at that Shaman's map. See ReviveAt.
+    // and does nothing). Offers a Shaman by nation (RTK's country branches collapse to our two home nations);
+    // picking one is PASSAGE ONLY — it warps the ghost to that Shaman's hut and leaves it a ghost. The
+    // revival itself belongs to the Shaman NPC you then click (ReviveAbility), which is RTK's own split:
+    // f1npc.lua's Silver Thread branch ends in a bare `player:warp(...)` and never touches state/health, and
+    // shaman.lua's click is what does `state = 0; health = maxHealth`. The warp targets below are f1npc.lua's
+    // literal coordinates. (This used to revive on arrival — a stand-in from when the Shaman NPCs had no
+    // behaviour of their own and a warp alone would have stranded the player as a permanent ghost.)
     private async Task SilverThread(Mob npc)
     {
         if (!IsDead)
@@ -226,10 +264,12 @@ public sealed partial class Session
             : new (string label, ushort map, ushort x, ushort y)[]
               { ("Dusk, to the West of Kugnae.", 8, 6, 4), ("Dawn, to the East of Kugnae.", 9, 3, 5) };
 
+        await DlgSay(npc, "Ah, another who walks amongst the ranks of the dead... but it is not your time yet... " +
+                          "I will give you passage to a Shaman to give you life again.");
         int choice = await DlgMenu(npc, "Which Shaman would you like to visit?", shamans.Select(s => s.label).ToList());
         if (choice < 1 || choice > shamans.Length) return;
         var s = shamans[choice - 1];
-        ReviveAt(s.map, s.x, s.y, "The Shaman calls your spirit home. You awaken anew.");
+        if (Warp(s.map, s.x, s.y)) SendMiniText("Speak with the Shaman to return to the world of the living.");
     }
 
 
@@ -254,6 +294,17 @@ public sealed partial class Session
     internal async Task<int> DlgMenu(Mob npc, string prompt, IReadOnlyList<string> options)
     {
         SendNpcMenu(npc, prompt, options);
+        var r = await AwaitReply();
+        return r.Kind == 0x02 ? r.MenuIndex : 0;
+    }
+
+    /// <summary>A menu whose portrait is the PLAYER's own paperdoll wearing <paramref name="face"/> instead of
+    /// the NPC's head — a try-on that touches nothing but this one packet (RTK does the same thing with a
+    /// throwaway `clone` NPC and `player.gfxFace`, since neither server wants to mutate the real character to
+    /// preview a purchase). Used by AppearanceAbility's Change Face browse.</summary>
+    internal async Task<int> DlgMenuFace(Mob npc, string prompt, IReadOnlyList<string> options, int face)
+    {
+        SendNpcMenuP(npc, DialogPortrait.Player(SelfAppearance(face), npc), prompt, options);
         var r = await AwaitReply();
         return r.Kind == 0x02 ? r.MenuIndex : 0;
     }
@@ -331,7 +382,8 @@ public sealed partial class Session
             if (i < 1 || i > sellable.Count) return;
             var (inv, def) = sellable[i - 1];
             _char.Coins += (uint)def!.SellPrice;
-            if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); }   // reason 0 = Remove (sold, not dropped)
+            // Selling says nothing (the client's own "You sold %s." line, reason 9, is NOT used in game).
+            if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason); }
             else SendAddItem(inv);
             SendStats();
             MarkDirty();
@@ -475,13 +527,14 @@ public sealed partial class Session
     }
 
     /// <summary>Remove <paramref name="amount"/> from a bag stack and update the client (whole stack removed
-    /// with reason 4 = "taken to parcel"). False without change if the stack is gone or too small — the
-    /// possession re-check after the async send prompts.</summary>
+    /// with reason 7 = "You posted &lt;item&gt;.", the client's own parcel line — it was reason 4, which says
+    /// "You threw &lt;item&gt;."). False without change if the stack is gone or too small — the possession
+    /// re-check after the async send prompts.</summary>
     private bool RemoveInventoryStack(InvItem inv, int amount)
     {
         if (!_char.Inventory.Contains(inv) || inv.Amount < amount) return false;
         inv.Amount -= amount;
-        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 4); }
+        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 7); }
         else SendAddItem(inv);
         MarkDirty();
         return true;
@@ -521,7 +574,7 @@ public sealed partial class Session
             sold += take;
             remaining -= take;
             inv.Amount -= take;
-            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); }   // reason 0 = Remove (sold, not dropped)
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason); }   // silent, as above
             else SendAddItem(inv);
         }
         _char.Coins += earned;
@@ -590,40 +643,26 @@ public sealed partial class Session
     }
 
     // ---- bank ability implementation (vault: coin + item storage) ------------------------------
-    // Looped like the shop: each action returns to the vault menu until the player cancels. Storage lives on
-    // the Character (BankMoney / BankItems) and persists via the JSON store. Joint/shared accounts (RTK's
-    // multi-owner vaults) are intentionally out of scope for a single-owner vault.
-    internal async Task DlgBank(Mob npc)
-    {
-        while (true)
-        {
-            var opts = new List<string> { "Deposit Item", "Withdraw Item" };
-            if (_char.Coins > 0)     opts.Add("Deposit Money");
-            if (_char.BankMoney > 0) opts.Add("Withdraw Money");
-
-            int c = await DlgMenu(npc, $"Your vault holds {_char.BankMoney} coins. What would you like to do?", opts);
-            if (c < 1 || c > opts.Count) return;
-            switch (opts[c - 1])
-            {
-                case "Deposit Item":   await BankDepositItem(npc);   break;
-                case "Withdraw Item":  await BankWithdrawItem(npc);  break;
-                case "Deposit Money":  await BankDepositMoney(npc);  break;
-                case "Withdraw Money": await BankWithdrawMoney(npc); break;
-            }
-        }
-    }
-
-    private async Task BankDepositMoney(Mob npc)
+    // Each action is its own NPC menu entry (BankAbility) rather than a combined "Banking" submenu, so they
+    // are entered directly and return to the NPC menu when done. Storage lives on the Character
+    // (BankMoney / BankItems) and persists via the store. Joint/shared accounts (RTK's multi-owner vaults)
+    // are intentionally out of scope for a single-owner vault. Coin comes back out by voice
+    // ("give my coins back" -> WithdrawItemFromBank), which is why there is no Withdraw Money entry.
+    //
+    // Every outcome is SPOKEN by the NPC (NpcBubble), never a dialog box, and in the same words the spoken
+    // commands use — the menu and the voice command are two ways into one teller, so they should sound alike
+    // (and bystanders hear the teller either way). Only the questions are dialogs.
+    internal async Task BankDepositMoney(Mob npc)
     {
         var s = await DlgInput(npc, $"You carry {_char.Coins} coins. How much will you deposit?");
         if (s is null) return;   // cancelled
         long amt = Math.Min(Math.Min(ParseAmount(s), _char.Coins), Content.BankMax - _char.BankMoney);
-        if (amt <= 0) { await DlgSay(npc, "You deposit nothing."); return; }
+        if (amt <= 0) { NpcBubble(npc, "You deposit nothing."); return; }
         _char.Coins -= (uint)amt;
         _char.BankMoney += (uint)amt;
         SendStats();
         MarkDirty();
-        await DlgSay(npc, $"You deposit {amt} coins. Your vault now holds {_char.BankMoney}.");
+        NpcBubble(npc, $"You deposit {amt} coins.");
     }
 
     private static bool IsCoinWord(string s) => s.Equals("coin", StringComparison.OrdinalIgnoreCase) || s.Equals("coins", StringComparison.OrdinalIgnoreCase);
@@ -678,7 +717,7 @@ public sealed partial class Session
             int take = Math.Min(remaining, inv.Amount);
             moved += take;
             remaining -= take;
-            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 0); _char.BankItems.Add(inv); }   // reason 0 = Remove (stored, not dropped)
+            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason); _char.BankItems.Add(inv); }
             else { inv.Amount -= take; SendAddItem(inv); _char.BankItems.Add(new InvItem(0, def.Id, take, inv.Dura)); }
         }
         if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
@@ -729,58 +768,102 @@ public sealed partial class Session
         return true;
     }
 
-    private async Task BankWithdrawMoney(Mob npc)
-    {
-        var s = await DlgInput(npc, $"Your vault holds {_char.BankMoney} coins. How much will you withdraw?");
-        if (s is null) return;
-        long amt = Math.Min(ParseAmount(s), _char.BankMoney);
-        if (amt <= 0) { await DlgSay(npc, "You withdraw nothing."); return; }
-        _char.BankMoney -= (uint)amt;
-        _char.Coins += (uint)amt;
-        SendStats();
-        MarkDirty();
-        await DlgSay(npc, $"Here are your {amt} coins. Your vault now holds {_char.BankMoney}.");
-    }
-
-    private async Task BankDepositItem(Mob npc)
+    internal async Task BankDepositItem(Mob npc)
     {
         var items = _char.Inventory.OrderBy(i => i.Slot)
             .Select(inv => (inv, def: Content.ItemById(inv.ItemId)))
             .Where(t => t.def is not null)
             .ToList();
-        if (items.Count == 0) { await DlgSay(npc, "You have nothing to store."); return; }
-
+        // Same as the withdraw side: an empty pack shows an empty list, not a bail-out message.
         int i = await DlgMenu(npc, "Which item will you store?",
                               items.Select(t => t.inv.Amount > 1 ? $"{t.def!.Name} ({t.inv.Amount})" : t.def!.Name).ToList());
         if (i < 1 || i > items.Count) return;
         var (inv, def) = items[i - 1];
-        _char.Inventory.Remove(inv);
-        SendDelItem((byte)inv.Slot, 0);         // reason 0 = Remove (stored, not dropped)
-        _char.BankItems.Add(inv);               // whole stack goes to the vault
+
+        // RTK refuses used/damaged goods for storage (rtklua depositNoConfirm): gear below full durability, or
+        // a charged consumable with spent charges. Dura holds current durability for gear and remaining charges
+        // for charged items; Dura == 0 is an unseeded legacy stack, treated as full. Checked before the
+        // quantity question — there's no point asking how many of something she won't take.
+        if ((def!.IsEquip || def.IsCharged) && inv.Dura != 0 && inv.Dura < def.Durability)
+        { NpcBubble(npc, "I don't want your junk. Ask a smith to fix it."); return; }
+
+        // A stack asks how much of it to store — dropping the whole pile in was never a choice the player got
+        // to make. A single item skips the question (there's only one answer).
+        int take = inv.Amount;
+        if (inv.Amount > 1)
+        {
+            var s = await DlgInput(npc, "How many do you want me to hold for you?");
+            if (s is null) return;                                     // cancelled
+            take = (int)Math.Clamp(ParseAmount(s), 0, inv.Amount);
+            if (take <= 0) { NpcBubble(npc, "You store nothing."); return; }
+        }
+
+        // RTK's safe-keeping fee: 10% of the item's sell value per unit, in hand up front or no deal.
+        long fee = (long)Math.Ceiling(def.SellPrice * 0.10 * take);
+        if (fee > _char.Coins) { NpcBubble(npc, $"Excuse me you didn't give me enough. It's {fee} coins."); return; }
+
+        if (take >= inv.Amount)
+        {
+            _char.Inventory.Remove(inv);
+            // Banking is meant to be silent — see Content.SilentDelReason for why this isn't just reason 0.
+            SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason);
+            _char.BankItems.Add(inv);           // whole stack goes to the vault
+        }
+        else
+        {
+            inv.Amount -= take;                 // part of it: shrink the bag stack, redraw it, vault the rest
+            SendAddItem(inv);
+            _char.BankItems.Add(new InvItem(0, def.Id, take, inv.Dura));
+        }
+        if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
         MarkDirty();
-        await DlgSay(npc, $"You store {def!.Name} in your vault.");
+        NpcBubble(npc, $"I'll take your {def.Name}. {take} of them.");    // same lines the spoken deposit gives
+        if (fee > 0) NpcBubble(npc, $"The fee is {fee} coins.");
     }
 
-    private async Task BankWithdrawItem(Mob npc)
+    internal async Task BankWithdrawItem(Mob npc)
     {
         var stored = _char.BankItems
             .Select(bi => (bi, def: Content.ItemById(bi.ItemId)))
             .Where(t => t.def is not null)
             .ToList();
-        if (stored.Count == 0) { await DlgSay(npc, "Your vault is empty."); return; }
-
-        int i = await DlgMenu(npc, "Which item will you withdraw?",
+        // No empty-vault special case: an empty vault just opens the same list with nothing in it, which is
+        // its own answer. Bailing out to a "your vault is empty" text box was an extra flow to click through
+        // that told the player less than the page itself does.
+        int i = await DlgMenu(npc, "Here's what I've been holding of yours. What do you want back?",
                               stored.Select(t => t.bi.Amount > 1 ? $"{t.def!.Name} ({t.bi.Amount})" : t.def!.Name).ToList());
         if (i < 1 || i > stored.Count) return;
         var (bi, def) = stored[i - 1];
+
+        // Mirror of the deposit side: take back as much of the stack as you ask for, not all of it.
+        int take = bi.Amount;
+        if (bi.Amount > 1)
+        {
+            var s = await DlgInput(npc, "How many do you want back?");
+            if (s is null) return;                                     // cancelled
+            take = (int)Math.Clamp(ParseAmount(s), 0, bi.Amount);
+            if (take <= 0) { NpcBubble(npc, "You withdraw nothing."); return; }
+        }
+
         int slot = FreeSlot();
-        if (slot < 0) { await DlgSay(npc, "Your pack is full."); return; }
-        _char.BankItems.Remove(bi);
-        bi.Slot = (byte)slot;                   // assign a fresh bag slot (vault slots are meaningless)
-        _char.Inventory.Add(bi);
-        SendAddItem(bi);
+        if (slot < 0) { NpcBubble(npc, "You can't carry anymore."); return; }
+        if (take >= bi.Amount)
+        {
+            _char.BankItems.Remove(bi);
+            bi.Slot = (byte)slot;               // assign a fresh bag slot (vault slots are meaningless)
+            _char.Inventory.Add(bi);
+            SendAddItem(bi);
+        }
+        else
+        {
+            bi.Amount -= take;                  // part of it: the rest stays in the vault
+            var give = new InvItem((byte)slot, def!.Id, take, bi.Dura);
+            _char.Inventory.Add(give);
+            SendAddItem(give);
+        }
         MarkDirty();
-        await DlgSay(npc, $"You withdraw {def!.Name} from your vault.");
+        // Same lines the spoken withdraw gives ("Here's your Acorn." / "Here's your Acorn (13).").
+        NpcBubble(npc, take > 1 ? $"Here's your {def!.Name} ({take})." : $"Here's your {def!.Name}.");
     }
 
     // Digits-only amount parse (mirrors RTK inputNumberCheck), capped so it can't overflow the coin math.
@@ -803,22 +886,19 @@ public sealed partial class Session
     // (body[0..1] = 02 02, RTK WFIFOB(5)=WFIFOB(6)=2) and the item list appended after the prompt:
     //   body[23+L] = item count (u8), then each item = len(u8) + ASCII text, contiguous.
     private void SendNpcMenu(Mob npc, string prompt, IReadOnlyList<string> options)
+        => SendNpcMenuP(npc, DialogPortrait.Npc(npc), prompt, options);
+
+    // Menu with an EXPLICIT portrait (so a script can put the player's own paperdoll in the head — see
+    // WriteHead). Offsets below are for the default 4-byte sprite head; a paperdoll head pushes everything
+    // after it out by 4, which the client accounts for from the parser's return value.
+    private void SendNpcMenuP(Mob npc, DialogPortrait p, string prompt, IReadOnlyList<string> options)
     {
-        ushort gfx = NpcPortrait(npc);
-        byte head = gfx == 0 ? (byte)0 : gfx >= 49152 ? (byte)2 : (byte)1;
-        byte color = npc.Color;
         var pr = Encoding.ASCII.GetBytes(prompt);
 
         var d = new List<byte>();
         d.Add(0x02); d.Add(0x02);          // [0..1] kind = menu (RTK WFIFOB(5)=2, WFIFOB(6)=2)
         d.AddRange(Be32(npc.Id));          // [2..5] npc entity id
-        d.Add(head);                       // [6]   head kind
-        d.Add(1);                          // [7]
-        d.AddRange(Be(gfx));               // [8..9] portrait graphic
-        d.Add(color);                      // [10]  portrait palette
-        d.Add(1);                          // [11]
-        d.AddRange(Be(gfx));               // [12..13]
-        d.Add(color);                      // [14]
+        WriteHead(d, p);                   // [6..14] head kind + portrait descriptor + trailing descriptor
         d.AddRange(Be32(1));               // [15..18]
         d.Add(0);                          // [19] prev button
         d.Add(0);                          // [20] next button
@@ -840,21 +920,12 @@ public sealed partial class Session
     // The client returns the text via 0x3A kind 4 (HandleNpcDialog -> DlgInput).
     private void SendInputBox(Mob npc, string prompt)
     {
-        ushort gfx = NpcPortrait(npc);
-        byte head = gfx == 0 ? (byte)0 : gfx >= 49152 ? (byte)2 : (byte)1;
-        byte color = npc.Color;
         var pr = Encoding.ASCII.GetBytes(prompt);
 
         var d = new List<byte>();
         d.Add(0x04); d.Add(0x04);          // [0..1] kind = input (RTK WFIFOB(5)=WFIFOB(6)=4)
         d.AddRange(Be32(npc.Id));          // [2..5] npc entity id
-        d.Add(head);                       // [6]   head kind
-        d.Add(1);                          // [7]
-        d.AddRange(Be(gfx));               // [8..9] portrait graphic
-        d.Add(color);                      // [10]  portrait palette
-        d.Add(1);                          // [11]
-        d.AddRange(Be(gfx));               // [12..13]
-        d.Add(color);                      // [14]
+        WriteHead(d, DialogPortrait.Npc(npc));   // [6..14] head kind + portrait descriptor + trailing descriptor
         d.AddRange(Be32(1));               // [15..18]
         d.Add(0);                          // [19] prev button
         d.Add(0);                          // [20] next button
@@ -886,12 +957,51 @@ public sealed partial class Session
     // palette carried in the 0x30 head. The client reads head kind from the byte directly, so — unlike the
     // range-derived helper above — this lets a script pick an item-icon portrait (kind 2) whose small Item.epf
     // frame would otherwise be misread as a creature look. RTK: convertGraphic(look,"monster") = 0x8000|look.
-    private readonly record struct DialogPortrait(byte Head, ushort Gfx, byte Color)
+    //
+    // Doll (non-null) selects the PLAYER-PAPERDOLL head instead of a sprite: the same 7 appearance bytes the
+    // 0x33 player look carries. See WriteHead for the client-side proof that 4.95 supports this.
+    private readonly record struct DialogPortrait(byte Head, ushort Gfx, byte Color, byte[]? Doll = null)
     {
         public static readonly DialogPortrait None = new(0, 0, 0);
         public static DialogPortrait Npc(Mob npc)  => npc.Sprite == 0 ? None : new(1, (ushort)(0x8000 | npc.Sprite), npc.Color);
         public static DialogPortrait Look(int look, int color) => look <= 0 ? None : new(1, (ushort)(0x8000 | look), (byte)color);
         public static DialogPortrait Item(ItemDef d) => new(2, d.Icon, d.IconColor);
+        /// <summary>A live paperdoll of the player themselves (7-byte 0x33 appearance). The NPC's own graphic
+        /// still rides along in the trailing descriptor, exactly as RTK's dialogtype-2 does.</summary>
+        public static DialogPortrait Player(byte[] appearance, Mob npc) =>
+            new(1, npc.Sprite == 0 ? (ushort)0 : (ushort)(0x8000 | npc.Sprite), npc.Color, appearance);
+    }
+
+    // The 0x30 head, shared by all three dialog forms (text box / menu / input) — they parse it identically.
+    //
+    // RE'd out of the 4.95 client (2026-08-06) rather than guessed: 0x44f530 -> 0x46c050 switches on body[0]
+    // (9 dialog kinds) and every branch's ctor does the same three things — `lea edx,[edi+6]` (i.e. &body[7]),
+    // `call 0x4360e0`, then `lea esi,[eax+0xa]` to find the next field. 0x4360e0 is a DISCRIMINATED UNION on
+    // that tag byte at body[7]:
+    //     tag 0 -> 0x436120, returns 7  == the 7-byte PLAYER APPEARANCE, byte-for-byte the same parser the
+    //                                     0x33 player look uses (§8), special-case on byte[3] and all
+    //     tag 1 -> 0x436200, returns 3  == u16 sprite id + palette byte (what every dialog sent before this)
+    //     tag 2 -> 0x436240              == item icon
+    //     else  -> returns 0, no head
+    // 0x4360e0 adds 1 for the tag itself, so it returns 4 or 8, and EVERY field after the head shifts by that
+    // much. body[6] (head kind) is only inspected for the value 2, which force-overwrites the tag with 2; the
+    // tag byte is what actually selects the form. A fixed 4-byte trailing descriptor follows the head and is
+    // skipped by the parser (`eax + 0xa` == head size + the 4 trailing bytes + the 6 bytes before the head).
+    private void WriteHead(List<byte> d, DialogPortrait p)
+    {
+        d.Add(p.Head);                        // [6] head kind (0 none / 1 sprite-or-doll / 2 item icon)
+        if (p.Doll is not null)
+        {
+            d.Add(0);                         // [7] tag 0 -> player paperdoll
+            d.AddRange(p.Doll);               // [8..14] the 7 appearance bytes (sex, form, face, armor, dye, weapon, shield)
+        }
+        else
+        {
+            d.Add(1);                         // [7] tag 1 -> plain sprite
+            d.AddRange(Be(p.Gfx));            // [8..9]
+            d.Add(p.Color);                   // [10]
+        }
+        d.Add(1); d.AddRange(Be(p.Gfx)); d.Add(p.Color);   // trailing descriptor (parsed past, never read here)
     }
 
     // Core 0x30 text-box sender with an EXPLICIT portrait (head kind not re-derived). Same frame as
@@ -902,13 +1012,7 @@ public sealed partial class Session
         var d = new List<byte>();
         d.AddRange(Be(1));                 // [0..1] type/count = 1
         d.AddRange(Be32(npcId));           // [2..5] npc entity id
-        d.Add(p.Head);                     // [6]   head kind
-        d.Add(1);                          // [7]
-        d.AddRange(Be(p.Gfx));             // [8..9] portrait graphic
-        d.Add(p.Color);                    // [10]  portrait palette
-        d.Add(1);                          // [11]
-        d.AddRange(Be(p.Gfx));             // [12..13]
-        d.Add(p.Color);                    // [14]
+        WriteHead(d, p);                   // [6..14] head kind + portrait descriptor + trailing descriptor
         d.AddRange(Be32(1));               // [15..18]
         d.Add((byte)(prev ? 1 : 0));       // [19] prev button
         d.Add((byte)(next ? 1 : 0));       // [20] next button
@@ -989,7 +1093,7 @@ public sealed partial class Session
                 _char.ProfileText = Encoding.ASCII.GetString(dec, off, tlen);
         }
 
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         Log.Info($"   -> CHANGE-PROFILE (0x4F) saved: pic={_char.ProfilePic?.Length ?? 0}B text=\"{_char.ProfileText}\"");
         SendMessage("Your profile has been saved.");
     }
@@ -1091,14 +1195,19 @@ public sealed partial class Session
         // scalar timers, not stat deltas — so surface them here too, or a spell like Sanctuary or Baekho's
         // Cunning would show no duration at all. Each is "Label (Ns)".
         static int Secs(long until, long now2) => (int)((until - now2 + 999) / 1000);
-        // Deduction has two independent sources (Sanctuary line + Baekho's Cunning). Show each active timer with
-        // the % reduction it currently grants; Sanctuary overrides Cunning while both run, but both timers are
-        // real (Cunning re-asserts when Sanctuary lapses), so surface both so the player can see the ladder.
-        if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} -{(int)Math.Round((1 - EffDeduction) * 100)}% ({Secs(SancDeductUntil, now)}s)");
+        // Deduction has two independent sources (Sanctuary line + Baekho's Cunning). Sanctuary overrides
+        // Cunning while both run, but both timers are real (Cunning re-asserts when Sanctuary lapses), so
+        // surface both so the player can see the ladder. Name + duration ONLY — the box shows a spell's NAME,
+        // not its magnitude ("Sanctuary (48s)", never "Sanctuary -50% (48s)"); every other line here follows
+        // that shape and this one was the odd one out.
+        if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} ({Secs(SancDeductUntil, now)}s)");
         if (CunningDeductActive)  lines.Add($"Cunning {(SancDeductActive ? "(suppressed) " : "")}({Secs(CunningDeductUntil, now)}s)");
         if (now < _rageUntil && _rageAmount > 1)  lines.Add($"{(_rageName.Length > 0 ? _rageName : "Fury")} ({Secs(_rageUntil, now)}s)");
         if (now < _backstabUntil)                 lines.Add($"Backstab ({Secs(_backstabUntil, now)}s)");
         if (now < _flankUntil)                    lines.Add($"Flank ({Secs(_flankUntil, now)}s)");
+        // Stealth (Invisible/Spirit's Form/Life's Cloak/Glass Form) is a scalar timer outside _buffs too, so it
+        // never showed a duration before — surface it here (works whether or not you're also morphed).
+        if (Stealthed)                            lines.Add($"{_stealthName} ({Secs(_stealthUntil, now)}s)");
 
         return string.Join('\t', lines);
     }
@@ -1172,7 +1281,7 @@ public sealed partial class Session
         // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
         // which already renders this character correctly): [sex, form, face, armor, 0, 0, 0]
         d.Add(0);
-        d.AddRange(new byte[] { (byte)tc.Sex, 0, (byte)tc.Face, tc.Armor, 0, target.WeaponLook(), target.ShieldLook() });
+        d.AddRange(new byte[] { (byte)tc.Sex, 0, target.FaceLook(), tc.Armor, 0, target.WeaponLook(), target.ShieldLook() });
 
         // three equipment ICON cells beside the doll: helm, left ring, right ring (no sprite layer for these
         // in 4.95, so they render as ground-icon boxes). Same IconWire encoding as the 0x37 equip window.

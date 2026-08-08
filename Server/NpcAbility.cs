@@ -37,8 +37,13 @@ public sealed class NpcContext
     /// <summary>Run the sell flow (the player's droppable, sellable inventory).</summary>
     public Task Sell() => _s.DlgSell(_npc);
 
-    /// <summary>Run the bank/vault flow (deposit &amp; withdraw coin and items).</summary>
-    public Task Bank() => _s.DlgBank(_npc);
+    /// <summary>Vault: put coin in. Each is its own top-level menu entry — 4.95 has no combined "Banking"
+    /// submenu (that's a later-client thing RTK's inn_npc.lua shows).</summary>
+    public Task DepositMoney() => _s.BankDepositMoney(_npc);
+    /// <summary>Vault: put an item in (picked from the pack).</summary>
+    public Task DepositItem()  => _s.BankDepositItem(_npc);
+    /// <summary>Vault: take an item back out (picked from what's stored).</summary>
+    public Task WithdrawItem() => _s.BankWithdrawItem(_npc);
 
     /// <summary>Does the player have any parcel waiting here (gates the "Receive Parcel" menu entry)?</summary>
     public bool HasParcels => _s.HasWaitingParcels;
@@ -59,6 +64,14 @@ public sealed class NpcContext
     /// <summary>Spoken "give my &lt;item|coin&gt; [count]" shortcut: withdraw `amount` (or the whole stack, if
     /// &lt;= 0) of a fuzzy-matched item — or coin, if the word is "coin"/"coins" — from the vault.</summary>
     public Task<bool> Withdraw(string item, int amount) => _s.WithdrawItemFromBank(_npc, item, amount);
+
+    /// <summary>Spoken "i buy [all] &lt;item&gt; [number N]" shortcut: buy `amount` of an item this NPC stocks
+    /// (or as many as gold/pack allow, if &lt;= 0). False if this NPC doesn't sell it, so the speech falls
+    /// through to normal chat instead of being swallowed.</summary>
+    public Task<bool> BuyByName(string name, int amount) => _s.BuyItemFromNpcByName(_npc, name, amount);
+
+    /// <summary>Spoken "what have i deposited?": bubble the vault's coin + item contents out loud.</summary>
+    public void ShowVault() => _s.ShowBankContents(_npc);
 
     // ---- quest helpers (used by QuestDef.Talk scripts; see Server/Quests.cs) ---------------------
     /// <summary>This player's stage for a quest (0 = not started; a quest defines the rest).</summary>
@@ -113,9 +126,11 @@ public sealed class NpcContext
     public int  Sex => _s.CharSex;
     /// <summary>The player's current face id (RTK player.face).</summary>
     public int  Face => _s.CharFace;
-    /// <summary>Live-preview a candidate face — redraws self immediately, not yet persisted.</summary>
-    public void PreviewFace(int face) => _s.PreviewFace(face);
-    /// <summary>Keep a previewed face (persists + redraws self).</summary>
+    /// <summary>A menu that shows the player's own paperdoll wearing <paramref name="face"/> as the dialog
+    /// portrait. Pure preview — nothing about the character changes until <see cref="CommitFace"/>.</summary>
+    public Task<int> MenuWithFace(string prompt, IReadOnlyList<string> options, int face)
+        => _s.DlgMenuFace(_npc, prompt, options, face);
+    /// <summary>Keep a face for good (persists + redraws self and peers).</summary>
     public void CommitFace(int face) => _s.CommitFace(face);
     /// <summary>Is anything currently equipped (RTK player:isEquipped()).</summary>
     public bool IsEquipped => _s.IsEquipped;
@@ -167,6 +182,13 @@ public sealed class NpcContext
     public string ItemName(string itemKey) => _s.ItemName(itemKey);
     /// <summary>Warp the player to a map/tile; false if that map isn't renderable here (no strand).</summary>
     public bool Warp(int map, int x, int y) => _s.Warp((ushort)map, (ushort)x, (ushort)y);
+
+    // ---- death / revival (ReviveAbility; RTK shaman.lua + totem_npc.lua `_resurrect`) --------------
+    /// <summary>Is the player a ghost right now? (RTK <c>player.state == 1</c>.)</summary>
+    public bool IsDead => _s.IsDead;
+    /// <summary>Bring a ghost back to life where they stand: full HP/MP, ghost form dropped. No warp — the
+    /// player already walked to the reviver.</summary>
+    public void Revive(string message) => _s.ReviveInPlace(message);
 
     /// <summary>The player's current tile (for warps that keep the same position).</summary>
     public int  X => _s.CharX;
@@ -264,30 +286,96 @@ public sealed class ShopAbility : INpcAbility, INpcSayHandler
         yield return ("Sell", c => c.Sell());
     }
 
-    // Spoken shortcut for selling TO the shop without opening the menu — a real NexusTK command, e.g.
-    // "buy my all acorns" (sell every acorn), "buy my 5 acorns" (sell 5), "buy my acorn" (sell 1). "my" is
-    // optional filler; "all" is a quantifier and always needs an item after it — bare "buy my all" (no item)
-    // isn't a valid command. Independent of this NPC's own Buy catalogue — any shop-flagged NPC buys
-    // anything sellable, same as the Sell menu.
+    // The two real NexusTK shop voice commands (nexusatlas Voice Commands list):
+    //   sell TO the shop:  "buy my <item>" / "buy my all <item>" / "buy my <item> number <N>"
+    //   buy FROM the shop: "i buy <item>"  / "i buy all <item>"  / "i buy <item> number <N>"
+    // ("buy my" reads backwards but is verbatim from the game — the shopkeeper "buys" your item.) Selling is
+    // independent of this NPC's own catalogue — any shop-flagged NPC buys anything sellable, same as the Sell
+    // menu; buying is limited to what this NPC stocks.
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
-        if (!speech.StartsWith("buy")) return false;
-        string rest = speech["buy".Length..].Trim();
-        if (rest.StartsWith("my ")) rest = rest["my ".Length..].Trim();
-        else if (rest == "my") rest = "";
-        if (rest.Length == 0) return false;
+        if (speech.StartsWith("buy my ") || speech == "buy my")
+        {
+            var (item, amount) = VoiceGrammar.ParseQty(speech.Length > 7 ? speech["buy my ".Length..] : "");
+            return item.Length != 0 && await ctx.SellByName(item, amount);
+        }
+        if (speech.StartsWith("i buy "))
+        {
+            var (item, amount) = VoiceGrammar.ParseQty(speech["i buy ".Length..]);
+            return item.Length != 0 && await ctx.BuyByName(item, amount);
+        }
+        return false;
+    }
+}
 
-        int amount = 1;   // default: sell one, if no quantifier is given
-        var parts = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length > 1 && parts[0] == "all")
-        { amount = -1; rest = string.Join(' ', parts[1..]); }                              // -1 = whole stack
-        else if (parts.Length > 1 && int.TryParse(parts[0], out var n) && n > 0)
-        { amount = n; rest = string.Join(' ', parts[1..]); }
-        else if (parts.Length == 1 && parts[0] == "all")
-        { return false; }                                                                   // "all" needs an item
+/// <summary>Shared parser for the quantity grammar the NexusTK voice commands use: an item phrase optionally
+/// carrying a leading "all" (whole stack) or a trailing "number &lt;N&gt;" (that many). Returns amount -1 for
+/// "all", N for "number N", else 1. The item is whatever words remain.</summary>
+internal static class VoiceGrammar
+{
+    public static (string item, int amount) ParseQty(string phrase)
+    {
+        phrase = phrase.Trim();
+        int idx = phrase.LastIndexOf(" number ", StringComparison.Ordinal);   // "<item> number <N>"
+        if (idx >= 0 && int.TryParse(phrase[(idx + " number ".Length)..].Trim(), out var n) && n > 0)
+            return (phrase[..idx].Trim(), n);
+        if (phrase.StartsWith("all ")) return (phrase["all ".Length..].Trim(), -1);   // whole stack
+        return (phrase, 1);
+    }
+}
 
-        if (rest.Length == 0) return false;
-        return await ctx.SellByName(rest, amount);
+/// <summary>The three "Misc" NexusTK voice commands that work near ANY NPC (nexusatlas Voice Commands list):
+/// "what's your name?", "what do you sell?", "what do you buy?". Appended to every NPC's composition (see
+/// <see cref="NpcScripts.For"/>) with no click-menu entry — it only answers these spoken questions out loud,
+/// and falls through on anything else. Registered last so a shop/bank/quest handler that matches the same
+/// speech wins.</summary>
+public sealed class InfoAbility : INpcAbility, INpcSayHandler
+{
+    public static readonly InfoAbility Instance = new();
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
+
+    public Task<bool> OnSay(NpcContext ctx, string speech)
+    {
+        if (speech.Contains("your name"))                     // "what's your name?", "what is your name?"
+        {
+            ctx.Bubble($"Hello, my name is {ctx.Def.Name}.");
+            return Task.FromResult(true);
+        }
+        if (speech.StartsWith("what do you sell"))
+        {
+            var names = Catalogue(ctx);
+            ctx.Bubble(names.Count == 0 ? "I don't sell anything" : "I sell " + Fit(names) + ".");
+            return Task.FromResult(true);
+        }
+        if (speech.StartsWith("what do you buy"))
+        {
+            var names = Catalogue(ctx);
+            ctx.Bubble(names.Count == 0 ? "I don't buy anything" : "I buy " + Fit(names) + ".");
+            return Task.FromResult(true);
+        }
+        return Task.FromResult(false);
+    }
+
+    // The NPC's stocked item names, deduped. In RTK a shop's spoken buy-list and sell-list are the same
+    // catalogue (buyItems == sellItems for most NPCs), so both questions answer from this.
+    private static List<string> Catalogue(NpcContext ctx) =>
+        (Shops.For(ctx.Def.Key) ?? System.Array.Empty<Shops.Category>())
+            .SelectMany(c => c.Keys).Select(Content.ItemByKey).OfType<ItemDef>()
+            .Select(d => d.Name).Distinct().ToList();
+
+    // Join item names into one over-head line, capped so it can't overflow the 0x0D speech buffer (u8 length).
+    private static string Fit(List<string> names)
+    {
+        var sb = new System.Text.StringBuilder();
+        int shown = 0;
+        foreach (var n in names)
+        {
+            if (sb.Length + n.Length + 2 > 180) break;
+            if (shown++ > 0) sb.Append(", ");
+            sb.Append(n);
+        }
+        if (shown < names.Count) sb.Append(", and more");
+        return sb.ToString();
     }
 }
 
@@ -301,47 +389,53 @@ public sealed class RepairAbility : INpcAbility
     }
 }
 
-/// <summary>Vault storage for coin + items (deposit / withdraw), persisted per character.</summary>
+/// <summary>Vault storage for coin + items (deposit / withdraw), persisted per character.
+///
+/// The three actions are their own top-level menu entries, so an inn keeper reads
+/// Buy / Sell / Deposit Money / Deposit Item / Withdraw Item. RTK's inn_npc.lua instead shows a single
+/// "Banking" button that opens a submenu (bank.show_main_menu) — that's its 7.x client's UI, not 4.95's, so
+/// it isn't followed here. Taking coin back out is voice-only ("give my coins back"), matching the same
+/// menu; <see cref="OnSay"/> handles it.</summary>
 public sealed class BankAbility : INpcAbility, INpcSayHandler
 {
     public static readonly BankAbility Instance = new();
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        yield return ("Banking", c => c.Bank());
+        yield return ("Deposit Money", c => c.DepositMoney());
+        yield return ("Deposit Item",  c => c.DepositItem());
+        yield return ("Withdraw Item", c => c.WithdrawItem());
     }
 
-    // Spoken "take my <item|coin> [count]" (deposit) / "give my <item|coin> [count]" (withdraw) — a real
-    // NexusTK command, e.g. "take my coin 500" (deposit 500 coin), "give my all acorns" (withdraw every
-    // acorn), "take my acorn" (deposit 1). "all" is a prefix quantifier (before the item); a trailing number
-    // is the count instead — this ordering is the opposite of the shop's "buy [N] <item>" and is exactly how
-    // the real command works, not a typo.
+    // The real NexusTK banking voice commands (nexusatlas Voice Commands list):
+    //   deposit:  "i will deposit <item>" / "i will deposit all <item>" / "i will deposit <item> number <N>"
+    //   withdraw: "give my <item> back"   / "give my all <item> back"   / "give my <item> number <N> back"
+    //   query:    "what have i deposited?"
+    // Coin uses the same verbs with the word "coin"/"coins" ("i will deposit coins number 500"). The legacy
+    // "take my <item>" deposit alias is kept so older habits still work.
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
-        if (speech.StartsWith("take my "))
+        if (speech.StartsWith("i will deposit "))
         {
-            var (item, amount) = ParseItemAmount(speech["take my ".Length..]);
+            var (item, amount) = VoiceGrammar.ParseQty(speech["i will deposit ".Length..]);
             return item.Length != 0 && await ctx.Deposit(item, amount);
         }
-        if (speech.StartsWith("give my "))
+        if (speech.StartsWith("give my ") && speech.EndsWith(" back"))
         {
-            var (item, amount) = ParseItemAmount(speech["give my ".Length..]);
+            string mid = speech["give my ".Length..^" back".Length];
+            var (item, amount) = VoiceGrammar.ParseQty(mid);
             return item.Length != 0 && await ctx.Withdraw(item, amount);
         }
+        if (speech.StartsWith("what have i deposited"))
+        {
+            ctx.ShowVault();
+            return true;
+        }
+        if (speech.StartsWith("take my "))   // legacy deposit alias
+        {
+            var (item, amount) = VoiceGrammar.ParseQty(speech["take my ".Length..]);
+            return item.Length != 0 && await ctx.Deposit(item, amount);
+        }
         return false;
-    }
-
-    // "[all] <item words...> [trailing count]": leading "all" -> whole stack (amount <= 0); else a trailing
-    // integer -> that many; else -> 1 (bare "take my acorn" deposits a single one).
-    private static (string item, int amount) ParseItemAmount(string rest)
-    {
-        rest = rest.Trim();
-        if (rest.StartsWith("all ")) return (rest["all ".Length..].Trim(), -1);
-
-        var parts = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length > 1 && int.TryParse(parts[^1], out var n) && n > 0)
-            return (string.Join(' ', parts[..^1]), n);
-
-        return (rest, 1);
     }
 }
 
@@ -417,7 +511,8 @@ public sealed class FishAbility : INpcAbility, INpcSayHandler
 /// Ports the new-player core: <b>Become a &lt;Class&gt;</b> at level 5 (sex-specific starter kit + 500 gold +
 /// path change), <b>Learn / Divine / Forget Secret</b> (the trainer's spell-teaching), and <b>Become Noble</b>
 /// (the level-75 title grant). One instance per base path (1 Warrior / 2 Rogue / 3 Mage / 4 Poet). The
-/// repeatable Minor Quest is a separate <see cref="MinorQuestAbility"/> composed alongside this one. NOT ported:
+/// repeatable Minor Quest is a separate <see cref="MinorQuestAbility"/> composed alongside this one — it adds
+/// no menu entry of its own; you get one by saying "quest" near the trainer. NOT ported:
 /// the level-66+ star/moon/sun armor chains and the nagnang trials — they depend on subsystems we don't model
 /// (karma, crafting ranks, carnage wins, marriage/partner, mentoring).</summary>
 public sealed class ClassTrainerAbility : INpcAbility
@@ -662,17 +757,28 @@ public sealed class LibrarianAbility : INpcAbility, INpcSayHandler
 
 /// <summary>Change Face / Change Gender (RTK rogue_guild_shaman.lua: <c>general_npc_funcs.changeFace</c> /
 /// <c>changeGender</c> — the third option, Eyes, isn't ported). Both are genuinely visible on this client:
-/// Face is a real byte in the 4.95 7-byte appearance form (§8 of the protocol doc), unlike hair/beard which
-/// that form has no slot for at all — see docs/NexusTK-4.95-Protocol.md §8 for why those two aren't offered
-/// here. Face browsing live-previews each candidate on the player's own screen (mirrors RTK's clone.equip
-/// preview loop) before it's paid for and committed.</summary>
+/// Face is a real byte in the 4.95 7-byte appearance form (§8 of the protocol doc). Face browsing
+/// live-previews each candidate on the player's own screen (mirrors RTK's clone.equip preview loop) before
+/// it's paid for and committed.</summary>
 public sealed class AppearanceAbility : INpcAbility
 {
     public static readonly AppearanceAbility Instance = new();
     private const uint FaceCost = 3000;
     private const uint GenderCost = 12000;
-    // RTK changeFace: faces 200..216, permanent, cycled with Next/Previous.
-    private static readonly int[] Faces = Enumerable.Range(200, 17).ToArray();
+
+    // The 4.95 client has exactly 90 head sprites, ids 0..89 — read straight off the client's own asset
+    // table (NexusTK.dat -> Head.tbl, whose first line is literally "NumFaces 90", then "ID n, Palette 0,
+    // Starting n*100" for every n in 0..89; Head.epf holds the matching 9000 frames, 100 per head). All 90
+    // were rendered and eyeballed: every one is a real, complete player head.
+    //
+    // DO NOT use RTK's list here. RTK's changeFace offers 200..216, which is a LATER client's id space —
+    // on 4.95 every one of those is out of range, so the client draws no head at all and you get a headless
+    // character (reported live 2026-08-06). Same trap as the spell/sound id spaces: an RTK constant is only
+    // portable once it's been checked against the 4.95 assets.
+    private const int FaceCount = 90;
+    // Browsing 90 one at a time is 89 dialog round-trips, so the loop also offers a coarse +10 jump and
+    // starts on the face you're already wearing (RTK started at its first entry, but it only had 17).
+    private const int FaceJump = 10;
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
@@ -691,28 +797,30 @@ public sealed class AppearanceAbility : INpcAbility
 
         await ctx.Say("Choose the face you like. Please be careful as the change is permanent. Use 'Next face'/'Previous face' to browse.");
 
-        int original = ctx.Face;
-        int index = 0;
+        // The browse is a TRY-ON, not a live edit: each step draws the player's own paperdoll wearing the
+        // candidate head in the dialog's portrait slot (MenuWithFace -> the 0x30 tag-0 player head). The
+        // character is never touched, so backing out costs nothing to undo, a half-finished browse can't
+        // leave a wrong face persisted, and nobody else in the room sees you flicker through 90 heads.
+        int index = Math.Clamp(ctx.Face, 0, FaceCount - 1);   // start on the face they're wearing
         while (true)
         {
-            ctx.PreviewFace(Faces[index]);
-            int choice = await ctx.Menu("Do you like this face?", new[] { "I want this one", "Next face", "Previous face", "Nevermind" });
+            int choice = await ctx.MenuWithFace($"Do you like this face? ({index + 1} of {FaceCount})",
+                new[] { "I want this one", "Next face", "Previous face", $"Skip ahead {FaceJump}", "Nevermind" }, index);
             if (choice == 1)
             {
-                if (ctx.Coins < FaceCost)
-                {
-                    ctx.PreviewFace(original);   // restore — can't afford it after all (money spent mid-browse elsewhere)
-                    await ctx.Say($"It will cost you {FaceCost:N0} coins. Come back when you have that.");
-                    return;
-                }
+                // Money can have moved since the first check (a trade, another window) — re-check before taking it.
+                if (ctx.Coins < FaceCost) { await ctx.Say($"It will cost you {FaceCost:N0} coins. Come back when you have that."); return; }
                 ctx.SpendGold(FaceCost);
-                ctx.CommitFace(Faces[index]);
+                ctx.CommitFace(index);
                 await ctx.Say("It's tricky to mold this flesh. Let's see how it looks.");
                 return;
             }
-            if (choice == 2) index = Math.Min(index + 1, Faces.Length - 1);
-            else if (choice == 3) index = Math.Max(index - 1, 0);
-            else { ctx.PreviewFace(original); return; }   // Nevermind or cancel (0) — restore
+            // Wrap at both ends (RTK clamped, but it only had 17 entries — with 90 a clamp just strands you
+            // at whichever end you walked to).
+            if (choice == 2) index = (index + 1) % FaceCount;
+            else if (choice == 3) index = (index + FaceCount - 1) % FaceCount;
+            else if (choice == 4) index = (index + FaceJump) % FaceCount;
+            else return;   // Nevermind, or the player closed the dialog — nothing to undo
         }
     }
 
@@ -1094,6 +1202,41 @@ public sealed class ChapelAbility : INpcAbility
 }
 
 /// <summary>Tells the current server date + time (a real, self-contained feature many NPCs share).</summary>
+/// <summary>Raise the dead — the one thing every Shaman does, and the reason ghosts walk to one at all
+/// (RTK <c>NPCs/Common/shaman.lua</c>'s <c>click</c>, and the identical <c>_resurrect</c> helper the four
+/// Wilderness totem priests call in <c>NPCs/Common/totem_npc.lua</c>; both scripts are quoted verbatim below).
+///
+/// Contributes NOTHING to a living player's menu: RTK wraps the whole thing in <c>if player.state == 1</c>
+/// with no else branch, so clicking a Shaman while alive is a no-op there and here. The revival is IN PLACE
+/// (<see cref="NpcContext.Revive"/>) — the ghost walked here under its own power, which is exactly what F1's
+/// "Silver Thread" passage is for (<c>Session.SilverThread</c> warps the ghost to a Shaman; this ability is
+/// what actually un-ghosts them once they arrive).
+///
+/// Wired to ShamanNpc + the four totem priests in NpcAbilities.csv. NOT to RogueGuildShamanNpc — despite the
+/// name, <c>rogue_guild_shaman.lua</c> is a face/gender/eyes changer (the `appearance` ability) and has no
+/// revival branch at all.</summary>
+public sealed class ReviveAbility : INpcAbility
+{
+    public static readonly ReviveAbility Instance = new();
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        if (!ctx.IsDead) yield break;   // RTK's `if player.state ~= 1 then return end`
+        yield return ("Return to the world of the living", Resurrect);
+    }
+
+    // The prompt, the Yes/No, and the closing line are RTK's own strings. A Shaman with nothing else to offer
+    // has exactly one menu entry, and RunNpcAsync dives straight into a single entry — so a ghost clicking a
+    // Shaman lands on this question immediately, matching RTK's script-on-click flow with no wrapper menu.
+    private static async Task Resurrect(NpcContext c)
+    {
+        int pick = await c.Menu("Ah, another of the fallen come for my aid. Are you ready to return to the world of the living?",
+                                new[] { "Yes", "No" });
+        if (pick != 1) return;   // "No", or the player closed the dialog
+        c.Revive("Your spirit returns to your body.");
+        await c.Say("So shall it be! Keep yourself safe, and free from harm.");
+    }
+}
+
 public sealed class TimeAbility : INpcAbility
 {
     public static readonly TimeAbility Instance = new();

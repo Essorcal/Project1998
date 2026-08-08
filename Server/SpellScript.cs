@@ -7,8 +7,8 @@ namespace Server;
 /// <c>SpellParams.csv</c> supplies each spell's row, and <see cref="SpellContext"/> is the facade a verb acts
 /// through. A thin static wrapper over a shared <see cref="LuaVerbHost"/> (the actual MoonSharp engine); both
 /// the CSV and this script hot-reload on <c>!reload</c> (see <see cref="Content.Load"/>). See
-/// <see cref="Session.ApplyCast"/> for the additive dispatch (a spell with no row / a Lua error falls through
-/// to the C# <c>CastX</c> path unchanged, so a broken verb can never take spells offline).
+/// <see cref="Session.ApplyCast"/> for the additive dispatch: a spell with no row and no verb falls through to
+/// the C# <c>CastX</c> path unchanged. A verb that ERRORS does not fall through — see <see cref="Run"/>.
 /// </summary>
 public static class SpellScript
 {
@@ -16,36 +16,43 @@ public static class SpellScript
 
     static SpellScript() => UserData.RegisterType<SpellContext>();
 
-    public static void Load(string? path) => _host.Load(path);
+    public static bool Load(string? path) => _host.Load(path);
 
     public static bool HasVerb(string verb) => _host.HasVerb(verb);
 
-    // The archetype path passes its data via ctx (ctx.amount / ctx.mana), not a CSV row, so it runs against a
-    // shared empty row (a stable object keeps LuaVerbHost's per-row Table cache warm).
-    private static readonly IReadOnlyDictionary<string, string> _noRow = new Dictionary<string, string>();
+    /// <summary>The empty row an archetype-style call runs against: those verbs take their numbers off
+    /// <c>ctx</c> rather than a CSV row. A single stable instance keeps LuaVerbHost's per-row Table cache warm
+    /// (it is keyed by row identity).</summary>
+    public static readonly IReadOnlyDictionary<string, string> NoRow = new Dictionary<string, string>();
 
-    /// <summary>Run an archetype verb (arch_damage/arch_heal/…) whose numbers come from <paramref name="ctx"/>.
-    /// Returns null if the verb isn't defined (caller falls back to the C# CastX handler); otherwise the verb's
-    /// success bool (a verb that ran but returned no boolean counts as success; a Lua error counts as a failed
-    /// cast — false — rather than null, so the caller does NOT re-run it via the fallback and double-apply).</summary>
-    public static bool? RunArch(string verb, SpellContext ctx)
+    /// <summary>Run a spell verb. ONE entry point for both bindings — a verb reached by its SpellParams row
+    /// (<paramref name="row"/> carries the numbers) and one reached from a C# dispatch site (pass
+    /// <see cref="NoRow"/>; the verb reads <c>ctx</c> instead). The verbs themselves already straddle both, e.g.
+    /// <c>local cost = row.mana or ctx.spellMana</c>, so the split only ever lived in these wrappers.
+    ///
+    /// <para>Tri-state result:</para>
+    /// <list type="bullet">
+    /// <item><b>null</b> — no such verb. Lua isn't handling this spell; the caller falls through to its C#
+    ///   dispatch. This is the ordinary case for the ~600 spells with no row.</item>
+    /// <item><b>true</b> — the cast succeeded. (A verb that returns no boolean at all counts as success, so a
+    ///   verb needn't bother with <c>return true</c>.)</item>
+    /// <item><b>false</b> — the verb ran and DECLINED (no mana / no target / blocked) and has already sent its
+    ///   own notice. The caller must return this straight up: no central "You cast X.", and NO fallthrough.</item>
+    /// </list>
+    ///
+    /// <para><b>A Lua error counts as false, never null.</b> The two wrappers this replaces disagreed about
+    /// exactly that — the archetype one returned false ("failed cast, don't re-run it") while the row one
+    /// returned null, which quietly re-ran the spell through a C# handler whose behaviour has since drifted
+    /// (filch barks over-head from Lua and into the status box from C#). Silently substituting a different
+    /// implementation is the worst of the three options: the player sees the spell misbehave, the log says
+    /// nothing about a fallback, and a verb that errored *after* spending mana gets its effect applied twice.
+    /// A failed cast that says so is strictly better, and the error is already logged by
+    /// <see cref="LuaVerbHost.Invoke"/>.</para></summary>
+    public static bool? Run(string verb, SpellContext ctx, IReadOnlyDictionary<string, string>? row = null)
     {
-        if (!_host.HasVerb(verb)) return null;
-        var ret = _host.Invoke(verb, ctx, _noRow);
-        if (ret is null) return false;                          // present but errored — treat as failed, no fallback
+        if (!_host.HasVerb(verb)) return null;                  // not a Lua spell -> C# dispatch
+        var ret = _host.Invoke(verb, ctx, row ?? NoRow);
+        if (ret is null) return false;                          // ran but errored (already logged) -> failed cast, no fallthrough
         return ret.Type != DataType.Boolean || ret.Boolean;     // non-boolean return = ran = success
-    }
-
-    /// <summary>Run a per-spell verb (bound via a SpellParams row). Tri-state, mirroring <see cref="RunArch"/>:
-    /// null = no such verb OR a Lua error (the caller falls through to the C# dispatch); true = the cast succeeded
-    /// (a non-boolean return counts as success, so a verb needn't bother returning true); false = the verb ran
-    /// but DECLINED (no mana / blocked / no target — it already sent its own notice). A false result must NOT
-    /// print the central "You cast X." or fall through to C#, so the caller returns it straight to HandleCast.</summary>
-    public static bool? RunResult(string verb, SpellContext ctx, IReadOnlyDictionary<string, string> row)
-    {
-        if (!_host.HasVerb(verb)) return null;
-        var ret = _host.Invoke(verb, ctx, row);
-        if (ret is null) return null;                          // Lua error -> fall through to the C# path
-        return ret.Type != DataType.Boolean || ret.Boolean;    // non-boolean return = ran = success
     }
 }

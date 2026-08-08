@@ -30,15 +30,21 @@ public static class NpcScript
     private static Table? _npcs;       // npcs[key]      = function(ctx)         -- click dialog
     private static Table? _npcsSay;    // npcs_say[key]  = function(ctx, speech)  -- spoken trigger, returns consumed?
 
-    /// <summary>(Re)load the NPC dialog script. On any error the Lua NPC path is simply disabled.</summary>
-    public static void Load(string? path)
+    /// <summary>(Re)load the NPC dialog script — ATOMICALLY, for the same reason as
+    /// <see cref="LuaVerbHost.Load"/>: the new script only replaces the running one once it has compiled and
+    /// produced both `npcs` and `__make_ctx`. A broken edit leaves the previous dialogs working and logs.
+    /// <para>This matters MORE here than for the verb hosts, because Lua NPC dialog has no C# fallback at all —
+    /// nulling first meant one typo in npc_dialog.lua struck every scripted NPC in the world mute until the
+    /// next good reload. Returns true if the Lua NPC path is live afterwards.</para></summary>
+    public static bool Load(string? path)
     {
         lock (_lock)
         {
-            _script = null;
-            _npcs = null;
-            _npcsSay = null;
-            if (path is null || !File.Exists(path)) return;
+            if (path is null || !File.Exists(path))
+            {
+                Log.Info($"!! npc_dialog.lua: no file at '{path ?? "(null)"}' — keeping {(_npcs is null ? "the Lua NPC path disabled" : "the previously-loaded dialogs")}");
+                return _npcs is not null;
+            }
             try
             {
                 // Hard sandbox (no io/os) PLUS the coroutine module — the whole dialog model is Lua coroutines
@@ -52,12 +58,15 @@ public static class NpcScript
                     _npcs = n.Table;
                     var sy = s.Globals.Get("npcs_say");            // optional — speech-trigger handlers
                     _npcsSay = sy.Type == DataType.Table ? sy.Table : null;
+                    return true;
                 }
-                else Log.Info("!! npc_dialog.lua missing global `npcs` table or `__make_ctx` — Lua NPC path disabled");
+                Log.Info("!! npc_dialog.lua missing global `npcs` table or `__make_ctx` — reload REJECTED, keeping the previous dialogs");
+                return _npcs is not null;
             }
             catch (Exception e)
             {
-                Log.Info($"!! npc_dialog.lua load failed: {e.Message} — Lua NPC path disabled");
+                Log.Info($"!! npc_dialog.lua load failed: {e.Message} — reload REJECTED, keeping the previous dialogs");
+                return _npcs is not null;
             }
         }
     }

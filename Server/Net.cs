@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Shared;
 
@@ -57,10 +58,25 @@ public sealed class TkListener
         };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown("ProcessExit");
 
+        // SIGTERM explicitly. This is how a Linux host actually stops the server — `systemctl restart`,
+        // `docker stop`, and an OOM-killer-adjacent supervisor all send SIGTERM, never Ctrl+C. The .NET
+        // runtime does raise ProcessExit for SIGTERM, so the handler above would cover it, but registering
+        // here makes the deployment-critical path explicit rather than an implementation detail, and gets
+        // the flush started at the top of the shutdown rather than at the very end of it. The
+        // _shutdownOnce guard means running through both paths flushes exactly once.
+        // (systemd's TimeoutStopSec — 30s in deploy/nexus-game.service — is what bounds this before SIGKILL.)
+        _sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx =>
+        {
+            Shutdown("SIGTERM");
+            ctx.Cancel = false;   // let the runtime carry on terminating; we only wanted the flush first
+        });
+
         var tasks = new List<Task>();
         foreach (var p in _ports) tasks.Add(ListenAsync(p));
         await Task.WhenAll(tasks);
     }
+
+    private PosixSignalRegistration? _sigterm;   // held for the process lifetime; disposing would unhook it
 
     private int _shutdownOnce;   // Interlocked guard: Environment.Exit(0) below re-raises ProcessExit, so
                                   // both handlers can reach Shutdown -- make sure the flush runs exactly once.
@@ -86,6 +102,15 @@ public sealed class TkListener
             TcpClient client;
             try { client = await listener.AcceptTcpClientAsync(); }
             catch (Exception e) { Log.Info($"!! accept on :{port} failed: {e.Message}"); continue; }
+
+            // DISABLE NAGLE. Every packet this server sends is small (a cast is ~5 tiny packets: 0x29 effect,
+            // 0x19 sound, 0x1A action, 0x08 stats, 0x0A text), and .NET leaves TCP_NODELAY off by default.
+            // Nagle then holds each small segment until the previous one is ACKed, and the client's delayed-ACK
+            // timer can sit on that for tens of ms — so back-to-back packets get delivered with variable jitter
+            // instead of back-to-back. Audible symptom: casts that should land in unison (three per action-budget
+            // window while a key is held) play their sounds slightly flammed. Latency matters here, throughput
+            // does not; there is no case where batching this game's packets is worth the delay.
+            try { client.NoDelay = true; } catch { /* socket already dead — the read loop will notice */ }
 
             // Admission control BEFORE spawning a session: shed load / throttle floods at the cheapest point.
             var ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;

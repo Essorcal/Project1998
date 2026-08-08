@@ -121,6 +121,11 @@ public sealed class Character
     public uint   Tnl       = 0;
     public string Title     = "";          // grade/honorific shown above the name (e.g. "Peasant")
     public string ClassName = "Peasant";   // path/class line
+    // Subpath RANK within the path (RTK ChaMark / status.mark): 0 = base class, 1 Il san … 5 Oh san. Nothing
+    // in the world ADVANCES this yet — the subpath-promotion NPCs aren't ported — so it stays 0 for ordinary
+    // play and is set by the GM "!mark" command. It is a real gate all the same: map entry (MapReqMark),
+    // unmarked-only doors, minor-quest eligibility and now mark-restricted gear (ItmMark) all read it.
+    public byte   Mark      = 0;
     public string ClanName  = "";          // guild/clan name ("" = clanless)
     public string ClanTitle = "";          // rank within the clan
     public string Spouse    = "";           // marriage line ("" = none)
@@ -180,6 +185,55 @@ public sealed class Character
     // Raw body of the creation packet (0x04), kept verbatim until its appearance-byte layout is
     // decoded from the logged dump and mapped onto the fields above. Null for the default spawn.
     public byte[]? CreationBlob = null;
+
+    // Timed effects that were still running at the last save — see TimedEffects. Snapshot-only: the live
+    // state is the session's own fields, and Session.CaptureTimedEffects refreshes this right before every
+    // write, so the field is meaningless (and ignored) except at load time.
+    public TimedEffects Effects = new();
+}
+
+/// <summary>
+/// The character's running timed effects, persisted so they survive a relog AND a server crash. Every
+/// deadline is stored as ABSOLUTE unix milliseconds, not as a remaining duration: a buff is a wall-clock
+/// timer, so 40 seconds of Might left is still 40 seconds after a 10-second reconnect and is GONE after an
+/// hour offline. Storing "remaining" instead would let a player bank a fury by logging out, and would hand
+/// back free duration after every crash restart.
+///
+/// Mirrors the session's live fields (Server/Session.Spells.cs, Session.Items.cs), which stay on
+/// Environment.TickCount64 — a monotonic clock that can't be dragged around by an NTP step mid-session.
+/// Session.CaptureTimedEffects / RestoreTimedEffects convert between the two.
+/// </summary>
+public sealed class TimedEffects
+{
+    /// <summary>Stat buffs, and curse/venom statuses (the ones carrying a mutually-exclusive Category).</summary>
+    public List<SavedBuff> Buffs = new();
+
+    /// <summary>Ward-style presence markers with no stat delta (item_verbs "ward"/"hardenbody"):
+    /// key -> absolute unix-ms expiry.</summary>
+    public Dictionary<string, long> StatusFlags = new();
+
+    // Rage / fury tier (player.rage): a whole-swing multiplier.
+    public long   RageUntil;   public int    RageAmount = 1;  public string RageName = "";
+    // Damage-reduction "deduction" — two independent, non-stacking sources (Sanctuary line, Baekho's Cunning).
+    public long   SancUntil;   public double SancMult   = 1.0; public string SancName = "";
+    public long   CunningUntil; public double CunningMult = 1.0;
+    // Combat stances (Backstab / Flank).
+    public long   BackstabUntil; public long FlankUntil;
+    // Stealth (Invisible / Spirit's Form / Life's Cloak / Glass Form) — timer + which spell armed it.
+    public long   StealthUntil; public string StealthName = "";
+    // Morph/disguise: the Monster.tbl look peers see instead of the human sprite.
+    public long   MorphUntil;  public ushort MorphLook;  public byte MorphColor; public string MorphKey = "";
+}
+
+/// <summary>One persisted entry of the session's live buff list. <see cref="Until"/> is absolute unix ms.</summary>
+public sealed class SavedBuff
+{
+    public string Stat     = "";
+    public int    Amount;
+    public long   Until;
+    public string Key      = "";
+    public string Name     = "";
+    public string Category = "";
 }
 
 /// <summary>
@@ -200,6 +254,12 @@ public sealed class InvItem
     // 1..5 = the 50/25/10/5/1% warnings already sent, so each only fires once as Dura counts down. Only
     // meaningful for worn equipment (Session.CheckDura); bag items stay at 0.
     public byte Repair = 0;
+
+    // Remaining "save this item from breaking" charges (RTK sd->status.inventory[x].protected): each one is
+    // consumed to restore the item to full durability instead of destroying it. Nothing grants a charge yet —
+    // the item-level ItmProtected flag is likewise 0 for every row in the registry — so this stays 0 and the
+    // protect branch (Session.TryProtectFromBreak) never fires; it is here so the break paths match RTK.
+    public byte Protected = 0;
 
     public InvItem() { }
     public InvItem(byte slot, int itemId, int amount, ushort dura = 0)

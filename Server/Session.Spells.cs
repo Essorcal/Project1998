@@ -28,6 +28,13 @@ public sealed partial class Session
     // list index, matching the 0x0F cast "pos" the client sends back.
     private void RefreshSpells()
     {
+        // Drop anything an era gate has since switched off (the 8 individual trap spells — see
+        // Content.IsOutOfEraSplitTrap) BEFORE numbering slots, so a book saved under the old rules doesn't
+        // hand the client a spell it can no longer cast. Compacting first keeps slot == list index, which is
+        // exactly what the client sends back on 0x0F.
+        if (_char.Spells.RemoveAll(id => Content.SpellById(id) is { } gated && Content.IsOutOfEraSplitTrap(gated)) > 0)
+            StoreSave();
+
         for (int i = 0; i < _char.Spells.Count; i++)
         {
             var sp = Content.SpellById(_char.Spells[i]);
@@ -66,7 +73,7 @@ public sealed partial class Session
             SendAddSpell(_char.Spells.Count - 1, sp);
             learned++;
         }
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         int spells = all.Count(s => s.IsSpell), skills = all.Count(s => s.IsSkill);
         SendLog($"Learned {learned} new {Content.PathName(path)} ({Character.AlignmentName(_char.Alignment)}) ability(ies) — " +
                 $"book now {_char.Spells.Count} (class has {all.Count} ≤ lvl {_char.Level}: {spells} spell / {skills} skill)." +
@@ -91,7 +98,7 @@ public sealed partial class Session
             : Array.FindIndex(Character.Alignments, s => string.Equals(s, a, StringComparison.OrdinalIgnoreCase));
         if (val < 0) { SendLog($"unknown alignment \"{a}\" — use Unaligned / Kwisin / Mingken / Ohaeng (or 0-3)."); return; }
         _char.Alignment = (byte)val;
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         SendLog($"Alignment set to {Character.AlignmentName(_char.Alignment)}. Run  !forgetspells  then  !spells  to relearn a clean {Character.AlignmentName(_char.Alignment)} set.");
         Log.Info($"   -> ALIGN set to {_char.Alignment} ({Character.AlignmentName(_char.Alignment)})");
     }
@@ -103,11 +110,13 @@ public sealed partial class Session
         if (q.Length == 0) { SendLog("usage: !learnspell <name or id>   (or  !spells  to learn all for your class)"); return; }
         var sp = Content.FindSpell(q);
         if (sp is null) { SendLog($"no spell matches \"{q}\"."); return; }
+        if (Content.IsOutOfEraSplitTrap(sp))
+        { SendLog($"{sp.Name} is a 2003-07-01 addition — out of era for 4.95. Use Set Trap, or set SplitTrapSpells=1 in ServerTuning.csv + !reload."); return; }
         if (_char.Spells.Contains(sp.Id)) { SendLog($"You already know {sp.Name}."); return; }
         if (_char.Spells.Count >= SpellBookCap) { SendLog($"Spellbook full ({SpellBookCap})."); return; }
         _char.Spells.Add(sp.Id);
         SendAddSpell(_char.Spells.Count - 1, sp);
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         SendLog($"Learned {sp.Name} ({(sp.IsSkill ? "skill" : "spell")}, {Content.PathName(sp.PathId)}).");
     }
 
@@ -118,7 +127,7 @@ public sealed partial class Session
         for (int slot = n - 1; slot >= 0; slot--)
             SendMap(0x18, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
         _char.Spells.Clear();
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         SendLog($"Forgot all {n} spell(s).");
     }
 
@@ -130,13 +139,33 @@ public sealed partial class Session
     // buffs, teleports, summons) are a follow-up — RTK implements those as ~900 Lua scripts.
     private void HandleCast(byte[] dec)
     {
-        if (_char.Hp == 0) { SendMiniText("Spirits cannot cast spells."); return; }
+        // Hyun Moo Revival is the ONE spell exempt from the dead guard - nexusatlas: "Will return poet's own
+        // life if dead." Everything else keeps RTK's "Spirits cannot cast spells." The slot is resolved first
+        // so we know WHICH spell is being cast before deciding.
         if (dec.Length < 1) return;
+        // MOUNT GATE. You can't cast from horseback — same state gate the equip/use paths already apply
+        // (Session.Items.cs), and the same clif_sendminitext wording. Checked before the slot is even
+        // resolved: no spell is exempt, not even Hyun Moo Revival (you can't be dead AND mounted anyway).
+        if (_char.Mounted) { SendMiniText("You can't do that while riding a horse."); return; }
         int slot = dec[0] - 1;
+        if (_char.Hp == 0)
+        {
+            var dyingPick = slot >= 0 && slot < _char.Spells.Count ? Content.SpellById(_char.Spells[slot]) : null;
+            if (dyingPick is null || !Content.IsHyunMooRevival(dyingPick))
+            { SendMiniText("Spirits cannot cast spells."); return; }
+        }
         if (slot < 0 || slot >= _char.Spells.Count)
         { Log.Info($"   ?? cast slot {slot} out of range ({_char.Spells.Count} known)"); return; }
         var sp = Content.SpellById(_char.Spells[slot]);
         if (sp is null) return;
+
+        // Era gate (Content.IsOutOfEraSplitTrap): the individual trap spells are a 2003-07-01 addition, so in
+        // 4.95 the only route is the Set Trap dispatcher's typed prompt. RefreshSpells already prunes them
+        // from the book on world entry — this catches the mid-session cases (a GM grant, a live !reload that
+        // flips the toggle back off) before any Lua/C# cast path can run. The dispatcher is NOT affected: it
+        // resolves the same SpellDef internally, downstream of this check.
+        if (Content.IsOutOfEraSplitTrap(sp))
+        { SendMiniText("You must cast Set Trap and name the trap you wish to set."); return; }
 
         // Per spell type, the body carries different args after the slot byte. Type 1 ("Which …?") = a typed
         // answer string — e.g. Gateway's N/E/S/W. RTK's clif_parsemagic (clif.c:8857) strcpy's it straight from
@@ -169,8 +198,13 @@ public sealed partial class Session
         // from a fixed type->sound table (magic/type 6 has none), so the 4th byte is ignored. The spell's sound is
         // sent separately over 0x19 by BroadcastFx (RTK clif_playsound), which the static RE shows IS wired to the
         // audio player. param stays 0.
-        SendAction(_char.Id, type: 6, time: 8, param: 0);                                  // cast anim (magic)
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 6, 8, 0), except: this);   // peers see us cast
+        // Cast POSE LENGTH (Content.CastAnimFrames). This used to be a hardcoded 8, which matches nothing in
+        // RTK and is why a held cast key rendered as three short flickers instead of one sustained pose: at
+        // ~133ms the pose expires between the client's key repeats, whereas at 35 (~583ms) each repeat
+        // re-asserts a pose that hasn't finished, so the three casts allowed per action-budget window read as
+        // one continuous cast.
+        SendAction(_char.Id, type: 6, time: Content.CastAnimFrames, param: 0);                                  // cast anim (magic)
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 6, Content.CastAnimFrames, 0), except: this);   // peers see us cast
         SendStats();                                                                        // push HP/MP to the HUD
     }
 
@@ -189,59 +223,56 @@ public sealed partial class Session
         if (Content.SpellParams.TryGetValue(sp.Key, out var prow))
         {
             var verb = prow.GetValueOrDefault("verb", "");
-            // Tri-state: null = no verb / Lua error -> fall through to C# below; true = cast succeeded; false = the
-            // verb ran but declined (no mana / blocked / no target) and already messaged, so return that verdict
-            // straight up (a false must NOT trigger the central "You cast X." or the C# fallback).
-            var r = SpellScript.RunResult(verb, new SpellContext(this, sp, targetId, answer), prow);
+            // Tri-state (SpellScript.Run): null = no such verb -> fall through to C# below; true = cast
+            // succeeded; false = the verb ran but declined (no mana / blocked / no target) OR errored, and has
+            // already messaged/logged — return that verdict straight up, since a false must NOT trigger the
+            // central "You cast X." and must NOT re-run the spell through the C# path.
+            var r = SpellScript.Run(verb, new SpellContext(this, sp, targetId, answer), prow);
             if (r.HasValue) return r.Value;
         }
 
         // Gateway (common/gateway.lua): a teleport with its own bespoke logic — warp to a gate of the caster's
         // kingdom picked by the N/E/S/W answer. Intercept before the fx dispatch (a teleport has no damage/heal
         // archetype and would otherwise degrade to CastMisc's "spend mana + acknowledge" no-op).
-        if (Content.BaseKey(sp) == "gateway") return CastGateway(sp, answer);
+        if (Content.BaseKey(sp) == "gateway") return Lua(CastWorldArch("gateway", sp, targetId, answer), sp);
 
-        // Return (common/return.lua): another peasant-commons teleport with no damage/heal archetype --
-        // same interception reason as Gateway above, or it would degrade to CastMisc's no-op.
-        if (sp.Key.Equals("return_spell", StringComparison.OrdinalIgnoreCase)) return CastReturn();
+        // (Return / bladestorm / spot_traps / filch / divine used to be dispatched from this method by a
+        // hardcoded key set each. They are now bound by their SpellParams row and handled by the block at the
+        // top — see the "Group A" note on SpellScript.Run. Their C# handlers are gone with them.)
 
         // Propose (common/propose.lua): a skill-type spell (SplType 5 — no native typed-answer/target wire
         // arg at all) whose real interaction is entirely a scripted dialog (RTK inputSeq/menuSeq), same class
         // of primitive as an NPC's. Intercept before the fx dispatch — it has no export row and would
         // otherwise silently no-op via CastMisc.
-        if (sp.Key.Equals("propose", StringComparison.OrdinalIgnoreCase)) return CastPropose(sp);
+        if (sp.Key.Equals("propose", StringComparison.OrdinalIgnoreCase)) return Lua(CastWorldArch("propose", sp, targetId, answer), sp);
 
         // set_trap dispatcher (RTK rogue/set_trap.lua, SplQuestion "What trap? >"): re-runs the SAME level
         // gate + mana cost as casting the specific set_X_trap spell directly (see Content.TrapSpellFor),
         // keyed off the typed answer. Costs no mana itself — CastTrap below spends the real per-kind amount.
+        // The dispatcher and the eight individual set_X_trap spells take the SAME route: LuaPlaceTrap already
+        // resolves the typed answer to a trap kind, enforces the level gate and debits the per-kind mana (it
+        // has to — the dispatcher spell carries none of those itself). The C# tail that used to repeat all of
+        // that here was a second copy of the same resolution.
         if (Content.IsTrapDispatcher(sp))
-        {
-            var trapKey = Content.TrapKeyForAnswer(answer ?? "");
-            var trapSpell = trapKey is null ? null : Content.SpellByKey(trapKey);
-            var trapInfo = trapSpell is null ? null : Content.TrapSpellFor(trapSpell);
-            if (trapInfo is null)
-            {
-                SendMiniText("Select: Dart trap, Snare trap, Repeating dart, Flash trap, Spear trap, Poison trap, Death trap, Sleep trap");
-                return false;
-            }
-            if (_char.Level < trapInfo.Value.Level) { SendMiniText($"You must be level {trapInfo.Value.Level} to set that trap."); return false; }
-            return CastTrap(trapSpell!, trapInfo.Value.Kind, Content.FxFor(trapSpell!), trapInfo.Value.Mana);
-        }
+            return Lua(CastWorldArch("set_trap", sp, targetId, answer), sp);
         if (Content.TrapSpellFor(sp) is (Content.TrapKind directKind, int _, int directMana))
-            return CastTrap(sp, directKind, Content.FxFor(sp), directMana);
-        if (Content.IsBladestormTrap(sp)) return CastBladestormTrap(sp);
+            return Lua(CastWorldArch("set_trap", sp, targetId, answer), sp);
         if (Content.PetSpellFor(sp) is (string petMobKey, int _, int petMana, int petCooldown))
-            return CastPetSummon(sp, petMobKey, petMana, petCooldown);
+            return Lua(CastWorldArch("pet_summon", sp, targetId, answer), sp);
 
         var fx = Content.FxFor(sp);
         string arch = fx?.Archetype ?? "";
 
+        if (Content.IsMendEquipment(sp))  return Lua(CastUtilArch("mend_equipment", sp, null), sp);
+        if (Content.IsJuJakEvocation(sp)) return Lua(CastUtilArch("jujak_evocation", sp, null), sp);
+        if (Content.IsHyunMooRevival(sp)) return Lua(CastUtilArch("hyunmoo_revival", sp, null), sp);
+
         // Mana-battery family (Invoke / Spirit's Power / …) always runs the verbatim RTK formula, whether the
         // export tagged it ManaBattery or we recognise its base identifier (belt-and-suspenders for export gaps).
         if (arch == "ManaBattery" || Content.BaseKey(sp) is "invoke" or "spirits_power" or "life_force" or "gather_magic")
-            return CastUtilArch("mana_battery", sp, null) ?? CastManaBattery(sp);
+            return Lua(CastUtilArch("mana_battery", sp, null), sp);
 
-        if (fx is null) return ApplyCastGeneric(sp, targetId);   // no export row — keyword classifier fallback
+        if (fx is null) return Lua(CastUtilArch("generic", sp, targetId), sp);   // no export row — keyword classifier fallback
 
         // Cooldown (RTK "aether"), if this spell has one and it's still ticking.
         if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait))
@@ -257,33 +288,46 @@ public sealed partial class Session
         // (backstab_warrior/back_battle_warrior/back_attack_warrior/back_damage_warrior, and the flank
         // equivalents) with CureCat "backstabs"/"flanks" — a clean, data-driven way to catch all 4 aliases of
         // each without hardcoding 8 identifiers.
-        if (fx.CureCat == "backstabs") return CastStanceArch("stance_backstab", sp, fx, mana, 0) ?? CastStance(sp, fx, mana, isBackstab: true);
-        if (fx.CureCat == "flanks")    return CastStanceArch("stance_flank",    sp, fx, mana, 0) ?? CastStance(sp, fx, mana, isBackstab: false);
+        if (fx.CureCat == "backstabs") return Lua(CastStanceArch("stance_backstab", sp, fx, mana, 0), sp);
+        if (fx.CureCat == "flanks")    return Lua(CastStanceArch("stance_flank",    sp, fx, mana, 0), sp);
 
         // Rage tiers (Wolf's/Tiger's/Dragon's Fury, Baekho's Rage — Warrior AND Rogue; user: "they get rage
         // spells until 99 I think") and Rogue's Invisible/Spirit's Form/Life's Cloak/Glass Form (sneak-attack
         // multiplier — user: "rogue invis also has a damage multiplier"): same class of gap as Backstab/Flank
         // above — neither has a numeric BuffStat/BuffAmt the generic CastBuff loop can express, so both
         // silently no-opped (spent mana, printed a message, did nothing) before this pass.
-        if (Content.RageAmountFor(sp) is int rageAmt) return CastStanceArch("stance_rage", sp, fx, mana, rageAmt) ?? CastRage(sp, fx, mana, rageAmt);
-        if (Content.IsStealthSpell(sp)) return CastStanceArch("stance_stealth", sp, fx, mana, 0) ?? CastStealth(sp, fx, mana);
-        if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return CastStanceArch("stance_enchant", sp, fx, enchantMana, enchantAmt) ?? CastEnchant(sp, fx, enchantAmt, enchantMana);
+        // Chung Ryong's Rage is a fury too, but INCREMENTAL — recast every 120s to climb tier 1→6, each tier
+        // costing more mana, hitting harder, adding AC, and draining vita when it wears out. It bypasses the
+        // flat CastRage path (and its "already benefiting from a fury" block, which would forbid the climb).
+        // Placed before RageAmountFor so the flat path never sees it (it's deliberately absent from SpellMods).
+        if (Content.IsChungRyongRage(sp)) return Lua(CastUtilArch("chungryong_rage", sp, null), sp);
+        if (Content.RageAmountFor(sp) is int rageAmt) return Lua(CastStanceArch("stance_rage", sp, fx, mana, rageAmt), sp);
+        if (Content.IsStealthSpell(sp))
+        {
+            // Guard + cooldown-arm live HERE (not in CastStealth) because the dispatch prefers the Lua verb
+            // `stance_stealth`, which bypasses CastStealth entirely — so anything only CastStealth did would
+            // silently not happen. Already invisible? Re-casting is a no-op (matches morph), no mana spent.
+            if (Stealthed) { SendMiniText("You already cast that spell."); return false; }
+            _stealthName = sp.Name;
+            bool okStealth = Lua(CastStanceArch("stance_stealth", sp, fx, mana, 0), sp);
+            if (okStealth && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);   // anti-spam once stealth drops (RTK aether)
+            return okStealth;
+        }
+        if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return Lua(CastStanceArch("stance_enchant", sp, fx, enchantMana, enchantAmt), sp);
 
         // The rest of this pass (self-sacrifice strikes, mana steal/gift, cleanse, revive, short leap): none
         // of these have a numeric BuffStat/BuffAmt or a damage amountExpr the generic archetypes can express
         // either (their CSV rows are all bare "Utility"), and each manages its own real RTK mana cost/cooldown
         // internally rather than trusting the generic `mana`/`fx.Aether` values above (which are blank for
         // all of them in the export — see each method's own hardcoded RTK constant).
-        if (Content.SacrificeFamilyFor(sp) is Content.SacrificeFamily fam) return CastSacrificeStrike(sp, fam);
-        if (Content.IsManaStealSpell(sp)) return CastUtilArch("mana_steal", sp, targetId) ?? CastManaSteal(sp, targetId);
-        if (Content.IsManaGiftSpell(sp)) return CastUtilArch("mana_gift", sp, targetId) ?? CastManaGift(sp, targetId);
-        if (Content.IsCleanseSpell(sp)) return CastUtilArch("cleanse", sp, targetId) ?? CastCleanse(sp, targetId);
-        if (Content.IsReviveSpell(sp)) return CastUtilArch("revive", sp, targetId) ?? CastRevive(sp, targetId);
-        if (Content.IsLeapSpell(sp)) return CastUtilArch("leap", sp, null) ?? CastLeap(sp);
-        if (Content.IsAmbushSpell(sp)) return CastAmbush(sp);
-        if (Content.IsSpotTrapsSpell(sp)) return CastSpotTraps(sp, fx, mana);
-        if (Content.IsGroundLootSpell(sp)) return CastGroundLoot(sp, fx, mana);
-        if (Content.IsDivinationSpell(sp)) return CastDivination(sp, fx, targetId, Content.IsDivinationSpySpell(sp));
+        if (Content.SacrificeFamilyFor(sp) is Content.SacrificeFamily fam) return Lua(CastWorldArch("sacrifice", sp, targetId, answer), sp);
+        if (Content.IsManaStealSpell(sp)) return Lua(CastUtilArch("mana_steal", sp, targetId), sp);
+        if (Content.IsManaGiftSpell(sp)) return Lua(CastUtilArch("mana_gift", sp, targetId), sp);
+        if (Content.IsCleanseSpell(sp)) return Lua(CastUtilArch("cleanse", sp, targetId), sp);
+        if (Content.IsReviveSpell(sp)) return Lua(CastUtilArch("revive", sp, targetId), sp);
+        if (Content.IsLeapSpell(sp)) return Lua(CastUtilArch("leap", sp, null), sp);
+        if (Content.IsAmbushSpell(sp)) return Lua(CastWorldArch("ambush", sp, targetId, answer), sp);
+
 
         // Morph family (see Content.MorphSpells/MorphDispatchSpells): question-dispatched ones (feral_rogue,
         // gangrel_rogue/mage, rodent_rogue, beast_rogue/mage, druids_rodent, wilderness_guise) resolve their
@@ -305,25 +349,29 @@ public sealed partial class Session
                 }
                 return false;
             }
-            return CastMorph(sp, fx, mLook, 0, mdMana, mdDur);
+            return Lua(CastMorphArch(sp, mLook, 0, mdMana, mdDur, targetId), sp);
         }
         if (Content.MorphFor(sp) is (ushort morphLook, ushort morphLookF, int morphMana, int morphDur))
-            return CastMorph(sp, fx, morphLook, morphLookF, morphMana, morphDur);
+            return Lua(CastMorphArch(sp, morphLook, morphLookF, morphMana, morphDur, targetId), sp);
 
-        // Archetype dispatch. Each archetype first tries its data-driven Lua verb (`arch_<name>` in
-        // spell_verbs.lua), so the whole archetype's behaviour is scriptable + hot-reloadable; if the verb is
-        // absent it falls back to the C# handler unchanged. Migrating one archetype at a time (Damage done —
-        // see docs/Modding.md); the others still dispatch straight to C#.
+        // Archetype dispatch — every archetype now runs its `arch_<name>` verb in spell_verbs.lua. There is no
+        // C# handler behind any of them any more: the whole spell system is scriptable and hot-reloadable, and
+        // Lua() turns "no such verb" into a visible failed cast rather than a silent fallthrough.
         bool ok = arch switch
         {
-            "Damage"     => CastArch("arch_damage", sp, fx, targetId, mana) ?? CastDamage(sp, fx, targetId, mana),
-            "Heal"       => CastArch("arch_heal", sp, fx, null, mana) ?? CastHeal(sp, fx, mana),
-            "Buff"       => CastArch("arch_buff", sp, fx, null, mana) ?? CastBuff(sp, fx, mana),
-            "TargetBuff" => CastArch("arch_targetbuff", sp, fx, targetId, mana) ?? CastTargetBuff(sp, fx, targetId, mana),
-            "Debuff"     => CastArch("arch_debuff", sp, fx, targetId, mana) ?? CastDebuff(sp, fx, targetId, mana),
-            "Cure"       => CastArch("arch_cure", sp, fx, null, mana) ?? CastCure(sp, fx, mana),
-            _            => CastMisc(sp, mana),   // Utility / Summon / Teleport / Dialog — graceful
+            "Damage"     => Lua(CastArch("arch_damage", sp, fx, targetId, mana), sp),
+            "Heal"       => Lua(CastArch("arch_heal", sp, fx, targetId, mana), sp),
+            "Buff"       => Lua(CastArch("arch_buff", sp, fx, null, mana), sp),
+            "TargetBuff" => Lua(CastArch("arch_targetbuff", sp, fx, targetId, mana), sp),
+            "Debuff"     => Lua(CastArch("arch_debuff", sp, fx, targetId, mana), sp),
+            "Cure"       => Lua(CastArch("arch_cure", sp, fx, null, mana), sp),
+            // Utility / Summon / Teleport / Dialog — no numeric effect to express, so the whole handler is
+            // "debit the mana"; the caster line comes from HandleCast. 137 of the 640 exported spells land here.
+            _            => Lua(CastArch("misc", sp, fx, targetId, mana), sp),
         };
+        // "Takes all mana" spells spend the whole pool AFTER the damage is computed from it (Content
+        // .ConsumesAllMana). Their rows say mana=0 precisely because the real cost is "everything".
+        if (ok && Content.ConsumesAllMana(sp)) { _char.Mp = 0; MarkDirty(); SendStats(); }
         if (ok && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
         return ok;
     }
@@ -337,7 +385,7 @@ public sealed partial class Session
     {
         if (!SpellScript.HasVerb(verb)) return null;
         double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
-        return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
+        return SpellScript.Run(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
     }
 
     // Stance Lua hook (Tier-2 migration): rage / enchant / stealth / backstab / flank all just ARM a timed melee
@@ -348,7 +396,7 @@ public sealed partial class Session
     private bool? CastStanceArch(string verb, SpellDef sp, SpellFx fx, int mana, double amount)
     {
         if (!SpellScript.HasVerb(verb)) return null;
-        return SpellScript.RunArch(verb, new SpellContext(this, sp, null, null, amount, mana, fx));
+        return SpellScript.Run(verb, new SpellContext(this, sp, null, null, amount, mana, fx));
     }
 
     // Tier-3 utility Lua hook (mana_steal/mana_gift/cleanse/revive/leap/mana_battery): these spells are classified
@@ -359,7 +407,37 @@ public sealed partial class Session
     private bool? CastUtilArch(string verb, SpellDef sp, uint? targetId)
     {
         if (!SpellScript.HasVerb(verb)) return null;
-        return SpellScript.RunArch(verb, new SpellContext(this, sp, targetId, null, 0, 0, null));
+        return SpellScript.Run(verb, new SpellContext(this, sp, targetId, null, 0, 0, null));
+    }
+
+    // Tier-4 world-effecting Lua hook (gateway/return_home/divine/spot_traps/filch/set_trap/bladestorm/pet_summon/
+    // propose): like CastUtilArch but carries the typed `answer` (Gateway's N/E/S/W, the set_trap dispatcher's
+    // trap name). Data-bound constants reach the verb via ctx.spellMana/petMana/etc., not a CSV row. Returns null
+    // only if the verb isn't loaded -> C# fallback; a Lua error returns false (no fallback), so a world mutation
+    // that already ran (a warp, a spawn) can't be re-applied by the C# handler.
+    /// <summary>Collapse a verb result to a plain success bool. Every spell dispatch now runs through Lua, so
+    /// there is no C# handler left to fall back to and a null (= the verb isn't defined) can only mean
+    /// spell_verbs.lua never loaded at all - <see cref="LuaVerbHost.Load"/> keeps the last good copy across a
+    /// bad @reload, so this is a startup/deploy failure, not a scripting typo. Fail the cast with a visible
+    /// notice and a log line rather than silently doing nothing and charging no mana.</summary>
+    private bool Lua(bool? result, SpellDef sp)
+    {
+        if (result.HasValue) return result.Value;
+        SendMiniText($"{sp.Name} is unavailable right now.");
+        Log.Info($"!! no Lua verb for spell '{sp.Key}' - is spell_verbs.lua loaded?");
+        return false;
+    }
+
+    private bool? CastWorldArch(string verb, SpellDef sp, uint? targetId, string? answer)
+        => SpellScript.Run(verb, new SpellContext(this, sp, targetId, answer));
+
+    // Morph hook: the C# dispatch has already resolved this cast's look/female-look/mana/duration (answer-picked
+    // forms), so stage that plan on the session and run the `morph` verb against it; the verb owns the guards.
+    private bool? CastMorphArch(SpellDef sp, ushort look, ushort lookF, int mana, int dur, uint? targetId)
+    {
+        if (!SpellScript.HasVerb("morph")) return null;   // stage nothing if Lua isn't going to run
+        LuaSetPendingMorph(look, lookF, mana, dur);
+        return SpellScript.Run("morph", new SpellContext(this, sp, targetId, null));
     }
 
     // ---- Lua spell-verb primitives (called by SpellContext; see Server/SpellScript.cs) --------------------
@@ -446,6 +524,64 @@ public sealed partial class Session
         SendStats();   // caster message is the central "You cast <name>." — no "restores N HP" flavor
     }
 
+    /// <summary>Heal whoever this cast is AIMED at — another player, yourself, or a MOB (healing your own pet or
+    /// a charmed creature is the point of the mob branch). Falls back to the caster when nothing resolves.
+    /// <para>Only <b>SplType 2</b> spells ("Which target? >" — Fleshspeak, Heal Others, Mend Wounds, …) are
+    /// targeted; a Type-5 self-skill like Touch of Health must NOT be redirected onto whatever you happen to be
+    /// facing, so it routes straight to the caster.</para></summary>
+    internal void LuaHealTarget(int amt, SpellDef sp, uint? targetId)
+    {
+        if (sp.Type != 2) { LuaHeal(amt, sp); return; }          // self-skill — never redirect
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (pc is null && mob is null) { LuaHeal(amt, sp); return; }   // aimed at nothing — heal yourself
+
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+
+        if (pc is not null)
+        {
+            if (ReferenceEquals(pc, this)) { LuaHeal(amt, sp); return; }
+            pc.ReceiveHeal(amt);
+            BroadcastFx(pc._char.Id, anim, snd);
+            TellTarget(pc, sp);
+            Log.Info($"      (lua) {sp.Name} -> healed player {pc._char.Id} '{pc._char.Name}' for {amt}");
+            return;
+        }
+
+        if (amt > 0 && mob!.Alive)
+        {
+            mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amt);
+            _world.Broadcast(_char.Map, p => p.DamageOver(mob.Id, HpPercent(mob), 0));   // refresh its over-head bar
+        }
+        BroadcastFx(mob!.Id, anim, snd);
+        Log.Info($"      (lua) {sp.Name} -> healed mob {mob.Id} '{mob.Name}' for {amt} -> {mob.Hp}/{mob.MaxHp}");
+    }
+
+    /// <summary>Raise this player's HP (capped at their effective max) and refresh their HUD. Cross-session —
+    /// called on the TARGET's own Session by a healer's cast.</summary>
+    internal void ReceiveHeal(int amt)
+    {
+        if (amt <= 0 || IsDead) return;
+        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
+        SendStats();
+    }
+
+    /// <summary>Current HP of the mob this cast is aimed at (0 if the target isn't a living mob) — Drain reads it
+    /// to decide whether the creature is weak enough to absorb, and how much life that yields.</summary>
+    internal int LuaTargetMobHp(uint? targetId) => ResolveCastTarget(targetId) is { Alive: true } m ? m.Hp : 0;
+
+    /// <summary>Play THIS spell's own animation/sound on the resolved target rather than on the caster — for
+    /// spells whose documented effect is drawn over the victim (Drain's atlas gif is the target's).</summary>
+    internal void LuaFxTarget(SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        uint? id = pc?._char.Id ?? mob?.Id;
+        if (id is null) return;
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(id.Value, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+    }
+
     internal void LuaRestoreMana(int amt)
     {
         if (amt <= 0) return;
@@ -490,15 +626,84 @@ public sealed partial class Session
     // Venom DoT (the `venom` verb): resolve the faced/targeted MOB (venoms are mob-only in RTK — a PC/no target
     // gets "It doesn't work") and hand it to World.PoisonMob (the shared poison engine). False if no mob or the
     // mob is already venomed (checkIfCast(venoms)); the verb then spends no mana. Plays the spell's debuff fx.
-    internal bool LuaApplyVenom(int tickCap, int lowMs, int highMs, SpellDef sp, uint? targetId)
+    // flatTick > 0 makes each tick a FIXED amount instead of MaxHp*1% — RTK's Burn is the odd one out in this
+    // family (a hardcoded 1000 per tick, see burn.lua while_cast).
+    internal bool LuaApplyVenom(int tickCap, int lowMs, int highMs, SpellDef sp, uint? targetId, int flatTick = 0)
     {
         var mob = ResolveCastTarget(targetId);
         if (mob is null) { SendMiniText("It doesn't work."); return false; }
-        if (!_world.PoisonMob(mob, tickCap, lowMs, highMs, _char.Id)) { SendMiniText("Another spell of this type is in effect."); return false; }
+        if (!_world.PoisonMob(mob, tickCap, lowMs, highMs, _char.Id, flatTick)) { SendMiniText("Another spell of this type is in effect."); return false; }
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        Log.Info($"      (lua) {sp.Name} -> venom mob {mob.Id} '{mob.Name}' tickCap {tickCap}");
+        Log.Info($"      (lua) {sp.Name} -> venom mob {mob.Id} '{mob.Name}' tick {(flatTick > 0 ? $"flat {flatTick}" : $"MaxHp*1% cap {tickCap}")}");
         return true;
+    }
+
+    // Blind (the `blind` verb — RTK Spells/NPCs/blind.lua and the mage blind/dark_veil/winters_shadow/ice_glare
+    // family, all of which just set `target.blind = true` for a duration). On a MOB this is a real mechanic:
+    // Mob.BlindUntil makes World.Tick drop its target and skip its aggro scan, so it wanders harmlessly.
+    // On a PC we only occupy the `blinds` exclusivity slot — 4.95 has no client-side blind effect we can drive,
+    // so a blinded player is mechanically unaffected; the slot still matters (it blocks a second blind, and a
+    // Cure of that category clears it). Returns false with the RTK notice if nothing valid is faced.
+    internal bool LuaBlindTarget(int durMs, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+
+        if (mob is not null)
+        {
+            if (mob.BlindUntil > Environment.TickCount64) { SendMiniText("Another spell of this type is in effect."); return false; }
+            mob.BlindUntil = Environment.TickCount64 + durMs;
+            mob.TargetId = 0;                                   // RTK: it loses whoever it was fighting immediately
+            if (fx is not null) BroadcastFx(mob.Id, anim, snd);
+            Log.Info($"      (lua) {sp.Name} -> blinded mob {mob.Id} '{mob.Name}' {durMs}ms");
+            return true;
+        }
+
+        if (!Content.IsPvpMap(_char.Map) && pc! != this) { SendMiniText("You cannot attack that target."); return false; }
+        if (pc!.HasStatusCategory("blinds")) { SendMiniText("Another spell of this type is in effect."); return false; }
+        pc.ReceiveCurse("", 0, durMs, sp.Key, sp.Name, "blinds");
+        if (fx is not null) BroadcastFx(pc._char.Id, anim, snd);
+        TellTarget(pc, sp);
+        Log.Info($"      (lua) {sp.Name} -> blinded player {pc._char.Id} '{pc._char.Name}' {durMs}ms (slot only — no client effect)");
+        return true;
+    }
+
+    // Endear / mind control (the `endear` verb — RTK poet endear.lua + its possess_soul/charm_life/align_follower
+    // clones, and the NPCs/endear.lua the Charm weapon procs). Takes a mob that is ALREADY in the world and makes
+    // it yours for a while: same OwnerId plumbing a CotW summon uses, so it counts against your pet cap and stops
+    // being a valid target for you. Deliberately leaves Mob.Summoned false, so when the timer lapses World.Tick
+    // hands it back to the world (RTK's uncast: `mob.owner = 0; mob.target = 0`) instead of despawning it.
+    // RTK's guards, in order: must be a mob, not a boss ("Your will is too weak."), not already owned by anyone.
+    internal bool LuaCharmTarget(int durMs, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (mob is null || pc is not null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
+        if (mob.IsBoss) { SendMiniText("Your will is too weak."); return false; }
+        if (mob.OwnerId != 0) { SendMiniText("A spell of this type is already cast."); return false; }
+
+        mob.OwnerId = _char.Id;
+        mob.PetExpiresAt = Environment.TickCount64 + durMs;
+        mob.TargetId = 0;                                       // it stops fighting you the moment it turns
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        Log.Info($"      (lua) {sp.Name} -> charmed mob {mob.Id} '{mob.Name}' for {durMs}ms (owner {_char.Id})");
+        return true;
+    }
+
+    // Public speech from the caster (RTK player:talk(2, "…")) — Kamikaze shouts before it detonates. Same 0x0D
+    // over-head bubble a typed chat line uses, broadcast to the whole map INCLUDING us, so it reads as the
+    // caster actually shouting rather than as a private status line.
+    internal void LuaTalk(string msg)
+    {
+        string formatted = $"{_char.Name}! {msg}";
+        if (formatted.Length > 250) formatted = formatted[..250];
+        var bytes = AsciiBytes(formatted);
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, bytes));   // RTK talk's own chatType 2
     }
 
     // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.
@@ -807,6 +1012,105 @@ public sealed partial class Session
         _pcSpellTarget.ReviveAt(_pcSpellTarget._char.Map, _pcSpellTarget._char.X, _pcSpellTarget._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
     }
 
+    /// <summary>Revive the CASTER in place, returning whether they were actually dead (so the verb can pick its
+    /// flavour line). Distinct from <see cref="LuaSetHp"/>, which only moves the number: ghost form is DERIVED
+    /// from Hp==0 but the client is only redrawn by RefreshAppearance, so raising HP through the plain setter
+    /// leaves a living player rendered as a ghost. Hyun Moo's revival is the self-revive with no relocation —
+    /// unlike Silver Thread or the poet Resurrect family, which move you to a Shaman.</summary>
+    // ---- Chung Ryong's Rage primitives -------------------------------------------------------------
+    // The one fury that CLIMBS: recast inside its window to go tier 1→6, each tier costing more, hitting
+    // harder, adding AC, and charging a vita price when it finally lapses. The tier can't live in Lua because
+    // RegenTick reads it to apply that wear-out drain, so C# keeps the field and the verb drives it: the verb
+    // owns the tier TABLE and the climb rule, this owns recording the tier and arming the effects.
+
+    /// <summary>The Chung Ryong rage tier currently recorded (0 = none). Pair with <c>rageActive</c> — a stale
+    /// tier lingers after the fury lapses, which is exactly what RegenTick's drain needs.</summary>
+    internal int LuaCrRageTier => _crRageTier;
+
+    /// <summary>Record a Chung Ryong rage tier and arm its effects: the swing multiplier + duration, and the
+    /// tier's AC as a KEYED buff so each climb silently replaces the previous tier's rather than stacking.</summary>
+    internal void LuaSetCrRage(int tier, int mult, int ac, int durMs, string name)
+    {
+        long now = Environment.TickCount64;
+        _crRageTier = tier;
+        _rageAmount = mult;
+        _rageUntil  = now + durMs;
+        _rageName   = $"{name} {tier}";                 // buff box shows the climbing tier
+        _buffs.RemoveAll(b => b.Key == CrRageAcKey);
+        if (ac != 0)
+            _buffs.Add(new ActiveBuff { Stat = "armor", Amount = ac, Expires = now + durMs, Key = CrRageAcKey, Name = name });
+        SendStats();
+        MarkDirty();
+    }
+
+    /// <summary>The keyword classifier's verdict for a spell with NO spell_effects row (Content.EffectOf):
+    /// "heal" - "damage" - "buff" - "other". The ~266 spells the export never covered are dispatched on this
+    /// alone, so exposing it is what lets the generic fallback live in Lua like everything else.</summary>
+    internal string LuaEffectKind(SpellDef sp) => Content.EffectOf(sp) switch
+    {
+        Content.SpellEffect.Heal   => "heal",
+        Content.SpellEffect.Damage => "damage",
+        Content.SpellEffect.Buff   => "buff",
+        _                          => "other",
+    };
+
+    /// <summary>Play a RAW anim/sound over the resolved target mob rather than the caster - the generic
+    /// fallback's zap, which has no spell_effects row of its own to draw from (so ctx:fxTarget can't serve).</summary>
+    internal void LuaFxRawTarget(int anim, int sound, uint? targetId)
+    {
+        var mob = ResolveCastTarget(targetId);
+        if (mob is not null) BroadcastFx(mob.Id, anim, sound);
+    }
+
+    internal bool LuaReviveSelf()
+    {
+        bool wasDead = _char.Hp == 0;
+        _char.Hp = EffMaxHp;
+        if (wasDead) RefreshAppearance();   // drop the ghost look for us and everyone watching
+        SendStats();
+        MarkDirty();
+        return wasDead;
+    }
+
+    // ---- pack-slot primitives (the Mend Equipment family) --------------------------------------------
+    // The first CAPABILITY a verb has to read the player's bag. Deliberately split query-from-action so the
+    // VERB owns every decision and message and C# only executes: LuaPackSlotState classifies the slot,
+    // LuaPackSlotName names it, LuaRepairPackSlot does the one thing the engine must do. (A single
+    // "mendFirstSlot()" primitive would have been shorter and would have put the whole spell back in C#.)
+
+    /// <summary>Classify pack slot <paramref name="slot"/> (0-based) for a repair spell:
+    /// <c>empty</c> · <c>notgear</c> (not equipment, or has no durability rating) · <c>perfect</c> (already
+    /// full) · <c>ok</c> (repairable and damaged).</summary>
+    internal string LuaPackSlotState(int slot)
+    {
+        var it = InvAt(slot);
+        var def = it is null ? null : Content.ItemById(it.ItemId);
+        if (it is null || def is null) return "empty";
+        if (!def.IsEquip || def.Durability == 0) return "notgear";
+        return it.Dura >= def.Durability ? "perfect" : "ok";
+    }
+
+    /// <summary>Display name of whatever sits in pack slot <paramref name="slot"/> ("" if empty).</summary>
+    internal string LuaPackSlotName(int slot)
+    {
+        var it = InvAt(slot);
+        var def = it is null ? null : Content.ItemById(it.ItemId);
+        return def?.Name ?? "";
+    }
+
+    /// <summary>Restore pack slot <paramref name="slot"/> to full durability and reset its 50/25/10/5/1%
+    /// warning ladder, redrawing the bag cell. No-op unless the slot is in the <c>ok</c> state above.</summary>
+    internal void LuaRepairPackSlot(int slot)
+    {
+        if (LuaPackSlotState(slot) != "ok") return;
+        var it = InvAt(slot)!;
+        var def = Content.ItemById(it.ItemId)!;
+        it.Dura = def.Durability;
+        it.Repair = 0;              // the warning ladder starts over (Session.CheckDura)
+        MarkDirty();
+        SendAddItem(it);            // redraw the cell so the new durability shows
+    }
+
     // Leap (RTK race): step up to maxDist tiles in the faced direction, stopping at the last passable tile (same
     // BlockedMove collision as movement), then re-anchor the viewport there. Returns tiles moved (0 = blocked, no
     // move). A faithful port of CastLeap's movement half; the verb owns the mana/cooldown around it.
@@ -830,6 +1134,284 @@ public sealed partial class Session
         return dist;
     }
 
+    // ---- Tier-4 world-effecting primitives -----------------------------------------------------------------
+    // Each wraps the irreducible engine core of its C# CastX handler (kept as the fallback), so the Lua verb owns
+    // only guards/mana/messages. Where a constant is data-bound (per-kind trap mana, pet cap, gate boxes) the
+    // primitive resolves it from Content, not a CSV row — these spells are classified in C#, not by a params row.
+    internal bool LuaWarpOut          => Content.WarpOut(_char.Map);
+    internal int  LuaSpellMana(SpellDef sp) { var fx = Content.FxFor(sp); return fx is not null && fx.Mana > 0 ? fx.Mana : 5; }
+    internal int  LuaSpellAether(SpellDef sp) => Content.FxFor(sp)?.Aether ?? 0;
+    internal void LuaMarkNarrated()   => _castNarrated = true;
+    internal bool LuaHasLegend(string mark) => HasLegend(mark);
+    internal void LuaForgetSpell(SpellDef sp) => ForgetOneSpell(sp.Id);
+
+    // Gateway core (see CastGateway): region+gate lookup, random landing tile, EnterMap + self-only arrival line.
+    internal bool LuaGateway(string? answer)
+    {
+        int region = Content.RegionOf(_char.Map);
+        if (!Content.GatewayRegions.TryGetValue(region, out var r) || !Content.Maps.TryGetValue(r.Map, out var map))
+        { SendMiniText("Cannot find any gates!"); return false; }
+        char dir = (answer ?? "").ToLowerInvariant().FirstOrDefault(char.IsLetter);
+        if (!r.Gates.TryGetValue(dir, out var box))
+        { SendMiniText("Which gate? Answer North, East, South or West."); return false; }
+        ushort x = (ushort)Random.Shared.Next(box.Xlo, box.Xhi + 1);
+        ushort y = (ushort)Random.Shared.Next(box.Ylo, box.Yhi + 1);
+        string gate = dir switch { 'n' => "North", 'e' => "East", 'w' => "West", 's' => "South", _ => "" };
+        EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
+        SendSound(708, _char.Id);
+        SendMiniText($"You have arrived at {gate} Gate of {r.City}.");
+        _castNarrated = true;
+        Log.Info($"      Gateway(lua) -> region {region} {r.City} {gate} gate: map {map.Id} ({x},{y})");
+        return true;
+    }
+
+    // Return core (see CastReturn/ReturnToInn): the verb owns the 30-mana debit + warpOut guard.
+    internal void LuaReturnHome() { ReturnToInn(); SendStats(); }
+
+    // Divination core (see CastDivination): the resolved PC target is _pcSpellTarget (set by ctx:pcTarget). Builds
+    // the inspect popup for the caster; spy variant appends the target's inventory. Self-narrates.
+    internal bool LuaIsSpy(SpellDef sp) => Content.IsDivinationSpySpell(sp);
+    internal int  LuaTargetLevel => _pcSpellTarget?._char.Level ?? 0;
+    internal void LuaDivine(SpellDef sp, bool showInventory)
+    {
+        if (_pcSpellTarget is not { } target) return;
+        var tc = target._char;
+        var text = new System.Text.StringBuilder();
+        text.Append(tc.ClassName).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
+        text.Append(tc.Title ?? "").Append('\n');
+        text.Append("Might: ").Append(target.EffMight)
+            .Append(" Will: ").Append(tc.Will + target.Totals().will)
+            .Append(" Grace: ").Append(tc.Grace + target.Totals().grace).Append('\n');
+        if (showInventory)
+        {
+            text.Append("Items: ");
+            foreach (var it in tc.Inventory)
+            {
+                var def = Content.ItemById(it.ItemId);
+                if (def is not null) text.Append(def.Name).Append(' ');
+            }
+        }
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendScriptMessageP(tc.Id, text.ToString(), DialogPortrait.None, prev: false, next: false);
+        _castNarrated = true;
+        Log.Info($"      Divine(lua) -> divined '{tc.Name}' (inventory={showInventory})");
+    }
+
+    // Spot Traps core (see CastSpotTraps): draw a caster-only marker on every hidden trap within 15 tiles.
+    internal int LuaRevealTraps()
+    {
+        var traps = _world.TrapsNear(_char.Map, _char.X, _char.Y, 15);
+        ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
+        foreach (var t in traps)
+            ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
+        Log.Info($"      SpotTraps(lua) -> revealed {traps.Length} trap(s) near ({_char.X},{_char.Y})");
+        return traps.Length;
+    }
+
+    // Filch core (see CastGroundLoot): grab the item on the faced tile — coins to purse, else to pack (put back if full).
+    internal void LuaFilch()
+    {
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
+        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        int tx = _char.X + dx, ty = _char.Y + dy;
+        if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) return;
+        if (_world.PeerAt(_char.Map, tx, ty) is not null) return;
+        // A thief does NOT get to filch a death pile: that lock is the whole point of "your items will be
+        // recovered even if a would-be thief is standing on them" (RTK f1npc.lua). Silent, like every other
+        // filch no-op — the spell simply comes up empty.
+        var gi = _world.PickUp(_char.Map, tx, ty, _char.Id);
+        if (gi is null) return;
+        if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); return; }
+        var def = Content.ItemById(gi.ItemId);
+        if (def is null) return;
+        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+            _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
+                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+        Log.Info($"      Filch(lua) -> grabbed item {gi.ItemId} from ({tx},{ty})");
+    }
+
+    // Set Trap core (see CastTrap + ApplyCast's dispatcher block): resolve the specific trap (typed answer for the
+    // set_trap dispatcher, else the spell itself), enforce its level gate, debit its per-kind mana, place it + fx.
+    internal bool LuaPlaceTrap(SpellDef sp, string? answer)
+    {
+        SpellDef trapSpell; Content.TrapKind kind; int level, mana;
+        if (Content.IsTrapDispatcher(sp))
+        {
+            var trapKey = Content.TrapKeyForAnswer(answer ?? "");
+            var ts = trapKey is null ? null : Content.SpellByKey(trapKey);
+            var info = ts is null ? null : Content.TrapSpellFor(ts);
+            if (ts is null || info is null)
+            { SendMiniText("Select: Dart trap, Snare trap, Repeating dart, Flash trap, Spear trap, Poison trap, Death trap, Sleep trap"); return false; }
+            trapSpell = ts; kind = info.Value.Kind; level = info.Value.Level; mana = info.Value.Mana;
+            if (_char.Level < level) { SendMiniText($"You must be level {level} to set that trap."); return false; }
+        }
+        else if (Content.TrapSpellFor(sp) is (Content.TrapKind k, int _, int mn))
+        { trapSpell = sp; kind = k; mana = mn; }
+        else return false;
+
+        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
+        _char.Mp -= (uint)mana;
+        _world.PlaceTrap(_char.Map, _char.X, _char.Y, Content.TrapWireKind(kind), _char.Id);
+        SendStats();
+        var fx = Content.FxFor(trapSpell);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, trapSpell.PathId), Content.EffectSound(fx, trapSpell.PathId));
+        Log.Info($"      {trapSpell.Name}(lua) -> placed {kind} trap at ({_char.X},{_char.Y})");
+        return true;
+    }
+
+    // Bladestorm core (see CastBladestormTrap): place the decoy; the verb owns mana/cooldown/fx.
+    internal void LuaPlaceBladestorm(int lifetimeMs)
+    {
+        _world.PlaceTrap(_char.Map, _char.X, _char.Y, "bladestorm", _char.Id, Environment.TickCount64 + lifetimeMs);
+        Log.Info($"      Bladestorm(lua) -> trap placed at ({_char.X},{_char.Y}), expires in {lifetimeMs}ms");
+    }
+
+    // Pet Summon core (see CastPetSummon): spawn this pet spell's mob one tile ahead (or on our tile if blocked).
+    internal int  LuaPetCount => _world.PetCountFor(_char.Map, _char.Id);
+    internal int  LuaPetCap   => Content.PetCapFor(_char.Level);
+    internal int  LuaPetMana(SpellDef sp)      => Content.PetSpellFor(sp) is (string _, int _, int m, int _) ? m : 0;
+    internal int  LuaPetCooldownMs(SpellDef sp) => Content.PetSpellFor(sp) is (string _, int _, int _, int c) ? c : 0;
+    internal bool LuaSummonPet(SpellDef sp)
+    {
+        if (Content.PetSpellFor(sp) is not (string mobKey, int _, int _, int _)) return false;
+        var def = Content.MobByKey(mobKey);
+        if (def is null) return false;
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
+        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        int fx2 = _char.X + dx, fy2 = _char.Y + dy;
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        bool frontFree = fx2 >= 0 && fy2 >= 0 && fx2 < _char.MapXs && fy2 < _char.MapYs
+                          && (md is null || !md.BlockedMove(fx2, fy2, _facing))
+                          && _world.MobAt(_char.Map, fx2, fy2) is null
+                          && _world.PeerAt(_char.Map, fx2, fy2) is null;
+        ushort sx = frontFree ? (ushort)fx2 : _char.X, sy = frontFree ? (ushort)fy2 : _char.Y;
+        var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3), color: def.Color,
+                                  exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
+        mob.OwnerId = _char.Id;
+        mob.Summoned = true;   // conjured, so World.Tick DESPAWNS it at PetExpiresAt (an endeared mob reverts instead)
+        mob.PetExpiresAt = Environment.TickCount64 + 300_000;
+        Log.Info($"      {sp.Name}(lua) -> summoned pet '{mob.Name}' ({mob.Id}) for player {_char.Id} at ({sx},{sy})");
+        return true;
+    }
+
+    // Morph core (see CastMorph): the resolved plan (look/female-look/mana/duration) is staged by CastMorphArch
+    // before the verb runs — the verb owns the already-active + mana guards, this applies + rebroadcasts.
+    private (ushort look, ushort lookF, int mana, int dur)? _pendingMorph;
+    internal void LuaSetPendingMorph(ushort look, ushort lookF, int mana, int dur) => _pendingMorph = (look, lookF, mana, dur);
+    internal int  LuaMorphMana => _pendingMorph?.mana ?? 0;
+    internal bool LuaMorphActive()
+    {
+        if (_pendingMorph is not { } m) return false;
+        ushort newLook = (m.lookF != 0 && _char.Sex == 1) ? m.lookF : m.look;
+        return _morphLook != 0 && _morphLook == newLook;
+    }
+    internal void LuaApplyMorph(SpellDef sp)
+    {
+        if (_pendingMorph is not { } m) return;
+        ushort newLook = (m.lookF != 0 && _char.Sex == 1) ? m.lookF : m.look;
+        _buffs.RemoveAll(b => b.Key == _morphKey);
+        _morphLook = newLook;
+        _morphColor = 0;
+        _morphUntil = Environment.TickCount64 + m.dur;
+        _morphKey = sp.Key;
+        _buffs.Add(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
+        SendStats();
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        ShowPlayer(this);
+        Log.Info($"      {sp.Name}(lua) -> morph look={_morphLook} for {m.dur}ms");
+    }
+
+    // Propose core (see CastPropose): the verb owns the engaged/married guard; this fires the async ask flow.
+    internal bool LuaPropose(SpellDef sp) { _ = RunProposeAsync(sp); return true; }
+
+    // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
+    // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
+    // verb; these primitives do the irreducible engine ops — resolve the faced mob, armor-net + apply, the
+    // overkill backflow/overflow, and (ambush) the leap + swing. Mirror CastSacrificeStrike/CastAmbush (kept as
+    // fallback). A single stash holds the resolved target for the rest of the cast.
+    private Mob? _frontStrikeMob;
+    private int  _frontStrikeX, _frontStrikeY;
+
+    internal string LuaSacrificeFamily(SpellDef sp) => Content.SacrificeFamilyFor(sp)?.ToString() ?? "";
+    internal int    LuaAlignment  => _char.Alignment;
+    internal bool   LuaBaekhoRage => _rageAmount == 5 && EffRage > 1;   // Baekho's Rage specifically, not a lesser Fury
+
+    internal bool LuaSacFrontMob()
+    {
+        var (fx, fy) = FrontTile();
+        _frontStrikeX = fx; _frontStrikeY = fy;
+        _frontStrikeMob = _world.MobAt(_char.Map, fx, fy);
+        return _frontStrikeMob is not null && _frontStrikeMob.Alive;
+    }
+    internal int LuaSacApply(SpellDef sp, int damage)
+    {
+        if (_frontStrikeMob is not { } mob) return 0;
+        var fam = Content.SacrificeFamilyFor(sp) ?? Content.SacrificeFamily.Berserk;
+        int netDamage = Combat.ApplyArmor(damage, mob.Ac, floor: -95);
+        int overkill = netDamage - (int)mob.Hp;   // overkill uses the mob's PRE-hit HP (RTK), read before TryDamage
+        _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
+        BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
+        ShowDamageResult(mob.Id, mob, died);
+        if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward, killExp: true); }
+        Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) dmg {netDamage} overkill {overkill}");
+        return overkill;
+    }
+    internal void LuaBackflow(int overkill, int preHp, int preMp) => ApplyBackflow(overkill, (uint)preHp, (uint)preMp);
+    internal void LuaOverflow(SpellDef sp, int overkill) =>
+        ApplyOverflow(overkill, _frontStrikeX, _frontStrikeY, Content.SacrificeFamilyFor(sp) ?? Content.SacrificeFamily.Berserk);
+
+    internal bool LuaAmbushMob()
+    {
+        var (fx, fy) = FrontTile();
+        _frontStrikeMob = _world.MobAt(_char.Map, fx, fy);
+        return _frontStrikeMob is not null;
+    }
+    internal bool LuaAmbushLeap()
+    {
+        if (_frontStrikeMob is not { } mob) return false;
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        int[] order = { _facing, (_facing + 1) & 3, (_facing + 3) & 3 };   // opposite our approach, then the two flanks
+        foreach (int sideDir in order)
+        {
+            var (tx, ty) = StepDir(mob.X, mob.Y, sideDir);
+            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
+            if (md?.BlockedMove(tx, ty, sideDir) ?? false) continue;
+            if (_world.PeerAt(_char.Map, tx, ty) is not null) continue;
+            if (_world.MobAt(_char.Map, tx, ty) is not null) continue;
+            _facing = (byte)((sideDir + 2) & 3);   // arrive facing back toward the mob
+            string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
+            EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)tx, (ushort)ty, mapName);
+            SendAction(_char.Id, type: 1, time: 8, param: 0);
+            _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);
+            return true;
+        }
+        return false;
+    }
+    internal void LuaAmbushStrike(SpellDef sp)
+    {
+        if (_frontStrikeMob is not { } mob) return;
+        var (dmg, crit) = PlayerSwingDamage(mob);
+        if (dmg <= 0) return;   // whiff (Combat.RollPlayerSwingRtk) — silent, no text
+        if (_world.TryDamage(_char.Map, mob, dmg, out bool died, _char.Id))
+        {
+            var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);
+            if (weapon is not null) DeductDura(weapon);
+            ShowDamageResult(mob.Id, mob, died, crit ? (byte)0xFF : HitCritByte);
+            PlayHitSfx(mob.Id);   // physical strike — same on-connect impact sfx as a plain swing
+            Log.Info($"      {sp.Name}(lua) -> leapt behind '{mob.Name}' and struck for {dmg}{(crit ? " (CRIT)" : "")}");
+            if (died)
+            {
+                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
+                AwardExp(reward, killExp: true);
+                TallyKill(mob);
+            }
+        }
+    }
+
     // The stat variables an RTK spell formula reads (player.level, player.will, target.baseHealth, …). Effective
     // (base + gear + buff) values, so a buffed caster hits harder. enchant/rage/invis reflect the real armed
     // multiplier now (EffEnchant/EffRage/Stealthed) in case any Damage-archetype formula ever reads them; fury
@@ -847,7 +1429,7 @@ public sealed partial class Session
             ["player.maxMagic"]   = EffMaxMp,
             ["player.health"]     = _char.Hp,
             ["player.maxHealth"]  = EffMaxHp,
-            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? 9 : 1,
+            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? 5 : 1,
             ["target.health"]     = target?.Hp ?? 0,
             ["target.baseHealth"] = target?.MaxHp ?? 0,
         };
@@ -866,144 +1448,6 @@ public sealed partial class Session
         int prot = Math.Max(0, target.Protection + (int)(willDiff / 10.0 + 0.5));
         int failChance = (int)(100 - Math.Pow(0.9, prot) * 100 + 0.5);
         return Random.Shared.Next(100) < failChance;
-    }
-
-    // Damage: evaluate the spell's real RTK damage formula, spend mana, apply to the faced/targeted mob.
-    private bool CastDamage(SpellDef sp, SpellFx fx, uint? targetId, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        var (mob, pc) = ResolveDamageTarget(targetId);
-        if (mob is null && pc is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (pc is not null)   // PvP / self-cast — no mob for target-var formulas, so evaluate with none
-            return HitPlayerWithSpell(pc, Math.Max(1, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)))), mana, sp);
-        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
-
-        int power = Math.Max(1, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(mob))));
-        _char.Mp -= (uint)mana;
-        if (_world.TryDamage(_char.Map, mob!, power, out bool died, _char.Id))
-        {
-            BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // graphic + sound
-            ShowDamageResult(mob!.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
-            if (died)
-            {
-                uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);   // exp message only; no caster hit/kill flavor
-            }
-            Log.Info($"      {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {power} (died={died})");
-        }
-        return true;
-    }
-
-    // Heal: evaluate the spell's real heal amount and restore the caster's HP (RTK heals a target; solo, that's
-    // us). A pure heal at full HP still "works" (mana spent) — matches casting a heal you don't strictly need.
-    private bool CastHeal(SpellDef sp, SpellFx fx, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        int amount = Math.Max(0, (int)Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null))));
-        _char.Mp -= (uint)mana;
-        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amount);
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // heal sparkle + sound
-        SendStats();   // HP bar updates; caster message is the central "You cast <name>."
-        return true;
-    }
-
-    // Buff: apply the spell's timed stat modifier(s) (might/hit/dam/…) for its RTK duration, folded live into the
-    // HUD/melee via Totals(). Re-casting refreshes rather than stacks (matches RTK removeDuras-then-setDuration).
-    // Buffs whose stat delta the export couldn't pin down still "cast" (mana + duration marker) so they're not
-    // silently dead.
-    private bool CastBuff(SpellDef sp, SpellFx fx, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
-        long expires = Environment.TickCount64 + durMs;
-        _buffs.RemoveAll(b => b.Key == sp.Key);   // refresh, don't stack
-
-        var stats = fx.BuffStat.Split('|', StringSplitOptions.RemoveEmptyEntries);
-        var amts  = fx.BuffAmt.Split('|', StringSplitOptions.RemoveEmptyEntries);
-        int applied = 0;
-        for (int i = 0; i < stats.Length && i < amts.Length; i++)
-            if (int.TryParse(amts[i].Split('.')[0], out var amt) && amt != 0)
-            { _buffs.Add(new ActiveBuff { Stat = stats[i], Amount = amt, Expires = expires, Key = sp.Key, Name = sp.Name }); applied++; }
-
-        SendStats();   // reflect the boosted caps/attributes on the HUD immediately
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // buff aura + sound
-        // Self-buff: the caster IS the target, so surface the live target-flavor line here (before HandleCast's
-        // "You cast <name>."). e.g. Might -> "Your muscles develop." then "You cast Might."
-        var flavor = Content.TargetTextFor(sp.Key);
-        if (flavor.Length > 0) SendMiniText(flavor);
-        _ = applied;
-        return true;
-    }
-
-    // TargetBuff: a beneficial timed stat buff (might/armor) cast ON a target — another player, yourself, or a
-    // mob/NPC (e.g. buffing your own summoned pet). RTK casts these on a PC only; per user design we also allow
-    // mob targets. These spells were reclassified from the extractor's bogus Debuff/slow (which sent Valor/Harden
-    // Armor hunting a mob to slow and failed with "finds no target") — see re/reclassify_target_buffs.py. The buff
-    // refreshes rather than stacks (RTK checkIfCast family guard, approximated per-spell by the spell Key).
-    private bool CastTargetBuff(SpellDef sp, SpellFx fx, uint? targetId, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-
-        string stat = fx.BuffStat;
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 300000;
-        bool haveAmt = int.TryParse(fx.BuffAmt.Split('.')[0], out var amount) && !string.IsNullOrEmpty(stat) && amount != 0;
-
-        // Resolve the target explicitly (don't reuse ResolvePcCastTarget/ResolveCastTarget — their faced-tile
-        // fallbacks would cross wires, e.g. a mob-id lookup falling back to a random adjacent player). An explicit
-        // client target id picks a player OR a mob; with no id we buff whoever/whatever we face.
-        Session? pc = null; Mob? mob = null;
-        if (targetId is uint tid && tid != 0)
-        {
-            pc = _world.PlayerById(tid);
-            if (pc is null) mob = _world.MobById(_char.Map, tid);
-        }
-        else
-        {
-            var (fxT, fyT) = FrontTile();
-            pc = _world.PeerAt(_char.Map, fxT, fyT);
-            if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
-        }
-        if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-
-        var anim = Content.EffectAnim(fx, sp.PathId);
-        var snd  = Content.EffectSound(fx, sp.PathId);
-
-        // Deduction (the sanctuary line: sanctuary/magic_shield/protect_soul/guard_life) is a fractional
-        // damage-reduction MULTIPLIER on a PLAYER only (RTK BL_PC) — it uses the dedicated deduction slot, not
-        // the int ActiveBuff stat loop. buffAmt is the final multiplier (0.5 = take half damage).
-        if (stat == "deduction")
-        {
-            if (pc is null) { SendMiniText($"{sp.Name} has no effect on that."); return false; }   // PC-only
-            double mult = double.TryParse(fx.BuffAmt, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var dm) ? dm : 1.0;
-            _char.Mp -= (uint)mana;
-            pc.ApplySanctuaryDeduction(mult, durMs, sp.Name);
-            BroadcastFx(pc._char.Id, anim, snd);
-            TellTarget(pc, sp);   // target flavor (self: before central "You cast X"; other: their line)
-            Log.Info($"      {sp.Name} -> deduction x{mult} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
-            SendStats();
-            return true;
-        }
-
-        _char.Mp -= (uint)mana;
-
-        if (pc is not null)
-        {
-            if (haveAmt) pc.ReceiveTimedBuff(stat, amount, durMs, sp.Key, sp.Name);
-            BroadcastFx(pc._char.Id, anim, snd);
-            TellTarget(pc, sp);
-            Log.Info($"      {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
-        }
-        else
-        {
-            if (haveAmt) _world.ApplyMobBuff(mob!, stat, amount, durMs, sp.Key);   // under World._lock (races Tick revert)
-            BroadcastFx(mob!.Id, anim, snd);   // mobs don't read text; caster gets the central "You cast X"
-            Log.Info($"      {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on mob {mob.Id} '{mob.Name}' {durMs}ms");
-        }
-        SendStats();
-        return true;
     }
 
     // Send the live TARGET-flavor line for a spell to its target. On a self-cast (target == caster) it prints
@@ -1029,30 +1473,18 @@ public sealed partial class Session
 
     // Backstab/Flank stance timers (RTK player.backstab/player.flank, set true by these Warrior skills'
     // "recast" hook and cleared by "uncast" when the duration lapses — we just track expiry directly, same
-    // pattern as Mob.FrozenUntil). Read by Session.PlayerSwingDamage via the properties below to apply RTK
-    // swingDamage.lua's backstab/flank positional 2x (Combat.IsBackstabAngle/IsFlankAngle) on top of the
-    // base same-facing positional bonus every swing already gets.
+    // pattern as Mob.FrozenUntil).
+    // NEITHER IS A DAMAGE MULTIPLIER (2026-08-04) — both are TARGETING spells that extend which neighbouring
+    // tile a swing can reach, at reduced damage. Both are read by Session.SwingTargets, which owns the rules:
+    //   BackstabStance (lvl 15) -> "Enables to Attack from warrior's back"    -> REAR tile,  x0.5
+    //   FlankStance    (lvl 20) -> "Enables to Attack to the Warrior's Sides" -> ONE side,   x0.5 (random)
+    // NOT to be confused with the positional mechanic also nicknamed "backstab": striking a target whose
+    // back is to the blow is x2 for anyone, always (Combat.IsBehindTarget) — a property of the TARGET's
+    // facing, independent of these spells. A backstab-spell swing into a mob that is itself facing away
+    // earns both. Combat.IsBackstabAngle/IsFlankAngle are retired; do not re-wire them.
     private long _backstabUntil, _flankUntil;
     private bool BackstabStance => Environment.TickCount64 < _backstabUntil;
     private bool FlankStance    => Environment.TickCount64 < _flankUntil;
-
-    // Backstab/Flank (RTK Spells.csv SplPthId=1 — Warrior-only, both at type 5/self-cast): a timed STANCE,
-    // not a stat buff or an attack — casting it just arms the positional bonus for the buff's duration (RTK
-    // 625s / ~10.4min per the Lua's `setDuration(..., 625000)`). Refreshing while already active just
-    // extends it (RTK's own recast semantics), matching CastBuff's "refresh, don't stack" behavior.
-    private bool CastStance(SpellDef sp, SpellFx fx, int mana, bool isBackstab)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
-        long expires = Environment.TickCount64 + durMs;
-        if (isBackstab) _backstabUntil = expires; else _flankUntil = expires;
-        SendStats();
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        // caster sees only the central "You cast <name>." (HandleCast); no flavor
-        Log.Info($"      {sp.Name} -> {(isBackstab ? "backstab" : "flank")} stance armed for {durMs}ms");
-        return true;
-    }
 
     // Rage-tier timer (RTK player.rage — Wolf's/Tiger's/Dragon's Fury, Baekho's Rage): swingDamage.lua
     // multiplies the ENTIRE player swing by max(player.rage,1), so this is the single biggest melee
@@ -1106,29 +1538,47 @@ public sealed partial class Session
         SendStats();
     }
 
-    // Real RTK rejects re-casting ANY fury while one is already active (`player:checkIfCast(lesserFuries) or
-    // player.rage > 1`) — you can't skip straight to a stronger tier by overwriting; you wait the current one
-    // out. Content.RageAmountFor's level gate (via SpellLevelOverrides) already keeps a low-level character
-    // off the higher tiers; this just blocks stacking/re-triggering once any tier is up.
-    private bool CastRage(SpellDef sp, SpellFx fx, int mana, int rageAmount)
+    // Chung Ryong's Rage — the Warrior Chung Ryong subpath's incremental fury (Warrior Tutor SoulHunter's
+    // board post, live-server truth; the boards outrank RTK). ONE spell key, recast every 120s to climb
+    // tier 1→6: each tier costs more mana, multiplies the whole swing harder (6/9/12/18/27/81 — the era-
+    // matched 2001-02 values, NOT the later 8/14/…/81 rebalance), grants AC, and drains a slice of vita
+    // when it finally WEARS OUT (renewing before that — the reward for maintaining — costs no vita). Ac is a
+    // positive armor buff: Totals().armor is SUBTRACTED from _char.Ac (lower Ac = better), so +N means +N AC.
+    private readonly record struct CrRageTier(int Mult, int Mana, int Ac, double VitaLostPct);
+    private static readonly CrRageTier[] ChungRyongRageTiers =
     {
-        if (EffRage > 1) { SendMiniText("You are already benefiting from a fury."); return false; }
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
-        _rageUntil = Environment.TickCount64 + durMs;
-        _rageAmount = rageAmount;
-        _rageName = sp.Name;
+        new(6,     2000,  0, 0.20),   // Rage 1
+        new(9,     7200,  0, 0.20),   // Rage 2
+        new(12,   16200,  5, 0.20),   // Rage 3
+        new(18,   28800, 15, 0.40),   // Rage 4
+        new(27,   64800, 30, 0.60),   // Rage 5
+        new(81,  145800, 50, 1.00),   // Rage 6 — leaves you at 1 vita/mana
+    };
+    // The spell's recast interval is enforced by the generic aether gate (spell_effects aether=120000); the
+    // buff LIVES a bit longer than that gate so there's a window to recast-and-climb before it wears out and
+    // drains vita. Both are session-local (like every fury) and reset on relog. _crRageTier==0 means not up.
+    private const int CrRageDurationMs = 135_000;
+    private const string CrRageAcKey = "chung_ryongs_rage_ac";
+    private int _crRageTier;
+
+    // Called from RegenTick when the Chung Ryong fury lapses without being renewed: apply the tier's vita
+    // price (tier 6 leaves you at 1 vita/mana), drop the AC buff, and reset the tier. Floors at 1 — the fury
+    // wearing off guts you but never outright kills.
+    private void ChungRyongRageWearOff()
+    {
+        var tier = ChungRyongRageTiers[_crRageTier - 1];
+        _crRageTier = 0;
+        _buffs.RemoveAll(b => b.Key == CrRageAcKey);
+        if (tier.VitaLostPct >= 1.0) { _char.Hp = 1; _char.Mp = 1; }
+        else _char.Hp = (uint)Math.Max(1, (int)(_char.Hp * (1.0 - tier.VitaLostPct)));
+        SendMiniText("Chung Ryong's rage leaves you drained.");
         SendStats();
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        // caster sees only the central "You cast <name>." (HandleCast); no flavor
-        Log.Info($"      {sp.Name} -> rage x{rageAmount} armed for {durMs}ms");
-        return true;
     }
 
-    // Stealth timer (RTK player.state==2 — Rogue Invisible/Spirit's Form/Life's Cloak/Glass Form): a flat 9x
-    // damage multiplier on the swing that follows (swingDamage.lua: `if player.state==2 then invisible=9
-    // end`), meant as a one-shot sneak-attack burst — landing that hit strips the stealth immediately
+    // Stealth timer (Rogue Invisible/Spirit's Form/Life's Cloak/Glass Form): a flat 5x damage multiplier on
+    // the swing that follows (tswolf 8/2001, era-matched to 4.95: "Invisible increases attack by 5 times";
+    // RTK's Lua says 9x but that's a later rebalance and RTK isn't authoritative), meant as a one-shot
+    // sneak-attack burst — landing that hit strips the stealth immediately
     // (RTK `block:removeDuras(invis)` after a nonzero hit), so Session.PlayerSwingDamage clears _stealthUntil
     // itself once it applies the multiplier. ONLY the damage multiplier is ported here — real RTK's
     // PC_INVIS also hides the player's sprite from other clients (clif.c), which isn't touched by this pass.
@@ -1138,25 +1588,16 @@ public sealed partial class Session
     // _stealthShown tracks whether we're currently drawn faded so the revert fires exactly once, whether stealth
     // ends by a hit (redrawn inline), a timer lapse, or a Cleanse/flush (both caught by World.Tick's IsStealthExpired).
     private bool _stealthShown;
+    private string _stealthName = "Invisible";   // the specific stealth spell cast (Invisible/Spirit's Form/…) — shown in the buff box
     /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
     public bool IsStealthExpired => _stealthShown && !Stealthed;
     /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
     public void RevertStealth() { if (!_stealthShown) return; _stealthShown = false; RefreshAppearance(); }
 
-    private bool CastStealth(SpellDef sp, SpellFx fx, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
-        _stealthUntil = Environment.TickCount64 + durMs;
-        _stealthShown = true;
-        SendStats();
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        RefreshAppearance();   // draw self + peers faded (form 5) — the invisible-spell see-through look
-        // caster sees only the central "You cast <name>." (HandleCast); no flavor
-        Log.Info($"      {sp.Name} -> stealth (9x next hit) armed for {durMs}ms");
-        return true;
-    }
+    /// <summary>Fully drop Invisible — clears BOTH the timer (so the 5x sneak multiplier stops) and the faded
+    /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingDamage) and grabbing floor loot
+    /// (HandlePickup). No-op if not stealthed.</summary>
+    public void BreakStealth() { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(); }
 
     // Enchant-tier timer (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua
     // multiplies ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingDamage).
@@ -1164,25 +1605,6 @@ public sealed partial class Session
     private long _enchantUntil;
     private double _enchantAmount = 1;
     private double EffEnchant => Environment.TickCount64 < _enchantUntil ? _enchantAmount : 1;
-
-    // Real RTK rejects casting ANY enchant while one (including itself) is already active — the shared
-    // "enchants" checkIfCast group in spellTables.lua — rather than letting a stronger tier overwrite a
-    // weaker one. Mana is the per-spell hardcoded amount from Content.EnchantFor, not the generic dispatch
-    // `mana` (unreliable in the CSV export for these Type-5 skills — tigers_fortitude_rogue is genuinely free).
-    private bool CastEnchant(SpellDef sp, SpellFx fx, double amount, int mana)
-    {
-        if (EffEnchant > 1) { SendMiniText("This spell is already active."); return false; }
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 60000;
-        _enchantUntil = Environment.TickCount64 + durMs;
-        _enchantAmount = amount;
-        SendStats();
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        // caster sees only the central "You cast <name>." (HandleCast); no flavor
-        Log.Info($"      {sp.Name} -> enchant x{amount} armed for {durMs}ms");
-        return true;
-    }
 
     // RTK "morphs" duration group (see Content.MorphSpells/MorphDispatchFor) — purely cosmetic disguise.
     // CORRECTED 2026-07-26: an earlier pass concluded self-view was client-engine blocked, based on 0x33's
@@ -1206,37 +1628,6 @@ public sealed partial class Session
     /// <summary>Read by World.Tick (outside the lock) to know when to fire the revert broadcast.</summary>
     public bool IsMorphExpired => _morphLook != 0 && Environment.TickCount64 >= _morphUntil;
 
-    // Real RTK lets EVERY morph identifier keep its OWN independent duration timer (hasDuration(OWN_NAME)),
-    // so casting a second morph while a different one is active leaves both ticking — whichever lapses LAST
-    // wins the visual, a genuine RTK quirk with no gameplay purpose. Simplified to one consistent slot:
-    // casting a DIFFERENT morph replaces the old one outright; re-casting the SAME one un-morphs (toggle),
-    // matching every morph script's own `if hasDuration(OWN_NAME) then removeDuras(morphs); return`.
-    private bool CastMorph(SpellDef sp, SpellFx? fx, ushort look, ushort lookFemale, int mana, int durationMs)
-    {
-        if (IsMorphed && string.Equals(_morphKey, sp.Key, StringComparison.OrdinalIgnoreCase)) { RevertMorph(); return true; }
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        _buffs.RemoveAll(b => b.Key == _morphKey);   // drop the OLD morph's timer entry (if switching morphs)
-        _morphLook = (lookFemale != 0 && _char.Sex == 1) ? lookFemale : look;
-        _morphColor = 0;   // RTK ties this to disguiseColor = player.armorColor, a per-item dye this server doesn't track
-        _morphUntil = Environment.TickCount64 + durationMs;
-        _morphKey = sp.Key;
-        _buffs.Add(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
-        SendStats();
-        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        // Force-clear the old entity (incl. its nameplate) on PEERS before re-showing — see RefreshAppearance
-        // doc comment. Deliberately NOT sent to ourselves: unlike a peer's copy of us, our own client's self
-        // entity is a persistent singleton the 0x33 self-id path updates in place (never destroys), and an
-        // explicit 0x0E despawn of our own id risks tearing down that same object instead (untested, and not
-        // needed — self's view was already correct before this fix).
-        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
-        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
-        ShowPlayer(this);   // + our own view too, via the same 0x07 self-id path — see doc comment above
-        // caster sees only the central "You cast <name>." (HandleCast); no flavor
-        Log.Info($"      {sp.Name} -> morph look={_morphLook} for {durationMs}ms (self + peer visible via 0x07, see Content.MorphSpells)");
-        return true;
-    }
-
     /// <summary>Clears morph state and re-broadcasts our real human look to everyone, including ourselves.
     /// Called from the toggle-off cast above, and from World.Tick (via IsMorphExpired) when the duration
     /// lapses on its own.</summary>
@@ -1250,104 +1641,26 @@ public sealed partial class Session
         ShowPlayer(this);   // restore our own view too (same 0x07-self-id path we used to morph)
     }
 
-    // The rogue/warrior "self-sacrifice strike" family (Lethal Strike/Afterlife's Embrace/Ming-Ken's
-    // Judgement/Calculating Blow; Desperate Attack/The Void's Measure/Beastly Frenzy/Tilting the Balance;
-    // Berserk/No Fear/Tiger's Pounce/Wind's Blast; Whirlwind/Death's Angel/Nature's Own/Bladedance). Ported
-    // verbatim from RTK rogue/lethal_strike.lua, rogue/desperate_attack.lua, warrior/berserk.lua,
-    // warrior/whirlwind.lua (+ rogue/backflow.lua, warrior/overflow.lua):
-    //   - damage is computed from the CASTER's OWN pre-cast HP/MP, not target stats — a facing-tile physical
-    //     attack (not a targeted cast) that hits whatever mob is directly in front of the caster
-    //   - the raw damage is armor-netted the same way melee is (Combat.ApplyArmor) to find any OVERKILL
-    //   - Rogue pair (Lethal Strike/Desperate Attack): overkill "backflows" — up to half returns to the
-    //     caster as HP and MP, each capped at half whatever HP/MP the caster had before casting
-    //   - Warrior pair (Berserk/Whirlwind): overkill "overflows" instead — splashes recursively onto up to
-    //     4 adjacent-tile mobs rather than refunding the caster
-    //   - landing the hit ALWAYS costs the caster a big chunk of their own HP, regardless of overkill
-    //   - Baekho's Rage specifically (rage tier 5, not any lesser Fury) adds a further 1.5x to Berserk/Whirlwind
-    //   - Whirlwind's damage factor AND post-hit HP cost differ by the caster's OWN alignment stat (RTK reads
-    //     player.alignment directly, not which of the 4 aliases was actually cast — Unaligned/Kwisin get the
-    //     milder tier, Ming-Ken/Ohaeng the harsher one)
-    // PC targets are skipped entirely — no PvP damage path exists yet (same precedent as CastDebuff below).
-    private bool CastSacrificeStrike(SpellDef sp, Content.SacrificeFamily fam)
+    // These four read their graphic+sound from the same spell_effects.csv row every other spell uses, keyed by
+    // the family's canonical identifier. They used to call Content.ZapEffect(201/120/119/125, class) directly
+    // with RTK's `local spellFX` constants — which carried RTK's own alignment bugs: Lethal Strike and
+    // Whirlwind are UNALIGNED spells that were passing a kwisin (201) and an ohaeng (125) constant
+    // respectively. Going through the row fixes both and keeps one source of truth (see re/fill_spell_fx.py).
+    private static readonly Dictionary<Content.SacrificeFamily, string> SacrificeKeys = new()
     {
-        var (mana, aetherMs) = fam switch
-        {
-            Content.SacrificeFamily.LethalStrike    => (120, 23000),
-            Content.SacrificeFamily.DesperateAttack => (60, 11000),
-            Content.SacrificeFamily.Berserk         => (60, 12000),
-            Content.SacrificeFamily.Whirlwind       => (120, _char.Alignment == 0 ? 30000 : 25000),
-            _ => (60, 60000),
-        };
-        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-
-        uint preHealth = _char.Hp, preMagic = _char.Mp;
-        bool baekho = _rageAmount == 5 && EffRage > 1;   // Baekho's Rage specifically, not any lesser Fury tier
-
-        int damage = fam switch
-        {
-            Content.SacrificeFamily.LethalStrike    => (int)Math.Ceiling(preHealth / 2.0) + (int)Math.Ceiling(preMagic * 2.5),
-            Content.SacrificeFamily.DesperateAttack => (int)(preHealth + preMagic),
-            Content.SacrificeFamily.Berserk         => (int)Math.Ceiling(preHealth * 0.75),
-            Content.SacrificeFamily.Whirlwind       => (int)Math.Ceiling(preHealth * (_char.Alignment >= 2 ? 1.525 : 1.75)),
-            _ => 0,
-        };
-        if ((fam is Content.SacrificeFamily.Berserk or Content.SacrificeFamily.Whirlwind) && baekho)
-            damage = (int)Math.Ceiling(damage * 1.5);
-
-        _char.Mp -= (uint)mana;
-        SetCooldown(sp.Key, aetherMs);
-
-        var (fx, fy) = FrontTile();
-        var mob = _world.MobAt(_char.Map, fx, fy);
-        bool landed = false;
-        if (mob is not null && mob.Alive)
-        {
-            int netDamage = Combat.ApplyArmor(damage, mob.Ac, floor: -95);
-            int overkill = netDamage - mob.Hp;
-            _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
-            BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
-            ShowDamageResult(mob.Id, mob, died);
-            landed = true;
-            if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward, killExp: true); }
-
-            if (overkill > 0)
-            {
-                if (fam is Content.SacrificeFamily.LethalStrike or Content.SacrificeFamily.DesperateAttack)
-                    ApplyBackflow(overkill, preHealth, preMagic);
-                else
-                    ApplyOverflow(overkill, fx, fy, fam);
-            }
-        }
-        else SendMiniText($"{sp.Name} finds no target.");
-
-        if (landed)
-        {
-            _char.Hp = fam switch
-            {
-                Content.SacrificeFamily.LethalStrike    => (uint)Math.Ceiling(_char.Hp / 2.0),
-                Content.SacrificeFamily.DesperateAttack => (uint)Math.Ceiling(_char.Hp / 2.0),
-                Content.SacrificeFamily.Berserk         => (uint)Math.Ceiling(_char.Hp / 3.0),
-                Content.SacrificeFamily.Whirlwind       => _char.Alignment >= 2 ? (uint)Math.Ceiling(_char.Hp * 0.10) : 10,
-                _ => _char.Hp,
-            };
-            if (fam == Content.SacrificeFamily.DesperateAttack) _char.Mp = 0;
-        }
-        SendStats();
-        Log.Info($"      {sp.Name} -> sacrifice strike ({fam}) landed={landed} hp->{_char.Hp}/{EffMaxHp}");
-        return true;
-    }
-
-    // RTK's spellFX local (201/120/119/125 for lethal_strike/desperate_attack/berserk/whirlwind) indexes the
-    // SAME shared pcalign->(anim,sound) ladder Content.ZapEffect already carries (rows 119-127/200-204).
-    private static (int anim, int sound) SacrificeFx(Content.SacrificeFamily fam) => fam switch
-    {
-        Content.SacrificeFamily.LethalStrike    => Content.ZapEffect(201, 2),
-        Content.SacrificeFamily.DesperateAttack => Content.ZapEffect(120, 2),
-        Content.SacrificeFamily.Berserk         => Content.ZapEffect(119, 1),
-        Content.SacrificeFamily.Whirlwind       => Content.ZapEffect(125, 1),
-        _ => (-1, -1),
+        [Content.SacrificeFamily.LethalStrike]    = "lethal_strike_rogue",
+        [Content.SacrificeFamily.DesperateAttack] = "desperate_attack_rogue",
+        [Content.SacrificeFamily.Berserk]         = "berserk_warrior",
+        [Content.SacrificeFamily.Whirlwind]       = "whirlwind_warrior",
+        [Content.SacrificeFamily.FocusedBlow]     = "focused_blow_rogue",
+        [Content.SacrificeFamily.Siege]           = "siege_warrior",
     };
+    private static (int anim, int sound) SacrificeFx(Content.SacrificeFamily fam)
+    {
+        if (!SacrificeKeys.TryGetValue(fam, out var key)) return (-1, -1);
+        var fx = Content.SpellByKey(key) is { } sp ? Content.FxFor(sp) : null;
+        return fx is null ? (-1, -1) : (Content.EffectAnim(fx), Content.EffectSound(fx));
+    }
     private static int SacrificeAnim(Content.SacrificeFamily fam) => SacrificeFx(fam).anim;
     private static int SacrificeSound(Content.SacrificeFamily fam) => SacrificeFx(fam).sound;
 
@@ -1404,57 +1717,6 @@ public sealed partial class Session
         return _world.PeerAt(_char.Map, fx, fy);
     }
 
-    // RTK poet/inspiration.lua family (Draw Energy/Harness Power/Combine Focus/Inspiration — 4 reskins, one
-    // mechanic): drains a GROUP MEMBER's entire current mana into the caster's own pool (capped at the
-    // caster's max). No separate cast cost — the "cost" IS taking the target's mana. Target must be in the
-    // caster's own party and not a ghost (RTK: "That cannot save them now").
-    private bool CastManaSteal(SpellDef sp, uint? targetId)
-    {
-        var target = ResolvePcCastTarget(targetId);
-        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (target.IsDead) { SendMiniText("That cannot save them now."); return false; }
-        if (_party is null || !ReferenceEquals(target._party, _party)) { SendMiniText("They must be in your group."); return false; }
-
-        uint mana = target._char.Mp;
-        target._char.Mp = 0;
-        target.SendStats();
-        target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
-
-        _char.Mp = Math.Min(EffMaxMp, _char.Mp + mana);
-        BroadcastFx(_char.Id, 6, 22);   // player:sendAction(6,20) + playSound(22) — no explicit Effect.tbl id in the Lua, action-only
-        SendStats();
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        Log.Info($"      {sp.Name} -> stole {mana} mana from '{target._char.Name}'");
-        return true;
-    }
-
-    // RTK poet/inspire.lua family (Inspire/Share Energy/Bestow Power/Release Focus — 4 reskins): tops off
-    // ANY other player's mana using the caster's own — no group requirement, but requires the caster hold at
-    // least 30 mana to attempt it at all, then gives up to (target's missing mana), capped by whatever the
-    // caster actually has (draining the caster to 0 rather than failing outright if they're short).
-    private bool CastManaGift(SpellDef sp, uint? targetId)
-    {
-        const int magicCost = 30;
-        var target = ResolvePcCastTarget(targetId);
-        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (ReferenceEquals(target, this)) { SendMiniText("It doesn't work."); return false; }
-        if (target.IsDead) { SendMiniText("That cannot save them now."); return false; }
-        if (_char.Mp < magicCost) { SendMiniText("Not enough mana."); return false; }
-
-        uint missing = target.EffMaxMp - target._char.Mp;
-        uint give = Math.Min(_char.Mp, missing);
-        _char.Mp -= give;
-        target._char.Mp = Math.Min(target.EffMaxMp, target._char.Mp + give);
-
-        target.SendStats();
-        target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
-        SendStats();
-        BroadcastFx(_char.Id, 6, 22);
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        Log.Info($"      {sp.Name} -> gave {give} mana to '{target._char.Name}'");
-        return true;
-    }
-
     // RTK's `player:flushDuration()` — strips every active timed spell effect in one shot, buffs and
     // debuffs alike. We don't yet track true player-targeted debuffs (only mob-targeted freezes), so this
     // clears every timed mechanic that exists PC-side: stat buffs, rage tiers, the stealth burst, and the
@@ -1466,140 +1728,6 @@ public sealed partial class Session
         _stealthUntil = 0;
         _backstabUntil = 0;
         _flankUntil = 0;
-    }
-
-    // RTK poet/dispell.lua family (Dispell/Remove Magic/Return Natural/Restore Balance — 4 reskins): a
-    // chance-based full buff/debuff wipe on a targeted player (self-castable too). Success chance is RTK's
-    // literal formula: target's effective armor (clamped to [-60,70]) minus a will-scaled protection term,
-    // folded into (120+armor)/2, floored at 10%. Fixed 200 mana; no cooldown in the Lua. Player Protection
-    // isn't modeled yet (only mobs carry it — see MobProtection), so the term defaults to 0 for a PC target.
-    private bool CastCleanse(SpellDef sp, uint? targetId)
-    {
-        const int cost = 200;
-        if (_char.Mp < cost) { SendMiniText("You do not have enough mana."); return false; }
-        var target = ResolvePcCastTarget(targetId);
-        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-
-        int targetArmor = Math.Clamp(target._char.Ac - target.Totals().armor, -60, 70);
-        int prot = (int)Math.Floor(((target._char.Will + target.Totals().will) - (_char.Will + Totals().will)) / 10.0);
-        int armor = targetArmor - prot;
-        int successRate = Math.Max(10, (int)Math.Ceiling((120 + armor) / 2.0));
-
-        _char.Mp -= cost;
-        SendStats();
-        if (Random.Shared.Next(1, 101) > successRate) { SendMiniText("Something went wrong."); return true; }
-
-        target.FlushDurations();
-        target.SendStats();
-        if (!ReferenceEquals(target, this)) target.SendMiniText($"{Snapshot().Name} casts {sp.Name} on you.");
-        BroadcastFx(_char.Id, 6, 34);
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        Log.Info($"      {sp.Name} -> cleansed '{target._char.Name}' (rate {successRate}%)");
-        return true;
-    }
-
-    // RTK poet/resurrect.lua family (Resurrect/Return Spirit/Ming-Ken Blessing/Death Undone — 4 reskins):
-    // revives a dead/ghost player to full health in place. Fixed 3000 mana, 8s cooldown. RTK also blocks
-    // reviving a currently-hostile PvP target (player:canPK) — not modeled since this server has no PvP
-    // combat/hostility-flag system yet, so that guard is simply absent rather than faked.
-    private bool CastRevive(SpellDef sp, uint? targetId)
-    {
-        const int cost = 3000;
-        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < cost) { SendMiniText("Your will is too weak."); return false; }
-        var target = ResolvePcCastTarget(targetId);
-        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (!target.IsDead) { SendMiniText($"{sp.Name} has no effect on the living."); return true; }
-
-        _char.Mp -= cost;
-        SetCooldown(sp.Key, 8000);
-        target.ReviveAt(target._char.Map, target._char.X, target._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
-        BroadcastFx(_char.Id, 6, 20);
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        SendStats();
-        Log.Info($"      {sp.Name} -> revived '{target._char.Name}'");
-        return true;
-    }
-
-    // RTK rogue/race.lua family (Race/Spiritual Jump/Leap of Faith/Transport — 4 independently-authored
-    // copies of the same mechanic): jump up to 3 tiles in the faced direction, stopping at the last passable
-    // tile (same collision test normal movement uses — BlockedMove folds in both the ground pass flag and
-    // SObj.tbl directional object-walls). 1 mana, 80s cooldown.
-    private bool CastLeap(SpellDef sp)
-    {
-        const int cost = 1;
-        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < cost) { SendMiniText("You do not have enough mana."); return false; }
-        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        if (md is null) { SendMiniText("It doesn't work here."); return false; }
-
-        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
-        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
-        int dist = 0;
-        for (int step = 1; step <= 3; step++)
-        {
-            int nx = _char.X + dx * step, ny = _char.Y + dy * step;
-            if (nx < 0 || ny < 0 || nx >= _char.MapXs || ny >= _char.MapYs || md.BlockedMove(nx, ny, _facing)) break;
-            dist = step;
-        }
-        if (dist == 0) { SendMiniText("There's nowhere to go."); return false; }
-
-        _char.Mp -= (uint)cost;
-        SetCooldown(sp.Key, 80000);
-        ushort nx2 = (ushort)(_char.X + dx * dist), ny2 = (ushort)(_char.Y + dy * dist);
-        string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
-        EnterMap(_char.Map, _char.MapXs, _char.MapYs, nx2, ny2, mapName);   // re-anchor viewport/redraw at the new spot (same convention as !warp)
-        SendStats();
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        Log.Info($"      {sp.Name} -> leapt {dist} tile(s) dir {_facing}");
-        return true;
-    }
-
-    // RTK rogue/ambush.lua (+ displacement/waylay/reflect reskins, see Content.IsAmbushSpell): "Leap over
-    // your enemy to face their back while attacking." No mana cost in the Lua — the caster teleports to the
-    // tile directly behind the faced target (relative to the TARGET's own facing, not the caster's) and
-    // re-faces to match it, which lines up exactly with Combat.IsBehindTarget's existing unconditional
-    // positional-backstab bonus (attacker/target facing the same way, attacker on the target's blind side)
-    // — so the follow-up swing below gets that x2 "for free", same as a real sneak-up. Only ever targets a
-    // world mob (RTK's own getTargetFacing prioritizes BL_MOB first; PC/NPC targets aren't meaningful here
-    // — this server has no PvP melee path yet). RTK paces reuse with player.ambushTimer (attackSpeed-
-    // derived, not modeled) — a short fixed cooldown substitutes so it can't be chain-spammed.
-    private bool CastAmbush(SpellDef sp)
-    {
-        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        var (fx, fy) = FrontTile();
-        var mob = _world.MobAt(_char.Map, fx, fy);
-        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-
-        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        byte behindDir = (byte)((mob.Dir + 2) & 3);
-        var (bx, by) = StepDir(mob.X, mob.Y, behindDir);
-        bool blocked = bx < 0 || by < 0 || bx >= _char.MapXs || by >= _char.MapYs ||
-                       (md?.BlockedMove(bx, by, behindDir) ?? false) || _world.PeerAt(_char.Map, bx, by) is not null;
-        if (blocked) { SendMiniText($"{sp.Name} finds no opening."); return false; }
-
-        SetCooldown(sp.Key, 3000);
-        _facing = mob.Dir;
-        string mapName2 = Content.Maps.TryGetValue(_char.Map, out var mi2) ? mi2.Name : "";
-        EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)bx, (ushort)by, mapName2);   // re-anchor viewport at the target's back
-        SendAction(_char.Id, type: 1, time: 8, param: 0);
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);
-
-        var (dmg, crit) = PlayerSwingDamage(mob);
-        if (_world.TryDamage(_char.Map, mob, dmg, out bool died, _char.Id))
-        {
-            var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);
-            if (weapon is not null) DeductDura(weapon);
-            ShowDamageResult(mob.Id, mob, died, crit ? (byte)0xFF : HitCritByte, (byte)Math.Clamp(_hitSfx, 0, 255));
-            Log.Info($"      {sp.Name} -> leapt behind '{mob.Name}' and struck for {dmg}{(crit ? " (CRIT)" : "")}");
-            if (died)
-            {
-                uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);   // exp message only; no caster kill flavor
-                TallyKill(mob);
-            }
-        }
-        return true;
     }
 
     // One step from (x,y) in direction dir (0=N/1=E/2=S/3=W — same convention as FrontTile/_facing/Mob.Dir).
@@ -1629,7 +1757,8 @@ public sealed partial class Session
 
         if (_world.PeerAt(_char.Map, tx, ty) is not null) return true;   // someone's standing on it — hands off
 
-        var gi = _world.PickUp(_char.Map, tx, ty);
+        // …and a looter-locked death pile is off limits to a thief too (see LuaFilch's note).
+        var gi = _world.PickUp(_char.Map, tx, ty, _char.Id);
         if (gi is null) return true;
         if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); return true; }   // coins -> purse
         var def = Content.ItemById(gi.ItemId);
@@ -1715,22 +1844,6 @@ public sealed partial class Session
         return true;
     }
 
-    // RTK rogue/set_X_trap.lua family (see Content.TrapSpellFor/IsTrapDispatcher): places a hidden hazard
-    // on the caster's OWN current tile (RTK: player.x/player.y at cast time, never the faced tile) that
-    // fires once a mob steps onto it (World.Tick's movement pass). Bark + sound play unconditionally, same
-    // as every other trap spell in the source.
-    private bool CastTrap(SpellDef sp, Content.TrapKind kind, SpellFx? fx, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        _world.PlaceTrap(_char.Map, _char.X, _char.Y, Content.TrapWireKind(kind), _char.Id);
-        SendStats();
-        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        // caster line centralized in HandleCast ("You cast <name>.")
-        Log.Info($"      {sp.Name} -> placed {kind} trap at ({_char.X},{_char.Y})");
-        return true;
-    }
-
     // RTK rogue/bladestorm_trap.lua (see Content.IsBladestormTrap): places a visible step-triggered decoy on
     // the caster's OWN tile that detonates a facing-cone AoE the instant ANYTHING steps onto it — a mob
     // triggers it from World.Tick's movement loop (TriggerTrapLocked's "bladestorm" case); a player triggers
@@ -1771,85 +1884,6 @@ public sealed partial class Session
         return raw;
     }
 
-    // RTK Poet "Call of the Wild" pet family (see Content.PetSpellFor/PetCapFor): spawns a real, correctly
-    // statted shared-world Mob owned by the caster (SummonWorldMob — same helper !summon uses), one tile
-    // ahead if that tile is free, else on the caster's own tile (RTK cotw_SpawnSetThreat's exact fallback).
-    // Expires 300s later (World.Tick), uncapped duration extension on recast — just another pet, subject to
-    // the same live-pet cap. Combat-assist/threat-transfer isn't ported (see Mob.OwnerId's doc).
-    private bool CastPetSummon(SpellDef sp, string mobKey, int mana, int cooldownMs)
-    {
-        var def = Content.MobByKey(mobKey);
-        if (def is null) { SendMiniText("Something went wrong."); return false; }
-        if (cooldownMs > 0 && OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (mana > 0 && _char.Mp < (uint)mana) { SendMiniText("Not enough mana."); return false; }
-
-        int cap = Content.PetCapFor(_char.Level);
-        if (_world.PetCountFor(_char.Map, _char.Id) >= cap) { SendMiniText("You cannot summon any more creatures right now."); return false; }
-
-        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
-        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
-        int fx2 = _char.X + dx, fy2 = _char.Y + dy;
-        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        bool frontFree = fx2 >= 0 && fy2 >= 0 && fx2 < _char.MapXs && fy2 < _char.MapYs
-                          && (md is null || !md.BlockedMove(fx2, fy2, _facing))
-                          && _world.MobAt(_char.Map, fx2, fy2) is null
-                          && _world.PeerAt(_char.Map, fx2, fy2) is null;
-        ushort sx = frontFree ? (ushort)fx2 : _char.X, sy = frontFree ? (ushort)fy2 : _char.Y;
-
-        if (mana > 0) _char.Mp -= (uint)mana;
-        if (cooldownMs > 0) SetCooldown(sp.Key, cooldownMs);
-        SendStats();
-
-        var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3), color: def.Color,
-                                  exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
-        mob.OwnerId = _char.Id;
-        mob.PetExpiresAt = Environment.TickCount64 + 300_000;
-        // caster line centralized in HandleCast ("You cast <name>.")
-        Log.Info($"      {sp.Name} -> summoned pet '{mob.Name}' ({mob.Id}) for player {_char.Id} at ({sx},{sy})");
-        return true;
-    }
-
-    // Debuff: paralyze/sleep the targeted mob — freeze its wandering for the RTK duration, subject to the spell's
-    // hit chance. PC targets are immune here (no PvP). Damage-less crowd control.
-    private bool CastDebuff(SpellDef sp, SpellFx fx, uint? targetId, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (sp.CanFail && RollDeflect(mob)) { SendMiniText("The magic has been deflected."); return true; }
-
-        double chance = string.IsNullOrEmpty(fx.Chance) ? 100 : Formula.Eval(fx.Chance, SpellVars(mob));
-        _char.Mp -= (uint)mana;
-        if (chance < 100 && Random.Shared.Next(100) >= chance) { SendMiniText($"{sp.Name} fails to take hold."); return true; }
-
-        int durMs = fx.DurationMs > 0 ? fx.DurationMs : 20000;
-        mob.FrozenUntil = Environment.TickCount64 + durMs;
-        BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // debuff graphic + sound
-        // caster line centralized in HandleCast ("You cast <name>."); the mob visibly freezes
-        Log.Info($"      {sp.Name} -> mob {mob.Id} '{mob.Name}' frozen {durMs}ms ({fx.Debuff})");
-        return true;
-    }
-
-    // Cure: RTK removes a category of durations from the target. We clear the caster's own active debuffs/buffs
-    // (we don't yet carry negative status), so functionally it's a "dispel my timers" + mana spend.
-    private bool CastCure(SpellDef sp, SpellFx fx, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        return true;
-    }
-
-    // Utility / Summon / Teleport / Dialog: no faithful model yet — spend the real mana and acknowledge so the
-    // cast isn't a silent no-op. These get bespoke cases later as they're wanted.
-    private bool CastMisc(SpellDef sp, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText($"Not enough mana to cast {sp.Name}."); return false; }
-        _char.Mp -= (uint)mana;
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        return true;
-    }
-
     // Gateway destinations are data-driven (data/game-data/GatewayGates.csv -> Content.GatewayRegions): region
     // -> the kingdom's city map + the four gate spawn boxes. Casting Gateway warps you to a RANDOM tile inside
     // the box for the gate you answered (N/E/S/W), on the region's city map. Coords are 1:1 with RTK
@@ -1863,22 +1897,6 @@ public sealed partial class Session
     // A virtual "npc" purely for the propose/marriage dialog headers (never spawned or looked up). Distinct
     // sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) / Trade (0xFFFFFFFD) / WorldMap (0xFFFFFFFC).
     private static readonly Mob MarriageVirtualNpc = new(0xFFFFFFFB, 0, 0, 0, "Cupid", 1);
-
-    // Propose (RTK Spells/common/propose.lua): a skill-type spell (SplType 5 — no native typed-answer/target
-    // wire arg) whose real interaction is entirely a scripted dialog (RTK inputSeq/menuSeq), the same class
-    // of primitive an NPC uses. CastPropose just validates + kicks the async flow off; RunProposeAsync does
-    // the actual asking, and PromptProposal (below) runs on the TARGET's own session once found.
-    private bool CastPropose(SpellDef sp)
-    {
-        if (HasLegend("engaged") || HasLegend("married"))
-        {
-            ForgetOneSpell(sp.Id);   // RTK: a stray cast of a spell you shouldn't have anymore just cleans it up
-            SendMiniText("You are already committed to someone else!");
-            return false;
-        }
-        _ = RunProposeAsync(sp);
-        return true;   // the cast anim plays regardless; the real outcome resolves async below
-    }
 
     private async Task RunProposeAsync(SpellDef sp)
     {
@@ -1963,51 +1981,6 @@ public sealed partial class Session
         return "Congratulations! You are both now married.";
     }
 
-    private bool CastGateway(SpellDef sp, string? answer)
-    {
-        if (_char.Hp == 0) { SendMiniText("Spirits cannot use Gateway."); return false; }
-        if (!Content.WarpOut(_char.Map)) { SendMiniText("It doesn't work here."); return false; }
-
-        int region = Content.RegionOf(_char.Map);
-        if (!Content.GatewayRegions.TryGetValue(region, out var r) || !Content.Maps.TryGetValue(r.Map, out var map))
-        { SendMiniText("Cannot find any gates!"); return false; }
-
-        // RTK keys on the answer's first letter (string.sub(q,1,1)). Take the first ASCII letter so a stray
-        // framing byte or leading space can't swallow the direction.
-        char dir = (answer ?? "").ToLowerInvariant().FirstOrDefault(char.IsLetter);
-        if (!r.Gates.TryGetValue(dir, out var box))
-        { SendMiniText("Which gate? Answer North, East, South or West."); return false; }
-
-        ushort x = (ushort)Random.Shared.Next(box.Xlo, box.Xhi + 1);
-        ushort y = (ushort)Random.Shared.Next(box.Ylo, box.Yhi + 1);
-        string gate = dir switch { 'n' => "North", 'e' => "East", 'w' => "West", 's' => "South", _ => "" };
-
-        EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
-        SendSound(708, _char.Id);   // confirmed live 2026-07-27; self-only, teleport isn't visible to peers anyway
-        SendMiniText($"You have arrived at {gate} Gate of {r.City}.");
-        _castNarrated = true;   // teleport narrates its own outcome — skip the generic "You cast Gateway."
-        Log.Info($"      Gateway -> region {region} {r.City} {gate} gate: map {map.Id} ({x},{y})");
-        return true;
-    }
-
-    // Return (common/return.lua): warps home to the same destination as the yellow_scroll/qui_hyang item's
-    // "warphome" effect (ReturnToInn -- see ApplyItemEffect's "warphome" case). RTK's script costs 30 mana
-    // and checks warpOut before warping ("That does not work here" verbatim); its handful of hardcoded
-    // per-map "Fizzle." checks (arena/instance ids like 3010/3011/3034-39/3042/666) aren't ported --
-    // Content.WarpOut already carries the real RTK per-map warp-out flag those would largely duplicate, and
-    // this server never loads those unrenderable instance maps in the first place (see Content.Warps' doc).
-    private bool CastReturn()
-    {
-        const uint cost = 30;
-        if (_char.Mp < cost) { SendMiniText("You do not have enough mana."); return false; }
-        if (!Content.WarpOut(_char.Map)) { SendMiniText("That does not work here."); return false; }
-
-        _char.Mp -= cost;
-        ReturnToInn();
-        SendStats();
-        return true;
-    }
-
     // RTK Player.returnToInn (player.lua:4607): "home" for Return / yellow_scroll / qui_hyang is a RANDOM
     // tavern in your nation (each has a bed to wake up in), NOT the nation's home-city interior — that's
     // CharacterFactory.HomeCityFor, which stays the fresh-character spawn + Silver-Thread revive point (it
@@ -2038,54 +2011,6 @@ public sealed partial class Session
         if (Content.TryMap(fm, out var fmap)) EnterMap(fmap.Id, fmap.Xs, fmap.Ys, fx, fy, fmap.Name);
     }
 
-    // Fallback for spells with NO export row: the old keyword classifier over the name (Damage/Heal/Buff/Utility)
-    // with the shared magic-damage base formula. Kept so an unmatched identifier still does something sensible.
-    private bool ApplyCastGeneric(SpellDef sp, uint? targetId)
-    {
-        const uint cost = 5;
-        if (_char.Mp < cost) { SendMiniText($"Not enough mana to cast {sp.Name}."); return false; }
-        var eq = Totals();
-        int power = Math.Max(1, 1 + (_char.Will + eq.will) * 4 + (_char.Grace + eq.grace) * 3);
-        switch (Content.EffectOf(sp))
-        {
-            case Content.SpellEffect.Heal:
-            {
-                _char.Mp -= cost;
-                uint before = _char.Hp;
-                _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)power);
-                _ = _char.Hp - before;
-                BroadcastFx(_char.Id, 5, 4);   // generic unaligned heal graphic + sound
-                // caster line centralized in HandleCast ("You cast <name>.")
-                return true;
-            }
-            case Content.SpellEffect.Damage:
-            {
-                var mob = ResolveCastTarget(targetId);
-                if (mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-                _char.Mp -= cost;
-                if (_world.TryDamage(_char.Map, mob, power, out bool died, _char.Id))
-                {
-                    BroadcastFx(mob.Id, 4, 56);   // generic unaligned zap graphic + sound
-                    ShowDamageResult(mob.Id, mob, died);   // 0x13: over-head HP bar (empty bar + delayed despawn on death)
-                    if (died)
-                    {
-                        uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                        AwardExp(reward, killExp: true);   // exp message only; no caster hit/kill flavor
-                    }
-                }
-                return true;
-            }
-            case Content.SpellEffect.Buff:
-                _char.Mp -= cost;
-                // caster line centralized in HandleCast ("You cast <name>.")
-                return true;
-            default:
-                _char.Mp -= cost;
-                // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-                return true;
-        }
-    }
-
     // Per-spell cooldowns ("aether"), keyed by spell identifier -> earliest next-cast tick (ms). Mirrors RTK's
     // player:setAether. Lightweight and session-local (resets on relog, like most timers here).
     private readonly Dictionary<string, long> _aether = new();
@@ -2093,33 +2018,10 @@ public sealed partial class Session
     {
         secondsLeft = 0;
         if (_aether.TryGetValue(key, out var until) && Environment.TickCount64 < until)
-        { secondsLeft = (int)Math.Ceiling((until - Environment.TickCount64) / 1000.0); return true; }
+        { secondsLeft = (int)((until - Environment.TickCount64) / 1000); return true; }   // FLOOR, matching RTK — a sub-second remainder shows "0" (e.g. Invisible's 1s aether cast too fast)
         return false;
     }
     private void SetCooldown(string key, int ms) => _aether[key] = Environment.TickCount64 + ms;
-
-    // Mana-battery family (Invoke / Spirit's Power / Life Force / Gather Magic). Ported verbatim from RTK
-    // rtklua/Accepted/Spells/{mage,poet}/invoke.lua: needs ≥30 current mana; HP cost = 40% of MAX mana, with
-    // HP floored at 100 (never below); then refill mana to FULL. 22s aether (cooldown).
-    private bool CastManaBattery(SpellDef sp)
-    {
-        const uint MinMana = 30;
-        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < MinMana) { SendMiniText("Not enough mana."); return false; }
-
-        uint healthCost = (uint)(EffMaxMp * 0.4);
-        uint before = _char.Hp;
-        _char.Hp = (long)_char.Hp - healthCost < 100 ? 100u : _char.Hp - healthCost;   // RTK: floor at 100
-        _char.Mp = EffMaxMp;                                                            // refill to full
-        SetCooldown(sp.Key, 22000);
-
-        uint lost = before > _char.Hp ? before - _char.Hp : 0;
-        if (Content.FxFor(sp) is { } fx)
-            BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));   // Invoke graphic + sound
-        // caster line is centralized in HandleCast ("You cast <name>.") — no per-handler message
-        Log.Info($"      {sp.Name}: -{lost} HP (cost {healthCost}, floor 100), MP -> full {_char.Mp}/{EffMaxMp}");
-        return true;
-    }
 
     // The world mob a cast should affect: an explicit target id if the client sent one, else the mob on the
     // tile the caster faces (like melee). World mobs only — session-local debug dummies aren't spell targets.

@@ -8,6 +8,12 @@ namespace Server;
 
 public sealed partial class Session
 {
+    /// <summary>Whether this session may run the "!" development/GM commands. Read fresh from
+    /// <see cref="GmAccounts"/> on every command rather than cached at login, so a !reload-driven demotion
+    /// takes effect immediately instead of at the offender's next relog. Keyed on the PERSISTED character
+    /// name (case-insensitively), which world entry now refuses to invent — so GM status can't be claimed
+    /// by connecting with a made-up name.</summary>
+    private bool IsGm => _enteredWorld && GmAccounts.IsGm(_char.Name);
 
     // ---- item GM commands ----
 
@@ -241,7 +247,7 @@ public sealed partial class Session
     {
         var a = ParseInts(text);
         _char.Weapon = (byte)(a.Length > 0 ? a[0] : 0);
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         SendSelfLook();   // re-send the self appearance so the weapon shows (may need a relog to redraw)
         SendMessage($"weapon set to {_char.Weapon}");
         Log.Info($"   -> WEAPON set to {_char.Weapon}");
@@ -255,7 +261,8 @@ public sealed partial class Session
         var a = ParseInts(text);
         _char.Mounted = a.Length > 0 ? a[0] != 0 : !_char.Mounted;
         RefreshAppearance();                                              // redraw self on the horse + everyone watching
-        SendMiniText(_char.Mounted ? "You climb onto the horse." : "You dismount.");
+        SendMiniText(_char.Mounted ? "The powerful steed takes you where you want to go."   // same lines as the
+                                   : "You precariously step again onto the ground.");       // real 'r' ride key
         Log.Info($"   -> MOUNT {( _char.Mounted ? "on" : "off")}");
     }
 
@@ -264,37 +271,68 @@ public sealed partial class Session
     // wild horse wandering Buya/Horse Valley, not a combat mob like "wild_horse"/"horse_guardsman" that just
     // shares the word) standing on the SINGLE tile you're facing (cardinal only, same FrontTile() the melee
     // attack uses — RTK has no 8-way/diagonal reach and neither does the player's own swing) and despawns it
-    // (ridden away, no loot/exp — see World.DespawnMob). Dismounting sets a fresh horse back down in front.
+    // (ridden away, no loot/exp — see World.DespawnMob). Dismounting sets a fresh horse back down on the
+    // first free tile clockwise from the one you face (see DismountTile).
     private void TryRideHorse()
     {
         if (!_char.Mounted)
         {
             var (hx, hy) = FrontTile();
             var horse = _world.MobNear(_char.Map, hx, hy, 0, mo => mo.Key == "horse");   // radius 0 = exact tile
-            if (horse is null) { SendMiniText("There is no horse to ride here."); return; }
+            // The three ride lines are the real game's, verbatim (they aren't in the client's Inter.dat line
+            // table, so they were always server-sent — ours were stand-ins).
+            if (horse is null) { SendMiniText("Good try, but there is nothing here that you can ride."); return; }
             _world.DespawnMob(_char.Map, horse);
             _char.Mounted = true;
             RefreshAppearance();
-            SendMiniText("You climb onto the horse.");
+            SendMiniText("The powerful steed takes you where you want to go.");
             Log.Info($"   -> MOUNT on (rode away world horse {horse.Id})");
         }
         else
         {
             _char.Mounted = false;
             RefreshAppearance();
-            SendMiniText("You dismount.");
+            SendMiniText("You precariously step again onto the ground.");
 
             var def = Content.Mobs.FirstOrDefault(m => m.Key == "horse");
             if (def is not null)
             {
-                var (fx, fy) = FrontTile();
-                ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
-                ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
-                SummonWorldMob(def.Look, x, y, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3),
+                var (x, y, dir) = DismountTile();
+                SummonWorldMob(def.Look, x, y, def.Name, def.Hp, dir: dir,
                                 color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
+                Log.Info($"   -> MOUNT off (set horse down at {x},{y} dir {dir})");
             }
-            Log.Info("   -> MOUNT off (set horse down in front)");
+            else Log.Info("   -> MOUNT off (no 'horse' MobDef — nothing set down)");
         }
+    }
+
+    /// <summary>Where to set the horse down when dismounting: the first free CARDINAL neighbour, checked
+    /// CLOCKWISE from the tile the player faces (faced, right, behind, left — dir, dir+1, dir+2, dir+3 in
+    /// the 0=N 1=E 2=S 3=W encoding, which is already clockwise); if all four are taken, the player's OWN
+    /// tile. Returns the tile plus the direction the horse should face (always back toward the rider).
+    /// Only 4 slots: this game has no diagonal adjacency anywhere — movement, melee reach and mount range
+    /// are all cardinal — so a horse must never land on a corner tile.
+    /// Free = in bounds, not blocked (<see cref="MapData.BlockedMove"/> — ground pass flag AND the SObj
+    /// directional object-wall, the same two-layer test the player's walk uses), and not already holding a
+    /// mob or another player.
+    /// The old code just clamped the faced tile to the map bounds and dropped the horse there, which put it
+    /// inside walls, in water, and on top of whatever already stood in front of you.
+    /// Stacking on the rider is the deliberate last resort (same principle as World.FreeSpawnTile's
+    /// accept-the-overlap fallback): a boxed-in player must still get their horse back.</summary>
+    private (ushort x, ushort y, byte dir) DismountTile()
+    {
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        for (int i = 0; i < 4; i++)
+        {
+            int side = (_facing + i) & 3;                  // i=0 is the faced tile, then clockwise
+            var (tx, ty) = Step(_char.X, _char.Y, side);
+            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
+            if (md is not null && md.BlockedMove(tx, ty, side)) continue;
+            if (TileHasMob(tx, ty)) continue;
+            if (_world.PeerAt(_char.Map, tx, ty) is not null) continue;
+            return ((ushort)tx, (ushort)ty, (byte)Opposite(side));   // face back toward the rider
+        }
+        return (_char.X, _char.Y, (byte)Opposite(_facing));   // fully boxed in — stack it on us
     }
 
     // "!lvl N" / "!might N" — set a BASE character stat so wear-requirements can be exercised on the
@@ -322,21 +360,35 @@ public sealed partial class Session
         int v = a.Length > 0 ? a[0] : 0;
         if (which == "level") _char.Level = (byte)Math.Clamp(v, 1, 99);
         else                  _char.Might = (byte)Math.Clamp(v, 0, 255);
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         SendStats();
         SendMessage($"{which} set to {(which == "level" ? _char.Level : _char.Might)}");
         Log.Info($"   -> {which.ToUpper()} set to {(which == "level" ? _char.Level : _char.Might)}");
     }
 
-    // "!class <name>" — set the class/path line shown in the self-profile ("Mind's Eye", 0x39). This is a
-    // display string only; path/class WEAR restrictions (ItmPthId) aren't enforced (no path-id concept yet).
-    // Re-pushes the profile so an open window updates immediately.
+    // "!mark <0-5>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san … 5 Oh san). No NPC advances it
+    // yet, so this is the only way to satisfy the gates that read it: mark-restricted gear (ItmMark), map entry
+    // (MapReqMark), unmarked-only doors, and minor-quest eligibility.
+    private void SetMark(string text)
+    {
+        var a = ParseInts(text);
+        if (a.Length == 0) { SendLog($"mark is {_char.Mark} (usage: !mark <0-5>)"); return; }
+        _char.Mark = (byte)Math.Clamp(a[0], 0, 5);
+        if (_enteredWorld) StoreSave();
+        SendMessage($"mark set to {_char.Mark}");
+        Log.Info($"   -> MARK set to {_char.Mark}");
+    }
+
+    // "!class <name>" — set the class/path line shown in the self-profile ("Mind's Eye", 0x39). It is ALSO the
+    // single source of truth for the character's path id (Content.PathIdForClass), so it drives spell learning
+    // and the ItmPthId gear restriction — a name that matches no Paths row leaves the character path-less and
+    // unable to wear any path-restricted gear. Re-pushes the profile so an open window updates immediately.
     private void SetClass(string text)
     {
         string name = text.Length > "!class".Length ? text["!class".Length..].Trim() : "";
         if (name.Length == 0) { SendLog($"class is '{_char.ClassName}' (usage: !class <name>)"); return; }
         _char.ClassName = name;
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         SendSelfProfile();
         SendMessage($"class set to {name}");
         Log.Info($"   -> CLASS set to '{name}'");

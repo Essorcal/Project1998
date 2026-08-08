@@ -15,7 +15,7 @@ public static class ItemScript
 
     static ItemScript() => UserData.RegisterType<ItemContext>();
 
-    public static void Load(string? path) => _host.Load(path);
+    public static bool Load(string? path) => _host.Load(path);
 
     public static bool HasVerb(string verb) => _host.HasVerb(verb);
 

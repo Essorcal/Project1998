@@ -29,16 +29,20 @@ public sealed partial class Session
 
     /// <summary>Put <paramref name="amount"/> of <paramref name="def"/> into the bag (stacking if the item
     /// stacks and a stack already exists), draw the slot (0x0F), and return false if the pack is full.</summary>
-    private bool GiveItem(ItemDef def, int amount = 1, ushort dura = 0, string customName = "")
+    private bool GiveItem(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false)
     {
-        if (dura == 0 && def.IsEquip) dura = def.Durability;
+        // Seed durability from the item DB: worn gear starts at full durability, and a charged consumable
+        // (wine/liquor/cigarettes) starts with its full charge count -- see ItemDef.IsCharged / HandleUseItem.
+        if (dura == 0 && (def.IsEquip || def.IsCharged)) dura = def.Durability;
         if (def.Stackable)
         {
             var stack = _char.Inventory.FirstOrDefault(i => i.ItemId == def.Id && i.CustomName == customName);
             if (stack is not null) { stack.Amount += amount; SendAddItem(stack); MarkDirty(); return true; }
         }
         int slot = FreeSlot();
-        if (slot < 0) { SendLog("Your pack is full."); return false; }
+        // Pack full. Generic callers (drops, quest rewards) get the plain notice; a shop-buy passes quiet:true
+        // so the NPC itself speaks the overflow line ("[npc]: You can't carry anymore.").
+        if (slot < 0) { if (!quiet) SendLog("Your pack is full."); return false; }
         var it = new InvItem((byte)slot, def.Id, amount, dura) { CustomName = customName };
         _char.Inventory.Add(it);
         SendAddItem(it);
@@ -93,7 +97,7 @@ public sealed partial class Session
         {
             if (!_dirty) return;
             _dirty = false;
-            if (_store.Save(_char)) _lastSaveAtMs = Environment.TickCount64;
+            if (StoreSave()) _lastSaveAtMs = Environment.TickCount64;
             else _dirty = true;
         }
     }
@@ -159,8 +163,41 @@ public sealed partial class Session
         uint tnlNext = Content.ExpToNext(path, _char.Level);
         _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
         SendStats();
-        SendSelfProfile();   // AC/Dam/Hit/Tnl live there, not in SendStats' HUD packet — refresh on every level-up
+        // NO SendSelfProfile() here. AC/Dam/Hit/Tnl do live in the 0x39 profile rather than the 0x08 HUD
+        // packet, but the 4.95 client treats an unsolicited 0x39 as "OPEN the profile window" — pushing one to
+        // refresh Tnl popped the character sheet in the player's face on every single kill (reported live
+        // while casting Ion Charge; the log shows 0x39 going out with no 0x2D having come in). 0x39 is now
+        // strictly a RESPONSE to the client's own 0x2D request, which re-reads these values anyway.
         SaveChar();
+    }
+
+    /// <summary>Experience lost on death (RTK player.lua <c>deathExpLoss</c>). Below 99 the loss is a flat 20%
+    /// of the CURRENT LEVEL'S BAND — the exp between this level's threshold and the previous one — so it costs
+    /// the same fifth of a level whether you just dinged or are one kill from the next one, and it can push you
+    /// back below your own level threshold (RTK never de-levels you for it, and neither do we: the level stands,
+    /// the bar just refills). At 99 there is no band left, so it takes <paramref name="percent"/> of the total
+    /// banked exp instead — 50% out in the world, 10% inside an instance.</summary>
+    private void DeathExpLoss(double percent)
+    {
+        int path = CharClassId;
+        uint lost;
+        if (_char.Level < 99)
+        {
+            uint here = Content.ExpToNext(path, _char.Level);
+            uint prev = _char.Level > 1 ? Content.ExpToNext(path, _char.Level - 1) : 0;
+            if (here <= prev) return;                                  // no table entry for this level -> nothing to take
+            lost = (uint)Math.Ceiling((here - prev) * 0.20);
+        }
+        else lost = (uint)Math.Ceiling(_char.Exp * percent);
+
+        if (lost == 0) return;
+        _char.Exp = lost >= _char.Exp ? 0 : _char.Exp - lost;
+        uint tnlNext = Content.ExpToNext(path, _char.Level);
+        _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
+        SendMiniText($"You've lost {lost:N0} exp!");
+        SendStats();
+        MarkDirty();
+        Log.Info($"   -> death exp loss: -{lost} -> {_char.Exp} (tnl {_char.Tnl})");
     }
 
     /// <summary>Award coin (refresh the HUD + persist).</summary>
@@ -253,10 +290,12 @@ public sealed partial class Session
         uint tnlNext = Content.ExpToNext(path, _char.Level);
         _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
 
-        if (_enteredWorld) _store.Save(_char);
+        if (_enteredWorld) StoreSave();
         BroadcastFx(_char.Id, 2, 123);   // one level-up sparkle for the whole jump
         SendStats();
-        SendSelfProfile();               // AC/Tnl live in the 0x39 profile, not the HUD packet
+        // Same reason as AwardExp above: an unsolicited 0x39 OPENS the profile window on 4.95, so don't push
+        // one here either. This is the GM "!lvl" path, where the player is standing right there and can open
+        // the sheet themselves.
         SendMessage($"Now level {_char.Level} ({Content.PathName(path)}) — HP {_char.MaxHp}, MP {_char.MaxMp}, " +
                     $"might {_char.Might}, will {_char.Will}, grace {_char.Grace}, AC {_char.Ac}.");
         Log.Info($"   -> !lvl {target}: reset+leveled ({Content.PathName(path)}) HP{_char.MaxHp} MP{_char.MaxMp} " +
@@ -282,7 +321,7 @@ public sealed partial class Session
             if (remaining <= 0) break;
             int take = Math.Min(remaining, it.Amount);
             it.Amount -= take; remaining -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }   // reason 0 = Remove (not a drop — this client-side text is otherwise "You dropped your X")
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }   // reason 0 -> "<item> removed." (see the §11c table; NOT silent)
             else SendAddItem(it);
         }
         SaveChar();
@@ -336,8 +375,9 @@ public sealed partial class Session
     internal int  CharLevel => _char.Level;
     /// <summary>A single "power" number quests gate on (RTK's baseMagic*2 + baseHealth analog).</summary>
     internal int  CharStat  => (int)(_char.MaxMp * 2 + _char.MaxHp);
-    /// <summary>Subpath mark count (0 — subpath marks aren't modelled yet; keeps min/maxMark gates working).</summary>
-    internal int  CharMark  => 0;
+    /// <summary>Subpath mark/rank (RTK <c>status.mark</c>) — see <see cref="Character.Mark"/>. 0 until a GM
+    /// sets it, since no subpath-promotion NPC is ported yet.</summary>
+    internal int  CharMark  => _char.Mark;
     internal int  QuestRandom(int maxInclusive) => Random.Shared.Next(1, Math.Max(1, maxInclusive) + 1);
     internal long NowUnix   => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     internal int  CharSex    => _char.Sex;
@@ -435,8 +475,12 @@ public sealed partial class Session
     // only a confirmed pick calls SaveChar. Sex change reuses the same pattern, then also re-broadcasts to
     // peers (Snapshot()/ShowPlayer already read _char.Sex/_char.Face live, so no separate wire format needed
     // the way the morph workaround required).
-    internal void PreviewFace(int face) { _char.Face = (ushort)face; SendSelfLook(); }
-    internal void CommitFace(int face) { _char.Face = (ushort)face; SendSelfLook(); SaveChar(); }
+    // Browsing doesn't come through here at all — a candidate face is previewed by drawing the player's own
+    // paperdoll in the dialog portrait (Session.DlgMenuFace), which mutates nothing. Only the paid-for pick
+    // lands, and it goes out via RefreshAppearance so peers see the new head immediately; before, a bought
+    // face only reached other players when something else happened to redraw us (equip, map change, walking
+    // out of view and back).
+    internal void CommitFace(int face) { _char.Face = (ushort)face; RefreshAppearance(); SaveChar(); }
 
     // War-paint dye (RTK arena_master.lua / general_npc_funcs.warPaint). ArmorColor is the 0x33 appearance[4]
     // palette byte; HasVisibleArmor mirrors RTK's "you need armor or a coat equipped to see your war paint"
@@ -499,7 +543,8 @@ public sealed partial class Session
         int p = CharClassId;
         if (p < 0) return new();
         return Content.SpellsForClass(p, _char.Level, _char.Alignment)
-                      .Where(s => !_char.Spells.Contains(s.Id)).ToList();
+                      .Where(s => !_char.Spells.Contains(s.Id))
+                      .Where(s => Content.CanRelearnAtNpc(s, p)).ToList();
     }
 
     /// <summary>Spells this class will unlock at a HIGHER level (RTK "Divine Secret" preview) — not yet
@@ -510,6 +555,7 @@ public sealed partial class Session
         if (p < 0) return new();
         return Content.SpellsForClass(p, 999, _char.Alignment)
                       .Where(s => s.Level > _char.Level && !_char.Spells.Contains(s.Id))
+                      .Where(s => Content.CanRelearnAtNpc(s, p))
                       .OrderBy(s => s.Level).Take(12).ToList();
     }
 

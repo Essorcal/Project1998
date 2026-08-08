@@ -80,6 +80,15 @@ public sealed class SpellContext
         _s.LuaMagicDamage((int)System.Math.Round(amt), (int)manaCost, _sp, _targetId);
     /// <summary>Heal the caster's own HP (capped at max), with the spell's sparkle fx.</summary>
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
+    /// <summary>Heal whoever this cast is AIMED at — another player, a mob (your pet), or yourself — with the
+    /// spell's fx drawn over them. Type-5 self-skills always heal the caster; only Type-2 "Which target? &gt;"
+    /// spells redirect. Falls back to the caster when nothing is targeted.</summary>
+    public void healTarget(double amt)  => _s.LuaHealTarget((int)System.Math.Round(amt), _sp, _targetId);
+    /// <summary>Current HP of the targeted mob (0 if it isn't a living mob) — Drain's "is it weak enough" test
+    /// and the amount of life it yields.</summary>
+    public double targetHp              => _s.LuaTargetMobHp(_targetId);
+    /// <summary>Play this spell's own anim/sound over the TARGET instead of the caster.</summary>
+    public void fxTarget()              => _s.LuaFxTarget(_sp, _targetId);
     /// <summary>Restore the caster's own mana (capped at max).</summary>
     public void restoreMana(double amt) => _s.LuaRestoreMana((int)System.Math.Round(amt));
     /// <summary>Apply a timed stat buff (e.g. "might"/"dam"/"hit") of <paramref name="amount"/> for
@@ -126,9 +135,23 @@ public sealed class SpellContext
 
     /// <summary>Apply a mob-only venom DoT (MaxHp×1% per 1.5s, per-tick clamped to <paramref name="tickCap"/>,
     /// for 1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>) ms). False if no mob target or it's
-    /// already venomed (a notice was sent) — the verb then spends no mana.</summary>
-    public bool applyVenom(double tickCap, double lowMs, double highMs) =>
-        _s.LuaApplyVenom((int)tickCap, (int)lowMs, (int)highMs, _sp, _targetId);
+    /// already venomed (a notice was sent) — the verb then spends no mana. <paramref name="flatTick"/> &gt; 0
+    /// substitutes a FIXED per-tick amount for the percentage (Burn's hardcoded 1000).</summary>
+    public bool applyVenom(double tickCap, double lowMs, double highMs, double flatTick = 0) =>
+        _s.LuaApplyVenom((int)tickCap, (int)lowMs, (int)highMs, _sp, _targetId, (int)flatTick);
+
+    /// <summary>Blind the faced/targeted creature for <paramref name="durMs"/> ms: a mob drops its target and
+    /// stops acquiring new ones (it just wanders); a PC only takes the 'blinds' exclusivity slot — 4.95 has no
+    /// client-side blind effect to drive. False (with the RTK notice) if there's no target or one is already blind.</summary>
+    public bool blindTarget(double durMs) => _s.LuaBlindTarget((int)durMs, _sp, _targetId);
+
+    /// <summary>Mind-control the faced/targeted mob for <paramref name="durMs"/> ms (RTK endear): it becomes
+    /// yours via the same ownership the pet system uses, then reverts to a normal world mob when the timer
+    /// lapses. False (with the RTK notice) for a boss, an already-owned mob, or no target.</summary>
+    public bool charmTarget(double durMs) => _s.LuaCharmTarget((int)durMs, _sp, _targetId);
+
+    /// <summary>Shout as the caster — an over-head chat bubble everyone on the map sees (RTK player:talk).</summary>
+    public void talk(string msg) => _s.LuaTalk(msg);
 
     // ---- primitives for the Buff / TargetBuff / Debuff / Cure archetype verbs -------------------------------
     /// <summary>Does the caster have at least <paramref name="amt"/> mana? Sends "You do not have enough mana."
@@ -204,6 +227,29 @@ public sealed class SpellContext
     /// <summary>Set the caster's mana (clamped to [0, maxMp]).</summary>
     public void setMana(double n) => _s.LuaSetMana((int)System.Math.Round(n));
 
+    /// <summary>Revive the CASTER where they stand; true if they were actually dead. Use this and not
+    /// <see cref="setHp"/> to bring someone back — ghost form is a redraw, not just a number.</summary>
+    public bool reviveSelf()      => _s.LuaReviveSelf();
+
+    /// <summary>Keyword-classifier verdict for a spell with no spell_effects row: "heal"/"damage"/"buff"/"other".</summary>
+    public string effectKind      => _s.LuaEffectKind(_sp);
+    /// <summary>Play a raw anim/sound over the resolved target mob (the generic fallback's zap).</summary>
+    public void fxRawTarget(double anim, double sound) => _s.LuaFxRawTarget((int)anim, (int)sound, _targetId);
+
+    /// <summary>The recorded Chung Ryong rage tier (0 = none). Check <see cref="rageActive"/> too: the tier
+    /// deliberately outlives the fury so the wear-out drain knows what to charge.</summary>
+    public double crRageTier      => _s.LuaCrRageTier;
+    /// <summary>Record a Chung Ryong rage tier and arm its multiplier, duration and (keyed) AC buff.</summary>
+    public void setCrRage(double tier, double mult, double ac, double durMs)
+        => _s.LuaSetCrRage((int)tier, (int)mult, (int)ac, (int)durMs, spellName);
+
+    /// <summary>Classify a 0-based pack slot for a repair spell: "empty" · "notgear" · "perfect" · "ok".</summary>
+    public string packSlotState(double slot) => _s.LuaPackSlotState((int)slot);
+    /// <summary>Display name of whatever is in a 0-based pack slot ("" if empty).</summary>
+    public string packSlotName(double slot)  => _s.LuaPackSlotName((int)slot);
+    /// <summary>Restore a 0-based pack slot to full durability (no-op unless packSlotState is "ok").</summary>
+    public void repairPackSlot(double slot)  => _s.LuaRepairPackSlot((int)slot);
+
     /// <summary>Resolve the targeted PLAYER (explicit id incl. self, else the faced peer) for this cast; all the
     /// target.* members below then act on it. False (with "&lt;name&gt; finds no target.") if none.</summary>
     public bool   pcTarget()      => _s.LuaResolvePcTarget(_sp, _targetId);
@@ -232,4 +278,87 @@ public sealed class SpellContext
     /// <summary>Leap up to <paramref name="maxDist"/> tiles in the faced direction (collision-stopped); returns
     /// the number of tiles actually moved (0 = blocked, nothing happened).</summary>
     public double leap(double maxDist) => _s.LuaLeap((int)maxDist);
+
+    // ---- Tier-4 world-effecting primitives (gateway/return/divine/spot_traps/filch/trap/bladestorm/pet/morph/propose) ----
+    /// <summary>Is the caster a ghost/dead? (Gateway/Return can't be cast while dead.)</summary>
+    public bool   isDead        => _s.IsDead;
+    /// <summary>Does the caster's current map allow warping out? (RTK warpOut flag — false on arenas/instances.)</summary>
+    public bool   canWarpOut    => _s.LuaWarpOut;
+    /// <summary>The spell's real per-spell mana cost from its export row (or 5 if the export had none).</summary>
+    public double spellMana     => _s.LuaSpellMana(_sp);
+    /// <summary>The spell's cooldown (RTK aether) in ms from its export row (0 if none).</summary>
+    public double spellAether    => _s.LuaSpellAether(_sp);
+    /// <summary>The resolved target player's level (after <see cref="pcTarget"/>). For Divination's level gate.</summary>
+    public double targetLevel   => _s.LuaTargetLevel;
+    /// <summary>Is this the spy (inventory-listing, equal-level-allowed) Divination variant, not judge?</summary>
+    public bool   spyMode       => _s.LuaIsSpy(_sp);
+    /// <summary>Live pet count this caster owns on the current map, and the level-scaled cap.</summary>
+    public double petCount      => _s.LuaPetCount;
+    public double petCap        => _s.LuaPetCap;
+    /// <summary>This pet spell's mana cost / cooldown ms (0 if none) — data-bound per pet spell.</summary>
+    public double petMana       => _s.LuaPetMana(_sp);
+    public double petCooldown   => _s.LuaPetCooldownMs(_sp);
+    /// <summary>Is a morph already active at the look this cast would apply? (Re-cast of the same form is a no-op.)</summary>
+    public bool   morphActive() => _s.LuaMorphActive();
+    /// <summary>The staged morph's resolved mana cost.</summary>
+    public double morphMana     => _s.LuaMorphMana;
+
+    /// <summary>Gateway: warp to the answered gate of the caster's kingdom. Self-narrates arrival; false (with a
+    /// notice) if the region has no gates or the answer isn't a direction.</summary>
+    public bool gateway()       => _s.LuaGateway(answer);
+    /// <summary>Return: warp home to a random tavern in the caster's nation.</summary>
+    public void returnHome()    => _s.LuaReturnHome();
+    /// <summary>Divination: build + send the inspect popup for the resolved target to the caster (spy variant
+    /// appends inventory). Self-narrates.</summary>
+    public void divine(bool showInventory) => _s.LuaDivine(_sp, showInventory);
+    /// <summary>Reveal every hidden trap within 15 tiles as a caster-only marker; returns how many were found.</summary>
+    public double revealTraps() => _s.LuaRevealTraps();
+    /// <summary>Grab the item on the faced tile (coins -> purse, else -> pack; put back if the pack is full).</summary>
+    public void filch()         => _s.LuaFilch();
+    /// <summary>Place a hidden trap on the caster's own tile — resolves kind/level/mana from the spell (or the
+    /// typed answer for the set_trap dispatcher) and owns its own mana debit. False (with a notice) on a bad
+    /// answer or too-low level / not enough mana.</summary>
+    public bool placeTrap()     => _s.LuaPlaceTrap(_sp, answer);
+    /// <summary>Place a bladestorm decoy on the caster's tile, auto-expiring in <paramref name="lifetimeMs"/> ms.</summary>
+    public void placeBladestorm(double lifetimeMs) => _s.LuaPlaceBladestorm((int)lifetimeMs);
+    /// <summary>Summon this spell's pet as a real owned world mob (one tile ahead, else on the caster's tile).
+    /// False if the pet/mob couldn't be resolved.</summary>
+    public bool summonPet()     => _s.LuaSummonPet(_sp);
+    /// <summary>Apply the staged morph plan (look/duration) to the caster + rebroadcast to self and peers.</summary>
+    public void applyMorph()    => _s.LuaApplyMorph(_sp);
+    /// <summary>Kick off the async marriage-proposal dialog (RTK RunProposeAsync). Returns immediately.</summary>
+    public void propose()       => _s.LuaPropose(_sp);
+    /// <summary>Does the caster carry a legend mark (e.g. "engaged"/"married")?</summary>
+    public bool hasLegend(string mark) => _s.LuaHasLegend(mark);
+    /// <summary>Forget this spell from the caster's spellbook (RTK cleanup of a spell you shouldn't still have).</summary>
+    public void forgetSpell()   => _s.LuaForgetSpell(_sp);
+    /// <summary>Mark this cast as self-narrated so the central "You cast X." line is suppressed.</summary>
+    public void narrated()      => _s.LuaMarkNarrated();
+
+    // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
+    /// <summary>Which self-sacrifice strike family this spell is ("LethalStrike"/"DesperateAttack"/"Berserk"/
+    /// "Whirlwind"), driving its per-family damage/mana/cooldown/HP-cost formulas.</summary>
+    public string sacrificeFamily => _s.LuaSacrificeFamily(_sp);
+    /// <summary>The caster's alignment stat (Whirlwind's damage factor + HP cost + cooldown branch on it).</summary>
+    public double alignment       => _s.LuaAlignment;
+    /// <summary>Is Baekho's Rage specifically active (rage tier 5, not a lesser Fury)? Adds x1.5 to Berserk/Whirlwind.</summary>
+    public bool   baekhoRage      => _s.LuaBaekhoRage;
+    /// <summary>Resolve + stash the mob on the faced tile for a sacrifice strike (alive). False if none — the
+    /// strike lands nothing (no HP cost), though the mana/cooldown were already spent.</summary>
+    public bool   sacFrontMob()   => _s.LuaSacFrontMob();
+    /// <summary>Apply <paramref name="damage"/> (armor-netted) to the stashed sacrifice target; plays the family
+    /// fx, awards kill XP. Returns the overkill (net damage minus the mob's pre-hit HP; may be negative).</summary>
+    public double sacApply(double damage) => _s.LuaSacApply(_sp, (int)System.Math.Round(damage));
+    /// <summary>Rogue overkill refund: up to half the overkill returns as HP and MP, each capped at half the
+    /// caster's pre-cast HP/MP.</summary>
+    public void   backflow(double overkill, double preHp, double preMp) => _s.LuaBackflow((int)overkill, (int)preHp, (int)preMp);
+    /// <summary>Warrior overkill splash: the overkill cleaves onto adjacent-tile mobs, recursively re-splashing.</summary>
+    public void   overflow(double overkill) => _s.LuaOverflow(_sp, (int)overkill);
+    /// <summary>Resolve + stash the mob on the faced tile for an ambush. False if none ("finds no target").</summary>
+    public bool   ambushMob()     => _s.LuaAmbushMob();
+    /// <summary>Teleport to the far side of the stashed mob (its back, else a flank), facing it. False if the
+    /// back and both flanks are all occupied ("finds no opening").</summary>
+    public bool   ambushLeap()    => _s.LuaAmbushLeap();
+    /// <summary>Swing on the stashed ambush target (gets the free positional backstab if landed on its blind side).</summary>
+    public void   ambushStrike()  => _s.LuaAmbushStrike(_sp);
 }

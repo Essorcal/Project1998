@@ -106,15 +106,58 @@ Add a row, pick/author a verb, `!reload`.
 
 - Monster stats/looks: `mobs.csv`. Spawns: `Spawns.csv` (fixed points) / `AreaSpawns.csv` (per-map/box counts)
   / `AreaSpawnsTrap.csv` (rare trap-ambush bosses).
+- **Prey creatures**: `MobFlees.csv` (`Identifier,Flees`). A listed mob never attacks and never holds a target;
+  it backs away from any player within 2 tiles at **double** its normal move rate, and for 4 s after being
+  *swung at* (hit **or** miss, or damaged by anything) it keeps running and notices you from 4 tiles.
+  **Ceiling:** the world steps a mob at most once per 600 ms tick, so a creature whose `MobMoveTime` is already
+  ≤1200 ms — the blue rooster is 500 — is *already* at max speed and its flee shows as direction, not pace.
+  Everything else about it — HP, drops, exp — is unchanged, so it's
+  still killable, just harder to corner. Nothing in RTK marks these creatures (its engine only has
+  `MobBehavior` 0/1/2+, and `mob_ai_basic.lua` gives a rabbit a wolf's chase-and-swing routine), so **which**
+  mobs flee is ours to pick; the movement itself is ported from the one `RunAway()` in the RTK tree
+  (`Mobs/mob.lua`, used by `Instances/mysterious_merchant.lua`). Ships with `rabbit` and `blue_rooster`; add a
+  row + `!reload` for any other critter. Kept out of `mobs.csv` so re-running the mob extractor can't drop it.
 - Shops: `ShopStock.csv` (flat stock) or `ShopCatalogues.csv` (sub-category menus).
 - Drops: `MobDrops.csv`.
 - Maps/warps: `map_index.csv`, `Maps.csv`, `Warps.csv`; location/warp geometry in `Inns.csv`,
-  `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `FallRooms.csv`, `Doors.csv`
-  (lock/key), `DoorObjects.csv` (the 'o'-key open/close graphic swap: `map` rows are exact faced-object swaps,
-  `delta` rows are `[lo,hi]` ranges whose open/closed ids differ by a fixed delta).
+  `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `FallRooms.csv`,
+  `ArenaDoors.csv`, `Doors.csv` (lock/key), `DoorObjects.csv` (the 'o'-key open/close graphic swap: `map` rows
+  are exact faced-object swaps, `delta` rows are `[lo,hi]` ranges whose open/closed ids differ by a fixed delta).
+  `defaultOpen=1` on a `map` row means that faced id is a **closed** door that should start **open** — the swap
+  is applied per cell as the `.map` is read, so a multi-tile door needs the flag on every piece of the run
+  (the city gates, `5-8` closed ↔ `15-18` open, are the ones that need it). A door is only a wall if its
+  object id is flagged solid in `SObj.tbl` — check there before assuming which id is the open one.
+- **Level-banded PvP arena doors**: `ArenaDoors.csv`
+  (`Map,Tiles,DestMap,DestX,DestY,MinLevel,MaxLevel,MaxVita,MaxMana,Unmarked,Label`). These are *scripted
+  tiles*, not warps — in RTK they live in `onScriptedTilesArena.lua`, and only each arena's way **back** is in
+  `Warps.csv`, so a door with no row here is simply dead. `Tiles` is a `;`-list of `x:y` (a door is normally
+  the 2 tiles its sprite covers); `DestX` may be a `lo-hi` band that the landing column is rolled from.
+  `MaxLevel`/`MaxVita`/`MaxMana` of `0` mean *no cap*, and the vital caps are **OR**'d (over either one keeps
+  you out) — unlike the engine-level `Maps.csv` requirement columns, which AND them. Under-levelled gets
+  *"Nightmarish visions of your own death repel you."*; over-qualified gets *"Your honor forbids you from
+  entering."* Don't add the PvP entry warning here — every arena map is `MapPvP=1`, so `EnterMap` sends it.
 - Progression: `LevelExp.csv` (exp curve), `PathGrowth.csv` (per-class HP/MP gain per level).
+- Background music: `MusicTracks.csv` (`Track,Name,Type` — the id↔song-name table the `!music <name>` command
+  reads; the stock client has 12 midis and 11 of them are named) and `MapBgm.csv` (`Zone,Track,Maps,Names` —
+  `Maps` a `;`-list of ids and `lo-hi` ranges, `Names` a `;`-list of map-name globs like `Buya *`).
+  Resolution order for a map is **explicit id/range → name glob → warp-graph spill → nothing**:
+  - a **zone** is a row that casts a wide net — `Buya,tiger,330,Buya *`;
+  - a **single-map override** is just a row with one id and no globs — `Kugnae Donjon,sorrow,24,` — and
+    because ids beat globs it wins over any zone that would otherwise claim that map by name, wherever it
+    sits in the file. `Track,0` on such a row means *silence here*;
+  - every **unlisted** map then inherits its *nearest* listed map's track through `Warps.csv` (multi-source
+    BFS at load). So Buya's shops, taverns and caves play Tiger without being listed, and the boundary with
+    Kugnae falls wherever the two areas actually meet. `!music` reports the hop count (`Buya +2`).
+  - a map with no warp path to any zone at all (arenas, gateways, scripted-tile dungeons — ~850 of 1750, all
+    of them warp-less in `Warps.csv`) keeps whatever is already playing, and falls to the `Default` row only
+    if you *log in* there with nothing playing yet.
+
+  Because assignment is by position rather than by history, the music is the same whichever way you arrive —
+  walking in, warping in, or logging in.
 - Server scalars: `ServerTuning.csv` (`key,value`) — `MailMinLevel`, `SpeechRange` (NPC hearing radius),
-  `BankMax` (coin cap). A missing key falls back to its historical default, so the file is optional.
+  `BankMax` (coin cap), `SplitTrapSpells` (0/1, default 0 — the 8 individual `set_X_trap` rogue spells are a
+  2003-07-01 addition, out of era for 4.95, so only the `Set Trap` typed prompt is learnable/castable; set 1
+  to restore them). A missing key falls back to its historical default, so the file is optional.
 
 ## Provenance & confidence
 

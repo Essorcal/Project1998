@@ -34,27 +34,44 @@ public sealed class LuaVerbHost
 
     public LuaVerbHost(string name) => _name = name;
 
-    /// <summary>(Re)load the verb script. A missing/broken file just disables this host — every caller then falls
-    /// through to its C# path, so this can never take a system offline.</summary>
-    public void Load(string? path)
+    /// <summary>(Re)load the verb script — ATOMICALLY. The new script is parsed into locals and only swapped in
+    /// once it has compiled AND produced a `verbs` table; a broken file leaves the previously-loaded verbs
+    /// running untouched and logs. Returns true if this host is live afterwards.
+    /// <para><b>Why atomic matters:</b> this used to null the host first and parse second, so ONE typo in a
+    /// hot-fixed .lua silently disabled EVERY verb in that file until the next good reload — the caster would
+    /// keep casting, but through the C# fallback, whose behaviour has drifted (filch barks over-head from Lua
+    /// and into the status box from C#). A hot-fix loop is exactly where typos happen, so the failure mode has
+    /// to be "your edit didn't take" — visible in the log, nothing else changes — rather than "the whole file
+    /// reverted to a different implementation".</para>
+    /// <para>The row cache is keyed to the live <see cref="Script"/>, so it is dropped only when the script is
+    /// actually replaced; a failed reload must keep it, since the old Tables still belong to the old Script.</para></summary>
+    public bool Load(string? path)
     {
         lock (_lock)
         {
-            _script = null;
-            _verbs = null;
-            _rowCache.Clear();   // cached Tables belong to the old Script — drop them on reload
-            if (path is null || !File.Exists(path)) return;
+            if (path is null || !File.Exists(path))
+            {
+                Log.Info($"!! {_name}: no verb file at '{path ?? "(null)"}' — keeping {(_verbs is null ? "the Lua path disabled" : "the previously-loaded verbs")}");
+                return _verbs is not null;
+            }
             try
             {
                 var s = new Script(CoreModules.Preset_HardSandbox);
                 s.DoString(File.ReadAllText(path), null, _name);
                 var v = s.Globals.Get("verbs");
-                if (v.Type == DataType.Table) { _script = s; _verbs = v.Table; }
-                else Log.Info($"!! {_name} defines no global `verbs` table — Lua path disabled");
+                if (v.Type != DataType.Table)
+                {
+                    Log.Info($"!! {_name} defines no global `verbs` table — reload REJECTED, keeping the previous verbs");
+                    return _verbs is not null;
+                }
+                _script = s; _verbs = v.Table;
+                _rowCache.Clear();   // cached Tables belong to the OLD Script — only safe to drop once it's replaced
+                return true;
             }
             catch (Exception e)
             {
-                Log.Info($"!! {_name} load failed: {e.Message} — Lua path disabled");
+                Log.Info($"!! {_name} load failed: {e.Message} — reload REJECTED, keeping the previous verbs");
+                return _verbs is not null;
             }
         }
     }

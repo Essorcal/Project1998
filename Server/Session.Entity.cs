@@ -152,6 +152,9 @@ public sealed partial class Session
         if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
 
         ExpireBuffs();   // send each faded buff's live "fade" line + drop it (runs even when dead/topped-off)
+        // Chung Ryong's Rage draining vita when it wears out (its price) — checked here so it fires whether the
+        // fury lapses in or out of combat, resting or not. EffRage/the AC buff already stop themselves on time.
+        if (_crRageTier > 0 && Environment.TickCount64 >= _rageUntil) ChungRyongRageWearOff();
 
         if (_char.Hp == 0) return;   // dead: no natural regen (RTK bails on health==0 / state==1)
 
@@ -283,6 +286,16 @@ public sealed partial class Session
     /// </summary>
     private void SendSelfLook()
     {
+        // While morphed, the self view must use the SAME 0x07 self-id creature path ShowPlayer(this) uses,
+        // NOT the human 0x33 look below — otherwise every appearance refresh that funnels through here (map
+        // change EnterMap, casting Invisible via RefreshAppearance, equip/mount changes) would redraw us as a
+        // human and silently wipe the disguise on our OWN client. Peers already stay correct (they redraw us
+        // via ShowPlayer, which is morph-aware); this keeps self in sync. Removal stays dispel/duration-only.
+        if (_morphLook != 0)
+        {
+            SendCreatureList(new[] { (_char.Id, (ushort)(0x8000 | _morphLook), _char.X, _char.Y, _morphColor, _facing) });
+            return;
+        }
         // 4.95 type-0 appearance layout (decoded via the look-lab sweeps):
         //   [0]=body/sex(0=M,1=F)  [1]=form/state(0=normal; 1 ghost, 3 mount, 5 invisible-spell)
         //   [2]=face  [3]=armor/coat  [4]=armor dye/palette index (0..8 all render as base color; 16/32/64/
@@ -290,9 +303,33 @@ public sealed partial class Session
         //   0 for now)  [5]=weapon  [6]=shield
         // NOTE the old code put "Hair" in [1] = the FORM byte — that's what blanked the character.
         //   ... [5]=weapon (Honor sword/Flame blade/…), [6]=shield
-        var app = new byte[] { (byte)_char.Sex, MountForm(), (byte)_char.Face, (byte)_char.Armor, _char.ArmorColor, WeaponLook(), ShieldLook() };
-        SendLook(_char.Id, _char.X, _char.Y, dir: _facing, app, renderKind: 1, _char.Name, "self(0x33)");
+        SendLook(_char.Id, _char.X, _char.Y, dir: _facing, SelfAppearance(), renderKind: 1, _char.Name, "self(0x33)");
     }
+
+    /// <summary>Our 7 appearance bytes. Shared by the 0x33 self look and the 0x30 dialog paperdoll head (the
+    /// client parses both with the same function, 0x436120 — see Session.Dialog.WriteHead), so a portrait can
+    /// never drift from what's actually drawn on the map.
+    /// <para><paramref name="face"/> overrides the worn head WITHOUT touching character state — that's what
+    /// makes the Change Face browse a real try-on rather than a live mutation. An overridden portrait also
+    /// forces the plain-human form byte: a preview should show a person, not the horse you happen to be
+    /// sitting on (or, for a ghost at a shaman, nothing at all).</para></summary>
+    private byte[] SelfAppearance(int face = -1) => new byte[]
+    {
+        (byte)_char.Sex,
+        face < 0 ? MountForm() : (byte)0,
+        face < 0 ? FaceLook() : (byte)Math.Clamp(face, 0, FaceCount - 1),
+        (byte)_char.Armor, _char.ArmorColor, WeaponLook(), ShieldLook(),
+    };
+
+    /// <summary>Head/face sprite byte for appearance[2], forced into the range the client actually has art
+    /// for. The 4.95 client ships exactly <see cref="FaceCount"/> heads (NexusTK.dat -> Head.tbl: "NumFaces
+    /// 90", ids 0..89) and silently draws NOTHING for anything above that — a headless character, no error.
+    /// The clamp exists because a face id is persisted player data that can outlive the bug that wrote it:
+    /// the shaman's Change Face used to hand out RTK's 200..216 (a later client's id space), so saved
+    /// characters can still carry an unrenderable value. Clamping here un-breaks them on sight instead of
+    /// making them pay 3,000 gold to a shaman to get a head back.</summary>
+    internal const int FaceCount = 90;
+    private byte FaceLook() => (byte)Math.Clamp((int)_char.Face, 0, FaceCount - 1);
 
     // Weapon/shield look bytes for the 0x33 appearance. CRITICAL: look 0 is a REAL weapon/shield sprite,
     // so an EMPTY slot must send 0xFF ("-1", proven live and matching RTK clif.c, which sends 0xFFFF for
@@ -338,19 +375,19 @@ public sealed partial class Session
     // RTK's own ItmSound field. That field turned out to be nearly useless for this: 331 ("most swords") is
     // shared not just by Maxcaliber/Wooden Saber/Novice Sword but by EVERY staff too (augury_staff,
     // staff_of_defense, wand_of_fire, the whole ju_jak/hsiao_chu/staff_of_chi families, …) — checked directly
-    // against Items.csv. Remapping by that field (331 -> 002.wav) therefore made every weapon of every
-    // category share one swing sound, which is exactly the "everything sounds like Maxcaliber" bug reported
-    // live 2026-07-27. 0 if unarmed or the weapon has no sound.
+    // against Items.csv. So the CATEGORY split stays: what the field is good for is the blade number itself,
+    // and 331 is what it gives every blade — Novice Sword, Wooden Saber, Maxcaliber and Spike alike (all four
+    // are ItmSound 331), which matches the live 2026-08-04 calibration. 0 if unarmed or the weapon has no sound.
     private int EquippedWeaponSound()
     {
         var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == 3);
         var def = e is null ? null : Content.ItemById(e.ItemId);
         if (def is null) return 0;
-        return IsStaffWeapon(def.Key) ? 335 : 2;   // both confirmed live 2026-07-27
+        return IsStaffWeapon(def.Key) ? 335 : 331;
     }
 
     // Staff/wand/rod-category weapons swing differently (335.wav, confirmed live via a staff) than blades
-    // (002.wav, confirmed live via Maxcaliber/Spike). Every Items.csv row actually named "staff" or "wand"
+    // (331.wav, live 2026-08-04 via Novice Sword / Wooden Saber). Every Items.csv row actually named "staff" or "wand"
     // (augury_staff, staff_of_power, wand_of_fire, the ju_jak/hsiao_chu/staff_of_chi upgrade chains, …) is a
     // genuine caster weapon, so a plain identifier match is reliable here — unlike ItmSound (see
     // EquippedWeaponSound's doc), Items.csv actually differentiates these by name consistently.
@@ -476,7 +513,9 @@ public sealed partial class Session
     //     hit-effect is queued for 0x78 ticks via 0x4622d0->0x41b5d0). RTK uses 33 (normal) / 255 (crit).
     //   * percent  -> the over-head HP bar fill, 0..100 (the client skips the bar if percent > 100; 0 = empty).
     //   * hitSound -> played through the sound manager if nonzero (RTK's u32 damage tail lands here as its high
-    //     byte = 0, so no hit sound normally; the 4.95 client ignores everything past body[7]).
+    //     byte = 0, so no hit sound normally; the 4.95 client ignores everything past body[7]). We leave this
+    //     at 0 and send impact sfx over 0x19 instead (Session.PlayHitSfx) — it's a BYTE, and the calibrated
+    //     player hit sound (349.wav) doesn't fit in one. The parameter stays because the field is real.
     // This is what draws the "remaining HP bar above a monster's head" on every hit. RTK's clif_send_mob_health
     // builds the same shape (plus the ignored u32 damage). critical is calibratable live via NEXUS_HIT_CRIT.
     private static readonly byte HitCritByte =
@@ -569,6 +608,7 @@ public sealed partial class Session
         byte critByte = critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
         byte hpPct = PlayerHpPercent();   // same for every peer — compute once, not inside the per-peer lambda
         _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, critByte));
+        _world.Broadcast(_char.Map, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played
         Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
     }
@@ -587,7 +627,13 @@ public sealed partial class Session
         SendStats();
         byte hpPct = PlayerHpPercent();
         _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
-        if (!ReferenceEquals(attacker, this)) SendMiniText($"{attacker._char.Name} hits you with {spellName}.");
+        if (!ReferenceEquals(attacker, this))
+        {
+            SendMiniText($"{attacker._char.Name} hits you with {spellName}.");
+            // Both sides remember the exchange — that's what a PvP-map pet reads to pick a person to go for.
+            MarkPvpFoe(attacker._char.Id);
+            attacker.MarkPvpFoe(_char.Id);
+        }
         Log.Info($"   -> {(ReferenceEquals(attacker, this) ? "self" : attacker._char.Name)} '{spellName}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
     }
@@ -600,9 +646,43 @@ public sealed partial class Session
     private void Die()
     {
         Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
-        SendMiniText("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
         _char.Mounted = false;                                            // a horse doesn't carry a ghost
         RefreshAppearance();                                              // redraw self as a ghost + everyone watching
+        ApplyDeathPenalties();                                            // exp/coin/gear/pile — see below
+        SendMiniText("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
+        SaveChar();                                                       // the penalties above must survive a crash, not just a clean logout
+    }
+
+    // The RTK death penalty, ported from Spells/baseFunc/death_save.lua's `uncast` (the hook that actually runs
+    // when a player's HP hits 0 — pc_diescript in the C engine only clears timers and threat, so reading mob.c/
+    // pc.c alone gives the false impression that dying in RTK is free). Order and gating are the Lua's:
+    //
+    //   GM                     -> nothing (RTK revives them outright instead of laying them out)
+    //   PvP kill               -> nothing ("no loss of dura and shit for pvp")
+    //   safe city              -> nothing (dying in Kugnae/Buya/Nagnang/the Mythic Nexus is free)
+    //   instance (59000-65000) -> 10% exp only
+    //   anywhere else          -> coin spill, 20%-of-a-level exp, gear damage + break-on-death, death pile
+    //
+    // RTK's exact map list is by TITLE, not id, so it is reproduced here as names — "KaMing's Encampment" is
+    // later content with no row in our Maps.csv and simply never matches.
+    private static readonly HashSet<string> SafeDeathMaps = new(StringComparer.OrdinalIgnoreCase)
+    { "Kugnae", "Buya", "Nagnang", "Mythic Nexus", "KaMing's Encampment" };
+
+    private void ApplyDeathPenalties()
+    {
+        if (IsGm) return;
+        // A PvP map is where players kill each other on purpose; RTK charges nothing for it (and the durability
+        // helpers bail on those maps of their own accord anyway).
+        if (Content.IsPvpMap(_char.Map)) return;
+        if (Content.Maps.TryGetValue(_char.Map, out var mi) && SafeDeathMaps.Contains(mi.Name)) return;
+
+        if (_char.Map is >= 59000 and <= 65000) { DeathExpLoss(0.10); return; }   // instance: exp only
+
+        DeathDropGold();
+        DeathExpLoss(0.50);      // the 0.50 only bites at level 99; below that it's 20% of the level band
+        DeathDuraLoss();         // 10% max-dura off every worn slot + break-on-death gear
+        DeathInventoryBod();     // break-on-death items in the BAG (a separate RTK pass)
+        DeathPileDrop();         // ~half the droppable bag spills onto the corpse tile
     }
 
     // Leave ghost state: full heal (gear/buffs included) + warp to (map,x,y). Used by Silver Thread to
@@ -616,6 +696,22 @@ public sealed partial class Session
         SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
         SendMiniText(arrivalMsg);
         Log.Info($"   -> REVIVED: {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
+    }
+
+    /// <summary>Leave ghost state WITHOUT moving — the Shaman/Priest NPC revival (RTK shaman.lua's `click` and
+    /// totem_npc.lua's `_resurrect`, which both do `state = 0; health = maxHealth; magic = maxMagic`). The
+    /// player walked their own ghost to the NPC, so there is nothing to warp to. Same restoration as
+    /// <see cref="ReviveAt"/> minus the map change; <see cref="RefreshAppearance"/> is what drops the ghost
+    /// form here (ReviveAt gets that implicitly from EnterMap).</summary>
+    internal void ReviveInPlace(string message)
+    {
+        _char.Hp = EffMaxHp;
+        _char.Mp = EffMaxMp;
+        RefreshAppearance();   // redraw self + everyone watching as living again (MountForm drops form 1)
+        SendStats();
+        SendMiniText(message);
+        MarkDirty();
+        Log.Info($"   -> REVIVED (in place): {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
     }
 
     // Home-city placement (HomeCityFor / PlaceNewCharacter) moved to Shared/CharacterFactory so the login

@@ -21,7 +21,7 @@ public sealed record MapInfo(ushort Id, string Name, ushort Xs, ushort Ys);
 /// <paramref name="Grace"/> (SQL <c>Grace</c>, already in the CSV but previously unparsed like the rest of
 /// this list) is read as the DEFENDER's grace in <see cref="Session.PlayerSwingDamage"/>'s crit-chance roll
 /// when a player attacks this mob.</summary>
-public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime, int Will = 0, bool Aggressive = false, int MinDam = 1, int MaxDam = 1, bool IsBoss = false, int Protection = 0, int Hit = 0, int Ac = 0, int Grace = 0);
+public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime, int Will = 0, bool Aggressive = false, int MinDam = 1, int MaxDam = 1, bool IsBoss = false, int Protection = 0, int Hit = 0, int Ac = 0, int Grace = 0, bool Flees = false);
 
 /// <summary>One independently-rolled line of a mob's RTK <c>loot</c> table (<c>MobDrops.lua</c>
 /// <c>_handleLoot</c>): a null <see cref="ItemKey"/> means gold rather than an item. The dropped amount is
@@ -100,7 +100,15 @@ public sealed record ItemDef(
     // is a boss mob. Protection (RTK ItmProtection) is the wearer's own magic-resist contribution,
     // folded into Session.RollDeflect the same way a mob's Protection is.
     int MinSDam = 0, int MaxSDam = 0, int MinLDam = 0, int MaxLDam = 0, int Protection = 0,
-    string Text = "")
+    string Text = "",
+    // Wear restrictions that were parsed nowhere until now (RTK pc_useitem's path/mark gate, clif_checkinvbod's
+    // break-on-death flag). PathId is ItmPthId: 0 = anyone; 1..5 = a BASE path (Warrior/Rogue/Mage/Poet/
+    // Dreamweaver) which every subpath under it satisfies; >=6 = one EXACT subpath class (Chung ryong, Barbarian,
+    // …). Mark is ItmMark, the subpath RANK (Il san = 1 … Oh san = 5) the wearer must have reached.
+    // BreakOnDeath is ItmBoD (77 items): destroyed outright when you die, wherever it sits. Protected is
+    // ItmProtected — RTK consumes a charge to RESTORE the item instead of breaking it; no row in the live
+    // registry sets it, so it is carried for fidelity and never fires today.
+    int PathId = 0, int Mark = 0, bool BreakOnDeath = false, bool Protected = false)
 {
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
@@ -428,13 +436,67 @@ public static partial class Content
     public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), MythicCaveDef> MythicCaveTiles { get; private set; }
         = new Dictionary<(ushort, ushort, ushort), MythicCaveDef>();
 
+    // ---- PvP arena doors (data/game-data/ArenaDoors.csv) -------------------------------------------------
+    // Tower Arena's five side doors are RTK Lua tile-scripts (onScriptedTilesArena.lua ->
+    // arenaPVPCheckAndWarp.lua), NOT rows in the SQL warp table — which is why every one of them was dead
+    // here: only the RETURN leg (each arena's 15:2/16:2 exit back into Tower Arena) is in Warps.csv, so the
+    // ring was one-way. Each door is a level-banded gateway into one PvP arena map:
+    //   west  0:5/0:6   -> Kugnae Adventure  6-35     east 21:5/21:6   -> Kugnae Legends  86-98
+    //   west  0:11/0:12 -> Kugnae Heroes    36-65     east 21:11/21:12 -> Kugnae Ancients 99, capped vitals
+    //   west  0:17/0:18 -> Kugnae Glory     66-85
+    // Consumed by Session.TryArenaDoor. Gate = level >= MinLevel (and unmarked, when Unmarked=1), rejected
+    // high when level > MaxLevel (0 = no cap) or — RTK uses OR here, unlike the engine's map-req check —
+    // baseMaxHP > MaxVita or baseMaxMP > MaxMana (0 = no cap). DestX may be a "lo-hi" range (RTK picks a
+    // random landing column so two entrants don't stack). Tiles is ';'-separated "x:y", same as MythicCaves.
+    //
+    // NOT ported: Tower Arena's NORTH row (y=2), which RTK gates on a live "carnage" minigame event id — we
+    // have no minigame scheduler, so in RTK-with-no-event those tiles only ever bounce you back anyway.
+    public sealed record ArenaDoorDef(ushort Map, (ushort X, ushort Y)[] Tiles, ushort DestMap,
+        ushort DestX, ushort DestX2, ushort DestY, int MinLevel, int MaxLevel,
+        uint MaxVita, uint MaxMana, bool Unmarked, string Label, string Sources);
+
+    public static IReadOnlyList<ArenaDoorDef> ArenaDoors { get; private set; } = new List<ArenaDoorDef>();
+
+    // Derived (map,x,y) -> door lookup, so the per-step check is one hash probe (same shape as MythicCaveTiles).
+    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), ArenaDoorDef> ArenaDoorTiles { get; private set; }
+        = new Dictionary<(ushort, ushort, ushort), ArenaDoorDef>();
+
+    // ---- Board-sign locations (data/game-data/BoardLocations.csv) -----------------------------------------
+    // RTK's onSign board-sign system (on_event.lua onSign / selectBulletinBoard): a board SPRITE tile that,
+    // when faced from the south (player looking north), opens ONE specific board (Server/Boards.cs) straight
+    // to its posts. Keyed by the board tile (map,x,y) + the target BoardId; consumed by Session via TryBoardAt
+    // with RTK's ±1 X tolerance. Distinct from the `b` mailbox/board-list — this jumps directly to a board.
+    public static IReadOnlyList<(ushort Map, ushort X, ushort Y, int BoardId)> BoardLocations { get; private set; }
+        = new List<(ushort, ushort, ushort, int)>();
+
     // ---- Location / warp geometry (Tier-1 extraction; data/game-data/*.csv) ------------------------------
     // RTK/RE geometry that used to be hard-coded in the game logic, moved to flat files so it hot-reloads via
     // !reload like every other registry. Consumers read these Content.* properties.
 
-    // Map -> BGM track override (BgmFor). A design assignment, not RTK data (the client files carry no
-    // map->track table); maps without a row get a stable id-derived pick. See MapBgm.csv.
-    public static IReadOnlyDictionary<ushort, byte> MapBgm { get; private set; } = new Dictionary<ushort, byte>();
+    // The stock client's background tracks, by id and by NAME (the midis in NexusTK.snd are numbered, but the
+    // songs have real names — see MusicTracks.csv, which is also what lets "!music mist" work). Type is the
+    // 0x19 channel: 2 = midi (everything the stock client ships), 1 = mp3/lsr.
+    public sealed record MusicTrack(ushort Id, string Name, byte Type);
+    public static IReadOnlyList<MusicTrack> MusicTracks { get; private set; } = new List<MusicTrack>();
+
+    // Area -> BGM track (BgmFor). A design assignment, not RTK data: RTK's own Maps table has one track
+    // (902) on 9799 of 9850 maps, and the 4.95 client files carry no map->track table at all. Zones match by
+    // explicit map id/range first, then by map-NAME glob; a map in no zone keeps whatever is already playing
+    // (see Session.PlayMapMusic) so walking into a shop or a cave never restarts the song. See MapBgm.csv.
+    public sealed record BgmZone(string Zone, ushort Track, byte Type,
+        IReadOnlyList<(ushort Lo, ushort Hi)> Maps, IReadOnlyList<string> Names);
+    public static IReadOnlyList<BgmZone> BgmZones { get; private set; } = new List<BgmZone>();
+
+    // Resolved map -> track, built once at load (BuildBgmMap): the zones' own maps at Hops 0, then every
+    // other map inherits its NEAREST zone through the warp graph. That spill is what makes a building or a
+    // cave play its area's theme without being listed, and — unlike leaving it to "whatever is already
+    // playing" — it also works when you LOG IN inside one, where there is no previous song to inherit.
+    public sealed record BgmPick(ushort Track, byte Type, string Zone, int Hops);
+    private static Dictionary<ushort, BgmPick> _bgmByMap = new();
+
+    /// <summary>The track to start on a zone-less map when nothing is playing yet (a fresh session): the
+    /// "Default" row of MapBgm.csv. Null leaves such a session silent until it reaches a zoned map.</summary>
+    public static (ushort bgm, byte type)? DefaultBgm { get; private set; }
 
     // Nation tavern return tiles for Return / yellow_scroll / qui_hyang (Session.ReturnToInn). Grouped by
     // Kugnae/Buya/Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae fallback) stays in code.
@@ -528,6 +590,21 @@ public static partial class Content
     public static int MailMinLevel => (int)Tune("MailMinLevel", 10);   // min level to view/send nmail
     public static int SpeechRange  => (int)Tune("SpeechRange", 8);     // tiles (Chebyshev) an NPC "hears" from
     public static uint BankMax     => (uint)Tune("BankMax", 100_000_000);   // per-account coin cap
+    // Highest minor-quest tier a path leader will hand out: 1 = Minor only (4.95 — the only tier that
+    // existed), 2 adds Major, 3 adds Epic. The Major/Epic rows stay in MinorQuests.csv either way; this only
+    // gates whether the "which type of quest?" menu is offered at all. See Server/MinorQuest.cs.
+    public static int MinorQuestTiers => (int)Tune("MinorQuestTiers", 1);
+    // The 0x10 "reason" byte for removals that should say NOTHING — banking and selling, both of which are
+    // silent in the real game. Every reason the 4.95 client has a line for narrates the removal (see the
+    // table in the protocol doc §11c); 0 renders "Acorn (51) removed.", which is the noise this exists to
+    // kill. 0 landing on the LAST message line rather than a line of its own is the tell of a `default:`
+    // branch, so an out-of-range reason may be the client's silent path; 15 is past the 12 real reasons but
+    // well inside the line table, so if the handler indexes raw instead of branching it shows a harmless
+    // unrelated line rather than reading off the end. Live-check it: silent = right; "… removed." = the
+    // default narrates and no silent reason exists; some other sentence = it indexes raw, so only 0-12 are safe.
+    public static int SilentDelReason => (int)Tune("SilentDelReason", 15);
+    // SplitTrapSpells (0/1, default 0) also lives here — accessor is next to the trap block it gates,
+    // see SplitTrapSpellsEnabled / IsOutOfEraSplitTrap.
 
     // Door-object graphic toggle table (data/game-data/DoorObjects.csv, transcribed from RTK open.lua `openDoors`).
     // Two lookups: DoorSwaps maps a faced object id -> (startDx, new object ids) for the explicit doors (single-tile
@@ -537,6 +614,27 @@ public static partial class Content
         new Dictionary<int, (int, ushort[])>();
     public static IReadOnlyList<(int Lo, int Hi, int Delta)> DoorDeltas { get; private set; } =
         new List<(int, int, int)>();
+
+    // Closed-door object id -> the open id that replaces it, applied cell-by-cell as a .map file is read
+    // (MapData.Load). This is how a door "starts open" without editing the client's own map files: the
+    // 4.95 client draws its LOCAL copy, so opening one also needs the 0x06 cell-patch every session gets on
+    // map entry (Session.SyncMapDoors). Populated from DoorObjects.csv rows flagged defaultOpen=1.
+    public static IReadOnlyDictionary<int, ushort> DoorDefaultOpen { get; private set; } =
+        new Dictionary<int, ushort>();
+
+    // ---- authored cell overrides (data/game-data/MapCells.csv) ------------------------------------------
+    // "The shipped map is wrong here." One row per cell: Map,X,Y,Tile,Pass,Obj — any of the three value
+    // columns left BLANK is inherited from the .map file, so you can fix passability without touching the
+    // graphic (or vice versa). Applied by MapData.Load as the LAST authored layer, so a hand-written row
+    // beats DoorDefaultOpen / DefaultClosed / ForceOpen. The .map files themselves are never modified.
+    public sealed record CellOverride(ushort Map, ushort X, ushort Y, ushort? Tile, ushort? Pass, ushort? Obj);
+    private static IReadOnlyDictionary<ushort, List<CellOverride>> _mapCells =
+        new Dictionary<ushort, List<CellOverride>>();
+    /// <summary>Total authored cell overrides loaded (for the startup summary).</summary>
+    public static int MapCellCount { get; private set; }
+    /// <summary>Authored cell overrides for one map (empty if none).</summary>
+    public static IReadOnlyList<CellOverride> MapCellsFor(ushort map) =>
+        _mapCells.TryGetValue(map, out var l) ? l : (IReadOnlyList<CellOverride>)Array.Empty<CellOverride>();
     /// <summary>Given the object a player faces, return the swapped door run (startDx + new ids), or null if it
     /// isn't a door. Mirrors the old Session.Movement.DoorToggle switch, now data-driven.</summary>
     public static (int StartDx, ushort[] Objs)? DoorToggleFor(int obj)
@@ -550,6 +648,7 @@ public static partial class Content
     public static void Load()
     {
         Maps = LoadMaps(ResolvePath("NEXUS_MAP_INDEX", "data", "game-data", "map_index.csv"));
+        MobFleeOverrides = LoadMobFlees(ResolvePath("NEXUS_MOB_FLEES", "data", "game-data", "MobFlees.csv"));   // BEFORE Mobs: LoadMobs folds it in
         Mobs = LoadMobs(ResolvePath("NEXUS_MOBS", "data", "game-data", "mobs.csv"));
         Items = LoadItems(ResolvePath("NEXUS_ITEMS", "data", "game-data", "Items.csv"));
         Warps = LoadWarps(ResolvePath("NEXUS_WARPS", "data", "game-data", "Warps.csv"));   // needs Maps
@@ -594,7 +693,14 @@ public static partial class Content
             .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
             .ToDictionary(e => e.key, e => e.cave);
         MythicCaves = mythicCaves;
-        MapBgm = LoadMapBgm(ResolvePath("NEXUS_MAP_BGM", "data", "game-data", "MapBgm.csv"));
+        var arenaDoors = LoadArenaDoors(ResolvePath("NEXUS_ARENA_DOORS", "data", "game-data", "ArenaDoors.csv"));
+        ArenaDoorTiles = arenaDoors   // derived tile index first, public list second (same reason as Npcs/_npcById)
+            .SelectMany(d => d.Tiles.Select(t => (key: (d.Map, t.X, t.Y), door: d)))
+            .ToDictionary(e => e.key, e => e.door);
+        ArenaDoors = arenaDoors;
+        MusicTracks = LoadMusicTracks(ResolvePath("NEXUS_MUSIC_TRACKS", "data", "game-data", "MusicTracks.csv"));
+        (BgmZones, DefaultBgm) = LoadBgmZones(ResolvePath("NEXUS_MAP_BGM", "data", "game-data", "MapBgm.csv"));
+        _bgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
         Inns = LoadInns(ResolvePath("NEXUS_INNS", "data", "game-data", "Inns.csv"));
         ForageAreas = LoadForageAreas(ResolvePath("NEXUS_FORAGE", "data", "game-data", "ForageAreas.csv"));
         PathHalls = LoadPathHalls(ResolvePath("NEXUS_PATHHALLS", "data", "game-data", "PathHalls.csv"));
@@ -602,24 +708,33 @@ public static partial class Content
         WorldDests = LoadWorldDests(ResolvePath("NEXUS_WORLDMAP_DESTS", "data", "game-data", "WorldMapDests.csv"));
         WorldMapTriggers = LoadWorldTriggers(ResolvePath("NEXUS_WORLDMAP_TRIGGERS", "data", "game-data", "WorldMapTriggers.csv"));
         FallRooms = LoadFallRooms(ResolvePath("NEXUS_FALLROOMS", "data", "game-data", "FallRooms.csv"));
+        BoardLocations = LoadBoardLocations(ResolvePath("NEXUS_BOARD_LOCATIONS", "data", "game-data", "BoardLocations.csv"));
         ShopCatalogues = LoadShopCatalogues(ResolvePath("NEXUS_SHOP_CATALOGUES", "data", "game-data", "ShopCatalogues.csv"));
         SpellParams = LoadKeyedRows(ResolvePath("NEXUS_SPELL_PARAMS", "data", "game-data", "SpellParams.csv"));
-        SpellScript.Load(ResolvePath("NEXUS_SPELL_VERBS", "data", "game-data", "spell_verbs.lua"));
+        // The three Lua files load ATOMICALLY (see LuaVerbHost.Load): a broken edit is REJECTED and the
+        // previously-loaded script keeps running. RejectedScripts records which ones didn't take so !reload can
+        // say so to the GM's face — a silent "reload ok" after a typo is how you end up debugging the wrong thing.
+        var rejected = new List<string>();
+        if (!SpellScript.Load(ResolvePath("NEXUS_SPELL_VERBS", "data", "game-data", "spell_verbs.lua"))) rejected.Add("spell_verbs.lua");
         ItemParams = LoadKeyedRows(ResolvePath("NEXUS_ITEM_PARAMS", "data", "game-data", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
-        ItemScript.Load(ResolvePath("NEXUS_ITEM_VERBS", "data", "game-data", "item_verbs.lua"));
-        NpcScript.Load(ResolvePath("NEXUS_NPC_DIALOG", "data", "game-data", "npc_dialog.lua"));
+        if (!ItemScript.Load(ResolvePath("NEXUS_ITEM_VERBS", "data", "game-data", "item_verbs.lua"))) rejected.Add("item_verbs.lua");
+        if (!NpcScript.Load(ResolvePath("NEXUS_NPC_DIALOG", "data", "game-data", "npc_dialog.lua"))) rejected.Add("npc_dialog.lua");
+        RejectedScripts = rejected;
         // Phase-1 spell-DATA tables (extracted from Content.cs literals; see re/extract_spell_tables.py).
         PetSpells = LoadPets(ResolvePath("NEXUS_PETS", "data", "game-data", "Pets.csv"));
+        WeaponProcs = LoadWeaponProcs(ResolvePath("NEXUS_WEAPON_PROCS", "data", "game-data", "WeaponProcs.csv"));
         TrapSpells = LoadTrapSpells(ResolvePath("NEXUS_TRAPS", "data", "game-data", "Traps.csv"));
         (MorphSpells, MorphDispatchSpells) = LoadMorphs(ResolvePath("NEXUS_MORPHS", "data", "game-data", "Morphs.csv"));
         (RageAmount, EnchantSpells) = LoadSpellMods(ResolvePath("NEXUS_SPELL_MODS", "data", "game-data", "SpellMods.csv"));
         NpcCompositions = LoadNpcCompositions(ResolvePath("NEXUS_NPC_ABILITIES", "data", "game-data", "NpcAbilities.csv"));
         PathGrowth = LoadPathGrowth(ResolvePath("NEXUS_PATH_GROWTH", "data", "game-data", "PathGrowth.csv"));
-        (DoorSwaps, DoorDeltas) = LoadDoorObjects(ResolvePath("NEXUS_DOOR_OBJECTS", "data", "game-data", "DoorObjects.csv"));
+        (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(ResolvePath("NEXUS_DOOR_OBJECTS", "data", "game-data", "DoorObjects.csv"));
         Tuning = LoadTuning(ResolvePath("NEXUS_SERVER_TUNING", "data", "game-data", "ServerTuning.csv"));
         Doors.SetConfig(LoadDoors(ResolvePath("NEXUS_DOORS", "data", "game-data", "Doors.csv")));
+        (_mapCells, var mapCellCount) = LoadMapCells(ResolvePath("NEXUS_MAP_CELLS", "data", "game-data", "MapCells.csv"));
+        MapCellCount = mapCellCount;
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check data/game-data/mobs.csv)"
                      : ""));
@@ -641,14 +756,33 @@ public static partial class Content
     public static string Reload()
     {
         Load();
-        return $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
-               $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
-               $"{CraftingToggleOverrides.Count} crafting-toggle overrides";
+        var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
+                      $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
+                      $"{CraftingToggleOverrides.Count} crafting-toggle overrides";
+        // A rejected .lua is the single most important thing !reload can tell you: your edit did NOT take, the
+        // old script is still running, and the reason is in the server log. Lead with it.
+        return RejectedScripts.Count == 0 ? summary
+             : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
     }
+
+    /// <summary>Lua files whose most recent (re)load was rejected for a compile/shape error — their previously
+    /// loaded version is still live. Empty when everything took. See <see cref="Reload"/>.</summary>
+    public static IReadOnlyList<string> RejectedScripts { get; private set; } = Array.Empty<string>();
 
     /// <summary>The portal at (map, x, y), if the player just stepped on a door tile.</summary>
     public static bool TryWarp(ushort map, ushort x, ushort y, out (ushort m, ushort x, ushort y) dest)
         => Warps.TryGetValue((map, x, y), out dest);
+
+    /// <summary>The board a board-sprite tile (map, x, y) belongs to, if any — RTK's onSign board-sign lookup
+    /// (selectBulletinBoard). Applies RTK's ±1 X tolerance (a board sprite spans a few columns) and an exact Y,
+    /// so a player facing north into any column of the board resolves the same board id.</summary>
+    public static bool TryBoardAt(ushort map, int x, int y, out int boardId)
+    {
+        foreach (var b in BoardLocations)
+            if (b.Map == map && b.Y == y && Math.Abs(b.X - x) <= 1) { boardId = b.BoardId; return true; }
+        boardId = 0;
+        return false;
+    }
 
     /// <summary>The RTK region a map belongs to (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …), or -1 if the
     /// map has no region row. Used by the Gateway spell to resolve the caster's kingdom.</summary>
@@ -773,23 +907,174 @@ public static partial class Content
             && EffectAnim(spk, 3) == 28                                          // spark → Effect.tbl 28
             && SpellFx.TryGetValue("heal_mage", out var hl) && EffectAnim(hl, 3) == 5;   // unaligned heal → 5
 
+        // --- Background music: track names + area zoning (MusicTracks.csv / MapBgm.csv) ---
+        Line($"--- Music: {MusicTracks.Count(t => t.Name.Length > 0)} named tracks, {BgmZones.Count} zones, " +
+             $"{_bgmByMap.Count} maps resolved, " +
+             $"default {(DefaultBgm is null ? "(none)" : $"{DefaultBgm.Value.bgm} '{TrackName(DefaultBgm.Value.bgm)}'")} ---");
+        foreach (var q in new[] { "mist", "tiger", "mon", "6", "10", "nope" })
+            Line($"    !music {q,-6} -> " + (FindTrack(q) is { } t ? $"track {t.Id} '{t.Name}' type{t.Type}" : "(no match)"));
+        // (map, expected track) — the six areas the assignment was specified for, plus a building inside each
+        // hub (which must resolve to the SAME track so walking through a door never restarts the song).
+        var bgmWant = new (ushort Map, string Track)[]
+        {
+            (137, "mist"), (3812, "mist"),        // Arctic Land / Arctic Tavern
+            (330, "tiger"), (365, "tiger"),       // Buya / Buya Salon
+            (114, "dark"), (457, "dark"),         // Hamgyong Nam-Do / Ruined House (Haunted Houses)
+            (3800, "sorrow"), (3806, "sorrow"),   // KaMing's Encampment / KaMing
+            (0, "dragon"), (1011, "dragon"),      // Kugnae / Kugnae Gathering
+            (41, "lake"),                         // Mythic Nexus
+            // Unlisted maps that must inherit their area through the warp graph, NOT the default track:
+            (332, "tiger"),                       // Spring Tavern — a shop off Buya
+            (367, "tiger"),                       // Eldritch Sanctum — 2 hops in from Buya (the login case)
+            (2, "dragon"),                        // Walsuk Tavern — a shop off Kugnae
+            (1013, "mist"),                       // Haeng Tavern — inside Arctic Village
+        };
+        bool bgmOk = true;
+        foreach (var (map, want) in bgmWant)
+        {
+            var got = BgmFor(map);
+            string name = got is null ? "(none)" : TrackName(got.Value.bgm);
+            bool hit = name.Equals(want, StringComparison.OrdinalIgnoreCase);
+            bgmOk &= hit;
+            Line($"    {(hit ? "ok " : "XX ")}map {map,-6} {(Maps.TryGetValue(map, out var bm) ? bm.Name : "?"),-22} -> " +
+                 $"{name,-8} zone '{BgmZoneOf(map)}' (want {want})");
+        }
+        int resolved = Maps.Values.Count(m => BgmFor(m.Id) is not null);
+        bool sticky = resolved > 0 && resolved < Maps.Count;   // some maps have no warp path to any zone
+        Line($"    {resolved}/{Maps.Count} maps resolved to a track; the rest keep whatever is playing " +
+             $"(and start on the default at login)");
+
+        // --- PvP arena doors: every configured door must lead somewhere renderable, and each destination
+        // must have its return leg in Warps.csv (a one-way door strands the player in the arena).
+        Line($"--- Arena doors: {ArenaDoors.Count} doors / {ArenaDoorTiles.Count} tiles ---");
+        bool doorsOk = ArenaDoors.Count > 0;
+        foreach (var d in ArenaDoors)
+        {
+            bool dest = Maps.ContainsKey(d.DestMap);
+            bool back = Warps.Any(w => w.Key.m == d.DestMap && w.Value.m == d.Map);
+            doorsOk &= dest && back;
+            string band = d.MaxLevel > 0 ? $"{d.MinLevel}-{d.MaxLevel}"
+                        : d.MaxVita > 0 ? $"{d.MinLevel}+, <= {d.MaxVita}v/{d.MaxMana}m"
+                        : $"{d.MinLevel}+";
+            Line($"    {(dest && back ? "ok " : "XX ")}map {d.Map} {string.Join("/", d.Tiles.Select(t => $"{t.X}:{t.Y}")),-13} -> " +
+                 $"{d.DestMap} '{(Maps.TryGetValue(d.DestMap, out var am) ? am.Name : "?")}' " +
+                 $"level {band}{(dest ? "" : "  [NO MAP DATA]")}{(back ? "" : "  [NO RETURN WARP]")}");
+        }
+
         bool ok = Maps.Count > 0 && Mobs.Count > 0 && Items.Count > 0
-                  && FindMap("kugnae") is not null && FindMob("rabbit") is not null && spellsOk;
+                  && FindMap("kugnae") is not null && FindMob("rabbit") is not null && spellsOk
+                  && bgmOk && sticky && doorsOk;
         Line(ok ? "SELFTEST: PASS" : "SELFTEST: FAIL (empty registry or missing expected entry)");
     }
 
     // ---- background music (0x19) --------------------------------------------------------------
     // The stock 4.95 client keeps its audio in NexusTK.snd, which ships exactly 12 background tracks
     // (1.mid .. 12.mid); the 0x19 music packet plays one by id with type 2 = MIDI. There is no original
-    // map->track table in the client files, so we assign them (MapBgm.csv): a few iconic hubs get a fixed
-    // theme, and every other map gets a stable pick from its id (so neighbouring maps tend to differ).
+    // map->track table in the client files, so we assign them ourselves — by AREA, not by map (MapBgm.csv).
 
-    /// <summary>The background track for a map: (bgm id 1..12, type 2 = MIDI). Iconic hubs are fixed
-    /// (<see cref="MapBgm"/>); anything else maps deterministically onto one of the 12 stock midis via its id.</summary>
-    public static (ushort bgm, byte type) BgmFor(ushort mapId)
+    /// <summary>The background track for a map: (bgm id, type 2 = MIDI), or null only for a map that no zone
+    /// claims AND that has no warp path to one — in which case the caller keeps whatever is already playing
+    /// (see Session.PlayMapMusic).</summary>
+    public static (ushort bgm, byte type)? BgmFor(ushort mapId) =>
+        _bgmByMap.TryGetValue(mapId, out var p) ? (p.Track, p.Type) : null;
+
+    /// <summary>The zone a map's music comes from, for "!music" feedback ("" if none). Maps that inherited
+    /// it through the warp graph rather than being listed are shown with their hop distance.</summary>
+    public static string BgmZoneOf(ushort mapId) =>
+        _bgmByMap.TryGetValue(mapId, out var p) ? (p.Hops == 0 ? p.Zone : $"{p.Zone} +{p.Hops}") : "";
+
+    // Resolve every map to a track, once per Load(). Three passes, each only filling maps still unclaimed:
+    //   1. explicit ids/ranges  -> so a single map can be carved out of an area another zone claims by name
+    //   2. map-name globs       -> "Buya *" and friends
+    //   3. warp-graph spill     -> multi-source BFS from everything claimed above, so each remaining map
+    //                             takes its NEAREST claimed map's track (Buya's shops/caves become Tiger
+    //                             without being listed; a login inside one starts on the right song)
+    private static Dictionary<ushort, BgmPick> BuildBgmMap()
     {
-        byte bgm = MapBgm.TryGetValue(mapId, out var pick) ? pick : (byte)((mapId % 12) + 1);
-        return (bgm, 2);
+        var byMap = new Dictionary<ushort, BgmPick>();
+
+        foreach (var z in BgmZones)
+            foreach (var (lo, hi) in z.Maps)
+                for (int id = lo; id <= hi; id++)
+                    if ((Maps.ContainsKey((ushort)id) || lo == hi) && !byMap.ContainsKey((ushort)id))
+                        byMap[(ushort)id] = new BgmPick(z.Track, z.Type, z.Zone, 0);
+
+        foreach (var z in BgmZones)
+            foreach (var pat in z.Names)
+                foreach (var m in Maps.Values)
+                    if (!byMap.ContainsKey(m.Id) && GlobMatch(m.Name, pat))
+                        byMap[m.Id] = new BgmPick(z.Track, z.Type, z.Zone, 0);
+
+        // Map-level adjacency from the tile warp table, treated as undirected: a one-way drop still tells us
+        // the two maps are the same neighbourhood, and most warps are paired anyway.
+        var adj = new Dictionary<ushort, List<ushort>>();
+        void Link(ushort a, ushort b)
+        {
+            if (a == b) return;
+            if (!adj.TryGetValue(a, out var l)) adj[a] = l = new List<ushort>();
+            if (!l.Contains(b)) l.Add(b);
+        }
+        foreach (var (from, to) in Warps)
+        {
+            if (!Maps.ContainsKey(from.m) || !Maps.ContainsKey(to.m)) continue;
+            Link(from.m, to.m);
+            Link(to.m, from.m);
+        }
+
+        var queue = new Queue<ushort>(byMap.Keys.Where(Maps.ContainsKey).OrderBy(id => id));
+        while (queue.Count > 0)
+        {
+            var cur = queue.Dequeue();
+            if (!adj.TryGetValue(cur, out var neighbours)) continue;
+            var here = byMap[cur];   // NB: not `from` — that's a LINQ query keyword and breaks `with`
+            foreach (var n in neighbours)
+            {
+                if (byMap.ContainsKey(n)) continue;
+                byMap[n] = here with { Hops = here.Hops + 1 };
+                queue.Enqueue(n);
+            }
+        }
+        return byMap;
+    }
+
+    /// <summary>A track by name ("mist") or by number ("6"); prefix match as a fallback so "mon" finds
+    /// "monkey". Null when nothing matches.</summary>
+    public static MusicTrack? FindTrack(string query)
+    {
+        query = query.Trim();
+        if (query.Length == 0) return null;
+        if (ushort.TryParse(query, out var id))
+            return MusicTracks.FirstOrDefault(t => t.Id == id) ?? new MusicTrack(id, "", 2);   // unnamed ids still play
+        return MusicTracks.FirstOrDefault(t => t.Name.Equals(query, StringComparison.OrdinalIgnoreCase))
+            ?? MusicTracks.FirstOrDefault(t => t.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>The name of a track id, or "" if it has none (only some of the 12 stock midis are named).</summary>
+    public static string TrackName(ushort id) =>
+        MusicTracks.FirstOrDefault(t => t.Id == id)?.Name ?? "";
+
+    // Case-insensitive '*' glob (no '?', no escaping — map names have neither). Used for the MapBgm.csv
+    // name patterns, e.g. "Buya *" matching "Buya Kan Shop" but not "Buyan Stables".
+    private static bool GlobMatch(string text, string pattern)
+    {
+        if (pattern.Length == 0) return false;
+        var parts = pattern.Split('*');
+        if (parts.Length == 1) return text.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+
+        int pos = 0;
+        if (!text.StartsWith(parts[0], StringComparison.OrdinalIgnoreCase)) return false;
+        pos = parts[0].Length;
+        for (int i = 1; i < parts.Length - 1; i++)
+        {
+            if (parts[i].Length == 0) continue;
+            int at = text.IndexOf(parts[i], pos, StringComparison.OrdinalIgnoreCase);
+            if (at < 0) return false;
+            pos = at + parts[i].Length;
+        }
+        var tail = parts[^1];
+        return tail.Length == 0
+            ? true
+            : text.Length - pos >= tail.Length && text.EndsWith(tail, StringComparison.OrdinalIgnoreCase);
     }
 
     // ---- lookups (used by the !warp / !maps / !mobs / !summon commands) ----
@@ -884,6 +1169,36 @@ public static partial class Content
     public static LearnCost? LearnCostFor(SpellDef sp, int pathId) =>
         SpellCosts.TryGetValue(sp.Key, out var perClass) && perClass.TryGetValue(pathId, out var cost) ? cost : null;
 
+    /// <summary>How long the caster holds the magic pose — the 0x1A action <c>time</c> field, in 1/60s frames
+    /// (35 = ~583ms). ONE value for every spell, deliberately.
+    /// <para>RTK varies it per script (35 ×117, 20 ×45, 25 ×9, 30 ×8 across 179 spells) and the groups are
+    /// coherent families — 30 is the Poet songs, 25 is the mount/companion set — but that is the RTK author's
+    /// styling, not evidence about real 4.95, and RTK coverage has burned us before. The only thing actually
+    /// established is that our old hardcoded 8 matches NOTHING in RTK and is too short to survive a held key.
+    /// 35 is RTK's modal value and what every attack/heal spell uses. If real per-spell values ever turn up,
+    /// this becomes a lookup then — not before.</para></summary>
+    public const ushort CastAnimFrames = 35;
+
+    // Genuinely universal base spells — the Nexon manual's "base secrets for every path", learned free in the
+    // newbie quest (currently just Soothe). Taught by !spells to EVERY class at their base SplLevel, and NOT
+    // gated by SpellCosts even though they carry per-class rows there — for these, those rows are relearn-cost
+    // data for the NPC relearn flow only, never a teachable gate. This explicit marker is what separates them
+    // from RESTRICTED commons (Return/Approach/Summon): those are ALSO PathId 0 + in SpellCosts, but there the
+    // rows ARE the gate — a class with no row (e.g. Warrior for Return) is correctly excluded. PathId alone
+    // can't tell the two apart, hence this allowlist.
+    private static readonly HashSet<string> UniversalBaseSpells = new(StringComparer.OrdinalIgnoreCase) { "soothe" };
+    public static bool IsUniversalBaseSpell(SpellDef sp) => UniversalBaseSpells.Contains(sp.Key);
+
+    /// <summary>Whether class <paramref name="pathId"/> may (re)learn <paramref name="sp"/> from a tutor NPC —
+    /// the gate for the "Learn Secret" menu, distinct from the universal <c>!spells</c> grant. A universal
+    /// base spell (Soothe) is granted to every class at the newbie quest, but if FORGOTTEN it can only be
+    /// relearned at the Guild by a class that has a per-class <see cref="SpellCosts"/> row for it — which is
+    /// how Poet is correctly refused Soothe (Warrior/Rogue/Mage have rows, Poet doesn't), matching the live
+    /// game's "cannot be relearned by Poets". Any non-universal spell is unaffected (already gated upstream by
+    /// <see cref="SpellsForClass"/>), so it always returns true here.</summary>
+    public static bool CanRelearnAtNpc(SpellDef sp, int pathId) =>
+        !IsUniversalBaseSpell(sp) || LearnCostFor(sp, pathId) is not null;
+
     /// <summary>Every spell/skill a class can learn at or below <paramref name="maxLevel"/> for a given
     /// <paramref name="alignment"/> (0 unaligned / 1 Kwisin / 2 Mingken / 3 Ohaeng) — i.e. the teachable set
     /// for "!spells". <see cref="SpellCosts"/> is checked FIRST for a spell's key: if present, the class only
@@ -895,13 +1210,16 @@ public static partial class Content
     /// excluded, so an unaligned character never gets the Kwisin/Mingken/Ohaeng variants (which often share a
     /// display name → looked like duplicates). Deduped by display name as a safety net, preferring the
     /// exact-alignment version over a universal one. Ordered by level then name so the spellbook fills in a
-    /// sensible order.</summary>
+    /// sensible order. Spells switched off by an era gate (see <see cref="IsOutOfEraSplitTrap"/>) are dropped
+    /// outright, so they never reach a tutor menu, the !spells grant, or the Divine Secret preview.</summary>
     public static List<SpellDef> SpellsForClass(int pathId, int maxLevel, int alignment) =>
         Spells.Where(s => s.Alignment < 0 || s.Alignment == alignment)
-              .Select(s => SpellCosts.TryGetValue(s.Key, out var perClass)
-                  ? (perClass.TryGetValue(pathId, out var cost) ? s with { Level = cost.Level } : null)
-                  : (s.PathId == pathId || s.PathId == 0 ? s : null))
-              .Where(s => s is not null && s.Level <= maxLevel)
+              .Select(s => IsUniversalBaseSpell(s)
+                  ? s                                             // taught to EVERY class at its base level; SpellCosts rows are relearn-cost only
+                  : SpellCosts.TryGetValue(s.Key, out var perClass)
+                      ? (perClass.TryGetValue(pathId, out var cost) ? s with { Level = cost.Level } : null)
+                      : (s.PathId == pathId || s.PathId == 0 ? s : null))
+              .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s))
               .Select(s => s!)
               .GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .Select(g => g.OrderByDescending(s => s.Alignment == alignment).ThenBy(s => s.Level).First())
@@ -918,69 +1236,29 @@ public static partial class Content
     // Sentinel for "this spell has no pcalign arg" (skills / non-global-helper spells).
     public const int NoPcAlign = int.MinValue;
 
-    // ---- spell effect graphic (client 0x29) ---------------------------------------------------
-    // The 4.95 client's 0x29 handler plays effect N from Effect.tbl (128 effects) over an entity — it is NOT a
-    // floating damage number (proven by disassembly of 0x4504b0 → 0x44e0a0 → the index-into-table copy at
-    // 0x4354b0). RTK's shared helpers pick that effect id (and a sound id) from the spell's `pcalign` argument;
-    // these two tables are ported verbatim from rtklua/Accepted/Spells/common/global_zap.lua + global_heal.lua.
-    // Returns the Effect.tbl id (0..127), or -1 for "no graphic". Sound ids are carried for when a 4.95 sound
-    // opcode is confirmed (not wired yet).
+    // ---- spell effect graphic (client 0x29) + sound (0x19) ------------------------------------
+    // The 4.95 client's 0x29 handler plays effect N from Effect.tbl (128 effects) over an entity - it is NOT a
+    // floating damage number (proven by disassembly of 0x4504b0 -> 0x44e0a0 -> the index-into-table copy at
+    // 0x4354b0). Sound rides its own 0x19 (see Session.BroadcastFx); the two are independent.
+    //
+    // BOTH now come straight off the spell's own row. There used to be a hardcoded `pcalign` ladder here,
+    // ported from rtklua's common/global_{zap,attack,heal}.lua, used ONLY by the Damage and Heal archetypes -
+    // every other archetype already carried explicit animation/sound columns. re/fill_spell_fx.py resolved that
+    // ladder once into those same columns for Damage/Heal too, so all ten archetypes now work the same way and
+    // `pcalign` is provenance only, never read at runtime. Doing it as data also fixed things the ladder could
+    // not express (full writeup in that script's docstring):
+    //   - 8 spells whose Lua passed the wrong alignment (Rain of Fire and Winds of Disaster are Ohaeng and
+    //     Nature's Wounding is Mingken, but all three passed unaligned; the whole poet vital_spark family too),
+    //   - 2 whose Spells.csv SplAlignment was wrong (the recover_rogue family is tagged 0,1,1,2),
+    //   - Singe rendering differently for rogue than for mage,
+    //   - 4 duplicate rows from a scratch copy of rogue/singe.lua.
+    // To retune a spell now: edit its animation/sound cell and @reload. No rebuild, no switch statement.
 
-    /// <summary>pcalign → (Effect.tbl id, sound id) for damaging casts (global_zap / global_attack). Warrior
-    /// (baseClass 1) and Rogue (baseClass 2) shift their &lt;10 pcalign by +100 / +200 first — same as RTK.</summary>
-    public static (int anim, int sound) ZapEffect(int pcalign, int pathId)
-    {
-        if (pcalign < 10)
-        {
-            if (pathId == 1) pcalign += 100;   // warrior
-            else if (pathId == 2) pcalign += 200;   // rogue
-        }
-        return pcalign switch
-        {
-            0 => (4, 56),   1 => (17, 59),  2 => (30, 57),  3 => (4, 55),          // aligned zaps
-            10 => (27, 55), 11 => (28, 55), 12 => (29, 55), 13 => (-1, 58),        // thunder bolt / spark / singe / taunt(no gfx)
-            30 => (8, 88),  31 => (54, 88), 32 => (104, 88), 33 => (112, 88),      // mage hellfire/inferno/doom
-            34 => (41, 88), 35 => (42, 88), 36 => (43, 88),                        // mage fissure / lava surge / volcanic blast
-            40 => (51, 88), 41 => (100, 88), 42 => (86, 88), 43 => (114, 88),      // poet retribution
-            99 => (6, 88),                                                          // unaligned LS/WW (attack ladder)
-            100 => (7, 88), 101 => (67, 14), 102 => (7, 87), 103 => (60, 87), 104 => (31, 30),  // warrior
-            119 => (9, 14), 120 => (6, 88), 121 => (7, 87), 122 => (32, 87), 123 => (68, 94),   // warrior vita edits
-            124 => (7, 88), 125 => (60, 102), 126 => (67, 88), 127 => (69, 88),
-            200 => (9, 88), 201 => (67, 102), 202 => (32, 88), 203 => (68, 88), 204 => (69, 88),  // rogue
-            251 => (17, 59), 252 => (30, 57), 253 => (4, 55),                       // class-override zaps
-            400 => (12, -1), 401 => (44, -1),                                       // dart / death trap
-            _ => (4, 56),                                                           // default unaligned zap
-        };
-    }
+    /// <summary>The Effect.tbl graphic id to play for a cast, or -1 for "no graphic".</summary>
+    public static int EffectAnim(SpellFx fx, int pathId = 0) => fx.Animation != 0 ? fx.Animation : -1;
 
-    /// <summary>pcalign → (Effect.tbl id, sound id) for healing casts (global_heal): 1 Kwi-Sin, 2 Ming-Ken,
-    /// 3 Ohaeng, else unaligned.</summary>
-    public static (int anim, int sound) HealEffect(int pcalign) => pcalign switch
-    {
-        1 => (65, 98),
-        2 => (64, 63),
-        3 => (63, 4),
-        _ => (5, 4),
-    };
-
-    /// <summary>The Effect.tbl graphic id to play for a cast (−1 = none). A spell whose own Lua body calls
-    /// sendAnimation (buffs, debuffs, Invoke) carries that id directly in <see cref="SpellFx.Animation"/>;
-    /// damaging/healing casts get theirs from the pcalign ladder in the shared helper.</summary>
-    public static int EffectAnim(SpellFx fx, int pathId)
-    {
-        if (fx.Animation > 0) return fx.Animation;                                  // spell set it explicitly
-        if (fx.PcAlign == NoPcAlign) return -1;                                     // no helper call, no explicit anim
-        return fx.Archetype == "Heal" ? HealEffect(fx.PcAlign).anim : ZapEffect(fx.PcAlign, pathId).anim;
-    }
-
-    /// <summary>The sound id to play for a cast (−1 = none), mirroring <see cref="EffectAnim"/>: the spell's own
-    /// playSound id if it has one (buffs, Invoke), else the pcalign ladder's sound.</summary>
-    public static int EffectSound(SpellFx fx, int pathId)
-    {
-        if (fx.Sound > 0) return fx.Sound;                                          // spell set it explicitly
-        if (fx.PcAlign == NoPcAlign) return -1;
-        return fx.Archetype == "Heal" ? HealEffect(fx.PcAlign).sound : ZapEffect(fx.PcAlign, pathId).sound;
-    }
+    /// <summary>The NexusTK.snd id to play for a cast, or -1 for "silent".</summary>
+    public static int EffectSound(SpellFx fx, int pathId = 0) => fx.Sound != 0 ? fx.Sound : -1;
 
     public static SpellDef? FindSpell(string query)
     {
@@ -1159,6 +1437,28 @@ public static partial class Content
         return meta;
     }
 
+    // Prey creatures — see LoadMobFlees / MobDef.Flees. Loaded BEFORE Mobs so LoadMobs can fold the flag in.
+    private static Dictionary<string, bool> MobFleeOverrides = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>data/game-data/MobFlees.csv (`Identifier,Flees`) — which creatures RUN AWAY rather than fight.
+    /// <para>There is nothing to port for this: RTK's engine knows only three MobBehavior values (0 fights back,
+    /// 1 attacks on sight, 2+ inert) and mob_ai_basic.lua gives a rabbit the same chase-and-swing routine as a
+    /// wolf — the single <c>RunAway()</c> in the whole RTK tree belongs to one instance boss. So the MOVEMENT is
+    /// ported from that boss (Mobs/mob.lua <c>RunAway</c>, Instances/mysterious_merchant.lua's
+    /// <c>on_attacked</c>), and WHICH creatures use it is this file. Sparse and kept out of mobs.csv so
+    /// re-running the mob extractor can't drop it; hot-reloads with !reload.</para></summary>
+    private static Dictionary<string, bool> LoadMobFlees(string? path)
+    {
+        var flees = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("Identifier", ""));
+            if (key.Length == 0) continue;
+            flees[key] = col.GetValueOrDefault("Flees", "0").Trim() != "0";
+        }
+        return flees;
+    }
+
     private static List<MobDef> LoadMobs(string? path)
     {
         var mobs = new List<MobDef>();
@@ -1186,7 +1486,8 @@ public static partial class Content
             int.TryParse(col.GetValueOrDefault("MobHit", "0"), out var hit);
             int.TryParse(col.GetValueOrDefault("MobArmor", "0"), out var ac);
             int.TryParse(col.GetValueOrDefault("Grace", "0"), out var grace);
-            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace));
+            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace,
+                Flees: MobFleeOverrides.GetValueOrDefault(key)));
         }
         return mobs;
     }
@@ -1275,7 +1576,9 @@ public static partial class Content
                 MinSDam: I("ItmMinimumSDamage"), MaxSDam: I("ItmMaximumSDamage"),
                 MinLDam: I("ItmMinimumLDamage"), MaxLDam: I("ItmMaximumLDamage"),
                 Protection: I("ItmProtection"),
-                Text: Clean(col.GetValueOrDefault("ItmText", ""))));
+                Text: Clean(col.GetValueOrDefault("ItmText", "")),
+                PathId: I("ItmPthId"), Mark: I("ItmMark"),
+                BreakOnDeath: I("ItmBoD") != 0, Protected: I("ItmProtected") != 0));
         }
         return items;
     }
@@ -1308,6 +1611,20 @@ public static partial class Content
             }
         }
         return warps;
+    }
+
+    // Board-sign tiles: MapId,X,Y,BoardId. Comment/blank/un-parseable rows are skipped, so the shipped file
+    // can carry documentation and be filled in live (calibrate the tile with !boardobj, then !reload).
+    private static List<(ushort, ushort, ushort, int)> LoadBoardLocations(string? path)
+    {
+        var list = new List<(ushort, ushort, ushort, int)>();
+        foreach (var col in ReadCsv(path))
+            if (ushort.TryParse(col.GetValueOrDefault("MapId"), out var m)
+                && ushort.TryParse(col.GetValueOrDefault("X"), out var x)
+                && ushort.TryParse(col.GetValueOrDefault("Y"), out var y)
+                && int.TryParse(col.GetValueOrDefault("BoardId"), out var bid))
+                list.Add((m, x, y, bid));
+        return list;
     }
 
     // Spawn points: SpnMobId,SpnMapId,SpnX,SpnY (+ RTK bookkeeping columns we ignore). Rows whose mob or
@@ -1380,7 +1697,9 @@ public static partial class Content
     //     RTK's own team hid via a later migration), PyungPetNpc, and the 3 SalonNpc barbers (Face/Gender stays
     //     Rogue-hall-only per user direction). See [[nexustk-495-broken-npc-assets]].
     //   * A few rows were CORRECTED, e.g. NpcId 51 Bagai (map 363) moved from (2,6) to (2,3).
-    //   * The Enabled column carries the on/off toggle (0 = keep the row but don't spawn; the retired tavern hands).
+    //   * The Enabled column carries the on/off toggle (0 = keep the row but don't spawn). Nothing is switched
+    //     off today — the inn keeps' assistants (InnNpc2: Ox, Taur) were, and are back, standing in their
+    //     taverns with an EMPTY ability composition, so they belong to the scene without a click menu.
 
     // Stationary NPCs (our data/game-data/NPCs.csv). We keep only NPCs whose map the client can render and that
     // sit on a real tile (skip the (0,0) placeholders — f1npc, treasure portals — which aren't placed beings).
@@ -1416,15 +1735,29 @@ public static partial class Content
     }
 
     // Class/path table: PthId -> base class name (PthMark0). The higher PthMark columns are per-rank
-    // titles ("Il san (W)" …) we don't need here.
+    // titles ("Il san (W)" …) we don't need here. PthType is loaded alongside into PathBase (see PathBaseOf).
     private static Dictionary<int, string> LoadPaths(string? path)
     {
         var paths = new Dictionary<int, string>();
+        var bases = new Dictionary<int, int>();
         foreach (var col in ReadCsv(path))
             if (int.TryParse(col.GetValueOrDefault("PthId"), out var id))
+            {
                 paths[id] = Clean(col.GetValueOrDefault("PthMark0", ""));
+                bases[id] = int.TryParse(col.GetValueOrDefault("PthType"), out var t) ? t : 0;
+            }
+        PathBase = bases;
         return paths;
     }
+
+    // PthId -> PthType, the BASE path a (sub)class descends from (RTK class_db.c classdb_path): every subpath
+    // collapses onto 1 Warrior / 2 Rogue / 3 Mage / 4 Poet, e.g. Chung ryong (6) and Barbarian (10) are both
+    // base 1. 0 = Peasant, 5 = Dreamweaver/Archon (RTK's GM branch, which skips every wear restriction).
+    private static Dictionary<int, int> PathBase = new();
+
+    /// <summary>The base path (PthType) a class/path id descends from — RTK <c>classdb_path</c>. Unknown ids
+    /// and Peasant both give 0.</summary>
+    public static int PathBaseOf(int pathId) => PathBase.GetValueOrDefault(pathId, 0);
 
     // See CraftingToggleOverrides above. Sparse by design — a skill missing from the file (or the file
     // missing entirely) just falls through to CraftingToggles.DefaultDisabled.
@@ -1472,15 +1805,84 @@ public static partial class Content
         return list;
     }
 
+    // See ArenaDoors above. One row per door (a door is the 2 adjacent tiles the sprite occupies). Tiles is
+    // ';'-separated "x:y"; DestX may be a "lo-hi" range. MaxLevel/MaxVita/MaxMana of 0 mean "no cap".
+    private static List<ArenaDoorDef> LoadArenaDoors(string? path)
+    {
+        var list = new List<ArenaDoorDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("Map"), out var map)) continue;
+            ushort U(string k) => ushort.TryParse(col.GetValueOrDefault(k), out var v) ? v : (ushort)0;
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            uint U32(string k) => uint.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0u;
+
+            var tiles = new List<(ushort X, ushort Y)>();
+            foreach (var pair in (col.GetValueOrDefault("Tiles") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var xy = pair.Split(':');
+                if (xy.Length == 2 && ushort.TryParse(xy[0].Trim(), out var tx) && ushort.TryParse(xy[1].Trim(), out var ty))
+                    tiles.Add((tx, ty));
+            }
+            if (tiles.Count == 0) continue;
+
+            // DestX is either a single column or a "lo-hi" band the landing tile is rolled from.
+            var span = (col.GetValueOrDefault("DestX") ?? "").Split('-', 2);
+            ushort.TryParse(span[0].Trim(), out var dx);
+            var dx2 = span.Length > 1 && ushort.TryParse(span[1].Trim(), out var hi) ? hi : dx;
+
+            list.Add(new ArenaDoorDef(map, tiles.ToArray(), U("DestMap"), dx, dx2, U("DestY"),
+                I("MinLevel"), I("MaxLevel"), U32("MaxVita"), U32("MaxMana"),
+                I("Unmarked") != 0, col.GetValueOrDefault("Label", "").Trim(), col.GetValueOrDefault("Sources", "")));
+        }
+        return list;
+    }
+
     // ---- Location / warp geometry loaders (see the Content.* registries near MythicCaves) ----------------
 
-    private static Dictionary<ushort, byte> LoadMapBgm(string? path)
+    // MusicTracks.csv: Track,Name[,Type] — the id<->name table for the stock midis. Type defaults to 2 (midi).
+    private static List<MusicTrack> LoadMusicTracks(string? path)
     {
-        var d = new Dictionary<ushort, byte>();
+        var list = new List<MusicTrack>();
         foreach (var col in ReadCsv(path))
-            if (ushort.TryParse(col.GetValueOrDefault("Map"), out var m) && byte.TryParse(col.GetValueOrDefault("Track"), out var t))
-                d[m] = t;
-        return d;
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("Track"), out var id)) continue;
+            var name = col.GetValueOrDefault("Name", "").Trim();
+            if (!byte.TryParse(col.GetValueOrDefault("Type"), out var type)) type = 2;
+            list.Add(new MusicTrack(id, name, type));
+        }
+        return list;
+    }
+
+    // MapBgm.csv: Zone,Track,Maps,Names — one row per AREA. `Track` is a MusicTracks.csv name or a raw id;
+    // `Maps` is a ';'-separated list of ids and lo-hi ranges; `Names` is a ';'-separated list of map-name
+    // globs. The row whose Zone is "Default" is pulled out as the fresh-session fallback (DefaultBgm).
+    private static (List<BgmZone>, (ushort, byte)?) LoadBgmZones(string? path)
+    {
+        var zones = new List<BgmZone>();
+        (ushort, byte)? def = null;
+
+        foreach (var col in ReadCsv(path))
+        {
+            var zone = col.GetValueOrDefault("Zone", "").Trim();
+            var track = FindTrack(col.GetValueOrDefault("Track", ""));
+            if (zone.Length == 0 || track is null) continue;
+
+            if (zone.Equals("Default", StringComparison.OrdinalIgnoreCase)) { def = (track.Id, track.Type); continue; }
+
+            var maps = new List<(ushort, ushort)>();
+            foreach (var part in col.GetValueOrDefault("Maps", "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var span = part.Split('-', 2);
+                if (ushort.TryParse(span[0].Trim(), out var lo))
+                    maps.Add((lo, span.Length > 1 && ushort.TryParse(span[1].Trim(), out var hi) ? hi : lo));
+            }
+            var names = col.GetValueOrDefault("Names", "")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+            zones.Add(new BgmZone(zone, track.Id, track.Type, maps, names));
+        }
+        return (zones, def);
     }
 
     private static Dictionary<string, IReadOnlyList<InnDef>> LoadInns(string? path)
@@ -1624,10 +2026,15 @@ public static partial class Content
 
     // DoorObjects.csv: two row kinds. `map` rows are exact faced-object swaps (result = `;`-separated new ids at
     // startDx); `delta` rows are single-tile [lo,hi] ranges whose result is a signed delta added to the faced id.
-    private static (Dictionary<int, (int, ushort[])>, List<(int, int, int)>) LoadDoorObjects(string? path)
+    // The optional `defaultOpen` column (1 on a `map` row) marks that row's faced id as the CLOSED state of a
+    // door that should start open — MapData.Load rewrites those cells as the file is read, per cell, so a
+    // multi-tile run needs the flag on every one of its pieces (see DoorDefaultOpen).
+    private static (Dictionary<int, (int, ushort[])>, List<(int, int, int)>, Dictionary<int, ushort>)
+        LoadDoorObjects(string? path)
     {
         var swaps = new Dictionary<int, (int, ushort[])>();
         var deltas = new List<(int, int, int)>();
+        var open = new Dictionary<int, ushort>();
         foreach (var c in ReadCsv(path))
         {
             var kind = c.GetValueOrDefault("kind", "").Trim();
@@ -1639,14 +2046,19 @@ public static partial class Content
                 int.TryParse(c.GetValueOrDefault("startDx", "0"), out var dx);
                 var ids = result.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(s => ushort.TryParse(s, out var u) ? u : (ushort)0).ToArray();
-                if (ids.Length > 0) swaps[lo] = (dx, ids);   // map rows use lo == hi as the exact faced id
+                if (ids.Length == 0) continue;
+                swaps[lo] = (dx, ids);   // map rows use lo == hi as the exact faced id
+                // This piece's own counterpart sits at -startDx in the run (startDx is how far LEFT the run
+                // starts from the faced tile), so the substitution stays single-cell and order-independent.
+                if (c.GetValueOrDefault("defaultOpen", "").Trim() == "1" && -dx >= 0 && -dx < ids.Length)
+                    open[lo] = ids[-dx];
             }
             else if (kind == "delta" && int.TryParse(result, out var d))
             {
                 deltas.Add((lo, hi, d));
             }
         }
-        return (swaps, deltas);
+        return (swaps, deltas, open);
     }
 
     // NpcAbilities.csv: NpcKey -> pipe-list of ability names (resolved to instances by NpcScripts.AbilityByName).
@@ -1693,6 +2105,32 @@ public static partial class Content
         return acc.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<(string, string[])>)kv.Value, StringComparer.OrdinalIgnoreCase);
     }
 
+    // MapCells.csv -> per-map authored cell overrides. Blank value column = inherit from the .map file, so
+    // "Map,X,Y,,0," means "make this tile walkable, leave its graphics alone". Rows for maps that don't exist
+    // are kept: the map may simply not be in the registry yet, and MapData only ever asks for its own id.
+    private static (Dictionary<ushort, List<CellOverride>>, int) LoadMapCells(string? path)
+    {
+        var d = new Dictionary<ushort, List<CellOverride>>();
+        int n = 0;
+        foreach (var col in ReadCsv(path))
+        {
+            if (!ushort.TryParse(col.GetValueOrDefault("Map"), out var m)) continue;
+            if (!ushort.TryParse(col.GetValueOrDefault("X"), out var x)) continue;
+            if (!ushort.TryParse(col.GetValueOrDefault("Y"), out var y)) continue;
+            ushort? U(string k)
+            {
+                var v = col.GetValueOrDefault(k);
+                return string.IsNullOrWhiteSpace(v) || !ushort.TryParse(v.Trim(), out var r) ? null : r;
+            }
+            var tile = U("Tile"); var pass = U("Pass"); var obj = U("Obj");
+            if (tile is null && pass is null && obj is null) continue;   // a row that overrides nothing
+            if (!d.TryGetValue(m, out var list)) d[m] = list = new();
+            list.Add(new CellOverride(m, x, y, tile, pass, obj));
+            n++;
+        }
+        return (d, n);
+    }
+
     private static Dictionary<(ushort, ushort, ushort), Doors.DoorConfig> LoadDoors(string? path)
     {
         var d = new Dictionary<(ushort, ushort, ushort), Doors.DoorConfig>();
@@ -1703,11 +2141,33 @@ public static partial class Content
             ushort.TryParse(col.GetValueOrDefault("Y"), out var y);
             bool B(string k, bool def) { var v = col.GetValueOrDefault(k); return string.IsNullOrEmpty(v) ? def : v.Trim() == "1"; }
             var key = col.GetValueOrDefault("Key", "");
+            // ClosedObj/OpenObj: ';'-separated object-id runs starting at this tile (same convention as
+            // DoorObjects.csv). Both must be present and the same length to be usable — a half-configured
+            // pair would give a door that opens and can never close, so drop both and log it.
+            ushort[]? Run(string k)
+            {
+                var v = col.GetValueOrDefault(k, "");
+                if (string.IsNullOrWhiteSpace(v)) return null;
+                var parts = v.Split(';', StringSplitOptions.RemoveEmptyEntries);
+                var outp = new List<ushort>();
+                foreach (var p in parts) if (ushort.TryParse(p.Trim(), out var o)) outp.Add(o);
+                return outp.Count > 0 ? outp.ToArray() : null;
+            }
+            var closed = Run("ClosedObj");
+            var open = Run("OpenObj");
+            if (closed is not null && open is not null && closed.Length != open.Length)
+            {
+                Log.Info($"   !! Doors.csv ({m},{x},{y}): ClosedObj has {closed.Length} id(s) but OpenObj has {open.Length} — ignoring both");
+                closed = open = null;
+            }
             d[(m, x, y)] = new Doors.DoorConfig(
                 Locked: B("Locked", false),
                 Key: string.IsNullOrWhiteSpace(key) ? null : key.Trim(),
                 ConsumeKey: B("ConsumeKey", true),
-                ForceOpen: B("ForceOpen", false));
+                ForceOpen: B("ForceOpen", false),
+                ClosedObjs: closed,
+                OpenObjs: open,
+                DefaultClosed: B("DefaultClosed", false));
         }
         return d;
     }
@@ -1755,6 +2215,11 @@ public static partial class Content
     /// <see cref="RageAmount"/>.</summary>
     public static int? RageAmountFor(SpellDef sp) => RageAmount.TryGetValue(sp.Key, out var r) ? r : null;
 
+    /// <summary>Chung Ryong's Rage — the Warrior Chung Ryong subpath's INCREMENTAL fury (one spell key,
+    /// recast every 120s to climb tier 1→6). Handled by its own <see cref="Session.CastChungRyongRage"/>
+    /// path rather than the flat <see cref="RageAmountFor"/> one, so it never appears in SpellMods.csv.</summary>
+    public static bool IsChungRyongRage(SpellDef sp) => sp.Key == "chung_ryongs_rage";
+
     // RTK warrior/enchant.lua, infuse.lua, ingress.lua, vipers_venom.lua, dragons_flame.lua + rogue/
     // tigers_fortitude.lua, baekhos_blade.lua: a weapon-enchant STANCE (player.enchant). Unlike rage (which
     // swingDamage.lua multiplies the WHOLE swing by), enchant only multiplies the raw weapon-swing term
@@ -1765,12 +2230,39 @@ public static partial class Content
     // Type-5-skill gap as rage/stealth/sacrifice-strikes; tigers_fortitude_rogue genuinely costs 0 mana,
     // just consumes cast components via requirements()).
     // Loaded from data/game-data/SpellMods.csv (`enchantAmt`/`enchantMana` columns) in Load() — see LoadSpellMods.
+    //
+    // LADDER RESOLVED 2026-08-04 on an EARLIEST-SOURCE-WINS rule (user decision). Three sources exist and
+    // they disagree; dating them shows the values were REBALANCED UPWARD over the years, so the earliest
+    // reading is the one closest to our 4.95 client (built 2001-06-29):
+    //                        nexusatlas 2003/04   DarkMaverick nmails   Melalye board post (rev. 2011)
+    //     Invisible                  -                    8                       9        (tswolf 2001: 5)
+    //     Rage 1..6                  -            6/9/12/18/27/81           8/14/20/26/36/81
+    //     Cunning 1..5               -                  4..8                     6..12
+    //     Dragon's Flame            5                     5                        6
+    //     Baekho's Blade           1.5                   1.5                       2
+    // Every value that moved, moved UP — so the 2011 post (boards.nexustk.com/Rogues/Melalye%2007210115.html,
+    // byline "Rogue Tutor Melalye" but signed Yttribium, "Reviewed 2011, by Deimos") is the LEAST era-correct
+    // despite being the most detailed. Do not treat it as authoritative on magnitudes; it IS the best source
+    // for STRUCTURE (which subpath rank grants which tier) and for qualitative rules.
+    // WHAT WE SHIP (earliest of each):
+    //     Enchant 1.5 | Infuse 2 | Ingress 3 | Viper's Venom 4 | Dragon's Flame 5 | Spirit Blade 9
+    //     Baekho's Blade (rogue, Ee San) 1.5
+    // Melalye's Dragon's Harness (Sam San) 8 and Chung Ryong's Wrath (Sa San) 10 do NOT exist in our 4.95
+    // Spells.csv (later-era subpath content) so they are not added. spirit_blade was ADDED here — it existed
+    // in Spells.csv with no SpellMods row, i.e. it was silently INERT.
+    // Klanx/Yari (also in the DM PDF) define `Ing` as 1 none | 3 Ingress | 4 "Il san NPC" | 5 "Ee san NPC",
+    // agreeing on Ingress 3. Infuse 2 / Ingress 3 / Viper's Venom 4 are unanimous across all sources.
+    // NOTE baekhos_blade_rogue 1.5 now EQUALS the free tigers_fortitude_rogue despite costing 6000 mana at
+    // level 99. That looks wrong but it is what both early sources say; flagged, not "corrected".
+    // STILL UNRESOLVED: art_of_war — DM calls it a x4 weapon enhancer, but RTK's art_of_war.lua implements
+    // something ELSE entirely (an 80-mana reveal of a mob's max health). Not wired as an enchant here.
     private static IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells = new Dictionary<string, (double, int)>(StringComparer.OrdinalIgnoreCase);
     public static (double Amt, int Mana)? EnchantFor(SpellDef sp) => EnchantSpells.TryGetValue(sp.Key, out var e) ? e : null;
 
-    // Rogue Invisible (+3 same-mechanic aliases per alignment: Spirit's Form/Life's Cloak/Glass Form —
-    // RTK Spells/rogue/invisible.lua): sets player.state=2, which swingDamage.lua reads as a flat 9x
-    // damage multiplier on the swing that follows (a sneak-attack bonus that then breaks the stealth —
+    // Rogue Invisible (+3 same-mechanic aliases per alignment: Spirit's Form/Life's Cloak/Glass Form):
+    // the swing that follows gets a flat 5x damage multiplier (tswolf 8/2001, era-matched to 4.95:
+    // "Invisible increases attack by 5 times"; RTK's Lua says 9x but that's a later, non-authoritative
+    // rebalance), a sneak-attack bonus that then breaks the stealth —
     // see Session.PlayerSwingDamage). NOTE: this only ports the DAMAGE multiplier, not real invisibility —
     // RTK's PC_INVIS state also hides the player's sprite from other clients (clif.c), which would need
     // viewport/ShowPlayer changes this pass doesn't touch.
@@ -1785,9 +2277,25 @@ public static partial class Content
     // from the caster's OWN alignment stat, not from which alias identifier was actually granted/cast, so
     // Session.CastSacrificeStrike keys off _char.Alignment rather than sp.Key for that (and for whirlwind's
     // alignment-gated damage factor/HP cost).
-    public enum SacrificeFamily { LethalStrike, DesperateAttack, Berserk, Whirlwind }
+    // FocusedBlow (Rogue Sam San) and Siege (Warrior Sam San) join the same family — both are "spend your own
+    // vita for a big facing-tile hit". nexusatlas: Focused Blow "Takes 2/3 of current Vita in a Strong Attack.
+    // The attack does 2 times current vitality in damage at 0 AC"; Siege "does a critical strike and leaves the
+    // caster with 25% vita left. Damage to target is 1.875 times current vitality plus 0.5 current mana at 0 AC".
+    // They have NO alignment aliases yet — the 2002-10-01 announcement lists Siege only under its Ohaeng-ish
+    // name "Life's end", so the other three alias identifiers are unknown and deliberately not invented.
+    public enum SacrificeFamily { LethalStrike, DesperateAttack, Berserk, Whirlwind, FocusedBlow, Siege }
     private static readonly Dictionary<string, SacrificeFamily> SacrificeAliases = new(StringComparer.OrdinalIgnoreCase)
     {
+        ["focused_blow_rogue"] = SacrificeFamily.FocusedBlow,
+
+        // Siege + its three alignment aliases (user-confirmed): Kwi-Sin "Soul's Freedom", Ming-Ken
+        // "Life's End", Ohaeng "Winter Chill". Same mechanic; CastSacrificeStrike picks the DISPLAYED name
+        // from the caster's own alignment, not from which alias was granted, exactly as the other families do.
+        ["siege_warrior"]        = SacrificeFamily.Siege,
+        ["souls_freedom_warrior"] = SacrificeFamily.Siege,
+        ["lifes_end_warrior"]     = SacrificeFamily.Siege,
+        ["winter_chill_warrior"]  = SacrificeFamily.Siege,
+
         ["lethal_strike_rogue"] = SacrificeFamily.LethalStrike, ["afterlifes_embrace_rogue"] = SacrificeFamily.LethalStrike,
         ["mingkens_judgement_rogue"] = SacrificeFamily.LethalStrike, ["calculating_blow_rogue"] = SacrificeFamily.LethalStrike,
 
@@ -1801,6 +2309,26 @@ public static partial class Content
         ["natures_own_warrior"] = SacrificeFamily.Whirlwind, ["bladedance_warrior"] = SacrificeFamily.Whirlwind,
     };
     public static SacrificeFamily? SacrificeFamilyFor(SpellDef sp) => SacrificeAliases.TryGetValue(sp.Key, out var f) ? f : null;
+
+    // Sam San one-offs that fit no existing archetype (nexusatlas 2004; the 2002-10-01 TSWolf announcement
+    // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases whose other
+    // identifiers we do not know - only the unaligned key is wired).
+    public static bool IsMendEquipment(SpellDef sp) => sp.Key == "mend_equipment_warrior";
+
+    // NPC-subpath guardian spells (their own SplPthId: 8 Ju Jak, 9 Hyun Moo). Both had Spells.csv rows but no
+    // archetype, so they spent mana and did nothing. Hyun Moo Revival is the one spell MEANT to be cast while
+    // dead, which is why Session.HandleCast exempts it from "Spirits cannot cast spells".
+    // "Takes all mana when cast and does that much damage times N" (nexusatlas): Inferno x1.5 (Ee San mage)
+    // and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carry mana=0 and an amountExpr reading
+    // player.magic, which computes the damage correctly but NEVER SPENDS the pool - so before this they were
+    // free, repeatable nukes scaling off a mana bar that never moved. Session.ApplyCast drains after a
+    // successful cast (the amount is computed first, so ordering is safe).
+    private static readonly HashSet<string> AllManaSpells =
+        new(StringComparer.OrdinalIgnoreCase) { "inferno_mage", "dooms_fire_mage" };
+    public static bool ConsumesAllMana(SpellDef sp) => AllManaSpells.Contains(sp.Key);
+
+    public static bool IsJuJakEvocation(SpellDef sp) => sp.Key == "ju_jak_evocation";
+    public static bool IsHyunMooRevival(SpellDef sp) => sp.Key == "hyun_moo_revival";
 
     // RTK poet/inspiration.lua family (Draw Energy/Harness Power/Combine Focus/Inspiration — 4 reskins, one
     // mechanic): drains a GROUP MEMBER's entire current mana into the caster's own pool.
@@ -1833,16 +2361,11 @@ public static partial class Content
         { "race_rogue", "spiritual_jump_rogue", "leap_of_faith_rogue", "transport_rogue" };
     public static bool IsLeapSpell(SpellDef sp) => LeapSpells.Contains(sp.Key);
 
-    // RTK rogue/filch.lua family (Filch/Spirit's Hand/Quick Fingers/Light Touch — 4 independently-authored
-    // copies of the same mechanic): grabs whatever's on the SINGLE tile directly in front of the caster
-    // (despite the spell description's "up to 4 tiles" claim, the Lua's own loop only ever runs i=1) — coins
-    // go straight to the purse, an item stack goes to inventory — but ONLY if no player is standing on that
-    // tile. RTK also skips a tile that's someone's protected deathpile; this server has no per-item
-    // ownership/deathpile model yet, so every ground stack is fair game once the tile-occupant check passes
-    // (same simplification precedent as the "no PvP path" skip on debuffs/sacrifice-strikes).
-    private static readonly HashSet<string> GroundLootSpells = new(StringComparer.OrdinalIgnoreCase)
-        { "filch_rogue", "spirits_hand_rogue", "quick_fingers_rogue", "light_touch_rogue" };
-    public static bool IsGroundLootSpell(SpellDef sp) => GroundLootSpells.Contains(sp.Key);
+    // (Filch/Spirit's Hand/Quick Fingers/Light Touch — RTK rogue/filch.lua — no longer needs a key table here:
+    // the four spells are bound to the `filch` verb by their SpellParams rows. The mechanic grabs whatever is on
+    // the SINGLE tile in front of the caster, despite the description's "up to 4 tiles" claim — the Lua's own
+    // loop only ever runs i=1 — and skips a tile a player is standing on, or one holding someone else's
+    // looter-locked death pile. See Session.LuaFilch + verbs.filch.)
 
     // RTK rogue/ambush.lua (+ displacement_rogue/waylay_rogue/reflect_rogue, alias-delegated reskins):
     // "Leap over your enemy to face their back while attacking." No mana cost in the Lua at all — only
@@ -1859,9 +2382,7 @@ public static partial class Content
     // aether value, the warrior family's doesn't: RTK's setAether(key, 25000) never made it into the CSV).
     // Reveals nearby hidden rogue-trap NPCs (dart/snare/repeating/flash/spear/poison/death/sleep) via a
     // caster-only marker item — see World.TrapsNear. Session.CastSpotTraps.
-    private static readonly HashSet<string> SpotTrapsSpells = new(StringComparer.OrdinalIgnoreCase)
-        { "watchful_eye_warrior", "spirits_whisper_warrior", "creatures_guidance_warrior", "spot_unbalance_warrior", "spot_traps" };
-    public static bool IsSpotTrapsSpell(SpellDef sp) => SpotTrapsSpells.Contains(sp.Key);
+    // (No key table: the five spells are bound to the `spot_traps` verb by their SpellParams rows.)
 
     // RTK rogue/judge.lua (Judge/Spiritual Advisor/Natural Talent/Appraise — 4 reskins) + rogue/spy.lua
     // (Spy/Spiritual Guide/Nature's Handiwork/Judgement Day — 4 reskins, same popup PLUS the target's
@@ -1869,11 +2390,11 @@ public static partial class Content
     // family requires the target STRICTLY lower level than the caster (`target.level >= player.level` fails);
     // the spy family allows an EQUAL level too (`target.level > player.level` fails) — a genuine, deliberate
     // difference in the Lua source, not a typo. Session.CastDivination.
-    private static readonly HashSet<string> DivinationSpells = new(StringComparer.OrdinalIgnoreCase)
-        { "judge_rogue", "spiritual_advisor_rogue", "natural_talent_rogue", "appraise_rogue" };
+    // All eight are bound to the `divine` verb by their SpellParams rows, so no dispatch table is needed.
+    // The judge/spy SPLIT still is: it is not a binding, it's a rule the verb reads through ctx.spyMode -
+    // judge needs the target STRICTLY lower level, spy allows equal. See Session.LuaIsSpy.
     private static readonly HashSet<string> DivinationSpySpells = new(StringComparer.OrdinalIgnoreCase)
         { "spy_rogue", "spiritual_guide_rogue", "natures_handiwork_rogue", "judgement_day_rogue" };
-    public static bool IsDivinationSpell(SpellDef sp) => DivinationSpells.Contains(sp.Key) || DivinationSpySpells.Contains(sp.Key);
     public static bool IsDivinationSpySpell(SpellDef sp) => DivinationSpySpells.Contains(sp.Key);
 
     // RTK rogue/set_trap.lua (dispatcher, "What trap? >" SplQuestion — Spells.csv row 2701) + the 8
@@ -1894,14 +2415,61 @@ public static partial class Content
     public static (TrapKind Kind, int Level, int Mana)? TrapSpellFor(SpellDef sp) => TrapSpells.TryGetValue(sp.Key, out var t) ? t : null;
     public static bool IsTrapDispatcher(SpellDef sp) => sp.Key.Equals("set_trap", StringComparison.OrdinalIgnoreCase);
 
+    // ERA GATE — the 8 individual set_X_trap spells above did NOT exist in 4.95. They were added by the
+    // 2003-07-01 reset, two years after this client shipped (built 2001-06-29). Three archive posts that day
+    // (nexus_news.md): Growl 10:48 relaying the in-character Dream Weaver board post from Eldridge ("the
+    // guild masters have also devised some new spells to help rogues ... the ability to split your trap
+    // spells into several spells", tagged with the standard OOC "currently under review" patch marker);
+    // Rachel 16:07 with the mechanics ("Set traps spell still exists, however you can also learn each
+    // individual trap spell such as 'Sleep trap' 'Dart trap' so that you don't have to type in the name");
+    // Conro 18:15 confirming the launch bug that Spot traps couldn't see them (fixed 2003-10-31). The
+    // NexusAtlas pages for these spells are dated 2003-11-04, but that post is Rachel's SITE-maintenance
+    // list, not a patch — her 2003-10-27 corrections say the data "will be added soon". Corroborated by the
+    // rogue tutor spell list itself, where every split entry is worded "Seperate form of <X>" and carries no
+    // ingredient cost (`-`), i.e. written after the split, describing derivatives of the original.
+    //
+    // So in-era there is exactly ONE way to set a trap: cast Set Trap (row 2701) and TYPE the trap's name at
+    // its "What trap? >" prompt. Nothing about the trap MECHANICS changes here and the rows stay in
+    // Spells.csv/Traps.csv — the dispatcher resolves the same set_X_trap SpellDefs internally, so every trap
+    // kind still works exactly as before. This gate only removes them as spells a rogue can learn from a
+    // tutor (SpellsForClass -> Learn Secret / Divine Secret / !spells) and cast directly from the book.
+    //
+    // Off by default; a deployment that wants the post-2003 behavior sets SplitTrapSpells=1 in
+    // data/game-data/ServerTuning.csv and runs !reload. Bladestorm/Sword's Dance/Tiger's Ambush/Cutting Edge
+    // (rows 2710-2713) are NOT covered — they are a different, subpath-only mechanic (the `bladestorm` verb / set_bladestorm_trap family).
+    public static bool SplitTrapSpellsEnabled => Tune("SplitTrapSpells", 0) != 0;
+    private static readonly HashSet<string> SplitTrapSpells = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "set_dart_trap", "set_flash_trap", "set_repeating_dart_trap", "set_snare_trap",
+        "set_spear_trap", "set_poison_dart_trap", "set_death_trap", "set_sleep_trap",
+    };
+    /// <summary>True when <paramref name="sp"/> is one of the 8 post-2003 individual trap spells and the
+    /// era gate is off — i.e. it may not be learned or cast directly (Set Trap still sets that trap).</summary>
+    public static bool IsOutOfEraSplitTrap(SpellDef sp) => !SplitTrapSpellsEnabled && SplitTrapSpells.Contains(sp.Key);
+
     // set_trap.lua's own q-string match ("dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep")
     // to the underlying set_X_trap identifier that TrapSpellFor understands.
-    public static string? TrapKeyForAnswer(string answer) => answer.Trim().ToLowerInvariant() switch
+    //
+    // RTK's set_trap.lua PROMPTS with one string and MATCHES another: it prints `traps[i] .. " trap"` — "Snare
+    // trap", "Dart trap", … — then compares `q == "snare"`. So typing back exactly what the menu just told you
+    // to type falls through to the else-branch and nothing is set. Live 4.95 clients send the full label
+    // (log: `dec : 0d 53 6e 61 72 65 20 74 72 61 70 00  |.Snare trap.|`), so matching RTK literally means no
+    // trap can ever be set through the dispatcher. Normalise instead: lowercase, drop a trailing "trap", and
+    // key off the first remaining word. That accepts "Snare trap", "snare", "SNARE TRAP" and "Repeating dart"
+    // alike, and is a superset of RTK's own accepted inputs — nothing that used to work stops working.
+    public static string? TrapKeyForAnswer(string answer)
     {
-        "dart" => "set_dart_trap", "snare" => "set_snare_trap", "repeating" => "set_repeating_dart_trap",
-        "flash" => "set_flash_trap", "spear" => "set_spear_trap", "poison" => "set_poison_dart_trap",
-        "death" => "set_death_trap", "sleep" => "set_sleep_trap", _ => null,
-    };
+        var a = (answer ?? "").Trim().ToLowerInvariant();
+        if (a.EndsWith(" trap", StringComparison.Ordinal)) a = a[..^5].TrimEnd();
+        int sp = a.IndexOf(' ');
+        if (sp > 0) a = a[..sp];              // "repeating dart" -> "repeating", "poison dart" -> "poison"
+        return a switch
+        {
+            "dart" => "set_dart_trap", "snare" => "set_snare_trap", "repeating" => "set_repeating_dart_trap",
+            "flash" => "set_flash_trap", "spear" => "set_spear_trap", "poison" => "set_poison_dart_trap",
+            "death" => "set_death_trap", "sleep" => "set_sleep_trap", _ => null,
+        };
+    }
 
     // RTK rogue/bladestorm_trap.lua (Spells.csv rows 2710-2713, all 4 SplAlignment reskins byte-for-byte
     // identical Lua) — despite the similar name, a COMPLETELY different mechanic from the set_X_trap hazard
@@ -1919,9 +2487,8 @@ public static partial class Content
     // decoy is alive — the exact drain/early-deletion formula wasn't in the captured source, so this is a
     // documented gap (flat 1520 upfront cost only), not a guess. See Session.CastBladestormTrap/
     // ApplyBladestormSelfDamage, World.CheckPlayerTrapTrigger, World.TriggerTrapLocked's "bladestorm" case.
-    private static readonly HashSet<string> BladestormTrapSpells =
-        new(StringComparer.OrdinalIgnoreCase) { "set_bladestorm_trap", "set_swords_dance_trap", "set_tigers_ambush_trap", "set_cutting_edge_trap" };
-    public static bool IsBladestormTrap(SpellDef sp) => BladestormTrapSpells.Contains(sp.Key);
+    // (No key table: the four are bound to the `bladestorm` verb by their SpellParams rows. The trap they
+    // place is still the "bladestorm" wire kind that World.TriggerTrapLocked / CheckPlayerTrapTrigger switch on.)
 
     /// <summary>The wire string World.Trap/TriggerTrapLocked switches on.</summary>
     public static string TrapWireKind(TrapKind k) => k switch
@@ -1971,6 +2538,10 @@ public static partial class Content
     // player.question, lowercased). rodent_rogue.lua never actually lowers `player.question` into a local
     // `q` before comparing (a genuine copy-paste bug in that one file vs. every sibling) — ported as
     // OBVIOUSLY intended (rabbit/squirrel), not as the RTK bug, since the bug has no gameplay purpose.
+    // rodent_rogue's "rabbit" answer is look 125, NOT the 21 RTK's rodent.lua hardcodes: 21 is the HARE
+    // sprite (mobs.csv `hare`/`large_hare`/`red_hare`), while the actual Rabbit — mob id 1, identifier
+    // `rabbit`, plus every blue/green/orange/red/magic colour variant — is look 125. Both looks carry a few
+    // mob rows named the other animal, so go by mob 1, not by a name scan.
     // wilderness_guise (Barbarian subpath, lvl 99) is RTK's odd one out: real RTK asks a MENU then chains
     // into separate recast()-only sub-spells (wolf_guise/rabbit_guise/deer_guise/sheep_guise/
     // thirsty_ogre_guise) that have no cast() of their own and are never independently castable — folded
@@ -1984,9 +2555,20 @@ public static partial class Content
     public static bool IsMorphSpell(SpellDef sp) => MorphSpells.ContainsKey(sp.Key) || MorphDispatchSpells.ContainsKey(sp.Key);
 
     // RTK Poet "Call of the Wild" pet-summon family (rtklua/Accepted/Spells/poet/cotw_*.lua): 7 tiers x 4
-    // alignment reskins (28 identifiers) + a 29th (cotw_giasomo_bird_poet, mob 807) that has NO matching row
-    // in mobs.csv at all — even the Lua flags it broken ("@TODO: I know this doesn't belong here, but
-    // the COTW structure is so terrible already") — so it's skipped here, not silently miscounted. Every
+    // alignment reskins (28 identifiers) + a 29th, cotw_giasomo_bird_poet. That 29th is NOT part of the
+    // learnable ladder: it has no requirements(), no Spells.csv row and no learn cost — it is fired only by
+    // the Giasomo stick's on_swing proc (see data/game-data/WeaponProcs.csv). Its Lua asks for mob 807,
+    // which exists nowhere; RTK's OWN SQL and our mobs.csv both put giasomo_bird at 600, and every other
+    // cotw id in that file matches the SQL exactly, so 807 is an isolated typo. It is wired to mob 600
+    // here. (The Lua flags itself: "@TODO: I know this doesn't belong here, but the COTW structure is so
+    // terrible already".) The base cotw_controller_poet is likewise not a summon — it has no cast() at all,
+    // only on_takedamage_while_cast (threat redirect) and uncast (dismiss every owned pet), which is why it
+    // is learned at 63 while the first actual creature comes at 68. DELIBERATELY NOT PORTED, either half:
+    // 4.95 Call of the Wild creatures leave play ONLY by being killed or by their own timer (there is no
+    // dismiss), and the threat side rides RTK's AI/threat.lua aggro table, which is later-server content —
+    // see the protocol doc's "RTK's threat table is later-server content". RTK ships the spell disabled
+    // anyway: it is the only cotw row in Spells.csv with SplActive=0 (all 14 summons are 1), so LoadSpells
+    // skips it. Every
     // tier spawns a real MobDef (all 28 DO exist in mobs.csv, correctly statted) owned by the caster,
     // capped by Content.PetCapFor and expiring 300s later (World.Tick). The top "avatar" tier is the one
     // real outlier: RTK charges GOLD (via requirements(), not mana) plus an 8-minute cooldown instead of the
@@ -2034,6 +2616,49 @@ public static partial class Content
             int.TryParse(c.GetValueOrDefault("mana", "0"), out var mana);
             int.TryParse(c.GetValueOrDefault("cooldownMs", "0"), out var cd);
             d[k] = (c.GetValueOrDefault("mobKey", "").Trim(), lvl, mana, cd);
+        }
+        return d;
+    }
+
+    // Weapon "on swing" procs (data/game-data/WeaponProcs.csv), ported from RTK's item on_swing handlers
+    // in rtklua/Accepted/Items/**. Every one is the same shape: roll chancePct on each swing, then cast a
+    // spell at whatever you face — Blood/venom, Charm/endear, Frost sabre/chill, and the Giasomo stick,
+    // whose proc summons a bird onto the caster (target=self) rather than hitting the target.
+    //
+    // The proc spells sit on SplPthId 99 — the shared path, castable by players and mobs alike. RTK files
+    // them under Spells/NPCs/, but that folder is "shared", not "monster-only": burn.lua, for one,
+    // branches on BL_PC vs BL_MOB. Each now carries a SpellParams row + Lua verb (venom/curse/blind/endear/
+    // kamikaze/magic_damage) reproducing its real RTK mechanics, so a proc does what the spell does.
+    //
+    // `spell` may instead name "builtin:<name>" for the two RTK items that act INLINE in their Lua with no
+    // spell behind them at all — shot_gun's ramping cone and viper_stick's 2s paralyze (Session.ProcShotgun /
+    // Session.ProcParalyze). `target` is one of:
+    //     enemy      cast at the faced creature (the default; every RTK on_swing starts with getTargetFacing)
+    //     self       cast on the caster, whether or not anything is faced
+    //     self_faced cast on the caster, but ONLY while facing a creature — the Giasomo stick's shape: its
+    //                bird lands on YOU, yet RTK still gates the whole handler on getTargetFacing.
+    public readonly record struct WeaponProc(string Item, int ChancePct, string Spell, bool SelfCast, bool NeedsFacing);
+
+    private static IReadOnlyDictionary<string, WeaponProc> WeaponProcs =
+        new Dictionary<string, WeaponProc>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The on-swing proc for an equipped weapon/armour identifier, if it has one.</summary>
+    public static WeaponProc? WeaponProcFor(string? itemKey) =>
+        itemKey is not null && WeaponProcs.TryGetValue(itemKey, out var p) ? p : null;
+
+    private static Dictionary<string, WeaponProc> LoadWeaponProcs(string? path)
+    {
+        var d = new Dictionary<string, WeaponProc>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in ReadCsv(path))
+        {
+            var item = c.GetValueOrDefault("item", "").Trim();
+            var spell = c.GetValueOrDefault("spell", "").Trim();
+            if (item.Length == 0 || item.StartsWith('#') || spell.Length == 0) continue;
+            if (!int.TryParse(c.GetValueOrDefault("chancePct", "0"), out var pct) || pct <= 0) continue;
+            var target = c.GetValueOrDefault("target", "enemy").Trim();
+            bool self = target.StartsWith("self", StringComparison.OrdinalIgnoreCase);
+            bool needsFacing = !self || target.Equals("self_faced", StringComparison.OrdinalIgnoreCase);
+            d[item] = new WeaponProc(item, pct, spell, self, needsFacing);
         }
         return d;
     }
@@ -2252,6 +2877,14 @@ public static partial class Content
 
     // Resolve an external data file: env override first, else <repo-root>/<parts...>. Repo root is the
     // dir holding the .sln (or Server+Shared), walked up from the running binary — cwd-independent.
+    //
+    // Falls back to the CURRENT DIRECTORY when no marker is found, matching Shared/RepoPaths.Root() and
+    // TkListener.RepoDataDir(). It used to return null instead, and the three resolvers disagreeing was a
+    // silent-failure trap for any layout without the marker (a `dotnet publish` output directory, say):
+    // the character store still found data/nexus.db via ITS cwd fallback, so the server started, listened,
+    // and accepted logins — into a world with zero maps, zero mobs and zero NPCs, with nothing in the log
+    // that read as an error. Agreeing on the fallback means the whole process either finds the data
+    // directory or misses it together, and the startup counts (0 maps) then actually mean what they say.
     private static string? ResolvePath(string envVar, params string[] parts)
     {
         var env = Environment.GetEnvironmentVariable(envVar);
@@ -2266,6 +2899,6 @@ public static partial class Content
             if (isRoot) return Path.Combine(new[] { dir.FullName }.Concat(parts).ToArray());
             dir = dir.Parent;
         }
-        return null;
+        return Path.Combine(new[] { Directory.GetCurrentDirectory() }.Concat(parts).ToArray());
     }
 }

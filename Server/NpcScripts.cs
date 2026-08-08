@@ -35,6 +35,7 @@ public static class NpcScripts
         ["war_paint"] = WarPaintAbility.Instance,
         ["shadow_stats"] = ShadowStatsAbility.Instance,
         ["chapel"] = ChapelAbility.Instance,
+        ["revive"] = ReviveAbility.Instance,
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via
@@ -51,12 +52,17 @@ public static class NpcScripts
         {
             foreach (var n in names)
                 if (AbilityByName.TryGetValue(n, out var a)) list.Add(a);
-            return list.ToArray();
+        }
+        else
+        {
+            if (def.Shop)   list.Add(ShopAbility.Instance);   // contributes nothing if we haven't stocked it
+            if (def.Repair) list.Add(RepairAbility.Instance);
+            if (def.Bank)   list.Add(BankAbility.Instance);
         }
 
-        if (def.Shop)   list.Add(ShopAbility.Instance);   // contributes nothing if we haven't stocked it
-        if (def.Repair) list.Add(RepairAbility.Instance);
-        if (def.Bank)   list.Add(BankAbility.Instance);
+        // Every NPC also answers the universal "Misc" voice questions (name / what do you buy / what do you
+        // sell). Last, so a matching shop/bank/quest handler wins; it adds no click-menu entry.
+        list.Add(InfoAbility.Instance);
         return list.ToArray();
     }
 }

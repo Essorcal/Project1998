@@ -88,7 +88,7 @@ public sealed partial class Session
             Key = key,   // MobDef identifier (for quest kill-matching); empty for keyless debug summons
             Dir = dir, Color = color, Exp = exp, HomeX = x, HomeY = y, Wander = true,
             MoveTime = moveTime, MoveTimer = Random.Shared.Next(moveTime),
-            Level = def?.Level ?? 0, Will = def?.Will ?? 0, Aggressive = def?.Aggressive ?? false,
+            Level = def?.Level ?? 0, Will = def?.Will ?? 0, Aggressive = def?.Aggressive ?? false, Flees = def?.Flees ?? false,
             MinDam = def?.MinDam ?? 1, MaxDam = def?.MaxDam ?? 1, Hit = def?.Hit ?? 0,
             IsBoss = def?.IsBoss ?? false, Protection = def?.Protection ?? 0, Ac = def?.Ac ?? 0, Grace = def?.Grace ?? 0,
         };
@@ -190,6 +190,44 @@ public sealed partial class Session
         return false;
     }
 
+    // PvP arena doors (onScriptedTilesArena.lua -> arenaPVPCheckAndWarp.lua). Tower Arena is a hub: five side
+    // doors, each opening into one level-banded PvP arena. NONE of them are SQL warps — only the return leg is
+    // — so before this every door in the room was dead. Geometry + bands are data-driven
+    // (data/game-data/ArenaDoors.csv -> Content.ArenaDoorTiles) and hot-reload via !reload.
+    //
+    // RTK's own rejection is a 2-tile shove based on facing; we hold at the from-tile with SendXy() like the
+    // mythic-cave and path-hall refusals, which is the same net effect on a 4.95 client (self-walk is local,
+    // so the step never commits) without needing the facing. The two denial lines are RTK's verbatim, and
+    // deliberately NOT the engine's map-req cascade in TryWarpGate — the arena script has its own wording.
+    // The "be careful, you may be slain..." entry warning isn't sent here: every arena map is MapPvP=1, so
+    // EnterMap's own PvP-crossing warning already fires (same string).
+    private bool TryArenaDoor(ushort x, ushort y)
+    {
+        if (!Content.ArenaDoorTiles.TryGetValue((_char.Map, x, y), out var door)) return false;
+
+        bool low  = _char.Level < door.MinLevel || (door.Unmarked && CharMark != 0);
+        // RTK's arena check ORs the two vital caps (the engine's map-req check ANDs them — this is the script's,
+        // so it stays OR): being over EITHER cap keeps you out of the capped band.
+        bool high = (door.MaxLevel > 0 && _char.Level > door.MaxLevel)
+                 || (door.MaxVita > 0 && (long)_char.MaxHp > door.MaxVita)
+                 || (door.MaxMana > 0 && (long)_char.MaxMp > door.MaxMana);
+
+        if (low || high)
+        {
+            SendXy();   // cancel the client's step prediction — the door holds them out
+            SendMiniText(low ? "Nightmarish visions of your own death repel you."
+                             : "Your honor forbids you from entering.");
+            Log.Info($"   -> ARENA '{door.Label}' door REFUSED ({(low ? "under" : "over")}-qualified: level {_char.Level}, vita {_char.MaxHp}, mana {_char.MaxMp})");
+            return true;
+        }
+
+        if (!Content.TryMap(door.DestMap, out var dm) || dm is null) { SendXy(); return true; }   // dest unrenderable -> don't strand
+        ushort dx = door.DestX2 > door.DestX ? (ushort)Random.Shared.Next(door.DestX, door.DestX2 + 1) : door.DestX;
+        Log.Info($"   -> ARENA '{door.Label}' -> map {door.DestMap} '{dm.Name}' ({dx},{door.DestY}) [level {_char.Level}]");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, dx, door.DestY, dm.Name);
+        return true;
+    }
+
     private bool WarpHall(ushort destMap, ushort dx, ushort dy)
     {
         if (!Content.TryMap(destMap, out var dm)) { SendXy(); return true; }   // dest not renderable -> don't strand
@@ -276,11 +314,30 @@ public sealed partial class Session
     private void SendWorldMap(string bgName)
     {
         var dests = Content.WorldDests;
+        // Origin = where the player opened the map. Captured up-front because it's both the ESC/cancel
+        // landing AND the entry-0 override below.
+        ushort originMap = _char.Map, originX = _char.X, originY = _char.Y;
+
+        // ESC-CANCEL FIX (2026-07-29, live-proven): the 4.95 client's ESC (exit without choosing) sends
+        // back the FIRST destination in the list we send -- there is NO cancel opcode and NO origin echo.
+        // (Proof: with Kugnae first, ESC's 0x3F body was byte-identical to the Kugnae dot, 1011/18/14,
+        // regardless of where the map was opened -- so it ALWAYS warped to Kugnae. The old code comment
+        // claiming ESC "carries the origin" was wrong.) Every trigger map IS one of these destination maps,
+        // so we put the player's CURRENT continent first with its landing tile overridden to the exact
+        // origin tile: ESC then round-trips to origin (which matches no real WorldDests row, so
+        // HandleWorldMapSelect's cancel branch restores the player in place), while every other dot travels
+        // as before. Dot PIXELS are unchanged (each dot keeps its own DotX/DotY) -- only wire order shifts.
+        var order = new List<int>(dests.Count);
+        for (int i = 0; i < dests.Count; i++) if (dests[i].Map == originMap) order.Add(i);
+        for (int i = 0; i < dests.Count; i++) if (dests[i].Map != originMap) order.Add(i);
+        if (order.Count == 0 || dests[order[0]].Map != originMap)
+            Log.Info($"   -> WORLDMAP WARN: opened on map {originMap} with no matching destination row; ESC-cancel will not work (add a WorldMapDests row for this map)");
+
         var d = new List<byte>();       // NO leading kind byte: payload[0] IS the bgName length (see comment)
         AddLenStr(d, bgName);
         d.Add((byte)dests.Count);
         d.Add(0);                        // unexplained byte after the count -- see class-comment note above
-        for (int i = 0; i < dests.Count; i++)
+        foreach (int i in order)
         {
             var dest = dests[i];
             // Dot position is field10's own pixel coordinate (WorldMapDests.csv DotX/DotY), unless a live
@@ -289,27 +346,33 @@ public sealed partial class Session
             var (dotX, dotY) = WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dest.DotX, dest.DotY);
             int sx = Math.Clamp(dotX, 0, 639);
             int sy = Math.Clamp(dotY, 0, 479);
+            // The current-continent entry (position 0) lands on the EXACT origin tile, so an ESC that
+            // selects it returns the player precisely where they stood -- not the continent's default tile.
+            bool isOrigin = dest.Map == originMap;
+            ushort landX = isOrigin ? originX : dest.X;
+            ushort landY = isOrigin ? originY : dest.Y;
             d.AddRange(Be((ushort)sx));   // x0 (field10 pixel)
             d.AddRange(Be((ushort)sy));   // y0 (field10 pixel)
             AddLenStr(d, dest.Name);
             d.AddRange(Be32(dest.Map));
-            d.AddRange(Be(dest.X));
-            d.AddRange(Be(dest.Y));
+            d.AddRange(Be(landX));
+            d.AddRange(Be(landY));
         }
         _worldMapPending = true;
-        _worldMapReturnMap = _char.Map;
-        _worldMapReturnX   = _char.X;
-        _worldMapReturnY   = _char.Y;
-        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {dests.Count} dests");
+        _worldMapReturnMap = originMap;
+        _worldMapReturnX   = originX;
+        _worldMapReturnY   = originY;
+        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {dests.Count} dests (origin map {originMap} first)");
     }
 
-    // Parses the client's world-map click / ESC reply. LIVE-CONFIRMED format (2026-07-26): the client sends
-    // opcode 0x3F with body  mapId(u32BE) x(u16BE) y(u16BE) 00  -- exactly RTK's case 0x3F map-change
-    // (clif.c:11619, pc_warp with the client-supplied map/x/y). There is NO separate cancel opcode: opening
-    // the map makes the client "leave the world", and BOTH a destination click and ESC send this same 0x3F --
-    // ESC just carries the player's ORIGINAL map/x/y. So: warp to the destination if it's a known one;
-    // otherwise (ESC, or any unrecognized coords) return the player to where they opened the map from, so
-    // they can never be stranded on the map screen or mis-warped to arbitrary client-chosen coords.
+    // Parses the client's world-map click / ESC reply. Body: mapId(u32BE) x(u16BE) y(u16BE) 00 -- RTK's
+    // case 0x3F map-change (clif.c:11619, pc_warp with the client-supplied map/x/y). There is NO separate
+    // cancel opcode: opening the map makes the client "leave the world", and BOTH a destination click and
+    // ESC send this same 0x3F. ESC does NOT echo the origin (old comment was wrong -- see SendWorldMap's
+    // ESC-CANCEL FIX); it echoes the FIRST list entry, which we make the player's current continent landing
+    // on the origin tile. So: if the reply is the origin tile, treat it as ESC/cancel and restore in place;
+    // else warp to the matching known destination; else (unrecognized) also fall back to restoring origin,
+    // so the player can never be stranded on the map screen or mis-warped to arbitrary client-chosen coords.
     private void HandleWorldMapSelect(byte[] dec)
     {
         if (!_worldMapPending) return;
@@ -318,6 +381,17 @@ public sealed partial class Session
         uint   map = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
         ushort x   = (ushort)((dec[4] << 8) | dec[5]);
         ushort y   = (ushort)((dec[6] << 8) | dec[7]);
+        // ESC / clicked own location: the reply is the origin tile (entry 0). Restore in place -- must
+        // still EnterMap to rebuild the view the modal world-map screen tore down.
+        if (map == _worldMapReturnMap && x == _worldMapReturnX && y == _worldMapReturnY)
+        {
+            if (Content.TryMap(_worldMapReturnMap, out var sm))
+            {
+                Log.Info($"   -> WORLDMAP (esc/cancel) stay at {_worldMapReturnMap} '{sm.Name}' ({_worldMapReturnX},{_worldMapReturnY})");
+                EnterMap(sm.Id, sm.Xs, sm.Ys, _worldMapReturnX, _worldMapReturnY, sm.Name);
+            }
+            return;
+        }
         foreach (var dest in Content.WorldDests)
         {
             if (dest.Map != map || dest.X != x || dest.Y != y) continue;
@@ -427,12 +501,16 @@ public sealed partial class Session
         // Warn on crossing INTO a PvP realm (RTK MapPvP flag — Content.IsPvpMap) from a non-PvP one, e.g.
         // stepping through an arena door into Sire Pit/Yusa Pit. Skipped when already in a PvP map (tier
         // warps within the same arena chain shouldn't re-nag every hop).
-        bool warnPvp = Content.IsPvpMap(mapId) && !Content.IsPvpMap(_char.Map);
+        // DISABLED per request — the pop-up on arena entry was unwanted. Flip PvpEntryWarning to re-enable
+        // the whole thing (the message block below is kept intact on purpose).
+        const bool PvpEntryWarning = false;
+        bool warnPvp = PvpEntryWarning && Content.IsPvpMap(mapId) && !Content.IsPvpMap(_char.Map);
 
         // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
         // clear our session-local debug dummies (the client drops all foreign entities on a map change).
         _world.LeaveMap(this, _char.Map);
         _mobs.Clear();
+        ResetStreamCoverage();   // terrain streamed for the old map says nothing about the new one
         _dlgReply = null;    // orphan any NPC prompt awaiting a reply — its NPC is on the old map
         _worldMapPending = false;   // any open world-map screen is meaningless once we've already warped
         ForgetShownMobs();   // new map -> the client wiped every foreign entity; re-stream from scratch
@@ -455,7 +533,7 @@ public sealed partial class Session
         foreach (var p in peers) ShowPlayer(p);
         SyncMobs(mobs);   // stream the in-view mobs of the new map
         foreach (var gi in _world.ItemsOn(mapId)) ShowGroundItem(gi);   // floor items on the new map (0x16)
-        SyncForceOpenDoors(mapId);
+        SyncMapDoors(mapId);
         if (warnPvp)
         {
             SendScriptMessageP(_char.Id,
@@ -465,22 +543,23 @@ public sealed partial class Session
         Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y}) — {peers.Length} player(s), {mobs.Length} mob(s) here");
     }
 
-    // A ForceOpen door (Doors.cs) only changes OUR server's own collision bookkeeping — it does nothing to
-    // what the client sees, because the 4.95 client loads its own local .map file for everything except the
-    // narrow 0x06 cell-patch mechanism (the same one door toggles use). Without this, the client's own local
-    // copy of the tile is untouched, so it keeps refusing the step client-side (self-walk is client-local —
-    // see [[nexustk-495-selfwalk-turn]]) regardless of what the server thinks. Clears the object outright
-    // (no real "open" sprite exists for these — see Doors.cs) and pushes the same patch our own MapData mirror
-    // gets, so a later HandleOpen/BlockedMove read agrees with what the client was actually told.
-    private void SyncForceOpenDoors(ushort mapId)
+    // Bring the arriving client's object layer in line with the server's. The 4.95 client draws its own local
+    // .map file for everything except the narrow 0x06 cell-patch mechanism (the same one door toggles use), so
+    // ANY server-side object change is invisible until we replay it — and self-walk is client-local
+    // ([[nexustk-495-selfwalk-turn]]), so a door the client still believes is shut keeps refusing the step no
+    // matter what the server thinks. Three things need replaying, and MapData.PatchRuns covers all of them at
+    // once because every one of them goes through SetObj:
+    //   * doors that START open (Content.DoorDefaultOpen, applied in MapData.Load — e.g. the city gates),
+    //   * doors another player has toggled since the map was first loaded (previously invisible to later
+    //     arrivals, who saw the file state and then got a first 'o' that appeared to do nothing),
+    //   * ForceOpen tiles (Doors.cs), which have no real "open" sprite and are simply cleared to object 0.
+    private void SyncMapDoors(ushort mapId)
     {
         var md = MapData.For(mapId, _char.MapXs, _char.MapYs);
         if (md is null) return;
-        foreach (var (x, y) in Doors.ForceOpenTiles(mapId))
-        {
-            md.SetObj(x, y, 0);
-            PatchObjRow(x, y, new ushort[] { 0 });
-        }
+        // ForceOpen tiles used to be stamped on here, per session, which mutated shared map state from a
+        // session path — they are an AUTHORED override now and applied once in MapData.Load.
+        foreach (var (x, y, objs) in md.PatchRuns()) PatchObjRow(x, y, objs);
     }
 
     // "!warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
@@ -561,6 +640,7 @@ public sealed partial class Session
             return;
         }
         MapData.Invalidate();
+        GmAccounts.Load();   // the GM roster is file-backed config too — promote/demote without a restart
         // Pre-warm the terrain cache for populated maps outside World._lock, so RebuildPopulation's
         // re-materialization (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading
         // .map files from disk while holding the world lock (the old reload-stall).

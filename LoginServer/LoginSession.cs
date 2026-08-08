@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Protocol.Tk495;
@@ -20,6 +21,7 @@ public sealed class LoginSession
     private readonly NetworkStream _stream;
     private readonly int _port;
     private readonly string _remote;
+    private readonly IPAddress _ip;   // source address, for the per-IP failed-login throttle
     private readonly CharacterStore _store;
     private readonly object _sendLock = new();
     private string _user = "?";
@@ -49,6 +51,7 @@ public sealed class LoginSession
         _port = port;
         _store = store;
         _remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
+        _ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
     }
 
     public async Task RunAsync()
@@ -75,7 +78,10 @@ public sealed class LoginSession
             {
                 int n = await _stream.ReadAsync(tmp);
                 if (n == 0) break;
-                Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
+                // Wire dumps are OFF by default on this channel — these bytes contain the player's
+                // password, and 4.95's cipher is a fixed published XOR, so "encrypted" is not a defense.
+                // See Log.WireEnabled.
+                if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
                 for (int i = 0; i < n; i++) buf.Add(tmp[i]);
 
                 var arr = buf.ToArray();
@@ -91,7 +97,7 @@ public sealed class LoginSession
                     buf.RemoveRange(0, off);
                     Volatile.Write(ref _established, 1);   // first valid frame parsed -> handshake satisfied
                 }
-                if (buf.Count > 0)
+                if (buf.Count > 0 && Log.WireEnabled)
                     Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
             }
         }
@@ -107,7 +113,7 @@ public sealed class LoginSession
     {
         var dec = TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey);
         Log.Info($"   <- pkt op=0x{pkt.Opcode:x2} inc=0x{pkt.Increment:x2} len={pkt.Body.Length + 2} body={pkt.Body.Length}B");
-        Log.Info($"        dec : {Log.Hex(dec)}");
+        if (Log.WireEnabled) Log.Info($"        dec : {Log.Hex(dec)}");   // contains the password — see Log.WireEnabled
 
         switch (pkt.Opcode)
         {
@@ -119,8 +125,15 @@ public sealed class LoginSession
         }
     }
 
-    // Create step 1 (0x02): the client asks whether a name is free. Body is the length-prefixed name.
-    // We stash it so creation (0x04) can key the record even if that packet omits the name.
+    // Create step 1 (0x02): the client asks whether a name is free. Body is the length-prefixed name
+    // (plus the chosen password — see the protocol doc §9). We stash both so creation (0x04) can key the
+    // record even if that packet omits the name.
+    //
+    // This check is now REAL. It used to answer "available" unconditionally, which meant re-creating an
+    // existing name walked straight into HandleCreate's load-then-overwrite path and RESET that character's
+    // password — i.e. anyone could take over any account by "creating" it again. HandleCreate now refuses a
+    // taken name outright (that refusal is the actual security boundary); this reply is the friendly half,
+    // so the player is told at the name field instead of after picking a face.
     private void NameAvailable(byte[] dec)
     {
         try
@@ -134,8 +147,32 @@ public sealed class LoginSession
         }
         catch { /* leave pending values as-is */ }
 
+        if (NameProblem(_pendingName) is { } why)
+        {
+            // Refuse by sending ONLY the message box (the same 0x02/0x0F path "Incorrect password." uses on
+            // this screen, which the client is known to render without a paired protocol reply) and NOT the
+            // availability OK, so the client can't advance to appearance selection.
+            SendMessage(why);
+            Log.Info($"   -> name REJECTED ('{_pendingName}'): {why}");
+            return;
+        }
+
         Send(new byte[] { 0xAA, 0x00, 0x06, 0x02, 0x01, 0x4F, 0x64, 0x79, 0x6E });
         Log.Info($"   -> name available (pending='{_pendingName}')");
+    }
+
+    // Shared name gate for the availability check and creation. Returns null if the name is usable, else the
+    // player-facing reason. Both the `characters` and `accounts` tables key on CharacterStore.Key (lowercased,
+    // non-alphanumerics stripped), so the character set has to be restricted to what survives that
+    // normalization — otherwise "Bo b" and "Bob" would be the same account under two different display names.
+    private static string? NameProblem(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "Please enter a name.";
+        if (name.Length < 3 || name.Length > 12) return "Names must be 3 to 12 characters.";
+        foreach (var ch in name)
+            if (!char.IsLetterOrDigit(ch) && ch != '_') return "Names may only use letters, numbers and _.";
+        if (CharacterStore.CharacterExists(name) || Accounts.Exists(name)) return "That name is already taken.";
+        return null;
     }
 
     // Create step 2 (0x04): the client sends the chosen name + appearance (gender, etc.) after the
@@ -154,22 +191,39 @@ public sealed class LoginSession
                 name = Encoding.ASCII.GetString(dec, 1, nlen);
         }
         catch { /* fall back to _pendingName */ }
-        if (string.IsNullOrEmpty(name)) name = _user;
+        if (string.IsNullOrEmpty(name)) name = _pendingName;
 
-        var existing = _store.Load(name);
-        var c = existing ?? new Character();
-        c.Name = name;
+        // Re-run the name gate here, not just at the availability check: 0x04 is a separate packet and a
+        // hand-rolled client can send it without ever asking 0x02. Refusing a TAKEN name is what stops the
+        // old load-then-overwrite path from resetting an existing character's password (account takeover).
+        if (NameProblem(name) is { } why)
+        {
+            Log.Info($"   -> CREATE REJECTED ('{name}'): {why}");
+            SendMessage(why);
+            return;
+        }
+
+        // A character with no password can't be logged into at all now that TOFU is gone (LoginAuth returns
+        // NoPassword), so refuse to create one rather than persist an unreachable record.
+        if (string.IsNullOrEmpty(_pendingPass))
+        {
+            Log.Info($"   -> CREATE REJECTED ('{name}'): no password captured from the 0x02 name-check");
+            SendMessage("Please enter a password.");
+            return;
+        }
+
+        var c = new Character();
+        c.Name = name;             // stored with the player's chosen CASING; logins match case-insensitively
         c.CreationBlob = dec;      // keep the raw body for future re-decoding if the mapping changes
         CharacterFactory.ApplyAppearance(c);        // decode gender/face/nation/totem/hair
-        if (existing is null) CharacterFactory.PlaceNewCharacter(c);   // brand new -> home city for the picked nation
-        _store.Save(c);
-        // Register the account with the password captured at the availability check (0x02). If it was
-        // missing for some reason, TOFU at first login (HandleLogin) still sets it.
-        if (!string.IsNullOrEmpty(_pendingPass))
+        CharacterFactory.PlaceNewCharacter(c);      // home city for the picked nation
+        if (!_store.Save(c))
         {
-            Accounts.SetPassword(name, Auth.Hash(_pendingPass));
-            Log.Info($"   -> account '{name}' registered with a password hash");
+            Log.Info($"   -> CREATE FAILED to persist '{name}' — not registering the account");
+            SendMessage("Could not create the character. Try again.");
+            return;
         }
+        Accounts.SetPassword(name, Auth.Hash(_pendingPass));
         Log.Info($"   -> CREATE persisted '{name}' (sex={c.Sex} face={c.Face} nation={Character.NationName(c.Nation)} totem={c.Totem}) -> {_store.Directory}");
         SendMessage("Account created.");
     }
@@ -180,14 +234,27 @@ public sealed class LoginSession
         _user = Encoding.ASCII.GetString(dec, 1, ulen);
         string pass = LoginAuth.ReadPassword(dec, 1 + ulen);   // 0x03 body: nameLen name pwLen pw 00
 
-        // Authenticate (verify existing hash, or trust-on-first-use for a never-registered / legacy account
-        // so existing characters aren't locked out). Shared rule so login + game re-login can't drift.
-        if (!LoginAuth.Authenticate(_user, pass))
+        // Online-guessing defense: refuse BEFORE verifying, so a burned-out address can't keep us doing
+        // BCrypt work either. ConnGuard only limits how often an address may CONNECT — one connection can
+        // send unlimited 0x03s, and a 3-8 char password doesn't survive that.
+        if (LoginThrottle.IsBlocked(_ip))
         {
-            Log.Info($"   -> LOGIN REJECTED (incorrect password) for user='{_user}'");
-            SendMessage("Incorrect password.");
+            Log.Info($"   -> LOGIN BLOCKED (failed-attempt budget exhausted) from {_remote} for user='{_user}'");
+            SendMessage(LoginThrottle.BlockedMessage);
+            return;
+        }
+
+        // Authenticate. STRICT: an unknown name is refused, never created — the only path to a character is
+        // the creation flow above. Shared rule so login + the game channel's re-login can't drift.
+        var auth = LoginAuth.Authenticate(_user, pass);
+        if (auth != LoginResult.Ok)
+        {
+            int left = LoginThrottle.RecordFailure(_ip);
+            Log.Info($"   -> LOGIN REJECTED ({auth}) for user='{_user}' from {_remote} ({left} attempt(s) left)");
+            SendMessage(LoginAuth.MessageFor(auth));
             return;   // no handoff — the client stays on the login screen showing the message
         }
+        LoginThrottle.RecordSuccess(_ip);
         Log.Info($"   -> LOGIN accepted for user='{_user}'");
         Accounts.TouchLogin(_user);
 

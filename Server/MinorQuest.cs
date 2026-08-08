@@ -2,8 +2,9 @@ namespace Server;
 
 /// <summary>
 /// The repeatable "slay one X" quest, ported from RTK <c>Accepted/Quests/MinorQuest.lua</c>. A class trainer
-/// offers it (menu: "Minor Quest" / "Complete Minor Quest"). On request it picks a random target from a tier
-/// (Minor, or Major/Epic once the player is high enough) whose level/stat ranges the player falls in, snapshots
+/// offers it by EAR, not by menu: stand near one and say "quest" (see <see cref="OnSay"/> — there are no click
+/// entries). On request it picks a random target from a tier (Minor only unless
+/// <see cref="Content.MinorQuestTiers"/> raises it) whose level/stat ranges the player falls in, snapshots
 /// the player's lifetime kill count for that target's mobs, and marks a legend. On completion it checks the
 /// player has killed one of them since (a kill-count delta), rewards experience scaled by tier, and records a
 /// "Completed N minor quests" legend. Abandoning locks out new quests for the tier's cooldown.
@@ -37,22 +38,32 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
         new("Epic",  1.0, 3, 21),
     };
 
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
-    {
-        yield return ("Minor Quest",          Quest);
-        yield return ("Complete Minor Quest", Complete);
-    }
+    /// <summary>No click menu at all: the minor quest is spoken-only. A path leader's menu shows only what it
+    /// teaches — you get a quest by standing near them and saying "quest". (RTK's trainer scripts DO list
+    /// "Minor Quest"/"Complete Minor Quest" as menu options, but that's its own 7.x UI; on 4.95 the quest is
+    /// the say-keyword flow below.)</summary>
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
 
-    // Spoken shortcuts, verbatim from RTK's four class-trainer scripts (warrior/rogue/mage/poet_trainer.lua):
-    // "quest"/"minor"/"minor quest" requests one; "complete"/"complete quest" turns it in.
+    // One verb does the whole loop, matching how it's spoken in game: "quest" asks for a quest, and once you
+    // are on one the same word turns it in if you've made the kill, or tells you you're still on it (with the
+    // abandon option) if you haven't. "complete" stays as an alias for the turn-in half, and "minor"/"minor
+    // quest" for the ask half, since RTK's four class-trainer scripts accept those too.
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         switch (speech)
         {
-            case "quest" or "minor" or "minor quest":     await Quest(ctx);    return true;
+            case "quest" or "minor" or "minor quest":     await Ask(ctx);      return true;
             case "complete" or "complete quest":          await Complete(ctx); return true;
             default:                                      return false;
         }
+    }
+
+    // "quest": start one, or resolve the one you're already on.
+    private async Task Ask(NpcContext ctx)
+    {
+        if (ctx.QuestStr(KActive) == "") { await Quest(ctx); return; }   // nothing active -> offer one
+        if (await TryComplete(ctx)) return;                             // kill made -> turn it in
+        await AbandonMenu(ctx);                                         // still hunting -> "you are already on…"
     }
 
     private static bool Between(long v, long lo, long hi) => v >= lo && v <= hi;
@@ -76,11 +87,15 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
             return;
         }
 
-        int tier = 1;   // Minor by default; higher tiers unlock with level (matches the Lua gating)
-        if (ctx.Level >= 10)
+        // Only the MINOR tier exists on 4.95, so saying "quest" hands one straight over with no "which type?"
+        // prompt in the way. RTK's Major/Epic tiers (and their rows in MinorQuests.csv, which are kept) are
+        // later content — raise MinorQuestTiers in ServerTuning.csv to 2 or 3 to restore the tier menu.
+        int tier = 1;
+        int maxTier = Math.Clamp(Content.MinorQuestTiers, 1, 3);
+        if (maxTier > 1 && ctx.Level >= 10)
         {
             var labels = new List<string> { Tiers[1].Label, Tiers[2].Label };
-            if (ctx.Level >= 15) labels.Add(Tiers[3].Label);
+            if (maxTier >= 3 && ctx.Level >= 15) labels.Add(Tiers[3].Label);
             int pick = await ctx.Menu("Which type of quest do you seek?", labels);
             if (pick < 1 || pick > labels.Count) return;   // cancelled
             tier = pick;
@@ -116,27 +131,32 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
     // ---- complete the active quest --------------------------------------------------------------
     private async Task Complete(NpcContext ctx)
     {
-        string key = ctx.QuestStr(KActive);
-        if (key == "")
+        if (ctx.QuestStr(KActive) == "")
         {
             await ctx.Say("You must begin a quest before you can complete it.");
             return;
         }
+        if (!await TryComplete(ctx))
+            await ctx.Say($"Please return when you have slain one {ActiveName(ctx)}.");
+    }
 
+    /// <summary>Turn in the active quest if its kill has been made; false (nothing said) if it hasn't, so the
+    /// caller can decide how to word "not yet". Assumes an active quest.</summary>
+    private async Task<bool> TryComplete(NpcContext ctx)
+    {
         int tier = ctx.Reg(KTier);
-        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, key);
-        if (quest is null) { ClearQuest(ctx, tier, abandoned: false); return; }   // stale key — reset cleanly
+        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.QuestStr(KActive));
+        if (quest is null) { ClearQuest(ctx, tier, abandoned: false); return true; }   // stale key — reset cleanly
 
-        bool met = quest.Mobs.Any(mob => ctx.KillCount(mob) > ctx.Reg(KKillPfx + mob));
-        if (!met)
-        {
-            await ctx.Say($"Please return when you have slain one {quest.DisplayName}.");
-            return;
-        }
+        if (!quest.Mobs.Any(mob => ctx.KillCount(mob) > ctx.Reg(KKillPfx + mob))) return false;
 
         ClearQuest(ctx, tier, abandoned: false);
         await AwardBonuses(ctx, tier);
+        return true;
     }
+
+    private static string ActiveName(NpcContext ctx) =>
+        Find(Tiers[Math.Clamp(ctx.Reg(KTier), 1, 3)].Label, ctx.QuestStr(KActive))?.DisplayName ?? "creature";
 
     private async Task AbandonMenu(NpcContext ctx)
     {

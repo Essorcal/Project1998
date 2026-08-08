@@ -46,7 +46,12 @@ public sealed class CharacterStore
         return string.IsNullOrEmpty(s) ? "_" : s;
     }
 
-    public bool Exists(string name)
+    public bool Exists(string name) => CharacterExists(name);
+
+    /// <summary>Static form of <see cref="Exists"/> — the table is keyed by the normalized username and the
+    /// lookup touches no instance state, so the shared auth rule (Shared/LoginAuth) can ask "does this
+    /// character exist?" without threading a store instance through. Case-insensitive (see <see cref="Key"/>).</summary>
+    public static bool CharacterExists(string name)
     {
         try
         {

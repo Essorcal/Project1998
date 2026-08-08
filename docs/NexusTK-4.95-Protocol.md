@@ -171,10 +171,32 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 
    **Login — client → server `0x03`:** body = `nameLen name pwLen pw 00`. Example decrypted:
    `03 04 "test" 07 "dragon5" 00`. **The client DOES send a password** (3–8 chars); the server verifies it
-   with **BCrypt** against the `accounts` table. A never-registered / legacy-migrated account has no hash →
-   **trust-on-first-use**: the first login sets the password to what was sent (so pre-auth characters aren't
-   locked out). On a wrong password the server replies with a `0x02` message box ("Incorrect password.") and
-   does **not** hand off. (Creation `0x02` carries `nameLen name pwLen pw 00 00 00` — same password field.)
+   with **BCrypt** against the `accounts` table. (Creation `0x02` carries `nameLen name pwLen pw 00 00 00` —
+   same password field.)
+
+   **Login never creates anything (hosting pass).** Three refusals, each a `0x02` message box with no
+   handoff — the client stays on the login screen showing the text:
+
+   | Case | Message |
+   |---|---|
+   | No character with that name | `That character does not exist.` |
+   | Character exists, wrong password | `Incorrect password.` |
+   | Character exists, no hash on file (pre-auth record) | `That character has no password set. Contact the server admin.` |
+
+   Trust-on-first-use is **gone** (`NEXUS_ALLOW_TOFU=1` re-enables it for a one-off legacy adoption): it
+   made every unregistered name a free account and let anyone claim a legacy passwordless character. The
+   only way a character comes into existence is the creation flow in §9. Names match **case-insensitively**
+   (both tables are `COLLATE NOCASE` on the normalized key) while the character keeps the casing it was
+   created with — world entry no longer overwrites the stored name with whatever the player typed.
+
+   Failed attempts are budgeted per source IP (default 10 / 5 min, `NEXUS_LOGIN_FAILS`), refused before the
+   BCrypt verify runs; a 3–8 char password does not survive an unmetered guessing loop, and `ConnGuard`
+   only limits how often an address may *connect*, not what it sends once connected. The same gate is on
+   the game channel's re-login path — otherwise the brute-force target just moves to port 2005.
+
+   **Logging:** the login channel's wire dump is OFF by default (`NEXUS_LOG_WIRE=1` to enable). These
+   packets carry the password in the clear, and the cipher is a fixed published XOR, so a "raw" dump is
+   just as readable as a decrypted one.
 
    **Server → client `0x03` (handoff):** tell the client where the game server is. Body layout
    (as implemented and confirmed working):
@@ -318,7 +340,8 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x03` | Login | `nameLen name pwLen pw 00` | Login channel. |
 | `0x10` | Arrival | `09 "NexonInc." nameLen name <token>` | Game channel, **plaintext**, client speaks first. |
 | `0x32` | Walk step | `dir(u8) stepCounter(u8) X(u16) Y(u16) pad` | Self-walk request (see §10). |
-| `0x06` | Walk + view refresh | same as `0x32` + `x0 y0 x1 y1 checksum` | Sent every few steps instead of `0x32`; handle identically for movement. |
+| `0x05` | **Map-data request** (view rect) | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + 4 junk bytes | **The terrain stream request — 4.95 sends this too** (corrected 2026-08-07; this table previously said 4.95 never sent `0x05`). Reply with an `0x06` cell block covering the rect (§13). See §10.7. |
+| `0x06` | Walk (long form) | `dir(u8) step(u8) X(u16BE) Y(u16BE)` + the same 4 junk bytes | Sent every few steps instead of `0x32`. Handle identically for movement. **Both** client packets are 10 bytes = a 6-byte payload + 4 trailing bytes; `0x32` is the same walk without them (7 bytes). **Those 4 bytes are UNINITIALIZED STACK, not a checksum** — ignore them (see §10.7). |
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
 | `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` (see §11). |
@@ -419,10 +442,23 @@ player `[0x4fd3ac]`), 1 = `%03d.MP3`, **0 = a positional wav/sfx**. Types 2/1 re
 `volume` is a raw byte the client **log-scales**: the handler computes `dB = 2000·log10(vol/100)` (so
 `vol=100` = 0 dB = nominal full, `vol>0` audible, `vol=0` silent), and the MIDI path then compresses it
 further against a base at `[snd+0x270]` — so the audible range is narrow and `>100` (up to 255) is the knob
-to push louder. The client dedups (`cmp bgm,[midi+8]`) so re-sending the playing track is a no-op. Send it
-on map entry / change (the server picks the track per map — `Content.BgmFor`); there is no original
-map→track table in the client files, so the assignments are the server's own. Songs are numbered `N.mid`;
-some tracks may reference instrument samples a given install lacks, but that only manifests at high volume.
+to push louder. The client dedups (`cmp bgm,[midi+8]`) so re-sending the playing track is a no-op. Songs are
+numbered `N.mid`; some tracks may reference instrument samples a given install lacks, but that only manifests
+at high volume.
+
+There is no original map→track table in the client files, so the assignments are the server's own, and they
+are made **per area, not per map** (`Content.BgmFor` over `MapBgm.csv`; the song *names* — `mist`, `tiger`,
+`dragon`… — are ours too, in `MusicTracks.csv`). Only the areas are listed: every other map inherits its
+nearest listed map's track through the `Warps.csv` graph, so a shop or a cave plays its area's theme and the
+track simply doesn't change on the way in. The few maps with no warp path to any area keep whatever is
+playing.
+
+**Timing gotcha (login).** A MIDI sent inside the world-entry burst is **dropped**: at that point the client
+has only just built its world object (the `0x02.00` trigger) and hasn't opened `Maps\TK<n>.map` yet. The
+`0x19` *type-0* login sfx sent two packets later in the same burst **is** audible, so this is the MIDI
+channel waking late, not the opcode being rejected. Hold the track and send it on the first packet the client
+sends back — its own `0x05` view request, ~125 ms after entry in the wire logs (`Session.ArmEntryMusic` /
+`StartEntryMusicIfArmed`).
 
 **`0x19` type 0 — spell sound-effect (SOLVED 2026-07-25, live-verified).** The type-0 path is **not** a flat
 "play sound N" — it's a positional-sound TLV parser, and RTK's `clif_playsound` (a later-client `type 3`
@@ -443,13 +479,147 @@ cast's effect (`0x29`) + this sound (`0x19`) to the whole map. **NOT** the `0x1A
 picks an action's sound from a fixed *action-type → sound* table (emote 22→311, sit 4→406), and **magic type 6
 → sound 0 → silent** no matter what byte we send (proven: `byte8=0` even on the audible emotes). Effect
 animation and sound are **separate** — the `0x29` effect ctor chain makes no play call, so sound rides its own
-`0x19`. Per-spell sound id from RTK's `pcalign` ladder (`Content.EffectSound`) or the spell's explicit
-`fx.Sound`. Sound files are `NexusTK.snd` (a PAK of `NNN.wav` + `N.mid`, non-contiguous, ids up to ~720);
+`0x19`. Per-spell sound + graphic come from the spell's own `spell_effects.csv` row (`Content.EffectSound` /
+`EffectAnim` are now plain column reads — see **Spell FX are data, not a ladder** below). Sound files are `NexusTK.snd` (a PAK of `NNN.wav` + `N.mid`, non-contiguous, ids up to ~720);
 `re/extract_snd.py` dumps them. **Best-effort only** — RTK's 6.x/7.x sound numbering doesn't perfectly match
 4.95's, and fan sites carry no sound data. Debug: `!snd <id>` auditions raw client sound ids live.
 
+**Calibrated sound ids (by ear, live 2026-08-04).** RTK's numbers live in a *later client's* sound space, so
+every id below was identified in-game against the real 4.95 `NexusTK.snd` and now overrides whatever RTK said.
+Everything not listed still runs on the ported RTK number and is a candidate for the same treatment.
+
+| Event | Id | Where |
+| --- | --- | --- |
+| Unarmed swing (hit or miss) | 009 | `Session._fistSfx` |
+| Weapon swing — blades | 331 | `Session.EquippedWeaponSound` |
+| Weapon swing — staves/wands | 335 | `Session.EquippedWeaponSound` |
+| Player swing that **lands** | 349 | `Session._hitSfx` → `PlayHitSfx`, layered on the swing sfx |
+| Mob swing (hit or miss) | 009 | `Session.MobSwingSfx`, fired from `World.Tick` |
+| Mob swing that **lands** | 001 | `Session.MobHitSfx`, fired from `Session.ApplyMobHit` |
+| Equip armor onto a bare body | 410 | `Session.GearSfx` (wire slot 2) |
+| Swap armor / take armor off | 411 | `Session.GearSfx` |
+| Draw or swap a weapon | 411 | `Session.GearSfx` (wire slot 1) |
+| Put a weapon away | 410 | `Session.GearSfx` |
+| Helms, rings | *silent* | `Session.GearSfx` — confirmed to make no sound |
+| Eat / use a consumable | 403 **+** 006 together | `Session.PlayEatSfx`, from `ItemEatAnim` |
+| Thunder Bolt / Spark / Singe (RTK sound 55) | 701 | `spell_effects.csv` `sound` column |
+| Soothe, Gateway | 708 | `spell_effects.csv` / `Session.LuaGateway` |
+| Successful login | 412 | `Session.cs` arrival burst |
+
+The swing/hit split is two separate sends: the swing sfx goes out on **every** attempt, the hit sfx **only**
+when the swing connects, and they stack. Note the player hit sound rides its own `0x19` rather than the `0x13`
+`hitSound` byte — that byte is real but 8 bits wide, and 349 doesn't fit.
+
+**Spell FX are data, not a ladder (2026-08-05).** Every spell's graphic + sound now come from the `animation`
+and `sound` columns of its own `spell_effects.csv` row. `Content.EffectAnim`/`EffectSound` are one-line column
+reads; there is no `pcalign` switch left in C#. To retune a spell: edit its cell, `!reload`, done.
+
+RTK stored this as `pcalign` — the 5th argument each spell passes to `global_zap`/`global_attack`/`global_heal`,
+flattening (visual family × alignment) into one int, with a `+100`/`+200` shift for Warrior/Rogue. Only the
+Damage and Heal archetypes used it; the other eight already carried explicit columns. `re/fill_spell_fx.py`
+resolved it once into those columns, so `pcalign` is now provenance only and never read at runtime.
+
+Resolving it surfaced that **all three available sources of a spell's alignment contain errors**, so the
+script cross-checks them and reports every disagreement rather than silently picking one:
+
+| Source | Errors found |
+| --- | --- |
+| `pcalign` (RTK Lua) | 8 — the whole poet `vital_spark` family passes `0`; `call_lightning`'s mingken+ohaeng members pass `0`; `lethal_strike`/`whirlwind` pass an aligned constant despite being unaligned |
+| `SplAlignment` (`Spells.csv`) | 2 — the `recover_rogue` family is tagged `0,1,1,2` (duplicate kwisin, no ohaeng) |
+| **position within the Lua file** | 0 — RTK writes a family as N tables in one file, ordered unaligned, kwisin, mingken, ohaeng |
+
+Position-in-file wins, being the only structural signal rather than a hand-typed value; it was corroborated by
+at least one other source in all 10 disagreements, and by the official manual's four parallel `… secrets`
+spell lists. The pass also deduped 4 rows that a scratch copy of `rogue/singe.lua` had produced, normalized
+Singe so it renders the same for rogue as for mage, and filled two cells the extractor had missed because the
+Lua passed a local variable (`slash_warrior` sound 60, and the `spellFX` spells). Four spells
+(`rogue/drain.lua`) are left with a blank sound on purpose — that file contains no `playSound` at all.
+
+**The animation id space, decoded from the client (2026-08-05).** `Effect.epf`/`.tbl`/`.frm`/`.pal` extract out
+of `NexusTK.dat` (`re/pak_extract.py`), and `re/render_effects.py` renders every animation to a contact sheet
+or gif. The table declares **`NumEffects 121` — ids 0–120**, not 0–127 as previously assumed.
+
+| File | Layout |
+| --- | --- |
+| `Effect.tbl` | text; per effect an `ID n, NumFrontFrames a, …, NumBackFrames b` line then `a+b` `Frame# N, Delay ms, …` lines. **`Frame#` is the absolute `Effect.epf` frame index** — no cumulative sum. The first `a` draw over the sprite, the last `b` behind it. |
+| `Effect.frm` | `u32` count (1432 = epf frame count) then one `u32` **per frame** = its palette index (0–10) |
+| `Effect.pal` | `u32` count then N 1056-byte `DLPalette` blocks: 32-byte header + 256 RGBA entries **at +32** |
+| `Effect.epf` | `u16` frameCount, `u16` w, `u16` h, `u16` pad, `u32` tocOff. **TOC lives at `12+tocOff`** (relative to the header, not absolute). Each 16-byte entry is `top,left,bottom,right (i16×4)` then `pixOff,stencilOff (u32×2)` — 4 shorts then 2 ints. Verified: all 1432 frames satisfy `stencilOff-pixOff == w*h`. Box coords are signed and usually negative — they're offsets from the cast tile, so the effect centres on its target. |
+
+Two decoding traps here, both of which produce plausible-but-wrong output rather than an error: the colour
+table is at **+32**, not the `+38` that `re/render_items.py` uses (at +38 every channel shears and everything
+renders magenta/blue), and the TOC field is **relative to the 12-byte header**.
+
+**Wire id = table index + 1.** The client loads `Effect.tbl` 1-based, so `0x29` byte *N* draws table entry
+*N−1* (`Session.SendEffect`, `EfxWireOffset = 0`, live-proven). So the `animation` column holds 1–121.
+
+**Animations identified against nexusatlas (2026-08-05).** The 2002-03 nexusatlas spell pages carry a capture
+of each spell's animation as a GIF; `re/scrape_atlas_spellfx.py` pulls them and `re/match_spell_fx.py` +
+`re/template_match_fx.py` match them to client effects. The GIFs are 1:1 captures of the client's own sprites,
+so **template-matching at native scale** (slide the client frame over the atlas frame, take the best
+normalised correlation) settles them exactly — many hit 1.000. The bbox-normalising scorer alone is not
+enough: it stretches each animation to its own bounding box and goes flat on small ones. The result table is
+`re/fx/animation_map.csv` (gif → effect id → wire id) and `re/fx/spell_animation_join.csv` (per spell).
+
+This confirmed the bulk of the existing `animation` values, including the one the code had explicitly flagged
+as unverified — `Session.SendEffect` warned the aligned heals "may not line up" with RTK's numbering. They do:
+`ohaengheal`→#62→63, `mingkenheal`→#63→64, `kwisinheal`→#64→65, matching the CSV exactly.
+
+**Every conflict was then rendered side by side and settled by eye** (`re/triage_anim.py`,
+`re/write_spell_anim.py`, sheets in `re/fx/review/`). 144 edits across four passes. The atlas won nearly every conflict,
+and several were systematic rather than one-offs:
+
+| Fix | Rows |
+| --- | --- |
+| Shapeshift/summon family was `12` (a dart); the real animation is `3` | 23 |
+| The melee-skill ids were ROTATED: Berserk 9→6, Desperate Attack 6→7, Whirlwind 7→9 | 3 |
+| `59` and `98` were SWAPPED: Augmentation/Magic Shield→98, Elemental Armor→59 | 8 |
+| Inner Blessing/Temper used Might's `11`; they are the "new might" `117` | 4 |
+| The drain family (Absorb/Drink of Souls/Parasite) used Heal's `5`; correct is `84` | 3 |
+| `dark_veil` 136 and `winters_shadow` 123 were outside the client's 1–121 range | 2 |
+| `lockup` pointed at `120`, one of the client's EMPTY effect slots | 1 |
+| Spells the atlas marks `none.gif`, now recorded as `-1` = confirmed silent | 67 |
+
+Three cases went the other way, which is why this is a decision table and not a blanket overwrite: Spark/Singe
+keep `28` (the atlas illustrates Thunder Bolt, Spark and Singe with a single Thunder Bolt capture that matches
+`27` exactly, and `thunder_bolt` already is 27 — so Spark/Singe use a genuinely different sibling bolt), and
+Fissure/Lava Surge keep `41`/`42` (the atlas tags both with `confuse.gif`, a tiny figure, but 41/42 are lava
+eruptions — an atlas mislabel). A similarity heuristic auto-kept three more as "sibling variants" that turned
+out to be wrong on inspection: it is only good for shortlisting, never for deciding.
+
+**The trap ladder comes from tswolf, not nexusatlas.** nexusatlas collapses Set Trap's whole ladder into two
+rungs, but [tswolf's 2001 rogue page](https://web.archive.org/web/20010724080903/http://www.tswolf.com/spells/rogue.shtml)
+has a `Graphic / Trap / Level / Mana Cost` table listing every rung with its own image, each `<img>` immediately
+followed by its own label. tswolf serves the *same image files* — all seven md5s are byte-identical to the
+nexusatlas copies — so the gif→effect mapping carries straight over:
+
+| Trap | Lvl | gif | id |   | Trap | Lvl | gif | id |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Dart trap | 26 | `dart` | 12 | | Spear Trap | 70 | `berserk` | 6 |
+| Flash trap | 35 | `might` | 11 | | Poison dart | 77 | `vex` | 1 |
+| Repeating dart | 44 | `dart` | 12 | | Death Trap | 88 | `deathtrap` | 44 |
+| Snare | 63 | `vex` | 1 | | Sleep Trap | 98 | `sanc` | 2 |
+
+Bladestorm trap reuses Lethal Strike's animation (9). Its other class pages carry no ladder tables, so they add
+nothing beyond nexusatlas.
+
+Coverage now: **498 spells carry a real id, 67 are confirmed to have NO animation (`-1`), 58 remain unknown** —
+of which 19 are GM/internal commands. The rest are poet pet-summons, rogue utility skills and three late trap
+variants (`cutting_edge`, `swords_dance`, `tigers_ambush`) that neither fan site documents.
+
+Note the column split: `-1` in `animation` means "no graphic", and says nothing about `sound` — the two are
+independent, and a spell with no animation can still play a sound.
+
+Caveats worth keeping: the atlas reuses **one GIF per visual family** (10 mage spells share `ignite.gif`), so
+it resolves a spell's family, not always its exact id — where the client holds near-identical siblings (the
+bolts #26/#27/#29) the atlas cannot say which a given spell uses. `ls.gif` and `ww.gif` are byte-identical, so
+Lethal Strike and Whirlwind are indistinguishable from this source. `kwisinarmor.gif` was never archived. The
+subpath pages (`ilsan`/`eesan`/`samsan`) 404 in every capture, so subpath spells have no atlas animation.
+**Use the 2002-03 captures, not the 2018 ones** — the later site serves `/photo/spells60/`, a 6.0-era art set
+that would silently poison a 4.95 match.
+
 **Missing-entity policy (2026-07-25): no fallbacks.** When an effect/sound id doesn't exist in the 4.95 client
-(e.g. `Effect.tbl` has only ids 0–127, so RTK anims ≥128 like `dark_veil`'s 136 are absent; a few RTK sounds
+(`Effect.tbl` ids run 0–120, i.e. wire 1–121, so RTK anims above that like `dark_veil`'s 136 are absent; a few RTK sounds
 have no matching `.wav`), we send it as-is and let the client show/play **nothing**, rather than substituting a
 stand-in — so a broken entry is visibly empty and easy to spot. `!efx <id>` auditions raw `Effect.tbl` ids
 (0–127) live to help identify the real 4.95 effect for a spell whose RTK id doesn't line up (a version-gap
@@ -552,7 +722,7 @@ layout:**
 |---|---|---|
 | `[0]` | **Body / sex** | `0` = male, `1+` = female. |
 | `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `!ride`/`!mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
-| `[2]` | **Face** | Distinct faces; range is larger than 8 (accepts values ≥ 0x34). |
+| `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head: 12 poses × facings, sub-frame 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
 | `[4]` | **Armor color / dye palette index** (RTK `player.armorColor`) | No visible change for `0..8` (all render as the base/undyed color — the earlier sweep's range was too narrow to catch it). LIVE-confirmed 2026-07-27 via a real-time Frida byte-sweep during a weapon toggle: `16`/`32`/`64`/`128`/`255` visibly recolor the worn armor. Exact palette mapping not yet catalogued. **Now driven by `Character.ArmorColor`** — persisted, carried in `PlayerSnapshot` so peers see it too, and set by the Arena Master's war paint (§11e, `WarPaintAbility`). Sweep/calibrate the real index→color map with the `!dye <n>` GM command. |
 | `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
@@ -564,8 +734,11 @@ layout:**
 > profile therefore emit the worn item's `Look` when a weapon (`Type 3`)/shield (`Type 5`) is actually equipped,
 > else `0xFF` — keyed on slot occupancy (a worn weapon with `Look == 0`, e.g. Novice sword, still shows sprite 0).
 
-**There is no hair slot** in this form. In 4.95, hair is not renderable via `0x33` (it was set by
-in-game stylist NPCs). This is a hard limit of the packet, not a server bug.
+**There is no separate hair slot** in this form, and creation byte `[4]` ("hair") has nowhere to go —
+but that does *not* mean 4.95 characters have no hair. `Head.epf` heads are **head + hairstyle baked
+together**, so the single face byte `[2]` picks both at once (see the render sheet: the 90 heads differ
+mostly by hair). An independent hair id can't be sent; a different hairstyle means a different face id.
+This is a hard limit of the packet, not a server bug.
 
 **The 'r' Ride key vs. `!ride`/`!mount` (fixed 2026-07-26).** These now do different things. `!ride`/
 `!mount [0|1]` (`Session.ToggleMount`) is a plain GM/debug toggle — flips `Character.Mounted` unconditionally,
@@ -577,9 +750,29 @@ is facing** (`FrontTile()`, checked via `World.MobNear(..., radius: 0)` — card
 player's own melee attack; diagonal doesn't count, corrected same day after the user caught it working
 diagonally) — and **despawns that mob** (`World.DespawnMob`: no loot/exp, and if it was a spawn-point mob
 the point is freed to respawn normally, like a kill). With no horse faced, 'r' just replies "There is no
-horse to ride here." and does nothing. **Dismounting spawns a fresh "horse" mob back onto the tile in
-front of the player, facing them** (`SummonWorldMob`, same path as `!summon`) — so the horse you rode away
-is physically set back down when you get off, instead of just vanishing.
+horse to ride here." and does nothing. **Dismounting spawns a fresh "horse" mob back down beside the
+player, facing them** (`SummonWorldMob`, same path as `!summon`) — so the horse you rode away is physically
+set back down when you get off, instead of just vanishing.
+
+**Where the dismounted horse lands (fixed 2026-08-06).** `Session.DismountTile()` checks the **4 cardinal
+neighbours only**, **clockwise from the tile the rider faces** (`dir`, `dir+1`, `dir+2`, `dir+3` — the
+0=N 1=E 2=S 3=W encoding is already clockwise, so that's faced/right/behind/left), and takes the first free
+one; if all four are taken it **stacks the horse on the rider's own tile** rather than dropping it. **No
+diagonals** — nothing in this game is diagonally adjacent (movement, melee reach, and the mount check
+itself are all cardinal), so a corner tile is never a valid slot. Free = in bounds + not
+`MapData.BlockedMove` (ground pass flag AND the `SObj` object-wall, the same two-layer test the walk uses)
++ no mob (`TileHasMob`) + no player (`World.PeerAt`). The horse always faces back toward the rider. Before
+this, dismount just `Math.Clamp`ed the faced tile to the map bounds and spawned there, so horses appeared
+inside walls, in water, and on top of whatever already stood in front of you.
+
+**What being mounted BLOCKS (2026-08-06).** `Character.Mounted` is a state gate, the same way RTK's
+`pc_equipitem` gates on it. Already gated: equip / unequip / use / eat (`Session.Items.cs`, minitext
+"You cannot do that while riding a mount."). Added: **casting** (`HandleCast`, minitext "You can't do
+that while riding a mount." — checked before the spell slot is even resolved, so no spell is exempt,
+not even Hyun Moo Revival) and **melee** (`HandleAttack` — **silent**, no message at all, matching the
+live client and matching how an over-rate swing is dropped). The melee gate sits before the swing-rate
+gate so a mounted attack key doesn't burn the swing interval; the shared action-budget bump for `0x13`
+still happens at dispatch, as in RTK.
 
 **Minimum visible self:** `appearance = [sex, 0, face, 0, 0, 0, 0]`, `renderKind = 1`. Any nonzero
 value in `[1]` (the form byte) risks blanking the whole sprite — that was the root cause of the
@@ -633,6 +826,14 @@ Creation is two login-channel packets:
 
 1. **`0x02` NameCheck** — `nameLen name pwLen pw 00 00 00` (name + password). Server replies `0x02`
    with payload `00` = "available / OK".
+
+   **Refusal.** No "name taken" reply form has been observed from a real server, so this server refuses by
+   sending ONLY the message box (`0x02` wrapping a `0x0F`, the same form `"Incorrect password."` uses on
+   this screen) and withholding the availability OK — the client then can't advance to appearance
+   selection. Verified over the wire: the client receives and displays the message. The real boundary is
+   `0x04`, which re-runs the same gate, because a hand-rolled client can send `0x04` without ever asking
+   `0x02`. (Before this, the name check answered "available" unconditionally and `0x04` did a
+   load-then-overwrite, so re-"creating" an existing name reset that character's password.)
 2. **`0x04` CreateAppearance** — **5 bytes**: `[0]=face [1]=sex [2]=nation [3]=totem [4]=hair`.
    Field ORDER confirmed against the real RTK char-server source (`RTK-Server/rtk/src/char/logif.c`,
    `logif_parse_newchar`): its call `char_db_newchar(name, pass, totem=RFIFOB(39), sex=RFIFOB(37)%2,
@@ -938,6 +1139,99 @@ refresh **recenters** the player even if realm-center had them parked off-center
 on, `HandleRefresh` re-locks the freeze at the new centered origin so it recenters *and* stays locked. RTK
 also emits a trailing `0x22 03` terminator, but `0x22` is the default no-op on 4.95 (remap slot `0x2a`), so
 it is not needed to end the refresh.
+
+### 10.7 Terrain streaming (`0x05` → `0x06`) — 4.95 streams its map too ✅
+
+**Corrected 2026-08-07.** This document previously asserted that the 4.95 client draws terrain *only* from
+its local `Maps\TK<id>.map` files and that `0x05` was unused on 4.95. Both were wrong. The client sends a
+**map-data request** exactly like 5.33's, and one session log contains **2,161 of them**, every one dropped
+by the server with `?? 0x05 with no V495 handler`:
+
+```
+dec : 00 00 00 00 0c 0c 00 63 c2 00     x0=0    y0=0    w=12 h=12   (at connect)
+dec : 00 6d 00 7e 13 11 00 d1 1c 00     x0=109  y0=126  w=19 h=17   (viewport + pad)
+```
+
+The local `.map` files are a **disk cache the client fills from this stream** (§10.8), not its only source,
+which is why some 4.x client distributions ship with an empty `Maps` directory.
+
+**The 4 trailing bytes are NOT a checksum — they are uninitialized stack.** This was assumed to be a view
+checksum (a plausible cache-validation hook: compare it server-side and skip streaming when the client's
+copy is already right). A Frida capture of 30 packets alongside the client's exact cell array
+(`re/frida_mapchk.py`) disproved it outright:
+
+* the *same* cell array produced `0x0000`, `0x82e7` and `0xda28` on consecutive steps;
+* two *different* arrays both produced `0x2638`;
+* map 3800 produced `0xbbbb`, a repeated fill byte, and `0x0000` recurs across unrelated states.
+
+They are deterministic only in the sense that the same preceding code path leaves the same residue on the
+stack — which is what makes them look content-derived if you only sample a little. **There is no
+cache-validation mechanism in this protocol**; the server cannot tell what a client already has cached, so
+it streams what the viewport needs and accepts the redundancy.
+
+The **request** is identical on both clients. The **reply** differs only in cell width, because the two
+clients pack passability differently:
+
+| | reply body |
+|---|---|
+| 5.33 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ tile(u16BE) pass(u16BE) obj(u16BE) } × w·h` |
+| 4.95 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ ground(u16BE) object(u16BE) } × w·h` |
+
+4.95's cell is the same shape the door cell-patch already sends (`ground` = tile in the low 14 bits,
+passability in the top 2 — `MapData.GroundWord`), so a streamed cell is byte-identical to what the client
+would have read from its own copy. No leading flag byte on either client. Receive handler `0x44fb90` writes
+each cell into the client's **live map array** and then redraws the patched rect, so the write itself is not
+viewport-gated and `height > 1` is fine — the door path only ever sends one row because that's all a door
+needs. Server code: `Session.HandleMapRequest`, one branch per `_ver`. Requests arriving before `0x15`
+enter-map (the client fires two `(0,0) 12×12` at connect) are ignored; it re-asks once in-world.
+
+**The client re-requests as it scrolls — roughly every 5 steps.** Measured over one 61 MB server log:
+2162 requests / 10598 walks (0.204) in sessions where the server never replied, and 139 / 810 (0.172) after
+it started replying — the same rate either way, so this is scroll-driven, not retry-on-silence. Each request
+is sent TWICE (identical rect and body); consecutive distinct rects step by ±1/±2 tiles. An earlier version
+of this section claimed the client only ever requested on map entry; that was wrong.
+
+**But it does not always re-request, and the gap is what causes black walls.** On map 1000 (18x25) a player
+entered at (8,23), got one rect (0,9) 18x16, then walked 11 tiles north to y=6 — into rows 0-8, which were
+never sent — with **no** further request. Map 41 (60x60) re-requested normally over the same kind of walk.
+The distinguishing feature is unconfirmed; the obvious candidate is that map 1000 is exactly as wide as the
+viewport, so its `x0` is pinned at 0 and only `y0` could change. Because of that gap the server also PUSHES
+terrain as the player moves (`Session.StreamViewport`): after each committed step it emits only the newly
+exposed strip (~21 cells, ~84 bytes) rather than the whole viewport (~1.3 KB). The tracker holds the LAST
+window rather than a running union of everything sent — a union is a bounding box, and a bounding box claims
+coverage it never sent (walk far north, then east: the new eastern columns only went out for the current
+rows, yet the box marks them covered for the whole accumulated height).
+
+**This push overlaps what the client asks for**: 755 replies were sent against 139 requests in the measured
+window, so most of the traffic is server-initiated and probably redundant on maps where the client
+re-requests properly. Gating the push on "the client hasn't asked recently AND the viewport left the last
+sent window" is the obvious refinement — see `NEXUS_V495_PUSHMAP`.
+
+### 10.8 The client's map cache is a memory-mapped file ✅
+
+`Maps\TK<id>.map` is not a read-only asset — the client opens it **read/write** and maps it:
+
+```
+CreateFileW("Maps\TK%d.map", GENERIC_READ|GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_FLAG_RANDOM_ACCESS, NULL)
+      -> [map+0x3e4]      ; OPEN_ALWAYS creates it when missing; CreateDirectoryW("Maps") runs first
+   ... WriteFile zero-fill to extend, or SetFilePointer+SetEndOfFile to truncate, to the exact map size
+CreateFileMappingW(hFile, NULL, PAGE_READWRITE, 0, 0, NULL)    -> [map+0x3e8]
+MapViewOfFile(hMapping, FILE_MAP_ALL_ACCESS, 0, 0, 0)          -> [map+0x3ec]
+```
+
+`+0x3ec` is the live cell array the `0x06` receive handler writes into, so **every streamed cell is
+persisted to disk by the OS** — there is no explicit write in the network path. Open path `0x44a780`
+(called from the enter-map path `0x44c5e0` with dims already stored at `+0x3e0/+0x3e2`); close path
+unmaps and closes with **no** `DeleteFile`, so the cache is never cleaned up.
+
+Map-object layout: `+0x3de` id · `+0x3e0` width · `+0x3e2` height · `+0x3e4` file handle · `+0x3e8` mapping
+· `+0x3ec` mapped view. Cell accessor `GetCell(out,x,y)` at `0x44cbc0` (bounds-checks then `[cells+i*4]`).
+
+**Gotcha — UAC VirtualStore.** The path is relative and the client is a 2001-era 32-bit exe with no
+manifest, so on modern Windows a non-elevated client writing into `C:\Program Files (x86)\...` is silently
+redirected to `%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Nexon\NextAeon\Maps\`. Reads are redirected
+too, and the virtualized copy WINS. Deleting the real `Maps` directory therefore does **not** give you a
+clean test — stale caches there will still be drawn. Clear the VirtualStore copy as well.
 
 ---
 
@@ -1350,9 +1644,33 @@ call site that ever passes reason `1`.
 sending reason `0` when moving an item from bag to gear, which showed the misleading "removed" line for an
 item that wasn't actually removed from the character. RTK's real `pc_equipscript` (`pc.c:1668`,
 `pc_delitem(sd, sd->invslot, 1, 6)`) uses reason `6` for equipping — the same code `ITM_USE` consumption uses
-(`pc.c:2085`) — not reason `0`. Fixed to send reason `6` on equip. `0` remains correct for genuine
-remove-without-a-line cases (sell/bank/quest-turn-in/GM-delete), which is what it was already used for
-elsewhere.
+(`pc.c:2085`) — not reason `0`. Fixed to send reason `6` on equip.
+
+**The real 4.95 reason table (found 2026-08-06) — and it is NOT RTK's numbering.** The messages aren't
+compiled into `NexusTK_local.exe` at all: they're plain CRLF-separated lines in **`Inter.dat`** (lines 85-96,
+byte `0xdbb148`), which the client indexes by reason and `sprintf`s the slot's drawn item into. Dumping that
+run gives the mapping outright — and the tail of it disagrees with the table RTK's `clif_senddelitem`
+(`clif.c:7026`) documents for its own later client, the same "RTK ids live in a later client's space" pattern
+as the sound ids (§7.3):
+
+| reason | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **4.95** | dropped | ate | smoked | threw | shot | used | posted | decayed | **sold** | **gave** | **broken** | **removed** |
+| RTK says | Drop | Eat | Smoke | Throw | Shot | Used | Posted | Decayed | *Gave* | *Sold* | *Removed* | *\*Item name\** |
+
+Consequences: **every** reason 1-12 narrates, so there is no "silent remove" among them — and reason `0`,
+which has no line of its own (line 84 is `"To: "`), rendering the *last* line is the signature of a
+`default:` branch. Whether an out-of-range reason is therefore silent, or falls through to the same default,
+is the one thing the table can't answer; `ServerTuning.csv`'s `SilentDelReason` (default 15) exists to settle
+it live. Note line 97 is `"Your profile has been saved."`, so a raw-indexing handler would show that for
+reason 13 — pick probe values inside the table, not past its end.
+
+Which reason each removal path should use, per the live game (user-confirmed 2026-08-06): **banking and
+selling say nothing** (`SilentDelReason`); a **drop** is `1` and a **full pack** is our own NPC line, both
+already correct; handing an item over in a **trade** is `10` "You gave `X`."; a **parcel** is `7`
+"You posted `X`." (it was `1`/`4`, announcing a posted parcel as dropped or thrown). Still using reason `0`
+(→ "`X` removed."), unreviewed: quest turn-ins (`TakeItem`) and the GM bag wipe. **Equipping** sends `6`,
+which on this client is "You used `X`." — RTK's `pc_equipscript` number, but its client's wording.
 | `0x37` | equip-window entry | `equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00` |
 | `0x38` | unequip-window | `spot(u8) 00` |
 | `0x07` | ground item (§7.2) | floor items go through the **`0x07` static base-object** path (below), NOT `0x16` — graphic = item's `Icon` (Item.epf frame), encoded via `IconWire` |
@@ -1459,8 +1777,10 @@ wall, not only at water/cliffs. Enforcement is `NEXUS_PASS` (default on; set `0`
 
 **Doors ('o' key / `0x20`) — WORKING (2026-07-25).** A door is an object drawn over the map. Pressing 'o'
 facing a door **toggles its open/closed graphic in place** — RTK `openDoors` (`open.lua`) does
-`setObject(m,x,y, closed↔open)`, e.g. Buya door `342 ↔ 364` (some doors span 3 tiles: x, x+1, x+2). It is
-**cosmetic only** (passability doesn't change) and shared world state. Entering a building is done by
+`setObject(m,x,y, closed↔open)`, e.g. Buya door `342 ↔ 364` (some doors span 3 tiles: x, x+1, x+2; the city
+gates span 4). It is shared world state. (An earlier version of this paragraph said "cosmetic only,
+passability doesn't change" — that predates the `SObj.tbl` object-wall layer, §collision. It is wrong for any
+door whose closed graphic is flagged solid there, which includes the city gates.) Entering a building is done by
 **walking** onto its warp tile (§warps), not by 'o'. Not every door leads anywhere — many are **decorative
 facades** (a passable gap in a wall sprite with no interior); RTK's authoritative `Warps` table confirms which
 doors are real entrances. `Session.HandleOpen`: reads the faced object, looks it up in the door toggle table
@@ -1468,6 +1788,20 @@ doors are real entrances. `Session.HandleOpen`: reads the faced object, looks it
 sends the **`0x06` cell-patch** (see §13) to every client on the map to redraw. The client re-renders the
 object layer over the patched rectangle regardless of whether the ground word changed. Full door toggle table:
 memory `nexustk-495-doors`.
+
+**City gates + the late-arrival replay (2026-08-06).** RTK's 4-tile-wide gate run `17670-17673 ↔ 17680-17683`
+is a *later* client's object space (4.x object ids are a 14-bit field, max 16383); its 4.95 counterpart is
+**`5-8 ↔ 15-18`** — same width, same `+10` pairing, and every gate in the game data sits between wall pieces
+`1-4` and `9-12`. Which half is open comes from **`SObj.tbl`, not the id order**: `5-8` are `0x0f` (solid all
+four sides) = **closed**, `15-18` are `0x00` = **open**. There are 22 such gates; 19 ship open, 3 ship shut
+(Kugnae south, City Limits `4717`, map `4951`), which is why 'o' looked broken in *opposite* ways at Kugnae's
+two gates — neither id was in the toggle table, so the south one was an unopenable wall and the north one an
+uncloseable hole. Closed ids now carry `defaultOpen=1` in `DoorObjects.csv`, applied per cell in
+`MapData.Load`. Because the 4.95 client draws its **own local** `.map`, a server-side object change is invisible
+until patched: `MapData` therefore tracks every cell that differs from the file, and `Session.SyncMapDoors`
+replays them as `0x06` runs on map entry. That also fixes a pre-existing bug — a door opened by one player was
+never shown to anyone who arrived afterwards, so their first 'o' appeared to do nothing (it was toggling a door
+they were being drawn as already-shut).
 
 **Scripted-tile warps — Mythic Nexus zodiac caves (map 41) — WORKING (2026-07-25).** Not every warp lives in
 the SQL `Warps` table. The 12 zodiac cave entrances on Mythic Nexus (map 41) are RTK **Lua tile-scripts**
@@ -1724,11 +2058,30 @@ RTK `clif_scriptmes` / `clif_scriptmenuseq` / `clif_inputseq`). The head is shar
 | Menu | `02 02` | `count(u8)` then each item = `len(u8)+ASCII` | button list |
 | Input | `04 04` | `0`(dialog2 len) `*`(0x2a sep) `0`(dialog3 len) `00 00` pad | free-text entry |
 
-Shared head/prompt layout (all three): `body[2..5]` npc id(u32BE) · `[6]` head kind (0 none / 1 npc gfx /
-2 item gfx, classified from the graphic like RTK) · `[7]=1` · `[8..9]` gfx(u16BE) · `[10]` color · `[11]=1`
-· `[12..13]` gfx · `[14]` color · `[15..18]`=1 · `[19]` prev-button · `[20]` next-button · `[21..22]` prompt
-len(u16BE) · `[23..]` prompt (ASCII). **Portrait gfx = `0x8000|look`** (creature sprite from Monster.epf,
-same encoding as the on-map spawn — RTK `clif.c:3190`); `0` → no portrait.
+Shared head/prompt layout (all three): `body[2..5]` npc id(u32BE) · `[6]` head kind · **`[7]` portrait tag +
+its payload (VARIABLE length, see below)** · a fixed 4-byte trailing descriptor `1, gfx(u16BE), color` ·
+then `=1`(u32) · prev-button · next-button · prompt len(u16BE) · prompt (ASCII). With the ordinary 4-byte
+sprite portrait that puts the trailing descriptor at `[11..14]`, the `=1` at `[15..18]`, prev/next at
+`[19]`/`[20]`, len at `[21..22]` and the prompt at `[23..]`. **Portrait gfx = `0x8000|look`** (creature
+sprite from Monster.epf, same encoding as the on-map spawn — RTK `clif.c:3190`); `0` → no portrait.
+
+**The portrait is a discriminated union — `body[7]` is the tag** (RE'd from the 4.95 client 2026-08-06;
+`0x44f530` → `0x46c050` switches `body[0]` across **9** dialog kinds, and all three we use run the same
+head code: `lea edx,[edi+6]` → `call 0x4360e0` → `lea esi,[eax+0xa]`). `0x4360e0` dispatches on the tag and
+returns the descriptor's total size, so **every field after the head shifts by it**:
+
+| `body[7]` tag | Parser | Payload | Total |
+|---|---|---|---|
+| `0` | `0x436120` | **the 7-byte player appearance — byte-for-byte the same parser the `0x33` player look uses (§8)** | 8 |
+| `1` | `0x436200` | `gfx(u16BE)` + `color` — an NPC/creature sprite | 4 |
+| `2` | `0x436240` | item icon | — |
+| other | — | no head at all | 0 |
+
+So **a 4.95 NPC dialog can show a full player paperdoll as its portrait**, not just a creature sprite —
+`Session.WriteHead` emits either form and `DialogPortrait.Doll` selects it. `body[6]` (head kind) is *not*
+the selector: the client only inspects it for the value `2`, which force-overwrites the tag with `2`.
+`AppearanceAbility`'s Change Face uses this to preview a candidate head on the player's own doll without
+touching the character (§11e) — the same thing RTK does with a throwaway `clone` NPC and `dialogtype=2`.
 
 ### `0x3a` client → server — the reply
 
@@ -1753,6 +2106,17 @@ data flags (so a plain stocked shop is zero-config). Each NPC declares only what
   id (smith, inn), prices from `Items.csv` (`BuyPrice`/`SellPrice`). Uses menus, **not** the `0x2f` grid.
 - **Bank** (`BankAbility` → `DlgBank`): deposit/withdraw coin (via the input box, capped 100M) and items;
   stored on `Character.BankMoney`/`BankItems`, persisted in the character JSON. Joint accounts out of scope.
+- **Change Face / Change Gender** (`AppearanceAbility`, RTK `general_npc_funcs.changeFace`/`changeGender`;
+  RTK's third option "Eyes" isn't ported). Browsing is a **try-on that mutates nothing**: each step draws the
+  player's own paperdoll wearing the candidate head in the dialog's *portrait* slot (`DlgMenuFace` → the
+  tag-0 player head above), so backing out needs no undo, an abandoned browse can't strand a wrong face in
+  the save file, and the room doesn't watch you flicker through 90 heads. Only the paid pick writes anything
+  (`CommitFace` → `RefreshAppearance` + save, which is also what finally shows peers the new head). RTK
+  achieves the same isolation with a throwaway `clone` NPC + `player.gfxFace`. **The candidate list is
+  `0..89`, the 4.95 client's real head range (§8) — NOT RTK's `200..216`, which is a later client's id space
+  and rendered every browsed face headless** (fixed 2026-08-06). Because 90 entries is a lot of dialog
+  round-trips, the loop starts on the face you're already wearing, shows "n of 90", wraps at both ends
+  (RTK clamped — it only had 17), and offers a coarse "Skip ahead 10".
 - **War paint** (`WarPaintAbility`, RTK `arena_master.lua` → `general_npc_funcs.warPaint`): the Arena Master's
   (`ArenaMasterNpc` — "Mountain"/"Tower") *only* service, an armor dye. Bleach back to base (10g) when dyed;
   else pick 1 of 8 team-battle colors (20g); level-99 characters are also offered special dyes (Brown/Wasabi/
@@ -1793,7 +2157,8 @@ with no evidence of existing in original 4.x/5.x NexusTK, so `TransportAbility` 
 ## 11f. Monster combat AI, death/revive, and the home-city spawn
 
 **Combat AI** (`World.Tick`, `Mob.TargetId`/`Level`/`AttackTime`) mirrors RTK's actual `mob_ai_normal.lua`
-threat model for the *fights-back* half — a mob only chases once hit. `World.TryDamage` takes
+targeting for the *fights-back* half — a mob only chases once hit. (A single `TargetId`, not a threat score
+per attacker: RTK's `AI/threat.lua` table is later-server content, see §"RTK's threat table".) `World.TryDamage` takes
 an `attackerId` and, on a non-lethal hit, sets `mob.TargetId` to the attacker. Each tick, a targeted mob
 
 **Unprovoked aggro** (fixed 2026-07-26 — "monster aggro is not working as expected, some monsters should
@@ -1821,6 +2186,47 @@ for `World.MobSwingDamage(mob.MinDam, mob.MaxDam)` damage (see below). It gives 
 the target dies, disconnects, or strays more than `ChaseLeash` (8) tiles from the
 mob's home tile. Both melee (`Session.HandleAttack`) and spell damage (`CastDamage`/the `Damage` case in
 `ApplyCast`) pass `_char.Id` as the attacker, so either can provoke a fight.
+
+##### The chase step is RTK's `FindCoords`, and it is meant to be stupid (2026-08-06)
+
+`World.StepMobToward` is a port of **`rtklua/Accepted/Mobs/mob.lua:299 FindCoords`** — the real 4.95 chase
+step, reached from `mob_ai_normal.move`/`.attack`. Every chase in the world goes through it (provoked mobs,
+both pet movers, pet retaliation), so obstacle handling can't diverge between them.
+
+RTK's algorithm in full: roll `checkmove = math.random(0, 2)`; if ≥1 try vertical-then-horizontal, else
+horizontal-then-vertical; within that order try **only** the one or two directions that close the gap
+(`mob.y < player.y -> side 2`, and so on), taking the first that isn't blocked. **That coin flip is the
+entire cleverness of 4.95 mob pathing.** No A*, no map search, no lookahead, no memory.
+
+What it produces — verified by simulating the port before shipping it:
+
+| Situation | Behaviour |
+|---|---|
+| Open ground | closes normally (19 ticks over 10 tiles diagonal) |
+| Single rock / corner, target off-axis | rounds it every time — the *other* axis is still "toward" |
+| Short wall (5 wide), target straight behind | gets round it 200/200 — the shuffle reaches the end |
+| Endless wall, target straight behind | **never** gets through |
+| Pit, target on the near side, stairs on the far side | **never** escapes — paces at the bottom forever |
+| Lateral spread while pinned | offsets −5…+5, peaked at 0/±1, tails rare |
+| Stepping directly away from the target | **never** |
+
+One deliberate departure from `FindCoords`, in its "nothing worked" branch: RTK flails at up to **11 fully
+random sides**, which lets a stuck mob walk eleven tiles straight away from you — that does not happen in the
+real game. The mob shuffles **sideways only** instead: the two directions perpendicular to the axis it's
+stuck on, never the one straight back. Run *length* is not the constraint — `Mob.DetourDir`/`DetourLeft`
+carry a shuffle 1-3 tiles usually and occasionally up to 6, so it isn't metronomic (without a run counter
+every shuffle is exactly one tile out and one back, because the closing step always wins the next tick). It's
+the *direction* that has to stay honest.
+
+RTK's other fallback — re-rolling `mob.target` to a random nearby player when it can't reach the current one
+— **is** ported, gated on `Mob.Aggressive` (a creature fighting only because you provoked it should keep
+pacing after *you*, not go find someone else). It's usually a no-op, since there's usually only one player in
+range. Landing a hit always outranks it: `World.TryDamage` re-points the mob at whoever hit it and clears any
+in-progress shuffle, so **zapping something always drags its aggro onto you, wall or no wall.**
+
+**Do not make this smarter.** A mob that solves a pit is wrong for this game. The bug being fixed here was
+narrower: the step was previously a single greedy move that gave up when blocked, so a mob with a wall, a
+tree, or another creature between you would stand on one tile facing you and never even try sideways.
 
 **Mob damage was massively under-tuned (fixed 2026-07-26 — user: "Going into Dragon 1 as a newbie with
 250HP, I should not be surviving even a single hit... 50 damage or something. REALLY off"):** the original
@@ -2009,7 +2415,8 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     RTK's wipe is total). Player `Protection` isn't modeled (only mobs carry it), so that term is 0 for a PC
     target — a known, minor simplification.
   - **Poet revive family** (Resurrect/Return Spirit/Ming-Ken Blessing/Death Undone, 4 spells): heals a dead/
-    ghost player back to full in place, reusing the existing `ReviveAt` (same code path Silver Thread uses).
+    ghost player back to full in place, reusing the existing `ReviveAt` (Silver Thread no longer shares this
+    path — as of 2026-08-06 it only warps; see §11k).
     Fixed 3000 mana, 8s cooldown. `Content.IsReviveSpell`/`Session.CastRevive`. RTK also blocks reviving a
     currently-hostile PvP target (`player:canPK`) — not modeled since this server has no PvP/hostility-flag
     system yet, so that guard is simply absent, not faked.
@@ -2050,7 +2457,18 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     mana-transfer/cleanse/revive families use).
   - **Trap-placement subsystem** (9 real castable ids — `set_trap`, the dispatcher with `SplQuestion` "What
     trap? >", plus the 8 `set_X_trap` spells Dart/Snare/RepeatingDart/Flash/Spear/Poison/Death/Sleep,
-    level-gated 26/33/44/55/66/77/88/99): an entirely NEW hidden-hazard-entity subsystem, `World.Trap`
+    level-gated 26/33/44/55/66/77/88/99). **ERA NOTE:** only the *dispatcher* is 4.95 content. The 8
+    individual trap spells were added by the **2003-07-01** reset, two years after this client shipped —
+    archive `nexus_news.md` that day carries the Dream Weaver board post relayed by Growl ("the ability to
+    split your trap spells into several spells"), Rachel's mechanics writeup ("Set traps spell still exists,
+    however you can also learn each individual trap spell ... so that you don't have to type in the name"),
+    and Conro confirming the launch bug that Spot traps couldn't see them (fixed 2003-10-31). The NexusAtlas
+    pages dated 2003-11-04 are Rachel's *site*-maintenance list, not the patch. They are therefore gated OFF
+    by default (`Content.IsOutOfEraSplitTrap`): dropped from `SpellsForClass` (tutor menus + `!spells`),
+    pruned from an existing book on world entry, and refused at `HandleCast`. The mechanics below are
+    untouched — the dispatcher resolves the same `set_X_trap` defs internally, so every trap kind still
+    works, you just have to type its name. Re-enable with `SplitTrapSpells,1` in `ServerTuning.csv` +
+    `!reload`. The subsystem itself: an entirely NEW hidden-hazard-entity layer, `World.Trap`
     (id/x/y/kind/ownerId) held per-map alongside `GroundItem`s but NEVER broadcast/drawn (invisible until
     triggered). `World.PlaceTrap`/`TrapsNear` are the public API; triggering is wired into `World.Tick`'s
     EXISTING mob-movement loop (both the chase-toward-target branch and the normal wander-step branch) — the
@@ -2082,12 +2500,16 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     via the new `World.PetCountFor` (matching RTK's own `getObjectsInMap` scope). The level-99 "avatar" tier
     is the one real outlier: `cotw_wind_warrior.lua` has no `player.magic` check at all — RTK charges GOLD (via
     `requirements()`) plus an 8-minute cooldown instead, ported via the pre-existing `OnCooldown`/
-    `SetCooldown` plumbing (0 mana). **NOT ported:** RTK's `cotw_controller_poet` threat-transfer — pets fight
-    independently via the normal wander/aggro `Mob` AI rather than sharing the owner's combat target, since
-    this server has no multi-entity threat-table concept to hook into. The 29th id,
-    `cotw_giasomo_bird_poet` (mob 807), has NO matching row anywhere in `mobs.csv` — even RTK's own Lua
-    flags it broken ("I know this doesn't belong here, but the COTW structure is so terrible already") — so
-    it's skipped, not silently miscounted.
+    `SetCooldown` plumbing (0 mana). **NOT ported:** `cotw_controller_poet`, neither its threat-transfer nor
+    its dismiss-all — both are later-server behaviour (4.95 pets leave play only by dying or timing out, and
+    RTK's threat table isn't 4.95; see §"Call of the Wild: the controller and the Giasomo bird"). Pets heel
+    and assist — see §"Pet AI" for the rules (that was added 2026-08-06; before it, an owned mob ran the plain
+    wander/aggro AI, so a `MobBehavior 0` pet just drifted off and never fought anything). The 29th
+    id, `cotw_giasomo_bird_poet`, asks for mob **807**, which exists nowhere — RTK's own SQL and our
+    `mobs.csv` both put `giasomo_bird` at **600** and every other cotw id matches the SQL exactly, so it is an
+    isolated typo (RTK's Lua flags itself: "I know this doesn't belong here, but the COTW structure is so
+    terrible already"). It is now wired to 600 via `Pets.csv`, plus a synthetic `Spells.csv` row (50052)
+    without which `Content.SpellByKey` returned null and the Giasomo stick's proc never fired at all.
 
   **Chunk 3 — fixed 2026-07-26** (user: "we need to fix shape shifting and add the position-directed
   attacks"):
@@ -2526,11 +2948,15 @@ entries:**
   me."*). RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
   server only has two home nations modeled, so it collapses to `_char.Nation`: Buya (`2`) offers **Felis**
   (map 338) / **Storm** (339), everyone else **Dusk** (map 8) / **Dawn** (map 9) — all four are real RTK
-  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/game-data/map_index.csv`. Picking one
-  calls `ReviveAt` (new — factored out of the old `Revive()`): full heal (gear/buffs included) + warp,
-  replacing the fixed-timer auto-revive §11f used to do. RTK's own flow only *warps near* a physical Shaman
-  NPC (revival happens on a second click there); this server skips that actor and revives directly on
-  arrival, since no standalone Shaman NPCs are placed.
+  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/game-data/map_index.csv`.
+  **Picking one is PASSAGE ONLY (corrected 2026-08-06)** — it warps the ghost to that Shaman's hut and
+  leaves it a ghost; the Shaman NPC there is what revives you (see `ReviveAbility` below). That is RTK's own
+  split: `f1npc.lua`'s Silver Thread branch ends in a bare `player:warp(...)` and never touches
+  `state`/`health`, and `shaman.lua`'s `click` is what does `state = 0; health = maxHealth`. The warp
+  coordinates are f1npc.lua's literal ones. It previously called `ReviveAt` (heal + warp) on the stated
+  premise that "no standalone Shaman NPCs are placed" — **that premise was wrong**: `ShamanNpc` rows for
+  Dusk/Dawn/Felis/Storm/Di jin have been in `NPCs.csv` all along (ids 64–67, 239), they simply had no
+  behaviour wired, so a warp alone would have stranded the player as a permanent ghost.
 - **Toggles** — RTK's submenu covers Clan Chat + Subpath Chat; only Subpath Chat exists here (§11i), so
   the submenu is a single toggle line for now. Same flag/toggle as F2 — this is just RTK's menu exposing
   the same switch a second way.
@@ -2541,9 +2967,30 @@ entries:**
   `SetCharClass` (`NpcAbility`'s path-choice ability) — matches RTK, whose `level5popupDialog` also only
   warps.
 
+**Shaman / Priest revival — `ReviveAbility` (added 2026-08-06).** The other half of the loop, and the thing
+that makes a Shaman worth walking to. Ported from RTK `NPCs/Common/shaman.lua`'s `click` and the identical
+`_resurrect` helper in `NPCs/Common/totem_npc.lua`; wired in `NpcAbilities.csv` as the `revive` ability on
+**`ShamanNpc`** (Dusk, Dawn, Felis, Storm, Di jin, Aura) and the **four Wilderness totem priests**
+(`BaekhoNpc`, `HyunMooNpc`, `ChungRyongNpc`, `JuJakNpc` — RTK routes all four through the same helper, and
+they are the `country == 0` Silver Thread destinations). **Not** on `RogueGuildShamanNpc`: despite the name,
+`rogue_guild_shaman.lua` is a face/gender/eyes changer (the `appearance` ability) with no revival branch.
+
+The ability contributes **nothing** to a living player's menu — RTK wraps its whole body in
+`if player.state == 1` with no else — so it is offered only to a ghost. Because a Shaman has no other
+service, that leaves exactly one menu entry, and `RunNpcAsync` dives straight into a single entry, so a
+ghost clicking a Shaman lands immediately on RTK's question: *"Ah, another of the fallen come for my aid.
+Are you ready to return to the world of the living?"* → Yes → `Session.ReviveInPlace` (full effective HP/MP,
+`RefreshAppearance` drops the ghost form, stats pushed, persisted) → *"So shall it be! Keep yourself safe,
+and free from harm."* No warp: the ghost walked here under its own power.
+
 **Not yet live-tested.** The `0xFFFFFFFF` sentinel, the trimmed menu, and the Silver Thread shaman list are
 all ported from RTK source with no live 4.95 client session behind them — confirm F1 actually opens the
 menu (and that ghosts can no longer wake up on their own) before relying on it.
+
+**Known gap:** RTK's `country == 0` (Wilderness) Silver Thread branch offers the four totem priests
+(Hyun Moo 1416, Ju Jak 1411, Baekho 1406, Chung ryong 1401, all at `(11,5)`) — every one of those NPCs and
+maps exists here, but `SilverThread` still collapses nation 0 into the Kugnae list. The priests now revive
+if you reach them on foot; they just aren't offered as Silver Thread destinations yet.
 
 ---
 
@@ -2788,7 +3235,7 @@ quest-gated entry) are both omitted because neither has renderable map data in t
 
 **Trigger tiles** (`Session.cs` `WorldMapTriggers`, keyed by the town map the player is standing in — each
 of the 7 towns above is also a trigger source, so the picker is reachable from any of them): Kugnae
-Gathering `x=19, y∈{12,13}`; Buya Gathering `x=0, y∈8..12`; Mythic Nexus `y=1, x∈28..32`; Nagnang Gathering
+Gathering `x=19, y∈{12,13}`; Buya Gathering `x=0, y∈8..12`; Mythic Nexus `y=3, x∈28..32`; Nagnang Gathering
 `y=5, x∈7..9`; Haeng Tavern `x=10, y∈{7,8}`; Kafas Tavern `x=11, y∈7..9`; KaMing's Encampment `y∈{0,1},
 x∈30..34`. All seven fit inside their map's real dimensions per `map_index.csv`.
 

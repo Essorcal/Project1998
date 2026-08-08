@@ -141,10 +141,15 @@ public sealed partial class Session
         // only the "outside" warp is in Warps.csv, which is why the leader/arena doors felt dead.
         if (!offMap && TryPathHallWarp((ushort)nx, (ushort)ny)) return;
 
+        // Tower Arena's five side doors (onScriptedTilesArena.lua) are scripted tiles too, level-banded per
+        // arena — the SQL table only holds each arena's way BACK, so the whole hub was one-way until now.
+        if (!offMap && TryArenaDoor((ushort)nx, (ushort)ny)) return;
+
         if (blocked)
         {
             _char.X = (ushort)fromX; _char.Y = (ushort)fromY;   // hold at the from-tile
             SendXy();                                           // 0x04 snap-back cancels the prediction
+            TryOpenBoardSign();   // bumping north into a board sprite opens it (RTK onSign), same as a turn
             Log.Info($"   -> walk dir={dir} BLOCKED at ({nx},{ny}) obj={obj}{(offMap ? " off-map" : "")}{(mobHere ? " mob" : "")} — held at ({_char.X},{_char.Y})");
             return;
         }
@@ -167,6 +172,11 @@ public sealed partial class Session
 
         // Our viewport just shifted a tile: stream in mobs that entered view, drop ones that left.
         SyncMobs(_world.View(this, _char.Map).mobs);
+
+        // ...and the TERRAIN under that viewport. The client only requests map data (0x05) on map ENTRY, so
+        // without this it runs off the edge of what was streamed and hits a black wall. Pushes just the newly
+        // exposed strip. See StreamViewport.
+        StreamViewport();
 
         if (_ver == ClientVersion.V533)
         {
@@ -296,6 +306,14 @@ public sealed partial class Session
         }
         Log.Info($"   -> walk dir={dir} ({fromX},{fromY})->({_char.X},{_char.Y}) obj={obj}");
 
+        // Walking straight up TO a board opens it. On 4.95 self-walk is client-local: pressing INTO the solid
+        // board tile is blocked by the client and no packet reaches us (so the blocked-branch hook above can't
+        // fire on a bump). Instead we catch the approaching step — the moment you land on the tile directly
+        // south of a board while facing north, TryOpenBoardSign matches (X, Y-1). This is the "walk up to the
+        // board and it opens" case; the turn-in-place case is handled in HandleTurn. Runs before the scripted
+        // tiles below so a fall-room warp can't fire on the same step and strand an open board on the old map.
+        TryOpenBoardSign();
+
         // The step is complete and the player stands on the new tile — run the after-step scripted tiles
         // (foraging, mythic fall-rooms). A fall-room warps, so this must come last (nothing follows it).
         OnScriptedTileStep();
@@ -311,6 +329,40 @@ public sealed partial class Session
         SendSide(_char.Id, _facing);
         _world.Broadcast(_char.Map, p => p.SideEntity(_char.Id, _facing), except: this);   // peers see us turn
         Log.Info($"   -> turn side={_facing} @ ({_char.X},{_char.Y})");
+        TryOpenBoardSign();   // RTK onSign: turning to face a board (looking north) opens it
+    }
+
+    // RTK board-sign (on_event.lua onSign -> selectBulletinBoard -> showBoard): while looking NORTH (back to
+    // screen), if the tile directly in front of us (one up) is a registered board sprite, open THAT board
+    // straight to its posts — bypassing the `b` board-list menu. This is the "walk up to the Carnage Schedule
+    // board and it opens" behaviour. Fired both on a turn-in-place and on a blocked north step (bumping the
+    // board), so either approach triggers it. Content.TryBoardAt applies RTK's ±1 X tolerance for wide boards.
+    // Returns true when a board was opened (the north-facing action was consumed by the sign).
+    private bool TryOpenBoardSign()
+    {
+        if ((_facing & 3) != 0) return false;                                          // only when looking north (RTK side==0)
+        if (!Content.TryBoardAt(_char.Map, _char.X, _char.Y - 1, out var boardId)) return false;
+        SendBoardPosts(boardId, popup: true);                                           // RTK showBoard: pop the window open (unsolicited)
+        Log.Info($"   -> BOARD-SIGN open board {boardId} facing ({_char.X},{_char.Y - 1}) on map {_char.Map}");
+        return true;
+    }
+
+    // "!boardobj" — board-sign calibration probe. Reports the tile you're FACING, the object sprite id sitting
+    // there (RTK's board sprites are 1619/1620; the 4.95 id is TBD), and whether a BoardLocations row already
+    // matches. Stand below a board looking north and run this to capture the (map,x,y) for BoardLocations.csv.
+    private void BoardObjProbe()
+    {
+        int dx = 0, dy = 0;
+        switch (_facing & 3) { case 0: dy = -1; break; case 1: dx = 1; break; case 2: dy = 1; break; case 3: dx = -1; break; }
+        int fx = _char.X + dx, fy = _char.Y + dy;
+        string dir = (_facing & 3) switch { 0 => "N", 1 => "E", 2 => "S", _ => "W" };
+        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
+        int obj = (md != null && fx >= 0 && fy >= 0 && fx < _char.MapXs && fy < _char.MapYs) ? md.Obj(fx, fy) : -1;
+        bool match = Content.TryBoardAt(_char.Map, fx, fy, out var bid);
+        string boardName = match ? (Boards.Find(bid)?.Name ?? "?") : "-";
+        SendLog($"boardobj: map {_char.Map} you@({_char.X},{_char.Y}) facing {dir} -> tile ({fx},{fy}) obj={obj} | board={(match ? $"{bid} \"{boardName}\"" : "none")}");
+        SendLog($"  to register: add  {_char.Map},{fx},{fy},<BoardId>  to BoardLocations.csv then !reload  (4=Carnage Schedule)");
+        Log.Info($"   -> !boardobj map {_char.Map} facing {dir} tile ({fx},{fy}) obj={obj} match={match} board={bid}");
     }
 
     // 0x20 = the 'o' / Open key. In NexusTK this TOGGLES the door object I'm facing between its closed and open
@@ -373,8 +425,18 @@ public sealed partial class Session
     }
 
     // The door-object toggle table now lives in data/game-data/DoorObjects.csv (RTK open.lua `openDoors`), loaded
-    // into Content.DoorSwaps / Content.DoorDeltas and queried via Content.DoorToggleFor. RTK's 17408+ range doors
-    // (maps whose object ids exceed the 4.x 14-bit field) aren't served and were never in the table.
+    // into Content.DoorSwaps / Content.DoorDeltas and queried via Content.DoorToggleFor.
+    //
+    // RTK's 17408+ ids are a LATER client's object space and can't be used verbatim (4.x objects are a 14-bit
+    // field, max 16383) — but that does NOT mean those doors are absent here, only renumbered. The city gates
+    // are the case that mattered: RTK's 4-tile-wide run 17670-17673 <-> 17680-17683 is, in the 4.95 object
+    // table, 5-8 <-> 15-18 (same 4-wide shape, same +10 pairing, and the map data agrees — every gate in the
+    // game has wall pieces 1-4 to its left and 9-12 to its right). Read the STATE off SObj.tbl, not the id
+    // order: 5-8 are flagged 0x0f (solid on all four sides) = CLOSED, 15-18 are 0x00 = OPEN. So Kugnae's north
+    // gate ships open and its south gate ships shut, which is why 'o' appeared broken in opposite ways at the
+    // two ends of the same city. The closed ids carry defaultOpen=1 so gates start open (Content.DoorDefaultOpen).
+    // Not ported: RTK's other 17408+ entries (17423/17425/17428/17430 pairs, the 3-wide 17408/17417), whose
+    // 4.95 counterparts nobody has identified — find them the same way, by matching run width against SObj flags.
 
     // Server->client 0x06 CELL PATCH: redraw a horizontal run of cells starting at (startX, y), setting each
     // cell's object to objs[i] while keeping its ground word (tile + passability) unchanged. This is how doors

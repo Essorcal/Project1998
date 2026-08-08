@@ -55,15 +55,35 @@ public sealed class Mob
     public int  PoisonTickDam;
     public uint PoisonOwnerId;   // caster's player id — credited with a poison-DOT kill (mirrors Trap.OwnerId)
 
-    // Poet "Call of the Wild" pet-summon family (RTK Spells/poet/cotw_*.lua): a normal shared-world Mob,
-    // just tagged with who summoned it (World.PetCountFor's spawn cap) and when it auto-expires (World.Tick
-    // despawns it via World.DespawnMob, no kill/loot). 0 = not a pet. Combat-assist/threat-transfer (RTK
-    // cotw_controller_poet) isn't ported — the pet is a real, correctly-statted companion, but fights
-    // independently (normal Aggressive/wander AI) rather than sharing its owner's target.
+    // Who this creature belongs to — a Poet's "Call of the Wild" summon (RTK Spells/poet/cotw_*.lua) or a
+    // creature taken by Endear & kin. 0 = nobody's. Besides the spawn cap (World.PetCountFor) and the expiry
+    // timer, this is what drives the PET AI in World.Tick: an owned mob never targets its owner, fights
+    // whatever is fighting its owner, and otherwise follows them; its kills credit the owner's exp, and its
+    // owner's own swings pass straight through it (Session.ResolveSwing). That mirrors RTK's own pet AI,
+    // which lives in its LUA layer (AI/mob_ai_cotw.lua: assist whatever holds threat on the owner, else the
+    // owner's last attacker, else walk to the owner; never fight a player; vanish if the owner leaves) —
+    // the C engine's mob_find_target scans players only and never looks at the owner, so reading mob.c alone
+    // gives the false impression RTK has no pet behaviour at all. Until this was wired up a CotW pet just
+    // wandered off while an Endear'd creature re-aggro'd the poet who charmed it a tick later.
+    // RTK's cotw_controller_poet (aggro redirect + mass dismiss) is still deliberately NOT ported: it is
+    // later-server, and in 4.95 these creatures leave play ONLY by being killed or by this timer.
     public uint OwnerId;
     public long PetExpiresAt;
 
-    // Combat AI (RTK's threat/target model, mob_ai_normal.lua: on_attacked sets the target, move/attack
+    // True only for a mob the owner CONJURED (a CotW summon / a Giasomo bird). A mob that was merely
+    // mind-controlled — Endear and its poet variants, which set OwnerId on a creature that was already
+    // standing there — leaves this false, and that distinction is what World.Tick keys the expiry on:
+    // RTK's cotw pet vanishes when its spawnTime passes, but endear's `uncast` only does
+    // `mob.owner = 0; mob.target = 0` — the creature stays in the world and turns on you again.
+    public bool Summoned;
+
+    // Set by the Blind family (RTK Spells/NPCs/blind.lua + mage blind/dark_veil/winter's shadow/ice glare,
+    // all of which just set `target.blind = true` for a duration). A blinded mob cannot SEE: World.Tick
+    // skips its unprovoked-aggro scan and drops any target it already had, so it falls back to plain
+    // wandering until this expires. 0 = not blinded.
+    public long BlindUntil;
+
+    // Combat AI (RTK's mob_ai_normal.lua targeting: on_attacked sets the target, move/attack
     // chase and swing at it): 0 = passive wander. World.TryDamage sets this to the attacker's player id on a
     // landed hit; World.Tick then has the mob abandon wandering to path toward and melee that player instead,
     // until it dies, logs off, or strays past ChaseLeash. Aggressive mobs ALSO get TargetId set unprovoked —
@@ -71,10 +91,40 @@ public sealed class Mob
     // MobBehavior==1 "type", which is separate from and runs before the mob_ai_normal.lua script ever executes).
     public uint TargetId;
 
+    // The sideways shuffle a blocked chaser is currently committed to (World.StepMobToward): which way, and
+    // how many more tiles of it are left. 0xFF = not shuffling. This exists ONLY to vary the length of the
+    // shuffle — without a run counter every shuffle is exactly one tile out and one tile back, because the
+    // step that closes on the target always wins the next tick. It is NOT wall-following and must not become
+    // it: a chaser is meant to stay stupid (see World.StepMobToward).
+    public byte DetourDir = 0xFF;
+    public byte DetourLeft;
+
+    // The MOB this mob is fighting — the other half of targeting, used by owned creatures (a Poet's Call of
+    // the Wild summon or an Endear'd captive) when they assist their owner against whatever is attacking
+    // them. Kept as its OWN field rather than overloading TargetId: the two id spaces don't overlap (players
+    // are small character ids, World.AllocateMobId starts at 100,000 — the same split RTK makes with
+    // MOB_START_NUM), but no reader should have to infer which kind of id it is holding. At most one of the
+    // two is non-zero. See World.Tick's pet-AI block.
+    public uint TargetMobId;
+
     // Copied from MobDef.Aggressive at spawn (RTK MobBehavior==1): scans for and locks onto any player within
     // AggroRadius each move tick, rather than only fighting back once hit. Most real monsters are aggressive;
     // herd/prey critters (rabbit, deer, squirrel, …) are the passive exception.
     public bool Aggressive;
+
+    // Copied from MobDef.Flees at spawn (data/game-data/MobFlees.csv): a PREY creature — a rabbit, a blue
+    // rooster. The opposite end of the scale from Aggressive, and mutually exclusive with it in practice: it
+    // never holds a target and never swings, it BACKS AWAY from any player who gets close (World.Tick's flee
+    // branch, ported from RTK Mobs/mob.lua RunAway) and bolts at double pace once spooked. Nothing in RTK's own
+    // data marks these creatures — RTK gives a rabbit a wolf's AI — so the flag is ours; see Content.LoadMobFlees.
+    public bool Flees;
+
+    // While Environment.TickCount64 is under this, a fleeing mob moves on HALF its usual MoveTime (RTK
+    // mysterious_merchant on_attacked: `mob.newMove = 500` — a spooked creature drops to a much shorter timer
+    // than its idle wander pace). Set by World.Spook whenever a player swings at it, hit or miss, and refreshed
+    // by each further swing. 0 = calm.
+    public long PanicUntil;
+
     public int  Level;         // copied from MobDef.Level at spawn — exp/display only, NOT melee damage (see MinDam/MaxDam)
     public int  AttackTime = 2000;   // ms between swings once adjacent to its target
     public int  AttackTimer;

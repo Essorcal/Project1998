@@ -35,5 +35,26 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers !warp/!maps/!mobs/!summon)
+GmAccounts.Load();   // who may run the "!" tooling (data/gm_accounts.txt / NEXUS_GMS); empty = nobody
+Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) — must outlive a restart
+
+// An empty content registry is a MISCONFIGURED DEPLOY, not a valid world: nothing throws, the server
+// listens and accepts logins, and every player lands in a mapless void. Fail loudly instead of leaving it
+// to be inferred from a "0 map(s)" line among the startup counts.
+if (Content.Maps.Count == 0)
+    Log.Info("!!! NO CONTENT LOADED — data/game-data was not found. Expected it under the repo root " +
+             $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
+             "The world will be empty. See deploy/README.md §2.");
+
+// Terrain availability. Missing .map files don't throw — collision and spawn placement just silently
+// degrade (players and mobs walk through walls) — so say so at startup instead. The Windows fallback dirs
+// are the client installs, which is exactly why a first Linux deploy finds nothing.
+{
+    var (found, total, dirs) = MapData.Availability(Content.Maps.Keys);
+    Log.Info($"=== terrain: {found}/{total} map file(s) found; searched: {string.Join(" | ", dirs)}");
+    if (found < total)
+        Log.Info($"!! {total - found} map(s) have NO .map file — collision and spawn placement are degraded on them. " +
+                 "Copy the client's Maps directory into data/maps, or set NEXUS_MAPS to it.");
+}
 Boards.MigrateFromJsonIfNeeded();   // one-time import of any legacy data/boards.json into the shared DB
 await new TkListener(ports).RunAsync();

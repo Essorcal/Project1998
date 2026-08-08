@@ -39,6 +39,10 @@ public sealed class LoginListener
             try { client = await listener.AcceptTcpClientAsync(); }
             catch (Exception e) { Log.Info($"!! accept on :{port} failed: {e.Message}"); continue; }
 
+            // Same TCP_NODELAY reasoning as the game server's accept loop: small packets, latency-sensitive,
+            // no throughput to gain from Nagle batching. Here it just makes login/redirect feel snappier.
+            try { client.NoDelay = true; } catch { /* socket already dead */ }
+
             var ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
             if (!_guard.TryAdmit(ip, out var reason))
             {

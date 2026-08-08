@@ -257,7 +257,7 @@ public sealed partial class Session
             {
                 int n = await _stream.ReadAsync(tmp);
                 if (n == 0) break;
-                Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
+                if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
                 for (int i = 0; i < n; i++) buf.Add(tmp[i]);
 
                 var arr = buf.ToArray();
@@ -273,7 +273,7 @@ public sealed partial class Session
                     buf.RemoveRange(0, off);
                     Volatile.Write(ref _established, 1);   // first valid frame parsed -> handshake satisfied
                 }
-                if (buf.Count > 0)
+                if (buf.Count > 0 && Log.WireEnabled)
                     Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
 
                 FlushIfDue();   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
@@ -333,11 +333,111 @@ public sealed partial class Session
         Log.Info($"   -> connection teardown ({reason})");
     }
 
+    // ---- RTK's global action budget (clif_parse gates + pc_timer) ------------------------------------
+    // NOTHING to do with aethers. RTK counts *every* action packet into one shared per-second budget,
+    // `sd->time`, which pc_timer zeroes on a fixed 1000ms tick (pc.c:613). Each gated opcode does
+    // `sd->time += 1; if (sd->time < 4) ...`, so the 1st/2nd/3rd action in a window run and the 4th onward
+    // are DROPPED SILENTLY — no minitext, no reply, no log to the player. This is what actually stops spell
+    // spam for the ~87% of spells whose script never calls setAether (114 of 394 RTK spell scripts do).
+    //
+    // The budget is SHARED across opcodes, and attack (0x13) increments it WITHOUT being gated by it (0x13
+    // has its own attack_speed timer instead) — so swinging at full speed really does eat your own cast
+    // allowance. Surprising, but it's RTK's, so it's kept.
+    //
+    // FIXED window, not sliding: RTK resets to 0 on a wall-clock tick, so 3 casts at the end of one second
+    // plus 3 at the start of the next (6 back-to-back) is legal. TickCount64/1000 reproduces that exactly
+    // without needing a per-session timer; the only drift is that RTK's window is anchored to the player's
+    // login and ours to server boot, which nothing can observe.
+    private const int ActionBudget = 4;   // RTK's `if (sd->time < 4)` -> 3 actions per window
+    private long _actionWindow;           // which 1s window _actionCount belongs to
+    private int  _actionCount;            // RTK sd->time
+
+    private void RollActionWindow()
+    {
+        long window = Environment.TickCount64 / 1000;
+        if (window != _actionWindow) { _actionWindow = window; _actionCount = 0; }
+    }
+
+    // RTK `sd->time += 1` — the raw increment, for 0x13 which pays into the budget but isn't gated by it.
+    private int BumpActionTime() { RollActionWindow(); return ++_actionCount; }
+
+    // RTK `sd->time += 1; if (sd->time < 4)` — the usual gated form.
+    private bool ActionAllowed(byte op)
+    {
+        if (BumpActionTime() < ActionBudget) return true;
+        Log.Info($"   -- op=0x{op:x2} dropped: action budget spent ({_actionCount} this second)");
+        return false;
+    }
+
+    // RTK `if (sd->time < 4)` with NO increment — unequip (0x1F) only.
+    private bool ActionBudgetLeft() { RollActionWindow(); return _actionCount < ActionBudget; }
+
+    // ---- Queue over-budget casts instead of discarding them (NEXUS_CAST_QUEUE=0 to disable) ------------
+    // Holding a cast key makes the client send 0x0F every ~31ms (OS auto-repeat, after a ~260ms initial
+    // delay — both measured live). With a plain drop-gate that yields three casts spaced 31ms apart, then
+    // ~940ms of silence, and 31ms of separation on three identical sounds is an audible flam. Real NexusTK
+    // is ONE animation and ONE sound with three casts landing together, which is what you get if the
+    // over-budget casts are HELD and released at the next window boundary instead of thrown away.
+    //
+    // INFERRED, NOT SOURCED. RTK discards (clif_parsemagic just falls through) and there is no 4.95 source
+    // for this either way — it is here because it reproduces the real game's behavior by ear, which is the
+    // only authority available. Treat it as a working reconstruction: if a real 4.95 source ever contradicts
+    // it, the source wins. Depth is capped at the budget and keeps the NEWEST casts, so the queue means
+    // "the key is still down", never a 30-deep backlog that keeps firing after you let go.
+    private static readonly bool CastQueueEnabled = Environment.GetEnvironmentVariable("NEXUS_CAST_QUEUE") != "0";
+    // How long a queued cast stays valid. Depth-capping bounds how MANY casts wait; this bounds how LONG,
+    // which is the part that matters once the key comes up: the client stops sending, so nothing triggers a
+    // drain, and the next packet of ANY kind (a walk step, seconds later) would otherwise fire casts from
+    // the last time you held the key. While the key really is held the client repeats every ~31ms, so the
+    // newest 3 are at most ~125ms old when the drain runs; 250ms clears that with room for the ~46ms jitter
+    // seen live, while staying far below the ~1s that would let a stale cast leak somewhere visible.
+    private const int CastQueueMaxAgeMs = 250;
+    private readonly Queue<(byte[] Body, long Tick)> _queuedCasts = new();
+
+    private void QueueCast(byte[] dec)
+    {
+        while (_queuedCasts.Count >= ActionBudget - 1) _queuedCasts.Dequeue();   // keep the newest only
+        _queuedCasts.Enqueue((dec, Environment.TickCount64));
+    }
+
+    // Drained at the top of every inbound packet: the client is repeating at ~31ms while the key is held, so
+    // this fires within ~31ms of the boundary without needing a timer. Uses the same bump-then-test as the
+    // live gate, so a released cast costs budget exactly like a live one and the net rate stays 3/second —
+    // the queue only changes WHEN they land (together), not HOW MANY.
+    private void DrainQueuedCasts()
+    {
+        if (_queuedCasts.Count == 0) return;
+
+        // Expire stale entries BEFORE the spent-window early-return, or a queue left over from a released
+        // key would sit untouched until something else happened to drain it. FIFO with monotonic stamps, so
+        // the head is always the oldest.
+        long now = Environment.TickCount64;
+        while (_queuedCasts.Count > 0 && now - _queuedCasts.Peek().Tick > CastQueueMaxAgeMs)
+        {
+            _queuedCasts.Dequeue();
+            Log.Info("   -- queued cast expired (cast key released)");
+        }
+        if (_queuedCasts.Count == 0) return;
+
+        RollActionWindow();
+        if (_actionCount >= ActionBudget) return;               // still inside the spent window
+        while (_queuedCasts.Count > 0 && BumpActionTime() < ActionBudget)
+        {
+            Log.Info("   -- queued cast released at window start");
+            HandleCast(_queuedCasts.Dequeue().Body);
+        }
+    }
+
     private void Handle(TkPacket pkt)
     {
         var dec = TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey);
-        Log.Info($"   <- pkt op=0x{pkt.Opcode:x2} inc=0x{pkt.Increment:x2} len={pkt.Body.Length + 2} body={pkt.Body.Length}B");
-        Log.Info($"        dec : {Log.Hex(dec)}");
+        if (Log.WireEnabled)
+        {
+            Log.Info($"   <- pkt op=0x{pkt.Opcode:x2} inc=0x{pkt.Increment:x2} len={pkt.Body.Length + 2} body={pkt.Body.Length}B");
+            Log.Info($"        dec : {Log.Hex(dec)}");
+        }
+
+        StartEntryMusicIfArmed(pkt.Opcode);   // login music waits for proof the client's world object is live
 
         switch (pkt.Opcode)
         {
@@ -362,13 +462,21 @@ public sealed partial class Session
             case 0x1b:
                 HandleSetting(dec);
                 break;
-            // 5.33 map/walk split (confirmed via Mithia 7.x clif dispatch + live capture):
+            // Map/walk split — the SAME for both clients (4.95 corrected 2026-08-07):
             //   0x05 = map-data request (view rect) -> stream terrain back as 0x06 (HandleMapRequest).
-            //   0x06 = walk (dir @ body[0], + reported pos/viewport) -> confirm move, same as 4.95.
-            // 4.95 differs: 0x05 unused, 0x06 = walk+sync. So 0x06 -> HandleWalk for BOTH versions.
+            //   0x06 = walk (dir @ body[0], + reported pos/viewport) -> confirm move.
+            // This block used to read "4.95 differs: 0x05 unused" and dropped every 4.95 0x05 with a
+            // "no V495 handler" log line. That was wrong: 4.95 sends the IDENTICAL request, 2161 of them
+            // in one session log, body =
+            //     x0(u16BE) y0(u16BE) w(u8) h(u8) 00 checksum(u16BE) 00
+            //     00 00 00 00 0c 0c 00 63 c2 00   -> (0,0)     12x12
+            //     00 6d 00 7e 13 11 00 d1 1c 00   -> (109,126) 19x17   (the 17x15 viewport + pad)
+            // — which is exactly what HandleMapRequest already parses. The 4.95 client streams its terrain
+            // from the server like every later client; the local .map files are a CACHE it verifies (hence
+            // the checksum, which the walk 0x06 also carries), not the only source. That's why some 4.x
+            // client distributions ship no Maps directory at all.
             case 0x05:
-                if (_ver == ClientVersion.V533) HandleMapRequest(dec);
-                else Log.Info("   ?? 0x05 with no V495 handler");
+                HandleMapRequest(dec);
                 break;
             case 0x06:
                 HandleWalk(dec);
@@ -382,8 +490,10 @@ public sealed partial class Session
             case 0x0E:                    HandleChat(dec); break;   // client chat -> echo as over-head speech
             // 0x1d = emotion request (the ':' emote wheel). body[0] = emote index; the client plays action
             // type = index + 11 (RTK clif_parseemotion: sendaction(index+11)). Broadcast as a 0x1A action.
-            case 0x1D:                    HandleEmotion(dec); break;
-            case 0x13:                    HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
+            case 0x1D:                    if (ActionAllowed(0x1D)) HandleEmotion(dec); break;
+            // 0x13 pays into the shared action budget but is NOT gated by it (RTK clif.c:11446) — melee has
+            // its own attack_speed timer, and HandleAttack applies our equivalent swing pacing.
+            case 0x13:                    BumpActionTime(); HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
             case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
             case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile / NPC dialog
             // 0x3A = NPC dialog response (RTK clif_parsenpcdialog): the client sends this after the player
@@ -393,7 +503,7 @@ public sealed partial class Session
             case 0x4F:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
             // ---- items (opcode numbers from RTK 7.x recv dispatch; confirmed to align with 4.95 by the
             // walk/turn/chat/attack/setting opcodes already matching). See §11c. ----
-            case 0x07:                    HandlePickup(dec); break;    // pick up the floor item under me
+            case 0x07:                    if (ActionAllowed(0x07)) HandlePickup(dec); break;    // pick up the floor item under me
             case 0x08:                    HandleDropItem(dec); break;  // drop a bag slot to the floor
             case 0x17:                    HandleThrow(dec); break;     // throw a bag slot (flies ahead)
             case 0x1A:                    HandleUseItem(dec, eat: true); break;   // eat/consume a slot
@@ -402,7 +512,9 @@ public sealed partial class Session
             // 0x1C; the hotkey just uses a different opcode, so route it to the same use/equip path.
             case 0x12:                    HandleUseItem(dec, eat: false); break;  // wield hotkey -> equip a slot
             case 0x1C:                    HandleUseItem(dec, eat: false); break;  // use/equip a slot
-            case 0x1F:                    HandleUnequip(dec); break;   // remove a worn item back to the bag
+            // RTK checks the budget here WITHOUT incrementing (clif.c:11514) — unequip is free but blocked
+            // once the second's allowance is already gone. 0x12/0x1C (wield/use) are ungated in RTK too.
+            case 0x1F:                    if (ActionBudgetLeft()) HandleUnequip(dec); break;   // remove a worn item back to the bag
             case 0x24:                    HandleDropGold(dec); break;  // drop a gold amount
             // 0x20 = the 'o' / Open key (RTK clif_parse case 0x20 "Clicked 'O'" -> clif_cancelafk + clif_open_sub
             // -> onOpen script). A deliberate action (RTK's handler clears AFK, so NOT a heartbeat): in NexusTK it
@@ -411,7 +523,10 @@ public sealed partial class Session
             case 0x20:                    HandleOpen(dec); break;
             // 0x0F = cast a learned spell (RTK clif_parsemagic): body[0]=book slot+1, then per spell type
             // 1 -> typed answer string, type 2 -> target entity id (u32BE), type 5 -> nothing. See HandleCast.
-            case 0x0F:                    HandleCast(dec); break;
+            case 0x0F:
+                if (ActionAllowed(0x0F)) HandleCast(dec);
+                else if (CastQueueEnabled) QueueCast(dec);
+                break;
             // 0x66 = right-click "examine item" request. The client sends it (and RETRIES ~6× because we don't
             // answer), expecting a 0x66 reply its handler 0x4511b0 renders as the item-detail popup. We can't
             // build that reply until its wire format is known — for now decode+log the request so labelled
@@ -449,6 +564,13 @@ public sealed partial class Session
             case 0x3F:                    HandleWorldMapSelect(dec); break;
             default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
+
+        // AFTER the switch, deliberately. Draining first let queued casts claim a fresh window's budget
+        // before an attack packet in that same window ever bumped it — and since 0x13 pays into the budget
+        // without being gated by it, casting and swinging stopped competing at all. They are supposed to:
+        // RTK spends ONE shared counter on both (`sd->time`), so a held attack key starves casting outright.
+        // Draining here means this packet's own action is charged first and the queue only gets what's left.
+        DrainQueuedCasts();   // no-op unless a held cast key left casts waiting on a window roll
     }
 
     // ---- game server ----
@@ -466,12 +588,25 @@ public sealed partial class Session
         int ulen = dec[0];
         var user = Encoding.ASCII.GetString(dec, 1, ulen);
         var pass = LoginAuth.ReadPassword(dec, 1 + ulen);
-        if (!LoginAuth.Authenticate(user, pass))
+        // Same per-IP failed-attempt budget the login channel enforces — the re-login path accepts the very
+        // same credentials, so leaving it ungated would just move the brute-force target to port 2005.
+        var ip = (_client.Client.RemoteEndPoint as System.Net.IPEndPoint)?.Address ?? System.Net.IPAddress.None;
+        if (LoginThrottle.IsBlocked(ip))
         {
-            Log.Info($"   -> RE-LOGIN REJECTED (incorrect password) for user='{user}'");
-            SendMessage("Incorrect password.");
+            Log.Info($"   -> RE-LOGIN BLOCKED (failed-attempt budget exhausted) for user='{user}'");
+            SendMessage(LoginThrottle.BlockedMessage);
+            return;
+        }
+
+        var auth = LoginAuth.Authenticate(user, pass);
+        if (auth != LoginResult.Ok)
+        {
+            int left = LoginThrottle.RecordFailure(ip);
+            Log.Info($"   -> RE-LOGIN REJECTED ({auth}) for user='{user}' ({left} attempt(s) left)");
+            SendMessage(LoginAuth.MessageFor(auth));
             return;   // no handoff; the client stays on the login screen
         }
+        LoginThrottle.RecordSuccess(ip);
 
         var nonce = HandoffTokens.Mint(user);
         var host = ParseGameHost();
@@ -551,13 +686,26 @@ public sealed partial class Session
             oldSession.KickForReplacement();
         }
 
-        // Load the persisted character (created on the login channel, or saved at last logout).
-        // Fall back to a fresh default spawn for an account we've never seen.
+        // Load the persisted character (created on the login channel, or saved at last logout). There is NO
+        // fallback spawn any more: world entry never invents a character. A missing record here means the
+        // login server minted a token for a name that has no character (it checks first, so this is either a
+        // race with an admin deleting the record, or a hand-rolled client with NEXUS_ENFORCE_HANDOFF=0).
+        // Creating one on the spot is what let anyone materialize a character by typing a new name at login.
         var loaded = _store.Load(_user);
-        _char = loaded ?? new Character();
-        _char.Name = _user;
+        if (loaded is null)
+        {
+            Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
+            _world.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
+            _client.Close();
+            return;
+        }
+        _char = loaded;
+        // Keep the CASING the character was created with — _user is whatever the player typed at the login
+        // prompt, and logins are case-insensitive, so assigning it here would rewrite "Snuggle" to "snuggle"
+        // (and then broadcast that to every peer) on the first lowercase login.
+        if (string.IsNullOrEmpty(_char.Name)) _char.Name = _user;
         CharacterFactory.ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
-        if (loaded is null) CharacterFactory.PlaceNewCharacter(_char);   // no saved character -> home city matching the picked nation
+        RestoreTimedEffects();                     // buffs/curses/stances/morph/stealth that were still running at logout
         _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);   // naked base AC = 100-level; recompute on load so records saved under the old decrement/gate logic self-correct
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
@@ -565,9 +713,7 @@ public sealed partial class Session
         // is how peers address this player's move/speech/despawn packets. It is a runtime handle, not a
         // persistent key, so we overwrite whatever was loaded and never save it back meaningfully.
         _char.Id = _world.AllocatePlayerId();
-        Log.Info(loaded is null
-            ? $"   -> ARRIVAL user='{_user}' — no saved character, using default spawn (entity id {_char.Id})"
-            : $"   -> ARRIVAL user='{_user}' — loaded saved character at map {_char.Map} ({_char.X},{_char.Y}) (entity id {_char.Id})");
+        Log.Info($"   -> ARRIVAL user='{_user}' — loaded character '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y}) (entity id {_char.Id})");
 
         // *** THE MISSING TRIGGER (found by reversing NexusTK.exe) ***
         // After 0x10 the client is on the loading screen; its game-WORLD object doesn't exist yet,
@@ -591,11 +737,11 @@ public sealed partial class Session
         SendXy();
         SendSelfLook();
         SendStats();
-        PlayMapMusic(_char.Map);   // 0x19: start this map's background track — SendWorldEntry() had this, ARRIVAL didn't
+        ArmEntryMusic();           // 0x19 music: ARMED here, sent on the client's first packet — see Handle()
         SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
         SendSound(412, _char.Id);  // "successfully logging in" sfx, confirmed live 2026-07-27
 
-        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 0x19 music + 412 login sfx ==");
+        Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 412 login sfx (music armed) ==");
 
         // Join the shared world: register on this map, draw everyone/everything already here for us, and
         // let EnterMap broadcast US to them. From now on peers see our moves/speech and we see theirs.
@@ -610,23 +756,34 @@ public sealed partial class Session
         Log.Info($"   == world join: map {_char.Map} has {peers.Length} other player(s), {mobs.Length} mob(s) ==");
     }
 
-    // ---- 5.33 terrain streaming (opcode 0x06) ----
-    // The 5.33 client draws NO terrain from local files; after 0x15 map-info it asks the server for the
-    // tiles in its viewport by sending a view-rect request (opcode 0x05 = initial full pull, 0x06 =
-    // incremental refresh). We reply with an opcode-0x06 cell block. Layout confirmed from BOTH the 5.33
-    // binary (handler sub_469060) and the Mithia 7.x reference (clif_parsemap / clif_sendmapdata):
-    //   request  body : x0(BE u16) y0(BE u16) w(u8) h(u8) checksum(BE u16)
-    //   response body : 00 | x0(BE u16) | y0(BE u16) | w(u8) | h(u8) | { tile(BE) pass(BE) obj(BE) } * w*h
-    // cell shorts are BIG-ENDIAN; the client draws each cell at (x0+ix, y0+iy). Without this the map is
-    // an empty black void — which is exactly what we saw before implementing it.
+    // ---- terrain streaming (opcode 0x06) — BOTH clients ----
+    // The client asks for the tiles in its viewport with a view-rect request (0x05), and we reply with an
+    // 0x06 cell block. Request layout is identical on 4.95 and 5.33 (confirmed from the 5.33 binary handler
+    // sub_469060, the Mithia 7.x reference clif_parsemap/clif_sendmapdata, AND a live 4.95 capture):
+    //   request body : x0(BE u16) y0(BE u16) w(u8) h(u8) [00 checksum(BE u16) 00 on 4.95]
+    // The REPLY differs in cell width, because the two clients pack passability differently:
+    //   5.33 : x0 y0 w h | { tile(BE) pass(BE) obj(BE) } * w*h        -- 3 shorts, pass in its own short
+    //   4.95 : x0 y0 w h | { ground(BE) object(BE) }    * w*h        -- 2 shorts, pass in ground's top 2 bits
+    // 4.95's form is the same cell shape SendObjRow already sends for doors (recv handler 0x44fb90, which
+    // writes each cell into the client's LIVE map array and then redraws the patched rect — so the write
+    // itself is not viewport-gated). No leading flag byte on either: the 5.33 handler reads x0 immediately
+    // after op+inc (a spurious 0x00 shifts every field by one, w reads as 0, and you get a black void).
+    // Mithia 7.x's clif_sendmapdata DOES emit a leading 0 here; both of these clients differ.
     private void HandleMapRequest(byte[] dec)
     {
         if (dec.Length < 6) { Log.Info($"   ?? map-req too short ({dec.Length}B)"); return; }
-        int x0 = (dec[0] << 8) | dec[1];
-        int y0 = (dec[2] << 8) | dec[3];
-        int reqW = dec[4];
-        int reqH = dec[5];
+        // The 4.95 client fires two (0,0) 12x12 requests at connect, BEFORE 0x15 enter-map — at that point
+        // _char has no map or dims, so MapData.For would build a 0-cell map and we'd answer with an empty
+        // rect. Ignore anything that arrives before the world join; the client re-asks once it's in.
+        if (!_enteredWorld || _char.MapXs == 0 || _char.MapYs == 0) return;
+        _stepsSinceMapReq = 0;   // the client is keeping itself fed; hold the push off (see StreamViewport)
+        SendMapRect((dec[0] << 8) | dec[1], (dec[2] << 8) | dec[3], dec[4], dec[5], "req");
+    }
 
+    /// <summary>Emit one 0x06 cell block for a rectangle, clamped to the map. Shared by the client's own
+    /// 0x05 request and by the walk-driven viewport stream (<see cref="StreamViewport"/>).</summary>
+    private void SendMapRect(int x0, int y0, int reqW, int reqH, string why)
+    {
         var map = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
         if (map is null) { Log.Info($"   ?? map-req for map {_char.Map}: no server-side tile data"); return; }
 
@@ -636,6 +793,7 @@ public sealed partial class Session
         if (y0 < 0) y0 = 0;
         int w = Math.Clamp(reqW, 0, Math.Max(0, map.Xs - x0));
         int h = Math.Clamp(reqH, 0, Math.Max(0, map.Ys - y0));
+        if (w <= 0 || h <= 0) return;
 
         // NO leading flag byte: the 5.33 client (handler sub_469060) reads x0 immediately after op+inc
         // — calibrated via the 0x15 handler and confirmed by the client-side Frida probe (a spurious
@@ -686,14 +844,106 @@ public sealed partial class Session
                 pass = PassAt(map, mx, my);
                 obj  = (ushort)((map.Obj(mx, my) + CellOff) & 0x3FFF);
             }
-            b.AddRange(Be(tile));
-            b.AddRange(Be(pass));
-            b.AddRange(Be(obj));
+            if (_ver == ClientVersion.V533)
+            {
+                b.AddRange(Be(tile));
+                b.AddRange(Be(pass));
+                b.AddRange(Be(obj));
+            }
+            else
+            {
+                // 4.95 packs passability into the ground short's top 2 bits — the same word the .map file
+                // stores and MapData.GroundWord rebuilds, so a streamed cell is byte-identical to what the
+                // client would have read from its own local copy.
+                b.AddRange(Be((ushort)((tile & 0x3FFF) | (pass << 14))));
+                b.AddRange(Be(obj));
+            }
         }
 
         string mode = MapDiag.Length == 0 ? $"real tileOff={CellOff}" : $"DIAG={MapDiag}";
-        Log.Info($"   -> map-data(0x06) rect ({x0},{y0}) req {reqW}x{reqH} -> {w}x{h} cells={total} [{mode}]");
+        Log.Info($"   -> map-data(0x06) [{why}] rect ({x0},{y0}) req {reqW}x{reqH} -> {w}x{h} cells={total} " +
+                 $"[{mode}] {(_ver == ClientVersion.V533 ? "3-short" : "2-short")} cells");
         Send(MapBuild(0x06, _gameInc++, b.ToArray()));
+        NoteStreamed(x0, y0, w, h);
+    }
+
+    // ---- walk-driven viewport streaming ----------------------------------------------------------------
+    // The client only sends its 0x05 map-data request on MAP ENTRY, not per step. Walk far enough from where
+    // you arrived and you run off the end of what was streamed and hit unwritten cells — a black wall. (It
+    // shows as a hard edge rather than a gradual fade because the client's map array is the memory-mapped
+    // cache file, freshly zero-filled for a map it has never cached.) So the SERVER has to push terrain as
+    // the player moves; that is what the walk 0x06's view checksum is for.
+    //
+    // We track the rectangle already sent for the current map and, after each step, extend it. Only the
+    // newly-exposed strip goes out (a step exposes one row or one column, ~21 cells / ~84 bytes) rather than
+    // the whole viewport, which would be ~1.3 KB per step per player for no benefit.
+    private ushort _streamMap;          // which map _stream* describes (0 = nothing streamed yet)
+    private bool _streamValid;
+    private int _streamX0, _streamY0, _streamX1, _streamY1;   // inclusive bounds already sent
+
+    // The client asks for 18x16 / 19x17 around itself. Stream a slightly larger window so a walking player
+    // can never outrun the coverage: at one tile per step, two tiles of margin is ample.
+    private const int StreamW = 23, StreamH = 21;
+
+    // The client normally re-requests on its own about every 5 steps (measured: 0.20 requests per walk,
+    // the same with or without the server replying, so it is scroll-driven rather than retrying). Where it
+    // does that, pushing is pure duplication — one measured window sent 755 replies against 139 requests.
+    // But it does NOT always do it: on map 1000 (18x25, exactly viewport-width so its x0 is pinned at 0) a
+    // player walked 11 tiles out of the requested rect with no further request, which is a black wall.
+    // So: push only once the client has gone quiet for PushGraceSteps. Set NEXUS_V495_PUSHMAP=0 to disable
+    // the push entirely and check whether the client really does keep up unaided.
+    private static readonly bool PushMap =
+        (Environment.GetEnvironmentVariable("NEXUS_V495_PUSHMAP") ?? "1").Trim() != "0";
+    private static readonly int PushGraceSteps =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_PUSHGRACE"), out var g) && g >= 0 ? g : 8;
+    private int _stepsSinceMapReq;
+
+    // Deliberately the LAST window, not a running union of everything sent. A union is a bounding box, and a
+    // bounding box claims coverage that was never sent: walk a long way north (box grows tall) then east, and
+    // the new eastern columns only went out for the CURRENT rows, yet the box would mark them covered for the
+    // whole accumulated height — walk back north along that edge and you'd hit black with the tracker
+    // insisting it was already streamed. Last-window can't lie. The cost is re-sending a strip when a player
+    // walks back over ground they've seen, which is ~84 bytes.
+    private void NoteStreamed(int x0, int y0, int w, int h)
+    {
+        if (w <= 0 || h <= 0) return;
+        _streamMap = _char.Map; _streamValid = true;
+        _streamX0 = x0; _streamY0 = y0; _streamX1 = x0 + w - 1; _streamY1 = y0 + h - 1;
+    }
+
+    /// <summary>Reset the coverage tracker — the player changed map, so nothing is streamed yet.</summary>
+    private void ResetStreamCoverage() { _streamValid = false; _streamMap = 0; }
+
+    /// <summary>Push any terrain the player's viewport now covers but we haven't sent. Call after a
+    /// committed step.</summary>
+    private void StreamViewport()
+    {
+        if (!_enteredWorld || _char.MapXs == 0 || _char.MapYs == 0) return;
+        _stepsSinceMapReq++;
+        if (!PushMap || _stepsSinceMapReq < PushGraceSteps) return;   // the client is asking for itself
+
+        int xs = _char.MapXs, ys = _char.MapYs;
+        int w = Math.Min(StreamW, xs), h = Math.Min(StreamH, ys);
+        int x0 = Math.Clamp(_char.X - w / 2, 0, xs - w);
+        int y0 = Math.Clamp(_char.Y - h / 2, 0, ys - h);
+        int x1 = x0 + w - 1, y1 = y0 + h - 1;
+
+        // Nothing streamed for this map yet, or the window has jumped clear of the last one (a warp landing
+        // inside the same map) -> send the whole thing; strips only make sense against an overlapping rect.
+        bool overlaps = _streamValid && _streamMap == _char.Map
+                        && x0 <= _streamX1 && x1 >= _streamX0 && y0 <= _streamY1 && y1 >= _streamY0;
+        if (!overlaps) { SendMapRect(x0, y0, w, h, "walk-init"); return; }
+        if (x0 >= _streamX0 && y0 >= _streamY0 && x1 <= _streamX1 && y1 <= _streamY1) return;   // already sent
+
+        // A step moves the window one tile on one axis, so normally exactly one of these fires. Corners can
+        // be sent twice when two do; re-writing a cell the client already has is harmless.
+        // NoteStreamed runs inside SendMapRect, so capture the old bounds before the first send.
+        int ox0 = _streamX0, oy0 = _streamY0, ox1 = _streamX1, oy1 = _streamY1;
+        if (x1 > ox1) SendMapRect(ox1 + 1, y0, x1 - ox1, h, "walk-e");
+        if (x0 < ox0) SendMapRect(x0, y0, ox0 - x0, h, "walk-w");
+        if (y1 > oy1) SendMapRect(x0, oy1 + 1, w, y1 - oy1, "walk-s");
+        if (y0 < oy0) SendMapRect(x0, y0, w, oy0 - y0, "walk-n");
+        NoteStreamed(x0, y0, w, h);   // the window as a whole is now covered
     }
 
     private Character _char = new();

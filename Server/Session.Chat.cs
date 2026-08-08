@@ -20,6 +20,43 @@ public sealed partial class Session
         var msg = dec[2..(2 + msgLen)];
         var text = Encoding.ASCII.GetString(msg);
 
+        // ==== PLAYER commands ====================================================================
+        // Everything in this first block is available to ordinary players. EVERY other "!" command is a
+        // development/GM tool (spawn items, set level, warp, hand out coins, hot-reload content) and is
+        // gated below on IsGm — see the GmAccounts gate. Keep new player-facing commands ABOVE that gate
+        // and new tools below it; a tool that drifts up here is a live economy exploit, not a typo.
+
+        // ---- whisper/tell: a private line to one online player (RTK clif_parsewisp) ----
+        if (text.StartsWith("!whisper ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[9..]); return; }
+        if (text.StartsWith("!w ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[3..]); return; }
+        // "!ignore [add|remove] <name>" (RTK ignorelist_add/remove — blocks whispers both ways, see
+        // DoWhisper) / "!friend [add|remove] <name>" (no RTK equivalent — see Character.Friends' doc).
+        if (text.StartsWith("!ignore", StringComparison.OrdinalIgnoreCase)) { HandleIgnoreCommand(text); return; }
+        if (text.StartsWith("!friend", StringComparison.OrdinalIgnoreCase)) { HandleFriendCommand(text); return; }
+        // "!mailflag" (a GM probe) MUST be checked before "!mail" — StartsWith("!mail") would otherwise
+        // swallow it — but it can't sit in the player block, so match it here and route it to the gate.
+        if (!text.StartsWith("!mailflag", StringComparison.OrdinalIgnoreCase) &&
+            text.StartsWith("!mail", StringComparison.OrdinalIgnoreCase)) { HandleMailCommand(text); return; }
+        // ---- party (RTK clif_addgroup/clif_leavegroup, §11) + trade (RTK clif_handitem &c., §11) ----
+        if (text.StartsWith("!leaveparty", StringComparison.OrdinalIgnoreCase)) { LeaveParty(); return; }
+        if (text.StartsWith("!party", StringComparison.OrdinalIgnoreCase)) { HandlePartyCommand(text); return; }  // "!party <name>" invite/kick, "!party" list
+        if (text.StartsWith("!trade", StringComparison.OrdinalIgnoreCase)) { HandleTradeCommand(text); return; } // "!trade <name>" open the trade menu
+        if (text.StartsWith("!travel", StringComparison.OrdinalIgnoreCase)) { _ = RunWorldMapMenuAsync(); return; }   // dialog fallback for §11m if the native screen ever regresses
+        if (text.StartsWith("!time", StringComparison.OrdinalIgnoreCase))  { ShowTime(); return; }                  // read-only: the game clock + totem-time status
+
+        // ==== GM GATE ============================================================================
+        // Everything past this point spawns items/mobs, sets level and stats, warps, mints coins, or
+        // hot-reloads content. On a hosted server those are administrative powers, so a non-GM gets the
+        // same answer as for any nonsense command and no hint that the tooling exists. GM membership is
+        // deployment config (data/gm_accounts.txt or NEXUS_GMS) — see Server/GmAccounts.cs.
+        if (text.StartsWith("!") && !IsGm)
+        {
+            Log.Info($"   -> denied GM command from non-GM '{_char.Name}': \"{text}\"");
+            SendLog("Unknown command.");
+            return;
+        }
+
+        // ==== GM / development tooling ===========================================================
         // Appearance look-lab: drive 0x33 appearance bytes live so we can read the sprite id-space
         // off the screen instead of guessing.  "!look b0 b1 b2 b3 b4 b5 b6" spawns one test dummy with
         // those 7 bytes; "!row i lo hi" spawns a labeled row sweeping appearance[i] from lo..hi.
@@ -29,24 +66,8 @@ public sealed partial class Session
         if (text.StartsWith("!crecol", StringComparison.OrdinalIgnoreCase)) { CreatureColorRow(text); return; } // sweep the 0x07 color byte for one look id
         if (text.StartsWith("!crow", StringComparison.OrdinalIgnoreCase)) { CreatureRow(text); return; }  // sweep monster look ids
         if (text.StartsWith("!cre", StringComparison.OrdinalIgnoreCase)) { CreatureOne(text); return; }    // spawn one real monster [look] [hp] [color]
-        // ---- navigation + data-driven content (registries loaded at startup from external data) ----
-        if (text.StartsWith("!music", StringComparison.OrdinalIgnoreCase)) { PlayMusicCmd(text); return; } // play a specific track (0x19)
-        // ---- whisper/tell: a private line to one online player (RTK clif_parsewisp) ----
-        if (text.StartsWith("!whisper ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[9..]); return; }
-        if (text.StartsWith("!w ", StringComparison.OrdinalIgnoreCase)) { HandleWhisper(text[3..]); return; }
-        // "!ignore [add|remove] <name>" (RTK ignorelist_add/remove — blocks whispers both ways, see
-        // DoWhisper) / "!friend [add|remove] <name>" (no RTK equivalent — see Character.Friends' doc).
-        if (text.StartsWith("!ignore", StringComparison.OrdinalIgnoreCase)) { HandleIgnoreCommand(text); return; }
-        if (text.StartsWith("!friend", StringComparison.OrdinalIgnoreCase)) { HandleFriendCommand(text); return; }
-        // "!mailflag" MUST be checked before "!mail" (StartsWith("!mail") would otherwise swallow it).
+        if (text.StartsWith("!music", StringComparison.OrdinalIgnoreCase)) { PlayMusicCmd(text); return; } // play a track by name or id (0x19)
         if (text.StartsWith("!mailflag", StringComparison.OrdinalIgnoreCase)) { MailFlagProbe(text); return; }  // sweep the 0x08 tail mail/parcel notify byte
-        // "!mail" — RTK nmail (see HandleMailCommand's doc for why compose is chat-command-only).
-        if (text.StartsWith("!mail", StringComparison.OrdinalIgnoreCase)) { HandleMailCommand(text); return; }
-        // ---- party (RTK clif_addgroup/clif_leavegroup, §11) + trade (RTK clif_handitem &c., §11) ----
-        if (text.StartsWith("!leaveparty", StringComparison.OrdinalIgnoreCase)) { LeaveParty(); return; }
-        if (text.StartsWith("!party", StringComparison.OrdinalIgnoreCase)) { HandlePartyCommand(text); return; }  // "!party <name>" invite/kick, "!party" list
-        if (text.StartsWith("!trade", StringComparison.OrdinalIgnoreCase)) { HandleTradeCommand(text); return; } // "!trade <name>" open the trade menu
-        if (text.StartsWith("!travel", StringComparison.OrdinalIgnoreCase)) { _ = RunWorldMapMenuAsync(); return; }   // dialog fallback for §11m if the native screen ever regresses
         // "!wmpos <i> <x> <y>" -- live-tune destination i's clickable dot to field10 pixel (x,y) and re-open
         // the map so you can eyeball it against the real town. i is the index in Content.WorldDests (0=Kugnae,
         // 1=Buya, 2=Mythic Nexus, 3=Arctic Land, 4=KaMing's). The tweak is an ephemeral in-session override
@@ -111,6 +132,7 @@ public sealed partial class Session
         if (text.StartsWith("!lvl", StringComparison.OrdinalIgnoreCase)) { var la = ParseInts(text); SetLevel(la.Length > 0 ? la[0] : _char.Level); return; }   // become level n with accurate stats (full HP/MP)
         if (text.StartsWith("!might", StringComparison.OrdinalIgnoreCase)) { SetBaseStat("might", text); return; } // set base might (test wear reqs)
         if (text.StartsWith("!class", StringComparison.OrdinalIgnoreCase)) { SetClass(text); return; }  // set the profile class/path line
+        if (text.StartsWith("!mark", StringComparison.OrdinalIgnoreCase)) { SetMark(text); return; }    // set the subpath rank (gates ItmMark gear / MapReqMark)
         if (text.StartsWith("!spells", StringComparison.OrdinalIgnoreCase)) { TeachClassSpells(); return; }      // learn ALL my class's spells up to my level
         if (text.StartsWith("!learnspell", StringComparison.OrdinalIgnoreCase)) { LearnSpellCmd(text); return; } // learn one spell by name/id
         if (text.StartsWith("!forgetspells", StringComparison.OrdinalIgnoreCase)) { ForgetSpells(); return; }    // clear the spellbook
@@ -134,9 +156,9 @@ public sealed partial class Session
         if (text.StartsWith("!click", StringComparison.OrdinalIgnoreCase)) { ClickProfileCmd(text); return; }  // native 0x34 click-profile: self, or "!click <name>" for another player
         if (text.StartsWith("!nat", StringComparison.OrdinalIgnoreCase)) { StatNation(text); return; }              // sweep nation id -> HUD name
         if (text.StartsWith("!totem", StringComparison.OrdinalIgnoreCase)) { StatTotem(text); return; }             // sweep totem id -> HUD name
-        if (text.StartsWith("!time", StringComparison.OrdinalIgnoreCase))  { ShowTime(); return; }                  // report the game clock + totem-time status
         if (text.StartsWith("!dye", StringComparison.OrdinalIgnoreCase)) { DyeProbe(text); return; }                // calibrate the war-paint dye: !dye <n> sets appearance[4]
         if (text.StartsWith("!hurt", StringComparison.OrdinalIgnoreCase)) { HurtSelfCmd(text); return; }             // take n damage (after deduction) to test Sanctuary/Cunning
+        if (text.StartsWith("!boardobj", StringComparison.OrdinalIgnoreCase)) { BoardObjProbe(); return; }           // board-sign calibration: report faced tile obj + BoardLocations match
         if (text.StartsWith("!hp", StringComparison.OrdinalIgnoreCase)) { StatHpTest(text); return; }               // verify maxHP/maxMP offsets
         if (text.StartsWith("!s", StringComparison.OrdinalIgnoreCase)) { StatProbe(text); return; }
 

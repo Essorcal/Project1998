@@ -1,0 +1,48 @@
+[Unit]
+Description=NexusTK game server (ports 2005/2006)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus
+ExecStart=/usr/bin/dotnet /opt/nexus/game/Server.dll --ports 2005,2006
+
+# Must match the login unit — the game channel's re-login path (Alt+X to the select screen) mints its own
+# handoff back to this host, so a wrong value here breaks re-login even when first login works.
+Environment=NEXUS_GAME_HOST=CHANGE.ME.TO.PUBLIC.IP
+
+# Server-side terrain. Only needed if the client's Maps directory does NOT live at <repo>/data/maps.
+# Without it collision and mob spawn placement silently degrade — startup logs "terrain: N/M map file(s)".
+#Environment=NEXUS_MAPS=/opt/nexus/data/maps
+
+# The per-packet hex dump is the backbone of the protocol RE work and is ON by default. On a live server it
+# is pure cost: a synchronous console + file write under a global lock, on the packet path, plus megabytes
+# of log per player-hour. Turn it off in production.
+Environment=NEXUS_LOG_WIRE=0
+
+# Worst-case data loss on a hard kill / power cut (default 15000 = 15s). Lower costs more SQLite writes.
+#Environment=NEXUS_AUTOSAVE_MS=15000
+
+Restart=always
+RestartSec=3
+
+# SIGTERM runs the graceful-shutdown flush (Server/Net.cs) — give it room to save every online player
+# before systemd escalates to SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nexus/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

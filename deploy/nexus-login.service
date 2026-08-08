@@ -1,0 +1,42 @@
+[Unit]
+Description=NexusTK login server (ports 2000/2001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus
+ExecStart=/usr/bin/dotnet /opt/nexus/login/LoginServer.dll --ports 2000,2001
+
+# NEXUS_GAME_HOST is the address the CLIENT must dial to reach the game server. It is baked into the
+# handoff packet, so it has to be the server's PUBLIC address, not 127.0.0.1 — a loopback value here makes
+# every client try to connect to itself after login and hang at the loading screen.
+Environment=NEXUS_GAME_HOST=CHANGE.ME.TO.PUBLIC.IP
+
+# Wire logging stays OFF: login packets carry the player's password in the clear (see LoginServer/Log.cs).
+Environment=NEXUS_LOG_WIRE=0
+
+# Failed-login budget per source IP (defaults: 10 per 5 minutes). Loopback is exempt by default; if the
+# login and game processes are on DIFFERENT boxes there is no loopback hop to protect, so you can drop the
+# exemption entirely with NEXUS_LOGIN_EXEMPT_LOOPBACK=0.
+#Environment=NEXUS_LOGIN_FAILS=10
+#Environment=NEXUS_LOGIN_FAIL_WINDOW_MS=300000
+
+Restart=always
+RestartSec=3
+
+# Hardening. The process only ever needs to write <repo>/data (SQLite + logs).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nexus/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

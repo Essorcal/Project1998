@@ -120,6 +120,33 @@ CREATE TABLE IF NOT EXISTS parcels (
   month     INTEGER,
   day       INTEGER
 );
+
+-- Map cells a PLAYER changed: doors opened, GM edits, event scripts. The .map files on disk are never
+-- written and authored corrections live in data/game-data/MapCells.csv, so this table holds only the
+-- diff against that authored baseline (MapData.RuntimeCells) — NOT the diff against the file. Baking
+-- authored corrections in here would make the DB outrank the CSV, and editing the CSV would silently
+-- stop working. One row per changed cell; the row is DELETED when a cell returns to its baseline (a
+-- door toggled shut again), so the table stays proportional to what is actually open right now.
+CREATE TABLE IF NOT EXISTS map_cells (
+  map  INTEGER NOT NULL,
+  x    INTEGER NOT NULL,
+  y    INTEGER NOT NULL,
+  tile INTEGER NOT NULL,
+  pass INTEGER NOT NULL,
+  obj  INTEGER NOT NULL,
+  PRIMARY KEY (map, x, y)
+);
+
+-- Locked doors a player has opened (Doors.csv Locked/Key). Separate from map_cells because unlocking is
+-- a separate axis from the open/closed GRAPHIC: a door can be unlocked but shut. Without this a key with
+-- ConsumeKey=1 was spent and the door relocked on restart — the key gone and the door shut again.
+CREATE TABLE IF NOT EXISTS map_unlocks (
+  map          INTEGER NOT NULL,
+  x            INTEGER NOT NULL,
+  y            INTEGER NOT NULL,
+  unlocked_utc INTEGER,
+  PRIMARY KEY (map, x, y)
+);
 ";
             cmd.ExecuteNonQuery();
             _initialized = true;

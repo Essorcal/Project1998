@@ -280,7 +280,9 @@ public sealed partial class Session
             var def = Content.ItemById(snap.ItemId);
             if (def is null) continue;
             have.Amount -= amount;
-            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 0); }
+            // reason 10 = "You gave <item>." — a trade hand-over is exactly what that client line is for
+            // (it was reason 0, which says "<item> removed." instead). See the table in the protocol doc §11c.
+            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 10); }
             to.GiveItem(def, amount, snap.Dura, snap.CustomName);
         }
     }
@@ -419,7 +421,13 @@ public sealed partial class Session
     // boards, not modelled). Board id 0 is the player's OWN mailbox (RTK case 9 == this same builder
     // called with board 0 — see Mail.cs): "name" per post becomes the sender, and an unread letter's
     // topic gets a "* " prefix so a native mailbox listing shows what's new without a separate flag byte.
-    private void SendBoardPosts(int boardId)
+    // popup=true is the RTK "showBoard" / board-sign path: the client has NO board window open yet, so the
+    // header must tell it to OPEN one. RTK (char/mapif.c mapif_parse_showposts) encodes this in flags1 — bit 0
+    // CLEAR = server-initiated popup, SET = a reply to the client's own board request (window already open).
+    // So a writable board is flags1=2 when popped open by a sign vs flags1=3 from the `b` menu. Without this,
+    // an unsolicited 0x31 is silently dropped (the exact symptom: packet sent, nothing opens). Mailbox (board
+    // 0) has no sign path, so popup only applies to real boards.
+    private void SendBoardPosts(int boardId, bool popup = false)
     {
         if (boardId == 0)
         {
@@ -455,7 +463,8 @@ public sealed partial class Session
         string name = Boards.Find(boardId)?.Name ?? "";
         var posts = Boards.PostsFor(boardId);
 
-        var d = new List<byte> { 2, 3 };
+        // flags2=2 (real board), flags1=3 normally / 2 when we pop the window open (see popup note above).
+        var d = new List<byte> { 2, (byte)(popup ? 2 : 3) };
         d.AddRange(Be((ushort)boardId));
         var bn = Ascii(name);
         d.Add((byte)bn.Length);
@@ -694,9 +703,10 @@ public sealed partial class Session
             if (slot is null || def is null) { SendLog($"You don't have '{iparts[0]}' to send."); return; }
             amt = Math.Min(amt, slot.Amount);
 
-            // Same removal shape as HandleDropItem: shrink the stack or clear the slot outright.
+            // Same removal shape as HandleDropItem, but reason 7 = "You posted <item>." — that client line
+            // exists for exactly this, and reason 1 was announcing a parcel as "You dropped <item>."
             int remaining = slot.Amount - amt;
-            if (remaining <= 0) { _char.Inventory.Remove(slot); SendDelItem(slot.Slot, 1); }
+            if (remaining <= 0) { _char.Inventory.Remove(slot); SendDelItem(slot.Slot, 7); }
             else { slot.Amount = remaining; SendAddItem(slot); }
             MarkDirty();
             itemId = def.Id; amount = amt; dura = slot.Dura;

@@ -39,7 +39,7 @@ public static class Boards
         new BoardDef(1, "Lore"),
         new BoardDef(2, "Map"),
         new BoardDef(3, "Poetry"),
-        new BoardDef(4, "Minigames & Carnages"),
+        new BoardDef(4, "Carnage Schedule"),
     };
 
     public static BoardDef? Find(int boardId) => All.FirstOrDefault(b => b.Id == boardId);
