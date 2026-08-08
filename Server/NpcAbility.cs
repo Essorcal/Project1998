@@ -860,7 +860,7 @@ public sealed class AppearanceAbility : INpcAbility
 /// Super Wasabi, gated on base Vita/Mana) offered before the team menu.
 /// <para>The color values are RTK's own palette indices. On the 4.95 client the index→visible-color map isn't
 /// fully catalogued (the look-lab confirmed 16/32/64/128/255 recolor and 0..8 stay base; the 9..36 range these
-/// live in was never swept), so some may need adjusting once swept with the <c>!dye &lt;n&gt;</c> GM command —
+/// live in was never swept), so some may need adjusting once swept with the <c>@dye &lt;n&gt;</c> GM command —
 /// the numbers here are the faithful RTK starting point.</para></summary>
 public sealed class WarPaintAbility : INpcAbility
 {

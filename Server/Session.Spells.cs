@@ -51,14 +51,14 @@ public sealed partial class Session
         SendMap(0x17, _gameInc++, d.ToArray(), $"addspell(0x17) slot={slot} '{sp.Name}' t{sp.Type}");
     }
 
-    // "!spells" — learn EVERY spell/skill of your class up to your level and populate the book. Class comes
-    // from the profile class line (set with !class); level from !lvl. Skips ones already known.
+    // "@spells" — learn EVERY spell/skill of your class up to your level and populate the book. Class comes
+    // from the profile class line (set with @class); level from @lvl. Skips ones already known.
     private void TeachClassSpells()
     {
         int path = Content.PathIdForClass(_char.ClassName);
         if (path < 0)
         {
-            SendLog($"'{_char.ClassName}' isn't a known class — set one first, e.g.  !class Mage  (Warrior / Rogue / Mage / Poet / Peasant).");
+            SendLog($"'{_char.ClassName}' isn't a known class — set one first, e.g.  @class Mage  (Warrior / Rogue / Mage / Poet / Peasant).");
             return;
         }
         var all = Content.SpellsForClass(path, _char.Level, _char.Alignment);
@@ -78,19 +78,19 @@ public sealed partial class Session
         SendLog($"Learned {learned} new {Content.PathName(path)} ({Character.AlignmentName(_char.Alignment)}) ability(ies) — " +
                 $"book now {_char.Spells.Count} (class has {all.Count} ≤ lvl {_char.Level}: {spells} spell / {skills} skill)." +
                 (capped ? $"  Hit the {SpellBookCap}-slot cap (raise NEXUS_SPELLBOOK_CAP)." : ""));
-        Log.Info($"   -> !spells: {Content.PathName(path)}({path}) align {_char.Alignment} lvl {_char.Level} -> +{learned}, total {_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
+        Log.Info($"   -> @spells: {Content.PathName(path)}({path}) align {_char.Alignment} lvl {_char.Level} -> +{learned}, total {_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
     }
 
-    // "!align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>" — set the sub-alignment !spells teaches. A character
+    // "@align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>" — set the sub-alignment @spells teaches. A character
     // learns only universal spells + this alignment's set, never the other sub-alignments' parallel spells
-    // (which share display names and showed up as duplicates). Non-destructive: run !forgetspells + !spells
+    // (which share display names and showed up as duplicates). Non-destructive: run @forgetspells + @spells
     // to relearn a clean single-alignment book after changing it.
     private void SetAlignment(string text)
     {
-        string a = text.Length > "!align".Length ? text["!align".Length..].Trim() : "";
+        string a = text.Trim();
         if (a.Length == 0)
         {
-            SendLog($"alignment is {Character.AlignmentName(_char.Alignment)} ({_char.Alignment}). usage: !align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>");
+            SendLog($"alignment is {Character.AlignmentName(_char.Alignment)} ({_char.Alignment}). usage: @align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>");
             return;
         }
         int val = int.TryParse(a, out var n) && n >= 0 && n < Character.Alignments.Length
@@ -99,19 +99,19 @@ public sealed partial class Session
         if (val < 0) { SendLog($"unknown alignment \"{a}\" — use Unaligned / Kwisin / Mingken / Ohaeng (or 0-3)."); return; }
         _char.Alignment = (byte)val;
         if (_enteredWorld) StoreSave();
-        SendLog($"Alignment set to {Character.AlignmentName(_char.Alignment)}. Run  !forgetspells  then  !spells  to relearn a clean {Character.AlignmentName(_char.Alignment)} set.");
+        SendLog($"Alignment set to {Character.AlignmentName(_char.Alignment)}. Run  @forgetspells  then  @spells  to relearn a clean {Character.AlignmentName(_char.Alignment)} set.");
         Log.Info($"   -> ALIGN set to {_char.Alignment} ({Character.AlignmentName(_char.Alignment)})");
     }
 
-    // "!learnspell <name|id>" — learn a single spell/skill by fuzzy name or id (any class; handy for testing).
+    // "@learnspell <name|id>" — learn a single spell/skill by fuzzy name or id (any class; handy for testing).
     private void LearnSpellCmd(string text)
     {
-        string q = text.Length > "!learnspell".Length ? text["!learnspell".Length..].Trim() : "";
-        if (q.Length == 0) { SendLog("usage: !learnspell <name or id>   (or  !spells  to learn all for your class)"); return; }
+        string q = text.Trim();
+        if (q.Length == 0) { SendLog("usage: @learnspell <name or id>   (or  @spells  to learn all for your class)"); return; }
         var sp = Content.FindSpell(q);
         if (sp is null) { SendLog($"no spell matches \"{q}\"."); return; }
         if (Content.IsOutOfEraSplitTrap(sp))
-        { SendLog($"{sp.Name} is a 2003-07-01 addition — out of era for 4.95. Use Set Trap, or set SplitTrapSpells=1 in ServerTuning.csv + !reload."); return; }
+        { SendLog($"{sp.Name} is a 2003-07-01 addition — out of era for 4.95. Use Set Trap, or set SplitTrapSpells=1 in ServerTuning.csv + @reload."); return; }
         if (_char.Spells.Contains(sp.Id)) { SendLog($"You already know {sp.Name}."); return; }
         if (_char.Spells.Count >= SpellBookCap) { SendLog($"Spellbook full ({SpellBookCap})."); return; }
         _char.Spells.Add(sp.Id);
@@ -120,7 +120,7 @@ public sealed partial class Session
         SendLog($"Learned {sp.Name} ({(sp.IsSkill ? "skill" : "spell")}, {Content.PathName(sp.PathId)}).");
     }
 
-    // "!forgetspells" — clear the whole book (0x18 remove per slot, then empty the list).
+    // "@forgetspells" — clear the whole book (0x18 remove per slot, then empty the list).
     private void ForgetSpells()
     {
         int n = _char.Spells.Count;
@@ -161,7 +161,7 @@ public sealed partial class Session
 
         // Era gate (Content.IsOutOfEraSplitTrap): the individual trap spells are a 2003-07-01 addition, so in
         // 4.95 the only route is the Set Trap dispatcher's typed prompt. RefreshSpells already prunes them
-        // from the book on world entry — this catches the mid-session cases (a GM grant, a live !reload that
+        // from the book on world entry — this catches the mid-session cases (a GM grant, a live @reload that
         // flips the toggle back off) before any Lua/C# cast path can run. The dispatcher is NOT affected: it
         // resolves the same SpellDef internally, downstream of this check.
         if (Content.IsOutOfEraSplitTrap(sp))
@@ -219,7 +219,7 @@ public sealed partial class Session
         // Data-driven Lua verb path (data/game-data/SpellParams.csv + spell_verbs.lua): if this spell has a
         // params row naming a loaded Lua verb, run it and we're done. STRICTLY ADDITIVE — any spell without a
         // row (the other ~600) falls straight through to the C# dispatch below, unchanged. A Lua error falls
-        // through too, so a broken verb can never take a spell offline. Both files hot-reload via !reload.
+        // through too, so a broken verb can never take a spell offline. Both files hot-reload via @reload.
         if (Content.SpellParams.TryGetValue(sp.Key, out var prow))
         {
             var verb = prow.GetValueOrDefault("verb", "");
@@ -1887,7 +1887,7 @@ public sealed partial class Session
     // Gateway destinations are data-driven (data/game-data/GatewayGates.csv -> Content.GatewayRegions): region
     // -> the kingdom's city map + the four gate spawn boxes. Casting Gateway warps you to a RANDOM tile inside
     // the box for the gate you answered (N/E/S/W), on the region's city map. Coords are 1:1 with RTK
-    // (gateway.lua); only the four playable kingdoms (regions 0-3) have gates. Hot-reloads via !reload.
+    // (gateway.lua); only the four playable kingdoms (regions 0-3) have gates. Hot-reloads via @reload.
 
     // Gateway: teleport to a gate of the caster's kingdom. The N/E/S/W answer to the spell's question picks the
     // gate; the region (Content.RegionOf) picks the city. Faithful to gateway.lua incl. its guards (dead can't
@@ -1989,7 +1989,7 @@ public sealed partial class Session
     // (Neutral/Shilla/Jinhan/Paekjae/Kaya) fall back to Kugnae's, matching RTK's own `country > 3 -> Ginger`.
     // Tavern return tiles are data-driven (data/game-data/Inns.csv -> Content.Inns), grouped Kugnae/Buya/
     // Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae default) stays here. Hot-reloads via
-    // !reload.
+    // @reload.
     private void ReturnToInn()
     {
         string group = _char.Nation switch

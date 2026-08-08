@@ -9,7 +9,7 @@ namespace Server;
 /// <c>learned_to_fish</c> legend, Chu Rua's shore on map 1111, the mount system, the missing-brother and
 /// ice-beast NPCs). Those stages show the real dialog but can't be COMPLETED until that content exists — which
 /// is exactly "port as far as current content allows." The item-turn-in stages (armor, meat, rose+chestnut,
-/// ogre cider, antlers, mica, student cap) are completable now via shops or <c>!item</c>. The separate
+/// ogre cider, antlers, mica, student cap) are completable now via shops or <c>@item</c>. The separate
 /// path-choice and warrior-armor branches of the RTK script (which need the class/guild systems) are out of scope.
 /// </summary>
 public static class TutorialQuest
@@ -188,7 +188,7 @@ public static class TutorialQuest
                       "When you get to the library mention my name to the librarian, I am sure he will have some words to say to you. Remember to say my name out loud.");
     }
 
-    // stage 6: ogre cider (fetch — completable via !item; RTK checks hasItemDura, we treat as hasItem)
+    // stage 6: ogre cider (fetch — completable via @item; RTK checks hasItemDura, we treat as hasItem)
     private static async Task OgreCider(NpcContext ctx)
     {
         if (ctx.HasItem("ogre_cider", 1))
@@ -236,7 +236,7 @@ public static class TutorialQuest
         }
     }
 
-    // stage 8: group hunting (gather 3 antlers from deer — completable via kills/!item)
+    // stage 8: group hunting (gather 3 antlers from deer — completable via kills/@item)
     private static async Task GroupHunt(NpcContext ctx)
     {
         if (ctx.HasItem("antler", 3))
@@ -352,7 +352,7 @@ public static class TutorialQuest
                       "Go there and talk to him about a new weapon. I am sure he will be willing to \"help\" you, ask about the \"Ice beast\"");
     }
 
-    // stage 13: end of tutorial (make a student cap from cloth; completable via !item / the museum caretaker)
+    // stage 13: end of tutorial (make a student cap from cloth; completable via @item / the museum caretaker)
     private static async Task StudentCap(NpcContext ctx)
     {
         if (ctx.HasItem("student_cap", 1) || ctx.HasEquipped("student_cap"))

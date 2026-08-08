@@ -347,7 +347,7 @@ public sealed partial class Session
         return true;
     }
 
-    // "!boardobj" — board-sign calibration probe. Reports the tile you're FACING, the object sprite id sitting
+    // "@boardobj" — board-sign calibration probe. Reports the tile you're FACING, the object sprite id sitting
     // there (RTK's board sprites are 1619/1620; the 4.95 id is TBD), and whether a BoardLocations row already
     // matches. Stand below a board looking north and run this to capture the (map,x,y) for BoardLocations.csv.
     private void BoardObjProbe()
@@ -361,8 +361,8 @@ public sealed partial class Session
         bool match = Content.TryBoardAt(_char.Map, fx, fy, out var bid);
         string boardName = match ? (Boards.Find(bid)?.Name ?? "?") : "-";
         SendLog($"boardobj: map {_char.Map} you@({_char.X},{_char.Y}) facing {dir} -> tile ({fx},{fy}) obj={obj} | board={(match ? $"{bid} \"{boardName}\"" : "none")}");
-        SendLog($"  to register: add  {_char.Map},{fx},{fy},<BoardId>  to BoardLocations.csv then !reload  (4=Carnage Schedule)");
-        Log.Info($"   -> !boardobj map {_char.Map} facing {dir} tile ({fx},{fy}) obj={obj} match={match} board={bid}");
+        SendLog($"  to register: add  {_char.Map},{fx},{fy},<BoardId>  to BoardLocations.csv then @reload  (4=Carnage Schedule)");
+        Log.Info($"   -> @boardobj map {_char.Map} facing {dir} tile ({fx},{fy}) obj={obj} match={match} board={bid}");
     }
 
     // 0x20 = the 'o' / Open key. In NexusTK this TOGGLES the door object I'm facing between its closed and open
@@ -496,8 +496,8 @@ public sealed partial class Session
         }
         else if (setting == 0x00)
         {
-            // 0x00 = the 'r' Ride key (RTK clif_changestatus case 0x00 -> clif_findmount). Unlike !ride/
-            // !mount (a plain GM toggle), this one is tied to a real world "horse" mob (MobDef key "horse",
+            // 0x00 = the 'r' Ride key (RTK clif_changestatus case 0x00 -> clif_findmount). Unlike @ride/
+            // @mount (a plain GM toggle), this one is tied to a real world "horse" mob (MobDef key "horse",
             // e.g. the wild horses roaming Buya/Horse Valley): mounting rides one away (despawns it) and
             // dismounting sets it back down in front of you.
             if (_char.Hp == 0) SendMiniText("Spirits can't do that.");

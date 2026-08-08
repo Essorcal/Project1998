@@ -2,12 +2,12 @@
 
 NexusServer separates the **engine** (C#, in `Server/`) from the **game data** (flat files, in the `data/`
 git submodule under `data/game-data/`). Almost everything a modder tunes — spells, items, NPCs, monsters,
-shops, maps, drop tables, level curves — lives in CSV or Lua and **hot-reloads with the `!reload` GM command,
+shops, maps, drop tables, level curves — lives in CSV or Lua and **hot-reloads with the `@reload` GM command,
 no server restart**. This document is the map of what lives where and how to change it.
 
 > Golden rule: **data describes *what*; code implements *how*.** A monster's HP is data; the combat formula
 > is code. A spell's mana cost is data; the packet that draws its animation is code. If you're editing a
-> number or a line of dialog, it should be a file edit + `!reload`, not a rebuild.
+> number or a line of dialog, it should be a file edit + `@reload`, not a rebuild.
 
 ---
 
@@ -15,7 +15,7 @@ no server restart**. This document is the map of what lives where and how to cha
 
 | Tier | Lives in | Changed by | Examples |
 |---|---|---|---|
-| **Flat config (CSV/Lua)** | `data/game-data/*.csv`, `*.lua` | edit file → `!reload` | mob stats, items, spells, NPCs, shops, drops, warps, level curves |
+| **Flat config (CSV/Lua)** | `data/game-data/*.csv`, `*.lua` | edit file → `@reload` | mob stats, items, spells, NPCs, shops, drops, warps, level curves |
 | **Live GM/player state** | SQLite (`*.db`) | in-game actions / GM commands | inventories, mail, marriages, quest progress |
 | **Engine constants** | `Server/*.cs` | edit code → rebuild | wire/packet formats, combat math, the mob AI tick, a handful of scalars |
 
@@ -23,7 +23,7 @@ Everything below is Tier 1 unless noted.
 
 ## Hot reload
 
-`!reload` (GM command) re-reads **every** `data/game-data` file — all CSVs and the three Lua scripts — and
+`@reload` (GM command) re-reads **every** `data/game-data` file — all CSVs and the three Lua scripts — and
 rebuilds the world population (added/removed/repositioned spawns and NPCs take effect immediately). A load
 error keeps the previous content and reports the error, so a typo can't take the server down. There are no
 compile-time content tables left that would need a restart.
@@ -45,7 +45,7 @@ Two layers, use whichever fits:
    - `SpellLevels.csv` — real level gate for Type-5 skills (overrides `Spells.csv`).
    - `Morphs.csv` / `Pets.csv` / `Traps.csv` / `SpellMods.csv` — params for morph / pet-summon / trap /
      rage+enchant spells.
-   Edit the number, `!reload`. Done.
+   Edit the number, `@reload`. Done.
 
    **Archetype verbs (`arch_*`).** A whole archetype's *behaviour* is also scriptable: `spell_verbs.lua` may
    define `arch_damage` (and, as they're migrated, `arch_heal`/`arch_buff`/…). When present, every spell of
@@ -61,7 +61,7 @@ Two layers, use whichever fits:
    - Define (or reuse) the verb in `spell_verbs.lua`: `function verbs.myverb(ctx, row) ... end`. The `ctx`
      facade exposes safe primitives (`ctx:spendMana`, `ctx:damage`, `ctx:heal`, `ctx:buff`, `ctx:say`, …) and
      read-only caster stats (`ctx.will`, `ctx.level`, …); `row` is your CSV row (numbers pre-parsed).
-   - `!reload`. When a spell has a `SpellParams` row naming a loaded verb, the Lua path runs; otherwise it
+   - `@reload`. When a spell has a `SpellParams` row naming a loaded verb, the Lua path runs; otherwise it
      falls through to the C# archetype handler unchanged. **Strictly additive — you can migrate one spell at a
      time, and a broken verb just falls back.**
 
@@ -82,12 +82,12 @@ Item use-effects are fully verb/row (the old C# table is gone):
   `activemsg`, …).
 - `item_verbs.lua` — the verbs (`heal` / `drink` / `ward` / `hardenbody` / `cure` / `warphome`). A verb may
   `return false` to REFUSE the use (a gate, e.g. a ward already active) so the item isn't consumed.
-Add a row, pick/author a verb, `!reload`.
+Add a row, pick/author a verb, `@reload`.
 
 ## Recipe: add or edit an **NPC**
 
 - **Placement**: `NPCs.csv` — id, identifier, map, tile, look, colour, `Enabled` (0 disables it). Edit +
-  `!reload` and the NPC moves/appears/vanishes live.
+  `@reload` and the NPC moves/appears/vanishes live.
 - **Behavior — reusable services** (shop/bank/repair/parcel/trainer/…): `NpcAbilities.csv` maps an NPC
   identifier to a pipe-list of ability names (`SmithNpc,shop|repair`). The names resolve to C# ability
   singletons via `NpcScripts.AbilityByName` — add a name there to expose a new service to the CSV.
@@ -116,7 +116,7 @@ Add a row, pick/author a verb, `!reload`.
   `MobBehavior` 0/1/2+, and `mob_ai_basic.lua` gives a rabbit a wolf's chase-and-swing routine), so **which**
   mobs flee is ours to pick; the movement itself is ported from the one `RunAway()` in the RTK tree
   (`Mobs/mob.lua`, used by `Instances/mysterious_merchant.lua`). Ships with `rabbit` and `blue_rooster`; add a
-  row + `!reload` for any other critter. Kept out of `mobs.csv` so re-running the mob extractor can't drop it.
+  row + `@reload` for any other critter. Kept out of `mobs.csv` so re-running the mob extractor can't drop it.
 - Shops: `ShopStock.csv` (flat stock) or `ShopCatalogues.csv` (sub-category menus).
 - Drops: `MobDrops.csv`.
 - Maps/warps: `map_index.csv`, `Maps.csv`, `Warps.csv`; location/warp geometry in `Inns.csv`,
@@ -137,7 +137,7 @@ Add a row, pick/author a verb, `!reload`.
   *"Nightmarish visions of your own death repel you."*; over-qualified gets *"Your honor forbids you from
   entering."* Don't add the PvP entry warning here — every arena map is `MapPvP=1`, so `EnterMap` sends it.
 - Progression: `LevelExp.csv` (exp curve), `PathGrowth.csv` (per-class HP/MP gain per level).
-- Background music: `MusicTracks.csv` (`Track,Name,Type` — the id↔song-name table the `!music <name>` command
+- Background music: `MusicTracks.csv` (`Track,Name,Type` — the id↔song-name table the `@music <name>` command
   reads; the stock client has 12 midis and 11 of them are named) and `MapBgm.csv` (`Zone,Track,Maps,Names` —
   `Maps` a `;`-list of ids and `lo-hi` ranges, `Names` a `;`-list of map-name globs like `Buya *`).
   Resolution order for a map is **explicit id/range → name glob → warp-graph spill → nothing**:
@@ -147,7 +147,7 @@ Add a row, pick/author a verb, `!reload`.
     sits in the file. `Track,0` on such a row means *silence here*;
   - every **unlisted** map then inherits its *nearest* listed map's track through `Warps.csv` (multi-source
     BFS at load). So Buya's shops, taverns and caves play Tiger without being listed, and the boundary with
-    Kugnae falls wherever the two areas actually meet. `!music` reports the hop count (`Buya +2`).
+    Kugnae falls wherever the two areas actually meet. `@music` reports the hop count (`Buya +2`).
   - a map with no warp path to any zone at all (arenas, gateways, scripted-tile dungeons — ~850 of 1750, all
     of them warp-less in `Warps.csv`) keeps whatever is already playing, and falls to the `Default` row only
     if you *log in* there with nothing playing yet.
@@ -189,4 +189,4 @@ These are *mechanism*, not tunable content:
 
 Run the offline registry self-test (loads every CSV/Lua and checks the registries) with `Server.dll
 --selftest` from a binary **inside the repo tree** (path resolution walks up from the binary to find
-`data/`). Data-only edits need no build — just `!reload`.
+`data/`). Data-only edits need no build — just `@reload`.

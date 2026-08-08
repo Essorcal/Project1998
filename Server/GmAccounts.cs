@@ -4,7 +4,7 @@ namespace Server;
 
 /// <summary>
 /// Who may run the "!" development/GM commands (Session.Chat's GM gate). Before this existed every one of
-/// them — !item, !coins, !lvl, !warp, !summon, !reload — was open to any player who typed it, which is
+/// them — @item, @coins, @lvl, @warp, @summon, @reload — was open to any player who typed it, which is
 /// harmless on a loopback test box and an instant economy collapse on a hosted one.
 ///
 /// Deployment config, not game state, so it follows the flat-file tier (see the config-persistence note):
@@ -16,9 +16,9 @@ namespace Server;
 ///
 /// EMPTY BY DEFAULT: a fresh deployment has no GMs at all, and the tooling is simply unreachable until an
 /// operator opts in. That's the safe default for the internet-facing case — the failure mode of forgetting
-/// to add yourself is "I can't use !warp", not "anyone can mint gold".
+/// to add yourself is "I can't use @warp", not "anyone can mint gold".
 ///
-/// Re-read by <c>!reload</c> along with the rest of the file-backed content, so promoting/demoting a GM
+/// Re-read by <c>@reload</c> along with the rest of the file-backed content, so promoting/demoting a GM
 /// doesn't need a restart. (A demotion only takes effect at the next command, not mid-command.)
 /// </summary>
 public static class GmAccounts
@@ -37,7 +37,7 @@ public static class GmAccounts
         lock (Gate) return _keys.Contains(Auth.Key(username));
     }
 
-    /// <summary>Re-read the roster (startup and !reload). Never throws: an unreadable file leaves the
+    /// <summary>Re-read the roster (startup and @reload). Never throws: an unreadable file leaves the
     /// previous roster in place rather than silently promoting or demoting everyone.</summary>
     public static void Load()
     {

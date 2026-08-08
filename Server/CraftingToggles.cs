@@ -1,9 +1,9 @@
 namespace Server;
 
 /// <summary>
-/// Which crafting skills are switched ON vs OFF — same flat-file + <c>!reload</c> pattern as every other
+/// Which crafting skills are switched ON vs OFF — same flat-file + <c>@reload</c> pattern as every other
 /// registry in <see cref="Content"/> (maps/mobs/items/etc.), NOT a live SQLite-backed toggle: era config is
-/// meant to be edited in <c>data/game-data/CraftingToggles.csv</c> and picked up on the next <c>!reload</c>,
+/// meant to be edited in <c>data/game-data/CraftingToggles.csv</c> and picked up on the next <c>@reload</c>,
 /// no restart required.
 ///
 ///   1. <see cref="DefaultDisabled"/> — a code-level default-OFF set for skills that are real but

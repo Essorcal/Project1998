@@ -17,7 +17,7 @@ public sealed partial class Session
 
     // Melee swing sfx (NexusTK.snd id). The client's action->sound table gives the swing action (0x1A type 1)
     // NO sound (like magic/type 6 -> 0), so a weapon swing is silent unless we play one explicitly over 0x19.
-    // Calibrate the id live with "!swingsnd <id>" (auditions it), then it rides every armed swing; 0 = silent.
+    // Calibrate the id live with "@swingsnd <id>" (auditions it), then it rides every armed swing; 0 = silent.
     private int _swingSfx = 0;
 
     // Unarmed ("bare fist") swing sfx fallback, used only when no weapon is equipped (EquippedWeaponSound()
@@ -27,7 +27,7 @@ public sealed partial class Session
     // 4.95 client's action-param byte is ignored for the swing (see the comment above _swingSfx), so we can't
     // reuse that trick here either. There's no RTK item row for "fists" to port a real id from. 009.wav,
     // calibrated live 2026-08-04 — the SAME id a mob's own swing uses (MobSwingSfx below), i.e. a bare fist
-    // and a claw/bite land on one shared "unarmed" sound. "!fistsnd <id>" recalibrates or mutes it (0).
+    // and a claw/bite land on one shared "unarmed" sound. "@fistsnd <id>" recalibrates or mutes it (0).
     private int _fistSfx = 9;
 
     // On-connect impact sfx for a PLAYER's melee, played ONLY when a swing actually lands — it stacks with the
@@ -39,7 +39,7 @@ public sealed partial class Session
     // own 0x19 broadcast instead, via PlayHitSfx below, which also means peers hear our hits land. RTK's
     // matching per-weapon field (ItmSoundHit / itemdb_soundhit) is dead in the reference server — itemdb_read's
     // SQL SELECT never fetches `sound_hit` — so there's no per-weapon number to port and this stays global.
-    // "!hitsnd <id>" recalibrates or mutes (0).
+    // "@hitsnd <id>" recalibrates or mutes (0).
     private int _hitSfx = 349;
 
     // A MOB's melee, the mirror of the two player fields above and calibrated live 2026-08-04 alongside them:
@@ -97,28 +97,28 @@ public sealed partial class Session
         if (id > 0) SendSound(id, _char.Id);
     }
 
-    // "!fistsnd <id>" — set the unarmed swing sfx (see _fistSfx). "!fistsnd 0" mutes it again.
+    // "@fistsnd <id>" — set the unarmed swing sfx (see _fistSfx). "@fistsnd 0" mutes it again.
     private void SetFistSound(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var id) || id < 0)
-        { SendLog($"usage: !fistsnd <id>   (current: {_fistSfx}; 0 = silent)"); return; }
+        if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
+        { SendLog($"usage: @fistsnd <id>   (current: {_fistSfx}; 0 = silent)"); return; }
         _fistSfx = id;
         if (id > 0) SendSound(id, _char.Id);
         SendLog($"fist swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> !fistsnd {id}");
+        Log.Info($"   -> @fistsnd {id}");
     }
 
-    // "!hitsnd <id>" — set the on-connect impact sfx (see _hitSfx). "!hitsnd 0" mutes it again.
+    // "@hitsnd <id>" — set the on-connect impact sfx (see _hitSfx). "@hitsnd 0" mutes it again.
     private void SetHitSound(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var id) || id < 0)
-        { SendLog($"usage: !hitsnd <id>   (current: {_hitSfx}; 0 = silent)"); return; }
+        if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
+        { SendLog($"usage: @hitsnd <id>   (current: {_hitSfx}; 0 = silent)"); return; }
         _hitSfx = id;
         if (id > 0) SendSound(id, _char.Id);
         SendLog($"hit sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> !hitsnd {id}");
+        Log.Info($"   -> @hitsnd {id}");
     }
 
     private void SendMusic(ushort bgm, byte type = 2, byte volume = 100)
@@ -145,7 +145,7 @@ public sealed partial class Session
     // `settingFlags & FLAG_WEATHER` (a later-client options toggle we have no record of on 4.95, and no
     // existing RE evidence either way that 4.95 even renders rain/snow at all); ported at face value since
     // it's the only real wire format on record, same "best real number available, flag it, let it be
-    // live-checked" precedent as the still-uncalibrated sound ids elsewhere in this file. "!weather <0-2>"
+    // live-checked" precedent as the still-uncalibrated sound ids elsewhere in this file. "@weather <0-2>"
     // lets the caster audition it directly.
     internal void SendWeather(byte weather) =>
         SendMap(0x1F, _gameInc++, new byte[] { weather }, $"weather(0x1F) {weather}");
@@ -195,34 +195,34 @@ public sealed partial class Session
         PlayMapMusic(_char.Map);
     }
 
-    // "!music <name|id> [vol]" — play a specific track, by song name ("!music mist") or by raw id 1..12 (the
+    // "@music <name|id> [vol]" — play a specific track, by song name ("@music mist") or by raw id 1..12 (the
     // stock client ships 12 midis, type 2); see MusicTracks.csv for the name table. vol is the raw volume
     // byte the client log-scales: 100 is nominal "full", but the midi path compresses it, so values ABOVE 100
-    // (up to 255) push it louder. "!music 0" / "!music stop" stops the music. Bare "!music" lists the names.
+    // (up to 255) push it louder. "@music 0" / "@music stop" stops the music. Bare "@music" lists the names.
     private void PlayMusicCmd(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2)
+        if (parts.Length < 1)
         {
             var names = string.Join(", ", Content.MusicTracks
                 .Where(t => t.Name.Length > 0).OrderBy(t => t.Name)
                 .Select(t => $"{t.Name}({t.Id})"));
-            SendLog("usage: !music <name|1-12> [vol 0-255, default 100]   (!music 0 or !music stop = stop)");
+            SendLog("usage: @music <name|1-12> [vol 0-255, default 100]   (@music 0 or @music stop = stop)");
             SendLog($"tracks: {names}");
             var zone = Content.BgmZoneOf(_char.Map);
             SendLog($"now playing: {(_bgm == NoBgm ? "nothing" : Describe(_bgm))}" +
                     (zone.Length > 0 ? $"   (this map's zone: {zone})" : "   (this map has no zone)"));
             return;
         }
-        if (parts[1].Equals("stop", StringComparison.OrdinalIgnoreCase)) { SendMusic(0); SendLog("music stopped"); return; }
+        if (parts[0].Equals("stop", StringComparison.OrdinalIgnoreCase)) { SendMusic(0); SendLog("music stopped"); return; }
 
-        var track = Content.FindTrack(parts[1]);
-        if (track is null) { SendLog($"'{parts[1]}' is not a track name or number (!music with no argument lists them)"); return; }
+        var track = Content.FindTrack(parts[0]);
+        if (track is null) { SendLog($"'{parts[0]}' is not a track name or number (@music with no argument lists them)"); return; }
 
-        byte vol = parts.Length > 2 && byte.TryParse(parts[2], out var v) ? v : (byte)100;
+        byte vol = parts.Length > 1 && byte.TryParse(parts[1], out var v) ? v : (byte)100;
         SendMusic(track.Id, track.Type, vol);
         SendLog(track.Id == 0 ? "music stopped" : $"playing {Describe(track.Id)} (vol {vol})");
-        Log.Info($"   -> !music bgm={track.Id} vol={vol}");
+        Log.Info($"   -> @music bgm={track.Id} vol={vol}");
 
         static string Describe(ushort id)
         {
@@ -233,95 +233,95 @@ public sealed partial class Session
 
     // Play raw client sound ids (0x19 sfx) to calibrate the 4.95 NexusTK.snd id space. RTK's per-spell sound
     // ids may not line up with the client's 001.wav..197.wav numbering, and the user hears "shifted" variants.
-    // `!snd 4` plays one; `!snd 4 5 6` plays several; `!snd 1 197 -` (a trailing '-') is rejected — keep it to a
+    // `@snd 4` plays one; `@snd 4 5 6` plays several; `@snd 1 197 -` (a trailing '-') is rejected — keep it to a
     // few at a time so they don't overlap into noise. Identify each by ear to map RTK sound -> client sound.
     private void SoundProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2) { SendLog("usage: !snd <id> [id2 …]   (plays client sound ids; NexusTK.snd has 001..197.wav)"); return; }
+        if (parts.Length < 1) { SendLog("usage: @snd <id> [id2 …]   (plays client sound ids; NexusTK.snd has 001..197.wav)"); return; }
         int played = 0;
-        for (int i = 1; i < parts.Length && played < 8; i++)
+        for (int i = 0; i < parts.Length && played < 8; i++)
         {
             if (!int.TryParse(parts[i], out var id) || id <= 0) continue;
             SendSound(id, _char.Id);
             SendLog($"playing sound {id}");
-            Log.Info($"   -> !snd {id}");
+            Log.Info($"   -> @snd {id}");
             played++;
         }
         if (played == 0) SendLog("no valid sound ids (want positive integers)");
     }
 
-    // "!mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
+    // "@mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
     // renders each one (0=wisp/blue, 3=mini/status — the default everything else uses, 5=system — what
     // durability warnings use, 11=group, 12=clan). No text -> a canned "test type N" line.
     private void MiniTextProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var type))
-        { SendLog("usage: !mtx <type> [text...]   (0=wisp 3=mini/status 5=system 11=group 12=clan)"); return; }
-        string msg = parts.Length > 2 ? string.Join(' ', parts[2..]) : $"test type {type}";
+        if (parts.Length < 1 || !int.TryParse(parts[0], out var type))
+        { SendLog("usage: @mtx <type> [text...]   (0=wisp 3=mini/status 5=system 11=group 12=clan)"); return; }
+        string msg = parts.Length > 1 ? string.Join(' ', parts[1..]) : $"test type {type}";
         SendMiniText(msg, (ushort)type);
         SendLog($"sent minitext type={type}: \"{msg}\"");
-        Log.Info($"   -> !mtx type={type} \"{msg}\"");
+        Log.Info($"   -> @mtx type={type} \"{msg}\"");
     }
 
-    // "!weather <0-2>" — force THIS map's weather and broadcast it to everyone already standing on it
+    // "@weather <0-2>" — force THIS map's weather and broadcast it to everyone already standing on it
     // (0=clear, 1=rain/WRAIN, 2=snow/WSNOW). See SendWeather's doc: the 0x1F wire format is ported from RTK
     // at face value but has no live confirmation yet against the real 4.95 client — this is how to check it.
     private void WeatherProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var w) || w is < 0 or > 2)
-        { SendLog($"usage: !weather <0-2>   (0=clear 1=rain 2=snow; current: {_world.GetWeather(_char.Map)})"); return; }
+        if (parts.Length < 1 || !int.TryParse(parts[0], out var w) || w is < 0 or > 2)
+        { SendLog($"usage: @weather <0-2>   (0=clear 1=rain 2=snow; current: {_world.GetWeather(_char.Map)})"); return; }
         _world.SetWeather(_char.Map, (byte)w);
         SendLog($"map {_char.Map} weather set to {w}");
-        Log.Info($"   -> !weather {w} (map {_char.Map})");
+        Log.Info($"   -> @weather {w} (map {_char.Map})");
     }
 
-    // "!swingsnd <id>" — set the melee swing sfx (and play it once so you can audition it in place). Use with
-    // "!snd" to hunt the right woosh id in NexusTK.snd, then "!swingsnd <that id>" bakes it onto every armed
-    // swing. "!swingsnd 0" mutes it again. Session-local (resets on relog) until we bake the final id as default.
+    // "@swingsnd <id>" — set the melee swing sfx (and play it once so you can audition it in place). Use with
+    // "@snd" to hunt the right woosh id in NexusTK.snd, then "@swingsnd <that id>" bakes it onto every armed
+    // swing. "@swingsnd 0" mutes it again. Session-local (resets on relog) until we bake the final id as default.
     private void SetSwingSound(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var id) || id < 0)
-        { SendLog($"usage: !swingsnd <id>   (current: {_swingSfx}; 0 = silent)"); return; }
+        if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
+        { SendLog($"usage: @swingsnd <id>   (current: {_swingSfx}; 0 = silent)"); return; }
         _swingSfx = id;
         if (id > 0) SendSound(id, _char.Id);
         SendLog($"swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> !swingsnd {id}");
+        Log.Info($"   -> @swingsnd {id}");
     }
 
     // Play raw Effect.tbl animation ids (0x29) over the caster, to calibrate the 4.95 effect id space vs RTK's
     // sendAnimation ids. Low ids (unaligned heal 5, spark 28) are confirmed identity, but RTK's 6.x/7.x client may
     // have inserted effects that shift mid/high ids — e.g. the aligned heals (Ohaeng 63 / Ming-Ken 64 / Kwi-Sin 65)
-    // may not line up. `!efx 5 63 64 65` plays the four heal variants so we can see which id is really which.
+    // may not line up. `@efx 5 63 64 65` plays the four heal variants so we can see which id is really which.
     private void EffectProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2) { SendLog("usage: !efx <id> [id2 …]   (play Effect.tbl anim ids 0..127 over you)"); return; }
+        if (parts.Length < 1) { SendLog("usage: @efx <id> [id2 …]   (play Effect.tbl anim ids 0..127 over you)"); return; }
         int played = 0;
-        for (int i = 1; i < parts.Length && played < 8; i++)
+        for (int i = 0; i < parts.Length && played < 8; i++)
         {
             if (!int.TryParse(parts[i], out var id) || id < 0 || id > 127) continue;
             SendEffect(_char.Id, id);
             SendLog($"effect {id}");
-            Log.Info($"   -> !efx {id}");
+            Log.Info($"   -> @efx {id}");
             played++;
         }
         if (played == 0) SendLog("no valid effect ids (0..127)");
     }
 
-    // "!hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
+    // "@hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
     // draws the over-head HP bar at <pct>% and plays the hit overlay animation 0x8f-<crit>. Use it to calibrate
     // NEXUS_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
-    // HitCritByte. e.g. "!hit 50" (half bar) then "!hit 50 0" / "!hit 50 40" to compare hit animations.
+    // HitCritByte. e.g. "@hit 50" (half bar) then "@hit 50 0" / "@hit 50 40" to compare hit animations.
     private void HitProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var pct))
-        { SendLog("usage: !hit <pct 0..100> [crit 0..255]   (over-head HP bar + hit anim on the faced mob)"); return; }
-        byte crit = parts.Length > 2 && byte.TryParse(parts[2], out var c) ? c : HitCritByte;
+        if (parts.Length < 1 || !int.TryParse(parts[0], out var pct))
+        { SendLog("usage: @hit <pct 0..100> [crit 0..255]   (over-head HP bar + hit anim on the faced mob)"); return; }
+        byte crit = parts.Length > 1 && byte.TryParse(parts[1], out var c) ? c : HitCritByte;
         pct = Math.Clamp(pct, 0, 100);
 
         var (fx, fy) = FrontTile();
@@ -330,7 +330,7 @@ public sealed partial class Session
         if (wmob is not null) _world.Broadcast(_char.Map, p => p.DamageOver(target, (byte)pct, crit));
         else                  SendDamage(target, (byte)pct, crit);
         SendLog($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
-        Log.Info($"   -> !hit id={target} pct={pct} crit={crit}");
+        Log.Info($"   -> @hit id={target} pct={pct} crit={crit}");
     }
 
 }

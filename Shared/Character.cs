@@ -44,7 +44,7 @@ public sealed class Character
     public byte Nation   = 1;   // kingdom id -> HUD crest (NATION_E.EPF). See NationName for the table.
     public byte Totem    = 4;   // 4 = none
 
-    /// <summary>Nation id -> name, confirmed empirically on the 4.95 HUD (see Session `!nat`). The
+    /// <summary>Nation id -> name, confirmed empirically on the 4.95 HUD (see Session `@nat`). The
     /// names live in a client data file (no strings in the exe), so this table is the source of truth.</summary>
     public static readonly string[] Nations =
         { "Neutral", "Koguryo", "Buya", "Nagnang", "Shilla", "Jinhan", "Paekjae", "Kaya" };
@@ -80,7 +80,7 @@ public sealed class Character
 
     // Learned spells/skills, in spellbook order. Each entry is a Content.Spells id; the book slot the client
     // uses (the 0x17 "pos" and the 0x0F cast "pos") is the index into this list. Persisted so the book
-    // survives a relog; re-sent on world entry. Taught by the !spells / !learnspell GM commands.
+    // survives a relog; re-sent on world entry. Taught by the @spells / @learnspell GM commands.
     public List<int> Spells = new();
 
     // Quest progress. Key = a quest id ("trial_of_iron"); value = its stage (0 = not started, 1 = active,
@@ -97,9 +97,9 @@ public sealed class Character
     // this (RTK's player:killCount) — kill-since-accept — so a fresh kill after accepting counts. Persisted.
     public Dictionary<string, int> Kills = new();
 
-    // Sub-alignment: 0 = Unaligned (base), 1 = Kwisin, 2 = Mingken, 3 = Ohaeng. Gates which spell set !spells
+    // Sub-alignment: 0 = Unaligned (base), 1 = Kwisin, 2 = Mingken, 3 = Ohaeng. Gates which spell set @spells
     // teaches — a character learns only universal spells + their own alignment's set, never the other
-    // sub-alignments' parallel spells. Set with !align.
+    // sub-alignments' parallel spells. Set with @align.
     public byte Alignment = 0;
 
     /// <summary>Sub-alignment id -> name (index = the Alignment value). Kwisin/Mingken/Ohaeng are NexusTK's
@@ -123,7 +123,7 @@ public sealed class Character
     public string ClassName = "Peasant";   // path/class line
     // Subpath RANK within the path (RTK ChaMark / status.mark): 0 = base class, 1 Il san … 5 Oh san. Nothing
     // in the world ADVANCES this yet — the subpath-promotion NPCs aren't ported — so it stays 0 for ordinary
-    // play and is set by the GM "!mark" command. It is a real gate all the same: map entry (MapReqMark),
+    // play and is set by the GM "@mark" command. It is a real gate all the same: map entry (MapReqMark),
     // unmarked-only doors, minor-quest eligibility and now mark-restricted gear (ItmMark) all read it.
     public byte   Mark      = 0;
     public string ClanName  = "";          // guild/clan name ("" = clanless)

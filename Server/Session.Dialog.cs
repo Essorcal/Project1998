@@ -61,7 +61,7 @@ public sealed partial class Session
         if (id == SubpathChatSentinel) { ToggleSubpathChat(); return; }
         if (id == F1MenuSentinel) { OpenF1Menu(); return; }
 
-        // id 0 (or explicitly our own id, e.g. "!click") -> our own public profile.
+        // id 0 (or explicitly our own id, e.g. "@click") -> our own public profile.
         if (id == 0 || id == _char.Id) { SendClickProfile(this); return; }
 
         // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
@@ -148,7 +148,7 @@ public sealed partial class Session
             // Data-driven Lua dialog (data/game-data/npc_dialog.lua): if this NPC identifier has a Lua script,
             // it OWNS the conversation (run it, done). Strictly additive — only NPCs we've authored a script for
             // take this path; every other NPC (and a broken/absent .lua) falls straight through to the C#
-            // abilities below, unchanged. Hot-reloads via !reload. See Server/NpcScript.cs.
+            // abilities below, unchanged. Hot-reloads via @reload. See Server/NpcScript.cs.
             if (NpcScript.Has(def.Key)) { await NpcScript.RunAsync(ctx, def.Key); return; }
 
             var abilities = NpcScripts.For(def);
@@ -1220,7 +1220,7 @@ public sealed partial class Session
         d.AddRange(b);
     }
 
-    // "!leg" — replay the EXACT 0x39 self-profile captured from a real 6.x server (jeedee/TkServer),
+    // "@leg" — replay the EXACT 0x39 self-profile captured from a real 6.x server (jeedee/TkServer),
     // decrypted with the shared NexonInc cipher. Known-good content: AC 99, class "Peasant", legend
     // "Born in Hyul 31, Winter". If the 4.95 profile window opens and shows these, the format is shared
     // and our native SendSelfProfile is correct; if it garbles, we diff against this capture.
@@ -1260,7 +1260,7 @@ public sealed partial class Session
     //   profile PICTURE (u16BE len + bytes)
     //   legend count (u8) + legends { icon u8, color u8, textLen u8, text }
     // NOTE: 4.95's click popup has NO totem slot (TOTEM.EPF is unreferenced in the client).
-    // <paramref name="target"/> is whoever the profile is ABOUT (self, for your own "!click"/profile key;
+    // <paramref name="target"/> is whoever the profile is ABOUT (self, for your own "@click"/profile key;
     // another connected player for a real click — RTK clif_clickonplayer). The packet always goes out over
     // THIS session's own socket (Send()/SendMap() are instance methods of the VIEWER); the DATA comes from
     // the target's own character/equipment, which is legal to read cross-instance here since WeaponLook,
@@ -1345,19 +1345,19 @@ public sealed partial class Session
         return string.Join('\t', names);
     }
 
-    // "!click" (self) / "!click <name>" (another connected player) — the debug entry point for the same
+    // "@click" (self) / "@click <name>" (another connected player) — the debug entry point for the same
     // 0x34 packet a real click sends (HandleClickInfo). Useful for eyeballing the "view others" window
     // (and its Group/Exchange buttons, §11l) without needing a second live client to click you.
     private void ClickProfileCmd(string text)
     {
-        string name = text.Length > "!click".Length ? text["!click".Length..].Trim() : "";
+        string name = text.Trim();
         if (name.Length == 0) { SendClickProfile(this); return; }
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
         SendClickProfile(target);
     }
 
-    // "!ckm" — send a 0x34 click-profile with DISTINCT MARKER strings in every text field, so we can
+    // "@ckm" — send a 0x34 click-profile with DISTINCT MARKER strings in every text field, so we can
     // read off which window slot each field lands in and pin the true 4.95 layout (the 7.x port
     // misaligns). Numeric appearance (nation/totem/sprite) is handled by the parser RE separately.
     private void SendClickMarker()
@@ -1411,7 +1411,7 @@ public sealed partial class Session
     // In-world command feedback that lands in the CHAT LOG. The client's chat pane + over-head bubbles
     // are both driven by 0x0D speech (RE: handler 0x450170 → 0x44dc90 registers a 3s text object into the
     // world message-manager at world+0x418). The 0x02 SendMessage path is a login-style message BOX that
-    // doesn't stack for multi-line output (why !maps/!mobs showed nothing). So command results speak as
+    // doesn't stack for multi-line output (why @maps/@mobs showed nothing). So command results speak as
     // the player's own entity → one chat-log line each. ASCII, clamped to the 0x0D u8 length field.
     // The 4.95 client's text boxes render a plain ASCII/codepage font, and Encoding.ASCII flattens anything
     // outside 0x00-0x7F to '?'. We routinely write typographic punctuation in messages (em-dash, curly quotes,

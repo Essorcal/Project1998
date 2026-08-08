@@ -551,7 +551,7 @@ public sealed partial class Session
             // 0x2E = RTK's party-invite opcode (clif_addgroup: body = nameLen(u8) name[nameLen], same shape
             // as 0x19 whisper above). Unlike the items/0x0F/whisper opcodes this one has never been seen in
             // a live 4.95 capture, so it's wired defensively (bad/garbage bytes just fail the name lookup —
-            // no risky reply is ever sent back). "!party <name>" is the confirmed-safe primary entry point.
+            // no risky reply is ever sent back). "@party <name>" is the confirmed-safe primary entry point.
             case 0x2E:                    HandlePartyInvite(dec); break;
             // 0x4A = RTK's exchange sub-protocol (clif_parse_exchange). Only sub-type 0 ("initiate exchange
             // with this target id") is handled — the click that opens a trade from another player's profile
@@ -752,7 +752,7 @@ public sealed partial class Session
         RefreshInventory();                       // fill the bag + equipment windows (0x0F / 0x37)
         RefreshSpells();                          // fill the spell/skill book (0x17) with learned spells
         int unreadMail = Mail.UnreadCount(_char.Name);   // RTK's own reward-mail flow always nudges "please visit your post office" — this is our login-time equivalent
-        if (unreadMail > 0) SendMiniText($"You have {unreadMail} unread letter{(unreadMail == 1 ? "" : "s")}. Try !mail.");
+        if (unreadMail > 0) SendMiniText($"You have {unreadMail} unread letter{(unreadMail == 1 ? "" : "s")}. Try @mail.");
         Log.Info($"   == world join: map {_char.Map} has {peers.Length} other player(s), {mobs.Length} mob(s) ==");
     }
 
@@ -952,7 +952,7 @@ public sealed partial class Session
 
 
     // Live creatures the player can fight. Server-authoritative HP; the client only draws them.
-    // Populated by the mob commands (!mob/!mobrow/!spawn); entries are removed on death (0x0E).
+    // Populated by the mob commands (@mob/@mobrow/@spawn); entries are removed on death (0x0E).
     private readonly List<Mob> _mobs = new();
     private uint _nextMobId = 5000;      // entity-id pool for spawned creatures (well above the self id)
     private byte _facing = 0;            // last direction the player faced (0=N 1=E 2=S 3=W); drives melee

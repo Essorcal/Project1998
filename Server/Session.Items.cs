@@ -222,8 +222,8 @@ public sealed partial class Session
         var mob = _world.MobAt(_char.Map, tx, ty);
         if (mob is not null) { SendMiniText(mob.Name); return; }
 
-        // Session-local debug dummies (!cre/!mob/!crow/!crecol/look-lab) never join the shared world, so
-        // they're invisible to _world.MobAt — check our own dummy list too (e.g. !crecol's "col<N>" labels).
+        // Session-local debug dummies (@cre/@mob/@crow/@crecol/look-lab) never join the shared world, so
+        // they're invisible to _world.MobAt — check our own dummy list too (e.g. @crecol's "col<N>" labels).
         var dummy = MobAt(tx, ty);
         if (dummy is not null) { SendMiniText(dummy.Name); return; }
 
@@ -277,7 +277,7 @@ public sealed partial class Session
     // Item* methods below — the SAME plumbing the old C# switch used. Gate verbs (ward/hardenbody) check FIRST
     // and skip the eat animation on refusal, matching every reviewed script's guard-before-effect order.
     // Returns false — WITHOUT consuming the item — only when a gate verb refused. Items with no ItemParams row
-    // fall back to the item DB's own Vita/Mana columns (almost none carry them). Both files hot-reload via !reload.
+    // fall back to the item DB's own Vita/Mana columns (almost none carry them). Both files hot-reload via @reload.
     private bool ApplyItemEffect(ItemDef def)
     {
         if (Content.ItemParams.TryGetValue(def.Key, out var row))

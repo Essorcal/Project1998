@@ -16,7 +16,7 @@ for (int i = 0; i < args.Length; i++)
 // Confirmed by reversing NexusTK.exe: 4.95 has ONE cipher on both channels — the simple
 // NexonInc XOR (no name-derived/table cipher, no index/trailer bytes). The old --mapkey/--index
 // knobs were 7.x-only artifacts and have been removed so the logs don't misrepresent the wire.
-// `--selftest` exercises the content registry + fuzzy lookups (the !warp/!maps/!mobs/!summon backing
+// `--selftest` exercises the content registry + fuzzy lookups (the @warp/@maps/@mobs/@summon backing
 // logic) and exits, WITHOUT opening ports — a quick offline check of the data layer.
 if (Array.Exists(args, a => a == "--selftest")) { Content.SelfTest(); return; }
 
@@ -34,7 +34,7 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 
 Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
-Content.Load();   // maps + mobs registries (external gitignored data; powers !warp/!maps/!mobs/!summon)
+Content.Load();   // maps + mobs registries (external gitignored data; powers @warp/@maps/@mobs/@summon)
 GmAccounts.Load();   // who may run the "!" tooling (data/gm_accounts.txt / NEXUS_GMS); empty = nobody
 Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) — must outlive a restart
 

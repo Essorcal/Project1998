@@ -14,13 +14,13 @@ launch-scope cuts).
 **Era-gating infra is built** (`Server/CraftingToggles.cs`, wired through `Content.cs`'s
 existing flat-file registry pattern — same as maps/mobs/items/etc., NOT SQLite): the
 config lives in `data/game-data/CraftingToggles.csv` (`Skill,Enabled` columns, env
-override `NEXUS_CRAFTING_TOGGLES`) and is picked up by the existing `!reload` GM
+override `NEXUS_CRAFTING_TOGGLES`) and is picked up by the existing `@reload` GM
 command, no restart required. Only skills actually listed in the file override the
 code-level default in `CraftingToggles.DefaultDisabled`; anything absent falls through
 to that default. Jewelry, Food Preparation, and Chef default OFF (see "Launch scope"
-below for why); everything else defaults ON. `!craft` is a read-only status command
+below for why); everything else defaults ON. `@craft` is a read-only status command
 (shows on/off per skill) — the toggle itself is config, not live GM state, so there's no
-`!craft on/off` mutation command; edit the CSV and `!reload` instead. Farming has no
+`@craft on/off` mutation command; edit the CSV and `@reload` instead. Farming has no
 toggle entry at all — it's excluded from scope entirely, not gated. This infra is ready
 now even though the actual skill mechanics (`Crafting.cs`) aren't ported yet —
 `CraftingToggles.IsEnabled(skill)` is the check to call once they are.
@@ -53,7 +53,7 @@ Era research turned up three different pictures, so three different treatments:
 - **Food Preparation / Chef**: dated 2001-01-13/2001-01-31 — technically in-era for 4.95
   (ships 5 months later) but after 4.83. Same treatment: **implemented, gated off by
   default**, a GM opts in per-target-era by flipping the row in
-  `CraftingToggles.csv` and running `!reload`. See the dedicated section below for the
+  `CraftingToggles.csv` and running `@reload`. See the dedicated section below for the
   full dating.
 - **Farming**: excluded from scope entirely (no toggle) — it IS a real, documented mechanic
   (Mage tutor Nussan's dedicated `Nussan 04260155.html` "Farming info" post; RTK has a real coded
@@ -85,7 +85,7 @@ That's ~3 months after the 4.83 client build (2000-10-12) but **~5 months before
 shipped, and neither depends on client-protocol features newer than 4.95 (NPC-dialog
 driven, like every other craft). Verdict: implement both, but off by default via
 `CraftingToggles` — a GM enables them per-target-era by editing
-`data/game-data/CraftingToggles.csv` and running `!reload`, rather than the server
+`data/game-data/CraftingToggles.csv` and running `@reload`, rather than the server
 assuming one era.
 
 ## Skill-gain mechanic — use SUCCESS-ONLY everywhere

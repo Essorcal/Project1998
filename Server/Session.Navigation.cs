@@ -11,15 +11,15 @@ public sealed partial class Session
 
     // ---- mob / combat lab ----
     // The 4.95 creature GRAPHIC id-space is unknown, so we discover it live (look-lab style) via 0x16.
-    //   "!mob <hi> <lo> [hp]"   spawn ONE creature on the tile in front of you (gfx = hi*256+lo) so you
+    //   "@mob <hi> <lo> [hp]"   spawn ONE creature on the tile in front of you (gfx = hi*256+lo) so you
     //                           can see it and immediately whack it.
-    //   "!mobrow <lo> <hi> [step]"  spawn a W->E row sweeping graphic id lo..hi (step defaults to 1).
+    //   "@mobrow <lo> <hi> [step]"  spawn a W->E row sweeping graphic id lo..hi (step defaults to 1).
     //                           The gfx id is a FRAME index into the monster archive (client adds
     //                           0x4000, category "I"), and Monster.tbl's "Starting" column lists each
     //                           monster's idle frame — the first ~19 monsters start at 0,20,40,...,360.
-    //                           So "!mobrow 0 360 20" shows one idle sprite per monster 0..18.
-    //   "!spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
-    //   "!kill"                 despawn every mob.
+    //                           So "@mobrow 0 360 20" shows one idle sprite per monster 0..18.
+    //   "@spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
+    //   "@kill"                 despawn every mob.
 
     private static int[] ParseInts(string text)
     {
@@ -29,7 +29,7 @@ public sealed partial class Session
         return vals.ToArray();
     }
 
-    // "!cre <lookId> [hp] [color]": spawn ONE real monster (Monster.epf, via 0x07) on the tile in front
+    // "@cre <lookId> [hp] [color]": spawn ONE real monster (Monster.epf, via 0x07) on the tile in front
     // of you, so you can see it AND immediately melee it (combat is unchanged — it hits any Mob on the
     // tile). [color] is the 0x07 color byte we're trying to identify as a recolor/palette selector.
     private void CreatureOne(string text)
@@ -52,7 +52,7 @@ public sealed partial class Session
     // face the rabbit and press space; HandleAttack finds it on the front tile and deals damage.
     private const ushort RabbitLook = 21;   // Monster.tbl look id — validated shape-match: rabbit = 21
 
-    // "!rabbit": drop a single wandering rabbit into the SHARED world on the tile in front of you.
+    // "@rabbit": drop a single wandering rabbit into the SHARED world on the tile in front of you.
     // Everyone on the map sees it, everyone fights the SAME one, and World.Tick drives its wander — no
     // per-session task anymore (that only moved the rabbit on the spawner's screen).
     private void SpawnRabbit()
@@ -72,13 +72,13 @@ public sealed partial class Session
 
     // Register a mob in the SHARED world (drawn via 0x07 = Monster.epf) and broadcast the spawn to every
     // player on the map. World.Tick then wanders it (leashed to its spawn tile); combat resolves against
-    // the world's authoritative HP in HandleAttack. This is the gameplay-mob path (!rabbit / !summon);
-    // the debug lab (!cre/!mob/!crow/look-lab) still uses the session-local SpawnMonster/SpawnMob.
+    // the world's authoritative HP in HandleAttack. This is the gameplay-mob path (@rabbit / @summon);
+    // the debug lab (@cre/@mob/@crow/look-lab) still uses the session-local SpawnMonster/SpawnMob.
     // `def`, when given, is the real registry entry — its full combat stat block (MinDam/MaxDam/Ac/Grace/
     // Hit/IsBoss/Protection/Will/Aggressive) rides along, exactly like World.Materialize's real spawns.
-    // Without it (the `!rabbit` no-registry fallback), a summon defaults to a harmless vanilla mob (1-1
-    // damage, 0 AC) rather than silently under-tuned — previously EVERY debug/GM summon (!rabbit/!summon/
-    // the ridden-horse re-spawn) dropped these fields entirely, so testing a fix like this one via !summon
+    // Without it (the `@rabbit` no-registry fallback), a summon defaults to a harmless vanilla mob (1-1
+    // damage, 0 AC) rather than silently under-tuned — previously EVERY debug/GM summon (@rabbit/@summon/
+    // the ridden-horse re-spawn) dropped these fields entirely, so testing a fix like this one via @summon
     // would never have shown the real numbers.
     private Mob SummonWorldMob(ushort look, ushort x, ushort y, string name, int hp, byte dir, byte color,
                                int exp = 0, int moveTime = 2500, string key = "", MobDef? def = null)
@@ -107,7 +107,7 @@ public sealed partial class Session
     //
     // The entrance tiles, destinations, and per-tier requirements are DATA-DRIVEN from
     // data/game-data/MythicCaves.csv (Content.MythicCaves / Content.MythicCaveTiles), editable + hot-reloadable
-    // via !reload. The requirement numbers are archival — cross-referenced against 4 tutor posts (see the CSV
+    // via @reload. The requirement numbers are archival — cross-referenced against 4 tutor posts (see the CSV
     // Sources column + Sources.csv tutor-caves-*); the tile/destination geometry is RTK routing.
 
     // Plural form for the mythic-cave denial line ("Mythic Oxen dwell here"). Every zodiac animal takes a
@@ -163,7 +163,7 @@ public sealed partial class Session
     // Tutor in, a staff role we don't model) — and the NORTH edge (x 8-9, y 1) into the player's alignment
     // sanctum (Unaligned/Kwisin/Mingken/Ohaeng, indexed by Character.Alignment 0-3). Only the map-exit warp is
     // in Warps.csv, so before this the leader-room and hall doors did nothing (or read as solid). The hall/
-    // sanctum geometry is data-driven (data/game-data/PathHalls.csv -> Content.PathHalls); hot-reloads via !reload.
+    // sanctum geometry is data-driven (data/game-data/PathHalls.csv -> Content.PathHalls); hot-reloads via @reload.
     private bool TryPathHallWarp(ushort x, ushort y)
     {
         if (!Content.PathHalls.TryGetValue(_char.Map, out var hall)) return false;
@@ -193,7 +193,7 @@ public sealed partial class Session
     // PvP arena doors (onScriptedTilesArena.lua -> arenaPVPCheckAndWarp.lua). Tower Arena is a hub: five side
     // doors, each opening into one level-banded PvP arena. NONE of them are SQL warps — only the return leg is
     // — so before this every door in the room was dead. Geometry + bands are data-driven
-    // (data/game-data/ArenaDoors.csv -> Content.ArenaDoorTiles) and hot-reload via !reload.
+    // (data/game-data/ArenaDoors.csv -> Content.ArenaDoorTiles) and hot-reload via @reload.
     //
     // RTK's own rejection is a 2-tile shove based on facing; we hold at the from-tile with SendXy() like the
     // mythic-cave and path-hall refusals, which is the same net effect on a 4.95 client (self-walk is local,
@@ -281,12 +281,12 @@ public sealed partial class Session
     // and are omitted outright.
     // X,Y = landing tile on the destination map. Destinations + their field10 dot pixels are data-driven
     // (data/game-data/WorldMapDests.csv -> Content.WorldDests, order-significant); the trigger tiles that open
-    // the screen live in Content.WorldMapTriggers (WorldMapTriggers.csv). Both hot-reload via !reload.
-    // Fine-tune a dot live in-client with "!wmpos <i> <x> <y>", then bake the number into WorldMapDests.csv.
+    // the screen live in Content.WorldMapTriggers (WorldMapTriggers.csv). Both hot-reload via @reload.
+    // Fine-tune a dot live in-client with "@wmpos <i> <x> <y>", then bake the number into WorldMapDests.csv.
 
-    // Ephemeral live-tuning overrides for the world-map dot pixels, set by "!wmpos <i> <x> <y>" (index into
+    // Ephemeral live-tuning overrides for the world-map dot pixels, set by "@wmpos <i> <x> <y>" (index into
     // Content.WorldDests). Not persisted — you eyeball a dot live, then bake the final number into
-    // WorldMapDests.csv and !reload. Empty = every dot uses its CSV DotX/DotY.
+    // WorldMapDests.csv and @reload. Empty = every dot uses its CSV DotX/DotY.
     private static readonly Dictionary<int, (int X, int Y)> WorldDotOverride = new();
 
     // True while a world-map screen we sent is (as far as we know) still open on the client, so a stray
@@ -310,7 +310,7 @@ public sealed partial class Session
     // crash was a one-byte framing error in the packet BELOW (a spurious leading kind=0 byte that the client
     // read as bgNameLen=0, misaligning every field -- see the class comment above SendWorldMap). Once that
     // byte is removed and a real background name is used (field10 = "Map of the Kingdom"), the packet parses
-    // correctly. The retail client is not buggy. "!wmtest <name>" tries alternate background graphics.
+    // correctly. The retail client is not buggy. "@wmtest <name>" tries alternate background graphics.
     private void SendWorldMap(string bgName)
     {
         var dests = Content.WorldDests;
@@ -341,7 +341,7 @@ public sealed partial class Session
         {
             var dest = dests[i];
             // Dot position is field10's own pixel coordinate (WorldMapDests.csv DotX/DotY), unless a live
-            // "!wmpos" tweak is overriding it this session -- placed directly on the displayed map, not scaled
+            // "@wmpos" tweak is overriding it this session -- placed directly on the displayed map, not scaled
             // from RTK. Clamp defensively to the 640x480 art.
             var (dotX, dotY) = WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dest.DotX, dest.DotY);
             int sx = Math.Clamp(dotX, 0, 639);
@@ -408,14 +408,14 @@ public sealed partial class Session
         }
     }
 
-    // "!travel" — chat-command fallback using the already-proven async dialog primitives, so travel keeps
+    // "@travel" — chat-command fallback using the already-proven async dialog primitives, so travel keeps
     // working end-to-end even before the native screen's click-reply format (above) is confirmed live.
     private static readonly Mob WorldMapVirtualNpc = new(0xFFFFFFFC, 0, 0, 0, "WorldMap", 1);
 
     private async Task RunWorldMapMenuAsync()
     {
         // The menu await can suspend for as long as the player takes to answer, during which something
-        // else entirely could move them (a GM !warp, death+revive, another dialog, disconnect). Re-verify
+        // else entirely could move them (a GM @warp, death+revive, another dialog, disconnect). Re-verify
         // they're still on the same map when the reply comes back -- same "don't trust state from before
         // the await" discipline as the trade flow re-validating live inventory at finalize.
         ushort startMap = _char.Map;
@@ -451,7 +451,7 @@ public sealed partial class Session
     // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
     // to a fixed landing tile in a lower sub-room (onScriptedTilesMythicFallRooms.lua). The source->landing
     // map is data-driven (data/game-data/FallRooms.csv -> Content.FallRooms, already tier-expanded); hot-reloads
-    // via !reload.
+    // via @reload.
     private const int FallRate = 500;
 
     private bool TryMythicFallRoom()
@@ -562,12 +562,12 @@ public sealed partial class Session
         foreach (var (x, y, objs) in md.PatchRuns()) PatchObjRow(x, y, objs);
     }
 
-    // "!warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
+    // "@warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
     // Trailing "x y" integers are the destination tile; the rest is the map query. Defaults to map centre.
     private void Warp(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2) { SendLog("usage: !warp <map name or id> [x y]"); return; }
+        if (parts.Length < 2) { SendLog("usage: @warp <map name or id> [x y]"); return; }
 
         int? cx = null, cy = null, end = parts.Length;
         if (parts.Length >= 4 && int.TryParse(parts[^1], out var py) && int.TryParse(parts[^2], out var px))
@@ -575,7 +575,7 @@ public sealed partial class Session
 
         string query = string.Join(' ', parts[1..end.Value]);
         var map = Content.FindMap(query);
-        if (map is null) { SendLog($"no map matches \"{query}\" — try  !maps {query}"); return; }
+        if (map is null) { SendLog($"no map matches \"{query}\" — try  @maps {query}"); return; }
 
         ushort x = (ushort)(cx ?? map.Xs / 2);
         ushort y = (ushort)(cy ?? map.Ys / 2);
@@ -583,35 +583,35 @@ public sealed partial class Session
         SendLog($"Warped to {map.Name} (map {map.Id}, {map.Xs}x{map.Ys}) at ({_char.X},{_char.Y}).");
     }
 
-    // "!maps [filter]": list maps, fuzzy-ranked by name (blank = alphabetical). Capped so we don't flood.
+    // "@maps [filter]": list maps, fuzzy-ranked by name (blank = alphabetical). Capped so we don't flood.
     private void ListMaps(string text)
     {
-        string q = text.Length > "!maps".Length ? text["!maps".Length..].Trim() : "";
+        string q = text.Trim();
         var found = Content.SearchMaps(q, 15);
         if (found.Count == 0) { SendLog(q.Length == 0 ? "no maps loaded (run re/build_map_index.py)" : $"no maps match \"{q}\""); return; }
         SendLog($"maps{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Maps.Count}):");
         foreach (var m in found) SendLog($"  {m.Id}: {m.Name} ({m.Xs}x{m.Ys})");
     }
 
-    // "!mobs [filter]": list summonable mobs, fuzzy-ranked by name.
+    // "@mobs [filter]": list summonable mobs, fuzzy-ranked by name.
     private void ListMobs(string text)
     {
-        string q = text.Length > "!mobs".Length ? text["!mobs".Length..].Trim() : "";
+        string q = text.Trim();
         var found = Content.SearchMobs(q, 15);
         if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check data/game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
         SendLog($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Mobs.Count}):");
-        foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (!summon {m.Name})");
+        foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (@summon {m.Name})");
     }
 
-    // "!summon <mob name or id>": spawn a real, named creature from the registry on the tile in front of
+    // "@summon <mob name or id>": spawn a real, named creature from the registry on the tile in front of
     // you — correct look + palette colour + HP + exp, all data-driven. Same 0x07 spawn + melee-kill loop
-    // as !rabbit, but any of the 700+ mobs by name. (No wander AI yet — that generalizes next.)
+    // as @rabbit, but any of the 700+ mobs by name. (No wander AI yet — that generalizes next.)
     private void Summon(string text)
     {
-        string q = text.Length > "!summon".Length ? text["!summon".Length..].Trim() : "";
-        if (q.Length == 0) { SendLog("usage: !summon <mob name or id>   (browse with  !mobs <name>)"); return; }
+        string q = text.Trim();
+        if (q.Length == 0) { SendLog("usage: @summon <mob name or id>   (browse with  @mobs <name>)"); return; }
         var mob = Content.FindMob(q);
-        if (mob is null) { SendLog($"no mob matches \"{q}\" — try  !mobs {q}"); return; }
+        if (mob is null) { SendLog($"no mob matches \"{q}\" — try  @mobs {q}"); return; }
 
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
@@ -620,7 +620,7 @@ public sealed partial class Session
         SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp, dmg {mob.MinDam}-{mob.MaxDam}).");
     }
 
-    // !reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
+    // @reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
     // NPC placements + on/off toggles, crafting-skill toggles, map metadata, mob drops, map BGM, and the Lua
     // verb/dialog scripts) WITHOUT restarting the server, so content fixes ship live. Re-reads the CSVs +
     // Lua, clears the map-terrain cache, and fully rebuilds the world population (World.RebuildPopulation) so
@@ -635,8 +635,8 @@ public sealed partial class Session
         try { summary = Content.Reload(); }
         catch (Exception e)
         {
-            SendLog($"!reload FAILED: {e.Message}  (previous content kept)");
-            Log.Info($"!! !reload by '{_char.Name}' failed: {e}");
+            SendLog($"@reload FAILED: {e.Message}  (previous content kept)");
+            Log.Info($"!! @reload by '{_char.Name}' failed: {e}");
             return;
         }
         MapData.Invalidate();
@@ -648,7 +648,7 @@ public sealed partial class Session
             if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
         var (mobs, npcs, maps) = _world.RebuildPopulation();
         SendLog($"Reloaded: {summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, {maps} live map(s) re-materialized; map cache cleared.");
-        Log.Info($"   -> !reload by '{_char.Name}': {summary}; rebuilt pop ({mobs} mobs / {npcs} npcs / {maps} maps)");
+        Log.Info($"   -> @reload by '{_char.Name}': {summary}; rebuilt pop ({mobs} mobs / {npcs} npcs / {maps} maps)");
     }
 
 }

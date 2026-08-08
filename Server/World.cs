@@ -59,7 +59,7 @@ public sealed class Trap
 /// instance is created in <see cref="TkListener"/> and handed to every <see cref="Session"/>, so all
 /// clients observe the SAME entities — players see each other, and everyone fights the same mobs.
 ///
-/// This replaces the old per-Session mob ownership for GAMEPLAY mobs (!summon / !rabbit). The debug
+/// This replaces the old per-Session mob ownership for GAMEPLAY mobs (@summon / @rabbit). The debug
 /// lab (look-lab dummies, monster/colour sweeps) stays session-local — those are single-screen
 /// diagnostics that shouldn't broadcast to the whole map.
 ///
@@ -160,7 +160,7 @@ public sealed class World
     // passable tiles within a box, topped up periodically. Chestnuts fill the Kugnae farm (map 0) and a Buya
     // patch (map 330) — the tutorial's stage-3 gather. A stack is MinQty..MaxQty items on one tile.
     // Forage spawn boxes are data-driven (data/game-data/ForageAreas.csv -> Content.ForageAreas); hot-reloads
-    // via !reload. See TopUpForageLocked.
+    // via @reload. See TopUpForageLocked.
     private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
 
     // ---- day/night clock (RTK map.c change_time_char, opcode 0x20) ----------------------------
@@ -338,7 +338,7 @@ public sealed class World
 
     /// <summary>Remove every placed instance of NPC def <paramref name="npcId"/> from the world and despawn
     /// it (0x0E) for everyone watching. Returns how many instances were removed. Called by
-    /// <see cref="ReconcileNpcToggles"/> on <c>!reload</c> — toggling is config (the Enabled column of
+    /// <see cref="ReconcileNpcToggles"/> on <c>@reload</c> — toggling is config (the Enabled column of
     /// NPCs.csv), not a live GM action, so this has no separate persistence step of its own.</summary>
     public int DisableNpc(int npcId)
     {
@@ -372,7 +372,7 @@ public sealed class World
         return true;
     }
 
-    /// <summary>Hot-reload hook (the <c>!reload</c> command, after <see cref="Content.Reload"/> re-reads
+    /// <summary>Hot-reload hook (the <c>@reload</c> command, after <see cref="Content.Reload"/> re-reads
     /// <c>NPCs.csv</c>): re-sync stationary-NPC placement against the just-reloaded Enabled flags — spawns any
     /// NPC newly enabled, despawns any newly disabled. <see cref="EnableNpc"/>/<see cref="DisableNpc"/> are
     /// already no-ops when there's nothing to change, so this is safe to run unconditionally on every reload.
@@ -936,7 +936,7 @@ public sealed class World
     /// pass, which only touches maps with at least one player).</summary>
     public byte GetWeather(ushort mapId) { lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.Weather : (byte)0; }
 
-    /// <summary>Force a map's weather (the "!weather" debug command — RTK's own setWeatherM is the same kind
+    /// <summary>Force a map's weather (the "@weather" debug command — RTK's own setWeatherM is the same kind
     /// of admin/quest-script lever). Broadcasts immediately to everyone already on that map.</summary>
     public void SetWeather(ushort mapId, byte weather)
     {
@@ -946,12 +946,12 @@ public sealed class World
 
     // ---- mobs ---------------------------------------------------------------------------------
 
-    /// <summary>Full population hot-reload (the <c>!reload</c> path, after <see cref="Content.Reload"/> swapped
+    /// <summary>Full population hot-reload (the <c>@reload</c> path, after <see cref="Content.Reload"/> swapped
     /// the spawn/NPC registries): tear down every spawn-backed mob AND stationary NPC, rebuild the spawn roster
     /// + NPC placement from the fresh <see cref="Content"/>, and re-materialize the maps that currently have
     /// players (the rest build lazily on next entry). Unlike the old in-place re-stat, this picks up
     /// ADDED / REMOVED / REPOSITIONED spawn rows and NPCs — editing <c>AreaSpawns.csv</c>/<c>Spawns.csv</c> or
-    /// an NPC's tile now takes effect on <c>!reload</c> without a restart. Cost is bounded: only populated maps
+    /// an NPC's tile now takes effect on <c>@reload</c> without a restart. Cost is bounded: only populated maps
     /// re-materialize; the ~23k lazy points elsewhere are cheap point objects again. Players on a populated map
     /// briefly see mobs blink (despawn now, re-stream on the next <see cref="Tick"/>) — acceptable for an admin
     /// reload; a wounded mob also resets to full, since area spawns have no stable identity to preserve.
@@ -987,7 +987,7 @@ public sealed class World
         return (despawn.Count, npcs, populated.Count);
     }
 
-    /// <summary>Map ids that currently have at least one player — used by the !reload path to pre-warm the
+    /// <summary>Map ids that currently have at least one player — used by the @reload path to pre-warm the
     /// terrain cache OUTSIDE this lock before <see cref="RebuildPopulation"/> re-materializes them (so the
     /// .map re-reads don't happen under the world lock, per the reload-stall fix).</summary>
     public List<ushort> PopulatedMapIds()
@@ -1342,7 +1342,7 @@ public sealed class World
         return gi;
     }
 
-    /// <summary>Despawn every mob on a map for all its players (the shared !kill).</summary>
+    /// <summary>Despawn every mob on a map for all its players (the shared @kill).</summary>
     public int ClearMap(ushort mapId)
     {
         uint[] ids;

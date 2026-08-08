@@ -75,7 +75,7 @@ public static class MapStore
     }
 
     /// <summary>Every locked tile that has been opened, across all maps — loaded once into
-    /// <see cref="Doors"/> at startup and on <c>!reload</c>.</summary>
+    /// <see cref="Doors"/> at startup and on <c>@reload</c>.</summary>
     public static IReadOnlyList<(ushort Map, ushort X, ushort Y)> Unlocks()
     {
         var list = new List<(ushort, ushort, ushort)>();

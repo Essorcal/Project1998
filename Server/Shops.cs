@@ -14,7 +14,7 @@ public static class Shops
 
     /// <summary>The buy catalogue for an NPC identifier. Curated sub-category catalogues
     /// (data/game-data/ShopCatalogues.csv -> <see cref="Content.ShopCatalogues"/>, e.g. SmithNpc's armor
-    /// menus) win — hand-authored, ordered, editable + hot-reloadable via !reload; otherwise fall back to the
+    /// menus) win — hand-authored, ordered, editable + hot-reloadable via @reload; otherwise fall back to the
     /// auto-extracted RTK stock (<see cref="Content.ShopStock"/>, a single flat "Goods" category) so any
     /// shop-flagged NPC has something to sell. Null if neither has it.</summary>
     public static Category[]? For(string npcKey)

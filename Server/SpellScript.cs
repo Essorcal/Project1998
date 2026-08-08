@@ -6,7 +6,7 @@ namespace Server;
 /// The spell half of the data-driven verb/row model: <c>data/game-data/spell_verbs.lua</c> defines the verbs,
 /// <c>SpellParams.csv</c> supplies each spell's row, and <see cref="SpellContext"/> is the facade a verb acts
 /// through. A thin static wrapper over a shared <see cref="LuaVerbHost"/> (the actual MoonSharp engine); both
-/// the CSV and this script hot-reload on <c>!reload</c> (see <see cref="Content.Load"/>). See
+/// the CSV and this script hot-reload on <c>@reload</c> (see <see cref="Content.Load"/>). See
 /// <see cref="Session.ApplyCast"/> for the additive dispatch: a spell with no row and no verb falls through to
 /// the C# <c>CastX</c> path unchanged. A verb that ERRORS does not fall through — see <see cref="Run"/>.
 /// </summary>

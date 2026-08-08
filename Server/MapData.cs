@@ -21,7 +21,7 @@ namespace Server;
 ///     <c>Maps</c> directory draws before we stream it anything.</item>
 ///   <item><b>base</b> — file + AUTHORED overrides (<c>MapCells.csv</c>, <c>DoorObjects.csv</c>'s
 ///     defaultOpen, <c>Doors.csv</c>'s ForceOpen/DefaultClosed). "The shipped map is wrong here." Content:
-///     lives in git, rebuilt from disk on <c>!reload</c>.</item>
+///     lives in git, rebuilt from disk on <c>@reload</c>.</item>
 ///   <item><b>live</b> — base + RUNTIME mutations (a door a player opened, a GM edit, an event script).
 ///     What every read sees.</item>
 /// </list>
@@ -205,7 +205,7 @@ public sealed class MapData
         Content.Maps.TryGetValue(id, out var mi) ? For(id, mi.Xs, mi.Ys) : null;
 
     /// <summary>Drop every cached map so the next <see cref="For"/> re-reads the <c>.map</c> file from disk.
-    /// Called by the hot-reload path (<c>!reload</c>): a changed <c>TK&lt;id&gt;.map</c> (terrain / object edits)
+    /// Called by the hot-reload path (<c>@reload</c>): a changed <c>TK&lt;id&gt;.map</c> (terrain / object edits)
     /// or a changed <c>MapCells.csv</c> then takes effect for anyone who re-enters or re-requests the map, no
     /// server restart needed. Runtime state (open doors) SURVIVES this — it is reloaded from the database on
     /// the next load, so a reload no longer slams every door shut the way it used to.</summary>

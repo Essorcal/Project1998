@@ -259,7 +259,7 @@ public sealed partial class Session
         // RTK onLevel.lua: sendAnimation(2, 0) + playSound(123) — anim 2 is the same Effect.tbl id Harden
         // Armor uses (confirmed live), but RTK's raw sound numbering is known not to map cleanly onto the
         // 4.95 client (see docs §7.3) — 123 here is the same unverified best-effort port as Harden Armor's
-        // 5; both want a correct id from `!snd <id>` before this is right.
+        // 5; both want a correct id from `@snd <id>` before this is right.
         if (announce)
         {
             BroadcastFx(_char.Id, 2, 123);
@@ -268,7 +268,7 @@ public sealed partial class Session
         }
     }
 
-    // "!lvl <n>" — GM: become level n with stats accurate for that level. Resets to the RTK level-1 baseline
+    // "@lvl <n>" — GM: become level n with stats accurate for that level. Resets to the RTK level-1 baseline
     // (Player.reset / CharacterFactory) and applies real LevelUps up to n, so MaxHP/MaxMP, Might/Will/Grace and
     // AC accumulate legitimately (same growth a natural progression uses) and HP/MP end full. Works both up and
     // down. GM-only, so it bypasses the Peasant level-5 wall; growth follows the character's CURRENT path (a
@@ -294,11 +294,11 @@ public sealed partial class Session
         BroadcastFx(_char.Id, 2, 123);   // one level-up sparkle for the whole jump
         SendStats();
         // Same reason as AwardExp above: an unsolicited 0x39 OPENS the profile window on 4.95, so don't push
-        // one here either. This is the GM "!lvl" path, where the player is standing right there and can open
+        // one here either. This is the GM "@lvl" path, where the player is standing right there and can open
         // the sheet themselves.
         SendMessage($"Now level {_char.Level} ({Content.PathName(path)}) — HP {_char.MaxHp}, MP {_char.MaxMp}, " +
                     $"might {_char.Might}, will {_char.Will}, grace {_char.Grace}, AC {_char.Ac}.");
-        Log.Info($"   -> !lvl {target}: reset+leveled ({Content.PathName(path)}) HP{_char.MaxHp} MP{_char.MaxMp} " +
+        Log.Info($"   -> @lvl {target}: reset+leveled ({Content.PathName(path)}) HP{_char.MaxHp} MP{_char.MaxMp} " +
                  $"M{_char.Might}/W{_char.Will}/G{_char.Grace} AC{_char.Ac}");
     }
 
@@ -522,7 +522,7 @@ public sealed partial class Session
 
     // ---- class / path + title + trainer spell-learning (RTK warrior_trainer.lua &c.) -------------
     // The character's path is stored as the ClassName string ("Peasant"/"Warrior"/…) — the same field
-    // !class/!spells already read — so there's one source of truth; CharClassId maps it to the numeric
+    // @class/@spells already read — so there's one source of truth; CharClassId maps it to the numeric
     // path id (0 Peasant / 1 Warrior / 2 Rogue / 3 Mage / 4 Poet). RTK's separate class/baseClass split
     // (for 5+ subpaths) isn't modelled: base paths only, so ClassName fully captures it.
     internal int CharClassId => Content.PathIdForClass(_char.ClassName);

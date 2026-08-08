@@ -46,10 +46,10 @@ public sealed partial class Session
 
     // 0x08 self-stats -> the always-on HUD. Opcode + full byte layout decoded empirically (2026-07-24):
     // a real 6.x server capture (jeedee/TkServer) proved stats = 0x08; a self-describing gradient packet
-    // (!stg, body[i]=i) then pinned every 4.95 field offset by reading the value off the HUD. flags=0x78
+    // (@stg, body[i]=i) then pinned every 4.95 field offset by reading the value off the HUD. flags=0x78
     // selects the full-stats form. Multi-byte stat fields are big-endian u32 (verified: HP=0x18191A1B at
-    // offset 24, Exp=0x20212223 at 32, etc.). maxHP[5]/maxMP[9] CONFIRMED via !hp (sending 100/1000
-    // drops the bar to ~10%). Nation id table (CONFIRMED via !nat, see Character.NationName).
+    // offset 24, Exp=0x20212223 at 32, etc.). maxHP[5]/maxMP[9] CONFIRMED via @hp (sending 100/1000
+    // drops the bar to ~10%). Nation id table (CONFIRMED via @nat, see Character.NationName).
     //   [0]=flags(0x78) [1]=nation [2]=totem [4]=level [5..8]=maxHP u32BE [9..12]=maxMP u32BE
     //   [13]=might [14]=will [17]=grace [24..27]=HP u32BE [28..31]=MP u32BE [32..35]=exp u32BE
     //   [36..39]=coins u32BE
@@ -68,7 +68,7 @@ public sealed partial class Session
         d[1] = _char.Nation;
         d[2] = _char.Totem;
         d[4] = _char.Level;
-        WriteBe32(d, 5, maxHp);             // maxHP  (offset [5] confirmed via !hp bar-fill test) — base + gear
+        WriteBe32(d, 5, maxHp);             // maxHP  (offset [5] confirmed via @hp bar-fill test) — base + gear
         WriteBe32(d, 9, maxMp);             // maxMP  (offset [9] confirmed) — base + gear
         d[13] = (byte)Math.Clamp(_char.Might + eq.might, 0, 255);
         d[14] = (byte)Math.Clamp(_char.Will  + eq.will,  0, 255);
@@ -202,14 +202,14 @@ public sealed partial class Session
         if (any) SendStats();   // effective caps/attributes dropped back -> refresh the HUD
     }
 
-    // "!nat <n>" — send stats with nation byte = n so we can read which kingdom name/crest the HUD shows.
+    // "@nat <n>" — send stats with nation byte = n so we can read which kingdom name/crest the HUD shows.
     // Nation names live in a client data file (no strings in the exe; NATION_E.EPF is a graphic set), so
     // the id -> nation mapping can only be built empirically. Sweep 0,1,2,... and record each.
     private void StatNation(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         byte n = 0;
-        if (parts.Length > 1) byte.TryParse(parts[1], out n);
+        if (parts.Length > 0) byte.TryParse(parts[0], out n);
         byte save = _char.Nation;
         _char.Nation = n;
         SendStats();
@@ -217,7 +217,7 @@ public sealed partial class Session
         Log.Info($"   -> NATION probe: sent nation={n}; read the HUD nation name/crest");
     }
 
-    // "!totem <n>" — same idea as !nat, for the totem crest: send stats with totem byte = n and read which
+    // "@totem <n>" — same idea as @nat, for the totem crest: send stats with totem byte = n and read which
     // name/graphic the HUD shows. Our documented table (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None) was
     // NEVER actually swept like nation was (§9/§16) — a live report showed a fresh character (Totem defaults
     // to 4, "None" per that table) rendering as ChungRyong, so the table is probably wrong. Sweep 0..4 here
@@ -226,7 +226,7 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         byte n = 0;
-        if (parts.Length > 1) byte.TryParse(parts[1], out n);
+        if (parts.Length > 0) byte.TryParse(parts[0], out n);
         byte save = _char.Totem;
         _char.Totem = n;
         SendStats();
@@ -234,7 +234,7 @@ public sealed partial class Session
         Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
     }
 
-    // "!time" — report the shared world clock (hour 0-23, year) and whether YOU are in your totem's totem-time
+    // "@time" — report the shared world clock (hour 0-23, year) and whether YOU are in your totem's totem-time
     // window (the +5% kill-exp bonus). The clock advances one game hour per 7.5 real minutes (World.HourTicks).
     private void ShowTime()
     {
@@ -245,30 +245,30 @@ public sealed partial class Session
                 (totem ? "TOTEM TIME — kill exp +5%." : "Not your totem time (no exp bonus)."));
     }
 
-    // "!dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n
+    // "@dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n
     // and redraws, so we can catalogue which palette index renders as which visible color on THIS 4.95 client
     // (the look-lab confirmed 16/32/64/128/255 recolor and 0..8 stay base, but 9..31 — the range RTK's team
-    // colors live in — was never swept). Wear an armor/coat first, or there's nothing to recolor. "!dye" with
+    // colors live in — was never swept). Wear an armor/coat first, or there's nothing to recolor. "@dye" with
     // no number resets to 0 (undyed). Feeds the real color values back into WarPaintAbility's team table.
     private void DyeProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         byte n = 0;
-        if (parts.Length > 1) byte.TryParse(parts[1], out n);
+        if (parts.Length > 0) byte.TryParse(parts[0], out n);
         SetArmorColor(n);
         SendMiniText($"dye = {n}" + (HasVisibleArmor ? "" : "  (no armor/coat worn — nothing to recolor)"), type: 3);
         Log.Info($"   -> DYE probe: appearance[4] = {n}");
     }
 
-    // "!hp <cur> <max>" — send stats with HP=cur, maxHP=max (and the same for MP) to PIN the maxHP/maxMP
+    // "@hp <cur> <max>" — send stats with HP=cur, maxHP=max (and the same for MP) to PIN the maxHP/maxMP
     // offsets: if [5]/[9] are really maxHP/maxMP, the HP/MP bar fill becomes cur/max (e.g. 100/1000 = 10%
     // full) and any "cur/max" text shows those numbers. If the bar stays full, the offset is wrong.
     private void StatHpTest(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         uint cur = 100, max = 1000;
-        if (parts.Length > 1) uint.TryParse(parts[1], out cur);
-        if (parts.Length > 2) uint.TryParse(parts[2], out max);
+        if (parts.Length > 0) uint.TryParse(parts[0], out cur);
+        if (parts.Length > 1) uint.TryParse(parts[1], out max);
         var (sh, sm, smh, smm) = (_char.Hp, _char.Mp, _char.MaxHp, _char.MaxMp);
         _char.Hp = cur; _char.MaxHp = max; _char.Mp = cur; _char.MaxMp = max;
         SendStats();
@@ -363,7 +363,7 @@ public sealed partial class Session
     /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
     public bool IsDead => _char.Hp == 0;
 
-    private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; !weapon GM override
+    private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; @weapon GM override
     private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
     private byte EquippedLook(int itmType, byte none)
     {
@@ -426,7 +426,7 @@ public sealed partial class Session
     //   +0xf u16 X'  +0x11 u16 Y'          (the "walked-from" tile)
     //   +0x13 u32 flags (color/hp-bar?; send 0)   +0x17 u8 dir
     // There is NO name field and NO viewport gate (0x44dbc0 skips the 0x424310 check), so a creature
-    // can be placed anywhere. The graphic id-space is unknown — swept live via !mobrow.
+    // can be placed anywhere. The graphic id-space is unknown — swept live via @mobrow.
     //
     // *** CRITICAL: (X',Y') MUST differ from (X,Y). *** The ctor 0x463020 computes the walk distance
     // `[obj+0x148] = |X-X'| + |Y-Y'|`, and the per-frame screen-position code (0x463160) does

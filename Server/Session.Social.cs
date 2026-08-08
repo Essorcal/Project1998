@@ -12,15 +12,15 @@ public sealed partial class Session
     // ---- party / group (RTK clif_addgroup / clif_leavegroup / clif_updategroup, clif.c:13993-14148) -------
     // Ported rules, RTK's literal minitext wording where it has one. Not modelled: RTK's per-map "canGroup"
     // gate (no server-side concept of a no-group map here) and RTK's ghost-can-invite-others allowance (we
-    // don't special-case a dead inviter either way — nothing here stops a ghost from typing "!party").
+    // don't special-case a dead inviter either way — nothing here stops a ghost from typing "@party").
 
-    /// <summary>"!party &lt;name&gt;" invites (or, from the leader onto an existing member of their OWN
-    /// party, KICKS — RTK's own self-referential special case in clif_addgroup) another player. "!party"
+    /// <summary>"@party &lt;name&gt;" invites (or, from the leader onto an existing member of their OWN
+    /// party, KICKS — RTK's own self-referential special case in clif_addgroup) another player. "@party"
     /// alone lists the roster. The chat command is the primary trigger; the 0x2E opcode case above is wired
     /// defensively as a bonus since 4.95 has never been captured actually sending it.</summary>
     private void HandlePartyCommand(string text)
     {
-        string rest = text.Length > "!party".Length ? text["!party".Length..].Trim() : "";
+        string rest = text.Trim();
         if (rest.Length == 0) { ShowPartyRoster(); return; }
         TryPartyInvite(rest);
     }
@@ -58,7 +58,7 @@ public sealed partial class Session
         _party.Broadcast($"{target.Snapshot().Name} is joining the group.");
     }
 
-    /// <summary>Removes <paramref name="member"/> from their party — used for "!leaveparty", the leader-kick
+    /// <summary>Removes <paramref name="member"/> from their party — used for "@leaveparty", the leader-kick
     /// special case above, and disconnect cleanup. Promotes the next member to leader (Party.Remove: the
     /// leader is always Members[0]) and disbands (notifying the last straggler) if that drops the party to
     /// one person. RTK sends the exact same "You have left the group." text whether you left or were kicked
@@ -105,13 +105,13 @@ public sealed partial class Session
     // Distinct sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) — see HandleClickInfo.
     private static readonly Mob TradeVirtualNpc = new(0xFFFFFFFD, 0, 0, 0, "Trade", 1);
 
-    /// <summary>"!trade &lt;name&gt;" — a name-based fallback trigger for testing/manual use. The REAL
+    /// <summary>"@trade &lt;name&gt;" — a name-based fallback trigger for testing/manual use. The REAL
     /// trigger is the "Exchange" button on another player's profile window (see HandleExchangeRequest,
     /// opcode 0x4A), which addresses the target by id since the client already has it from the click.</summary>
     private void HandleTradeCommand(string text)
     {
-        string name = text.Length > "!trade".Length ? text["!trade".Length..].Trim() : "";
-        if (name.Length == 0) { SendLog("Trade with whom? Try: !trade <name>"); return; }
+        string name = text.Trim();
+        if (name.Length == 0) { SendLog("Trade with whom? Try: @trade <name>"); return; }
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
         TryStartTrade(target);
@@ -325,7 +325,7 @@ public sealed partial class Session
     // RTK reads the fields at raw fd offsets 8+; our `dec` begins at the subcmd byte (dec[i] == fd[i+5]), so:
     //   dec[3]=toLen, dec[4..]=recipient, then topicLen(u8), topic, msgLen(u16 BE), body, sendCopy(u8).
     // Level-10 gated exactly like RTK. This is the authentic in-game "compose a letter" path (vs our
-    // !mail-send chat fallback). The leading Log.Info in HandleBoard + the dump here let us confirm live
+    // @mail-send chat fallback). The leading Log.Info in HandleBoard + the dump here let us confirm live
     // whether the 4.95 client's compose UI actually emits this.
     private void HandleNmailSend(byte[] dec)
     {
@@ -490,7 +490,7 @@ public sealed partial class Session
     // nmailFlag(u8: 1 when board==0) postId(u16BE) authorLen(u8) author[...] month(u8) day(u8)
     // topicLen(u8) topic[...] bodyLen(u16BE) body[...] — per RTK intif_parse_readpost/mapif_parse_readpost.
     // Board id 0 -> the mailbox: marks the letter read and auto-claims
-    // any attached parcel (see Mail.ClaimItem) the same way reading it via "!mail read" does, so a native
+    // any attached parcel (see Mail.ClaimItem) the same way reading it via "@mail read" does, so a native
     // mailbox UI and the chat-command fallback behave identically regardless of which one the player uses.
     private void SendBoardReadPost(int boardId, int postId)
     {
@@ -566,7 +566,7 @@ public sealed partial class Session
     // ---- mail (RTK nmail — see Mail.cs's doc for why compose is chat-command-only) -------------
 
 
-    // Shared read path: RTK case 3 aimed at board 0 (SendBoardReadPost) and "!mail read <id>" both funnel
+    // Shared read path: RTK case 3 aimed at board 0 (SendBoardReadPost) and "@mail read <id>" both funnel
     // through here so reading behaves identically either way — marks it read, and if it's carrying an
     // unclaimed parcel, gives the item now (pack-full falls back to dropping it at your feet, same recovery
     // as CastGroundLoot). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
@@ -616,8 +616,8 @@ public sealed partial class Session
         RefreshMailFlags();   // reading (+ claiming any parcel) may clear the HUD mail/parcel arrow — refresh body[45]
     }
 
-    // "!mail" (inbox list) / "!mail read <id>" / "!mail delete <id>" / "!mail send <name> | <subject> | <body>"
-    // / "!mail sendItem <name> <itemKey> [amount] | <subject> | <body>". RTK gates nmail at level 10 (see
+    // "@mail" (inbox list) / "@mail read <id>" / "@mail delete <id>" / "@mail send <name> | <subject> | <body>"
+    // / "@mail sendItem <name> <itemKey> [amount] | <subject> | <body>". RTK gates nmail at level 10 (see
     // MailMinLevel); everything else is our own design — the real nmail_write/boards_post wire format has no
     // surviving source anywhere in this reference tree (Mail.cs's doc), so there's no RTK literal to port
     // for composing. sendItem pulls straight from the caster's own bag (by inventory slot number, or by the
@@ -625,7 +625,7 @@ public sealed partial class Session
     // same as handing it over in person.
     private void HandleMailCommand(string text)
     {
-        var rest = text.Length > "!mail".Length ? text["!mail".Length..].Trim() : "";
+        var rest = text.Trim();
         if (rest.Length == 0) { ListMail(); return; }
 
         int sp = rest.IndexOf(' ');
@@ -635,11 +635,11 @@ public sealed partial class Session
         switch (sub)
         {
             case "read":
-                if (!int.TryParse(arg, out var readId)) { SendLog("usage: !mail read <id>"); return; }
+                if (!int.TryParse(arg, out var readId)) { SendLog("usage: @mail read <id>"); return; }
                 ReadMail(readId);
                 break;
             case "delete":
-                if (!int.TryParse(arg, out var delId)) { SendLog("usage: !mail delete <id>"); return; }
+                if (!int.TryParse(arg, out var delId)) { SendLog("usage: @mail delete <id>"); return; }
                 SendLog(Mail.Delete(_char.Name, delId) ? "The letter has been deleted." : "That letter no longer exists.");
                 break;
             case "send":
@@ -648,7 +648,7 @@ public sealed partial class Session
             case "senditem":
                 {
                     int isp = arg.IndexOf(' ');
-                    if (isp < 0) { SendLog("usage: !mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
+                    if (isp < 0) { SendLog("usage: @mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
                     string toName = arg[..isp];
                     SendMailCommand($"{toName} | {arg[(isp + 1)..]}", itemArg: arg[(isp + 1)..]);
                 }
@@ -665,7 +665,7 @@ public sealed partial class Session
         if (inbox.Count == 0) { SendLog("Your mailbox is empty."); return; }
         foreach (var m in inbox)
             SendLog($"[{m.Position}]{(m.IsRead ? "" : " *NEW*")} From {m.Sender} ({m.Month}/{m.Day}): {m.Topic}{(m.ItemId >= 0 && !m.Claimed ? " [parcel attached]" : "")}");
-        SendLog("!mail read <id> to open one, !mail delete <id> to remove it.");
+        SendLog("@mail read <id> to open one, @mail delete <id> to remove it.");
     }
 
     // "<name> | <subject> | <body>" — pipe-delimited since names/subjects can contain spaces. itemArg, when
@@ -675,7 +675,7 @@ public sealed partial class Session
         if (_char.Level < Content.MailMinLevel) { SendMiniText($"You must be at least level {Content.MailMinLevel} to view/send nmail."); return; }
 
         var parts = spec.Split('|');
-        if (parts.Length < 3) { SendLog("usage: !mail send <name> | <subject> | <body>"); return; }
+        if (parts.Length < 3) { SendLog("usage: @mail send <name> | <subject> | <body>"); return; }
         string toName = parts[0].Trim();
         string subject = parts[1].Trim();
         string body = parts[2].Trim();
@@ -686,7 +686,7 @@ public sealed partial class Session
         if (itemArg is not null)
         {
             var iparts = itemArg.Split('|')[0].Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (iparts.Length < 1) { SendLog("usage: !mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
+            if (iparts.Length < 1) { SendLog("usage: @mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
             int amt = iparts.Length > 1 && int.TryParse(iparts[1], out var a) ? Math.Max(1, a) : 1;
 
             InvItem? slot = null;
@@ -779,17 +779,17 @@ public sealed partial class Session
         Log.Info($"   -> LOOK dummy id={id} @({x},{y}) app=[{string.Join(" ", app)}]");
     }
 
-    // "!row i lo hi [body]": sweep appearance byte [i] from lo..hi across a west->east row of dummies, all
+    // "@row i lo hi [body]": sweep appearance byte [i] from lo..hi across a west->east row of dummies, all
     // other bytes 0. One screenshot then maps that byte's entire id space. Optional 4th arg sets appearance
     // byte [0] (the BODY/sex) for the whole row — default 1 (female, the historically-swept base); pass 0 to
     // sweep the MALE body (its weapon/shield defaults differ from female — male frame 0 was never mapped).
     private void LookRow(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        int idx = parts.Length > 1 && int.TryParse(parts[1], out var pi) ? Math.Clamp(pi, 0, 6) : 0;
-        int lo = parts.Length > 2 && int.TryParse(parts[2], out var pl) ? pl : 0;
-        int hi = parts.Length > 3 && int.TryParse(parts[3], out var ph) ? ph : lo + 7;
-        int body = parts.Length > 4 && int.TryParse(parts[4], out var pb) ? pb : 1;
+        int idx = parts.Length > 0 && int.TryParse(parts[0], out var pi) ? Math.Clamp(pi, 0, 6) : 0;
+        int lo = parts.Length > 1 && int.TryParse(parts[1], out var pl) ? pl : 0;
+        int hi = parts.Length > 2 && int.TryParse(parts[2], out var ph) ? ph : lo + 7;
+        int body = parts.Length > 3 && int.TryParse(parts[3], out var pb) ? pb : 1;
         ushort y = (ushort)Math.Clamp(_char.Y - 2, 0, _char.MapYs - 1);
         int col = 0;
         for (int v = lo; v <= hi && col < 12; v++, col++)

@@ -68,7 +68,7 @@ public sealed partial class Session
         // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 on
         // EVERY swing, armed or not — weapon in hand -> its own ItmSound (RTK's per-weapon mapping — most
         // swords 331, Sword of power 337, …); bare hands -> the calibratable fist fallback (_fistSfx, see its
-        // doc — no real RTK id exists to port for "no weapon"). !swingsnd overrides either case for
+        // doc — no real RTK id exists to port for "no weapon"). @swingsnd overrides either case for
         // calibration. Everyone on the map hears it, bound to us.
         int weaponSwing = EquippedWeaponSound();
         int swing = _swingSfx > 0 ? _swingSfx : weaponSwing > 0 ? weaponSwing : _fistSfx;
@@ -87,7 +87,7 @@ public sealed partial class Session
     // Resolve ONE independent attack against whatever creature stands on (x,y). Called once per reachable
     // tile by HandleAttack. Check the SHARED world FIRST — HP there is world-authoritative so two players
     // can't double-kill and both claim the reward — then fall back to session-local debug dummies
-    // (look-lab / !cre / !mob sweeps, visible only to us).
+    // (look-lab / @cre / @mob sweeps, visible only to us).
     // `reach` scales this target's damage (1.0 faced tile, <1 for a Backstab/Flank extension).
     // Durability is deducted PER LANDED HIT, not per swing: the board note is "the dura you lose on your
     // hand held weapon when you hit your target", so a 3-target swing that connects 3 times costs 3.
@@ -152,7 +152,7 @@ public sealed partial class Session
     // RTK gives some gear an `on_swing` handler (rtklua/Accepted/Items/**): a percentage roll per swing
     // that casts a spell at whatever you're facing — Blood/venom, Charm/endear, Frost sabre/chill, and the
     // Giasomo stick, whose proc summons a Giasomo bird onto the caster instead of hitting the target.
-    // Table: data/game-data/WeaponProcs.csv (hot-reloads with !reload).
+    // Table: data/game-data/WeaponProcs.csv (hot-reloads with @reload).
     //
     // Fired on the SWING, not on a landed hit, matching RTK — on_swing runs before any damage roll, so a
     // miss can still proc. Every equipped piece is checked, not just the weapon: chaos_armor procs too.

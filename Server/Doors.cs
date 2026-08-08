@@ -16,7 +16,7 @@ namespace Server;
 /// open/close toggle or, combined with ForceOpen, is simply walkable from then on.
 ///
 /// Runtime unlock state is process-wide, same lifetime as a toggled door's object-id mutation in
-/// <see cref="MapData"/> (resets on <c>!reload</c> / restart) — keyed by the tile the player interacts with
+/// <see cref="MapData"/> (resets on <c>@reload</c> / restart) — keyed by the tile the player interacts with
 /// (matches <c>Session.HandleOpen</c>'s faced tile fx,fy).
 /// </summary>
 public static class Doors
@@ -38,13 +38,13 @@ public static class Doors
         bool DefaultClosed = false);
 
     // Per-tile door config, loaded from data/game-data/Doors.csv by Content.Load (via SetConfig) and swapped on
-    // !reload. Starts empty; a missing file just means no configured doors (plain RTK open/close toggle, no lock).
+    // @reload. Starts empty; a missing file just means no configured doors (plain RTK open/close toggle, no lock).
     // e.g. the Buya Salon entrance (map 330, tiles 118/119,133 -> "Buya Salon"): object ids 356/357 aren't in
     // RTK's open.lua table yet SObj.tbl flags them solid on every side, so 'o' silently no-opped — "locked open"
     // (ForceOpen) per user direction makes the warp tile always walkable.
     private static Dictionary<(ushort map, ushort x, ushort y), DoorConfig> Config = new();
 
-    /// <summary>Replace the door config table (Content.Load / !reload). Reference assignment is atomic, so a
+    /// <summary>Replace the door config table (Content.Load / @reload). Reference assignment is atomic, so a
     /// concurrent reader always sees a whole old-or-new table.</summary>
     internal static void SetConfig(Dictionary<(ushort map, ushort x, ushort y), DoorConfig> config) => Config = config;
 
@@ -92,7 +92,7 @@ public static class Doors
         MapStore.SetUnlocked(map, x, y, false);
     }
 
-    /// <summary>Load the persisted unlock set. Called at startup and on <c>!reload</c>; replaces whatever is
+    /// <summary>Load the persisted unlock set. Called at startup and on <c>@reload</c>; replaces whatever is
     /// in memory, so a row deleted straight out of the DB takes effect on reload.</summary>
     public static void LoadUnlocks()
     {

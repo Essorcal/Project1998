@@ -27,7 +27,7 @@ public sealed class LuaVerbHost
     private Table? _verbs;
     // Cache the parsed Lua Table per row object, so a hot cast/use doesn't rebuild it + re-parse every CSV cell
     // each call (matters once hundreds of spells route through here). Keyed by the row's IDENTITY: Content
-    // rebuilds every row object on !reload, so old entries fall out of this weak table naturally, and Load()
+    // rebuilds every row object on @reload, so old entries fall out of this weak table naturally, and Load()
     // clears it anyway (the cached Tables belong to the OLD Script and can't be reused by the new one). Verbs
     // treat `row` as read-only, so sharing one Table across calls is safe.
     private readonly ConditionalWeakTable<object, Table> _rowCache = new();
