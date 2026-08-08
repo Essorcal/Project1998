@@ -1,0 +1,3 @@
+item,dam_s_lo,dam_s_hi,dam_l_lo,dam_l_hi,dam_bonus,hit_bonus,vit,mana,might,grace,will,ac,class_req,level_req,notes
+Swift sword,20,25,20,25,1,0,10,0,0,1,0,0,Rogue,5,right-click window; durability 2362/5000
+Black ring,,,,,0,3,0,0,0,0,0,0,,,+3 hit (from character sheet delta)

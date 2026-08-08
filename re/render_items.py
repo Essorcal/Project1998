@@ -37,18 +37,23 @@ def load_tbl_palettes(path="Item.tbl"):
                 if k.strip() == "Palette": pal[idn] = int(v)
     return pal
 
+# CORRECTED 2026-08-07. The 16-byte TOC entry read at toc+i*16 is
+#   top(i16) left(i16) pixOff(u32) stencilOff(u32) bottom(i16) right(i16)
+# but the trailing bottom/right pair belongs to the NEXT frame's origin, not this one. The size of frame i
+# is therefore (left[i] - right[i-1]) x (top[i] - bottom[i-1]) -- that reproduces stencilOff-pixOff for
+# 1309/1309 Item.epf frames exactly, where the old same-entry box matched almost none of them and the
+# n//w fallback sheared every sprite whose box was wrong. Frame 0 has no predecessor and is unusable, so
+# Item.epf frame N+1 == client item id N (id 265 = the green helm drawn from frame 266).
 def epf_frame(epf, fi):
     fc, = struct.unpack_from("<H", epf, 0)
     toc, = struct.unpack_from("<I", epf, 8)
-    if fi < 0 or fi >= fc: return None
-    top, left, pix, sten, bot, right = struct.unpack_from("<hhIIhh", epf, toc + fi * 16)
-    n = sten - pix
-    if n <= 4: return None
-    w = abs(right - left) or 1
-    if n % w: w = w  # keep box width; height fills the rest
-    h = max(1, n // w)
-    raw = epf[12 + pix: 12 + pix + w * h]
-    return w, h, raw
+    if fi < 1 or fi >= fc: return None
+    top, left, pix, sten, _, _ = struct.unpack_from("<hhIIhh", epf, toc + fi * 16)
+    _, _, _, _, pbot, pright = struct.unpack_from("<hhIIhh", epf, toc + (fi - 1) * 16)
+    w = left - pright
+    h = top - pbot
+    if w <= 0 or h <= 0 or w * h != sten - pix: return None
+    return w, h, epf[12 + pix: 12 + pix + w * h]
 
 def main():
     lo, hi = int(sys.argv[1]), int(sys.argv[2])

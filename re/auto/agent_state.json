@@ -1,10 +1,22 @@
 {
  "gear": {
   "might": 0,
-  "grace": 1,
+  "grace": 0,
   "will": 0,
-  "maxhp": 10,
+  "maxhp": 0,
   "maxmana": 0
  },
- "gear_known": true
+ "gear_known": false,
+ "cur": {
+  "level": 19,
+  "might": 12,
+  "will": 10,
+  "grace": 19,
+  "maxhp": 1079,
+  "maxmana": 525
+ },
+ "ac": 54,
+ "dam": 0,
+ "hit": 3,
+ "stats_ts": 1785725037470
 }

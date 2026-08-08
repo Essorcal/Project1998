@@ -14,20 +14,256 @@ public sealed partial class Session
     // == 0 is the self-profile request (byte != 0 is group status in 7.x). We reply with 0x39, the
     // self-profile packet (clif_mystaytus): AC/clan/title/class/legend. Without this reply the window
     // never appears — that's the bug the user hit.
-    // 0x66 right-click "examine item". Body (live capture): [0]=00 [1]=itemRef(varies per item) [2]=00
-    // [3..6]=01 01 01 01 [7..9]=00 00 00. body[1] is the item selector — decode it against the bag/gear by
-    // right-clicking KNOWN items and reading this log (does body[1] equal the slot? the icon? the item id?).
-    // Once body[1] is understood AND the 0x66 REPLY format (client handler 0x4511b0) is reversed, this can
-    // answer with the item-detail popup. Until then it's a decode probe (no reply -> the client stops retrying
-    // only after its own timeout, which is harmless).
+    // ---- 0x66 "examine item" (right-click a bag slot) --------------------------------------------
+    // REQUEST, RE'd out of the 4.95 binary 2026-08-07. It is built by the INVENTORY pane's mouse handler
+    // (client 0x43bf40, mouse-message kind 4) through packet builder 0x43c290, which writes the body byte
+    // for byte:
+    //   body[0]=00  body[1]=cursor X (low byte)  body[2]=00  body[3..4]=01 01
+    //   body[5]=SLOT  body[6]=01  body[7..9]=00
+    // The pane is 15 cells wide with a page byte at widget+0x104, so a click resolves to
+    // `cell + 15*page + 1` (0x43bf94) and then through 0x43c5a0 ("the Nth occupied slot") to the id in
+    // body[5]. The SAME id is what a LEFT-click sends as 0x1C (use item, builder 0x43c160), so the slot
+    // convention here is identical to HandleUseItem's — 1-based.
+    // The item is in body[5], NOT body[1]: an earlier note had the two swapped, which is why every logged
+    // decode said "no bag item at that slot" (it was reading the cursor X, 196..225). The two track each
+    // other because both derive from the same click — that near-15:1 ratio was the cell pitch, not an id.
     private void HandleItemInfoRequest(byte[] dec)
     {
-        int sel = dec.Length > 1 ? dec[1] : -1;
-        var it = _char.Inventory.FirstOrDefault(i => i.Slot == sel)
-              ?? _char.Equipment.FirstOrDefault(e => e.Slot == sel);
+        int slot = (dec.Length > 5 ? dec[5] : 0) - 1;      // 1-based on the wire, like 0x1C
+        // The request can only come from the bag widget, so don't fall back to Equipment: worn gear numbers
+        // its slots on a different scale (ItemDef.EquipSlot) and would answer with the wrong item.
+        var it = InvAt(slot);
         var def = it is null ? null : Content.ItemById(it.ItemId);
-        Log.Info($"   -> ITEM-INFO (0x66) sel={sel} (0x{(sel < 0 ? 0 : sel):x2}) body={Log.Hex(dec)}" +
-                 (def is null ? "  [no bag/gear item at that slot]" : $"  -> '{def.Name}' #{def.Id}"));
+        Log.Info($"   -> ITEM-INFO (0x66) slot={slot + 1} cursorX={(dec.Length > 1 ? dec[1] : 0)}" +
+                 (def is null ? "  [empty slot]" : $"  -> '{def.Name}' #{def.Id}"));
+        if (it is null || def is null) return;
+        SendItemInfo(def, ItemInfoText(def, it), (byte)(slot + 1));
+    }
+
+    // ---- THE REPLY: `0x59` sub-kind 0, the inventory pane's own tooltip -------------------------------
+    // This is the real thing — the blue multi-line box that hangs off the item list. It is NOT a dialog and
+    // NOT a window: opcode 0x59 is claimed by the INVENTORY PANE itself (its packet handler 0x43c110 takes
+    // 0x0F, 0x10 and 0x59), and sub-kind 0 lands in 0x43c1b0:
+    //     body[0] = 0            sub-kind. (1 is a different feature entirely — RTK's clif_sendtowns sends
+    //                            0x59 with body[0]=64, and the world dispatcher's 0x59 trampoline at
+    //                            0x44b9e9 gates on body[0]==1, so the two never collide.)
+    //     body[1] = anchor u8    which inventory row to hang off; we echo the slot the client asked about.
+    //     body[2..3] = u16BE len 1..0x3FF. Out of that range and the handler bails silently.
+    //     body[4..]  = text
+    // The handler asks the pane for its own rectangle (0x425380), computes a midpoint, and builds a
+    // 0x108-byte overlay object (0x42f450) with the text, the anchor and a `0x2710` (10000) lifetime — so
+    // the box places itself against the item list and times out on its own. No close button, which is
+    // exactly what the period screenshots show.
+    // Line breaks: 0x42f450's own scan (0x42f4ed) counts CR (0x0d), LF (0x0a) AND TAB (0x09) as breaks, so
+    // any of the three works and the separator doesn't need calibrating.
+    private void SendItemTooltip(byte anchor, IReadOnlyList<string> lines)
+    {
+        var t = PopupAscii(string.Join(_itemInfoSep, lines));
+        if (t.Length > 0x3FF) t = t[..0x3FF];          // hard client range check, not a soft cap
+        if (t.Length == 0) return;                     // len 0 is also rejected by the handler
+        var body = new List<byte> { 0, anchor, (byte)(t.Length >> 8), (byte)t.Length };
+        body.AddRange(t);
+        SendMap(0x59, _gameInc++, body.ToArray(), $"item-tooltip(0x59) anchor={anchor} {t.Length}B");
+    }
+
+    // REPLY — the same opcode back, parsed by client handler 0x4511b0. **`0x66` IS A "GO TO THIS URL"
+    // PACKET.** Every kind takes a URL; they differ only in which browser opens it:
+    //   kind 0   -> [u16BE len][URL]                       the client's OWN EMBEDDED BROWSER.
+    //   kind 1/2 -> [u16BE len1][URL][u16BE len2][text]    a centred "DLGBBS01.EPF + OK" popup whose second
+    //               string is a message (<=999 chars); OK ShellExecutes the URL in the EXTERNAL browser.
+    //               kind 1 additionally quits the game.
+    // All lengths are u16 BIG-endian (client reader 0x475ca0 is `hi<<8 | lo`).
+    //
+    // PROOF for kind 0 (RE'd 2026-08-07). The window class built at 0x406250 hosts an Internet Explorer
+    // ActiveX control: vtable slot +0x8c (0x406680) does `CoCreateInstance(CLSID_WebBrowser@0x4d00a8, ...)`
+    // and queries `IID_IWebBrowser2@0x4d0098`; feeding it our string reaches 0x4053c0, which does
+    // `SysAllocString(str)` and then `call [vtbl+0x2c]` with five args = **IWebBrowser2::Navigate(BSTR url,
+    // flags, targetFrame, postData, headers)**. The window sits at (10,10)-(630,470) — near-fullscreen.
+    // PROOF for kinds 1/2: the popup's OK handler is vtable slot +0x70 = 0x488480, two actions —
+    //     ShellExecuteA(0, 0, url, 0, 0, SW_SHOWNORMAL)
+    //     if (flagByte at window+0x280) { SetEvent(app+0x818); app+0x815 = 1 }   // 0x403030 -> shutdown
+    // RTK 7.x confirms both INDEPENDENTLY: `clif_sendurl(sd, type, url)` (clif.c:265) builds this exact
+    // packet and comments the type byte "0 = ingame browser, 1 = popup open browser then close client,
+    // 2 = popup". **Never send kind 1.**
+    //
+    // SO: right-clicking a bag item asks the server for a WEB PAGE. Original NexusTK served item pages off
+    // nexustk.com and rendered them in that embedded browser — which is why nothing in the client draws an
+    // item-detail panel, and why Item.tbl carries no text.
+    //
+    // We support both. With ItemInfoUrl set we answer kind 0 and the real in-game browser opens; with it
+    // empty we fall back to the kind-2 popup carrying the stat text, which needs no web server.
+    //
+    // ⚠ THE POPUP'S URL MUST NOT BE EMPTY. An empty string makes ShellExecute open the client's own install
+    // directory in Explorer (observed 2026-08-07). It has to be a string the shell will *reject*: '<' and
+    // '>' are illegal in filenames and it carries no scheme, so this can only fail to SE_ERR_FNF — which is
+    // what makes OK a plain dismiss. A bare word would be worse: ShellExecute resolves those against
+    // App Paths/PATH and could launch a program.
+    private const string NoUrl = "<none>";
+
+    // ⚠ THE IN-GAME BROWSER (kind 0) IS DEAD IN THIS BUILD — do not route the feature through it. Live test
+    // 2026-08-07 with a real URL: the window's ctor asks for sprite category "X" (XBUTTON.EPF, its close
+    // button), the load throws an uncaught allocation-failure (`_CxxThrowException` via 0x430c7a ->
+    // 0x406cb6, the XBUTTON.EPF site) and the client dies on a null deref at 0x470ff4. The asset simply
+    // isn't in this install's archives, so the browser chrome can't build. Kept behind @iteminfo url for
+    // completeness; never the default.
+
+    /// <summary>How the examine reply is delivered. <c>Tooltip</c> = the `0x59` inventory-pane overlay — the
+    /// real one. <c>Overlay</c> = a `0x0A` message type. <c>Popup</c> = the `0x66` OK dialog (which the game
+    /// uses for the Rogue Judge/Spy spells, so it's the wrong frame here). <c>Browser</c> = `0x66` kind 0,
+    /// which crashes this build.</summary>
+    private enum ItemInfoMode { Tooltip, Overlay, Popup, Browser }
+    private ItemInfoMode _itemInfoMode = ItemInfoMode.Tooltip;
+
+    /// <summary>0x0A message type for <see cref="ItemInfoMode.Overlay"/>. Types 2, 3 and 8 all reach the
+    /// bordered word-wrap box; which one the live client actually paints is a one-command sweep.</summary>
+    private byte _itemInfoType = 2;
+
+    /// <summary>URL template for the (broken) in-game browser, e.g. <c>http://host/item/{id}</c>.</summary>
+    private string _itemInfoUrl = "";
+    private string _itemInfoSep = "\n";
+
+    private void SendItemInfo(ItemDef def, IReadOnlyList<string> lines, byte anchor = 1)
+    {
+        switch (_itemInfoMode)
+        {
+            case ItemInfoMode.Tooltip:
+                SendItemTooltip(anchor, lines);
+                return;
+
+            case ItemInfoMode.Overlay:
+                SendItemOverlay(lines);
+                return;
+
+            case ItemInfoMode.Browser:
+            {
+                var url = PopupAscii(_itemInfoUrl.Replace("{id}", def.Id.ToString())
+                                                 .Replace("{name}", Uri.EscapeDataString(def.Name)));
+                var b = new List<byte> { 0 };
+                b.AddRange(Be((ushort)url.Length)); b.AddRange(url);
+                SendMap(0x66, _gameInc++, b.ToArray(), $"item-info(0x66) browser url={Encoding.ASCII.GetString(url)}");
+                return;
+            }
+
+            default:
+            {
+                var body = PopupAscii(string.Join(_itemInfoSep, lines));
+                if (body.Length > 999) body = body[..999];
+                var url = PopupAscii(NoUrl);
+                var b = new List<byte> { 2 };
+                b.AddRange(Be((ushort)url.Length));  b.AddRange(url);
+                b.AddRange(Be((ushort)body.Length)); b.AddRange(body);
+                SendMap(0x66, _gameInc++, b.ToArray(), $"item-info(0x66) popup {body.Length}B");
+                return;
+            }
+        }
+    }
+
+    // The examine OVERLAY: the multi-line blue text box that hangs off the inventory pane. It is not a
+    // window at all — it is opcode 0x0A, the same message channel as mini-text, on a type that routes to
+    // the client's bordered word-wrap box instead of the status line.
+    //
+    // That box is the class at 0x47b400-0x47c700: it builds a nine-slice frame out of MSGBORD.EPF (the ten
+    // sprite loads at 0x47b4c6..0x47b58f) and lays the text out itself with a real word-wrap pass
+    // (0x47c310 walks the string measuring each glyph via 0x423880 and breaking on whitespace via
+    // 0x4ae324) — which is why the reference screenshot wraps "Dégâts: Petit … Grand …" onto two lines.
+    // Its 0x0A handler is 0x47c520: `body[0]` = type, and the jump table at 0x47c6c4 covers types 2..8,
+    // of which **2, 3 and 8** reach the text path and 4/5/7 fall through to other widgets.
+    //
+    // The text limit is the client's own widen buffer: 0x8000 chars, vs the 999 the 0x66 popup allows and
+    // the 255 our mini-text used to assume. A full stat block fits with room to spare.
+    private void SendItemOverlay(IReadOnlyList<string> lines)
+        => SendMiniText(string.Join(_itemInfoSep, lines), _itemInfoType);
+
+    // The popup is a plain ANSI/wide text control — anything outside printable ASCII would widen into
+    // garbage, so fold it out here rather than at every call site.
+    private static byte[] PopupAscii(string s)
+    {
+        var b = Encoding.ASCII.GetBytes(s);       // non-ASCII already becomes '?'
+        for (int i = 0; i < b.Length; i++)
+            if (b[i] < 0x20 && b[i] != (byte)'\n' && b[i] != (byte)'\r' && b[i] != (byte)'\t') b[i] = (byte)' ';
+        return b;
+    }
+
+    /// <summary>The examine tooltip's body, laid out the way the real game's box does it — name, durability,
+    /// the small/large damage pair, one combined Armor/Hit/Dam line, then the "&lt;stat&gt; increase:" column,
+    /// owner, and the class-level requirement. Labels sit left, values at a fixed column. Only lines the item
+    /// actually earns are emitted.</summary>
+    private IReadOnlyList<string> ItemInfoText(ItemDef def, InvItem it)
+    {
+        var L = new List<string> { string.IsNullOrEmpty(it.CustomName) ? def.Name : it.CustomName };
+        if (it.Amount > 1) L.Add(Row("Quantity:", it.Amount.ToString()));
+
+        // Charged consumables (wine/pipes) report their charges where gear reports durability.
+        if (def.IsCharged)
+            L.Add(Row($"{def.Text}:", (it.Dura == 0 ? def.Durability : it.Dura).ToString()));
+        else if (def.Durability > 0)
+            L.Add($"Durability: {(it.Dura == 0 ? def.Durability : it.Dura)} / {def.Durability}");
+
+        // The weapon's real swing range (the S/L columns Combat rolls from), not the ItmDam bonus. The
+        // second line indents so "Large:" sits under "Small:", as in the original.
+        if (def.MaxSDam > 0 || def.MaxLDam > 0)
+        {
+            L.Add(Row("Damage: Small:", $"{def.MinSDam}{DamRangeSep}{def.MaxSDam}"));
+            L.Add(Row("        Large:", $"{def.MinLDam}{DamRangeSep}{def.MaxLDam}"));
+        }
+
+        // One combined line, printed whole for anything wearable even when a term is 0 — that's how the
+        // original reads, and "Armor: 0" is information (it tells you the item gives none).
+        if (def.IsEquip || def.Armor != 0 || def.Hit != 0 || def.Dam != 0)
+            L.Add($"Armor: {def.Armor}  Hit: {def.Hit}  Dam: {def.Dam}");
+
+        Increase(L, "Vitality", def.Vita);
+        Increase(L, "Mana",     def.Mana);
+        Increase(L, "Might",    def.Might);
+        Increase(L, "Will",     def.Will);
+        Increase(L, "Grace",    def.Grace);
+        Increase(L, "Healing",  def.Healing);
+        Increase(L, "Wisdom",   def.Wisdom);
+        if (def.Protection != 0) L.Add(Row("Protection:", def.Protection.ToString()));
+
+        // "Owner:" is the BOUND owner, not whoever is holding it — which is why it shows on some items in
+        // the original and not on others with an otherwise identical layout. Binding is a real mechanic
+        // (NPC subpath weapons arrive bound; a quest upgrade like Spike -> Enchanted Spike binds the result),
+        // so this is keyed off the bind and stays absent for ordinary loot.
+        if (!string.IsNullOrEmpty(it.Owner)) L.Add(Row("Owner:", it.Owner));
+
+        // "<Path> Level <n>" — the level gate expressed with the path that has to meet it, exactly as the
+        // original prints it ("Peasant Level 90" for an unrestricted item, PathId 0 being Peasant). Skipped
+        // for ungated junk, where it would only ever read "Peasant Level 0".
+        if (def.IsEquip || def.Level > 0)
+            L.Add(Row($"{Content.PathName(def.PathId)} Level", def.Level.ToString()));
+
+        // Extra gates the original's sample item didn't happen to carry. Kept because they are the
+        // difference between "I can wear this later" and "I can never wear this", and each is checked
+        // against the live character with the same test the wear path enforces.
+        if (def.MightReq > 0)
+            L.Add(Row("Might required:", def.MightReq.ToString()) + (def.MightReq > EffMight ? "  (you have " + EffMight + ")" : ""));
+        if (def.Mark > 0)
+            L.Add(Row("Mark required:", MarkName(def.Mark)) + (_char.Mark < def.Mark ? "  (unearned)" : ""));
+        if (def.Sex < 2)
+            L.Add(Row("Restricted:", def.Sex == 0 ? "Men only" : "Women only") + (def.Sex != _char.Sex ? "  (not you)" : ""));
+        if (def.NoDrop) L.Add("Cannot be dropped.");
+        // Break-on-death is a warning, not a field: shown only when it's true, and always last so it reads
+        // as the closing note on the item rather than another stat row.
+        if (def.BreakOnDeath) L.Add("Break on death");
+        return L;
+    }
+
+    /// <summary>Value column for the tooltip's label/value rows, measured off the original's alignment
+    /// ("Vitality increase:" + 4 spaces, "Protection:" + 11, "Owner:" + 16 all land here).</summary>
+    private const int ValueColumn = 22;
+    private static string Row(string label, string value) => label.PadRight(ValueColumn) + value;
+
+    /// <summary>What the original prints between a damage range's two numbers. It renders as a lowercase
+    /// 'm' in every surviving screenshot of the box (English "90m140", French "55m65"); whether that is a
+    /// literal 'm' or the client's glyph for a range character is unknown, so this reproduces what is on
+    /// screen. One character to change if it turns out to be a tilde.</summary>
+    private const string DamRangeSep = "m";
+
+    // "<Stat> increase:   N" — omitted entirely when the item doesn't touch that stat.
+    private static void Increase(List<string> lines, string stat, int v)
+    {
+        if (v != 0) lines.Add(Row($"{stat} increase:", v.ToString()));
     }
 
     private void HandleProfileRequest(byte[] dec)
@@ -965,7 +1201,7 @@ public sealed partial class Session
         public static readonly DialogPortrait None = new(0, 0, 0);
         public static DialogPortrait Npc(Mob npc)  => npc.Sprite == 0 ? None : new(1, (ushort)(0x8000 | npc.Sprite), npc.Color);
         public static DialogPortrait Look(int look, int color) => look <= 0 ? None : new(1, (ushort)(0x8000 | look), (byte)color);
-        public static DialogPortrait Item(ItemDef d) => new(2, d.Icon, d.IconColor);
+        public static DialogPortrait Item(ushort icon, byte color) => new(2, icon, color);
         /// <summary>A live paperdoll of the player themselves (7-byte 0x33 appearance). The NPC's own graphic
         /// still rides along in the trailing descriptor, exactly as RTK's dialogtype-2 does.</summary>
         public static DialogPortrait Player(byte[] appearance, Mob npc) =>
@@ -1042,7 +1278,9 @@ public sealed partial class Session
     internal Task DlgSayItem(Mob npc, string itemKey, IReadOnlyList<string> pages)
     {
         var def = Content.ItemByKey(itemKey);
-        return DlgSeq(npc, def is null ? DialogPortrait.Npc(npc) : DialogPortrait.Item(def), pages);
+        // IconOf folds the colour into the frame on 4.95 (no colour channel) and keeps it separate on 5.x.
+        return DlgSeq(npc, def is null ? DialogPortrait.Npc(npc)
+                                       : DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0), pages);
     }
 
     // 0x3A = the client's reply to a 0x30 we sent (RTK clif_parsenpcdialog). body[0]=kind (01 text/close,
@@ -1187,7 +1425,7 @@ public sealed partial class Session
             {
                 int secs = (int)Math.Max(0, (g.Max(x => x.Expires) - now + 999) / 1000);
                 var name = string.IsNullOrEmpty(g.First().Name) ? g.Key : g.First().Name;
-                return $"{name} ({secs}s)";
+                return $"{name} {secs}s";
             })
             .ToList();
 
@@ -1198,16 +1436,16 @@ public sealed partial class Session
         // Deduction has two independent sources (Sanctuary line + Baekho's Cunning). Sanctuary overrides
         // Cunning while both run, but both timers are real (Cunning re-asserts when Sanctuary lapses), so
         // surface both so the player can see the ladder. Name + duration ONLY — the box shows a spell's NAME,
-        // not its magnitude ("Sanctuary (48s)", never "Sanctuary -50% (48s)"); every other line here follows
+        // not its magnitude ("Sanctuary 48s", never "Sanctuary -50% 48s"); every other line here follows
         // that shape and this one was the odd one out.
-        if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} ({Secs(SancDeductUntil, now)}s)");
-        if (CunningDeductActive)  lines.Add($"Cunning {(SancDeductActive ? "(suppressed) " : "")}({Secs(CunningDeductUntil, now)}s)");
-        if (now < _rageUntil && _rageAmount > 1)  lines.Add($"{(_rageName.Length > 0 ? _rageName : "Fury")} ({Secs(_rageUntil, now)}s)");
-        if (now < _backstabUntil)                 lines.Add($"Backstab ({Secs(_backstabUntil, now)}s)");
-        if (now < _flankUntil)                    lines.Add($"Flank ({Secs(_flankUntil, now)}s)");
+        if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} {Secs(SancDeductUntil, now)}s");
+        if (CunningDeductActive)  lines.Add($"Cunning {(SancDeductActive ? "suppressed " : "")}{Secs(CunningDeductUntil, now)}s");
+        if (now < _rageUntil && _rageAmount > 1)  lines.Add($"{(_rageName.Length > 0 ? _rageName : "Fury")} {Secs(_rageUntil, now)}s");
+        if (now < _backstabUntil)                 lines.Add($"Backstab {Secs(_backstabUntil, now)}s");
+        if (now < _flankUntil)                    lines.Add($"Flank {Secs(_flankUntil, now)}s");
         // Stealth (Invisible/Spirit's Form/Life's Cloak/Glass Form) is a scalar timer outside _buffs too, so it
         // never showed a duration before — surface it here (works whether or not you're also morphed).
-        if (Stealthed)                            lines.Add($"{_stealthName} ({Secs(_stealthUntil, now)}s)");
+        if (Stealthed)                            lines.Add($"{_stealthName} {Secs(_stealthUntil, now)}s");
 
         return string.Join('\t', lines);
     }
@@ -1281,7 +1519,7 @@ public sealed partial class Session
         // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
         // which already renders this character correctly): [sex, form, face, armor, 0, 0, 0]
         d.Add(0);
-        d.AddRange(new byte[] { (byte)tc.Sex, 0, target.FaceLook(), tc.Armor, 0, target.WeaponLook(), target.ShieldLook() });
+        d.AddRange(new byte[] { (byte)tc.Sex, 0, target.FaceLook(), tc.Armor, target.ArmorDye(), target.WeaponLook(), target.ShieldLook() });
 
         // three equipment ICON cells beside the doll: helm, left ring, right ring (no sprite layer for these
         // in 4.95, so they render as ground-icon boxes). Same IconWire encoding as the 0x37 equip window.
@@ -1330,19 +1568,27 @@ public sealed partial class Session
         SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={tc.Id} nation={tc.Nation} blurb={blurb.Length}B legends={legs.Count}");
     }
 
-    // Page-1 gear/item list for the click profile (the "inspect another player" view): the names of every
-    // worn item, TAB-separated (the client turns 0x09 -> CR, one per line). This is the equipment list that
-    // shows below the portrait when you click a character. Ordered by the canonical equip-slot byte so the
-    // list reads weapon → armour → shield → helm → … regardless of the order items were put on. Called on
-    // whichever Session the profile is ABOUT (see SendClickProfile), so this always reads ITS OWN _char.
+    // Page-1 gear/item list for the click profile (the "inspect another player" view), TAB-separated (the
+    // client turns 0x09 -> CR, one per line). Only FILLED slots get a line — an empty slot is omitted, not
+    // shown as a bare label. Each line is the client's own equip LETTER + slot name + item name, in slot order:
+    //   w:Weapon:<name>  a:Armor:<name>  s:Shield:<name>  h:Helmet:<name>  l:LHand:<name>  r:RHand:<name>
+    // Slot keys are the WIRE slots the items are actually worn in (Equipment.Slot), not ItemDef.EquipSlot —
+    // a second ring is worn in slot 8 (RHand) even though its def says 7. Called on whichever Session the
+    // profile is ABOUT (see SendClickProfile), so this always reads ITS OWN _char.
+    private static readonly (byte Slot, char Letter, string Label)[] GearListSlots =
+    {
+        (1, 'w', "Weapon"), (2, 'a', "Armor"), (3, 's', "Shield"),
+        (4, 'h', "Helmet"), (7, 'l', "LHand"), (8, 'r', "RHand"),
+    };
+
     private string GearListText()
     {
-        var names = _char.Equipment
-            .Select(e => (worn: e, def: Content.ItemById(e.ItemId)))
+        var lines = GearListSlots
+            .Select(s => (s, worn: _char.Equipment.FirstOrDefault(e => e.Slot == s.Slot)))
+            .Select(x => (x.s, x.worn, def: x.worn is null ? null : Content.ItemById(x.worn.ItemId)))
             .Where(x => x.def is not null)
-            .OrderBy(x => x.def!.EquipSlot)
-            .Select(x => string.IsNullOrEmpty(x.worn.CustomName) ? x.def!.Name : x.worn.CustomName);
-        return string.Join('\t', names);
+            .Select(x => $"{x.s.Letter}:{x.s.Label}:{(string.IsNullOrEmpty(x.worn!.CustomName) ? x.def!.Name : x.worn.CustomName)}");
+        return string.Join('\t', lines);
     }
 
     // "@click" (self) / "@click <name>" (another connected player) — the debug entry point for the same
@@ -1434,17 +1680,22 @@ public sealed partial class Session
     // The client's STATUS / MINI-TEXT box — the scrolling log pane that sits below the inventory (where
     // "item dropped", "experience gained", look-at names, etc. belong). This is a DIFFERENT channel from
     // both the 0x0D chat bubble (SendLog) and the 0x02 login message box (SendMessage). RTK drives it via
-    // clif_sendminitext → clif_sendmsg(sd, 3, msg): opcode 0x0A, body = `type(u16 LE) len(u8) text`.
-    // type: 0=wisp(blue) · 3=mini/status text · 5=system · 11=group · 12=clan. 0x0A is one of the opcodes
-    // the RE reference binary no-ops but the live 4.95 client renders — same group as the 0x0F/0x37 item
-    // opcodes we already use (see protocol doc §"Binary note"). ASCII, clamped to the u8 length field.
+    // clif_sendminitext → clif_sendmsg(sd, 3, msg).
+    // type: 0=wisp(blue) · 3=mini/status text · 5=system · 11=group · 12=clan.
+    //
+    // TRUE LAYOUT (RE'd 2026-08-07): `type(u8) len(u16BE) text` — NOT `type(u16LE) len(u8)`. Every 0x0A
+    // handler in the client reads it that way (e.g. 0x47c520, 0x490930, 0x40eeb0: u8 at body[0], then
+    // 0x475ca0 — the big-endian u16 reader — at body[1]). The old reading happened to produce identical
+    // bytes because our type high byte is always 0 and our text was always under 256 chars; it would have
+    // silently truncated the moment either stopped being true. The text cap here is the client's own
+    // 0x8000-char widen buffer, not 255.
     private void SendMiniText(string text, ushort type = 3)
     {
-        if (text.Length > 255) text = text[..255];
         var t = AsciiBytes(text);
-        var body = new List<byte> { (byte)(type & 0xFF), (byte)(type >> 8), (byte)t.Length };
+        if (t.Length > 0x7FFF) t = t[..0x7FFF];
+        var body = new List<byte> { (byte)type, (byte)(t.Length >> 8), (byte)t.Length };
         body.AddRange(t);
-        SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type}");
+        SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type} {t.Length}B");
     }
 
     // ---- helpers ----

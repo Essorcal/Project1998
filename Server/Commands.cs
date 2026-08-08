@@ -78,6 +78,8 @@ public sealed partial class Session
         G("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
         G("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
+        G("iteminfo", (s, a) => s.ItemInfoCmd(a),   "<slot> | mode <m> | sep <s>", "fire the examine reply; switch how it's rendered"),
+        G("bind",     (s, a) => s.BindItemCmd(a),   "<slot> [name|off]",  "bind a bag item to a character (or clear it)"),
 
         // ---- spells ---------------------------------------------------------------------------------
         G("spells",        (s, a) => s.TeachClassSpells(), "",            "learn every class spell up to your level"),

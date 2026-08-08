@@ -261,6 +261,14 @@ public sealed class InvItem
     // protect branch (Session.TryProtectFromBreak) never fires; it is here so the break paths match RTK.
     public byte Protected = 0;
 
+    /// <summary>Bound owner. Empty = unbound (the normal case). Some items bind to the character who
+    /// obtained them — NPC-sold subpath weapons, and items produced by a quest upgrade (a Spike becoming an
+    /// Enchanted Spike) — after which the examine tooltip shows "Owner: &lt;name&gt;". This is per-STACK
+    /// state, not per-item-definition, which is why it lives here and not on ItemDef: the same registry row
+    /// can exist bound in one player's bag and unbound in another's. Nothing sets it automatically yet —
+    /// the grant sites for those two cases still need wiring, see @bind.</summary>
+    public string Owner = "";
+
     public InvItem() { }
     public InvItem(byte slot, int itemId, int amount, ushort dura = 0)
     { Slot = slot; ItemId = itemId; Amount = amount; Dura = dura; }

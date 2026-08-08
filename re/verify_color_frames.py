@@ -28,26 +28,21 @@ def load_pal_blocks(path="monster.pal"):
         blocks.append(colors)
     return blocks
 
+# CORRECTED 2026-08-07 (see docs/NexusTK-4.95-Protocol.md §11c). The bottom/right pair at the end of TOC
+# entry i belongs to the NEXT frame's origin, so frame i measures (left[i] - right[i-1]) x (top[i] -
+# bottom[i-1]). Exact for 1309/1309 Item.epf frames; the old same-entry box + "which dim divides pixbytes"
+# guesswork sheared any frame whose box was wrong. Frame 0 has no predecessor, hence frame N+1 == asset id N.
 def epf_frame(epf, frame_idx):
     frameCount, w, h, unk = struct.unpack_from("<HHHH", epf, 0)
     (tocOffset,) = struct.unpack_from("<I", epf, 8)
-    if frame_idx < 0 or frame_idx >= frameCount:
+    if frame_idx < 1 or frame_idx >= frameCount:
         return None
-    toc_o = tocOffset + frame_idx * 16
-    top, left, pixOff, stencilOff, bottom, right = struct.unpack_from("<hhIIhh", epf, toc_o)
-    pixbytes = stencilOff - pixOff
-    if pixbytes <= 4:
+    top, left, pixOff, stencilOff, _, _ = struct.unpack_from("<hhIIhh", epf, tocOffset + frame_idx * 16)
+    _, _, _, _, pbot, pright = struct.unpack_from("<hhIIhh", epf, tocOffset + (frame_idx - 1) * 16)
+    fw, fh = left - pright, top - pbot
+    if fw <= 0 or fh <= 0 or fw * fh != stencilOff - pixOff:
         return None
-    bw = abs(right - left) or 1
-    bh = abs(bottom - top) or 1
-    # derive true dims: which box dim divides pixbytes evenly
-    fw, fh = bw, bh
-    if pixbytes % bw == 0:
-        fw, fh = bw, pixbytes // bw
-    elif pixbytes % bh == 0:
-        fw, fh = pixbytes // bh, bh
-    raw = epf[12 + pixOff: 12 + pixOff + fw * fh]
-    return fw, fh, raw
+    return fw, fh, epf[12 + pixOff: 12 + pixOff + fw * fh]
 
 def main():
     look = int(sys.argv[1])

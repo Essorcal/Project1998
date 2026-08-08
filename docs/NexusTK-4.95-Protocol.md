@@ -352,6 +352,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
 | `0x1b` | Setting toggle | `subCmd(u8) pad pad` | Client toggle. `0x00` = the 'r' Ride key (RTK `clif_changestatus` case 0x00 → `clif_findmount`; `Session.TryRideHorse` — mounts by despawning a real nearby "horse" world mob, dismounts by spawning one back in front of you, §8); `0x02` = group/sociable (Shift+G, §9.5); `0x07` = realm-center (F4, §10.5); `0x08` = exchange/trade (§9.5); `0x09` = fast-move (§10.1). Group/exchange are persisted profile status flags; the others are session/camera state. |
 | `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
+| `0x66` | **Examine item** (right-click a bag slot) | `00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00` | The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the raw cursor X, not an item reference. Reply with a `0x66` detail popup (§11c.1). |
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
 ### 7.2 Server → client
@@ -724,9 +725,45 @@ layout:**
 | `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `@ride`/`@mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
 | `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head: 12 poses × facings, sub-frame 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
-| `[4]` | **Armor color / dye palette index** (RTK `player.armorColor`) | No visible change for `0..8` (all render as the base/undyed color — the earlier sweep's range was too narrow to catch it). LIVE-confirmed 2026-07-27 via a real-time Frida byte-sweep during a weapon toggle: `16`/`32`/`64`/`128`/`255` visibly recolor the worn armor. Exact palette mapping not yet catalogued. **Now driven by `Character.ArmorColor`** — persisted, carried in `PlayerSnapshot` so peers see it too, and set by the Arena Master's war paint (§11e, `WarPaintAbility`). Sweep/calibrate the real index→color map with the `@dye <n>` GM command. |
+| `[4]` | **Body-layer colour (ramp shift)** | Recolours the worn armor/coat. **Not a palette index — a ramp selector:** the tinted blit does `if (pixel >= 0x30) pixel += colour * 8` before the palette lookup, so garment colours live in 8-entry ramps from index `0x30` and this byte picks the ramp (skin/outline indices below `0x30` are untouched). See the ⚠ below. Driven by `Session.ArmorDye()` = the worn armor's `ItmLookColor`, overridden by `Character.ArmorColor` (Arena Master war paint, §11e) when set. |
 | `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
 | `[6]` | **Shield** | Distinct shields. **`0` is a REAL shield — "no shield" is `0xFF` (`-1`).** |
+
+> **⚠ Byte `[4]` is a RAMP SHIFT on the body layer, and it must carry the armor's own `ItmLookColor`
+> (RE'd end-to-end 2026-08-07).** The real player draw is **`0x432320`** (reached from the entity draw at
+> `0x462999`/`0x462a2e` → `call 0x432320`). It resolves the four layer frames via `0x433040`, fetches each
+> layer's palette from its table record (`rec+4`) through `0x467470(kind, palIdx)`, and **remembers which
+> loop index is the body layer in `[ebp+0x28]`**. At blit time:
+> ```
+> 0x004328de  cmp  ecx, eax            ; this layer == the body layer?
+> 0x004328e0  jne  0x432907            ;   no  -> plain blit, colour 0   ([obj+0x94])
+> 0x004328e2  mov  eax, [ebp + 0x19]   ; appearance[4]
+> 0x004328e5  test al, al
+> 0x004328e7  je   0x432907            ;   zero -> plain blit
+> 0x004328ff  call dword ptr [ebx+0x98]  ; TINTED blit, colour passed through
+> ```
+> The tinted blit is `0x428c10` (16-bit) / `0x42cb40`, and the recolour is one instruction:
+> ```
+> 0x00428d56  movsx eax, byte [ebp+0x18] ; colour
+> 0x00428d5a  shl   eax, 3               ; colour * 8
+> ...
+> 0x00428e1a  mov  al, byte [esi]        ; source pixel = palette index
+> 0x00428e1c  cmp  al, 0x30
+> 0x00428e1e  jb   0x428e23              ; < 0x30 (skin/outline) -> untouched
+> 0x00428e20  add  al, byte [ebp-0x14]   ; index += colour * 8
+> 0x00428e2f  mov  ax, word [ebx+eax*2+0x2c]   ; palette lookup
+> ```
+> So each garment's colours are an 8-entry ramp based at `0x30` and the byte selects the ramp — which is why
+> all 67 `Body.epf` sprites look green: **green is merely the base ramp**, and every seasonal colour is the
+> same art shifted. Rendering body 4 with the shift at `ItmLookColor` 0..9 reproduces the ten armor icons
+> exactly (green / teal / blue / cream / salmon / gold / pale-pink=earth / magenta / pale-blue / copper).
+>
+> **The bug this caused:** the server only ever put `Character.ArmorColor` (the war-paint dye) in this byte,
+> so undyed armor always rendered at ramp 0 — the doll was "spring" no matter what the bag icon showed,
+> while the icon looked right because RTK gives those rows their own `ItmIcon`. Fixed by `Session.ArmorDye()`
+> (worn armor's `ItmLookColor`, war paint overriding). Note `0x4329b0` is a **different, simplified** draw
+> path with no palette/tint step — do not use it to reason about colour; the earlier revision of this doc did
+> exactly that and wrongly concluded the byte was dead.
 
 > **⚠ Weapon/shield "empty" = `0xFF`, not `0` (proven live 2026-07-25 + RTK `clif.c`).** A row-sweep of `[5]`/`[6]`
 > showed every value `0..15` renders a distinct blade/shield for **both** sexes; only `-1` (byte `0xFF`) is bare
@@ -974,7 +1011,7 @@ fields (gear in wrong cells). Decoding a real 6.x capture with the grammar above
 perfectly up to the legend count, then the 6.x equip block is left unconsumed. The self-view doll BODY is the
 LIVE on-map sprite (armor/weapon/shield only) — helm/rings have no sprite layer and show ONLY in the 3 icon
 cells. The **buff box** is the self-view analog of the click-profile's gear list (issue: self=buffs,
-other=gear); it holds `Name (Ns)` per active buff, grouped by spell (`Session.BuffBoxText`).
+other=gear); it holds `Name Ns` per active buff (no parentheses), grouped by spell (`Session.BuffBoxText`).
 
 **Click-profile — request `0x43` → reply `0x34`.** Clicking a character sends `43 01 id(u32) 00`. Reply
 with `0x34`, the public two-page view (portrait + gear on page 1; nation + picture + writable blurb on
@@ -985,7 +1022,10 @@ and does not fit 4.95. Body:
 5 header strings (u8 len + bytes): title, clan, clanTitle, class, name   (order confirmed live)
 appearance: tag u8 (=0) + 7 look bytes                (same 7-byte form as 0x33 type-0 → correct sprite)
 [helmIcon u16BE][leftRingIcon u16BE][rightRingIcon u16BE]  ← 3 equip-icon cells (SAME as 0x39; NOT portraits)
-gear/item list (u8 len + text)                        PAGE 1; item names TAB-separated (client → CR)
+gear/item list (u8 len + text)                        PAGE 1; TAB-separated (client → CR), one line per FILLED
+                                                      slot (empty slots omitted), in slot order:
+                                                      `w:Weapon:<n>` `a:Armor:<n>` `s:Shield:<n>` `h:Helmet:<n>`
+                                                      `l:LHand:<n>` `r:RHand:<n>`
 scalar (u32BE)                                        (unknown; 0)
 group (u8), exchange (u8)                             the two status cells; 0/1 = off/on, 0xff = blank WHITE box
 nation (u8)                                           PAGE 2; drawn via NATION_E.EPF
@@ -1595,11 +1635,58 @@ icon directly. Sending the 5.x layout to 4.95 made the client read the name one 
 *count* was the same off-by-one — everything after the name shifted by one. `SendAddItem`/`SendEquip`
 branch on `_ver`; the tables below show the **V533** shape (V495 = same minus the `iconColor` byte).
 
-**⚠ Binary note.** The RE reference binary `NexusTK_local.exe` **no-ops** `0x0A/0x0F/0x10/0x37/0x38` in its
-world dispatcher (`remap[op-3]` → jump-table entry `0x2a` = the `xor al,al;ret` default at `0x44bbcd`), yet
-the real 4.x client renders them — so the running 4.x client is a **different build** than
-`NexusTK_local.exe`. Disassembly of that binary is NOT authoritative for the item opcodes; the layouts here
-are driven by live behavior. (Identify the running exe to RE the exact layout: icon-id space still unmapped.)
+**⚠ Because 4.95 has no `iconColor` byte, the color is part of the ICON ID — fold it in (fixed 2026-08-07).**
+Dropping the byte was right; leaving the icon at the bare `ItmIcon` was not. 4.95 cannot recolor an item
+graphic *anywhere*: the bag/equip icon draw is `0x435ab0(frame, dest)` → `0x431020("ITEM.EPF", frame+0x4000,
+dest)`, and the floor-object path resolves the same way — a frame index and nothing else, palette from
+`Item.tbl`. Color variants are therefore **separate consecutive `Item.epf` frames**, and RTK's
+`(ItmIcon, ItmIconColor)` pair is just the later client's encoding of `ItmIcon + ItmIconColor`:
+
+| RTK base icon | client ids | set |
+|---|---|---|
+| 89 / 99 / 120 | 89–98 / 99–108 / 120–128 | waistcoat / garb / scale mail |
+| 149 / 159 / 180 | 149–158 / 159–168 / 180–188 | dress / blouse / mail dress |
+| 265 / 450 | 265–274 / 450–459 | **helm** / gown |
+
+Sending the bare icon drew the color-0 member for all ten — the "every helmet is a spring helmet" bug.
+`Content.ResolveIconColors` folds the color in for those eight runs (`ItemDef.ClientIcon`), and
+`Session.IconOf` is the single place the V495/V533 choice is made (bag, equip window, profile helm/ring
+cells, floor items, item dialog portraits all go through it). It is an **allow-list on purpose**: most
+non-zero `ItmIconColor` values in `Items.csv` belong to later-client content where the palette index is not
+a frame offset, and adding it blindly lands on an unrelated sprite. A second guard refuses any target
+another item already claims as its own `ItmIcon` (catches rows where RTK gave the variants real icons and
+left a stale color — `star_armor_dress` 172+2 is `sun_armor_dress`'s icon).
+
+**⚠ `Item.epf` TOC decode was off by one — `re/render_items.py` and `re/verify_color_frames.py` had it
+wrong.** Reading 16-byte entries at `tocOffset + i*16` as `top,left,pixOff,stencilOff,bottom,right` gives a
+box that does **not** match the pixel span. The `bottom`/`right` in entry *i* belong to the *next* frame's
+origin pair; the correct rule is `w = left[i] - right[i-1]`, `h = top[i] - bottom[i-1]`, which reproduces
+`stencilOff-pixOff` for **1309/1309** frames exactly. Consequence: **`Item.epf` frame `N+1` is client item
+id `N`** (frame 0 is unusable), which is why id 265 draws the green helm that lives at frame 266.
+
+**✅ Binary note — CORRECTED 2026-08-07. There is no "different build"; there are SIX dispatchers.**
+This section used to say that because `NexusTK_local.exe`'s world dispatcher (`0x44b9c0`) no-ops
+`0x0A/0x0F/0x10/0x37/0x38` while the live client clearly renders them, the running client must be a
+different build. It isn't — that dispatcher is only *one* of several. **A received packet is offered to a
+chain of window/widget objects, each via vtable slot +`0x5c`, until one returns TRUE** (`al=1` = handled,
+`al=0` = pass it on; you can see the chaining explicitly at `0x474575`, `call [edx+0x5c]`). Every dispatcher
+has the same shape: opcode = `[[arg+0xc]]`, a byte remap table, then a jump table.
+
+| Dispatcher | Owner | Opcodes it claims |
+|---|---|---|
+| `0x44b9c0` | world/map | `03 04 06 07 0b 0c 0d 0e 11 12 13 15 16 19 1a 1b 1d 1f 20 21 26 29 2e 2f 30 31 33 34 35 36 39 3b 42 44 46 49 4a 4b 59 66 67 68` |
+| `0x48eb40` | player state (owns `[0x4fd400]`) | `04 05 08 0a 0b 0f 10 12 15 17 18 24 26 4e` |
+| `0x474550` | equipment / profile | `08 1d 33 37 38 39` |
+| `0x43c110` | inventory pane | `0f 10 59` |
+| `0x47bb90` | — | `0a 0f 10 17` |
+| `0x47a6b0` | spellbook pane | `17 18` |
+| `0x413970` / `0x496640` | — | `04 0b 15 26` / `04 08 0b 26` |
+| `0x40ebc0`, `0x453210`, `0x46c490` | — | `0a 0d` / `2f 30` / `2f 30` |
+
+So the disassembly **is** authoritative — you just have to look in more than one place. The player-state
+class is where the item/spell arrays live: **inventory** at `state+0x13e`, 52 slots of **164 bytes**
+(`0x48fd50` is the `0x0F` additem handler, `0x48f070` its setter); **spellbook** at `state+0x21ec`, stride
+**328**; a third array at `state+0x2294`, same stride.
 
 **Icons — SOLVED (encoding, not a mapping).** The client's item-sprite resolver (`0x435ab0`) does
 `spriteId = iconField + 0x4000`, then the frame indexer (`0x431450`) bounds-checks the **low 16 bits**
@@ -1713,13 +1800,19 @@ nothing's found).
 **Status / mini-text box — server→client `0x0A` (`SendMiniText`).** The scrolling log pane beneath the
 inventory (look-at names, item pickup/drop, "experience gained", map-entry rejections, whisper text). A
 distinct channel from both the `0x0D` chat bubble (`SendLog`) and the `0x02` login message box
-(`SendMessage`). Mirrors RTK `clif_sendmsg(sd, type, msg)` (clif.c:6484) byte-for-byte: body after the
-opcode+inc is `type(u16 LE) · len(u8) · text[len]` (ASCII, `len` clamped to the u8). `type`: **0** = wisp
-(blue), **3** = mini/status text (the default, `clif_sendminitext`), **5** = system, **11** = group, **12** =
-clan. `0x0A` is one of the opcodes the RE reference binary `NexusTK_local.exe` no-ops in its dispatch table
-yet the **live 4.95 client renders** — same group as the `0x0F`/`0x37` item opcodes we already rely on (see
-the "Binary note" above); the `type=3` routing is live-proven, `type=0`'s exact pane is RTK's documented
-intent (see the whisper-delivery note).
+(`SendMessage`).
+
+**⚠ Layout corrected 2026-08-07: the body is `type(u8) · len(u16BE) · text[len]`**, not
+`type(u16 LE) · len(u8)`. Every `0x0A` handler in the client reads it that way — a `u8` at `body[0]`, then
+`0x475ca0` (the *big-endian* u16 reader) at `body[1]`: see `0x47c520`, `0x490930`, `0x40eeb0`. The old
+reading produced identical bytes only because our type high byte is always 0 and our text was always under
+256 chars; it would have silently truncated the moment either stopped being true. **The real cap is the
+client's own widen buffer — `0x8000` characters**, not 255.
+
+`type`: **0** = wisp (blue), **3** = mini/status text (the default, `clif_sendminitext`), **5** = system,
+**11** = group, **12** = clan — and **2 / 3 / 8 additionally reach the bordered word-wrap overlay** (§11c.1).
+Which widget wins is decided by the handler chain, since several claim `0x0A` (see the Binary note: a packet
+walks widgets via vtable slot +`0x5c` until one returns TRUE).
 
 **State guards on item actions (added 2026-07-26).** RTK gates every one of drop/throw/drop-gold/equip on
 player state before doing anything else — dead (`Hp==0`, "Spirit") or mounted can't perform them. Ours now
@@ -1857,7 +1950,153 @@ Baekdu / Nagnang-shield / generic quest halls (host maps not renderable = 7.x co
 Carnage Hall minigames (maps render but need a full event-manager). See memory `nexustk-495-scripted-tile-warps`.
 
 **GM commands:** `@items [filter]` (browse registry), `@item <name/id> [amount]` (summon into bag),
-`@clearinv` (reset bag + gear).
+`@clearinv` (reset bag + gear), `@iteminfo <slot> [kind] [sep]` (fire + tune the examine popup, below).
+
+### 11c.1 `0x66` — "examine item" (right-click a bag slot) ✅ *(both directions RE'd from the 4.95 binary, 2026-08-07)*
+
+Right-clicking an item in the inventory pane asks the server what it is. Before this was answered, the client
+sent the request and **retried it 5–8×** before giving up.
+
+**Request (client → server), 10 body bytes.** Built by the inventory pane's mouse handler `0x43bf40`
+(mouse-message kind **4**; kind 2 is the left-click that sends `0x1C` *use item* via builder `0x43c160`)
+through packet builder `0x43c290`, which writes the body byte for byte:
+
+```
+00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00
+```
+
+The pane is **15 cells wide** with a page byte at *widget*+`0x104`, so a click resolves to
+`cell + 15*page + 1` (`0x43bf94`) and then through `0x43c5a0` ("the array index of the Nth occupied slot")
+to the id in **body[5]**. Because a left-click hands that same id to `0x1C`, the slot convention is
+identical to `HandleUseItem`'s — **1-based**.
+
+> **Gotcha.** body[1] is the raw **cursor X**, not an item reference. An early note had the two swapped,
+> which made every logged decode read 196–225 and report "no bag item at that slot". The two bytes track
+> each other at roughly 15:1 only because both come from the same click — that ratio is the cell pitch.
+
+**Reply (server → client), same opcode — and it is a "GO TO THIS URL" packet.** Client handler `0x4511b0`,
+keyed on `body[0]`. Every kind carries a URL; they differ only in *which browser opens it*:
+
+| kind | body after the kind byte | What happens |
+|---|---|---|
+| `0` | `u16BE len` + **URL** | The client's **own embedded Internet Explorer control** navigates to it, in a near-fullscreen window at (10,10)–(630,470). |
+| `1` / `2` | `u16BE len1` + **URL**, `u16BE len2` + **text** | A centred `DLGBBS01.EPF` + **OK** popup showing *text* (≤999 chars); **OK** `ShellExecute`s the URL in the *external* browser. `1` additionally **quits the game**. |
+
+All lengths are **u16 big-endian** (client reader `0x475ca0` is `hi<<8 | lo`).
+
+**Proof for kind 0.** The window class built at `0x406250` hosts an ActiveX browser: vtable slot +`0x8c`
+(`0x406680`) calls `CoCreateInstance(CLSID_WebBrowser@0x4d00a8, …)` and queries `IID_IWebBrowser2@0x4d0098`
+(the binary imports `ole32!CoCreateInstance`). Our string reaches `0x4053c0`, which does
+`SysAllocString(str)` and then `call [vtbl+0x2c]` with five arguments — **`IWebBrowser2::Navigate(BSTR url,
+flags, targetFrame, postData, headers)`**.
+
+**Proof for kinds 1/2.** The popup's OK handler is vtable slot +`0x70` = `0x488480`, two actions:
+
+```
+ShellExecuteA(0, 0, url, 0, 0, SW_SHOWNORMAL)                        // url verbatim from window+0x27c
+if (flag at window+0x280) { SetEvent(app+0x818); app+0x815 = 1 }     // 0x403030 — shutdown signal
+```
+
+**RTK 7.x confirms both independently.** `clif_sendurl(sd, type, url)` (`rtk/src/map/clif.c:265`) builds this
+exact packet and comments the type byte:
+
+```c
+WFIFOB(sd->fd, 5) = type; // 0 = ingame browser, 1 = popup open browser then close client, 2 = popup
+```
+
+> ### So right-clicking an item asks the server for a WEB PAGE
+>
+> That is the whole feature. Original NexusTK served item pages off `nexustk.com` and rendered them in the
+> embedded browser — which is exactly why **no window class in the client draws an item-detail panel**, and
+> why `Item.tbl` carries no text (it is `ID n, Palette p, Alpha a, Light l` — sprite metadata only).
+>
+> Getting here cost two live incidents worth remembering. **Kind 1 killed the client** (it is kind 2 plus the
+> quit flag). Then **kind 2 with an *empty* URL opened the client's own install directory in Explorer** —
+> `ShellExecute("")` resolves to the working directory. The popup fallback therefore sends the literal
+> `<none>`: `<` and `>` are illegal in filenames and it carries no scheme, so the shell can only fail it to
+> `SE_ERR_FNF`, which is what makes OK a plain dismiss. A bare word would be worse — `ShellExecute` resolves
+> those against `App Paths`/`PATH` and could *launch a program*.
+>
+> Ruled out along the way (all now identified, and worth keeping): `0x44` = no-op (`mov al,1; ret`), `0x67` =
+> a seconds countdown, `0x68` = a `0x75` challenge/response ping, `0x4a` = a `GetModuleFileName` anti-cheat
+> check, `0x49` = a file-existence check answering on `0x4F`, `0x4b` = a string the client echoes straight
+> back, `0x31` = the board ACK, `0x35` = the mail/parcel reader (`MAIL.EPF`/`PARCEL.EPF`), `0x36` = the user
+> list (`USERLIST.EPF`), `0x42` = the trade window (`DLGEXC1.EPF`), `0x46` = the "Power" window, `0x2f` = the
+> shop grid (`DLGMERC1.EPF`). `#INFOSHOP:` turned out to be a `PHONE.CFG` item-mall marker. The 16 sites that
+> draw an item sprite belong only to: the inventory pane (`ITEMINV.EPF`), ground items, trade, mix/craft
+> (`MIXITEM.EPF`), the shop, and the profile paperdolls — there is no seventh.
+
+### ✅ The reply: `0x59` sub-kind 0 — the inventory pane's own tooltip
+
+A period screenshot settles the shape: item info is a **multi-line box hanging off the item list**, with the
+name, durability, small/large damage, a combined armour/hit/dam line, owner and the class-level requirement.
+Wrapped, no window chrome, **no close button**. Not a dialog, not a web page.
+
+It is not a separate window class at all — **the inventory pane draws it itself**. That pane's packet handler
+(`0x43c110`) claims three opcodes: `0x0F`, `0x10` and **`0x59`**. Sub-kind 0 lands in `0x43c1b0`:
+
+```
+body[0] = 0             sub-kind
+body[1] = anchor (u8)   which item row to hang off — echo back the slot that was asked about
+body[2..3] = u16BE len  must be 1..0x3FF; outside that the handler bails silently
+body[4..]  = text
+```
+
+The handler asks the pane for its own rectangle (`0x425380`), computes a midpoint, and builds a `0x108`-byte
+overlay object (`0x42f450`) from the text, the anchor, and a **`0x2710` (10000) lifetime** — so the box
+positions itself against the item list and times out on its own, which is why the screenshots have no close
+button. `0x42f450`'s own scan (`0x42f4ed`) treats **CR (`0x0d`), LF (`0x0a`) and TAB (`0x09`) all as line
+breaks**, so the separator needs no calibrating.
+
+**Sub-kind 1 is a different feature and cannot collide**: RTK's `clif_sendtowns` sends `0x59` with
+`body[0]=64`, and the world dispatcher's `0x59` trampoline (`0x44b9e9`) gates on `body[0]==1`, while the
+inventory pane gates on `body[0]==0`.
+
+**Rejected alternatives, live-tested.** `0x0A` types 2/3 land in the status pane (the client's *other*
+bordered word-wrap box, class `0x47b400`–`0x47c700`, nine-slice `MSGBORD.EPF`, wrap pass at `0x47c310`) —
+right mechanism, wrong pane. `0x0A` type 8 and `0x66` kind 2 both raise the parchment **OK dialog**, which
+the game already uses for the Rogue Judge/Spy spells. `0x66` kind 0 crashes.
+
+**Server side.** `Session.HandleItemInfoRequest` → `ItemInfoText` → `SendItemInfo`, which supports both:
+
+- **`mode tooltip` (default)** — `SendItemTooltip`, the `0x59` inventory-pane overlay above. This is the one.
+- **`mode overlay`** — `SendMiniText(text, type)`; `@iteminfo type <n>` sweeps the `0x0A` types (status pane).
+- **`mode browser`** — 0x66 kind 0. **⚠ This CRASHES this build.** Live test with a real URL: the window's
+  ctor asks for sprite category `"X"` (`XBUTTON.EPF`, its close button), the load throws an uncaught
+  allocation failure (`_CxxThrowException` via `0x430c7a` → `0x406cb6`, the `XBUTTON.EPF` site) and the
+  client dies on a null deref at `0x470ff4`. The asset isn't in this install's archives, so the browser
+  chrome can't build. Kept only for completeness.
+- **`mode popup`** — 0x66 kind 2, the same text in the OK dialog. Renders, but that dialog is what the game
+  uses for the Rogue Judge/Spy spells, so it's the wrong frame here.
+
+**The text** (`ItemInfoText`) reproduces the original box's layout, taken from period screenshots: name,
+`Durability: cur / max`, the `Damage: Small: / Large:` pair (indented so the labels align), one combined
+`Armor: n  Hit: n  Dam: n` line, the `<stat> increase:` column (Vitality / Mana / Might / Will / Grace /
+Healing / Wisdom), `Protection:`, and `<Path> Level n`. Labels sit left with values at column 22 —
+measured off the original's alignment. Only lines an item earns are printed. `ItmHealing` and `ItmWisdom`
+were parsed nowhere until this needed them.
+
+**`Owner:` is the BOUND owner**, not whoever is holding it — which is why it appears on some items in the
+original and not on others with an otherwise identical layout. Binding is real: NPC-sold subpath weapons
+arrive bound, and a quest upgrade binds its result (a Spike becoming an Enchanted Spike). It is per-STACK
+state — `InvItem.Owner`, persisted with the rest of the character JSON, so no schema change — because the
+same registry row can be bound in one player's bag and unbound in another's. The line is emitted only when
+that field is set. **Nothing binds automatically yet**: the two grant sites (subpath-weapon purchase, quest
+upgrade) still need wiring, and `@bind <slot> [name|off]` is the interim path.
+
+**`Break on death`** is a warning, not a field: emitted only when the item actually has `ItmBoD`, and always
+the **last** line, so it reads as the closing note on the item rather than another stat row.
+
+The damage range separator renders as a lowercase `m` in every surviving screenshot ("90m140", French
+"55m65"); whether that's a literal `m` or the client's glyph for a range character is unknown, so
+`DamRangeSep` reproduces what is on screen and is one character to change.
+
+Three gates the original's sample item didn't carry are kept because they decide "later" vs "never" —
+`Might required:`, `Mark required:`, and the sex restriction — each annotated when *you* fail it, using the
+same tests `EquipFromSlot` and `CanUsePath` enforce.
+
+`@iteminfo <slot>` fires the reply on demand; `mode` switches renderer, `sep` the line-break character
+(irrelevant for the tooltip, which accepts all three).
 
 ---
 
@@ -3440,7 +3679,8 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x46` | `0x451020` | ? |
 | `0x4a` | `0x4514d0` | ? |
 | `0x4b` | `0x451630` | ? |
-| `0x66` | `0x4511b0` | ? |
+| `0x59` | `0x43c1b0` (inventory pane) / `0x449f60` (world) | ✓ **item tooltip** when `body[0]==0`: `00 anchor(u8) u16BE len text` — the box that hangs off the item list, 10s lifetime, self-positioning. `body[0]==1` is the town list instead. See §11c.1 |
+| `0x66` | `0x4511b0` | ✓ **"open this URL"**: `kind(u8)` then 1 or 2 `u16BE`-length strings, string 1 = the URL. kind 0 = embedded IE (**crashes this build**, missing `XBUTTON.EPF`); kind 1/2 = the parchment OK dialog, and **kind 1 exits the game**. Not the item window. See §11c.1 |
 | `0x67` | `0x4513e0` | ? |
 | `0x68` | `0x4516a0` | ? |
 
@@ -3602,7 +3842,32 @@ magnitude faster for "what does this byte mean" questions.
   (`data/game-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
   has no evidence of existing in original 4.x/5.x NexusTK, so it isn't ported.
 - **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x31, 0x35, 0x36, 0x39, 0x3b,
-  0x42, 0x44, 0x46, 0x4a, 0x4b, 0x66, 0x67, 0x68`.
+  0x42, 0x44, 0x46, 0x4a, 0x4b, 0x67, 0x68`. (`0x66` is decoded — §11c.1.)
+- **A client packet you don't answer looks like a client bug.** `0x66` arrived in bursts of 5–8 identical
+  packets and read as spam until the builder was traced: it's one right-click, **retried** because nothing
+  came back. When a request repeats with an unchanging body, suspect a missing reply before a misparse.
+- **To find who BUILDS a client packet, don't grep for the opcode as an immediate** — this client never
+  stores one with `mov byte [buf], op`. It calls a write-byte helper `0x475bf0(value, dst)`, so the opcode
+  is a `push` operand: search for `6a <op>` (push imm8) followed by `call 0x475bf0`, and the whole body
+  falls out in order at the matching stack offsets. `0x475c10` is the matching u16 writer (**big-endian**),
+  `0x475c90`/`0x475ca0`/`0x475ce0` the u8/u16/u32 readers.
+- **Handler arg0 points at the OPCODE, not the body.** Every `0x4xxxxx` handler reads its first body byte at
+  `[esi+1]`. Calibrated against `0x29`, whose layout is known (`0x4504b0`: `esi+1` = the u32 entity id).
+- **One dispatcher is never the whole dispatch.** "Opcode X is a no-op in the jump table, yet the client
+  clearly handles it" meant *there is another dispatcher*, not *this is a different build* — the packet walks
+  a chain of widgets via vtable slot `+0x5c` until one returns TRUE. Find the rest by locating a handler you
+  can prove exists (e.g. via the array it writes) and walking back to its caller. See the corrected Binary
+  note in §11c.
+- **Check the client's IMPORTS before assuming a window is hand-drawn.** `ole32!CoCreateInstance` +
+  `CLSID_WebBrowser` + `IID_IWebBrowser2` meant a whole feature — item info — was a *web page*, not a
+  packet-driven panel. Weeks of hunting for a nonexistent item-detail window ended with one import-table
+  lookup.
+- **Read a dialog's BUTTON handler before you send it, not just its parser.** Parsing `0x66`'s handler told
+  us the field layout and nothing about consequences; its OK handler (`0x488480`) turned out to
+  `ShellExecute` the first string and, on a flag, signal the app to exit — which is what a live client did.
+  The parser says what the packet *means*; the vtable says what the packet *does*. Check both, and resolve
+  the IAT slots (`ShellExecuteA` at `0x4c9378`, `SetEvent` at `0x4c9214`) — an unnamed `call [0x4c93xx]` is
+  one lookup away from being obvious.
 
 ---
 

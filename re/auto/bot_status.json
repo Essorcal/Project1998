@@ -1,0 +1,23 @@
+{
+ "state": "explore",
+ "abs_pos": [
+  8,
+  35
+ ],
+ "facing": 0,
+ "hp": 830,
+ "maxhp": 1079,
+ "level": 19,
+ "exp": 66635,
+ "entities_tracked": 1,
+ "session_kills": 7,
+ "damaged_looks": {
+  "25": 103
+ },
+ "blacklisted": 6,
+ "grid_walkable": 203,
+ "grid_walls": 0,
+ "grid_inferred": 0,
+ "mem_pos": true,
+ "updated": "2026-08-02 19:44:24"
+}

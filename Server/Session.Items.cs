@@ -25,7 +25,7 @@ public sealed partial class Session
                     : name;
 
         var d = new List<byte> { (byte)(it.Slot + 1) };
-        d.AddRange(Be(IconWire(def.Icon)));   // RTK ItmIcon == client Item.epf frame; encode for the +0x4000 resolver
+        d.AddRange(Be(IconWire(IconOf(def))));   // client Item.epf frame; encode for the +0x4000 resolver
         // 5.x (V533) carries an icon-color byte here; 4.95 (V495) does NOT — it reads the name length
         // right after the icon. Proven live: on 4.95 an extra byte here made the client read the name
         // one byte early (Apple iconColor=0 → empty name "You ate ."; Poison apple iconColor=12 → 12-char
@@ -53,7 +53,7 @@ public sealed partial class Session
         if (def is null) return;
         string name = string.IsNullOrEmpty(worn.CustomName) ? def.Name : worn.CustomName;
         var d = new List<byte> { worn.Slot };     // worn.Slot holds the wire equip-slot byte
-        d.AddRange(Be(IconWire(def.Icon)));        // +0x4000 resolver encoding (see SendAddItem / IconWire)
+        d.AddRange(Be(IconWire(IconOf(def))));     // +0x4000 resolver encoding (see SendAddItem / IconWire)
         if (_ver == ClientVersion.V533) d.Add(def.IconColor);   // 4.95 omits the icon-color byte (see SendAddItem)
         var nn = Ascii(name); d.Add((byte)nn.Length); d.AddRange(nn);
         var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
@@ -71,8 +71,15 @@ public sealed partial class Session
     {
         var worn = _char.Equipment.FirstOrDefault(e => e.Slot == wireSlot);
         var def = worn is null ? null : Content.ItemById(worn.ItemId);
-        return def is null ? (ushort)0 : IconWire(def.Icon);
+        return def is null ? (ushort)0 : IconWire(IconOf(def));
     }
+
+    /// <summary>The Item.epf frame to send this client for <paramref name="def"/>. 4.95 has no colour byte
+    /// anywhere in the item graphics path, so the colour is folded into the frame (<see cref="ItemDef.ClientIcon"/>);
+    /// 5.x carries <c>iconColor</c> as its own field on 0x0F/0x37 and must keep the base icon so the two
+    /// aren't applied twice. This is the ONLY place that difference lives — every icon we emit goes through
+    /// here (bag, equip window, profile cells, floor items, item dialog portraits).</summary>
+    private ushort IconOf(ItemDef def) => _ver == ClientVersion.V533 ? def.Icon : def.ClientIcon;
 
     // 0x38 unequip-window: spot(u8) 00.
     private void SendUnequip(byte wireSlot) =>
@@ -87,8 +94,14 @@ public sealed partial class Session
     /// frames (0..1310) map to 0xc000..0xc51e, all > 0xbfff, so they hit type 2 and resolve (look+0x4000)&0xffff
     /// against Item.epf -- the SAME resolver the bag/0x0F path uses. Caveat: 0x07 has a viewport gate (0x424310),
     /// so the tile must be on-screen when spawned (true for drop/throw at the player's feet).</summary>
-    public void ShowGroundItem(GroundItem gi) =>
-        SendCreatureList(new[] { (gi.Id, IconWire(gi.Graphic), gi.X, gi.Y, (byte)0, (byte)0) });
+    /// <para><see cref="GroundItem.Graphic"/> is the base <c>ItmIcon</c> (world state, shared by every viewer),
+    /// so the per-client colour fold happens here rather than at drop time. Coin piles carry ItemId -1 and no
+    /// def, and keep the graphic they were dropped with.</para>
+    public void ShowGroundItem(GroundItem gi)
+    {
+        var def = gi.ItemId >= 0 ? Content.ItemById(gi.ItemId) : null;
+        SendCreatureList(new[] { (gi.Id, IconWire(def is null ? gi.Graphic : IconOf(def)), gi.X, gi.Y, (byte)0, (byte)0) });
+    }
 
     // The 4.95 type-0 form has three gear-driven look bytes: weapon [5], armor [3] and shield [6]. Weapon/
     // shield are derived live from Equipment by WeaponLook()/ShieldLook() (0xFF = bare), so equipping any of

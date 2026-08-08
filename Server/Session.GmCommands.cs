@@ -88,6 +88,95 @@ public sealed partial class Session
         SendLog($"Gave {def.Name}{(amount > 1 ? $" x{amount}" : "")} (#{def.Id}, {(def.IsEquip ? $"equip slot {def.EquipSlot}" : def.IsConsumable ? "use" : "etc")}).");
     }
 
+    // "@iteminfo [slot] [sep]" / "@iteminfo url <template|off>" — drive the 0x66 examine reply.
+    //
+    // `url` switches to the AUTHENTIC path: `0x66` is a "navigate to this URL" packet, and with a template
+    // set the client opens it in its own embedded Internet Explorer control — the real item window (see
+    // Session.SendItemInfo for the proof). `{id}` and `{name}` are substituted. Anything servable works,
+    // so this is testable against any page before we host our own:
+    //     @iteminfo url http://localhost:8080/item/{id}
+    //     @iteminfo url off        (back to the text popup)
+    // Without a URL we answer with the kind-2 popup carrying the stat text, and `sep` tunes the character
+    // its text control breaks lines on (n / r / rn / t) — the one thing the binary can't settle, since the
+    // popup only measures text WIDTH.
+    // The kind byte is not exposed: kind 1 is kind 2 plus the dialog's "exit the game on OK" flag, and
+    // sending it once already killed a live client.
+    private void ItemInfoCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        string arg = parts.Length > 1 ? parts[1] : "";
+
+        if (parts.Length > 0)
+            switch (parts[0].ToLowerInvariant())
+            {
+                // "type <n>" — the 0x0A message type the overlay rides on. 2, 3 and 8 all reach the
+                // client's word-wrap box (Session.SendItemOverlay); this is how we find which one paints.
+                case "type":
+                    if (byte.TryParse(arg, out var ty)) { _itemInfoType = ty; _itemInfoMode = ItemInfoMode.Overlay; }
+                    SendLog($"item-info: overlay on 0x0A type {_itemInfoType}  (sweep: {Prefix}iteminfo type 3 / 8)");
+                    return;
+
+                case "mode":
+                    _itemInfoMode = arg.ToLowerInvariant() switch
+                    {
+                        "overlay" => ItemInfoMode.Overlay,
+                        "popup"   => ItemInfoMode.Popup,
+                        "browser" => ItemInfoMode.Browser,
+                        _         => ItemInfoMode.Tooltip,
+                    };
+                    if (_itemInfoMode == ItemInfoMode.Browser)
+                        SendLog("WARNING: the in-game browser CRASHES this build (XBUTTON.EPF is missing).");
+                    SendLog($"item-info mode: {_itemInfoMode}");
+                    return;
+
+                // The browser is kept only for completeness — it is a confirmed client-killer here.
+                case "url":
+                    _itemInfoUrl = arg.Length > 0 && !arg.Equals("off", StringComparison.OrdinalIgnoreCase) ? arg : "";
+                    if (_itemInfoUrl.Length == 0 && _itemInfoMode == ItemInfoMode.Browser)
+                        _itemInfoMode = ItemInfoMode.Overlay;
+                    SendLog($"item-info url: {(_itemInfoUrl.Length > 0 ? _itemInfoUrl : "(none)")}");
+                    return;
+
+                case "sep":
+                    _itemInfoSep = arg.ToLowerInvariant() switch
+                    { "n" => "\n", "r" => "\r", "rn" => "\r\n", "t" => "\t", _ => _itemInfoSep };
+                    SendLog($"item-info sep: {(_itemInfoSep == "\n" ? "n" : _itemInfoSep == "\r" ? "r" : _itemInfoSep == "\r\n" ? "rn" : "t")}");
+                    return;
+            }
+
+        if (parts.Length == 0 || !int.TryParse(parts[0], out var slot))
+        {
+            SendLog($"usage: {Prefix}iteminfo <bag slot>  |  mode <tooltip|overlay|popup|browser>  |  type <n>  |  sep <n|r|rn|t>  |  url <tpl|off>");
+            SendLog($"  now: mode={_itemInfoMode} type={_itemInfoType}");
+            return;
+        }
+
+        var it = InvAt(slot - 1);                       // 1-based, matching the wire and the bag UI
+        var def = it is null ? null : Content.ItemById(it.ItemId);
+        if (it is null || def is null) { SendLog($"Bag slot {slot} is empty."); return; }
+        SendItemInfo(def, ItemInfoText(def, it), (byte)slot);
+    }
+
+    // "@bind <slot> [name|off]" — bind a bag item to a character (default: you), or clear the bind. Binding
+    // is a real mechanic — NPC subpath weapons arrive bound, and a quest upgrade binds its result — but
+    // nothing GRANTS a bound item automatically yet, so this is both the test path and the only way to
+    // produce one. See InvItem.Owner; the tooltip's "Owner:" line is driven by it.
+    private void BindItemCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0 || !int.TryParse(parts[0], out var slot))
+        { SendLog($"usage: {Prefix}bind <bag slot> [name|off]   (default: bind to you)"); return; }
+
+        var it = InvAt(slot - 1);                       // 1-based, matching the bag UI
+        var def = it is null ? null : Content.ItemById(it.ItemId);
+        if (it is null || def is null) { SendLog($"Bag slot {slot} is empty."); return; }
+
+        bool clear = parts.Length > 1 && parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
+        it.Owner = clear ? "" : parts.Length > 1 ? parts[1] : _char.Name;
+        MarkDirty();
+        SendLog(clear ? $"{def.Name} is no longer bound." : $"{def.Name} is now bound to {it.Owner}.");
+    }
+
     // "@clearinv": empty the bag + gear (test reset).
     private void ClearInventory()
     {

@@ -318,7 +318,7 @@ public sealed partial class Session
         (byte)_char.Sex,
         face < 0 ? MountForm() : (byte)0,
         face < 0 ? FaceLook() : (byte)Math.Clamp(face, 0, FaceCount - 1),
-        (byte)_char.Armor, _char.ArmorColor, WeaponLook(), ShieldLook(),
+        (byte)_char.Armor, ArmorDye(), WeaponLook(), ShieldLook(),
     };
 
     /// <summary>Head/face sprite byte for appearance[2], forced into the range the client actually has art
@@ -365,6 +365,24 @@ public sealed partial class Session
 
     private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; @weapon GM override
     private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
+
+    /// <summary>appearance[4] — the body layer's colour. RE'd end-to-end 2026-08-07 (player draw 0x432320,
+    /// tinted blit 0x428c10): the client draws the body through a SEPARATE blit entry whenever this byte is
+    /// non-zero, and that blit does <c>if (pixel &gt;= 0x30) pixel += colour * 8</c> before the palette lookup.
+    /// So the garment's colours live in 8-entry ramps from index 0x30 and this byte picks the ramp, while
+    /// skin/outline indices below 0x30 stay put. That is why the 67 Body.epf sprites all look green: green is
+    /// merely the BASE ramp, and every seasonal colour is the same art shifted.
+    /// <para>Source of the value is the worn armor's own <c>ItmLookColor</c> (earth armor = 6, sun = 5, …) —
+    /// previously never sent, so every armor rendered at ramp 0 and the doll was always "spring" no matter
+    /// what the bag icon showed. The Arena Master's war paint (<see cref="Character.ArmorColor"/>) overrides
+    /// it when set, which is exactly RTK's behaviour: dyed gear shows the dye, undyed gear shows its own
+    /// colour. Bleaching back to 0 restores the item colour rather than forcing green.</para></summary>
+    private byte ArmorDye()
+    {
+        if (_char.ArmorColor != 0) return _char.ArmorColor;                 // war paint wins while it's applied
+        var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type is 4 or 16);
+        return e is null ? (byte)0 : Content.ItemById(e.ItemId)?.LookColor ?? 0;
+    }
     private byte EquippedLook(int itmType, byte none)
     {
         var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == itmType);

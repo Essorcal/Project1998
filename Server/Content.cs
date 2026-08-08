@@ -100,7 +100,15 @@ public sealed record ItemDef(
     // is a boss mob. Protection (RTK ItmProtection) is the wearer's own magic-resist contribution,
     // folded into Session.RollDeflect the same way a mob's Protection is.
     int MinSDam = 0, int MaxSDam = 0, int MinLDam = 0, int MaxLDam = 0, int Protection = 0,
+    // ItmHealing / ItmWisdom: the last two stat columns, parsed nowhere until the item tooltip needed them
+    // ("Healing increase:" is a line in the real examine box). Carried for display; nothing consumes them
+    // mechanically yet.
+    int Healing = 0, int Wisdom = 0,
     string Text = "",
+    // ItmBuyText: the shop blurb the game itself writes for an item's restriction ("Strength of 35 req",
+    // "For level 5 or higher", "For peasants") -- 182 rows carry one. Free-text, so it's shown as a note on
+    // the examine popup (Session.ItemInfoText) rather than parsed; the real gates are the numeric columns.
+    string BuyText = "",
     // Wear restrictions that were parsed nowhere until now (RTK pc_useitem's path/mark gate, clif_checkinvbod's
     // break-on-death flag). PathId is ItmPthId: 0 = anyone; 1..5 = a BASE path (Warrior/Rogue/Mage/Poet/
     // Dreamweaver) which every subpath under it satisfies; >=6 = one EXACT subpath class (Chung ryong, Barbarian,
@@ -110,6 +118,14 @@ public sealed record ItemDef(
     // registry sets it, so it is carried for fidelity and never fires today.
     int PathId = 0, int Mark = 0, bool BreakOnDeath = false, bool Protected = false)
 {
+    /// <summary>The Item.epf id the 4.95 client must be told to draw — <see cref="Icon"/> with
+    /// <see cref="IconColor"/> already folded in (see Content.ResolveIconColors). 4.95 has NO colour channel
+    /// for item graphics at all: the bag/equip/ground draw calls take only a frame index and pull the palette
+    /// from Item.tbl, so a colour variant is a SEPARATE consecutive frame. RTK's (icon, colour) pair is the
+    /// later client's encoding of the same thing. Equals <see cref="Icon"/> for everything that isn't part of
+    /// a recognised colour run.</summary>
+    public ushort ClientIcon { get; init; } = Icon;
+
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
     public bool IsConsumable => Type is 0 or 1 or 2;     // EAT / USE / SMOKE
@@ -1576,9 +1592,52 @@ public static partial class Content
                 MinSDam: I("ItmMinimumSDamage"), MaxSDam: I("ItmMaximumSDamage"),
                 MinLDam: I("ItmMinimumLDamage"), MaxLDam: I("ItmMaximumLDamage"),
                 Protection: I("ItmProtection"),
+                Healing: I("ItmHealing"), Wisdom: I("ItmWisdom"),
                 Text: Clean(col.GetValueOrDefault("ItmText", "")),
+                BuyText: Clean(col.GetValueOrDefault("ItmBuyText", "")),
                 PathId: I("ItmPthId"), Mark: I("ItmMark"),
                 BreakOnDeath: I("ItmBoD") != 0, Protected: I("ItmProtected") != 0));
+        }
+        return ResolveIconColors(items);
+    }
+
+    // Item.epf ids the 4.95 client actually has art for (Item.tbl "NumItems 1310", ids 0..1309).
+    private const int ItemIconCount = 1310;
+
+    // Base icons of the colour RUNS the 4.95 Item.epf ships: `base + ItmIconColor` is a real, distinct sprite
+    // of the same garment for these, and only these. Derived by decoding Item.epf directly (see the note in
+    // ResolveIconColors) — every entry is a ten-frame seasonal set (spring/summer/autumn/winter/blood/earth/
+    // star/moon/sun/ancient) that RTK stores as one icon plus a palette index:
+    //   89 waistcoat  99 garb  120 scale mail  149 dress  159 blouse  180 mail dress  265 helm  450 gown
+    // Deliberately an allow-list rather than "always add the colour": most non-zero ItmIconColor values in
+    // Items.csv belong to LATER-client content whose palette index is not a 4.95 frame offset, and blindly
+    // adding it there lands on an unrelated sprite (dark_casque 713+2 = another casque's icon, hyun_moo_circlet
+    // 989+22 = an 8x8 blob, surge 34+7 = a different item). Those keep their base icon, which is what they
+    // already drew.
+    private static readonly ushort[] IconColorRuns = { 89, 99, 120, 149, 159, 180, 265, 450 };
+
+    /// <summary>Fold <c>ItmIconColor</c> into the icon for the colour runs the 4.95 client has art for.
+    /// <para>Why this exists: the 4.95 client cannot recolour an item graphic. The bag/equip draw
+    /// (<c>0x435ab0</c>) and the ground-object draw both call <c>0x431020(epfName, frame, dest)</c> — a frame
+    /// index and nothing else — and the palette comes from Item.tbl per frame. Sun/moon/star helms are
+    /// therefore ten SEPARATE Item.epf frames (265..274), not one frame plus a colour byte, and sending the
+    /// bare <c>ItmIcon</c> drew the first one for all ten (the "everything is spring" bug).</para>
+    /// <para>The <paramref name="items"/> pass also refuses any target that some other item already claims as
+    /// its own <c>ItmIcon</c> — that catches the rows where RTK gave the variants real icons of their own and
+    /// left a stale colour behind (star_armor_dress 172+2 is sun_armor_dress's icon; kabuto 265+10 is another
+    /// helm), which must keep the base.</para></summary>
+    private static List<ItemDef> ResolveIconColors(List<ItemDef> items)
+    {
+        var claimed = new HashSet<int>();
+        foreach (var it in items) claimed.Add(it.Icon);
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            var it = items[i];
+            if (it.IconColor == 0 || Array.IndexOf(IconColorRuns, it.Icon) < 0) continue;
+            int frame = it.Icon + it.IconColor;
+            if (frame >= ItemIconCount || claimed.Contains(frame)) continue;
+            items[i] = it with { ClientIcon = (ushort)frame };
         }
         return items;
     }

@@ -527,10 +527,10 @@ public sealed partial class Session
                 if (ActionAllowed(0x0F)) HandleCast(dec);
                 else if (CastQueueEnabled) QueueCast(dec);
                 break;
-            // 0x66 = right-click "examine item" request. The client sends it (and RETRIES ~6× because we don't
-            // answer), expecting a 0x66 reply its handler 0x4511b0 renders as the item-detail popup. We can't
-            // build that reply until its wire format is known — for now decode+log the request so labelled
-            // right-clicks map body[1] -> which item. See HandleItemInfoRequest / issue #3.
+            // 0x66 = right-click "examine item" on a bag slot. Answered with a 0x66 reply that the client's
+            // handler 0x4511b0 renders as the item-detail popup (stats + wear requirements). Both directions
+            // are RE'd from the 4.95 binary — see HandleItemInfoRequest / SendItemInfo for the wire formats
+            // and the builder/handler addresses. Leaving it unanswered is what made the client retry ~6×.
             case 0x66:                    HandleItemInfoRequest(dec); break;
             // 0x09 = the ';' Look key (RTK clif_parselookat_2). No coordinates in the body — it always
             // inspects the tile immediately in front of us (facing direction). See HandleLookAt.
