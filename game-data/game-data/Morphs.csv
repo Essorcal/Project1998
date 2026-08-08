@@ -20,9 +20,9 @@ ohaeng_chameleon_mage,170,0,30,185000,
 dagger_uniform,102,0,25,162000,
 chongun_uniform,37,0,25,162000,
 marketer_guise,52,0,125,60000,
-feral_rogue,,,30,185000,pig:19;piglet:20;puppy:18;mongrel:103;cat:182
+feral_rogue,,,30,185000,puppy:18;mongrel:103;cat:182;piglet:20;pig:19
 gangrel_rogue,,,30,185000,fox:22;wolf:23
-rodent_rogue,,,30,185000,rabbit:21;squirrel:25
+rodent_rogue,,,30,185000,rabbit:125;squirrel:25
 beast_rogue,,,30,185000,tiger:29;bear:24
 gangrel_mage,,,30,185000,fox:22;wolf:23
 beast_mage,,,30,185000,tiger:29;bear:24

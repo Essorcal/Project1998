@@ -142,7 +142,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 2002,spiritsong_rogue,Spiritsong,2,2,1,0,0,Which target? >,0,0,0,1,0,1
 2003,helping_hand_rogue,Helping Hand,2,2,2,0,0,Which target? >,0,0,0,1,0,1
 2004,heal_others_rogue,Heal Others,2,2,3,0,0,Which target? >,0,0,0,1,0,1
-2005,feral_rogue,Feral,1,2,0,0,0,"Pig, Piglet, Puppy, Mongrel, or Cat Morph? >",0,0,0,1,0,1
+2005,feral_rogue,Feral,1,2,0,0,0,Become what?,0,0,0,1,0,1
 2006,kwisin_cloak_rogue,Kwi-Sin Cloak,5,5,1,0,0,,0,0,0,1,0,1
 2007,mingken_cloak_rogue,Ming-Ken Cloak,5,5,2,0,0,,0,0,0,1,0,1
 2008,ohaeng_cloak_rogue,Ohaeng Cloak,5,5,3,0,0,,0,0,0,1,0,1
@@ -170,7 +170,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 2030,spirit_warrior_rogue,Spirit Warrior,5,2,1,0,0,,0,0,0,1,0,1
 2031,natural_defense_rogue,Natural Defense,5,2,2,0,0,,0,0,0,1,0,1
 2032,ohaengs_armor_rogue,Ohaeng\'s Armor,5,2,3,0,0,,0,0,0,1,0,1
-2033,rodent_rogue,Rodent,1,2,0,0,0,Squirrel or Rabbit? >,0,0,0,1,0,1
+2033,rodent_rogue,Rodent,1,2,0,0,0,Become what?,0,0,0,1,0,1
 2034,kwisin_disguise_rogue,Kwi-Sin Disguise,5,5,1,0,0,,0,0,0,1,0,1
 2035,mingken_disguise_rogue,Ming-Ken Disguise,5,5,1,0,0,,0,0,0,1,0,1
 2036,ohaeng_disguise_rogue,Ohaeng Disguise,5,5,2,0,0,,0,0,0,1,0,1
@@ -182,7 +182,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 2042,souls_rage_rogue,Soul\'s Rage,5,2,1,0,0,,0,0,0,1,0,1
 2043,spirit_of_the_forest_rogue,Spirit of the Forest,5,2,2,0,0,,0,0,0,1,0,1
 2044,augmentation_rogue,Augmentation,5,2,3,0,0,,0,0,0,1,0,1
-2045,gangrel_rogue,Gangrel,1,2,0,0,0,Fox or Wolf? >,0,0,0,1,0,1
+2045,gangrel_rogue,Gangrel,1,2,0,0,0,Become what?,0,0,0,1,0,1
 2046,kwisin_mask_rogue,Kwi-Sin Mask,5,2,1,0,0,,0,0,0,1,0,1
 2047,mingken_mask_rogue,Ming-Ken Mask,5,2,2,0,0,,0,0,0,1,0,1
 2048,ohaeng_mask_rogue,Ohaeng Mask,5,2,3,0,0,,0,0,0,1,0,1
@@ -194,7 +194,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 2054,displacement_rogue,Displacement,5,2,1,0,0,,0,0,0,1,0,1
 2055,waylay_rogue,Waylay,5,2,2,0,0,,0,0,0,1,0,1
 2056,reflect_rogue,Reflect,5,2,3,0,0,,0,0,0,1,0,1
-2057,beast_rogue,Beast,1,2,0,0,0,Tiger or Bear? >,0,0,0,1,0,1
+2057,beast_rogue,Beast,1,2,0,0,0,Become what?,0,0,0,1,0,1
 2058,kwisin_chameleon_rogue,Kwi-Sin Chameleon,5,5,1,0,0,,0,0,0,1,0,1
 2059,mingken_chameleon_rogue,Ming-Ken Chameleon,5,5,2,0,0,,0,0,0,1,0,1
 2060,ohaeng_chameleon_rogue,Ohaeng Chameleon,5,5,3,0,0,,0,0,0,1,0,1
@@ -353,7 +353,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 3073,spirits_power_mage,Spirit\'s Power,5,3,1,0,0,,0,0,0,1,0,1
 3074,life_force_mage,Life Force,5,3,2,0,0,,0,0,0,1,0,1
 3075,gather_magic_mage,Gather Magic,5,3,3,0,0,,0,0,0,1,0,1
-3076,gangrel_mage,Gangrel,1,3,0,0,0,Fox or Wolf? >,0,0,0,1,0,1
+3076,gangrel_mage,Gangrel,1,3,0,0,0,Become what?,0,0,0,1,0,1
 3077,kwisin_mask_mage,Kwi-Sin Mask,5,3,1,0,0,,0,0,0,1,0,1
 3078,mingken_mask_mage,Ming-Ken Mask,5,3,2,0,0,,0,0,0,1,0,1
 3079,ohaeng_mask_mage,Ohaeng Mask,5,3,3,0,0,,0,0,0,1,0,1
@@ -373,7 +373,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 3093,release_curse_mage,Release Curse,2,3,1,0,0,Which target? >,0,0,0,1,0,1
 3094,undo_evil_mage,Undo Evil,2,3,2,0,0,Which target? >,0,0,0,1,0,1
 3095,restore_armor_mage,Restore Armor,2,3,3,0,0,Which target? >,0,0,0,1,0,1
-3096,beast_mage,Beast,1,3,0,0,0,Tiger or Bear? >,0,0,0,1,0,1
+3096,beast_mage,Beast,1,3,0,0,0,Become what?,0,0,0,1,0,1
 3097,kwisin_chameleon_mage,Kwi-Sin Chameleon,5,5,1,0,0,,0,0,0,1,0,1
 3098,mingken_chameleon_mage,Ming-Ken Chameleon,5,5,2,0,0,,0,0,0,1,0,1
 3099,ohaeng_chameleon_mage,Ohaeng Chameleon,5,5,3,0,0,,0,0,0,1,0,1
@@ -905,3 +905,24 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 50047,purple_potion,Purple potion,5,99,-1,0,0,,0,0,0,1,1,1
 50048,poisoned_bracelet_spell,Poisoned Bracelet,5,99,-1,0,0,,0,0,0,1,1,0
 50049,hwan_spell,hwan_spell,5,99,-1,0,0,,0,0,0,1,1,0
+50050,burn,Burn,5,99,0,0,0,,0,0,0,1,1,1
+50051,forsake,Forsake,5,99,0,0,0,,0,0,0,1,1,1
+50052,cotw_giasomo_bird_poet,Call of the Wild,5,99,-1,0,50,,0,0,0,1,0,1
+1094,dragons_harness_warrior,Dragon\'s Harness,5,1,-1,3,0,,0,0,0,1,0,1
+1095,healths_return_warrior,Health\'s Return,5,1,0,3,0,,0,0,0,1,0,1
+1096,mend_equipment_warrior,Mend Equipment,5,1,0,3,0,,0,0,0,1,0,1
+1097,siege_warrior,Siege,5,1,0,3,0,,0,0,0,1,0,1
+2125,blades_charm_rogue,Blade\'s Charm,5,2,-1,3,0,,0,0,0,1,0,1
+2126,explorers_remedy_rogue,Explorer\'s Remedy,5,2,0,3,0,,0,0,0,1,0,1
+2127,focused_blow_rogue,Focused Blow,5,2,0,3,0,,0,0,0,1,0,1
+2128,power_stream_rogue,Power Stream,2,2,0,3,0,Which target? >,0,0,0,1,0,1
+3168,dooms_fire_mage,Dooms Fire,2,3,0,3,0,Which target? >,0,0,0,1,0,1
+3169,energy_flow_mage,Energy Flow,2,3,0,3,0,Which target? >,0,0,0,1,0,1
+3170,suppress_mage,Suppress,2,3,-1,3,0,Which target? >,0,0,0,1,1,1
+4160,charge_of_life_poet,Charge of Life,2,4,0,3,0,Which target? >,0,0,0,1,0,1
+4161,deteriorate_poet,Deteriorate,2,4,-1,3,0,Which target? >,0,0,0,1,1,1
+4162,ensure_poet,Ensure,2,4,0,3,0,Which target? >,0,0,0,1,0,1
+4729,cotw_wind_master_poet,Wind master,5,4,0,3,0,,0,0,0,1,0,1
+1098,souls_freedom_warrior,Soul\'s Freedom,5,1,1,3,0,,0,0,0,1,0,1
+1099,lifes_end_warrior,Life\'s End,5,1,2,3,0,,0,0,0,1,0,1
+1100,winter_chill_warrior,Winter Chill,5,1,3,3,0,,0,0,0,1,0,1

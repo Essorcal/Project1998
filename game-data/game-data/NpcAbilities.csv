@@ -1,8 +1,8 @@
 NpcKey,Abilities
 SmithNpc,shop|repair
 MessengerNpc,shop|messenger
-InnNpc,shop|bank|time
-InnNpc2,transport|time
+InnNpc,shop|bank
+InnNpc2,
 FishNpc,fish
 LibrarianNpc,librarian
 WarriorTrainerNpc,warrior_trainer|minor_quest
@@ -13,3 +13,8 @@ RogueGuildShamanNpc,appearance
 ArenaMasterNpc,war_paint
 ExpSeller,shadow_stats
 ChapelNpc,shop|chapel
+ShamanNpc,revive
+BaekhoNpc,revive
+HyunMooNpc,revive
+ChungRyongNpc,revive
+JuJakNpc,revive

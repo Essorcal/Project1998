@@ -1,5 +1,8 @@
-Map,Track
-0,1
-330,2
-41,5
-24,6
+Zone,Track,Maps,Names,Notes
+Default,earth,,,"last resort: a map in no zone AND with no warp path to one (arenas, gateways, scripted-tile dungeons)"
+Kugnae,dragon,0,Kugnae *,
+Buya,tiger,330,Buya *,
+Arctic Land,mist,137,Arctic *,
+Hamgyong Nam-Do,dark,114;450-459;20214,,"450-459 = the Old Shanty / Dagger-Wicked-Ruined house cluster (the Haunted Houses); 20214 = Nagnang Haunted House"
+KaMing's Encampment,sorrow,3800;3806,,
+Mythic Nexus,lake,41,,

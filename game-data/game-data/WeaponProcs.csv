@@ -1,0 +1,26 @@
+item,chancePct,spell,target,note
+giasomo_stick,4,cotw_giasomo_bird_poet,self_faced,Summons a Giasomo bird. RTK's lua says mobID 807 which exists nowhere -- RTK's own SQL and our mobs.csv both put giasomo_bird at 600.
+chaos_armor,100,calculating_blow_rogue,enemy,GM-only armour; RTK fires it on every swing.
+blood,4,venom,enemy,
+enchanted_blood,4,venom,enemy,
+il_san_blood,4,venom,enemy,
+ee_san_blood,4,venom,enemy,
+sam_san_blood,4,venom,enemy,
+sa_san_blood,4,venom,enemy,
+charm,4,endear,enemy,
+enchanted_charm,4,endear,enemy,
+il_san_charm,4,endear,enemy,
+ee_san_charm,4,endear,enemy,
+sam_san_charm,4,endear,enemy,
+sa_san_charm,4,endear,enemy,
+frost_sabre,4,chill,enemy,
+poet_whip,4,freeze,enemy,
+corrupted_blade,4,corrupt,enemy,
+cursed_blade,4,curse,enemy,
+forsaken_staff,4,blind,enemy,
+tainted_blade,4,taint,enemy,
+ilbon_knife,4,kamikaze,enemy,
+flamefang,4,burn,enemy,
+forsaken_blade,4,forsake,enemy,
+shot_gun,100,builtin:shotgun,enemy,GM item (Items.csv 60005, under the ===GM ITEMS=== marker). Ramping 7-tile cone; see Session.ProcShotgun.
+viper_stick,4,builtin:paralyze,enemy,RTK sets a 2s paralyze duration inline rather than casting a spell; see Session.ProcParalyze.

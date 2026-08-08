@@ -1,4 +1,4 @@
-key,verb,mana,base,coeff,amount,willcoeff,category,stat,duration,notes,Sources
+key,verb,mana,base,coeff,amount,willcoeff,category,stat,duration,notes,Sources,flat
 bolt_mage,magic_damage,4,2,1.5,,,,,,Basic mage nuke: 2 + 1.5*Will,rtk-lua
 heal_mage,heal,6,,,20,1.0,,,,Flat 20 + 1*Will HP,rtk-lua
 mend_wounds_mage,heal,3,,,10,0.5,,,,Weaker heal sharing the same heal verb,rtk-lua
@@ -38,3 +38,47 @@ hoche_warrior,ward,5000,,,0,,protections,,60000,"Hoche: protection ward, no stat
 immunity_warrior,ward,5000,,,0,,protections,,60000,"Immunity: protection clone",rtk-lua
 forest_blessing_warrior,ward,5000,,,0,,protections,,60000,"Forest Blessing: protection clone",rtk-lua
 magics_shield_warrior,ward,5000,,,0,,protections,,60000,"Magic's Shield: protection clone",rtk-lua
+venom,venom,60,1000,,1000,,venoms,,20000,"Venom (NPCs/venom.lua -- the SHARED path-99 spell the Blood weapons proc, not the mage venom_mage): DoT MaxHp*1%/1.5s, tick cap 1000, dur 1+rand(1000,20000)ms",rtk-lua,
+burn,venom,200,75000,,1000,,venoms,,75000,"Burn (NPCs/burn.lua, procced by Flamefang): the one DoT in this family with a FLAT tick -- 1000 damage flat, not MaxHp*1%, for a FIXED 75s",rtk-lua,1000
+curse,curse,60,,,-35,,curses,armor,50000,"Curse (NPCs/curse.lua, procced by Cursed blade): RTK armor+35 -> our -35 (victim takes more damage); 50s",rtk-lua,
+chill,curse,300,,,-8,,curses,armor,60000,"Chill (NPCs/chill.lua, procced by Frost sabre): RTK armor+8 -> -8; 60s",rtk-lua,
+corrupt,curse,100,,,-40,,curses,armor,50000,"Corrupt (NPCs/corrupt.lua, procced by Corrupted blade): RTK armor+40 -> -40; 50s",rtk-lua,
+taint,curse,40,,,-20,,curses,armor,50000,"Taint (NPCs/taint.lua, procced by Tainted blade): RTK armor+20 -> -20; 50s",rtk-lua,
+forsake,curse,500,,,-45,,curses,armor,62000,"Forsake (NPCs/forsake.lua, procced by Forsaken blade): RTK armor+45 -> -45; 62s",rtk-lua,
+blind,blind,300,,,,,blinds,,10000,"Blind (NPCs/blind.lua, procced by Forsaken staff): mob drops aggro and cannot re-acquire for 10s; on a PC only the blinds slot (no 4.95 client effect)",rtk-lua,
+endear,endear,300,6000,,,,endears,,15000,"Endear (NPCs/endear.lua, procced by the Charm weapons): mind-control the faced mob for 15s, 6s cooldown; reverts to a normal world mob after (RTK uncast clears owner/target only)",rtk-lua,
+endear_poet,endear,300,6000,,,,endears,,15000,"Poet mind-control family (Spells/poet/endear.lua -- endear_poet/possess_soul_poet/charm_life_poet/align_follower_poet are four IDENTICAL copies of the same script, one per subpath rank). Same 300 mana / 15s control / 6s aether as the NPC endear the Charm weapons proc. Without these rows the poet spells had no verb at all and fell through to their spell_effects Buff archetype, i.e. silently did nothing.",rtk-lua,
+possess_soul_poet,endear,300,6000,,,,endears,,15000,"Poet mind-control family (Spells/poet/endear.lua -- endear_poet/possess_soul_poet/charm_life_poet/align_follower_poet are four IDENTICAL copies of the same script, one per subpath rank). Same 300 mana / 15s control / 6s aether as the NPC endear the Charm weapons proc. Without these rows the poet spells had no verb at all and fell through to their spell_effects Buff archetype, i.e. silently did nothing.",rtk-lua,
+charm_life_poet,endear,300,6000,,,,endears,,15000,"Poet mind-control family (Spells/poet/endear.lua -- endear_poet/possess_soul_poet/charm_life_poet/align_follower_poet are four IDENTICAL copies of the same script, one per subpath rank). Same 300 mana / 15s control / 6s aether as the NPC endear the Charm weapons proc. Without these rows the poet spells had no verb at all and fell through to their spell_effects Buff archetype, i.e. silently did nothing.",rtk-lua,
+align_follower_poet,endear,300,6000,,,,endears,,15000,"Poet mind-control family (Spells/poet/endear.lua -- endear_poet/possess_soul_poet/charm_life_poet/align_follower_poet are four IDENTICAL copies of the same script, one per subpath rank). Same 300 mana / 15s control / 6s aether as the NPC endear the Charm weapons proc. Without these rows the poet spells had no verb at all and fell through to their spell_effects Buff archetype, i.e. silently did nothing.",rtk-lua,
+freeze,magic_damage,800,112,0,,,,,,"Freeze (NPCs/freeze.lua, procced by Poet whip): flat 112 magic damage, no hold despite the name -- RTK computes a duration then never uses it",rtk-lua,
+kamikaze,kamikaze,120,,1.75,10,,,,,"Kamikaze (NPCs/kamikaze.lua, procced by Ilbon knife): blast = ceil(caster CURRENT hp * 1.75) then the caster is left on exactly 10 hp",rtk-lua,
+drain_rogue,drain,60,,,1000,,,,,"Drain (lvl 80): absorb a mob at/under 1000 HP -- heal for its remaining life, which kills it. No caster scaling at all.",rtk-lua,
+drink_of_souls_rogue,drain,60,,,1000,,,,,Drink of Souls: Kwisin drain clone,rtk-lua,
+parasite_rogue,drain,60,,,1000,,,,,Parasite: Mingken drain clone,rtk-lua,
+absorb_rogue,drain,60,,,1000,,,,,Absorb: Ohaeng drain clone,rtk-lua,
+suppress_mage,curse,120,,,-50,,curses,armor,187000,"Suppress (Sam San mage): curses-category, upgraded Hindrance/Ju Jak; atlas +50 AC -> our -50; 187s",nexusatlas-2004
+deteriorate_poet,curse,1500,,,-9,,disheartens,armor,18000,"Deteriorate (Sam San poet): 'upgraded dishearten' (TSWolf 2002-10-01 as 'Hearts Breaking'); +9 AC -> -9; 18s",nexusatlas-2004
+ensure_poet,ward,1500,,,6,,bolsters,armor,37000,"Ensure (Sam San poet): 'upgraded bolster' (TSWolf 2002-10-01 as 'Soul Guard'); -6 AC -> armor +6; 37s",nexusatlas-2004
+filch_rogue,filch,,,,,,,,,binding only; mana from spell_effects via ctx.spellMana,,
+spirits_hand_rogue,filch,,,,,,,,,binding only; mana from spell_effects via ctx.spellMana,,
+quick_fingers_rogue,filch,,,,,,,,,binding only; mana from spell_effects via ctx.spellMana,,
+light_touch_rogue,filch,,,,,,,,,binding only; mana from spell_effects via ctx.spellMana,,
+watchful_eye_warrior,spot_traps,,,,,,,,,binding only; verb self-checks its own aether cooldown,,
+spirits_whisper_warrior,spot_traps,,,,,,,,,binding only; verb self-checks its own aether cooldown,,
+creatures_guidance_warrior,spot_traps,,,,,,,,,binding only; verb self-checks its own aether cooldown,,
+spot_unbalance_warrior,spot_traps,,,,,,,,,binding only; verb self-checks its own aether cooldown,,
+spot_traps,spot_traps,,,,,,,,,binding only; verb self-checks its own aether cooldown,,
+judge_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+spiritual_advisor_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+natural_talent_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+appraise_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+spy_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+spiritual_guide_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+natures_handiwork_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+judgement_day_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,
+return_spell,return_home,,,,,,,,,binding only; no spell_effects row, ctx.spellMana falls back to 5,,
+set_bladestorm_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,
+set_swords_dance_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,
+set_tigers_ambush_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,
+set_cutting_edge_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,

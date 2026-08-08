@@ -28,7 +28,7 @@ end
 -- ctx:heal caps at max HP and plays the sparkle/message.
 function verbs.arch_heal(ctx, row)
   if not ctx:spendMana(ctx.mana) then return false end
-  ctx:heal(ctx.amount)
+  ctx:healTarget(ctx.amount)   -- lands on the AIMED target (player/mob/self); type-5 self-skills heal the caster
   return true
 end
 
@@ -241,11 +241,59 @@ function verbs.stance_flank(ctx, row)    return arm_positional(ctx, "flank")    
 -- window, capped so it can never land the killing blow (RTK while_cast_1500). Reuses the SAME poison engine the
 -- Rogue poison-dart trap already drives (World.PoisonMob). row.amount = per-tick cap, row.base = random lower
 -- bound (ms); blocked if the target is already venomed (checkIfCast(venoms)) or isn't a mob ("It doesn't work").
+-- row.duration sets an upper bound other than RTK's usual 30000 (Burn's window is a FIXED 75s: base = duration).
+-- row.flat > 0 swaps the MaxHp*1% tick for a fixed amount — Burn is the only member that works that way.
 function verbs.venom(ctx, row)
   local mana = row.mana or 60
   if not ctx:enoughMana(mana) then return false end
-  if not ctx:applyVenom(row.amount or 1000, row.base or 1500, 30000) then return false end
+  if not ctx:applyVenom(row.amount or 1000, row.base or 1500, row.duration or 30000, row.flat or 0) then return false end
   ctx:debitMana(mana)
+  return true
+end
+
+-- Blind (RTK Spells/NPCs/blind.lua + the mage blind/dark_veil/winters_shadow/ice_glare family): the target
+-- stops being able to find anything. Real teeth on a MOB (it drops aggro and wanders); on a PC it only holds
+-- the 'blinds' slot, since 4.95 gives us no client-side blind to draw. row.mana, row.duration.
+function verbs.blind(ctx, row)
+  local mana = row.mana or 300
+  if not ctx:enoughMana(mana) then return false end
+  if not ctx:blindTarget(row.duration or 10000) then return false end
+  ctx:debitMana(mana)
+  return true
+end
+
+-- Endear / mind control (RTK poet/endear.lua + possess_soul/charm_life/align_follower, and NPCs/endear.lua
+-- that the Charm weapons proc): the faced mob becomes YOURS for row.duration, counting against your pet cap.
+-- When it lapses the creature reverts to a normal world mob rather than despawning (RTK's uncast just clears
+-- owner/target). Bosses and already-owned mobs refuse. row.duration is the control time, row.base the cooldown
+-- (RTK setAether 6000) so you can't perma-chain it.
+function verbs.endear(ctx, row)
+  local mana = row.mana or 300
+  if ctx:onCooldown(ctx.spellKey) then ctx:say("Your will is too weak."); return false end
+  if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
+  if not ctx:charmTarget(row.duration or 15000) then return false end
+  ctx:debitMana(mana)
+  if (row.base or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.base) end
+  return true
+end
+
+-- NO cotw_controller verb here on purpose. RTK's cotw_controller_poet is a threat-redirect + dismiss-all
+-- toggle, and BOTH halves are later-server behaviour: its threat side rides AI/threat.lua (an aggro table
+-- whose callers are Druid/Monk/Spy subpath spells, GM spells and a TESTING/ file), and 4.95 Call of the Wild
+-- creatures only ever leave play by being KILLED or by their own timer -- there is no dismiss. RTK itself
+-- ships the spell disabled (the only cotw row with SplActive=0). Don't re-add either half.
+
+-- Kamikaze (RTK Spells/NPCs/kamikaze.lua): detonate yourself. The blast is ceil(your CURRENT hp * 1.75), so it
+-- hits hardest at full health, and you are left on exactly 10 hp whether or not it killed anything. RTK shouts
+-- "Kamikaze~!" over your head first. Deliberately NOT gated on hp — dropping to 10 is the cost, not a failure.
+function verbs.kamikaze(ctx, row)
+  local mana = row.mana or 120
+  if not ctx:enoughMana(mana) then ctx:say("You do not have enough mana.") return false end
+  if not ctx.hasTarget then ctx:say(ctx.spellName .. " finds no target."); return false end
+  ctx:debitMana(mana)
+  ctx:talk("Kamikaze~!")
+  ctx:damage(math.ceil(ctx.hp * (row.coeff or 1.75)))
+  ctx:setHp(row.amount or 10)
   return true
 end
 
@@ -407,5 +455,335 @@ function verbs.ward(ctx, row)
   ctx:debitMana(mana)
   ctx:applyWard(row.category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 60000)
   if cd then ctx:setCooldown(ctx.spellKey, cd) end
+  return true
+end
+
+-- =========================================================================================================
+-- TIER 4 — WORLD-EFFECTING layer. These spells reach outside the caster/target stat model to touch the map,
+-- world entities, or persistent state, so each leans on a `world`/`tile` facade primitive (ctx:gateway,
+-- ctx:summonPet, ctx:placeTrap, ctx:warp-home, ...) whose heavy engine op stays in C#. The VERB owns the
+-- guards, mana/cooldown, and player-facing messages (the moddable/hot-reloadable part); the primitive does
+-- the irreducible engine work. These spells are classified in C# (no SpellParams row), so they run against an
+-- empty row — data-bound constants (per-kind trap mana, pet caps, gate boxes) come from the primitives via
+-- ctx.spellMana / ctx.petMana / etc., not row.*. Each still falls back to its C# CastX handler if unloaded.
+-- =========================================================================================================
+
+-- Gateway (RTK common/gateway.lua): teleport to a random tile in the answered N/E/S/W gate box of the caster's
+-- kingdom city. No mana (RTK only state-checks). ctx:gateway does the region/gate lookup, landing + narration.
+function verbs.gateway(ctx, row)
+  if ctx.isDead then ctx:say("Spirits cannot use Gateway."); return false end
+  if not ctx.canWarpOut then ctx:say("It doesn't work here."); return false end
+  return ctx:gateway()                                   -- reads ctx.answer; self-narrates its own arrival line
+end
+
+-- Return (RTK common/return.lua): warp home to a random tavern in your nation. 30 mana; blocked on warp-locked maps.
+function verbs.return_home(ctx, row)
+  local cost = row.mana or 30
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  if not ctx.canWarpOut then ctx:say("That does not work here."); return false end
+  ctx:setMana(ctx.mp - cost)
+  ctx:returnHome()
+  return true
+end
+
+-- Divination (RTK rogue/judge.lua + spy.lua): inspect a lower-level player's class/name/level/stats (spy also
+-- lists their inventory). 30 mana. Judge needs a STRICTLY lower target; spy allows equal level too.
+function verbs.divine(ctx, row)
+  local cost = row.mana or 30
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  if not ctx:pcTarget() then return false end
+  local ok
+  if ctx.spyMode then ok = ctx.targetLevel <= ctx.level else ok = ctx.targetLevel < ctx.level end
+  if not ok then ctx:say("Target player must be lower level than you for you to use this spell."); return false end
+  ctx:setMana(ctx.mp - cost)
+  ctx:divine(ctx.spyMode)                                -- builds + sends the inspect popup (self-narrates)
+  return true
+end
+
+-- Spot Traps (RTK warrior/watchful_eye.lua + dog/spot_traps.lua): reveal every hidden trap within 15 tiles as a
+-- caster-only marker sprite. The sense-result line IS the caster narration.
+function verbs.spot_traps(ctx, row)
+  local cost = row.mana or ctx.spellMana
+  local cd = row.duration or (ctx.spellAether > 0 and ctx.spellAether or 25000)
+  if ctx.spellAether > 0 and ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  ctx:setMana(ctx.mp - cost)
+  ctx:setCooldown(ctx.spellKey, cd)
+  ctx:fxSelf()
+  local n = ctx:revealTraps()
+  if n > 0 then ctx:say("You sense " .. n .. " hidden trap" .. (n == 1 and "" or "s") .. " nearby.")
+  else ctx:say("You sense nothing nearby.") end
+  ctx:narrated()
+  return true
+end
+
+-- Filch (RTK rogue/filch.lua family): grab the item on the faced tile into your pack (coins -> purse). The bark
+-- + fx play unconditionally, before looking at the floor — same as RTK.
+function verbs.filch(ctx, row)
+  local cost = row.mana or ctx.spellMana
+  if ctx.mp < cost then ctx:say("Your will is too weak."); return false end
+  ctx:setMana(ctx.mp - cost)
+  ctx:fxSelf()
+  ctx:talk("I'll take that")          -- RTK player:talk(2, ...) -- an over-head bubble, not a status line
+  ctx:filch()
+  return true
+end
+
+-- Drain (RTK rogue/drain.lua + drink_of_souls/parasite/absorb): finish off a WEAK creature and take whatever
+-- life it had left. Only works on a mob at or under row.amount HP (RTK 1000) -- "drains all animals/summons
+-- less than 1000 vita and gives you their remaining life". Nothing scales off the caster, so a level-99 mage
+-- and a level-80 one drain identically; the yield is entirely the victim's remaining HP.
+function verbs.drain(ctx, row)
+  local mana = row.mana or 60
+  if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
+  local hp = ctx.targetHp
+  if hp <= 0 or hp > (row.amount or 1000) then ctx:say("It doesn't work."); return false end
+  ctx:debitMana(mana)
+  ctx:fxTarget()                      -- the spell's own anim over the VICTIM (unaligned 1 / aligned 84)
+  ctx:heal(hp)                        -- their remaining life becomes yours...
+  ctx:damage(hp)                      -- ...and it kills them (normal death/loot/exp path)
+  return true
+end
+
+-- Set Trap (RTK rogue/set_X_trap.lua + set_trap.lua dispatcher): place a hidden hazard on your own tile. Which
+-- kind/level/mana is data-bound (per trap), so the primitive resolves it from the spell (or the typed answer for
+-- the dispatcher) and owns the mana debit; the verb is just the entry point + fallback boundary.
+function verbs.set_trap(ctx, row)
+  return ctx:placeTrap()                                 -- resolves kind+mana, checks level/mana, places + fx
+end
+
+-- Bladestorm Trap (RTK rogue/bladestorm_trap.lua): place a visible decoy that detonates a facing-cone AoE when
+-- anything steps on it. 1520 mana, 125s cooldown, 21s lifetime (RTK constants; tunable via a row later).
+function verbs.bladestorm(ctx, row)
+  local cost = row.mana or 1520
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  ctx:setMana(ctx.mp - cost)
+  ctx:setCooldown(ctx.spellKey, row.duration or 125000)
+  ctx:placeBladestorm(row.amount or 21000)
+  ctx:fxSelf()
+  return true
+end
+
+-- Pet Summon (RTK Poet "Call of the Wild"): spawn a real owned world mob one tile ahead (or on your tile if
+-- blocked), expiring in 300s. Mana/cooldown/mob are data-bound (per pet spell) so come via ctx.pet*.
+function verbs.pet_summon(ctx, row)
+  if ctx.petCooldown > 0 and ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.petMana > 0 and ctx.mp < ctx.petMana then ctx:say("Not enough mana."); return false end
+  if ctx.petCount >= ctx.petCap then ctx:say("You cannot summon any more creatures right now."); return false end
+  if not ctx:summonPet() then ctx:say("Something went wrong."); return false end
+  if ctx.petMana > 0 then ctx:setMana(ctx.mp - ctx.petMana) end
+  if ctx.petCooldown > 0 then ctx:setCooldown(ctx.spellKey, ctx.petCooldown) end
+  return true
+end
+
+-- Morph (RTK disguise family): reskin the caster to an animal look for a duration, visible to self + peers. The
+-- look/female-look/mana/duration are resolved in C# (answer-dispatched forms) and staged before the verb runs;
+-- ctx.morph* read that staged plan.
+function verbs.morph(ctx, row)
+  if ctx:morphActive() then ctx:say("You already cast that spell."); return false end
+  if ctx.mp < ctx.morphMana then ctx:say("You do not have enough mana."); return false end
+  ctx:setMana(ctx.mp - ctx.morphMana)
+  ctx:applyMorph()
+  return true
+end
+
+-- Propose (RTK common/propose.lua): a marriage proposal — kicks off a scripted async dialog (ask beloved's name,
+-- then prompt them). No mana; the real outcome resolves asynchronously. Blocked if already engaged/married.
+function verbs.propose(ctx, row)
+  if ctx:hasLegend("engaged") or ctx:hasLegend("married") then
+    ctx:forgetSpell()
+    ctx:say("You are already committed to someone else!")
+    return false
+  end
+  ctx:propose()                                          -- fires RunProposeAsync; the cast anim plays regardless
+  return true
+end
+
+-- =========================================================================================================
+-- COMBAT STRAYS — physical facing-tile strikes (not archetype casts). Both hit whatever mob is directly in
+-- front of the caster; the engine ops (swing damage, armor-net, overkill splash, teleport) stay C# primitives.
+-- =========================================================================================================
+
+-- Sacrifice strikes (RTK rogue/lethal_strike + desperate_attack, warrior/berserk + whirlwind & reskins): trade
+-- the caster's OWN pre-cast HP/MP for one oversized facing-tile hit. Damage, mana, cooldown, and post-hit HP
+-- cost all differ by family (ctx.sacrificeFamily); Baekho's Rage adds x1.5 to the warrior pair. Overkill either
+-- "backflows" up to half back to the rogue (HP+MP) or "overflows" as an AoE splash for the warrior pair. NOTE:
+-- casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
+function verbs.sacrifice(ctx, row)
+  local fam = ctx.sacrificeFamily
+  local mana, aether
+  if     fam == "LethalStrike"    then mana, aether = 120, 23000
+  elseif fam == "DesperateAttack" then mana, aether = 60, 11000
+  elseif fam == "Berserk"         then mana, aether = 60, 12000
+  elseif fam == "Whirlwind"       then mana, aether = 120, (ctx.alignment == 0 and 30000 or 25000)
+  else                                 mana, aether = 60, 60000 end
+
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
+
+  local preHp, preMp = ctx.hp, ctx.mp
+  local baekho = ctx.baekhoRage
+  local damage
+  if     fam == "LethalStrike"    then damage = math.ceil(preHp / 2) + math.ceil(preMp * 2.5)
+  elseif fam == "DesperateAttack" then damage = preHp + preMp
+  elseif fam == "Berserk"         then damage = math.ceil(preHp * 0.75)
+  elseif fam == "Whirlwind"       then damage = math.ceil(preHp * (ctx.alignment >= 2 and 1.525 or 1.75))
+  else                                 damage = 0 end
+  if (fam == "Berserk" or fam == "Whirlwind") and baekho then damage = math.ceil(damage * 1.5) end
+
+  ctx:setMana(ctx.mp - mana)                             -- spent even if nothing is in front (RTK)
+  ctx:setCooldown(ctx.spellKey, aether)
+
+  if ctx:sacFrontMob() then
+    local overkill = ctx:sacApply(damage)
+    if overkill > 0 then
+      if fam == "LethalStrike" or fam == "DesperateAttack" then ctx:backflow(overkill, preHp, preMp)
+      else ctx:overflow(overkill) end
+    end
+    -- post-hit self HP cost — reads CURRENT hp, which a rogue backflow may have topped up first
+    local newHp
+    if     fam == "LethalStrike"    then newHp = math.ceil(ctx.hp / 2)
+    elseif fam == "DesperateAttack" then newHp = math.ceil(ctx.hp / 2)
+    elseif fam == "Berserk"         then newHp = math.ceil(ctx.hp / 3)
+    elseif fam == "Whirlwind"       then newHp = (ctx.alignment >= 2 and math.ceil(ctx.hp * 0.10) or 10)
+    else                                 newHp = ctx.hp end
+    ctx:setHp(newHp)
+    if fam == "DesperateAttack" then ctx:setMana(0) end
+  else
+    ctx:say(ctx.spellName .. " finds no target.")
+  end
+  return true
+end
+
+-- Ambush (RTK rogue/ambush.lua + reskins): leap to the far side of the faced mob (its back if it faces you,
+-- else a flank) and strike. No mana, no cooldown. ctx:ambushLeap does the tile pick + teleport; if the mob's
+-- back and both flanks are occupied it can't land ("finds no opening"). The strike gets the free positional
+-- backstab when it lands on the blind side (Combat.IsBehindTarget).
+function verbs.ambush(ctx, row)
+  if not ctx:ambushMob()  then ctx:say(ctx.spellName .. " finds no target.");  return false end
+  if not ctx:ambushLeap() then ctx:say(ctx.spellName .. " finds no opening."); return false end
+  ctx:ambushStrike()
+  return true
+end
+
+-- Misc / catch-all (the Utility, Summon, Teleport and Dialog archetypes — 137 of the 640 exported spells).
+-- These have no numeric effect the engine can express: RTK's own scripts for them are dialog or flavour, and
+-- what the server owes the player is the mana debit plus the central "You cast X." line, which HandleCast
+-- prints. Spending the mana in Lua rather than C# is the whole point — it makes the cost of every one of those
+-- 137 spells tunable from spell_effects.csv/SpellParams.csv without a rebuild.
+function verbs.misc(ctx, row)
+  local cost = row.mana or ctx.mana
+  if not ctx:spendMana(cost) then return false end       -- spendMana already sent "Not enough mana to cast X."
+  return true
+end
+
+-- Ju Jak's Evocation (RTK subpath guardian spell): refills the mana pool outright and converts what you were
+-- ALREADY holding into vitality, capped at a third of your maximum mana. Cast on a full pool it is a big heal;
+-- cast on an empty one it is only a refill, which is why the flavour line has two forms.
+-- Order matters: the vita is computed from the mana you held BEFORE the refill, or it would always pay the cap.
+function verbs.jujak_evocation(ctx, row)
+  local preMp = ctx.mp
+  local vita  = math.min(preMp, math.floor(ctx.maxMp / 3))
+  ctx:setMana(ctx.maxMp)
+  if vita > 0 then ctx:setHp(math.min(ctx.maxHp, ctx.hp + vita)) end
+  ctx:fxSelf()
+  if vita > 0 then ctx:say("Ju Jak's fire restores your magic and " .. vita .. " vitality.")
+  else               ctx:say("Ju Jak's fire restores your magic.") end
+  ctx:narrated()
+  return true
+end
+
+-- Hyun Moo's Revival (RTK subpath guardian spell): a SELF revive that leaves you where you fell — unlike
+-- Silver Thread or the poet Resurrect family, both of which relocate you to a Shaman. Restores full vita and
+-- then leaves you holding everything except the spell's cost, which is why it reads "all mana EXCEPT for
+-- 10,000" in the source. Castable alive too, as a full heal; the flavour line is the only difference.
+-- ctx:reviveSelf (not ctx:setHp) is what actually drops ghost form — see its doc.
+function verbs.hyunmoo_revival(ctx, row)
+  local cost = row.mana or 10000
+  if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
+  local wasDead = ctx:reviveSelf()
+  ctx:setMana(math.max(0, ctx.maxMp - cost))
+  ctx:fxSelf()
+  ctx:say(wasDead and "Hyun Moo returns your life." or "Hyun Moo restores you.")
+  ctx:narrated()
+  return true
+end
+
+-- Mend Equipment (RTK "Luster return"/"Spirit Salvation" reskins): repairs whatever sits in the FIRST pack
+-- slot back to full durability. The first-slot rule is RTK's, not a simplification — the spell has no target
+-- wire arg, so the slot IS the selection. Every refusal is its own line because the player otherwise has no
+-- way to tell "wrong slot" from "already fine".
+function verbs.mend_equipment(ctx, row)
+  local slot  = row.amount or 0                          -- 0-based; tunable in case a reskin ever reads another slot
+  local cost  = row.mana or (ctx.spellMana > 5 and ctx.spellMana or 50000)
+  local state = ctx:packSlotState(slot)
+  local name  = ctx:packSlotName(slot)
+
+  if state == "empty"    then ctx:say("You have nothing in the first pack slot.");      return false end
+  if state == "notgear"  then ctx:say(name .. " cannot be repaired.");                  return false end
+  if state == "perfect"  then ctx:say("Your " .. name .. " is already in perfect repair."); return false end
+  if not ctx:spendMana(cost) then return false end
+
+  ctx:repairPackSlot(slot)
+  ctx:say("Your " .. name .. " is restored to perfect condition.")
+  ctx:narrated()
+  return true
+end
+
+-- Chung Ryong's Rage: the one fury that CLIMBS. Recasting inside its window steps you 1 -> 6, each tier
+-- costing more mana, multiplying the swing harder and adding AC; letting it lapse charges a vita price
+-- (applied by the engine's regen tick, which is why the TIER is recorded in C# rather than kept here).
+-- Recasting at 6 refreshes the timer without climbing further. The 120s recast gate is the spell's ordinary
+-- aether; the buff deliberately LIVES longer than that gate, so there is a window to recast and climb before
+-- the wear-out fires. This table is the whole balance surface — edit it and !reload, no rebuild.
+local CHUNG_RYONG_RAGE = {
+  { mult = 6,  mana =   2000, ac =  0 },
+  { mult = 9,  mana =   7200, ac =  0 },
+  { mult = 12, mana =  16200, ac =  5 },
+  { mult = 18, mana =  28800, ac = 15 },
+  { mult = 27, mana =  64800, ac = 30 },
+  { mult = 81, mana = 145800, ac = 50 },   -- tier 6 wear-out leaves you at 1 vita/mana
+}
+local CR_RAGE_DURATION_MS = 135000
+
+function verbs.chungryong_rage(ctx, row)
+  -- Climb from the live tier; if the fury has already lapsed (or never ran) start fresh at 1.
+  local base = ctx.rageActive and ctx.crRageTier or 0
+  local tier = math.min(base + 1, #CHUNG_RYONG_RAGE)
+  local t    = CHUNG_RYONG_RAGE[tier]
+
+  if not ctx:enoughMana(t.mana) then return false end     -- sends its own "not enough mana" line
+  ctx:debitMana(t.mana)
+  ctx:setCrRage(tier, t.mult, t.ac, row.duration or CR_RAGE_DURATION_MS)
+  ctx:setCooldown(ctx.spellKey, ctx.spellAether > 0 and ctx.spellAether or 120000)
+  ctx:fxSelf()
+  return true
+end
+
+-- Generic fallback: the ~266 spells the RTK formula export never covered have no spell_effects row at all, so
+-- there is no archetype and no formula — only the keyword classifier's guess at what the spell is FOR
+-- (ctx.effectKind). Power is a flat stat read, deliberately crude; this is the "we don't know this spell, do
+-- something defensible" path, and it stays cheap on purpose. The 5-mana floor and the unaligned graphics
+-- (heal 5/4, zap 4/56) are the engine's long-standing defaults, now editable here.
+function verbs.generic(ctx, row)
+  local cost  = row.mana or 5
+  local power = math.max(1, 1 + ctx.will * 4 + ctx.grace * 3)
+  local kind  = ctx.effectKind
+
+  if kind == "damage" then
+    if not ctx.hasTarget then ctx:say(ctx.spellName .. " finds no target."); return false end
+    if not ctx:spendMana(cost) then return false end
+    ctx:fxRawTarget(4, 56)                                -- generic unaligned zap
+    ctx:damage(power)                                     -- HP bar, death + exp are the engine's job
+    return true
+  end
+
+  if not ctx:spendMana(cost) then return false end
+  if kind == "heal" then
+    ctx:setHp(math.min(ctx.maxHp, ctx.hp + power))
+    ctx:fx(5, 4)                                          -- generic unaligned heal
+  end
+  -- "buff"/"other": mana is spent and HandleCast prints "You cast X." — nothing else is known about them.
   return true
 end

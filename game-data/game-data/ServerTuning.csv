@@ -2,3 +2,6 @@ key,value
 MailMinLevel,10
 SpeechRange,8
 BankMax,100000000
+SplitTrapSpells,0
+MinorQuestTiers,1
+SilentDelReason,15
