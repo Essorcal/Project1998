@@ -758,12 +758,13 @@ public sealed partial class Session
 
     private uint _probeId = 1000;
 
-    // Parse up to 7 whitespace-separated byte values after the command word.
-    private static byte[] ParseBytes(string text)
+    // Up to 7 whitespace-separated byte values from a command's ARGUMENT TAIL (see Server/Commands.cs);
+    // missing/unparseable positions stay 0. Indexes from token 0 — handlers no longer see the command name.
+    private static byte[] ParseBytes(string args)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var parts = args.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         var app = new byte[7];
-        for (int i = 1; i < parts.Length && i - 1 < 7; i++) byte.TryParse(parts[i], out app[i - 1]);
+        for (int i = 0; i < parts.Length && i < 7; i++) byte.TryParse(parts[i], out app[i]);
         return app;
     }
 

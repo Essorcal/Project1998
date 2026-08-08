@@ -639,7 +639,13 @@ public sealed partial class Session
         _char.Mp = EffMaxMp;
         if (_enteredWorld) StoreSave();
         SendStats();
-        SendLog($"vita {_char.MaxHp:N0}, mana {_char.MaxMp:N0}, might {_char.Might}, grace {_char.Grace}, will {_char.Will}.");
+        // Report BASE and EFFECTIVE separately: what you set is the base, but the HUD shows base + gear +
+        // buffs, so "@stats 50000 …" reading back as 50,400 on screen is equipment, not a rounding bug.
+        var eq = Totals();
+        SendLog($"base: vita {_char.MaxHp:N0}, mana {_char.MaxMp:N0}, might {_char.Might}, grace {_char.Grace}, will {_char.Will}.");
+        if (EffMaxHp != _char.MaxHp || EffMaxMp != _char.MaxMp || eq.might != 0 || eq.grace != 0 || eq.will != 0)
+            SendLog($"with gear: vita {EffMaxHp:N0}, mana {EffMaxMp:N0}, might {_char.Might + eq.might}, " +
+                    $"grace {_char.Grace + eq.grace}, will {_char.Will + eq.will}.");
         Log.Info($"   -> {Prefix}stats: hp {_char.MaxHp} mp {_char.MaxMp} " +
                  $"M{_char.Might}/G{_char.Grace}/W{_char.Will}");
     }

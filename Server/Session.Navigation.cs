@@ -21,11 +21,16 @@ public sealed partial class Session
     //   "@spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
     //   "@kill"                 despawn every mob.
 
-    private static int[] ParseInts(string text)
+    /// <summary>Every integer in a command's ARGUMENT TAIL, in order; non-numeric tokens are skipped.
+    /// Starts at token 0: handlers are handed the arguments alone (see Server/Commands.cs), never the
+    /// whole message. It used to start at 1 to step over the command name, which after the move to the
+    /// command table silently ate the FIRST argument of every numeric command — "@stats 50000 50000 130"
+    /// parsed as (50000, 130).</summary>
+    private static int[] ParseInts(string args)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var parts = args.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         var vals = new List<int>();
-        for (int i = 1; i < parts.Length; i++) if (int.TryParse(parts[i], out var v)) vals.Add(v);
+        for (int i = 0; i < parts.Length; i++) if (int.TryParse(parts[i], out var v)) vals.Add(v);
         return vals.ToArray();
     }
 
@@ -567,13 +572,15 @@ public sealed partial class Session
     private void Warp(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2) { SendLog("usage: @warp <map name or id> [x y]"); return; }
+        if (parts.Length < 1) { SendLog($"usage: {Prefix}warp <map name or id> [x y]"); return; }
 
+        // Trailing "x y" only counts as coordinates when something is left over to name the map with —
+        // "@warp 12 5" is map 12 at whatever's left, not a nameless map at (12,5).
         int? cx = null, cy = null, end = parts.Length;
-        if (parts.Length >= 4 && int.TryParse(parts[^1], out var py) && int.TryParse(parts[^2], out var px))
+        if (parts.Length >= 3 && int.TryParse(parts[^1], out var py) && int.TryParse(parts[^2], out var px))
         { cx = px; cy = py; end = parts.Length - 2; }
 
-        string query = string.Join(' ', parts[1..end.Value]);
+        string query = string.Join(' ', parts[0..end.Value]);
         var map = Content.FindMap(query);
         if (map is null) { SendLog($"no map matches \"{query}\" — try  @maps {query}"); return; }
 

@@ -143,15 +143,25 @@ public sealed partial class Session
         return map;
     }
 
+    /// <summary>Split a chat message into command name and ARGUMENT TAIL. False when it isn't a command
+    /// (no prefix, or prefix alone), in which case the message is ordinary speech. Pure and static so the
+    /// dispatch split can be executed in a test rather than only read — the args-tail contract is exactly
+    /// where the move to the command table went wrong once already.</summary>
+    internal static bool SplitCommand(string text, out string name, out string args)
+    {
+        name = args = "";
+        if (text.Length < 2 || text[0] != Prefix) return false;
+        int sp = text.IndexOf(' ');
+        name = sp < 0 ? text[1..] : text[1..sp];
+        args = sp < 0 ? "" : text[(sp + 1)..].Trim();
+        return true;
+    }
+
     /// <summary>Try to run <paramref name="text"/> as a chat command. Returns false if it isn't one (no
     /// prefix), in which case the caller treats it as ordinary speech.</summary>
     private bool TryRunCommand(string text)
     {
-        if (text.Length < 2 || text[0] != Prefix) return false;
-
-        int sp = text.IndexOf(' ');
-        string name = sp < 0 ? text[1..] : text[1..sp];
-        string args = sp < 0 ? "" : text[(sp + 1)..].Trim();
+        if (!SplitCommand(text, out string name, out string args)) return false;
 
         if (name.Equals("help", StringComparison.OrdinalIgnoreCase)) { ShowCommandHelp(args); return true; }
 
