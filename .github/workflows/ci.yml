@@ -1,0 +1,168 @@
+name: build / test / deploy
+
+# The pipeline has two lanes, decided by WHAT changed (see the `changes` job):
+#
+#   code    -> publish, stage a new release on the host, schedule a warned restart
+#   content -> rsync data/ and @reload; no restart, nobody gets kicked
+#
+# Content is by far the more common change, and it is hot-reloadable (Content.Load / @reload), so treating
+# every push as "restart the world" would be both wrong and rude.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      restart_delay_minutes:
+        description: "Minutes of warning before the restart (0 = restart as soon as it lands)"
+        required: false
+        default: "30"
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  DOTNET_NOLOGO: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.changes.outputs.code }}
+    steps:
+      - name: Checkout (with the data submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          # The default GITHUB_TOKEN is scoped to THIS repository only, so it cannot clone the private
+          # NexusServer-data submodule. This must be a PAT (or GitHub App token) with read access to both.
+          token: ${{ secrets.SUBMODULE_TOKEN }}
+
+      - name: Which lane is this?
+        id: changes
+        run: |
+          # A first push (or a force-push that rewrote history) has no usable "before" commit; treat it as a
+          # code change so the safe/complete lane runs rather than silently shipping data only.
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "No usable base commit — running the full code lane."
+            exit 0
+          fi
+          # `data` is a submodule, so a content-only change shows up here as a one-line gitlink bump.
+          if git diff --name-only "$before" "${{ github.sha }}" | grep -qvE '^data$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Content-only push (data submodule pointer moved)."
+          fi
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore NexusServer.sln
+
+      - name: Build
+        run: dotnet build NexusServer.sln -c Release --no-restore
+
+      # The real gate. `dotnet build` cannot see a bad CSV row, a renamed Lua verb, or a missing .map file —
+      # see Tests/ContentSmokeTests.cs for why each of those is a silent failure rather than a loud one.
+      - name: Content smoke test
+        run: dotnet test Tests/Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Publish (linux-x64, framework-dependent)
+        if: github.event_name != 'pull_request'
+        run: |
+          dotnet publish Server/Server.csproj           -c Release -r linux-x64 --self-contained false -o out/game
+          dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-x64 --self-contained false -o out/login
+
+      # data/ ships as part of the release payload. It is only ~9 MB tracked, and shipping it WITH the build
+      # keeps a release self-describing: whatever is in releases/<sha>/ is exactly what that commit ran.
+      - name: Bundle
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p bundle
+          cp -r out/game out/login bundle/
+          # deploy/ rides along because nexus-backup.service runs the script out of current/deploy — the
+          # backup then always matches the release it shipped with, instead of being a separate thing that
+          # has to be remembered and updated by hand.
+          cp -r deploy bundle/
+          chmod +x bundle/deploy/*.sh
+          mkdir -p bundle/data
+          # Only the tracked content — not chars/, nexus.db or the logs, which live on the host and must
+          # never be overwritten by a deploy.
+          git -C data archive HEAD | tar -x -C bundle/data
+          tar czf nexus-${{ github.sha }}.tar.gz -C bundle .
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: nexus-${{ github.sha }}
+          path: nexus-${{ github.sha }}.tar.gz
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------------------------
+  deploy:
+    needs: build
+    # Never deploy from a PR, and only from the release branch.
+    #
+    # DEPLOY_ENABLED is the master switch. Until there is a host to deploy TO, this job must skip rather
+    # than run and fail — a permanently-red pipeline teaches you to ignore the pipeline. Set the repository
+    # variable to the string "true" once the VPS exists and the DEPLOY_* secrets below are populated:
+    #   gh variable set DEPLOY_ENABLED --body true
+    # `vars` is one of the few contexts allowed in a job-level `if`; `secrets` is not, which is why the
+    # switch is a variable and not a check for the secrets themselves.
+    if: >-
+      vars.DEPLOY_ENABLED == 'true'
+      && github.event_name != 'pull_request'
+      && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    # Point this at a GitHub Environment with a required reviewer if you want a manual gate before prod.
+    environment: production
+    concurrency:
+      # Two deploys racing would interleave rsyncs into the same release tree. Queue them instead.
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      # Only for deploy/host-deploy.sh, which is piped to the host over SSH. No submodules needed — the data
+      # payload is already inside the artifact.
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nexus-${{ github.sha }}
+
+      - name: Set up SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pin the host key rather than StrictHostKeyChecking=no — otherwise the deploy will happily hand
+          # the server's binaries to whatever answers on that IP.
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload the release
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp -P "${{ secrets.DEPLOY_PORT || 22 }}" \
+            "nexus-${{ github.sha }}.tar.gz" "$USER@$HOST:/tmp/"
+
+      - name: Stage and schedule
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          DELAY: ${{ github.event.inputs.restart_delay_minutes || '30' }}
+        run: |
+          ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" \
+            "bash -s -- ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}" \
+            < deploy/host-deploy.sh

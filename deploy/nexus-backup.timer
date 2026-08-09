@@ -1,0 +1,19 @@
+[Unit]
+Description=Nightly NexusTK database backup
+Documentation=file:///opt/nexus/current/deploy/README.md
+
+[Timer]
+# 04:00 local, when the server is at its quietest. The exact hour matters less than it being consistent.
+OnCalendar=*-*-* 04:00:00
+
+# Spread the start over 10 minutes so the snapshot doesn't land at the same instant as every other timer on
+# the box (and, if this is ever more than one host, so they don't all hit shared storage together).
+RandomizedDelaySec=600
+
+# The one setting that makes this survive reality: if the machine was off or the server was down at 04:00,
+# run as soon as it is back rather than silently skipping to tomorrow. Without it a host that reboots each
+# evening would never back up at all.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

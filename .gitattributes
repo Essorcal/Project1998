@@ -1,0 +1,50 @@
+# Line endings are now a DEPLOYMENT concern, not a taste one: this repo is authored on Windows
+# (core.autocrlf=true) and checked out by a Linux CI runner and a Linux host. Without an explicit policy the
+# working-tree ending depends on whoever committed the file, and Git's text/binary guess depends on whether a
+# NUL byte happens to appear in the first 8000 bytes.
+#
+# Everything normalizes to LF in the repo and on checkout. Two files are deliberately CRLF because Windows
+# tooling reads them directly from the working tree.
+
+* text=auto eol=lf
+
+# ---- source ----
+*.cs        text eol=lf
+*.csproj    text eol=lf
+*.sln       text eol=crlf
+*.config    text eol=lf
+*.md        text eol=lf
+*.py        text eol=lf
+*.lua       text eol=lf
+*.csv       text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# ---- shell ----
+# A .sh with CRLF fails on Linux with the famously unhelpful "bad interpreter: /bin/bash^M".
+*.sh        text eol=lf
+*.service   text eol=lf
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# ---- binary ----
+# These are the ones that matter. A .map is 1750 files of terrain the server reads as raw bytes; a single
+# CRLF substitution inside one silently corrupts collision for that map rather than failing loudly. Git's
+# heuristic almost certainly classifies them binary already — "almost certainly" is not a good enough
+# guarantee for the thing that decides whether players can walk through walls.
+*.map       binary
+*.cmp       binary
+*.tbl       binary
+*.epf       binary
+*.pal       binary
+*.frm       binary
+*.dat       binary
+*.db        binary
+*.exe       binary
+*.dll       binary
+*.png       binary
+*.gif       binary
+*.jpg       binary
+*.wav       binary
+*.mp3       binary

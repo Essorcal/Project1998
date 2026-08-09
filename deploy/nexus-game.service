@@ -8,7 +8,9 @@ Type=simple
 User=nexus
 Group=nexus
 WorkingDirectory=/opt/nexus
-ExecStart=/usr/bin/dotnet /opt/nexus/game/Server.dll --ports 2005,2006
+# Via the `current` symlink, which deploy/host-deploy.sh flips to the new releases/<sha> directory. A restart
+# is therefore all it takes to pick up a new build — and a rollback is flipping the symlink back.
+ExecStart=/usr/bin/dotnet /opt/nexus/current/game/Server.dll --ports 2005,2006
 
 # Must match the login unit — the game channel's re-login path (Alt+X to the select screen) mints its own
 # handoff back to this host, so a wrong value here breaks re-login even when first login works.
@@ -26,6 +28,10 @@ Environment=NEXUS_LOG_WIRE=0
 # Worst-case data loss on a hard kill / power cut (default 15000 = 15s). Lower costs more SQLite writes.
 #Environment=NEXUS_AUTOSAVE_MS=15000
 
+# Restart=always is load-bearing for the deploy, not just for crashes: a scheduled restart (@restart, or the
+# data/restart_at file a deploy writes) ends with the process calling Environment.Exit(0) after warning every
+# player, and it is systemd that brings it back — on the newly-flipped `current` symlink. With Restart=on-failure
+# a clean exit would simply leave the server down.
 Restart=always
 RestartSec=3
 

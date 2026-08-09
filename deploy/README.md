@@ -16,7 +16,7 @@ must keep that marker.
 
 ## 1. Publish
 
-On the build machine:
+Normally CI does this — see §9. By hand, on the build machine:
 
 ```bash
 dotnet publish Server/Server.csproj -c Release -r linux-x64 --self-contained false -o out/game
@@ -30,38 +30,45 @@ Target layout on the host (`/opt/nexus`):
 
 ```
 /opt/nexus/
-  Server/            <- empty marker dir, so RepoPaths.Root() resolves here
-  Shared/            <- empty marker dir, same reason
-  game/              <- published game binaries
-  login/             <- published login binaries
-  data/              <- game-data, maps, nexus.db, logs   (the only writable path)
+  NexusServer.sln        <- empty marker file, so RepoPaths.Root() resolves here
+  current -> releases/<sha>
+  releases/<sha>/game/   <- published game binaries
+  releases/<sha>/login/  <- published login binaries
+  data/                  <- game-data, maps, nexus.db, chars/, logs  (the only writable path)
 ```
 
-The two empty marker directories are what make `RepoPaths.Root()` land on `/opt/nexus`; without them both
-processes fall back to the working directory and you get two different `data/` dirs. Alternatively keep an
-`.sln` file at the root.
+The marker file is what makes `RepoPaths.Root()` land on `/opt/nexus`; without it both processes fall back to
+the working directory and you get two different `data/` dirs. An empty `Server/` + `Shared/` pair of
+directories works as the marker too — but **do not put either marker inside a release directory**, or the root
+resolves to the release and every deploy gets its own empty `data/`.
+
+Both units start via `current`, so deploying is: unpack a new release, flip the symlink, restart. Rolling back
+is flipping it the other way.
 
 ## 2. Ship the data directory
 
-`data/` is a **git submodule pointing at a local Windows path** (`C:/Users/brian/Desktop/NexusServer-data.git`),
-so `git submodule update` will not work on the host. Copy it across instead — or repoint the submodule at a
-reachable remote first.
+`data/` is a git submodule in its own private repository. CI checks it out with the rest of the tree and
+bundles the tracked content into the release tarball, so a deploy carries its own data — nothing to copy by
+hand. Cloning it yourself needs a token with access to *both* repos (see §9).
 
 Two things inside it matter beyond the CSVs:
 
 - **`data/game-data/`** — the content registry. Filenames are referenced with exact case and Linux is
   case-sensitive; copy them verbatim, don't let anything lowercase them.
-- **`data/maps/`** — the `.map` terrain files. **This is the one that will bite.** The repo ships only
-  `TK32.map`; on Windows the server silently falls back to `C:\Program Files (x86)\Nexon\NextAeon\Maps`,
-  which does not exist on the host. Copy the client's `Maps` directory (~1750 files, ~10 MB) into
-  `data/maps/`, or point `NEXUS_MAPS` at wherever you put it.
+- **`data/maps/`** — the ~1750 `.map` terrain files. These **are** tracked in the data repo now, so a normal
+  checkout has them. What still bites is a *partial* copy: a missing `.map` throws nothing and logs one line,
+  and collision plus mob/NPC spawn placement silently degrade, so players and monsters walk through walls.
+  On Windows it hides even better, because the server falls back to
+  `C:\Program Files (x86)\Nexon\NextAeon\Maps` — a dev box looks fine while the host is empty.
 
-  Without it nothing crashes — collision and mob/NPC spawn placement just silently degrade, so players and
-  monsters walk through walls. The game server logs the count at startup; check it:
+  `Tests/ContentSmokeTests.cs` asserts every map has its file, so CI fails rather than shipping that. The
+  game server also logs the count at startup:
 
   ```
   === terrain: 1743/1743 map file(s) found; searched: ...
   ```
+
+  Set `NEXUS_MAPS` if the files live somewhere other than `<root>/data/maps`.
 
 ## 3. Configure
 
@@ -86,6 +93,7 @@ hang on the loading screen.
 | `NEXUS_GAME_HOST` | `127.0.0.1` | Public IP the handoff redirects to. **Must be set.** |
 | `NEXUS_MAPS` | — | Terrain directory, if not `data/maps`. |
 | `NEXUS_GMS` | — | Comma-separated GM names; unioned with `data/gm_accounts.txt`. |
+| `NEXUS_TESTERS` | — | Comma-separated tester names; unioned with `data/tester_accounts.txt`. |
 | `NEXUS_LOG_WIRE` | game `1`, login `0` | Per-packet hex dump. Set `0` on the game server in production. Login defaults off because its packets contain plaintext passwords. |
 | `NEXUS_LOG_MAX_BYTES` | 64 MB / 32 MB | Log rotation threshold; disk use is capped at ~2x this. |
 | `NEXUS_AUTOSAVE_MS` | `15000` | Bounds worst-case data loss on a hard kill. |
@@ -116,11 +124,20 @@ dotnet /opt/nexus/login/LoginServer.dll --delete-character <name>
 `--list-accounts` flags characters with **MISSING** passwords — records that predate the accounts table.
 They cannot log in until you set one.
 
-## 5. GM access
+## 5. Staff access
 
-`!` commands (spawn items, set level, warp, mint coins, hot-reload content) are gated on a roster that is
-**empty by default**, so on a fresh deploy nobody can run them. Add one name per line to
-`data/gm_accounts.txt` (or set `NEXUS_GMS`), then `!reload` in game — no restart needed.
+`@` commands (spawn items, set level, warp, mint coins, hot-reload content) come in two tiers, each gated
+on a roster that is **empty by default**, so on a fresh deploy nobody can run any of them.
+
+| Tier | Roster | May run |
+|---|---|---|
+| **GM** | `data/gm_accounts.txt` / `NEXUS_GMS` | Everything. |
+| **Tester** | `data/tester_accounts.txt` / `NEXUS_TESTERS` | Rebuild their own character (`@lvl`, `@mark`, `@class`, `@align`, `@stats`, `@spell`), summon items and coin, and the self-affecting toys (`@ride`, `@weapon`, `@hurt`). No warping, no spawning monsters, no `@reload`, no protocol labs. |
+
+Add one name per line to the appropriate file, then `@reload` in game — no restart needed. A name in both
+files is a GM: the tiers are a floor, not a partition. `@help` lists only what the caller may actually
+run, and anything above the caller's tier answers `Unknown command.` — the same answer a typo gets, so
+the tooling stays invisible rather than merely locked.
 
 ## 6. Firewall
 
@@ -132,17 +149,150 @@ sudo ufw allow 2000/tcp && sudo ufw allow 2005/tcp
 
 ## 7. Backups
 
-Everything mutable is in `data/nexus.db` (WAL mode). Back it up with SQLite's own backup so you never
-capture a torn write:
+Everything mutable is in `data/nexus.db` — accounts, every character, board posts, mail, parcels, door
+state, the world clock, moderation. Losing that file loses the server.
+
+`deploy/nexus-backup.sh` + its systemd timer run this nightly at 04:00. Install once:
 
 ```bash
-sqlite3 /opt/nexus/data/nexus.db ".backup '/var/backups/nexus-$(date +%F).db'"
+sudo cp deploy/nexus-backup.{service,timer} /etc/systemd/system/ && sudo mkdir -p /var/backups/nexus && sudo chown nexus:nexus /var/backups/nexus
 ```
 
-Copying the file with `cp` while the servers run can produce an inconsistent snapshot — use `.backup`, or
-stop both services first.
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now nexus-backup.timer
+```
 
-## 8. Client side
+```bash
+systemctl list-timers nexus-backup.timer
+```
+
+Three things about it that are deliberate:
+
+- **It uses `sqlite3 .backup`, never `cp`.** The database is in WAL mode with both servers connected, so a
+  plain copy can capture a main file whose committed data is still in the `-wal` sidecar — restoring that
+  gives you a torn or stale database. `.backup` uses SQLite's online backup API and needs nothing stopped.
+- **Each snapshot is verified** (`PRAGMA integrity_check`, plus a character count, because an intact but
+  empty database passes an integrity check). A failed verification aborts the run *before* the prune step,
+  so a run of failures can never age out the last good copy.
+- **`Persistent=true` on the timer.** If the host was off at 04:00 it runs on the next boot instead of
+  silently skipping a day.
+
+Retention is 30 days, tunable via `NEXUS_BACKUP_KEEP_DAYS` in the unit file. Restoring is just stopping both
+services, gunzipping a snapshot over `data/nexus.db` (delete any `-wal`/`-shm` sidecars first), and starting
+them again.
+
+## 7a. Moderation
+
+GM-only chat commands, all recorded in an append-only `mod_log` table with who did it and why:
+
+| Command | Effect |
+|---|---|
+| `@ban <name> [minutes] [reason]` | Refused at login and at world entry. **Kicks them immediately if online.** |
+| `@unban <name>` | Lifts it. |
+| `@mute <name> [minutes] [reason]` | Blocks speech, whisper and subpath chat. `@` commands still work. Applies to a live session immediately. |
+| `@unmute <name>` | Lifts it. |
+| `@kick <name> [reason]` | Disconnects — saving them first, so a kick never costs progress. |
+| `@banip <ip> [minutes] [reason]` / `@banip remove <ip>` | Bans a source address. |
+| `@bans` | Everyone currently banned or muted. |
+| `@modlog [n]` | Recent actions, newest first. |
+
+**Omitting the duration means permanent.** The alternative — a mistyped command silently expiring instantly
+— fails in the direction nobody notices.
+
+Durations are absolute deadlines, so a ban cannot be waited out by logging off and a mute survives a
+restart with the right time remaining. A GM cannot be banned or muted; remove them from the roster first.
+
+Account bans and IP bans are separate axes on purpose: an account ban is evaded by making a new character,
+an IP ban catches everyone in a household. For a serious case use both.
+
+One thing to know about the login flow: the ban is checked **after** the password, so the login screen can't
+be used to enumerate who is banned. The consequence is that a banned player sees "Incorrect password" if
+they also typo their password — that is intended.
+
+## 8. Restarting the server
+
+Never `systemctl restart nexus-game` on a populated server if you can avoid it — it is a SIGTERM, and while
+that does flush every player's save (`Server/Net.cs`), they get no warning at all.
+
+Use the schedule instead. From in game, as a GM:
+
+```
+@restart 30 shipping the pet AI fix
+```
+
+Everyone online is told immediately, then again at **20, 15, 10, 5, 2 and 1 minutes**, then once more as it
+goes down. `@restart` on its own reports the time remaining; `@restart cancel` calls it off (and tells
+everyone it was called off). `Server/RestartSchedule.cs` owns all of this.
+
+The deadline is an **absolute instant**, not a countdown, so a stalled tick announces late but still restarts
+on time. At zero the process announces, waits three seconds for the last packet to reach the client, and calls
+`Environment.Exit(0)` — which runs the same graceful save-everyone flush that SIGTERM does. systemd's
+`Restart=always` brings it straight back.
+
+### Scheduling one without a GM online
+
+A deploy has nobody logged in, so there is a file trigger. Write an **absolute unix-ms deadline** to
+`data/restart_at`, optionally with a reason after a pipe:
+
+```bash
+echo "$(( ($(date +%s) + 1800) * 1000 ))|maintenance" > /opt/nexus/data/restart_at
+```
+
+The server polls for it every ~6 seconds and **consumes** (deletes) it on read. That deletion is load-bearing:
+without it the freshly-restarted process would find the same file and restart itself again, forever. A
+deadline already in the past is refused and logged rather than obeyed, for the same reason.
+
+`data/reload_now` is the content-lane equivalent — an empty file asks for a hot content reload (the `@reload`
+path) with no restart and nobody kicked. Any text in it is announced to players as a note.
+
+## 9. CI/CD
+
+`.github/workflows/ci.yml` builds, tests and deploys. Two lanes, chosen by what changed:
+
+| Lane | Trigger | What happens |
+|---|---|---|
+| **content** | only the `data` submodule pointer moved | rsync content, drop `reload_now`, hot reload. **No restart.** |
+| **code** | anything else | publish → stage `releases/<sha>` → flip `current` → schedule a warned restart |
+
+The symlink is flipped **immediately** but the restart is scheduled. Swapping the pointer under a running
+process is safe — the live server keeps its already-mapped assemblies until it exits — and it means the
+restart itself *is* the deploy. It also means a crash during the warning window comes back up on the new
+build rather than the old one.
+
+The gate that matters is not `dotnet build`. It is `Tests/ContentSmokeTests.cs`: a stray comma in a CSV, a
+renamed Lua verb, or a missing `.map` file all compile perfectly and all reach players. Those tests load the
+real content and assert the registries are populated, every Lua script compiles, every `SpellParams` row names
+a verb that exists, and every map has its terrain file.
+
+### Secrets to set on the code repository
+
+| Secret | What |
+|---|---|
+| `SUBMODULE_TOKEN` | PAT (or GitHub App token) with **read** on both repos. The default `GITHUB_TOKEN` is scoped to one repository and cannot clone the private data submodule. |
+| `DEPLOY_SSH_KEY` | Private key for the deploy user. |
+| `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan <host>` output. Pinned deliberately — without it the deploy would hand the server's binaries to whatever answers on that IP. |
+| `DEPLOY_HOST` / `DEPLOY_USER` | Where to ship. |
+| `DEPLOY_PORT` | Optional; defaults to 22. |
+
+### Sudoers entry the deploy needs
+
+`deploy/host-deploy.sh` restarts the **login** server directly (the game restarts itself on the ladder). Login
+has no players to warn, but it must not be left running an older build than the game — the handoff packet is a
+contract between the two. Grant exactly that and nothing more:
+
+```
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart nexus-login, /usr/bin/systemd-run --on-active=* --unit=nexus-login-redeploy systemctl restart nexus-login
+```
+
+### Rollback
+
+```bash
+ln -sfn /opt/nexus/releases/<previous-sha> /opt/nexus/current && sudo systemctl restart nexus-game nexus-login
+```
+
+The last 5 releases are kept on the host, so this is a symlink flip rather than a rebuild.
+
+## 10. Client side
 
 The client must be pointed at the host. For 4.83/4.95 that means patching the plaintext `Address` entry in
 `NexusTK.dat` (offset ~0x195a) — the IP strings in the exe are stale and patching them does nothing. See

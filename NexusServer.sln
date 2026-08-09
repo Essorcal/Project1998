@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tools", "Tools\Tools.csproj
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LoginServer", "LoginServer\LoginServer.csproj", "{B2E7C3D4-5F6A-4B8C-9D0E-1A2B3C4D5E6F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests", "Tests\Tests.csproj", "{3B9D094F-244C-43BE-AE93-C230BDF9726B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -42,5 +44,9 @@ Global
 		{B2E7C3D4-5F6A-4B8C-9D0E-1A2B3C4D5E6F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B2E7C3D4-5F6A-4B8C-9D0E-1A2B3C4D5E6F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B2E7C3D4-5F6A-4B8C-9D0E-1A2B3C4D5E6F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

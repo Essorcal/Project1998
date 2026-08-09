@@ -1,0 +1,28 @@
+[Unit]
+Description=NexusTK database backup (data/nexus.db)
+# Not ordered against the game/login units on purpose: sqlite3's online .backup API takes a consistent
+# snapshot of a LIVE database, so nothing needs to be stopped and a backup must still run if they are down.
+After=network.target
+
+[Service]
+Type=oneshot
+User=nexus
+Group=nexus
+ExecStart=/opt/nexus/current/deploy/nexus-backup.sh
+
+# Where the snapshots land and how long they are kept. The backup directory must exist and be writable by
+# the nexus user, and must be listed in ReadWritePaths below.
+Environment=NEXUS_ROOT=/opt/nexus
+Environment=NEXUS_BACKUP_DIR=/var/backups/nexus
+Environment=NEXUS_BACKUP_KEEP_DAYS=30
+
+# Same hardening as the servers. The backup reads the database and writes only to the backup directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nexus/data /var/backups/nexus
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
