@@ -5,7 +5,7 @@ BankMax,100000000
 SplitTrapSpells,0
 MinorQuestTiers,1
 EquipDelReason,12
-MailFirstOnBoard,1
+MailFirstOnBoard,0
 LookUpdateInPlace,1
 ShowNameplates,1
 UserListNationMask,7

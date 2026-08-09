@@ -16,9 +16,10 @@ verbs = {}
 -- arch_* verb makes that archetype fall back to its C# handler, so migration is one archetype at a time.
 -- =========================================================================================================
 
--- Damage archetype: the standard direct magic attack. ctx:magicDamage does the whole faithful sequence
--- (mana check -> resolve target -> deflect roll, no mana on a deflect -> spend mana -> apply + XP). Returns
--- false if the cast couldn't happen (no mana / no target) so the cast animation is suppressed, matching C#.
+-- Damage archetype: the standard direct magic attack. ctx:magicDamage does the whole sequence (mana check ->
+-- resolve target -> spend mana -> deflect roll -> apply + XP). A DEFLECT still costs the mana: the spell was
+-- cast, the target resisted it. Returns false only if the cast couldn't happen at all (no mana / no target),
+-- so the cast animation is suppressed for those and those only.
 function verbs.arch_damage(ctx, row)
   return ctx:magicDamage(ctx.amount, ctx.mana)
 end
@@ -64,7 +65,7 @@ end
 -- a player (with their flavor line) or a mob. buffAmt is a fraction for deduction, an integer otherwise.
 function verbs.arch_targetbuff(ctx, row)
   if not ctx:enoughMana(ctx.mana) then return false end
-  if ctx.targetKind == "none" then ctx:say(ctx.spellName .. " finds no target."); return false end
+  if ctx.targetKind == "none" then return false end   -- silent: a cast that finds nothing says nothing
   local dur = ctx.durationMs > 0 and ctx.durationMs or 300000
   if ctx.buffStat == "deduction" then
     if ctx.targetKind ~= "player" then ctx:say(ctx.spellName .. " has no effect on that."); return false end
@@ -77,16 +78,90 @@ function verbs.arch_targetbuff(ctx, row)
   return true
 end
 
--- Debuff archetype: a hostile crowd-control freeze. Check mana, require a target, roll the magic-deflect (no
--- mana on a deflect), debit, roll the take-hold chance, then freeze the mob for the duration.
+-- Debuff archetype: the hostile crowd-control family. The export row's `debuff` column says WHICH kind this
+-- spell is, and the four behave differently in RTK -- before this they all ran one generic freeze, so Blind
+-- froze a mob solid instead of blinding it and Doze was indistinguishable from Paralyze.
+--
+--   kind      category   holds?  blinds?  repeats its animation?   RTK source
+--   blind     blinds       no      yes      no                     mage/blind.lua (+ dark_veil/winters_shadow/ice_glare)
+--   paralyze  paras        yes     no       no                     mage/paralyze.lua (+ spirit_leash/cold_binds/lockup), static.lua
+--   sleep     sleeps       yes     no       YES, every 1s          mage/doze.lua + sleep.lua (while_cast -> sendAnimation(2))
+--   slow      slows        yes     no       no                     the leftover Debuff rows with no verb of their own
+--
+-- The category is an EXCLUSIVITY slot (RTK checkIfCast): while one runs, the same kind cannot be re-applied --
+-- no stacking, no refreshing, no chain-casting something into a permanent hold. It has to run its course (or
+-- be cured) first. Different kinds are different slots, so blind+paralyze deliberately still stack.
+-- `amp` is the DAMAGE AMPLIFIER the hold leaves on its victim: NexusAtlas gives both sleep spells one --
+-- Doze "The next attack upon the target will do 1.3x the normal damage", Sleep 1.5x -- and that is what RTK's
+-- `target.sleep = 1.3` and its `sd->sleep != 1.0f` guards have been all along: a float multiplier whose
+-- default is 1.0, doubling as the "is held" flag. Read as a bool it looks like a no-op, which is how it got
+-- missed. 1.0 = no amplification.
+local DEBUFF = {
+  blind    = { cat = "blinds", hold = false, blind = true,  repeatMs = 0,    fallback = 60000, amp = 1.0 },
+  paralyze = { cat = "paras",  hold = true,  blind = false, repeatMs = 0,    fallback = 20000, amp = 1.0 },
+  sleep    = { cat = "sleeps", hold = true,  blind = false, repeatMs = 1000, fallback = 10000, amp = 1.3 },
+  slow     = { cat = "slows",  hold = true,  blind = false, repeatMs = 0,    fallback = 20000, amp = 1.0 },
+}
+-- Sleep (lvl 70) amplifies harder than Doze (lvl 82) per the atlas -- 1.5x against 1.3x -- so the per-kind
+-- default above is overridden per spell here. RTK writes 1.3 in both scripts; the atlas distinguishes them.
+local AMP_BY_SPELL = { sleep_mage = 1.5, sweet_musings_mage = 1.5, essence_of_poppies_mage = 1.5, stillness_mage = 1.5 }
+
+-- Take-hold chance where the SPELL DATA doesn't state one. RTK gives a failure roll to exactly one member of
+-- this family -- paralyze, at `70 + will*0.2307`, which the export captured in spell_effects.csv's `chance`
+-- column and ctx.chance evaluates per cast. Everything else in RTK lands 100% of the time, which is why blind
+-- could be held on a creature indefinitely and a curse never missed.
+--
+-- These numbers are OURS, not archive values: nothing in the scraped data or the Lua pins a rate for the
+-- others. They are the balance surface for "an offensive status should sometimes just fail" -- edit and
+-- @reload, no rebuild. A per-spell `chance` formula in spell_effects.csv always wins over the table.
+local HOLD_CHANCE = { blind = 75, sleep = 80, paralyze = 100, slow = 90 }
+
+-- The refusal line for a blocked exclusivity slot, shared by every verb that has one (arch_debuff, curse,
+-- ward). `already` = the slot is held by THIS VERY SPELL, still running. RTK words that case differently from
+-- somebody else's spell being in the way -- paralyze.lua answers "You already cast that spell." off its own
+-- `target.paralyzed`, static.lua answers "A more powerful spell is in effect." off the very same flag -- and
+-- the only reason it had to hand-write the choice per script is that a mob stored one boolean per mechanic,
+-- never the identity of whatever set it. Our slots carry the spell key, so the choice is made once, here.
+-- A protection keeps its own more specific line: that isn't a same-type collision, it's the target being
+-- immune, and it can never be the spell you just cast.
+local function blockMsg(cat, already)
+  if cat == "protections" then return "The target is already protected." end
+  if already then return "You already cast that spell." end
+  return "Another spell of this type is in effect."
+end
+
 function verbs.arch_debuff(ctx, row)
+  local kind = ctx.debuffKind
+  local d = DEBUFF[kind] or DEBUFF.slow
   if not ctx:enoughMana(ctx.mana) then return false end
-  if not ctx.hasTarget then ctx:say(ctx.spellName .. " finds no target."); return false end
-  if ctx:deflected() then ctx:say("The magic has been deflected."); return true end
-  ctx:debitMana(ctx.mana)
+
+  -- targetKind (not hasTarget) because Doze can land on a PLAYER: hasTarget resolves MOBS only, so a doze
+  -- aimed at someone would have answered "finds no target" before ever reaching holdTarget's player branch.
+  if ctx.targetKind == "none" then return false end   -- silent: a cast that finds nothing says nothing
+
+  -- Refuse an occupied slot BEFORE anything is charged, so a re-cast at something already held is a plain
+  -- "no" rather than a roll you can lose and pay for. (holdTarget re-checks and is the real authority; this
+  -- is the cheap early out.)
+  if ctx:hasStatus(d.cat) then ctx:say(blockMsg(d.cat, ctx:alreadyCast(d.cat))); return false end
+
+  -- A DEFLECT STILL COSTS THE MANA: the spell was cast and the power left you, and the target resisting it
+  -- is their achievement, not a refund. (RTK returns before its debit; a free deflect would mean a resistant
+  -- target costs nothing to keep hammering.)
+  if ctx:deflected() then ctx:debitMana(ctx.mana); ctx:say("The magic has been deflected."); return true end
+
+  local dur = ctx.durationMs > 0 and ctx.durationMs or d.fallback
+  -- A FIZZLE COSTS THE MANA for the same reason: re-casting until it lands would otherwise be free, which
+  -- drains the failure rate of any meaning.
   local ch = ctx.chance
-  if ch < 100 and not ctx:roll(ch) then ctx:say(ctx.spellName .. " fails to take hold."); return true end
-  ctx:freezeTarget(ctx.durationMs > 0 and ctx.durationMs or 20000)
+  if ch >= 100 then ch = HOLD_CHANCE[kind] or 100 end
+  if ch < 100 and not ctx:roll(ch) then ctx:debitMana(ctx.mana); ctx:say("Something went wrong."); return true end
+
+  -- holdTarget owns the boss cap, the PvP gate on the Doze family, and the "It doesn't work." for everything
+  -- else aimed at a player. It returns false without spending anything.
+  if not ctx:holdTarget(d.cat, dur, d.hold, d.blind, d.repeatMs) then return false end
+  local amp = AMP_BY_SPELL[ctx.spellKey] or d.amp
+  if amp > 1.0 then ctx:amplify(amp, dur) end   -- the next hit on them lands harder, then the hold breaks
+  ctx:debitMana(ctx.mana)
   return true
 end
 
@@ -237,28 +312,105 @@ end
 function verbs.stance_backstab(ctx, row) return arm_positional(ctx, "backstab") end
 function verbs.stance_flank(ctx, row)    return arm_positional(ctx, "flank")    end
 
--- Venom (RTK mage/venom.lua & kin): a MOB-only damage-over-time poison — ticks MaxHp*1% every 1.5s for a random
--- window, capped so it can never land the killing blow (RTK while_cast_1500). Reuses the SAME poison engine the
--- Rogue poison-dart trap already drives (World.PoisonMob). row.amount = per-tick cap, row.base = random lower
--- bound (ms); blocked if the target is already venomed (checkIfCast(venoms)) or isn't a mob ("It doesn't work").
--- row.duration sets an upper bound other than RTK's usual 30000 (Burn's window is a FIXED 75s: base = duration).
--- row.flat > 0 swaps the MaxHp*1% tick for a fixed amount — Burn is the only member that works that way.
+-- Venom (RTK mage/venom.lua & kin): a damage-over-time poison, on a CREATURE OR A PLAYER.
+--
+-- TWO SOURCES, and they agree once you do the arithmetic. Listed oldest first, which is also most-in-era:
+--   tswolf.com, 2001-02-23 (4.83/4.95 era -- the closest source we have):
+--     "Poisons Target for a Random amount of time. A Poisoned Person recieves a 160 second poison that will
+--      bring them down to low health, but not kill them."
+--   NexusAtlas, 2002-12 (later, but the only one that quotes a damage number):
+--     "Poisons monster targets for a random amount of time. Does 1000 damage a second, disregarding armor
+--      class, on other players. Does more damage per second to animals. Poison will not kill a target but
+--      rather bring them to the lowest possible health."
+--
+-- So a CREATURE gets the random window; a PERSON gets a fixed 160s. 160s x 1000/s = 160,000 total against a
+-- never-kill clamp, which means the rate only sets HOW FAST you reach the floor and tswolf's "brought down to
+-- low health" is simply the steady state of sitting there. It is also self-scaling: anyone whose pool exceeds
+-- ~160k rides the whole window out without ever flooring, so venom decides fights early and merely hurts at
+-- cap -- no special case needed for level 99.
+--
+-- Neither target can ever take the killing blow: the tick is clamped to leave 1 vita and keeps flashing.
+-- The creature half reuses the SAME poison engine the Rogue poison-dart trap drives (World.PoisonMob).
+--
+--   row.amount  per-tick cap, creature ("more damage per second to animals" -- MaxHp*1% per 1.5s tick)
+--   row.base    random window lower bound, ms (creature)
+--   row.duration        upper bound, ms -- RTK's usual 30000; Burn's window is a FIXED 75s (base = duration)
+--   row.flat    > 0 swaps the creature's MaxHp*1% for a fixed per-tick amount (Burn alone works that way)
+--   row.pcDps     PLAYER damage per SECOND -- atlas 1000 read as a rate => 1500/tick. UNVERIFIED.
+--   row.pcPerTick PLAYER damage per TICK, overrides pcDps when set. The rival reading of the same
+--                 sentence: 1000 PER TICK (=667/s), which is the shape RTK's own code uses (MaxHp*1%
+--                 per 1500ms tick, capped 2000/tick -- and a typical 1% lands near 1000, so the
+--                 description may just be someone eyeballing the per-tick number). Set it to 1000 to
+--                 switch readings. Only the never-kill floor moves: ~160k max HP vs ~107k.
+--   row.pcDurMs   PLAYER window, ms       -- tswolf 160000, fixed, overrides the random roll
+--
+-- Both player numbers are one @reload away from being retuned once someone measures them on a live server.
+-- Blocked if the target is already venomed (checkIfCast(venoms)), and PvP-gated for another player.
 function verbs.venom(ctx, row)
   local mana = row.mana or 60
   if not ctx:enoughMana(mana) then return false end
-  if not ctx:applyVenom(row.amount or 1000, row.base or 1500, row.duration or 30000, row.flat or 0) then return false end
+  if not ctx:applyVenom(row.amount or 1000, row.base or 1500, row.duration or 30000, row.flat or 0,
+                        row.pcDps or 1000, row.pcDurMs or 160000, row.pcPerTick or 0) then return false end
   ctx:debitMana(mana)
   return true
 end
 
--- Blind (RTK Spells/NPCs/blind.lua + the mage blind/dark_veil/winters_shadow/ice_glare family): the target
--- stops being able to find anything. Real teeth on a MOB (it drops aggro and wanders); on a PC it only holds
--- the 'blinds' slot, since 4.95 gives us no client-side blind to draw. row.mana, row.duration.
+-- Blind (RTK Spells/NPCs/blind.lua): the creature stops being able to find anything -- it drops whoever it
+-- was fighting, never acquires anyone new, and stands still rather than wandering, though it will still swing
+-- at somebody who walks into arm's reach. Shares the `blinds` slot (and so the no-re-cast rule) with the mage
+-- blind family, which reaches the same primitive through arch_debuff. row.mana, row.duration, row.chance.
 function verbs.blind(ctx, row)
   local mana = row.mana or 300
   if not ctx:enoughMana(mana) then return false end
-  if not ctx:blindTarget(row.duration or 10000) then return false end
+  local ch = row.chance or 75
+  if ch < 100 and not ctx:roll(ch) then ctx:debitMana(mana); ctx:say("Something went wrong."); return true end
+  if not ctx:holdTarget("blinds", row.duration or 10000, false, true, 0) then return false end
   ctx:debitMana(mana)
+  return true
+end
+
+-- =========================================================================================================
+-- AREA (4-way) spells: the two ladders that hit the four tiles around you instead of a target.
+--   mage  zap  -- Erupt / Ion Charge / Explode / Electrocute / Tempest (+ 3 alignment reskins each)
+--   poet  heal -- Vital Spark / Anoint / Remedy / Heaven's Kiss (+ 3 each)
+-- Classified in C# (Content.AreaSpellFor, which also carries the real per-family mana the formula export
+-- couldn't see), so ctx.amount is the spell's own evaluated damage/heal and ctx.mana its cost.
+--
+-- The ORDER here is RTK's and it matters: the mana goes first, the sweep second, and the "You cast X." line
+-- (printed by HandleCast on a true return) last and unconditionally. Casting into an empty room is a real
+-- cast that costs full price -- which is the behaviour being asked for, and the opposite of the single-target
+-- path's "finds no target" refusal that these were wrongly falling into.
+-- =========================================================================================================
+
+function verbs.area_zap(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:areaZap(ctx.amount)          -- 0 targets is fine; each victim gets its own animation + HP bar
+  return true
+end
+
+function verbs.area_heal(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:areaHeal(ctx.amount)         -- players on the four adjacent tiles; never you, never pets (RTK BL_PC)
+  return true
+end
+
+-- Sage ladder (RTK Spells/common/sage.lua: share_wisdom -> mentors -> apprentices -> adepts -> sages): the
+-- game's only world-wide chat channel. You type a line at the spell's ">" prompt and every player on the
+-- server sees "[<your name>]: <line>". The five tiers differ ONLY in what they charge and how long they make
+-- you wait (row.mana / row.duration), so one verb covers all of them.
+-- Casting with nothing typed is a no-op that costs nothing -- RTK guards the same way, and the client shows
+-- its own prompt, so there is nothing useful to say about it.
+function verbs.sage_shout(ctx, row)
+  local mana = row.mana or 10
+  local cd   = row.duration or 900000
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if not ctx:enoughMana(mana) then return false end
+  if not ctx:worldShout(ctx.answer) then return false end
+  ctx:debitMana(mana)
+  ctx:setCooldown(ctx.spellKey, cd)
+  ctx:narrated()                   -- the shout IS the output; "You cast Share Wisdom." on top reads as noise
   return true
 end
 
@@ -302,7 +454,7 @@ end
 function verbs.kamikaze(ctx, row)
   local mana = row.mana or 120
   if not ctx:enoughMana(mana) then ctx:say("You do not have enough mana.") return false end
-  if not ctx.hasTarget then ctx:say(ctx.spellName .. " finds no target."); return false end
+  if not ctx.hasTarget then return false end          -- silent
   ctx:debitMana(mana)
   ctx:talk("Kamikaze~!")
   ctx:damage(math.ceil(ctx.hp * (row.coeff or 1.75)))
@@ -429,22 +581,28 @@ local function blockedBy(hasFn, category)
   end
   return nil
 end
-local function blockMsg(cat)
-  if cat == "protections" then return "The target is already protected." end
-  return "Another spell of this type is in effect."
-end
+-- (blockMsg lives up by arch_debuff, its first caller -- a local declared here would be invisible there.)
 
 -- Curse (RTK Spells/*/pestilence.lua & kin): apply a MUTUALLY-EXCLUSIVE categorized status to a curse target.
 -- Blocked if the target already carries a status in this category's BLOCK list (checkIfCast) — which is what
 -- makes self-pestilence a real defense (occupy your own 'curses' slot with a mild curse; row.amount is the stat
 -- effect, e.g. armor -5 -> raises effective AC -> take MORE damage) AND what makes a protection curse-immune.
 -- Row: mana, category (curses/disheartens/...), stat, amount, duration. Removed later by a Cure of that category.
+-- Take-hold chance per curse category. Like HOLD_CHANCE above these are OURS: RTK's curse scripts have no
+-- failure roll at all, so a curse always stuck. A per-spell `chance` column in SpellParams.csv overrides.
+-- Note what this interacts with: because a landed curse OCCUPIES its category slot and blocks every other
+-- curse until it lapses, a miss is the only way a second attempt is even possible -- so the rate is really
+-- "how often does the first cast get to decide the slot", not a damage-style dps knob.
+local CURSE_CHANCE = { curses = 75, minorcurses = 85, disheartens = 80 }
+
 function verbs.curse(ctx, row)
   local mana = row.mana or 0
   if not ctx:enoughMana(mana) then return false end
   if not ctx:canCurse() then return false end                                    -- PvP-legal PC (incl self) or a mob
   local by = blockedBy(function(c) return ctx:hasStatus(c) end, row.category)
-  if by then ctx:say(blockMsg(by)); return false end
+  if by then ctx:say(blockMsg(by, ctx:alreadyCast(by))); return false end
+  local ch = row.chance or CURSE_CHANCE[row.category] or 100
+  if ch < 100 and not ctx:roll(ch) then ctx:debitMana(mana); ctx:say("Something went wrong."); return true end
   ctx:debitMana(mana)
   ctx:applyCurse(row.category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 200000)
   return true
@@ -464,7 +622,7 @@ function verbs.ward(ctx, row)
   if not ctx:enoughMana(mana) then return false end
   if not ctx:wardTarget(WARD_SELF[row.category] and "self" or "ally") then return false end
   local by = blockedBy(function(c) return ctx:wardHasStatus(c) end, row.category)
-  if by then ctx:say(blockMsg(by)); return false end
+  if by then ctx:say(blockMsg(by, ctx:wardAlreadyCast())); return false end
   ctx:debitMana(mana)
   ctx:applyWard(row.category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 60000)
   if cd then ctx:setCooldown(ctx.spellKey, cd) end
@@ -663,9 +821,7 @@ function verbs.sacrifice(ctx, row)
     else                                 newHp = ctx.hp end
     ctx:setHp(newHp)
     if fam == "DesperateAttack" then ctx:setMana(0) end
-  else
-    ctx:say(ctx.spellName .. " finds no target.")
-  end
+  end   -- nothing in front: the mana and cooldown are still spent (RTK), and nothing is said
   return true
 end
 
@@ -674,7 +830,7 @@ end
 -- back and both flanks are occupied it can't land ("finds no opening"). The strike gets the free positional
 -- backstab when it lands on the blind side (Combat.IsBehindTarget).
 function verbs.ambush(ctx, row)
-  if not ctx:ambushMob()  then ctx:say(ctx.spellName .. " finds no target.");  return false end
+  if not ctx:ambushMob()  then return false end       -- silent
   if not ctx:ambushLeap() then ctx:say(ctx.spellName .. " finds no opening."); return false end
   ctx:ambushStrike()
   return true
@@ -785,7 +941,9 @@ function verbs.generic(ctx, row)
   local kind  = ctx.effectKind
 
   if kind == "damage" then
-    if not ctx.hasTarget then ctx:say(ctx.spellName .. " finds no target."); return false end
+    -- hasDamageTarget, not hasTarget: the latter resolves MOBS only and would refuse a legal self-zap
+    -- (unaimed in a PvP map resolves to you) before the damage path ever saw it.
+    if not ctx.hasDamageTarget then return false end  -- silent
     if not ctx:spendMana(cost) then return false end
     ctx:fxRawTarget(4, 56)                                -- generic unaligned zap
     ctx:damage(power)                                     -- HP bar, death + exp are the engine's job
