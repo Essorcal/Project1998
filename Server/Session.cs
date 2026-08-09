@@ -531,7 +531,13 @@ public sealed partial class Session
             // handler 0x4511b0 renders as the item-detail popup (stats + wear requirements). Both directions
             // are RE'd from the 4.95 binary — see HandleItemInfoRequest / SendItemInfo for the wire formats
             // and the builder/handler addresses. Leaving it unanswered is what made the client retry ~6×.
-            case 0x66:                    HandleItemInfoRequest(dec); break;
+            // body[0] splits the two: 0 = examine (`00 cursorX 00 01 01 SLOT 01 00 00 00`), 1 = "send me
+            // the town/nation table" (the fixed `01 00 01 01 00 01 01 00` the client emits from 0x449ed0
+            // when its own table is empty, right before the 0x18 user-list request). See Session.UserList.
+            case 0x66:
+                if (dec.Length > 0 && dec[0] == 1) HandleTownListRequest(dec);
+                else HandleItemInfoRequest(dec);
+                break;
             // 0x09 = the ';' Look key (RTK clif_parselookat_2). No coordinates in the body — it always
             // inspects the tile immediately in front of us (facing direction). See HandleLookAt.
             case 0x09:                    HandleLookAt(dec); break;
@@ -562,7 +568,20 @@ public sealed partial class Session
             // 0x3F = world-map click / ESC reply (§11m). LIVE-CONFIRMED 2026-07-26: body =
             // mapId(u32BE) x(u16BE) y(u16BE) 00 -- RTK's case 0x3F map-change. See HandleWorldMapSelect.
             case 0x3F:                    HandleWorldMapSelect(dec); break;
-            default:                      Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2}"); break;
+            // 0x18 = "send me the user list" (empty body; client 0x490e00 stages the lone byte 0x18 and
+            // sends length 1). Reached from modifier+'W' (0x48e5cf) and menu-action 3 (table 0x430914),
+            // both via 0x48e3d0. RTK dispatches the same opcode to clif_user_list. See Session.UserList.
+            case 0x18:                    HandleUserListRequest(); break;
+            // 0x39 in = the answer from any 0x2f merchant window (RTK case 0x39 -> clif_handle_menuinput),
+            // tagged by the byte the server put at body[1]. Unrelated to 0x39 OUT, which is the self-profile.
+            case 0x39:                    HandleShopReply(dec); break;
+            // Dump the BODY, not just the opcode. An unhandled opcode is nearly always one we're mid-way
+            // through decoding, and its bytes are the whole point — without them every probe needs Frida
+            // running on the client just to read what the client already told us.
+            default:
+                Log.Info($"   ?? no handler for opcode 0x{pkt.Opcode:x2} {dec.Length}B: " +
+                         Convert.ToHexString(dec).ToLowerInvariant());
+                break;
         }
 
         // AFTER the switch, deliberately. Draining first let queued casts claim a fresh window's budget
@@ -751,8 +770,9 @@ public sealed partial class Session
         foreach (var gi in _world.ItemsOn(_char.Map)) ShowGroundItem(gi);  // floor items (0x16)
         RefreshInventory();                       // fill the bag + equipment windows (0x0F / 0x37)
         RefreshSpells();                          // fill the spell/skill book (0x17) with learned spells
-        int unreadMail = Mail.UnreadCount(_char.Name);   // RTK's own reward-mail flow always nudges "please visit your post office" — this is our login-time equivalent
-        if (unreadMail > 0) SendMiniText($"You have {unreadMail} unread letter{(unreadMail == 1 ? "" : "s")}. Try @mail.");
+        // No login-time "you have mail" line: the HUD already says it. Unread mail raises the 0x08 mail-arrow
+        // flag (SendStats, flags2 bit 0x10) and a waiting parcel lights the bottom-left bag icon — both are
+        // standing indicators, so a minitext on top of them is a duplicate the player didn't ask for.
         Log.Info($"   == world join: map {_char.Map} has {peers.Length} other player(s), {mobs.Length} mob(s) ==");
     }
 

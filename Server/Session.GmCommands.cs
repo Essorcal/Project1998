@@ -227,6 +227,32 @@ public sealed partial class Session
         SendMap(0x0F, _gameInc++, d.ToArray(), $"rawicon(0x0F) slot={slot} frame={frame} wire=0x{IconWire(frame):x4}");
     }
 
+    // "@delreason [lo] [hi]" — walk the 0x10 del-item REASON byte and print the line each one narrates, to
+    // find one that says nothing. Equipping needs a silent removal: the bag entry can only be cleared by a
+    // 0x10 (the equip window is a separate structure), but every reason tried so far speaks — 0/15 "<item>
+    // removed.", 2 "You ate", 5 "You shot", 6 "You used". See Content.EquipDelReason.
+    //
+    // Each step paints a THROWAWAY item into the last bag slot with a raw 0x0F and then deletes it, so the
+    // real inventory is never touched and the sweep is safe to run anywhere. The label goes out first, so the
+    // transcript reads "reason N:" immediately followed by whatever the client says (or nothing).
+    private void DelReasonSweep(string text)
+    {
+        var a = ParseInts(text);
+        int lo = a.Length > 0 ? a[0] : 0, hi = a.Length > 1 ? a[1] : 15;
+        lo = Math.Clamp(lo, 0, 255); hi = Math.Clamp(hi, lo, 255);
+        byte slot = (byte)(_char.MaxInv - 1);          // last slot: least likely to collide with real gear
+        SendLog($"0x10 reason sweep {lo}..{hi} — a reason with NO line after it is the silent one.");
+        for (int r = lo; r <= hi; r++)
+        {
+            SendRawIcon(slot, 1, $"reason{r}");
+            SendLog($"reason {r}:");
+            SendDelItem(slot, (byte)r);
+            System.Threading.Thread.Sleep(700);
+        }
+        SendLog("sweep done. Set EquipDelReason to a silent reason (or leave it) and @reload.");
+        Log.Info($"   -> DELREASON SWEEP {lo}..{hi} on slot {slot}");
+    }
+
     // "@crecol <lookId> [loColor] [hiColor] [step]": spawn the SAME look id across a GRID (12 cols/row,
     // wraps to more rows north) at increasing 0x07 color-byte values (default 0..23 — the client's color
     // byte visibly wraps mod 24, see docs) so every candidate recolor is visible in one screenshot without
@@ -737,6 +763,129 @@ public sealed partial class Session
                     $"grace {_char.Grace + eq.grace}, will {_char.Will + eq.will}.");
         Log.Info($"   -> {Prefix}stats: hp {_char.MaxHp} mp {_char.MaxMp} " +
                  $"M{_char.Might}/G{_char.Grace}/W{_char.Will}");
+    }
+
+    // "@pkt <op> [token...]" — put an ARBITRARY server->client packet on the wire. Every undecoded opcode
+    // used to need its own throwaway command before it could be poked once; this replaces that whole class
+    // of one-offs. Tokens (whitespace-separated):
+    //   xx      one raw hex byte                       "0a", "ff"
+    //   #n      u16 big-endian, decimal                "#300"
+    //   %n      u32 big-endian, decimal                "%3600"
+    //   :text   ASCII bytes, no length prefix
+    //   $text   ASCII bytes behind a u16BE length      (the shape most string fields here want)
+    // In ':'/'$' an underscore means a space, so a string stays ONE token and fields can still follow it —
+    // several of these packets put a length or a level AFTER the text. No opcode is filtered: some of them
+    // do crash the client, and finding out which is the point.
+    private void RawPacketCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            SendLog($"usage: {Prefix}pkt <hexop> [xx | #u16 | %u32 | :text | $text]");
+            SendLog($"  {Prefix}pkt add <tokens>   append to the pending packet (the chat box is short)");
+            SendLog($"  {Prefix}pkt send <hexop>   send what's pending, then clear it");
+            SendLog($"  {Prefix}pkt show | clear   inspect or drop the pending bytes");
+            SendLog($"  {Prefix}pkt file <name>    send data/packets/<name>.txt (';' starts a comment)");
+            return;
+        }
+
+        // Long packets can't be typed in one line, so tokens accumulate into _pktPending across several
+        // commands and go out on "send". "file" is the same parser over a file, for anything worth keeping.
+        switch (parts[0].ToLowerInvariant())
+        {
+            case "add":
+                if (!ParsePacketTokens(parts[1..], _pktPending)) return;
+                SendLog($"pending {_pktPending.Count}B: {Convert.ToHexString(_pktPending.ToArray()).ToLowerInvariant()}");
+                return;
+            case "clear":
+                _pktPending.Clear();
+                SendLog("pending packet cleared.");
+                return;
+            case "show":
+                SendLog(_pktPending.Count == 0 ? "nothing pending."
+                    : $"pending {_pktPending.Count}B: {Convert.ToHexString(_pktPending.ToArray()).ToLowerInvariant()}");
+                return;
+            case "send":
+                if (parts.Length < 2 || !byte.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber,
+                                                       null, out byte pendOp))
+                { SendLog($"usage: {Prefix}pkt send <hexop>"); return; }
+                SendRawPacket(pendOp, _pktPending.ToArray());
+                _pktPending.Clear();
+                return;
+            case "file":
+                if (parts.Length < 2) { SendLog($"usage: {Prefix}pkt file <name>"); return; }
+                SendPacketFile(parts[1]);
+                return;
+        }
+
+        if (!byte.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out byte op))
+        {
+            SendLog($"'{parts[0]}' is not a hex opcode.");
+            return;
+        }
+        var oneShot = new List<byte>();
+        if (ParsePacketTokens(parts[1..], oneShot)) SendRawPacket(op, oneShot.ToArray());
+    }
+
+    /// <summary>Bytes accumulated by "@pkt add", flushed by "@pkt send". Per-session so two GMs building
+    /// different probes can't scribble on each other.</summary>
+    private readonly List<byte> _pktPending = new();
+
+    /// <summary>Append one packet's worth of tokens to <paramref name="body"/>. False (and a message to the
+    /// player) on the first token that doesn't parse, leaving whatever parsed before it in place.</summary>
+    private bool ParsePacketTokens(string[] parts, List<byte> body)
+    {
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string t = parts[i];
+            if (t.StartsWith(';')) break;                       // rest of the line is a comment
+            if (t[0] == ':' || t[0] == '$')
+            {
+                var b = Encoding.ASCII.GetBytes(t[1..].Replace('_', ' '));
+                if (t[0] == '$') body.AddRange(Be((ushort)b.Length));
+                body.AddRange(b);
+                continue;
+            }
+            if (t[0] == '#' && ushort.TryParse(t[1..], out ushort u16)) { body.AddRange(Be(u16)); continue; }
+            if (t[0] == '%' && uint.TryParse(t[1..], out uint u32)) { body.AddRange(Be32(u32)); continue; }
+            if (byte.TryParse(t, System.Globalization.NumberStyles.HexNumber, null, out byte raw))
+            { body.Add(raw); continue; }
+            SendLog($"can't parse '{t}' — expected a hex byte, #u16, %u32, :text or $text.");
+            return false;
+        }
+        return true;
+    }
+
+    private void SendRawPacket(byte op, byte[] bytes)
+    {
+        SendMap(op, _gameInc++, bytes, $"raw(0x{op:x2})");
+        SendLog($"sent 0x{op:x2} + {bytes.Length}B: {Convert.ToHexString(bytes).ToLowerInvariant()}");
+        Log.Info($"   -> RAW PKT 0x{op:x2} {bytes.Length}B {Convert.ToHexString(bytes).ToLowerInvariant()}");
+    }
+
+    /// <summary>"@pkt file &lt;name&gt;" — send data/packets/&lt;name&gt;.txt. The file's FIRST token is the
+    /// opcode and the rest is the body, so one file is one complete packet you can keep editing in a real
+    /// text editor and re-fire with one short command. Newlines are just whitespace; ';' starts a comment.</summary>
+    private void SendPacketFile(string name)
+    {
+        // Sits beside data/chars rather than under it — packet probes aren't character state.
+        string dir = Path.Combine(Path.GetDirectoryName(TkListener.RepoDataDir())!, "packets");
+        string path = Path.Combine(dir, Path.GetFileName(name) + ".txt");
+        if (!File.Exists(path)) { SendLog($"no such packet file: data/packets/{Path.GetFileName(name)}.txt"); return; }
+
+        // A comment has to be stripped a line at a time, since ';' ends the LINE, not the file.
+        var tokens = new List<string>();
+        foreach (var line in File.ReadAllLines(path))
+        {
+            int c = line.IndexOf(';');
+            tokens.AddRange((c < 0 ? line : line[..c]).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        }
+        if (tokens.Count == 0) { SendLog($"{Path.GetFileName(path)} is empty."); return; }
+        if (!byte.TryParse(tokens[0], System.Globalization.NumberStyles.HexNumber, null, out byte op))
+        { SendLog($"first token of {Path.GetFileName(path)} must be a hex opcode, got '{tokens[0]}'."); return; }
+
+        var body = new List<byte>();
+        if (ParsePacketTokens(tokens.ToArray()[1..], body)) SendRawPacket(op, body.ToArray());
     }
 
     // 0x0D speech: chatType(u8) entityId(u32BE) msgLen(u8) msg[]. Handler 0x450170 shows msg

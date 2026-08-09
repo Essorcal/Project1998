@@ -13,7 +13,9 @@ Run any time mid-crawl:  python re/archive_coverage.py
 import os, re, csv, json, gzip, collections
 
 D = os.path.dirname(os.path.abspath(__file__))
-A = os.path.join(D, "archive")
+# Same resolution as archive_scrape.py -- data lives in scraped_nexus_data, not here.
+A = os.environ.get("NEXUS_ARCHIVE") or os.path.normpath(
+    os.path.join(D, "..", "..", "scraped_nexus_data", "artifacts", "user_pages"))
 CACHE = os.path.join(A, "cache")
 CLASSES = ["Warrior", "Rogue", "Mage", "Poet"]
 BANDS = [(1, 9), (10, 19), (20, 29), (30, 39), (40, 49),

@@ -140,19 +140,19 @@ public sealed partial class Session
     private void HandleCast(byte[] dec)
     {
         // Hyun Moo Revival is the ONE spell exempt from the dead guard - nexusatlas: "Will return poet's own
-        // life if dead." Everything else keeps RTK's "Spirits cannot cast spells." The slot is resolved first
+        // life if dead." Everything else keeps RTK's "Spirits can't cast spells." The slot is resolved first
         // so we know WHICH spell is being cast before deciding.
         if (dec.Length < 1) return;
         // MOUNT GATE. You can't cast from horseback — same state gate the equip/use paths already apply
         // (Session.Items.cs), and the same clif_sendminitext wording. Checked before the slot is even
         // resolved: no spell is exempt, not even Hyun Moo Revival (you can't be dead AND mounted anyway).
-        if (_char.Mounted) { SendMiniText("You can't do that while riding a horse."); return; }
+        if (BlockedByMount()) return;
         int slot = dec[0] - 1;
         if (_char.Hp == 0)
         {
             var dyingPick = slot >= 0 && slot < _char.Spells.Count ? Content.SpellById(_char.Spells[slot]) : null;
             if (dyingPick is null || !Content.IsHyunMooRevival(dyingPick))
-            { SendMiniText("Spirits cannot cast spells."); return; }
+            { SendMiniText("Spirits can't cast spells."); return; }
         }
         if (slot < 0 || slot >= _char.Spells.Count)
         { Log.Info($"   ?? cast slot {slot} out of range ({_char.Spells.Count} known)"); return; }
@@ -663,7 +663,7 @@ public sealed partial class Session
             return true;
         }
 
-        if (!Content.IsPvpMap(_char.Map) && pc! != this) { SendMiniText("You cannot attack that target."); return false; }
+        if (!Content.IsPvpMap(_char.Map) && pc! != this) { SendMiniText("You can't attack that target."); return false; }
         if (pc!.HasStatusCategory("blinds")) { SendMiniText("Another spell of this type is in effect."); return false; }
         pc.ReceiveCurse("", 0, durMs, sp.Key, sp.Name, "blinds");
         if (fx is not null) BroadcastFx(pc._char.Id, anim, snd);
@@ -821,6 +821,9 @@ public sealed partial class Session
         return mob is not null && sp.CanFail && RollDeflect(mob);
     }
     internal bool LuaRoll(double pct) => Random.Shared.Next(100) < pct;
+    /// <summary>Uniform integer in [lo, hi] INCLUSIVE. Same Random.Shared stream as LuaRoll so all spell
+    /// randomness stays on one sequence — don't reach for Lua's math.random, which is a separate generator.</summary>
+    internal int LuaRollRange(int lo, int hi) => hi <= lo ? lo : Random.Shared.Next(lo, hi + 1);
     internal double LuaDebuffChance(SpellDef sp, uint? targetId)
     {
         var fx = Content.FxFor(sp);
@@ -874,7 +877,7 @@ public sealed partial class Session
     {
         ResolveTargetBuff(targetId, out var pc, out var mob);
         if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (pc is not null && !Content.IsPvpMap(_char.Map)) { SendMiniText("You cannot attack that target."); return false; }
+        if (pc is not null && !Content.IsPvpMap(_char.Map)) { SendMiniText("You can't attack that target."); return false; }
         return true;
     }
 
@@ -1150,7 +1153,7 @@ public sealed partial class Session
     {
         int region = Content.RegionOf(_char.Map);
         if (!Content.GatewayRegions.TryGetValue(region, out var r) || !Content.Maps.TryGetValue(r.Map, out var map))
-        { SendMiniText("Cannot find any gates!"); return false; }
+        { SendMiniText("Can't find any gates!"); return false; }
         char dir = (answer ?? "").ToLowerInvariant().FirstOrDefault(char.IsLetter);
         if (!r.Gates.TryGetValue(dir, out var box))
         { SendMiniText("Which gate? Answer North, East, South or West."); return false; }
@@ -1891,7 +1894,7 @@ public sealed partial class Session
 
     // Gateway: teleport to a gate of the caster's kingdom. The N/E/S/W answer to the spell's question picks the
     // gate; the region (Content.RegionOf) picks the city. Faithful to gateway.lua incl. its guards (dead can't
-    // cast, warp-locked maps say "It doesn't work here", non-kingdom maps "Cannot find any gates!") and the
+    // cast, warp-locked maps say "It doesn't work here", non-kingdom maps "Can't find any gates!") and the
     // per-gate random landing spread. No mana cost — RTK's gateway only calls canCast (a state check), not a
     // mana debit. On success we re-run the full map-entry sequence via EnterMap so the client redraws.
     // A virtual "npc" purely for the propose/marriage dialog headers (never spawned or looked up). Distinct
@@ -2074,7 +2077,7 @@ public sealed partial class Session
     private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp)
     {
         bool isSelf = ReferenceEquals(pc, this);
-        if (!isSelf && !Content.IsPvpMap(_char.Map)) { SendMiniText("You cannot attack that target."); return false; }
+        if (!isSelf && !Content.IsPvpMap(_char.Map)) { SendMiniText("You can't attack that target."); return false; }
         if (!isSelf && sp.CanFail && RollDeflectPvp(pc)) { SendMiniText("The magic has been deflected."); return true; }
         if (mana > 0)
         {

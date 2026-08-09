@@ -63,3 +63,19 @@ RTK-Server/
 client-5.33-redirect/
 
 re/monster-matcher/server.log
+
+# ---- Spell-FX RE workspace (re/fx/): 19MB of PAK extracts (Effect.epf/tbl/pal/frm), scraped nexusatlas
+# GIFs/HTML and the montage sheets built from them. All regenerable via re/pak_extract.py + the atlas
+# scrapers. The three derived CSVs below ARE the findings, so they stay tracked.
+re/fx/*
+!re/fx/animation_map.csv
+!re/fx/spell_animation_join.csv
+!re/fx/triage.csv
+
+# ---- Bulk sprite extracts pulled out of the client PAK for one-off inspection ----
+re/out_*.epf
+
+# ---- Timestamped snapshots the re/auto harness writes before each run ----
+re/auto/*.bak
+re/auto/*.bak.*
+re/auto/*.csv.*.bak

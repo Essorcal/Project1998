@@ -348,11 +348,57 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e). |
 | `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
-| `0x4f` | Change profile | `picSize(u16) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit. Persist the picture + blurb; reply with a `0x02` message. (see §9.5) |
+| `0x4f` | Change profile | `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit, **or** answered a `0x49` (§13a) — byte-identical either way. Persist the picture + blurb; reply with a `0x02` message. `picSize = 0` is the normal case and does **not** mean the packet or the server is broken: the picture is a file the PLAYER supplies, and every client-side failure still replies with 0 (see §9.5a). |
+| `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
-| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | Client toggle. `0x00` = the 'r' Ride key (RTK `clif_changestatus` case 0x00 → `clif_findmount`; `Session.TryRideHorse` — mounts by despawning a real nearby "horse" world mob, dismounts by spawning one back in front of you, §8); `0x02` = group/sociable (Shift+G, §9.5); `0x07` = realm-center (F4, §10.5); `0x08` = exchange/trade (§9.5); `0x09` = fast-move (§10.1). Group/exchange are persisted profile status flags; the others are session/camera state. |
+| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. The client reports only that a toggle **flipped**, never its state, so every one of these is a state the server has to keep in sync from a shared default. |
 | `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
-| `0x66` | **Examine item** (right-click a bag slot) | `00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00` | The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the raw cursor X, not an item reference. Reply with a `0x66` detail popup (§11c.1). |
+| `0x66` | **Examine item** (right-click a bag slot) | `00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00` | **`body[0] == 0`.** The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the raw cursor X, not an item reference. Reply with a `0x66` detail popup (§11c.1). |
+| `0x66` | **Town-table request** | `01 00 01 01 00 01 01 00` | **`body[0] == 1`** — the same opcode, split on the first byte. Fixed body, sent from `0x449ed0` only when the client's own town table is empty. Reply `0x59` sub-1 — §13c. |
+
+#### `0x1b` — the Options menu
+
+The bit is always `1 << (subCmd - 1)` (RTK `enum settingFLAGS`, `common/mmo.h`); the announce string is
+always `"<label>"` left-padded to **column 17** then `":ON"`/`":OFF"`, sent as a `0x02` message — confirmed
+by the live capture `02 0f 15 "Fast Move        :OFF"`.
+
+| sub | bit | label / behaviour |
+|---|---|---|
+| `0x00` | — | **'r' Ride key.** RTK `clif_findmount`; `Session.TryRideHorse` mounts by despawning a real nearby "horse" world mob and dismounts by spawning one back in front of you (§8). No flag bit. |
+| `0x01` | 1 | `Listen to whisper` |
+| `0x02` | 2 | `Join a group` — Shift+G. A persisted **profile** status cell (§9.5), so it lives in `Character.Grouped`, not the flag word |
+| `0x03` | 4 | `Listen to shout` |
+| `0x04` | 8 | `Listen to advice` |
+| `0x05` | 16 | `Believe in magic` |
+| `0x06` | 32 | `Weather change` — also re-sends `0x1F` immediately, and flips the mapinfo render byte (below) |
+| `0x07` | 64 | `Realm-centered` — F4 camera lock (§10.5). Session/camera state |
+| `0x08` | 128 | `Exchange` — persisted profile status cell (§9.5), `Character.Exchange` |
+| `0x09` | 256 | `Fast Move` — the movement model (§10.1) |
+| `0x0a` | — | `Clan whisper`. RTK keeps this one *out* of the flag word (`status.clan_chat`) |
+| `0x0d` | 4096 | `Hear sounds` |
+| `0x0e` | 8192 | `Show Helmet` |
+| `0x0f` | 16384 | `Show Necklace` (RTK's own string is misaligned to column 19 — a typo there, not a format) |
+
+> RTK reads the sub-command at `RFIFOB(fd, 6)`; **4.95 puts it at `body[0]`** — confirmed by the capture
+> `1b 09 00` for fast-move. Don't copy RTK's offset.
+
+#### `0x1F` — weather ⚠ *RTK's byte does not work here*
+
+Server→client, one byte. Handler `0x450f40` does **not** take the value as a state — it **bands** it first:
+
+| `body[0]` | state |
+|---|---|
+| `< 0x0b` | 0 (clear) |
+| `0x0b … 0x63` | 1 |
+| `0x64` (100) | *falls through with the raw 100 still in the slot — a client bug. Avoid this value.* |
+| `>= 0x65` | 2 |
+
+then applies `0x44d340(state, [world+0x401])` — new state plus the previous one, so it can cross-fade.
+
+**RTK's `WRAIN=1` / `WSNOW=2` are both `< 0x0b`, so sending its byte verbatim pins the client to CLEAR and
+weather can never render.** We map 0/1/2 → `0 / 0x32 / 0x96`. RTK also flips the mapinfo render byte
+(`clif.c:4600`) from 5 to **4** while the weather toggle is on, which arms the map for drawing — the `0x1F`
+state alone is not enough.
 | `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
 ### 7.2 Server → client
@@ -1076,6 +1122,43 @@ Gotchas that cost real debugging time:
 and reply with a `0x02` "Your profile has been saved." message. A later `0x43` click then shows the
 player's own words + drawing.
 
+### 9.5a Profile PICTURES — where they actually come from ✅ *(RE'd 2026-08-08)*
+
+**The server never supplies the picture, and can't.** It is a file the *player* drops next to the client;
+the client reads it off disk and attaches it to the `0x4f` it was going to send anyway. A capture that
+shows `picSize = 0` therefore says nothing about the server:
+
+```
+FILE  CreateFileW("...\NextAeon/users/Zaleroo.epf") -> handle=0xffffffff  <<< OPEN FAILED >>>
+ENCR  op=0x4f len=9: 4f 00 00 04 61 73 64 66 00        <- picSize 0, blurb "asdf"
+```
+
+That is the no-file path, and **every** client-side failure takes it — the `0x4f` always goes out, just
+with a zero-length picture. Both directions are already wired here (`HandleChangeProfile` stores it,
+`SendClickProfile` field #15 serves it back to viewers), so the only thing missing in that capture was
+the file.
+
+**What the client demands** (validation reversed from `0x44edc0`; each check is a hard `jne` bail):
+
+| | |
+|---|---|
+| path | `<client cwd>/users/<CharacterName>.epf`, retried as `.face` |
+| size | **exactly `0xb1c` = 2844 bytes** |
+| `dword @ +8` | **`0xaf0` = 2800** — the EPF TOC offset (12-byte header + 2800 bytes of pixel area) |
+| geometry | `toc[1].top − toc[0].bottom == 0x38` and `toc[1].left − toc[0].right == 0x30` |
+
+The frame box is split across two TOC entries (frame *i*'s size is `left[i] − right[i−1]` by
+`top[i] − bottom[i−1]`, see `re/render_items.py`), so frame 0 is a pure origin marker and the picture is
+frame 1: **48 × 56, 8bpp**. Those numbers are fixed — any other geometry is rejected outright, not merely
+drawn wrong.
+
+`re/make_profile_epf.py <image> <out.epf>` builds a conforming file (it asserts all four checks before
+writing). Server side, **`0x49`** (`@askpic`) makes a client re-read the file and answer on `0x4f` without
+the player reopening the profile editor — a safe probe, since the failure path still replies.
+
+Which palette the client draws the picture with is **not** pinned; the generator defaults to `Item.pal`
+block 0. If colours come out wrong, sweep the block index — the client accepted the file either way.
+
 ---
 
 ## 10. Movement model
@@ -1747,17 +1830,38 @@ as the sound ids (§7.3):
 
 Consequences: **every** reason 1-12 narrates, so there is no "silent remove" among them — and reason `0`,
 which has no line of its own (line 84 is `"To: "`), rendering the *last* line is the signature of a
-`default:` branch. Whether an out-of-range reason is therefore silent, or falls through to the same default,
-is the one thing the table can't answer; `ServerTuning.csv`'s `SilentDelReason` (default 15) exists to settle
-it live. Note line 97 is `"Your profile has been saved."`, so a raw-indexing handler would show that for
-reason 13 — pick probe values inside the table, not past its end.
+`default:` branch.
 
-Which reason each removal path should use, per the live game (user-confirmed 2026-08-06): **banking and
-selling say nothing** (`SilentDelReason`); a **drop** is `1` and a **full pack** is our own NPC line, both
+**⚠ SETTLED LIVE 2026-08-07: no reason byte is silent.** The open question above — whether an out-of-range
+reason is silent or falls into the same default — was probed with `SilentDelReason` 15 on the equip path:
+it renders "`X` removed.", the *same* line reason `0` gives. Both ends land on the last of the twelve lines,
+so the handler **clamps/defaults** rather than indexing raw (a raw index would have shown line 97,
+"Your profile has been saved.", for 13). There is therefore no silent code to pick: **a path that must say
+nothing cannot send `0x10` at all.** `SilentDelReason` is gone with the theory that named it — every path
+that used it now names a real reason, and the equip path sends no delitem (below).
+
+Which reason each removal path should use, per the live game (user-confirmed 2026-08-06, banking and selling
+revised 2026-08-07): a **bank deposit** and a **shop sale** are both `10` "You gave `X`." — you handed the
+item over, and reason `9` ("You sold `X`.") is a line the real game doesn't use. Both send it ONLY when the
+whole entry leaves the pack; selling or storing part of a stack redraws the stack with `0x0F`, sends no
+delitem, and is therefore silent by construction. A **drop** is `1` and a **full pack** is our own NPC line, both
 already correct; handing an item over in a **trade** is `10` "You gave `X`."; a **parcel** is `7`
 "You posted `X`." (it was `1`/`4`, announcing a posted parcel as dropped or thrown). Still using reason `0`
-(→ "`X` removed."), unreviewed: quest turn-ins (`TakeItem`) and the GM bag wipe. **Equipping** sends `6`,
-which on this client is "You used `X`." — RTK's `pc_equipscript` number, but its client's wording.
+(→ "`X` removed."), unreviewed: quest turn-ins (`TakeItem`) and the GM bag wipe.
+
+**Consuming and wearing (user-specified 2026-08-07, `Session.HandleUseItem` / `EquipFromSlot`).** Three
+distinct behaviours, one rule each:
+- **Wearing gear — SILENT, by sending no `0x10` at all.** RTK's `pc_equipscript` passes reason `6`, which on
+  this client reads "You used `X`." — a consumable's line; the out-of-range 15 was tried next and reads
+  "`X` removed." Since no reason is silent (above), `EquipFromSlot` now omits the delitem entirely and lets
+  the `0x37` equip-window entry carry the move. The tunable `EquipDelReason` (default `-1` = send nothing)
+  puts the packet back without a rebuild if the client turns out to leave the bag slot drawn — which is the
+  one thing this depends on, and the likely reason the real game can be silent here at all.
+- **Consumables — silent until gone, then exactly one line, from the client.** No line while any of the stack
+  (or any charge) remains; the use that removes the last of it sends the delitem, and its reason picks the
+  wording: **food (ITM_EAT) → `2`** "You ate `X`.", **everything else** (wine/liquor charges, herbs, powders,
+  ITM_USE) **→ `6`** "You used `X`." Keyed on the item TYPE, not the eat-vs-use keypress, so `0x1C` on food
+  still says "ate".
 | `0x37` | equip-window entry | `equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00` |
 | `0x38` | unequip-window | `spot(u8) 00` |
 | `0x07` | ground item (§7.2) | floor items go through the **`0x07` static base-object** path (below), NOT `0x16` — graphic = item's `Icon` (Item.epf frame), encoded via `IconWire` |
@@ -1840,8 +1944,12 @@ relog (which reloads `Equipment` and redraws it) can't drift or double-count. Ma
 unisex `2` is the common case at 1944/2545 items, so the gate only fires when `ItmSex < 2` and mismatches
 `Character.Sex`, which uses the same `0`=M/`1`=F encoding), minimum **level** (`ItmLevel`), and minimum
 **might** (`ItmMightRequired`, tested against *effective* might so already-worn +might gear counts). The
-client also parses a **path/class** restriction (`ItmPthId`), but the bring-up character has no path id yet,
-so it is not enforced. GM setters `@lvl <n>` / `@might <n>` adjust the base stats to exercise the gates.
+**path/class** restriction (`ItmPthId`) is enforced too, but one level up the call chain in `CanUsePath` (see
+§11c) so it also covers the consumables that carry one. **It has no GM bypass any more** (2026-08-07): it
+used to skip GMs, which — with the GM account being the one anybody actually plays — read as the gate simply
+not working (a Mage wearing a Rogue's waistcoat), while the sex/level/might gates beside it refused that same
+GM all along. GM setters `@lvl <n>` / `@might <n>` adjust the base stats to exercise the gates; `@class
+<name>` switches path to exercise this one.
 
 **Cursed/malus gear gate (added 2026-07-26, RTK `pc_canequipstats`).** 14/19 items in the registry carry a
 *negative* `ItmVita`/`ItmMana` line (a stat penalty, not a bonus). RTK blocks equipping one if the penalty's
@@ -2019,8 +2127,8 @@ WFIFOB(sd->fd, 5) = type; // 0 = ingame browser, 1 = popup open browser then clo
 >
 > Ruled out along the way (all now identified, and worth keeping): `0x44` = no-op (`mov al,1; ret`), `0x67` =
 > a seconds countdown, `0x68` = a `0x75` challenge/response ping, `0x4a` = a `GetModuleFileName` anti-cheat
-> check, `0x49` = a file-existence check answering on `0x4F`, `0x4b` = a string the client echoes straight
-> back, `0x31` = the board ACK, `0x35` = the mail/parcel reader (`MAIL.EPF`/`PARCEL.EPF`), `0x36` = the user
+> check, `0x49` = a profile-picture upload request answering on `0x4F`, `0x4b` = a buffer the client echoes
+> straight back as its own next packet, `0x31` = the board ACK, `0x35` = the mail/parcel reader (`MAIL.EPF`/`PARCEL.EPF`), `0x36` = the user
 > list (`USERLIST.EPF`), `0x42` = the trade window (`DLGEXC1.EPF`), `0x46` = the "Power" window, `0x2f` = the
 > shop grid (`DLGMERC1.EPF`). `#INFOSHOP:` turned out to be a `PHONE.CFG` item-mall marker. The 16 sites that
 > draw an item sprite belong only to: the inventory pane (`ITEMINV.EPF`), ground items, trade, mix/craft
@@ -2091,9 +2199,10 @@ The damage range separator renders as a lowercase `m` in every surviving screens
 "55m65"); whether that's a literal `m` or the client's glyph for a range character is unknown, so
 `DamRangeSep` reproduces what is on screen and is one character to change.
 
-Three gates the original's sample item didn't carry are kept because they decide "later" vs "never" —
-`Might required:`, `Mark required:`, and the sex restriction — each annotated when *you* fail it, using the
-same tests `EquipFromSlot` and `CanUsePath` enforce.
+Two gates the original's sample item didn't carry are kept because they decide "later" vs "never" —
+`Might required:` and `Mark required:` — each annotated when *you* fail it, using the same tests
+`EquipFromSlot` and `CanUsePath` enforce. **No sex line** (removed 2026-08-07): `ItmSex` is a wear gate, not
+a description, and the original box never printed one — `EquipFromSlot` simply refuses the item.
 
 `@iteminfo <slot>` fires the reply on demand; `mode` switches renderer, `sep` the line-break character
 (irrelevant for the tooltip, which accepts all three).
@@ -2271,8 +2380,10 @@ below.
 (`clif.c` `clif_handle_clickgetinfo`, `BL_MOB` case) runs an `onLook` script whose player-facing branch is
 gated on `player.gmLevel > 0` — a GM gets a minitext readout (name/id/level/HP/AC), everyone else gets no
 packet at all (this was matched as-is from 2026-07-25 to 2026-07-26). We now deliberately diverge from that:
-`HandleClickInfo` sends `"It's a/an {mob.Name}."` via mini-text for any regular player who left-clicks a real
+`HandleClickInfo` sends the bare `{mob.Name}` via mini-text for any regular player who left-clicks a real
 mob, since right-click-to-walk can't be intercepted (above) and this is the only server-side lever available.
+The name goes out on its own — no sentence around it (2026-08-07: it was `"It's a/an {name}."`; the pane is a
+readout, and the other look-at lines there are bare too, so the article helper is gone).
 Previously (2026-07-25 fix) it used to fall through to `SendClickProfile`, which unconditionally serializes
 **your own** `_char`, so clicking a monster rendered your own profile mislabeled with the mob's id.
 
@@ -3028,7 +3139,13 @@ codebase, rather than copying RTK's literal (and inconsistent) byte-4 values.
   nmailFlag(u8: 1 when board 0) postId(u16BE) authorLen author[...] month day topicLen topic[...]
   bodyLen(u16BE) body[...]` — per RTK `intif_parse_readpost`/`mapif_parse_readpost`.
 
-**The 'm' hotkey — DEAD IN THIS BUILD, proven at the dispatch table (client RE, 2026-07-28).** The
+**The 'm' hotkey — CONDITIONALLY LIVE (corrected 2026-07-30; the dispatch-table read below is right but
+is not the whole input path).** Live capture: pressing `'m'` **with the mail arrow up** sends `3b 01 00`
+and opens the board window — the same request as `'b'`. The mail-arrow HUD widget (ctor `0x47a230`,
+`0x469654 → 0x406e80(1)`) grabs the key first and is armed only while the arrow is drawn, which is why
+every earlier static test — all run with no mail — saw nothing happen. The original reading follows.
+
+**(SUPERSEDED) The 'm' hotkey — dead at the dispatch table (client RE, 2026-07-28).** The
 in-world letter hotkeys are dispatched by a char switch @`0x48e625` (index = `char-0x0D`, byte-index
 table @`0x48eab0`, 50-case jump table @`0x48e9e8`). Full map decoded: 'b'=case 22 (board window ctor
 `0x406e80(1)` → sub-1 request via `0x407100`), 'i'=28, 's'=32, 'c'=23, 'o'=29, etc. **'m'/'M' sit in
@@ -3046,9 +3163,20 @@ messenger" minitext there, and the same here.
 
 > **Negative result (tested live 2026-07-28): an unsolicited mailbox `0x31` opens NO window.** Sending
 > the mode-4 posts view when the player hasn't opened the board window does nothing at all — the client
-> only renders a `0x31` into an ALREADY-OPEN board window. So there is no server-side way to jump
-> straight into the mailbox, and no packet the dead 'm' key could be pointed at without a client patch.
-> The mailbox is therefore reached via **b → Mailbox** (listed last in the board list).
+> only renders a `0x31` into an ALREADY-OPEN board window.
+>
+> **⚠️ That does NOT mean the mailbox is unreachable — corrected 2026-08-07.** Two things the note above
+> over-generalised. First, `'m'` is not dead: **the mail-arrow HUD widget intercepts it before the
+> char-dispatch table**, so `'m'` works whenever the arrow is up and sends the same `3b 01 00` as `'b'`
+> (live capture, 2026-07-30 — see the correction in §11f-key below). Second, the board-window ctor
+> `0x406e80` runs on the **keypress**, before the request goes out, so by the time our reply to that
+> `0x3B` sub-1 lands **the window IS open** — which is the case the negative test didn't cover.
+>
+> So answering an unread inbox with the mailbox posts view instead of the board list makes `'m'` land
+> straight in the mailbox with no client patch (`Content.MailFirstOnBoard`, default on). The cost is that
+> `'b'` does the same while mail is unread, since the two keys are indistinguishable on the wire.
+> `Session.Movement.cs` also pops a board open unsolicited with `flags1=2` (board-signs), so `flags1` is
+> worth suspecting if an unsolicited push is ever wanted for the mailbox too.
 > `re/patches/patch_495_mail_key.py` implements the optional one-byte fix (byteTable['m'] 49→22, making
 > 'm' a second 'b') — written, verified against the build, **deliberately NOT applied**: patching the
 > client wasn't wanted, and it could only duplicate 'b' anyway, not open the mailbox directly.
@@ -3182,9 +3310,11 @@ Kan (cash-shop currency) donations toward "Wisdom Star," tutor appointment, mini
 RTK-hosted character webpage's visibility toggles, "Faerie Light," "AFK Message." **Trimmed to three real
 entries:**
 
-- **Silver Thread** — only offered while dead (`IsDead`; picking it alive echoes RTK's own line: *"This
-  is for the dead of the land to find a path to the shaman. You are not dead, so you have no path with
-  me."*). RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
+- **Silver Thread** — **always listed** (changed 2026-08-07); the `IsDead` gate lives inside the branch, not
+  on the menu entry, which is RTK's own shape: picking it alive just echoes RTK's line — *"This is for the
+  dead of the land to find a path to the shaman. You are not dead, so you have no path with me."* — and does
+  nothing (no warp, no state change). Listing it unconditionally is how a living player finds out that F1 is
+  the way back from death, the same reasoning as "Recover Death Pile" below. RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
   server only has two home nations modeled, so it collapses to `_char.Nation`: Buya (`2`) offers **Felis**
   (map 338) / **Storm** (339), everyone else **Dusk** (map 8) / **Dawn** (map 9) — all four are real RTK
   map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/game-data/map_index.csv`.
@@ -3649,40 +3779,542 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x17` | — | ⏳ **add spell to book** (server→client): `slot(u8) type(u8) name(u8len) question(u8len)` — §11d. (client→server = throw item) · `0x18` = remove spell |
 | `0x10` | — | ⏳ **remove item from bag slot** (server→client) — §11c |
 | `0x11` | `0x450350` | entity + 1 byte |
-| `0x12` | `0x4509a0` | entity + 2 bytes |
+| `0x12` | `0x4509a0` | ✳ **per-entity virtual call**: `id(u32BE) unused(u8) sel(u8)`. `body[4]` is read and discarded; `sel` must be `< 0xa0` or the packet is dropped, then the entity is looked up (`0x44b120`) and its **vtable +0x74** is called with `sel`. Meaning depends on what `+0x74` is for the creature class — not yet chased |
 | `0x13` | `0x4508f0` | ✓ **combat damage / over-head HP bar** (server→client): `id(u32BE) crit(u8) percent(u8) hitSnd(u8)` → HP bar + hit anim `0x8f−crit` + sfx — §7.2 |
 | `0x15` | `0x44f8b0` | ✓ enter-map |
 | `0x16` | `0x450a00` | **ground ITEM/object spawn** (draws from Item.epf `"I"`): `+5 gfx(u16) +7 id(u32) +0xb X/Y …`. **NOT a monster** — §7.2, §11a. **Walk projectile → invisible at rest; the server uses `0x07` static objects for floor items instead — §11c.** |
 | `0x1a` | `0x4503a0` | ✓ action (attack/sit/…) |
-| `0x1b` | `0x450830` | ? |
-| `0x1d` | `0x450db0` | entity + 1 byte |
+| `0x1b` | `0x450830` | **writable paper popup** (RTK `clif_paperpopupwrite`): `invSlot(u8) width(u8) height(u8) 00 len(u16BE) text[]` — the `0x35` page plus an inventory slot |
+| `0x1d` | `0x450db0` | ✳ **change an entity's LOOK in place**: `id(u32BE) kind(u8) look[7]`. `kind` 0 -> the standard 7-byte player look (reader `0x436120`, the same one `0x33`/`0x34` use), 1 -> the same shape tagged 1 (`0x4361b0`). Applied through `[window+0x418]`. This is the respawn-free way to push a gear/dye/morph change — worth trying against the nameplate litter, which comes from re-spawning the entity |
 | `0x1e` | — | ✓ ack |
-| `0x1f` | `0x450f40` | 3-state set (thresholds 0x0b/0x63/0x65 → `[world+0x401]`) |
+| `0x1f` | `0x450f40` | ✓ **weather** — the value is BANDED, not a state (0x0b/0x63/0x65 → `[world+0x401]`). RTK's 1/2 both read as clear; see the `0x1F` block in §recv |
 | `0x20` | `0x44f820` | ✓ time-of-day (server→client). **client→server = the 'o'/Open key** (RTK `clif_parse` case `0x20` "Clicked 'O'" → `clif_cancelafk` + `clif_open_sub` → `openDoors`): in NexusTK this **toggles the faced door object's open/closed graphic in place** (cosmetic; passability untouched) — it does NOT warp. Body is a bare `00` (no target), so the server resolves the faced tile from its own pos + facing. Confirmed live 2026-07-25: sent **only** on the 'o' keypress (deliberate, not a heartbeat — RTK's handler clears AFK). `HandleOpen` toggles the faced door via the door table and the `0x06` cell-patch (above). Doors: §12 |
-| `0x21` | `0x450f90` | UI window (`0x174`) |
+| `0x21` | `0x450f90` | ✳ **body-less UI window** — allocates a `0x174` object and calls `0x451700` (a `0x198`-wide widget at `(0xc, 0x8f)`, vtable `0x4cc410`) **without ever reading the packet**. Reported live as a transient blue banner where the text input sits. Nothing to encode: sending the bare opcode is the whole protocol |
 | `0x26` | `0x44fb80` (main) → **`0x4903d0`** (pre-dispatch) | **Self-walk — WORKS.** Main-table handler is a no-op, but `0x26` is pre-dispatched via the self-entity vtable (`+0x38` @ `0x4cf038` → `0x48eb40` → `handlerB`). This is the 4.95 self-walk primitive (§10.3). |
 | `0x29` | `0x4504b0` | ✓ **effect animation** over entity: `id(u32) effectId(u8, 1-based) A/B/C(u16)`; u8 indexes `Effect.tbl` (128 fx). **Not a damage number** — §11d |
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
-| `0x2f` | `0x44f490` | **buy/shop grid window** (RTK `clif_buydialog`) — identified, not implemented (shops use `0x30` menus instead — §11e) |
+| `0x2f` | `0x44f490` | **buy/shop grid window** (RTK `clif_buydialog`) — builds a temp stack object (vtable `0x4cc3cc`), parse `0x452c50` (`DLGMERC1.EPF`). Identified, not implemented (shops use `0x30` menus — §11e) |
 | `0x30` | `0x44f530` | ✓ **NPC dialog** (server→client): text box / menu / input, `body[0..1]` kind = `00 01`/`02 02`/`04 04`. Live-confirmed on 4.95. Reply = `0x3a`. See §11e |
-| `0x31` | `0x451080` | ? |
+| `0x31` | `0x451080` | ✓ board write ACK (§11f) |
 | `0x33` | `0x44fef0` | ✓ self/entity spawn (appearance) |
 | `0x34` | `0x450270` | ✓ **click-profile** window (UI `0x198`); body parsed by widget `0x48b6a0`. See §9.5 |
-| `0x35` | `0x450890` | ? |
-| `0x36` | `0x4515d0` | ? |
+| `0x35` | `0x450890` | **paper popup** (RTK `clif_paperpopup`): `00 width(u8) height(u8) 00 len(u16BE) text[]`. A parchment page, NOT the mail reader. §13a |
+| `0x36` | `0x4515d0` | ✓ **user list window** — `0x294` object, parse `0x48a0c0`, category `"U"`. Fully decoded + implemented; requested by `0x18`. §13c |
 | `0x37` | — | ⏳ **equip-window entry** (server→client) — §11c |
 | `0x38` | — | ⏳ **unequip-window** (server→client) — §11c |
 | `0x39` | `0x4510f0` | ✓ **self-profile** ("Mind's Eye", UI `0x198`): AC/clan/title/class/legend. See §9.5 |
-| `0x3b` | `0x450fe0` | ? (client heartbeat companion) |
-| `0x42` | `0x451120` | ? |
-| `0x44` | `0x4511a0` | ? |
-| `0x46` | `0x451020` | ? |
-| `0x4a` | `0x4514d0` | ? |
-| `0x4b` | `0x451630` | ? |
-| `0x59` | `0x43c1b0` (inventory pane) / `0x449f60` (world) | ✓ **item tooltip** when `body[0]==0`: `00 anchor(u8) u16BE len text` — the box that hangs off the item list, 10s lifetime, self-positioning. `body[0]==1` is the town list instead. See §11c.1 |
+| `0x3b` | `0x450fe0` | ✳ **a u16BE split into its two bytes**: reads `u16BE @body[0]`, runs the LOW byte and the HIGH byte separately through `0x44cb90(x, 0)` and hands both results to `0x44ed00`. So it is one packed pair, not a scalar — not the heartbeat companion this row used to guess |
+| `0x42` | `0x451120` | **trade/exchange window** — **gated on `body[0]==0`**, then `00 targetId(u32BE) nameLen(u8) name[] level(u16BE)` (RTK `clif_startexchange`). §13a |
+| `0x44` | `0x4511a0` | no-op (`mov al,1; ret`) |
+| `0x49` | `0x44edc0` | **"resend your profile picture"** — empty body (the trampoline passes no packet pointer). Client reads `<cwd>/users/<name>.epf` (fallback `.face`) and answers on `0x4f`. §13a |
+| `0x46` | `0x451020` | **"Power" board** (RTK `clif_sendpowerboard`): `01 count(u16BE)` then `count` × `id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]`. §13a |
+| `0x4a` | `0x4514d0` | `GetModuleFileName` anti-cheat check |
+| `0x4b` | `0x451630` | **remote-send**: `len(u16BE) bytes[len]` — the client sends `bytes` back **verbatim** as its next packet (`bytes[0]` is the opcode). `0x451d10` is a plain `memcpy`, so the payload is plaintext. Buffer is `0x2714`. §13a |
+| `0x59` | `0x43c1b0` (inventory pane) / `0x449f60` (world) | ✓ **item tooltip** when `body[0]==0`: `00 anchor(u8) u16BE len text` — the box that hangs off the item list, 10s lifetime, self-positioning. ✓ **`body[0]==1` = the town/nation table** (§13c) — a prerequisite for the user list, not an optional extra. See §11c.1 |
 | `0x66` | `0x4511b0` | ✓ **"open this URL"**: `kind(u8)` then 1 or 2 `u16BE`-length strings, string 1 = the URL. kind 0 = embedded IE (**crashes this build**, missing `XBUTTON.EPF`); kind 1/2 = the parchment OK dialog, and **kind 1 exits the game**. Not the item window. See §11c.1 |
-| `0x67` | `0x4513e0` | ? |
-| `0x68` | `0x4516a0` | ? |
+| `0x67` | `0x4513e0` | **countdown timer** at (0x85, 0x0a): `kind(u8) seconds(u32BE)`. kind 0 updates an existing timer only, 1/2 create-or-update with a different mode, 3 closes it. `seconds >= 0xe10` (3600) picks the wider display format. §13a |
+| `0x68` | `0x4516a0` | **challenge ping**: `token(u32BE)`. Client replies `0x75` = `token(u32BE) [player+0x70](u32BE)`, 9-byte body. §13a |
+
+---
+
+### 13a. The nine late-table handlers
+
+All identified 2026-08-07 by walking the dispatch table directly: opcode `n` indexes the byte table at
+`0x44bc80 + (n-3)`, and that byte indexes the jump table at `0x44bbd4`. Anything landing on `0x44bbcd` is a
+no-op. Four of the nine are fully decoded; five open a window whose body layout is still unread.
+
+**Decoded.**
+
+* **`0x67` — countdown timer.** `kind(u8) seconds(u32BE)`. The widget is a `0x120`-byte object built at
+  screen (`0x85`, `0x0a`) and cached in the global `[0x501d58]`, so a second `0x67` reuses it. `kind` 1 and 2
+  create-or-update (two display modes), `kind` 0 only updates one that already exists — with no timer live it
+  does nothing at all — and `kind` 3 closes it (`0x467c90`). The setter `0x486530` stores `now + seconds` as an
+  absolute deadline, and `seconds >= 3600` selects the wider format.
+* **`0x68` — challenge ping.** `token(u32BE)`. The client immediately answers with opcode `0x75`, body
+  `token(u32BE)` echoed plus a second `u32BE` read from `[[0x4fd3b0]+0x70]`. Nine bytes, no window, no user
+  interaction — a liveness/anti-idle probe.
+* **`0x4b` — remote send.** `len(u16BE) bytes[len]`. The client copies `bytes` into a `0x2714` stack buffer and
+  puts it **straight back on the wire as its own next packet**, so `bytes[0]` is the opcode it will send. The
+  copy helper `0x451d10` turned out to be a plain `rep movsd` **memcpy** — there is no obfuscation on the
+  payload. This makes the server able to force the client to emit any packet it likes.
+* **`0x49` — resend your profile picture.** Empty body; its dispatch trampoline doesn't even pass the packet
+  pointer. The client does `GetCurrentDirectory()` + `/users/` + `<name>` + `.epf` (retrying `.face`), requires
+  the file to be **exactly `0xb1c` = 2844 bytes** with an internal dword at `+8` equal to `0xaf0` and two `u16`
+  pairs differing by `0x38` and `0x30`, then answers on **`0x4f`** with
+  `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` — byte-for-byte the packet it already sends when you save the
+  profile editor, which `HandleChangeProfile` parses today. Any failure along the way still replies, with
+  `picSize = 0`, so this is a safe probe.
+
+**`0x35` is the PAPER POPUP, not a mail reader.** Earlier notes had this wrong. Parse `0x468550` reads
+`00 width(u8) height(u8) 00 len(u16BE) text[len]` — four flag bytes then a length-prefixed message, which it
+widens with `MultiByteToWideChar` into a `0x1f40` buffer before drawing. RTK's `clif_paperpopup` builds
+exactly that, and its own comments name `body[1]`/`body[2]` "width of paper" / "height of paper". The
+`0x4683a0(pkt, mode)` entry has two modes but the `0x35` handler **hardcodes mode 1**, so this is the only
+shape `0x35` can take. (`0x1b` is the sibling: RTK `clif_paperpopupwrite`, same layout plus an inventory slot
+at `body[0]` — a *writable* paper page.)
+
+**Window opens, body from RTK's builders.** Cross-referenced against `RTK-Server/rtk/src/map/clif.c`, whose
+offsets map to ours as `WFIFOB(fd, 5)` = `body[0]` (offset 4 is our `inc`).
+
+| op | handler | object | parse | body |
+|---|---|---|---|---|
+| `0x2f` | `0x44f490` | temp stack obj, vtable `0x4cc3cc` | `0x452c50` | **sub-kind dispatcher** — `body[0]` selects one of 11 windows. Decoded below |
+| `0x36` | `0x4515d0` | `0x294` | `0x48a0c0` | ✓ **user list** — DECODED 2026-08-08, §13c. (This row used to read "No RTK builder exists — still undecoded". Both halves were wrong: the builder is `clif_user_list` + `intif_parse_userlist`, and the format is now pinned.) |
+| `0x42` | `0x451120` | `0x288` | `0x420e80` | trade (`DLGEXC1.EPF`). `00 targetId(u32BE) nameLen(u8) name[] level(u16BE)` |
+| `0x46` | `0x451020` | `0x2f0` | `0x46ac00` | "Power" board, category `"P"`. `01 count(u16BE)` then `count` × `id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]` |
+
+`0x42` is the only one with a guard: `body[0]` must be `0` or the handler returns without building anything —
+which is also RTK's "initiation" subtype. Its other subtypes (`01` = ask amount, `02` = add item) drive an
+already-open window.
+
+#### `0x2f` — the merchant/menu family
+
+`0x452c50` switches on `body[0]` over `0..0x0a` and hands each sub-handler `&body[1]`. Sub-kinds **7** and **9**
+are no-ops; the rest each build their own window.
+
+| `body[0]` | parse | object | what |
+|---|---|---|---|
+| 0 | `0x453290` | `0x494` | **menu** — RTK `clif.c:9268`, which also sets `body[1] = 1` |
+| 1 | `0x452dc0` → | | |
+| 2 | `0x452e30` → | | |
+| 3 | `0x454240` | `0x48c` | **input amount** (buy quantity prompt) — RTK `clif.c:13000`, `body[1] = 3` |
+| 4 | `0x4548f0` | `0x284` | **shop grid** — RTK `clif_buydialog` (`clif.c:12387`), `body[1] = 2` |
+| 5 | `0x452f90` -> `0x4553e0` | `0x284` | ✓ **sell grid** — rows come from the CLIENT's bag; we send `scalar(u16BE) count(u8)` + wire slot bytes |
+| 6 | `0x452ff0` -> `0x455c50` | `0x284` | ✓ **text-list grid** — `scalar(u16BE) count(u16BE)` then `count x [id(u32BE) len(u8) text[]]`. **The 4-byte id is SKIPPED, never stored** (`add esi, 4`, 0x455da8 — the only grid that does this) and the reply carries the TEXT, so the id is inert in 4.95: match on the string, and keep labels unique |
+| 8 | `0x453050` -> `0x4564b0` | `0x284` | ✳ **SPELLBOOK grid** — carries NO rows. After the prompt it reads one `u16BE` (a ctor arg, not a count) and fills itself from `[state + 0x21ec + i*0x148]`, i = 1..0x34. This is the class-master **"forget a spell"** picker |
+| 10 | `0x4530b0` -> `0x456c40` | `0x284` | ✓ **two-string grid** — `scalar(u16BE) count(u16BE)` then `count x [label(u8) description(u8)]`. LIVE-CONFIRMED: clicking a row answers `0x39` with the **description** string |
+
+**Sub-kinds 1 and 2 are not new windows.** 1 dispatches to `0x453290` and 2 to `0x454240` — the *same*
+parse functions and object sizes as sub-kinds 0 and 3. They are variants of the menu and the amount
+prompt, differing only in whatever the sub-kind byte itself selects.
+
+**Menu body** (sub 0 / 1, `0x453290`): `tag(u8) npcId(u32BE) look prompt(u16BE len) subtitle(u8 len)
+count(u8)` then `count x [ optionText(u8 len) optionId(u16BE) ]`. **This server does not use it** — NPC
+menus go through `0x30` dialogs instead, so the whole `0x494` merchant-skin menu is unused.
+
+**Amount body** (sub 3 / 2, `0x454240`): `tag(u8) npcId(u32BE) look prompt(u16BE len) itemName(u8 len)
+max(u16BE)`.
+
+> **Sub-kind 6 hides a 4-byte per-row field.** The loop body opens with `add esi, 4` (`0x455da8`) *before*
+> it reads the length byte — no other grid does (sub-kind 5's and 10's loops go straight to the length).
+> Miss it and the parser takes a byte from the middle of the first string as the length, which is what
+> made two probes look like a broken reply:
+>
+> * `05 "Alpha" 05 "Bravo" 07 "Charlie"` → row 0 ate `05 41 6c 70` as the id, read len = `0x68` (`'h'`) =
+>   104, and its text ran from offset 5 to the end of the buffer — byte-for-byte the 18-byte `0x39` reply
+>   that came back (`61 05 42 72 61 76 6f …`).
+> * Three 24-byte single-letter rows → row 0 ate `18 41 41 41` as the id, read len = `0x41` (`'A'`) = 65,
+>   and drew "AAAA…(20 more) + 0x18 + BBBB…" as ONE line. Row 2 was the overrun; row 3 fell off the end,
+>   so only two rows drew.
+>
+> The reply was never malformed — it was faithfully echoing a string we had mis-lengthed. Row counter is
+> a `u8` compared against the `u16` count (`0x455e31`), so >255 rows will wrap.
+>
+> LIVE-CONFIRMED with the corrected format: three rows drew cleanly and clicking row 0 answered
+> `0x39` with `08 "AAAAAAAA"` — the row **text**. The `u32` id is skipped on parse and absent from the
+> reply, so it is dead space on this client; like the buy grid, this window is matched by NAME, which
+> means duplicate labels are ambiguous (cf. the unique-label map the bank withdraw flow builds).
+
+---
+
+### 13c. `0x36` — the user list ✅ *(decoded + implemented 2026-08-08)*
+
+**Correcting §13a.** It said "`0x36` … no RTK builder exists to cross-reference, so it needs the
+padding-sweep approach." There is a builder, in two halves — the map server forwards to the char server
+(`clif_user_list`, `clif.c:1133` → `0x300B`) and the reply is formatted in `intif_parse_userlist`
+(`map/intif.c:560`) off the query in `mapif_parse_userlist` (`char/mapif.c:458`). No sweep was needed: the
+client's own parser `0x48a0c0` agrees with it field for field, **except for one extra u32 4.95 has and RTK
+7.x does not** — so RTK's row cannot be ported verbatim.
+
+**The round trip.** Three legs, all read out of the client:
+
+1. **Open** — modifier bit 2 + `'W'` (`0x48e5cf: cmp al,0x77`), or entry **3** of the 8-entry UI action
+   table at `0x430914`. Both land on `0x48e3d0`.
+2. **`0x66` out (client→server), body `01 00 01 01 00 01 01 00`** — "send me the town/nation table",
+   emitted by `0x449ed0` but only when the client's own table is empty (`0x449ec0` short-circuits on
+   `[table+8] > 0`). Shares the opcode with the examine-item request, which is `body[0] == 0`; this is
+   `body[0] == 1`, so the two split cleanly.
+3. **`0x18` out, EMPTY body** (`0x490e00` stages the single byte and sends length 1) — "send me the user
+   list". Same opcode RTK dispatches to `clif_user_list`.
+
+**`0x59` sub-kind 1 — the town/nation table.** The user-list window needs this *first*: it labels each
+column from it and resolves the viewer's own nation through it, so an empty table means an unlabelled,
+empty window. Trampoline `0x44b9e9` gates on `body[0] == 1` and hands `&body[2]` to `0x449f60`:
+
+| field | |
+|---|---|
+| `body[0]` | `1` — sub-kind. (Sub-kind 0 is the item tooltip, §11c.1.) |
+| `body[1]` | unread |
+| `body[2..3]` | `u16BE` guard — the handler bails on `<= 0` (signed). RTK writes 34; any positive number works |
+| `body[4]` | `u8` count |
+| rows | `id(u8) nameLen(u8) name[nameLen]` — ASCII, widened, max 0x20 wide chars |
+
+> ⚠ **RTK's `clif_sendtowns` writes `body[0] = 64`, which 4.95 rejects outright** (its gate is `== 1`).
+> That is the one field to change when porting; everything else in `clif_sendtowns` matches.
+
+**`0x36` body.** The pointer the client walks is `packet - 1`, so its `[+1]` is our `body[0]`.
+
+| field | |
+|---|---|
+| `[0..1]` | `u16BE` headline total. Drawn as **(total − hiddenRows)**, *not* the row count |
+| `[2..3]` | `u16BE` row count — the loop bound |
+| `[4]` | `u8` initial sort: **0** = by rank (comparator `0x48b340`), **1** = by name (`0x48b370`, `wcscmp`). RTK sends 1 |
+| rows × count | `(nation<<4 \| path&7)` `(hidden<<4 \| icon&0xF)` **`nameColour(u8)`** `rank(u32BE)` `(mark<<4 \| nameLen&0xF)` `name[nameLen]` |
+
+* **`rank(u32BE)` is 4.95-only.** RTK's row goes straight from the hunter byte to a colour byte and then
+  the name length. Porting it verbatim shears every row from the 4th byte on.
+* **Name length is 4 bits** — it shares a byte with the tier nibble, so **15 characters is a hard wire
+  limit**, not a style choice.
+* **Sorting is client-side after the first paint.** The window's own toggle re-runs `0x48b390`/`0x48b3b0`
+  on the rows it already holds (`0x48ae85`/`0x48aec5`) without asking us again — which is why the `0x18`
+  request carries no mode, and why a post-99 stat tiebreak would have to be folded into the same `rank`
+  u32 to survive. The rank comparator is *(tier ascending, then rank descending)*; that pair is exactly
+  RTK's `ORDER BY ChaMark DESC, ChaLevel DESC, SUM(ChaBaseMana*2 + ChaBaseVita) DESC`.
+
+**Two client-side filters decide whether a row appears at all** — get these wrong and the window is empty
+while the packet looks perfect:
+
+* **`hidden` nibble != 0 drops the row entirely** (and counts it into the subtrahend above) unless the
+  *viewer's* state byte `[0x4fd400 + 0x1dc] == 1`. Send 0.
+* **`nation` nibble must equal the viewer's own nation** for the row to land in one of the five path
+  columns. Every visible row still goes into the window's master list at `+0x290`, so cross-nation players
+  are carried but only your own nation fills the columns. That single nibble *is* the "compare across
+  nations" behaviour.
+
+Columns come from the path bits: `1→col0, 2→col1, 3→col2, 4→col3, 0→col4` — five `0x6e`-wide columns from
+x=`0x13`, i.e. Warrior/Rogue/Mage/Poet + Peasant, matching our `PathId` exactly.
+
+**LIVE-CONFIRMED 2026-08-08 (`@users nations` / `paths` / `tiers`):**
+
+* **The nation nibble and the column mapping work as decoded.** Five rows, one per path, each landed in
+  its own column: `[WARRIOR | ROGUE | MAGE | POET | PEASANT]` = path `1,2,3,4,0`.
+* **The "tier" nibble is the MARK badge**, and its values are the subpath ranks:
+  `0` none · `1` Il-San · `2` Ee-San · `3` Sam-San · `4` Sam-San's successor Sa-San. (5-15 draw nothing.)
+  Pinned by sweeping tier 0-15 under sort mode 1 and reading the badges back in the order they landed.
+* **Sort mode 1 really is `wcscmp` on the name** — the 16 sweep rows came back in exact lexicographic
+  order (`tier0, tier1, tier10, …, tier15, tier2, tier3, tier4`), which incidentally **proves the client
+  parses our name strings correctly into row+0xE**. So any "the name doesn't show" symptom is a PAINT
+  problem, not a parse one.
+* **Row byte +2 is the NAME's TEXT COLOUR, not RTK's "hunter".** Measured by sweeping it 0..15: it is a
+  palette index, and 0..15 is the standard 16-colour palette —
+  `0` black · `1` dark blue · `2` dark green · `3` teal · `4` dark red · `5` magenta · `6` brown ·
+  `7` light gray · `8` dark gray · `9` light blue · `10` light green · `11` light cyan · `12` red ·
+  `13` pink · `14` yellow · `15` white. Above 15 it reaches into the client's 256-entry palette and is
+  sparse (32 tan, 176 pale green, 192 off-white, 208 light orange, 224 blue-green) — the space RTK's own
+  143 white / 63 same-clan green / 47 GM red live in.
+  > **`0` paints the name BLACK ON BLACK.** This is what made every name invisible while rows, badges and
+  > marks all drew correctly — it read as a broken name field for four rounds of probing. **RTK's row is
+  > not aligned with 4.95's here**: RTK has `hunter` at +2 and `colour` at +3; 4.95 has the colour at +2
+  > and no hunter at all. Copying RTK's field names is what planted the wrong label.
+* **The icon nibble is the SUBPATH BADGE, drawn relative to the COLUMN.** Each column listbox loads its own
+  sixteen sprites from category `"I"` (`0x48af92`, `0x24`-byte slots at listbox+`0x1dc`), so one index is a
+  different sprite per class. Swept across all five columns and it reproduces **Paths.csv `PthIcon`** exactly:
+
+  | icon | Warrior | Rogue | Mage | Poet |
+  |---|---|---|---|---|
+  | 0 | *(base class, no badge)* | | | |
+  | 1 | Barbarian | Merchant | Diviner | Druid |
+  | 2 | Chongun | Ranger *(draws nothing)* | Geomancer | Monk |
+  | 3 | Do | Spy | Shaman | Muse |
+  | 4 | Chung ryong | Baekho | Ju jak | Hyun moo |
+
+  **Indices 5-15 draw nothing** — the bank is effectively 5 wide, which matches `PthIcon` never exceeding
+  4 in the data. So the nibble has 11 spare values and no hidden badges to find.
+
+  So a character's whole user-list identity is **one `PthId`**: `PthType` picks the column, `PthIcon` the
+  badge. Using the raw `PthId` for either is wrong — Barbarian is id 10, which as column bits (`&7` = 2)
+  files a warrior under ROGUE. Four more sprites from category `"S"` at +`0x14c` are the column headers.
+* `listbox+0x41c` / `+0x420` are **not** row data: they are the array of the five sibling columns and its
+  count, used by `0x48b2f0` to clear the selection on the other four.
+
+**Still unpinned:** what the client *draws* for `classIcon` (indexes one of sixteen `0x24`-byte sprite
+slots at listbox+`0x1dc`), `hunter`, and `rank`. `@users sweep` sends a synthetic 16-row roster where row
+*i* carries `icon=i, hunter=i, rank=i, tier=i` under the name `i<n>`, so the mapping gets read off the
+screen instead of guessed — the same method `@nat` used for the nation crest.
+
+All of them share a common prefix, read by every parse function in the same order:
+
+```
+body[0]   sub-kind
+body[1]   u8    -> obj+0x280 / +0x284, passed on to the window ctor
+body[2:6] u32BE entity id (the NPC), echoed back in the client's reply
+body[6]   u8    NOT READ by the 4.95 client (RTK writes its descriptor-kind guess here)
+body[7:]  LOOK DESCRIPTOR, read by 0x4360e0 -- kind(u8) then:
+            kind 0 -> the 7-byte player look (0x436120), same one 0x30 and 0x33 use
+            kind 1 -> graphic(u16BE) colour(u8)      (0x436200)
+            kind 2 -> graphic(u16BE) + 1 skipped     (0x436240)
+          kinds 1 and 2 both advance 4 bytes total; anything else advances 0
++4 bytes  NOT READ (RTK writes a second copy of the descriptor here)
+u16BE     dialog length
+          dialog text
+```
+
+**The reply — inbound `0x39`.** Every `0x2f` window answers on opcode `0x39` (RTK `case 0x39` ->
+`clif_handle_menuinput`), which dispatches on `body[0]` = the tag the server wrote at the request's `body[1]`.
+That is what RTK's `//For parsing purposes` byte is for. Nothing to do with `0x39` OUT (the self-profile).
+
+| tag | window | reply payload |
+|---|---|---|
+| 0 | menu cancelled | — |
+| 1 | menu | — |
+| 2 | buy grid | `body[7]` = nameLen, `body[8..]` = the item NAME (RTK `clif_parsebuy`). Empty name = closed |
+| 3 | input amount | quantity |
+| 4 | sell grid | `body[7]` = the bag slot (RTK `clif_parsesell`) |
+
+The buy grid identifying its row **by name rather than index** is the awkward part: two rows with the same
+name are indistinguishable. RTK leans on it too (its bank appends `" - BONDED"` to disambiguate).
+
+**Shop grid (`body[0] = 4`)** continues:
+
+```
+u16BE   unknown -- fed straight into the grid widget ctor 0x454fa0. RTK fills it with
+        strlen(dialog), unswapped, which cannot be meaningful; treat the value as unknown
+u16BE   item count
+count x  icon(u16BE) price(u32BE) nameLen(u8) name[] textLen(u8) text[]
+```
+
+The per-row `text` is the buy blurb — RTK falls back to `"<path> level <n>"` when the item has no `ItmBuyText`,
+which is where our `ItemDef.BuyText` column comes from.
+
+**Sell grid (`body[0] = 5`, tag 4)** is much smaller — no names, icons or prices, because the client already
+has them for your own bag. After the shared prefix it is `u16BE unknown`, then a **`u8`** count (not the buy
+grid's `u16BE`), then that many wire slots.
+
+> **These are the same ONE-based slots `0x0F` uses.** The row loop at `0x455541` reads the byte, computes
+> `edx = 41 * byte`, and indexes `[invBase + edx*4 + 0x13e]` — which is byte-for-byte the address the `0x0F`
+> add-item store computes (`0x48f070`), and the `0x0F` handler range-checks its slot as `1..0x34`. One scale,
+> one array. RTK's `item[i] + 1` agrees.
+>
+> Send anything lower and every row draws further down the bag, and the loop's `test cl,cl; je` empty-entry
+> check renders the overshoot as a *blank row* rather than skipping it — so the symptom is a list that looks
+> **shifted** rather than misindexed, and the click still resolves correctly if the server makes the matching
+> mistake on the way back. That masked the bug twice here. The reply echoes the byte unchanged, so compare it
+> against the value sent rather than adjusting it.
+>
+> The trap is that `InvItem.Slot` on our side is **zero**-based and `SendAddItem` has always added 1 — so
+> "use the slot" is wrong and "subtract one" is wronger. `Session.Items.cs` `WireSlot` is now the single
+> place that conversion happens.
+
+**Amount prompt (`body[0] = 3`, tag 3)** is the native "how many?" box. After the shared prefix: the dialog
+text, then the item name as `u8 len + text`, then a `u16BE` stored at `+0x286` (`0x4543af`) which reads as the
+maximum enterable amount — RTK hardcodes it to 76, which would cap any larger stack, so send the real stack
+size. It answers with **two** strings (RTK `clif_parseinput` reads `body[7]` then a second length/text
+immediately after); which one carries the typed number isn't settled, so take whichever parses as an integer.
+
+**Two encodings that must not be guessed.** Both were wrong on the first attempt and both already had a
+correct implementation elsewhere in the server:
+* the NPC portrait is a creature look in the **`0x8000 | sprite`** space, exactly as `Session.Dialog.cs`
+  `NpcPortrait` builds it for the `0x30` head — and in fact `body[6..]` IS the `0x30` head layout, so
+  `WriteHead` is reused verbatim;
+* a row icon is **`IconWire(frame)` = `(frame - 0x4000) & 0xFFFF`**, i.e. `frame + 0xC000`, the same encoding
+  `Session.Items.cs` sends on `0x0F` for the bag. RTK only adds 49152 on its *custom-icon* branch and sends a
+  raw `ItmIcon` otherwise; for 4.95 the +49152 form is right for **every** row and a raw frame draws nothing.
+
+**Banking uses these same two windows.** RTK has no bank packet — `rtklua/.../click/bank.lua` calls
+`player:buy(...)` (the buy grid) to list stored items and reads the picked item's *name* back. So "deposit"
+is the sell grid and "withdraw" is the buy grid; there is no third window to find.
+
+> **4.95 vs RTK divergence, one byte per row.** RTK writes `icon(u16BE) iconColour(u8) price(u32BE)`. The 4.95
+> client reads the `u32BE` at descriptor+2 — **there is no colour byte in a shop row here**. Follow the client;
+> RTK is a 7.x server and this is exactly the kind of field later clients grew.
+
+
+**Testing these.** `@pkt <hexop> [tokens]` puts an arbitrary server→client packet on the wire — raw hex bytes,
+`#n` for u16BE, `%n` for u32BE, `:text` for bare ASCII, `$text` for ASCII behind a u16BE length. Inside
+`:`/`$` an underscore is a space, so a string stays one token and fields can follow it (several of these put a
+length or a level *after* the text). Watch the client's own outgoing side with `re/frida_probe.py`, whose
+`ENCR` lines are plaintext-before-encryption — that is how `0x68`'s `0x75` answer and `0x4b`'s echo are seen.
+
+**RTK is the shortcut here.** Four of these nine (`0x67`, `0x68`, `0x49`, `0x35`) were decoded from the client
+and then found verbatim in `RTK-Server/rtk/src/map/clif.c` — `clif_send_timer`, the ping, `clif_retrieveprofile`,
+`clif_paperpopup`. Two more (`0x42`, `0x46`) only have an RTK builder. Grep `WFIFOB(sd->fd, 3) = 0xNN` there
+*before* disassembling a window's parse function.
+
+
+
+---
+
+### 13d. `0x4a` — a remote file-tamper primitive ⚠ *never wire this*
+
+The handler table row used to read "`GetModuleFileName` anti-cheat check". Wrong API, and badly
+understating what it does. Handler `0x4514d0`:
+
+```
+body[0] must be 0                      else bail
+body[1] = one byte, kept
+body[2..5] = u32BE, must be 0x7D3AFF99  else bail      <- hardcoded magic
+  GetSystemDirectoryW(buf, 0x104)
+  sprintf(path, L"%s\Mscfg.dll", buf)
+  CreateFileA(path, GENERIC_READ|GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+  WriteFile(h, &body[1], 1, ...)        <- writes the packet's byte at offset 0
+  SetFilePointer(h, 0xdb72, NULL, FILE_BEGIN)
+  SetEndOfFile(h)                       <- truncates the file to 56178 bytes
+  CloseHandle(h)
+```
+
+So a server can make any connected client **overwrite the first byte of `System32\Mscfg.dll` and truncate
+it**. In period this was near-certainly Nexon's remote kill switch for a specific cheat DLL; the magic
+constant is the only thing gating it. `OPEN_EXISTING` means it is a no-op on a machine that doesn't have
+that file, which is every modern machine — but that is luck, not a safeguard.
+
+**This server does not send `0x4a` and should not.** It is documented so nobody re-derives it and wires it
+by accident, and so the magic is recognisable if it ever shows up in a capture from somewhere else.
+
+### 13e. `0x3b` — CRC-16 challenge (server -> client)
+
+Not the "client heartbeat companion" the old row guessed. `0x450fe0`:
+
+```
+token = u16BE(body[0])
+crc   = crc16(token & 0xFF, 0)          ; 0x44cb90: crc = table[crc>>8] ^ byte ^ (crc<<8)
+crc   = crc16(token >> 8,  crc)
+-> send 0x45, body = u16BE(crc), length 3
+```
+
+The table at `0x4f27e0` is plain **CRC-16/CCITT (poly 0x1021)** — verified against a generated table, and
+RTK ships the same one (`clif.c:1039`). Note the byte order: the LOW byte of the token is folded in first.
+A sibling of `0x68`/`0x75` (`token(u32BE)` → echo) — both are liveness/tamper probes, neither is wired.
+
+---
+
+### 13b. Opcode implementation status (server -> client)
+
+Generated from the client's own dispatch tables (the six chained dispatchers, §13) against every opcode this
+server actually puts on the wire. 53 opcodes are accepted by a dispatcher; three more (`0x02`, `0x1e`, `0x22`)
+we send successfully, so they belong to a dispatcher not yet enumerated.
+
+| op | what | status | notes |
+|---|---|---|---|
+| `0x02` | enter-world trigger | ✅ done | mandatory first packet; builds the world object |
+| `0x04` | coords / camera scroll | ✅ done |  |
+| `0x05` | self entity id | ✅ done |  |
+| `0x06` | map cell-patch | ✅ done |  |
+| `0x07` | creature/monster list | ✅ done | also the floor-item path |
+| `0x08` | stat/HUD block | ✅ done | partial — mail flag, nation, totem probed |
+| `0x0a` | minitext / system line | ✅ done | type(u8) len(u16BE) text |
+| `0x0c` | move / animate entity | ✅ done |  |
+| `0x0d` | over-head speech | ✅ done |  |
+| `0x0e` | despawn list | ✅ done |  |
+| `0x0f` | add item to bag slot | ✅ done |  |
+| `0x10` | remove from bag slot | ✅ done | reason byte picks the client's line; 12 is silent |
+| `0x11` | turn / face | ✅ done |  |
+| `0x13` | damage / over-head HP bar | ✅ done |  |
+| `0x15` | enter-map | ✅ done |  |
+| `0x16` | ground item spawn (walk projectile) | ✅ done | used for thrown items only; floor items use 0x07 |
+| `0x17` | add spell to book | ✅ done |  |
+| `0x18` | remove spell from book | ✅ done |  |
+| `0x19` | music | ✅ done |  |
+| `0x1a` | action (attack/sit/emote) | ✅ done |  |
+| `0x1e` | ack | ✅ done |  |
+| `0x1f` | weather | ✅ done | banded, not a raw state — RTK's byte reads as CLEAR |
+| `0x20` | time of day | ✅ done |  |
+| `0x22` | (sent during entry) | ✅ done |  |
+| `0x26` | self-walk pace | ✅ done |  |
+| `0x29` | effect animation | ✅ done |  |
+| `0x2e` | world map / skill list | ✅ done |  |
+| `0x2f` | merchant grid family | ✅ done | sub-kinds 3/4/5 wired; 0/1/2/6/8/10 not |
+| `0x30` | NPC dialog | ✅ done |  |
+| `0x31` | board write ACK | ✅ done |  |
+| `0x33` | self/entity spawn | ✅ done |  |
+| `0x34` | click-profile window | ✅ done |  |
+| `0x37` | equip-window entry | ✅ done |  |
+| `0x38` | unequip-window | ✅ done |  |
+| `0x39` | self-profile | ✅ done |  |
+| `0x59` | item tooltip / town list | ✅ done | both sub-kinds wired (0 tooltip, 1 town table) |
+| `0x66` | open URL / parchment OK | ✅ done | kind 1 EXITS the game; kind 0 crashes this build |
+| `0x1b` | writable paper popup | 🔧 decoded, not wired | invSlot(u8) width(u8) height(u8) 00 len(u16BE) text[] |
+| `0x35` | paper popup | 🔧 decoded, not wired | 00 width(u8) height(u8) 00 len(u16BE) text[] |
+| `0x42` | trade window | 🔧 decoded, not wired | 00 targetId(u32BE) nameLen(u8) name[] level(u16BE); body[0] must be 0 |
+| `0x46` | "Power" board | 🔧 decoded, not wired | 01 count(u16BE), then id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[] |
+| `0x49` | resend profile picture | ✅ done | `@askpic`. Client answers on 0x4f; picSize 0 = it couldn't read a valid file, §9.5a |
+| `0x4b` | remote send | 🔧 decoded, not wired | len(u16BE) bytes[] — client re-emits them verbatim as its own packet |
+| `0x67` | countdown timer | 🔧 decoded, not wired | kind(u8) seconds(u32BE); kind 3 closes, 12 kinds 0-3 |
+| `0x68` | challenge ping | 🔧 decoded, not wired | token(u32BE); client answers 0x75, which we do not handle |
+| `0x03` | download / URL | ❓ shape unread | reads HKLM registry (0x44f0e0) |
+| `0x12` | per-entity virtual call | 🔧 shape decoded, target unknown | `id(u32BE) unused(u8) sel(u8)`, `sel < 0xa0`, calls entity vtable +0x74 |
+| `0x1d` | look-update in place | ✅ done | `id(u32BE) kind(u8) look[7]`; replaces despawn+respawn, `LookUpdateInPlace` |
+| `0x21` | body-less UI banner | 🔧 decoded | never reads the packet — the bare opcode IS the protocol |
+| `0x24` | (player-state dispatcher) | ❓ shape unread | world dispatcher maps it to the NO-OP; only the player-state dispatcher accepts it |
+| `0x36` | user list window | ✅ done | §13c. Requested by `0x18`; needs `0x59` sub-1 (town table) first |
+| `0x3b` | CRC-16 challenge | 🔧 decoded, not wired | `token(u16BE)`; client answers `0x45` with CRC-16/CCITT(token), low byte first |
+| `0x4a` | ⚠ REMOTE FILE TAMPER | 🚫 decoded, deliberately NOT wired | truncates `<System32>\Mscfg.dll`. See §13d — do not send |
+| `0x4e` | (player-state dispatcher) | ❓ shape unread | same as 0x24 — world dispatcher no-ops it |
+| `0x0b` | no-op | ⊘ client no-op | handler returns immediately |
+| `0x44` | no-op | ⊘ client no-op | mov al,1; ret |
+
+**40 implemented · 7 decoded but not wired · 1 decoded and deliberately not wired · 6 still unread · 2 client no-ops** (of 56).
+
+### 13b. Opcode implementation status (server -> client)
+
+Generated from the client's own dispatch tables (the six chained dispatchers, SS13) against every opcode this
+server actually puts on the wire. 53 opcodes are accepted by a dispatcher; three more (`0x02`, `0x1e`, `0x22`)
+we send successfully, so they belong to a dispatcher not yet enumerated.
+
+| op | what | status | notes |
+|---|---|---|---|
+| `0x02` | enter-world trigger | DONE | mandatory first packet; builds the world object |
+| `0x04` | coords / camera scroll | DONE |  |
+| `0x05` | self entity id | DONE |  |
+| `0x06` | map cell-patch | DONE |  |
+| `0x07` | creature/monster list | DONE | also the floor-item path |
+| `0x08` | stat/HUD block | DONE | partial - mail flag, nation, totem probed |
+| `0x0a` | minitext / system line | DONE | type(u8) len(u16BE) text |
+| `0x0c` | move / animate entity | DONE |  |
+| `0x0d` | over-head speech | DONE |  |
+| `0x0e` | despawn list | DONE |  |
+| `0x0f` | add item to bag slot | DONE |  |
+| `0x10` | remove from bag slot | DONE | reason byte picks the client's line; 12 is the only silent one |
+| `0x11` | turn / face | DONE |  |
+| `0x13` | damage / over-head HP bar | DONE |  |
+| `0x15` | enter-map | DONE |  |
+| `0x16` | ground item spawn (walk projectile) | DONE | thrown items only; floor items use 0x07 |
+| `0x17` | add spell to book | DONE |  |
+| `0x18` | remove spell from book | DONE |  |
+| `0x19` | music | DONE |  |
+| `0x1a` | action (attack/sit/emote) | DONE |  |
+| `0x1e` | ack | DONE |  |
+| `0x1f` | weather | DONE | banded, not a raw state — RTK's byte reads as CLEAR |
+| `0x20` | time of day | DONE |  |
+| `0x22` | (sent during world entry) | DONE |  |
+| `0x26` | self-walk pace | DONE |  |
+| `0x29` | effect animation | DONE |  |
+| `0x2e` | world map / skill list | DONE |  |
+| `0x2f` | merchant grid family | PARTIAL | **3/4/5 wired** (amount prompt, buy grid, sell grid). Sub-kind 0 is a menu we do NOT use — menus go through `0x30` instead. 1 is a 2nd `0x494` menu, 2 a 2nd `0x48c` amount, and 6/8/10 are three more `0x284` GRIDS (same class as 4/5) — 7 and 9 are client no-ops |
+| `0x30` | NPC dialog | DONE |  |
+| `0x31` | board write ACK | DONE |  |
+| `0x33` | self/entity spawn | DONE |  |
+| `0x34` | click-profile window | DONE |  |
+| `0x37` | equip-window entry | DONE |  |
+| `0x38` | unequip-window | DONE |  |
+| `0x39` | self-profile | DONE |  |
+| `0x59` | item tooltip / town list | DONE | both sub-kinds wired (0 tooltip, 1 town table) |
+| `0x66` | open URL / parchment OK | DONE | kind 1 EXITS the game; kind 0 crashes this build |
+| `0x1b` | writable paper popup | DECODED, not wired | invSlot(u8) width(u8) height(u8) 00 len(u16BE) text[] |
+| `0x35` | paper popup | DECODED, not wired | 00 width(u8) height(u8) 00 len(u16BE) text[] |
+| `0x42` | trade window | DECODED, not wired | 00 targetId(u32BE) nameLen(u8) name[] level(u16BE); body[0] must be 0 |
+| `0x46` | "Power" board | DECODED, not wired | 01 count(u16BE), then id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[] |
+| `0x49` | resend profile picture | DONE | `@askpic`; client answers on 0x4f, §9.5a |
+| `0x4b` | remote send | DECODED, not wired | len(u16BE) bytes[] - the client re-emits them verbatim as its own packet |
+| `0x67` | countdown timer | DECODED, not wired | kind(u8) seconds(u32BE); kinds 0-3, 3 closes it |
+| `0x68` | challenge ping | DECODED, not wired | token(u32BE); client answers on 0x75, which we do not handle |
+| `0x03` | download / URL | not decoded | reads HKLM registry (handler 0x44f0e0) |
+| `0x12` | entity + 2 bytes | not decoded | handler 0x4509a0 |
+| `0x1d` | entity + 1 byte | not decoded | handler 0x450db0 |
+| `0x21` | UI window (0x174) | not decoded | handler 0x450f90 |
+| `0x24` | (player-state dispatcher) | not decoded | inbound 0x24 is drop-gold; the outbound meaning is unread |
+| `0x36` | user list window | DONE | §13c. `0x18` requests it; `0x59` sub-1 town table must precede it |
+| `0x3b` | board list | not decoded | client heartbeat companion |
+| `0x4a` | anti-cheat check | not decoded | GetModuleFileName |
+| `0x4e` | (player-state dispatcher) | not decoded |  |
+| `0x0b` | no-op | client no-op | handler returns immediately |
+| `0x44` | no-op | client no-op | mov al,1; ret |
+
+**37 implemented, 8 decoded but not wired, 9 still unread, 2 client no-ops** (of 56).
+
+Inbound (client -> server) we handle 32 opcodes: `05 06 07 08 09 0e 0f 11 12 13 17 19 1a 1b 1c 1d 1f
+20 24 2d 2e 32 38 39 3a 3b 3f 41 43 4a 4f 66`, plus `0x10` (arrival) before the switch. That side can't
+be enumerated exhaustively the way the send side can -- it would mean finding every send site in the
+client -- but the only known gap is `0x75`, the answer to a `0x68` ping we never send.
 
 ---
 

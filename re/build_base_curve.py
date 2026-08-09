@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 build_base_curve.py — Recover the deterministic per-level BASE stat schedule for
-each base class from the archive.org character scrape (archive/chars.csv).
+each base class from the archive.org character scrape (user_pages/chars.csv).
 
 Key findings this pipeline rests on (see MEMORY nexustk-archive-userpages-scrape):
   * Archive pages show BASE stats (no item bonuses) -> the value at (class,level)
@@ -24,7 +24,7 @@ Two prune strategies, one per stat family:
                 MODE is the true formula ceiling; fraction below the ceiling is the
                 empirical "loss rate".
 
-Outputs (re/archive/):
+Outputs (scraped_nexus_data/artifacts/user_pages/):
   base_curve.csv        class,level,stat,value,kind,n,n_pruned,loss_rate
   base_curve_rtk_diff.csv   where our recovered ceiling disagrees with onLevel.lua
 Run:  python re/build_base_curve.py
@@ -32,9 +32,12 @@ Run:  python re/build_base_curve.py
 import csv, collections, statistics as st, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CHARS = os.path.join(HERE, "archive", "chars.csv")
-OUT_CURVE = os.path.join(HERE, "archive", "base_curve.csv")
-OUT_DIFF = os.path.join(HERE, "archive", "base_curve_rtk_diff.csv")
+# Same resolution as archive_scrape.py -- data lives in scraped_nexus_data, not here.
+ARCHIVE = os.environ.get("NEXUS_ARCHIVE") or os.path.normpath(
+    os.path.join(HERE, "..", "..", "scraped_nexus_data", "artifacts", "user_pages"))
+CHARS = os.path.join(ARCHIVE, "chars.csv")
+OUT_CURVE = os.path.join(ARCHIVE, "base_curve.csv")
+OUT_DIFF = os.path.join(ARCHIVE, "base_curve_rtk_diff.csv")
 
 CLASSES = ["Warrior", "Rogue", "Mage", "Poet"]
 KEY = {"Warrior": "might", "Rogue": "grace", "Mage": "will", "Poet": "will"}

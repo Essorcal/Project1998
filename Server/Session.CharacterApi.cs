@@ -28,25 +28,88 @@ public sealed partial class Session
     }
 
     /// <summary>Put <paramref name="amount"/> of <paramref name="def"/> into the bag (stacking if the item
-    /// stacks and a stack already exists), draw the slot (0x0F), and return false if the pack is full.</summary>
+    /// stacks and a stack already exists), draw the slot (0x0F), and return false if any of it didn't fit.
+    /// <para>Callers that TAKE the item from somewhere else must use <see cref="GivePlaced"/> instead — a
+    /// bool can't distinguish "none of it fit" from "some of it fit", and deducting the full amount from the
+    /// source after a partial give duplicates or destroys goods.</para></summary>
     private bool GiveItem(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false)
+        => GivePlaced(def, amount, dura, customName, quiet) == Math.Max(1, amount);
+
+    /// <summary>As <see cref="GiveItem"/>, but returns HOW MANY actually landed in the bag (0..amount). This
+    /// is the form any hand-over needs — trade, vault withdrawal, mail attachment — so the source can be
+    /// debited by exactly what the destination accepted and no more.</summary>
+    private int GivePlaced(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false)
     {
         // Seed durability from the item DB: worn gear starts at full durability, and a charged consumable
         // (wine/liquor/cigarettes) starts with its full charge count -- see ItemDef.IsCharged / HandleUseItem.
         if (dura == 0 && (def.IsEquip || def.IsCharged)) dura = def.Durability;
+
+        // Fill part-full stacks first, then spill into fresh slots, none of them past ItemDef.StackCap. This
+        // used to be a single unbounded `stack.Amount += amount`, so a slot could hold any number at all.
+        // Existing over-cap stacks are left alone rather than force-split: the `< cap` filter simply skips
+        // them, so they drain naturally instead of a save-load rewriting a player's bag underneath them.
+        int cap = def.StackCap, want = Math.Max(1, amount);
+        // The inventory-wide cap comes first, since it's what stops a second stack existing at all.
+        int allowed = Math.Min(want, CarryRoom(def, customName));
+        if (allowed <= 0) { CarryCapNotice(def); return 0; }
+        int left = allowed;
         if (def.Stackable)
+            foreach (var stack in _char.Inventory
+                         .Where(i => i.ItemId == def.Id && i.CustomName == customName && i.Amount < cap)
+                         .ToList())
+            {
+                if (left <= 0) break;
+                int put = Math.Min(cap - stack.Amount, left);
+                stack.Amount += put;
+                left -= put;
+                SendAddItem(stack);
+            }
+
+        while (left > 0)
         {
-            var stack = _char.Inventory.FirstOrDefault(i => i.ItemId == def.Id && i.CustomName == customName);
-            if (stack is not null) { stack.Amount += amount; SendAddItem(stack); MarkDirty(); return true; }
+            int slot = FreeSlot();
+            // Pack full. Generic callers (a pickup, a drop, a quest reward) get the bare minitext; a shop
+            // buy passes quiet:true because the NPC speaks a longer line of its own instead.
+            if (slot < 0) { if (!quiet) SendMiniText("You can't have more."); break; }
+            int put = Math.Min(cap, left);
+            var it = new InvItem((byte)slot, def.Id, put, dura) { CustomName = customName };
+            _char.Inventory.Add(it);
+            SendAddItem(it);
+            left -= put;
         }
-        int slot = FreeSlot();
-        // Pack full. Generic callers (drops, quest rewards) get the plain notice; a shop-buy passes quiet:true
-        // so the NPC itself speaks the overflow line ("[npc]: You can't carry anymore.").
-        if (slot < 0) { if (!quiet) SendLog("Your pack is full."); return false; }
-        var it = new InvItem((byte)slot, def.Id, amount, dura) { CustomName = customName };
-        _char.Inventory.Add(it);
-        SendAddItem(it);
         MarkDirty();
+        // What actually landed. Short of `want` when the carry cap trimmed it (allowed < want) or the pack
+        // ran out of slots partway (left > 0). Whatever did fit is kept rather than rolled back.
+        return allowed - left;
+    }
+
+    /// <summary>How many more of <paramref name="def"/> the bag may take before hitting its inventory-wide
+    /// limit (<see cref="ItemDef.CarryCap"/>), or <see cref="int.MaxValue"/> when the item has none. Since
+    /// that limit equals one stack for every item that sets it, this is what stops a second stack forming —
+    /// as opposed to <see cref="ItemDef.StackCap"/>, which only bounds a single slot.</summary>
+    private int CarryRoom(ItemDef def, string customName = "")
+    {
+        if (!def.Stackable || def.CarryCap <= 0) return int.MaxValue;
+        int held = _char.Inventory.Where(i => i.ItemId == def.Id && i.CustomName == customName).Sum(i => i.Amount);
+        return Math.Max(0, def.CarryCap - held);
+    }
+
+    /// <summary>Hitting the carry cap is a RULE, not something a character says — it's the same answer
+    /// whether the item came from a mob, a shop or the vault, so it goes to minitext rather than out of an
+    /// NPC's mouth. (Distinct from the pack-being-full line, which a shopkeeper does speak.) The number is
+    /// the cap itself, not the room left, so the message teaches the limit rather than the moment.</summary>
+    private void CarryCapNotice(ItemDef def) =>
+        SendMiniText($"{def.Name}, You can't have more than {def.CarryCap}.");
+
+    /// <summary>True (and complains) when the player is on a mount, for the handlers that horseback forbids:
+    /// using/eating, equipping, unequipping, dropping, throwing, dropping gold and casting. Centralised
+    /// because the same refusal had drifted into three different wordings across six call sites.
+    /// <para>MELEE IS NOT IN HERE. A blocked swing shows nothing at all — see HandleAttack, which returns
+    /// silently and deliberately doesn't route through this.</para></summary>
+    private bool BlockedByMount()
+    {
+        if (!_char.Mounted) return false;
+        SendMiniText("You can't do that while riding a mount.");
         return true;
     }
 
@@ -155,7 +218,7 @@ public sealed partial class Session
             // (see PathHalls/TryPathHallEntrance) — enough exp banks up but doesn't auto-level past the wall.
             if (path == 0 && _char.Level >= 5)
             {
-                SendMiniText("You cannot increase your level without choosing a path first.");
+                SendMiniText("You can't increase your level without choosing a path first.");
                 break;
             }
             LevelUp(path);

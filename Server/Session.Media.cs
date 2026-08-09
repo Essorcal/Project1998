@@ -140,15 +140,34 @@ public sealed partial class Session
     internal void SendTime(byte hour, byte year) =>
         SendMap(0x20, _gameInc++, new byte[] { hour, year }, $"time(0x20) hour={hour} year={year}");
 
-    // 0x1F = weather (RTK clif_sendweather, clif.c:4565): a single byte, 0=clear/1=WRAIN/2=WSNOW (map.h).
-    // UNVERIFIED against the real 4.95 client — RTK's own send only fires this opcode when
-    // `settingFlags & FLAG_WEATHER` (a later-client options toggle we have no record of on 4.95, and no
-    // existing RE evidence either way that 4.95 even renders rain/snow at all); ported at face value since
-    // it's the only real wire format on record, same "best real number available, flag it, let it be
-    // live-checked" precedent as the still-uncalibrated sound ids elsewhere in this file. "@weather <0-2>"
-    // lets the caster audition it directly.
-    internal void SendWeather(byte weather) =>
-        SendMap(0x1F, _gameInc++, new byte[] { weather }, $"weather(0x1F) {weather}");
+    // 0x1F = weather (RTK clif_sendweather, clif.c:4565): a single byte.
+    //
+    // CALIBRATED against the 4.95 client 2026-08-08 — and RTK's raw byte does NOT work here. Handler
+    // 0x450f40 does not take the value as a state at all; it BANDS it before use:
+    //     body[0] <  0x0b        -> state 0        (clear)
+    //     body[0] <= 0x63        -> state 1
+    //     body[0] >= 0x65        -> state 2
+    //     body[0] == 0x64 (100)  -> falls through with the RAW 100 still in the slot — a client bug. Avoid.
+    // then applies it via 0x44d340(state, [world+0x401]), i.e. new state + the previous one, so the client
+    // can cross-fade. RTK's WRAIN=1 / WSNOW=2 are both < 0x0b, so porting its byte verbatim (which is what
+    // this did before) pinned the client to CLEAR forever and no weather could ever render. WeatherWire maps
+    // our 0/1/2 into the middle of each band instead.
+    //
+    // The player's own "Weather change" toggle (0x1b sub-6, Character.SettingFlags) gates it exactly as RTK
+    // does: with it off we send 0 rather than not sending, so turning it off clears an effect already on
+    // screen instead of leaving it stuck until the next map change.
+    private static readonly byte[] WeatherWire = { 0, 0x32, 0x96 };   // clear / band 1 (50) / band 2 (150)
+
+    internal void SendWeather(byte weather)
+    {
+        bool on = _char.HasSetting(0x06);
+        byte wire = on && weather < WeatherWire.Length ? WeatherWire[weather] : (byte)0;
+        SendMap(0x1F, _gameInc++, new byte[] { wire }, $"weather(0x1F) {weather} -> wire {wire}{(on ? "" : " (toggle off)")}");
+    }
+
+    /// <summary>Re-assert the current map's weather — used by the 0x1b sub-6 toggle, which has to take
+    /// effect immediately rather than at the next map change.</summary>
+    internal void SendWeather() => SendWeather(_world.GetWeather(_char.Map));
 
     // Music follows the AREA, not the map. Re-sending a track id restarts the song from the top, so a map
     // change only touches the music when the new map's zone actually wants a DIFFERENT track (MapBgm.csv):
@@ -265,17 +284,86 @@ public sealed partial class Session
         Log.Info($"   -> @mtx type={type} \"{msg}\"");
     }
 
-    // "@weather <0-2>" — force THIS map's weather and broadcast it to everyone already standing on it
-    // (0=clear, 1=rain/WRAIN, 2=snow/WSNOW). See SendWeather's doc: the 0x1F wire format is ported from RTK
-    // at face value but has no live confirmation yet against the real 4.95 client — this is how to check it.
+    // "@weather clear|rain|snow|0|1|2" — force THIS map's weather and broadcast it to everyone standing on
+    // it. "@weather raw <n>" instead sends one byte STRAIGHT to the 0x1F handler without the band mapping,
+    // which is how to explore what each band actually draws: the handler buckets its byte (<0x0b -> 0,
+    // 0x0b..0x63 -> 1, >=0x65 -> 2) rather than taking a state, so only three effects exist no matter what
+    // you send. Raw 100 is the one value to avoid — it falls through the buckets with the value still in the
+    // slot (client bug, see SendWeather).
+    private static readonly string[] WeatherNames = { "clear", "rain", "snow" };
+
     private void WeatherProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out var w) || w is < 0 or > 2)
-        { SendLog($"usage: @weather <0-2>   (0=clear 1=rain 2=snow; current: {_world.GetWeather(_char.Map)})"); return; }
+
+        if (parts.Length >= 2 && parts[0].Equals("raw", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(parts[1], out var raw) && raw is >= 0 and <= 255)
+        {
+            SendMap(0x1F, _gameInc++, new byte[] { (byte)raw }, $"weather(0x1F) RAW {raw}");
+            string band = raw < 0x0b ? "0 (clear)" : raw <= 0x63 ? "1" : raw == 0x64 ? "NONE - falls through, client bug" : "2";
+            SendLog($"raw 0x1F byte {raw} -> band {band}   (not stored on the map; @weather <name> to persist)");
+            return;
+        }
+
+        int w = -1;
+        if (parts.Length >= 1)
+        {
+            w = Array.FindIndex(WeatherNames, n => n.Equals(parts[0], StringComparison.OrdinalIgnoreCase));
+            if (w < 0 && int.TryParse(parts[0], out var n) && n is >= 0 and <= 2) w = n;
+        }
+        if (w < 0)
+        {
+            byte cur = _world.GetWeather(_char.Map);
+            SendLog($"usage: @weather clear|rain|snow   |   @weather raw <0-255>");
+            SendLog($"map {_char.Map} is {WeatherNames[Math.Min(cur, (byte)2)]}" +
+                    $"; your 'Weather change' toggle is {(_char.HasSetting(0x06) ? "ON" : "OFF - nothing will draw")}");
+            return;
+        }
+
         _world.SetWeather(_char.Map, (byte)w);
-        SendLog($"map {_char.Map} weather set to {w}");
-        Log.Info($"   -> @weather {w} (map {_char.Map})");
+        SendLog($"map {_char.Map} weather set to {WeatherNames[w]}" +
+                (_char.HasSetting(0x06) ? "" : "   (your 'Weather change' toggle is OFF - @setting weather on)"));
+        Log.Info($"   -> @weather {WeatherNames[w]} (map {_char.Map})");
+    }
+
+    // "@setting [name] [on|off]" — read or set any 0x1b Options toggle from the server side. This exists
+    // because the 4.95 Options WINDOW only wires four of them: its click handlers hardcode sub-commands
+    // 4 (advice), 5 (magic), 6 (weather) and 9 (fast move) — see the callers of the generic sender 0x4651a0
+    // (0x464e0b/0x464e51/0x464e97/0x464edd). Everything else in the flag word either has its own key
+    // (whisper F5, group Shift+G, exchange, realm F4) or has NO client affordance at all on this build, so
+    // the server is the only way to reach it. See the Show Helmet note in Session.Movement.SettingLabels.
+    private void SettingCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            SendLog("usage: @setting <name> [on|off]   (omit on/off to toggle)");
+            foreach (var (sub, label) in SettingLabels)
+                SendLog($"  {label.ToLowerInvariant().Replace(" ", "-"),-18} {(_char.HasSetting(sub) ? "ON" : "OFF")}");
+            return;
+        }
+
+        string want = parts[0].Replace("-", " ");
+        var hit = SettingLabels.FirstOrDefault(kv =>
+            kv.Value.Equals(want, StringComparison.OrdinalIgnoreCase) ||
+            kv.Value.Contains(want, StringComparison.OrdinalIgnoreCase));
+        if (hit.Value is null) { SendLog($"no setting matches '{parts[0]}' — run @setting for the list"); return; }
+
+        bool on = parts.Length > 1
+            ? parts[1].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[1] == "1"
+            : !_char.HasSetting(hit.Key);
+        if (on != _char.HasSetting(hit.Key)) _char.ToggleSetting(hit.Key);
+        SaveChar();
+        SendMessage(SettingLine(hit.Value, on));
+
+        if (hit.Key == 0x06) SendWeather();
+        // Show Helmet / Show Necklace are stored and announced, but 4.95 has nothing to apply them to: the
+        // 7-byte look (reader 0x436120, offsets 0..6) has no helm or necklace slot at all, so a worn helm is
+        // never drawn on the body regardless. RTK's own cases 14/15 are tagged "Added 4/6/17" — 2017, a later
+        // client. Kept because the bit is real and costs nothing if helm rendering ever lands.
+        if (hit.Key is 0x0E or 0x0F)
+            SendLog("note: 4.95's appearance has no helm/necklace slot, so this toggle draws nothing on this client");
+        Log.Info($"   -> @setting {hit.Value} = {(on ? "ON" : "OFF")}");
     }
 
     // "@swingsnd <id>" — set the melee swing sfx (and play it once so you can audition it in place). Use with

@@ -188,6 +188,9 @@ public sealed class SpellContext
     public bool deflected()             => _s.LuaDeflected(_sp, _targetId);
     /// <summary>Uniform percent roll: true with probability <paramref name="pct"/>% (RTK Random.Next(100) &lt; pct).</summary>
     public bool roll(double pct)        => _s.LuaRoll(pct);
+    /// <summary>Uniform integer in [<paramref name="lo"/>, <paramref name="hi"/>] inclusive, off the same
+    /// stream as <see cref="roll"/>. For weighted picks (e.g. Endear's variable control duration).</summary>
+    public double rollRange(double lo, double hi) => _s.LuaRollRange((int)lo, (int)hi);
     /// <summary>Freeze the resolved mob target for <paramref name="durMs"/> ms (RTK debuff hold) + debuff fx.</summary>
     public void freezeTarget(double durMs) => _s.LuaFreezeTarget((int)durMs, _sp, _targetId);
 
@@ -195,7 +198,7 @@ public sealed class SpellContext
     /// <summary>The category this Cure removes (SpellFx.CureCat: "curses"/"venoms"/"minorcurses"). "" if none.</summary>
     public string cureCat               => _fx?.CureCat ?? "";
     /// <summary>Is the resolved curse target a legal one (a PC only in a PvP map — incl. yourself — or a mob)?
-    /// Sends the RTK notice and returns false otherwise ("finds no target." / "You cannot attack that target.").</summary>
+    /// Sends the RTK notice and returns false otherwise ("finds no target." / "You can't attack that target.").</summary>
     public bool canCurse()              => _s.LuaCanCurseTarget(_sp, _targetId);
     /// <summary>Does the resolved curse target already carry a status of <paramref name="category"/>? (The
     /// checkIfCast guard — a same-category curse is then blocked, which is what makes self-pestilence a defense.)</summary>

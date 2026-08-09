@@ -155,6 +155,30 @@ public sealed class Character
     public bool   Grouped   = false;
     public bool   Exchange  = true;
 
+    /// <summary>The rest of the Options-menu toggles, as RTK's <c>settingFlags</c> bitfield
+    /// (common/mmo.h <c>enum settingFLAGS</c>). Every one of them is a <c>0x1b</c> sub-command, and the bit
+    /// is always <c>1 &lt;&lt; (subCmd - 1)</c> — see <see cref="SettingBit"/>. Group/exchange/realm/fast-move
+    /// also live in this space but are kept in their own fields above (they feed the profile packets and the
+    /// movement model), so their bits here are unused.
+    ///
+    /// Defaults match a fresh RTK character: the four listen/believe channels, weather, sound and both
+    /// show-gear toggles ON. The client only ever tells us a toggle FLIPPED, never its state, so these
+    /// defaults are also our only sync point — same deal as fast-move.</summary>
+    public int SettingFlags = SettingBit(1) | SettingBit(3) | SettingBit(4) | SettingBit(5)    // whisper/shout/advice/magic
+                            | SettingBit(6) | SettingBit(13) | SettingBit(14) | SettingBit(15); // weather/sound/helm/necklace
+
+    /// <summary>Setting bit for a <c>0x1b</c> sub-command (RTK: FLAG_WHISPER=1 for sub 1, FLAG_GROUP=2 for
+    /// sub 2, … FLAG_NECKLACE=16384 for sub 15).</summary>
+    public static int SettingBit(int subCmd) => 1 << (subCmd - 1);
+
+    public bool HasSetting(int subCmd) => (SettingFlags & SettingBit(subCmd)) != 0;
+
+    /// <summary>Flip a setting and return its new state.</summary>
+    public bool ToggleSetting(int subCmd) { SettingFlags ^= SettingBit(subCmd); return HasSetting(subCmd); }
+
+    /// <summary>Clan whisper is a plain on/off in RTK (status.clan_chat), not part of the flag word.</summary>
+    public bool   ClanChat  = false;
+
     // Subpath chat (F2 toggle, RTK clif_handle_clickgetinfo's 0xFFFFFFFE sentinel + clif_sendsubpathmessage):
     // a server-wide chat channel reaching every OTHER online player who shares this character's ClassName and
     // also has it on. Off by default, like RTK. See Session.ToggleSubpathChat / DoSubpathChat.

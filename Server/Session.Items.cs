@@ -9,6 +9,14 @@ namespace Server;
 public sealed partial class Session
 {
 
+    /// <summary><see cref="InvItem.Slot"/> is ZERO-based; every wire field that names a bag slot is
+    /// one-based. The client keeps its bag as a 164-byte-stride array and indexes it with this value
+    /// verbatim — the `0x0F` store (`0x48f070`) and the `0x2f` sell grid's row loop (`0x455541`) compute the
+    /// same address, `base + 164*n + 0x13e` — so anything that puts a slot on the wire must go through here.
+    /// Getting it wrong renders a *blank* row rather than nothing (the loop's `test cl,cl; je` skips the draw
+    /// but still counts the row), which reads as a list that's shifted rather than one that's misindexed.</summary>
+    private static byte WireSlot(InvItem it) => (byte)(it.Slot + 1);
+
     // 0x0F add-item-to-slot: slot(u8=idx+1) icon(u16) iconColor(u8) [dispName u8len+txt] [baseName u8len+txt]
     //   amount(u32) [block: stack/0(u8) dura(u32) protected(u8)] [owner u8len+txt] 00 00 00.
     private void SendAddItem(InvItem it)
@@ -24,7 +32,7 @@ public sealed partial class Session
                     : def.IsCharged ? $"{name} [{(it.Dura == 0 ? def.Durability : it.Dura)} {def.Text}]"
                     : name;
 
-        var d = new List<byte> { (byte)(it.Slot + 1) };
+        var d = new List<byte> { WireSlot(it) };
         d.AddRange(Be(IconWire(IconOf(def))));   // client Item.epf frame; encode for the +0x4000 resolver
         // 5.x (V533) carries an icon-color byte here; 4.95 (V495) does NOT — it reads the name length
         // right after the icon. Proven live: on 4.95 an extra byte here made the client read the name
@@ -42,7 +50,8 @@ public sealed partial class Session
         SendMap(0x0F, _gameInc++, d.ToArray(), $"additem(0x0F) slot={it.Slot} '{name}' x{it.Amount}");
     }
 
-    // 0x10 remove-from-slot: slot(u8=idx+1) reason(u8) 00 00. reason: 0=Remove 1=Drop 2=Eat 4=Throw 6=Used …
+    // 0x10 remove-from-slot: slot(u8=idx+1) reason(u8) 00 00. The reason picks the line the CLIENT prints;
+    // 12 is the only silent one. Full table swept live 2026-08-07 — see Content.EquipDelReason.
     private void SendDelItem(byte slot, byte reason) =>
         SendMap(0x10, _gameInc++, new byte[] { (byte)(slot + 1), reason, 0, 0 }, $"delitem(0x10) slot={slot} r={reason}");
 
@@ -156,7 +165,7 @@ public sealed partial class Session
         if (dec.Length < 1) return;
         // RTK clif_parsedropitem gates on player state first (dead/mounted can't drop).
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
-        if (_char.Mounted) { SendMiniText("You cannot do that while riding a horse."); return; }
+        if (BlockedByMount()) return;
         int slot = dec[0] - 1;
         // dec[1] = the "all" flag: 'd' (drop one) sends 0, 'D'/Shift+d (drop whole stack) sends 1.
         // Confirmed live: client emits `08 <slot+1> 00 00` for d and `08 <slot+1> 01 00` for D.
@@ -185,7 +194,7 @@ public sealed partial class Session
         if (dec.Length < 2) return;
         // RTK clif_parsethrowitem gates on player state first (dead/mounted can't throw).
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
-        if (_char.Mounted) { SendMiniText("You cannot do that while riding a horse."); return; }
+        if (BlockedByMount()) return;
         int slot = dec[1] - 1;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
@@ -251,6 +260,9 @@ public sealed partial class Session
     private void HandleUseItem(byte[] dec, bool eat)
     {
         if (dec.Length < 1) return;
+        // Nothing gets used, eaten or worn from horseback. This funnel covers eat AND use AND the wear path
+        // (EquipFromSlot below), so the gate belongs here rather than only on the branch that equips.
+        if (BlockedByMount()) return;
         int slot = dec[0] - 1;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
@@ -258,11 +270,25 @@ public sealed partial class Session
         // is the funnel for eating, using AND wearing, so it covers the 17 non-equip items that carry an
         // ItmPthId — a Rogue's stealth powder, a Warrior's shard bomb, the eight rogue darts. See CanUsePath.
         if (!CanUsePath(def)) return;
-        if (def.IsEquip) { if (eat) { SendMiniText($"You can't eat {def.Name}."); return; } EquipFromSlot(slot); return; }
-        if (eat && def.Type != 0) { SendMiniText("That is not edible."); return; }   // ITM_EAT only
+        // "that", never the item's name — the refusal is about the attempt, not the object.
+        if (def.IsEquip) { if (eat) { SendMiniText("You can't eat that."); return; } EquipFromSlot(slot); return; }
+        if (eat && def.Type != 0) { SendMiniText("You can't eat that."); return; }   // ITM_EAT only — same line as gear
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
 
         if (!ApplyItemEffect(def)) return;   // gate refused (e.g. ward already active) -> not consumed, RTK's own early-return
+
+        // Narration (user-specified, 2026-08-07): a consumable is SILENT until it's gone, and speaks exactly
+        // once — on the use that removes the last of it. The line comes from the CLIENT itself, off the
+        // delitem reason: FOOD (ITM_EAT) gets 2 -> "You ate <item>."; every other consumable (wine/liquor
+        // charges, herbs, powders, ITM_USE) gets 6 -> "You used <item>." A use that leaves stock behind sends
+        // no delitem at all, hence no line. (Wearing gear narrates nothing at all — see EquipFromSlot, which
+        // used to borrow that same reason 6 and so announced armour as though it had been drunk.)
+        // Key off the item TYPE, not the eat/use keypress: 0x1C on food is still eating. Full reason table in
+        // Content.EquipDelReason. Reason 3 ("You smoked") is deliberately NOT used for the pipes even though
+        // it exists and ItmText would identify them exactly (only "puffs" vs "sips" appear in the registry) —
+        // user's call, 2026-08-07. Pipes take 6 like every other non-food consumable.
+        bool food = def.Type == 0;   // ITM_EAT
+        byte goneReason = (byte)(food ? 2 : 6);
 
         // Charged consumables (RTK ITM_SMOKE: wine/liquor/cigarettes) hold N uses in their durability field
         // with a unit label in ItmText ("sips"/"puffs"). A use spends ONE charge, not the whole item; it is
@@ -272,14 +298,14 @@ public sealed partial class Session
         {
             if (it.Dura == 0) it.Dura = def.Durability;
             it.Dura = (ushort)(it.Dura - 1);
-            if (it.Dura == 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 6); }   // 6 = Used
-            else SendAddItem(it);   // re-send: the "[N unit]" charge count in the name updates in place (RTK: no minitext)
+            if (it.Dura == 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, goneReason); }
+            else SendAddItem(it);   // re-send: the "[N unit]" charge count in the name updates in place
             MarkDirty();
             return;
         }
 
         it.Amount -= 1;
-        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, (byte)(eat ? 2 : 6)); }
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, goneReason); }
         else SendAddItem(it);
         MarkDirty();
     }
@@ -598,8 +624,10 @@ public sealed partial class Session
     /// path and is satisfied by every subpath under it (a Chung ryong still counts as a Warrior — RTK compares
     /// <c>classdb_path</c> of the player's class, not the class id itself); 6+ names ONE exact subpath class. A
     /// restricted item additionally requires the player's subpath mark to have reached ItmMark.
-    /// Dreamweavers/Archons (base path 5) and our own GM accounts skip the whole check, matching RTK's
-    /// `classdb_path(class) == 5` branch.
+    /// Dreamweavers/Archons (base path 5) skip the whole check, matching RTK's `classdb_path(class) == 5`
+    /// branch. GM accounts do NOT (removed 2026-08-07): the bypass made the gate look broken to the only
+    /// account actually used for testing, and the sibling wear gates below — sex, level, might — never had
+    /// one either, so a GM was already refused a female-only robe while walking off in a Rogue's waistcoat.
     /// <para>469 of the 1241 wearable items carry a path restriction and 146 a mark — none of it was enforced
     /// before (ItmPthId/ItmMark weren't even parsed), which is why a Poet could wear a Warrior's sword.</para>
     /// Refusals are RTK's own <c>map_msg</c> lines, sent as system minitext like every other use/equip refusal.
@@ -608,12 +636,11 @@ public sealed partial class Session
     private bool CanUsePath(ItemDef def)
     {
         if (def.PathId == 0) return true;                       // unrestricted
-        if (IsGm) return true;                                  // RTK: GMs get no errors
         int myClass = CharClassId;                              // -1 when ClassName matches no Paths row
         int myBase  = myClass < 0 ? 0 : Content.PathBaseOf(myClass);
         if (myBase == 5) return true;                           // Dreamweaver/Archon
         bool ok = def.PathId < 6 ? myBase == def.PathId : myClass == def.PathId;
-        if (!ok) { SendMiniText("Your path forbids it."); return false; }
+        if (!ok) { SendMiniText("Your Path has forbidden itself from this vulgar implement."); return false; }
         // RTK MAP_ERRITMMARK reuses the level message verbatim ("You need more experience."); say which rank
         // instead, since nothing in the client explains that a subpath mark is what's missing. Only equipment
         // carries a mark in the live registry (146 rows, all wearable), so "wear" is always the right verb.
@@ -636,7 +663,7 @@ public sealed partial class Session
         // (line ~1551/1557), pc_canequipitem's sex/level/might via map_msg[ret].message (line ~1575), and
         // pc_canequipstats's cursed-stat check (line ~1585) -- never a spoken clif_sendmsg chat bubble.
         if (_char.Hp == 0) { SendMiniText("Spirit's can't do that."); return; }
-        if (_char.Mounted) { SendMiniText("You can't do that while riding a horse."); return; }
+        if (BlockedByMount()) return;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
         // Wear requirements (RTK item_data): sex-locked gear, a minimum level, and a minimum MIGHT (checked
@@ -644,8 +671,10 @@ public sealed partial class Session
         // ItmSex: 0 = male-only, 1 = female-only, 2 = UNISEX (the common case — 1944/2545 items, incl. most
         // weapons). Character.Sex uses the same 0=M/1=F encoding, so a sex-locked item (0 or 1) must match;
         // anything >= 2 is unrestricted. (The old `!= 0` test wrongly blocked every unisex item.)
-        if (def.Sex < 2 && def.Sex != _char.Sex) { SendMiniText($"You can't wear {def.Name}."); return; }
-        if (def.Level > _char.Level) { SendMiniText($"You must be level {def.Level} to wear {def.Name}."); return; }
+        // The refusal wording is the real game's, verbatim (user-supplied 2026-08-07) — short, and naming
+        // neither the item nor the number you're missing.
+        if (def.Sex < 2 && def.Sex != _char.Sex) { SendMiniText("This doesn't fit you."); return; }
+        if (def.Level > _char.Level) { SendMiniText("You need more experience."); return; }
         if (def.MightReq > EffMight) { SendMiniText($"You need {def.MightReq} might to wear {def.Name}."); return; }
         // (The path/mark gate is NOT here — it's on the use funnel, HandleUseItem. See CanUsePath.)
         // Two-handed weapon vs shield (RTK pc_canequipitem, MAP_ERRITM2H): a weapon whose LOOK falls in
@@ -655,7 +684,7 @@ public sealed partial class Session
                          && Content.ItemById(wep.ItemId) is { Look: >= 10000 and <= 29999 };
         bool wearingShield = _char.Equipment.Any(e => e.Slot == 3);
         if ((def.Type == 5 && wearing2H) || (def.Type == 3 && def.Look is >= 10000 and <= 29999 && wearingShield))
-        { SendMiniText("You cannot equip a 2-handed weapon with a shield."); return; }
+        { SendMiniText("You can't equip a 2-handed weapon with a shield."); return; }
         // Cursed/malus gear (negative Vita/Mana): RTK pc_canequipstats blocks it if the penalty would exceed
         // your current effective max — it'd zero out the pool entirely. 14/19 items in the registry carry a
         // negative Vita/Mana line, so this is reachable, not theoretical.
@@ -670,16 +699,30 @@ public sealed partial class Session
             wire = 8;
 
         _char.Inventory.Remove(it);
-        SendDelItem((byte)slot, 6);                   // reason 6 = Used (RTK pc_equipscript: pc_delitem(..., 1, 6) — same code as ITM_USE, not a "removed" reason 0)
+        // This 0x10 is MANDATORY, however it narrates. Suppressing it (to keep wearing gear silent) left a
+        // ghost row in the bag that couldn't be dropped, equipped or used — the server had already let the
+        // item go while the client still drew it. The bag is a separate structure from the equip window: only
+        // 0x48f0b0, reached from the 0x10 handler, clears a bag entry, and the 0x37 below never touches it.
+        // See Content.EquipDelReason for the reason-byte options and how to sweep for a quiet one.
+        if (Content.EquipDelReason >= 0) SendDelItem((byte)slot, (byte)Content.EquipDelReason);
 
         var prev = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
         bool replacing = prev is not null;   // swapping over worn gear sounds different than dressing a bare slot (GearSfx)
         if (prev is not null)
         {
+            var pdef = Content.ItemById(prev.ItemId);
+            // Bag FIRST, gear second, and only proceed if it landed — see HandleUnequip for what the other
+            // order costs. The incoming item's slot was freed just above so there is normally room; if there
+            // somehow isn't, put the incoming item back rather than destroy the one being replaced.
+            if (pdef is not null && !GiveItem(pdef, 1, prev.Dura, prev.CustomName))
+            {
+                _char.Inventory.Add(it);
+                SendAddItem(it);
+                return;
+            }
             _char.Equipment.Remove(prev);
             SendUnequip(wire);
-            var pdef = Content.ItemById(prev.ItemId);
-            if (pdef is not null) { ApplyAppearance(pdef, equip: false); GiveItem(pdef, 1, prev.Dura, prev.CustomName); }
+            if (pdef is not null) ApplyAppearance(pdef, equip: false);
         }
 
         var worn = new InvItem(wire, def.Id, 1, it.Dura == 0 ? def.Durability : it.Dura) { CustomName = it.CustomName };
@@ -698,14 +741,20 @@ public sealed partial class Session
     private void HandleUnequip(byte[] dec)
     {
         if (dec.Length < 1) return;
+        if (BlockedByMount()) return;              // taking gear off is a swap too
         byte wire = dec[0];
         var worn = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
         if (worn is null) return;
+        var def = Content.ItemById(worn.ItemId);
+        // Get it into the bag BEFORE taking it off, and abort if it won't fit. The old order removed the
+        // gear first and then ignored GiveItem's result, so taking anything off with a full pack DESTROYED
+        // it outright. Failing here leaves the item worn, which is the only harmless outcome. (UnequipAll
+        // already had this order; the single-slot path did not.)
+        if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName)) return;
         _char.Equipment.Remove(worn);
         InvalidateEquipTotals();
         SendUnequip(wire);
-        var def = Content.ItemById(worn.ItemId);
-        if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, worn.Dura, worn.CustomName); }
+        if (def is not null) ApplyAppearance(def, equip: false);
         SendStats();                                  // drop the gear bonuses from the HUD
         PlayGearSfx(wire, equipping: false);
         MarkDirty();
@@ -713,7 +762,7 @@ public sealed partial class Session
 
     // Typed-"A" bulk unequip: strips every worn slot back into the bag, same per-item plumbing as
     // HandleUnequip (SendUnequip + appearance revert + GiveItem). Stops the moment the bag can't take the
-    // next item back — GiveItem already sends "Your pack is full." and leaves that item (and everything
+    // next item back — GiveItem already sends "You can't have more." and leaves that item (and everything
     // after it) equipped, rather than dropping it on the ground or destroying it.
     private void UnequipAll()
     {
@@ -945,7 +994,7 @@ public sealed partial class Session
         if (dec.Length < 4) return;
         // RTK clif_parsedropgold gates on player state first (dead/mounted can't drop gold).
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
-        if (_char.Mounted) { SendMiniText("You cannot do that while riding a horse."); return; }
+        if (BlockedByMount()) return;
         uint amt = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
         if (amt > _char.Coins) amt = _char.Coins;
         if (amt == 0) { SendLog("You have no coins to drop."); return; }

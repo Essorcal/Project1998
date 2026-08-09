@@ -131,6 +131,21 @@ public sealed record ItemDef(
     public bool IsConsumable => Type is 0 or 1 or 2;     // EAT / USE / SMOKE
     public bool Stackable => StackAmount > 1 || MaxAmount > 1;
 
+    /// <summary>The most a single bag slot (or vault entry) may hold — an Acorn caps at 201, arrows at 100.
+    /// <c>ItmStackAmount</c> and <c>ItmMaximumAmount</c> agree on every row that sets either, so the larger
+    /// of the two is the cap and non-stacking rows fall back to 1. Both columns were parsed from the start
+    /// but only ever consulted to derive <see cref="Stackable"/>, so nothing capped anything: stacks grew
+    /// without limit wherever items merged (pickup, vault deposit), and a 271-Acorn slot was reachable.</summary>
+    public int StackCap => Math.Max(1, Math.Max(StackAmount, MaxAmount));
+
+    /// <summary>Most of this item the whole bag may hold, across every slot; 0 means uncapped.
+    /// <para><c>ItmMaximumAmount</c> is NOT a duplicate of <c>ItmStackAmount</c> — it is the inventory-wide
+    /// total. 203 rows set it and it equals the stack size on every single one, so a stackable item is
+    /// limited to exactly ONE stack: you cannot carry two piles of acorns or two of wool. Wine, pipes and
+    /// arrows look like the exception but aren't stacks at all (<c>stack=1, max=0</c>) — they're individual
+    /// items, one per slot, so any number of slots may hold them.</para></summary>
+    public int CarryCap => MaxAmount;
+
     /// <summary>A charged consumable (RTK ITM_SMOKE: wine/liquor/cigarettes): N uses stored in the
     /// durability field, with <see cref="Text"/> as the unit label ("sips"/"puffs"). Each use spends one
     /// charge and the item is removed only at 0 (RTK pc_useitem ITM_SMOKE). The "indestructible" items carry
@@ -610,15 +625,81 @@ public static partial class Content
     // existed), 2 adds Major, 3 adds Epic. The Major/Epic rows stay in MinorQuests.csv either way; this only
     // gates whether the "which type of quest?" menu is offered at all. See Server/MinorQuest.cs.
     public static int MinorQuestTiers => (int)Tune("MinorQuestTiers", 1);
-    // The 0x10 "reason" byte for removals that should say NOTHING — banking and selling, both of which are
-    // silent in the real game. Every reason the 4.95 client has a line for narrates the removal (see the
-    // table in the protocol doc §11c); 0 renders "Acorn (51) removed.", which is the noise this exists to
-    // kill. 0 landing on the LAST message line rather than a line of its own is the tell of a `default:`
-    // branch, so an out-of-range reason may be the client's silent path; 15 is past the 12 real reasons but
-    // well inside the line table, so if the handler indexes raw instead of branching it shows a harmless
-    // unrelated line rather than reading off the end. Live-check it: silent = right; "… removed." = the
-    // default narrates and no silent reason exists; some other sentence = it indexes raw, so only 0-12 are safe.
-    public static int SilentDelReason => (int)Tune("SilentDelReason", 15);
+    // (SilentDelReason is GONE, 2026-08-07. It existed to probe whether an out-of-range 0x10 reason was the
+    // client's silent path; the live answer was no — 15 renders "<item> removed.", the same line reason 0
+    // gives, so the handler clamps/defaults and NO reason byte is silent. Every path that used it has since
+    // moved to a real reason (bank deposit and shop sale both hand the item over: 10, "You gave X."), and a
+    // path that must truly say nothing sends no 0x10 at all — see EquipDelReason.)
+    // Equipping is the one removal that ought to be TRULY silent: the item didn't leave you, it moved onto
+    // your body, and the real game says nothing. Suppressing the 0x10 entirely was tried (default -1) and is
+    // WRONG — it leaves a ghost row in the bag that can't be dropped, equipped or used, because the server
+    // has already dropped the item while the client still draws it.
+    //
+    // The reason it can't work: the equip window and the bag are SEPARATE client structures. The bag is a
+    // 164-byte-stride array and the ONLY thing that clears an entry is 0x48f0b0, reached only from the 0x10
+    // handler (0x48fe10) — which range-checks the slot and ignores the reason byte completely. The 0x37
+    // equip-window entry never touches that array, so it cannot stand alone.
+    //
+    // Reason 12 is the one code that says NOTHING, so equipping gets both: the bag entry is cleared and the
+    // player isn't told they "used" their armour. Full table swept live 2026-08-07 (@delreason):
+    //   0 "<item> removed."   1 "You dropped"   2 "You ate"     3 "You smoked" (herb/sonhi pipes)
+    //   4 "You threw"         5 "You shot"      6 "You used"    7 "You posted"
+    //   8 "<item> decayed."   9 "You gave"     10 "You sold"   11 "<item> removed."
+    //  12 SILENT             13 "<item> broken."               14+ all "<item> removed."
+    public static int EquipDelReason => (int)Tune("EquipDelReason", 12);
+    /// <summary>Open the board request straight into the MAILBOX when the player has unread n-mail, instead
+    /// of the board list. 'm' is armed only while the mail arrow is up and sends the same `3b 01 00` as 'b',
+    /// so this is the only way to make 'm' behave like a mailbox key — at the cost of 'b' doing the same
+    /// while mail is unread. 0 = always show the board list (Mailbox is still its last entry).</summary>
+    public static bool MailFirstOnBoard => Tune("MailFirstOnBoard", 1) != 0;
+
+    /// <summary>Patch a peer's appearance with <c>0x1d</c> (look-update-in-place) instead of the
+    /// despawn(<c>0x0E</c>) + respawn(<c>0x33</c>) pair. The old pair exists because a bare <c>0x33</c>
+    /// re-send orphans the entity and leaks its nameplate marker; <c>0x1d</c> sidesteps that entirely by
+    /// never destroying or creating anything. Morph and stealth still take the full path regardless —
+    /// see Session.RefreshAppearance. 0 = always use the old pair.</summary>
+    public static bool LookUpdateInPlace => Tune("LookUpdateInPlace", 1) != 0;
+
+    /// <summary>Draw nameplates over other players. The plate is rendered from the NAME string in the
+    /// <c>0x33</c> spawn, so sending an empty name is a pure server-side way to suppress it — no client
+    /// patch needed (cf. re/patch_no_nametag.py, which does it on disk). Applies to PEERS only; your own
+    /// name is never in a peer packet. 0 = no plates.</summary>
+    public static bool ShowNameplates => Tune("ShowNameplates", 1) != 0;
+
+    /// <summary>Which nations the user-list window (0x36) gets columns and a name for — the ids sent in the
+    /// 0x59 sub-1 town table. Default is the three this server actually plays: 0 Neutral, 1 Koguryo,
+    /// 2 Buya. Deliberately NOT the same thing as <c>Character.Nations</c>, which is the HUD crest id space
+    /// (0x08 stats, calibrated via @nat) and must keep all 8 entries.
+    /// <para>A nation absent from this table cannot be resolved by the client: it scans the table for the
+    /// viewer's own nation id and falls back to entry 0 when it misses, at which point every row whose
+    /// nation nibble isn't 0 drops out of the columns. So a player whose nation is off this list sees an
+    /// empty window, not a partial one.</para></summary>
+    /// <para>ServerTuning holds scalars only, so this is a BITMASK over the nation ids: bit i = nation i.
+    /// Default 7 = 0b111 = Neutral + Koguryo + Buya. 255 restores all eight.</para></summary>
+    // User-list name colours — row byte +2, a palette index measured live (`@users hunters`). 0..15 is the
+    // standard 16-colour palette and **0 paints black on black**, which is what made every name invisible
+    // until 2026-08-08. Same three cases RTK colours (default / same clan / GM), in the palette this client
+    // actually has. Values above 15 reach further into the 256-entry palette if a deployment wants them.
+    // Highest rule wins: self, then GM, then clan, then default. 0 turns an OPTIONAL rule off — safe to
+    // overload that way because 0 is the invisible colour and can never be a deliberate choice. Only
+    // UserListColorDefault has no off switch.
+    //   0 black(invisible) 1 dk blue  2 dk green 3 teal      4 dk red  5 magenta 6 brown   7 lt gray
+    //   8 dk gray          9 lt blue 10 lt green 11 lt cyan 12 red    13 pink   14 yellow 15 white
+    public static int UserListColorDefault => (int)Tune("UserListColorDefault", 15);   // white
+    public static int UserListColorClan    => (int)Tune("UserListColorClan",    10);   // light green — RTK's same-clan highlight
+    public static int UserListColorGm      => (int)Tune("UserListColorGm",      12);   // red
+    public static int UserListColorSelf    => (int)Tune("UserListColorSelf",    14);   // yellow — no RTK equivalent, ours
+
+    public static IReadOnlyList<byte> UserListNations
+    {
+        get
+        {
+            int mask = (int)Tune("UserListNationMask", 7);
+            var ids = new List<byte>();
+            for (byte i = 0; i < 8; i++) if ((mask & (1 << i)) != 0) ids.Add(i);
+            return ids.Count > 0 ? ids : new List<byte> { 0 };   // the client bails on an empty table
+        }
+    }
     // SplitTrapSpells (0/1, default 0) also lives here — accessor is next to the trap block it gates,
     // see SplitTrapSpellsEnabled / IsOutOfEraSplitTrap.
 
@@ -1799,15 +1880,32 @@ public static partial class Content
     {
         var paths = new Dictionary<int, string>();
         var bases = new Dictionary<int, int>();
+        var icons = new Dictionary<int, int>();
         foreach (var col in ReadCsv(path))
             if (int.TryParse(col.GetValueOrDefault("PthId"), out var id))
             {
                 paths[id] = Clean(col.GetValueOrDefault("PthMark0", ""));
                 bases[id] = int.TryParse(col.GetValueOrDefault("PthType"), out var t) ? t : 0;
+                icons[id] = int.TryParse(col.GetValueOrDefault("PthIcon"), out var ic) ? ic : 0;
             }
         PathBase = bases;
+        PathIcon = icons;
         return paths;
     }
+
+    // PthId -> PthIcon, the subpath BADGE index. Read live off the user-list window 2026-08-08 (@users
+    // sweep, all five columns) and it matches this column exactly: the badge is drawn RELATIVE TO THE
+    // COLUMN, so one index means a different sprite per class —
+    //     icon 0  (none)      base class
+    //     icon 1  Barbarian / Merchant  / Diviner   / Druid
+    //     icon 2  Chongun   / Ranger    / Geomancer / Monk      (Ranger draws nothing on this build)
+    //     icon 3  Do        / Spy       / Shaman    / Muse
+    //     icon 4  Chung ryong / Baekho  / Ju jak    / Hyun moo
+    // So a character's whole user-list identity is one PthId: PthType picks the column, PthIcon the badge.
+    private static Dictionary<int, int> PathIcon = new();
+
+    /// <summary>Subpath badge index for a path id (Paths.csv PthIcon) — see <see cref="PathIcon"/>.</summary>
+    public static int PathIconOf(int pathId) => PathIcon.GetValueOrDefault(pathId, 0);
 
     // PthId -> PthType, the BASE path a (sub)class descends from (RTK class_db.c classdb_path): every subpath
     // collapses onto 1 Warrior / 2 Rogue / 3 Mage / 4 Poet, e.g. Chung ryong (6) and Barbarian (10) are both
@@ -2376,7 +2474,7 @@ public static partial class Content
 
     // NPC-subpath guardian spells (their own SplPthId: 8 Ju Jak, 9 Hyun Moo). Both had Spells.csv rows but no
     // archetype, so they spent mana and did nothing. Hyun Moo Revival is the one spell MEANT to be cast while
-    // dead, which is why Session.HandleCast exempts it from "Spirits cannot cast spells".
+    // dead, which is why Session.HandleCast exempts it from "Spirits can't cast spells".
     // "Takes all mana when cast and does that much damage times N" (nexusatlas): Inferno x1.5 (Ee San mage)
     // and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carry mana=0 and an amountExpr reading
     // player.magic, which computes the damage correctly but NEVER SPENDS the pool - so before this they were

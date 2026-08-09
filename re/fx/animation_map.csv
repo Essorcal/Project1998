@@ -1,0 +1,74 @@
+gif,client_effect,wire_id,n_spells,example_spells
+vex,0,1,14,Blind; Drain; Paralyze; Pestilence; Scourge; Static
+sanc,1,2,19,Backstab; Bless; Doze; Enchant; Essence of Poppies; Flank
+summon,2,3,48,Approach; Beast; Feral; Gangrel; Kwi-Sin Chameleon; Kwi-Sin Cloak
+ignite,3,4,33,Blazing Sands; Call Lightning; Chain Lightning; Deluge; Earthquake; Electrocute
+heal,4,5,42,Annoint; Fleshspeak; Fortify; Heal; Heaven's Kiss; Lay Hands
+berserk,5,6,1,Berserk
+desperate,6,7,1,Desperate Attack
+hellfire,7,8,1,Hellfire
+ls,8,9,1,Lethal Strike
+ww,8,9,3,Tilting the Balance; Whirlwind; Wind's Blast
+remmy,9,10,9,Atone; Cure Paralysis; Dispell; Purge; Remove Curse; Remove Veil
+might,10,11,20,Barrier; Dragon's Fury; Harden Body; Human Barrier; Inspiration; Inspire
+dart,11,12,5,Set Trap; Share Energy
+totemeffect,15,16,1,Draw Energy
+sealfate,16,17,19,Cresendo; Dance Macabre; Dance of Death; Death Scream; Eater of the Dead; Embrace of the Void
+spiritfury,17,18,1,Spirit Fury
+mingkenshadowfigure,19,20,2,Natural Defense; Spirit Warrior
+newshadowfigure,20,21,1,Ohaeng's Armor
+chill,21,22,1,Combine Focus
+spark,26,27,9,Singe; Spark; Thunder Bolt
+mingkenzap,29,30,19,Avalance; Bolt; Breaking of the World; Flight of Arrows; Forests Discord; Lightning
+slash,30,31,4,Slash
+whitetigerclaws,31,32,2,Beastly Frenzy; Tiger's Pounce
+confuse,33,34,3,Confuse; Fissure; Lava Surge
+endear,38,39,12,Align Follower; Amnesia; Chaos Rain; Charm Life; Curse of the Void; Dispise Friend
+deathtrap,43,44,4,Death Trap; Set Trap
+ohaenginspire,48,49,1,Release Focus
+retribution,50,51,1,Retribution
+freeze,51,52,2,Ice Glare; Lockup
+kwisinvex,52,53,2,Damage Will; Death's Face
+annihilation,53,54,1,Consume Soul
+mingkensanc,55,56,2,Guard Life
+mingkenpurge,56,57,5,Restore Health; Restore Sight; Return Movement
+ohaengremmy,57,58,4,Align Armor; Restore Armor; Restore Balance
+ohaengsanc,58,59,2,Elemental Armor
+ohaengww,59,60,2,Bladedance; Calculating Blow
+kwisinsanc,60,61,2,Protect Soul
+ohaengheal,62,63,24,Bandage; Breath of Life; Cooling Touch; Earths Embrace; Gathering of Majesty; Heal Others
+mingkenheal,63,64,24,Balm; Fertile Soil; Gathering of Power; Gathering of the Flock; Heal Injury; Healing Breath
+kwisinheal,64,65,24,Ancestors Embrace; Ancestors Kiss; Ancestors Touch; Breath of Power; Brethren of Spirits; Brothers of Spirit
+mingkenww,66,67,2,Ming Ken's Judgement; Nature's Own
+kwisinberserk,67,68,2,No Fear; The Void's Measure
+kwisinww,68,69,2,Afterlife's Embrace; Death's Angel
+kwisinpurge,69,70,6,Bestow Power; Clear Darkness; Cure Illness; Release Binds
+kwisinremmy,70,71,4,Release Curse; Remove Magic; Restore Will
+mingkenhardenbody,71,72,2,Deaths Guard; Life's Protection
+mingkeninspiration,75,76,1,Harness Power
+ohaenginvoke,77,78,2,Gather Magic
+ohaengvex,78,79,2,Flaw; Unalign armor
+mingkenvenom,83,84,6,Absorb; Corruption; Drink of Souls; Parasite; Snake Bite; Spirits Leech
+mingkenret,85,86,1,Palm of Life
+ohaenghardenbody,86,87,1,Body of Alignment
+kwisinpara,87,88,2,Darken Veil; Spirit Leash
+mingkeninvoke,89,90,2,Life Force
+ohaengrez,91,92,1,Death Undone
+kwisininvoke,94,95,2,Spirits Power
+kwisinrez,95,96,1,Return Spirit
+ohaenghardenarmor,97,98,7,Augmentation; Magic Shield; Ohaeng's Anger; Ohaeng's Grace
+mingkenpara,98,99,2,Cold Binds; Winters Shadow
+kwisinret,99,100,1,Spirit Puppet
+mingkenvex,100,101,2,Drop Guard; Un-natural Selection
+kwisinfury,102,103,5,Filling the Soul; Soul's Rage; Strength of Ancestors; filling the Soul
+mingkenhellfire,103,104,1,Flesh Eaters
+mingkenfury,105,106,5,Spirit of the Dragon; Spirit of the Forest; Spirit of the Wild
+mingkenremmy,106,107,4,Raise Guard; Return Natural; Undo Evil
+ohaengpurge,107,108,5,Free Movement; Purge Darkness; Remove Poison
+mingkenhardenarmor,109,110,2,Shield of Life
+kwisinarmor,110,111,2,Thicken Skin
+ohaenghf,111,112,1,Hurricane
+ohaengret,113,114,1,Tornado
+mingkenrez,115,116,1,Ming-Ken Blessing
+newmight,116,117,12,Bless Muscles; Inner Blessing; Power Burst; Spirit Strength; Strengthen; Temper
+none,,,118,(explicitly no animation)

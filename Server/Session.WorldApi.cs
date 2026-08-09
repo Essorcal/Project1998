@@ -39,7 +39,10 @@ public sealed partial class Session
         if (s.Faded && !ReferenceEquals(other, this) && !SharesGroup(other)) { DespawnEntity(s.Id); return; }
         if (s.MorphLook != 0) { SendCreatureList(new[] { (s.Id, (ushort)(0x8000 | s.MorphLook), s.X, s.Y, s.MorphColor, s.Dir) }); return; }
         var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : s.Faded ? 5 : s.Mounted ? 3 : 0), s.Face, s.Armor, s.ArmorColor, s.Weapon, s.Shield };   // [1]=form (5=invisible-spell/faded), [4]=war-paint dye
-        SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, s.Name, $"peer(0x33) id={s.Id} '{s.Name}'");
+        // The nameplate is drawn straight off this string, so an empty name is the whole "hide nameplates"
+        // mechanism — server-side, no client patch (see Content.ShowNameplates).
+        string plate = Content.ShowNameplates ? s.Name : "";
+        SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, plate, $"peer(0x33) id={s.Id} '{s.Name}'");
     }
 
     /// <summary>Do the viewer (this) and <paramref name="other"/> share a party? (Used to gate who can see a

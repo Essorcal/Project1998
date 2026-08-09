@@ -1,0 +1,459 @@
+key,spell,class,alignment,gif,atlas_wire_id,csv_animation,status
+thunder_bolt_mage,Thunder Bolt,mage,kwisin,spark,27,27,agree
+spirit_strength_mage,Spirit Strength,mage,kwisin,newmight,117,117,agree
+soothe,Soothe,mage,kwisin,heal,5,5,agree
+pestilence_mage,Pestilence,mage,kwisin,vex,1,1,agree
+static_mage,Static,mage,kwisin,vex,1,1,agree
+glimpse_of_the_void_mage,Glimpse of the Void,mage,kwisin,sealfate,17,17,agree
+spiritsong_mage,Spiritsong,mage,kwisin,kwisinheal,65,65,agree
+embrace_of_the_void_mage,Embrace of the Void,mage,kwisin,sealfate,17,17,agree
+thicken_skin_mage,Thicken Skin,mage,kwisin,kwisinarmor,111,111,agree
+spirit_strike_mage,Spirit Strike,mage,kwisin,sealfate,17,17,agree
+approach,Approach,mage,kwisin,summon,3,3,agree
+spirits_smile_mage,Spirits Smile,mage,kwisin,kwisinheal,65,65,agree
+soulstorm_mage,Soulstorm,mage,kwisin,sealfate,17,17,agree
+spiritual_cure_mage,Spiritual Cure,mage,kwisin,kwisinheal,65,65,agree
+strengthen_mage,Strengthen,mage,kwisin,newmight,117,117,agree
+soul_strike_mage,Soul Strike,mage,kwisin,sealfate,17,17,agree
+renew_essence_mage,Renew Essence,mage,kwisin,kwisinheal,65,65,agree
+cure_illness_mage,Cure Illness,mage,kwisin,kwisinpurge,70,70,agree
+summon,Summon,mage,kwisin,summon,3,3,agree
+crescendo_mage,Cresendo,mage,kwisin,sealfate,17,17,agree
+spirits_embrace_mage,Spiritual Embrace,mage,kwisin,kwisinheal,65,65,agree
+release_binds_mage,Release Binds,mage,kwisin,kwisinpurge,70,70,agree
+protect_soul_mage,Protect Soul,mage,kwisin,kwisinsanc,61,61,agree
+spirits_power_mage,Spirits Power,mage,kwisin,kwisininvoke,95,95,agree
+kwisin_mask_mage,Kwi-Sin Mask,mage,kwisin,summon,3,3,agree
+ancestors_touch_mage,Ancestors Touch,mage,kwisin,kwisinheal,65,65,agree
+soul_spike_mage,Soul Spike,mage,kwisin,sealfate,17,17,agree
+soul_chasm_mage,Soul Chasm,mage,kwisin,sealfate,17,17,agree
+release_curse_mage,Release Curse,mage,kwisin,kwisinremmy,71,71,agree
+kwisin_chameleon_mage,Kwi-Sin Chameleon,mage,kwisin,summon,3,3,agree
+death_scream_mage,Death Scream,mage,kwisin,sealfate,17,17,agree
+deaths_face_mage,Death's Face,mage,kwisin,kwisinvex,53,53,agree
+spirits_leech_mage,Spirits Leech,mage,kwisin,mingkenvenom,84,84,agree
+dark_veil_mage,Darken Veil,mage,kwisin,kwisinpara,88,88,agree
+spirit_leash_mage,Spirit Leash,mage,kwisin,kwisinpara,88,88,agree
+eater_of_the_dead_mage,Eater of the Dead,mage,kwisin,sealfate,17,17,agree
+curse_of_the_void_mage,Curse of the Void,mage,kwisin,endear,39,39,agree
+sweet_musings_mage,Sweet Musings,mage,kwisin,sanc,2,2,agree
+river_of_blood_mage,River of Blood,mage,kwisin,sealfate,17,17,agree
+voids_touch_mage,Voids Touch,mage,kwisin,sanc,2,2,agree
+dance_macabre_mage,Dance Macabre,mage,kwisin,sealfate,17,17,agree
+still_embrace_mage,Still Embrace,mage,kwisin,kwisinheal,65,65,agree
+consume_soul_mage,Consume Soul,mage,kwisin,annihilation,54,54,agree
+spirits_power_poet,Spirits Power,poet,kwisin,kwisininvoke,95,95,agree
+spirits_smile_poet,Spirits Smile,poet,kwisin,kwisinheal,65,65,agree
+spirits_embrace_poet,Spirits Embrace,poet,kwisin,kwisinheal,65,65,agree
+glimpse_of_the_void_poet,Glimpse of the Void,poet,kwisin,sealfate,17,17,agree
+cure_illness_poet,Cure Illness,poet,kwisin,kwisinpurge,70,70,agree
+thicken_skin_poet,Thicken Skin,poet,kwisin,kwisinarmor,111,111,agree
+spirits_kiss_poet,Spirits Kiss,poet,kwisin,kwisinheal,65,65,agree
+embrace_of_the_void_poet,Embrace of the Void,poet,kwisin,sealfate,17,17,agree
+release_curse_poet,Release Curse,poet,kwisin,kwisinremmy,71,71,agree
+strengthen_poet,Strengthen,poet,kwisin,newmight,117,117,agree
+spirit_strike_poet,Spirit Strike,poet,kwisin,sealfate,17,17,agree
+ancestors_touch_poet,Ancestors Touch,poet,kwisin,kwisinheal,65,65,agree
+brothers_of_spirit_poet,Brothers of Spirit,poet,kwisin,kwisinheal,65,65,agree
+protect_soul_poet,Protect Soul,poet,kwisin,kwisinsanc,61,61,agree
+clear_darkness_poet,Clear Darkness,poet,kwisin,kwisinpurge,70,70,agree
+possess_soul_poet,Posses Soul,poet,kwisin,endear,39,39,agree
+release_binds_poet,Release Binds,poet,kwisin,kwisinpurge,70,70,agree
+ancestors_embrace_poet,Ancestors Embrace,poet,kwisin,kwisinheal,65,65,agree
+draw_energy_poet,Draw Energy,poet,kwisin,totemeffect,16,16,agree
+brethren_of_spirits_poet,Brethren of Spirits,poet,kwisin,kwisinheal,65,65,agree
+restore_will_poet,Restore Will,poet,kwisin,kwisinremmy,71,71,agree
+ancestors_kiss_poet,Ancestors Kiss,poet,kwisin,kwisinheal,65,65,agree
+hear_spirits_poet,Hear Spirits,poet,kwisin,none,,-1,none-in-atlas
+spirit_puppet_poet,Spirit Puppet,poet,kwisin,kwisinret,100,100,agree
+share_energy_poet,Share Energy,poet,kwisin,dart,12,12,agree
+damage_will_poet,Damage Will,poet,kwisin,kwisinvex,53,53,agree
+tossing_the_bones_poet,Tossing the Bones,poet,kwisin,sealfate,17,17,agree
+block_entry_poet,Block Entry,poet,kwisin,none,,-1,none-in-atlas
+clan_of_souls_poet,Clan of Souls,poet,kwisin,kwisinheal,65,65,agree
+deaths_guard_poet,Deaths Guard,poet,kwisin,mingkenhardenbody,72,72,agree
+remove_magic_poet,Remove Magic,poet,kwisin,kwisinremmy,71,71,agree
+dance_of_death_poet,Dance of Death,poet,kwisin,sealfate,17,17,agree
+breath_of_power_poet,Breath of Power,poet,kwisin,kwisinheal,65,65,agree
+return_spirit_poet,Return Spirit,poet,kwisin,kwisinrez,96,96,agree
+restore_poet,Restore,poet,kwisin,heal,5,5,agree
+spiritsong_rogue,Spiritsong,rogue,kwisin,kwisinheal,65,65,agree
+kwisin_cloak_rogue,Kwi-Sin Cloak,rogue,kwisin,summon,3,3,agree
+spirit_strength_rogue,Spirit Strength,rogue,kwisin,newmight,117,117,agree
+spiritual_advisor_rogue,Spiritual Advisor,rogue,kwisin,none,,-1,none-in-atlas
+embrace_of_the_void_rogue,Embrace of the Void,rogue,kwisin,sealfate,17,17,agree
+spiritual_cure_rogue,Spiritual Cure,rogue,kwisin,kwisinheal,65,65,agree
+spirit_strike_rogue,Spirit Strike,rogue,kwisin,sealfate,17,17,agree
+spirit_warrior_rogue,Spirit Warrior,rogue,kwisin,mingkenshadowfigure,20,20,agree
+kwisin_disguise_rogue,Kwi-Sin Disguise,rogue,kwisin,summon,3,3,agree
+set_trap,Set Trap,rogue,kwisin,dart,12,12,agree
+spiritual_guide_rogue,Spiritual Guide,rogue,kwisin,none,,-1,none-in-atlas
+souls_rage_rogue,Soul's Rage,rogue,kwisin,kwisinfury,103,103,agree
+kwisin_mask_rogue,Kwi-Sin Mask,rogue,kwisin,summon,3,3,agree
+spirits_form_rogue,Spirit's Form,rogue,kwisin,none,,-1,none-in-atlas
+displacement_rogue,Displacement,rogue,kwisin,none,,-1,none-in-atlas
+kwisin_chameleon_rogue,Kwi-Sin Chameleon,rogue,kwisin,summon,3,3,agree
+forgetfulness_rogue,Forgetfulness,rogue,kwisin,endear,39,39,agree
+spirits_embrace_rogue,Spiritual Embrace,rogue,kwisin,kwisinheal,65,65,agree
+the_voids_measure_rogue,The Void's Measure,rogue,kwisin,kwisinberserk,68,68,agree
+filling_the_soul_rogue,Filling the Soul,rogue,kwisin,kwisinfury,103,103,agree
+drink_of_souls_rogue,Drink of Souls,rogue,kwisin,mingkenvenom,84,84,agree
+set_trap,Set Trap,rogue,kwisin,deathtrap,44,12,differs
+spirit_caress_rogue,Spirit Caress,rogue,kwisin,kwisinheal,65,65,agree
+afterlifes_embrace_rogue,Afterlife's Embrace,rogue,kwisin,kwisinww,69,69,agree
+souls_rage_warrior,Soul's Rage,warrior,kwisin,kwisinfury,103,103,agree
+sanctification_warrior,Sanctification,warrior,kwisin,none,,-1,none-in-atlas
+spiritsong_warrior,Spiritsong,warrior,kwisin,kwisinheal,65,65,agree
+back_battle_warrior,Back Battle,warrior,kwisin,none,,-1,none-in-atlas
+flank_battle_warrior,Flank Battle,warrior,kwisin,none,,-1,none-in-atlas
+filling_the_soul_warrior,filling the Soul,warrior,kwisin,kwisinfury,103,103,agree
+spiritual_aid_warrior,Spiritual Aid,warrior,kwisin,none,,-1,none-in-atlas
+renew_essence_warrior,Renew Essence,warrior,kwisin,kwisinheal,65,65,agree
+spirit_arm_warrior,Spirit Arm,warrior,kwisin,none,,-1,none-in-atlas
+spirits_whisper_warrior,Spirit's Whisper,warrior,kwisin,none,,-1,none-in-atlas
+strength_of_ancestors_warrior,Strength of Ancestors,warrior,kwisin,kwisinfury,103,103,agree
+tincture_of_the_unknown_warrior,Tincture of the Unknown,warrior,kwisin,none,,-1,none-in-atlas
+slash_warrior,Slash,warrior,kwisin,slash,31,31,agree
+hand_of_darkness_warrior,Hand of Darkness,warrior,kwisin,none,,-1,none-in-atlas
+no_fear_warrior,No Fear,warrior,kwisin,kwisinberserk,68,68,agree
+touch_of_health_warrior,Touch of Health,warrior,kwisin,kwisinheal,65,65,agree
+deaths_angel_warrior,Death's Angel,warrior,kwisin,kwisinww,69,69,agree
+inner_blessing_mage,Inner Blessing,mage,mingken,newmight,117,117,agree
+bolt_mage,Bolt,mage,mingken,mingkenzap,30,30,agree
+helping_hand_mage,Helping Hand,mage,mingken,mingkenheal,64,64,agree
+lightning_mage,Lightning,mage,mingken,mingkenzap,30,30,agree
+shield_of_life_mage,Shield of Life,mage,mingken,mingkenhardenarmor,110,110,agree
+wrath_of_nature_mage,Wrath of Nature,mage,mingken,mingkenzap,30,30,agree
+lifes_water_mage,Life's Water,mage,mingken,mingkenheal,64,64,agree
+avalanche_mage,Avalance,mage,mingken,mingkenzap,30,30,agree
+natures_kiss_mage,Natures Kiss,mage,mingken,mingkenheal,64,64,agree
+bless_muscles_mage,Bless Muscles,mage,mingken,newmight,117,117,agree
+tree_dart_mage,Tree Dart,mage,mingken,mingkenzap,30,30,agree
+lifesong_mage,Lifesong,mage,mingken,mingkenheal,64,64,agree
+restore_health_mage,Restore Health,mage,mingken,mingkenpurge,57,57,agree
+flight_of_arrows_mage,Flight of Arrows,mage,mingken,mingkenzap,30,30,agree
+infuse_energy_mage,Infuse Energy,mage,mingken,mingkenheal,64,64,agree
+return_movement_mage,Return Movement,mage,mingken,mingkenpurge,57,57,agree
+guard_life_mage,Guard Life,mage,mingken,mingkensanc,56,56,agree
+life_force_mage,Life Force,mage,mingken,mingkeninvoke,90,90,agree
+mingken_mask_mage,Ming-Ken Mask,mage,mingken,summon,3,3,agree
+life_flow_mage,Life Flow,mage,mingken,mingkenheal,64,64,agree
+treefall_mage,Treefall,mage,mingken,mingkenzap,30,30,agree
+winters_vortex_mage,Winters Vortex,mage,mingken,mingkenzap,30,30,agree
+undo_evil_mage,Undo Evil,mage,mingken,mingkenremmy,107,107,agree
+mingken_chameleon_mage,Ming-Ken Chameleon,mage,mingken,summon,3,3,agree
+natures_wounding_mage,Natures Wounding,mage,mingken,mingkenzap,30,30,agree
+unnatural_selection_mage,Un-natural Selection,mage,mingken,mingkenvex,101,101,agree
+snake_bite_mage,Snake Bite,mage,mingken,mingkenvenom,84,84,agree
+winters_shadow_mage,Winters Shadow,mage,mingken,mingkenpara,99,99,agree
+cold_binds_mage,Cold Binds,mage,mingken,mingkenpara,99,99,agree
+forests_discord_mage,Forests Discord,mage,mingken,mingkenzap,30,30,agree
+despise_friend_mage,Dispise Friend,mage,mingken,endear,39,39,agree
+essence_of_poppies_mage,Essence of Poppies,mage,mingken,sanc,2,2,agree
+natural_disaster_mage,Natural Disaster,mage,mingken,mingkenzap,30,30,agree
+still_ethers_mage,Still Ethers,mage,mingken,sanc,2,2,agree
+wilding_mage,Wilding,mage,mingken,mingkenzap,30,30,agree
+infuse_life_mage,Infuse Life,mage,mingken,mingkenheal,64,64,agree
+flesh_eaters_mage,Flesh Eaters,mage,mingken,mingkenhellfire,104,104,agree
+life_force_poet,Life Force,poet,mingken,mingkeninvoke,90,90,agree
+lifes_water_poet,Life's Water,poet,mingken,mingkenheal,64,64,agree
+infuse_energy_poet,Infuse Energy,poet,mingken,mingkenheal,64,64,agree
+bolt_poet,Bolt,poet,mingken,mingkenzap,30,30,agree
+restore_health_poet,Restore Health,poet,mingken,mingkenpurge,57,57,agree
+shield_of_life_poet,Shield of Life,poet,mingken,mingkenhardenarmor,110,110,agree
+spark_of_health_poet,Spark of Health,poet,mingken,mingkenheal,64,64,agree
+lightning_poet,Lightning,poet,mingken,mingkenzap,30,30,agree
+undo_evil_poet,Undo Evil,poet,mingken,mingkenremmy,107,107,agree
+bless_muscles_poet,Bless Muscles,poet,mingken,newmight,117,117,agree
+wrath_of_nature_poet,Wrath of Nature,poet,mingken,mingkenzap,30,30,agree
+life_flow_poet,Life Flow,poet,mingken,mingkenheal,64,64,agree
+gathering_of_power_poet,Gathering of Power,poet,mingken,mingkenheal,64,64,agree
+guard_life_poet,Guard Life,poet,mingken,mingkensanc,56,56,agree
+restore_sight_poet,Restore Sight,poet,mingken,mingkenpurge,57,57,agree
+charm_life_poet,Charm Life,poet,mingken,endear,39,39,agree
+return_movement_poet,Return Movement,poet,mingken,mingkenpurge,57,57,agree
+lifeforce_poet,Life-Force,poet,mingken,mingkenheal,64,64,agree
+harness_power_poet,Harness Power,poet,mingken,mingkeninspiration,76,76,agree
+gathering_of_the_flock_poet,Gathering of the Flock,poet,mingken,mingkenheal,64,64,agree
+raise_guard_poet,Raise Guard,poet,mingken,mingkenremmy,107,107,agree
+fertile_soil_poet,Fertile Soil,poet,mingken,mingkenheal,64,64,agree
+improve_sight_poet,Improve Sight,poet,mingken,none,,-1,none-in-atlas
+palm_of_life_poet,Palm of Life,poet,mingken,mingkenret,86,86,agree
+life_barrier_poet,Life Barrier,poet,mingken,none,,-1,none-in-atlas
+bestow_power_poet,Bestow Power,poet,mingken,kwisinpurge,70,70,agree
+drop_guard_poet,Drop Guard,poet,mingken,mingkenvex,101,101,agree
+natures_fury_poet,Natures Fury,poet,mingken,mingkenzap,30,30,agree
+distance_self_poet,Distance Self,poet,mingken,none,,-1,none-in-atlas
+healing_hand_poet,Healing Hand,poet,mingken,mingkenheal,64,64,agree
+lifes_protection_poet,Life's Protection,poet,mingken,mingkenhardenbody,72,72,agree
+return_natural_poet,Return Natural,poet,mingken,mingkenremmy,107,107,agree
+breaking_of_the_world_poet,Breaking of the World,poet,mingken,mingkenzap,30,30,agree
+healing_breath_poet,Healing Breath,poet,mingken,mingkenheal,64,64,agree
+mingken_blessing_poet,Ming-Ken Blessing,poet,mingken,mingkenrez,116,116,agree
+helping_hand_rogue,Helping Hand,rogue,mingken,mingkenheal,64,64,agree
+mingken_cloak_rogue,Ming-Ken Cloak,rogue,mingken,summon,3,3,agree
+inner_blessing_rogue,Inner Blessing,rogue,mingken,newmight,117,117,agree
+natural_talent_rogue,Natural Talent,rogue,mingken,none,,-1,none-in-atlas
+lightning_rogue,Lightning,rogue,mingken,mingkenzap,30,30,agree
+natures_kiss_rogue,Natures Kiss,rogue,mingken,mingkenheal,64,64,agree
+wrath_of_nature_rogue,Wrath of Nature,rogue,mingken,mingkenzap,30,30,agree
+natural_defense_rogue,Natural Defense,rogue,mingken,mingkenshadowfigure,20,20,agree
+mingken_disguise_rogue,Ming-Ken Disguise,rogue,mingken,summon,3,3,agree
+natures_handiwork_rogue,Nature's Handiwork,rogue,mingken,none,,-1,none-in-atlas
+spirit_of_the_forest_rogue,Spirit of the Forest,rogue,mingken,mingkenfury,106,106,agree
+mingken_mask_rogue,Ming-Ken Mask,rogue,mingken,summon,3,3,agree
+lifes_cloak_rogue,Life's Cloak,rogue,mingken,none,,-1,none-in-atlas
+waylay_rogue,Waylay,rogue,mingken,none,,-1,none-in-atlas
+mingken_chameleon_rogue,Ming-Ken Chameleon,rogue,mingken,summon,3,3,agree
+free_spirit_rogue,Free Spirit,rogue,mingken,endear,39,39,agree
+infuse_energy_rogue,Infuse Energy,rogue,mingken,mingkenheal,64,64,agree
+beastly_frenzy_rogue,Beastly Frenzy,rogue,mingken,whitetigerclaws,32,32,agree
+spirit_of_the_wild_rogue,Spirit of the Wild,rogue,mingken,mingkenfury,106,106,agree
+parasite_rogue,Parasite,rogue,mingken,mingkenvenom,84,84,agree
+heal_injury_rogue,Heal Injury,rogue,mingken,mingkenheal,64,64,agree
+mingkens_judgement_rogue,Ming Ken's Judgement,rogue,mingken,mingkenww,67,67,agree
+spirit_of_the_forest_warrior,Spirit of the Forest,warrior,mingken,mingkenfury,106,106,agree
+tribal_gathering_warrior,Tribal Gathering,warrior,mingken,none,,-1,none-in-atlas
+helping_hand_warrior,Helping Hand,warrior,mingken,mingkenheal,64,64,agree
+back_attack_warrior,Back Attack,warrior,mingken,none,,-1,none-in-atlas
+flank_attack_warrior,Flank Attack,warrior,mingken,none,,-1,none-in-atlas
+spirit_of_the_wild_warrior,Spirit of the Wild,warrior,mingken,mingkenfury,106,106,agree
+oneness_warrior,Oneness,warrior,mingken,none,,-1,none-in-atlas
+lifesong_warrior,Lifesong,warrior,mingken,mingkenheal,64,64,agree
+touch_of_the_bear_warrior,Touch of the Bear,warrior,mingken,none,,-1,none-in-atlas
+creatures_guidance_warrior,Creature's Guidance,warrior,mingken,none,,-1,none-in-atlas
+spirit_of_the_dragon_warrior,Spirit of the Dragon,warrior,mingken,mingkenfury,106,106,agree
+tigers_claw_warrior,Tiger's Claw,warrior,mingken,none,,-1,none-in-atlas
+dragons_claw_warrior,Dragon's Claw,warrior,mingken,none,,-1,none-in-atlas
+tigers_pounce_warrior,Tiger's Pounce,warrior,mingken,whitetigerclaws,32,32,agree
+balm_warrior,Balm,warrior,mingken,mingkenheal,64,64,agree
+natures_own_warrior,Nature's Own,warrior,mingken,mingkenww,67,67,agree
+temper_mage,Temper,mage,ohaeng,newmight,117,117,agree
+natures_ire_mage,Natures Ire,mage,ohaeng,ignite,4,4,agree
+heal_others_mage,Heal Others,mage,ohaeng,ohaengheal,63,63,agree
+natures_storm_mage,Natures Storm,mage,ohaeng,ignite,4,4,agree
+elemental_armor_mage,Elemental Armor,mage,ohaeng,ohaengsanc,59,59,agree
+thunderclap_mage,Thunderclap,mage,ohaeng,ignite,4,4,agree
+quicken_mage,Quicken,mage,ohaeng,ohaengheal,63,63,agree
+deluge_mage,Deluge,mage,ohaeng,ignite,4,4,agree
+cooling_touch_mage,Cooling Touch,mage,ohaeng,ohaengheal,63,63,agree
+power_burst_mage,Power Burst,mage,ohaeng,newmight,117,117,agree
+sunstroke_mage,Sunstroke,mage,ohaeng,ignite,4,4,agree
+sweet_waters_mage,Sweet Waters,mage,ohaeng,ohaengheal,63,63,agree
+remove_poison_mage,Remove Poison,mage,ohaeng,ohaengpurge,108,108,agree
+blazing_sands_mage,Blazing Sands,mage,ohaeng,ignite,4,4,agree
+lifes_river_mage,Lifes River,mage,ohaeng,ohaengheal,63,63,agree
+free_movement_mage,Free Movement,mage,ohaeng,ohaengpurge,108,108,agree
+magic_shield_mage,Magic Shield,mage,ohaeng,ohaenghardenarmor,98,98,agree
+gather_magic_mage,Gather Magic,mage,ohaeng,ohaenginvoke,78,78,agree
+ohaeng_mask_mage,Ohaeng Mask,mage,ohaeng,summon,3,3,agree
+infuse_lifeforce_mage,Infuse Life-force,mage,ohaeng,ohaengheal,63,63,agree
+shatter_mage,Shatter,mage,ohaeng,ignite,4,4,agree
+volcano_mage,Volcano,mage,ohaeng,ignite,4,4,agree
+restore_armor_mage,Restore Armor,mage,ohaeng,ohaengremmy,58,58,agree
+ohaeng_chameleon_mage,Ohaeng Chameleon,mage,ohaeng,summon,3,3,agree
+rain_of_fire_mage,Rain of Fire,mage,ohaeng,ignite,4,4,agree
+flaw_mage,Flaw,mage,ohaeng,ohaengvex,79,79,agree
+corruption_mage,Corruption,mage,ohaeng,mingkenvenom,84,84,agree
+ice_glare_mage,Ice Glare,mage,ohaeng,freeze,52,52,agree
+lockup_mage,Lockup,mage,ohaeng,freeze,52,52,agree
+shatter_storm_mage,Shatter Storm,mage,ohaeng,ignite,4,4,agree
+chaos_rain_mage,Chaos Rain,mage,ohaeng,endear,39,39,agree
+stillness_mage,Stillness,mage,ohaeng,sanc,2,2,agree
+winds_of_disaster_mage,Winds of Disaster,mage,ohaeng,ignite,4,4,agree
+still_waters_mage,Still Waters,mage,ohaeng,sanc,2,2,agree
+chain_lightning_mage,Chain Lightning,mage,ohaeng,ignite,4,4,agree
+healing_rain_mage,Healing Rain,mage,ohaeng,ohaengheal,63,63,agree
+hurricane_mage,Hurricane,mage,ohaeng,ohaenghf,112,112,agree
+gather_magic_poet,Gather Magic,poet,ohaeng,ohaenginvoke,78,78,agree
+quicken_poet,Quicken,poet,ohaeng,ohaengheal,63,63,agree
+lifes_river_poet,Lifes River,poet,ohaeng,ohaengheal,63,63,agree
+natures_ire_poet,Natures Ire,poet,ohaeng,ignite,4,4,agree
+remove_poison_poet,Remove Poison,poet,ohaeng,ohaengpurge,108,108,agree
+elemental_armor_poet,Elemental Armor,poet,ohaeng,ohaengsanc,59,59,agree
+water_of_nature_poet,Water of Nature,poet,ohaeng,ohaengheal,63,63,agree
+natures_storm_poet,Natures Storm,poet,ohaeng,ignite,4,4,agree
+restore_armor_poet,Restore Armor,poet,ohaeng,ohaengremmy,58,58,agree
+power_burst_poet,Power Burst,poet,ohaeng,newmight,117,117,agree
+thunderclap_poet,Thunderclap,poet,ohaeng,ignite,4,4,agree
+infuse_lifeforce_poet,Infuse Life-force,poet,ohaeng,ohaengheal,63,63,agree
+natures_family_poet,Natures Family,poet,ohaeng,ohaengheal,63,63,agree
+magic_shield_poet,Magic Shield,poet,ohaeng,ohaenghardenarmor,98,98,agree
+purge_darkness_poet,Purge Darkness,poet,ohaeng,ohaengpurge,108,108,agree
+align_follower_poet,Align Follower,poet,ohaeng,endear,39,39,agree
+free_movement_poet,Free Movement,poet,ohaeng,ohaengpurge,108,108,agree
+lifespring_poet,Lifespring,poet,ohaeng,ohaengheal,63,63,agree
+combine_focus_poet,Combine Focus,poet,ohaeng,chill,22,22,agree
+gathering_of_majesty_poet,Gathering of Majesty,poet,ohaeng,ohaengheal,63,63,agree
+align_armor_poet,Align Armor,poet,ohaeng,ohaengremmy,58,58,agree
+waters_of_purity_poet,Waters of Purity,poet,ohaeng,ohaengheal,63,63,agree
+show_hidden_poet,Show Hidden,poet,ohaeng,none,,-1,none-in-atlas
+tornado_poet,Tornado,poet,ohaeng,ohaengret,114,114,agree
+balance_barrier_poet,Balance Barrier,poet,ohaeng,none,,-1,none-in-atlas
+release_focus_poet,Release Focus,poet,ohaeng,ohaenginspire,49,49,agree
+unalign_armor_poet,Unalign armor,poet,ohaeng,ohaengvex,79,79,agree
+groundstrike_poet,Groundstrike,poet,ohaeng,ignite,4,4,agree
+protect_sides_poet,Protect Sides,poet,ohaeng,none,,-1,none-in-atlas
+earths_embrace_poet,Earths Embrace,poet,ohaeng,ohaengheal,63,63,agree
+body_of_alignment_poet,Body of Alignment,poet,ohaeng,ohaenghardenbody,87,87,agree
+restore_balance_poet,Restore Balance,poet,ohaeng,ohaengremmy,58,58,agree
+storm_crow_poet,Stormcow,poet,ohaeng,ignite,4,4,agree
+breath_of_life_poet,Breath of Life,poet,ohaeng,ohaengheal,63,63,agree
+death_undone_poet,Death Undone,poet,ohaeng,ohaengrez,92,92,agree
+heal_others_rogue,Heal Others,rogue,ohaeng,ohaengheal,63,63,agree
+ohaeng_cloak_rogue,Ohaeng Cloak,rogue,ohaeng,summon,3,3,agree
+temper_rogue,Temper,rogue,ohaeng,newmight,117,117,agree
+appraise_rogue,Appraise,rogue,ohaeng,none,,-1,none-in-atlas
+natures_storm_rogue,Natures Storm,rogue,ohaeng,ignite,4,4,agree
+cooling_touch_rogue,Cooling Touch,rogue,ohaeng,ohaengheal,63,63,agree
+thunderclap_rogue,Thunderclap,rogue,ohaeng,ignite,4,4,agree
+ohaengs_armor_rogue,Ohaeng's Armor,rogue,ohaeng,newshadowfigure,21,21,agree
+ohaeng_disguise_rogue,Ohaeng Disguise,rogue,ohaeng,summon,3,3,agree
+judgement_day_rogue,Judgement Day,rogue,ohaeng,none,,-1,none-in-atlas
+augmentation_rogue,Augmentation,rogue,ohaeng,ohaenghardenarmor,98,98,agree
+ohaeng_mask_rogue,Ohaeng Mask,rogue,ohaeng,summon,3,3,agree
+glass_form_rogue,Glass Form,rogue,ohaeng,none,,-1,none-in-atlas
+reflect_rogue,Reflect,rogue,ohaeng,none,,-1,none-in-atlas
+ohaeng_chameleon_rogue,Ohaeng Chameleon,rogue,ohaeng,summon,3,3,agree
+mislead_rogue,Mislead,rogue,ohaeng,endear,39,39,agree
+lifes_river_rogue,Lifes River,rogue,ohaeng,ohaengheal,63,63,agree
+tilting_the_balance_rogue,Tilting the Balance,rogue,ohaeng,ww,9,9,agree
+ohaengs_grace_rogue,Ohaeng's Grace,rogue,ohaeng,ohaenghardenarmor,98,98,agree
+absorb_rogue,Absorb,rogue,ohaeng,mingkenvenom,84,84,agree
+bandage_rogue,Bandage,rogue,ohaeng,ohaengheal,63,63,agree
+calculating_blow_rogue,Calculating Blow,rogue,ohaeng,ohaengww,60,60,agree
+augmentation_warrior,Augmentation,warrior,ohaeng,ohaenghardenarmor,98,98,agree
+strength_of_purpose_warrior,Strength of Purpose,warrior,ohaeng,none,,-1,none-in-atlas
+heal_others_warrior,Heal Others,warrior,ohaeng,ohaengheal,63,63,agree
+back_damage_warrior,Back Damage,warrior,ohaeng,none,,-1,none-in-atlas
+flank_damage_warrior,Flank Damage,warrior,ohaeng,none,,-1,none-in-atlas
+ohaengs_grace_warrior,Ohaeng's Grace,warrior,ohaeng,ohaenghardenarmor,98,98,agree
+strengthen_weapon_warrior,Strength Weapon,warrior,ohaeng,none,,-1,none-in-atlas
+sweet_waters_warrior,Sweet Waters,warrior,ohaeng,ohaengheal,63,63,agree
+sharpen_warrior,Sharpen,warrior,ohaeng,none,,-1,none-in-atlas
+spot_unbalance_warrior,Spot Unbalance,warrior,ohaeng,none,,-1,none-in-atlas
+ohaengs_anger_warrior,Ohaeng's Anger,warrior,ohaeng,ohaenghardenarmor,98,98,agree
+whetstone_warrior,Whetstone,warrior,ohaeng,none,,-1,none-in-atlas
+razors_edge_warrior,Razors Edge,warrior,ohaeng,none,,-1,none-in-atlas
+winds_blast_warrior,Wind's Blast,warrior,ohaeng,ww,9,9,agree
+restoration_warrior,Restoration,warrior,ohaeng,ohaengheal,63,63,agree
+bladedance_warrior,Bladedance,warrior,ohaeng,ohaengww,60,60,agree
+fissure,Fissure,,unaligned,confuse,34,41,differs
+lava_surge,Lava Surge,,unaligned,confuse,34,42,differs
+survive,Survive,,unaligned,heal,5,5,agree
+fascinate,Fascinate,,unaligned,endear,39,39,agree
+spot_traps,Spot Traps,,unaligned,none,,-1,none-in-atlas
+serpents_fury,Serpent's Fury,,unaligned,might,11,11,agree
+greater_blessing,Greater Blessing,,unaligned,sanc,2,2,agree
+spirit_fury,Spirit Fury,,unaligned,spiritfury,18,18,agree
+might_mage,Might,mage,unaligned,might,11,11,agree
+spark_mage,Spark,mage,unaligned,spark,27,28,differs
+fleshspeak_mage,Fleshspeak,mage,unaligned,heal,5,5,agree
+singe_mage,Singe,mage,unaligned,spark,27,28,differs
+harden_armor_mage,Harden Armor,mage,unaligned,sanc,2,2,agree
+ignite_mage,Ignite,mage,unaligned,ignite,4,4,agree
+lay_hands_mage,Lay Hands,mage,unaligned,heal,5,5,agree
+erupt_mage,Erupt,mage,unaligned,ignite,4,4,agree
+mend_wounds_mage,Mend Wounds,mage,unaligned,heal,5,5,agree
+valor_mage,Valor,mage,unaligned,might,11,11,agree
+ion_mage,Ion,mage,unaligned,ignite,4,4,agree
+relief_mage,Relief,mage,unaligned,heal,5,5,agree
+purge_mage,Purge,mage,unaligned,remmy,10,10,agree
+ion_charge_mage,Ion Charge,mage,unaligned,ignite,4,4,agree
+recover_mage,Recover,mage,unaligned,heal,5,5,agree
+cure_paralysis_mage,Cure Paralysis,mage,unaligned,remmy,10,10,agree
+sanctuary_mage,Sanctuary,mage,unaligned,might,11,11,agree
+invoke_mage,Invoke,mage,unaligned,might,11,11,agree
+gangrel_mage,Gangrel,mage,unaligned,summon,3,3,agree
+heal_mage,Heal,mage,unaligned,heal,5,5,agree
+impact_mage,Impact,mage,unaligned,ignite,4,4,agree
+explode_mage,Explode,mage,unaligned,ignite,4,4,agree
+remove_curse_mage,Remove Curse,mage,unaligned,remmy,10,10,agree
+beast_mage,Beast,mage,unaligned,summon,3,3,agree
+call_lightning_mage,Call Lightning,mage,unaligned,ignite,4,4,agree
+vex_mage,Vex,mage,unaligned,vex,1,1,agree
+venom_mage,Venom,mage,unaligned,vex,1,1,agree
+blind_mage,Blind,mage,unaligned,vex,1,1,agree
+paralyze_mage,Paralyze,mage,unaligned,vex,1,1,agree
+electrocute_mage,Electrocute,mage,unaligned,ignite,4,4,agree
+confuse_mage,Confuse,mage,unaligned,confuse,34,34,agree
+sleep_mage,Sleep,mage,unaligned,sanc,2,2,agree
+stormstrike_mage,Stormstrike,mage,unaligned,ignite,4,4,agree
+doze_mage,Doze,mage,unaligned,sanc,2,2,agree
+tempest_mage,Tempest,mage,unaligned,ignite,4,4,agree
+rejuvenate_mage,Rejeuvenate,mage,unaligned,heal,5,5,agree
+hellfire_mage,Hellfire,mage,unaligned,hellfire,8,8,agree
+invoke_poet,Invoke,poet,unaligned,might,11,11,agree
+lay_hands_poet,Lay Hands,poet,unaligned,heal,5,5,agree
+recover_poet,Recover,poet,unaligned,heal,5,5,agree
+spark_poet,Spark,poet,unaligned,spark,27,28,differs
+purge_poet,Purge,poet,unaligned,remmy,10,10,agree
+harden_armor_poet,Harden Armor,poet,unaligned,sanc,2,2,agree
+vital_spark_poet,Vital Spark,poet,unaligned,heal,5,5,agree
+singe_poet,Singe,poet,unaligned,spark,27,28,differs
+remove_curse_poet,Remove Curse,poet,unaligned,remmy,10,10,agree
+valor_poet,Valor,poet,unaligned,might,11,11,agree
+ignite_poet,Ignite,poet,unaligned,ignite,4,4,agree
+heal_poet,Heal,poet,unaligned,heal,5,5,agree
+anoint_poet,Annoint,poet,unaligned,heal,5,5,agree
+sanctuary_poet,Sanctuary,poet,unaligned,might,11,11,agree
+remove_veil_poet,Remove Veil,poet,unaligned,remmy,10,10,agree
+endear_poet,Endear,poet,unaligned,endear,39,39,agree
+cure_paralysis_poet,Cure Paralysis,poet,unaligned,remmy,10,10,agree
+revitalize_poet,Revitalize,poet,unaligned,heal,5,5,agree
+inspiration_poet,Inspiration,poet,unaligned,might,11,11,agree
+remedy_poet,Remedy,poet,unaligned,heal,5,5,agree
+atone_poet,Atone,poet,unaligned,remmy,10,10,agree
+fortify_poet,Fortify,poet,unaligned,heal,5,5,agree
+second_sight_poet,Second Sight,poet,unaligned,none,,-1,none-in-atlas
+retribution_poet,Retribution,poet,unaligned,retribution,51,51,agree
+barrier_poet,Barrier,poet,unaligned,might,11,11,agree
+inspire_poet,Inspire,poet,unaligned,might,11,11,agree
+scourge_poet,Scourge,poet,unaligned,vex,1,1,agree
+earthquake_poet,Earthquake,poet,unaligned,ignite,4,4,agree
+heavens_kiss_poet,Heaven's Kiss,poet,unaligned,heal,5,5,agree
+harden_body_poet,Harden Body,poet,unaligned,might,11,11,agree
+dispell_poet,Dispell,poet,unaligned,remmy,10,10,agree
+flare_poet,Flare,poet,unaligned,ignite,4,4,agree
+water_of_life_poet,Water of Life,poet,unaligned,heal,5,5,agree
+resurrect_poet,Ressurect,poet,unaligned,might,11,11,agree
+fleshspeak_rogue,Fleshspeak,rogue,unaligned,heal,5,5,agree
+feral_rogue,Feral,rogue,unaligned,summon,3,3,agree
+might_rogue,Might,rogue,unaligned,might,11,11,agree
+judge_rogue,Judge,rogue,unaligned,none,,-1,none-in-atlas
+singe_rogue,Singe,rogue,unaligned,spark,27,28,differs
+mend_wounds_rogue,Mend Wounds,rogue,unaligned,heal,5,5,agree
+ignite_rogue,Ignite,rogue,unaligned,ignite,4,4,agree
+shadow_figure_rogue,Shadow Figure,rogue,unaligned,sanc,2,2,agree
+rodent_rogue,Rodent,rogue,unaligned,summon,3,3,agree
+spy_rogue,Spy,rogue,unaligned,none,,-1,none-in-atlas
+wolfs_fury_rogue,Wolf's Fury,rogue,unaligned,might,11,11,agree
+gangrel_rogue,Gangrel,rogue,unaligned,summon,3,3,agree
+invisible_rogue,Invisible,rogue,unaligned,none,,-1,none-in-atlas
+ambush_rogue,Ambush,rogue,unaligned,none,,-1,none-in-atlas
+beast_rogue,Beast,rogue,unaligned,summon,3,3,agree
+amnesia_rogue,Amnesia,rogue,unaligned,endear,39,39,agree
+recover_rogue,Recover,rogue,unaligned,heal,5,5,agree
+desperate_attack_rogue,Desperate Attack,rogue,unaligned,desperate,7,7,agree
+tigers_fury_rogue,Tiger's Fury,rogue,unaligned,might,11,11,agree
+filch_rogue,Filch,rogue,unaligned,none,,-1,none-in-atlas
+drain_rogue,Drain,rogue,unaligned,vex,1,1,agree
+set_death_trap,Death Trap,rogue,unaligned,deathtrap,44,44,agree
+seal_wounds_rogue,Seal Wounds,rogue,unaligned,heal,5,5,agree
+lethal_strike_rogue,Lethal Strike,rogue,unaligned,ls,9,9,agree
+wolfs_fury_warrior,Wolf's Fury,warrior,unaligned,might,11,11,agree
+bless_warrior,Bless,warrior,unaligned,sanc,2,2,agree
+fleshspeak_warrior,Fleshspeak,warrior,unaligned,heal,5,5,agree
+backstab_warrior,Backstab,warrior,unaligned,sanc,2,2,agree
+flank_warrior,Flank,warrior,unaligned,sanc,2,2,agree
+tigers_fury_warrior,Tiger's Fury,warrior,unaligned,might,11,11,agree
+enchant_warrior,Enchant,warrior,unaligned,sanc,2,2,agree
+relief_warrior,Relief,warrior,unaligned,heal,5,5,agree
+potence_warrior,Potence,warrior,unaligned,sanc,2,2,agree
+watchful_eye_warrior,Watchful Eye,warrior,unaligned,none,,-1,none-in-atlas
+dragons_fury_warrior,Dragon's Fury,warrior,unaligned,might,11,11,agree
+infuse_warrior,Infuse,warrior,unaligned,sanc,2,2,agree
+ingress_warrior,Ingress,warrior,unaligned,sanc,2,2,agree
+berserk_warrior,Berserk,warrior,unaligned,berserk,6,6,agree
+vigor_warrior,Vigor,warrior,unaligned,heal,5,5,agree
+whirlwind_warrior,Whirlwind,warrior,unaligned,ww,9,9,agree

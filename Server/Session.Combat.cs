@@ -39,7 +39,7 @@ public sealed partial class Session
 
     private void HandleAttack(byte[] dec)
     {
-        if (_char.Hp == 0) { SendMiniText("Spirits cannot attack."); return; }
+        if (_char.Hp == 0) { SendMiniText("Spirits can't attack."); return; }
 
         // MOUNT GATE. No melee from horseback. SILENT, unlike the cast gate's minitext — the live client
         // shows nothing at all for a blocked swing, matching how an over-rate swing is dropped below.

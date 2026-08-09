@@ -18,6 +18,7 @@ public static class TutorialQuest
     private const string Stage      = "tutorial_quest";
     private const string GaveGold   = "tutorial_quest1_gave_gold";
     private const string GaveMeat   = "tutorial_quest2_gave_meat";
+    private const string GaveSword  = "tutorial_quest8_gave_sword";
 
     public static readonly QuestDef Def = new()
     {
@@ -50,9 +51,17 @@ public static class TutorialQuest
         }
     }
 
-    // stage 0 -> 1
+    // stage 0 -> 1 (gated behind NoviceQuest — the reconstructed first-steps chain arms the player and
+    // teaches Soothe before the RTK line's buy/sell lessons begin; see NoviceQuest for why it's separate).
     private static async Task Intro(NpcContext ctx)
     {
+        if (ctx.Stage(NoviceQuest.Key) < NoviceQuest.Done)
+        {
+            await ctx.Say("Not so fast, young one. There is simpler ground to cover before I take your training " +
+                          "in hand. Ask me of your first steps.");
+            return;
+        }
+
         ctx.SetStage(Stage, 1);
         await ctx.Say("Greetings and welcome to my home. I see you are eager to get on with your adventure. " +
                       "Before you do however, there is much more you need to learn. Click on me to learn... ");
@@ -248,6 +257,17 @@ public static class TutorialQuest
             await ctx.Say("You are a great fighter, that has learnt well. I hope you fought well and defended your other members well.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
             return;
+        }
+
+        // Deer are the first stage that genuinely needs a weapon (level 5, 300 vita, vs the rabbit/squirrel the
+        // wooden saber was for), so the novice sword goes out HERE, with the task — same shape as BuyArmor's
+        // gold and SellMeat's rabbit meat. Archive has it as "Tutor - Free" (tswolf swords table, Jan 2001),
+        // later re-documented as the tutorial area's Angel Quiz. Once only; the Smith stocks no replacement.
+        if (ctx.Reg(GaveSword) == 0)
+        {
+            ctx.GiveItem("novice_sword", 1);
+            ctx.SetReg(GaveSword, 1);
+            await ctx.SayItem("novice_sword", "Before you go — that saber has served you, but it was cut for rabbits. Take this novice sword.");
         }
 
         await ctx.Say("You're coming well by yourself, but solitary legends die fast. Form a covenant with others for great adventure.",

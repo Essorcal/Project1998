@@ -18,10 +18,14 @@ So a page shows the character's BASE stats. They still include PERMANENT bonuses
 level-99 base of 99 -- that is award accumulation, not gear. Levels 1-98 only, and
 low/mid levels are cleanest since awards pile up late.
 
+Data lives in ../../scraped_nexus_data/artifacts/user_pages/ (referred to below as
+user_pages/) -- it's archive source data, so it sits with the other Nexus archives
+rather than beside this script. Override the location with $NEXUS_ARCHIVE.
+
 Stages (each resumable, run in order):
-    python re/archive_scrape.py index     # CDX -> archive/index.jsonl
-    python re/archive_scrape.py fetch     # download snapshots -> archive/cache/*.gz
-    python re/archive_scrape.py parse      # cache -> archive/chars.csv
+    python re/archive_scrape.py index     # CDX -> user_pages/index.jsonl
+    python re/archive_scrape.py fetch     # download snapshots -> user_pages/cache/*.gz
+    python re/archive_scrape.py parse      # cache -> user_pages/chars.csv
     python re/archive_scrape.py analyze    # chars.csv -> per class/level tables
 
 Politeness: single-digit requests/sec, exponential backoff on 429/5xx, and every
@@ -31,7 +35,14 @@ import os, sys, re, csv, json, gzip, time, random, threading, argparse, statisti
 import urllib.request, urllib.error, collections
 
 D = os.path.dirname(os.path.abspath(__file__))
-A = os.path.join(D, "archive")
+# The scraped pages live with the other Nexus archives (scraped_nexus_data), not beside
+# this script -- they're source data, not RE output. Set NEXUS_ARCHIVE if the two trees
+# aren't siblings on disk. The parent check is deliberate: a wrong path would otherwise
+# silently makedirs an empty archive and restart the whole crawl from zero.
+A = os.environ.get("NEXUS_ARCHIVE") or os.path.normpath(
+    os.path.join(D, "..", "..", "scraped_nexus_data", "artifacts", "user_pages"))
+if not os.path.isdir(os.path.dirname(A)):
+    sys.exit(f"archive root not found: {os.path.dirname(A)}\nset NEXUS_ARCHIVE to the user_pages dir")
 CACHE = os.path.join(A, "cache")
 os.makedirs(CACHE, exist_ok=True)
 P_INDEX = os.path.join(A, "index.jsonl")

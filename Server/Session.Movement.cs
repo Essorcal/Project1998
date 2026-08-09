@@ -509,7 +509,7 @@ public sealed partial class Session
             // window (0x39 group byte / 0x34 status cell) reads it, so reopening the profile shows the change.
             _char.Grouped = !_char.Grouped;
             SaveChar();
-            SendMessage(_char.Grouped ? "You are now sociable." : "You are no longer sociable.");
+            SendMessage(SettingLine("Join a group", _char.Grouped));
             Log.Info($"   -> setting 0x02 Group/sociable = {(_char.Grouped ? "ON" : "OFF")}");
         }
         else if (setting == 0x08)
@@ -517,14 +517,56 @@ public sealed partial class Session
             // Toggle "exchange/trade" (whether others may exchange with you). Same profile cells; persisted.
             _char.Exchange = !_char.Exchange;
             SaveChar();
-            SendMessage(_char.Exchange ? "You will now exchange." : "You will no longer exchange.");
+            SendMessage(SettingLine("Exchange", _char.Exchange));
             Log.Info($"   -> setting 0x08 Exchange = {(_char.Exchange ? "ON" : "OFF")}");
+        }
+        else if (setting == 0x0A)
+        {
+            // Clan whisper. RTK keeps this one OUT of the settingFlags word (status.clan_chat), so we do too.
+            _char.ClanChat = !_char.ClanChat;
+            SaveChar();
+            SendMessage(SettingLine("Clan whisper", _char.ClanChat));
+            Log.Info($"   -> setting 0x0A Clan whisper = {(_char.ClanChat ? "ON" : "OFF")}");
+        }
+        else if (SettingLabels.TryGetValue(setting, out var label))
+        {
+            // The remaining Options-menu toggles. Each is one bit of Character.SettingFlags (RTK
+            // clif_changestatus cases 1/3/4/5/6/13/14/15) and the client only reports the FLIP, never the
+            // state — so our stored bit and the client's checkbox stay in sync purely by both starting from
+            // the same defaults. Same contract as fast-move.
+            bool on = _char.ToggleSetting(setting);
+            SaveChar();
+            SendMessage(SettingLine(label, on));
+            Log.Info($"   -> setting 0x{setting:X2} {label} = {(on ? "ON" : "OFF")}");
+            // Weather is the only one of these with a packet behind it: turning it off must black out the
+            // effect immediately rather than waiting for the next map change (RTK case 0x06 -> clif_sendweather).
+            if (setting == 0x06) SendWeather();
         }
         else
         {
             Log.Info($"   -> setting 0x{setting:X2} (not handled)");
         }
     }
+
+    // RTK's clif_changestatus writes each toggle as "<label><pad>:ON|OFF" left-padded to a fixed column, and
+    // the live 4.95 capture of the fast-move toggle ("Fast Move        :OFF") shows the client renders the
+    // padding verbatim — it is part of the string, not the widget. Column 17 reproduces every RTK line.
+    private static string SettingLine(string label, bool on) => $"{label,-17}:{(on ? "ON" : "OFF")}";
+
+    // 0x1b sub-command -> Options-menu label, for the toggles that are nothing but a settingFlags bit.
+    // Ride (0), group (2), realm (7), exchange (8), fast-move (9) and clan whisper (10) all do extra work
+    // and are handled above; these just flip and announce.
+    private static readonly Dictionary<byte, string> SettingLabels = new()
+    {
+        [0x01] = "Listen to whisper",
+        [0x03] = "Listen to shout",
+        [0x04] = "Listen to advice",
+        [0x05] = "Believe in magic",
+        [0x06] = "Weather change",
+        [0x0D] = "Hear sounds",
+        [0x0E] = "Show Helmet",
+        [0x0F] = "Show Necklace",
+    };
 
     // 0x38 = HARD REFRESH (Ctrl+R). The client dims the screen (gray mask) and asks the server to re-assert
     // authoritative state. We mirror RTK's clif_refresh: re-send mapinfo (0x15 — on 4.95 this triggers a

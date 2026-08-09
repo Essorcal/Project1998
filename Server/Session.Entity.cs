@@ -352,11 +352,59 @@ public sealed partial class Session
     /// (0x0E) before anything re-spawns. Fix: force the proven-reliable despawn ourselves before every
     /// peer redraw, instead of trusting the client to replace in place. Self's own view isn't affected —
     /// SendSelfLook updates the persistent self entity directly rather than destroying/recreating it.</summary>
+    ///
+    /// <para>SUPERSEDED for the common case (2026-08-08): <c>0x1d</c> is the packet this always wanted.
+    /// Its handler <c>0x450db0</c> takes <c>id(u32BE) kind(u8) look[7]</c>, looks the entity up with
+    /// <c>0x44b120</c> and <b>bails if it doesn't exist</b> — it never constructs one — then walks the look
+    /// field by field and only reacts to the ones that actually changed. There is no destroy, no create, no
+    /// name in the packet, so there is no orphan and no nameplate marker to leak, and no despawn/respawn
+    /// flicker either. The teardown path above stays for the cases <c>0x1d</c> genuinely cannot express: a
+    /// morph (a <c>0x07</c> creature sprite, not a 7-byte human look) and stealth (per-viewer visibility, so
+    /// the answer is a despawn rather than any look at all). <c>LookUpdateInPlace,0</c> + <c>@reload</c>
+    /// reverts to the old path wholesale.</para></summary>
     private void RefreshAppearance()
     {
-        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
         SendSelfLook();
+
+        // 0x1d can only patch an entity the peer already has, and only a plain human one. If we were
+        // morphed/faded on the last broadcast, peers may hold a creature sprite or nothing at all, so the
+        // in-place patch would land on the wrong object or silently do nothing — take the full path and let
+        // ShowPlayer re-decide per viewer. Same when we're special NOW.
+        bool special = _morphLook != 0 || Stealthed;
+        if (Content.LookUpdateInPlace && !special && _peersHoldHumanLook)
+        {
+            var look = SelfAppearance();
+            _world.Broadcast(_char.Map, p => p.UpdatePlayerLook(_char.Id, look), except: this);
+            return;
+        }
+
+        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        _peersHoldHumanLook = !special;
+    }
+
+    /// <summary>Whether the last thing we broadcast to peers was a plain human <c>0x33</c> — i.e. whether a
+    /// <c>0x1d</c> in-place look patch has something valid to land on. Set by every full redraw; consulted by
+    /// <see cref="RefreshAppearance"/>. Peers who arrive later are drawn by <see cref="ShowPlayer"/> anyway,
+    /// so this only has to track OUR own last broadcast, not per-viewer state.</summary>
+    private bool _peersHoldHumanLook;
+
+    /// <summary>0x1d — patch an already-drawn entity's appearance in place, no despawn/respawn.
+    /// Body: <c>id(u32BE) kind(u8) look[7]</c>. <c>kind</c> 0 selects the same 7-byte player-look reader
+    /// (<c>0x436120</c>) that <c>0x33</c> and the <c>0x30</c> dialog paperdoll use, so the bytes are
+    /// byte-for-byte <see cref="SelfAppearance"/> — a look can never drift between the three.
+    /// <para>Client-side quirk worth knowing: if the FORM byte is <c>2</c>, the handler (0x450e42) rewrites it
+    /// to 5 (faded) unless the viewer is the subject or has state byte <c>[0x4fd400+0x1dc]</c> set — the very
+    /// same "can see hidden" byte the user-list window checks before drawing a hidden row (§13c). So form 2 is
+    /// a GM-invisibility the CLIENT enforces; we don't use it (stealth is server-side per-viewer), but don't
+    /// send 2 by accident.</para></summary>
+    internal void UpdatePlayerLook(uint id, byte[] look)
+    {
+        var d = new byte[12];
+        WriteBe32(d, 0, id);
+        d[4] = 0;                     // kind 0 = the 7-byte player look
+        Array.Copy(look, 0, d, 5, 7);
+        SendMap(0x1d, _gameInc++, d, $"look-update(0x1d) id={id}");
     }
 
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —

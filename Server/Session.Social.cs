@@ -279,11 +279,16 @@ public sealed partial class Session
             if (amount <= 0) continue;
             var def = Content.ItemById(snap.ItemId);
             if (def is null) continue;
-            have.Amount -= amount;
-            // reason 10 = "You gave <item>." — a trade hand-over is exactly what that client line is for
-            // (it was reason 0, which says "<item> removed." instead). See the table in the protocol doc §11c.
-            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 10); }
-            to.GiveItem(def, amount, snap.Dura, snap.CustomName);
+            // RECEIVER FIRST, and debit only what they actually took. The old order deducted from the sender
+            // and then ignored the result, so trading into a full pack — or, since carry caps landed, into
+            // someone already holding their limit — DESTROYED the goods outright.
+            int placed = to.GivePlaced(def, amount, snap.Dura, snap.CustomName);
+            if (placed <= 0) continue;                  // wouldn't fit; it stays with its owner
+            have.Amount -= placed;
+            // reason 9 = "You gave <item>." — a trade hand-over is exactly what that client line is for
+            // (10 is "You sold", which is the vendor's). See the table in Content.EquipDelReason.
+            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 9); }
+            else from.SendAddItem(have);                // partial take: redraw the shrunken stack
         }
     }
 
@@ -310,7 +315,23 @@ public sealed partial class Session
         Log.Info($"   0x3B board packet: subcmd={dec[0]} len={dec.Length}: {BitConverter.ToString(dec)}");
         switch (dec[0])
         {
-            case 1: SendBoardList(); break;                                                  // Show Board
+            // Show Board. 'b', 'm' and the mail-arrow CLICK all send this identical `3b 01 00`, so the
+            // server cannot tell them apart — but it doesn't need to. 'm' is armed ONLY while the mail
+            // arrow is up (the HUD widget intercepts the key before the char-dispatch table), so answering
+            // an unread inbox with the MAILBOX VIEW instead of the board list makes 'm' land straight in
+            // the mailbox, which is what it looks like it should do.
+            //
+            // Why this renders when a bare unsolicited 0x31 doesn't: the client runs the board-window ctor
+            // (0x406e80) on the KEYPRESS, before the request goes out, so the window is already open by the
+            // time this reply lands. The old "no server-side way into the mailbox" note tested a 0x31 sent
+            // with no window open, which is a different case.
+            //
+            // The cost is that 'b' also opens the mailbox while mail is unread. Content.MailFirstOnBoard=0
+            // + @reload restores the plain board list without a rebuild.
+            case 1:
+                if (Content.MailFirstOnBoard && Mail.UnreadCount(_char.Name) > 0) SendBoardPosts(0);
+                else SendBoardList();
+                break;
             case 2: if (dec.Length >= 3) SendBoardPosts(U16(dec, 1)); break;                  // Show posts from board # (board 0 -> own mailbox)
             case 3: if (dec.Length >= 5) SendBoardReadPost(U16(dec, 1), U16(dec, 3)); break;  // Read post (board 0 -> own mailbox)
             case 4: HandleBoardMakePost(dec); break;                                          // Make post (board 0 rejected — see its own doc)

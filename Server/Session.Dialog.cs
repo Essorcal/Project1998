@@ -240,8 +240,8 @@ public sealed partial class Session
             L.Add(Row("Might required:", def.MightReq.ToString()) + (def.MightReq > EffMight ? "  (you have " + EffMight + ")" : ""));
         if (def.Mark > 0)
             L.Add(Row("Mark required:", MarkName(def.Mark)) + (_char.Mark < def.Mark ? "  (unearned)" : ""));
-        if (def.Sex < 2)
-            L.Add(Row("Restricted:", def.Sex == 0 ? "Men only" : "Women only") + (def.Sex != _char.Sex ? "  (not you)" : ""));
+        // NO sex line. `ItmSex` is a wear gate, not a description: the original box never printed one, and
+        // the enforcement lives where it belongs — EquipFromSlot refuses the item outright (2026-08-07).
         if (def.NoDrop) L.Add("Cannot be dropped.");
         // Break-on-death is a warning, not a field: shown only when it's true, and always last so it reads
         // as the closing note on the item rather than another stat row.
@@ -310,9 +310,11 @@ public sealed partial class Session
         // right-click-to-walk is client-local pathing we can't intercept (see §11 self-walk note), so the
         // only server-controllable feedback for "what IS that" is this click-info reply -- a name-only
         // mini-text readout, short of the GM-only name/id/level/HP/AC dump onLook does.
+        // Just the NAME, no sentence around it ("Brown Rabbit", not "It's a Brown Rabbit.") — the mini-text
+        // pane is a readout, and every other look-at line there is bare too.
         if (_world.MobById(_char.Map, id) is { } mob)
         {
-            SendMiniText($"It's {(StartsWithVowel(mob.Name) ? "an" : "a")} {mob.Name}.");
+            SendMiniText(mob.Name);
             return;
         }
 
@@ -324,11 +326,6 @@ public sealed partial class Session
         var target = _world.PlayerById(id);
         if (target is not null) SendClickProfile(target);
     }
-
-    // Cheap "a"/"an" article check for mob-name mini-text (HandleClickInfo). Good enough for our mob
-    // roster (no silent-letter edge cases like "hour").
-    private static bool StartsWithVowel(string s) =>
-        s.Length > 0 && "AEIOUaeiou".IndexOf(s[0]) >= 0;
 
     // F2: flip the subpath-chat toggle and confirm via mini-text (RTK: "Subpath Chat: ON"/"OFF" — same
     // wording, same channel used elsewhere for status confirmations). Persisted so it survives a relog.
@@ -413,7 +410,7 @@ public sealed partial class Session
     // RTK's f1npc.lua has ~15 entries (GM tools, Kan donations, tutor management, minigame stats, webpage
     // profile settings…) that depend on systems this server doesn't model. Trimmed to what's real here:
     // Silver Thread (shaman resurrection — RTK's actual answer to "how do you get un-ghosted", replacing
-    // the old fixed-timer auto-revive) and Choose a Path (the same Peasant-level-5 guild warp §11j's Peasant
+    // the old fixed-timer auto-revive; always listed, gated inside) and Choose a Path (the same Peasant-level-5 guild warp §11j's Peasant
     // wall points at, offered as a menu shortcut instead of walking to the physical hall). The old "Toggles"
     // submenu (just the Subpath Chat flip) was removed — that toggle is F2's own binding (ToggleSubpathChat).
 
@@ -428,17 +425,17 @@ public sealed partial class Session
     {
         var npc = F1VirtualNpc;
         var opts = new List<string>();
-        if (IsDead) opts.Add("Silver Thread");
+        // Always listed, like "Recover Death Pile" below: the branch itself explains what it's for when you're
+        // alive ("...you are not dead, so you have no path with me"), so a living player still learns that F1
+        // is how you get back from the dead. Hiding it until you're already a ghost teaches nobody.
+        opts.Add("Silver Thread");
         if (CharClassId == 0 && _char.Level >= 5) opts.Add("Choose a Path");
         // Always offered, exactly as RTK does it: the branch itself is what TEACHES the ability, explaining the
         // facing/two-step rule when there's nothing to recover. Hiding it until a pile happens to be underfoot
         // would mean nobody ever discovers it exists.
         opts.Add("Recover Death Pile");
 
-        // With nothing to offer (a living, already-classed player) F1 has no function here — say so rather
-        // than pop an empty picker. (The Subpath Chat toggle that used to live under "Toggles" is F2's job.)
-        if (opts.Count == 0) { await DlgSay(npc, $"Hello {_char.Name}! There is nothing I can do for you right now."); return; }
-
+        // (The Subpath Chat toggle that used to live under "Toggles" is F2's job — see ToggleSubpathChat.)
         int choice = await DlgMenu(npc, $"Hello {_char.Name}! How can I help you today?", opts);
         if (choice < 1 || choice > opts.Count) return;
 
@@ -465,7 +462,7 @@ public sealed partial class Session
                               "To use this ability, you must be alive. If you do not have enough room in your inventory, you will be unable to recover all of your items.");
             return;
         }
-        if (IsDead) { await DlgSay(npc, "You cannot recover your death pile while you are dead."); return; }
+        if (IsDead) { await DlgSay(npc, "You can't recover your death pile while you are dead."); return; }
 
         int taken = RecoverDeathPile();
         if (taken == 0) return;   // pack was already full on the first stack — GiveItem said so
@@ -478,8 +475,8 @@ public sealed partial class Session
         Log.Info($"   -> death pile recovered: {taken} stack(s) by {_char.Name} @({_char.X},{_char.Y}) facing {_facing}");
     }
 
-    // "Silver Thread": only reachable while dead (matches RTK's own gate — picking it while alive says so
-    // and does nothing). Offers a Shaman by nation (RTK's country branches collapse to our two home nations);
+    // "Silver Thread": always listed but gated inside, which is RTK's own shape — picking it while alive just
+    // says so and does nothing (no warp, no state change). Offers a Shaman by nation (RTK's country branches collapse to our two home nations);
     // picking one is PASSAGE ONLY — it warps the ghost to that Shaman's hut and leaves it a ghost. The
     // revival itself belongs to the Shaman NPC you then click (ReviveAbility), which is RTK's own split:
     // f1npc.lua's Silver Thread branch ends in a bare `player:warp(...)` and never touches state/health, and
@@ -587,14 +584,27 @@ public sealed partial class Session
             cat = cats[ci - 1];
         }
 
+        // The native icon grid (0x2f sub-kind 4) rather than a text menu — it carries the item's real Item.epf
+        // icon, price and blurb, which a menu line can't. It answers by NAME, so the row list is what maps a
+        // reply back to an item; duplicate names in one catalogue would be indistinguishable (none exist today).
         var items = cat.Keys.Select(Content.ItemByKey).OfType<ItemDef>().ToList();
         while (true)
         {
-            int ii = await DlgMenu(npc, "What would you like?", items.Select(it => $"{it.Name} - {it.BuyPrice}g").ToList());
-            if (ii < 1 || ii > items.Count) return;   // cancelled -> done shopping
-            var it = items[ii - 1];
+            SendBuyGrid(npc, "What would you like?", items.Select(d => ShopRow(d, d.BuyPrice)).ToList());
+            var pick = await AwaitShopReply();
+            if (pick.Name.Length == 0) return;                      // closed the window -> done shopping
+            var it = items.FirstOrDefault(d => d.Name.Equals(pick.Name, StringComparison.OrdinalIgnoreCase));
+            if (it is null) { Log.Info($"   ?? buy: no catalogue row named '{pick.Name}'"); return; }
             if (_char.Coins < (uint)it.BuyPrice) { await DlgSay(npc, $"You can't afford {it.Name} ({it.BuyPrice} gold)."); continue; }
-            if (!GiveItem(it)) return;                 // pack full — GiveItem already told the player
+            // Pack full ends the visit with a dialog, not a bubble — it's the one refusal the player has to
+            // act on before anything else here can work. The carry cap sends its own minitext from inside
+            // GiveItem, so CarryRoom distinguishes the two failures.
+            if (!GiveItem(it, quiet: true))
+            {
+                if (CarryRoom(it) > 0)
+                    await DlgSay(npc, "You don't have enough hands to carry all of that, free up some space in your inventory then come back to me.");
+                return;
+            }
             _char.Coins -= (uint)it.BuyPrice;
             SendStats();
             MarkDirty();
@@ -613,17 +623,43 @@ public sealed partial class Session
                 .ToList();
             if (sellable.Count == 0) { await DlgSay(npc, "You have nothing I'd buy."); return; }
 
-            int i = await DlgMenu(npc, "What would you like to sell?",
-                                  sellable.Select(t => $"{t.def!.Name} - {t.def.SellPrice}g").ToList());
-            if (i < 1 || i > sellable.Count) return;
-            var (inv, def) = sellable[i - 1];
-            _char.Coins += (uint)def!.SellPrice;
-            // Selling says nothing (the client's own "You sold %s." line, reason 9, is NOT used in game).
-            if (--inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason); }
+            // Sell grid (0x2f sub-kind 5) — only the bag slots go on the wire; the client draws each row's
+            // icon and name from the inventory it already has. Same one-based wire slot as 0x0F, so it goes
+            // out through WireSlot and the echoed reply comes home as -1.
+            SendSellGrid(npc, "What would you like to sell?",
+                         sellable.Select(t => WireSlot(t.inv)).ToList());
+            var pick = await AwaitShopReply();
+            var hit = sellable.FirstOrDefault(t => WireSlot(t.inv) == pick.Slot);
+            if (hit.def is null) return;               // closed the window, or a slot we didn't offer
+            var (inv, def) = hit;
+
+            // A stack asks how many, in the client's own amount box, rather than silently selling one.
+            int qty = 1;
+            if (inv.Amount > 1)
+            {
+                var n = await AskAmount(npc, $"How many {def!.Name} would you like to sell?", def.Name, inv.Amount);
+                if (n is null) return;
+                qty = Math.Clamp(n.Value, 0, inv.Amount);
+                if (qty <= 0) continue;                // typed 0 / cancelled -> back to the list
+            }
+
+            // Quote the total and let them back out. The price is only visible at this point — the sell grid
+            // draws from the client's own bag, so no row can show what it's worth — which is exactly why the
+            // real game asks. Anything but Yes falls back to the list rather than ending the conversation.
+            int total = def!.SellPrice * qty;
+            if (await DlgMenu(npc, $"I'll pay you {total} gold for that, is it a deal?",
+                              new[] { "Yes", "No" }) != 1) continue;
+            _char.Coins += (uint)total;
+            // Reason 10 is literally "You sold <item>." (9 is "You gave", for a bank deposit — an earlier
+            // comment here had those two the wrong way round). Sent only when the whole entry goes; selling
+            // part of a stack redraws it and stays silent. That client line is the whole confirmation — the
+            // gold figure was already quoted and accepted a step ago, so a dialog box repeating it would be
+            // a second thing to dismiss between the sale and the list reappearing.
+            inv.Amount -= qty;
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 10); }
             else SendAddItem(inv);
             SendStats();
             MarkDirty();
-            await DlgSay(npc, $"You sold {def.Name} for {def.SellPrice} gold.");
         }
     }
 
@@ -810,7 +846,7 @@ public sealed partial class Session
             sold += take;
             remaining -= take;
             inv.Amount -= take;
-            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason); }   // silent, as above
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 10); }   // "You gave X.", as above
             else SendAddItem(inv);
         }
         _char.Coins += earned;
@@ -852,7 +888,14 @@ public sealed partial class Session
         for (int i = 0; i < want; i++)
         {
             if (_char.Coins < (uint)def.BuyPrice) break;
-            if (!GiveItem(def, quiet: true)) { NpcBubble(npc, "You can't carry anymore."); break; }   // pack full — NPC says so
+            // Pack full — the shopkeeper says so at length. quiet:true keeps GiveItem's bare minitext out of
+            // the way, EXCEPT for the carry-cap refusal, which sends its own and needs no shopkeeper line.
+            if (!GiveItem(def, quiet: true))
+            {
+                if (CarryRoom(def) > 0)
+                    NpcBubble(npc, "You don't have enough hands to carry all of that, free up some space in your inventory then come back to me.");
+                break;
+            }
             _char.Coins -= (uint)def.BuyPrice;
             spent += (uint)def.BuyPrice;
             bought++;
@@ -953,8 +996,11 @@ public sealed partial class Session
             int take = Math.Min(remaining, inv.Amount);
             moved += take;
             remaining -= take;
-            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason); _char.BankItems.Add(inv); }
-            else { inv.Amount -= take; SendAddItem(inv); _char.BankItems.Add(new InvItem(0, def.Id, take, inv.Dura)); }
+            // Reason 10 = "You gave <item>." — right for handing the whole entry over, and only sent when the
+            // entry really leaves the pack. A partial deposit takes the SendAddItem branch below and stays
+            // silent: nothing left your bag, the count just dropped. (See BankDepositItem for the same split.)
+            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 9); VaultAdd(inv); }
+            else { inv.Amount -= take; SendAddItem(inv); VaultAdd(new InvItem(0, def.Id, take, inv.Dura)); }
         }
         if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
         SaveChar();
@@ -990,8 +1036,11 @@ public sealed partial class Session
         {
             if (remaining <= 0) break;
             int slot = FreeSlot();
-            if (slot < 0) { if (moved == 0) NpcBubble(npc, "You can't carry anymore."); break; }
-            int take = Math.Min(remaining, bi.Amount);
+            // No room to hand it back: the banker refuses out loud AND the rule goes to minitext, since the
+            // two say different things — one is her declining, the other is why.
+            if (slot < 0) { if (moved == 0) { NpcBubble(npc, "I can't return that to you."); SendMiniText("You can't have more."); } break; }
+            int take = Math.Min(Math.Min(remaining, bi.Amount), CarryRoom(def));
+            if (take <= 0) { if (moved == 0) CarryCapNotice(def); break; }
             moved += take;
             remaining -= take;
             if (take >= bi.Amount) { _char.BankItems.Remove(bi); bi.Slot = (byte)slot; _char.Inventory.Add(bi); SendAddItem(bi); }
@@ -1004,85 +1053,147 @@ public sealed partial class Session
         return true;
     }
 
+    /// <summary>Put an entry in the vault, MERGING into an existing stack of the same item and condition
+    /// instead of adding a second row. Merging is what makes the withdraw grid workable: it identifies the
+    /// picked row by name, so two rows of one item would be indistinguishable. Gear never merges (it isn't
+    /// stackable and each piece carries its own durability), so the grid still has to disambiguate labels.</summary>
+    private void VaultAdd(InvItem it)
+    {
+        // Capped at ItemDef.StackCap like a bag slot, so the vault can't build a pile the player could never
+        // have carried — and so a withdrawal always fits in one slot. Merging is deliberately bounded: an
+        // unbounded merge is how a 271-Acorn stack (cap 201) became withdrawable.
+        if (Content.ItemById(it.ItemId) is { Stackable: true } def)
+        {
+            int cap = def.StackCap, left = it.Amount;
+            foreach (var b in _char.BankItems
+                         .Where(b => b.ItemId == it.ItemId && b.Dura == it.Dura && b.Amount < cap).ToList())
+            {
+                if (left <= 0) break;
+                int put = Math.Min(cap - b.Amount, left);
+                b.Amount += put;
+                left -= put;
+            }
+            while (left > 0)
+            {
+                int put = Math.Min(cap, left);
+                _char.BankItems.Add(new InvItem(0, it.ItemId, put, it.Dura));
+                left -= put;
+            }
+            return;
+        }
+        it.Slot = 0;                            // vault slots are meaningless
+        _char.BankItems.Add(it);
+    }
+
     internal async Task BankDepositItem(Mob npc)
     {
+      while (true)
+      {
         var items = _char.Inventory.OrderBy(i => i.Slot)
             .Select(inv => (inv, def: Content.ItemById(inv.ItemId)))
             .Where(t => t.def is not null)
             .ToList();
-        // Same as the withdraw side: an empty pack shows an empty list, not a bail-out message.
-        int i = await DlgMenu(npc, "Which item will you store?",
-                              items.Select(t => t.inv.Amount > 1 ? $"{t.def!.Name} ({t.inv.Amount})" : t.def!.Name).ToList());
-        if (i < 1 || i > items.Count) return;
-        var (inv, def) = items[i - 1];
+        // The native grid (0x2f sub-kind 5): the client draws each row's own icon and name straight out of
+        // the bag, so only the slots go on the wire. An empty pack shows an empty list, not a bail-out.
+        SendSellGrid(npc, "Which item will you store?", items.Select(t => WireSlot(t.inv)).ToList());
+        var pick = await AwaitShopReply();
+        var hit = items.FirstOrDefault(t => WireSlot(t.inv) == pick.Slot);
+        if (hit.def is null) return;            // closed the window
+        var (inv, def) = hit;
 
         // RTK refuses used/damaged goods for storage (rtklua depositNoConfirm): gear below full durability, or
         // a charged consumable with spent charges. Dura holds current durability for gear and remaining charges
         // for charged items; Dura == 0 is an unseeded legacy stack, treated as full. Checked before the
         // quantity question — there's no point asking how many of something she won't take.
         if ((def!.IsEquip || def.IsCharged) && inv.Dura != 0 && inv.Dura < def.Durability)
-        { NpcBubble(npc, "I don't want your junk. Ask a smith to fix it."); return; }
+        { NpcBubble(npc, "I don't want your junk. Ask a smith to fix it."); continue; }
 
         // A stack asks how much of it to store — dropping the whole pile in was never a choice the player got
         // to make. A single item skips the question (there's only one answer).
         int take = inv.Amount;
         if (inv.Amount > 1)
         {
-            var s = await DlgInput(npc, "How many do you want me to hold for you?");
-            if (s is null) return;                                     // cancelled
-            take = (int)Math.Clamp(ParseAmount(s), 0, inv.Amount);
-            if (take <= 0) { NpcBubble(npc, "You store nothing."); return; }
+            var n = await AskAmount(npc, "How many do you want me to hold for you?", def.Name, inv.Amount);
+            if (n is null) return;                                     // cancelled
+            if (n.Value <= 0) { NpcBubble(npc, "You store nothing."); continue; }
+            // Refused, not clamped. There is no UI element that can report a correction, so quietly storing
+            // a different number than the one typed would be indistinguishable from it having worked.
+            if (n.Value > inv.Amount) { NpcBubble(npc, "That many?"); continue; }
+            take = n.Value;
         }
 
         // RTK's safe-keeping fee: 10% of the item's sell value per unit, in hand up front or no deal.
         long fee = (long)Math.Ceiling(def.SellPrice * 0.10 * take);
-        if (fee > _char.Coins) { NpcBubble(npc, $"Excuse me you didn't give me enough. It's {fee} coins."); return; }
+        if (fee > _char.Coins) { NpcBubble(npc, $"Excuse me you didn't give me enough. It's {fee} coins."); continue; }
 
         if (take >= inv.Amount)
         {
             _char.Inventory.Remove(inv);
-            // Banking is meant to be silent — see Content.SilentDelReason for why this isn't just reason 0.
-            SendDelItem((byte)inv.Slot, (byte)Content.SilentDelReason);
-            _char.BankItems.Add(inv);           // whole stack goes to the vault
+            // Reason 9 = "You gave <item>." — the whole entry is leaving the pack. A partial deposit takes
+            // the else branch, which sends no delitem and so says nothing (the count just drops).
+            SendDelItem((byte)inv.Slot, 9);
+            VaultAdd(inv);                      // whole stack goes to the vault
         }
         else
         {
             inv.Amount -= take;                 // part of it: shrink the bag stack, redraw it, vault the rest
             SendAddItem(inv);
-            _char.BankItems.Add(new InvItem(0, def.Id, take, inv.Dura));
+            VaultAdd(new InvItem(0, def.Id, take, inv.Dura));
         }
         if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
         MarkDirty();
         NpcBubble(npc, $"I'll take your {def.Name}. {take} of them.");    // same lines the spoken deposit gives
         if (fee > 0) NpcBubble(npc, $"The fee is {fee} coins.");
+      }
     }
 
     internal async Task BankWithdrawItem(Mob npc)
     {
+      while (true)
+      {
         var stored = _char.BankItems
             .Select(bi => (bi, def: Content.ItemById(bi.ItemId)))
             .Where(t => t.def is not null)
             .ToList();
-        // No empty-vault special case: an empty vault just opens the same list with nothing in it, which is
-        // its own answer. Bailing out to a "your vault is empty" text box was an extra flow to click through
-        // that told the player less than the page itself does.
-        int i = await DlgMenu(npc, "Here's what I've been holding of yours. What do you want back?",
-                              stored.Select(t => t.bi.Amount > 1 ? $"{t.def!.Name} ({t.bi.Amount})" : t.def!.Name).ToList());
-        if (i < 1 || i > stored.Count) return;
-        var (bi, def) = stored[i - 1];
+        // The buy grid (0x2f sub-kind 4) with the stored COUNT in the price column — the same argument RTK's
+        // own bank Lua fills with bankCountTable. No empty-vault special case: an empty vault just opens the
+        // same list with nothing in it, which is its own answer.
+        //
+        // The reply names the row rather than indexing it, so every label must be unique. Stacks merge on
+        // deposit (VaultAdd), but gear doesn't stack, so two identical swords still need telling apart.
+        var byLabel = new Dictionary<string, (InvItem bi, ItemDef def)>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<GridRow>();
+        foreach (var (b, d) in stored)
+        {
+            string label = d!.Name;
+            for (int n = 2; byLabel.ContainsKey(label); n++) label = $"{d.Name} ({n})";
+            byLabel[label] = (b, d);
+            rows.Add(ShopRow(d, b.Amount) with { Name = label });
+        }
+        SendBuyGrid(npc, "Here's what I've been holding of yours. What do you want back?", rows);
+        var pick = await AwaitShopReply();
+        if (!byLabel.TryGetValue(pick.Name, out var got)) return;      // closed the window
+        var (bi, def) = got;
 
         // Mirror of the deposit side: take back as much of the stack as you ask for, not all of it.
         int take = bi.Amount;
         if (bi.Amount > 1)
         {
-            var s = await DlgInput(npc, "How many do you want back?");
-            if (s is null) return;                                     // cancelled
-            take = (int)Math.Clamp(ParseAmount(s), 0, bi.Amount);
-            if (take <= 0) { NpcBubble(npc, "You withdraw nothing."); return; }
+            var n = await AskAmount(npc, "How many do you want back?", def.Name, bi.Amount);
+            if (n is null) return;                                     // cancelled
+            if (n.Value <= 0) { NpcBubble(npc, "You withdraw nothing."); continue; }
+            // Refused, never clamped — see the deposit side. Asking for more than is stored gets a flat no.
+            if (n.Value > bi.Amount) { NpcBubble(npc, "That many?"); continue; }
+            take = n.Value;
         }
 
+        // This path adds to the bag directly rather than through GiveItem, so it has to honour the
+        // inventory-wide carry cap itself — otherwise the vault is a way to hold two stacks of a one-stack
+        // item. Refused rather than trimmed, like every other quantity here.
+        if (take > CarryRoom(def)) { CarryCapNotice(def); continue; }
+
         int slot = FreeSlot();
-        if (slot < 0) { NpcBubble(npc, "You can't carry anymore."); return; }
+        if (slot < 0) { NpcBubble(npc, "I can't return that to you."); SendMiniText("You can't have more."); continue; }
         if (take >= bi.Amount)
         {
             _char.BankItems.Remove(bi);
@@ -1100,6 +1211,7 @@ public sealed partial class Session
         MarkDirty();
         // Same lines the spoken withdraw gives ("Here's your Acorn." / "Here's your Acorn (13).").
         NpcBubble(npc, take > 1 ? $"Here's your {def!.Name} ({take})." : $"Here's your {def!.Name}.");
+      }
     }
 
     // Digits-only amount parse (mirrors RTK inputNumberCheck), capped so it can't overflow the coin math.
@@ -1334,6 +1446,29 @@ public sealed partial class Session
         if (_enteredWorld) StoreSave();
         Log.Info($"   -> CHANGE-PROFILE (0x4F) saved: pic={_char.ProfilePic?.Length ?? 0}B text=\"{_char.ProfileText}\"");
         SendMessage("Your profile has been saved.");
+    }
+
+    // ---- 0x49 — "resend your profile picture" (server -> client) ---------------------------------------
+    // Empty body; the dispatch trampoline doesn't even pass a packet pointer, so there is nothing to fill in.
+    // The client (0x44edc0) answers on 0x4F with EXACTLY the packet the profile editor sends, which
+    // HandleChangeProfile above already parses — so this is a safe probe: every failure path still replies,
+    // just with picSize = 0.
+    //
+    // What it reads, and therefore what a player has to put on disk for a picture to exist at all
+    // (validation reversed from 0x44ef0c onward, all four checks are hard `jne` bails):
+    //   file      <client cwd>/users/<CharacterName>.epf   — retried as .face
+    //   size      EXACTLY 0xb1c = 2844 bytes
+    //   dword@8   == 0xaf0 = 2800   (the EPF's TOC offset, i.e. 12-byte header + 2800 bytes of pixels)
+    //   frame box  toc[1].top - toc[0].bottom == 0x38  and  toc[1].left - toc[0].right == 0x30
+    //              -> the picture is a single 48 x 56 frame. See re/make_profile_epf.py.
+    // The user's own capture shows the miss: CreateFileW(".../users/Zaleroo.epf") -> INVALID_HANDLE, and the
+    // 0x4F that followed carried picSize 0. Nothing is wrong server-side when that happens — the file just
+    // isn't there.
+    internal void SendResendProfilePic()
+    {
+        SendMap(0x49, _gameInc++, Array.Empty<byte>(), "resend-profile-pic(0x49)");
+        Log.Info("   -> 0x49 asked the client to re-upload users/<name>.epf; watch for the 0x4F reply " +
+                 "(picSize 0 = the client couldn't read a valid 2844-byte file)");
     }
 
     // 0x39 self-profile ("Mind's Eye"). Layout decoded from the 7.x clif_mystaytus builder and confirmed
@@ -1638,7 +1773,11 @@ public sealed partial class Session
         b.AddRange(Be(mapId));
         b.AddRange(Be(xs));
         b.AddRange(Be(ys));
-        b.Add(5);            // flag
+        // Render mode. RTK's clif_sendmapinfo writes 5 normally and 4 when the player's "Weather change"
+        // toggle is on (clif.c:4600), so this cell arms the map for weather drawing — the 0x1F state alone
+        // isn't enough. Follows the same setting bit SendWeather gates on, which is why toggling it re-sends
+        // mapinfo nowhere: the next map change carries it, and 0x1F handles the immediate case.
+        b.Add(_char.HasSetting(0x06) ? (byte)4 : (byte)5);
         b.Add(_realm);       // realm-center camera lock (0=off edge-aware, 1=on centered); toggled by F4
         b.Add((byte)t.Length);
         b.AddRange(t);

@@ -1,0 +1,9 @@
+key,spell,class,gif,csv_animation,atlas_wire,verdict,why
+fissure,Fissure,,confuse,41,34,REVIEW,#40 vs #33 differ 0.27
+lava_surge,Lava Surge,,confuse,42,34,REVIEW,#41 vs #33 differ 0.27
+set_trap,Set Trap,rogue,deathtrap,12,44,REVIEW,#11 vs #43 differ 0.41
+singe_mage,Singe,mage,spark,28,27,REVIEW,#27 vs #26 differ 0.47
+singe_poet,Singe,poet,spark,28,27,REVIEW,#27 vs #26 differ 0.47
+singe_rogue,Singe,rogue,spark,28,27,REVIEW,#27 vs #26 differ 0.47
+spark_mage,Spark,mage,spark,28,27,REVIEW,#27 vs #26 differ 0.47
+spark_poet,Spark,poet,spark,28,27,REVIEW,#27 vs #26 differ 0.47

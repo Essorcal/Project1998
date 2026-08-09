@@ -106,7 +106,7 @@ public sealed partial class Session
         // just the recipient blocking the sender, but also the sender's own list (so you can't be pestered
         // by someone you've muted even if THEY never muted you). canwhisper's real wording on failure.
         if (IsIgnoring(target._char.Name) || target.IsIgnoring(_char.Name))
-        { SendLog("They cannot hear you right now."); return; }
+        { SendLog("They can't hear you right now."); return; }
 
         target.ReceiveWhisper(_char.Name, msg);
         SendMiniText($"{_char.Name}: {msg}", type: 0);   // sender's own echo — same line the receiver sees

@@ -109,7 +109,8 @@ public sealed partial class Session
         G("hitsnd",   (s, a) => s.SetHitSound(a),   "<id>",      "set + audition the on-connect impact sfx"),
         G("efx",      (s, a) => s.EffectProbe(a),   "<id>",      "play a raw Effect.tbl animation over self"),
         G("mtx",      (s, a) => s.MiniTextProbe(a), "<type>",    "audition a raw SendMiniText channel"),
-        G("weather",  (s, a) => s.WeatherProbe(a),  "<0|1|2>",   "force this map's weather (UNVERIFIED wire)"),
+        G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow | raw <n>", "force this map's weather"),
+        G("setting",  (s, a) => s.SettingCmd(a),    "[name] [on|off]", "read/set any 0x1b Options toggle"),
 
         // ---- protocol probes ------------------------------------------------------------------------
         G("hit",      (s, a) => s.HitProbe(a),          "[dmg]",   "0x13 over-head HP bar on the faced mob"),
@@ -121,6 +122,8 @@ public sealed partial class Session
         G("sweep",    (s, a) => s.StatSweep(a),         "",        "disabled (crashes the client)"),
         G("mailflag", (s, a) => s.MailFlagProbe(a),     "<off> [valHex]", "sweep the 0x08 mail/parcel notify byte"),
         G("nat",      (s, a) => s.StatNation(a),        "<id>",    "sweep nation id -> HUD name"),
+        G("users",    (s, a) => s.UserListCmd(a),       "[sort|sweep]", "0x36 user list (sweep = label every cell)"),
+        G("askpic",   (s, a) => s.SendResendProfilePic(), "",      "0x49 - make the client re-upload users/<name>.epf"),
         G("totem",    (s, a) => s.StatTotem(a),         "<id>",    "sweep totem id -> HUD name"),
         G("self",     (s, a) => s.SendSelfProfile(),    "",        "native 0x39 self-profile"),
         G("leg",      (s, a) => s.SendProfileReplay6x(), "",       "exact 6.x 0x39 replay"),
@@ -129,6 +132,9 @@ public sealed partial class Session
         G("boardobj", (s, a) => s.BoardObjProbe(),      "",        "board-sign calibration for the faced tile"),
         G("wmpos",    (s, a) => s.WorldMapPosCmd(a),    "<i> <x> <y>", "live-tune a world-map destination dot"),
         G("wmtest",   (s, a) => s.WorldMapTestCmd(a),   "[bg]",    "native world-map screen with a given background"),
+        G("pkt",      (s, a) => s.RawPacketCmd(a),      "<hexop> [tokens] | add | send | show | clear | file <name>",
+                                                        "send a raw server->client packet"),
+        G("delreason", (s, a) => s.DelReasonSweep(a),   "[lo] [hi]", "sweep the 0x10 reason byte for a silent one"),
     };
 
     /// <summary>name -> command, aliases included. Built once; a duplicate name is a programming error and
