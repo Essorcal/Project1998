@@ -8,12 +8,17 @@ namespace Server;
 
 public sealed partial class Session
 {
-    /// <summary>Whether this session may run the "!" development/GM commands. Read fresh from
-    /// <see cref="GmAccounts"/> on every command rather than cached at login, so a @reload-driven demotion
+    /// <summary>Which tier of the '@' command table this session may reach. Read fresh from
+    /// <see cref="StaffAccounts"/> on every command rather than cached at login, so a @reload-driven demotion
     /// takes effect immediately instead of at the offender's next relog. Keyed on the PERSISTED character
-    /// name (case-insensitively), which world entry now refuses to invent — so GM status can't be claimed
+    /// name (case-insensitively), which world entry now refuses to invent — so staff status can't be claimed
     /// by connecting with a made-up name.</summary>
-    private bool IsGm => _enteredWorld && GmAccounts.IsGm(_char.Name);
+    private AccessLevel Access => _enteredWorld ? StaffAccounts.LevelFor(_char.Name) : AccessLevel.Player;
+
+    /// <summary>Full operator access. Testers are deliberately excluded: the three things this gates (the
+    /// user-list colour, the death-penalty exemption, the '!'-prefix nudge) are world-facing privileges
+    /// rather than tooling, and a tester is an ordinary player as far as the world is concerned.</summary>
+    private bool IsGm => Access == AccessLevel.Gm;
 
     // ---- item GM commands ----
 
@@ -481,32 +486,93 @@ public sealed partial class Session
         Log.Info($"   -> {which.ToUpper()} set to {(which == "level" ? _char.Level : _char.Might)}");
     }
 
-    // "@mark <0-5>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san … 5 Oh san). No NPC advances it
-    // yet, so this is the only way to satisfy the gates that read it: mark-restricted gear (ItmMark), map entry
-    // (MapReqMark), unmarked-only doors, and minor-quest eligibility.
+    // "@mark <0-3>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san · 2 Ee san · 3 Sam san) and
+    // rebuild the character at it. A rank is levels PAST 99, not an alternative to them, so this FORCES level
+    // 99 first: "@lvl 99" is the base class, "@mark 1" is Il san on top of it, and so on. Each rank brings its
+    // own stat growth and its own secrets; the base 1-99 book is unchanged underneath.
+    //
+    // Stops at Sam san — see Content.MaxMark: Spells.csv has no mark-4 or mark-5 rows, so Sa san and Oh san
+    // would be a title and a stat bump over nothing.
+    //
+    // No NPC advances the rank yet, so this is also still the only way to satisfy the other gates that read
+    // it: mark-restricted gear (ItmMark), map entry (MapReqMark), unmarked-only doors, and minor-quest
+    // eligibility.
     private void SetMark(string text)
     {
+        // Name the ranks of the character's OWN path, not the generic Il san ladder — a Ju jak's ranks are
+        // Force / Inferno / Pandemonium, and telling them otherwise is just wrong.
+        int p = Math.Max(0, CharClassId);
+        string ladder = string.Join(" · ", Enumerable.Range(1, Content.MaxMark).Select(m => $"{m} {Content.PathTitle(p, m)}"));
+
         var a = ParseInts(text);
-        if (a.Length == 0) { SendLog($"mark is {_char.Mark} (usage: @mark <0-5>)"); return; }
-        _char.Mark = (byte)Math.Clamp(a[0], 0, 5);
-        if (_enteredWorld) StoreSave();
-        SendMessage($"mark set to {_char.Mark}");
-        Log.Info($"   -> MARK set to {_char.Mark}");
+        if (a.Length == 0)
+        {
+            SendLog($"mark is {_char.Mark} ({ClassTitle}). usage: {Prefix}mark <0-{Content.MaxMark}> — {ladder}, each on top of level 99.");
+            return;
+        }
+        // Refuse rather than clamp: silently turning "@mark 5" into Sam san would read as a working Oh san.
+        if (a[0] > Content.MaxMark)
+        {
+            SendLog($"{Content.PathTitle(p, Content.MaxMark)} (mark {Content.MaxMark}) is as far as the ranks go — " +
+                    $"there are no mark-{Content.MaxMark + 1} spells in the game data yet. Ranks: {ladder}.");
+            return;
+        }
+        RespecTo(99, Math.Max(0, a[0]));
     }
 
-    // "@class <name>" — set the class/path line shown in the self-profile ("Mind's Eye", 0x39). It is ALSO the
-    // single source of truth for the character's path id (Content.PathIdForClass), so it drives spell learning
-    // and the ItmPthId gear restriction — a name that matches no Paths row leaves the character path-less and
-    // unable to wear any path-restricted gear. Re-pushes the profile so an open window updates immediately.
+    // "@class <name>" — set the class/path and rebuild the character as one. `Character.ClassName` stores the
+    // BASE name and is the single source of truth for the path id (Content.PathIdForClass), which drives spell
+    // learning, the ItmPthId gear restriction and the subpath chat channel; what a player SEES is
+    // ClassTitle (base + rank), so the stored string stays stable while the displayed one changes with @mark.
+    //
+    // ACCEPTS RANK NAMES TOO. "@class Inferno" is Ju jak at mark 2, "@class Il san (W)" is Warrior at mark 1 —
+    // the rank titles are what a character is actually called, so refusing them would mean the name shown in
+    // the profile is one you can't type back. A base name leaves the current rank alone.
+    //
+    // RESTRICTED to Content.PlayablePaths: the four base classes, Peasant, and the four NPC subpaths (Chung
+    // ryong / Baekho / Ju jak / Hyun moo). RTK's Paths.csv also lists a GM branch and twelve PC subpaths, none
+    // of which this server models — accepting one would produce a character with a rank ladder and no spells
+    // behind it. NPC SUBPATHS FORCE LEVEL 99, for the same reason @mark does: you subpath at the cap, and the
+    // subpath's own spell is pinned there.
+    //
+    // The rebuild keeps the current level and rank and re-derives everything else from the new class: stats
+    // follow the new path's growth curve (a Warrior turned Mage loses the warrior HP roll and gains the mage
+    // MP one) and the book becomes the new class's. Without that, "@class Mage" left a Warrior's HP, a
+    // Warrior's skills, and a class line that no longer described either.
     private void SetClass(string text)
     {
         string name = text.Trim();
-        if (name.Length == 0) { SendLog($"class is '{_char.ClassName}' (usage: @class <name>)"); return; }
-        _char.ClassName = name;
-        if (_enteredWorld) StoreSave();
+        if (name.Length == 0)
+        {
+            SendLog($"class is '{ClassTitle}' (usage: {Prefix}class <name>)");
+            SendLog($"  {string.Join(" · ", Content.PlayablePathNames())}  — or any rank title up to Sam san " +
+                    $"(Il san (W), Fury, Inferno, …)");
+            return;
+        }
+        if (Content.PathRankForName(name) is not { } pick)
+        { SendLog($"'{name}' isn't a known class or rank. Try: {string.Join(" · ", Content.PlayablePathNames())}"); return; }
+        if (!Content.IsPlayablePath(pick.PathId))
+        {
+            SendLog($"'{Content.PathName(pick.PathId)}' isn't playable here — this server models the base classes and the " +
+                    $"NPC subpaths only. Try: {string.Join(" · ", Content.PlayablePathNames())}");
+            return;
+        }
+
+        if (pick.Mark > Content.MaxMark)
+        {
+            SendLog($"'{name}' is rank {pick.Mark}, past the {Content.PathTitle(pick.PathId, Content.MaxMark)} cap — " +
+                    $"there are no mark-{Content.MaxMark + 1} spells in the game data yet. " +
+                    $"Try  {Prefix}class {Content.PathTitle(pick.PathId, Content.MaxMark)}.");
+            return;
+        }
+
+        bool npcSubpath = Content.PathBaseOf(pick.PathId) != pick.PathId;
+        int mark  = pick.Mark > 0 ? pick.Mark : Math.Min((int)_char.Mark, Content.MaxMark);   // a rank name sets the rank; a base name keeps it
+        int level = npcSubpath || mark > 0 ? 99 : _char.Level;            // subpaths and ranks live at the cap
+
+        _char.ClassName = Content.PathName(pick.PathId);
+        RespecTo(level, mark);
         SendSelfProfile();
-        SendMessage($"class set to {name}");
-        Log.Info($"   -> CLASS set to '{name}'");
     }
 
     // ---- stats/HUD probe lab ----

@@ -261,7 +261,14 @@ public sealed partial class Session
         TransferItems(trade.OfferB.Items, b, a);
 
         a.SendStats(); b.SendStats();
-        a.SaveChar(); b.SaveChar();
+
+        // ONE transaction for both sides. Two separate saves can commit half an exchange — and whichever
+        // half lands, the result is either a duplicated stack or a destroyed one. The in-memory transfer
+        // above is careful enough that it can only ever under-deliver; this is what stops the PERSISTENCE
+        // layer from undoing that care. A failed write leaves both sides dirty for the next flush to retry.
+        if (!FlushPair(a, b))
+            Log.Info($"!! trade save FAILED for '{a._char.Name}' <-> '{b._char.Name}' — both left dirty for retry");
+
         EndTrade(trade, "You exchanged, and gave away ownership of the items.");
     }
 
@@ -321,13 +328,18 @@ public sealed partial class Session
             // an unread inbox with the MAILBOX VIEW instead of the board list makes 'm' land straight in
             // the mailbox, which is what it looks like it should do.
             //
-            // Why this renders when a bare unsolicited 0x31 doesn't: the client runs the board-window ctor
-            // (0x406e80) on the KEYPRESS, before the request goes out, so the window is already open by the
-            // time this reply lands. The old "no server-side way into the mailbox" note tested a 0x31 sent
-            // with no window open, which is a different case.
+            // ⚠ MailFirstOnBoard NOW DEFAULTS OFF — turning it on HARD-FREEZES the client (live 2026-08-08).
+            // The theory below (window ctor 0x406e80 already ran on the keypress, so a posts body will render)
+            // is WRONG for this case: the window being open is necessary but not sufficient. Repro from
+            // data/server.log — `3b 01 00` answered with `boardposts(0x31) mailbox n=1` and the client sent
+            // nothing ever again (no walk, no turn, no keypress) until the socket was torn down 35s later.
+            // The very same posts bytes render fine when they answer sub-2, so the ctor evidently arms a
+            // LIST-shaped parse and a posts body walks it off the end. Sub-1 must answer with the list.
             //
-            // The cost is that 'b' also opens the mailbox while mail is unread. Content.MailFirstOnBoard=0
-            // + @reload restores the plain board list without a rebuild.
+            // (Superseded reasoning, kept because it is still right about the unsolicited-0x31 case:) the
+            // client runs the board-window ctor on the KEYPRESS, before the request goes out, so the window
+            // is already open by the time this reply lands — which is why the old "an unsolicited 0x31 opens
+            // no window" note doesn't apply here. It just isn't enough to make a mode swap safe.
             case 1:
                 if (Content.MailFirstOnBoard && Mail.UnreadCount(_char.Name) > 0) SendBoardPosts(0);
                 else SendBoardList();
@@ -599,20 +611,44 @@ public sealed partial class Session
         if (mail is null) { SendLog("That letter no longer exists."); return; }
 
         Mail.MarkRead(_char.Name, position);
+
+        // The attachment claim and the character save go in ONE transaction — flipping `claimed` on its own
+        // connection meant a crash before the next autosave consumed the attachment without delivering it.
+        // See Parcel.ClaimIn / CharacterStore.SaveWith. Reading a letter with no attachment does no DB work
+        // here at all: the conditional UPDATE simply matches nothing and we skip the save.
         string attachNote = "";
-        var claim = Mail.ClaimItem(_char.Name, position);
-        if (claim is (int itemId, int amount, int dura))
+        if (mail.ItemId >= 0)
         {
-            var def = Content.ItemById(itemId);
-            if (def is not null)
+            var snapshot = SnapshotBag();
+            string? note = null;
+            // Deferred for the same reason as the parcel path: a ground item has no database row, so
+            // materializing it inside a transaction that then rolls back would leave the goods on the floor
+            // AND the attachment still unclaimed.
+            GroundItem? pendingDrop = null;
+            bool committed = _store.SaveWith(_char, (cn, tx) =>
             {
+                var claim = Mail.ClaimItemIn(cn, tx, _char.Name, position);
+                if (claim is not (int itemId, int amount, int dura)) return false;   // no attachment, or already claimed
+
+                var def = Content.ItemById(itemId);
+                if (def is null) return true;   // consume it; an unresolvable item id isn't deliverable
+
                 bool gotIt = GiveItem(def, amount, (ushort)Math.Max(0, dura), "");
                 if (!gotIt)
-                    _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = itemId,
-                        X = _char.X, Y = _char.Y, Amount = amount, Dura = (ushort)Math.Max(0, dura), Graphic = def.Icon });
-                attachNote = gotIt ? $" [Parcel: {def.Name} x{amount} added to your bag]"
-                                    : $" [Parcel: {def.Name} x{amount} — your bag was full, dropped at your feet]";
+                    pendingDrop = new GroundItem { Id = _world.AllocateItemId(), ItemId = itemId,
+                        X = _char.X, Y = _char.Y, Amount = amount, Dura = (ushort)Math.Max(0, dura), Graphic = def.Icon };
+                note = gotIt ? $" [Parcel: {def.Name} x{amount} added to your bag]"
+                             : $" [Parcel: {def.Name} x{amount} — your bag was full, dropped at your feet]";
+                return true;
+            });
+
+            if (committed)
+            {
+                if (pendingDrop is not null) _world.DropItem(_char.Map, pendingDrop);
+                attachNote = note ?? "";
+                SendStats();
             }
+            else RestoreBag(snapshot);   // already claimed, or the write failed — either way undo the give
         }
 
         // type=5/buttons=3/nmailFlag=1 are RTK's nmail read-view values (map/intif.c intif_parse_readpost:

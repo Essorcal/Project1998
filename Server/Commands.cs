@@ -26,16 +26,19 @@ public sealed partial class Session
     internal const char Prefix = '@';
 
     /// <param name="Names">Canonical name first, then aliases. Lower-case; matching is case-insensitive.</param>
-    /// <param name="GmOnly">Gated on <see cref="IsGm"/>. A non-GM gets the same answer as for a name that
-    /// doesn't exist, so the tooling stays invisible rather than merely locked.</param>
+    /// <param name="Min">The lowest <see cref="AccessLevel"/> that may run it, compared against
+    /// <see cref="Access"/>. Someone below it gets the same answer as for a name that doesn't exist, so the
+    /// tooling stays invisible rather than merely locked.</param>
     /// <param name="Run">Receives the argument tail (see the class doc).</param>
     /// <param name="Args">Argument shape for @help, e.g. "&lt;name|id&gt; [amount]"; "" for none.</param>
-    private sealed record Command(string[] Names, bool GmOnly, Action<Session, string> Run, string Args, string Help);
+    private sealed record Command(string[] Names, AccessLevel Min, Action<Session, string> Run, string Args, string Help);
 
     private static Command P(string names, Action<Session, string> run, string args, string help)
-        => new(names.Split('|'), false, run, args, help);
+        => new(names.Split('|'), AccessLevel.Player, run, args, help);
+    private static Command T(string names, Action<Session, string> run, string args, string help)
+        => new(names.Split('|'), AccessLevel.Tester, run, args, help);
     private static Command G(string names, Action<Session, string> run, string args, string help)
-        => new(names.Split('|'), true, run, args, help);
+        => new(names.Split('|'), AccessLevel.Gm, run, args, help);
 
     private static readonly Command[] CommandTable =
     {
@@ -56,35 +59,51 @@ public sealed partial class Session
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
         G("reload",  (s, a) => s.ReloadContent(),  "",                    "hot-reload file-backed content"),
+        G("restart", (s, a) => s.RestartCmd(a),    "[minutes] [reason] | cancel", "schedule a server restart, warning everyone as it nears"),
         G("rabbit",  (s, a) => s.SpawnRabbit(),    "",                    "one wandering, killable rabbit"),
         G("kill",    (s, a) => s.KillMobs(),       "",                    "despawn every mob on this map"),
 
         // ---- character ------------------------------------------------------------------------------
-        G("lvl",     (s, a) => { var i = ParseInts(a); s.SetLevel(i.Length > 0 ? i[0] : s._char.Level); },
-                                                   "<1-99>",              "become level n with accurate stats"),
-        G("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
-                                                                          "set vitals and stats directly"),
-        G("might",   (s, a) => s.SetBaseStat("might", a), "<n>",          "set base might"),
-        G("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path"),
-        G("mark",    (s, a) => s.SetMark(a),       "<0-5>",               "set the subpath rank"),
-        G("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment"),
-        G("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
-        G("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
-        G("weapon",  (s, a) => s.SetWeapon(a),     "<sprite>",            "set the weapon appearance byte"),
-        G("hurt",    (s, a) => s.HurtSelfCmd(a),   "<n>",                 "take n damage (after deduction)"),
+        // These REBUILD the character (see Session.RespecTo): stats and the spellbook always come out exactly
+        // right for the resulting class/level/mark/alignment. That's why there is no longer a "@spells" —
+        // there is nothing left for it to do.
+        T("lvl",     (s, a) => { var i = ParseInts(a); s.RespecLevel(i.Length > 0 ? i[0] : s._char.Level); },
+                                                   "<1-99>",              "rebuild as level n: accurate stats + the matching spellbook"),
+        T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
+        T("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path and rebuild for it"),
+        T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
+        T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
+                                                                          "set vitals and stats directly (overrides the curve)"),
+        T("might",   (s, a) => s.SetBaseStat("might", a), "<n>",          "set base might"),
+        T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
+        T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
+        T("weapon",  (s, a) => s.SetWeapon(a),     "<sprite>",            "set the weapon appearance byte"),
+        T("hurt",    (s, a) => s.HurtSelfCmd(a),   "<n>",                 "take n damage (after deduction)"),
 
         // ---- items ----------------------------------------------------------------------------------
-        G("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),
-        G("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
-        G("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
+        T("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),
+        T("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
+        T("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
+        T("iteminfo", (s, a) => s.ItemInfoCmd(a),   "<slot> | mode <m> | sep <s>", "fire the examine reply; switch how it's rendered"),
+        T("bind",     (s, a) => s.BindItemCmd(a),   "<slot> [name|off]",  "bind a bag item to a character (or clear it)"),
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
-        G("iteminfo", (s, a) => s.ItemInfoCmd(a),   "<slot> | mode <m> | sep <s>", "fire the examine reply; switch how it's rendered"),
-        G("bind",     (s, a) => s.BindItemCmd(a),   "<slot> [name|off]",  "bind a bag item to a character (or clear it)"),
 
         // ---- spells ---------------------------------------------------------------------------------
-        G("spells",        (s, a) => s.TeachClassSpells(), "",            "learn every class spell up to your level"),
-        G("learnspell",    (s, a) => s.LearnSpellCmd(a),   "<name|id>",   "learn one spell"),
-        G("forgetspells",  (s, a) => s.ForgetSpells(),     "",            "clear the spellbook"),
+        // @spells / @forgetspells are gone: @lvl / @class / @mark / @align each resync the whole book, so the
+        // only thing left worth doing by hand is granting ONE spell you wouldn't otherwise have.
+        T("spell|learnspell", (s, a) => s.LearnSpellCmd(a), "<name|id>",  "learn one specific spell, free"),
+
+        // ---- moderation -----------------------------------------------------------------------------
+        // GM-only, all of them. See Session.Moderation.cs: no duration means PERMANENT, and anything applied
+        // to an online player takes effect immediately rather than at their next login.
+        G("ban",    (s, a) => s.BanCmd(a),    "<name> [minutes] [reason]", "ban an account (no duration = permanent); kicks them if online"),
+        G("unban",  (s, a) => s.UnbanCmd(a),  "<name>",                    "lift an account ban"),
+        G("mute",   (s, a) => s.MuteCmd(a),   "<name> [minutes] [reason]", "silence speech/whisper/subpath chat; '@' commands still work"),
+        G("unmute", (s, a) => s.UnmuteCmd(a), "<name>",                    "lift a mute"),
+        G("kick",   (s, a) => s.KickCmd(a),   "<name> [reason]",           "disconnect an online player (saves them first)"),
+        G("banip",  (s, a) => s.BanIpCmd(a),  "<ip> [minutes] [reason] | remove <ip>", "ban a source address"),
+        G("bans",   (s, a) => s.BansCmd(a),   "",                          "list everyone currently banned or muted"),
+        G("modlog", (s, a) => s.ModLogCmd(a), "[n]",                       "recent moderation actions, newest first"),
 
         // ---- config read-outs -----------------------------------------------------------------------
         G("npc",   (s, a) => s.NpcToggleCmd(a),   "", "which NPCs are switched off (config + @reload to change)"),
@@ -111,6 +130,7 @@ public sealed partial class Session
         G("mtx",      (s, a) => s.MiniTextProbe(a), "<type>",    "audition a raw SendMiniText channel"),
         G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow | raw <n>", "force this map's weather"),
         G("setting",  (s, a) => s.SettingCmd(a),    "[name] [on|off]", "read/set any 0x1b Options toggle"),
+        G("doze",     (s, a) => s.DozeSelfCmd(a),   "[secs|off]", "put YOURSELF to sleep (Doze can't be self-targeted on the wire)"),
 
         // ---- protocol probes ------------------------------------------------------------------------
         G("hit",      (s, a) => s.HitProbe(a),          "[dmg]",   "0x13 over-head HP bar on the faced mob"),
@@ -173,13 +193,14 @@ public sealed partial class Session
 
         if (name.Equals("help", StringComparison.OrdinalIgnoreCase)) { ShowCommandHelp(args); return true; }
 
+        var access = Access;
         bool known = CommandsByName.TryGetValue(name, out var cmd);
-        if (!known || (cmd!.GmOnly && !IsGm))
+        if (!known || access < cmd!.Min)
         {
-            // A non-GM must not be able to tell a GM command from a typo, so both answers are identical
-            // for them. A GM gets the more useful message.
-            if (known) Log.Info($"   -> denied GM command from non-GM '{_char.Name}': \"{text}\"");
-            SendLog(IsGm ? $"Unknown command '{Prefix}{name}'. Try {Prefix}help." : "Unknown command.");
+            // Someone below the tier must not be able to tell a gated command from a typo, so both answers
+            // are identical for them. Staff get the more useful message.
+            if (known) Log.Info($"   -> denied {cmd!.Min} command from {access} '{_char.Name}': \"{text}\"");
+            SendLog(access > AccessLevel.Player ? $"Unknown command '{Prefix}{name}'. Try {Prefix}help." : "Unknown command.");
             return true;
         }
 
@@ -187,13 +208,13 @@ public sealed partial class Session
         return true;
     }
 
-    /// <summary>"@help [filter]" — every command this session may actually run, so the list a non-GM sees
-    /// contains no GM tooling at all.</summary>
+    /// <summary>"@help [filter]" — every command this session may actually run, so the list a player sees
+    /// contains no staff tooling at all, and a tester's contains no GM tooling.</summary>
     private void ShowCommandHelp(string filter)
     {
-        bool gm = IsGm;
+        var access = Access;
         var rows = CommandTable
-            .Where(c => !c.GmOnly || gm)
+            .Where(c => access >= c.Min)
             .Where(c => filter.Length == 0 || c.Names.Any(n => n.Contains(filter, StringComparison.OrdinalIgnoreCase))
                                            || c.Help.Contains(filter, StringComparison.OrdinalIgnoreCase))
             .ToList();

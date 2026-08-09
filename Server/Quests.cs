@@ -30,13 +30,15 @@ public sealed class QuestDef
 public static class Quests
 {
     // giver NpcId -> the quests it offers. Jadespear #49 and Ironheart #20 share the tutorial chain (both are
-    // MainTutorialNpc in the RTK data), so the same QuestDef is listed under both. NoviceQuest is listed first
-    // and gates TutorialQuest (see TutorialQuest.Intro) — it's the reconstructed first-steps chain that arms
-    // and teaches a fresh peasant before the RTK line's buy/sell lessons begin.
+    // MainTutorialNpc in the RTK data), so the same QuestDef is listed under both.
+    //
+    // NoviceQuest is deliberately NOT listed here. QuestAbility yields one menu entry per QuestDef, so listing
+    // it alongside TutorialQuest made the tutor offer a CHOICE between the two chains. They're sequential, not
+    // alternatives — TutorialQuest.Run dispatches into NoviceQuest until it's finished, keeping one entry.
     private static readonly Dictionary<int, QuestDef[]> ByNpc = new()
     {
-        [20] = new[] { NoviceQuest.Def, TutorialQuest.Def },   // Ironheart
-        [49] = new[] { NoviceQuest.Def, TutorialQuest.Def },   // Jadespear
+        [20] = new[] { TutorialQuest.Def },   // Ironheart
+        [49] = new[] { TutorialQuest.Def },   // Jadespear
     };
 
     /// <summary>The quests a given NPC offers (empty if none).</summary>

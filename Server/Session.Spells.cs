@@ -51,46 +51,57 @@ public sealed partial class Session
         SendMap(0x17, _gameInc++, d.ToArray(), $"addspell(0x17) slot={slot} '{sp.Name}' t{sp.Type}");
     }
 
-    // "@spells" — learn EVERY spell/skill of your class up to your level and populate the book. Class comes
-    // from the profile class line (set with @class); level from @lvl. Skips ones already known.
-    private void TeachClassSpells()
+    /// <summary>Replace the whole book with EXACTLY the abilities this character's class, level, mark and
+    /// alignment entitle it to — the spell half of <see cref="RespecTo"/>, run by @lvl, @class, @mark and
+    /// @align. This is a rebuild, not a top-up: everything is forgotten first, so the book can shrink (drop
+    /// to level 10 and the level-90 secrets go with it) and can never accumulate leftovers from a previous
+    /// class or alignment. That is the whole reason the old "@spells" (learn-everything, additive, never
+    /// forgets) and "@forgetspells" are gone — between them they could only ever grow the book, and a
+    /// character who had been three classes carried all three books around.
+    ///
+    /// <para>Returns false with the class complaint already sent if the character has no known path.</para></summary>
+    private bool SyncSpellbook(bool announce = true)
     {
         int path = Content.PathIdForClass(_char.ClassName);
         if (path < 0)
         {
-            SendLog($"'{_char.ClassName}' isn't a known class — set one first, e.g.  @class Mage  (Warrior / Rogue / Mage / Poet / Peasant).");
-            return;
+            SendLog($"'{_char.ClassName}' isn't a known class — set one first, e.g.  {Prefix}class Mage  " +
+                    $"({string.Join(" / ", Content.PlayablePathNames())}).");
+            return false;
         }
-        var all = Content.SpellsForClass(path, _char.Level, _char.Alignment);
-        if (all.Count == 0) { SendLog($"No spells found for {Content.PathName(path)} ({Character.AlignmentName(_char.Alignment)}) at level {_char.Level}."); return; }
+        var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark);
 
-        int learned = 0; bool capped = false;
-        foreach (var sp in all)
+        ClearSpellbook();
+        bool capped = want.Count > SpellBookCap;
+        foreach (var sp in want.Take(SpellBookCap))
         {
-            if (_char.Spells.Contains(sp.Id)) continue;
-            if (_char.Spells.Count >= SpellBookCap) { capped = true; break; }
             _char.Spells.Add(sp.Id);
             SendAddSpell(_char.Spells.Count - 1, sp);
-            learned++;
         }
         if (_enteredWorld) StoreSave();
-        int spells = all.Count(s => s.IsSpell), skills = all.Count(s => s.IsSkill);
-        SendLog($"Learned {learned} new {Content.PathName(path)} ({Character.AlignmentName(_char.Alignment)}) ability(ies) — " +
-                $"book now {_char.Spells.Count} (class has {all.Count} ≤ lvl {_char.Level}: {spells} spell / {skills} skill)." +
-                (capped ? $"  Hit the {SpellBookCap}-slot cap (raise NEXUS_SPELLBOOK_CAP)." : ""));
-        Log.Info($"   -> @spells: {Content.PathName(path)}({path}) align {_char.Alignment} lvl {_char.Level} -> +{learned}, total {_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
+
+        int spells = want.Take(SpellBookCap).Count(s => s.IsSpell);
+        int skills = _char.Spells.Count - spells;
+        if (announce)
+            SendLog($"Spellbook rebuilt for {ClassTitle} lvl {_char.Level} " +
+                    $"({Character.AlignmentName(_char.Alignment)}): {_char.Spells.Count} ability(ies) — {spells} spell / {skills} skill." +
+                    (capped ? $"  Hit the {SpellBookCap}-slot cap (raise NEXUS_SPELLBOOK_CAP)." : ""));
+        Log.Info($"   -> spellbook resync: {ClassTitle} ({Content.PathName(path)}/{path}) align {_char.Alignment} " +
+                 $"mark {_char.Mark} lvl {_char.Level} -> {_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
+        return true;
     }
 
-    // "@align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>" — set the sub-alignment @spells teaches. A character
-    // learns only universal spells + this alignment's set, never the other sub-alignments' parallel spells
-    // (which share display names and showed up as duplicates). Non-destructive: run @forgetspells + @spells
-    // to relearn a clean single-alignment book after changing it.
+    // "@align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>" — set the sub-alignment the book is drawn from. A
+    // character holds only universal spells + this alignment's set, never the other sub-alignments' parallel
+    // spells (which share display names and showed up as duplicates). Rebuilds the book on the spot, so the
+    // old two-step "@forgetspells then @spells to get a clean single-alignment set" is no longer a thing you
+    // can forget to do.
     private void SetAlignment(string text)
     {
         string a = text.Trim();
         if (a.Length == 0)
         {
-            SendLog($"alignment is {Character.AlignmentName(_char.Alignment)} ({_char.Alignment}). usage: @align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>");
+            SendLog($"alignment is {Character.AlignmentName(_char.Alignment)} ({_char.Alignment}). usage: {Prefix}align <Unaligned|Kwisin|Mingken|Ohaeng | 0-3>");
             return;
         }
         int val = int.TryParse(a, out var n) && n >= 0 && n < Character.Alignments.Length
@@ -99,15 +110,20 @@ public sealed partial class Session
         if (val < 0) { SendLog($"unknown alignment \"{a}\" — use Unaligned / Kwisin / Mingken / Ohaeng (or 0-3)."); return; }
         _char.Alignment = (byte)val;
         if (_enteredWorld) StoreSave();
-        SendLog($"Alignment set to {Character.AlignmentName(_char.Alignment)}. Run  @forgetspells  then  @spells  to relearn a clean {Character.AlignmentName(_char.Alignment)} set.");
+        SendLog($"Alignment set to {Character.AlignmentName(_char.Alignment)}.");
+        SyncSpellbook();
         Log.Info($"   -> ALIGN set to {_char.Alignment} ({Character.AlignmentName(_char.Alignment)})");
     }
 
-    // "@learnspell <name|id>" — learn a single spell/skill by fuzzy name or id (any class; handy for testing).
+    // "@spell <name|id>" — learn a single spell/skill by fuzzy name or id, free and out of band: any class,
+    // any level, any rank. The one spell command left, and the escape hatch for everything the rebuild grant
+    // deliberately withholds — a lower rung of a ladder (@lvl gives you Hellfire, this gives you Spark back),
+    // another class's ability, or a mark secret before you have the mark. A later @lvl/@class/@mark/@align
+    // rebuilds the book and takes it away again, by design.
     private void LearnSpellCmd(string text)
     {
         string q = text.Trim();
-        if (q.Length == 0) { SendLog("usage: @learnspell <name or id>   (or  @spells  to learn all for your class)"); return; }
+        if (q.Length == 0) { SendLog($"usage: {Prefix}spell <name or id>   (the class book itself comes from {Prefix}lvl / {Prefix}class / {Prefix}mark)"); return; }
         var sp = Content.FindSpell(q);
         if (sp is null) { SendLog($"no spell matches \"{q}\"."); return; }
         if (Content.IsOutOfEraSplitTrap(sp))
@@ -120,15 +136,14 @@ public sealed partial class Session
         SendLog($"Learned {sp.Name} ({(sp.IsSkill ? "skill" : "spell")}, {Content.PathName(sp.PathId)}).");
     }
 
-    // "@forgetspells" — clear the whole book (0x18 remove per slot, then empty the list).
-    private void ForgetSpells()
+    /// <summary>Empty the book: one 0x18 remove per slot (highest first, so the client's array shifts under
+    /// us predictably), then drop the ids. Not a command any more — the only caller is
+    /// <see cref="SyncSpellbook"/>, which immediately refills it.</summary>
+    private void ClearSpellbook()
     {
-        int n = _char.Spells.Count;
-        for (int slot = n - 1; slot >= 0; slot--)
+        for (int slot = _char.Spells.Count - 1; slot >= 0; slot--)
             SendMap(0x18, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
         _char.Spells.Clear();
-        if (_enteredWorld) StoreSave();
-        SendLog($"Forgot all {n} spell(s).");
     }
 
     // 0x0F cast (RTK clif_parsemagic): body[0]=book slot+1; then per the learned spell's type: type 1 -> a
@@ -143,6 +158,10 @@ public sealed partial class Session
         // life if dead." Everything else keeps RTK's "Spirits can't cast spells." The slot is resolved first
         // so we know WHICH spell is being cast before deciding.
         if (dec.Length < 1) return;
+        // SLEEP GATE (the Doze family's PvP branch — see ReceiveSleep). Checked alongside the mount gate,
+        // before the slot is resolved: no spell is exempt, and there is nothing to be gained from letting a
+        // sleeping caster pick which one they can't cast.
+        if (Asleep) { SendMiniText("You are asleep."); return; }
         // MOUNT GATE. You can't cast from horseback — same state gate the equip/use paths already apply
         // (Session.Items.cs), and the same clif_sendminitext wording. Checked before the slot is even
         // resolved: no spell is exempt, not even Hyun Moo Revival (you can't be dead AND mounted anyway).
@@ -354,6 +373,14 @@ public sealed partial class Session
         if (Content.MorphFor(sp) is (ushort morphLook, ushort morphLookF, int morphMana, int morphDur))
             return Lua(CastMorphArch(sp, morphLook, morphLookF, morphMana, morphDur, targetId), sp);
 
+        // AREA (4-way) spells — the mage zap ladder and the poet heal ladder. They carry a perfectly good
+        // Damage/Heal export row (the formula and the per-alignment graphics are all correct), so they reach
+        // the archetype path below and get aimed at a single target that doesn't exist. Intercept here and run
+        // the area verb against the SAME pre-evaluated amount, with the real per-family mana the export
+        // couldn't see (Content.AreaSpellFor explains why it reads 0).
+        if (Content.AreaSpellFor(sp) is (string areaVerb, int areaMana))
+            return Lua(CastArch(areaVerb, sp, fx, null, areaMana), sp);
+
         // Archetype dispatch — every archetype now runs its `arch_<name>` verb in spell_verbs.lua. There is no
         // C# handler behind any of them any more: the whole spell system is scriptable and hot-reloadable, and
         // Lua() turns "no such verb" into a visible failed cast rather than a silent fallthrough.
@@ -450,7 +477,26 @@ public sealed partial class Session
     internal uint LuaHp    => _char.Hp;
     internal uint LuaMaxHp => EffMaxHp;
     internal uint LuaMp    => _char.Mp;
+    /// <summary>A cast that resolves to nothing says <b>NOTHING</b> to the player — it only logs.
+    /// <para>Aiming at empty air is a miss, not an error. The refusal already suppresses the "You cast X."
+    /// line and the cast animation, and that absence IS the feedback; a "&lt;spell&gt; finds no target."
+    /// notice on top of it was our invention, fired constantly during ordinary play (every zap thrown a beat
+    /// after something died), and read as a malfunction rather than a miss.</para>
+    /// The log line stays: "nothing happened and nothing was said" is the hardest state to diagnose from a
+    /// bug report, so the server side keeps saying which spell found nothing and where.</summary>
+    private void LogNoTarget(SpellDef sp) =>
+        Log.Info($"      -x {sp.Name}: no target at ({_char.X},{_char.Y}) facing {_facing} — silent refusal");
+
     internal bool LuaHasTarget(uint? targetId) => ResolveCastTarget(targetId) is not null;
+
+    /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (in a PvP map, unaimed)
+    /// yourself? Distinct from <see cref="LuaHasTarget"/>, which resolves mobs only and would therefore
+    /// refuse a legal self-zap before it ever reached the damage path.</summary>
+    internal bool LuaHasDamageTarget(uint? targetId)
+    {
+        var (m, p) = ResolveDamageTarget(targetId);
+        return m is not null || p is not null;
+    }
 
     internal bool LuaSpendMana(int amt, SpellDef sp)
     {
@@ -464,7 +510,7 @@ public sealed partial class Session
     internal bool LuaDamageTarget(int amt, SpellDef sp, uint? targetId)
     {
         var (mob, pc) = ResolveDamageTarget(targetId);
-        if (mob is null && pc is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
         if (pc is not null) return HitPlayerWithSpell(pc, amt, 0, sp);   // PvP / self-cast (verb already spent mana)
         if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
@@ -493,11 +539,14 @@ public sealed partial class Session
         if (mana < 0) mana = 0;
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         var (mob, pc) = ResolveDamageTarget(targetId);
-        if (mob is null && pc is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
         if (pc is not null) return HitPlayerWithSpell(pc, amt, mana, sp);   // PvP / self-cast
-        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
-        if (amt < 1) amt = 1;
+        // A DEFLECT STILL COSTS THE MANA. The spell was cast and the power left you; the target resisting it
+        // is their achievement, not a refund. (RTK returns before its debit here, but a free deflect means a
+        // resistant target costs nothing to keep hammering, which drains the mechanic of any meaning.)
         _char.Mp -= (uint)mana;
+        if (sp.CanFail && RollDeflect(mob!)) { SendStats(); SendMiniText("The magic has been deflected."); return true; }
+        if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         if (_world.TryDamage(_char.Map, mob!, amt, out bool died, _char.Id))
         {
@@ -513,6 +562,108 @@ public sealed partial class Session
         return true;
     }
 
+    // ---- AREA (4-way) spells: the mage zap ladder and the poet heal ladder --------------------------------
+    // RTK Spells/mage/{erupt,ion_charge,explode,electrocute,tempest}.lua and Spells/poet/{vital_spark,anoint,
+    // remedy,heavens_kiss}.lua, each with four alignment reskins — 36 spells that share one shape:
+    //
+    //     local x = {-1, 0, 1, 0}; local y = {0, -1, 0, 1}
+    //     ...spend the mana up front...
+    //     for i = 1, 4 do <whatever stands on that cell gets hit/healed> end
+    //     player:sendMinitext("You cast <name>.")
+    //
+    // Three things fall straight out of that and are the whole reason they used to answer "finds no target":
+    //  * they are SplType 5 — no target argument exists, so the single-target archetype had nothing to aim at
+    //    and bailed before spending anything;
+    //  * the mana is spent BEFORE the loop and the cast line prints AFTER it unconditionally, so casting at
+    //    empty air is a legal (if wasteful) cast, not a failure;
+    //  * the caster's OWN cell is never scanned, so these can't hit you.
+    //
+    // Cells are scanned in RTK's own order (W, N, E, S) and only the FIRST occupant of each is taken, matching
+    // its `target[1]`. Returns how many were affected purely for the log.
+
+    private static readonly (int dx, int dy)[] AreaCells = { (-1, 0), (0, -1), (1, 0), (0, 1) };
+
+    /// <summary>The 4-way zap: damage every creature on a cardinally-adjacent cell. Mobs always; a PLAYER only
+    /// on a PvP map (RTK gates its PC branch on <c>canPK</c>) — off one they are simply skipped, silently,
+    /// exactly as an empty tile is. Each victim gets the spell's own animation over it, an HP bar, and, if it
+    /// dies, its exp.</summary>
+    internal int LuaAreaZap(int amt, SpellDef sp)
+    {
+        if (amt < 1) amt = 1;
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+        bool pvp = Content.IsPvpMap(_char.Map);
+        int hitCount = 0;
+        foreach (var (dx, dy) in AreaCells)
+        {
+            int cx = _char.X + dx, cy = _char.Y + dy;
+            if (cx < 0 || cy < 0) continue;
+            var mob = _world.MobAt(_char.Map, (ushort)cx, (ushort)cy);
+            if (mob is not null)
+            {
+                if (mob.IsNpc) continue;                       // NPCs are indestructible — don't waste the beat on them
+                if (sp.CanFail && RollDeflect(mob)) continue;  // resisted this one; the others still land
+                if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+                {
+                    BroadcastFx(mob.Id, anim, snd);
+                    ShowDamageResult(mob.Id, mob, died);
+                    if (died) AwardExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), killExp: true);
+                    hitCount++;
+                }
+                continue;
+            }
+            var peer = _world.PeerAt(_char.Map, (ushort)cx, (ushort)cy);
+            if (peer is null || ReferenceEquals(peer, this) || !pvp) continue;
+            if (sp.CanFail && RollDeflectPvp(peer)) continue;
+            BroadcastFx(peer._char.Id, anim, snd);
+            peer.ReceiveSpellDamage(amt, this, sp.Name);
+            hitCount++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> 4-way zap {amt} dmg, {hitCount} target(s)");
+        return hitCount;
+    }
+
+    /// <summary>The 4-way heal: restore HP to every PLAYER on a cardinally-adjacent cell (RTK's poet ladder
+    /// scans <c>BL_PC</c> only — these do not heal your pet, and they do not heal you). Each gets the spell's
+    /// animation, the "&lt;caster&gt; casts X on you." line, and a refreshed over-head bar.</summary>
+    internal int LuaAreaHeal(int amt, SpellDef sp)
+    {
+        if (amt <= 0) return 0;
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+        int n = 0;
+        foreach (var (dx, dy) in AreaCells)
+        {
+            int cx = _char.X + dx, cy = _char.Y + dy;
+            if (cx < 0 || cy < 0) continue;
+            var peer = _world.PeerAt(_char.Map, (ushort)cx, (ushort)cy);
+            if (peer is null || ReferenceEquals(peer, this)) continue;
+            peer.ReceiveHeal(amt);
+            BroadcastFx(peer._char.Id, anim, snd);
+            TellTarget(peer, sp);
+            n++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> 4-way heal {amt}, {n} target(s)");
+        return n;
+    }
+
+    /// <summary>Say something to EVERY player on the server, in the Sage spell's own format (RTK
+    /// common/sage.lua: <c>broadcast(-1, "[" .. player.name .. "]: " .. text)</c>). This is the whole point of
+    /// the Share Wisdom ladder — a paid, cooldown-gated world channel — so it deliberately reaches every map,
+    /// unlike every other chat path we have. Empty text is a no-op (RTK guards the same way).</summary>
+    internal bool LuaWorldShout(string text)
+    {
+        text = (text ?? "").Trim();
+        if (text.Length == 0) return false;
+        string line = $"[{_char.Name}]: {text}";
+        if (line.Length > 250) line = line[..250];
+        foreach (var p in _world.AllPlayers()) p.SendMessage(line);
+        Log.Info($"   -> world shout by {_char.Name}: {text}");
+        return true;
+    }
+
     internal void LuaHeal(int amt, SpellDef sp)
     {
         if (amt > 0)
@@ -520,6 +671,8 @@ public sealed partial class Session
             _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
             var fx = Content.FxFor(sp);
             if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+            byte selfPct = PlayerHpPercent();   // over-head bar, same as taking a hit — see ReceiveHeal
+            _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, selfPct, HealBarCritByte));
         }
         SendStats();   // caster message is the central "You cast <name>." — no "restores N HP" flavor
     }
@@ -558,14 +711,26 @@ public sealed partial class Session
         Log.Info($"      (lua) {sp.Name} -> healed mob {mob.Id} '{mob.Name}' for {amt} -> {mob.Hp}/{mob.MaxHp}");
     }
 
-    /// <summary>Raise this player's HP (capped at their effective max) and refresh their HUD. Cross-session —
-    /// called on the TARGET's own Session by a healer's cast.</summary>
+    /// <summary>Raise this player's HP (capped at their effective max), refresh their HUD, and redraw the
+    /// over-head bar for the whole map. Cross-session — called on the TARGET's own Session by a healer's cast.
+    /// <para>The bar is the same <c>0x13</c> packet a hit sends, with <c>critical = 0</c>. RTK does exactly
+    /// this: <c>addHealthExtend</c> reaches <c>clif_send_pc_healthscript(sd, -damage, 0)</c>, i.e. the heal is
+    /// a NEGATIVE damage through the identical builder, and 0 is the critical byte it passes. Without it the
+    /// healer and the bystanders saw nothing at all — only the healed player's own HUD number moved.</para></summary>
     internal void ReceiveHeal(int amt)
     {
         if (amt <= 0 || IsDead) return;
         _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
         SendStats();
+        byte pct = PlayerHpPercent();
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, pct, HealBarCritByte));
     }
+
+    /// <summary>The <c>0x13</c> critical byte a HEAL carries. RTK passes 0 (see <see cref="ReceiveHeal"/>);
+    /// the byte still selects an overlay animation (<c>0x8f − critical</c>), so it is exposed here in case the
+    /// 4.95 client draws something unwanted for that id and it needs re-picking live.</summary>
+    private static readonly byte HealBarCritByte =
+        byte.TryParse(Environment.GetEnvironmentVariable("NEXUS_HEAL_CRIT"), out var hc) ? hc : (byte)0;
 
     /// <summary>Current HP of the mob this cast is aimed at (0 if the target isn't a living mob) — Drain reads it
     /// to decide whether the creature is weak enough to absorb, and how much life that yields.</summary>
@@ -628,49 +793,60 @@ public sealed partial class Session
     // mob is already venomed (checkIfCast(venoms)); the verb then spends no mana. Plays the spell's debuff fx.
     // flatTick > 0 makes each tick a FIXED amount instead of MaxHp*1% — RTK's Burn is the odd one out in this
     // family (a hardcoded 1000 per tick, see burn.lua while_cast).
-    internal bool LuaApplyVenom(int tickCap, int lowMs, int highMs, SpellDef sp, uint? targetId, int flatTick = 0)
+    internal bool LuaApplyVenom(int tickCap, int lowMs, int highMs, SpellDef sp, uint? targetId, int flatTick = 0,
+                                int pcDps = 1000, int pcDurMs = 0, int pcPerTick = 0)
     {
-        var mob = ResolveCastTarget(targetId);
-        if (mob is null) { SendMiniText("It doesn't work."); return false; }
-        if (!_world.PoisonMob(mob, tickCap, lowMs, highMs, _char.Id, flatTick)) { SendMiniText("Another spell of this type is in effect."); return false; }
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
         var fx = Content.FxFor(sp);
-        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        int vAnim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int vSnd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+
+        // PLAYER target — a FIXED window and a flat rate, both different from the creature side.
+        //
+        // Two sources, and they agree once you do the arithmetic:
+        //   tswolf.com 2001-02-23 (IN ERA — 4.83/4.95, the closest source we have): "A Poisoned Person
+        //     receives a 160 SECOND poison that will bring them down to low health, but not kill them."
+        //     A person's window is fixed at 160s, NOT the creature's random roll.
+        //   NexusAtlas 2002-12 (later, but the only one that quotes a number): "Does 1000 damage a second,
+        //     disregarding armor class, on other players."
+        //
+        // 160s x 1000/s = 160,000 total, against a never-kill clamp. So the RATE only sets how fast you
+        // reach the floor, and tswolf's "brought down to low health" is just the steady state of being
+        // there. That also answers the "1000/s is brutal until 99" worry — it is self-scaling, not despite
+        // the flat rate but because of it: anyone whose pool exceeds ~160k rides the whole window out
+        // without ever flooring, so the spell decides fights at low level and merely hurts at cap.
+        // Both numbers are `pcDps` / `pcDurMs` in SpellParams.csv — @reload retunes them after a live test.
+        if (pc is not null)
+        {
+            // PvP-gated for ANY player target, self included (see LuaCanCurseTarget for the reasoning).
+            if (!Content.IsPvpMap(_char.Map))
+            { SendMiniText("You can't attack that target."); return false; }
+            if (pc.Poisoned || pc.HasStatusCategory("venoms"))
+            { SendMiniText(BlockedStatusMsg(pc.HasStatusFromSpell(sp.Key))); return false; }
+            int durMs = pcDurMs > 0 ? pcDurMs : 1 + Random.Shared.Next(lowMs, highMs + 1);
+            pc.ReceivePoison(pcDps, durMs, _char.Id, vAnim, sp.Key, sp.Name, pcPerTick);
+            if (fx is not null) BroadcastFx(pc._char.Id, vAnim, vSnd);
+            if (!ReferenceEquals(pc, this)) TellTarget(pc, sp);
+            Log.Info($"      (lua) {sp.Name} -> venom player {pc._char.Id} '{pc._char.Name}' " +
+                     $"{(pcPerTick > 0 ? $"{pcPerTick}/tick" : $"{pcDps}/s")} for {durMs}ms");
+            return true;
+        }
+
+        if (mob is null) { SendMiniText("It doesn't work."); return false; }
+        // The animation is handed to the poison engine as well as played once here: RTK's while_cast_1500
+        // re-sends it on EVERY damage tick, so the venom keeps flashing for its whole window. Sound is
+        // deliberately not repeated — a zap sfx every 1.5s for 30s is unbearable; only the graphic loops.
+        if (!_world.PoisonMob(mob, tickCap, lowMs, highMs, _char.Id, flatTick, vAnim, spellKey: sp.Key))
+        { SendMiniText(BlockedStatusMsg(_world.MobStatusKey(mob, "venoms") == sp.Key)); return false; }
+        if (fx is not null) BroadcastFx(mob.Id, vAnim, vSnd);
         Log.Info($"      (lua) {sp.Name} -> venom mob {mob.Id} '{mob.Name}' tick {(flatTick > 0 ? $"flat {flatTick}" : $"MaxHp*1% cap {tickCap}")}");
         return true;
     }
 
-    // Blind (the `blind` verb — RTK Spells/NPCs/blind.lua and the mage blind/dark_veil/winters_shadow/ice_glare
-    // family, all of which just set `target.blind = true` for a duration). On a MOB this is a real mechanic:
-    // Mob.BlindUntil makes World.Tick drop its target and skip its aggro scan, so it wanders harmlessly.
-    // On a PC we only occupy the `blinds` exclusivity slot — 4.95 has no client-side blind effect we can drive,
-    // so a blinded player is mechanically unaffected; the slot still matters (it blocks a second blind, and a
-    // Cure of that category clears it). Returns false with the RTK notice if nothing valid is faced.
-    internal bool LuaBlindTarget(int durMs, SpellDef sp, uint? targetId)
-    {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
-        if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        var fx = Content.FxFor(sp);
-        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
-        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
-
-        if (mob is not null)
-        {
-            if (mob.BlindUntil > Environment.TickCount64) { SendMiniText("Another spell of this type is in effect."); return false; }
-            mob.BlindUntil = Environment.TickCount64 + durMs;
-            mob.TargetId = 0;                                   // RTK: it loses whoever it was fighting immediately
-            if (fx is not null) BroadcastFx(mob.Id, anim, snd);
-            Log.Info($"      (lua) {sp.Name} -> blinded mob {mob.Id} '{mob.Name}' {durMs}ms");
-            return true;
-        }
-
-        if (!Content.IsPvpMap(_char.Map) && pc! != this) { SendMiniText("You can't attack that target."); return false; }
-        if (pc!.HasStatusCategory("blinds")) { SendMiniText("Another spell of this type is in effect."); return false; }
-        pc.ReceiveCurse("", 0, durMs, sp.Key, sp.Name, "blinds");
-        if (fx is not null) BroadcastFx(pc._char.Id, anim, snd);
-        TellTarget(pc, sp);
-        Log.Info($"      (lua) {sp.Name} -> blinded player {pc._char.Id} '{pc._char.Name}' {durMs}ms (slot only — no client effect)");
-        return true;
-    }
+    // (Blind used to have its own primitive here. It is now one `debuff` kind among four, all of them routed
+    // through LuaHoldTarget above — same exclusivity slot, same boss cap, same messages. The old version's PC
+    // branch is gone with it: RTK's blind/paralyze/doze all answer "It doesn't work." to a BL_PC, and a
+    // player-side slot that had no mechanical effect at all was only ever bookkeeping.)
 
     // Endear / mind control (the `endear` verb — RTK poet endear.lua + its possess_soul/charm_life/align_follower
     // clones, and the NPCs/endear.lua the Charm weapon procs). Takes a mob that is ALREADY in the world and makes
@@ -681,7 +857,7 @@ public sealed partial class Session
     internal bool LuaCharmTarget(int durMs, SpellDef sp, uint? targetId)
     {
         ResolveTargetBuff(targetId, out var pc, out var mob);
-        if (mob is null || pc is not null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (mob is null || pc is not null) { LogNoTarget(sp); return false; }
         if (mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
         if (mob.IsBoss) { SendMiniText("Your will is too weak."); return false; }
         if (mob.OwnerId != 0) { SendMiniText("A spell of this type is already cast."); return false; }
@@ -762,7 +938,26 @@ public sealed partial class Session
 
     // TargetBuff resolution + apply (mirror CastTargetBuff): resolve the explicit target (id -> player else mob;
     // no id -> faced tile: peer else mob), classify for the verb, and apply the buff/deduction the verb chose.
-    private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob)
+    /// <param name="selfIfUnaimedInPvp">Land on the CASTER when nothing else resolves, <b>on a PvP map only</b> —
+    /// the rule that makes a hostile self-cast possible at all.
+    /// <para>4.95 gives a spell no way to say "me": the client casts with the slot alone, so every targeted
+    /// spell resolves off the faced tile, and you are never on your own faced tile. Every self-cast in the
+    /// game is therefore this fallback. <see cref="LuaHealTarget"/> has always had it ("aimed at nothing —
+    /// heal yourself"), which is why healing yourself works; the hostile-status paths did not, which is why
+    /// self-Doze and the documented self-pestilence defence resolved to nothing and did nothing.</para>
+    /// <para>Enabled for hostile STATUS spells (curse · hold · venom) and NOT for damage. A curse or a doze
+    /// aimed at nothing landing on you is the intended play — occupying your own exclusivity slot with a mild
+    /// curse so a worse one bounces off is a real PvP tactic. A NUKE aimed at nothing landing on you is just a
+    /// way to kill yourself when a mob dies mid-cast, so the damage paths keep refusing (silently).</para>
+    /// <para><b>Why the PvP gate is on the FALLBACK and not on the self-cast itself.</b> The tactic it exists
+    /// for — parking a mild curse in your own exclusivity slot — is only worth anything where someone can
+    /// curse you, i.e. exactly where <see cref="Content.IsPvpMap"/> is true. Off one, this fallback had no
+    /// upside left and one sharp edge: a type-2 cast whose target died (or that the client sent with no id at
+    /// all, log `0f 14 00`) silently landed a 7-minute −30 armor Vex on the caster, in a town. So the fallback
+    /// now stops at the map boundary, matching <see cref="ResolveDamageTarget"/> beat for beat: aimed at
+    /// nothing, off a PvP map, a hostile cast resolves to nobody and fails quietly. Inside an arena every
+    /// self-status play still works exactly as before.</para></param>
+    private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob, bool selfIfUnaimedInPvp = false)
     {
         pc = null; mob = null;
         if (targetId is uint tid && tid != 0)
@@ -776,6 +971,7 @@ public sealed partial class Session
             pc = _world.PeerAt(_char.Map, fxT, fyT);
             if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
         }
+        if (selfIfUnaimedInPvp && pc is null && mob is null && Content.IsPvpMap(_char.Map)) pc = this;
     }
     internal string LuaTargetBuffKind(uint? targetId)
     {
@@ -831,15 +1027,75 @@ public sealed partial class Session
         var mob = ResolveCastTarget(targetId);
         return Formula.Eval(fx.Chance, SpellVars(mob));
     }
-    internal void LuaFreezeTarget(int durMs, SpellDef sp, uint? targetId)
+    /// <summary>Which kind of hold this Debuff spell is, straight off its export row's <c>debuff</c> column:
+    /// "blind" · "paralyze" · "sleep" · "slow". The archetype verb branches on it — before this, every Debuff
+    /// spell in the game ran the same generic freeze, so Blind froze instead of blinding and Doze was
+    /// indistinguishable from Paralyze.</summary>
+    internal string LuaDebuffKind(SpellDef sp) => Content.FxFor(sp)?.Debuff ?? "";
+
+    /// <summary>Apply one of the hostile categorised holds to the faced/targeted MOB (RTK's
+    /// paralyze/doze/sleep/blind family). <paramref name="category"/> is the exclusivity slot ("paras" ·
+    /// "sleeps" · "blinds" · "slows"); <paramref name="hold"/> freezes it in place, <paramref name="blind"/>
+    /// takes its sight. <paramref name="repeatFxMs"/> &gt; 0 keeps re-drawing the spell's own animation on
+    /// that cadence for as long as the status runs (RTK <c>while_cast</c> — doze/sleep do this, paralyze
+    /// doesn't).
+    /// <para>Mostly mob-only: RTK's paralyze, static, blind and Sleep all reject <c>BL_PC</c>. <b>Doze is the
+    /// exception</b> (<see cref="Content.HoldHitsPlayers"/>) and lands on another player in a PvP map — see
+    /// <see cref="ReceiveSleep"/> for what a hold can and can't mean against a 4.95 client.</para>
+    /// False (with the RTK notice, no mana spent) if there's no legal target, or the slot is already occupied —
+    /// which is what stops the same hold being chain-cast to keep something locked down forever.</summary>
+    internal bool LuaHoldTarget(string category, int durMs, bool hold, bool blind, int repeatFxMs,
+                                SpellDef sp, uint? targetId)
     {
-        var mob = ResolveCastTarget(targetId);
-        if (mob is null) return;
-        mob.FrozenUntil = Environment.TickCount64 + durMs;
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+
+        // PLAYER target — legal for the Doze family only.
+        if (pc is not null)
+        {
+            bool onSelf = ReferenceEquals(pc, this);
+            if (!Content.HoldHitsPlayers(sp))
+            { SendMiniText("It doesn't work."); Log.Info($"      -x {sp.Name}: holds don't work on players (only the Doze family does)"); return false; }
+            // PvP is required to hold ANY player (RTK's `canPK`), yourself included — the same boundary the
+            // curse and damage paths draw. A self-doze is harmless in isolation, but off a PvP map it has no
+            // opponent to be a tactic against, so every one that landed there was an unaimed cast falling
+            // through onto its caster rather than something anybody meant to do.
+            if (!Content.IsPvpMap(_char.Map))
+            { SendMiniText("You can't attack that target."); Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't hold a player here"); return false; }
+            if (pc.HasStatusCategory(category))
+            { SendMiniText(BlockedStatusMsg(pc.HasStatusFromSpell(sp.Key))); Log.Info($"      -x {sp.Name}: '{pc._char.Name}' already carries a [{category}]"); return false; }
+            var pfx  = Content.FxFor(sp);
+            int pAnim = pfx is not null ? Content.EffectAnim(pfx, sp.PathId) : 0;
+            int pSnd  = pfx is not null ? Content.EffectSound(pfx, sp.PathId) : 0;
+            pc.ReceiveSleep(category, durMs, sp.Key, sp.Name, pAnim, repeatFxMs);
+            if (pfx is not null) BroadcastFx(pc._char.Id, pAnim, pSnd);
+            if (!onSelf) TellTarget(pc, sp);   // on yourself, ReceiveSleep's own "You fall asleep." is the line
+            Log.Info($"      (lua) {sp.Name} -> player {pc._char.Id} '{pc._char.Name}'{(onSelf ? " (SELF)" : "")} " +
+                     $"[{category}] {durMs}ms anim={pAnim} repeat={repeatFxMs}ms");
+            return true;
+        }
+
+        // "It doesn't work." for an NPC too — it has no AI to take away in the first place.
+        if (mob is null || mob.IsNpc)
+        {
+            if (mob is null) LogNoTarget(sp); else SendMiniText("It doesn't work.");
+            Log.Info($"      -x {sp.Name}: {(mob is null ? "no target resolved (no id sent and nothing on the faced tile)" : "target is an NPC")}");
+            return false;
+        }
         var fx = Content.FxFor(sp);
-        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' frozen {durMs}ms");
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+        // RTK shortens a hold on a boss to a token 2s (doze/sleep both do `if target.isBoss ~= 0 then
+        // duration = 2000`) — you can interrupt one, you can't lock it down.
+        if (mob.IsBoss && durMs > BossHoldMs) durMs = BossHoldMs;
+        if (!_world.ApplyMobStatus(mob, category, durMs, hold, blind, anim, snd, repeatFxMs, sp.Key))
+        { SendMiniText(BlockedStatusMsg(_world.MobStatusKey(mob, category) == sp.Key)); Log.Info($"      -x {sp.Name}: mob {mob.Id} already carries a [{category}]"); return false; }
+        if (fx is not null) BroadcastFx(mob.Id, anim, snd);
+        Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' [{category}] {durMs}ms hold={hold} blind={blind} anim={anim} repeat={repeatFxMs}ms");
+        return true;
     }
+
+    /// <summary>RTK's boss cap on a hold, shared by doze and sleep (<c>duration = 2000</c>).</summary>
+    private const int BossHoldMs = 2000;
 
     // ---- CURSE / categorized-status primitives (the `curse` verb + arch_cure category removal) ---------------
     // A curse is a mutually-exclusive categorized status (RTK spellTables.lua): applying one is blocked if the
@@ -870,23 +1126,72 @@ public sealed partial class Session
         return _buffs.Any(b => b.Category.Length > 0 && CatFamily(b.Category) == fam && b.Expires > now);
     }
 
+    // ---- "You already cast that spell." vs "Another spell of this type is in effect." -------------------------
+    // Both are RTK lines, and RTK picks between them by WHAT IS IN THE SLOT: paralyze.lua answers "You already
+    // cast that spell." off its own `target.paralyzed`, static.lua answers "A more powerful spell is in effect."
+    // off the same flag. It could only ever manage that by hand, per script, because a mob carried one boolean
+    // per mechanic and not the identity of what set it. Now that a slot remembers its spell key on both sides
+    // (Mob.MobStatus.Key / ActiveBuff.Key), the distinction is general: re-casting YOUR OWN running spell reads
+    // as "you already cast that", anything else in the slot reads as "another spell".
+
+    /// <summary>The refusal line for a blocked categorised status. <paramref name="sameSpell"/> = the slot is
+    /// held by the very spell being cast again.</summary>
+    internal static string BlockedStatusMsg(bool sameSpell) =>
+        sameSpell ? "You already cast that spell." : "Another spell of this type is in effect.";
+
+    /// <summary>Is a still-running categorised status on THIS player the work of <paramref name="key"/>? Only
+    /// categorised entries count: an ordinary buff (Might &amp;c) refreshes rather than blocks, so it never
+    /// produces a refusal that would need this wording.</summary>
+    internal bool HasStatusFromSpell(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return false;
+        long now = Environment.TickCount64;
+        return _buffs.Any(b => b.Category.Length > 0 && b.Key == key && b.Expires > now);
+    }
+
+    /// <summary>Was the slot that just blocked this cast filled by this same spell? <paramref name="category"/>
+    /// is the category that actually did the blocking (which for a curse may be a broader one than the spell's
+    /// own — a protection bouncing a curse, say — in which case this is simply false).</summary>
+    internal bool LuaAlreadyCastOnTarget(string category, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        if (pc is not null) return pc.HasStatusFromSpell(sp.Key);
+        if (mob is not null) return _world.MobStatusKey(mob, CatFamily(category)) == sp.Key;
+        return false;
+    }
+
     // Validate a curse target the way RTK pestilence.lua does: a PC (incl. YOURSELF) is only a legal curse target
-    // in a PvP map (approximates RTK canPK); a mob is always fair game; nothing faced -> "finds no target". NPCs
+    // in a PvP map (approximates RTK canPK); a mob is always fair game; nothing faced -> a silent refusal. NPCs
     // aren't distinguished from mobs on 4.95 (stationary mobs), so curse-on-NPC isn't specifically blocked yet.
     internal bool LuaCanCurseTarget(SpellDef sp, uint? targetId)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
-        if (pc is null && mob is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
-        if (pc is not null && !Content.IsPvpMap(_char.Map)) { SendMiniText("You can't attack that target."); return false; }
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        if (pc is null && mob is null) { LogNoTarget(sp); return false; }
+        // The PvP-map gate covers YOURSELF too — same rule, and for the same reason, as HitPlayerWithSpell's.
+        // Self-pestilence IS a real defence (occupy your own exclusivity slot with a mild curse so a worse one
+        // can't land), but it is only ever worth anything where someone can curse you, so keeping it PvP-only
+        // costs the tactic nothing. Off a PvP map it bought no defence and only ever fired by accident — the
+        // client sending a type-2 cast with a stale or absent target id, landing a 7-minute self-Vex in town.
+        if (pc is not null && !Content.IsPvpMap(_char.Map))
+        { SendMiniText("You can't attack that target."); return false; }
         return true;
     }
 
-    // Does the resolved curse target already carry a status of this category? (PC only; mob curse-exclusivity is
-    // a follow-up — a mob can currently take a curse regardless.)
+    // Does the resolved curse target already carry a status of this category? Checks BOTH sides: a player via
+    // the categorised _buffs list, a mob via Mob.Statuses. The mob half used to be missing entirely, and that
+    // was the whole of the "a weak curse doesn't block a strong one" bug — the exclusivity that makes Vex
+    // (minorcurses) bar Scourge (curses) only ever ran against players, so on a monster every curse simply
+    // overwrote the last one and the checkIfCast rule may as well not have existed.
     internal bool LuaCurseHasCategory(string category, uint? targetId)
     {
-        ResolveTargetBuff(targetId, out var pc, out _);
-        return pc is not null && pc.HasStatusCategory(category);
+        if (string.IsNullOrEmpty(category)) return false;
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        if (pc is not null) return pc.HasStatusCategory(category);
+        // CatFamily on BOTH sides, same as HasStatusCategory: minorcurses collapses into curses so the two
+        // block each other symmetrically (RTK's curse scripts all guard on the broad `curses` table).
+        if (mob is null) return false;
+        string fam = CatFamily(category);
+        return _world.MobHasStatus(mob, fam) || (fam == "curses" && _world.MobHasStatus(mob, "minorcurses"));
     }
 
     // Apply a categorized status to the resolved curse target (PC via _buffs+Category; mob via the timed-buff
@@ -894,7 +1199,7 @@ public sealed partial class Session
     // damage, our inverted-AC equivalent of RTK's cursing "armor += 5"); amount may be 0 for a pure blocker.
     internal void LuaApplyCurse(string category, string stat, int amount, int durMs, SpellDef sp, uint? targetId)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
         var fx = Content.FxFor(sp);
         int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
         int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
@@ -907,11 +1212,198 @@ public sealed partial class Session
         }
         else if (mob is not null)
         {
+            // Occupy the category slot as well as applying the stat, so the next curse's checkIfCast can see
+            // it. Neither a hold nor a blind — a curse only weakens, it doesn't stop the creature.
+            _world.ApplyMobStatus(mob, CatFamily(category), durMs, hold: false, blind: false, spellKey: sp.Key);
             if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);
             if (fx is not null) BroadcastFx(mob.Id, anim, snd);
             Log.Info($"      (lua) {sp.Name} -> curse [{category}] {stat}{amount:+0;-0} on mob {mob.Id} '{mob.Name}' {durMs}ms");
         }
         SendStats();
+    }
+
+    /// <summary>Put THIS player to sleep (the Doze family's PvP branch). Cross-session — called on the
+    /// TARGET's own Session.
+    /// <para><b>What a hold can and cannot be on a 4.95 client.</b> It cannot stop you walking: self-walk is
+    /// CLIENT-LOCAL (the client moves itself and the server only paces it), so a movement freeze would just
+    /// desync — you'd keep walking on your own screen. What the server DOES own is every action you take
+    /// through it, so sleep takes your <b>attacks and your casts</b> (see the guards in HandleAttack /
+    /// HandleCast). You can still run; you can't fight back. Against Doze's 10 seconds that makes it an
+    /// opener, not a lockdown.</para>
+    /// <para>It ends the moment you take damage (RTK <c>on_takedamage_while_cast</c>), so the caster gets one
+    /// free move out of it rather than a chain of them — the same rule the mob side follows.</para></summary>
+    internal void ReceiveSleep(string category, int durMs, string key, string name, int anim, int repeatFxMs)
+    {
+        if (durMs <= 0) { Log.Info($"      -x {name}: zero duration, nothing applied"); return; }
+        ReceiveCurse("", 0, durMs, key, name, category);   // no stat effect — the slot IS the effect
+        _sleepUntil = Environment.TickCount64 + durMs;
+        // The drowse keeps redrawing over your head for as long as it holds (RTK doze's `while_cast`), which
+        // is also what tells everyone watching that you're out of the fight.
+        if (anim > 0 && repeatFxMs > 0)
+        {
+            _sleepFxAnim = anim; _sleepFxEvery = repeatFxMs;
+            _sleepFxNext = Environment.TickCount64 + repeatFxMs;
+        }
+        SendMiniText("You fall asleep.");
+    }
+
+    private long _sleepUntil, _sleepFxNext;
+    private int  _sleepFxAnim, _sleepFxEvery;
+
+    // ---- player-side venom (the PC half of the poison DoT) ---------------------------------------------------
+    // NexusAtlas, Venom: "Poisons monster targets for a random amount of time. Does 1000 damage a second,
+    // DISREGARDING ARMOR CLASS, on other players. Does more damage per second to animals. Poison will not kill
+    // a target but rather bring them to the lowest possible health."
+    //
+    // So this is not a mob-only spell, which is what we had built. RTK's venom.lua is self-contradictory on the
+    // point — its `cast` refuses `BL_PC` outright ("It doesn't work.") while its `while_cast_1500` carries a
+    // fully-written PC branch, gated on canPK, that the cast can never reach. The atlas describes the PC
+    // behaviour in detail, and the archive outranks the Lua for what the real game did.
+    private long _poisonUntil, _poisonNextTick;
+    private int  _poisonPerTick, _poisonFxAnim;
+    private uint _poisonBy;
+
+    /// <summary>Is this player currently venomed?</summary>
+    internal bool Poisoned => _poisonUntil > Environment.TickCount64;
+
+    /// <summary>Apply the venom DoT to THIS player. Cross-session — called on the VICTIM's own Session.
+    /// <para><b>Two readings of the atlas's "1000 damage a second", and it is a real coin-flip:</b>
+    /// <list type="number">
+    /// <item><b>a RATE</b> — 1000/s against the 1.5s cadence = <b>1500 per tick</b>. Reads the sentence
+    ///   literally. This is <paramref name="dps"/>.</item>
+    /// <item><b>a per-TICK amount</b> — 1000 per tick = 667/s, with "a second" being loose wording for the
+    ///   ~1.5s tick. This is what RTK's code shape suggests: its <c>while_cast_1500</c> deals
+    ///   <c>MaxHp*1%</c> capped at <c>_maxDamage = 2000</c> per TICK, and a typical target's 1% lands right
+    ///   about 1000 — so the description may simply be someone eyeballing the per-tick number. This is
+    ///   <paramref name="perTick"/>, which WINS when set.</item>
+    /// </list>
+    /// Both satisfy the atlas's "more damage per second to animals" comparison, so neither is ruled out.
+    /// The practical difference is only where the never-kill floor bites: ~160k max HP under (1), ~107k
+    /// under (2). Set <c>pcPerTick</c> in SpellParams.csv to switch readings without doing the conversion
+    /// in your head.</para>
+    /// Also occupies the <c>venoms</c> category, which is what blocks a second venom and lets the eight
+    /// <c>cureCat = venoms</c> cures clear it.</summary>
+    internal void ReceivePoison(int dps, int durMs, uint by, int anim, string key, string name, int perTick = 0)
+    {
+        if (durMs <= 0 || IsDead) return;
+        _poisonPerTick = perTick > 0
+            ? perTick
+            : Math.Max(1, (int)Math.Round(dps * (World.PoisonTickMs / 1000.0)));
+        _poisonUntil   = Environment.TickCount64 + durMs;
+        _poisonNextTick = Environment.TickCount64 + World.PoisonTickMs;
+        _poisonFxAnim  = anim;
+        _poisonBy      = by;
+        ReceiveCurse("", 0, durMs, key, name, "venoms");   // the exclusivity slot + the profile duration line
+        SendMiniText("Poison courses through you.");
+    }
+
+    /// <summary>Clear the venom (a cure of category <c>venoms</c>, or the timer lapsing).</summary>
+    internal void CurePoison()
+    {
+        if (_poisonUntil == 0) return;
+        bool was = Poisoned;
+        _poisonUntil = 0; _poisonFxAnim = 0;
+        _buffs.RemoveAll(b => b.Category == "venoms");
+        if (was) { SendMiniText("The poison passes."); SendStats(); }
+    }
+
+    /// <summary>Driven by the world heartbeat. Deals the tick, redraws the venom animation, and lapses the
+    /// status. <b>It can never kill</b> — the atlas is explicit that poison brings you to the lowest possible
+    /// health and stops, so the damage is clamped to leave 1 HP and <see cref="Die"/> is never reached.
+    /// Armour is deliberately not consulted ("disregarding armor class"), and neither is the deduction
+    /// multiplier — this is not a hit, it is the poison already inside you.</summary>
+    internal void TickPoison()
+    {
+        if (_poisonUntil == 0) return;
+        if (!Poisoned) { CurePoison(); return; }
+        if (IsDead) { CurePoison(); return; }
+        if (Environment.TickCount64 < _poisonNextTick) return;
+        _poisonNextTick = Environment.TickCount64 + World.PoisonTickMs;
+
+        int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
+        if (_poisonFxAnim > 0)
+        {
+            int a = _poisonFxAnim;
+            _world.Broadcast(_char.Map, p => p.EffectOver(_char.Id, a));
+        }
+        if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
+        _char.Hp -= (uint)dam;
+        WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
+        SendStats();
+        byte pct = PlayerHpPercent();
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, pct, HitCritByte));
+        if (_poisonBy != 0 && _poisonBy != _char.Id) MarkPvpFoe(_poisonBy);
+    }
+
+    /// <summary>"@doze [secs]" — put YOURSELF to sleep, to audition the hold without a second character.
+    /// <para>This exists because <b>Doze cannot be self-targeted over the wire.</b> The 4.95 client casts with
+    /// the slot alone — live-confirmed, `0f | slot+1 00`, no target id even for a "Which target? &gt;" spell
+    /// (protocol doc §14) — so every targeted spell resolves off the FACED TILE, and you are never on your own
+    /// faced tile. Casting Doze at yourself therefore resolves to whatever you happen to be looking at, and
+    /// to nothing at all in an empty room. To hold another player, face them in a PvP map and cast normally;
+    /// that path works. This command is the only way to be your own target.</para></summary>
+    private void DozeSelfCmd(string text)
+    {
+        string arg = text.Trim();
+        // "@doze off" / "@doze 0" wakes you now. Needed, not a nicety: the only other way out is taking a
+        // hit, so dozing yourself in an empty room would otherwise mean sitting out the whole timer. Chat
+        // isn't gated by the hold, so the command still reaches the server while you're under it.
+        if (arg is "off" or "0" or "wake") { WakeUp(byDamage: false); SendLog("Awake."); return; }
+        int secs = int.TryParse(arg, out var n) && n > 0 ? Math.Min(n, 300) : 10;
+        // Borrow the real spell's row so the audition uses the same animation and cadence the cast would.
+        var sp = Content.FindSpell("doze_mage");
+        var fx = sp is not null ? Content.FxFor(sp) : null;
+        int anim = sp is not null && fx is not null ? Content.EffectAnim(fx, sp.PathId) : 2;
+        ReceiveSleep("sleeps", secs * 1000, "doze_mage", sp?.Name ?? "Doze", anim, 1000);
+        BroadcastFx(_char.Id, anim, sp is not null && fx is not null ? Content.EffectSound(fx, sp.PathId) : 0);
+        SendLog($"Asleep for {secs}s: no walking, turning, attacking or casting; anim {anim} replays every 1s; " +
+                "taking damage wakes you. Open your profile to see the duration.");
+    }
+
+    /// <summary>Is this player currently held asleep? Read by the attack/cast gates.</summary>
+    internal bool Asleep => _sleepUntil > Environment.TickCount64;
+
+    // Damage amplifier left by a sleep-family hold (see Mob.DamageAmp for the full note): the NEXT hit on a
+    // dozed/slept player is multiplied, then it's spent. Read + consumed by ApplyMobHit / ReceiveSpellDamage.
+    private double _dmgAmp;
+    private long   _dmgAmpUntil;
+    internal void ArmDamageAmp(double mult, int durMs) { _dmgAmp = mult; _dmgAmpUntil = Environment.TickCount64 + durMs; }
+    internal double TakeDamageAmp()
+    {
+        if (_dmgAmp <= 1.0 || _dmgAmpUntil <= Environment.TickCount64) return 1.0;
+        double a = _dmgAmp; _dmgAmp = 0; _dmgAmpUntil = 0;
+        return a;
+    }
+
+    /// <summary>Arm the sleep-family damage amplifier on whatever this cast just held (player or mob).</summary>
+    internal void LuaAmplify(double mult, int durMs, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        if (pc is not null) pc.ArmDamageAmp(mult, durMs);
+        else if (mob is not null) { mob.DamageAmp = mult; mob.DamageAmpUntil = Environment.TickCount64 + durMs; }
+    }
+
+    /// <summary>Wake up — on damage (RTK's rule), or when the timer lapses. Clears the slot so a Cure isn't
+    /// needed and a second Doze can land later.</summary>
+    internal void WakeUp(bool byDamage)
+    {
+        if (_sleepUntil == 0) return;
+        bool was = Asleep;
+        _sleepUntil = 0; _sleepFxAnim = 0;
+        _buffs.RemoveAll(b => b.Category == "sleeps");
+        if (was) { SendMiniText(byDamage ? "The pain wakes you." : "You wake up."); SendStats(); }
+    }
+
+    /// <summary>Driven by the world heartbeat: redraw the drowse over a sleeping player, and wake them when
+    /// the timer runs out. (The mob side rides <see cref="Mob.FxRepeat"/>; a player has no Mob to hang it on.)</summary>
+    internal void TickSleep()
+    {
+        if (_sleepUntil == 0) return;
+        if (!Asleep) { WakeUp(byDamage: false); return; }
+        if (_sleepFxAnim <= 0 || Environment.TickCount64 < _sleepFxNext) return;
+        _sleepFxNext = Environment.TickCount64 + _sleepFxEvery;
+        int a = _sleepFxAnim;
+        _world.Broadcast(_char.Map, p => p.EffectOver(_char.Id, a));
     }
 
     // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
@@ -946,6 +1438,9 @@ public sealed partial class Session
     }
     // Category check for the ward's own target (PC only — mobs don't carry categories, matching the curse side).
     internal bool LuaWardHasStatus(string category) => _wardPc?.HasStatusCategory(category) ?? false;
+    // …and whether the thing occupying that slot is this very ward, so a re-cast reads "You already cast that
+    // spell." instead of the generic "another spell" (which, on your own bolster, is plainly wrong).
+    internal bool LuaWardAlreadyCast(SpellDef sp) => _wardPc?.HasStatusFromSpell(sp.Key) ?? false;
     // Apply the ward: a PC gets the categorized status (ReceiveCurse — shared curse/ward storage, folds into
     // Totals()/AC and expires+reverts on its own); a mob gets just the stat buff (no category). Plays fx + flavor.
     internal void LuaApplyWard(string category, string stat, int amount, int durMs, SpellDef sp)
@@ -973,6 +1468,11 @@ public sealed partial class Session
     {
         if (string.IsNullOrEmpty(category)) return 0;
         int n = _buffs.RemoveAll(b => b.Category.Length > 0 && CureMatches(b.Category, category));   // curing `curses` also clears minor curses
+        // The sleep hold lives in its own timer as well as the buff list (the gates read the timer, so they
+        // have to agree). No shipped Cure carries cureCat "sleeps" today — this keeps the two in step if one
+        // ever does, rather than leaving a player whose slot is clear but who still can't swing.
+        if (CureMatches("sleeps", category)) WakeUp(byDamage: false);
+        if (CureMatches("venoms", category)) CurePoison();   // same reason: the DoT rides its own timer too
         if (n > 0) SendStats();
         return n;
     }
@@ -991,7 +1491,7 @@ public sealed partial class Session
     internal bool LuaResolvePcTarget(SpellDef sp, uint? targetId)
     {
         _pcSpellTarget = ResolvePcCastTarget(targetId);
-        if (_pcSpellTarget is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (_pcSpellTarget is null) { LogNoTarget(sp); return false; }
         return true;
     }
     internal uint LuaTargetMana    => _pcSpellTarget?._char.Mp ?? 0;
@@ -1180,7 +1680,7 @@ public sealed partial class Session
         if (_pcSpellTarget is not { } target) return;
         var tc = target._char;
         var text = new System.Text.StringBuilder();
-        text.Append(tc.ClassName).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
+        text.Append(ClassTitleOf(tc)).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
         text.Append(tc.Title ?? "").Append('\n');
         text.Append("Might: ").Append(target.EffMight)
             .Append(" Will: ").Append(tc.Will + target.Totals().will)
@@ -1812,7 +2312,7 @@ public sealed partial class Session
         const int mana = 30;
         if (_char.Mp < mana) { SendMiniText("You do not have enough mana."); return false; }
         var target = ResolvePcCastTarget(targetId);
-        if (target is null) { SendMiniText($"{sp.Name} finds no target."); return false; }
+        if (target is null) { LogNoTarget(sp); return false; }
 
         // Judge family: target must be STRICTLY lower level. Spy family: equal level is also allowed.
         // (`target.level >= player.level` fails vs `target.level > player.level` fails — a real distinction
@@ -1825,7 +2325,7 @@ public sealed partial class Session
 
         var tc = target._char;
         var text = new System.Text.StringBuilder();
-        text.Append(tc.ClassName).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
+        text.Append(ClassTitleOf(tc)).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
         text.Append(tc.Title ?? "").Append('\n');
         text.Append("Might: ").Append(target.EffMight)
             .Append(" Will: ").Append(tc.Will + target.Totals().will)
@@ -2053,7 +2553,20 @@ public sealed partial class Session
         }
         var (fx, fy) = FrontTile();
         var fm = _world.MobAt(_char.Map, fx, fy);
-        return fm is not null ? (fm, null) : (null, _world.PeerAt(_char.Map, fx, fy));
+        if (fm is not null) return (fm, null);
+        var peer = _world.PeerAt(_char.Map, fx, fy);
+        if (peer is not null) return (null, peer);
+        // Nothing aimed at. IN A PVP MAP that resolves to YOU — same "unaimed falls back to the caster" rule
+        // every other self-cast rides (see ResolveTargetBuff's selfIfUnaimedInPvp), since the client gives a spell
+        // no way to say "me". Zapping yourself is a legal thing to do where PvP is on.
+        //
+        // OFF a PvP map it stays null, so the cast fails silently rather than resolving to a target it would
+        // then have to refuse out loud with "You can't attack that target." — nothing was there, and saying
+        // nothing is the honest answer.
+        //
+        // FOOTGUN, stated once and left alone because it is the asked-for behaviour: in an arena, a zap thrown
+        // the instant your target dies now lands on you.
+        return (null, Content.IsPvpMap(_char.Map) ? this : null);
     }
 
     // PvP magic-deflect: the same RTK formula as RollDeflect(mob), but the defender is a PLAYER — resist scales
@@ -2077,13 +2590,17 @@ public sealed partial class Session
     private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp)
     {
         bool isSelf = ReferenceEquals(pc, this);
-        if (!isSelf && !Content.IsPvpMap(_char.Map)) { SendMiniText("You can't attack that target."); return false; }
-        if (!isSelf && sp.CanFail && RollDeflectPvp(pc)) { SendMiniText("The magic has been deflected."); return true; }
+        // The PvP-map gate covers YOURSELF too. It used to exempt a self-cast on the reasoning that it only
+        // hurts you — but "only hurts you" isn't true of a game with a death penalty and a corpse run, and it
+        // meant a mistyped target let you kill yourself in the middle of a town. A hostile spell aimed at a
+        // player is a hostile spell aimed at a player; where PvP is off, it doesn't land on anyone.
+        if (!Content.IsPvpMap(_char.Map)) { SendMiniText("You can't attack that target."); return false; }
         if (mana > 0)
         {
             if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-            _char.Mp -= (uint)mana;
+            _char.Mp -= (uint)mana;   // spent BEFORE the deflect roll — a resisted spell was still cast
         }
+        if (!isSelf && sp.CanFail && RollDeflectPvp(pc)) { SendStats(); SendMiniText("The magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(pc._char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));

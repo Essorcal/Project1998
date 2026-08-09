@@ -147,22 +147,22 @@ public static class Mail
 
     /// <summary>One-shot claim of an attached parcel: returns the item to give and flips claimed so a
     /// second read can't duplicate it. Null if this letter has no attachment or it's already been claimed.</summary>
-    public static (int itemId, int amount, int dura)? ClaimItem(string recipient, int position)
+    /// <summary>Runs inside the caller's transaction, alongside the character save that receives the item —
+    /// see <see cref="Parcel.ClaimIn"/> for why the two must commit together. The <c>claimed=0</c> predicate
+    /// is still what makes a second read a no-op rather than a duplication.</summary>
+    public static (int itemId, int amount, int dura)? ClaimItemIn(
+        SqliteConnection cn, SqliteTransaction tx, string recipient, int position)
     {
-        try
-        {
-            using var cn = Db.Open();
-            using var cmd = cn.CreateCommand();
-            cmd.CommandText = @"UPDATE mail_posts SET claimed=1
-                                WHERE recipient=$r COLLATE NOCASE AND position=$p AND item_id>=0 AND claimed=0
-                                RETURNING item_id, item_amount, item_dura;";
-            cmd.Parameters.AddWithValue("$r", recipient);
-            cmd.Parameters.AddWithValue("$p", position);
-            using var reader = cmd.ExecuteReader();
-            if (!reader.Read()) return null;
-            return (reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2));
-        }
-        catch { return null; }
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = @"UPDATE mail_posts SET claimed=1
+                            WHERE recipient=$r COLLATE NOCASE AND position=$p AND item_id>=0 AND claimed=0
+                            RETURNING item_id, item_amount, item_dura;";
+        cmd.Parameters.AddWithValue("$r", recipient);
+        cmd.Parameters.AddWithValue("$p", position);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) return null;
+        return (reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2));
     }
 
     /// <summary>Delete a letter from the RECIPIENT's own mailbox — mail has no "author delete" concept like

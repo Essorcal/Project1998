@@ -193,8 +193,12 @@ public sealed record ItemDef(
 /// prompt spell (the client asks <c>Question</c> and sends the typed answer), <b>2</b> = targeted (the client
 /// sends a target entity id), <b>5</b> = self / no-target. The client renders type 1/2 in the Spell book and
 /// type 5 in the Skill book (both populate through the same 0x17 packet, keyed on this type).
+/// <c>Mark</c> is the SUBPATH RANK required (SplMark: 0 = the base 1-99 class list, 1 = Il san, 2 = Ee san,
+/// 3 = Sam san) — 121 of the 906 rows carry one and they all have <c>SplLevel</c> 0, which used to make them
+/// look like level-1 spells and land in every level-99 character's book alongside the base list. See
+/// <see cref="Content.MarkSpellLevel"/>.
 /// </summary>
-public sealed record SpellDef(int Id, string Key, string Name, byte Type, int PathId, int Level, int Alignment, string Question, bool CanFail = false)
+public sealed record SpellDef(int Id, string Key, string Name, byte Type, int PathId, int Level, int Alignment, string Question, bool CanFail = false, int Mark = 0)
 {
     public bool NeedsTarget => Type == 2;   // client sends a target entity id (u32) when casting
     public bool NeedsPrompt => Type == 1;   // client sends the typed answer string when casting
@@ -649,9 +653,14 @@ public static partial class Content
     public static int EquipDelReason => (int)Tune("EquipDelReason", 12);
     /// <summary>Open the board request straight into the MAILBOX when the player has unread n-mail, instead
     /// of the board list. 'm' is armed only while the mail arrow is up and sends the same `3b 01 00` as 'b',
-    /// so this is the only way to make 'm' behave like a mailbox key — at the cost of 'b' doing the same
-    /// while mail is unread. 0 = always show the board list (Mailbox is still its last entry).</summary>
-    public static bool MailFirstOnBoard => Tune("MailFirstOnBoard", 1) != 0;
+    /// so this would be the only way to make 'm' behave like a mailbox key — at the cost of 'b' doing the same
+    /// while mail is unread. 0 = always show the board list (Mailbox is still its last entry).
+    /// <para>DEFAULT 0 BECAUSE 1 HARD-FREEZES THE 4.95 CLIENT (live 2026-08-08): answering sub-1 "Show Board"
+    /// with a POSTS body (0x31 flags2=4) instead of the LIST body locks the client up — it stops pumping
+    /// input entirely and never sends another packet. The identical posts bytes render fine when they answer
+    /// sub-2, so the window ctor 0x406e80(1) evidently arms a list-shaped parse that a posts body walks off
+    /// the end of. Don't turn this back on without RE'ing that ctor first. See Session.HandleBoard case 1.</para></summary>
+    public static bool MailFirstOnBoard => Tune("MailFirstOnBoard", 0) != 0;
 
     /// <summary>Patch a peer's appearance with <c>0x1d</c> (look-update-in-place) instead of the
     /// despawn(<c>0x0E</c>) + respawn(<c>0x33</c>) pair. The old pair exists because a bare <c>0x33</c>
@@ -775,9 +784,18 @@ public static partial class Content
         _mobByKey  = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
         _spellById = IndexFirst(Spells, s => s.Id);
         _spellByKey = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
-        var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);   // name -> id, first wins
-        foreach (var kv in Paths) if (!string.IsNullOrEmpty(kv.Value)) pathIdByName.TryAdd(kv.Value, kv.Key);
+        _ladderOf = BuildSpellLadders(Spells);
+        // name -> id, first wins. BASE names go in first so a string that is one path's class name and
+        // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
+        var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var pathRankByName = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in Paths)
+            if (!string.IsNullOrEmpty(kv.Value)) { pathIdByName.TryAdd(kv.Value, kv.Key); pathRankByName.TryAdd(kv.Value, (kv.Key, 0)); }
+        foreach (var (id, ladder) in PathRanks)
+            for (int m = 1; m < ladder.Length; m++)
+                if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
         _pathIdByName = pathIdByName;
+        _pathRankByName = pathRankByName;
         SpellFx = LoadSpellFx(ResolvePath("NEXUS_SPELL_FX", "data", "game-data", "spell_effects.csv"));
         SpellTexts = LoadSpellTexts(ResolvePath("NEXUS_SPELL_TEXT", "data", "game-data", "SpellText.csv"));
         SpellCosts = LoadSpellCosts(ResolvePath("NEXUS_SPELL_COSTS", "data", "game-data", "SpellLearnCosts.csv"));
@@ -1308,20 +1326,186 @@ public static partial class Content
     /// display name → looked like duplicates). Deduped by display name as a safety net, preferring the
     /// exact-alignment version over a universal one. Ordered by level then name so the spellbook fills in a
     /// sensible order. Spells switched off by an era gate (see <see cref="IsOutOfEraSplitTrap"/>) are dropped
-    /// outright, so they never reach a tutor menu, the @spells grant, or the Divine Secret preview.</summary>
-    public static List<SpellDef> SpellsForClass(int pathId, int maxLevel, int alignment) =>
-        Spells.Where(s => s.Alignment < 0 || s.Alignment == alignment)
-              .Select(s => IsUniversalBaseSpell(s)
-                  ? s                                             // taught to EVERY class at its base level; SpellCosts rows are relearn-cost only
+    /// outright, so they never reach a tutor menu, the character rebuild, or the Divine Secret preview.
+    /// <para><paramref name="mark"/> is the character's subpath rank, and gates the Il/Ee/Sam san secrets:
+    /// they carry <c>SplMark</c> 1-3 and are pinned to <see cref="MarkSpellLevel"/>, so a level-99 base
+    /// character sees none of them and an Ee san sees ranks 1 and 2 (ranks are cumulative — you keep what Il
+    /// san taught you). Before this the column was read by nothing at all, which is how every level-99
+    /// character ended up holding secrets belonging to ranks they had never earned.</para></summary>
+    public static List<SpellDef> SpellsForClass(int pathId, int maxLevel, int alignment, int mark = 0)
+    {
+        // An NPC subpath IS its base class plus a little: a Chung ryong learns the whole Warrior list (the
+        // learn-cost table and every SplPthId are keyed to the base four), then its own signature spell and
+        // its base class's two Dog spells on top. PathBaseOf is RTK's classdb_path, the same mapping the gear
+        // restriction already uses, so "a Chung ryong may wear warrior gear" and "a Chung ryong learns warrior
+        // secrets" now come from one source.
+        int basePath = PathBaseOf(pathId);
+        bool npcSubpath = pathId != basePath;
+        var dog = npcSubpath ? DogSpellsFor(basePath) : null;
+
+        return Spells.Where(s => (s.Alignment < 0 || s.Alignment == alignment) && s.Mark <= mark)
+              .Select(s =>
+                    dog is not null && dog.TryGetValue(s.Key, out var dogLevel) ? s with { Level = dogLevel }
+                  : npcSubpath && s.PathId == pathId ? s with { Level = MarkSpellLevel }   // the subpath's own signature spell; you only get there at the cap
+                  : IsUniversalBaseSpell(s) ? s                    // taught to EVERY class at its base level; SpellCosts rows are relearn-cost only
                   : SpellCosts.TryGetValue(s.Key, out var perClass)
-                      ? (perClass.TryGetValue(pathId, out var cost) ? s with { Level = cost.Level } : null)
-                      : (s.PathId == pathId || s.PathId == 0 ? s : null))
+                      ? (perClass.TryGetValue(basePath, out var cost) ? s with { Level = cost.Level } : null)
+                      : (s.PathId == basePath || s.PathId == 0 ? s : null))
               .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s))
               .Select(s => s!)
               .GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .Select(g => g.OrderByDescending(s => s.Alignment == alignment).ThenBy(s => s.Level).First())
               .OrderBy(s => s.Level).ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .ToList();
+    }
+
+    // ---- DOG spells -----------------------------------------------------------------------------------
+    // Two per base class, taught by the class's Dog rather than by the guild master ("The guildmaster is not
+    // involved in these spells" — you kill something, come back, and hand over items). Levels and pairings
+    // are from the archived nexusatlas "Dog Spells" page (re/fx/atlas_html/class_dog.html, capture
+    // 2002-12-30 — in era for the 4.95 client, see the Sam San timeline). They live in Spells.csv under the
+    // "===DOG SPELLS===" divider with SplPthId 99 and SplLevel 0, so nothing else can reach them: the class
+    // filter never matches 99, which is why they have been dead data until now.
+    //
+    // That page also says "People in PC subpaths cannot learn these spells". We grant them to NPC SUBPATHS
+    // ONLY (per the user's call), which is inside that rule — the PC subpaths it excludes aren't playable
+    // here at all. An un-subpathed base class doesn't get them, so they read as part of the subpath reward.
+    //
+    // Where the levels conflict with the fan tutor-board posts (re/archive_warrior_spells.md flags Greater
+    // Blessing 60-vs-70 and Spirit Fury 91-vs-99), the official listing wins — the same tie-break already
+    // used for Siege's aether count.
+    private static readonly Dictionary<int, (string Key, int Level)[]> DogSpellsByBasePath = new()
+    {
+        [1] = new[] { ("greater_blessing", 70), ("spirit_fury", 99) },   // Warrior: +4 hit · weapon damage x5
+        [2] = new[] { ("spot_traps", 70), ("serpents_fury", 99) },       // Rogue:   reveal traps · weapon damage x4
+        [3] = new[] { ("fissure", 70), ("lava_surge", 99) },             // Mage:    ranged 5-way fire, two tiers
+        [4] = new[] { ("survive", 70), ("fascinate", 99) },              // Poet:    1000-vita group heal · mind control
+    };
+
+    private static Dictionary<string, int>? DogSpellsFor(int basePath) =>
+        DogSpellsByBasePath.TryGetValue(basePath, out var rows)
+            ? rows.ToDictionary(r => r.Key, r => r.Level, StringComparer.OrdinalIgnoreCase)
+            : null;
+
+    /// <summary>The level a mark (subpath-rank) spell is pinned to. Marks sit ON TOP of the level cap — an
+    /// Il san is, in the user's words, "level 100" — so every rank spell needs level 99 first and then the
+    /// rank. The CSV can't say that (SplLevel is 0 on all 121 of them), so <see cref="LoadSpells"/> floors
+    /// them here and <see cref="SpellsForClass"/>'s ordinary <c>Level &lt;= maxLevel</c> test does the rest.</summary>
+    public const int MarkSpellLevel = 99;
+
+    /// <summary>The highest subpath rank a character may hold: <b>3, Sam san</b> — the last one that exists
+    /// as content. Paths.csv names five ranks per path and Items.csv carries 34 Sa san (mark 4) items, but
+    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 57 mark-2, 18 mark-3, and zero for 4 or 5.
+    /// (That asymmetry is exactly what proved Sam san was an RTK implementation gap rather than an
+    /// out-of-era feature — see the nexustk-495-subpath-spells note; Sa san is the same gap, one tier up and
+    /// not yet closed.) Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is one
+    /// more level of stat growth and a title, so the ladder stops here until those spells are written.
+    /// <para>KNOWN CONSEQUENCE: the 34 mark-4 items stay unwearable, since the ItmMark gear gate reads the
+    /// same field. That is the correct behaviour for a rank nobody can hold — Sa san gear is precisely what
+    /// a Sa san would wear — and it reverses the moment this constant moves.</para></summary>
+    public const int MaxMark = 3;
+
+    // ---- ability LADDERS (the same ability, restated stronger, over and over) --------------------------
+    // Mage learns nine single-target zaps that differ only in magnitude (Thunder Bolt -> Spark -> Singe ->
+    // Ignite -> Ion -> Impact -> Call Lightning -> Stormstrike -> Hellfire), five 4-way ones, and nine heals
+    // across two ladders. Learning ALL of them is what filled the book: 57 entries for a level-99 Ee san mage
+    // against a 52-slot cap, so the tail was silently dropped. Once you have Hellfire, Thunder Bolt is not a
+    // spell you would ever cast — so the character-rebuild grant (RespecSpellSet) keeps ONLY the top rung of
+    // each ladder you qualify for. Every class ends up between 20 and 48 entries at every mark.
+    //
+    // Ladders are per-class and by SHAPE, not by archetype: single-target zap, 4-way zap, self-only heal,
+    // targeted heal and 4-way heal are five separate ladders because each does something the others can't,
+    // and a class keeps its best of each. Anything not listed here is never trimmed — buffs, curses, cures,
+    // traps, summons and the mark secrets are all one-of-a-kind and all survive.
+    //
+    // Only the BASE (unaligned) key of each rung is listed; BuildAlignFamilies expands each to its Kwisin /
+    // Mingken / Ohaeng reskins, which is why a ladder like the mage 4-way one is 5 entries here and covers
+    // the same 20 keys AreaZapMana spells out by hand.
+    //
+    // This is the GM/tester grant ONLY. Tutor NPCs still offer the whole ladder (SpellsForClass is
+    // untouched), because a real character climbing it one rung at a time is the entire point of the ladder.
+    private static readonly Dictionary<int, Dictionary<string, string[]>> LadderRungs = new()
+    {
+        [1] = new()   // Warrior — no zap ladder; its damage skills (Taunt/Slash/Berserk/Whirlwind) are all
+        {             // different mechanics, not tiers of one.
+            ["heal_self"]   = new[] { "soothe", "relief_warrior", "vigor_warrior" },
+            ["heal_target"] = new[] { "fleshspeak_warrior" },
+        },
+        [2] = new()   // Rogue
+        {
+            ["zap"]         = new[] { "singe_rogue", "ignite_rogue" },
+            ["heal_self"]   = new[] { "soothe", "maros_remedy_rogue" },
+            ["heal_target"] = new[] { "fleshspeak_rogue", "mend_wounds_rogue", "recover_rogue", "seal_wounds_rogue" },
+            // Drain is Heal-archetype but it is a life-steal ATTACK, so it is not on the heal ladder.
+        },
+        [3] = new()   // Mage
+        {
+            ["zap"]         = new[] { "thunder_bolt_mage", "spark_mage", "singe_mage", "ignite_mage", "ion_mage",
+                                      "impact_mage", "call_lightning_mage", "stormstrike_mage", "hellfire_mage" },
+            ["zap_area"]    = new[] { "erupt_mage", "ion_charge_mage", "explode_mage", "electrocute_mage", "tempest_mage" },
+            ["heal_self"]   = new[] { "soothe", "lay_hands_mage", "relief_mage" },
+            ["heal_target"] = new[] { "fleshspeak_mage", "mend_wounds_mage", "recover_mage", "heal_mage", "rejuvenate_mage" },
+        },
+        [4] = new()   // Poet
+        {
+            ["zap"]         = new[] { "spark_poet", "singe_poet", "ignite_poet", "retribution_poet",
+                                      "earthquake_poet", "flare_poet" },
+            ["heal_area"]   = new[] { "vital_spark_poet", "anoint_poet", "remedy_poet", "heavens_kiss_poet" },
+            ["heal_self"]   = new[] { "lay_hands_poet", "fortify_poet" },
+            ["heal_target"] = new[] { "recover_poet", "heal_poet", "revitalize_poet", "water_of_life_poet" },
+            // Poet has no Soothe rung: it is the one class the live game refuses to (re)teach it to.
+        },
+    };
+
+    /// <summary>(pathId, spell key) → ladder id, expanded from <see cref="LadderRungs"/> through the
+    /// alignment families. Keyed per path because <c>soothe</c> is the bottom rung of three different
+    /// classes' self-heal ladders.</summary>
+    private static IReadOnlyDictionary<int, Dictionary<string, string>> _ladderOf =
+        new Dictionary<int, Dictionary<string, string>>();
+
+    private static Dictionary<int, Dictionary<string, string>> BuildSpellLadders(IReadOnlyList<SpellDef> spells)
+    {
+        var family = BuildAlignFamilies(spells);
+        var byLeader = spells.GroupBy(s => family.GetValueOrDefault(s.Key, s.Key), StringComparer.OrdinalIgnoreCase)
+                             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<int, Dictionary<string, string>>();
+        foreach (var (pathId, ladders) in LadderRungs)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (ladderId, rungs) in ladders)
+                foreach (var rung in rungs)
+                    if (byLeader.TryGetValue(rung, out var siblings))
+                        foreach (var s in siblings) map[s.Key] = ladderId;
+                    else
+                        Log.Info($"!! spell ladder {pathId}/{ladderId}: no spell keyed '{rung}' — rung ignored");
+            result[pathId] = map;
+        }
+        return result;
+    }
+
+    /// <summary>The EXACT book a character of this class/level/mark/alignment should hold — what @lvl,
+    /// @class, @mark and @align rebuild to. <see cref="SpellsForClass"/> (which is also the tutor menu, and
+    /// stays complete) narrowed to one rung per ladder: the highest-level member of each that the character
+    /// qualifies for, ties broken by SplId so the pick is stable across reloads.</summary>
+    public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark)
+    {
+        var all = SpellsForClass(pathId, maxLevel, alignment, mark);
+        // Ladders are declared per BASE class, and an NPC subpath inherits its base class's whole list, so
+        // it inherits the ladders with it. The two Dog spells are deliberately not on any ladder: Fissure ->
+        // Lava Surge is a tier pair, but it is two spells from a separate trainer, and collapsing it would
+        // erase half of the only reward the subpath grants outright.
+        if (!_ladderOf.TryGetValue(PathBaseOf(pathId), out var ladders)) return all;
+
+        var top = new Dictionary<string, SpellDef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in all)
+            if (ladders.TryGetValue(s.Key, out var ladderId)
+                && (!top.TryGetValue(ladderId, out var best) || s.Level > best.Level
+                                                            || (s.Level == best.Level && s.Id > best.Id)))
+                top[ladderId] = s;
+
+        return all.Where(s => !ladders.TryGetValue(s.Key, out var ladderId)
+                              || ReferenceEquals(top[ladderId], s)).ToList();
+    }
 
     public static SpellDef? SpellById(int id) => _spellById.TryGetValue(id, out var v) ? v : null;
     public static SpellDef? SpellByKey(string? key) => key is not null && _spellByKey.TryGetValue(key, out var v) ? v : null;
@@ -1874,24 +2058,72 @@ public static partial class Content
         return npcs;
     }
 
-    // Class/path table: PthId -> base class name (PthMark0). The higher PthMark columns are per-rank
-    // titles ("Il san (W)" …) we don't need here. PthType is loaded alongside into PathBase (see PathBaseOf).
+    // Class/path table: PthId -> base class name (PthMark0), PLUS the whole PthMark0..15 rank ladder into
+    // PathRanks — "Warrior · Il san (W) · Ee san (W) · …" for a base class, "Ju jak · Force · Inferno ·
+    // Pandemonium · Catastrophe · Ju jak" for an NPC subpath. Those higher columns are what a character is
+    // actually CALLED once it has a mark, and the rank names are not decoration: the warrior mark-2 spell is
+    // literally "Assault" and Chung ryong's mark-2 title is "Assault", which is the clearest evidence that
+    // SplMark and PthMarkN are the same rank axis. PthType is loaded alongside into PathBase (PathBaseOf).
+    private const int MaxPathRank = 15;   // Paths.csv goes PthMark0..PthMark15; only 0..5 are ever populated
+
     private static Dictionary<int, string> LoadPaths(string? path)
     {
         var paths = new Dictionary<int, string>();
+        var ranks = new Dictionary<int, string[]>();
         var bases = new Dictionary<int, int>();
         var icons = new Dictionary<int, int>();
         foreach (var col in ReadCsv(path))
             if (int.TryParse(col.GetValueOrDefault("PthId"), out var id))
             {
-                paths[id] = Clean(col.GetValueOrDefault("PthMark0", ""));
+                var ladder = new string[MaxPathRank + 1];
+                for (int m = 0; m <= MaxPathRank; m++) ladder[m] = Clean(col.GetValueOrDefault($"PthMark{m}", ""));
+                paths[id] = ladder[0];
+                ranks[id] = ladder;
                 bases[id] = int.TryParse(col.GetValueOrDefault("PthType"), out var t) ? t : 0;
                 icons[id] = int.TryParse(col.GetValueOrDefault("PthIcon"), out var ic) ? ic : 0;
             }
+        PathRanks = ranks;
         PathBase = bases;
         PathIcon = icons;
         return paths;
     }
+
+    private static Dictionary<int, string[]> PathRanks = new();
+
+    /// <summary>What a character of this path and mark is CALLED — Paths.csv <c>PthMark&lt;mark&gt;</c>.
+    /// A Ju jak is "Force" at mark 1, "Inferno" at 2, "Pandemonium" at 3, "Catastrophe" at 4; a Warrior is
+    /// "Il san (W)" at 1. Falls back to the base name (mark 0) for a blank or out-of-range column, so a rank
+    /// nobody named still reads as the class rather than as an empty string.</summary>
+    public static string PathTitle(int pathId, int mark)
+    {
+        if (!PathRanks.TryGetValue(pathId, out var ladder)) return PathName(pathId);
+        if (mark > 0 && mark < ladder.Length && ladder[mark].Length > 0) return ladder[mark];
+        return ladder[0].Length > 0 ? ladder[0] : PathName(pathId);
+    }
+
+    /// <summary>Resolve any class OR rank name to the path and mark it denotes: "Mage" → (3, 0),
+    /// "Inferno" → (8, 2), "Il san (W)" → (1, 1). Null if it names nothing. Base names are indexed first, so
+    /// a string that is one path's class name and another's rank title always resolves to the class.</summary>
+    public static (int PathId, int Mark)? PathRankForName(string? name)
+    {
+        var n = (name ?? "").Trim();
+        return n.Length != 0 && _pathRankByName.TryGetValue(n, out var v) ? v : null;
+    }
+
+    private static IReadOnlyDictionary<string, (int PathId, int Mark)> _pathRankByName =
+        new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The paths a character may actually BE: the four base classes and Peasant, plus the four NPC
+    /// subpaths (Chung ryong / Baekho / Ju jak / Hyun moo). Everything else in Paths.csv is either RTK's GM
+    /// branch (5 Dreamweaver, 22 Archon) or a PC subpath (10-21 Barbarian … Muse) that this server does not
+    /// model — no spells, no promotion NPC, and in the PC subpaths' case a rank ladder that would silently
+    /// hand out the base class's secrets under the wrong titles.</summary>
+    public static readonly IReadOnlySet<int> PlayablePaths = new HashSet<int> { 0, 1, 2, 3, 4, 6, 7, 8, 9 };
+
+    public static bool IsPlayablePath(int pathId) => PlayablePaths.Contains(pathId);
+
+    /// <summary>The playable paths in display order, as "&lt;name&gt;" strings for a usage line.</summary>
+    public static IEnumerable<string> PlayablePathNames() => PlayablePaths.Select(PathName);
 
     // PthId -> PthIcon, the subpath BADGE index. Read live off the user-list window 2026-08-08 (@users
     // sweep, all five columns) and it matches this column exactly: the badge is drawn RELATIVE TO THE
@@ -2487,6 +2719,65 @@ public static partial class Content
     public static bool IsJuJakEvocation(SpellDef sp) => sp.Key == "ju_jak_evocation";
     public static bool IsHyunMooRevival(SpellDef sp) => sp.Key == "hyun_moo_revival";
 
+    // ---- AREA (4-way) spells --------------------------------------------------------------------------------
+    // The two ladders that hit the four cardinally-adjacent cells instead of a target: the mage zap line
+    // (Erupt -> Ion Charge -> Explode -> Electrocute -> Tempest) and the poet heal line (Vital Spark -> Anoint
+    // -> Remedy -> Heaven's Kiss), each with its four alignment reskins. Identified in the RTK Lua by the
+    // literal `local x = {-1, 0, 1, 0}` cell walk (Spells/mage/{erupt,ion_charge,explode,electrocute,tempest}
+    // .lua and Spells/poet/{vital_spark,anoint,remedy,heavens_kiss}.lua) — the ONLY spells in the whole tree
+    // that have it, so the list below is exhaustive rather than a sample.
+    //
+    // A key set rather than a data column because the formula export can't see this: the extractor reads each
+    // script's damage/heal expression and its global_zap/global_heal call, and both of those look identical to
+    // a single-target spell. It is also why the export gave every one of them mana=0 — these debit up front,
+    // outside the shared helper, so the helper's manacost argument is 0. The real per-family costs live in
+    // AreaSpellMana below and are what Session.ApplyCast passes to the verb.
+    //
+    // Every one of them is SplType 5 (no target argument exists), which is what made the old single-target
+    // dispatch answer "<name> finds no target." on every cast, spending nothing.
+    private static readonly Dictionary<string, int> AreaZapMana = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["erupt_mage"] = 80,        ["soulstorm_mage"] = 80,       ["avalanche_mage"] = 80,        ["deluge_mage"] = 80,
+        ["ion_charge_mage"] = 120,  ["crescendo_mage"] = 120,      ["flight_of_arrows_mage"] = 120,["blazing_sands_mage"] = 120,
+        ["explode_mage"] = 180,     ["soul_chasm_mage"] = 180,     ["winters_vortex_mage"] = 180,  ["volcano_mage"] = 180,
+        ["electrocute_mage"] = 250, ["eater_of_the_dead_mage"] = 250, ["forests_discord_mage"] = 250, ["shatter_storm_mage"] = 250,
+        ["tempest_mage"] = 310,     ["dance_macabre_mage"] = 310,  ["wilding_mage"] = 310,         ["chain_lightning_mage"] = 310,
+    };
+    // The poet ladder is a flat 390 across all four tiers — the tiers differ only in how much they heal
+    // (100 / 200 / 500 / 1000, which the export DID capture correctly in amountExpr).
+    private static readonly HashSet<string> AreaHealSpells = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "vital_spark_poet", "spirits_kiss_poet", "spark_of_health_poet", "water_of_nature_poet",
+        "anoint_poet", "brothers_of_spirit_poet", "gathering_of_power_poet", "natures_family_poet",
+        "remedy_poet", "brethren_of_spirits_poet", "gathering_of_the_flock_poet", "gathering_of_majesty_poet",
+        "heavens_kiss_poet", "clan_of_souls_poet", "healing_hand_poet", "earths_embrace_poet",
+    };
+    private const int AreaHealMana = 390;
+
+    /// <summary>Is this one of the 4-way area spells, and if so which verb runs it and what does it cost?
+    /// Null for everything else. <c>("area_zap", mana)</c> or <c>("area_heal", 390)</c>.</summary>
+    public static (string Verb, int Mana)? AreaSpellFor(SpellDef sp) =>
+        AreaZapMana.TryGetValue(sp.Key, out var m) ? ("area_zap", m)
+        : AreaHealSpells.Contains(sp.Key) ? ("area_heal", AreaHealMana)
+        : null;
+
+    // ---- The one hold that reaches PLAYERS -------------------------------------------------------------------
+    // Doze (lvl 82) and its three alignment reskins are the ONLY members of the blind/paralyze/sleep family
+    // whose RTK script has a `BL_PC` branch:
+    //     elseif (target.blType == BL_PC and player:canPK(target)) then …
+    // Every other one — paralyze, static, blind, and Sleep (lvl 70, the cheaper-to-learn cousin that is
+    // strictly stronger on monsters) — answers a player with "It doesn't work." / "Something went wrong."
+    // So this is per-SPELL, not per-kind: Doze and Sleep share `debuff = sleep` and differ only here.
+    // `canPK` is our IsPvpMap gate, so it lands in an arena and nowhere else.
+    private static readonly HashSet<string> PlayerHoldSpells = new(StringComparer.OrdinalIgnoreCase)
+        { "doze_mage", "voids_touch_mage", "still_ethers_mage", "still_waters_mage" };
+    /// <summary>May this hold be cast on another PLAYER (in a PvP map)? True only for the Doze family.</summary>
+    public static bool HoldHitsPlayers(SpellDef sp) => PlayerHoldSpells.Contains(sp.Key);
+
+    // (The Sage ladder — Share Wisdom and its four upgrades, RTK Spells/common/sage.lua — needs no classifier
+    // here: it is bound to the `sage_shout` verb by SpellParams rows, since its per-tier mana and cooldown are
+    // the only things that differ between the five and both are plain numbers a row can carry.)
+
     // RTK poet/inspiration.lua family (Draw Energy/Harness Power/Combine Focus/Inspiration — 4 reskins, one
     // mechanic): drains a GROUP MEMBER's entire current mana into the caster's own pool.
     private static readonly HashSet<string> ManaStealSpells = new(StringComparer.OrdinalIgnoreCase)
@@ -2906,12 +3197,46 @@ public static partial class Content
             int.TryParse(col.GetValueOrDefault("SplLevel", "0"), out var lvl);
             if (SpellLevelOverrides.TryGetValue(key, out var lvlOverride)) lvl = lvlOverride;
             if (!int.TryParse(col.GetValueOrDefault("SplAlignment", "-1"), out var align)) align = -1;
+            int.TryParse(col.GetValueOrDefault("SplMark", "0"), out var mark);
+            // Every mark row carries SplLevel 0 (the rank IS the requirement — there is no level past 99),
+            // so without this floor a mark spell reads as "learnable at level 1" and SpellsForClass hands
+            // Il san and Ee san secrets to any level-99 base character. See MarkSpellLevel.
+            if (mark > 0) lvl = Math.Max(lvl, MarkSpellLevel);
             var q = Clean(col.GetValueOrDefault("SplQuestion", ""));
             if (q.Equals("NO", StringComparison.OrdinalIgnoreCase)) q = "";
             bool canFail = col.GetValueOrDefault("SplCanFail", "0") == "1";   // RTK magicdb_canfail — gates the deflect roll
-            spells.Add(new SpellDef(id, key, name, type, pth, lvl, align, q, canFail));
+            spells.Add(new SpellDef(id, key, name, type, pth, lvl, align, q, canFail, mark));
         }
         return spells;
+    }
+
+    /// <summary>The alignment-reskin family each spell belongs to: key → the KEY OF ITS BASE (alignment 0 or
+    /// universal) sibling. Most abilities exist four times over — <c>spark_mage</c> (unaligned) alongside
+    /// <c>glimpse_of_the_void_mage</c> (Kwisin), <c>bolt_mage</c> (Mingken) and <c>natures_ire_mage</c>
+    /// (Ohaeng) — and the four are stored as a consecutive run of SplIds within one (SplPthId, SplType)
+    /// block, alignments ascending. That adjacency is the only thing in the data that links them: they share
+    /// no name, no key stem and no level column. Walking it here means <see cref="SpellLadders"/> can be
+    /// declared with ONE base key per tier instead of four, and stays correct for Kwisin/Mingken/Ohaeng
+    /// characters for free.
+    ///
+    /// A new family starts at an alignment 0 row, at any universal (-1) row, at the first row after one, and
+    /// wherever the alignment stops ascending. Validated by reconstructing <see cref="AreaZapMana"/>'s 20
+    /// keys and <see cref="AreaHealSpells"/>'s 16 from their 5 and 4 base keys — both hand-curated from the
+    /// RTK Lua years apart from this, and both come back exact.</summary>
+    private static Dictionary<string, string> BuildAlignFamilies(IReadOnlyList<SpellDef> spells)
+    {
+        var leaderOf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var block in spells.OrderBy(s => s.Id).GroupBy(s => (s.PathId, s.Type)))
+        {
+            string leader = ""; int prev = int.MinValue;
+            foreach (var s in block)
+            {
+                if (leader.Length == 0 || s.Alignment <= 0 || prev < 0 || s.Alignment < prev) leader = s.Key;
+                leaderOf[s.Key] = leader;
+                prev = s.Alignment;
+            }
+        }
+        return leaderOf;
     }
 
     // Per-spell effect rows from re/extract_spell_formulas.py (spell_effects.csv). Keyed by identifier so it

@@ -30,6 +30,23 @@ public static class TutorialQuest
     private static async Task Run(NpcContext ctx)
     {
         int stage = ctx.Stage(Stage);
+
+        // This chain's own greeting still opens the whole conversation — it ends on "Click on me to learn...",
+        // which is exactly the invitation to start the first-steps chain. So stage 0 runs before anything else.
+        if (stage == 0)
+        {
+            await Intro(ctx);
+            return;
+        }
+
+        // The reconstructed first-steps chain then runs to completion, as part of the SAME conversation — the
+        // tutor must never offer a choice between the two, so this dispatches rather than adding a menu entry.
+        if (ctx.Stage(NoviceQuest.Key) < NoviceQuest.Done)
+        {
+            await NoviceQuest.Run(ctx);
+            return;
+        }
+
         switch (stage)
         {
             case 0:  await Intro(ctx);        break;
@@ -51,17 +68,9 @@ public static class TutorialQuest
         }
     }
 
-    // stage 0 -> 1 (gated behind NoviceQuest — the reconstructed first-steps chain arms the player and
-    // teaches Soothe before the RTK line's buy/sell lessons begin; see NoviceQuest for why it's separate).
+    // stage 0 -> 1 (only reachable once NoviceQuest is finished — see the dispatch at the top of Run).
     private static async Task Intro(NpcContext ctx)
     {
-        if (ctx.Stage(NoviceQuest.Key) < NoviceQuest.Done)
-        {
-            await ctx.Say("Not so fast, young one. There is simpler ground to cover before I take your training " +
-                          "in hand. Ask me of your first steps.");
-            return;
-        }
-
         ctx.SetStage(Stage, 1);
         await ctx.Say("Greetings and welcome to my home. I see you are eager to get on with your adventure. " +
                       "Before you do however, there is much more you need to learn. Click on me to learn... ");

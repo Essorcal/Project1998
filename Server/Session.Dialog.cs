@@ -234,12 +234,12 @@ public sealed partial class Session
             L.Add(Row($"{Content.PathName(def.PathId)} Level", def.Level.ToString()));
 
         // Extra gates the original's sample item didn't happen to carry. Kept because they are the
-        // difference between "I can wear this later" and "I can never wear this", and each is checked
-        // against the live character with the same test the wear path enforces.
-        if (def.MightReq > 0)
-            L.Add(Row("Might required:", def.MightReq.ToString()) + (def.MightReq > EffMight ? "  (you have " + EffMight + ")" : ""));
-        if (def.Mark > 0)
-            L.Add(Row("Mark required:", MarkName(def.Mark)) + (_char.Mark < def.Mark ? "  (unearned)" : ""));
+        // difference between "I can wear this later" and "I can never wear this". Stated flat, as
+        // requirements only: the box describes the ITEM, so it reads the same whoever is holding it and
+        // never annotates which gates the viewer currently fails. Failing one is the wear path's business
+        // (CanWear/CanUsePath), and it says so there with its own message.
+        if (def.MightReq > 0) L.Add(Row("Might required:", def.MightReq.ToString()));
+        if (def.Mark > 0)     L.Add(Row("Mark required:", MarkName(def.Mark)));
         // NO sex line. `ItmSex` is a wear gate, not a description: the original box never printed one, and
         // the enforcement lives where it belongs — EquipFromSlot refuses the item outright (2026-08-07).
         if (def.NoDrop) L.Add("Cannot be dropped.");
@@ -344,8 +344,11 @@ public sealed partial class Session
     private void DoSubpathChat(string msg)
     {
         if (!_char.SubpathChat) { SendMiniText("Turn on Subpath Chat first (F2)."); return; }
+        if (IsMuted()) { ReportMuted(); return; }   // server-wide channel — the LAST one a mute may leave open
         if (!Content.CanTalk(_char.Map)) { SendMiniText("Your voice is swept away by a strange wind."); return; }
-        string line = $"<@{_char.Name}> ({_char.ClassName}) {msg}";
+        // Speaker label is the RANK title ("Inferno"), the audience is the PATH — ranks of one class share a
+        // channel, which is what makes it a subpath channel rather than a rank channel.
+        string line = $"<@{_char.Name}> ({ClassTitle}) {msg}";
         foreach (var p in _world.AllPlayers())
             if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
                 p.SendMiniText(line);
@@ -755,31 +758,65 @@ public sealed partial class Session
             if (list.Count == 0) { await DlgSay(npc, "You have no parcels waiting."); return; }
 
             var p = list[0];                                   // FIFO by position
-            var got = Parcel.Claim(_char.Name, p.Position);     // atomic remove-and-return (guards double-claim)
-            if (got is null) continue;                          // already taken by another path — re-list
 
-            if (got.IsGold)
+            // ONE transaction: the parcel leaves the queue and the goods land in the bag together, or
+            // neither happens. Previously the claim committed on its own and the character saved up to
+            // AutoSaveMs later — a crash in that window destroyed the parcel outright (gone from the queue,
+            // never delivered). The conditional DELETE inside the transaction is still the double-claim
+            // guard, so nothing is lost by moving it in here.
+            var snapshot = SnapshotBag();
+            ParcelItem? got = null;
+            string? say = null;
+            // The pack-full fallback drops the goods at the player's feet. That drop is deferred until AFTER
+            // the commit on purpose: ground items are pure runtime state with no database row, so dropping
+            // inside the transaction and then failing to commit would leave the item lying there AND the
+            // parcel still claimable — the exact duplication this whole path exists to prevent.
+            GroundItem? pendingDrop = null;
+            bool committed = _store.SaveWith(_char, (cn, tx) =>
             {
-                _char.Coins += (uint)got.Amount;
-                SendStats(); MarkDirty();
-                await DlgSay(npc, $"You receive {got.Amount:N0} gold from {got.Sender}.");
-            }
-            else
-            {
-                var def = Content.ItemById(got.ItemId);
-                if (def is null) { await DlgSay(npc, "One of your parcels held something I no longer recognize; I've discarded it."); }
-                else
+                got = Parcel.ClaimIn(cn, tx, _char.Name, p.Position);
+                if (got is null) return false;                  // already taken by another path — re-list
+
+                if (got.IsGold)
                 {
-                    bool gotIt = GiveItem(def, got.Amount, (ushort)Math.Max(0, got.Dura), got.Engrave);
-                    if (!gotIt)
-                        _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
-                            X = _char.X, Y = _char.Y, Amount = got.Amount, Dura = (ushort)Math.Max(0, got.Dura), Graphic = def.Icon });
-                    SendStats(); MarkDirty();
-                    await DlgSay(npc, gotIt
-                        ? $"You receive a parcel from {got.Sender}: {def.Name} x{got.Amount}."
-                        : $"A parcel from {got.Sender} held {def.Name} x{got.Amount}, but your pack was full — it's at your feet.");
+                    _char.Coins += (uint)got.Amount;
+                    say = $"You receive {got.Amount:N0} gold from {got.Sender}.";
+                    return true;
                 }
+
+                var def = Content.ItemById(got.ItemId);
+                if (def is null)
+                {
+                    say = "One of your parcels held something I no longer recognize; I've discarded it.";
+                    return true;   // still consume the row — an item id we can't resolve isn't deliverable
+                }
+
+                bool gotIt = GiveItem(def, got.Amount, (ushort)Math.Max(0, got.Dura), got.Engrave);
+                if (!gotIt)
+                    pendingDrop = new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
+                        X = _char.X, Y = _char.Y, Amount = got.Amount, Dura = (ushort)Math.Max(0, got.Dura), Graphic = def.Icon };
+                say = gotIt
+                    ? $"You receive a parcel from {got.Sender}: {def.Name} x{got.Amount}."
+                    : $"A parcel from {got.Sender} held {def.Name} x{got.Amount}, but your pack was full — it's at your feet.";
+                return true;
+            });
+
+            if (!committed)
+            {
+                // Either the row was already gone (re-list and try the next one) or the write failed. Both
+                // need the in-memory give rolled back: the callback may have run to completion and only the
+                // COMMIT failed, and leaving that standing would let the next autosave persist an item whose
+                // parcel row is still in the queue — a dupe.
+                RestoreBag(snapshot);
+                if (got is null) continue;
+                await DlgSay(npc, "I couldn't hand that over just now — try me again in a moment.");
+                Log.Info($"!! parcel claim FAILED for '{_char.Name}' pos={p.Position} — rolled back, parcel kept");
+                return;
             }
+
+            if (pendingDrop is not null) _world.DropItem(_char.Map, pendingDrop);   // committed — safe to materialize
+            SendStats();
+            if (say is not null) await DlgSay(npc, say);
 
             RefreshMailFlags();   // claiming a parcel may clear the HUD bag flag (SendStats above sent the stale cache)
             if (!Parcel.HasAny(_char.Name)) return;
@@ -1515,7 +1552,7 @@ public sealed partial class Session
         AddLenStr(d, _char.Spouse);
         d.Add((byte)(_char.Grouped ? 1 : 0));   // group/sociable flag (Shift+G)
         d.AddRange(Be32(_char.Tnl));    // experience to next level
-        AddLenStr(d, _char.ClassName);
+        AddLenStr(d, ClassTitle);       // class + rank ("Inferno"), not the stored base name
 
         // The three equipment ICON cells beside the doll: helm, left ring, right ring. These slots have no
         // character-sprite layer in 4.95, so the profile shows them as ground-icon boxes fed by these u16s.
@@ -1648,7 +1685,7 @@ public sealed partial class Session
         AddLenStr(d, tc.Title);
         AddLenStr(d, tc.ClanName);
         AddLenStr(d, tc.ClanTitle);
-        AddLenStr(d, tc.ClassName);
+        AddLenStr(d, ClassTitleOf(tc));   // class + rank, same as the self-profile shows
         AddLenStr(d, tc.Name);
 
         // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
@@ -1835,6 +1872,16 @@ public sealed partial class Session
         var body = new List<byte> { (byte)type, (byte)(t.Length >> 8), (byte)t.Length };
         body.AddRange(t);
         SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type} {t.Length}B");
+    }
+
+    /// <summary>A server-wide announcement (restart warnings — see <see cref="RestartSchedule"/>), sent on
+    /// BOTH text channels on purpose. The 0x0A system line (type 5) is where an announcement belongs, but
+    /// that pane scrolls and a player fighting in a cave will miss it; the 0x0D chat-log line is the one
+    /// they are actually looking at. A restart notice is the one message it's worth saying twice.</summary>
+    internal void SystemAnnounce(string text)
+    {
+        SendMiniText(text, type: 5);
+        SendLog(text);
     }
 
     // ---- helpers ----

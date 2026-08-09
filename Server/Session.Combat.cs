@@ -41,6 +41,10 @@ public sealed partial class Session
     {
         if (_char.Hp == 0) { SendMiniText("Spirits can't attack."); return; }
 
+        // SLEEP GATE (the Doze family's PvP branch — see Session.ReceiveSleep). A hold can't stop a 4.95
+        // client walking, but it can take every action that goes through the server, and a swing is one.
+        if (Asleep) { SendMiniText("You are asleep."); return; }
+
         // MOUNT GATE. No melee from horseback. SILENT, unlike the cast gate's minitext — the live client
         // shows nothing at all for a blocked swing, matching how an over-rate swing is dropped below.
         // Dropped before the swing gate so a mounted attack key doesn't consume the swing interval either.

@@ -650,8 +650,9 @@ public sealed partial class Session
 
     /// <summary>Subpath rank name for a mark number (RTK Paths.PthMark1..5 — the "Il san (W)" column family,
     /// class suffix dropped since the mark itself is class-agnostic here).</summary>
-    private static string MarkName(int mark) => mark switch
+    internal static string MarkName(int mark) => mark switch
     {
+        0 => "unmarked",
         1 => "Il san", 2 => "Ee san", 3 => "Sam san", 4 => "Sa san", 5 => "Oh san", _ => $"rank-{mark}"
     };
 

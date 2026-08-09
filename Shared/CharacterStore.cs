@@ -106,6 +106,93 @@ public sealed class CharacterStore
         }
     }
 
+    /// <summary>
+    /// Save several characters in ONE transaction — all of them land, or none of them do.
+    ///
+    /// <para>This exists for transfers BETWEEN characters. A trade calling <see cref="Save"/> twice is two
+    /// independent commits, and a crash (or a single failed write) between them leaves the world with one
+    /// half of the exchange applied: whichever half, that is either a duplicated stack or a destroyed one.
+    /// The in-memory transfer logic can be as careful as it likes and still not fix that, because the
+    /// problem is at the persistence boundary, not in the logic.</para>
+    ///
+    /// <para>Serialization happens BEFORE the transaction opens, so the (relatively slow) JSON work for a
+    /// multi-KB character graph doesn't hold a write lock that every other session's save is queued behind.</para>
+    /// </summary>
+    public bool SaveMany(IReadOnlyList<Character> chars)
+    {
+        if (chars.Count == 0) return true;
+        try
+        {
+            // Serialize first — outside the transaction, and eagerly, so a mid-serialize collection mutation
+            // throws here (whole call returns false, caller retries) rather than half-way through a commit.
+            var rows = new List<(string User, string Json)>(chars.Count);
+            foreach (var c in chars) rows.Add((Key(c.Name), JsonSerializer.Serialize(c, Json)));
+
+            using var cn = Db.Open();
+            using var tx = cn.BeginTransaction();
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            foreach (var (user, json) in rows)
+            {
+                using var cmd = cn.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText = @"INSERT INTO characters(username, json, updated_utc) VALUES($u, $j, $t)
+                                    ON CONFLICT(username) DO UPDATE SET json=$j, updated_utc=$t;";
+                cmd.Parameters.AddWithValue("$u", user);
+                cmd.Parameters.AddWithValue("$j", json);
+                cmd.Parameters.AddWithValue("$t", now);
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+            return true;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! SaveMany({chars.Count}) failed: {e.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Run <paramref name="work"/> and save <paramref name="c"/> in one transaction, so a database mutation
+    /// and the character change that pays for it commit together. <paramref name="work"/> receives the open
+    /// connection and transaction and must use them for every statement it issues.
+    ///
+    /// <para>The case this exists for is claiming a parcel or a piece of mail: the row is deleted from the
+    /// queue and the item appears in the bag, and those must not be able to come apart. Previously the
+    /// delete committed on its own and the character saved separately — a crash in between and the parcel
+    /// was gone from the queue having never arrived.</para>
+    ///
+    /// <para>Returns false if anything threw, with the transaction rolled back. The CALLER is responsible
+    /// for undoing its own in-memory change on false — this method cannot do that for it.</para>
+    /// </summary>
+    public bool SaveWith(Character c, Func<SqliteConnection, SqliteTransaction, bool> work)
+    {
+        try
+        {
+            using var cn = Db.Open();
+            using var tx = cn.BeginTransaction();
+
+            if (!work(cn, tx)) { tx.Rollback(); return false; }
+
+            using var cmd = cn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"INSERT INTO characters(username, json, updated_utc) VALUES($u, $j, $t)
+                                ON CONFLICT(username) DO UPDATE SET json=$j, updated_utc=$t;";
+            cmd.Parameters.AddWithValue("$u", Key(c.Name));
+            cmd.Parameters.AddWithValue("$j", JsonSerializer.Serialize(c, Json));
+            cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            cmd.ExecuteNonQuery();
+
+            tx.Commit();
+            return true;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! SaveWith('{c.Name}') failed: {e.Message}");
+            return false;
+        }
+    }
+
     // One-time import of the legacy data/chars/*.json into the DB. Idempotent: each record is inserted
     // only if that username is absent (INSERT OR IGNORE), so it never clobbers newer DB state and is safe
     // to run from both processes and on every startup. The JSON files are left in place as a backup.

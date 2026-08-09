@@ -41,7 +41,7 @@ public sealed class SpellContext
     public double mana   { get; }
 
     // ---- archetype-row fields (Lua: ctx.buffStat, ctx.durationMs, …) for the Buff/TargetBuff/Debuff verbs ----
-    /// <summary>The spell's display name (for "&lt;name&gt; finds no target." style notices).</summary>
+    /// <summary>The spell's display name, for the notices a verb does send ("&lt;name&gt; isn't ready yet.").</summary>
     public string spellName  => _sp.Name;
     /// <summary>The spell's stable key (for keying its own cooldown/duration, e.g. a ward's aether).</summary>
     public string spellKey   => _sp.Key;
@@ -65,6 +65,9 @@ public sealed class SpellContext
     public double maxHp     => _s.LuaMaxHp;
     public double mp        => _s.LuaMp;
     public bool   hasTarget => _s.LuaHasTarget(_targetId);
+    /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (PvP map, unaimed) you?
+    /// Use this and not <see cref="hasTarget"/> in front of a <c>ctx:damage</c>, which resolves mobs only.</summary>
+    public bool   hasDamageTarget => _s.LuaHasDamageTarget(_targetId);
     /// <summary>The player's typed answer to the spell's question prompt (empty if none).</summary>
     public string answer    { get; }
 
@@ -137,13 +140,27 @@ public sealed class SpellContext
     /// for 1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>) ms). False if no mob target or it's
     /// already venomed (a notice was sent) — the verb then spends no mana. <paramref name="flatTick"/> &gt; 0
     /// substitutes a FIXED per-tick amount for the percentage (Burn's hardcoded 1000).</summary>
-    public bool applyVenom(double tickCap, double lowMs, double highMs, double flatTick = 0) =>
-        _s.LuaApplyVenom((int)tickCap, (int)lowMs, (int)highMs, _sp, _targetId, (int)flatTick);
+    public bool applyVenom(double tickCap, double lowMs, double highMs, double flatTick = 0,
+                          double pcDps = 1000, double pcDurMs = 0, double pcPerTick = 0) =>
+        _s.LuaApplyVenom((int)tickCap, (int)lowMs, (int)highMs, _sp, _targetId,
+                         (int)flatTick, (int)pcDps, (int)pcDurMs, (int)pcPerTick);
 
-    /// <summary>Blind the faced/targeted creature for <paramref name="durMs"/> ms: a mob drops its target and
-    /// stops acquiring new ones (it just wanders); a PC only takes the 'blinds' exclusivity slot — 4.95 has no
-    /// client-side blind effect to drive. False (with the RTK notice) if there's no target or one is already blind.</summary>
-    public bool blindTarget(double durMs) => _s.LuaBlindTarget((int)durMs, _sp, _targetId);
+    /// <summary>Which hold this Debuff spell is, from its export row: "blind" · "paralyze" · "sleep" · "slow".</summary>
+    public string debuffKind => _s.LuaDebuffKind(_sp);
+
+    /// <summary>Apply a hostile categorised hold to the faced/targeted MOB. <paramref name="category"/> is the
+    /// exclusivity slot ("blinds"/"paras"/"sleeps"/"slows") — a second cast is REFUSED while it runs, which is
+    /// what stops a hold being chain-cast; <paramref name="hold"/> freezes it, <paramref name="blind"/> takes
+    /// its sight; <paramref name="repeatFxMs"/> &gt; 0 re-draws the spell's animation on that cadence for the
+    /// whole duration (RTK <c>while_cast</c>). Mob-only — a PC gets "It doesn't work.", per RTK.
+    /// False (no mana spent) on no target or an occupied slot.</summary>
+    public bool holdTarget(string category, double durMs, bool hold, bool blind, double repeatFxMs) =>
+        _s.LuaHoldTarget(category, (int)durMs, hold, blind, (int)repeatFxMs, _sp, _targetId);
+
+    /// <summary>Arm the sleep-family damage amplifier on whatever this cast just held: the NEXT attack on
+    /// them is multiplied by <paramref name="mult"/> (Doze 1.3x, Sleep 1.5x per NexusAtlas), then it's
+    /// spent. Works on a player or a creature.</summary>
+    public void amplify(double mult, double durMs) => _s.LuaAmplify(mult, (int)durMs, _targetId);
 
     /// <summary>Mind-control the faced/targeted mob for <paramref name="durMs"/> ms (RTK endear): it becomes
     /// yours via the same ownership the pet system uses, then reverts to a normal world mob when the timer
@@ -152,6 +169,17 @@ public sealed class SpellContext
 
     /// <summary>Shout as the caster — an over-head chat bubble everyone on the map sees (RTK player:talk).</summary>
     public void talk(string msg) => _s.LuaTalk(msg);
+
+    /// <summary>Damage everything on the four cardinally-adjacent cells (the mage 4-way zap ladder). Mobs
+    /// always, other players only on a PvP map, never the caster. Returns how many were hit — casting at empty
+    /// air legitimately returns 0 and is still a successful cast.</summary>
+    public double areaZap(double amt) => _s.LuaAreaZap((int)System.Math.Round(amt), _sp);
+    /// <summary>Heal every PLAYER on the four cardinally-adjacent cells (the poet 4-way heal ladder). Not the
+    /// caster, not pets — RTK scans BL_PC only. Returns how many were healed.</summary>
+    public double areaHeal(double amt) => _s.LuaAreaHeal((int)System.Math.Round(amt), _sp);
+    /// <summary>Broadcast a line to EVERY player on the server as "[name]: text" (the Sage ladder's world
+    /// channel, RTK <c>broadcast(-1, …)</c>). False if the text was empty.</summary>
+    public bool worldShout(string text) => _s.LuaWorldShout(text);
 
     // ---- primitives for the Buff / TargetBuff / Debuff / Cure archetype verbs -------------------------------
     /// <summary>Does the caster have at least <paramref name="amt"/> mana? Sends "You do not have enough mana."
@@ -191,18 +219,25 @@ public sealed class SpellContext
     /// <summary>Uniform integer in [<paramref name="lo"/>, <paramref name="hi"/>] inclusive, off the same
     /// stream as <see cref="roll"/>. For weighted picks (e.g. Endear's variable control duration).</summary>
     public double rollRange(double lo, double hi) => _s.LuaRollRange((int)lo, (int)hi);
-    /// <summary>Freeze the resolved mob target for <paramref name="durMs"/> ms (RTK debuff hold) + debuff fx.</summary>
-    public void freezeTarget(double durMs) => _s.LuaFreezeTarget((int)durMs, _sp, _targetId);
+    // (`freezeTarget` is gone. It set Mob.FrozenUntil directly, with no exclusivity slot — which is what let a
+    // hold be re-cast on top of itself indefinitely. Use `holdTarget` above: same freeze, plus the checkIfCast
+    // refusal, the boss cap and the repeating animation.)
 
     // ---- curse / categorized-status primitives (the `curse` verb + arch_cure) ------------------------------
     /// <summary>The category this Cure removes (SpellFx.CureCat: "curses"/"venoms"/"minorcurses"). "" if none.</summary>
     public string cureCat               => _fx?.CureCat ?? "";
     /// <summary>Is the resolved curse target a legal one (a PC only in a PvP map — incl. yourself — or a mob)?
-    /// Sends the RTK notice and returns false otherwise ("finds no target." / "You can't attack that target.").</summary>
+    /// False otherwise — silently when nothing is there, with "You can't attack that target." when it is
+    /// someone you may not curse here.</summary>
     public bool canCurse()              => _s.LuaCanCurseTarget(_sp, _targetId);
     /// <summary>Does the resolved curse target already carry a status of <paramref name="category"/>? (The
     /// checkIfCast guard — a same-category curse is then blocked, which is what makes self-pestilence a defense.)</summary>
     public bool hasStatus(string category) => _s.LuaCurseHasCategory(category, _targetId);
+    /// <summary>Is the status occupying <paramref name="category"/> on the resolved target THIS spell's own? Pass
+    /// the category that actually blocked the cast (see blockedBy) — the answer picks the refusal wording:
+    /// "You already cast that spell." for your own running spell, "Another spell of this type…" for anyone
+    /// else's. False when the blocker is a broader category you didn't put there (a protection, say).</summary>
+    public bool alreadyCast(string category) => _s.LuaAlreadyCastOnTarget(category, _sp, _targetId);
     /// <summary>Apply a categorized status to the resolved curse target: <paramref name="category"/> occupies the
     /// exclusivity slot; <paramref name="stat"/>/<paramref name="amount"/> is the effect (e.g. armor -5 → take more
     /// damage). Plays fx + the target's flavor line.</summary>
@@ -217,6 +252,8 @@ public sealed class SpellContext
     public bool wardTarget(string mode)      => _s.LuaWardTarget(mode, _targetId);
     /// <summary>Does the resolved ward target already carry a status of <paramref name="category"/>? (PC only.)</summary>
     public bool wardHasStatus(string category) => _s.LuaWardHasStatus(category);
+    /// <summary>The ward-target twin of <see cref="alreadyCast"/>: is the blocking status this same ward?</summary>
+    public bool wardAlreadyCast()              => _s.LuaWardAlreadyCast(_sp);
     /// <summary>Apply the ward to the resolved target: a PC gets the categorized status (shares curse storage,
     /// folds into AC); a mob gets just the stat buff. <paramref name="amount"/> may be 0 (a protection slot).</summary>
     public void applyWard(string category, string stat, double amount, double durMs) =>
@@ -254,7 +291,7 @@ public sealed class SpellContext
     public void repairPackSlot(double slot)  => _s.LuaRepairPackSlot((int)slot);
 
     /// <summary>Resolve the targeted PLAYER (explicit id incl. self, else the faced peer) for this cast; all the
-    /// target.* members below then act on it. False (with "&lt;name&gt; finds no target.") if none.</summary>
+    /// target.* members below then act on it. False — and SILENT — if none.</summary>
     public bool   pcTarget()      => _s.LuaResolvePcTarget(_sp, _targetId);
     /// <summary>Resolved target's current mana.</summary>
     public double targetMana      => _s.LuaTargetMana;
@@ -357,7 +394,7 @@ public sealed class SpellContext
     public void   backflow(double overkill, double preHp, double preMp) => _s.LuaBackflow((int)overkill, (int)preHp, (int)preMp);
     /// <summary>Warrior overkill splash: the overkill cleaves onto adjacent-tile mobs, recursively re-splashing.</summary>
     public void   overflow(double overkill) => _s.LuaOverflow(_sp, (int)overkill);
-    /// <summary>Resolve + stash the mob on the faced tile for an ambush. False if none ("finds no target").</summary>
+    /// <summary>Resolve + stash the mob on the faced tile for an ambush. False (silently) if none.</summary>
     public bool   ambushMob()     => _s.LuaAmbushMob();
     /// <summary>Teleport to the far side of the stashed mob (its back, else a flank), facing it. False if the
     /// back and both flanks are all occupied ("finds no opening").</summary>

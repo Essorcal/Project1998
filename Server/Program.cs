@@ -35,7 +35,7 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers @warp/@maps/@mobs/@summon)
-GmAccounts.Load();   // who may run the "!" tooling (data/gm_accounts.txt / NEXUS_GMS); empty = nobody
+StaffAccounts.Load();   // who may run the '@' tooling, and at which tier (data/{gm,tester}_accounts.txt); empty = nobody
 Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) — must outlive a restart
 
 // An empty content registry is a MISCONFIGURED DEPLOY, not a valid world: nothing throws, the server

@@ -126,6 +126,29 @@ public sealed partial class Session
     /// AutoSaveMs tick.</summary>
     private void SaveChar() { if (_enteredWorld) { _dirty = true; FlushNow(); } }
 
+    /// <summary>
+    /// A restorable snapshot of the bag and purse, for a transfer that commits against the database and has
+    /// to be undone if that commit fails (claiming a parcel or a mail attachment — see
+    /// <see cref="CharacterStore.SaveWith"/>).
+    ///
+    /// <para>Deep-copies each stack rather than copying the list, because giving an item can INCREASE the
+    /// Amount on a stack the player already had. A shallow copy would restore the list shape and leave the
+    /// duplicated count in place — which is the exact bug this whole path exists to prevent.</para>
+    /// </summary>
+    private (List<InvItem> Inv, uint Coins) SnapshotBag()
+        => (_char.Inventory.Select(i => i.Clone()).ToList(), _char.Coins);
+
+    /// <summary>Roll the bag and purse back to a <see cref="SnapshotBag"/>, and redraw. The redraw matters:
+    /// the client was already told about the item by the give that we are now undoing, so without it their
+    /// bag would show a stack the server no longer believes in.</summary>
+    private void RestoreBag((List<InvItem> Inv, uint Coins) snap)
+    {
+        _char.Inventory = snap.Inv;
+        _char.Coins = snap.Coins;
+        RefreshInventory();
+        SendStats();
+    }
+
     /// <summary>Mark this session's character dirty without an immediate save — the mutation sites that
     /// used to be entirely unpersisted (pickup/drop/equip/durability/shop/bank/movement, see the
     /// persistence audit) call this instead. Picked up by this session's own FlushIfDue (active player) or
@@ -207,9 +230,9 @@ public sealed partial class Session
         if (totem) amount = (uint)Math.Round(amount * 1.05, MidpointRounding.AwayFromZero);
         // RTK player.lua giveXPStacked: every exp grant pops a status-box message, not just combat —
         // quest/tutorial/NPC rewards get the same notice retail players see on a kill.
-        SendMiniText(totem ? $"{amount:N0} experience! (totem time)" : $"{amount:N0} experience!");
+        SendMiniText($"{amount:N0} experience!");
         _char.Exp += amount;
-        int path = CharClassId;
+        int path = CharBasePathId;
         while (_char.Level < 99)
         {
             uint need = Content.ExpToNext(path, _char.Level);
@@ -242,7 +265,7 @@ public sealed partial class Session
     /// banked exp instead — 50% out in the world, 10% inside an instance.</summary>
     private void DeathExpLoss(double percent)
     {
-        int path = CharClassId;
+        int path = CharBasePathId;
         uint lost;
         if (_char.Level < 99)
         {
@@ -331,38 +354,64 @@ public sealed partial class Session
         }
     }
 
-    // "@lvl <n>" — GM: become level n with stats accurate for that level. Resets to the RTK level-1 baseline
-    // (Player.reset / CharacterFactory) and applies real LevelUps up to n, so MaxHP/MaxMP, Might/Will/Grace and
-    // AC accumulate legitimately (same growth a natural progression uses) and HP/MP end full. Works both up and
-    // down. GM-only, so it bypasses the Peasant level-5 wall; growth follows the character's CURRENT path (a
-    // Peasant gets peasant HP/MP curves — pick a real path first for class-appropriate stats).
-    internal void SetLevel(int target)
+    // "@lvl <n>" — rebuild as a clean level-n character of the current class. Anything a level-n character of
+    // that class would have, this character now has; anything it wouldn't, this character now doesn't.
+    //
+    // MARK IS CLEARED. A subpath rank sits ON TOP of the cap — Il san is "level 100" — so it can't survive a
+    // move to level 40, and leaving it on at 99 would make "@lvl 99" and "@mark 0" mean different things for
+    // no reason. @mark is how you put it back, and it re-runs this at 99 first.
+    internal void RespecLevel(int target) => RespecTo(Math.Clamp(target, 1, 99), mark: 0);
+
+    /// <summary>The one character rebuild: @lvl, @class, @mark and @align all end up here. Resets to the RTK
+    /// level-1 baseline (Player.reset / CharacterFactory) and applies real LevelUps up to
+    /// <paramref name="level"/>, so MaxHP/MaxMP, Might/Will/Grace and AC accumulate legitimately (the same
+    /// growth a natural progression uses) and HP/MP end full. Works both up and down. Staff-only, so it
+    /// bypasses the Peasant level-5 wall; growth follows the character's CURRENT path (a Peasant gets peasant
+    /// HP/MP curves — pick a real path first for class-appropriate stats). Then
+    /// <see cref="SyncSpellbook"/> rebuilds the book to match, which is what makes this a clean slate rather
+    /// than a stat edit: no ability from a previous class, level or rank can survive it.
+    ///
+    /// <para><paramref name="mark"/> (the subpath rank, 0-<see cref="Content.MaxMark"/>) is levels PAST the cap: each rank runs one more
+    /// LevelUp with the level counter reading 100, 101, … so an Il san keeps growing on the same curve and
+    /// its AC keeps falling past 1 (100 − effective level). The stored level then goes back to 99, because
+    /// that is what the character sheet and the exp table understand; only the accumulated stats and the
+    /// rank's spells reveal the difference. Nothing in the live game's data says what a rank is worth in
+    /// stats, so "one more level per rank" is our own model, not a ported number.</para></summary>
+    internal void RespecTo(int level, int mark)
     {
-        target = Math.Clamp(target, 1, 99);
-        int path = CharClassId;
+        level = Math.Clamp(level, 1, 99);
+        mark  = Math.Clamp(mark, 0, Content.MaxMark);
+        // Growth and the exp table are keyed to the BASE four (PathGrowth.csv and LevelExp.csv have no rows
+        // past 4), so an NPC subpath levels on its base class's curve — a Chung ryong grows like the Warrior
+        // it is. Reading CharClassId here instead would silently drop a subpath onto the Peasant curve.
+        int path = CharBasePathId;
 
         _char.Level = 1;
         _char.Might = 3; _char.Grace = 3; _char.Will = 3;
         _char.MaxHp = (uint)Random.Shared.Next(45, 56);   // RTK Player.reset baseline
         _char.MaxMp = (uint)Random.Shared.Next(32, 37);
         _char.Ac = (sbyte)(100 - 1);
-        for (int lvl = 1; lvl < target; lvl++) LevelUp(path, announce: false);
+        for (int lvl = 1; lvl < level + mark; lvl++) LevelUp(path, announce: false);
 
+        _char.Mark  = (byte)mark;
+        _char.Level = (byte)level;                                      // the ranks' levels are not real levels
         _char.Hp = EffMaxHp; _char.Mp = EffMaxMp;                       // full vitals for the new level
-        _char.Exp = target > 1 ? Content.ExpToNext(path, target - 1) : 0;   // exp at the start of this level
-        uint tnlNext = Content.ExpToNext(path, _char.Level);
+        _char.Exp = level > 1 ? Content.ExpToNext(path, level - 1) : 0;  // exp at the start of this level
+        uint tnlNext = Content.ExpToNext(path, level);
         _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
 
+        SyncSpellbook(announce: false);                                 // also StoreSaves, and reports the count below
         if (_enteredWorld) StoreSave();
         BroadcastFx(_char.Id, 2, 123);   // one level-up sparkle for the whole jump
         SendStats();
         // Same reason as AwardExp above: an unsolicited 0x39 OPENS the profile window on 4.95, so don't push
-        // one here either. This is the GM "@lvl" path, where the player is standing right there and can open
-        // the sheet themselves.
-        SendMessage($"Now level {_char.Level} ({Content.PathName(path)}) — HP {_char.MaxHp}, MP {_char.MaxMp}, " +
-                    $"might {_char.Might}, will {_char.Will}, grace {_char.Grace}, AC {_char.Ac}.");
-        Log.Info($"   -> @lvl {target}: reset+leveled ({Content.PathName(path)}) HP{_char.MaxHp} MP{_char.MaxMp} " +
-                 $"M{_char.Might}/W{_char.Will}/G{_char.Grace} AC{_char.Ac}");
+        // one here either. This is the GM path, where the player is standing right there and can open the
+        // sheet themselves.
+        SendMessage($"Now level {_char.Level} ({ClassTitle}) — HP {_char.MaxHp}, MP {_char.MaxMp}, " +
+                    $"might {_char.Might}, will {_char.Will}, grace {_char.Grace}, AC {_char.Ac}, " +
+                    $"{_char.Spells.Count} ability(ies).");
+        Log.Info($"   -> respec lvl {level} mark {mark}: reset+leveled ({ClassTitle}, base {Content.PathName(path)}) " +
+                 $"HP{_char.MaxHp} MP{_char.MaxMp} M{_char.Might}/W{_char.Will}/G{_char.Grace} AC{_char.Ac} book{_char.Spells.Count}");
     }
 
     /// <summary>How many of an item (by content key) the player is carrying, summed across stacks.</summary>
@@ -515,7 +564,7 @@ public sealed partial class Session
     {
         if (amount > 0 && _char.Exp < amount) return false;
         _char.Exp -= amount;
-        uint tnlNext = Content.ExpToNext(CharClassId, _char.Level);
+        uint tnlNext = Content.ExpToNext(CharBasePathId, _char.Level);
         _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
         SendStats();
         SaveChar();
@@ -589,6 +638,25 @@ public sealed partial class Session
     // path id (0 Peasant / 1 Warrior / 2 Rogue / 3 Mage / 4 Poet). RTK's separate class/baseClass split
     // (for 5+ subpaths) isn't modelled: base paths only, so ClassName fully captures it.
     internal int CharClassId => Content.PathIdForClass(_char.ClassName);
+
+    /// <summary>The BASE path this character's class descends from (RTK <c>classdb_path</c>) — a Chung ryong
+    /// reads 1 (Warrior). Everything keyed to the base four goes through this: level-up growth
+    /// (PathGrowth.csv), the exp table (LevelExp.csv), the learn-cost table and the spell ladders. Peasant
+    /// and an unrecognized class both read 0.</summary>
+    internal int CharBasePathId => Content.PathBaseOf(Math.Max(0, CharClassId));
+
+    /// <summary>What this character is CALLED right now — class plus rank (Paths.csv PthMark&lt;mark&gt;):
+    /// "Warrior" at mark 0, "Il san (W)" at 1; a Ju jak reads "Force" at 1 and "Inferno" at 2. Every place
+    /// that SHOWS a class to a player uses this; <see cref="Character.ClassName"/> stays the base name so the
+    /// path id, the subpath chat channel and the gear gate keep resolving off one stable string.</summary>
+    internal string ClassTitle => ClassTitleOf(_char);
+
+    internal static string ClassTitleOf(Character c)
+    {
+        int p = Content.PathIdForClass(c.ClassName);
+        return p < 0 ? c.ClassName : Content.PathTitle(p, c.Mark);
+    }
+
     internal string CharTitle => _char.Title;
 
     /// <summary>Set the player's path (RTK <c>updatePath</c>): change the profile class line + persist. We
@@ -605,7 +673,7 @@ public sealed partial class Session
     {
         int p = CharClassId;
         if (p < 0) return new();
-        return Content.SpellsForClass(p, _char.Level, _char.Alignment)
+        return Content.SpellsForClass(p, _char.Level, _char.Alignment, _char.Mark)
                       .Where(s => !_char.Spells.Contains(s.Id))
                       .Where(s => Content.CanRelearnAtNpc(s, p)).ToList();
     }
@@ -616,7 +684,7 @@ public sealed partial class Session
     {
         int p = CharClassId;
         if (p < 0) return new();
-        return Content.SpellsForClass(p, 999, _char.Alignment)
+        return Content.SpellsForClass(p, 999, _char.Alignment, _char.Mark)
                       .Where(s => s.Level > _char.Level && !_char.Spells.Contains(s.Id))
                       .Where(s => Content.CanRelearnAtNpc(s, p))
                       .OrderBy(s => s.Level).Take(12).ToList();

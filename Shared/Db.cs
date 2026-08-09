@@ -65,11 +65,66 @@ CREATE TABLE IF NOT EXISTS characters (
   updated_utc INTEGER
 );
 
+-- Moderation state, keyed by the same normalized username as accounts/characters. SEPARATE from `accounts`
+-- so that table stays purely about authentication — and so adding this needed no migration of an existing
+-- deployment's schema.
+--
+-- `*_until` is unix SECONDS: 0 = not banned/muted, otherwise the moment it lapses. A permanent action stores
+-- Moderation.Forever (year 9999) rather than a -1 sentinel, so every check is the same `until > now`
+-- comparison with no special case to forget.
+CREATE TABLE IF NOT EXISTS moderation (
+  username    TEXT PRIMARY KEY COLLATE NOCASE,
+  ban_until   INTEGER NOT NULL DEFAULT 0,
+  ban_reason  TEXT,
+  ban_by      TEXT,
+  ban_at      INTEGER,
+  mute_until  INTEGER NOT NULL DEFAULT 0,
+  mute_reason TEXT,
+  mute_by     TEXT,
+  mute_at     INTEGER
+);
+
+-- Account bans are trivially evaded by making a new character, IP bans catch a shared household. RTK keeps
+-- both axes (ChaBanned + a BannedIP table) and so do we; a GM picks which one fits.
+CREATE TABLE IF NOT EXISTS banned_ips (
+  ip        TEXT PRIMARY KEY,
+  until     INTEGER NOT NULL DEFAULT 0,
+  reason    TEXT,
+  banned_by TEXT,
+  banned_at INTEGER
+);
+
+-- Append-only record of every moderation action, including the ones that UNDO something. A ban with no
+-- record of who placed it and why is unreviewable, and who LIFTED a ban is the question that actually gets
+-- asked. Never updated, never deleted.
+CREATE TABLE IF NOT EXISTS mod_log (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  at_utc INTEGER NOT NULL,
+  actor  TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT,
+  detail TEXT
+);
+
+-- Small key/value store for state that belongs to the WORLD rather than to any character — currently the
+-- in-game clock (RTK keeps the same thing in its `Time` table). Without this the calendar resets to its
+-- compiled-in start on every restart, which stopped being harmless the moment deploys began restarting the
+-- server on a schedule.
+CREATE TABLE IF NOT EXISTS world_state (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- Login->game handoff nonces. `ip` is the address the login connection came from; the game arrival must
+-- come from the same one. That binding is what carries the security when the nonce itself is short: the
+-- client only echoes back the bytes its fixed-size handoff field has room for after the username, so a
+-- long name leaves as little as one significant byte (see Shared/HandoffTokens).
 CREATE TABLE IF NOT EXISTS handoff_tokens (
   nonce_hash  TEXT PRIMARY KEY,
   username    TEXT NOT NULL,
   expires_utc INTEGER NOT NULL,
-  consumed    INTEGER NOT NULL DEFAULT 0
+  consumed    INTEGER NOT NULL DEFAULT 0,
+  ip          TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS board_posts (
@@ -149,6 +204,15 @@ CREATE TABLE IF NOT EXISTS map_unlocks (
 );
 ";
             cmd.ExecuteNonQuery();
+
+            // Migrations for databases created before a column existed. CREATE TABLE IF NOT EXISTS above is
+            // a no-op on an existing table, so a new column has to be added explicitly; ALTER TABLE throws
+            // "duplicate column name" once it is already there, which is the success case on every later run.
+            foreach (var alter in new[] { "ALTER TABLE handoff_tokens ADD COLUMN ip TEXT NOT NULL DEFAULT '';" })
+            {
+                try { using var mig = cn.CreateCommand(); mig.CommandText = alter; mig.ExecuteNonQuery(); }
+                catch (SqliteException) { /* column already present */ }
+            }
             _initialized = true;
         }
     }

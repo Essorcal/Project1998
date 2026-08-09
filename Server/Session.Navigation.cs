@@ -636,26 +636,55 @@ public sealed partial class Session
     // world lock first, so the .map re-reads don't stall the world under the lock. A load error keeps the OLD
     // content. (Everything file-backed is reloadable now — no compile-time content tables remain that a
     // restart would be needed for.)
+    //
+    // The work itself lives in World.ReloadFromDisk, because a content deploy has no GM logged in to type
+    // this — the CI content lane drops a data/reload_now sentinel and the world picks it up (see
+    // RestartSchedule.Loop). This method is now just the chat-facing half: run it, report it to the GM.
     private void ReloadContent()
     {
-        string summary;
-        try { summary = Content.Reload(); }
-        catch (Exception e)
+        var (ok, report) = _world.ReloadFromDisk();
+        SendLog(ok ? $"Reloaded: {report}" : $"@reload FAILED: {report}  (previous content kept)");
+        Log.Info($"   -> @reload by '{_char.Name}': {report}");
+    }
+
+    // @restart [minutes] [reason] | @restart cancel | @restart  (status)
+    //
+    // The in-game half of RestartSchedule; the other trigger is the data/restart_at file a deploy writes.
+    // Note this is deliberately NOT an immediate kill — there is no "@restart now" shorthand, because the
+    // whole point of the ladder is that players get told. A GM who genuinely wants it down this second can
+    // say "@restart 0", which still announces, still flushes every player, and still takes the grace period.
+    private void RestartCmd(string args)
+    {
+        var sched = _world.Restarts;
+        args = args.Trim();
+
+        if (args.Length == 0)
         {
-            SendLog($"@reload FAILED: {e.Message}  (previous content kept)");
-            Log.Info($"!! @reload by '{_char.Name}' failed: {e}");
+            long left = sched.RemainingMs;
+            SendLog(left < 0
+                ? $"No restart scheduled.  ({Prefix}restart <minutes> [reason])"
+                : $"Restart in {left / 60000}m{left / 1000 % 60:00}s.  ({Prefix}restart cancel to call it off)");
             return;
         }
-        MapData.Invalidate();
-        GmAccounts.Load();   // the GM roster is file-backed config too — promote/demote without a restart
-        // Pre-warm the terrain cache for populated maps outside World._lock, so RebuildPopulation's
-        // re-materialization (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading
-        // .map files from disk while holding the world lock (the old reload-stall).
-        foreach (var mapId in _world.PopulatedMapIds())
-            if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
-        var (mobs, npcs, maps) = _world.RebuildPopulation();
-        SendLog($"Reloaded: {summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, {maps} live map(s) re-materialized; map cache cleared.");
-        Log.Info($"   -> @reload by '{_char.Name}': {summary}; rebuilt pop ({mobs} mobs / {npcs} npcs / {maps} maps)");
+
+        if (args.Equals("cancel", StringComparison.OrdinalIgnoreCase)
+            || args.Equals("off", StringComparison.OrdinalIgnoreCase))
+        {
+            SendLog(sched.Cancel() ? "Restart cancelled." : "Nothing to cancel.");
+            return;
+        }
+
+        // "<minutes> [reason]" — the tail after the number is free text, so "@restart 30 deploying 1.2" works.
+        var parts = args.Split(' ', 2);
+        if (!double.TryParse(parts[0], out double minutes) || minutes < 0 || minutes > 24 * 60)
+        {
+            SendLog($"Usage: {Prefix}restart <minutes 0-1440> [reason] | {Prefix}restart cancel");
+            return;
+        }
+        string reason = parts.Length > 1 ? parts[1].Trim() : "";
+
+        sched.Schedule(minutes, reason);
+        Log.Info($"   -> {Prefix}restart by '{_char.Name}': {minutes} min ({(reason.Length == 0 ? "no reason" : reason)})");
     }
 
 }

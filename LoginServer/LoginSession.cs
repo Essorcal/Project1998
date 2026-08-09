@@ -147,6 +147,16 @@ public sealed class LoginSession
         }
         catch { /* leave pending values as-is */ }
 
+        // Report a weak password HERE too, not just at creation: 0x02 carries the password alongside the
+        // name, so the player can be told before they go pick a face. Only when one was actually supplied —
+        // an empty box at this stage is normal, and creation is the gate that insists on one.
+        if (!string.IsNullOrEmpty(_pendingPass) && PasswordProblem(_pendingPass) is { } pwWhy)
+        {
+            SendMessage(pwWhy);
+            Log.Info($"   -> password REJECTED at name-check ('{_pendingName}'): {pwWhy}");
+            return;
+        }
+
         if (NameProblem(_pendingName) is { } why)
         {
             // Refuse by sending ONLY the message box (the same 0x02/0x0F path "Incorrect password." uses on
@@ -158,20 +168,47 @@ public sealed class LoginSession
         }
 
         Send(new byte[] { 0xAA, 0x00, 0x06, 0x02, 0x01, 0x4F, 0x64, 0x79, 0x6E });
-        Log.Info($"   -> name available (pending='{_pendingName}')");
+        // The password LENGTH only — never the password. This is the measurement that decides whether the
+        // client's entry box truncates what it transmits (and so whether stronger passwords need a client
+        // patch at all). A length is safe to keep in a log; the password is not — see Log.WireEnabled.
+        Log.Info($"   -> name available (pending='{_pendingName}', password {_pendingPass.Length} chars)");
     }
 
     // Shared name gate for the availability check and creation. Returns null if the name is usable, else the
     // player-facing reason. Both the `characters` and `accounts` tables key on CharacterStore.Key (lowercased,
     // non-alphanumerics stripped), so the character set has to be restricted to what survives that
     // normalization — otherwise "Bo b" and "Bob" would be the same account under two different display names.
+    //
+    // The rule matches STANDARD NexusTK: up to 12 characters, LETTERS ONLY — no spaces, no digits, no
+    // punctuation. (It used to allow digits and _, which normalization would have folded together anyway.)
+    private const int MaxNameLength = 12;
+
     private static string? NameProblem(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return "Please enter a name.";
-        if (name.Length < 3 || name.Length > 12) return "Names must be 3 to 12 characters.";
+        if (name.Length < 3 || name.Length > MaxNameLength) return $"Names must be 3 to {MaxNameLength} letters.";
         foreach (var ch in name)
-            if (!char.IsLetterOrDigit(ch) && ch != '_') return "Names may only use letters, numbers and _.";
+            if (!char.IsAsciiLetter(ch)) return "Names may only use letters.";
         if (CharacterStore.CharacterExists(name) || Accounts.Exists(name)) return "That name is already taken.";
+        return null;
+    }
+
+    // Password gate, applied at CREATION only — never at login, so tightening it can't lock out an existing
+    // account. Standard NexusTK is 4-8 characters with at least one number; the floor and the digit rule are
+    // kept (nothing that works on a standard server is refused here) but the 8-character ceiling is NOT a
+    // protocol limit — the wire carries a u8-length password, so 255 fit, and BCrypt doesn't care how long
+    // the input is. MaxPasswordLength is therefore ours to choose; it is capped here only by what the 4.95
+    // client's entry box will actually transmit, which is measured, not assumed. Raise it once that number
+    // is known — this constant is the only thing to change.
+    private const int MinPasswordLength = 4;
+    private const int MaxPasswordLength = 16;
+
+    private static string? PasswordProblem(string pass)
+    {
+        if (string.IsNullOrEmpty(pass)) return "Please enter a password.";
+        if (pass.Length < MinPasswordLength) return $"Passwords must be at least {MinPasswordLength} characters.";
+        if (pass.Length > MaxPasswordLength) return $"Passwords must be at most {MaxPasswordLength} characters.";
+        if (!pass.Any(char.IsAsciiDigit)) return "Passwords must contain at least one number.";
         return null;
     }
 
@@ -204,11 +241,12 @@ public sealed class LoginSession
         }
 
         // A character with no password can't be logged into at all now that TOFU is gone (LoginAuth returns
-        // NoPassword), so refuse to create one rather than persist an unreachable record.
-        if (string.IsNullOrEmpty(_pendingPass))
+        // NoPassword), so refuse to create one rather than persist an unreachable record. The strength rules
+        // ride along here: this is the one place a password is chosen.
+        if (PasswordProblem(_pendingPass) is { } pwWhy)
         {
-            Log.Info($"   -> CREATE REJECTED ('{name}'): no password captured from the 0x02 name-check");
-            SendMessage("Please enter a password.");
+            Log.Info($"   -> CREATE REJECTED ('{name}'): password ({_pendingPass.Length} chars) — {pwWhy}");
+            SendMessage(pwWhy);
             return;
         }
 
@@ -230,7 +268,17 @@ public sealed class LoginSession
 
     private void HandleLogin(byte[] dec)
     {
-        int ulen = dec[0];
+        // Defensive parse. The client's name/password boxes are effectively unbounded, so the length byte
+        // and the body can disagree (a >255-char entry wraps the u8 length) — and every other handler on
+        // this channel already guards. Unguarded, a malformed 0x03 threw out of the read loop and the
+        // player just saw a silent disconnect with no message, which is the hardest failure to diagnose.
+        int ulen = dec.Length > 0 ? dec[0] : 0;
+        if (ulen <= 0 || 1 + ulen > dec.Length)
+        {
+            Log.Info($"   -> LOGIN REJECTED (malformed 0x03: {dec.Length}B body, nameLen={ulen}) from {_remote}");
+            SendMessage("Please enter a name and password.");
+            return;
+        }
         _user = Encoding.ASCII.GetString(dec, 1, ulen);
         string pass = LoginAuth.ReadPassword(dec, 1 + ulen);   // 0x03 body: nameLen name pwLen pw 00
 
@@ -246,21 +294,43 @@ public sealed class LoginSession
 
         // Authenticate. STRICT: an unknown name is refused, never created — the only path to a character is
         // the creation flow above. Shared rule so login + the game channel's re-login can't drift.
+        // Source-address ban (Moderation.BanIp). Checked before the password so a banned address can't spend
+        // our BCrypt budget either — unlike an account ban, this one reveals nothing, since the address
+        // already knows it is the one being refused.
+        if (Moderation.IsIpBanned(_ip.ToString(), out var ipReason))
+        {
+            Log.Info($"   -> LOGIN REJECTED (ip banned) for user='{_user}' from {_remote}");
+            SendMessage(string.IsNullOrWhiteSpace(ipReason)
+                ? "This address is banned from the server."
+                : $"This address is banned from the server: {ipReason}");
+            return;
+        }
+
         var auth = LoginAuth.Authenticate(_user, pass);
         if (auth != LoginResult.Ok)
         {
+            // A ban is NOT a failed credential — the password was right. Charging it to the per-IP
+            // failed-attempt budget would eventually IP-block a banned player's whole household as a side
+            // effect of them retrying, which is a different (and unintended) punishment.
+            if (auth == LoginResult.Banned)
+            {
+                Log.Info($"   -> LOGIN REJECTED (banned) for user='{_user}' from {_remote}");
+                SendMessage(LoginAuth.BanMessageFor(_user));
+                return;
+            }
             int left = LoginThrottle.RecordFailure(_ip);
             Log.Info($"   -> LOGIN REJECTED ({auth}) for user='{_user}' from {_remote} ({left} attempt(s) left)");
             SendMessage(LoginAuth.MessageFor(auth));
             return;   // no handoff — the client stays on the login screen showing the message
         }
         LoginThrottle.RecordSuccess(_ip);
-        Log.Info($"   -> LOGIN accepted for user='{_user}'");
+        Log.Info($"   -> LOGIN accepted for user='{_user}' (name {_user.Length} chars, password {pass.Length} chars)");
         Accounts.TouchLogin(_user);
 
-        // Mint a single-use handoff nonce (exactly 5 bytes = the client's echoed token slot) and record it
-        // in the shared DB; the game server validates+consumes it on 0x10 arrival (Shared/HandoffTokens).
-        var nonce = HandoffTokens.Mint(_user);
+        // Mint a single-use handoff nonce (5 bytes on the wire; how many the client can carry back depends
+        // on the username length — see Shared/HandoffTokens) bound to this connection's source address, and
+        // record it in the shared DB; the game server validates+consumes it on 0x10 arrival.
+        var nonce = HandoffTokens.Mint(_user, _ip.ToString());
 
         // handoff: send the client to the GAME server (reversed IP octets + port). Keep the version's
         // channel together: a V533 login (port 2001) hands off to the V533 game port 2006; V495 -> 2005.

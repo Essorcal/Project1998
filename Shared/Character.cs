@@ -120,11 +120,15 @@ public sealed class Character
     public byte   Hit       = 0;
     public uint   Tnl       = 0;
     public string Title     = "";          // grade/honorific shown above the name (e.g. "Peasant")
-    public string ClassName = "Peasant";   // path/class line
-    // Subpath RANK within the path (RTK ChaMark / status.mark): 0 = base class, 1 Il san … 5 Oh san. Nothing
-    // in the world ADVANCES this yet — the subpath-promotion NPCs aren't ported — so it stays 0 for ordinary
-    // play and is set by the GM "@mark" command. It is a real gate all the same: map entry (MapReqMark),
-    // unmarked-only doors, minor-quest eligibility and now mark-restricted gear (ItmMark) all read it.
+    public string ClassName = "Peasant";   // path/class BASE name; what a player SEES is base + rank (Session.ClassTitle)
+    // Subpath RANK within the path (RTK ChaMark / status.mark): 0 = base class, 1 Il san … 5 Oh san. The
+    // field holds all six for the sake of the data that references them, but a character may only REACH
+    // Content.MaxMark (3, Sam san) — Spells.csv has no mark-4/5 rows, so the higher ranks have no content
+    // behind them. Nothing in the world ADVANCES this yet — the subpath-promotion NPCs aren't ported — so it
+    // stays 0 for ordinary play and is set by the "@mark" command. It is a real gate all the same: map entry
+    // (MapReqMark), unmarked-only doors, minor-quest eligibility and mark-restricted gear (ItmMark) read it.
+    // The rank NAMES are per path (Paths.csv PthMark1..5): a Warrior's rank 1 is "Il san (W)", a Ju jak's is
+    // "Force" — and the rank axis is shared with SplMark, so a rank's title and its spells line up.
     public byte   Mark      = 0;
     public string ClanName  = "";          // guild/clan name ("" = clanless)
     public string ClanTitle = "";          // rank within the clan
@@ -296,6 +300,15 @@ public sealed class InvItem
     public InvItem() { }
     public InvItem(byte slot, int itemId, int amount, ushort dura = 0)
     { Slot = slot; ItemId = itemId; Amount = amount; Dura = dura; }
+
+    /// <summary>An independent copy. Used to snapshot the bag before a transfer that might have to be rolled
+    /// back (see Session.SnapshotBag) — a shallow list copy wouldn't do, because the failure cases mutate
+    /// Amount on an EXISTING stack rather than only adding and removing whole entries.</summary>
+    public InvItem Clone() => new()
+    {
+        Slot = Slot, ItemId = ItemId, Amount = Amount, Dura = Dura,
+        CustomName = CustomName, Repair = Repair, Protected = Protected, Owner = Owner,
+    };
 }
 
 /// <summary>One legend-mark line in the profile window: an icon id, a text color, and the text. <see cref="Name"/>

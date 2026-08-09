@@ -198,7 +198,7 @@ public sealed partial class Session
         // flag. We key on the account instead, which is the closer analogue for how this server works — the
         // visible difference is that a GM playing an ordinary Warrior is red here and wouldn't be in RTK.
         int gm = Content.UserListColorGm;
-        if (gm != 0 && GmAccounts.IsGm(subject._char.Name)) return (byte)gm;
+        if (gm != 0 && StaffAccounts.IsGm(subject._char.Name)) return (byte)gm;
 
         int clanInk = Content.UserListColorClan;
         string clan = subject._char.ClanName;

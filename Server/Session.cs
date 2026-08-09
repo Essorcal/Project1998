@@ -16,6 +16,7 @@ public sealed partial class Session
     private readonly NetworkStream _stream;
     private readonly int _port;
     private readonly string _remote;
+    private readonly string _remoteIp;   // address only (no port) — handoff tokens are bound to it
     private readonly CharacterStore _store;
     private readonly World _world;   // the shared world (players + mobs); every broadcast goes through it
     private string _user = "?";
@@ -215,6 +216,8 @@ public sealed partial class Session
         _world = world;
         _ver = (port == 2001 || port == 2006) ? ClientVersion.V533 : ClientVersion.V495;
         _remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
+        _remoteIp = ((client.Client.RemoteEndPoint as System.Net.IPEndPoint)?.Address
+                     ?? System.Net.IPAddress.None).ToString();
     }
 
     public async Task RunAsync()
@@ -617,9 +620,26 @@ public sealed partial class Session
             return;
         }
 
+        if (Moderation.IsIpBanned(ip.ToString(), out var ipReason))
+        {
+            Log.Info($"   -> RE-LOGIN REJECTED (ip banned) for user='{user}'");
+            SendMessage(string.IsNullOrWhiteSpace(ipReason)
+                ? "This address is banned from the server."
+                : $"This address is banned from the server: {ipReason}");
+            return;
+        }
+
         var auth = LoginAuth.Authenticate(user, pass);
         if (auth != LoginResult.Ok)
         {
+            // See the matching note in LoginSession: a ban is not a failed credential, so it must not eat
+            // the per-IP failed-attempt budget.
+            if (auth == LoginResult.Banned)
+            {
+                Log.Info($"   -> RE-LOGIN REJECTED (banned) for user='{user}'");
+                SendMessage(LoginAuth.BanMessageFor(user));
+                return;
+            }
             int left = LoginThrottle.RecordFailure(ip);
             Log.Info($"   -> RE-LOGIN REJECTED ({auth}) for user='{user}' ({left} attempt(s) left)");
             SendMessage(LoginAuth.MessageFor(auth));
@@ -627,7 +647,7 @@ public sealed partial class Session
         }
         LoginThrottle.RecordSuccess(ip);
 
-        var nonce = HandoffTokens.Mint(user);
+        var nonce = HandoffTokens.Mint(user, _remoteIp);
         var host = ParseGameHost();
         int gport = _port;   // redirect back to this same game port (2005 V495 / 2006 V533)
         var p = new List<byte>
@@ -672,7 +692,11 @@ public sealed partial class Session
             int ulen = body[1 + klen];
             _user = Encoding.ASCII.GetString(body, 2 + klen, ulen);
             int tokenStart = 2 + klen + ulen;
-            if (tokenStart < body.Length) token = body[tokenStart..];   // the 5-byte handoff nonce
+            // What's left of the handoff nonce. NOT always 5 bytes: the client copies <ulen><user><nonce>
+            // into one fixed 13-byte NUL-terminated field, so a longer username eats into the nonce (see
+            // Shared/HandoffTokens.SurvivingBytes). Take whatever is here and let Consume decide how much
+            // of it must match.
+            if (tokenStart < body.Length) token = body[tokenStart..];
         }
         catch { /* keep default */ }
 
@@ -681,16 +705,29 @@ public sealed partial class Session
         // claiming ANY username — identity now rests on a login-verified secret, not the client's claim.
         // Safety valve: NEXUS_ENFORCE_HANDOFF=0 downgrades a failure to a warning (fallback only if a
         // deployment hits a token problem); the default is to enforce.
-        if (!HandoffTokens.Consume(token, _user))
+        if (!HandoffTokens.Consume(token, _user, _remoteIp))
         {
             bool enforce = (Environment.GetEnvironmentVariable("NEXUS_ENFORCE_HANDOFF") ?? "1").Trim() != "0";
             if (enforce)
             {
-                Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' (token {Log.Hex(token)}) — closing connection");
+                Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' from {_remoteIp} " +
+                         $"(token {Log.Hex(token)}, {HandoffTokens.SurvivingBytes(_user)} byte(s) expected) — closing connection");
                 _client.Close();
                 return;
             }
             Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (NEXUS_ENFORCE_HANDOFF=0)");
+        }
+
+        // Ban check AGAIN, here at the actual door to the world. The login channel already refused a banned
+        // account, but a handoff token minted moments BEFORE the ban was placed is still valid until it
+        // expires, and NEXUS_ENFORCE_HANDOFF=0 skips the token check entirely. This is the authoritative
+        // gate: nothing enters the world without passing it.
+        if (Moderation.IsBanned(_user, out _, out _))
+        {
+            Log.Info($"   -> ARRIVAL REJECTED: account '{_user}' is banned — closing connection");
+            SendMessage(LoginAuth.BanMessageFor(_user));
+            _client.Close();
+            return;
         }
 
         // Duplicate-login guard: if this account is already connected (stale client + a fresh reconnect
@@ -725,6 +762,7 @@ public sealed partial class Session
         if (string.IsNullOrEmpty(_char.Name)) _char.Name = _user;
         CharacterFactory.ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
         RestoreTimedEffects();                     // buffs/curses/stances/morph/stealth that were still running at logout
+        LoadModerationState();                     // mute deadline onto the session, so the chat path needs no DB read
         _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);   // naked base AC = 100-level; recompute on load so records saved under the old decrement/gate logic self-correct
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player

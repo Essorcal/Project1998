@@ -16,6 +16,10 @@ public enum LoginResult
     /// <summary>Character exists but has no password on file (a record migrated from before auth existed).
     /// NOT auto-adopted: an admin must set one (LoginServer --set-password) or enable NEXUS_ALLOW_TOFU=1.</summary>
     NoPassword,
+
+    /// <summary>The account is banned (see <see cref="Moderation"/>). Checked AFTER the password so a wrong
+    /// guess can't be used to enumerate who is banned.</summary>
+    Banned,
 }
 
 /// <summary>
@@ -66,7 +70,23 @@ public static class LoginAuth
             Accounts.SetPassword(user, Auth.Hash(pass));   // one-time legacy adoption, opt-in only
             return LoginResult.Ok;
         }
-        return Auth.Verify(pass, hash) ? LoginResult.Ok : LoginResult.BadPassword;
+        if (!Auth.Verify(pass, hash)) return LoginResult.BadPassword;
+
+        // The ban check goes AFTER the password check on purpose. Answering "you are banned" to an
+        // unauthenticated attempt would turn the login screen into a free oracle for who is banned — and
+        // more usefully to an attacker, would confirm a username exists without knowing its password.
+        return Moderation.IsBanned(user, out _, out _) ? LoginResult.Banned : LoginResult.Ok;
+    }
+
+    /// <summary>The message a banned login should see, including how long is left and why. Separate from
+    /// <see cref="MessageFor"/> because it needs the account name to look the reason up.</summary>
+    public static string BanMessageFor(string user)
+    {
+        if (!Moderation.IsBanned(user, out var reason, out var until)) return "";
+        string when = until >= Moderation.Forever ? "" : $" ({Moderation.Describe(until)} remaining)";
+        return string.IsNullOrWhiteSpace(reason)
+            ? $"This account is banned{when}."
+            : $"This account is banned{when}: {reason}";
     }
 
     /// <summary>The client-visible one-line message for a failed <see cref="Authenticate"/>. Kept here so
@@ -79,6 +99,7 @@ public static class LoginAuth
         LoginResult.NoCharacter => "That character does not exist.",
         LoginResult.BadPassword => "Incorrect password.",
         LoginResult.NoPassword  => "That character has no password set. Contact the server admin.",
+        LoginResult.Banned      => "This account is banned.",   // callers with the name use BanMessageFor
         _                       => "",
     };
 }

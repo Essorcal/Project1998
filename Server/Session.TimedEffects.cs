@@ -118,4 +118,45 @@ public sealed partial class Session
         CaptureTimedEffects();
         return _store.Save(_char);
     }
+
+    /// <summary>
+    /// Save TWO sessions atomically — both character rows land in one transaction, or neither does. Used by
+    /// the trade finalizer, where two independent saves can tear an exchange in half and leave the world
+    /// with a duplicated or destroyed stack (see <see cref="CharacterStore.SaveMany"/>).
+    ///
+    /// <para><b>Lock order is by UserKey, not by argument order.</b> Both sessions' save gates have to be
+    /// held across the capture-and-write, and two threads taking them in opposite orders is a textbook ABBA
+    /// deadlock. Ordering on a value both threads compute identically makes that impossible regardless of
+    /// which side finalizes.</para>
+    ///
+    /// <para>Failure restores BOTH dirty flags, so the next ordinary flush retries — the same contract
+    /// <see cref="FlushNow"/> has, extended across the pair.</para>
+    /// </summary>
+    internal static bool FlushPair(Session a, Session b)
+    {
+        if (ReferenceEquals(a, b)) { a.FlushNow(); return true; }
+        if (!a._enteredWorld || !b._enteredWorld) { a.FlushNow(); b.FlushNow(); return true; }
+
+        // Deterministic order. UserKey is unique per online account (the duplicate-login guard enforces it),
+        // but tie-break on identity anyway rather than rely on that invariant holding forever.
+        int cmp = string.CompareOrdinal(a.UserKey, b.UserKey);
+        if (cmp == 0) cmp = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(a)
+                          .CompareTo(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(b));
+        var (first, second) = cmp <= 0 ? (a, b) : (b, a);
+
+        lock (first._saveGate)
+        lock (second._saveGate)
+        {
+            a._dirty = false; b._dirty = false;
+            a.CaptureTimedEffects(); b.CaptureTimedEffects();
+
+            if (a._store.SaveMany(new[] { a._char, b._char }))
+            {
+                a._lastSaveAtMs = b._lastSaveAtMs = Environment.TickCount64;
+                return true;
+            }
+            a._dirty = true; b._dirty = true;   // retried by the next FlushIfDue / autosave sweep
+            return false;
+        }
+    }
 }

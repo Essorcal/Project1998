@@ -212,14 +212,33 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 
    **Handoff token — single-use nonce (2026-07-27).** The 5-byte token slot was a static constant
    (`00 01 12 11 00`); it is now a **server-minted, single-use, 60s-TTL nonce** bound to the username
-   (SHA-256 stored in `handoff_tokens`), so the game port can't be reached by claiming any username.
-   **Two hard wire facts, learned live:**
+   **and to the login connection's source address** (SHA-256 stored in `handoff_tokens`), so the game port
+   can't be reached by claiming any username. **Hard wire facts, learned live:**
    - **Do NOT grow the token past 5 bytes** — the client parses the `0x03` reply as a fixed-size redirect
      struct; a 16-byte token corrupts the parse and breaks login.
-   - The client preserves only the **first 4 bytes** of the slot and **forces the 5th to 0** (a minted
-     `xx xx xx xx <rand>` comes back `xx xx xx xx 00`). So the nonce is **4 significant (non-zero) bytes +
-     a trailing 0**, and only those 4 bytes are hashed/validated. 32 bits — safe given single-use + short
-     TTL + rate limiting.
+   - **The username and the token SHARE one 13-byte field, so a long name truncates the nonce**
+     (corrected 2026-08-08). The client does not keep the token in a slot of its own: it copies the tail of
+     this reply — `<nameLen><name><token>` — into a single fixed **13-byte NUL-terminated** field
+     (12 bytes + a forced terminator) and echoes that field back verbatim in `0x10`. That is why **every
+     `0x10` body is exactly 23 bytes** whatever the name length. Surviving nonce bytes = `11 - nameLen`:
+
+     | name length | nonce bytes echoed back |
+     |---|---|
+     | ≤ 7 | 4 (the full nonce) |
+     | 8 | 3 |
+     | 9 | 2 |
+     | 10 | 1 |
+     | ≥ 11 | 0 — nothing survives |
+
+     The earlier note here — "the client preserves the first 4 bytes and forces the 5th to 0" — was
+     probed only with 7-character names, where `11 - 7 = 4` makes the two rules look identical. Validating
+     a fixed 4 bytes therefore **rejected every account with a name longer than 7 characters**: it could log
+     in, then bounced at world entry with `invalid/expired handoff token`. Both sides now derive the
+     surviving length from the username (`HandoffTokens.SurvivingBytes`) so they cannot disagree.
+   - Because that leaves as little as one byte (or none), **the address binding, not the nonce, is what
+     carries the security for long names.** Mint records the login connection's IP; the `0x10` arrival must
+     come from the same address. Keep the significant nonce bytes **non-zero** — the client's copy stops at
+     the first NUL.
 
 ### 4.2 Game channel (port 2005)
 
@@ -231,9 +250,11 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    Parse the username from it: `klen = body[0]; ulen = body[1+klen]; user = body[2+klen .. +ulen]`.
    The trailing bytes are the **handoff token** (`body[2+klen+ulen ..]`); the game server
    **validates and single-use-consumes** it against the username (must exist, be unexpired, unconsumed,
-   and bound to this user) — otherwise it **closes the connection**. This is what stops a client from
-   connecting straight to the game port and claiming any username. (`NEXUS_ENFORCE_HANDOFF=0` downgrades a
-   failure to a warning as a fallback.)
+   and bound to this user *and this source address*) — otherwise it **closes the connection**. This is what
+   stops a client from connecting straight to the game port and claiming any username.
+   (`NEXUS_ENFORCE_HANDOFF=0` downgrades a failure to a warning as a fallback.)
+   **The token is NOT always 5 bytes here** — it is however much the client's shared 13-byte field had
+   room for after the name (§4.1), so compare only the first `11 - nameLen` bytes.
 
 2. The server now drives the **world-entry burst** (§5, §6).
 
@@ -473,7 +494,16 @@ One packet does three things on the target entity:
   here; the 4.95 client reads only its **high byte** = `0` normally, and ignores everything past `body[7]`).
 
 RTK's `clif_send_mob_health` / `clif_send_pc_healthscript` build the same shape. `critical` is calibratable
-live via `NEXUS_HIT_CRIT`; `@hit <pct> [crit]` auditions the bar + hit anim over the faced mob. **Death beat:**
+live via `NEXUS_HIT_CRIT`; `@hit <pct> [crit]` auditions the bar + hit anim over the faced mob.
+
+**A heal is a NEGATIVE hit on this same packet.** `clif_send_pc_healthscript` takes a signed `damage` and
+does `if (damage < 0) currentvita -= damage`, then builds the identical `0x13`; `addHealthExtend` reaches it
+as `clif_send_pc_healthscript(sd, -damage, 0)` (and the mob twin as `clif_send_mob_healthscript(mob, -damage,
+0)`). So healing draws the over-head bar exactly like damage does, with **`critical = 0`** — that byte still
+selects an overlay animation (`0x8f − 0`), and 0 is simply what the reference server passes. Ours is
+`NEXUS_HEAL_CRIT` if the 4.95 client turns out to draw something unwanted for that id.
+
+**Death beat:**
 4.95 monsters have **no** death frame-set (`monsfrm.tbl` defines only walk/attack), so a "death animation" is:
 send `percent = 0` (empty bar + final hit spark), then delay the `0x0E` despawn (`NEXUS_DEATH_DELAY_MS`, default
 600 ms) so the corpse doesn't pop out instantly. Players die to **ghost form** (appearance `[1]=1`, §8) instead.
@@ -1174,6 +1204,36 @@ dir(u8) stepCounter(u8) X(u16) Y(u16) pad
 Direction map: **0 = North (y−1), 1 = East (x+1), 2 = South (y+1), 3 = West (x−1).** `X,Y` is the client's
 believed **current** tile (where it is walking *from*) — step from it (client-authoritative resync) so
 collision runs on the cell the client is really on.
+
+### 10.0 Refusing a step — the server CAN immobilise a player
+
+Client-side prediction is not client authority. The client guesses a step and **`0x04` overrules it**: reply
+with the authoritative `(X,Y)` and the prediction is cancelled. That is the whole of our wall collision, and
+it works under fast-move too (the "client already moved" case still gets corrected on a block).
+
+RTK's `clif_parsewalk` refuses with a three-packet sequence, and the same one covers *both* a blocked tile
+and a status hold — `if (sd->canmove || sd->paralyzed || sd->sleep != 1.0f || sd->snare)`:
+```
+clif_blockmovement(sd, 0);   // 0x51, flag 0
+clif_sendxy(sd);             // 0x04, authoritative x/y + view anchor
+clif_blockmovement(sd, 1);   // 0x51, flag 1
+```
+**`0x51` has no 4.95 handler** — it maps to the no-op in the world dispatcher (`remap[0x51−3] = 0x2a`), and
+the player-state dispatcher rejects it before the table is even consulted (`0x48eb51: cmp esi, 0x4a; ja
+<no-op>` on `opcode − 4`, so it only accepts `0x04`–`0x4E`). It isn't the part that does the work: the
+`clif_sendxy` in the middle is, and that is a plain `0x04`.
+
+Two things matter when refusing:
+* **Send something.** The client has already predicted the step and blocks awaiting the ack. Returning
+  silently freezes it permanently, not for the duration of whatever you were enforcing.
+* **Snap to the SERVER's `(X,Y)`, not the client's reported tile.** A normal step trusts the client's claim
+  (above); a *refused* one must not, or a client that keeps reporting a tile further along creeps one step
+  per packet.
+
+RTK gates four things on `paralyzed || sleep`: `clif_parsewalk`, `clif_noparsewalk` (its click-to-move),
+`clif_parseattack` (silent `return 0`), and `case 0x0F` magic (silently skipped). Turning is folded into its
+walk parser; on 4.95 it is a separate `0x11`, and refusing it needs **no** snap-back — a turn is
+fire-and-forget with no ack pending, so simply not broadcasting it is enough.
 
 ### 10.1 Fast-move flag — read it PER WALK, do not track the toggle
 
@@ -2219,14 +2279,51 @@ geography matches, unlike Mithia). 906 rows → `Content.Spells` (841 after drop
 rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, PathId, Level, Question`.
 
 - **`PathId`** = the class that learns it: **0 Peasant · 1 Warrior · 2 Rogue · 3 Mage · 4 Poet**, 5+ subpaths,
-  99 = system/common. From the RTK `Paths` table (`Content.Paths`, `PthMark0` = class name; higher marks are
-  per-rank titles). `Character.ClassName` (set with `@class`) resolves to a path id via `PathIdForClass`.
+  99 = system/common. From the RTK `Paths` table (`Content.Paths`, `PthMark0` = class name; `PthMark1..5` are
+  the per-rank titles). `Character.ClassName` (set with `@class`) resolves to a path id via `PathIdForClass`.
+  > **Playable paths** (`Content.PlayablePaths`) are the five base rows plus the four **NPC subpaths** —
+  > 6 Chung ryong (Warrior) · 7 Baekho (Rogue) · 8 Ju jak (Mage) · 9 Hyun moo (Poet). Paths.csv's other rows
+  > are RTK's GM branch (5 Dreamweaver, 22 Archon) and twelve **PC subpaths** (10-21 Barbarian … Muse); none
+  > is modelled here, and `@class` refuses them rather than minting a character with a rank ladder and no
+  > spells behind it.
+  >
+  > An NPC subpath **is its base class plus a little**. `SpellsForClass` resolves `PathBaseOf` (RTK
+  > `classdb_path`, the same PthType the gear gate already uses) and runs the whole base-class list through
+  > it, then adds two things: the subpath's own signature spell (`chung_ryongs_rage` / `baekhos_cunning` /
+  > `ju_jak_evocation` / `hyun_moo_revival` — one row each, `SplLevel` 0, pinned to 99 since you subpath at
+  > the cap) and the base class's two **Dog spells** (below). Level-up growth and the exp table also go
+  > through the base path, since `PathGrowth.csv` and `LevelExp.csv` stop at 4 — without that a Chung ryong
+  > would silently level on the Peasant curve.
+- **Rank titles are the same axis as `SplMark`.** Paths.csv gives a Warrior "Il san (W) … Oh san (W)" and a
+  Ju jak "Force · Inferno · Pandemonium · Catastrophe"; the warrior mark-2 spell is literally named
+  **Assault** and Chung ryong's mark-2 title is **Assault**, which is what pins the two together. So an NPC
+  subpath's ranks draw the same `SplMark` spells its base class's ranks do. `Content.PathTitle(path, mark)`
+  is what a character is CALLED, and every player-visible class line goes through `Session.ClassTitle` —
+  the self-profile (`0x39`), the click-profile (`0x34`), the subpath-chat speaker label and Divine's read-out.
+  `Character.ClassName` deliberately stays the BASE name so the path id, the subpath chat *channel* and the
+  gear gate all keep resolving off one stable string. `@class` accepts a rank title as input for the same
+  reason it displays one: `@class Inferno` = Ju jak at mark 2.
 - **`Level`** = the character level required. Most advanced-class spells in this dump are level 0 (gated by
-  path/subpath, not base level); Peasant has a 0/1/25 spread. `@spells` teaches every class spell with
-  `Level ≤ Character.Level` — **plus the path-0 spells that are TRULY universal** (Soothe, Gateway, Mentor,
-  Propose), which every class keeps after subpathing. `Content.SpellsForClass` unions `PathId == yourClass`
-  with `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway are level 1, so
-  `@lvl ≥ 1`).
+  path/subpath, not base level); Peasant has a 0/1/25 spread. The character rebuild (`@lvl`) grants every
+  class spell with `Level ≤ Character.Level` — **plus the path-0 spells that are TRULY universal** (Soothe,
+  Gateway, Mentor, Propose), which every class keeps after subpathing. `Content.SpellsForClass` unions
+  `PathId == yourClass` with `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway
+  are level 1, so `@lvl ≥ 1`).
+- **`Mark`** (`SplMark`) = the **subpath RANK** required: **0** the base 1-99 list · **1** Il san · **2** Ee
+  san · **3** Sam san. 121 of the 906 rows carry one, and **every one of them has `SplLevel` 0** — so until
+  2026-08-08 the column was read by nothing and those rows looked like level-1 spells. Every level-99
+  character was handed the Il san *and* Ee san secrets of ranks it had never earned, which is also what
+  overflowed the 52-slot book (a level-99 Ee san mage wanted 57 entries). `LoadSpells` now floors a mark
+  row's level to `Content.MarkSpellLevel` (99: a rank sits *on top of* the cap, it is not an alternative to
+  it) and `SpellsForClass` filters `Mark ≤ Character.Mark`. Ranks are cumulative — an Ee san keeps what Il
+  san taught it.
+  > **The rank ladder stops at Sam san** (`Content.MaxMark` = 3), and `@mark`/`@class` refuse anything above
+  > it rather than clamping. Paths.csv names five ranks and Items.csv carries 34 Sa san (mark 4) items, but
+  > **Spells.csv has 46 / 57 / 18 / 0 / 0 rows for marks 1-5** — that exact asymmetry is what proved Sam san
+  > was an RTK implementation gap rather than an out-of-era feature (`nexustk-495-subpath-spells`), and Sa
+  > san is the same gap one tier up. A rank 4 would be a title and one level of stat growth over nothing.
+  > *Known consequence:* those 34 Sa san items stay unwearable, since `ItmMark` reads the same field. That is
+  > right for a rank nobody can hold, and it reverses the moment `MaxMark` moves.
   > **Return/Approach/Summon are NOT part of that peasant-commons union (corrected 2026-07-27)** — the CSV's
   > `SplPthId=0` makes them look identical to Soothe/Gateway/Mentor/Propose, and none of the four scripts
   > (`return.lua`/`approach.lua`/`summon.lua`) contain a class check either, so this was genuinely
@@ -2248,7 +2345,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   > **Real per-class learn COSTS (not just levels) are now enforced** for these 6 spells (Propose
   > deliberately excluded — see below) via `Content.LearnCosts` (`Dictionary<string, Dictionary<int,
   > LearnCost>>`), checked/charged in `ClassTrainerAbility.LearnSecret` (`NpcAbility.cs`) — NOT inside
-  > `Session.LearnSpellFromNpc` itself, so the debug `@spells`/`@learnspell` commands (which never call that
+  > `Session.LearnSpellFromNpc` itself, so the staff `@lvl` rebuild and `@spell` (which never call that
   > method — they mutate `_char.Spells` directly) stay free, matching prior behavior:
   > - Gateway (all): 10 acorn + 10 rabbit meat, free
   > - Return: Mage 30 acorn + 50g · Rogue 100 acorn + 100g · Poet 1 yellow_scroll
@@ -2284,7 +2381,7 @@ slot(u8 = idx+1)  type(u8)  nameLen(u8) name  questionLen(u8) question
 item opcodes `0x0F/0x10/0x37/0x38`, which are no-ops there too yet work live via the client's *secondary*
 dispatcher. That shared property is the evidence the add-spell path is handled the same way (needs one live
 confirm, same as items did). Learned ids persist in `Character.Spells` (book order) and are re-sent on world
-entry by `RefreshSpells`. Remove-spell = **`0x18`** (`slot(u8=pos+1)`), used by `@forgetspells`.
+entry by `RefreshSpells`. Remove-spell = **`0x18`** (`slot(u8=pos+1)`), used by `Session.ClearSpellbook` at the start of every rebuild.
 
 **Cast — client→server `0x0F`** (RTK `clif_parsemagic`): `body[0] = book slot+1`, then by the learned spell's
 type: **type 1** → the typed answer string (a **NUL-terminated ASCII** string right after the slot byte — RTK
@@ -2345,14 +2442,65 @@ sound together (`Session.BroadcastFx`). The caster's `0x1A` magic pose still pla
 **Icons:** the `0x17` add-spell carries **no icon field** (neither does RTK's `clif_sendmagic`) — the client
 resolves the book icon internally, so no icon-id mapping pass is needed on the server side (unlike items/mobs).
 
-**Slot cap:** the client's book array size is unconfirmed for 4.95; RTK 7.x uses 52 (`MAX_SPELLS`). `@spells`
+**Slot cap:** the client's book array size is unconfirmed for 4.95; RTK 7.x uses 52 (`MAX_SPELLS`). The grant
 caps at 52 (env `NEXUS_SPELLBOOK_CAP`) so an over-long teach can't overrun the client array — raise once a live
-test confirms the real limit (Mage has 163 class spells, so the cap bites until then).
+test confirms the real limit. The cap no longer bites: the mark gate and the ladder collapse below put every
+playable path between **1 and 51** entries at every reachable rank and alignment (1 is Peasant, which owns
+only Soothe). Worst case is an unaligned Hyun moo at Sam san — "Guardian" — at **51 of 52**, one slot of
+headroom. Anything added to the Poet list, or a `Content.MaxMark` raised to Sa san, needs this re-measured.
 
-**GM commands:** `@class <Warrior|Rogue|Mage|Poet|Peasant>` (set class), `@align <Unaligned|Kwisin|Mingken|Ohaeng>`
-(set sub-alignment) + `@lvl <n>` (set level), then **`@spells`** = learn every class spell ≤ level for that
-alignment and fill the book; `@learnspell <name|id>` = learn one (any class, for testing); `@forgetspells` =
-clear the book.
+**Ability ladders (`Content.LadderRungs` → `RespecSpellSet`).** Mage learns nine single-target zaps that differ
+only in magnitude (Thunder Bolt → Spark → Singe → Ignite → Ion → Impact → Call Lightning → Stormstrike →
+Hellfire), five 4-way ones, and nine heals across two ladders. Once you have Hellfire, Thunder Bolt is not a
+spell you would ever cast, and holding all nine is what filled the book. The character rebuild therefore keeps
+**only the top rung of each ladder you qualify for**. Ladders are per class and by SHAPE — single-target zap,
+4-way zap, self-only heal, targeted heal, 4-way heal — so a class always keeps one of each. Everything not on
+a ladder (buffs, curses, cures, traps, summons, the mark secrets) is one-of-a-kind and always survives.
+Tutor NPCs are **unaffected**: `SpellsForClass` still offers the whole ladder, because climbing it one rung at
+a time is the point of it.
+> Only the **base (unaligned) key** of each rung is declared. `Content.BuildAlignFamilies` expands it to the
+> Kwisin/Mingken/Ohaeng reskins by walking SplId order within each `(SplPthId, SplType)` block: the four
+> variants of an ability are stored as one consecutive run with ascending alignment, and that adjacency is the
+> *only* thing in the data linking them (they share no name, key stem or level). Validated by reconstructing
+> `AreaZapMana`'s 20 keys and `AreaHealSpells`'s 16 from their 5 and 4 base keys — both hand-curated from the
+> RTK Lua years earlier, both come back exact.
+
+**Dog spells (`Content.DogSpellsByBasePath`).** Two per base class, taught by that class's **Dog** rather
+than the guild master — "the guildmaster is not involved in these spells": you kill something, come back, and
+hand over items. Warrior **Greater Blessing 70 / Spirit Fury 99**, Rogue **Spot Traps 70 / Serpent's Fury
+99**, Mage **Fissure 70 / Lava Surge 99**, Poet **Survive 70 / Fascinate 99**. Source: the archived nexusatlas
+*Dog Spells* page (`re/fx/atlas_html/class_dog.html`, capture **2002-12-30** — in era, same timeline as Sam
+San). They sit in Spells.csv under the `===DOG SPELLS===` divider with `SplPthId 99` and `SplLevel 0`, so no
+class filter could ever match them — **dead data until 2026-08-08**. Granted to **NPC subpaths only**, which
+is inside the page's own rule ("people in PC subpaths cannot learn these spells" — and the PC subpaths it
+excludes aren't playable here at all). Where the fan tutor-board posts disagree on the level (Greater Blessing
+60-vs-70, Spirit Fury 91-vs-99, `re/archive_warrior_spells.md`), **the official listing wins** — the same
+tie-break already used for Siege's aether count. They are deliberately **not** on any ladder: Fissure → Lava
+Surge is a genuine tier pair, but collapsing it would erase half of the only thing a subpath grants outright.
+
+**Staff commands.** `@lvl <1-99>`, `@class <class or rank name>`, `@mark <0-3>` and
+`@align <Unaligned|Kwisin|Mingken|Ohaeng>` all funnel into **one rebuild** (`Session.RespecTo`): reset to the
+level-1 baseline, re-apply real `LevelUp`s on the current path, then **replace** the book with exactly
+`RespecSpellSet(class, level, alignment, mark)`. It is a rebuild, not a top-up — the book can shrink, and
+nothing from a previous class, level or rank survives.
+- `@mark n` forces level 99 first, then runs `n` further `LevelUp`s with the counter reading 100, 101, … so a
+  rank keeps growing on the same curve and its AC keeps falling past 1 (`100 − effective level`). The *stored*
+  level goes back to 99, which is what the character sheet and the exp table understand. Nothing in the live
+  game's data says what a rank is worth in stats, so "one more level per rank" is our model, not a ported
+  number.
+- `@lvl` **clears the mark** — a rank can't survive a move to level 40, and at 99 it would make `@lvl 99` and
+  `@mark 0` mean different things for no reason.
+- `@class` takes a class name (keeps the current rank) **or a rank title** (`@class Inferno` = Ju jak at
+  mark 2). An NPC subpath forces level 99, for the same reason `@mark` does.
+- **The stored level is always ≤ 99.** Ranks are levels past the cap only for the purpose of rolling growth;
+  `_char.Level` goes back to 99 immediately afterwards, so the HUD, the character sheet, the exp table and
+  every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
+- `@stats` still overrides the curve outright, and by design a later rebuild discards it.
+- `@spell <name|id>` learns one specific ability free, out of band: any class, any level, any rank. It is the
+  escape hatch for everything the rebuild withholds (a lower ladder rung, another class's ability, a mark
+  secret you haven't earned). A later rebuild takes it away again.
+- **`@spells` and `@forgetspells` are gone.** Both were additive-only — between them the book could only ever
+  grow, so a character that had been three classes carried all three books around. The rebuild subsumes them.
 
 ---
 
@@ -2814,7 +2962,7 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     however you can also learn each individual trap spell ... so that you don't have to type in the name"),
     and Conro confirming the launch bug that Spot traps couldn't see them (fixed 2003-10-31). The NexusAtlas
     pages dated 2003-11-04 are Rachel's *site*-maintenance list, not the patch. They are therefore gated OFF
-    by default (`Content.IsOutOfEraSplitTrap`): dropped from `SpellsForClass` (tutor menus + `@spells`),
+    by default (`Content.IsOutOfEraSplitTrap`): dropped from `SpellsForClass` (tutor menus + the `@lvl` rebuild),
     pruned from an existing book on world entry, and refused at `HandleCast`. The mechanics below are
     untouched — the dispatcher resolves the same `set_X_trap` defs internally, so every trap kind still
     works, you just have to type its name. Re-enable with `SplitTrapSpells,1` in `ServerTuning.csv` +
@@ -3173,8 +3321,19 @@ messenger" minitext there, and the same here.
 > `0x3B` sub-1 lands **the window IS open** — which is the case the negative test didn't cover.
 >
 > So answering an unread inbox with the mailbox posts view instead of the board list makes `'m'` land
-> straight in the mailbox with no client patch (`Content.MailFirstOnBoard`, default on). The cost is that
+> straight in the mailbox with no client patch (`Content.MailFirstOnBoard`). The cost is that
 > `'b'` does the same while mail is unread, since the two keys are indistinguishable on the wire.
+>
+> **⚠️ That shortcut HARD-FREEZES the client — measured 2026-08-08, `MailFirstOnBoard` now defaults OFF.**
+> Repro (`data/server.log`): `<~ aa 00 04 3b 04 …` → `dec 01 00` → `-> boardposts(0x31) mailbox n=1: 38B`,
+> and from that instant the client sends **nothing** — no walk, no turn, no keypress — for 35 s until the
+> socket is torn down, while the server keeps happily pushing mob `0x0C`/`0x11` at it. So the window being
+> open is **necessary but not sufficient**: the ctor `0x406e80(1)` evidently arms a **list-shaped parse**,
+> and a posts body (`flags2=4`, byte 0 = 4 where the list wants type = 1) walks it off the end and spins.
+> The *identical* posts bytes render fine when they answer **sub-2**, which is what pins the fault on the
+> request context rather than the payload. **Sub-1 must be answered with the board list**; the Mailbox is
+> reachable as that list's last entry (the proven path). Re-enabling the shortcut needs `0x406e80` RE'd
+> first.
 > `Session.Movement.cs` also pops a board open unsolicited with `flags1=2` (board-signs), so `flags1` is
 > worth suspecting if an unsolicited push is ever wanted for the mailbox too.
 > `re/patches/patch_495_mail_key.py` implements the optional one-byte fix (byteTable['m'] 49→22, making

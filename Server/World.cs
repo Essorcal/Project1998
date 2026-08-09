@@ -120,6 +120,11 @@ public sealed class World
     private long _tick;                                                  // heartbeat counter (600ms each)
 
     private const int TickMs = 600;         // world heartbeat period; also the unit MoveTimer accumulates in
+
+    /// <summary>Poison/venom damage cadence, RTK's <c>while_cast_1500</c>. Shared by the mob DoT, the Rogue
+    /// poison trap and the player-side venom, so the rate NexusAtlas quotes ("1000 damage a second") converts
+    /// against one number in one place — see <see cref="Session.ReceivePoison"/>.</summary>
+    public const int PoisonTickMs = 1500;
     // A dead spawn point respawns after this many ticks (~18s at 600ms/tick), mirroring RTK's short town
     // respawn cadence so a cleared patch of Buya refills while the player is still nearby.
     private const int RespawnTicks = 30;
@@ -173,12 +178,37 @@ public sealed class World
     // Session.SendTime) — day/season have no client-visible effect via this packet.
     private const int HourTicks = 750;    // 450000ms / TickMs(600) — one in-game hour per real 7.5 minutes
     private int _hour = 16, _day, _season = 1, _year = 50;
-                                           // hour/year starting values match what this server always sent
-                                           // before this was wired up live (the old hardcoded 0x10/0x32
-                                           // placeholder), so deploying this doesn't jump the clock for
-                                           // anyone already playing; day/season start mid-cycle arbitrarily
-                                           // (RTK itself loads these from a DB Time table we don't persist)
+                                           // These are now only the FIRST-BOOT values, used until the clock
+                                           // has been persisted once. hour/year match what this server always
+                                           // sent before the clock was wired up live (the old hardcoded
+                                           // 0x10/0x32 placeholder), so a fresh database doesn't jump the
+                                           // clock for anyone already playing; day/season start mid-cycle
+                                           // arbitrarily. RTK loads the same four values from its `Time`
+                                           // table, and now so do we — see LoadClock/SaveClock.
     public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
+
+    /// <summary>Resume the calendar from <c>world_state</c> (RTK loads cur_time/day/season/year from its
+    /// `Time` table the same way). A database with no clock rows yet — a brand-new deployment — keeps the
+    /// first-boot values above. Each field is range-clamped on the way in so a hand-edited or corrupt row
+    /// can't put the world at hour 97.</summary>
+    private void LoadClock()
+    {
+        _hour   = Math.Clamp(WorldState.GetInt("clock.hour",   _hour),   0, 23);
+        _day    = Math.Clamp(WorldState.GetInt("clock.day",    _day),    0, 91);
+        _season = Math.Clamp(WorldState.GetInt("clock.season", _season), 1, 4);
+        _year   = Math.Clamp(WorldState.GetInt("clock.year",   _year),   0, 255);
+        Log.Info($"=== clock: Hyul {_year}, season {_season}, day {_day}, hour {_hour}");
+    }
+
+    /// <summary>Persist the calendar. Called on every in-game hour rollover — once per 7.5 real minutes, so
+    /// the cost is one tiny transaction per restart-survivable unit of game time, and a crash can lose at
+    /// most the hour in progress. All four fields go in ONE transaction: they are a single logical value.</summary>
+    private void SaveClock()
+        => WorldState.SetMany(
+            ("clock.hour",   _hour.ToString()),
+            ("clock.day",    _day.ToString()),
+            ("clock.season", _season.ToString()),
+            ("clock.year",   _year.ToString()));
 
     /// <summary>Whether the shared world clock is currently in <paramref name="totem"/>'s totem time
     /// (RTK isTotemTime) — the +5% kill-exp window. Reads the live hour; see <see cref="Content.IsTotemTime"/>.</summary>
@@ -207,12 +237,19 @@ public sealed class World
     private uint _nextNpcId = 300_000;    // NPCs get their own id band (disjoint from mobs) so a click can tell them apart
     private uint _nextItemId = 500_000;
 
+    /// <summary>The scheduled-restart clock (@restart, or the data/restart_at file a deploy writes). Kept on
+    /// the World because a restart warning is a server-wide broadcast and AllPlayers lives here.</summary>
+    public RestartSchedule Restarts { get; }
+
     public World()
     {
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
+        LoadClock();                      // resume the in-game calendar where the last run left it
+        Restarts = new RestartSchedule(this);
         _ = Task.Run(TickLoop);           // start the shared mob-AI + respawn heartbeat
         _ = Task.Run(AutoSaveLoop);       // periodic crash-safety backstop (idle-dirty players); see AutoSaveLoop
+        _ = Task.Run(Restarts.Loop);      // restart-warning ladder + the deploy's file trigger
     }
 
     // ---- persistent spawn roster --------------------------------------------------------------
@@ -1020,6 +1057,47 @@ public sealed class World
         }
     }
 
+    /// <summary>Apply a hostile categorised status to a mob (RTK <c>checkIfCast</c> + <c>setDuration</c>): the
+    /// exclusivity slot, whichever AI field the status actually drives, and — for the ones RTK re-draws in
+    /// <c>while_cast</c> — the repeating over-head animation.
+    /// <para>Returns <b>false</b> if a status of <paramref name="category"/> is already running, which is the
+    /// whole point: an offensive hold cannot be stacked or refreshed on top of itself, so the victim gets the
+    /// hold's full window back before it can be re-applied.</para>
+    /// <paramref name="hold"/> freezes movement (paralyze/sleep/slow), <paramref name="blind"/> takes its
+    /// sight. Both false = a pure stat curse, which only occupies the slot.</summary>
+    public bool ApplyMobStatus(Mob mob, string category, int durMs, bool hold, bool blind,
+                               int fxAnim = 0, int fxSound = 0, int fxEveryMs = 0, string spellKey = "")
+    {
+        if (durMs <= 0) return false;
+        lock (_lock)
+        {
+            long now = Environment.TickCount64;
+            if (mob.HasStatus(category, now)) return false;          // RTK checkIfCast — no stacking, no refresh
+            long until = now + durMs;
+            mob.SetStatus(category, until, spellKey);
+            // Take the LATER of any running hold and this one, so a short paralyze can't cut a long sleep
+            // short — the two are different categories and are allowed to overlap.
+            if (hold)  mob.FrozenUntil = Math.Max(mob.FrozenUntil, until);
+            if (blind) { mob.BlindUntil = Math.Max(mob.BlindUntil, until); mob.TargetId = 0; }
+            if (fxAnim > 0 && fxEveryMs > 0) mob.SetFxRepeat(fxAnim, fxSound, fxEveryMs, until, now);
+            return true;
+        }
+    }
+
+    /// <summary>Does this mob already carry a status of <paramref name="category"/>? (The read-only half of
+    /// <see cref="ApplyMobStatus"/>, for a verb that needs to check before it commits to anything.)</summary>
+    public bool MobHasStatus(Mob mob, string category)
+    {
+        lock (_lock) return mob.HasStatus(category, Environment.TickCount64);
+    }
+
+    /// <summary>The spell key holding <paramref name="category"/>'s slot on this mob right now, or "" if it is
+    /// free. Lets a blocked cast say whether it bounced off ITS OWN running spell or somebody else's.</summary>
+    public string MobStatusKey(Mob mob, string category)
+    {
+        lock (_lock) return mob.StatusKey(category, Environment.TickCount64);
+    }
+
     /// <summary>Apply a venom/poison damage-over-time to a mob (RTK mage venom.lua family — the SAME engine the
     /// Rogue poison-dart trap drives, see <see cref="TriggerTrapLocked"/>'s "poison" case): ticks MaxHp*1% every
     /// 1500ms for a random window (1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>)), the per-tick
@@ -1029,16 +1107,24 @@ public sealed class World
     /// RTK's Burn (Spells/NPCs/burn.lua) is the one member of this family whose while_cast deals a hardcoded
     /// 1000 rather than a percentage, and clamping a flat 1000 through <paramref name="tickCap"/> would silently
     /// weaken it against anything under 100k HP.</para></summary>
-    public bool PoisonMob(Mob mob, int tickCap, int lowMs, int highMs, uint ownerId, int flatTick = 0)
+    /// <param name="fxAnim">Effect id to re-draw over the victim on every 1500ms tick, mirroring RTK's
+    /// <c>while_cast_1500</c>, which calls <c>target:sendAnimation(1)</c> each time it deals damage — the
+    /// poison is meant to keep flashing for its whole window, not once at cast. 0 = no repeat (the trap
+    /// path, whose RTK script draws nothing per tick).</param>
+    public bool PoisonMob(Mob mob, int tickCap, int lowMs, int highMs, uint ownerId, int flatTick = 0,
+                          int fxAnim = 0, int fxSound = 0, string spellKey = "")
     {
         lock (_lock)
         {
             long now = Environment.TickCount64;
             if (mob.PoisonUntil > now) return false;                        // already venomed — RTK checkIfCast(venoms)
             mob.PoisonUntil     = now + 1 + Random.Shared.Next(lowMs, highMs + 1);
-            mob.PoisonNextTick  = now + 1500;
+            mob.PoisonNextTick  = now + PoisonTickMs;
             mob.PoisonTickDam   = flatTick > 0 ? flatTick : Math.Clamp((int)(mob.MaxHp * 0.01), 1, tickCap);
             mob.PoisonOwnerId   = ownerId;
+            mob.SetStatus("venoms", mob.PoisonUntil, spellKey);
+            // Same 1500ms cadence as the damage tick, so the flash and the hit land together.
+            if (fxAnim > 0) mob.SetFxRepeat(fxAnim, fxSound, PoisonTickMs, mob.PoisonUntil, now);
             return true;
         }
     }
@@ -1130,6 +1216,36 @@ public sealed class World
     {
         lock (_lock)
             return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+    }
+
+    /// <summary>
+    /// Hot-reload every file-backed registry and rebuild the world population from it — the work behind the
+    /// <c>@reload</c> GM command, lifted out of <see cref="Session"/> because the OTHER caller has no session:
+    /// a content-only deploy drops a <c>data/reload_now</c> sentinel and <see cref="RestartSchedule.Loop"/>
+    /// calls this. That is the whole point of the content lane — a CSV or Lua fix ships without kicking anyone.
+    ///
+    /// <para>Returns (ok, report). A load error keeps the OLD content and comes back <c>ok: false</c> with the
+    /// message, rather than throwing — a bad CSV must not take down a running world.</para>
+    /// </summary>
+    public (bool ok, string report) ReloadFromDisk()
+    {
+        string summary;
+        try { summary = Content.Reload(); }
+        catch (Exception e)
+        {
+            Log.Info($"!! content reload failed: {e}");
+            return (false, e.Message);
+        }
+        MapData.Invalidate();
+        StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
+        // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
+        // (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
+        // while holding the world lock (the old reload-stall).
+        foreach (var mapId in PopulatedMapIds())
+            if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
+        var (mobs, npcs, maps) = RebuildPopulation();
+        return (true, $"{summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, " +
+                      $"{maps} live map(s) re-materialized; map cache cleared.");
     }
 
     /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
@@ -1238,6 +1354,11 @@ public sealed class World
         lock (_lock)
         {
             if (!mob.Alive || mob.IsNpc) return false;   // NPCs are indestructible (a click talks to them, not fights)
+            // Sleep-family amplifier: "the NEXT attack upon the target" lands harder (Doze 1.3x, Sleep 1.5x).
+            // Consumed here so it applies to exactly one hit, and applied before the HP subtraction so the
+            // over-head bar and any kill it causes both reflect the amplified number.
+            double amp = mob.TakeDamageAmp(Environment.TickCount64);
+            if (amp > 1.0) dmg = (int)Math.Round(dmg * amp);
             mob.Hp -= dmg;
             died = !mob.Alive;
             // Provoked -> fight back (mob_ai_normal on_attacked). Getting hit ALWAYS wins: it drops whatever
@@ -1245,6 +1366,12 @@ public sealed class World
             // stuck-mob retarget in Tick — so zapping something always drags its aggro onto you, wall or no
             // wall, however unreachable you are.
             if (!died && attackerId != 0) { mob.TargetId = attackerId; mob.TargetMobId = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+            // Being hit wakes a sleeping creature (RTK sleep.lua on_takedamage_while_cast). Paralyze
+            // deliberately does NOT clear here — a paralyzed mob stays held while you beat on it.
+            if (!died && mob.HasStatus("sleeps", Environment.TickCount64))
+            {
+                mob.ClearStatus("sleeps"); mob.FrozenUntil = 0; mob.FxRepeatUntil = 0;
+            }
             // …unless it's PREY, which has no fight in it: being hurt by anything (a spell, a trap, a swing)
             // panics it instead. Tick clears the TargetId set just above before it can ever be acted on; this
             // is what makes a spell as alarming as a sword. A pure MISS never reaches here — Session.ResolveSwing
@@ -1385,6 +1512,10 @@ public sealed class World
         // Real damage from a triggered trap (instant hit) or a poison tick — both need Session-facing
         // broadcasts (damage number, death despawn, owner exp) that must run outside the lock, same as `hits`.
         var trapDamage = new List<(ushort map, Mob mob, int dmg, uint ownerId)>();
+        // Repeating status effects (RTK `while_cast`): venom re-draws its animation every poison tick, doze
+        // and sleep re-draw theirs for as long as the hold runs. Broadcasting is socket I/O, so — like every
+        // other visual below — the tick only QUEUES them under the lock and sends them after it's released.
+        var fxRepeats = new List<(ushort map, uint id, int anim, int sound)>();
         var expiredPets = new List<(ushort map, Mob mob)>();
         var expiredMorphs = new List<Session>();
         var expiredStealth = new List<Session>();
@@ -1508,19 +1639,61 @@ public sealed class World
 
                     // Poison trap DOT (RTK poison_dart_trap.lua while_cast_1500): ticks every 1500ms regardless
                     // of freeze/wander state, and — per RTK — never fires a tick that would finish the kill.
-                    if (mob.PoisonUntil > Environment.TickCount64 && Environment.TickCount64 >= mob.PoisonNextTick && mob.Hp > mob.PoisonTickDam)
+                    if (mob.PoisonUntil > Environment.TickCount64 && Environment.TickCount64 >= mob.PoisonNextTick)
                     {
-                        mob.PoisonNextTick = Environment.TickCount64 + 1500;
-                        trapDamage.Add((mapId, mob, mob.PoisonTickDam, mob.PoisonOwnerId));
+                        mob.PoisonNextTick = Environment.TickCount64 + PoisonTickMs;
+                        // "Poison will not kill a target but rather bring them to the lowest possible health"
+                        // (NexusAtlas). RTK's while_cast says the same in code: `if health > damage then
+                        // remove else health = 1`. This used to SKIP the tick once HP fell to the tick
+                        // amount, which left the victim parked wherever it happened to be instead of at 1 —
+                        // so a venomed creature stopped short of the state the spell is supposed to leave it in.
+                        int lethal = Math.Max(0, mob.Hp - 1);
+                        int dam = Math.Min(mob.PoisonTickDam, lethal);
+                        if (dam > 0) trapDamage.Add((mapId, mob, dam, mob.PoisonOwnerId));
                     }
+
+                    // Repeating status animation (RTK `while_cast`): venom's per-tick zap, doze/sleep's drowse.
+                    // Driven here rather than off each status's own timer so one cadence covers them all, and
+                    // so it keeps running while the mob is frozen — which is exactly when you need to see it.
+                    if (mob.FxRepeatUntil > Environment.TickCount64)
+                    {
+                        if (Environment.TickCount64 >= mob.FxRepeatNext)
+                        {
+                            mob.FxRepeatNext = Environment.TickCount64 + mob.FxRepeatEvery;
+                            fxRepeats.Add((mapId, mob.Id, mob.FxRepeatAnim, mob.FxRepeatSound));
+                        }
+                    }
+                    else if (mob.FxRepeatUntil != 0) mob.FxRepeatUntil = 0;
 
                     if (mob.FrozenUntil > Environment.TickCount64) continue;   // paralyzed/asleep — hold still
 
-                    // Blind (RTK's `target.blind = true`): a blinded mob can't SEE, so it drops whoever it was
-                    // fighting and its aggro scan below is skipped — it falls through to plain wandering until
-                    // the duration lapses. Unlike FrozenUntil it does NOT stop movement; blind is an aiming
-                    // debuff, not a hold, which is why the two stack usefully.
-                    if (mob.BlindUntil > Environment.TickCount64) mob.TargetId = 0;
+                    // Blind (RTK's `target.blind = true`): a blinded creature can't SEE. It drops whoever it
+                    // was fighting, the unprovoked-aggro scan below is skipped, and — this is the part that
+                    // used to be wrong — it does NOT wander either. A mob with no sight has nowhere to go, so
+                    // it holds its ground; the old code fell straight through to the wander block, which made
+                    // a blinded mob spin on the spot and read as though the spell had done nothing.
+                    // What it CAN still do is lash out at whatever is within arm's reach, turning to face it:
+                    // being blind doesn't stop you swinging at someone who walks into you.
+                    if (mob.BlindUntil > Environment.TickCount64)
+                    {
+                        mob.TargetId = 0; mob.TargetMobId = 0;
+                        // Prey never fights (see the flee block below), and an owned creature has no business
+                        // swinging at people off a PK map — the same two exemptions the sighted paths apply.
+                        Session? reach = null;
+                        if (!mob.Flees && (mob.OwnerId == 0 || Content.IsPvpMap(mapId)))
+                            foreach (var p in m.Players)
+                            {
+                                if (p.IsDead || p.PlayerId == mob.OwnerId) continue;
+                                int bdx = p.PlayerX - mob.X, bdy = p.PlayerY - mob.Y;
+                                if ((bdx == 0 && Math.Abs(bdy) == 1) || (bdy == 0 && Math.Abs(bdx) == 1)) { reach = p; break; }
+                            }
+                        if (reach is null) { mob.AttackTimer = 0; continue; }
+                        byte bface = FaceDelta(reach.PlayerX - mob.X, reach.PlayerY - mob.Y);
+                        if (bface != mob.Dir) { mob.Dir = bface; turns.Add((mapId, mob.Id, bface)); }
+                        mob.AttackTimer += TickMs;
+                        if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; hits.Add((mapId, mob, reach)); }
+                        continue;
+                    }
 
                     // ---- PET AI: a mob with an OWNER (a Poet's Call of the Wild summon, or an Endear'd
                     // captive) does not behave like a wild one. Three rules, applied in order:
@@ -1661,7 +1834,9 @@ public sealed class World
                     // OWNED mobs are excluded outright: a charmed creature must not re-acquire the poet who
                     // just charmed it (the pet block above already returned for every case where it has an
                     // owner it can serve, so this only skips the "owner isn't here" leftovers).
-                    if (mob.TargetId == 0 && mob.Aggressive && mob.OwnerId == 0 && mob.BlindUntil <= Environment.TickCount64)
+                    // (No blind check here any more — a blinded mob never reaches this line; its own branch
+                    // above handles it and continues.)
+                    if (mob.TargetId == 0 && mob.Aggressive && mob.OwnerId == 0)
                     {
                         var victim = m.Players.FirstOrDefault(p => !p.IsDead
                             && Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) <= AggroRadius);
@@ -1820,6 +1995,16 @@ public sealed class World
         foreach (var tn in turns)
             Broadcast(tn.map, p => p.SideMob(tn.id, tn.dir));
 
+        // Repeating status effects queued above (venom's per-tick zap, doze/sleep's drowse) — the same 0x29 +
+        // 0x19 pair a cast plays, re-sent over the afflicted creature for as long as the status holds.
+        foreach (var fr in fxRepeats)
+            Broadcast(fr.map, p => { p.EffectOver(fr.id, fr.anim); if (fr.sound > 0) p.SoundAt(fr.sound, fr.id); });
+
+        // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
+        // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
+        // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
+        foreach (var s in AllPlayers()) { Try(s.TickSleep); Try(s.TickPoison); }
+
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (forage is not null)
             foreach (var (map, gi) in forage)
@@ -1872,6 +2057,10 @@ public sealed class World
         {
             var (h, y) = Time;
             foreach (var p in players2) Try(() => p.SendTime(h, y));
+            // Persist OUT HERE, not at the rollover inside the lock — a SQLite write while holding _lock
+            // would stall the whole world on disk I/O, the same reason the @reload terrain pre-warm was
+            // moved out. Once per in-game hour is once per 7.5 real minutes.
+            Try(SaveClock);
         }
         if (weatherChanges is not null)
             foreach (var (map, w) in weatherChanges)

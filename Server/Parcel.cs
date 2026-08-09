@@ -120,20 +120,24 @@ public static class Parcel
             Amount = amount, Dura = dura, Engrave = engrave ?? "", Month = month, Day = day };
     }
 
-    /// <summary>Atomically remove one parcel by position and return it — the claim step. Null if it's already
-    /// gone (guards a double-claim race the same way Mail.ClaimItem's conditional UPDATE does).</summary>
-    public static ParcelItem? Claim(string recipient, int position)
+    /// <summary>
+    /// Remove one parcel by position and return it — the claim step. Null if it was already gone, which is
+    /// what guards the double-claim race (the conditional DELETE either matches a row or it doesn't).
+    ///
+    /// <para><b>Takes the caller's transaction on purpose.</b> The parcel leaving the queue and the item
+    /// arriving in the player's bag have to commit together: claiming on its own connection meant a crash
+    /// between the delete and the character's next autosave destroyed the parcel outright — gone from the
+    /// queue, never delivered. The caller runs this inside <see cref="CharacterStore.SaveWith"/> so both
+    /// halves land or neither does.</para>
+    /// </summary>
+    public static ParcelItem? ClaimIn(SqliteConnection cn, SqliteTransaction tx, string recipient, int position)
     {
-        try
-        {
-            using var cn = Db.Open();
-            using var cmd = cn.CreateCommand();
-            cmd.CommandText = $"DELETE FROM parcels WHERE recipient=$r COLLATE NOCASE AND position=$p RETURNING {Cols};";
-            cmd.Parameters.AddWithValue("$r", recipient);
-            cmd.Parameters.AddWithValue("$p", position);
-            using var r = cmd.ExecuteReader();
-            return r.Read() ? Read(r) : null;
-        }
-        catch { return null; }
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = $"DELETE FROM parcels WHERE recipient=$r COLLATE NOCASE AND position=$p RETURNING {Cols};";
+        cmd.Parameters.AddWithValue("$r", recipient);
+        cmd.Parameters.AddWithValue("$p", position);
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? Read(r) : null;
     }
 }

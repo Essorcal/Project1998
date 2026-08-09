@@ -641,6 +641,7 @@ public sealed partial class Session
     public void ApplyMobHit(Mob mob, int rawDmg)
     {
         if (IsDead) return;   // already down — don't re-trigger Die() while the revive delay is pending
+        WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
 
         // RTK hitCritChance.lua: mobs DO roll a crit chance, but real swingDamage.lua's _getMobSwingDamage
         // never multiplies mob damage by it — only a PLAYER's own swing gets the x3 (see
@@ -655,6 +656,12 @@ public sealed partial class Session
         // naked/positive-AC player takes MORE than raw — armor can't fully negate a hit (-80 floor = min 20%).
         int effectiveAc = _char.Ac - Totals().armor;
         int dmg = Combat.ApplyArmor(rawDmg, effectiveAc, floor: -80);
+
+        // Sleep-family amplifier: being dozed/slept makes the NEXT hit on you land harder (Doze 1.3x,
+        // Sleep 1.5x). Consumed here, so it applies to one hit only. WakeUp below then breaks the hold —
+        // together that is the whole point of the spell: set up one amplified opener.
+        double ampMul = TakeDamageAmp();
+        if (ampMul > 1.0) dmg = (int)Math.Round(dmg * ampMul);
 
         // Positional "attacked from behind while both face the same way" 2x (RTK swingDamage.lua's
         // side==target.side rule; applied AFTER armor, matching the Lua's own order). NOT ported: the
@@ -687,7 +694,10 @@ public sealed partial class Session
     public void ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
     {
         if (IsDead) return;   // already down — don't re-trigger Die() while the revive gate is pending
+        WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
         if (rawDmg < 1) rawDmg = 1;
+        double spellAmp = TakeDamageAmp();          // sleep-family amplifier — see ApplyMobHit
+        if (spellAmp > 1.0) rawDmg = (int)Math.Round(rawDmg * spellAmp);
         int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         SendStats();
@@ -891,13 +901,47 @@ public sealed partial class Session
         return EdgeAwareAnchor(_char.X, _char.Y);
     }
 
-    // The normal follow-camera anchor: the screen tile the self is drawn at (mid-view, clamped near borders).
+    // The client's tile viewport, confirmed against the binary (see below) and against every anchor ever
+    // sent: vx=16 and vy=14 have both rendered, and the gate below is a strict `<`, so these are exact.
+    private const int ViewW = 17;
+    private const int ViewH = 15;
+
+    // The normal follow-camera anchor: the screen tile the self is drawn at. The 0x04 handler derives the
+    // map origin as (X - vx, Y - vy), so the anchor IS the placement control — raise vx and the map slides
+    // right under a self drawn further into the view.
+    //
+    // WHAT THE CLIENT ACTUALLY CONSTRAINS (RE'd 2026-08-09, NexusTK_local.exe):
+    //   * gate 0x44c8f0 (0x44c660 skips the ENTIRE origin write when it returns 0) checks only four things:
+    //         0 <= X < mapW,  0 <= Y < mapH,  0 <= vx < ViewW,  0 <= vy < ViewH
+    //     It never looks at the origin. Hence the clamps below are exactly the gate's bounds.
+    //   * viewport builder 0x44c950 clamps the drawn rect to the map on all four sides:
+    //         top  = max(0, originY-1)      bottom = min(mapH, originY + ViewH + 1)
+    //         left = max(0, originX-1)      right  = min(mapW, originX + ViewW + 1)
+    //     so a negative or over-long origin never reads outside the map — it just leaves empty screen.
+    // Together: ANY origin is safe, and a map smaller than the viewport can be placed anywhere in it.
+    //
+    // MAPS SMALLER THAN THE VIEWPORT. The home interiors are 12x12, smaller than the 17x15 view, so they
+    // can never fill it. The follow-camera branches below are meaningless there (there is nothing to
+    // follow) and merely shoved the map into a corner. Instead, centre it: split the leftover margin, which
+    // for odd leftovers leaves the extra row/column on the bottom-right. A 12x12 map lands with 2 blank
+    // columns left / 3 right and 1 blank row top / 2 bottom.
+    //
+    // NOTE: an earlier revision of this comment claimed the client accepted only one vertical origin
+    // (ys-ViewH) and rendered nothing otherwise. The disassembly above disproves that — the origin is not
+    // gated and the draw rect is clamped — so that is NOT why the first Buya spawn came up blank. That
+    // cause is still unexplained; don't let this comment be cited as if it were the answer.
     private (ushort vx, ushort vy) EdgeAwareAnchor(int cx, int cy)
     {
         int xs = _char.MapXs, ys = _char.MapYs;
-        int vx = cx < 8 ? cx : (cx >= xs - 8 ? cx - xs + 17 : 8);
-        int vy = cy < 7 ? cy : (cy >= ys - 7 ? cy - ys + 15 : 7);
-        return ((ushort)Math.Clamp(vx, 0, 16), (ushort)Math.Clamp(vy, 0, 14));
+        int vx = xs < ViewW      ? cx + (ViewW - xs) / 2   // narrower than the view -> centre it
+               : cx < ViewW / 2  ? cx
+               : cx >= xs - 8    ? cx - xs + ViewW
+               : ViewW / 2;
+        int vy = ys < ViewH      ? cy + (ViewH - ys) / 2   // shorter than the view -> centre it
+               : cy < ViewH / 2  ? cy
+               : cy >= ys - 7    ? cy - ys + ViewH
+               : ViewH / 2;
+        return ((ushort)Math.Clamp(vx, 0, ViewW - 1), (ushort)Math.Clamp(vy, 0, ViewH - 1));
     }
 
     // 0x04: absolute self (X,Y) + screen anchor. The handler (0x44faf0) sets camera scroll via

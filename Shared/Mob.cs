@@ -78,10 +78,92 @@ public sealed class Mob
     public bool Summoned;
 
     // Set by the Blind family (RTK Spells/NPCs/blind.lua + mage blind/dark_veil/winter's shadow/ice glare,
-    // all of which just set `target.blind = true` for a duration). A blinded mob cannot SEE: World.Tick
-    // skips its unprovoked-aggro scan and drops any target it already had, so it falls back to plain
-    // wandering until this expires. 0 = not blinded.
+    // all of which just set `target.blind = true` for a duration). A blinded creature cannot SEE, so
+    // World.Tick drops any target it had, skips its unprovoked-aggro scan, and — unlike a frozen mob, which
+    // is held rigid — leaves it standing still rather than wandering: with no sight there is nowhere to go.
+    // It can still lash out at whatever it can REACH (a cardinally-adjacent player), turning to face them.
+    // 0 = not blinded.
     public long BlindUntil;
+
+    /// <summary>Categorised status slots (RTK <c>checkIfCast</c>): category -> the TickCount64 it lapses at.
+    /// The mob-side twin of a player's <c>ActiveBuff.Category</c>, and the reason a second blind/paralyze/
+    /// curse can't simply be re-applied on top of a running one. Categories are the same strings the spell
+    /// data uses — "blinds" · "paras" · "sleeps" · "venoms" · "curses" · "minorcurses" · "disheartens" …
+    /// <para>Deliberately separate from <see cref="FrozenUntil"/> / <see cref="BlindUntil"/> / <see
+    /// cref="PoisonUntil"/>, which are what the AI reads: those are the MECHANIC, this is the EXCLUSIVITY
+    /// bookkeeping, and they can differ (a boss's doze is shortened to 2s but still occupies the slot).</para>
+    /// Null until something is applied — most mobs never carry a status, and this is per-mob on maps that
+    /// hold thousands of them.
+    /// <para>The slot remembers WHICH SPELL filled it, not just when it lapses, so a refusal can tell you
+    /// whether you are re-casting your own running spell ("You already cast that spell.") or bouncing off a
+    /// different one that got there first ("Another spell of this type is in effect."). RTK draws the same
+    /// distinction — paralyze.lua answers the former on its own <c>target.paralyzed</c>, static.lua the
+    /// latter — it just couldn't express it in general, having only one boolean flag per mechanic.</para></summary>
+    public Dictionary<string, MobStatus>? Statuses;
+
+    /// <summary>One occupied status slot: when it lapses, and the spell key that put it there.</summary>
+    public readonly record struct MobStatus(long Until, string Key);
+
+    /// <summary>Is a status of <paramref name="category"/> still running on this mob?</summary>
+    public bool HasStatus(string category, long now) =>
+        Statuses is not null && Statuses.TryGetValue(category, out var s) && s.Until > now;
+
+    /// <summary>The spell key currently occupying <paramref name="category"/>'s slot, or "" if it is free.</summary>
+    public string StatusKey(string category, long now) =>
+        Statuses is not null && Statuses.TryGetValue(category, out var s) && s.Until > now ? s.Key : "";
+
+    /// <summary>Free a slot immediately, before its timer runs out (the sleep-breaks-on-damage path).</summary>
+    public void ClearStatus(string category)
+    {
+        if (Statuses is not null && Statuses.ContainsKey(category)) Statuses[category] = new MobStatus(0, "");
+    }
+
+    /// <summary>Damage amplifier left by a sleep-family hold: the next attack on this creature is multiplied
+    /// by it, and lands the creature awake. NexusAtlas gives Doze 1.3x and Sleep 1.5x ("The next attack upon
+    /// the target will do 1.3x the normal damage"). This IS RTK's <c>target.sleep = 1.3</c> and the
+    /// <c>sd->sleep != 1.0f</c> guards throughout its C — a float whose default 1.0 doubles as the "not held"
+    /// flag, which is exactly why reading it as a boolean makes the whole mechanic disappear.
+    /// 1.0 (or 0, unset) = no amplification.</summary>
+    public double DamageAmp;
+    public long   DamageAmpUntil;
+
+    /// <summary>Consume the amplifier if one is armed: returns the multiplier and clears it, so it applies to
+    /// exactly ONE hit — "the NEXT attack", not every attack for the duration.</summary>
+    public double TakeDamageAmp(long now)
+    {
+        if (DamageAmp <= 1.0 || DamageAmpUntil <= now) return 1.0;
+        double a = DamageAmp;
+        DamageAmp = 0; DamageAmpUntil = 0;
+        return a;
+    }
+
+    /// <summary>Occupy <paramref name="category"/>'s slot until <paramref name="until"/> (TickCount64), on
+    /// behalf of <paramref name="spellKey"/> (blank for a non-spell source such as a trap).</summary>
+    public void SetStatus(string category, long until, string spellKey = "")
+    {
+        if (string.IsNullOrEmpty(category)) return;
+        (Statuses ??= new())[category] = new MobStatus(until, spellKey);
+    }
+
+    // A repeating over-head effect, driven by World.Tick, for statuses whose animation is supposed to keep
+    // playing for as long as they hold rather than firing once at cast. This is RTK's `while_cast` hook: venom
+    // re-sends its animation on every 1500ms poison tick, and doze/sleep re-send theirs on every spell-timer
+    // tick. Without it a 50-second hold looks identical to a fizzle after the first frame.
+    // 0 = nothing repeating. FxRepeatEvery is the cadence in ms.
+    public long FxRepeatUntil;
+    public long FxRepeatNext;
+    public int  FxRepeatEvery;
+    public int  FxRepeatAnim;
+    public int  FxRepeatSound;
+
+    /// <summary>Start (or replace) the repeating over-head effect. <paramref name="everyMs"/> is the cadence;
+    /// the first replay lands one cadence AFTER the cast, since the cast already drew frame one.</summary>
+    public void SetFxRepeat(int anim, int sound, int everyMs, long until, long now)
+    {
+        if (anim <= 0 || everyMs <= 0) { FxRepeatUntil = 0; return; }
+        FxRepeatAnim = anim; FxRepeatSound = sound; FxRepeatEvery = everyMs;
+        FxRepeatUntil = until; FxRepeatNext = now + everyMs;
+    }
 
     // Combat AI (RTK's mob_ai_normal.lua targeting: on_attacked sets the target, move/attack
     // chase and swing at it): 0 = passive wander. World.TryDamage sets this to the attacker's player id on a

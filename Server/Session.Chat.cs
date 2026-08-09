@@ -31,17 +31,21 @@ public sealed partial class Session
         if (text.StartsWith("/subpathchat ", StringComparison.OrdinalIgnoreCase)) { DoSubpathChat(text[13..].Trim()); return; }
         if (text.StartsWith("/sp ", StringComparison.OrdinalIgnoreCase)) { DoSubpathChat(text[4..].Trim()); return; }
 
-        // Commands moved from '!' to '@'. A GM leading with '!' is near-certainly reaching for the old
+        // Commands moved from '!' to '@'. Staff leading with '!' are near-certainly reaching for the old
         // prefix, and letting that through would SHOUT the old-style command to everyone on the map — so nudge
-        // instead. Only for GMs: for an ordinary player '!' has never meant anything, and their shouts
-        // must keep working.
-        if (IsGm && text.Length > 1 && text[0] == '!' && char.IsLetter(text[1]))
+        // instead. Only for staff (either tier): for an ordinary player '!' has never meant anything, and
+        // their shouts must keep working.
+        if (Access > AccessLevel.Player && text.Length > 1 && text[0] == '!' && char.IsLetter(text[1]))
         { SendLog($"Commands now start with '{Prefix}' — try  {Prefix}{text[1..]}"); return; }
 
         // "A" (uppercase, exact) — remove ALL equipped items at once, same effect as clicking every worn
         // slot's 0x1F unequip in a row. Case-sensitive so ordinary chat ("a", "aww", …) still speaks
         // normally; nothing else in this client sends a bare capital letter as a message.
         if (text == "A") { UnequipAll(); return; }
+
+        // Muted players may still run '@' commands (handled above) but cannot SPEAK. The gate sits here,
+        // after the command table, so a mute silences the player without also taking away @time or @party.
+        if (IsMuted()) { ReportMuted(); return; }
 
         // Real chat (not a ! command): everyone on the map hears it. Broadcast the over-head bubble (0x0D)
         // to all co-located players INCLUDING us, so we see our own bubble too. Prefix with who said it
@@ -61,6 +65,43 @@ public sealed partial class Session
 
         // …and let a nearby NPC react to it (RTK onSayClick: "i'd like to fish", a tutor's name, …).
         DispatchSpeech(text);
+    }
+
+    // ---- mute ---------------------------------------------------------------------------------------
+    //
+    // Held as an absolute unix-SECONDS deadline on the SESSION, not re-read from the database per line. A
+    // DB round-trip on every chat message would put a synchronous read on the packet path for state that
+    // changes maybe twice a week. It is loaded once at world entry (LoadModerationState) and pushed
+    // directly onto the live session by @mute/@unmute (Session.ApplyMute), so both the placement and the
+    // lifting are immediate; the deadline being absolute is what makes EXPIRY work with no timer at all.
+    private long _mutedUntil;
+    private string _muteReason = "";
+
+    internal bool IsMuted() => _mutedUntil > Moderation.Now;
+
+    /// <summary>Load this account's mute state into the session. Called once, at world entry.</summary>
+    internal void LoadModerationState()
+    {
+        if (Moderation.IsMuted(_user, out var reason, out var until)) { _mutedUntil = until; _muteReason = reason; }
+        else { _mutedUntil = 0; _muteReason = ""; }
+    }
+
+    /// <summary>Apply a mute/unmute to an ALREADY-ONLINE session, so a GM's command takes effect on the next
+    /// line the player types rather than at their next login.</summary>
+    internal void ApplyMute(long until, string reason)
+    {
+        _mutedUntil = until;
+        _muteReason = reason ?? "";
+        if (IsMuted()) ReportMuted();
+        else SendLog("You are no longer muted.");
+    }
+
+    private void ReportMuted()
+    {
+        string left = _mutedUntil >= Moderation.Forever ? "" : $" ({Moderation.Describe(_mutedUntil)} remaining)";
+        SendLog(string.IsNullOrWhiteSpace(_muteReason)
+            ? $"You are muted and cannot speak{left}."
+            : $"You are muted and cannot speak{left}: {_muteReason}");
     }
 
     // ---- whisper/tell (RTK clif_parsewisp, clif.c:7644-7790) ---------------------------------------------
@@ -95,6 +136,9 @@ public sealed partial class Session
     private void DoWhisper(string name, string msg)
     {
         if (name.Length == 0 || msg.Length == 0) return;
+
+        // A mute that only stopped map speech would be no mute at all — whisper is the obvious way around it.
+        if (IsMuted()) { ReportMuted(); return; }
 
         // RTK: map[sd->bl.m].cantalk == 1 blocks whisper with this exact line (only 2 maps set it).
         if (!Content.CanTalk(_char.Map)) { SendLog("Your voice is swept away by a strange wind."); return; }

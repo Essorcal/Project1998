@@ -61,6 +61,28 @@ public sealed partial class Session
 
     private void HandleWalk(byte[] dec)
     {
+        // SLEEP GATE (the Doze family — see Session.ReceiveSleep). A held player does not move, and this is
+        // the same mechanism RTK uses: clif_parsewalk refuses on `sd->paralyzed || sd->sleep != 1.0f ||
+        // sd->snare` with `clif_blockmovement(0); clif_sendxy(sd); clif_blockmovement(1)`. The `0x51`
+        // block/unblock wrapper has no 4.95 handler (it no-ops in the world dispatcher, and the player-state
+        // dispatcher's range check `cmp esi,0x4a` on `opcode-4` rejects it outright), but it isn't the part
+        // that does the work: `clif_sendxy` is, and that is our `SendXy` — the exact 0x04 snap-back the
+        // `blocked` branch below already uses to stop players walking through walls. Client-side prediction
+        // is not the same as client authority; the client guesses, and 0x04 overrules it.
+        //
+        // Snapping to the SERVER's (X,Y) rather than the client-reported tile at body[2..5] is deliberate: a
+        // normal step trusts the client's claim (see below), but while you're held that claim is exactly what
+        // must not be honoured, or a client that keeps reporting a tile further along creeps a step per packet.
+        //
+        // Sending SOMETHING is mandatory, not politeness: on 4.95 the client has already predicted the step
+        // and blocks awaiting the ack. Returning silently freezes it for good, not for the doze's duration.
+        if (Asleep)
+        {
+            SendXy();
+            Log.Info($"   -> walk refused: asleep — held at ({_char.X},{_char.Y})");
+            return;
+        }
+
         byte dir = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(dir & 3);   // remember which way we're facing so melee (0x13) knows the front tile
 
@@ -324,6 +346,12 @@ public sealed partial class Session
     // did — forces a step the client never intended, desyncing position and defeating collision.)
     private void HandleTurn(byte[] dec)
     {
+        // Held players don't pivot either — the same rule the mob side follows (a frozen mob holds its
+        // facing). Unlike the walk gate this needs no snap-back: a turn is fire-and-forget on 4.95, with no
+        // ack the client is waiting on, so simply not broadcasting it is enough. The turner's own screen has
+        // already pivoted locally; that is cosmetic and rights itself on the next real move.
+        if (Asleep) return;
+
         byte side = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(side & 3);
         SendSide(_char.Id, _facing);
