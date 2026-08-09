@@ -19,12 +19,25 @@ must keep that marker.
 Normally CI does this — see §9. By hand, on the build machine:
 
 ```bash
-dotnet publish Server/Server.csproj -c Release -r linux-x64 --self-contained false -o out/game
+dotnet publish Server/Server.csproj -c Release -r linux-arm64 --self-contained true -o out/game
 ```
 
 ```bash
-dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-x64 --self-contained false -o out/login
+dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-arm64 --self-contained true -o out/login
 ```
+
+`linux-arm64` because the host is an Oracle Ampere A1. Nothing in the source is architecture-specific —
+MoonSharp and BCrypt.Net-Next are pure managed, and `Microsoft.Data.Sqlite` ships a native `e_sqlite3` for
+arm64 — so building for x64 instead is a one-word change if you move hosts.
+
+**The host needs no .NET installed.** These are self-contained builds: the runtime ships inside the release,
+the units exec the apphost (`current/game/Server`) rather than `dotnet Server.dll`, and `releases/<sha>` is
+therefore exactly what that commit ran. With a framework-dependent build, upgrading the host runtime
+silently changes the behaviour of every release already on disk — including the one you roll *back* to,
+which is the worst possible moment to discover it. The cost is ~70 MB per app.
+
+Not trimmed and not AOT-compiled: MoonSharp binds script verbs by reflection, which is exactly what the
+trimmer cannot see.
 
 Target layout on the host (`/opt/nexus`):
 
@@ -147,6 +160,22 @@ Only 2000/2001/2005/2006 need to be open. If you only support the 4.95 client, o
 sudo ufw allow 2000/tcp && sudo ufw allow 2005/tcp
 ```
 
+**On Oracle Cloud there are two firewalls, and opening one is not enough.** The VCN Security List (or an
+NSG) in the OCI console is the outer one; the instance images also ship *host* `iptables` rules that drop
+everything except SSH. A port opened in only one layer looks exactly like a server that is not listening,
+which is why this eats an afternoon. Open both, and check the host side with:
+
+```bash
+sudo iptables -L INPUT -n --line-numbers
+```
+
+If the rules are managed by `netfilter-persistent` (the Ubuntu images) rather than `ufw`, add them there —
+`ufw allow` will appear to succeed while the pre-existing REJECT rule earlier in the chain still wins.
+
+**Reserve the public IP.** The default ephemeral address changes when the instance is stopped and started,
+and the client dials a raw IP baked into `NexusTK.dat` (§10) — an IP change means repatching every player's
+client. Convert it to a Reserved Public IP in the console before handing the address out.
+
 ## 7. Backups
 
 Everything mutable is in `data/nexus.db` — accounts, every character, board posts, mail, parcels, door
@@ -177,9 +206,79 @@ Three things about it that are deliberate:
 - **`Persistent=true` on the timer.** If the host was off at 04:00 it runs on the next boot instead of
   silently skipping a day.
 
-Retention is 30 days, tunable via `NEXUS_BACKUP_KEEP_DAYS` in the unit file. Restoring is just stopping both
-services, gunzipping a snapshot over `data/nexus.db` (delete any `-wal`/`-shm` sidecars first), and starting
-them again.
+Local retention is 30 days (`NEXUS_BACKUP_KEEP_DAYS`). Restoring is just stopping both services, gunzipping a
+snapshot over `data/nexus.db` (delete any `-wal`/`-shm` sidecars first), and starting them again.
+
+### Offsite copy (Cloudflare R2)
+
+A backup stored on the machine being backed up covers corruption and fat-fingers and nothing else. On an
+Oracle Always Free tenancy the host going away is a routine event rather than a disaster scenario — idle
+instances are reclaimed and free accounts are suspended — so the offsite copy is the one that matters.
+
+R2 is deliberately a **different vendor from the compute**. Pushing to OCI Object Storage in the same
+tenancy would share the exact failure mode being insured against.
+
+The script **refuses to run** if `NEXUS_R2_REMOTE` is unset, rather than quietly degrading to local-only.
+Set `NEXUS_BACKUP_OFFSITE=0` if you want local-only on purpose. Silent degradation is how a server ends up
+with backups everyone believes are offsite.
+
+Setup, once:
+
+1. In the Cloudflare dashboard, create an R2 bucket (e.g. `nexus-backups`) and an **R2 API token** scoped to
+   *Object Read & Write* on that bucket only. You will get an Access Key ID and a Secret Access Key, plus
+   your account ID. Create these yourself — they are credentials and do not belong in this repo or in CI.
+2. Install rclone (arm64 is in the Ubuntu archive):
+
+```bash
+sudo apt install -y rclone
+```
+
+3. Write `/etc/nexus/rclone.conf`, substituting your three values:
+
+```ini
+[r2]
+type = s3
+provider = Cloudflare
+access_key_id = YOUR_ACCESS_KEY_ID
+secret_access_key = YOUR_SECRET_ACCESS_KEY
+endpoint = https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com
+region = auto
+```
+
+4. Lock it down — it holds a live secret, and the backup runs as `nexus`:
+
+```bash
+sudo chown root:nexus /etc/nexus/rclone.conf && sudo chmod 640 /etc/nexus/rclone.conf
+```
+
+5. Verify before trusting it. This should list the bucket without error:
+
+```bash
+sudo -u nexus RCLONE_CONFIG=/etc/nexus/rclone.conf rclone lsd r2:
+```
+
+The unit points rclone at that path via `RCLONE_CONFIG`, because `ProtectHome=true` hides the default
+`~/.config/rclone/rclone.conf`.
+
+Three deliberate choices in the offsite half:
+
+- **The push happens *before* the local prune.** A broken offsite path leaves more local copies, not fewer.
+  The database is a few hundred KB, so there is no disk-pressure argument for pruning while offsite is
+  failing, and a strong argument against it.
+- **A failed push exits non-zero**, so the timer lands in systemd's `failed` state and `systemctl
+  list-timers` / `systemctl --failed` shows it. rclone verifies the hash after transfer, so a truncated
+  upload fails here rather than on the day you need it.
+- **Remote retention is 90 days**, longer than local (`NEXUS_R2_KEEP_DAYS`). Remote storage is cheap and the
+  scenario it covers — quiet corruption, an abusive player found late, a lost host — is usually noticed
+  well after the fact. The remote prune is scoped with `--include 'nexus-*.db.gz'` so pointing this at a
+  shared bucket can never delete somebody else's objects.
+
+**Test the restore path before you need it.** An untested backup is a hope. Pull the newest object down and
+open it:
+
+```bash
+rclone copy "r2:nexus-backups/$(rclone lsf r2:nexus-backups --include 'nexus-*.db.gz' | sort | tail -1)" /tmp/ && gunzip -c /tmp/nexus-*.db.gz > /tmp/verify.db && sqlite3 /tmp/verify.db "PRAGMA integrity_check; SELECT COUNT(*) FROM characters;"
+```
 
 ## 7a. Moderation
 

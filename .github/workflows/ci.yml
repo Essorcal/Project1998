@@ -75,11 +75,22 @@ jobs:
       - name: Content smoke test
         run: dotnet test Tests/Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
 
-      - name: Publish (linux-x64, framework-dependent)
+      # linux-arm64 because the host is an Oracle Ampere A1 (the only Always Free shape with usable specs).
+      # Nothing in the source is architecture-specific: MoonSharp and BCrypt.Net-Next are pure managed, and
+      # Microsoft.Data.Sqlite ships a native e_sqlite3 for linux-arm64.
+      #
+      # SELF-CONTAINED on purpose. The runtime rides along in the release, so the host needs no .NET installed
+      # and no Microsoft apt repo, and — the real reason — releases/<sha> becomes exactly what that commit ran.
+      # With a framework-dependent build, a host runtime upgrade silently changes how every existing release
+      # behaves, including the one you roll BACK to in an emergency.
+      #
+      # Not trimmed and not AOT: MoonSharp resolves script bindings by reflection, which is precisely what the
+      # trimmer cannot see. The ~70 MB per app is irrelevant against 200 GB of free block storage.
+      - name: Publish (linux-arm64, self-contained)
         if: github.event_name != 'pull_request'
         run: |
-          dotnet publish Server/Server.csproj           -c Release -r linux-x64 --self-contained false -o out/game
-          dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-x64 --self-contained false -o out/login
+          dotnet publish Server/Server.csproj           -c Release -r linux-arm64 --self-contained true -o out/game
+          dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-arm64 --self-contained true -o out/login
 
       # data/ ships as part of the release payload. It is only ~9 MB tracked, and shipping it WITH the build
       # keeps a release self-describing: whatever is in releases/<sha>/ is exactly what that commit ran.
@@ -93,6 +104,10 @@ jobs:
           # has to be remembered and updated by hand.
           cp -r deploy bundle/
           chmod +x bundle/deploy/*.sh
+          # The apphosts are what systemd execs now that the build is self-contained. publish sets the
+          # executable bit, but tar/scp round-tripping is not worth trusting with the thing that decides
+          # whether the server can start at all.
+          chmod +x bundle/game/Server bundle/login/LoginServer
           mkdir -p bundle/data
           # Only the tracked content — not chars/, nexus.db or the logs, which live on the host and must
           # never be overwritten by a deploy.

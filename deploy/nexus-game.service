@@ -10,7 +10,12 @@ Group=nexus
 WorkingDirectory=/opt/nexus
 # Via the `current` symlink, which deploy/host-deploy.sh flips to the new releases/<sha> directory. A restart
 # is therefore all it takes to pick up a new build — and a rollback is flipping the symlink back.
-ExecStart=/usr/bin/dotnet /opt/nexus/current/game/Server.dll --ports 2005,2006
+#
+# The build is self-contained (see the publish step in .github/workflows/ci.yml), so this is the apphost
+# rather than `dotnet Server.dll`, and the host needs no .NET runtime installed. The runtime that ships
+# inside the release is the one this binary uses, which is what makes a rollback actually restore the old
+# behaviour instead of the old code on a newer runtime.
+ExecStart=/opt/nexus/current/game/Server --ports 2005,2006
 
 # Must match the login unit — the game channel's re-login path (Alt+X to the select screen) mints its own
 # handoff back to this host, so a wrong value here breaks re-login even when first login works.

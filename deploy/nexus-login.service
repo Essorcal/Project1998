@@ -10,7 +10,9 @@ Group=nexus
 WorkingDirectory=/opt/nexus
 # Via the `current` symlink, which deploy/host-deploy.sh flips to the new releases/<sha> directory. A restart
 # is therefore all it takes to pick up a new build — and a rollback is flipping the symlink back.
-ExecStart=/usr/bin/dotnet /opt/nexus/current/login/LoginServer.dll --ports 2000,2001
+# Self-contained apphost, not `dotnet LoginServer.dll` — the host has no .NET runtime installed. See the
+# matching note in nexus-game.service.
+ExecStart=/opt/nexus/current/login/LoginServer --ports 2000,2001
 
 # NEXUS_GAME_HOST is the address the CLIENT must dial to reach the game server. It is baked into the
 # handoff packet, so it has to be the server's PUBLIC address, not 127.0.0.1 — a loopback value here makes

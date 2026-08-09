@@ -16,6 +16,16 @@ Environment=NEXUS_ROOT=/opt/nexus
 Environment=NEXUS_BACKUP_DIR=/var/backups/nexus
 Environment=NEXUS_BACKUP_KEEP_DAYS=30
 
+# Offsite copy to Cloudflare R2 — a different vendor from the compute on purpose. The script REFUSES to run
+# if this is unset, rather than quietly degrading to local-only; set NEXUS_BACKUP_OFFSITE=0 if you genuinely
+# want local-only. See deploy/README.md §7 for creating the bucket, the API token and the rclone remote.
+Environment=NEXUS_R2_REMOTE=r2:nexus-backups
+Environment=NEXUS_R2_KEEP_DAYS=90
+
+# ProtectHome=true hides /home and /root, so rclone cannot find its default ~/.config/rclone/rclone.conf.
+# Point it at a system path instead. That file holds the R2 secret access key: chmod 640, root:nexus.
+Environment=RCLONE_CONFIG=/etc/nexus/rclone.conf
+
 # Same hardening as the servers. The backup reads the database and writes only to the backup directory.
 NoNewPrivileges=true
 PrivateTmp=true
