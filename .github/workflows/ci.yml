@@ -37,7 +37,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           # The default GITHUB_TOKEN is scoped to THIS repository only, so it cannot clone the private
-          # NexusServer-data submodule. This must be a PAT (or GitHub App token) with read access to both.
+          # Project1998-data submodule. This must be a PAT (or GitHub App token) with read access to both.
           token: ${{ secrets.SUBMODULE_TOKEN }}
 
       - name: Which lane is this?
