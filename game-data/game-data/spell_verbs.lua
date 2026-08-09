@@ -267,11 +267,24 @@ end
 -- When it lapses the creature reverts to a normal world mob rather than despawning (RTK's uncast just clears
 -- owner/target). Bosses and already-owned mobs refuse. row.duration is the control time, row.base the cooldown
 -- (RTK setAether 6000) so you can't perma-chain it.
+--
+-- The control time is a ROLL, not a flat timer: uniform in [row.duration, row.durationMax] ms. All three charm
+-- spells share this verb and differ only by their row -- Endear 15-20s, Fascinate 30-35s, Enthrall (the Charm
+-- weapon proc, key `endear`) 40-45s. These bands are PROVISIONAL tuning pending live measurement, not archive
+-- values: the archive only pins Endear's floor (RTK's flat 15000) and NexusAtlas 4.x's "15-30 Seconds" range.
+-- A row with no durationMax (or one not above duration) keeps the old flat behaviour.
+local function charm_duration(ctx, row)
+  local lo = tonumber(row.duration) or 15000
+  local hi = tonumber(row.durationMax) or lo
+  if hi <= lo then return lo end
+  return ctx:rollRange(lo, hi)
+end
+
 function verbs.endear(ctx, row)
   local mana = row.mana or 300
   if ctx:onCooldown(ctx.spellKey) then ctx:say("Your will is too weak."); return false end
   if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
-  if not ctx:charmTarget(row.duration or 15000) then return false end
+  if not ctx:charmTarget(charm_duration(ctx, row)) then return false end
   ctx:debitMana(mana)
   if (row.base or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.base) end
   return true

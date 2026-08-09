@@ -1,0 +1,42 @@
+; 0x2f SUB-KIND 6  --  fire with:  @pkt file sub6
+;
+; SOLVED 2026-08-08 by your two-row screenshot. Every row is preceded by FOUR BYTES the parser skips
+; before it reads the length:  `add esi, 4` at 0x455da8, the first instruction of the loop body. No
+; other grid does this -- sub-kind 5 (sell) and sub-kind 10 both go straight to the length byte.
+;
+;   row = id(u32BE)  len(u8)  text[len]
+;
+; That single instruction explains both failed probes exactly:
+;   * "Alpha/Bravo/Charlie": row 0 ate `05 41 6c 70` as the id, then read len = 0x68 ('h') = 104, so
+;     its text ran from offset 5 through the rest of the buffer -- which is byte-for-byte the 18-byte
+;     reply that came back (`61 05 42 72 61 76 6f ...`).
+;   * 24-letter rows: row 0 ate `18 41 41 41` as the id, then read len = 0x41 ('A') = 65, giving
+;     "AAAA...(the remaining 20) + 0x18 + BBBB..." on ONE line -- the A's, the odd glyph and the B's you
+;     saw. Row 2 was the overrun, and row 3 fell off the end, which is why only two rows drew.
+;
+; So the reply was never malformed: we were feeding it a length from the middle of a string.
+;
+; With the format below it draws three clean rows, and clicking row 0 answers:
+;     0x39  tag=2  ...  08 "AAAAAAAA"
+; i.e. the row TEXT, exactly like sub-kind 10. The u32 id is skipped on parse AND absent from the reply,
+; so it is dead space on this client -- a field a later client presumably reads. Practical consequence:
+; this window is matched by NAME, so duplicate labels are ambiguous (the bank withdraw flow already
+; builds a unique-label map for the buy grid for the same reason).
+
+2f              ; opcode
+
+06              ; body[0]  sub-kind 6
+02              ; body[1]  reply tag -- borrowed from the buy grid so HandleShopReply logs it
+%1              ; npc entity id
+01              ; not read by 4.95
+01 #33992 00    ; look descriptor
+01 #33992 00    ; skipped copy
+
+$Row_probe                      ; prompt (u16BE length)
+
+#0              ; unread u16BE scalar
+#3              ; row count (u16BE) -- counter is a u8 compared against this u16 (0x455e31)
+
+%101 08 :AAAAAAAA
+%102 08 :BBBBBBBB
+%103 08 :CCCCCCCC

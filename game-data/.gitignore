@@ -9,3 +9,12 @@ nexus.db-journal
 # Server stdout capture — runtime artifact, not content.
 server.log
 *.log
+
+# ---- Rotated stdout captures (server.log.1, .2, ...) — the bare *.log rule above misses these ----
+server.log.*
+
+# ---- Editor/tool backups made before a bulk CSV rewrite. The rewritten file is the content; the
+# pre-image is scratch. Includes the one-off *.pre-<thing>-restore snapshots. ----
+*.bak
+*.bak[0-9]
+*.pre-*

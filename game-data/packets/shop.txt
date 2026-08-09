@@ -1,0 +1,36 @@
+; Shop grid  --  0x2f sub-kind 4 (RTK clif_buydialog).  Fire with:  @pkt file shop
+; First token is the opcode; everything after it is the body.
+; Tokens: xx = hex byte, #n = u16BE, %n = u32BE, :text = ASCII (underscore means space),
+;         $text = ASCII behind a u16BE length.  ';' comments to end of line.
+
+2f              ; opcode
+
+; ---- prefix shared by every 0x2f sub-kind ----
+04              ; body[0]  sub-kind 4 = shop grid
+02              ; body[1]  REPLY TAG -- echoed back on inbound 0x39 body[0] so the server knows which
+                ;          window answered. RTK: 1 menu / 2 buy / 3 input amount / 4 sell.
+%1              ; body[2:6] NPC entity id
+01              ; body[6]  NOT read by the 4.95 client (RTK writes its descriptor-kind guess here)
+
+; body[7:11] look descriptor: kind 1 = graphic(u16BE) colour(u8).
+; The graphic is a CREATURE look in the 0x8000|sprite space -- the same encoding Session.Dialog.cs
+; NpcPortrait uses for the 0x30 dialog head. A raw sprite number draws nothing.
+; 0x8000|200 = 33992.  Swap 200 for the NPC's real Mob.Sprite.
+01 #33992 00
+01 #33992 00    ; NOT read -- RTK writes a second copy and the client skips 4 bytes
+
+$Welcome_to_my_shop.
+
+; ---- grid ----
+#0              ; unknown u16BE, fed straight into the grid widget ctor 0x454fa0.
+                ; RTK fills it with strlen(dialog) UNSWAPPED, so its value proves nothing. Sweep it.
+#2              ; item count
+
+; row = icon(u16BE) price(u32BE) nameLen(u8) name[] textLen(u8) text[]
+; NOTE 1: no colour byte after the icon -- RTK writes one, the 4.95 client does not read it.
+; NOTE 2: the icon is IconWire(frame) = (frame - 0x4000) & 0xFFFF, i.e. frame + 0xC000 -- the same
+;         encoding Session.Items.cs sends on 0x0F for the bag. A raw frame number draws nothing.
+;         frame 84 -> 0xc054 = 49236.   frame 85 -> 0xc055 = 49237.
+; NOTE 3: the length bytes must be exact or the parser walks into the next field.
+#49236  %50    09 :Rice_Ball  12 :Restores_some_vita
+#49237  %1200  05 :Sword      0f :Warrior_level_5

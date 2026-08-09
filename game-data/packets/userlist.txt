@@ -1,0 +1,20 @@
+; User list  --  0x36.  Fire with:  @pkt file userlist
+;
+; UNKNOWN FORMAT. This is a starting point, not a spec. RTK has no builder for 0x36 at all,
+; so there is nothing to cross-reference and the body below is a GUESS shaped like the
+; power board (0x46), which is the closest relative: a subtype, a count, then rows.
+;
+; Client side of what IS known: handler 0x4515d0 allocates a 0x294-byte object and parses it
+; with 0x48a0c0; the sprite category is "U" (USERLIST.EPF).
+;
+; HOW TO SWEEP: the parse either bails or builds a window. Start with the shortest body that
+; could work and grow it until something renders, then vary one field at a time.
+;   @pkt 36 00
+;   @pkt 36 01 #0
+;   @pkt 36 01 #1 %1 05 :Brian
+; Anything that draws is progress; anything that draws NOTHING means the parse bailed early.
+
+36
+01              ; subtype (guess)
+#1              ; row count (guess, u16BE)
+%1  05 :Brian   ; id(u32BE) nameLen(u8) name[]  (guess)

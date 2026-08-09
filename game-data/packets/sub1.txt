@@ -1,0 +1,27 @@
+; 0x2f SUB-KIND 1  --  fire with:  @pkt file sub1
+;
+; Sub-kind 1 dispatches to parse 0x453290, which is the SAME function sub-kind 0 (menu) uses, and
+; builds the same 0x494 object. So 1 is a VARIANT of the menu, not a new window -- the body below is
+; the menu body verbatim. Whatever differs (skin, button set, where it anchors) is decided by the
+; sub-kind byte alone, so diff this against the same file with 00 on the sub-kind line.
+;
+; Menu body, read in this order by 0x453290:
+;   tag(u8)  npcId(u32BE)  look  prompt(u16BE len)  subtitle(u8 len)  count(u8)
+;   count x [ optionText(u8 len) optionId(u16BE) ]
+
+2f              ; opcode
+
+01              ; body[0]  SUB-KIND -- change to 00 to see the plain menu for comparison
+01              ; body[1]  reply tag (RTK uses 1 for the menu)
+%1              ; npc entity id
+01              ; not read by 4.95
+01 #33992 00    ; look descriptor: kind 1, creature graphic 0x8000|200, colour 0
+01 #33992 00    ; skipped copy
+
+$What_would_you_like_to_do?     ; prompt   (u16BE length)
+04 :Menu                        ; subtitle (u8 length)  -- "Menu" = 4
+
+03                              ; option count (u8)
+03 :One   #101
+03 :Two   #102
+05 :Three #103
