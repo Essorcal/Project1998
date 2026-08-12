@@ -303,13 +303,31 @@ public sealed partial class Session
     // That was OUR one-byte framing error, not a client bug (the client is retail-shipped and works). The
     // client's click/ESC reply is LIVE-CONFIRMED (opcode 0x3F, body mapId(u32BE) x(u16BE) y(u16BE) 00 --
     // RTK's case 0x3F map-change); HandleWorldMapSelect below decodes it and either warps to the clicked
-    // destination or, for ESC/unrecognized coords, back to the origin. Two of RTK's nine destinations
-    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (game-data/map_index.csv)
-    // and are omitted outright.
+    // destination or, for ESC/unrecognized coords, back to the origin. Of RTK's nine destinations, only
+    // Mount Baekdu is omitted outright: its map 4259 has no renderable map data here (game-data/map_index.csv).
+    // Hamgyong Nam-Do IS carried, but not to RTK's target: RTK warps it to map 99 ("North Hamgyong Valley"),
+    // which has no map data, so it goes to map 114 -- the map literally NAMED "Hamgyong Nam-Do" -- landing on
+    // (21,8), an already-proven warp arrival tile (Warps.csv 314, from map 141). Its return trigger is 114's
+    // north edge, y=0 x∈12..15. Those four tiles are ALSO Warps.csv 283-286 (114 -> map 99), but that warp
+    // never fires here: the warp branch in HandleWalk is gated on Content.TryMap(dest.m), and 99 has no map
+    // data, so the step completes normally and the after-step hook below gets the tile. Nagnang (2520) and
+    // Hausson (1025) are renderable too and could be added the same way; they simply aren't listed yet.
     // X,Y = landing tile on the destination map. Destinations + their field10 dot pixels are data-driven
     // (game-data/WorldMapDests.csv -> Content.WorldDests, order-significant); the trigger tiles that open
     // the screen live in Content.WorldMapTriggers (WorldMapTriggers.csv). Both hot-reload via @reload.
-    // Fine-tune a dot live in-client with "@wmpos <i> <x> <y>", then bake the number into WorldMapDests.csv.
+    //
+    // DOT PIXELS: DotX/DotY is the CENTRE of the label button, not its top-left. Proven in the client at
+    // 0x423600, which the world-map draw loop (0x423500) calls once per entry:
+    //     w = textWidth(name) + 0xc ; h = fontHeight * 2
+    //     left = x0 - w/2 ; top = y0 - h/2 ; right = left + w ; bottom = top + h
+    // So DO NOT scale RTK's 7.x x0/y0 into this space -- those numbers are pixels in a DIFFERENT background
+    // image (RTK's "WMkru"), and no scale factor makes them land correctly; that is what put every button in
+    // the wrong place. Pick coordinates straight off the real 640x480 artwork instead:
+    //     python re/worldmap_plot.py --grid
+    // renders field10.epf out of the client's own Inter.dat and draws each button with the exact geometry
+    // above, flagging any that fall on the wooden frame or under the "Map of the Kingdom" banner. Iterate
+    // there with --move/--add, then bake the numbers into WorldMapDests.csv. ("@wmpos <i> <x> <y>" still
+    // works for a live in-client nudge, but the plot tool is the faster loop.)
 
     // Ephemeral live-tuning overrides for the world-map dot pixels, set by "@wmpos <i> <x> <y>" (index into
     // Content.WorldDests). Not persisted — you eyeball a dot live, then bake the final number into
