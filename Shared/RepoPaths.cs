@@ -64,19 +64,19 @@ public static class RepoPaths
         return string.IsNullOrWhiteSpace(env) ? Path.Combine(Root(), name) : env;
     }
 
-    /// <summary>&lt;root&gt;/game-data — authored content. Read-only at runtime. Override: NEXUS_GAME_DATA.</summary>
-    public static string GameDataDir() => RootedDir("NEXUS_GAME_DATA", "game-data");
+    /// <summary>&lt;root&gt;/game-data — authored content. Read-only at runtime. Override: P1998_GAME_DATA.</summary>
+    public static string GameDataDir() => RootedDir("P1998_GAME_DATA", "game-data");
 
     /// <summary>&lt;root&gt;/state — live instance state, and the whole of what a backup must capture.
-    /// Override: NEXUS_STATE.</summary>
-    public static string StateDir() => RootedDir("NEXUS_STATE", "state");
+    /// Override: P1998_STATE.</summary>
+    public static string StateDir() => RootedDir("P1998_STATE", "state");
 
-    /// <summary>&lt;root&gt;/logs — stdout captures. Regenerable; not backed up. Override: NEXUS_LOGS.</summary>
-    public static string LogsDir() => RootedDir("NEXUS_LOGS", "logs");
+    /// <summary>&lt;root&gt;/logs — stdout captures. Regenerable; not backed up. Override: P1998_LOGS.</summary>
+    public static string LogsDir() => RootedDir("P1998_LOGS", "logs");
 
     /// <summary>&lt;root&gt;/run — deploy-to-server control triggers, consumed and deleted by the running
-    /// process. Not state; not backed up. Override: NEXUS_RUN.</summary>
-    public static string RunDir() => RootedDir("NEXUS_RUN", "run");
+    /// process. Not state; not backed up. Override: P1998_RUN.</summary>
+    public static string RunDir() => RootedDir("P1998_RUN", "run");
 
     /// <summary>A file under <see cref="GameDataDir"/>, with a per-file environment override that wins
     /// over both. The per-file overrides predate the directory one and are how a test or a bisect points
@@ -95,7 +95,7 @@ public static class RepoPaths
     /// which is exactly why it belongs under state/ and inside the backup.</summary>
     public static string CharsDir() => State("chars");
 
-    /// <summary>&lt;root&gt;/state/nexus.db — accounts, characters, boards, mail, parcels, moderation, the
+    /// <summary>&lt;root&gt;/state/project1998.db — accounts, characters, boards, mail, parcels, moderation, the
     /// world clock. The single most important file on the host.</summary>
-    public static string DbPath() => State("nexus.db");
+    public static string DbPath() => State("project1998.db");
 }

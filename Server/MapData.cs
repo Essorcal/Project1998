@@ -263,7 +263,7 @@ public sealed class MapData
     private static MapData? Load(ushort id, ushort xs, ushort ys)
     {
         var path = Locate(id);
-        if (path is null) { Log.Info($"   !! map TK{id}.map not found (searched NEXUS_MAPS, game-data/maps, client installs)"); return null; }
+        if (path is null) { Log.Info($"   !! map TK{id}.map not found (searched P1998_MAPS, game-data/maps, client installs)"); return null; }
 
         var d = File.ReadAllBytes(path);
         int cells = xs * ys;
@@ -351,7 +351,7 @@ public sealed class MapData
     /// its own — players walk through walls and, with a client that has no local <c>Maps</c> directory, see
     /// nothing at all. On Windows the last-resort search dirs are the client installs, which is why this never
     /// bit locally and would bite immediately on a Linux host: copy the client's <c>Maps</c> directory to
-    /// <c>game-data/maps</c> or point <c>NEXUS_MAPS</c> at it.</summary>
+    /// <c>game-data/maps</c> or point <c>P1998_MAPS</c> at it.</summary>
     public static (int found, int total, string[] dirs) Availability(IEnumerable<ushort> mapIds)
     {
         int found = 0, total = 0;
@@ -365,7 +365,7 @@ public sealed class MapData
 
     private static IEnumerable<string> SearchDirs()
     {
-        var env = Environment.GetEnvironmentVariable("NEXUS_MAPS");
+        var env = Environment.GetEnvironmentVariable("P1998_MAPS");
         if (!string.IsNullOrWhiteSpace(env)) yield return env;
 
         // game-data/maps — terrain is authored CONTENT, versioned with the CSVs it has to agree with.

@@ -51,7 +51,7 @@ public sealed class ConnGuard
 
     /// <summary>Build a guard from environment variables, all with sane defaults so an unconfigured deploy
     /// is still protected. <paramref name="prefix"/> namespaces the vars per process (e.g. "LOGIN"/"GAME"):
-    ///   NEXUS_&lt;prefix&gt;_MAXCONN (global, default 2000), _PERIP (default 8),
+    ///   P1998_&lt;prefix&gt;_MAXCONN (global, default 2000), _PERIP (default 8),
     ///   _RATE (opens per window, default 30), _RATEWIN_MS (window, default 10000),
     ///   _EXEMPT_LOOPBACK (default 1).
     ///   PERIP=8 is sized to reliably SUPPORT ~2 players per IP — 2 steady game sockets, the brief login->game
@@ -61,8 +61,8 @@ public sealed class ConnGuard
     ///   players. RATE=30/10s already covers 2 players logging in / reconnecting with retries.</summary>
     public static ConnGuard FromEnv(string prefix)
     {
-        int I(string k, int d) => int.TryParse(Environment.GetEnvironmentVariable($"NEXUS_{prefix}_{k}"), out var v) && v > 0 ? v : d;
-        bool loop = (Environment.GetEnvironmentVariable($"NEXUS_{prefix}_EXEMPT_LOOPBACK") ?? "1").Trim() != "0";
+        int I(string k, int d) => int.TryParse(Environment.GetEnvironmentVariable($"P1998_{prefix}_{k}"), out var v) && v > 0 ? v : d;
+        bool loop = (Environment.GetEnvironmentVariable($"P1998_{prefix}_EXEMPT_LOOPBACK") ?? "1").Trim() != "0";
         return new ConnGuard(I("MAXCONN", 2000), I("PERIP", 8), I("RATE", 30), I("RATEWIN_MS", 10_000), loop);
     }
 

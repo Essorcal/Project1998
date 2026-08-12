@@ -1529,9 +1529,9 @@ public sealed class World
 
     /// <summary>A tick this slow (work OR scheduling delay, ms) gets a diagnostic line. 150ms is a quarter of
     /// the heartbeat — well clear of normal jitter, low enough to catch a stall long before a player would
-    /// call it lag. <c>NEXUS_SLOW_TICK_MS</c> tunes it; 0 disables the watchdog.</summary>
+    /// call it lag. <c>P1998_SLOW_TICK_MS</c> tunes it; 0 disables the watchdog.</summary>
     private static readonly int SlowTickMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_SLOW_TICK_MS"), out var st) && st >= 0 ? st : 150;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_TICK_MS"), out var st) && st >= 0 ? st : 150;
 
     private long _lockWaitMs;   // how long the last Tick() waited to acquire _lock (watchdog attribution)
 

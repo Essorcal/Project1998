@@ -1,6 +1,6 @@
 using Xunit;
 
-// Every test class in this assembly talks to the SAME SQLite file (state/nexus.db) — that is deliberate,
+// Every test class in this assembly talks to the SAME SQLite file (state/project1998.db) — that is deliberate,
 // because the guarantees under test (single-use consume, transactional rollback, WAL behaviour) live in the
 // SQL rather than in C#, and a mock would only prove the mock works.
 //

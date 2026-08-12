@@ -32,7 +32,7 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
 
-Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
+Log.Info($"=== Project1998 (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers @warp/@maps/@mobs/@summon)
 StaffAccounts.Load();   // who may run the '@' tooling, and at which tier (state/{gm,tester}_accounts.txt); empty = nobody
@@ -45,7 +45,7 @@ if (Content.Maps.Count == 0)
     Log.Info("!!! NO CONTENT LOADED — game-data was not found. Expected it under the repo root " +
              $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
              "The world will be empty. Did you clone with --recurse-submodules? " +
-             "Fix: git submodule update --init, or set NEXUS_GAME_DATA to the content directory.");
+             "Fix: git submodule update --init, or set P1998_GAME_DATA to the content directory.");
 
 // Terrain availability. Missing .map files don't throw — collision and spawn placement just silently
 // degrade (players and mobs walk through walls) — so say so at startup instead. The Windows fallback dirs
@@ -55,7 +55,7 @@ if (Content.Maps.Count == 0)
     Log.Info($"=== terrain: {found}/{total} map file(s) found; searched: {string.Join(" | ", dirs)}");
     if (found < total)
         Log.Info($"!! {total - found} map(s) have NO .map file — collision and spawn placement are degraded on them. " +
-                 "Copy the client's Maps directory into game-data/maps, or set NEXUS_MAPS to it.");
+                 "Copy the client's Maps directory into game-data/maps, or set P1998_MAPS to it.");
 }
 Boards.MigrateFromJsonIfNeeded();   // one-time import of any legacy state/boards.json into the shared DB
 await new TkListener(ports).RunAsync();

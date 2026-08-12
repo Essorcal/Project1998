@@ -10,7 +10,7 @@ public sealed class LoginListener
     private readonly int[] _ports;
     private readonly CharacterStore _store;
     // The login port is the internet-facing front door, so admission control matters most here. Tighter
-    // defaults than the game port would be reasonable; tune via NEXUS_LOGIN_* (see ConnGuard.FromEnv).
+    // defaults than the game port would be reasonable; tune via P1998_LOGIN_* (see ConnGuard.FromEnv).
     private readonly ConnGuard _guard = ConnGuard.FromEnv("LOGIN");
 
     public LoginListener(int[] ports, CharacterStore store)
@@ -54,7 +54,7 @@ public sealed class LoginListener
             {
                 if (!ProxyProtocol.IsTrustedPeer(peer))
                 {
-                    Log.Info($"!! REJECT {peer} on :{port} (not in NEXUS_PROXY_ALLOW); {_guard.Total} live");
+                    Log.Info($"!! REJECT {peer} on :{port} (not in P1998_PROXY_ALLOW); {_guard.Total} live");
                     try { client.Close(); } catch { /* already gone */ }
                     continue;
                 }

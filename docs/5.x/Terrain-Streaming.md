@@ -105,11 +105,11 @@ The `0x05` pull always sends because the client forces its checksum to `0`.
 ## Server implementation
 
 - Handler: `Session.HandleMapRequest` (routed from `0x05`/`0x06` for V533 sessions only).
-- Tile source: `Server/MapData.cs` loads the 4.x `TK<id>.map` (searches `NEXUS_MAPS`, repo `game-data/maps/`,
+- Tile source: `Server/MapData.cs` loads the 4.x `TK<id>.map` (searches `P1998_MAPS`, repo `game-data/maps/`,
   then the client installs) and exposes `Tile/Pass/Obj`. Map 32 is committed at `game-data/maps/TK32.map`;
   any other map loads on demand from the installed 4.x map set.
-- Diagnostics: `NEXUS_MAP_DIAG=sweep` ramps the ground index `0..28550` across the rect (to probe which
-  indices render); `NEXUS_MAP_DIAG=solid:N` fills one index. Drive via `re/Run-Diag-Sweep.bat` /
+- Diagnostics: `P1998_MAP_DIAG=sweep` ramps the ground index `0..28550` across the rect (to probe which
+  indices render); `P1998_MAP_DIAG=solid:N` fills one index. Drive via `re/Run-Diag-Sweep.bat` /
   `re/Run-Diag-Solid.bat` (set env inside a `.bat` — PowerShell's `set VAR=val` is a no-op; use `$env:`).
 
 ## Open questions

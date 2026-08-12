@@ -14,7 +14,7 @@ launch-scope cuts).
 **Era-gating infra is built** (`Server/CraftingToggles.cs`, wired through `Content.cs`'s
 existing flat-file registry pattern — same as maps/mobs/items/etc., NOT SQLite): the
 config lives in `game-data/CraftingToggles.csv` (`Skill,Enabled` columns, env
-override `NEXUS_CRAFTING_TOGGLES`) and is picked up by the existing `@reload` GM
+override `P1998_CRAFTING_TOGGLES`) and is picked up by the existing `@reload` GM
 command, no restart required. Only skills actually listed in the file override the
 code-level default in `CraftingToggles.DefaultDisabled`; anything absent falls through
 to that default. Jewelry, Food Preparation, and Chef default OFF (see "Launch scope"

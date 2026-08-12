@@ -11,7 +11,7 @@ public static class Log
     private static long _written;
 
     private static readonly long MaxBytes =
-        long.TryParse(Environment.GetEnvironmentVariable("NEXUS_LOG_MAX_BYTES"), out var mb) && mb > 0 ? mb : 32L * 1024 * 1024;
+        long.TryParse(Environment.GetEnvironmentVariable("P1998_LOG_MAX_BYTES"), out var mb) && mb > 0 ? mb : 32L * 1024 * 1024;
 
     /// <summary>
     /// Whether to dump raw/decrypted packet bytes.
@@ -23,9 +23,9 @@ public static class Log
     /// logs/login.log and the systemd journal in plaintext, where log shipping, backups and a support
     /// screenshot all quietly spread it further.
     ///
-    /// Set NEXUS_LOG_WIRE=1 to turn it back on for protocol work on a machine with no real accounts.
+    /// Set P1998_LOG_WIRE=1 to turn it back on for protocol work on a machine with no real accounts.
     /// </summary>
-    public static readonly bool WireEnabled = Environment.GetEnvironmentVariable("NEXUS_LOG_WIRE") == "1";
+    public static readonly bool WireEnabled = Environment.GetEnvironmentVariable("P1998_LOG_WIRE") == "1";
 
     /// <summary>Tee log lines into a file, with the same size-based rotation the game server uses (see
     /// Server/Log.cs): at MaxBytes the file becomes &lt;name&gt;.1 and a fresh one opens.</summary>

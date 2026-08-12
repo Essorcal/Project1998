@@ -27,18 +27,18 @@ namespace Server;
 /// </summary>
 public static class Watchdog
 {
-    /// <summary>Report pool scheduling latency at or above this many ms. <c>NEXUS_POOL_LAG_MS</c> tunes it;
+    /// <summary>Report pool scheduling latency at or above this many ms. <c>P1998_POOL_LAG_MS</c> tunes it;
     /// 0 disables the probe entirely.</summary>
     private static readonly int PoolLagMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_POOL_LAG_MS"), out var pl) && pl >= 0 ? pl : 100;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_POOL_LAG_MS"), out var pl) && pl >= 0 ? pl : 100;
 
     private const int ProbeIntervalMs = 1000;
 
     /// <summary>Report a client that has sent us NOTHING for this long while we are still actively sending
     /// to it. That asymmetry — world going out, nothing coming back — is the exact shape of "the mobs keep
-    /// moving but my character can't move or act". <c>NEXUS_SILENT_MS</c> tunes it; 0 disables.</summary>
+    /// moving but my character can't move or act". <c>P1998_SILENT_MS</c> tunes it; 0 disables.</summary>
     private static readonly int SilentMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_SILENT_MS"), out var sm) && sm >= 0 ? sm : 4000;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_SILENT_MS"), out var sm) && sm >= 0 ? sm : 4000;
 
     private static World? _world;
 

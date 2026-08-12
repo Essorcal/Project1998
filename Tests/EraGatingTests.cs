@@ -26,16 +26,16 @@ public class EraGatingTests
         var tuning = Path.Combine(dir, "ServerTuning.csv");
         File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");
 
-        var prev = Environment.GetEnvironmentVariable("NEXUS_SERVER_TUNING");
+        var prev = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
         try
         {
-            Environment.SetEnvironmentVariable("NEXUS_SERVER_TUNING", tuning);
+            Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
             EraCalendar.Reload();
             body();
         }
         finally
         {
-            Environment.SetEnvironmentVariable("NEXUS_SERVER_TUNING", prev);
+            Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", prev);
             EraCalendar.Reload();           // put the real calendar back for whatever runs next
             try { Directory.Delete(dir, true); } catch { /* temp dir; not worth failing a test over */ }
         }

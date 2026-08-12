@@ -402,7 +402,7 @@ public sealed partial class Session
 
     // "@hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
     // draws the over-head HP bar at <pct>% and plays the hit overlay animation 0x8f-<crit>. Use it to calibrate
-    // NEXUS_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
+    // P1998_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
     // HitCritByte. e.g. "@hit 50" (half bar) then "@hit 50 0" / "@hit 50 40" to compare hit animations.
     private void HitProbe(string text)
     {

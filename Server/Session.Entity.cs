@@ -602,9 +602,9 @@ public sealed partial class Session
     //     at 0 and send impact sfx over 0x19 instead (Session.PlayHitSfx) — it's a BYTE, and the calibrated
     //     player hit sound (349.wav) doesn't fit in one. The parameter stays because the field is real.
     // This is what draws the "remaining HP bar above a monster's head" on every hit. RTK's clif_send_mob_health
-    // builds the same shape (plus the ignored u32 damage). critical is calibratable live via NEXUS_HIT_CRIT.
+    // builds the same shape (plus the ignored u32 damage). critical is calibratable live via P1998_HIT_CRIT.
     private static readonly byte HitCritByte =
-        byte.TryParse(Environment.GetEnvironmentVariable("NEXUS_HIT_CRIT"), out var c) ? c : (byte)0x21; // 33 = RTK normal hit
+        byte.TryParse(Environment.GetEnvironmentVariable("P1998_HIT_CRIT"), out var c) ? c : (byte)0x21; // 33 = RTK normal hit
     private void SendDamage(uint id, byte percent, byte critical, byte hitSound = 0)
     {
         if (percent > 100) percent = 100;                 // >100 would make the client skip the bar entirely
@@ -631,9 +631,9 @@ public sealed partial class Session
     // Death beat: on a killing blow, empty the target's HP bar (0x13 percent=0, which also plays the final hit
     // overlay), then remove the corpse (0x0E) after a short delay so it doesn't just pop out of existence. 4.95
     // monsters have no death frame-set (monsfrm.tbl defines only walk/attack states), so the "death animation" is
-    // this beat: last hit spark + empty bar, held briefly, then despawn. Delay is calibratable via NEXUS_DEATH_DELAY_MS.
+    // this beat: last hit spark + empty bar, held briefly, then despawn. Delay is calibratable via P1998_DEATH_DELAY_MS.
     private static readonly int DeathDespawnMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_DEATH_DELAY_MS"), out var v) ? Math.Clamp(v, 0, 5000) : 600;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_DEATH_DELAY_MS"), out var v) ? Math.Clamp(v, 0, 5000) : 600;
 
     // Show the result of a hit that already resolved in the world: draw the over-head HP bar for everyone on the
     // map, and on death run the death beat (empty bar + delayed despawn). `mob` is read for its remaining HP%.
@@ -831,9 +831,9 @@ public sealed partial class Session
     // DIRECTLY to RTK's sendAnimation id (EfxWireOffset = 0), proven live: casting Ion (pcalign 0 → anim 4 =
     // unaligned zap) with a +1 offset showed the anim-5 graphic (unaligned heal) — i.e. wire N draws the anim-N
     // effect, so no adjustment. (The handler's internal index-1 is cancelled by the effect table being loaded
-    // 1-based.) Overridable via NEXUS_EFX_WIRE_OFFSET. A/B/C = 0 → centered, default style. effectId < 0 = no-op.
+    // 1-based.) Overridable via P1998_EFX_WIRE_OFFSET. A/B/C = 0 → centered, default style. effectId < 0 = no-op.
     private static readonly int EfxWireOffset =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_EFX_WIRE_OFFSET"), out var w) ? w : 0;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_EFX_WIRE_OFFSET"), out var w) ? w : 0;
     private void SendEffect(uint id, int effectId)
     {
         if (effectId < 0) return;

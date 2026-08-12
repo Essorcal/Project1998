@@ -65,10 +65,10 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore
-        run: dotnet restore NexusServer.sln
+        run: dotnet restore Project1998.sln
 
       - name: Build
-        run: dotnet build NexusServer.sln -c Release --no-restore
+        run: dotnet build Project1998.sln -c Release --no-restore
 
       # The real gate. `dotnet build` cannot see a bad CSV row, a renamed Lua verb, or a missing .map file —
       # see Tests/ContentSmokeTests.cs for why each of those is a silent failure rather than a loud one.
@@ -104,7 +104,7 @@ jobs:
           cp -r out/game out/login bundle/
           # Binaries and content ONLY. The systemd units, the deploy script and the backup script used to
           # ride along in this tarball; they now live in Project1998-infra and are checked out on the host
-          # at /opt/nexus/infra, so this repo carries nothing host-shaped and a fork's CI has nothing to
+          # at /opt/project1998/infra, so this repo carries nothing host-shaped and a fork's CI has nothing to
           # trip over. The release is still self-describing about the thing it IS: the build and the
           # content that build ran against.
           #
@@ -114,7 +114,7 @@ jobs:
           chmod +x bundle/game/Server bundle/login/LoginServer
           mkdir -p bundle/game-data
           # `git archive` ships the tracked content and nothing else. Under the old shared data/ directory this
-          # was load-bearing — the working tree there also held nexus.db and chars/. It no longer is: state
+          # was load-bearing — the working tree there also held project1998.db and chars/. It no longer is: state
           # lives in state/, which this job never even looks at. Kept because it is still the cheapest way to
           # get exactly the committed tree.
           git -C game-data archive HEAD | tar -x -C bundle/game-data
@@ -122,13 +122,13 @@ jobs:
           # unpacked tarball), so this file is the only way the nightly backup can record which game-data a
           # state snapshot belongs with — and without that pairing a restore is not a point in time.
           git -C game-data rev-parse HEAD > bundle/game-data/.version
-          tar czf nexus-${{ github.sha }}.tar.gz -C bundle .
+          tar czf p1998-${{ github.sha }}.tar.gz -C bundle .
 
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
-          name: nexus-${{ github.sha }}
-          path: nexus-${{ github.sha }}.tar.gz
+          name: p1998-${{ github.sha }}
+          path: p1998-${{ github.sha }}.tar.gz
           retention-days: 14
 
   # ---------------------------------------------------------------------------------------------
@@ -156,7 +156,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: nexus-${{ github.sha }}
+          name: p1998-${{ github.sha }}
 
       - name: Set up SSH
         run: |
@@ -174,12 +174,12 @@ jobs:
           USER: ${{ secrets.DEPLOY_USER }}
         run: |
           scp -P "${{ secrets.DEPLOY_PORT || 22 }}" \
-            "nexus-${{ github.sha }}.tar.gz" "$USER@$HOST:/tmp/"
+            "p1998-${{ github.sha }}.tar.gz" "$USER@$HOST:/tmp/"
 
-      # host-deploy.sh lives in Project1998-infra, checked out on the host at /opt/nexus/infra, and is
+      # host-deploy.sh lives in Project1998-infra, checked out on the host at /opt/project1998/infra, and is
       # invoked BY PATH rather than piped in over stdin. That inversion is what keeps this repo free of
       # host-shaped files: CI's job ends at "here is a tarball", and how the host installs it is the infra
-      # repo's business, updated on its own cadence with `git -C /opt/nexus/infra pull`.
+      # repo's business, updated on its own cadence with `git -C /opt/project1998/infra pull`.
       - name: Stage and schedule
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
@@ -187,4 +187,4 @@ jobs:
           DELAY: ${{ github.event.inputs.restart_delay_minutes || '30' }}
         run: |
           ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" \
-            "bash /opt/nexus/infra/scripts/host-deploy.sh ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}"
+            "bash /opt/project1998/infra/scripts/host-deploy.sh ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}"

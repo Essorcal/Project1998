@@ -309,7 +309,7 @@ public sealed partial class Session
             }
             else
             {
-                // ---- legacy fallbacks (NEXUS_V495_SLOW_MOVE != 5), kept for comparison ----
+                // ---- legacy fallbacks (P1998_V495_SLOW_MOVE != 5), kept for comparison ----
                 // Realm-center ON: camera FROZEN. These paths REQUIRE a 0x04 to unblock the next step
                 // (0x0C commits the tile but never clears the walk gate — the client freezes at frameCtr 2
                 // awaiting a 0x04). Animate legs source-anchored (0x0C from-tile, no scroll) then complete
@@ -352,7 +352,7 @@ public sealed partial class Session
         }
         else
         {
-            // NEXUS_V495_SELF_MOVE=0: NO 0x0C. The self sprite stays centered; 0x04's camera scroll
+            // P1998_V495_SELF_MOVE=0: NO 0x0C. The self sprite stays centered; 0x04's camera scroll
             // (@0x44c660, decaying -10/-12 offsets) is the motion. Smooth, but no leg cycle.
             SendXy();
         }

@@ -33,7 +33,7 @@ import csv, collections, statistics as st, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Same resolution as archive_scrape.py -- data lives in scraped_nexus_data, not here.
-ARCHIVE = os.environ.get("NEXUS_ARCHIVE") or os.path.normpath(
+ARCHIVE = os.environ.get("P1998_ARCHIVE") or os.path.normpath(
     os.path.join(HERE, "..", "..", "scraped_nexus_data", "artifacts", "user_pages"))
 CHARS = os.path.join(ARCHIVE, "chars.csv")
 OUT_CURVE = os.path.join(ARCHIVE, "base_curve.csv")

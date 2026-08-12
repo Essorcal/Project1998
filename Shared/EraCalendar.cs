@@ -111,7 +111,7 @@ public static class EraCalendar
 
     private static int ReadEraDate()
     {
-        foreach (var row in ReadCsv(RepoPaths.GameData("NEXUS_SERVER_TUNING", "ServerTuning.csv")))
+        foreach (var row in ReadCsv(RepoPaths.GameData("P1998_SERVER_TUNING", "ServerTuning.csv")))
             if (row.TryGetValue("key", out var k) && k.Trim().Equals("EraDate", StringComparison.OrdinalIgnoreCase)
                 && row.TryGetValue("value", out var v)
                 && double.TryParse(v.Trim(), System.Globalization.NumberStyles.Float,
@@ -126,7 +126,7 @@ public static class EraCalendar
         static DateOnly? Date(string s) =>
             DateOnly.TryParse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : null;
 
-        foreach (var row in ReadCsv(RepoPaths.GameData("NEXUS_ERA_FEATURES", "EraFeatures.csv")))
+        foreach (var row in ReadCsv(RepoPaths.GameData("P1998_ERA_FEATURES", "EraFeatures.csv")))
         {
             var key = row.GetValueOrDefault("Feature", "").Trim();
             if (key.Length == 0) continue;

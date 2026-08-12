@@ -47,7 +47,7 @@ public static class Log
     // database down with it. At MaxBytes the current file is renamed to <name>.1 (replacing any previous
     // .1) and a fresh one opened, so disk use is bounded at ~2x MaxBytes. Env-tunable.
     private static readonly long MaxBytes =
-        long.TryParse(Environment.GetEnvironmentVariable("NEXUS_LOG_MAX_BYTES"), out var mb) && mb > 0 ? mb : 64L * 1024 * 1024;
+        long.TryParse(Environment.GetEnvironmentVariable("P1998_LOG_MAX_BYTES"), out var mb) && mb > 0 ? mb : 64L * 1024 * 1024;
 
     private static readonly Thread Writer;
 
@@ -215,10 +215,10 @@ public static class Log
     /// <summary>Whether to emit the per-packet WIRE dump (raw read, opcode line, decrypted body). On by
     /// default — it's the backbone of the protocol RE work. It no longer blocks the game (see the class
     /// doc), but it still costs a hex-string build per packet and floods the file, so
-    /// <c>NEXUS_LOG_WIRE=0</c> remains the right setting for a live server (our own deployment sets it in
+    /// <c>P1998_LOG_WIRE=0</c> remains the right setting for a live server (our own deployment sets it in
     /// the unit file, in Project1998-infra). Guard call sites with this flag rather than letting Log.Hex
     /// run and throwing the string away.</summary>
-    public static readonly bool WireEnabled = Environment.GetEnvironmentVariable("NEXUS_LOG_WIRE") != "0";
+    public static readonly bool WireEnabled = Environment.GetEnvironmentVariable("P1998_LOG_WIRE") != "0";
 
     public static string Hex(byte[] b)
     {

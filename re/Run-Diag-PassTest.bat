@@ -7,7 +7,7 @@ REM   - if nothing changes at all                       -> the client ignores `p
 REM Try several block values, e.g.  Run-Diag-PassTest.bat 1   /  2   /  3   /  32768
 set PVAL=%1
 if "%PVAL%"=="" set PVAL=1
-set NEXUS_MAP_DIAG=passtest:%PVAL%
+set P1998_MAP_DIAG=passtest:%PVAL%
 set DOTNET="C:\Users\brian\AppData\Local\Microsoft\dotnet\dotnet.exe"
 %DOTNET% run --project "%~dp0..\Server" -- --ports 2000,2005,2001,2006
 pause

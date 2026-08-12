@@ -12,7 +12,7 @@ key,pathId,level,gold,item1,amt1,item2,amt2,item3,amt3,item4,amt4,source
 import csv, json, re
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\brian\Desktop\NexusServer")
+ROOT = Path(r"C:\Users\brian\Desktop\Project1998")
 
 # ---- Spells.csv: key -> (name, pathId) -----------------------------------------------------------------
 spells_by_name = {}   # normalized name -> [(key, pathId), ...] (a name can appear for multiple pathIds -- reskins)

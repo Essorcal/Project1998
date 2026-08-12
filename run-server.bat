@@ -6,7 +6,7 @@ REM They run separately so one can crash or be restarted without taking the othe
 REM window is the internet-facing front door; the game window can be closed + relaunched to ship a
 REM code change while players stay connected to login and auto-reconnect.
 REM
-REM Split deployment: set NEXUS_GAME_HOST to the game box's public IP before launching login, so the
+REM Split deployment: set P1998_GAME_HOST to the game box's public IP before launching login, so the
 REM handoff redirects clients to the right machine (defaults to 127.0.0.1 = same box).
 REM
 REM Uses the user-local .NET 8 SDK (not on PATH). Close a window (or Ctrl+C in it) to stop that process.
@@ -22,8 +22,8 @@ REM   2. No build race: `dotnet run` builds on its own, so launching both window
 REM      rebuild the shared `Shared` project in parallel and collide on its obj cache
 REM      ("Shared.AssemblyInfoInputs.cache ... being used by another process"). Building here once, then
 REM      launching with --no-build, removes that race entirely.
-echo Building NexusServer.sln ...
-"%DOTNET%" build "%~dp0NexusServer.sln" -v:m -nologo
+echo Building Project1998.sln ...
+"%DOTNET%" build "%~dp0Project1998.sln" -v:m -nologo
 if errorlevel 1 (
     echo.
     echo *** BUILD FAILED -- server not started. Fix the errors above and re-run. ***

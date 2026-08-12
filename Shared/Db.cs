@@ -4,7 +4,7 @@ namespace Shared;
 
 /// <summary>
 /// The single SQLite database shared by the login and game processes (accounts, characters, handoff
-/// tokens, board posts). One file at &lt;root&gt;/state/nexus.db in WAL mode so both processes can access it
+/// tokens, board posts). One file at &lt;root&gt;/state/project1998.db in WAL mode so both processes can access it
 /// concurrently: WAL allows many readers plus one writer across processes, and a per-connection
 /// busy_timeout absorbs the brief lock waits when both write at once.
 ///
@@ -17,10 +17,44 @@ public static class Db
     private static bool _initialized;
     private static string? _path;
 
-    /// <summary>Absolute path of the database file (&lt;root&gt;/state/nexus.db).</summary>
+    /// <summary>Absolute path of the database file (&lt;root&gt;/state/project1998.db).</summary>
     public static string Path => _path ??= RepoPaths.DbPath();
 
     /// <summary>Open a ready-to-use connection (schema guaranteed to exist, busy_timeout set).</summary>
+    /// <summary>
+    /// Refuse to start on a deployment that still has the pre-rename <c>nexus.db</c> beside an absent
+    /// <c>project1998.db</c>.
+    ///
+    /// SQLite creates a missing database silently, so without this the server would come up, listen, accept
+    /// logins, and drop every player into a world with no accounts and no characters — with nothing in the
+    /// log that reads as an error. The data is still on disk and perfectly intact; it just is not the file
+    /// being opened any more. That is the single most alarming failure this rename can produce, so it fails
+    /// LOUD and early instead.
+    ///
+    /// Deliberately not an automatic rename. Moving a live WAL database by file is how you corrupt one: the
+    /// -wal sidecar holds committed pages that are not yet in the main file, so anything that moves the .db
+    /// without the -wal loses them. The safe sequence needs the server stopped and a checkpoint, which is an
+    /// operator action with a decision in it, not something to do behind their back at startup.
+    /// </summary>
+    private static void GuardAgainstPreRenameDatabase()
+    {
+        var current = Path;
+        if (System.IO.File.Exists(current)) return;
+
+        var legacy = System.IO.Path.Combine(RepoPaths.StateDir(), "nexus.db");
+        if (!System.IO.File.Exists(legacy)) return;   // fresh deployment: nothing to migrate
+
+        throw new InvalidOperationException(
+            $"Found the pre-rename database '{legacy}' but no '{current}'.\n" +
+            "Starting now would silently create an EMPTY world and leave your accounts and characters behind.\n\n" +
+            "Stop both servers, then rename all three files together (the -wal holds committed pages the\n" +
+            "main file does not yet have, so moving the .db alone loses them):\n" +
+            "  mv state/nexus.db      state/project1998.db\n" +
+            "  mv state/nexus.db-wal  state/project1998.db-wal\n" +
+            "  mv state/nexus.db-shm  state/project1998.db-shm\n\n" +
+            "(-wal and -shm may not exist if the server was stopped cleanly; that is fine.)");
+    }
+
     public static SqliteConnection Open()
     {
         EnsureInitialized();
@@ -45,6 +79,7 @@ public static class Db
         {
             if (_initialized) return;
             System.IO.Directory.CreateDirectory(RepoPaths.StateDir());
+            GuardAgainstPreRenameDatabase();
             using var cn = new SqliteConnection($"Data Source={Path}");
             cn.Open();
             using var cmd = cn.CreateCommand();

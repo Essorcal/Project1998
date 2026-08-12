@@ -1,6 +1,6 @@
-# NexusServer Modding Guide
+# Project1998 Modding Guide
 
-NexusServer separates the **engine** (C#, in `Server/`) from the **game data** (flat files, in the `data/`
+Project1998 separates the **engine** (C#, in `Server/`) from the **game data** (flat files, in the `data/`
 git submodule under `game-data/`). Almost everything a modder tunes — spells, items, NPCs, monsters,
 shops, maps, drop tables, level curves — lives in CSV or Lua and **hot-reloads with the `@reload` GM command,
 no server restart**. This document is the map of what lives where and how to change it.

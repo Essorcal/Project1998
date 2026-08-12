@@ -15,7 +15,7 @@ namespace Shared;
 ///       exemption bypasses the per-IP cap and the rate gate entirely. The abuse protection silently
 ///       turns OFF and nothing in the log says so.
 ///   proxy in a container (backend across the bridge) -> every connection arrives from the gateway
-///       address -> NEXUS_*_PERIP (default 8) becomes a GLOBAL cap and the ninth player is rejected.
+///       address -> P1998_*_PERIP (default 8) becomes a GLOBAL cap and the ninth player is rejected.
 ///
 /// Same cause, opposite symptoms, and the handoff token degrades either way: binding a nonce to "came
 /// from the proxy" is binding it to nothing, since that is true of every connection including an
@@ -25,10 +25,10 @@ namespace Shared;
 /// connection: anyone who can reach the port can send one and claim to be any address they like. That
 /// would turn this from a fix for the per-IP gates into a total bypass of them (and would let an attacker
 /// forge the source address a handoff token is bound to). The header is therefore only read from peers in
-/// <c>NEXUS_PROXY_ALLOW</c>, checked BEFORE a single byte is read, and every other peer is dropped at
+/// <c>P1998_PROXY_ALLOW</c>, checked BEFORE a single byte is read, and every other peer is dropped at
 /// accept. A misconfigured allow-list fails closed — nobody connects — which is the right direction.
 ///
-/// OFF BY DEFAULT. <c>NEXUS_TRUST_PROXY=0</c> means the accept path behaves exactly as it always has, so
+/// OFF BY DEFAULT. <c>P1998_TRUST_PROXY=0</c> means the accept path behaves exactly as it always has, so
 /// a bare `dotnet run` clone with no proxy in front is unaffected and never waits for a header that is
 /// not coming.
 ///
@@ -44,20 +44,20 @@ public static class ProxyProtocol
 
     /// <summary>Read and trust a PROXY header on every accepted connection. Default off.</summary>
     public static bool Enabled { get; } =
-        (Environment.GetEnvironmentVariable("NEXUS_TRUST_PROXY") ?? "0").Trim() == "1";
+        (Environment.GetEnvironmentVariable("P1998_TRUST_PROXY") ?? "0").Trim() == "1";
 
     /// <summary>How long a trusted peer has to deliver the header before the connection is dropped. The
     /// proxy writes it immediately on connect, so this only ever fires on a broken or hostile peer; it is
-    /// separate from NEXUS_HANDSHAKE_MS because that budget covers the first GAME packet, which cannot
+    /// separate from P1998_HANDSHAKE_MS because that budget covers the first GAME packet, which cannot
     /// start being parsed until this is out of the way.</summary>
     private static readonly int HeaderMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_PROXY_HEADER_MS"), out var v) && v > 0 ? v : 5_000;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_PROXY_HEADER_MS"), out var v) && v > 0 ? v : 5_000;
 
     /// <summary>Peers allowed to speak PROXY protocol, as addresses or CIDR blocks. Defaults to loopback
     /// (the same-box HAProxy case). A containerised proxy needs its bridge network added, e.g.
-    /// NEXUS_PROXY_ALLOW=127.0.0.1/8,::1/128,172.16.0.0/12</summary>
+    /// P1998_PROXY_ALLOW=127.0.0.1/8,::1/128,172.16.0.0/12</summary>
     private static readonly (IPAddress Net, int Bits)[] Allow =
-        ParseAllow(Environment.GetEnvironmentVariable("NEXUS_PROXY_ALLOW"));
+        ParseAllow(Environment.GetEnvironmentVariable("P1998_PROXY_ALLOW"));
 
     /// <summary>Human-readable allow-list, for the startup banner.</summary>
     public static string DescribeAllow =>

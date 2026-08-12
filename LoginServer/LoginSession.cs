@@ -30,19 +30,19 @@ public sealed class LoginSession
 
     // Slow-loris defense (the login port is the internet-facing front door): a connection must send its first
     // valid framed packet within this budget or it is dropped. Only the first packet is gated. Env-tunable,
-    // shared with the game server's NEXUS_HANDSHAKE_MS; 15s is far more than a real client needs.
+    // shared with the game server's P1998_HANDSHAKE_MS; 15s is far more than a real client needs.
     private static readonly int HandshakeMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
     private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
 
     // AA 00 13 7E 1B "CONNECTED SERVER\n"  (plaintext welcome, as the 6.x reference sends on connect)
     private static readonly byte[] Welcome = BuildWelcome();
 
     // The game server the client is redirected to after a successful login. Defaults to loopback (login
-    // and game on the same box); set NEXUS_GAME_HOST to the game server's public IP for a split
+    // and game on the same box); set P1998_GAME_HOST to the game server's public IP for a split
     // deployment. The client stores the host/port from our 0x03 reply, opens a FRESH connection to it,
     // and announces itself there with 0x10.
-    private static readonly byte[] GameHost = ParseHost(Environment.GetEnvironmentVariable("NEXUS_GAME_HOST"));
+    private static readonly byte[] GameHost = ParseHost(Environment.GetEnvironmentVariable("P1998_GAME_HOST"));
 
     /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
     /// has already consumed its PROXY header. Null on a direct connection. The per-IP failed-login throttle

@@ -1841,7 +1841,7 @@ public sealed partial class Session
         b.Add(_realm);       // realm-center camera lock (0=off edge-aware, 1=on centered); toggled by F4
         b.Add((byte)t.Length);
         b.AddRange(t);
-        // light field — encoding chosen by NEXUS_LIGHT_FMT so 5.33's parse can be probed live.
+        // light field — encoding chosen by P1998_LIGHT_FMT so 5.33's parse can be probed live.
         var lv = LightValue;
         switch (LightFmt)
         {

@@ -11,8 +11,8 @@
 
 # ---- Live instance state — NEVER committed, to EITHER repo ----
 # The counterpart to game-data/. Created by running the server, unique to this machine, and the entire
-# backup target (the nightly sqlite3 .backup lives in Project1998-infra, scripts/nexus-backup.sh):
-#   state/   nexus.db + its WAL sidecars, the legacy chars/*.json store, gm/tester_accounts.txt
+# backup target (the nightly sqlite3 .backup lives in Project1998-infra, scripts/p1998-backup.sh):
+#   state/   project1998.db + its WAL sidecars, the legacy chars/*.json store, gm/tester_accounts.txt
 #   logs/    server.log / login.log and their rotations. Regenerable; 80 MB of them here right now.
 #   run/     restart_at / reload_now — deploy-to-server triggers, consumed and deleted on read.
 #

@@ -92,7 +92,7 @@ public static class ObjectFlags
     private static string? Locate()
     {
         var candidates = new List<string>();
-        var env = Environment.GetEnvironmentVariable("NEXUS_SOBJ");
+        var env = Environment.GetEnvironmentVariable("P1998_SOBJ");
         if (!string.IsNullOrWhiteSpace(env)) candidates.Add(env);
 
         candidates.Add(Path.Combine(Shared.RepoPaths.GameDataDir(), "SObj.tbl"));

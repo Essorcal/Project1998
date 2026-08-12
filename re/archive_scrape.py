@@ -20,7 +20,7 @@ low/mid levels are cleanest since awards pile up late.
 
 Data lives in ../../scraped_nexus_data/artifacts/user_pages/ (referred to below as
 user_pages/) -- it's archive source data, so it sits with the other Nexus archives
-rather than beside this script. Override the location with $NEXUS_ARCHIVE.
+rather than beside this script. Override the location with $P1998_ARCHIVE.
 
 Stages (each resumable, run in order):
     python re/archive_scrape.py index     # CDX -> user_pages/index.jsonl
@@ -36,13 +36,13 @@ import urllib.request, urllib.error, collections
 
 D = os.path.dirname(os.path.abspath(__file__))
 # The scraped pages live with the other Nexus archives (scraped_nexus_data), not beside
-# this script -- they're source data, not RE output. Set NEXUS_ARCHIVE if the two trees
+# this script -- they're source data, not RE output. Set P1998_ARCHIVE if the two trees
 # aren't siblings on disk. The parent check is deliberate: a wrong path would otherwise
 # silently makedirs an empty archive and restart the whole crawl from zero.
-A = os.environ.get("NEXUS_ARCHIVE") or os.path.normpath(
+A = os.environ.get("P1998_ARCHIVE") or os.path.normpath(
     os.path.join(D, "..", "..", "scraped_nexus_data", "artifacts", "user_pages"))
 if not os.path.isdir(os.path.dirname(A)):
-    sys.exit(f"archive root not found: {os.path.dirname(A)}\nset NEXUS_ARCHIVE to the user_pages dir")
+    sys.exit(f"archive root not found: {os.path.dirname(A)}\nset P1998_ARCHIVE to the user_pages dir")
 CACHE = os.path.join(A, "cache")
 os.makedirs(CACHE, exist_ok=True)
 P_INDEX = os.path.join(A, "index.jsonl")

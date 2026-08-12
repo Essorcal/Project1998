@@ -50,10 +50,10 @@ public sealed partial class Session
                                                       FullMode = BoundedChannelFullMode.Wait });
 
     /// <summary>Warn when a frame waits this long (ms) to reach the socket, or when the socket write itself
-    /// blocks that long. <c>NEXUS_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player
+    /// blocks that long. <c>P1998_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player
     /// would notice, so the log names the stall before anyone complains about it.</summary>
     private static readonly int SlowSendMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
 
     // Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10 world
@@ -63,7 +63,7 @@ public sealed partial class Session
     // connection idling between world-exit and re-login) is never disconnected. Env-tunable; 15s is far more
     // than a real client needs (it speaks in milliseconds) yet kills a hold.
     private static readonly int HandshakeMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
     private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
 
     // --- robust persistence (dirty-flag autosave, see MarkDirty/FlushNow) ---
@@ -76,7 +76,7 @@ public sealed partial class Session
     // Internal (not private) so World.AutoSaveLoop ticks on the exact same cadence as this session's own
     // FlushIfDue, instead of duplicating the env-var parsing and risking the two drifting apart.
     internal static readonly int AutoSaveMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_AUTOSAVE_MS"), out var asv) && asv > 0 ? asv : 15_000;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_AUTOSAVE_MS"), out var asv) && asv > 0 ? asv : 15_000;
     private volatile bool _dirty;
     private long _lastSaveAtMs;
 
@@ -127,21 +127,21 @@ public sealed partial class Session
     private bool IsLoginPort => _port == 2000 || _port == 2001;
 
     // --- world-light diagnostic knobs (env-tweakable, no rebuild needed to sweep) ---
-    //   NEXUS_LIGHT      integer 0..65535, the map light/darkness value (default 232, proven bright on 4.95)
-    //   NEXUS_LIGHT_FMT  how to encode it on the 0x15: "beu16" (default, 4.95), "leu16", or "u8"
+    //   P1998_LIGHT      integer 0..65535, the map light/darkness value (default 232, proven bright on 4.95)
+    //   P1998_LIGHT_FMT  how to encode it on the 0x15: "beu16" (default, 4.95), "leu16", or "u8"
     // 5.33 draws terrain black with the 4.95-proven be-u16 232; sweeping these isolates whether the
     // client reads the light field at a different width/endianness (leading 00 -> light 0 -> black).
     private static readonly int LightValue =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_LIGHT"), out var lv) ? lv : 232;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_LIGHT"), out var lv) ? lv : 232;
     private static readonly string LightFmt =
-        (Environment.GetEnvironmentVariable("NEXUS_LIGHT_FMT") ?? "beu16").Trim().ToLowerInvariant();
+        (Environment.GetEnvironmentVariable("P1998_LIGHT_FMT") ?? "beu16").Trim().ToLowerInvariant();
 
     // 5.33 terrain-stream tile offset. The 4.x .map stores raw frame indices (the 4.95 client draws
     // them as-is); some client eras expect index+1 (0 = "no tile", client subtracts 1). Mithia 7.x
-    // streams raw, so default 0 — but if 5.33 terrain comes out shifted by one frame, set NEXUS_TILE_OFF=1
+    // streams raw, so default 0 — but if 5.33 terrain comes out shifted by one frame, set P1998_TILE_OFF=1
     // (or -1) to correct it without a rebuild. Applied to the ground + object shorts, not passability.
     private static readonly int CellOff =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_TILE_OFF"), out var co) ? co : 0;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_TILE_OFF"), out var co) ? co : 0;
 
     // 5.33 terrain-render diagnostic for the 0x06 stream (set via a .bat so PowerShell's `set` quirk
     // can't bite). "" = real map tiles. "sweep" = ramp the ground index across the whole visible rect
@@ -149,12 +149,12 @@ public sealed partial class Session
     // "solid:N" = fill with ground index N. Sweep/solid send the tile UNMASKED (real tiles are still
     // masked to 14 bits since 4.x ground packs passability in the top 2 bits).
     private static readonly string MapDiag =
-        (Environment.GetEnvironmentVariable("NEXUS_MAP_DIAG") ?? "").Trim().ToLowerInvariant();
+        (Environment.GetEnvironmentVariable("P1998_MAP_DIAG") ?? "").Trim().ToLowerInvariant();
 
-    // Server-side passability (collision). NEXUS_PASS=0 disables it (walk through anything) if the 4.x
+    // Server-side passability (collision). P1998_PASS=0 disables it (walk through anything) if the 4.x
     // top-2-bits polarity turns out wrong for a given map. Default on. Mithia 7.x: read_pass!=0 => blocked.
     private static readonly bool PassEnforce =
-        (Environment.GetEnvironmentVariable("NEXUS_PASS") ?? "1").Trim() != "0";
+        (Environment.GetEnvironmentVariable("P1998_PASS") ?? "1").Trim() != "0";
     // Parsed block value for the passtest:N diagnostic (default 1); shared by the map stream + collision.
     private static readonly int PassTestN =
         MapDiag.StartsWith("passtest:") && int.TryParse(MapDiag.AsSpan(9), out var ptn) ? ptn : 1;
@@ -165,9 +165,9 @@ public sealed partial class Session
     // then FREEZES — it will not advance further until our 0x04 arrives, at which point it snaps straight
     // to completion. So 0x04 must land just AFTER that natural ~180ms window: too early truncates the
     // prediction (looks like an instant snap); too late just prolongs the freeze before the snap.
-    // NEXUS_V495_WALK_MS tunes it (0 = old same-frame slide, sent before ANY tick can play).
+    // P1998_V495_WALK_MS tunes it (0 = old same-frame slide, sent before ANY tick can play).
     private static readonly int V495WalkMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_WALK_MS"), out var wm) ? wm : 200;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_WALK_MS"), out var wm) ? wm : 200;
 
     // Self-walk drive mode for 4.95, chosen by static RE of the client's animation path.
     //   start-walk @0x462320  sets walk-active [+0x18c]=1 and registers the anim timer (0x41b5d0)
@@ -177,7 +177,7 @@ public sealed partial class Session
     //                         SMOOTH camera scroll, independent of 0x0C.
     // So the OVERSHOOT (sprite lands on dest then slides past) comes only from the reposition, which is
     // gated on current!=dest. The LEG cycle comes from walk-active + anim timer, set before that gate.
-    // Modes (NEXUS_V495_SELF_MOVE):
+    // Modes (P1998_V495_SELF_MOVE):
     //   0 = 0x04 only            -> smooth camera scroll, but NO legs (walk-active never set)
     //   1 = 0x0C(dest)+delay+0x04-> legacy; legs but forward overshoot + snap on the final step
     //   2 = 0x0C(SOURCE)+0x04    -> legs on (walk-active set) with reposition SKIPPED (dest==current);
@@ -187,18 +187,18 @@ public sealed partial class Session
     //   5 = delay + 0x04         -> DEFAULT: send nothing immediately so the LOCAL controller animates the
     //                              full step (legs + slide + camera), then after the anim completes send 0x04
     //                              to unblock the next step. By then move-commit's unregister is a no-op, so
-    //                              the legs are NOT cancelled. NEXUS_V495_ACK_MS tunes the delay.
+    //                              the legs are NOT cancelled. P1998_V495_ACK_MS tunes the delay.
     //   7 = nothing on a good walk (RTK-faithful) -> DEFAULT: client moves/animates/scrolls locally; 0x04
     //       is sent ONLY as a correction (desync/block). Stops our per-step 0x04 from re-scrolling the
     //       camera the client already moved (the residual "wonkiness" + fighting realm-center).
     private static readonly int V495SelfMove =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_SELF_MOVE"), out var sm) ? sm : 7;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_SELF_MOVE"), out var sm) ? sm : 7;
 
     // Delay (ms) before the mode-5 unblock 0x04. Must be >= the client's local walk animation (~4 frames,
     // ~360ms) so the 0x04 lands AFTER the legs finish and doesn't cancel them. Too short => truncated legs;
     // too long => sluggish walk cadence (the client gates the next step on this ack).
     private static readonly int V495AckMs =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_ACK_MS"), out var am) ? am : 360;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_ACK_MS"), out var am) ? am : 360;
 
     // FAST-MOVE OFF (server-authoritative) response strategy for 4.95. When fast-move is off the client
     // makes NO local prediction — it sends the walk request and waits for the server to assign the step
@@ -224,16 +224,16 @@ public sealed partial class Session
     //       move-commits the step + starts the next locally ([+0x65f3]=1, no wait, no 0x04, no forced
     //       scroll). Same packet 5.33 uses; respects realm-center. See HandleWalk for the full RE trail.
     private static readonly int V495SlowMove =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_SLOW_MOVE"), out var slm) ? slm : 5;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_SLOW_MOVE"), out var slm) ? slm : 5;
 
     // "Realm center" (F4 in RTK) — a CLIENT camera mode signalled by a flag byte in the 0x15 mapinfo
     // packet (RTK clif_sendmapinfo byte +12; our SendMapInfo body[7]). When ON the client locks the camera
     // dead-center on the character (the world scrolls under a fixed sprite); when OFF the camera uses the
     // edge-aware/offset behavior that can lag during a walk. The 4.95 client honors it: its 0x15 handler
     // (@0x44f8b0) reads this byte, computes (realm==0), and feeds it to the view/camera rebuild (@0x44c570).
-    // NEXUS_V495_REALM=1 enables it to test whether a locked camera fixes the walk "wonkiness".
+    // P1998_V495_REALM=1 enables it to test whether a locked camera fixes the walk "wonkiness".
     private static readonly byte RealmCenter =
-        Environment.GetEnvironmentVariable("NEXUS_V495_REALM") == "1" ? (byte)1 : (byte)0;
+        Environment.GetEnvironmentVariable("P1998_V495_REALM") == "1" ? (byte)1 : (byte)0;
 
     // AA 00 13 7E 1B "CONNECTED SERVER\n"  (plaintext welcome, as the 6.x reference sends)
     private static readonly byte[] Welcome =
@@ -454,7 +454,7 @@ public sealed partial class Session
     // RTK `if (sd->time < 4)` with NO increment — unequip (0x1F) only.
     private bool ActionBudgetLeft() { RollActionWindow(); return _actionCount < ActionBudget; }
 
-    // ---- Queue over-budget casts instead of discarding them (NEXUS_CAST_QUEUE=0 to disable) ------------
+    // ---- Queue over-budget casts instead of discarding them (P1998_CAST_QUEUE=0 to disable) ------------
     // Holding a cast key makes the client send 0x0F every ~31ms (OS auto-repeat, after a ~260ms initial
     // delay — both measured live). With a plain drop-gate that yields three casts spaced 31ms apart, then
     // ~940ms of silence, and 31ms of separation on three identical sounds is an audible flam. Real NexusTK
@@ -466,7 +466,7 @@ public sealed partial class Session
     // only authority available. Treat it as a working reconstruction: if a real 4.95 source ever contradicts
     // it, the source wins. Depth is capped at the budget and keeps the NEWEST casts, so the queue means
     // "the key is still down", never a 30-deep backlog that keeps firing after you let go.
-    private static readonly bool CastQueueEnabled = Environment.GetEnvironmentVariable("NEXUS_CAST_QUEUE") != "0";
+    private static readonly bool CastQueueEnabled = Environment.GetEnvironmentVariable("P1998_CAST_QUEUE") != "0";
     // How long a queued cast stays valid. Depth-capping bounds how MANY casts wait; this bounds how LONG,
     // which is the part that matters once the key comes up: the client stops sending, so nothing triggers a
     // drain, and the next packet of ANY kind (a walk step, seconds later) would otherwise fire casts from
@@ -747,11 +747,11 @@ public sealed partial class Session
     }
 
     // Game host the re-login handoff redirects to (must match how the client reached this game server).
-    // Defaults to loopback; set NEXUS_GAME_HOST for a split-box deployment (same var the login server uses).
+    // Defaults to loopback; set P1998_GAME_HOST for a split-box deployment (same var the login server uses).
     private static byte[] ParseGameHost()
     {
         var def = new byte[] { 127, 0, 0, 1 };
-        var h = Environment.GetEnvironmentVariable("NEXUS_GAME_HOST");
+        var h = Environment.GetEnvironmentVariable("P1998_GAME_HOST");
         if (string.IsNullOrWhiteSpace(h)) return def;
         var parts = h.Split('.');
         if (parts.Length != 4) return def;
@@ -782,11 +782,11 @@ public sealed partial class Session
         // Validate the single-use handoff token the login server minted for this username (see
         // Shared/HandoffTokens). This is what stops a client from connecting straight to the game port and
         // claiming ANY username — identity now rests on a login-verified secret, not the client's claim.
-        // Safety valve: NEXUS_ENFORCE_HANDOFF=0 downgrades a failure to a warning (fallback only if a
+        // Safety valve: P1998_ENFORCE_HANDOFF=0 downgrades a failure to a warning (fallback only if a
         // deployment hits a token problem); the default is to enforce.
         if (!HandoffTokens.Consume(token, _user, _remoteIp))
         {
-            bool enforce = (Environment.GetEnvironmentVariable("NEXUS_ENFORCE_HANDOFF") ?? "1").Trim() != "0";
+            bool enforce = (Environment.GetEnvironmentVariable("P1998_ENFORCE_HANDOFF") ?? "1").Trim() != "0";
             if (enforce)
             {
                 Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' from {_remoteIp} " +
@@ -794,12 +794,12 @@ public sealed partial class Session
                 _client.Close();
                 return;
             }
-            Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (NEXUS_ENFORCE_HANDOFF=0)");
+            Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (P1998_ENFORCE_HANDOFF=0)");
         }
 
         // Ban check AGAIN, here at the actual door to the world. The login channel already refused a banned
         // account, but a handoff token minted moments BEFORE the ban was placed is still valid until it
-        // expires, and NEXUS_ENFORCE_HANDOFF=0 skips the token check entirely. This is the authoritative
+        // expires, and P1998_ENFORCE_HANDOFF=0 skips the token check entirely. This is the authoritative
         // gate: nothing enters the world without passing it.
         if (Moderation.IsBanned(_user, out _, out _))
         {
@@ -824,7 +824,7 @@ public sealed partial class Session
         // Load the persisted character (created on the login channel, or saved at last logout). There is NO
         // fallback spawn any more: world entry never invents a character. A missing record here means the
         // login server minted a token for a name that has no character (it checks first, so this is either a
-        // race with an admin deleting the record, or a hand-rolled client with NEXUS_ENFORCE_HANDOFF=0).
+        // race with an admin deleting the record, or a hand-rolled client with P1998_ENFORCE_HANDOFF=0).
         // Creating one on the spot is what let anyone materialize a character by typing a new name at login.
         var loaded = _store.Load(_user);
         if (loaded is null)
@@ -1037,12 +1037,12 @@ public sealed partial class Session
     // So the push now runs on EVERY step (grace 0). The old 8-step grace deferred to the client's own
     // requests, which is where the visible black boxes came from. The duplication that grace was avoiding is
     // one ~100-byte strip per step; NoteStreamed no longer lets a client request shrink the tracked window,
-    // so a request costs one margin fill, not a full re-send every time. NEXUS_V495_PUSHGRACE restores the
-    // old deferral, NEXUS_V495_PUSHMAP=0 disables the push entirely.
+    // so a request costs one margin fill, not a full re-send every time. P1998_V495_PUSHGRACE restores the
+    // old deferral, P1998_V495_PUSHMAP=0 disables the push entirely.
     private static readonly bool PushMap =
-        (Environment.GetEnvironmentVariable("NEXUS_V495_PUSHMAP") ?? "1").Trim() != "0";
+        (Environment.GetEnvironmentVariable("P1998_V495_PUSHMAP") ?? "1").Trim() != "0";
     private static readonly int PushGraceSteps =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_PUSHGRACE"), out var g) && g >= 0 ? g : 0;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_PUSHGRACE"), out var g) && g >= 0 ? g : 0;
     private int _stepsSinceMapReq;
 
     // Deliberately the LAST window, not a running union of everything sent. A union is a bounding box, and a
@@ -1145,12 +1145,12 @@ public sealed partial class Session
     // connect). The client PERSISTS fast-move across launches, and the working/smooth setup is fast-move
     // ON (client-authoritative), so we default ON to match a client that already has it enabled. Each
     // 0x1b/09 notification flips it to stay in sync. (If a fresh client actually boots OFF, one toggle
-    // re-syncs; NEXUS_V495_FASTMOVE_DEFAULT can override the assumed startup state.)
+    // re-syncs; P1998_V495_FASTMOVE_DEFAULT can override the assumed startup state.)
     private bool _fastMove = FastMoveDefault;
 
 
     private static readonly bool FastMoveDefault =
-        Environment.GetEnvironmentVariable("NEXUS_V495_FASTMOVE_DEFAULT") == "0" ? false : true;
+        Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_DEFAULT") == "0" ? false : true;
 
     // Viewport-streamed world mobs: the set of shared-mob ids currently drawn on THIS client. The client's
     // 0x07 spawn silently drops entities outside the camera rect, so a 400-mob map can't be blanket-sent —

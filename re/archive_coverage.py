@@ -14,7 +14,7 @@ import os, re, csv, json, gzip, collections
 
 D = os.path.dirname(os.path.abspath(__file__))
 # Same resolution as archive_scrape.py -- data lives in scraped_nexus_data, not here.
-A = os.environ.get("NEXUS_ARCHIVE") or os.path.normpath(
+A = os.environ.get("P1998_ARCHIVE") or os.path.normpath(
     os.path.join(D, "..", "..", "scraped_nexus_data", "artifacts", "user_pages"))
 CACHE = os.path.join(A, "cache")
 CLASSES = ["Warrior", "Rogue", "Mage", "Poet"]

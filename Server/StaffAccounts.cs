@@ -28,7 +28,7 @@ public enum AccessLevel
 /// Deployment config, not game state, so it follows the flat-file tier (see the config-persistence note):
 /// one normalized username per line in <c>state/gm_accounts.txt</c> (full access) and
 /// <c>state/tester_accounts.txt</c> (the character/item subset), with <c>#</c> comments and blank lines
-/// ignored, plus comma-separated <c>NEXUS_GMS</c> / <c>NEXUS_TESTERS</c> environment overrides that are
+/// ignored, plus comma-separated <c>P1998_GMS</c> / <c>P1998_TESTERS</c> environment overrides that are
 /// UNIONed with their file (handy for a container that ships no writable data dir). Matching is
 /// case-insensitive via the same <see cref="Auth.Key"/> normalization accounts and characters use, so
 /// "Brian", "brian" and "BRIAN" are one person. A name in BOTH rosters is a GM — the tiers are a floor, not
@@ -73,8 +73,8 @@ public static class StaffAccounts
     /// previous roster in place rather than silently promoting or demoting everyone.</summary>
     public static void Load()
     {
-        var gms = ReadRoster(GmPath, "NEXUS_GMS");
-        var testers = ReadRoster(TesterPath, "NEXUS_TESTERS");
+        var gms = ReadRoster(GmPath, "P1998_GMS");
+        var testers = ReadRoster(TesterPath, "P1998_TESTERS");
         if (gms is null && testers is null) { lock (Gate) _loaded = true; return; }
 
         lock (Gate)
@@ -85,7 +85,7 @@ public static class StaffAccounts
             gms = _gms; testers = _testers;
         }
         Log.Info(gms.Count == 0
-            ? $"[staff] no GM accounts configured (add one per line to {GmPath}, or set NEXUS_GMS) — the GM tier is disabled for everyone"
+            ? $"[staff] no GM accounts configured (add one per line to {GmPath}, or set P1998_GMS) — the GM tier is disabled for everyone"
             : $"[staff] {gms.Count} GM account(s) + {testers.Count} tester account(s) loaded");
     }
 

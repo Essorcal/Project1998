@@ -15,7 +15,7 @@ fourth answer means nothing.
 import os, struct, sys
 from PIL import Image
 
-RE = r"C:\Users\brian\Desktop\NexusServer\re"
+RE = r"C:\Users\brian\Desktop\Project1998\re"
 sys.path.insert(0, RE)
 from render_pets import Epf, load_tbl, load_pal          # noqa: E402  (reuse the proven decoders)
 

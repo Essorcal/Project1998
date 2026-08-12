@@ -150,7 +150,7 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 ## 4. Connection lifecycle
 
 > **Process split (2026-07-27):** the login channel (2000/2001) and game channel (2005/2006) now run as
-> **two separate processes** (`LoginServer` and the game `Server`) sharing one SQLite DB (`state/nexus.db`).
+> **two separate processes** (`LoginServer` and the game `Server`) sharing one SQLite DB (`state/project1998.db`).
 > They can crash/restart independently. The login server is the internet-facing front door and does not load
 > the game world/content.
 
@@ -183,18 +183,18 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    | Character exists, wrong password | `Incorrect password.` |
    | Character exists, no hash on file (pre-auth record) | `That character has no password set. Contact the server admin.` |
 
-   Trust-on-first-use is **gone** (`NEXUS_ALLOW_TOFU=1` re-enables it for a one-off legacy adoption): it
+   Trust-on-first-use is **gone** (`P1998_ALLOW_TOFU=1` re-enables it for a one-off legacy adoption): it
    made every unregistered name a free account and let anyone claim a legacy passwordless character. The
    only way a character comes into existence is the creation flow in §9. Names match **case-insensitively**
    (both tables are `COLLATE NOCASE` on the normalized key) while the character keeps the casing it was
    created with — world entry no longer overwrites the stored name with whatever the player typed.
 
-   Failed attempts are budgeted per source IP (default 10 / 5 min, `NEXUS_LOGIN_FAILS`), refused before the
+   Failed attempts are budgeted per source IP (default 10 / 5 min, `P1998_LOGIN_FAILS`), refused before the
    BCrypt verify runs; a 3–8 char password does not survive an unmetered guessing loop, and `ConnGuard`
    only limits how often an address may *connect*, not what it sends once connected. The same gate is on
    the game channel's re-login path — otherwise the brute-force target just moves to port 2005.
 
-   **Logging:** the login channel's wire dump is OFF by default (`NEXUS_LOG_WIRE=1` to enable). These
+   **Logging:** the login channel's wire dump is OFF by default (`P1998_LOG_WIRE=1` to enable). These
    packets carry the password in the clear, and the cipher is a fixed published XOR, so a "raw" dump is
    just as readable as a decrypted one.
 
@@ -252,7 +252,7 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    **validates and single-use-consumes** it against the username (must exist, be unexpired, unconsumed,
    and bound to this user *and this source address*) — otherwise it **closes the connection**. This is what
    stops a client from connecting straight to the game port and claiming any username.
-   (`NEXUS_ENFORCE_HANDOFF=0` downgrades a failure to a warning as a fallback.)
+   (`P1998_ENFORCE_HANDOFF=0` downgrades a failure to a warning as a fallback.)
    **The token is NOT always 5 bytes here** — it is however much the client's shared 13-byte field had
    room for after the name (§4.1), so compare only the first `11 - nameLen` bytes.
 
@@ -274,17 +274,17 @@ scrubbing, OS SYN-flood protection, a firewall restricting the game ports to pos
 - **Guarded accept loops** — a transient `AcceptTcpClientAsync` throw is logged and skipped, never faulting
   the listener task.
 - **Connection admission (`Shared/ConnGuard.cs`)**, checked on every accept before a session is spawned:
-  - **Global cap** (load-shed): past `NEXUS_<GAME|LOGIN>_MAXCONN` (default 2000) accept-then-close.
-  - **Per-IP concurrent cap**: `NEXUS_<…>_PERIP` (default **8** — sized to reliably support ~2 players/IP
+  - **Global cap** (load-shed): past `P1998_<GAME|LOGIN>_MAXCONN` (default 2000) accept-then-close.
+  - **Per-IP concurrent cap**: `P1998_<…>_PERIP` (default **8** — sized to reliably support ~2 players/IP
     incl. the brief login→game socket overlap and a lingering half-open "ghost" socket; it is **not** a hard
     player quota — enforce that in login logic if wanted).
-  - **Per-IP open-rate limit** (fixed window): `NEXUS_<…>_RATE` opens per `_RATEWIN_MS` (default 30 / 10 s),
+  - **Per-IP open-rate limit** (fixed window): `P1998_<…>_RATE` opens per `_RATEWIN_MS` (default 30 / 10 s),
     catching connect/disconnect churn floods the concurrent cap wouldn't.
   - **Loopback is exempt** from the per-IP + rate gates (local dev, the client test box, and the same-box
     login→game hop all originate from 127.0.0.1) but still counts toward the global cap. Rate table is
     soft-capped (fails **open** past 100k distinct IPs) so it can't itself become a memory-DoS.
 - **Handshake watchdog** — a freshly-accepted connection must send its first **valid framed** packet within
-  `NEXUS_HANDSHAKE_MS` (default 15 s) or it is dropped (slow-loris defense). Only the first packet is gated
+  `P1998_HANDSHAKE_MS` (default 15 s) or it is dropped (slow-loris defense). Only the first packet is gated
   (via an `_established` flag), so an in-world / AFK / Alt+X-idle player is never disconnected. Reads after
   the handshake are untimed. The watchdog **closes the socket** (unblocking the pending read) rather than
   relying on `NetworkStream`'s unreliable read-cancellation.
@@ -494,18 +494,18 @@ One packet does three things on the target entity:
   here; the 4.95 client reads only its **high byte** = `0` normally, and ignores everything past `body[7]`).
 
 RTK's `clif_send_mob_health` / `clif_send_pc_healthscript` build the same shape. `critical` is calibratable
-live via `NEXUS_HIT_CRIT`; `@hit <pct> [crit]` auditions the bar + hit anim over the faced mob.
+live via `P1998_HIT_CRIT`; `@hit <pct> [crit]` auditions the bar + hit anim over the faced mob.
 
 **A heal is a NEGATIVE hit on this same packet.** `clif_send_pc_healthscript` takes a signed `damage` and
 does `if (damage < 0) currentvita -= damage`, then builds the identical `0x13`; `addHealthExtend` reaches it
 as `clif_send_pc_healthscript(sd, -damage, 0)` (and the mob twin as `clif_send_mob_healthscript(mob, -damage,
 0)`). So healing draws the over-head bar exactly like damage does, with **`critical = 0`** — that byte still
 selects an overlay animation (`0x8f − 0`), and 0 is simply what the reference server passes. Ours is
-`NEXUS_HEAL_CRIT` if the 4.95 client turns out to draw something unwanted for that id.
+`P1998_HEAL_CRIT` if the 4.95 client turns out to draw something unwanted for that id.
 
 **Death beat:**
 4.95 monsters have **no** death frame-set (`monsfrm.tbl` defines only walk/attack), so a "death animation" is:
-send `percent = 0` (empty bar + final hit spark), then delay the `0x0E` despawn (`NEXUS_DEATH_DELAY_MS`, default
+send `percent = 0` (empty bar + final hit spark), then delay the `0x0E` despawn (`P1998_DEATH_DELAY_MS`, default
 600 ms) so the corpse doesn't pop out instantly. Players die to **ghost form** (appearance `[1]=1`, §8) instead.
 
 **`0x19` — background music.**
@@ -767,7 +767,7 @@ Trace: `0x4504b0` reads the fields, resolves the entity, calls `0x44e0a0`; that 
 which does `idx = u8 − 1; if (idx < 0 || idx ≥ count) bail; entry = table[idx]` and copies the 36-byte effect
 template (9 dwords). A number renderer would `itoa` the value — this indexes a table, so it's a graphic. `u8 = 0`
 ⇒ no effect. `A` is scaled ×1000 = the vertical pop offset; `B`/`C` are style. Send `A=B=C=0` to center it.
-**The wire `u8` maps directly to RTK's `sendAnimation(N)` id** (`NEXUS_EFX_WIRE_OFFSET = 0`) — proven live: Ion
+**The wire `u8` maps directly to RTK's `sendAnimation(N)` id** (`P1998_EFX_WIRE_OFFSET = 0`) — proven live: Ion
 (`pcalign 0` → anim 4 = unaligned zap) sent with a `+1` offset drew the anim-5 graphic (unaligned heal), so
 `u8 = N` draws the anim-N effect (the handler's internal `−1` is cancelled by the table being loaded 1-based).
 The effect-id + sound-id per spell come from RTK's `global_zap`/`global_heal` `pcalign` ladder (ported to
@@ -1319,7 +1319,7 @@ fast-move ON. Server code: `SendSelfWalk(dir, fromX, fromY)`.
 >   `screen = logical(dest) + forward_step*(frameCtr/4)` — a guaranteed forward OVERSHOOT for the self. It
 >   is for animating *other* entities. Normal walk speed constant is 80.
 >
-> (Legacy `0x0C`/`0x04` walk attempts survive only behind `NEXUS_V495_SLOW_MOVE` (0–4) for comparison;
+> (Legacy `0x0C`/`0x04` walk attempts survive only behind `P1998_V495_SLOW_MOVE` (0–4) for comparison;
 > the default `5` is the `0x26` path above.)
 
 ### 10.4 Turn (`0x11`) — first press turns, second press walks
@@ -1440,7 +1440,7 @@ cell writes are parsed.
 adds no coverage, so the larger one is kept. Without that, every client `0x05` (18×16) would clobber the
 tracker and the next step would re-send the whole margin back out to 27×25. This is not the union the
 paragraph above rejects: the tracker still only ever holds a rectangle that was sent *whole*.
-`NEXUS_V495_PUSHGRACE` restores the old deferral; `NEXUS_V495_PUSHMAP=0` disables the push entirely.
+`P1998_V495_PUSHGRACE` restores the old deferral; `P1998_V495_PUSHMAP=0` disables the push entirely.
 
 ### 10.8 The client's map cache is a memory-mapped file ✅
 
@@ -2096,7 +2096,7 @@ last *passable* tile, so items never come to rest on a wall or an unreachable ti
 two-layer test the walk uses** (§12): the **ground pass flag** (`Blocked` = `map.Pass(x,y) != 0`; top 2 bits
 of the ground `u16`, `3` = solid, `0` = walkable, `1`/`2` never occur) **OR** the **`SObj.tbl` directional
 object-wall** for the throw heading (`ObjectFlags.Blocks`) — so a thrown item halts at a building's side
-wall, not only at water/cliffs. Enforcement is `NEXUS_PASS` (default on; set `0` to disable); the walk
+wall, not only at water/cliffs. Enforcement is `P1998_PASS` (default on; set `0` to disable); the walk
 (`HandleWalk`) applies the identical two-layer check.
 
 **Doors ('o' key / `0x20`) — WORKING (2026-07-25).** A door is an object drawn over the map. Pressing 'o'
@@ -2506,7 +2506,7 @@ sound together (`Session.BroadcastFx`). The caster's `0x1A` magic pose still pla
 resolves the book icon internally, so no icon-id mapping pass is needed on the server side (unlike items/mobs).
 
 **Slot cap:** the client's book array size is unconfirmed for 4.95; RTK 7.x uses 52 (`MAX_SPELLS`). The grant
-caps at 52 (env `NEXUS_SPELLBOOK_CAP`) so an over-long teach can't overrun the client array — raise once a live
+caps at 52 (env `P1998_SPELLBOOK_CAP`) so an over-long teach can't overrun the client array — raise once a live
 test confirms the real limit. The cap no longer bites: the mark gate and the ladder collapse below put every
 playable path between **1 and 51** entries at every reachable rank and alignment (1 is Peasant, which owns
 only Soothe). Worst case is an unaligned Hyun moo at Sam san — "Guardian" — at **51 of 52**, one slot of
@@ -4815,8 +4815,8 @@ The generated CSVs above are loaded once at startup by the static, load-once, re
 `Content` registry (`Content.Load()` in `Program.cs`; `--selftest` exercises it offline without opening
 ports). It powers the navigation commands (§11): fuzzy `FindMap`/`FindMob`/`SearchMaps`/`SearchMobs`
 (score: exact < prefix < substring < subsequence), `TryWarp((map,x,y)→(map,x,y))`, and `TryMap(id)`.
-Paths are env-overridable: `NEXUS_MAP_INDEX` → `map_index.csv`, `NEXUS_MOBS` → `mobs.csv`,
-`NEXUS_WARPS` → `Warps.csv`.
+Paths are env-overridable: `P1998_MAP_INDEX` → `map_index.csv`, `P1998_MOBS` → `mobs.csv`,
+`P1998_WARPS` → `Warps.csv`.
 
 **Map dims are client-authoritative** (`re/build_map_index.py`): every one of the client's ~1750
 `TK<id>.map` files is emitted — a map the client ships is warpable, period. The `.map` is headerless, so

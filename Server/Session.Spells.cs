@@ -19,10 +19,10 @@ public sealed partial class Session
     // (name/class/level/type/prompt) come from the RTK Spells table (Content.Spells) — real NexusTK data.
 
     // The client's spellbook array size is unconfirmed for 4.95; RTK 7.x uses 52 (MAX_SPELLS). Cap
-    // conservatively so an over-long teach can't overrun the client array; raise via NEXUS_SPELLBOOK_CAP
+    // conservatively so an over-long teach can't overrun the client array; raise via P1998_SPELLBOOK_CAP
     // once a live test confirms the real limit.
     private static readonly int SpellBookCap =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_SPELLBOOK_CAP"), out var c) && c > 0 ? c : 52;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_SPELLBOOK_CAP"), out var c) && c > 0 ? c : 52;
 
     // Re-send every learned spell/skill on world entry (the client's book starts empty each login). Slot =
     // list index, matching the 0x0F cast "pos" the client sends back.
@@ -85,7 +85,7 @@ public sealed partial class Session
         if (announce)
             SendLog($"Spellbook rebuilt for {ClassTitle} lvl {_char.Level} " +
                     $"({Character.AlignmentName(_char.Alignment)}): {_char.Spells.Count} ability(ies) — {spells} spell / {skills} skill." +
-                    (capped ? $"  Hit the {SpellBookCap}-slot cap (raise NEXUS_SPELLBOOK_CAP)." : ""));
+                    (capped ? $"  Hit the {SpellBookCap}-slot cap (raise P1998_SPELLBOOK_CAP)." : ""));
         Log.Info($"   -> spellbook resync: {ClassTitle} ({Content.PathName(path)}/{path}) align {_char.Alignment} " +
                  $"mark {_char.Mark} lvl {_char.Level} -> {_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
         return true;
@@ -730,7 +730,7 @@ public sealed partial class Session
     /// the byte still selects an overlay animation (<c>0x8f − critical</c>), so it is exposed here in case the
     /// 4.95 client draws something unwanted for that id and it needs re-picking live.</summary>
     private static readonly byte HealBarCritByte =
-        byte.TryParse(Environment.GetEnvironmentVariable("NEXUS_HEAL_CRIT"), out var hc) ? hc : (byte)0;
+        byte.TryParse(Environment.GetEnvironmentVariable("P1998_HEAL_CRIT"), out var hc) ? hc : (byte)0;
 
     /// <summary>Current HP of the mob this cast is aimed at (0 if the target isn't a living mob) — Drain reads it
     /// to decide whether the creature is weak enough to absorb, and how much life that yields.</summary>

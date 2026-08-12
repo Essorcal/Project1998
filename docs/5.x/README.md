@@ -2,7 +2,7 @@
 
 This folder documents everything specific to serving the **NexusTK 5.33 client**
 (`C:\Program Files (x86)\Nexon\NextAeon5`, build **5.3.3.384**, exe dated Jan 2003) from the
-local C# `NexusServer`. The 4.95 protocol is documented separately in
+local C# `Project1998`. The 4.95 protocol is documented separately in
 [`../NexusTK-4.95-Protocol.md`](../NexusTK-4.95-Protocol.md); this folder only covers where 5.x
 **differs**.
 

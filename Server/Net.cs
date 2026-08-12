@@ -114,7 +114,7 @@ public sealed class TkListener
                 // likes — which would make this a bypass of the per-IP gates rather than a fix for them.
                 if (!ProxyProtocol.IsTrustedPeer(peer))
                 {
-                    Log.Info($"!! REJECT {peer} on :{port} (not in NEXUS_PROXY_ALLOW); {_guard.Total} live");
+                    Log.Info($"!! REJECT {peer} on :{port} (not in P1998_PROXY_ALLOW); {_guard.Total} live");
                     try { client.Close(); } catch { /* already gone */ }
                     continue;
                 }

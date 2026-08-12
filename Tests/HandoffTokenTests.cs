@@ -4,7 +4,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The login→game handoff token, mint through consume. These run against the REAL database (state/nexus.db)
+/// The login→game handoff token, mint through consume. These run against the REAL database (state/project1998.db)
 /// with throwaway usernames, because the guarantees under test are single-use and expiry — both enforced by
 /// the SQL, so a mock would only prove the mock works.
 ///

@@ -1,4 +1,4 @@
-# NexusServer (C#/.NET 8) — game-server prototype
+# Project1998 (C#/.NET 8) — game-server prototype
 
 A clean-architecture rebuild of the 4.95 NexusTK server, structured to become the
 foundation for a Unity-client game (Shared library is referenced by both sides later).
@@ -11,7 +11,7 @@ foundation for a Unity-client game (Shared library is referenced by both sides l
 
 ## Build & run (offline)
 ```
-dotnet build NexusServer.sln          # nuget.config clears online sources; no deps needed
+dotnet build Project1998.sln          # nuget.config clears online sources; no deps needed
 dotnet run --project Server -- --ports 2000,2005
 ```
 

@@ -23,7 +23,7 @@ import re
 import sys
 
 SEARCH_DIRS = [
-    os.environ.get("NEXUS_MAPS"),
+    os.environ.get("P1998_MAPS"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "maps"),
     r"C:\Program Files (x86)\Nexon\NextAeon\Maps",
     r"C:\Program Files (x86)\Nexon\NextAeon5\Maps",

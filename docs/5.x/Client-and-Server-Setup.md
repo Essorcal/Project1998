@@ -1,6 +1,6 @@
 # 5.33 client targeting + unified dual-client server
 
-How to point the 5.33 client at the local server, and how one `NexusServer` process serves both the
+How to point the 5.33 client at the local server, and how one `Project1998` process serves both the
 4.95 and 5.33 clients at once.
 
 ## Redirecting the 5.33 client to the local server
@@ -42,7 +42,7 @@ Verify with `Get-NetTCPConnection` after login: the client connects loopback to 
 
 ## Unified dual-client server (version-tagged by port)
 
-One `NexusServer` process serves both clients. Rather than sniff the client version off the wire, each
+One `Project1998` process serves both clients. Rather than sniff the client version off the wire, each
 client gets its **own listener ports**, and the session is tagged by the port it arrived on. The proven
 4.95 code path is therefore **never entered by a 5.33 session**.
 

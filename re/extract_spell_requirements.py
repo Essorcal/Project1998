@@ -18,7 +18,7 @@ Output: JSON list of {key, file, level, items: [[item_key_or_id, amount], ...], 
 import json, re
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\brian\Desktop\NexusServer\RTK-Server\rtklua\Accepted\Spells")
+ROOT = Path(r"C:\Users\brian\Desktop\Project1998\RTK-Server\rtklua\Accepted\Spells")
 CLASS_DIRS = ["warrior", "rogue", "mage", "poet", "common", "Subpaths", "GM", "dog", "instance", "baseFunc"]
 
 TABLE_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{', re.MULTILINE)
@@ -177,7 +177,7 @@ def main():
             r['resolved_via_alias'] = cur['alias_of']
             cur = target
 
-    out_path = Path(r"C:\Users\brian\Desktop\NexusServer\re\spell_requirements_lua.json")
+    out_path = Path(r"C:\Users\brian\Desktop\Project1998\re\spell_requirements_lua.json")
     out_path.write_text(json.dumps(all_results, indent=1), encoding='utf-8')
     ok = sum(1 for r in all_results if r['parse_ok'])
     print(f"{len(all_results)} spell tables found, {ok} cleanly parsed, {len(all_results)-ok} need manual review")

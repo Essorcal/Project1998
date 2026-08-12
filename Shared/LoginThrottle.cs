@@ -25,11 +25,11 @@ namespace Shared;
 public static class LoginThrottle
 {
     private static readonly int MaxFails =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_LOGIN_FAILS"), out var f) && f > 0 ? f : 10;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_LOGIN_FAILS"), out var f) && f > 0 ? f : 10;
     private static readonly long WindowMs =
-        long.TryParse(Environment.GetEnvironmentVariable("NEXUS_LOGIN_FAIL_WINDOW_MS"), out var w) && w > 0 ? w : 300_000;
+        long.TryParse(Environment.GetEnvironmentVariable("P1998_LOGIN_FAIL_WINDOW_MS"), out var w) && w > 0 ? w : 300_000;
     private static readonly bool ExemptLoopback =
-        (Environment.GetEnvironmentVariable("NEXUS_LOGIN_EXEMPT_LOOPBACK") ?? "1").Trim() != "0";
+        (Environment.GetEnvironmentVariable("P1998_LOGIN_EXEMPT_LOOPBACK") ?? "1").Trim() != "0";
 
     private sealed class Window { public long Start; public int Fails; }
     private static readonly ConcurrentDictionary<IPAddress, Window> Table = new();
