@@ -97,7 +97,7 @@ map to the same pixels — which is why the raw 4.x ground index renders correct
 
 - **`Server/MapData.cs`** — loads a 4.x headerless `.map` (4 B/cell `[ground u16 LE][object u16 LE]`,
   ground top-2-bits = passability) and exposes `Tile/Pass/Obj`. Search order: `NEXUS_MAPS` env → repo
-  `data/maps/` → 4.x client install → 5.x client install.
+  `game-data/maps/` → 4.x client install → 5.x client install.
 - **Diagnostics**: `NEXUS_MAP_DIAG=sweep` (ramp ground index 0..28550 across the rect) /
   `solid:N` (fill one index), plus `NEXUS_TILE_OFF` (± shift, ended up `0`). Launchers:
   `re/Run-Diag-Sweep.bat`, `re/Run-Diag-Solid.bat` (set env inside the `.bat`; PowerShell `set VAR=val`

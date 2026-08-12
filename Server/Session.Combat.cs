@@ -122,7 +122,7 @@ public sealed partial class Session
                 if (died)
                 {
                     uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
-                    AwardExp(reward, killExp: true);                                             // reward to the killer only (levels too)
+                    AwardKillExp(reward, _char.Map, wmob.X, wmob.Y);                             // killer + any group member in range (levels too)
                     SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
                     Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
                     TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
@@ -156,7 +156,7 @@ public sealed partial class Session
     // RTK gives some gear an `on_swing` handler (rtklua/Accepted/Items/**): a percentage roll per swing
     // that casts a spell at whatever you're facing — Blood/venom, Charm/endear, Frost sabre/chill, and the
     // Giasomo stick, whose proc summons a Giasomo bird onto the caster instead of hitting the target.
-    // Table: data/game-data/WeaponProcs.csv (hot-reloads with @reload).
+    // Table: game-data/WeaponProcs.csv (hot-reloads with @reload).
     //
     // Fired on the SWING, not on a landed hit, matching RTK — on_swing runs before any damage roll, so a
     // miss can still proc. Every equipped piece is checked, not just the weapon: chaos_armor procs too.
@@ -274,7 +274,7 @@ public sealed partial class Session
                     if (died)
                     {
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                        AwardExp(reward, killExp: true);
+                        AwardKillExp(reward, _char.Map, mob.X, mob.Y);
                         SendMessage($"You defeated {mob.Name}. (+{reward} exp)");
                         TallyKill(mob);
                     }

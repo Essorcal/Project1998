@@ -35,7 +35,7 @@ INDEX = os.path.join(REPO, "data", "game-data", "map_index.csv")
 
 def map_files():
     """id -> path, union over every search dir, first dir wins (same precedence as
-    MapData.SearchDirs). data/maps holds only a couple of overrides, so a single
+    MapData.SearchDirs). game-data/maps holds only a couple of overrides, so a single
     "first dir that has any TK*.map" rule would hide the full client set."""
     out = {}
     dirs = []

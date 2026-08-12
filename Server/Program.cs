@@ -20,13 +20,13 @@ for (int i = 0; i < args.Length; i++)
 // logic) and exits, WITHOUT opening ports — a quick offline check of the data layer.
 if (Array.Exists(args, a => a == "--selftest")) { Content.SelfTest(); return; }
 
-// Crash forensics. (1) Tee all logging into data/server.log — console output dies with the window,
+// Crash forensics. (1) Tee all logging into logs/server.log — console output dies with the window,
 // and we lost the trace of the first native-mail-send failure exactly that way. (2) Catch-and-log
 // process-fatal exceptions from ANY thread, and unobserved Task faults, so a death always leaves a
 // stack in the file. Note the Ctrl+C handler in TkListener: pressing Ctrl+C in the console (e.g. to
 // copy text with nothing selected) triggers a CLEAN exit ("=== shutdown signal (Ctrl+C)"), which can
 // masquerade as a crash — the log file now shows which one happened.
-Log.AttachFile(Path.Combine(Path.GetDirectoryName(TkListener.RepoDataDir())!, "server.log"));
+Log.AttachFile(Path.Combine(Shared.RepoPaths.LogsDir(), "server.log"));
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
 TaskScheduler.UnobservedTaskException += (_, e) =>
@@ -35,16 +35,17 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 Log.Info($"=== NexusServer (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers @warp/@maps/@mobs/@summon)
-StaffAccounts.Load();   // who may run the '@' tooling, and at which tier (data/{gm,tester}_accounts.txt); empty = nobody
+StaffAccounts.Load();   // who may run the '@' tooling, and at which tier (state/{gm,tester}_accounts.txt); empty = nobody
 Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) — must outlive a restart
 
 // An empty content registry is a MISCONFIGURED DEPLOY, not a valid world: nothing throws, the server
 // listens and accepts logins, and every player lands in a mapless void. Fail loudly instead of leaving it
 // to be inferred from a "0 map(s)" line among the startup counts.
 if (Content.Maps.Count == 0)
-    Log.Info("!!! NO CONTENT LOADED — data/game-data was not found. Expected it under the repo root " +
+    Log.Info("!!! NO CONTENT LOADED — game-data was not found. Expected it under the repo root " +
              $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
-             "The world will be empty. See deploy/README.md §2.");
+             "The world will be empty. Did you clone with --recurse-submodules? " +
+             "Fix: git submodule update --init, or set NEXUS_GAME_DATA to the content directory.");
 
 // Terrain availability. Missing .map files don't throw — collision and spawn placement just silently
 // degrade (players and mobs walk through walls) — so say so at startup instead. The Windows fallback dirs
@@ -54,7 +55,7 @@ if (Content.Maps.Count == 0)
     Log.Info($"=== terrain: {found}/{total} map file(s) found; searched: {string.Join(" | ", dirs)}");
     if (found < total)
         Log.Info($"!! {total - found} map(s) have NO .map file — collision and spawn placement are degraded on them. " +
-                 "Copy the client's Maps directory into data/maps, or set NEXUS_MAPS to it.");
+                 "Copy the client's Maps directory into game-data/maps, or set NEXUS_MAPS to it.");
 }
-Boards.MigrateFromJsonIfNeeded();   // one-time import of any legacy data/boards.json into the shared DB
+Boards.MigrateFromJsonIfNeeded();   // one-time import of any legacy state/boards.json into the shared DB
 await new TkListener(ports).RunAsync();

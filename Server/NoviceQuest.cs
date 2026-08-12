@@ -11,6 +11,16 @@ namespace Server;
 /// you the quests, one by one. All the quests are the same" — TSWolf, 2001-03-19), so this is the area
 /// chain folded back onto a single tutor.
 ///
+/// ERA — because those beats MOVED rather than being retired, this chain and the area are mutually
+/// exclusive: <see cref="Era.TutorNoviceChain"/> retires on 2000-10-06, the day
+/// <see cref="Era.NewbieArea"/> arrives, and <see cref="TutorialQuest"/> only dispatches here while it is
+/// live. The area's own versions of these four beats — with the four separate speakers whose "continue
+/// down this path" framing this file had to rewrite away — are transcribed from the surviving screenshots
+/// in <c>game-data/npc_dialog.lua</c> (WoodlandSmithNpc, WoodlandArmorerNpc, TutorialNpc1/2,
+/// MignokNpc). Note the area asks for TEN rabbits and TEN squirrels where this asks for five: the tswolf
+/// guide states ten, and the five here is this file's own exp-budget tuning, described below.
+/// See docs/Era-Gating.md.
+///
 /// The MECHANICAL beats and the item/spell prices come from the surviving screenshots on
 /// tswolf.com/newb/quest.shtml and quest2.shtml (archived 2001-06-27 / 2001-07-23; saved under
 /// scraped_nexus_data artifacts/tswolf/newb_questpics/): wield with u, inventory with i, the vitality bar
@@ -84,8 +94,8 @@ public static class NoviceQuest
         ctx.SetReg(RabbitSnap, ctx.KillCount("rabbit"));
         ctx.SetStage(Key, 1);
 
-        await ctx.Say("Welcome, child. You have come into this world with nothing but your name, and a name " +
-                      "will not keep the beasts off you.");
+        await ctx.Say("You have come into this world with nothing but your name, and a name will not " +
+                      "keep the beasts off you.");
         await ctx.SayItem("wooden_saber", "Take this saber. It is old and it is plain, but it holds an edge.");
         await ctx.Say("Press <i> to see it in your inventory, then type <u> and the letter beside it to wield it.");
         await ctx.SayLook(125, 11, "There are rabbits just outside my door. Slay five of them, and return to me " +

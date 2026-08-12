@@ -56,7 +56,32 @@ public static class CharacterFactory
     public static (ushort map, ushort x, ushort y) HomeCityFor(byte nation) =>
         nation == 2 ? ((ushort)351, (ushort)3, (ushort)6) : ((ushort)36, (ushort)5, (ushort)10);
 
-    // Place a BRAND NEW character (never persisted before) at their home city instead of Character's
+    // Where a BRAND NEW character opens their eyes — which is NOT always the home city, and is the one
+    // place the two differ from each other.
+    //
+    // From 2000-10-06 the game put a small tutorial AREA in front of the kingdoms ("You used to just spawn
+    // in next to Jadespear or Ironheart then they added a small area before you entered your starting
+    // nation"), so a new character starts in Welcome (map 4711) and only reaches their nation's tutor at
+    // the end of it, when the Woodland Angel warps them there. Before that date there was no area and the
+    // tutor's home WAS the spawn. See Shared/EraCalendar.cs and docs/Era-Gating.md.
+    //
+    // Nation-independent on purpose: the area sits BEFORE you enter your kingdom, so both nations walk the
+    // same rooms. The nation split re-appears at the far end, in the Angel's warp home.
+    //
+    // Deliberately NOT folded into HomeCityFor: that is also the revive point (Silver Thread, GM fallback),
+    // and a defeated veteran must not wake up in the newbie area.
+    //
+    // Welcome is 16x16 with — verified against TK4711.map — no solid tiles at all. (3,5) is the arrival
+    // spot, up and to the left; the way onward is the four-tile doorway along the bottom edge at
+    // (8..11, 15), which Warps.csv carries into Open Field (4712).
+    public static (ushort map, ushort x, ushort y, ushort xs, ushort ys) StartFor(byte nation)
+    {
+        if (EraCalendar.Has(EraCalendar.NewbieArea)) return (4711, 3, 5, 16, 16);
+        var (m, x, y) = HomeCityFor(nation);
+        return (m, x, y, 12, 12);   // both home interiors (36, 351) are 12x12
+    }
+
+    // Place a BRAND NEW character (never persisted before) at their starting point instead of Character's
     // compiled-in fallback. MUST run after ApplyAppearance has decoded the real Nation pick (creation
     // byte[2]) or every character would route by the compiled-in default instead of the picked nation.
     //
@@ -65,9 +90,9 @@ public static class CharacterFactory
     // defaults, fixed values not rolls, so they don't need re-applying here).
     public static void PlaceNewCharacter(Character c)
     {
-        var (map, x, y) = HomeCityFor(c.Nation);
+        var (map, x, y, xs, ys) = StartFor(c.Nation);
         c.Map = map; c.X = x; c.Y = y;
-        c.MapXs = 12; c.MapYs = 12;   // both home interiors (36, 351) are 12x12
+        c.MapXs = xs; c.MapYs = ys;
 
         c.MaxHp = c.Hp = (uint)Random.Shared.Next(45, 56);   // inclusive both ends, matches math.random(45,55)
         c.MaxMp = c.Mp = (uint)Random.Shared.Next(32, 37);   // matches math.random(32,36)

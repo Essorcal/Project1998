@@ -1,7 +1,7 @@
 # NexusServer Modding Guide
 
 NexusServer separates the **engine** (C#, in `Server/`) from the **game data** (flat files, in the `data/`
-git submodule under `data/game-data/`). Almost everything a modder tunes — spells, items, NPCs, monsters,
+git submodule under `game-data/`). Almost everything a modder tunes — spells, items, NPCs, monsters,
 shops, maps, drop tables, level curves — lives in CSV or Lua and **hot-reloads with the `@reload` GM command,
 no server restart**. This document is the map of what lives where and how to change it.
 
@@ -15,7 +15,7 @@ no server restart**. This document is the map of what lives where and how to cha
 
 | Tier | Lives in | Changed by | Examples |
 |---|---|---|---|
-| **Flat config (CSV/Lua)** | `data/game-data/*.csv`, `*.lua` | edit file → `@reload` | mob stats, items, spells, NPCs, shops, drops, warps, level curves |
+| **Flat config (CSV/Lua)** | `game-data/*.csv`, `*.lua` | edit file → `@reload` | mob stats, items, spells, NPCs, shops, drops, warps, level curves |
 | **Live GM/player state** | SQLite (`*.db`) | in-game actions / GM commands | inventories, mail, marriages, quest progress |
 | **Engine constants** | `Server/*.cs` | edit code → rebuild | wire/packet formats, combat math, the mob AI tick, a handful of scalars |
 
@@ -23,7 +23,7 @@ Everything below is Tier 1 unless noted.
 
 ## Hot reload
 
-`@reload` (GM command) re-reads **every** `data/game-data` file — all CSVs and the three Lua scripts — and
+`@reload` (GM command) re-reads **every** `game-data` file — all CSVs and the three Lua scripts — and
 rebuilds the world population (added/removed/repositioned spawns and NPCs take effect immediately). A load
 error keeps the previous content and reports the error, so a typo can't take the server down. There are no
 compile-time content tables left that would need a restart.
@@ -161,7 +161,7 @@ Add a row, pick/author a verb, `@reload`.
 
 ## Provenance & confidence
 
-Sourced facts carry a `Sources` column referencing `data/game-data/Sources.csv`; `re/build_confidence.py`
+Sourced facts carry a `Sources` column referencing `game-data/Sources.csv`; `re/build_confidence.py`
 scores each datum HIGH/MEDIUM/LOW from the source weights (live observation > era-correct tutor archive > RTK
 fallback). Run it after editing sourced data.
 

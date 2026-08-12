@@ -3,7 +3,7 @@ using MoonSharp.Interpreter;
 namespace Server;
 
 /// <summary>
-/// The item-use half of the verb/row model: <c>data/game-data/item_verbs.lua</c> defines the effect verbs
+/// The item-use half of the verb/row model: <c>game-data/item_verbs.lua</c> defines the effect verbs
 /// (heal / drink / ward / hardenbody / warphome / …), <c>ItemParams.csv</c> supplies each consumable's row, and
 /// <see cref="ItemContext"/> is the facade a verb acts through. A thin static wrapper over a shared
 /// <see cref="LuaVerbHost"/>; both files hot-reload on <c>@reload</c> (see <see cref="Content.Load"/>). See

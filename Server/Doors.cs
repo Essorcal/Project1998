@@ -37,7 +37,7 @@ public static class Doors
         ushort[]? OpenObjs = null,
         bool DefaultClosed = false);
 
-    // Per-tile door config, loaded from data/game-data/Doors.csv by Content.Load (via SetConfig) and swapped on
+    // Per-tile door config, loaded from game-data/Doors.csv by Content.Load (via SetConfig) and swapped on
     // @reload. Starts empty; a missing file just means no configured doors (plain RTK open/close toggle, no lock).
     // e.g. the Buya Salon entrance (map 330, tiles 118/119,133 -> "Buya Salon"): object ids 356/357 aren't in
     // RTK's open.lua table yet SObj.tbl flags them solid on every side, so 'o' silently no-opped — "locked open"

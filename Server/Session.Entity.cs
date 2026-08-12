@@ -424,12 +424,31 @@ public sealed partial class Session
     /// previously never sent, so every armor rendered at ramp 0 and the doll was always "spring" no matter
     /// what the bag icon showed. The Arena Master's war paint (<see cref="Character.ArmorColor"/>) overrides
     /// it when set, which is exactly RTK's behaviour: dyed gear shows the dye, undyed gear shows its own
-    /// colour. Bleaching back to 0 restores the item colour rather than forcing green.</para></summary>
+    /// colour. Bleaching back to 0 restores the item colour rather than forcing green.</para>
+    /// <para><b>The remap (2026-08-09).</b> appearance[4] is a ramp shift, and the client resolves the shifted
+    /// index against <b>the body sprite's own palette</b> — <c>Body.tbl</c> assigns one per body, and only
+    /// bodies <c>0..35</c> use Palette 0, the seasonal one the <c>ItmLookColor</c> 0..9 convention indexes.
+    /// Bodies <c>36..43</c> (the wind armors) are on Palette 1, which shares only ramps 24/28/29/30/31 with
+    /// Palette 0 and whose own 24 ramps all run light→dark where Palette 0's run dark→light. So the SAME
+    /// number is a different colour on different armor: ramp 10 is the grayscale/black ramp on Palette 0 and a
+    /// BROWN ramp on Palette 1 — a Hyun moo (black team) dye came out brown on wind armor, and Ju jak came out
+    /// olive. Every value the rest of the server speaks (war paint AND <c>ItmLookColor</c>) is canonical, i.e.
+    /// Palette 0's meaning; <see cref="Content.DyeRampFor"/> converts it to the ramp that renders that same
+    /// colour on the body actually worn. Identity for Palette 0 and 2 bodies, so only wind needs rows today.
+    /// Bodies 44..56 (ice + late gear) are Palette 2, whose ramps 0..31 are byte-identical to Palette 0.</para>
+    /// <para>Worth knowing: wind armor's own <c>ItmLookColor</c> is 24 and RTK's Chung ryong war paint is
+    /// <b>also</b> 24 (both mean the same azure ramp, and 24 is one of the shared rows so it needs no remap) —
+    /// which is the one dye that still cannot change a wind armor's appearance, because it is already exactly
+    /// what an undyed one renders. If a Chung ryong wind-armor player needs to be distinguishable from an
+    /// undyed one in a team battle, point that pair at another blue: <c>36,43,24,12</c> in ArmorDyeRamps.csv
+    /// (Palette 1 ramp 12 is a periwinkle blue, shading direction preserved).</para></summary>
     private byte ArmorDye()
     {
-        if (_char.ArmorColor != 0) return _char.ArmorColor;                 // war paint wins while it's applied
+        if (_char.ArmorColor != 0)                                          // war paint wins while it's applied
+            return Content.DyeRampFor(_char.Armor, _char.ArmorColor);
         var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type is 4 or 16);
-        return e is null ? (byte)0 : Content.ItemById(e.ItemId)?.LookColor ?? 0;
+        byte lc = e is null ? (byte)0 : Content.ItemById(e.ItemId)?.LookColor ?? 0;
+        return Content.DyeRampFor(_char.Armor, lc);
     }
     private byte EquippedLook(int itmType, byte none)
     {
@@ -651,10 +670,11 @@ public sealed partial class Session
             tgtGrace: _char.Grace + Totals().grace, tgtLevel: _char.Level);
 
         // RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is signed and
-        // LOWER is better (armor SUBTRACTS from it, same convention as SendStats/EffMight elsewhere), so a
-        // well-armored (very negative effective AC) player takes as little as 20% of the raw swing, while a
-        // naked/positive-AC player takes MORE than raw — armor can't fully negate a hit (-80 floor = min 20%).
-        int effectiveAc = _char.Ac - Totals().armor;
+        // LOWER is better, and gear/buff armor is an AC delta in the same units, so it simply ADDS (a -4 garb
+        // takes 4 off your AC; see Session.Items.EquipTotals). A well-armored (very negative effective AC)
+        // player takes as little as 20% of the raw swing, while a naked/positive-AC player takes MORE than
+        // raw — armor can't fully negate a hit (-80 floor = min 20%).
+        int effectiveAc = _char.Ac + Totals().armor;
         int dmg = Combat.ApplyArmor(rawDmg, effectiveAc, floor: -80);
 
         // Sleep-family amplifier: being dozed/slept makes the NEXT hit on you land harder (Doze 1.3x,

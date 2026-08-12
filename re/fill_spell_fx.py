@@ -22,14 +22,14 @@ mostly agree on, and report every row where (a) or (b) disagrees so the exceptio
 than being silently resolved.
 
 Run:  python re/fill_spell_fx.py          # dry run, prints the full disagreement report
-      python re/fill_spell_fx.py --write  # rewrite data/game-data/spell_effects.csv in place
+      python re/fill_spell_fx.py --write  # rewrite game-data/spell_effects.csv in place
 """
 import csv, re, sys, shutil, collections
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SPELLS = ROOT / "data/game-data/Spells.csv"
-FX = ROOT / "data/game-data/spell_effects.csv"
+SPELLS = ROOT / "game-data/Spells.csv"
+FX = ROOT / "game-data/spell_effects.csv"
 LUA = ROOT / "RTK-Server/rtklua/Accepted/Spells"
 
 ALIGN_NAME = {0: "unaligned", 1: "kwisin", 2: "mingken", 3: "ohaeng"}

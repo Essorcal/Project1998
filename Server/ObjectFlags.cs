@@ -84,31 +84,20 @@ public static class ObjectFlags
         }
     }
 
-    // Same search strategy as MapData.Locate: env override, then the repo. Prefer data/SObj.tbl — that is the
-    // CLIENT's own table (extract with `python re/pak_extract.py <install>/NexusTK.dat SObj.tbl data/SObj.tbl`),
-    // whose object-id space the .map files actually index, so server collision matches what the client draws.
-    // The RTK-Server copy is a superset that agrees on every in-range id, so it is a safe fallback if the
-    // client extract is absent.
+    // Same search strategy as MapData.Locate: env override, then content. Prefer game-data/SObj.tbl — that is
+    // the CLIENT's own table (extract with
+    // `python re/pak_extract.py <install>/NexusTK.dat SObj.tbl game-data/SObj.tbl`), whose object-id space the
+    // .map files actually index, so server collision matches what the client draws. The RTK-Server copy is a
+    // superset that agrees on every in-range id, so it is a safe fallback if the client extract is absent.
     private static string? Locate()
     {
         var candidates = new List<string>();
         var env = Environment.GetEnvironmentVariable("NEXUS_SOBJ");
         if (!string.IsNullOrWhiteSpace(env)) candidates.Add(env);
 
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            bool isRoot = dir.GetFiles("*.sln").Length > 0
-                       || (Directory.Exists(Path.Combine(dir.FullName, "Server"))
-                           && Directory.Exists(Path.Combine(dir.FullName, "Shared")));
-            if (isRoot)
-            {
-                candidates.Add(Path.Combine(dir.FullName, "data", "SObj.tbl"));
-                candidates.Add(Path.Combine(dir.FullName, "RTK-Server", "rtk", "SObj.tbl"));
-                break;
-            }
-            dir = dir.Parent;
-        }
+        candidates.Add(Path.Combine(Shared.RepoPaths.GameDataDir(), "SObj.tbl"));
+        candidates.Add(Path.Combine(Shared.RepoPaths.Root(), "RTK-Server", "rtk", "SObj.tbl"));
+
         foreach (var c in candidates)
             if (File.Exists(c)) return c;
         return null;

@@ -17,7 +17,7 @@ ROOT = Path(r"C:\Users\brian\Desktop\NexusServer")
 # ---- Spells.csv: key -> (name, pathId) -----------------------------------------------------------------
 spells_by_name = {}   # normalized name -> [(key, pathId), ...] (a name can appear for multiple pathIds -- reskins)
 spells_by_key = {}
-with open(ROOT / "data/game-data/Spells.csv", encoding="utf-8") as f:
+with open(ROOT / "game-data/Spells.csv", encoding="utf-8") as f:
     r = csv.DictReader(f)
     for row in r:
         key = row["SplIdentifier"].strip()
@@ -33,7 +33,7 @@ with open(ROOT / "data/game-data/Spells.csv", encoding="utf-8") as f:
 
 # ---- Items.csv: valid item keys ------------------------------------------------------------------------
 item_keys = set()
-with open(ROOT / "data/game-data/Items.csv", encoding="utf-8") as f:
+with open(ROOT / "game-data/Items.csv", encoding="utf-8") as f:
     r = csv.DictReader(f)
     for row in r:
         item_keys.add(row["ItmIdentifier"].strip())

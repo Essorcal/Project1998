@@ -194,7 +194,7 @@ public sealed class Mob
     // herd/prey critters (rabbit, deer, squirrel, …) are the passive exception.
     public bool Aggressive;
 
-    // Copied from MobDef.Flees at spawn (data/game-data/MobFlees.csv): a PREY creature — a rabbit, a blue
+    // Copied from MobDef.Flees at spawn (game-data/MobFlees.csv): a PREY creature — a rabbit, a blue
     // rooster. The opposite end of the scale from Aggressive, and mutually exclusive with it in practice: it
     // never holds a target and never swings, it BACKS AWAY from any player who gets close (World.Tick's flee
     // branch, ported from RTK Mobs/mob.lua RunAway) and bolts at double pace once spooked. Nothing in RTK's own
@@ -251,15 +251,15 @@ public sealed class Mob
     public List<TimedBuff>? Buffs;
 
     /// <summary>Apply (sign=+1) or revert (sign=-1) a targeted-buff stat delta onto this mob's raw combat fields.
-    /// <paramref name="amount"/> uses the player-side convention where a positive `armor` means BETTER defence;
-    /// a mob's <see cref="Ac"/> is signed lower-is-better, so armor improves it by subtracting. `might` has no mob
-    /// field, so it maps to the flat per-swing damage range. Shared by Session.CastTargetBuff and World.Tick so
-    /// apply and revert can never drift.</summary>
+    /// <paramref name="amount"/> is an AC DELTA in the same signed lower-is-better units as <see cref="Ac"/>
+    /// itself — damage taken is raw x (1 + ac/100), so a warding buff is NEGATIVE and a curse POSITIVE — and it
+    /// therefore just adds. `might` has no mob field, so it maps to the flat per-swing damage range. Shared by
+    /// Session.CastTargetBuff and World.Tick so apply and revert can never drift.</summary>
     public void AdjustBuffField(string stat, int amount, int sign)
     {
         switch (stat)
         {
-            case "armor": Ac -= amount * sign; break;                                  // +armor => lower (better) Ac
+            case "armor": Ac += amount * sign; break;                                  // -armor => lower (better) Ac
             case "might": MinDam += amount * sign; MaxDam += amount * sign; break;      // no mob Might -> flat damage
         }
     }

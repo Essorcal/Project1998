@@ -331,7 +331,7 @@ public sealed partial class Session
             // ⚠ MailFirstOnBoard NOW DEFAULTS OFF — turning it on HARD-FREEZES the client (live 2026-08-08).
             // The theory below (window ctor 0x406e80 already ran on the keypress, so a posts body will render)
             // is WRONG for this case: the window being open is necessary but not sufficient. Repro from
-            // data/server.log — `3b 01 00` answered with `boardposts(0x31) mailbox n=1` and the client sent
+            // logs/server.log — `3b 01 00` answered with `boardposts(0x31) mailbox n=1` and the client sent
             // nothing ever again (no walk, no turn, no keypress) until the socket was torn down 35s later.
             // The very same posts bytes render fine when they answer sub-2, so the ctor evidently arms a
             // LIST-shaped parse and a posts body walks it off the end. Sub-1 must answer with the list.

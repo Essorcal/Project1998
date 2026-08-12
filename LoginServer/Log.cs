@@ -20,7 +20,7 @@ public static class Log
     /// login channel's packets carry the player's PASSWORD in the clear (0x02 name-check and 0x03 login are
     /// both `nameLen name pwLen pw`), and 4.95's cipher is a fixed, published XOR, so the "raw" dump is
     /// every bit as readable as the decrypted one. Leaving this on writes every player's password into
-    /// data/login.log and the systemd journal in plaintext, where log shipping, backups and a support
+    /// logs/login.log and the systemd journal in plaintext, where log shipping, backups and a support
     /// screenshot all quietly spread it further.
     ///
     /// Set NEXUS_LOG_WIRE=1 to turn it back on for protocol work on a machine with no real accounts.
@@ -33,6 +33,9 @@ public static class Log
     {
         lock (Gate)
         {
+            // Same reasoning as Server/Log.AttachFile: logs/ is gitignored and nothing else creates it, and
+            // the open below reports-and-continues, so an absent directory would silently cost us the file.
+            try { Directory.CreateDirectory(Path.GetDirectoryName(path)!); } catch { /* OpenLocked reports */ }
             _path = path;
             OpenLocked("opened");
         }

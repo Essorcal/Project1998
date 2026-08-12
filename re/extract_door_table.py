@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Extract the door-object graphic toggle table from Server/Session.Movement.cs's `DoorToggle` switch
-into data/game-data/DoorObjects.csv -- fidelity-guaranteed (parses the C# literal, no hand transcription).
+into game-data/DoorObjects.csv -- fidelity-guaranteed (parses the C# literal, no hand transcription).
 
 Two row kinds:
   map,<obj>,<obj>,<startDx>,<id;id;...>   an exact faced-object match -> swap the run to these ids at startDx
@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "Server/Session.Movement.cs"
-OUT = ROOT / "data/game-data/DoorObjects.csv"
+OUT = ROOT / "game-data/DoorObjects.csv"
 
 text = SRC.read_text(encoding="utf-8")
 

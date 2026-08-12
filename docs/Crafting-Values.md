@@ -13,7 +13,7 @@ launch-scope cuts).
 
 **Era-gating infra is built** (`Server/CraftingToggles.cs`, wired through `Content.cs`'s
 existing flat-file registry pattern — same as maps/mobs/items/etc., NOT SQLite): the
-config lives in `data/game-data/CraftingToggles.csv` (`Skill,Enabled` columns, env
+config lives in `game-data/CraftingToggles.csv` (`Skill,Enabled` columns, env
 override `NEXUS_CRAFTING_TOGGLES`) and is picked up by the existing `@reload` GM
 command, no restart required. Only skills actually listed in the file override the
 code-level default in `CraftingToggles.DefaultDisabled`; anything absent falls through
@@ -47,7 +47,7 @@ Era research turned up three different pictures, so three different treatments:
   builds this project centers on. The other three Manufacturing skills
   (Tailoring/Carpentry/Smithing) are attested far earlier (2000-08-26/2000-10-24,
   `tswolf/arc7-2000.html`/`arc9-2000.html`). **Decision: implement it, gated off by
-  default** via `data/game-data/CraftingToggles.csv` (`Server/CraftingToggles.cs`) rather
+  default** via `game-data/CraftingToggles.csv` (`Server/CraftingToggles.cs`) rather
   than cutting it — keeps the values ready without committing to an era claim the
   research doesn't cleanly support either way.
 - **Food Preparation / Chef**: dated 2001-01-13/2001-01-31 — technically in-era for 4.95
@@ -85,7 +85,7 @@ That's ~3 months after the 4.83 client build (2000-10-12) but **~5 months before
 shipped, and neither depends on client-protocol features newer than 4.95 (NPC-dialog
 driven, like every other craft). Verdict: implement both, but off by default via
 `CraftingToggles` — a GM enables them per-target-era by editing
-`data/game-data/CraftingToggles.csv` and running `@reload`, rather than the server
+`game-data/CraftingToggles.csv` and running `@reload`, rather than the server
 assuming one era.
 
 ## Skill-gain mechanic — use SUCCESS-ONLY everywhere

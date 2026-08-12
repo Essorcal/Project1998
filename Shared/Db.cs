@@ -4,7 +4,7 @@ namespace Shared;
 
 /// <summary>
 /// The single SQLite database shared by the login and game processes (accounts, characters, handoff
-/// tokens, board posts). One file at &lt;repo&gt;/data/nexus.db in WAL mode so both processes can access it
+/// tokens, board posts). One file at &lt;root&gt;/state/nexus.db in WAL mode so both processes can access it
 /// concurrently: WAL allows many readers plus one writer across processes, and a per-connection
 /// busy_timeout absorbs the brief lock waits when both write at once.
 ///
@@ -17,8 +17,8 @@ public static class Db
     private static bool _initialized;
     private static string? _path;
 
-    /// <summary>Absolute path of the database file (&lt;repo&gt;/data/nexus.db).</summary>
-    public static string Path => _path ??= System.IO.Path.Combine(RepoPaths.DataDir(), "nexus.db");
+    /// <summary>Absolute path of the database file (&lt;root&gt;/state/nexus.db).</summary>
+    public static string Path => _path ??= RepoPaths.DbPath();
 
     /// <summary>Open a ready-to-use connection (schema guaranteed to exist, busy_timeout set).</summary>
     public static SqliteConnection Open()
@@ -44,7 +44,7 @@ public static class Db
         lock (InitGate)
         {
             if (_initialized) return;
-            System.IO.Directory.CreateDirectory(RepoPaths.DataDir());
+            System.IO.Directory.CreateDirectory(RepoPaths.StateDir());
             using var cn = new SqliteConnection($"Data Source={Path}");
             cn.Open();
             using var cmd = cn.CreateCommand();
@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS parcels (
 );
 
 -- Map cells a PLAYER changed: doors opened, GM edits, event scripts. The .map files on disk are never
--- written and authored corrections live in data/game-data/MapCells.csv, so this table holds only the
+-- written and authored corrections live in game-data/MapCells.csv, so this table holds only the
 -- diff against that authored baseline (MapData.RuntimeCells) — NOT the diff against the file. Baking
 -- authored corrections in here would make the DB outrank the CSV, and editing the CSV would silently
 -- stop working. One row per changed cell; the row is DELETED when a cell returns to its baseline (a

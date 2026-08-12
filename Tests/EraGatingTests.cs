@@ -1,0 +1,153 @@
+using Server;
+using Shared;
+using Xunit;
+
+namespace Tests;
+
+/// <summary>
+/// The era calendar decides what a brand-new player sees, and it is the one part of the content pipeline
+/// whose failure is INVISIBLE: a wrong date doesn't throw, doesn't log, and doesn't fail to load — it just
+/// quietly serves the wrong decade. These tests pin the three tutorial eras against the REAL
+/// <c>EraFeatures.csv</c> (only the target date is overridden), so editing a date in that file without
+/// meaning to breaks the build rather than the world.
+///
+/// Assembly-wide parallelism is off (see AssemblyInfo.cs), so driving the static calendar here is safe —
+/// but every test still restores it in a finally, because <see cref="ContentSmokeTests"/> calls
+/// <c>Content.Load</c>, which re-reads the calendar from the same environment variable.
+/// </summary>
+public class EraGatingTests
+{
+    // Point the calendar at a throwaway ServerTuning.csv holding just the date. EraFeatures.csv is left
+    // alone on purpose: the shipped dates are the thing under test.
+    private static void WithEraDate(int yyyymmdd, Action body)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "nexus-era-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var tuning = Path.Combine(dir, "ServerTuning.csv");
+        File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");
+
+        var prev = Environment.GetEnvironmentVariable("NEXUS_SERVER_TUNING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NEXUS_SERVER_TUNING", tuning);
+            EraCalendar.Reload();
+            body();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NEXUS_SERVER_TUNING", prev);
+            EraCalendar.Reload();           // put the real calendar back for whatever runs next
+            try { Directory.Delete(dir, true); } catch { /* temp dir; not worth failing a test over */ }
+        }
+    }
+
+    /// <summary>2001-07-09, the shipped default (the day client 4.95 released): the newbie area exists, the
+    /// tutor has stopped teaching the beats that moved into it, and both 2001-03-18 quests are live.</summary>
+    [Fact]
+    public void DefaultDateIsTheFullTutorial()
+    {
+        WithEraDate(EraCalendar.DefaultDate, () =>
+        {
+            Assert.True(Era.Has(Era.NewbieArea),        "newbie area should exist at 2001-07-09");
+            Assert.False(Era.Has(Era.TutorNoviceChain), "tutor should NOT re-teach beats that moved into the area");
+            Assert.True(Era.Has(Era.DuMountainQuest),   "Du Mountain quest shipped 2001-03-18");
+            Assert.True(Era.Has(Era.StudentCapQuest),   "student cap quest shipped 2001-03-18");
+        });
+    }
+
+    /// <summary>The day before 2001-03-18: the area is open but neither of that day's quests exists yet.
+    /// This is the middle of the three eras.</summary>
+    [Fact]
+    public void DayBeforeTheTwoThousandOneQuestsExcludesBoth()
+    {
+        WithEraDate(20010317, () =>
+        {
+            Assert.True(Era.Has(Era.NewbieArea));
+            Assert.False(Era.Has(Era.DuMountainQuest), "quest is dated 2001-03-18; 03-17 must exclude it");
+            Assert.False(Era.Has(Era.StudentCapQuest), "quest is dated 2001-03-18; 03-17 must exclude it");
+        });
+
+        WithEraDate(20010318, () =>
+        {
+            Assert.True(Era.Has(Era.DuMountainQuest), "the introduction date itself is INCLUSIVE");
+            Assert.True(Era.Has(Era.StudentCapQuest), "the introduction date itself is INCLUSIVE");
+        });
+    }
+
+    /// <summary>The area and the tutor-delivered chain are EXCLUSIVE — the beats moved, they were never
+    /// duplicated. Retirement being exclusive is what makes the handover land on a single day, so check the
+    /// hinge from both sides.</summary>
+    [Fact]
+    public void AreaAndTutorChainAreNeverBothLive()
+    {
+        WithEraDate(20001005, () =>
+        {
+            Assert.False(Era.Has(Era.NewbieArea),      "area opens 2000-10-06; the day before must exclude it");
+            Assert.True(Era.Has(Era.TutorNoviceChain), "before the area, the tutor is the only source");
+        });
+
+        WithEraDate(20001006, () =>
+        {
+            Assert.True(Era.Has(Era.NewbieArea),        "introduction is inclusive");
+            Assert.False(Era.Has(Era.TutorNoviceChain), "retirement is EXCLUSIVE — gone ON the handover day");
+        });
+
+        // The invariant itself, swept across the whole handover window.
+        foreach (var d in new[] { 20000101, 20001005, 20001006, 20010317, 20010318, 20010709, 20050101 })
+            WithEraDate(d, () =>
+                Assert.True(Era.Has(Era.NewbieArea) != Era.Has(Era.TutorNoviceChain),
+                    $"at {d} exactly one of the area / tutor-taught chain must be live"));
+    }
+
+    /// <summary>A brand-new character starts in Welcome (4711) once the area exists, and at their nation's
+    /// tutor before that. This is the behaviour the LOGIN server depends on, which is why the calendar
+    /// lives in Shared at all.</summary>
+    [Fact]
+    public void NewCharacterSpawnFollowsTheEra()
+    {
+        WithEraDate(EraCalendar.DefaultDate, () =>
+        {
+            foreach (byte nation in new byte[] { 1, 2 })
+            {
+                var s = CharacterFactory.StartFor(nation);
+                Assert.Equal(4711, s.map);                    // Welcome
+                Assert.Equal((ushort)3, s.x);
+                Assert.Equal((ushort)5, s.y);
+                Assert.Equal((ushort)16, s.xs);               // 16x16 — dims must match the map, not the 12x12 homes
+                Assert.Equal((ushort)16, s.ys);
+            }
+        });
+
+        WithEraDate(20001005, () =>
+        {
+            Assert.Equal(36,  CharacterFactory.StartFor(1).map);   // Ironheart's Home
+            Assert.Equal(351, CharacterFactory.StartFor(2).map);   // Jadespear's Home (Buya)
+            Assert.Equal((ushort)12, CharacterFactory.StartFor(1).xs);
+        });
+    }
+
+    /// <summary>Revive must NOT follow the era — a defeated veteran does not wake up in the newbie area.
+    /// <c>HomeCityFor</c> is shared with the Silver Thread revive point, so it stays nation-only.</summary>
+    [Fact]
+    public void ReviveIgnoresTheEra()
+    {
+        WithEraDate(EraCalendar.DefaultDate, () =>
+        {
+            Assert.Equal(36,  CharacterFactory.HomeCityFor(1).map);
+            Assert.Equal(351, CharacterFactory.HomeCityFor(2).map);
+        });
+    }
+
+    /// <summary>EraDate=0 switches gating off entirely: every dated feature reads as present, including
+    /// pairs that are mutually exclusive under a real date. That's the documented escape hatch.</summary>
+    [Fact]
+    public void ZeroDateDisablesGating()
+    {
+        WithEraDate(0, () =>
+        {
+            Assert.Null(Era.Today);
+            foreach (var f in Era.KnownFeatures)
+                Assert.True(Era.Has(f), $"{f} should be present when gating is off");
+        });
+    }
+}

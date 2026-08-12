@@ -2,7 +2,7 @@
 """Extract RTK dynamic mob spawns from rtklua/Accepted/NPCs/mobSpawnHandler.lua.
 
 RTK spawns town/dungeon mobs two ways:
-  * a small static `Spawns0` SQL table (already exported to data/game-data/Spawns0.csv) —
+  * a small static `Spawns0` SQL table (already exported to game-data/Spawns0.csv) —
     covers only ~19 maps (Kugnae, Buya, a few specials);
   * a big Lua "spawner NPC" that calls, per hunting map:
         handleSpawn(npc, map, {mobIds...}, {counts...}, timer [, minX, minY, maxX, maxY])

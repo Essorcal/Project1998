@@ -1,4 +1,4 @@
-"""Extract mob floor-loot drop tables from rtklua Accepted/Mobs/MobDrops.lua into data/game-data/MobDrops.csv,
+"""Extract mob floor-loot drop tables from rtklua Accepted/Mobs/MobDrops.lua into game-data/MobDrops.csv,
 so the server's drop rolls match RTK's real per-mob tables instead of a hand-guessed placeholder.
 
 The Lua's `_mobDropsTable` has one entry per mob key, each with an optional `loot` block (independently-rolled

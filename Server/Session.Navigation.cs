@@ -111,7 +111,7 @@ public sealed partial class Session
     // reproduce that: tier 1 -> base map, tier 2 -> base+3000, tier 3 -> base+4000.
     //
     // The entrance tiles, destinations, and per-tier requirements are DATA-DRIVEN from
-    // data/game-data/MythicCaves.csv (Content.MythicCaves / Content.MythicCaveTiles), editable + hot-reloadable
+    // game-data/MythicCaves.csv (Content.MythicCaves / Content.MythicCaveTiles), editable + hot-reloadable
     // via @reload. The requirement numbers are archival — cross-referenced against 4 tutor posts (see the CSV
     // Sources column + Sources.csv tutor-caves-*); the tile/destination geometry is RTK routing.
 
@@ -168,7 +168,7 @@ public sealed partial class Session
     // Tutor in, a staff role we don't model) — and the NORTH edge (x 8-9, y 1) into the player's alignment
     // sanctum (Unaligned/Kwisin/Mingken/Ohaeng, indexed by Character.Alignment 0-3). Only the map-exit warp is
     // in Warps.csv, so before this the leader-room and hall doors did nothing (or read as solid). The hall/
-    // sanctum geometry is data-driven (data/game-data/PathHalls.csv -> Content.PathHalls); hot-reloads via @reload.
+    // sanctum geometry is data-driven (game-data/PathHalls.csv -> Content.PathHalls); hot-reloads via @reload.
     private bool TryPathHallWarp(ushort x, ushort y)
     {
         if (!Content.PathHalls.TryGetValue(_char.Map, out var hall)) return false;
@@ -198,7 +198,7 @@ public sealed partial class Session
     // PvP arena doors (onScriptedTilesArena.lua -> arenaPVPCheckAndWarp.lua). Tower Arena is a hub: five side
     // doors, each opening into one level-banded PvP arena. NONE of them are SQL warps — only the return leg is
     // — so before this every door in the room was dead. Geometry + bands are data-driven
-    // (data/game-data/ArenaDoors.csv -> Content.ArenaDoorTiles) and hot-reload via @reload.
+    // (game-data/ArenaDoors.csv -> Content.ArenaDoorTiles) and hot-reload via @reload.
     //
     // RTK's own rejection is a 2-tile shove based on facing; we hold at the from-tile with SendXy() like the
     // mythic-cave and path-hall refusals, which is the same net effect on a 4.95 client (self-walk is local,
@@ -282,10 +282,10 @@ public sealed partial class Session
     // client's click/ESC reply is LIVE-CONFIRMED (opcode 0x3F, body mapId(u32BE) x(u16BE) y(u16BE) 00 --
     // RTK's case 0x3F map-change); HandleWorldMapSelect below decodes it and either warps to the clicked
     // destination or, for ESC/unrecognized coords, back to the origin. Two of RTK's nine destinations
-    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (data/game-data/map_index.csv)
+    // (Hamgyong Nam-Do, Mount Baekdu) have no renderable map data in this project (game-data/map_index.csv)
     // and are omitted outright.
     // X,Y = landing tile on the destination map. Destinations + their field10 dot pixels are data-driven
-    // (data/game-data/WorldMapDests.csv -> Content.WorldDests, order-significant); the trigger tiles that open
+    // (game-data/WorldMapDests.csv -> Content.WorldDests, order-significant); the trigger tiles that open
     // the screen live in Content.WorldMapTriggers (WorldMapTriggers.csv). Both hot-reload via @reload.
     // Fine-tune a dot live in-client with "@wmpos <i> <x> <y>", then bake the number into WorldMapDests.csv.
 
@@ -455,7 +455,7 @@ public sealed partial class Session
 
     // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor
     // to a fixed landing tile in a lower sub-room (onScriptedTilesMythicFallRooms.lua). The source->landing
-    // map is data-driven (data/game-data/FallRooms.csv -> Content.FallRooms, already tier-expanded); hot-reloads
+    // map is data-driven (game-data/FallRooms.csv -> Content.FallRooms, already tier-expanded); hot-reloads
     // via @reload.
     private const int FallRate = 500;
 
@@ -530,6 +530,7 @@ public sealed partial class Session
         SendMapInfo(mapId, xs, ys, mapName, 232, _gameInc++);   // 0x15 (light arg ignored; uses LightValue)
         SendXy();                                                // 0x04 coords + camera anchor
         SendSelfLook();                                          // 0x33 draw self on the new map
+        PrimeViewport("warp");                                   // 0x06 fill the window before the client asks
         PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
         SendWeather(_world.GetWeather(mapId));                   // 0x1F whatever the new map's weather already is
 
@@ -605,7 +606,7 @@ public sealed partial class Session
     {
         string q = text.Trim();
         var found = Content.SearchMobs(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check data/game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
         SendLog($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Mobs.Count}):");
         foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (@summon {m.Name})");
     }
@@ -638,7 +639,7 @@ public sealed partial class Session
     // restart would be needed for.)
     //
     // The work itself lives in World.ReloadFromDisk, because a content deploy has no GM logged in to type
-    // this — the CI content lane drops a data/reload_now sentinel and the world picks it up (see
+    // this — the CI content lane drops a run/reload_now sentinel and the world picks it up (see
     // RestartSchedule.Loop). This method is now just the chat-facing half: run it, report it to the GM.
     private void ReloadContent()
     {
@@ -649,7 +650,7 @@ public sealed partial class Session
 
     // @restart [minutes] [reason] | @restart cancel | @restart  (status)
     //
-    // The in-game half of RestartSchedule; the other trigger is the data/restart_at file a deploy writes.
+    // The in-game half of RestartSchedule; the other trigger is the run/restart_at file a deploy writes.
     // Note this is deliberately NOT an immediate kill — there is no "@restart now" shorthand, because the
     // whole point of the ladder is that players get told. A GM who genuinely wants it down this second can
     // say "@restart 0", which still announces, still flushes every player, and still takes the grace period.

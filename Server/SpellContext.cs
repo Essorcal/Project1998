@@ -3,7 +3,7 @@ using MoonSharp.Interpreter;
 namespace Server;
 
 /// <summary>
-/// The Lua-facing facade a spell verb (<c>data/game-data/spell_verbs.lua</c>) uses to act on the game — the
+/// The Lua-facing facade a spell verb (<c>game-data/spell_verbs.lua</c>) uses to act on the game — the
 /// spell-cast analogue of <see cref="NpcContext"/>. Created per cast, bound to one caster + target. It exposes
 /// a small, safe set of engine primitives (spend mana, damage the target, heal, speak) plus read-only caster
 /// stats, so a verb reads as linear script:

@@ -38,9 +38,22 @@ public sealed partial class Session
     // is what the old _sendLock protected.
     private const int OutboundCapacity = 2048;   // ~a burst of world-entry packets is well under this; a
                                                  // truly stuck socket hits it and we drop the connection.
-    private readonly Channel<byte[]> _outbound = Channel.CreateBounded<byte[]>(
+
+    /// <summary>A queued frame plus the moment it was handed to the queue. The log line for a packet is
+    /// written when it is ENQUEUED, so without this timestamp a multi-second delay between "the server
+    /// decided to send this" and "the bytes actually left the machine" is completely invisible — the log
+    /// looks perfect while the player is frozen. See WriterLoop's slow-send watchdog.</summary>
+    private readonly record struct Outbound(byte[] Buf, long QueuedAtMs);
+
+    private readonly Channel<Outbound> _outbound = Channel.CreateBounded<Outbound>(
         new BoundedChannelOptions(OutboundCapacity) { SingleReader = true, SingleWriter = false,
                                                       FullMode = BoundedChannelFullMode.Wait });
+
+    /// <summary>Warn when a frame waits this long (ms) to reach the socket, or when the socket write itself
+    /// blocks that long. <c>NEXUS_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player
+    /// would notice, so the log names the stall before anyone complains about it.</summary>
+    private static readonly int SlowSendMs =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
 
     // Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10 world
@@ -66,6 +79,35 @@ public sealed partial class Session
         int.TryParse(Environment.GetEnvironmentVariable("NEXUS_AUTOSAVE_MS"), out var asv) && asv > 0 ? asv : 15_000;
     private volatile bool _dirty;
     private long _lastSaveAtMs;
+
+    // ---- input-silence diagnostics (see Watchdog.ScanSessions) --------------------------------------
+    // The reported symptom is "mobs keep moving but my character can't move or act": the world is fine and
+    // we are still sending to this client, but it has stopped sending US anything. Neither side of that is
+    // visible in the packet log — an idle player and a wedged one look identical — so record the last time
+    // each direction carried traffic and let the watchdog spot the asymmetry.
+    private long _lastInboundMs = Environment.TickCount64;
+    private long _lastOutboundMs = Environment.TickCount64;
+    internal long LastInboundMs  => Volatile.Read(ref _lastInboundMs);
+    internal long LastOutboundMs => Volatile.Read(ref _lastOutboundMs);
+    internal byte LastInboundOp;    // opcode of the last packet the client sent us
+    internal byte LastOutboundOp;   // opcode of the last frame we queued for it
+    internal string Remote => _remote;
+
+    /// <summary>One-line dump of everything that could plausibly be gating this client's input, for the
+    /// silence watchdog. Deliberately reads only cheap fields — it runs off the watchdog thread.</summary>
+    internal string DiagState()
+    {
+        long now = Environment.TickCount64;
+        return $"last-in 0x{LastInboundOp:x2} {now - LastInboundMs}ms ago, " +
+               $"last-out 0x{LastOutboundOp:x2} {now - LastOutboundMs}ms ago, " +
+               $"outq {_outbound.Reader.Count}, pos ({_char.X},{_char.Y}) map {_char.Map}, " +
+               $"action-budget {_actionCount}/{ActionBudget} (window {_actionWindow}), " +
+               // A non-null _dlgReply means we are awaiting a 0x3A and the client is sitting in a MODAL
+               // dialog — which is itself a state where it will not send walks. Prime suspect for a
+               // "can't move but the world keeps going" report, so it is called out explicitly.
+               $"queued-casts {_queuedCasts.Count}, awaiting-dialog-reply {(_dlgReply is not null ? "YES" : "no")}, " +
+               $"trade {(_trade is not null ? "OPEN" : "none")}, dirty {_dirty}";
+    }
     // Set once this session has been superseded by a newer login for the same account (duplicate-login
     // guard, see World.RegisterOnline/Session.KickForReplacement). Gates the read-loop's disconnect save
     // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
@@ -207,7 +249,13 @@ public sealed partial class Session
         return all;
     }
 
-    public Session(TcpClient client, int port, CharacterStore store, World world)
+    /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
+    /// has already consumed its PROXY header (see Shared/ProxyProtocol.cs). Null on a direct connection,
+    /// where the socket's peer IS the client. Everything downstream — the handoff token binding at
+    /// HandoffTokens.Mint/Consume, the ban and moderation surface, and every log line — has to see the
+    /// player rather than the proxy, or it is reasoning about one address shared by the whole server.</param>
+    public Session(TcpClient client, int port, CharacterStore store, World world,
+                   System.Net.IPAddress? realIp = null)
     {
         _client = client;
         _stream = client.GetStream();
@@ -215,9 +263,12 @@ public sealed partial class Session
         _store = store;
         _world = world;
         _ver = (port == 2001 || port == 2006) ? ClientVersion.V533 : ClientVersion.V495;
-        _remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
-        _remoteIp = ((client.Client.RemoteEndPoint as System.Net.IPEndPoint)?.Address
-                     ?? System.Net.IPAddress.None).ToString();
+        var peer = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+        // Keep the proxy's own address in the log line: when the allow-list or the HAProxy backend is
+        // misconfigured, "which proxy claimed this" is the only thing that distinguishes a real player
+        // from a forged header, and it is not recoverable after the fact.
+        _remote = realIp is not null ? $"{realIp} (via {peer?.Address})" : peer?.ToString() ?? "?";
+        _remoteIp = (realIp ?? peer?.Address ?? System.Net.IPAddress.None).ToString();
     }
 
     public async Task RunAsync()
@@ -260,6 +311,7 @@ public sealed partial class Session
             {
                 int n = await _stream.ReadAsync(tmp);
                 if (n == 0) break;
+                Volatile.Write(ref _lastInboundMs, Environment.TickCount64);   // silence watchdog
                 if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
                 for (int i = 0; i < n; i++) buf.Add(tmp[i]);
 
@@ -269,6 +321,7 @@ public sealed partial class Session
                 {
                     if (!TkPacket.TryParse(arr.AsSpan(off), out var pkt, out int consumed)) break;
                     off += consumed;
+                    LastInboundOp = pkt.Opcode;
                     Handle(pkt);
                 }
                 if (off > 0)
@@ -316,10 +369,36 @@ public sealed partial class Session
     // so a slow/blocked WriteAsync can never stall the World tick thread or this session's read loop.
     private async Task WriterLoop()
     {
+        long lastWarnMs = 0;
+        int suppressed = 0;
         try
         {
-            await foreach (var buf in _outbound.Reader.ReadAllAsync())
-                await _stream.WriteAsync(buf);
+            await foreach (var item in _outbound.Reader.ReadAllAsync())
+            {
+                long queuedMs = Environment.TickCount64 - item.QueuedAtMs;   // enqueue -> we picked it up
+                long w0 = Environment.TickCount64;
+                await _stream.WriteAsync(item.Buf);
+                long writeMs = Environment.TickCount64 - w0;                 // time inside the socket write
+
+                if (SlowSendMs <= 0) continue;
+                if (queuedMs < SlowSendMs && writeMs < SlowSendMs) continue;
+
+                // Rate-limited to one line/second per session: a genuinely bad link would otherwise fill the
+                // log with thousands of these and bury the first (most useful) one.
+                long now = Environment.TickCount64;
+                if (now - lastWarnMs < 1000) { suppressed++; continue; }
+                lastWarnMs = now;
+
+                // Read this line as: WRITE high -> the kernel send buffer is full, i.e. the client is not
+                // ACKing fast enough (packet loss + TCP retransmit backoff, or plain bandwidth). That stall
+                // is on the network, not in the server, and no amount of server tuning shortens it.
+                // QUEUED high with WRITE low -> we were slow to pick the frame up: this task is a thread-pool
+                // work item, so that means pool starvation (cross-check the pool-latency line from Watchdog).
+                Log.Info($"!! SLOW SEND {_remote}: queued {queuedMs}ms, write {writeMs}ms, " +
+                         $"{_outbound.Reader.Count} frame(s) still queued" +
+                         (suppressed > 0 ? $" (+{suppressed} more suppressed since the last line)" : ""));
+                suppressed = 0;
+            }
         }
         catch (Exception e) { Log.Info($"!! {_remote} writer stopped: {e.Message}"); }
         finally { CloseConnection("writer exit"); }   // e.g. client closed the socket -> unblock the reader
@@ -793,6 +872,7 @@ public sealed partial class Session
         Log.Info("   -> mapinfo(0x15)");
         SendXy();
         SendSelfLook();
+        PrimeViewport("login");   // 0x06 fill the window now — don't wait on the client's own 0x05
         SendStats();
         ArmEntryMusic();           // 0x19 music: ARMED here, sent on the client's first packet — see Handle()
         SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
@@ -939,21 +1019,30 @@ public sealed partial class Session
     private bool _streamValid;
     private int _streamX0, _streamY0, _streamX1, _streamY1;   // inclusive bounds already sent
 
-    // The client asks for 18x16 / 19x17 around itself. Stream a slightly larger window so a walking player
-    // can never outrun the coverage: at one tile per step, two tiles of margin is ample.
-    private const int StreamW = 23, StreamH = 21;
+    // The client asks for 18x16 / 19x17 around itself. Stream a larger window so a walking player can never
+    // outrun the coverage. The DRAWN rect is 19x17 (the builder at 0x44c950 extends one tile past the 17x15
+    // viewport on every side — see Session.Entity.cs), so measure margin from that, not from 17x15: a 27x25
+    // window centred on the player puts its edge 13 tiles out against a visible edge ~9 tiles out, i.e. 4
+    // tiles of lookahead. Cost is per-STRIP, not per-window (one step exposes one 25-cell column = ~100 B),
+    // so widening the window is nearly free once the initial fill is done.
+    private const int StreamW = 27, StreamH = 25;
 
     // The client normally re-requests on its own about every 5 steps (measured: 0.20 requests per walk,
-    // the same with or without the server replying, so it is scroll-driven rather than retrying). Where it
-    // does that, pushing is pure duplication — one measured window sent 755 replies against 139 requests.
-    // But it does NOT always do it: on map 1000 (18x25, exactly viewport-width so its x0 is pinned at 0) a
-    // player walked 11 tiles out of the requested rect with no further request, which is a black wall.
-    // So: push only once the client has gone quiet for PushGraceSteps. Set NEXUS_V495_PUSHMAP=0 to disable
-    // the push entirely and check whether the client really does keep up unaided.
+    // the same with or without the server replying, so it is scroll-driven rather than retrying). But its
+    // own request is only 18x16 around itself — barely wider than the 19x17 it draws — so five steps in one
+    // direction runs the drawn edge past the requested rect and you see black cells a step or two ahead of
+    // you. And it does NOT always re-request: on map 1000 (18x25, exactly viewport-width so its x0 is pinned
+    // at 0) a player walked 11 tiles out of the requested rect with no further request at all.
+    //
+    // So the push now runs on EVERY step (grace 0). The old 8-step grace deferred to the client's own
+    // requests, which is where the visible black boxes came from. The duplication that grace was avoiding is
+    // one ~100-byte strip per step; NoteStreamed no longer lets a client request shrink the tracked window,
+    // so a request costs one margin fill, not a full re-send every time. NEXUS_V495_PUSHGRACE restores the
+    // old deferral, NEXUS_V495_PUSHMAP=0 disables the push entirely.
     private static readonly bool PushMap =
         (Environment.GetEnvironmentVariable("NEXUS_V495_PUSHMAP") ?? "1").Trim() != "0";
     private static readonly int PushGraceSteps =
-        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_PUSHGRACE"), out var g) && g >= 0 ? g : 8;
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_V495_PUSHGRACE"), out var g) && g >= 0 ? g : 0;
     private int _stepsSinceMapReq;
 
     // Deliberately the LAST window, not a running union of everything sent. A union is a bounding box, and a
@@ -965,12 +1054,46 @@ public sealed partial class Session
     private void NoteStreamed(int x0, int y0, int w, int h)
     {
         if (w <= 0 || h <= 0) return;
+        int x1 = x0 + w - 1, y1 = y0 + h - 1;
+        // A rect strictly INSIDE the tracked one adds no coverage, so keep the larger one — it was itself
+        // sent as a single rect, so it stays an honest claim (this is not the union the note above rejects;
+        // the tracked rect only ever holds a rectangle we actually sent whole). This matters because the
+        // client's own 0x05 (18x16) is smaller than our push window: without it, every client request would
+        // shrink the tracker and the next step would re-send the whole margin back out to 27x25.
+        if (_streamValid && _streamMap == _char.Map
+            && x0 >= _streamX0 && y0 >= _streamY0 && x1 <= _streamX1 && y1 <= _streamY1) return;
         _streamMap = _char.Map; _streamValid = true;
-        _streamX0 = x0; _streamY0 = y0; _streamX1 = x0 + w - 1; _streamY1 = y0 + h - 1;
+        _streamX0 = x0; _streamY0 = y0; _streamX1 = x1; _streamY1 = y1;
     }
 
     /// <summary>Reset the coverage tracker — the player changed map, so nothing is streamed yet.</summary>
     private void ResetStreamCoverage() { _streamValid = false; _streamMap = 0; }
+
+    /// <summary>The rect we want covered around the player: the stream window clamped to the map (so a map
+    /// smaller than the window is simply sent whole).</summary>
+    private (int x0, int y0, int w, int h) StreamWindow()
+    {
+        int xs = _char.MapXs, ys = _char.MapYs;
+        int w = Math.Min(StreamW, xs), h = Math.Min(StreamH, ys);
+        return (Math.Clamp(_char.X - w / 2, 0, xs - w), Math.Clamp(_char.Y - h / 2, 0, ys - h), w, h);
+    }
+
+    /// <summary>Send the whole stream window NOW, ignoring the grace and the coverage tracker. Call right
+    /// after the 0x15/0x04/0x33 entry trio on every map entry (login, warp, refresh).
+    ///
+    /// Warping is the worst case for terrain and used to be the one path with no push at all: the client's
+    /// map array is its memory-mapped cache file, freshly zero-filled for a map it has never visited, and
+    /// the only thing that filled it was the client's own 0x05 — which lags the 0x15, covers just 18x16
+    /// around the arrival tile, and (map 1000) sometimes never comes. So you landed inside a small island
+    /// of real tiles with black in every direction, and the walk-driven push only repaired it a strip at a
+    /// time as you walked into it. Priming the full window on arrival is ~2.7 KB once per map entry.</summary>
+    private void PrimeViewport(string why)
+    {
+        if (!PushMap || !_enteredWorld || _char.MapXs == 0 || _char.MapYs == 0) return;
+        var (x0, y0, w, h) = StreamWindow();
+        _stepsSinceMapReq = 0;   // we just fed the client a full window; any configured grace restarts here
+        SendMapRect(x0, y0, w, h, why);
+    }
 
     /// <summary>Push any terrain the player's viewport now covers but we haven't sent. Call after a
     /// committed step.</summary>
@@ -980,10 +1103,7 @@ public sealed partial class Session
         _stepsSinceMapReq++;
         if (!PushMap || _stepsSinceMapReq < PushGraceSteps) return;   // the client is asking for itself
 
-        int xs = _char.MapXs, ys = _char.MapYs;
-        int w = Math.Min(StreamW, xs), h = Math.Min(StreamH, ys);
-        int x0 = Math.Clamp(_char.X - w / 2, 0, xs - w);
-        int y0 = Math.Clamp(_char.Y - h / 2, 0, ys - h);
+        var (x0, y0, w, h) = StreamWindow();
         int x1 = x0 + w - 1, y1 = y0 + h - 1;
 
         // Nothing streamed for this map yet, or the window has jumped clear of the last one (a warp landing
@@ -1038,13 +1158,24 @@ public sealed partial class Session
     // a screenful. Guarded by _viewLock (touched by both this read-loop and the World tick thread). Send()
     // no longer takes a lock (it's a lock-free channel enqueue), so _viewLock can't participate in a deadlock.
     private readonly HashSet<uint> _shownMobs = new();
+    // Shown mobs currently sitting in the overdraw band (outside the strict 17x15, inside the drawn 19x17).
+    // The client MAY have culled these; if one steps back into the strict rect we re-assert its 0x07 rather
+    // than assume it's still there. This is what makes HidePad > ShowPad safe — see SyncMobs.
+    private readonly HashSet<uint> _edgeMobs = new();
     private readonly object _viewLock = new();
-    // The pads MUST hug the real 17x15 viewport. The client's 0x07 spawn is viewport-gated: a spawn sent
-    // for an OFF-screen tile is silently dropped, so spawning ahead of the edge (ShowPad>0) would mark a
-    // mob "shown" that the client never created — it then never appears. Likewise the client culls entities
-    // that move off-screen, so keeping a mob "shown" past the edge (HidePad>0) leaves a dead zone where we
-    // think it's drawn but it's gone, and we never re-send it. So: show/despawn EXACTLY at the screen edge.
+    // SHOW at the strict 17x15 edge, HIDE at the drawn edge one tile further out.
+    //
+    // ShowPad must stay 0: the 0x07 spawn is viewport-gated (0x424310 is a rect test against the camera
+    // viewport), so a spawn for an off-screen tile is silently dropped and would mark a mob "shown" that
+    // the client never created.
+    //
+    // HidePad is 1 because the client DRAWS one tile past the viewport on every side: the viewport builder
+    // 0x44c950 clamps to originX-1 .. originX+ViewW+1 (see Session.Entity.cs), i.e. a 19x17 drawn rect
+    // around a 17x15 viewport. Despawning at 17x15 therefore yanks mobs off a tile that is still on screen
+    // — the reported "mobs pop out one tile too soon". The dead zone this note used to warn about (we think
+    // it's drawn, the client already culled it, we never re-send) is closed by _edgeMobs: anything that
+    // spends time in the band gets a fresh 0x07 when it re-enters the strict rect.
     private const int ShowPad = 0;
-    private const int HidePad = 0;
+    private const int HidePad = 1;
 
 }

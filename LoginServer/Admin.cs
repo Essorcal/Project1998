@@ -108,9 +108,9 @@ public static class Admin
             rows += cmd.ExecuteNonQuery();
         }
         tx.Commit();
-        // The legacy data/chars/*.json backup is left alone deliberately — but CharacterStore's migration
+        // The legacy state/chars/*.json backup is left alone deliberately — but CharacterStore's migration
         // would re-import it into an empty DB, so say so rather than leaving a surprise.
-        Console.WriteLine($"Deleted '{name}' ({rows} row(s)). Note: any data/chars/{Auth.Key(name)}.json backup " +
+        Console.WriteLine($"Deleted '{name}' ({rows} row(s)). Note: any state/chars/{Auth.Key(name)}.json backup " +
                           "still exists and would be re-imported if the DB were ever rebuilt from scratch.");
     }
 }

@@ -72,22 +72,45 @@ public sealed class ConnGuard
     /// socket immediately.</summary>
     public bool TryAdmit(IPAddress ip, out string? reason)
     {
-        reason = null;
-        bool exempt = _exemptLoopback && IPAddress.IsLoopback(ip);
+        if (!TryReserveGlobal(out reason)) return false;
+        if (!BindIp(ip, out reason)) { ReleaseGlobal(); return false; }
+        return true;
+    }
 
-        // Global load-shed first (reserve a global slot; roll back if any later gate rejects).
+    /// <summary>
+    /// The global load-shed gate on its own, for the case where the real client address is not known yet.
+    ///
+    /// Behind a PROXY-protocol front end the address the per-IP gates need only arrives after the header
+    /// has been read, and reading it means an await — which must not happen inline in the accept loop or
+    /// one silent peer stalls every other connection. So the accept loop reserves the global slot here
+    /// (keeping load-shedding at the cheapest point, before anything is spawned), and <see cref="BindIp"/>
+    /// applies the per-IP and rate gates once the header has resolved. Pair with <see cref="ReleaseGlobal"/>
+    /// if the header never arrives, or with <see cref="Release"/> once BindIp has succeeded.
+    /// </summary>
+    public bool TryReserveGlobal(out string? reason)
+    {
+        reason = null;
         if (Interlocked.Increment(ref _total) > _globalMax)
         {
             Interlocked.Decrement(ref _total);
             reason = $"global cap {_globalMax}";
             return false;
         }
+        return true;
+    }
+
+    /// <summary>Apply the per-IP concurrent and rate gates to an already-reserved global slot. Never
+    /// touches the global counter — on failure the caller releases it with <see cref="ReleaseGlobal"/>,
+    /// which keeps this composable with <see cref="TryReserveGlobal"/> in either order of failure.</summary>
+    public bool BindIp(IPAddress ip, out string? reason)
+    {
+        reason = null;
+        bool exempt = _exemptLoopback && IPAddress.IsLoopback(ip);
 
         if (!exempt)
         {
             if (RateExceeded(ip))
             {
-                Interlocked.Decrement(ref _total);
                 reason = $"rate {_rateMax}/{_rateWindowMs}ms";
                 return false;
             }
@@ -96,7 +119,6 @@ public sealed class ConnGuard
             if (cur > _perIpMax)
             {
                 _perIp.AddOrUpdate(ip, 0, (_, v) => v - 1);
-                Interlocked.Decrement(ref _total);
                 reason = $"per-IP cap {_perIpMax}";
                 return false;
             }
@@ -107,6 +129,10 @@ public sealed class ConnGuard
         }
         return true;
     }
+
+    /// <summary>Give back a slot taken by <see cref="TryReserveGlobal"/> when no <see cref="BindIp"/> ever
+    /// succeeded for it (a PROXY header that never arrived, or one that was rejected).</summary>
+    public void ReleaseGlobal() => Interlocked.Decrement(ref _total);
 
     /// <summary>Release the reservation taken by a successful <see cref="TryAdmit"/>. Idempotency is the
     /// caller's job (call it once per admitted connection, in a finally).</summary>

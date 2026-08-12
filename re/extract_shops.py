@@ -1,4 +1,4 @@
-"""Extract every shop NPC's BUY list from the rtklua NPC scripts into data/game-data/ShopStock.csv, so any
+"""Extract every shop NPC's BUY list from the rtklua NPC scripts into game-data/ShopStock.csv, so any
 shop-flagged NPC has stock without hand-authoring each catalogue. The server loads this as a fallback behind
 the curated Shops.cs catalogues (which stay authoritative where present).
 

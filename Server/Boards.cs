@@ -24,22 +24,29 @@ public sealed class BoardPost
 
 /// <summary>A named board (RTK <c>board_db</c>: id + display name). RTK's own board list
 /// (<c>db/board_db.txt</c>) is server-instance configuration the reference tree doesn't ship — there's no
-/// real seed data to port. This list instead reuses REAL RTK board identifiers straight from RTK's own
-/// board scripts (<c>rtklua/Developers/Boards/*.lua</c>: lore/map/poetry/minigamescarnages), not invented
-/// names, picking the ones that don't depend on concepts this server has no model for yet (GM level, tutor
-/// rank, clans — <c>pathBoards.lua</c>'s per-class boards gate posting on "tutor" status, subpath boards
-/// need a clan/subpath system). Every board here is open to read + post by any player, matching RTK's own
-/// default for a board with no gating <c>check</c> script.</summary>
+/// real seed data to port, so the roster below is this server's own choice of boards rather than anything
+/// recovered from RTK. Order here IS the order the client draws in the <c>b</c> list; the personal
+/// <b>Mailbox</b> (board 0) is appended after them by <c>Session.SendBoardList</c> and is not listed here.
+/// Ids are the wire <c>BrdBnmId</c> and are what <c>board_posts.board_id</c> and
+/// <c>game-data/BoardLocations.csv</c> reference — renumbering an existing board re-homes its posts
+/// and any board-sign pointing at it, so add new boards with new ids rather than reshuffling.
+/// Every board is open to read + post by any player, matching RTK's own default for a board with no gating
+/// <c>check</c> script (RTK's gated boards need GM level / tutor rank / clans, none of which are modelled).</summary>
 public sealed record BoardDef(int Id, string Name);
 
 public static class Boards
 {
     public static readonly IReadOnlyList<BoardDef> All = new[]
     {
-        new BoardDef(1, "Lore"),
-        new BoardDef(2, "Map"),
-        new BoardDef(3, "Poetry"),
-        new BoardDef(4, "Carnage Schedule"),
+        new BoardDef(1, "Community"),
+        new BoardDef(2, "Market (Buy)"),
+        new BoardDef(3, "Market (Sell)"),
+        new BoardDef(4, "Hunting"),
+        new BoardDef(5, "Community Events"),
+        new BoardDef(6, "Law"),
+        new BoardDef(7, "Guide"),
+        new BoardDef(8, "Poetry"),
+        new BoardDef(9, "Bugs"),
     };
 
     public static BoardDef? Find(int boardId) => All.FirstOrDefault(b => b.Id == boardId);
@@ -142,7 +149,7 @@ public static class Boards
         catch { return false; }
     }
 
-    // One-time import of a legacy data/boards.json (if present) into the DB. Idempotent: skips when the
+    // One-time import of a legacy state/boards.json (if present) into the DB. Idempotent: skips when the
     // board_posts table already has rows. Called once at game-server startup.
     public static void MigrateFromJsonIfNeeded()
     {
@@ -155,7 +162,7 @@ public static class Boards
                 if (Convert.ToInt32(count.ExecuteScalar()) > 0) return;   // already have posts -> done
             }
 
-            var path = Path.Combine(RepoPaths.DataDir(), "boards.json");
+            var path = RepoPaths.State("boards.json");
             if (!File.Exists(path)) return;
 
             List<BoardPost>? posts;

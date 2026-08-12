@@ -5,7 +5,7 @@ namespace Tests;
 
 /// <summary>
 /// The CI gate. Not unit tests of game logic — a check that the CONTENT still loads, because that is how this
-/// server actually breaks. Almost everything here is driven by <c>data/game-data/*.csv</c> and three Lua files
+/// server actually breaks. Almost everything here is driven by <c>game-data/*.csv</c> and three Lua files
 /// that the compiler never sees: a stray comma in Items.csv, a renamed spell verb, a missing .map file. None
 /// of that fails a <c>dotnet build</c>, and all of it reaches players.
 ///
@@ -45,6 +45,28 @@ public class ContentSmokeTests
         Assert.True(Content.Warps.Count  > 0, "Warps.csv loaded no warps");
         Assert.True(Content.Spells.Count > 0, "Spells.csv loaded no spells");
         Assert.True(Content.Npcs.Count   > 0, "NPCs.csv loaded no NPCs");
+    }
+
+    /// <summary>A brand-new character's spawn tile can actually reach the rest of the world.
+    ///
+    /// <para>This is not a hypothetical. Welcome (4711) shipped with its only exits at <c>(9,16)</c> and
+    /// <c>(10,16)</c> on a 16x16 map — rows 0-15 — so both source tiles were out of bounds and the room was
+    /// a sealed box. Nothing detects that at load time: the warp rows parse fine, the map loads fine, and the
+    /// first symptom is a new player who cannot move on. Assert the doorway instead of trusting it.</para></summary>
+    [Fact]
+    public void NewbieAreaFirstDoorwayIsReachable()
+    {
+        EnsureLoaded();
+
+        var start = Shared.CharacterFactory.StartFor(1);
+        if (start.map != 4711) return;    // pre-area era configured; the tutor-home spawn has no doorway to check
+
+        Assert.True(start.x < start.xs && start.y < start.ys,
+            $"spawn ({start.x},{start.y}) is outside Welcome's {start.xs}x{start.ys} bounds");
+
+        for (ushort wx = 8; wx <= 11; wx++)
+            Assert.True(Content.TryWarp(4711, wx, 15, out var d) && d.m == 4712,
+                $"Welcome (4711) tile ({wx},15) must warp into Open Field (4712) — without it a new character is sealed in");
     }
 
     /// <summary>The three Lua files compile. <see cref="Content.RejectedScripts"/> is how LuaVerbHost reports a
@@ -112,5 +134,52 @@ public class ContentSmokeTests
         Assert.True(found == total,
             $"{total - found} of {total} map(s) have no .map file (searched: {string.Join(" | ", dirs)}). "
             + "Collision and spawn placement are degraded on those maps.");
+    }
+
+    /// <summary>
+    /// The armor-dye ramp remap (ArmorDyeRamps.csv). Silent-failure shaped in the usual way: if the file goes
+    /// missing or its header stops matching, <see cref="Content.DyeRampFor"/> quietly becomes the identity and
+    /// dyes go back to rendering the wrong colour on any body whose Body.tbl palette is not the seasonal one —
+    /// nothing throws, nothing logs, the war paint just lies. Wind armor (bodies 36..43, Palette 1) is the only
+    /// family affected today: ramp 10 is black on Palette 0 but BROWN there, so a Hyun moo dye came out brown.
+    /// </summary>
+    [Fact]
+    public void ArmorDyeRampsRemapWindArmor()
+    {
+        EnsureLoaded();
+
+        Assert.NotEmpty(Content.ArmorDyeRamps);
+
+        // Wind bodies must move OFF the canonical value for the colours Palette 1 disagrees on...
+        Assert.Equal(28, Content.DyeRampFor(38, 10));    // Hyun moo  black -> Palette 1's grayscale row
+        Assert.Equal(29, Content.DyeRampFor(38, 11));    // Baekho    white
+        Assert.Equal(3,  Content.DyeRampFor(38, 17));    // River     kept distinct from Chung ryong's blue
+        Assert.Equal(16, Content.DyeRampFor(38, 20));    // Fire      orange (Palette 1's ramp 20 is khaki)
+        Assert.Equal(24, Content.DyeRampFor(38, 24));    // Chung ryong blue — a SHARED row, so identity
+        Assert.Equal(31, Content.DyeRampFor(38, 31));    // Ju jak    vermilion — shared row, identity
+
+        // ...and every other body must pass through untouched, or we would break the armors that work.
+        foreach (byte dye in WarPaintAbility.TeamColors)
+        {
+            Assert.Equal(dye, Content.DyeRampFor(4, dye));    // Palette 0, the seasonal armors
+            Assert.Equal(dye, Content.DyeRampFor(48, dye));   // Palette 2 (ice) — identical ramps to Palette 0
+        }
+    }
+
+    /// <summary>Every Arena Master team colour must have a ramp defined for the wind bodies, or that team
+    /// silently renders as some unrelated hue there (the original bug). Catches the easy mistake of retuning
+    /// <see cref="WarPaintAbility"/> without adding the matching ArmorDyeRamps.csv row.</summary>
+    [Fact]
+    public void EveryTeamDyeHasAWindArmorRamp()
+    {
+        EnsureLoaded();
+
+        var missing = WarPaintAbility.TeamColors
+            .Where(c => !Content.ArmorDyeRamps.ContainsKey(((ushort)38, c)))
+            .ToList();
+
+        Assert.True(missing.Count == 0,
+            "Arena Master team colour(s) with no wind-armor (Palette 1) ramp in ArmorDyeRamps.csv: "
+            + string.Join(", ", missing) + ". They will render the wrong colour on wind armor.");
     }
 }

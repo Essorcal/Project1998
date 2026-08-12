@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive a HIGH / MEDIUM / LOW confidence rating for every sourced datum in the data CSVs, from the
 provenance recorded on each row (a `source`/`Sources` column) plus the per-source attributes in the
-central registry data/game-data/Sources.csv.
+central registry game-data/Sources.csv.
 
 Confidence is NEVER hand-authored -- it is computed here from the referenced sources, so adding a live
 test or another anecdote automatically re-rates the datum. Tune the model by editing source `Weight`s in
@@ -24,32 +24,32 @@ from pathlib import Path
 from collections import Counter, defaultdict
 
 ROOT = Path(__file__).resolve().parent.parent
-REGISTRY = ROOT / "data/game-data/Sources.csv"
+REGISTRY = ROOT / "game-data/Sources.csv"
 
 # Files to score: (path, source_column, default_source_id_for_blank_cells)
 FILES = [
-    ("data/game-data/SpellLearnCosts.csv", "source", None),
-    ("data/game-data/mobs.csv",        "Sources", "rtk-db"),   # pilot column not added yet -> skipped if absent
-    ("data/game-data/MythicCaves.csv", "Sources", None),       # zodiac cave reqs; 4 tutor-caves-* per row
+    ("game-data/SpellLearnCosts.csv", "source", None),
+    ("game-data/mobs.csv",        "Sources", "rtk-db"),   # pilot column not added yet -> skipped if absent
+    ("game-data/MythicCaves.csv", "Sources", None),       # zodiac cave reqs; 4 tutor-caves-* per row
     # Tier-1 location/warp geometry (mostly rtk-lua fallback -> LOW, which is honest until independently verified)
-    ("data/game-data/Inns.csv",             "Sources", "rtk-lua"),
-    ("data/game-data/ForageAreas.csv",      "Sources", "rtk-lua"),
-    ("data/game-data/Doors.csv",            "Sources", None),
-    ("data/game-data/PathHalls.csv",        "Sources", "rtk-lua"),
-    ("data/game-data/GatewayGates.csv",     "Sources", "rtk-lua"),
-    ("data/game-data/WorldMapDests.csv",    "Sources", "binary-re"),
-    ("data/game-data/WorldMapTriggers.csv", "Sources", "rtk-lua"),
-    ("data/game-data/FallRooms.csv",        "Sources", "rtk-lua"),
-    ("data/game-data/ShopCatalogues.csv",   "Sources", "rtk-lua"),
-    ("data/game-data/SpellParams.csv",       "Sources", "rtk-lua"),   # Lua verb/row spell params (spike)
-    ("data/game-data/ItemParams.csv",        "Sources", "rtk-lua"),   # Lua verb/row item use-effect params
+    ("game-data/Inns.csv",             "Sources", "rtk-lua"),
+    ("game-data/ForageAreas.csv",      "Sources", "rtk-lua"),
+    ("game-data/Doors.csv",            "Sources", None),
+    ("game-data/PathHalls.csv",        "Sources", "rtk-lua"),
+    ("game-data/GatewayGates.csv",     "Sources", "rtk-lua"),
+    ("game-data/WorldMapDests.csv",    "Sources", "binary-re"),
+    ("game-data/WorldMapTriggers.csv", "Sources", "rtk-lua"),
+    ("game-data/FallRooms.csv",        "Sources", "rtk-lua"),
+    ("game-data/ShopCatalogues.csv",   "Sources", "rtk-lua"),
+    ("game-data/SpellParams.csv",       "Sources", "rtk-lua"),   # Lua verb/row spell params (spike)
+    ("game-data/ItemParams.csv",        "Sources", "rtk-lua"),   # Lua verb/row item use-effect params
     # Phase-1 spell-DATA tables (extracted from Content.cs literals; all rtk-lua-sourced balance numbers).
-    ("data/game-data/SpellLevels.csv",  "Sources", "rtk-lua"),
-    ("data/game-data/Morphs.csv",       "Sources", "rtk-lua"),
-    ("data/game-data/Pets.csv",         "Sources", "rtk-lua"),
-    ("data/game-data/Traps.csv",        "Sources", "rtk-lua"),
-    ("data/game-data/SpellMods.csv",    "Sources", "rtk-lua"),
-    ("data/game-data/PathGrowth.csv",   "Sources", "rtk-lua"),   # per-class level-up HP/MP gain ranges
+    ("game-data/SpellLevels.csv",  "Sources", "rtk-lua"),
+    ("game-data/Morphs.csv",       "Sources", "rtk-lua"),
+    ("game-data/Pets.csv",         "Sources", "rtk-lua"),
+    ("game-data/Traps.csv",        "Sources", "rtk-lua"),
+    ("game-data/SpellMods.csv",    "Sources", "rtk-lua"),
+    ("game-data/PathGrowth.csv",   "Sources", "rtk-lua"),   # per-class level-up HP/MP gain ranges
 ]
 
 # ---- load the source registry ------------------------------------------------------------------------

@@ -215,13 +215,89 @@ public sealed partial class Session
     internal void SetQuestStage(string questKey, int stage) { _char.Quests[questKey] = stage; SaveChar(); }
     internal int  QuestCounter(string counterKey) => _char.Quests.GetValueOrDefault(counterKey);
 
+    // ===== group experience (RTK Scripts/exp.lua onGetExp) =======================================
+    // Per-head share by group size. The whole group is worth MORE than a solo kill — two people take
+    // 0.703 each, so 1.41x the mob's experience enters the world — which is the mechanical reason the
+    // tutor tells you to find a covenant. Index = number of eligible members; [0] is the solo case.
+    // 1-INDEXED by member count, exactly like the Lua table it comes from — slot 0 is an unused placeholder
+    // so GroupExpShare[n] reads the same here as expTable[n] does there.
+    private static readonly double[] GroupExpShare =
+    {
+        0.0,                                                                          // unused
+        1.0,      0.70339,  0.67339,  0.64339,  0.61339,  0.58339,  0.55339,  0.53339,
+        0.51339,  0.49339,  0.47339,  0.45339,  0.44339,  0.43339,  0.42339,
+    };
+    private static double ShareFor(int members) =>
+        GroupExpShare[Math.Clamp(members, 1, GroupExpShare.Length - 1)];
+
+    /// <summary>Award a kill's experience to the killer AND to every eligible group member, RTK-style
+    /// (<c>Scripts/exp.lua onGetExp</c>). Eligible = in the same group, ALIVE, on the mob's map, and within
+    /// 12 tiles of the CORPSE on both axes (RTK <c>distanceSquare(member, mob, 12)</c> — a square, not a
+    /// radius). Each eligible member takes <c>share(n)</c> of the mob's experience scaled by their own
+    /// standing against the group's highest: <c>finalxp = amount * (level + mark*10) / highest</c>, so a
+    /// level 10 towed through a level 50 cave earns a fifth of what the 50 earns rather than a free ride.
+    /// <para>One deliberate divergence: the KILLER is always eligible, even if somehow out of range of the
+    /// corpse. RTK would silently pay nobody in that case; here the swing that landed always pays the person
+    /// who landed it. Everyone else is filtered exactly as RTK filters them.</para>
+    /// <para>Each share still goes through <see cref="AwardExp"/> per member, so the Peasant wall, the totem
+    /// window, level-ups and the save all apply to each of them individually.</para></summary>
+    internal void AwardKillExp(uint reward, ushort mobMap, int mobX, int mobY)
+    {
+        if (reward == 0) return;
+
+        var party = _party;
+        if (party is null) { AwardExp(reward, killExp: true); return; }   // solo: the whole kill, unchanged
+
+        static long Eff(Session s) => s.CharLevel + s.CharMark * 10L;
+
+        var eligible = new List<Session>();
+        foreach (var m in party.Members)
+        {
+            if (ReferenceEquals(m, this)) { eligible.Add(m); continue; }   // the killer, always
+            if (m.IsDead || m.CharMap != mobMap) continue;
+            if (Math.Abs(m.CharX - mobX) > GroupExpRange || Math.Abs(m.CharY - mobY) > GroupExpRange) continue;
+            eligible.Add(m);
+        }
+        if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // nobody else in range
+
+        long highest = eligible.Max(Eff);
+        if (highest <= 0) highest = 1;
+        uint amount = (uint)Math.Ceiling(reward * ShareFor(eligible.Count));
+
+        foreach (var m in eligible)
+        {
+            uint share = (uint)Math.Ceiling(amount * (double)Eff(m) / highest);
+            m.AwardExp(share, killExp: true);
+        }
+        Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members (highest eff {highest})");
+    }
+
+    /// <summary>How far from the corpse a group member may stand and still be paid, on each axis
+    /// (RTK <c>distanceSquare(..., 12)</c>). Comfortably more than a screen, so the whole group gets paid
+    /// even when spread across the room.</summary>
+    private const int GroupExpRange = 12;
+
     /// <summary>Award experience: add exp, then run RTK's pc_checklevel loop (0+ level-ups — a single big
     /// reward can carry a low-level character through several levels at once), refresh TNL, push the HUD exp
     /// bar, and persist. Every exp source (quests, melee/spell kills) funnels through here so leveling happens
-    /// the same way regardless of who granted it. See LevelUp for the per-level stat/HP/MP gain formulas.</summary>
+    /// the same way regardless of who granted it. See LevelUp for the per-level stat/HP/MP gain formulas.
+    /// <para>Kill experience should go through <see cref="AwardKillExp"/> instead, which splits it across the
+    /// group first and then calls this once per member.</para></summary>
     internal void AwardExp(uint amount, bool killExp = false)
     {
         if (amount == 0) return;
+        // THE PEASANT WALL (RTK player.lua giveXPStacked:4279). A Peasant at level 5 gains NOTHING — the Lua
+        // returns before `player.exp = player.exp + get`, so the exp is refused outright, not banked for later.
+        // That distinction is the whole point: banking it would let a walled Peasant hoard exp and then flood
+        // through several levels the instant they pick a path, and would hand the shadow-stat vendors (which
+        // spend banked exp) a supply RTK never lets a Peasant have. Sits above the totem bonus and the
+        // "N experience!" notice because RTK's check does too — a refused grant is silent about the amount.
+        if (CharBasePathId == 0 && _char.Level >= 5)
+        {
+            SendMiniText("You cannot increase your level without choosing a path first.");
+            SendMiniText("Please visit your Kingdom's tutor or press F1 and select \"Choose a Path\" from the list.");
+            return;
+        }
         // Totem time (RTK Scripts/exp.lua → Player.checkTotemTimeXP): kill exp earned during your totem's
         // six-hour window is multiplied by 1.05. Only combat kills opt in via killExp — quest/tutorial/NPC
         // rewards do NOT, matching RTK where the multiplier lives in the mob-kill exp split, not the generic
@@ -237,11 +313,13 @@ public sealed partial class Session
         {
             uint need = Content.ExpToNext(path, _char.Level);
             if (need == 0 || _char.Exp < need) break;   // no table entry, or not enough exp yet -> done
-            // RTK onLevel.lua: Peasants (path 0) cap at level 5 until they choose a real path at a path hall
-            // (see PathHalls/TryPathHallEntrance) — enough exp banks up but doesn't auto-level past the wall.
+            // RTK onLevel.lua:40 repeats the wall inside the level-up script, and so do we. The gate at the top
+            // of this method means a normal grant never reaches here, but exp can arrive at level 5 by other
+            // routes — a character rebuilt onto path 0 by @class/@lvl, or one carrying exp banked before the
+            // gate existed — and those must not level either.
             if (path == 0 && _char.Level >= 5)
             {
-                SendMiniText("You can't increase your level without choosing a path first.");
+                SendMiniText("You cannot increase your level without choosing a path first.");
                 break;
             }
             LevelUp(path);
@@ -312,7 +390,7 @@ public sealed partial class Session
         }
 
         // Which stat is PRIMARY per class stays here (mechanic); the HP/MP gain RANGES are tunable balance data
-        // in data/game-data/PathGrowth.csv (Content.PathGrowthFor) — max is the exclusive Random.Next arg.
+        // in game-data/PathGrowth.csv (Content.PathGrowthFor) — max is the exclusive Random.Next arg.
         switch (path)
         {
             case 1:  _char.Might += 1; _char.Grace += (byte)secondary; _char.Will += (byte)tertiary; break;   // Warrior: might primary
@@ -495,6 +573,7 @@ public sealed partial class Session
     internal int  CharSex    => _char.Sex;
     internal int  CharFace   => _char.Face;
     internal int  CharNation => _char.Nation;
+    internal bool CharMounted => _char.Mounted;
     internal int  CharX      => _char.X;
     internal int  CharY      => _char.Y;
     internal uint CharCoins  => _char.Coins;
@@ -679,15 +758,17 @@ public sealed partial class Session
     }
 
     /// <summary>Spells this class will unlock at a HIGHER level (RTK "Divine Secret" preview) — not yet
-    /// learnable. Ordered by level; capped so the preview dialog stays readable.</summary>
-    internal List<SpellDef> FutureClassSpells()
+    /// learnable. Ordered by level. Windowed to the next <paramref name="levelsAhead"/> insights the way RTK's
+    /// <c>futureSpells</c> windows its own list (it uses 10; we use 5 per the user), so the preview stays a
+    /// "what's next" peek rather than the whole remaining ladder.</summary>
+    internal List<SpellDef> FutureClassSpells(int levelsAhead = 5)
     {
         int p = CharClassId;
         if (p < 0) return new();
-        return Content.SpellsForClass(p, 999, _char.Alignment, _char.Mark)
+        return Content.SpellsForClass(p, _char.Level + levelsAhead, _char.Alignment, _char.Mark)
                       .Where(s => s.Level > _char.Level && !_char.Spells.Contains(s.Id))
                       .Where(s => Content.CanRelearnAtNpc(s, p))
-                      .OrderBy(s => s.Level).Take(12).ToList();
+                      .OrderBy(s => s.Level).ThenBy(s => s.Name).ToList();
     }
 
     /// <summary>Spells the player currently knows, for the "Forget Secret" menu.</summary>

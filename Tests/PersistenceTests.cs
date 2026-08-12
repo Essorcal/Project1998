@@ -6,7 +6,7 @@ namespace Tests;
 
 /// <summary>
 /// Tests for the persistence guarantees the trade/parcel paths now depend on. These run against the REAL
-/// database (data/nexus.db) using throwaway character names, because the thing under test is SQLite
+/// database (state/nexus.db) using throwaway character names, because the thing under test is SQLite
 /// transaction behaviour — a mock would only prove the mock is transactional.
 /// </summary>
 public class PersistenceTests : IDisposable

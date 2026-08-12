@@ -381,7 +381,17 @@ public sealed partial class Session
         {
             var ctx = new NpcContext(this, npc, def);
 
-            // Data-driven Lua dialog (data/game-data/npc_dialog.lua): if this NPC identifier has a Lua script,
+            // A ghost in the tutorial area: EVERY NPC here stands in for a Shaman. The area has none of its
+            // own and Silver Thread is refused inside it, so without this a player who dies in the first
+            // rooms is stuck as a ghost with nothing in the world able to help them. Deliberately the whole
+            // area and every NPC in it — a beginner should not have to work out WHICH one to click.
+            //
+            // Runs ahead of both the Lua and C# dispatch so it also covers NPCs whose own dialog would
+            // otherwise talk past the fact that the player is dead. Reuses the Shaman's own script rather
+            // than a copy, so the wording can only ever drift in one place.
+            if (IsDead && Content.IsTutorialMap(_char.Map)) { await ReviveAbility.Resurrect(ctx); return; }
+
+            // Data-driven Lua dialog (game-data/npc_dialog.lua): if this NPC identifier has a Lua script,
             // it OWNS the conversation (run it, done). Strictly additive — only NPCs we've authored a script for
             // take this path; every other NPC (and a broken/absent .lua) falls straight through to the C#
             // abilities below, unchanged. Hot-reloads via @reload. See Server/NpcScript.cs.
@@ -488,6 +498,19 @@ public sealed partial class Session
     // behaviour of their own and a warp alone would have stranded the player as a permanent ghost.)
     private async Task SilverThread(Mob npc)
     {
+        // The tutorial area is sealed on purpose: every Shaman this offers is out in the world, so letting a
+        // player take passage would eject them from the chain permanently (there is no warp back in) — and
+        // they could do it ALIVE, since the passage itself never checked. Answer with what the ability is
+        // for instead, and point at the area's own stand-in: while dead, any NPC here revives you
+        // (see RunNpcAsync). Checked before the IsDead branch so it covers a living player who picks it out
+        // of curiosity, which is the more common way to find this menu.
+        if (Content.IsTutorialMap(_char.Map))
+        {
+            await DlgSay(npc, "This ability will let you return to a shaman to resurrect.  " +
+                              "For now just click on one of the merchants in this area.");
+            return;
+        }
+
         if (!IsDead)
         {
             await DlgSay(npc, "This is for the dead of the land to find a path to the shaman. You are not dead, so you have no path with me.");
@@ -1543,7 +1566,7 @@ public sealed partial class Session
     {
         var eq = Totals();                    // fold worn-gear bonuses + active buffs into the displayed AC/dam/hit
         var d = new List<byte>();
-        d.Add((byte)(sbyte)Math.Clamp(_char.Ac - eq.armor, -128, 127));   // AC: lower is better, armor subtracts
+        d.Add((byte)(sbyte)Math.Clamp(_char.Ac + eq.armor, -128, 127));   // AC: lower is better; gear/buff armor is a signed AC delta
         d.Add((byte)Math.Clamp(_char.Dam + eq.dam, 0, 255));
         d.Add((byte)Math.Clamp(_char.Hit + eq.hit, 0, 255));
         AddLenStr(d, _char.ClanName);

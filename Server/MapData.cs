@@ -186,17 +186,61 @@ public sealed class MapData
         (Solid(x, y) || ObjectFlags.Blocks(_obj[y * Xs + x], dir));
 
     private static readonly Dictionary<ushort, MapData?> Cache = new();
+    // One gate per map id, so a load only ever blocks callers who want THAT map. See For().
+    private static readonly Dictionary<ushort, object> LoadGates = new();
 
-    /// <summary>Load (and cache) map <paramref name="id"/> at the given dims, or null if the file is missing/short.</summary>
+    /// <summary>Load (and cache) map <paramref name="id"/> at the given dims, or null if the file is missing/short.
+    ///
+    /// <para><b>The load never holds <see cref="Cache"/>.</b> A miss reads the whole <c>.map</c> off disk,
+    /// decodes every cell, and runs a SQLite query (<see cref="MapStore.Cells"/>, whose connection carries a
+    /// 5s busy_timeout). Doing that under the one dictionary lock meant a session thread entering a fresh map
+    /// blocked the world tick — which calls this every heartbeat — and the tick blocked holding the WORLD
+    /// lock, so every player on every map froze for the duration. Now the dictionary lock is only ever held
+    /// for a lookup or an insert, and concurrent callers for the same map queue on that map's own gate.</para>
+    ///
+    /// <para>Hot path (a cache hit) is unchanged: one uncontended lock and a dictionary probe. Callers on a
+    /// latency-critical path should still <see cref="Prewarm"/> before taking a lock of their own.</para></summary>
     public static MapData? For(ushort id, ushort xs, ushort ys)
     {
         lock (Cache)
-        {
             if (Cache.TryGetValue(id, out var cached)) return cached;
-            var md = Load(id, xs, ys);
-            Cache[id] = md;
+
+        object gate;
+        lock (Cache)
+        {
+            // Re-check: another thread may have finished the load between the two lock acquisitions.
+            if (Cache.TryGetValue(id, out var raced)) return raced;
+            if (!LoadGates.TryGetValue(id, out gate!)) LoadGates[id] = gate = new object();
+        }
+
+        lock (gate)
+        {
+            // Winner loads; everyone else who queued here finds the finished result.
+            lock (Cache)
+                if (Cache.TryGetValue(id, out var done)) return done;
+
+            var md = Load(id, xs, ys);   // slow: disk + decode + SQLite. NO global lock held.
+
+            lock (Cache)
+            {
+                // Invalidate() may have run while we were loading. It clears the gates too, so this entry
+                // would be a stale read of the pre-reload file — drop it and let the next caller re-load.
+                if (!LoadGates.ContainsKey(id)) return md;
+                Cache[id] = md;
+            }
             return md;
         }
+    }
+
+    /// <summary>Make sure map <paramref name="id"/> is loaded, from a caller that holds NO lock. Call this
+    /// before entering a critical section that will read the map: it moves the disk + SQLite cost off the
+    /// locked path, so the section itself only ever hits the cache. No-op for an unknown map id or one that
+    /// is already cached. See <see cref="For"/> for why this matters.</summary>
+    public static void Prewarm(ushort id)
+    {
+        lock (Cache)
+            if (Cache.ContainsKey(id)) return;
+        if (Content.Maps.TryGetValue(id, out var mi)) For(id, mi.Xs, mi.Ys);
     }
 
     /// <summary>Load (and cache) map <paramref name="id"/>, taking its dims from the map registry. For callers
@@ -211,13 +255,15 @@ public sealed class MapData
     /// the next load, so a reload no longer slams every door shut the way it used to.</summary>
     public static void Invalidate()
     {
-        lock (Cache) Cache.Clear();
+        // Gates go too: a load in flight right now was started against the OLD files, so its result must not
+        // be published into the cache (For() checks the gate's presence before inserting).
+        lock (Cache) { Cache.Clear(); LoadGates.Clear(); }
     }
 
     private static MapData? Load(ushort id, ushort xs, ushort ys)
     {
         var path = Locate(id);
-        if (path is null) { Log.Info($"   !! map TK{id}.map not found (searched NEXUS_MAPS, repo data/maps, client installs)"); return null; }
+        if (path is null) { Log.Info($"   !! map TK{id}.map not found (searched NEXUS_MAPS, game-data/maps, client installs)"); return null; }
 
         var d = File.ReadAllBytes(path);
         int cells = xs * ys;
@@ -267,7 +313,7 @@ public sealed class MapData
         int forced = 0;
         foreach (var (x, y) in Doors.ForceOpenTiles(id)) { md.Author(x, y, null, 0, 0); forced++; }
 
-        // Hand-authored cell corrections (data/game-data/MapCells.csv). Last, so they beat everything above.
+        // Hand-authored cell corrections (game-data/MapCells.csv). Last, so they beat everything above.
         int patched = 0;
         foreach (var c in Content.MapCellsFor(id)) { md.Author(c.X, c.Y, c.Tile, c.Pass, c.Obj); patched++; }
 
@@ -305,7 +351,7 @@ public sealed class MapData
     /// its own — players walk through walls and, with a client that has no local <c>Maps</c> directory, see
     /// nothing at all. On Windows the last-resort search dirs are the client installs, which is why this never
     /// bit locally and would bite immediately on a Linux host: copy the client's <c>Maps</c> directory to
-    /// <c>data/maps</c> or point <c>NEXUS_MAPS</c> at it.</summary>
+    /// <c>game-data/maps</c> or point <c>NEXUS_MAPS</c> at it.</summary>
     public static (int found, int total, string[] dirs) Availability(IEnumerable<ushort> mapIds)
     {
         int found = 0, total = 0;
@@ -322,16 +368,8 @@ public sealed class MapData
         var env = Environment.GetEnvironmentVariable("NEXUS_MAPS");
         if (!string.IsNullOrWhiteSpace(env)) yield return env;
 
-        // repo data/maps (self-contained, committed)
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            bool isRoot = dir.GetFiles("*.sln").Length > 0
-                       || (Directory.Exists(Path.Combine(dir.FullName, "Server"))
-                           && Directory.Exists(Path.Combine(dir.FullName, "Shared")));
-            if (isRoot) { yield return Path.Combine(dir.FullName, "data", "maps"); break; }
-            dir = dir.Parent;
-        }
+        // game-data/maps — terrain is authored CONTENT, versioned with the CSVs it has to agree with.
+        yield return Path.Combine(Shared.RepoPaths.GameDataDir(), "maps");
 
         // fall back to the client installs, which ship the full 4.x map set
         yield return @"C:\Program Files (x86)\Nexon\NextAeon\Maps";

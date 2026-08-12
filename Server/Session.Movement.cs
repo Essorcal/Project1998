@@ -29,6 +29,22 @@ public sealed partial class Session
     // messages (cases 1-3) already cover every diff value, so the mark/path-specific text below them is only
     // reachable when ReqLvl equals the player's level exactly and a mark/path check also fails — an RTK
     // inconsistency preserved here rather than "fixed".
+    // Quest-locked warp (game-data/WarpQuestLocks.csv): is this warp switched off until a quest advances?
+    //
+    // Nothing about MOVEMENT changes when this returns true — see the call site. It is not a barrier and
+    // not a collision rule; the tile stays walkable and the player stands on it. Contrast TryWarpGate
+    // below, which is RTK's map-requirement cascade and genuinely does push the player back off the tile.
+    //
+    // Keyed on (from, to), so the lock is one-way: walking BACK the way you came is never affected.
+    private bool WarpLockedByQuest(ushort destMap, out string lockMsg)
+    {
+        lockMsg = "";
+        if (!Content.WarpQuestLocks.TryGetValue((_char.Map, destMap), out var wl)) return false;
+        if (QuestStage(wl.QuestKey) >= wl.MinStage) return false;
+        lockMsg = wl.Message;
+        return true;
+    }
+
     private bool TryWarpGate(ushort destMap, out string denyMsg)
     {
         denyMsg = "";
@@ -130,7 +146,21 @@ public sealed partial class Session
 
         // Doors/portals take precedence over collision: if the tile we're stepping toward is a warp
         // source, take it — even if that tile is otherwise "solid" (many doorways sit on object tiles).
-        if (!offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var dest)
+        //
+        // A quest lock switches the WARP off and nothing else. The player is not stopped, pushed back or
+        // blocked in any way: the tile simply stops being a portal for them, so they walk onto it like any
+        // other patch of ground and get told why they weren't carried anywhere. That is the whole mechanic
+        // — no barrier, no wall.
+        bool warpLocked = false;
+        if (!offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var lockedDest)
+            && WarpLockedByQuest(lockedDest.m, out var lockMsg))
+        {
+            warpLocked = true;
+            SendMiniText(lockMsg);
+            Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {lockedDest.m} quest-locked: {lockMsg} — step allowed, no warp");
+        }
+
+        if (!warpLocked && !offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var dest)
             && Content.TryMap(dest.m, out var dm))
         {
             if (!TryWarpGate(dest.m, out var denyMsg))
@@ -155,7 +185,7 @@ public sealed partial class Session
 
         // Zodiac cave entrances (Mythic Nexus) are RTK Lua tile-scripts (onScriptedTilesMythic ->
         // mythic_cave_selector), NOT SQL warps — so they need their own handler. Stepping on a configured
-        // entrance tile (data/game-data/MythicCaves.csv, keyed by map+x+y) warps to the deepest cave tier the
+        // entrance tile (game-data/MythicCaves.csv, keyed by map+x+y) warps to the deepest cave tier the
         // player's level/vitals unlock (or refuses, under-levelled). Non-entrance tiles return immediately.
         if (!offMap && TryMythicCaveEntrance((ushort)nx, (ushort)ny)) return;
 
@@ -362,8 +392,8 @@ public sealed partial class Session
 
     // RTK board-sign (on_event.lua onSign -> selectBulletinBoard -> showBoard): while looking NORTH (back to
     // screen), if the tile directly in front of us (one up) is a registered board sprite, open THAT board
-    // straight to its posts — bypassing the `b` board-list menu. This is the "walk up to the Carnage Schedule
-    // board and it opens" behaviour. Fired both on a turn-in-place and on a blocked north step (bumping the
+    // straight to its posts — bypassing the `b` board-list menu. This is the "walk up to the Buya arena
+    // schedule board and it opens" behaviour. Fired both on a turn-in-place and on a blocked north step (bumping the
     // board), so either approach triggers it. Content.TryBoardAt applies RTK's ±1 X tolerance for wide boards.
     // Returns true when a board was opened (the north-facing action was consumed by the sign).
     private bool TryOpenBoardSign()
@@ -389,7 +419,11 @@ public sealed partial class Session
         bool match = Content.TryBoardAt(_char.Map, fx, fy, out var bid);
         string boardName = match ? (Boards.Find(bid)?.Name ?? "?") : "-";
         SendLog($"boardobj: map {_char.Map} you@({_char.X},{_char.Y}) facing {dir} -> tile ({fx},{fy}) obj={obj} | board={(match ? $"{bid} \"{boardName}\"" : "none")}");
-        SendLog($"  to register: add  {_char.Map},{fx},{fy},<BoardId>  to BoardLocations.csv then @reload  (4=Carnage Schedule)");
+        SendLog($"  to register: add  {_char.Map},{fx},{fy},<BoardId>  to BoardLocations.csv then @reload");
+        // Board ids come straight from Boards.All so this hint can't go stale when the roster changes; a few
+        // per line because one chat line can't hold the whole roster.
+        foreach (var chunk in Boards.All.Select(b => $"{b.Id}={b.Name}").Chunk(4))
+            SendLog("  boards: " + string.Join("  ", chunk));
         Log.Info($"   -> @boardobj map {_char.Map} facing {dir} tile ({fx},{fy}) obj={obj} match={match} board={bid}");
     }
 
@@ -452,7 +486,7 @@ public sealed partial class Session
         _world.Broadcast(_char.Map, p => p.PatchObjRow((ushort)sx, (ushort)fy, objs));
     }
 
-    // The door-object toggle table now lives in data/game-data/DoorObjects.csv (RTK open.lua `openDoors`), loaded
+    // The door-object toggle table now lives in game-data/DoorObjects.csv (RTK open.lua `openDoors`), loaded
     // into Content.DoorSwaps / Content.DoorDeltas and queried via Content.DoorToggleFor.
     //
     // RTK's 17408+ ids are a LATER client's object space and can't be used verbatim (4.x objects are a 14-bit
@@ -617,6 +651,7 @@ public sealed partial class Session
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
         SendXy();          // 0x04: authoritative (X,Y) + recentered camera (now centered even under realm)
         SendSelfLook();    // 0x33: redraw self on the reloaded map
+        PrimeViewport("refresh");   // 0x06: re-fill the window — Ctrl+R is the player's "fix my screen" key
         RedrawWorld();     // re-assert peers + mobs + ground items the 0x15 reload dropped
         Log.Info($"   -> refresh (0x38, Ctrl+R) — recentered at ({_char.X},{_char.Y}){(_realm != 0 ? " (realm re-locked at center)" : "")}");
     }

@@ -1,4 +1,4 @@
-"""Generate data/game-data/AreaSpawnsTrap.csv — the mob populations RTK spawns through its
+"""Generate game-data/AreaSpawnsTrap.csv — the mob populations RTK spawns through its
 trap-tile AMBUSH system (RTK-Server/rtklua/Accepted/NPCs/trap/mob_spawn.lua +
 tigerTrap.lua + rabbitTrap.lua), which our handleSpawn-only extractor (extract_lua_spawns.py)
 never sees.

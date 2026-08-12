@@ -17,30 +17,13 @@ public sealed class TkListener
     public TkListener(int[] ports)
     {
         _ports = ports;
-        // Anchor the character store to the repo root, NOT the current working directory. Anchoring to
-        // cwd caused a nasty "regression": launching the server from Server\ instead of the repo root
+        // Anchor the character store to the deployment root, NOT the current working directory. Anchoring
+        // to cwd caused a nasty "regression": launching the server from Server\ instead of the repo root
         // pointed the store at an empty Server\data\chars, so every login missed its saved character and
-        // rendered the default face/gender. RepoDataDir walks up from the binary to the project root so
-        // the store is the same folder no matter where the process is started from.
-        _store = new CharacterStore(RepoDataDir());
+        // rendered the default face/gender. RepoPaths walks up from the binary to the root so the store is
+        // the same folder no matter where the process is started from.
+        _store = new CharacterStore(Shared.RepoPaths.CharsDir());
         Log.Info($"character store: {_store.Directory}");
-    }
-
-    // Find <repo>/data/chars by walking up from the executable location until we hit the directory that
-    // holds the solution/project (marked by the Server\ folder or a .sln). Falls back to cwd if no
-    // marker is found, preserving the old behavior for unusual layouts.
-    internal static string RepoDataDir()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            bool isRoot = dir.GetFiles("*.sln").Length > 0
-                       || (System.IO.Directory.Exists(Path.Combine(dir.FullName, "Server"))
-                           && System.IO.Directory.Exists(Path.Combine(dir.FullName, "Shared")));
-            if (isRoot) return Path.Combine(dir.FullName, "data", "chars");
-            dir = dir.Parent;
-        }
-        return Path.Combine(System.IO.Directory.GetCurrentDirectory(), "data", "chars");
     }
 
     public async Task RunAsync()
@@ -64,7 +47,7 @@ public sealed class TkListener
         // here makes the deployment-critical path explicit rather than an implementation detail, and gets
         // the flush started at the top of the shutdown rather than at the very end of it. The
         // _shutdownOnce guard means running through both paths flushes exactly once.
-        // (systemd's TimeoutStopSec — 30s in deploy/nexus-game.service — is what bounds this before SIGKILL.)
+        // (Under systemd, TimeoutStopSec is what bounds this before SIGKILL; our unit sets 30s.)
         _sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx =>
         {
             Shutdown("SIGTERM");
@@ -86,13 +69,18 @@ public sealed class TkListener
         Log.Info($"=== shutdown signal ({reason}) — flushing connected players ===");
         int n = _world.SaveAllPlayers();
         Log.Info($"   -> flushed {n} player(s)");
+        // Logging is asynchronous now (see Log), so the lines above are still queued at this point and the
+        // Environment.Exit(0) that follows Ctrl+C would discard them. Drain the queue last, once nothing
+        // else has anything left to say.
+        Log.Shutdown();
     }
 
     private async Task ListenAsync(int port)
     {
-        var listener = new TcpListener(IPAddress.Any, port);
+        var listener = new TcpListener(NetBind.Address, port);
         listener.Start();
-        Log.Info($"listening on 0.0.0.0:{port}");
+        Log.Info($"listening on {NetBind.Describe}:{port}"
+                 + (ProxyProtocol.Enabled ? $" [PROXY protocol trusted from {ProxyProtocol.DescribeAllow}]" : ""));
         while (true)
         {
             // Guard the accept loop: a transient AcceptTcpClientAsync throw (e.g. a connection reset
@@ -112,23 +100,80 @@ public sealed class TkListener
             // does not; there is no case where batching this game's packets is worth the delay.
             try { client.NoDelay = true; } catch { /* socket already dead — the read loop will notice */ }
 
-            // Admission control BEFORE spawning a session: shed load / throttle floods at the cheapest point.
-            var ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
-            if (!_guard.TryAdmit(ip, out var reason))
+            var peer = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
+
+            // BEHIND A PROXY, the address to gate on is in a header we have not read yet, and reading it
+            // means an await — which cannot happen here, because one peer that connects and then says
+            // nothing would stall every other pending connection for the header timeout. So this branch
+            // reserves only the global slot (load-shedding stays at the cheapest point) and hands off; the
+            // per-IP and rate gates are applied against the real address inside RunProxiedAsync.
+            if (ProxyProtocol.Enabled)
             {
-                Log.Info($"!! REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
+                // The peer check comes FIRST, before a byte is read. A PROXY header is just bytes at the
+                // head of a connection, so anything allowed to send one can claim any source address it
+                // likes — which would make this a bypass of the per-IP gates rather than a fix for them.
+                if (!ProxyProtocol.IsTrustedPeer(peer))
+                {
+                    Log.Info($"!! REJECT {peer} on :{port} (not in NEXUS_PROXY_ALLOW); {_guard.Total} live");
+                    try { client.Close(); } catch { /* already gone */ }
+                    continue;
+                }
+                if (!_guard.TryReserveGlobal(out var greason))
+                {
+                    Log.Info($"!! REJECT {peer} on :{port} ({greason}); {_guard.Total} live");
+                    try { client.Close(); } catch { /* already gone */ }
+                    continue;
+                }
+                _ = RunProxiedAsync(client, port, peer);
+                continue;
+            }
+
+            // Admission control BEFORE spawning a session: shed load / throttle floods at the cheapest point.
+            if (!_guard.TryAdmit(peer, out var reason))
+            {
+                Log.Info($"!! REJECT {peer} on :{port} ({reason}); {_guard.Total} live");
                 try { client.Close(); } catch { /* already gone */ }
                 continue;
             }
-            _ = RunAndReleaseAsync(client, port, ip);   // fire-and-forget; releases the admission slot on exit
+            _ = RunAndReleaseAsync(client, port, peer, null);   // fire-and-forget; releases the slot on exit
         }
     }
 
-    // Runs one session and guarantees the admission slot is released exactly once when it ends (however it
-    // ends — clean disconnect, error, or slow-client drop).
-    private async Task RunAndReleaseAsync(TcpClient client, int port, IPAddress ip)
+    // Reads the PROXY header, then applies the gates the accept loop had to defer. Owns the global slot
+    // reserved above from entry: every exit path either releases it here or hands it to RunAndReleaseAsync.
+    private async Task RunProxiedAsync(TcpClient client, int port, IPAddress peer)
     {
-        try { await new Session(client, port, _store, _world).RunAsync(); }
+        IPAddress ip;
+        try
+        {
+            // A LOCAL header (the proxy's own health check) carries no address; fall back to the peer,
+            // which is the proxy itself and therefore correctly exempt from the per-IP gates.
+            ip = await ProxyProtocol.ReadHeaderAsync(client.GetStream()) ?? peer;
+        }
+        catch (Exception e)
+        {
+            Log.Info($"!! PROXY header from {peer} on :{port} failed: {e.Message}");
+            _guard.ReleaseGlobal();
+            try { client.Close(); } catch { /* already gone */ }
+            return;
+        }
+
+        if (!_guard.BindIp(ip, out var reason))
+        {
+            Log.Info($"!! REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
+            _guard.ReleaseGlobal();
+            try { client.Close(); } catch { /* already gone */ }
+            return;
+        }
+        await RunAndReleaseAsync(client, port, ip, ip);
+    }
+
+    // Runs one session and guarantees the admission slot is released exactly once when it ends (however it
+    // ends — clean disconnect, error, or slow-client drop). realIp is non-null only on the proxied path,
+    // where it is what the session must use for handoff tokens and logging instead of the socket's peer.
+    private async Task RunAndReleaseAsync(TcpClient client, int port, IPAddress ip, IPAddress? realIp)
+    {
+        try { await new Session(client, port, _store, _world, realIp).RunAsync(); }
         catch (Exception e) { Log.Info($"!! session {ip} on :{port} faulted: {e.Message}"); }
         finally { _guard.Release(ip); }
     }

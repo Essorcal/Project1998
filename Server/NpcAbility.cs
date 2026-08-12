@@ -151,6 +151,11 @@ public sealed class NpcContext
     /// <summary>The player's nation/kingdom id (RTK player.country; 1 = Koguryo/Kugnae).</summary>
     public int  Nation => _s.CharNation;
 
+    /// <summary>Is the player sitting on a horse? (RTK checks <c>player.state == 3 and player.disguise == 26</c>
+    /// — a mounted state plus the horse disguise; here the two are one flag, since the mount IS the appearance
+    /// form byte.) The tutorial's horse-riding stage gates on this.</summary>
+    public bool Mounted => _s.CharMounted;
+
     /// <summary>Coin on hand (RTK player.money).</summary>
     public uint Coins => _s.CharCoins;
     /// <summary>Spend coin if the player can afford it; false (no change) if they can't.</summary>
@@ -204,6 +209,10 @@ public sealed class NpcContext
     // ---- class / path + title + spell-learning (used by ClassTrainerAbility; RTK *_trainer.lua) ---
     /// <summary>The player's path id (0 = Peasant, 1 Warrior / 2 Rogue / 3 Mage / 4 Poet); -1 if unknown.</summary>
     public int ClassId => _s.CharClassId;
+    /// <summary>The BASE path this class descends from — what Content.SpellCosts is keyed to, so a fee lookup
+    /// must use this rather than <see cref="ClassId"/> (an NPC subpath has no rows of its own and would read
+    /// as FREE while its level still came from the base class's row).</summary>
+    public int BasePathId => _s.CharBasePathId;
     /// <summary>Set the player's path (RTK updatePath) — changes the profile class line, persists.</summary>
     public void SetClass(int pathId) => _s.SetCharClass(pathId);
     /// <summary>The player's current noble title ("" if none).</summary>
@@ -213,8 +222,9 @@ public sealed class NpcContext
 
     /// <summary>Spells the player can learn now (class + level, minus known) — the Learn Secret menu.</summary>
     public List<SpellDef> LearnableSpells() => _s.LearnableClassSpells();
-    /// <summary>Spells the player's class unlocks at higher levels — the Divine Secret preview.</summary>
-    public List<SpellDef> FutureSpells() => _s.FutureClassSpells();
+    /// <summary>Spells the player's class unlocks over the next <paramref name="levelsAhead"/> insights — the
+    /// Divine Secret preview.</summary>
+    public List<SpellDef> FutureSpells(int levelsAhead = 5) => _s.FutureClassSpells(levelsAhead);
     /// <summary>Spells the player currently knows — the Forget Secret menu.</summary>
     public List<SpellDef> KnownSpells() => _s.KnownSpellList();
     /// <summary>Teach one spell; false if the spellbook is full.</summary>
@@ -625,30 +635,58 @@ public sealed class ClassTrainerAbility : INpcAbility
             "If you wish to learn some skills let me know, I can teach you many things to help you in battle.");
     }
 
-    // "Learn Secret" (RTK learnSpell): pick from the spells this class can learn at or below your level.
+    // The fee line both trainer flows show before anything is spent (RTK learnSpell/futureSpells build the
+    // identical string): "The fee to learn X is: <item> (n), <item> (n), <gold> gold, All must be in good
+    // condition." — or "FREE" when the spell has no Content.SpellCosts row for this class. RTK carries gold as
+    // an item with id 0 inside the same list; our LearnCost keeps it in its own field, so it's appended last.
+    // RTK breaks the line after "is:"; we keep it on one line because nothing else in this server's 4.95
+    // dialog text relies on \n rendering and it has never been confirmed on this client.
+    private static string FeeText(NpcContext ctx, SpellDef sp)
+    {
+        var cost = Content.LearnCostFor(sp, ctx.BasePathId);
+        var parts = new List<string>();
+        if (cost is not null)
+        {
+            foreach (var (item, amount) in cost.Items) parts.Add($"{ctx.ItemName(item)} ({amount})");
+            if (cost.Gold > 0) parts.Add($"{cost.Gold} gold");
+        }
+        return parts.Count == 0
+            ? $"The fee to learn {sp.Name} is: FREE"
+            : $"The fee to learn {sp.Name} is: {string.Join(", ", parts)}, All must be in good condition.";
+    }
+
+    // "Learn Secret" (RTK learnSpell): pick from the spells this class can learn at or below your level, swear
+    // the oath, see the full fee, then pay it. The menu lists BARE names — RTK builds a "<name> Lvl: <n>"
+    // display string but never actually shows it in the picker.
     private static async Task LearnSecret(NpcContext ctx)
     {
         var learn = ctx.LearnableSpells();
         if (learn.Count == 0)
         { await ctx.Say("You have learned every secret I can teach you for now. Grow stronger, then return."); return; }
 
-        int pick = await ctx.Menu("Which secret shall I teach you?",
-            learn.Select(s => $"{s.Name} (Lv {s.Level})").ToList());
+        int pick = await ctx.Menu("Which secret shall I teach you?", learn.Select(s => s.Name).ToList());
         if (pick < 1 || pick > learn.Count) return;
 
         var sp = learn[pick - 1];
+        const string Humble = "The potential for learning is endless, be always humble and ready to learn.";
 
-        // Real per-class item/gold cost for the "peasant commons" spells (Gateway/Soothe/Return/Mentor/
-        // Approach/Summon) — most spells have no entry in Content.LearnCosts and stay free, unchanged from
-        // before (see that table's doc for the archive cross-check behind these six).
-        if (Content.LearnCostFor(sp, ctx.ClassId) is { } cost)
+        int swear = await ctx.Menu(
+            $"You are ready to learn {sp.Name}. Do you swear you will use this secret only for good causes?",
+            new[] { "Yes", "No" });
+        if (swear != 1) { await ctx.Say(Humble); return; }
+
+        if (await ctx.Menu(FeeText(ctx, sp), new[] { "Yes", "No" }) != 1) { await ctx.Say(Humble); return; }
+
+        // Real per-class item/gold cost (Content.SpellCosts); a spell with no row for this class stays free.
+        // Everything is checked BEFORE anything is consumed, so a short fee costs the player nothing.
+        if (Content.LearnCostFor(sp, ctx.BasePathId) is { } cost)
         {
-            foreach (var (item, amount) in cost.Items)
-                if (!ctx.HasItem(item, amount))
-                { await ctx.Say($"You need {amount} {ctx.ItemName(item)} to learn {sp.Name}."); return; }
-            if (ctx.Coins < (uint)cost.Gold)
-            { await ctx.Say($"You need {cost.Gold} gold to learn {sp.Name}."); return; }
-
+            bool short_ = cost.Items.Any(i => !ctx.HasItem(i.Item, i.Amount)) || ctx.Coins < (uint)cost.Gold;
+            if (short_)
+            {
+                await ctx.Say("Paying for what you want is a sign of devotion. Return when you have what is required for this.");
+                return;
+            }
             foreach (var (item, amount) in cost.Items) ctx.TakeItem(item, amount);
             if (cost.Gold > 0) ctx.SpendGold((uint)cost.Gold);
         }
@@ -657,13 +695,19 @@ public sealed class ClassTrainerAbility : INpcAbility
         await ctx.Say($"You have learned {sp.Name}.");
     }
 
-    // "Divine Secret" (RTK futureSpells): a read-only preview of what this class unlocks at higher levels.
+    // "Divine Secret" (RTK futureSpells): the SAME shape as Learn Secret — pick a secret from the next few
+    // insights and read its level + full fee — except nothing is ever spent and nothing is learned. Purely a
+    // "what should I be saving for" preview.
     private static async Task DivineSecret(NpcContext ctx)
     {
         var fut = ctx.FutureSpells();
         if (fut.Count == 0) { await ctx.Say("There are no further secrets awaiting you."); return; }
-        await ctx.Say("These secrets await you as you grow in power:",
-            string.Join("\n", fut.Select(s => $"{s.Name} — insight {s.Level}")));
+
+        int pick = await ctx.Menu("Which secret would you like to learn more about?", fut.Select(s => s.Name).ToList());
+        if (pick < 1 || pick > fut.Count) return;
+
+        var sp = fut[pick - 1];
+        await ctx.Say($"{sp.Name} can be learned at insight {sp.Level}.", FeeText(ctx, sp));
     }
 
     // "Forget Secret" (RTK forgetSpell): drop one spell/skill from the book (works on any known ability).
@@ -746,7 +790,7 @@ public sealed class LibrarianAbility : INpcAbility, INpcSayHandler
     }
 }
 
-// Chu Rua the turtle (ChuRuaNpc) is now a Lua dialog script (data/game-data/npc_dialog.lua -> npcs.ChuRuaNpc),
+// Chu Rua the turtle (ChuRuaNpc) is now a Lua dialog script (game-data/npc_dialog.lua -> npcs.ChuRuaNpc),
 // so its C# ability was deleted — Session.RunNpcAsync gives the Lua script exclusive ownership when present
 // (see NpcScript.Has). Its speech-only companions below (rabbit/rock/tiger) stay in C# until the Lua NPC layer
 // grows an OnSay/speech-trigger hook (Phase 3).
@@ -866,12 +910,28 @@ public sealed class WarPaintAbility : INpcAbility
 {
     public static readonly WarPaintAbility Instance = new();
 
-    // RTK team-battle dyes (general_npc_funcs.warPaint): 8 teams, 20 gold, one armorColor each.
+    // RTK team-battle dyes (general_npc_funcs.warPaint): 8 teams, 20 gold, one armorColor each. These are
+    // CANONICAL colours — i.e. what they mean on the shared "seasonal" body palette. Session.ArmorDye() runs
+    // them through Content.DyeRampFor so they render as the same colour on armors whose body sprite uses a
+    // different Body.tbl palette (see ArmorDyeRamps.csv).
+    //
+    // DELIBERATE DEVIATION FROM RTK (2026-08-09): Ju jak was RTK's 21 and Fire RTK's 31. On this client's
+    // palette 21 is the ramp at index 216 — mean (117,52,22), a dark RUST — so the Vermilion Bird rendered
+    // brown on every armor in the game. The palette holds exactly one strong red, ramp 31 at index 40, mean
+    // (173,45,0) with more than double the red-dominance of any other ramp, and Fire had it. So Ju jak takes
+    // 31 and Fire moves to 20 (index 208, mean (213,134,65) — orange, arguably a better "Fire" anyway), which
+    // keeps all eight teams distinguishable. Characters dyed before this keep their stored byte and simply
+    // show the old colour until they re-dye; nothing migrates, nothing breaks.
     private static readonly (string Name, byte Color)[] Teams =
     {
-        ("Hyun moo", 10), ("Ju jak", 21), ("Chung ryong", 24), ("Baekho", 11),
-        ("Ash", 28), ("River", 17), ("Fire", 31), ("Snow", 29),
+        ("Hyun moo", 10), ("Ju jak", 31), ("Chung ryong", 24), ("Baekho", 11),
+        ("Ash", 28), ("River", 17), ("Fire", 20), ("Snow", 29),
     };
+
+    /// <summary>The eight team colours, for the content check that every one of them has a ramp defined for
+    /// each body palette that disagrees with the seasonal one — retuning the table above without adding the
+    /// matching ArmorDyeRamps.csv row is a silent wrong-colour bug, not a crash.</summary>
+    public static IEnumerable<byte> TeamColors => Teams.Select(t => t.Color);
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
@@ -1227,7 +1287,11 @@ public sealed class ReviveAbility : INpcAbility
     // The prompt, the Yes/No, and the closing line are RTK's own strings. A Shaman with nothing else to offer
     // has exactly one menu entry, and RunNpcAsync dives straight into a single entry — so a ghost clicking a
     // Shaman lands on this question immediately, matching RTK's script-on-click flow with no wrapper menu.
-    private static async Task Resurrect(NpcContext c)
+    //
+    // internal, not private: the tutorial area has no Shaman of its own, so every NPC there answers a ghost
+    // with this exact dialog (Session.RunNpcAsync). Sharing the method rather than copying the strings is
+    // what keeps the two paths from drifting apart.
+    internal static async Task Resurrect(NpcContext c)
     {
         int pick = await c.Menu("Ah, another of the fallen come for my aid. Are you ready to return to the world of the living?",
                                 new[] { "Yes", "No" });

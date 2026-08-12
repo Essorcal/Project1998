@@ -311,7 +311,7 @@ public sealed partial class Session
     }
 
     // Runs one consumable's real RTK use-script effect via the data-driven verb/row Lua system
-    // (data/game-data/ItemParams.csv names each item's verb + params; data/game-data/item_verbs.lua is the
+    // (game-data/ItemParams.csv names each item's verb + params; game-data/item_verbs.lua is the
     // logic; see Server/ItemScript.cs). The verb acts through ItemContext, whose primitives delegate to the
     // Item* methods below — the SAME plumbing the old C# switch used. Gate verbs (ward/hardenbody) check FIRST
     // and skip the eat animation on refusal, matching every reviewed script's guard-before-effect order.
@@ -340,7 +340,7 @@ public sealed partial class Session
     // Thin wrappers reusing the exact plumbing the old C# ApplyItemEffect switch used, so the Lua route can't
     // drift into a second implementation. (Stat reads level/might/hp/maxHp/mp reuse the shared Lua* accessors
     // defined in Session.Spells.cs; say/message/restoreMana reuse LuaSay/LuaMessage/LuaRestoreMana.)
-    internal int ItemArmor => Math.Clamp(_char.Ac - Totals().armor, -80, 70);   // RTK harden-body's clamped armor
+    internal int ItemArmor => Math.Clamp(_char.Ac + Totals().armor, -80, 70);   // RTK harden-body's clamped armor
 
     internal void ItemEatAnim()   // the shared eat/use pose + sound, self and peers (RTK action 8)
     {
@@ -398,6 +398,13 @@ public sealed partial class Session
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam)? _equipTotals;
     private void InvalidateEquipTotals() => _equipTotals = null;
 
+    // ARMOR SIGN — the one field in this tuple where "more" is WORSE. Every other slot is a straight bonus
+    // (more might is more might); `armor` is an AC DELTA, and AC works the other way round: damage taken is
+    // raw x (1 + ac/100), so MORE AC = MORE DAMAGE and -1 AC = 1% less. That is why every armor item in
+    // Items.csv is NEGATIVE (spring garb -4) and why the handful of positive ones are real penalties
+    // (wedding dress +30 — you wear it for the ceremony, not the fight). Gear, buffs (SpellParams.csv's
+    // `armor` stat: bolster -4, pestilence +5) and mobs (mobs.csv MobArmor) all speak these same units, and
+    // every consumer just ADDS this to _char.Ac. Nothing anywhere negates.
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) EquipTotals()
     {
         if (_equipTotals is { } cached) return cached;
@@ -605,7 +612,7 @@ public sealed partial class Session
     }
 
     // Effective (base + gear + buffs) caps/attributes used by the HUD, heals and melee. AC is signed and LOWER
-    // is better in TK, so armor SUBTRACTS from it.
+    // is better in TK; gear/buff armor is an AC delta in those same units, so it simply ADDS (see EquipTotals).
     private uint EffMaxHp => (uint)Math.Max(1, (int)_char.MaxHp + Totals().hp);
     private uint EffMaxMp => (uint)Math.Max(0, (int)_char.MaxMp + Totals().mp);
     private int  EffMight => Math.Clamp(_char.Might + Totals().might, 0, 255);

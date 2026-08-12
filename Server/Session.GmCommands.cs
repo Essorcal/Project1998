@@ -27,7 +27,7 @@ public sealed partial class Session
     {
         string q = text.Trim();
         var found = Content.SearchItems(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check data/game-data/Items.csv)" : $"no items match \"{q}\""); return; }
+        if (found.Count == 0) { SendLog(q.Length == 0 ? "no items loaded (check game-data/Items.csv)" : $"no items match \"{q}\""); return; }
         SendLog($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Items.Count}):");
         foreach (var i in found)
             SendLog($"  #{i.Id} {i.Name} — {(i.IsEquip ? $"equip(dam {i.Dam}/ac {i.Armor})" : i.IsConsumable ? "use" : "etc")}   (@item {i.Name})");
@@ -55,7 +55,7 @@ public sealed partial class Session
     }
 
     // "@npc" / "@npc list" — show which NPCs are switched off. Read-only: toggling an NPC means setting the
-    // Enabled column in data/game-data/NPCs.csv and running @reload (World.ReconcileNpcToggles spawns/despawns
+    // Enabled column in game-data/NPCs.csv and running @reload (World.ReconcileNpcToggles spawns/despawns
     // to match), not a live GM mutation command. The tavern-hand "small guy" NPCs (Ox/Taur) are off by default.
     private void NpcToggleCmd(string text)
     {
@@ -64,19 +64,49 @@ public sealed partial class Session
                               .Select(n => $"#{n.Id} {n.Name} (map {n.Map})").ToList();
         SendLog((off.Count == 0 ? "No NPCs are switched off."
                                 : $"Switched-off NPCs ({off.Count}): " + string.Join(", ", off)) +
-                "  (edit the Enabled column in data/game-data/NPCs.csv + @reload to change)");
+                "  (edit the Enabled column in game-data/NPCs.csv + @reload to change)");
     }
 
     // "@craft" / "@craft list" — show which crafting skills are era-gated on/off. Read-only: the toggle
-    // itself is config, not live GM state — edit data/game-data/CraftingToggles.csv and run @reload to
+    // itself is config, not live GM state — edit game-data/CraftingToggles.csv and run @reload to
     // change it (see Server/CraftingToggles.cs + docs/Crafting-Values.md for why Jewelry and Food
     // Preparation/Chef default off).
     private void CraftToggleCmd(string text)
     {
         var lines = CraftingToggles.AllSkills
             .Select(s => $"{s}={(CraftingToggles.IsEnabled(s) ? "ON" : "off")}");
-        SendLog("Crafting skills (edit data/game-data/CraftingToggles.csv + @reload to change): " +
+        SendLog("Crafting skills (edit game-data/CraftingToggles.csv + @reload to change): " +
                 string.Join(", ", lines));
+    }
+
+    // "@era" — what date the world is pretending it is, and which dated features that includes. Read-only
+    // for the same reason as @craft: the target date is deployment config (ServerTuning.csv EraDate), not
+    // live GM state, so it moves by editing the file and running @reload. A feature with no row in
+    // EraFeatures.csv is always present and deliberately isn't listed — see Server/Era.cs.
+    private void EraCmd(string text)
+    {
+        var now = Era.Today;
+        if (now is null)
+        {
+            SendLog("Era gating is OFF (EraDate=0 in game-data/ServerTuning.csv) — all dated content is present.");
+            return;
+        }
+
+        // "from X" / "until X" / "X..Y" / "undated" — the window as declared, independent of whether the
+        // current date happens to fall inside it (the ON/off flag already says that).
+        static string Window(Shared.EraWindow? w) => w switch
+        {
+            null                                          => "undated",
+            { Introduced: { } i, Retired: { } r }         => $"{i:yyyy-MM-dd}..{r:yyyy-MM-dd}",
+            { Introduced: { } i }                         => $"from {i:yyyy-MM-dd}",
+            { Retired:    { } r }                         => $"until {r:yyyy-MM-dd}",
+            _                                             => "undated",
+        };
+
+        var lines = Era.KnownFeatures.Select(f =>
+            $"{f}={(Era.Has(f) ? "ON" : "off")} ({Window(Era.Window(f))})");
+        SendLog($"Era date {now.Value:yyyy-MM-dd} — {string.Join(", ", lines)}  " +
+                "(edit EraDate in game-data/ServerTuning.csv + @reload to change)");
     }
 
     private void GiveItemCmd(string text)
@@ -751,7 +781,7 @@ public sealed partial class Session
     // "@wmpos <i> <x> <y>" — live-tune destination i's clickable dot to field10 pixel (x,y) and re-open the
     // map so you can eyeball it against the real town. i is the index in Content.WorldDests (0=Kugnae,
     // 1=Buya, 2=Mythic Nexus, 3=Arctic Land, 4=KaMing's). The tweak is an ephemeral in-session override
-    // (WorldDotOverride); once happy, bake the number into data/game-data/WorldMapDests.csv (DotX/DotY) +
+    // (WorldDotOverride); once happy, bake the number into game-data/WorldMapDests.csv (DotX/DotY) +
     // @reload. "@wmpos" with no args lists the effective positions. See §11m.
     private void WorldMapPosCmd(string args)
     {
@@ -851,7 +881,7 @@ public sealed partial class Session
             SendLog($"  {Prefix}pkt add <tokens>   append to the pending packet (the chat box is short)");
             SendLog($"  {Prefix}pkt send <hexop>   send what's pending, then clear it");
             SendLog($"  {Prefix}pkt show | clear   inspect or drop the pending bytes");
-            SendLog($"  {Prefix}pkt file <name>    send data/packets/<name>.txt (';' starts a comment)");
+            SendLog($"  {Prefix}pkt file <name>    send game-data/packets/<name>.txt (';' starts a comment)");
             return;
         }
 
@@ -929,15 +959,15 @@ public sealed partial class Session
         Log.Info($"   -> RAW PKT 0x{op:x2} {bytes.Length}B {Convert.ToHexString(bytes).ToLowerInvariant()}");
     }
 
-    /// <summary>"@pkt file &lt;name&gt;" — send data/packets/&lt;name&gt;.txt. The file's FIRST token is the
+    /// <summary>"@pkt file &lt;name&gt;" — send game-data/packets/&lt;name&gt;.txt. The file's FIRST token is the
     /// opcode and the rest is the body, so one file is one complete packet you can keep editing in a real
     /// text editor and re-fire with one short command. Newlines are just whitespace; ';' starts a comment.</summary>
     private void SendPacketFile(string name)
     {
-        // Sits beside data/chars rather than under it — packet probes aren't character state.
-        string dir = Path.Combine(Path.GetDirectoryName(TkListener.RepoDataDir())!, "packets");
+        // Content, not state: these probes are hand-authored, versioned, and identical on every deployment.
+        string dir = Path.Combine(Shared.RepoPaths.GameDataDir(), "packets");
         string path = Path.Combine(dir, Path.GetFileName(name) + ".txt");
-        if (!File.Exists(path)) { SendLog($"no such packet file: data/packets/{Path.GetFileName(name)}.txt"); return; }
+        if (!File.Exists(path)) { SendLog($"no such packet file: game-data/packets/{Path.GetFileName(name)}.txt"); return; }
 
         // A comment has to be stripped a line at a time, since ';' ends the LINE, not the file.
         var tokens = new List<string>();

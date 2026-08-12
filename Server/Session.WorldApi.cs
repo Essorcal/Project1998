@@ -75,16 +75,31 @@ public sealed partial class Session
             foreach (var m in mobs)
             {
                 if (!m.Alive) continue;
-                bool shown = _shownMobs.Contains(m.Id);
-                if (!shown && InView(m.X, m.Y, ShowPad)) { ShowMob(m); _shownMobs.Add(m.Id); }
-                else if (shown && !InView(m.X, m.Y, HidePad)) { SendDespawn(m.Id); _shownMobs.Remove(m.Id); }
+                bool core = InView(m.X, m.Y, ShowPad);        // strict 17x15 — where a 0x07 is accepted
+                if (!_shownMobs.Contains(m.Id))
+                {
+                    if (core) { ShowMob(m); _shownMobs.Add(m.Id); }
+                }
+                else if (!InView(m.X, m.Y, HidePad))          // left the DRAWN 19x17 rect — now really gone
+                {
+                    SendDespawn(m.Id); _shownMobs.Remove(m.Id); _edgeMobs.Remove(m.Id);
+                }
+                else if (core)
+                {
+                    // Back inside the strict rect after loitering in the overdraw band. We don't know whether
+                    // the client culled it out there, so re-send the spawn: 0x07 on a live id is an in-place
+                    // update, and this is strictly cheaper than the despawn+respawn pair the old HidePad=0
+                    // sent on every boundary crossing.
+                    if (_edgeMobs.Remove(m.Id)) ShowMob(m);
+                }
+                else _edgeMobs.Add(m.Id);                     // in the band: keep it drawn, flag it as suspect
             }
         }
     }
 
     /// <summary>Reset the drawn-mob set (before a full 0x15 map rebuild, which drops all foreign entities
     /// client-side). The next SyncMobs then re-streams everything currently in view.</summary>
-    private void ForgetShownMobs() { lock (_viewLock) _shownMobs.Clear(); }
+    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); } }
 
     /// <summary>Re-assert every co-located peer + mob on OUR client. Call after re-sending 0x15 mapinfo
     /// in place (the realm-center refresh), which makes the client rebuild the map and drop all FOREIGN
@@ -121,7 +136,7 @@ public sealed partial class Session
     public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, type, time, param);  // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
-    public void DespawnEntity(uint id) { lock (_viewLock) _shownMobs.Remove(id); SendDespawn(id); }  // 0x0E
+    public void DespawnEntity(uint id) { lock (_viewLock) { _shownMobs.Remove(id); _edgeMobs.Remove(id); } SendDespawn(id); }  // 0x0E
 
     // Non-blocking enqueue. Peer broadcasts and mob AI call this ON the shared World.TickLoop thread, so it
     // must never block: it just hands the frame to the outbound channel (WriterLoop does the socket write).
@@ -132,7 +147,11 @@ public sealed partial class Session
     private void Send(byte[] data)
     {
         if (Volatile.Read(ref _closed) != 0) return;
-        if (_outbound.Writer.TryWrite(data)) return;
+        long nowMs = Environment.TickCount64;
+        Volatile.Write(ref _lastOutboundMs, nowMs);            // silence watchdog
+        if (data.Length > 3) LastOutboundOp = data[3];         // aa | len_hi | len_lo | op
+        // Stamped on enqueue so WriterLoop can report how long the frame sat here before it hit the socket.
+        if (_outbound.Writer.TryWrite(new Outbound(data, nowMs))) return;
         Log.Info($"!! {_remote} outbound queue full ({OutboundCapacity}) — dropping slow client");
         CloseConnection("slow client (outbound queue full)");
     }

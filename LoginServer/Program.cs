@@ -23,7 +23,7 @@ for (int i = 0; i < args.Length; i++)
 // Persist this process's log too (the game server has done so since the nmail "crash" whose console
 // output was lost). Rotated by size — see LoginServer/Log.cs. Note WireEnabled is OFF here by default:
 // login packets carry plaintext passwords.
-Log.AttachFile(Path.Combine(RepoPaths.DataDir(), "login.log"));
+Log.AttachFile(Path.Combine(RepoPaths.LogsDir(), "login.log"));
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
 TaskScheduler.UnobservedTaskException += (_, e) =>

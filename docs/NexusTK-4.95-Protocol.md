@@ -150,7 +150,7 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 ## 4. Connection lifecycle
 
 > **Process split (2026-07-27):** the login channel (2000/2001) and game channel (2005/2006) now run as
-> **two separate processes** (`LoginServer` and the game `Server`) sharing one SQLite DB (`data/nexus.db`).
+> **two separate processes** (`LoginServer` and the game `Server`) sharing one SQLite DB (`state/nexus.db`).
 > They can crash/restart independently. The login server is the internet-facing front door and does not load
 > the game world/content.
 
@@ -801,7 +801,7 @@ layout:**
 | `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `@ride`/`@mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
 | `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head: 12 poses × facings, sub-frame 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
-| `[4]` | **Body-layer colour (ramp shift)** | Recolours the worn armor/coat. **Not a palette index — a ramp selector:** the tinted blit does `if (pixel >= 0x30) pixel += colour * 8` before the palette lookup, so garment colours live in 8-entry ramps from index `0x30` and this byte picks the ramp (skin/outline indices below `0x30` are untouched). See the ⚠ below. Driven by `Session.ArmorDye()` = the worn armor's `ItmLookColor`, overridden by `Character.ArmorColor` (Arena Master war paint, §11e) when set. |
+| `[4]` | **Body-layer colour (ramp shift)** | Recolours the worn armor/coat. **Not a palette index — a ramp selector:** the tinted blit does `if (pixel >= 0x30) pixel += colour * 8` before the palette lookup, so garment colours live in 8-entry ramps from index `0x30` and this byte picks the ramp (skin/outline indices below `0x30` are untouched). See the ⚠ below. Driven by `Session.ArmorDye()` = the worn armor's `ItmLookColor` **when that is a real ramp (0..9)**, overridden by `Character.ArmorColor` (Arena Master war paint, §11e) when set. See the second ⚠ below. |
 | `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
 | `[6]` | **Shield** | Distinct shields. **`0` is a REAL shield — "no shield" is `0xFF` (`-1`).** |
 
@@ -840,6 +840,36 @@ layout:**
 > (worn armor's `ItmLookColor`, war paint overriding). Note `0x4329b0` is a **different, simplified** draw
 > path with no palette/tint step — do not use it to reason about colour; the earlier revision of this doc did
 > exactly that and wrongly concluded the byte was dead.
+
+> **⚠ The ramp is resolved against THE BODY SPRITE'S OWN PALETTE, so one number is different colours on
+> different armor (RE'd 2026-08-09).** `Body.tbl` assigns every body a palette and **only bodies `0..35` use
+> Palette 0** — the seasonal one the `ItmLookColor` 0..9 convention indexes. Bodies `36..43` (the wind armors)
+> are Palette 1, `44..56` (ice and the other late gear) Palette 2, `57..62`/`63..65`/`66` Palettes 3/4/5.
+> **Ramp 10 is the grayscale/black ramp on Palette 0 and a BROWN ramp on Palette 1**, so the Hyun moo (black
+> team) war paint came out brown on wind armor, and Ju jak came out olive.
+>
+> Palette 1 shares only ramps **`24`/`28`/`29`/`30`/`31`** with Palette 0 (the system rows), and all 24 of its
+> *own* ramps run **light→dark** where Palette 0's run dark→light — the wind sprites are authored against an
+> inverted palette, so only those five preserve shading. Palette 2's ramps `0..31` are byte-identical to
+> Palette 0, so ice needs no remap.
+>
+> Fix: **`game-data/ArmorDyeRamps.csv`** (`BodyLookLo,BodyLookHi,Dye,Ramp`) → `Content.DyeRampFor`,
+> applied by `Session.ArmorDye()` to **both** the war paint and the item's `ItmLookColor`. Everything else in
+> the server keeps speaking canonical (Palette-0) numbers; only the wire byte is converted. Wind mapping:
+> Hyun moo `10→28`, Baekho `11→29`, River `17→3`, Fire `20→16`, Chung ryong `24→24`, Ash `28→28`, Snow
+> `29→29`, Ju jak `31→31`. Derivation and proof sheet: `re/wind_dye_final.png`.
+>
+> **Two team colours deviate from RTK on purpose (§11e).** RTK gives Ju jak `21` and Fire `31`. On this
+> client's palette, ramp 21 (index 216) is a dark RUST, mean `(117,52,22)` — so the Vermilion Bird rendered
+> brown on *every* armor, not just wind. The palette holds exactly one strong red, ramp 31 (index 40), mean
+> `(173,45,0)`, with over double the red-dominance of any other ramp — and Fire had it. Ju jak therefore takes
+> `31` and Fire moves to `20` (index 208, mean `(213,134,65)`, orange), which keeps all eight teams
+> distinguishable. Palette 1 has no orange at ramp 20 (that row is khaki), hence the `20→16` row.
+>
+> One residual, by design: wind armor's own `ItmLookColor` is `24` and RTK's **Chung ryong war paint is also
+> `24`** (§11e) — both mean the same azure ramp, so that single dye cannot change a wind armor, because it is
+> already exactly what an undyed one renders. Row `36,43,24,12` points it at a distinct periwinkle if a team
+> battle needs to tell them apart.
 
 > **⚠ Weapon/shield "empty" = `0xFF`, not `0` (proven live 2026-07-25 + RTK `clif.c`).** A row-sweep of `[5]`/`[6]`
 > showed every value `0..15` renders a distinct blade/shield for **both** sexes; only `-1` (byte `0xFF`) is bare
@@ -1386,9 +1416,31 @@ coverage it never sent (walk far north, then east: the new eastern columns only 
 rows, yet the box marks them covered for the whole accumulated height).
 
 **This push overlaps what the client asks for**: 755 replies were sent against 139 requests in the measured
-window, so most of the traffic is server-initiated and probably redundant on maps where the client
-re-requests properly. Gating the push on "the client hasn't asked recently AND the viewport left the last
-sent window" is the obvious refinement — see `NEXUS_V495_PUSHMAP`.
+window, so most of the traffic is server-initiated and redundant on maps where the client re-requests
+properly. That redundancy was once gated behind an 8-step "the client hasn't asked recently" grace —
+**and the grace was wrong** (removed 2026-08-09, user-reported "black boxes I can almost walk to").
+Deferring to the client cannot work, because the client's own request is only **18×16** around itself while
+it *draws* **19×17** (viewport builder `0x44c950` extends one tile past the 17×15 view on every side; see
+§11b.1): its request buys about one tile of margin, and it re-asks only every ~5 steps,
+so two or three steps in a straight line puts the drawn edge on cells nobody sent. The push now runs on
+**every** committed step, with the window widened to **27×25** (≈4 tiles of lookahead past the drawn edge).
+The cost is per-strip, not per-window: one step exposes one 25-cell column ≈ 100 bytes.
+
+**Map ENTRY is the worst case, and used to have no push at all** (`Session.PrimeViewport`, added 2026-08-09).
+`EnterMap` reset the coverage tracker and then relied entirely on the client's own `0x05`. On a map the
+client has never visited its cache file is freshly zero-filled, so you arrived on a small island of real
+tiles with black in every direction, and the walk-driven push only repaired it one strip at a time as you
+walked into it. The full window is now sent immediately after the `0x15`/`0x04`/`0x33` entry trio on login,
+on warp, and on `Ctrl+R` refresh — ~2.7 KB, once per map entry. (Not on the F4 realm-center refresh: no map
+change, and §10.8's memory-mapped cache means the streamed cells survive the `0x15` reload.) Ordering is
+safe because the client parses sequentially: the `0x15` has finished mapping the file before the `0x06`
+cell writes are parsed.
+
+`NoteStreamed` also refuses to *shrink* the tracked rect — a rect that falls entirely inside the tracked one
+adds no coverage, so the larger one is kept. Without that, every client `0x05` (18×16) would clobber the
+tracker and the next step would re-send the whole margin back out to 27×25. This is not the union the
+paragraph above rejects: the tracker still only ever holds a rectangle that was sent *whole*.
+`NEXUS_V495_PUSHGRACE` restores the old deferral; `NEXUS_V495_PUSHMAP=0` disables the push entirely.
 
 ### 10.8 The client's map cache is a memory-mapped file ✅
 
@@ -1564,7 +1616,7 @@ objects captured outside the `setExceptionHandler` callback read back as `0x0` i
 
 Names/stats are **not** in the client (audit above) — they come from the **RTK reference server DB** (§17.1)
 and the **Nexus Atlas** scrape (pre-6.5 exp values). Extract these **locally** with the tools in `re/` — the
-data itself is **kept out of this repo** (logic-only server; the generated CSVs land in `data/game-data/`,
+data itself is **kept out of this repo** (logic-only server; the generated CSVs land in `game-data/`,
 which is gitignored). RTK look-ids
 validate against our own EPF shape-matching (rat=91, mouse=120, bull=27, rabbit=21, fox=22, wolf=23, bear=24,
 squirrel=25). Colours ≤19 map to our `Monster.pal`; RTK colours >19 are 7.x-only and must be re-picked for
@@ -1632,7 +1684,7 @@ near each other, the common case. Only **mobs** are viewport-streamed; see §11b
 
 The world is populated automatically from **two** RTK spawn sources, not just by commands.
 
-**Static spawn table (`Content.Spawns` ← `data/game-data/Spawns.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
+**Static spawn table (`Content.Spawns` ← `game-data/Spawns.csv`).** Each `SpawnDef` is `(mobId, map, x, y)`
 — one live mob per point. This is only **1175 points across 19 maps** (Kugnae 526, Buya 408, a few specials): it
 covers the towns and little else. RTK's `Spawns0` SQL table genuinely has nothing for the hunting maps.
 
@@ -1655,7 +1707,7 @@ exit are all gone in one place — the maps/mobs/warps stay in the source CSVs u
 nothing for them even loads), so trimming `ExcludedMapRanges` fully restores the cave. Same "flag, don't delete"
 pattern as the Hwan exclusion above; add further RTK-only reskin dungeons here if found.
 
-**Area spawns (`Content.AreaSpawns` ← `data/game-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
+**Area spawns (`Content.AreaSpawns` ← `game-data/AreaSpawns.csv`).** *This is where every cave/dungeon gets its
 mobs.* RTK spawns hunting-map populations from a Lua "spawner NPC" (`mobSpawnHandler.lua`), not the SQL table, via
 `handleSpawn(npc, map, {mobIds}, {counts}, timer [,minX,minY,maxX,maxY])`. `re/extract_lua_spawns.py` parses those
 617 calls into `AreaSpawnDef (mobId, map, count, box)` — **2371 rows, ~21.5k mobs across 767 maps** (Mythic Nexus
@@ -1677,7 +1729,7 @@ stack. An area spawn's home tile is fixed on first materialize (respawns hug the
 `Materialize`, minting a fresh mob id.
 
 **Drops (`Content.RollDrops`).** RTK's real per-mob drop tables, extracted from the server-side Lua
-(`RTK-Server/rtklua/Accepted/Mobs/MobDrops.lua`) by `re/extract_mob_drops.py` into `data/game-data/MobDrops.csv`
+(`RTK-Server/rtklua/Accepted/Mobs/MobDrops.lua`) by `re/extract_mob_drops.py` into `game-data/MobDrops.csv`
 and loaded into `Content.MobDrops` (382 mobs; a mob absent from the table drops nothing, matching RTK). Each
 mob has independent `loot` lines (its own item/amount-range/percent, several can hit on one kill) and at most
 one `rareLoot` line (rolled in listed order, only the first hit drops). A `GOLD` item key means a gold pile
@@ -1706,17 +1758,28 @@ mob (`_world.MobAt` in `HandleWalk`; warp tiles still take precedence).
 **Viewport streaming (`Session.SyncMobs`).** The `0x07` spawn is viewport-gated (§14): an off-screen spawn is
 silently dropped, and the client culls entities that move off-screen. So mobs are streamed per player:
 `_shownMobs` tracks which mob ids are drawn on that client; each tick (and on the player's own walk) `SyncMobs`
-sends `0x07` for mobs that entered the camera rect and `0x0E` for ones that left. **`ShowPad = HidePad = 0`** —
-the pads hug the *exact* 17×15 viewport: spawning ahead of the edge would mark a mob "shown" that the client
-dropped (→ never appears), and keeping one "shown" past the edge leaves a dead zone the client already culled
-(→ vanishes for good). `World.Tick` reconciles views **before** broadcasting moves, and `MoveMob`/`SideMob` are
+sends `0x07` for mobs that entered the camera rect and `0x0E` for ones that left.
+
+**`ShowPad = 0`, `HidePad = 1`** — show at the strict 17×15 edge, hide one tile further out (corrected
+2026-08-09; both were 0, which made mobs "pop out one tile too soon"). The two rects are genuinely different
+sizes and conflating them was the bug: the **spawn gate** `0x424310` is a containment test against the 17×15
+viewport, so `ShowPad` must stay 0 or a spawn is silently dropped and the mob is marked shown but never
+appears. The **drawn rect** is 19×17 — viewport builder `0x44c950` clamps to `originX-1 .. originX+ViewW+1`
+on all four sides — so despawning at 17×15 yanks a mob off a tile that is still on screen.
+
+The dead zone this note used to warn about (we think it's drawn, the client already culled it, we never
+re-send) is closed by `_edgeMobs`: any shown mob sitting in the overdraw band is flagged, and re-entering the
+strict rect re-sends its `0x07` (an in-place update on a live id). That is strictly *cheaper* than the old
+`HidePad = 0`, which sent a `0x0E` + `0x07` pair on every boundary crossing.
+
+`World.Tick` reconciles views **before** broadcasting moves, and `MoveMob`/`SideMob` are
 no-ops for players who don't have the mob shown — bounding on-wire traffic to on-screen mobs even on a 400-mob
 map. This is what lets the full spawn roster render without blanket-sending hundreds of entities.
 
 **Colours.** The `0x07` colour byte uses RTK's **`MobLookColor`**. (An experiment sending the client's decoded
 `Monster.tbl` palette instead rendered every mob green — RTK's per-mob colour matches the client for the common
 critters, so we kept it. A proper RTK-colour → client-palette mapping is future work; the decoded table lives in
-`data/game-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
+`game-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
 
 **`rabbit` (MobId 1) had the wrong Look/Color — fixed live 2026-07-26.** The extracted `mobs.csv` row
 for the base overworld `rabbit` mob (used by 242 fixed spawn points + 22 area spawns — the everyday wild
@@ -1762,7 +1825,7 @@ pickup/drop/throw/use/equip handlers. Opcodes + wire layouts were translated fro
 Builders/handlers live in `Session.cs` (`SendAddItem`/`SendDelItem`/`SendEquip`/`SendUnequip`,
 `HandlePickup`/`HandleDropItem`/`HandleThrow`/`HandleUseItem`/`HandleUnequip`/`HandleDropGold`); floor
 items live in `World.cs` (`DropItem`/`PickUp`/`ItemsOn`, id pool `500000+`); the registry is `Content.Items`
-(`ItemDef`) loaded from the gitignored `data/game-data/Items.csv` (2545 items — id, name, type, icon, look,
+(`ItemDef`) loaded from the gitignored `game-data/Items.csv` (2545 items — id, name, type, icon, look,
 stat lines), same logic-only pattern as maps/mobs.
 
 **Confidence.** The **recv** opcodes are trustworthy — 4.95's walk/turn/chat/attack/setting opcodes already
@@ -2393,7 +2456,7 @@ packet-supplied target.
 
 `HandleCast` plays the cast animation (`0x1A` **type 6 = magic**) for the caster + peers, then applies the
 spell's effect via a **data-driven magic engine** (`Session.ApplyCast`). The effect data is extracted straight
-from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `data/game-data/spell_effects.csv` (gitignored),
+from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `game-data/spell_effects.csv` (gitignored),
 loaded into `Content.SpellFx` and joined to each spell by identifier (the Lua table name == `SplIdentifier`).
 Each row carries an **archetype** + the spell's **real RTK numbers**: the damage/heal *formula string*, the true
 mana cost, buff stat+amount+duration, debuff kind+duration+chance, cooldown ("aether"). 621 of the ~841 spells
@@ -3071,7 +3134,7 @@ deliberate simplification made before the F1 menu was understood): a ghost now r
 nation and revives (`ReviveAt`: full heal + warp) on arrival.
 
 **Home city** (`Session.HomeCityFor`/`PlaceNewCharacter`): a fresh character spawns, and a defeated one
-revives, **just inside their nation's home**, near the real RTK door-arrival tile (`data/game-data/
+revives, **just inside their nation's home**, near the real RTK door-arrival tile (`game-data/
 Warps.csv`) rather than GmWarp's outdoor GM-teleport spot:
 - Nation `2` (Buya): map **351** (Jadespear's Home) at `(3,6)`.
 - every other nation: map **36** (Ironheart's Home) at `(5,10)` — the door tile from Kugnae's
@@ -3104,7 +3167,7 @@ itself IS the real RTK flow (F1 → Silver Thread → pick a Shaman) — the one
 that `ReviveAt` heals on arrival at the Shaman's map instead of requiring a second click on a standalone
 Shaman NPC actor once there (we don't have those placed as real map NPCs).
 
-**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `data/game-data/Warps.csv` ids 56-59) is
+**The live Buya↔Jadespear's-Home door** (`Content.Warps`/`TryWarp`, `game-data/Warps.csv` ids 56-59) is
 a *separate* code path from the hardcoded home-city spawn above — walking onto Buya's door tile
 (`330:(55/56,121)`) drives the normal warp system (`Session.HandleWalk` → `EnterMap`).
 
@@ -3342,16 +3405,28 @@ messenger" minitext there, and the same here.
 
 **Board list content.** RTK's actual board list (`db/board_db.txt`) is server-instance config not present
 in the reference tree — there's no real seed data to port, unlike every other feature this session (items,
-mobs, maps, spells all had real CSVs). `Boards.All` (`Server/Boards.cs`) instead reuses REAL RTK board
-identifiers pulled straight from RTK's own board Lua scripts (`rtklua/Developers/Boards/*.lua`): **Lore**,
-**Map**, **Poetry**, **Minigames & Carnages** — the ones that don't depend on unmodelled concepts (GM
-level, tutor rank, clans/subpaths block the rest: `bugs_board`/`devs_board` are GM-only, `pathBoards.lua`'s
-per-class boards gate posting on "tutor" status, `subpath_public_boards.lua` needs a subpath system). Every
-board here is open to read + post by any player. This is a judgment call, not RTK ground truth — if a
-different board list is wanted, it's a one-line edit to `Boards.All`.
+mobs, maps, spells all had real CSVs), so `Boards.All` (`Server/Boards.cs`) is this server's own roster,
+in wire-id order (which is also the order the client draws):
+
+| Id | Board | | Id | Board |
+|---|---|---|---|---|
+| 1 | Community        | | 6 | Law |
+| 2 | Market (Buy)     | | 7 | Guide |
+| 3 | Market (Sell)    | | 8 | Poetry |
+| 4 | Hunting          | | 9 | Bugs |
+| 5 | Community Events | | 0 | **Mailbox** (appended by `SendBoardList`, not in `Boards.All`) |
+
+Every board is open to read + post by any player — RTK's own default for a board with no gating `check`
+script; its gated boards (`bugs_board`/`devs_board` GM-only, `pathBoards.lua` per-class boards gating on
+"tutor" status, `subpath_public_boards.lua`) need concepts this server doesn't model. Changing the roster
+is an edit to `Boards.All`, but the ids are the wire `BrdBnmId` and are referenced by `board_posts.board_id`
+and `game-data/BoardLocations.csv` — renumbering an existing board re-homes its posts and any
+board-sign pointing at it, so add with new ids rather than reshuffling. (The one board-sign registered so
+far, the Buya arena schedule board at `330,127,79`, points at **5 Community Events**; it pointed at the
+previous roster's id 4 "Carnage Schedule".)
 
 **Storage.** RTK's posts live in a separate char-server's SQL database; this server is single-process, so
-posts collapse into one server-wide JSON file (`data/boards.json`, `Server/Boards.cs`) instead — same
+posts collapse into one server-wide JSON file (`state/boards.json`, `Server/Boards.cs`) instead — same
 "RTK's shape, our storage" choice already made for characters (`Shared/CharacterStore.cs`). Delete is
 author-only (RTK's broader GM/tutor `CAN_DEL` grant isn't modelled).
 
@@ -3407,7 +3482,7 @@ run on every level).
 `classdb_level(path, level)` = total exp needed to leave `level` (i.e. reach `level+1`). Paths 0-4 map
 1:1 onto this server's existing `Content.PathIdForClass`/`Paths.csv` scheme (`PthType` column: 0 Peasant /
 1 Warrior / 2 Rogue / 3 Mage / 4 Poet — RTK's own `Paths` table, already in use for spell-book gating).
-Extracted (awk one-liner over the RTK file) into a long-format `data/game-data/LevelExp.csv`
+Extracted (awk one-liner over the RTK file) into a long-format `game-data/LevelExp.csv`
 (`Path,Level,CumExp`), loaded by `Content.LoadLevelExp` into `Content.ExpToNext(pathId, level)`.
 
 **`Session.AwardExp(amount)`** is now the single funnel every exp source goes through (quest rewards,
@@ -3476,7 +3551,7 @@ entries:**
   the way back from death, the same reasoning as "Recover Death Pile" below. RTK branches the Shaman choice on `player.country` (0 Wilderness / 1 Kugnae / 2 Buya); this
   server only has two home nations modeled, so it collapses to `_char.Nation`: Buya (`2`) offers **Felis**
   (map 338) / **Storm** (339), everyone else **Dusk** (map 8) / **Dawn** (map 9) — all four are real RTK
-  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `data/game-data/map_index.csv`.
+  map ids, confirmed present as literal 10×10 "\* Shaman" rooms in `game-data/map_index.csv`.
   **Picking one is PASSAGE ONLY (corrected 2026-08-06)** — it warps the ghost to that Shaman's hut and
   leaves it a ghost; the Shaman NPC there is what revives you (see `ReviveAbility` below). That is RTK's own
   split: `f1npc.lua`'s Silver Thread branch ends in a bare `player:warp(...)` and never touches
@@ -3749,7 +3824,7 @@ The framing bug that used to crash this is fixed.
 **Destinations** (`Session.cs` `WorldDests`) — 7 of RTK's 9 real destinations; Hamgyong Nam-Do (map 99,
 RTK's own display-name mismatch against its actual map title) and Mount Baekdu (map 4259, the one
 quest-gated entry) are both omitted because neither has renderable map data in this project's
-`data/game-data/map_index.csv`:
+`game-data/map_index.csv`:
 
 | Destination | Map | Landing (x,y) |
 |---|---|---|
@@ -3907,7 +3982,7 @@ byte**, then `count` records each = `u8 tileCount` · `tileCount × u16` frame i
 no object = flag `0`. The **client's** table (`NexusTK.dat` → `SObj.tbl`, 7608 objects) is authoritative for
 the object-id space the `.map` files use; RTK's copy (`RTK-Server/rtk/SObj.tbl`, 18954 objects) is a superset
 that agrees on every in-range id. Extract the client copy with
-`python re/pak_extract.py "<install>/NexusTK.dat" SObj.tbl data/SObj.tbl`.
+`python re/pak_extract.py "<install>/NexusTK.dat" SObj.tbl game-data/SObj.tbl`.
 
 The **spawn coordinate must lie inside the camera viewport** at the moment `0x33` is processed, or the
 placement check bails and the character never renders (§14). With scroll `(0,0)` the initial viewport
@@ -4630,7 +4705,7 @@ magnitude faster for "what does this byte mean" questions.
   Buy/Sell and the bank's take/give also have spoken shortcuts (real NexusTK commands, not RTK-ported — see
   §11e's spoken shortcuts note). **Remaining:** the authentic buy/sell grid window (`0x2f`, currently menu-based); per-NPC
   quest/crafting scripts (RTK Lua); joint bank accounts; and the flat item-price data isn't tracked
-  (`data/game-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
+  (`game-data/` ignored). **Transport is deliberately a stub** — RTK's `Waypoint.lua` fast-travel network
   has no evidence of existing in original 4.x/5.x NexusTK, so it isn't ported.
 - **Undecoded handlers** worth probing when needed: `0x1b, 0x2f, 0x31, 0x35, 0x36, 0x39, 0x3b,
   0x42, 0x44, 0x46, 0x4a, 0x4b, 0x67, 0x68`. (`0x66` is decoded — §11c.1.)
@@ -4706,7 +4781,7 @@ Clans, Friends, Legends, Mail, Kills, SpellBook, Registry, Auctions, Boards, Par
 ids/colours need 4.95 validation); stats are 7.x-balanced (structure correct, numbers a design choice); the
 non-overlapping maps/warps/NPCs are 7.x-added content and are filtered out of the extracts.
 **Reproduce:** clone `RTK-Server` (gitignored), then `python re/rtk_extract.py` writes the CSVs to
-`data/game-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
+`game-data/` (also gitignored) + prints the client-overlap report; `re/rtk_analyze.py` lists all 54
 tables with row counts. ²`AreaSpawns.csv` isn't an SQL table — it's generated from the Lua spawner by
 `python re/extract_lua_spawns.py` (parses `mobSpawnHandler.lua`'s `handleSpawn(...)` calls). **None of
 this data is committed** — this repo is logic-only; the CSVs are generated locally and kept out of git.
@@ -4732,7 +4807,7 @@ This repo is **logic-only**. All game *data* lives outside it and is regenerated
 | **Nexus Atlas** via Wayback (pre-6.5, ~2005-10) | monster names, exp, type; monster art GIFs | `re/monster-matcher/` scrapers (Wayback CDX + `im_` raw fetch) |
 | **DizzyThermal/TKViewer** | later-client DAT/DNA format docs (e.g. `MONSTER.DNA` struct) | GitHub (reference only) |
 | **jeedee/TkServer** (6.x), **darkalucard/StarterTK** (7.x) | packet-builder concepts (§17) | GitHub (reference only) |
-| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `data/game-data/map_index.csv` |
+| **Client `Maps/TK<id>.map`** (in the client install) | authoritative *map existence* + cell count (headerless 4-byte cells) | `re/build_map_index.py` → `game-data/map_index.csv` |
 
 ### 17.3 Runtime content registry (`Server/Content.cs`) — how the data is consumed
 

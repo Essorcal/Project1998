@@ -26,8 +26,8 @@ public enum AccessLevel
 /// which is harmless on a loopback test box and an instant economy collapse on a hosted one.
 ///
 /// Deployment config, not game state, so it follows the flat-file tier (see the config-persistence note):
-/// one normalized username per line in <c>data/gm_accounts.txt</c> (full access) and
-/// <c>data/tester_accounts.txt</c> (the character/item subset), with <c>#</c> comments and blank lines
+/// one normalized username per line in <c>state/gm_accounts.txt</c> (full access) and
+/// <c>state/tester_accounts.txt</c> (the character/item subset), with <c>#</c> comments and blank lines
 /// ignored, plus comma-separated <c>NEXUS_GMS</c> / <c>NEXUS_TESTERS</c> environment overrides that are
 /// UNIONed with their file (handy for a container that ships no writable data dir). Matching is
 /// case-insensitive via the same <see cref="Auth.Key"/> normalization accounts and characters use, so
@@ -48,10 +48,10 @@ public static class StaffAccounts
     private static HashSet<string> _testers = new();
     private static bool _loaded;
 
-    /// <summary>The GM roster file — &lt;repo&gt;/data/gm_accounts.txt. Absent is normal (means "no GMs").</summary>
-    public static string GmPath => System.IO.Path.Combine(RepoPaths.DataDir(), "gm_accounts.txt");
-    /// <summary>The tester roster file — &lt;repo&gt;/data/tester_accounts.txt. Absent is normal.</summary>
-    public static string TesterPath => System.IO.Path.Combine(RepoPaths.DataDir(), "tester_accounts.txt");
+    /// <summary>The GM roster file — &lt;root&gt;/state/gm_accounts.txt. Absent is normal (means "no GMs").</summary>
+    public static string GmPath => RepoPaths.State("gm_accounts.txt");
+    /// <summary>The tester roster file — &lt;root&gt;/state/tester_accounts.txt. Absent is normal.</summary>
+    public static string TesterPath => RepoPaths.State("tester_accounts.txt");
 
     /// <summary>The tier this username sits at. GM wins over tester; unlisted is <see cref="AccessLevel.Player"/>.</summary>
     public static AccessLevel LevelFor(string username)

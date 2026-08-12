@@ -5,12 +5,21 @@ namespace Server;
 /// Jadespear #49 / Ironheart #20 script), driving <c>quest["tutorial_quest"]</c> through 14 stages. Ported
 /// faithfully: each stage's dialog, item/creature portraits, gates and rewards match the Lua.
 ///
-/// Reality note — stages gate on world content this server doesn't have yet (a fishing NPC that grants the
-/// <c>learned_to_fish</c> legend, Chu Rua's shore on map 1111, the mount system, the missing-brother and
-/// ice-beast NPCs). Those stages show the real dialog but can't be COMPLETED until that content exists — which
-/// is exactly "port as far as current content allows." The item-turn-in stages (armor, meat, rose+chestnut,
-/// ogre cider, antlers, mica, student cap) are completable now via shops or <c>@item</c>. The separate
-/// path-choice and warrior-armor branches of the RTK script (which need the class/guild systems) are out of scope.
+/// Reality note — some stages gate on world content this server doesn't have yet (a fishing NPC that grants
+/// the <c>learned_to_fish</c> legend, Chu Rua's shore on map 1111, the ice-beast NPC). Those stages show the
+/// real dialog but can't be COMPLETED until that content exists — which is exactly "port as far as current
+/// content allows." Stage 11's missing brother IS implemented (Haguru on Du Mountain — see
+/// <see cref="FindBrother"/>). Most item-turn-in stages (armor, meat, rose+chestnut, ogre cider, antlers,
+/// mica) are completable via shops or <c>@item</c>; stage 13's student cap is NOT in any shop or drop table,
+/// so <c>@item</c> is currently its only route — the wool → Yon → cloth → Caretaker chain the dialog
+/// describes has no scripts behind it yet. The script's separate warrior-armor branch (Chongun's tiger
+/// essence, needing the quest items) is still out of scope; its path-choice branch is ported — see
+/// <see cref="PathChoice"/>.
+///
+/// ERA — stages 11 and 13 were added 2001-03-18 and are gated on <see cref="Era.DuMountainQuest"/> /
+/// <see cref="Era.StudentCapQuest"/>; before that date the chain simply runs 10 → 12 and ends. The
+/// first-steps beats this chain dispatches into (<see cref="NoviceQuest"/>) move out of the tutor and into
+/// the newbie area on 2000-10-06. See <see cref="StageInEra"/> and docs/Era-Gating.md.
 /// </summary>
 public static class TutorialQuest
 {
@@ -29,6 +38,18 @@ public static class TutorialQuest
 
     private static async Task Run(NpcContext ctx)
     {
+        // RTK main_tutorial_npc.lua:14 — a Peasant who has reached level 5 gets THIS branch instead of the
+        // tutorial, on every click, until they pick a path. The Lua `return`s, so it's a hard block, and
+        // deliberately so: Session.AwardExp already froze them at level 5, so continuing the chain would hand
+        // out exp rewards that evaporate on arrival while hiding the one thing they actually need to do.
+        // Sits above the stage-0 intro and the NoviceQuest dispatch because the Lua's check is the first thing
+        // in `click` — a player who hits 5 mid-chain is blocked there too, not just between stages.
+        if (ctx.Level >= 5 && ctx.ClassId == 0)
+        {
+            await PathChoice(ctx);
+            return;
+        }
+
         int stage = ctx.Stage(Stage);
 
         // This chain's own greeting still opens the whole conversation — it ends on "Click on me to learn...",
@@ -41,11 +62,24 @@ public static class TutorialQuest
 
         // The reconstructed first-steps chain then runs to completion, as part of the SAME conversation — the
         // tutor must never offer a choice between the two, so this dispatches rather than adding a menu entry.
-        if (ctx.Stage(NoviceQuest.Key) < NoviceQuest.Done)
+        // Era gate: these beats MOVED into the newbie area on 2000-10-06 rather than being retired, so from
+        // that date the tutor must not teach them a second time — a player reaching him has already been
+        // handed the saber, the garb and Soothe out there. Before it the area doesn't exist and the tutor is
+        // the only place they can come from. Exactly one of the pair is ever live (Era.TutorNoviceChain
+        // retires the day Era.NewbieArea arrives), and the tutor himself is present in every era either way.
+        if (Era.Has(Era.TutorNoviceChain) && ctx.Stage(NoviceQuest.Key) < NoviceQuest.Done)
         {
             await NoviceQuest.Run(ctx);
             return;
         }
+
+        // Step over any stage whose quest doesn't exist yet at the server's era date. Deliberately WITHOUT
+        // rewriting the saved stage: the gate is deployment config, and config must never mutate a
+        // player's progress. A character stored at 11 with the Du Mountain quest switched off simply
+        // dispatches as 12, and moving the era date forward later hands them that same quest back rather
+        // than having silently consumed it. Stage 13 skipping to 14 lands on the closing line below, which
+        // is exactly where the chain ended before 2001-03-18.
+        while (stage <= 13 && !StageInEra(stage)) stage++;
 
         switch (stage)
         {
@@ -66,6 +100,71 @@ public static class TutorialQuest
             default: await ctx.Say("I have taught you all that I can, young one. The time has come for you to " +
                                    "venture out into the Kingdoms and create your own legends."); break;
         }
+    }
+
+    /// <summary>Does this stage's quest exist at the server's era date? Only the two 2001-03-18 additions
+    /// carry a date — the rest of the chain is older than the surviving archive and is always present, so
+    /// they're the only two the tutor can ever be missing. Both the mountain and Haguru himself predate
+    /// the quest and stay in the world either way; see <see cref="Era.DuMountainQuest"/>.</summary>
+    private static bool StageInEra(int stage) => stage switch
+    {
+        11 => Era.Has(Era.DuMountainQuest),
+        13 => Era.Has(Era.StudentCapQuest),
+        _  => true,
+    };
+
+    /// <summary>The level-5 Peasant path-choice branch (RTK <c>main_tutorial_npc.lua:14-122</c>): explain the
+    /// four paths, or ferry the player to a guild hall. The tutor only WARPS — the Guildmaster inside is what
+    /// assigns the class (<see cref="ClassTrainerAbility"/>), exactly as in RTK.
+    ///
+    /// Divergence: the halls are the player's own kingdom's. The Lua hardcodes Buya's four (341-344) even for a
+    /// Kugnae player, but f1npc.lua's level5popupDialog — the same milestone, reached through F1 — picks by
+    /// <c>player.country</c>, so the tutor's copy reads as an oversight rather than a rule. Map ids match
+    /// Session.ChoosePathMenu so both routes land in the same place.</summary>
+    private static async Task PathChoice(NpcContext ctx)
+    {
+        // RTK order: warriors, rogues, mages, poets (its choice 2..5), each with its own send-off line.
+        (string label, ushort kugnae, ushort buya, string sendOff)[] guilds =
+        {
+            ("Show me the Warriors guild.", 11, 341, "Ah, the heart of a fighter. This is the path for the true fighter. Let me show you to their hall now."),
+            ("Show me the Rogues guild.",   15, 343, "A nimble fighter is what you want to be? Let me show you to their hall now."),
+            ("Show me the Mage guild.",     13, 342, "A mastery of magic is what you seek? Let me show you to their hall now."),
+            ("Show me the Poet guild.",     17, 344, "A caring, nurturing soul you are indeed. Let me show you to their hall now."),
+        };
+
+        await ctx.Say("Oh my, you are growing fast! You have already reached the 5th level. But I notice you have not yet picked your path.",
+                      "You should really look into picking your path before you continue with these tasks.");
+
+        var opts = new List<string> { "Can you explain the paths?" };
+        foreach (var g in guilds) opts.Add(g.label);
+        opts.Add("I will pick one later.");
+
+        int choice = await ctx.Menu("Would you like me to send you to your guild to pick your destiny, or would you like to continue?", opts);
+
+        if (choice == 1)
+        {
+            await ctx.Say(
+                "In this land we have 4 main paths. They are the Warriors, the Rogues, the Mages, and the Poets.",
+                "Warriors are the fighters, they use their brute force to kill their foes, and can power through large numbers of mobs quickly.",
+                "Rogues are also fighters, but use more magic to assist them. A nimble and deadly killer one on one.",
+                "Magi are the magic users of the land. Powerful in the art of offensive magic, and relies on range attacks",
+                "Finally the Poets. They are the healers of the land. While they kill very little for themselves, they are always a welcomed addition to every group.",
+                "You can learn more about each path from the Guild tutors, found in the lower left corner of each guild.");
+            return;
+        }
+
+        if (choice >= 2 && choice <= 5)
+        {
+            var g = guilds[choice - 2];
+            await ctx.Say(g.sendOff, "Remember to return to me later, so you can continue your tutorial.");
+            ctx.Warp(ctx.Nation == 2 ? g.buya : g.kugnae, 8, 7);
+            return;
+        }
+
+        if (choice == 6)
+            await ctx.Say("This is your choice... But remember this, any experience you gain now until you pick your path will go to waste. Pick your path soon...");
+
+        // choice 0 (the player closed the menu) says nothing and changes nothing — they're still blocked.
     }
 
     // stage 0 -> 1 (only reachable once NoviceQuest is finished — see the dispatch at the top of Run).
@@ -327,16 +426,31 @@ public static class TutorialQuest
         }
     }
 
-    // stage 10: horse riding (needs the mount system — state 3 + horse disguise — which isn't in yet).
+    // stage 10: horse riding. RTK main_tutorial_npc.lua:777 gates on `player.state == 3 and player.disguise
+    // == 26` — mounted AND wearing the horse graphic. Here those are one flag (Character.Mounted drives the
+    // 0x33 form byte), so ctx.Mounted is the whole check. Ride a real wild horse in with the 'r' key
+    // (Session.TryRideHorse) and this clears.
     private static async Task HorseRiding(NpcContext ctx)
     {
-        // We don't model mounts, so the mounted check can't pass yet; the offer dialog is faithful.
+        if (ctx.Mounted)
+        {
+            ctx.AwardExp(150);
+            ctx.SetStage(Stage, 11);
+            await ctx.SayLook(17, 3, "What a great steed you have there. Very impressive indeed, I love to watch horses.",
+                                     "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
+            return;
+        }
+
         await ctx.Say("Nothing is better than a swift steed carrying you off to where you want to go. You should learn to ride now, as it will aid you greatly on your way to destiny.");
         await ctx.SayLook(17, 3, "You can't do much while mounted on a horse, but it is much faster than walking. Go find a horse and ride it back to me.");
         await ctx.Say("Talk to me again when you are mounted on a horse. Near the top left of the city is a good place to look for horses, there is usually a few there. Once you find one walk up to it and ride it by pressing the [r] key.");
     }
 
-    // stage 11: find the missing brother (needs the helped_haguru legend from Sanhae — not in yet).
+    // stage 11: find the missing brother. The brother IS Haguru (npc_dialog.lua HaguruNpc, ported from RTK
+    // NPCs/arctic/haguru.lua) — he stands on Du Mountain, off the Northern Pass, and sets helped_haguru once
+    // you have killed 3 mountain wolves for him. Note the tutor's directions below send you at Sanhae and the
+    // Arctic; that is RTK's own wording and it is a red herring — Du Mountain is the FIRST turning off the
+    // Northern Pass, before the Arctic gate, and Haguru is the only NPC on it.
     private static async Task FindBrother(NpcContext ctx)
     {
         if (ctx.Reg("helped_haguru") == 1)
@@ -364,7 +478,9 @@ public static class TutorialQuest
         }
     }
 
-    // stage 12: a better weapon (needs the defeated_ice_beast legend from KaMing's trickster — not in yet).
+    // stage 12: a better weapon. The trickster is Blood, in Blood's Home off KaMing's Encampment (npcs_say
+    // .BloodNpc, ported from RTK NPCs/kaming/blood.lua): say "ice beast", pay his 100 gold, kill the Ice Beast
+    // in Northeast Koguryo for its ice heart, and he forges the Frost sabre and grants the legend.
     private static async Task BetterWeapon(NpcContext ctx)
     {
         if (ctx.HasLegend("defeated_ice_beast"))

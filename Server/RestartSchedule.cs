@@ -13,7 +13,7 @@ namespace Server;
 ///
 /// TWO TRIGGERS, ON PURPOSE:
 ///   • <c>@restart 30 [reason]</c> — a GM in game, for the unplanned case.
-///   • <c>data/restart_at</c>     — a file holding "unixMs|reason", for CI. A deploy has no GM logged in,
+///   • <c>run/restart_at</c>     — a file holding "unixMs|reason", for CI. A deploy has no GM logged in,
 ///     so it needs a way in that doesn't involve the game protocol at all. The file is CONSUMED (deleted)
 ///     the moment it is read, which is what stops a restart from replaying forever: the newly-started
 ///     process would otherwise find the same file and schedule itself again.
@@ -48,12 +48,14 @@ public sealed class RestartSchedule
 
     public RestartSchedule(World world) => _world = world;
 
-    private string TriggerFile => Path.Combine(RepoPaths.DataDir(), "restart_at");
+    // run/, not state/: a trigger is a message from the deploy to the running process, consumed and deleted
+    // on read. Restoring one out of a backup would schedule a restart nobody asked for.
+    private string TriggerFile => Path.Combine(RepoPaths.RunDir(), "restart_at");
 
     /// <summary>The CONTENT lane's trigger: a sentinel dropped by a content-only deploy, meaning "re-read the
     /// CSVs and Lua, nobody needs to be kicked". Same consume-on-read discipline as the restart trigger.
     /// Its contents, if any, are used as the note announced to players.</summary>
-    private string ReloadFile => Path.Combine(RepoPaths.DataDir(), "reload_now");
+    private string ReloadFile => Path.Combine(RepoPaths.RunDir(), "reload_now");
 
     /// <summary>Is a restart booked, and how long until it.</summary>
     public bool Pending { get { lock (_lock) return _deadlineMs != 0; } }
@@ -169,7 +171,7 @@ public sealed class RestartSchedule
 
     // ---- the file trigger -------------------------------------------------------------------------
 
-    /// <summary>Read and CONSUME <c>data/restart_at</c> if present. Format: <c>unixMs</c> or
+    /// <summary>Read and CONSUME <c>run/restart_at</c> if present. Format: <c>unixMs</c> or
     /// <c>unixMs|reason</c>. Deleting on read is load-bearing — see the class doc.</summary>
     private void PollTriggerFile()
     {
@@ -204,7 +206,7 @@ public sealed class RestartSchedule
         Schedule(remaining / 60_000.0, reason);
     }
 
-    /// <summary>Read and CONSUME <c>data/reload_now</c> — the content lane's "the CSVs on disk are newer than
+    /// <summary>Read and CONSUME <c>run/reload_now</c> — the content lane's "the CSVs on disk are newer than
     /// the ones I have loaded" sentinel. Any text in the file is announced to players as a note; an empty file
     /// reloads silently, which is the right default for a typo fix nobody needs to hear about.</summary>
     private void PollReloadFile()
@@ -220,7 +222,7 @@ public sealed class RestartSchedule
         catch (IOException) { return; }        // couldn't consume it — do NOT reload, or we'd loop every poll
         catch (UnauthorizedAccessException) { return; }
 
-        Log.Info("=== content reload requested (data/reload_now) ===");
+        Log.Info("=== content reload requested (run/reload_now) ===");
         var (ok, report) = _world.ReloadFromDisk();
         Log.Info(ok ? $"   -> reloaded: {report}" : $"!! reload FAILED: {report} (previous content kept)");
 

@@ -13,7 +13,7 @@ namespace Server;
 public static class NpcScripts
 {
     // Ability NAME -> the C# singleton that implements it. This is the code half of the composition: the CSV
-    // (data/game-data/NpcAbilities.csv, loaded into Content.NpcCompositions) says WHICH abilities each NPC has;
+    // (game-data/NpcAbilities.csv, loaded into Content.NpcCompositions) says WHICH abilities each NPC has;
     // this map turns each name into its shared instance. To expose a new ability to the CSV, register it here.
     // (ClassTrainerAbility has four per-class instances; everything else is a lone singleton.)
     private static readonly Dictionary<string, INpcAbility> AbilityByName = new(StringComparer.OrdinalIgnoreCase)

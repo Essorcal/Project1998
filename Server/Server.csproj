@@ -14,6 +14,16 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- Server GC + concurrent (background) gen2. The default for a console app is WORKSTATION GC, which
+         collects on the allocating thread: a gen2 there stops the world tick mid-heartbeat. Server GC gives
+         each core its own heap and dedicated collection threads, and Concurrent keeps gen2 mostly in the
+         background instead of as one blocking pause. The tick allocates several lists plus a HashSet per
+         active map per 600ms, so this is squarely the allocation profile server GC is for.
+         Costs more RSS (one heap per core). Override on a memory-tight host without a rebuild:
+         DOTNET_gcServer=0. The slow-tick watchdog prints a per-tick gc figure to tell if it mattered. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
 </Project>

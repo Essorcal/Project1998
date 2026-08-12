@@ -3,7 +3,7 @@ using MoonSharp.Interpreter;
 namespace Server;
 
 /// <summary>
-/// The Lua-facing facade an item-effect verb (<c>data/game-data/item_verbs.lua</c>) uses to act on the game —
+/// The Lua-facing facade an item-effect verb (<c>game-data/item_verbs.lua</c>) uses to act on the game —
 /// the consumable-use analogue of <see cref="SpellContext"/>. Created per use, bound to one eater + the item
 /// being consumed. Exposes a small, safe set of engine primitives (heal, restore mana, set a timed status ward,
 /// warp home, …) plus read-only eater stats, so a verb reads as linear script:

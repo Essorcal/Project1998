@@ -14,7 +14,7 @@ namespace Shared;
 /// processes, so the record written at creation must be visible to the game process at world entry.
 ///
 /// The constructor still takes the legacy JSON directory — now used only as the ONE-TIME migration source
-/// (and left in place afterwards as a backup). Existing data/chars/*.json are imported on first run.
+/// (and left in place afterwards as a backup). Existing state/chars/*.json are imported on first run.
 /// </summary>
 public sealed class CharacterStore
 {
@@ -193,7 +193,7 @@ public sealed class CharacterStore
         }
     }
 
-    // One-time import of the legacy data/chars/*.json into the DB. Idempotent: each record is inserted
+    // One-time import of the legacy state/chars/*.json into the DB. Idempotent: each record is inserted
     // only if that username is absent (INSERT OR IGNORE), so it never clobbers newer DB state and is safe
     // to run from both processes and on every startup. The JSON files are left in place as a backup.
     private void MigrateFromJsonIfNeeded()

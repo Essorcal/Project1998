@@ -15,7 +15,7 @@ import csv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CSV = ROOT / "data/game-data/spell_effects.csv"
+CSV = ROOT / "game-data/spell_effects.csv"
 
 MIGHT       = {"valor", "strengthen", "bless_muscles", "power_burst"}
 ARMOR_LONG  = {"harden_armor", "thicken_skin", "shield_of_life", "elemental_armor"}

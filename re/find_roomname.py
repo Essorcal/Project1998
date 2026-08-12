@@ -8,7 +8,7 @@ room identity can.
 
 We don't need to know which room we're in to find it: harvest every UTF-16LE string in the
 client's heap and intersect that set with the 1751 known map names from
-data/game-data/map_index.csv. Whatever matches IS the current room (plus any static name
+game-data/map_index.csv. Whatever matches IS the current room (plus any static name
 tables, which are equally useful -- a table entry is a stable, restart-proof address).
 
 Then climb from the string toward a module-static root so the accessor survives restarts.

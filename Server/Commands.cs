@@ -108,6 +108,7 @@ public sealed partial class Session
         // ---- config read-outs -----------------------------------------------------------------------
         G("npc",   (s, a) => s.NpcToggleCmd(a),   "", "which NPCs are switched off (config + @reload to change)"),
         G("craft", (s, a) => s.CraftToggleCmd(a), "", "crafting era-gate status (config + @reload to change)"),
+        G("era",   (s, a) => s.EraCmd(a),         "", "target date + which dated content it includes"),
 
         // ---- sprite / appearance lab ----------------------------------------------------------------
         G("look",   (s, a) => s.LookOne(a),          "b0..b6",          "spawn a dummy with those appearance bytes"),

@@ -44,14 +44,18 @@ public sealed class LoginSession
     // and announces itself there with 0x10.
     private static readonly byte[] GameHost = ParseHost(Environment.GetEnvironmentVariable("NEXUS_GAME_HOST"));
 
-    public LoginSession(TcpClient client, int port, CharacterStore store)
+    /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
+    /// has already consumed its PROXY header. Null on a direct connection. The per-IP failed-login throttle
+    /// and the handoff token are both keyed on this, and keyed on the proxy they protect nothing.</param>
+    public LoginSession(TcpClient client, int port, CharacterStore store, IPAddress? realIp = null)
     {
         _client = client;
         _stream = client.GetStream();
         _port = port;
         _store = store;
-        _remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
-        _ip = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
+        var peer = client.Client.RemoteEndPoint as IPEndPoint;
+        _remote = realIp is not null ? $"{realIp} (via {peer?.Address})" : peer?.ToString() ?? "?";
+        _ip = realIp ?? peer?.Address ?? IPAddress.None;
     }
 
     public async Task RunAsync()

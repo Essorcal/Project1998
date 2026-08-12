@@ -10,7 +10,7 @@ We classify each into an archetype and pull out the numeric params + the *formul
 so C# can evaluate the real RTK formula (a tiny expression evaluator handles the ~30 distinct expressions).
 
 RTK is gitignored reference data. Run: python re/extract_spell_formulas.py
-Writes data/game-data/spell_effects.csv (gitignored) + prints an archetype coverage report.
+Writes game-data/spell_effects.csv (gitignored) + prints an archetype coverage report.
 """
 import os, re, glob, csv
 from collections import Counter
@@ -185,7 +185,7 @@ with open(os.path.join(OUT, 'spell_effects.csv'), 'w', newline='', encoding='utf
     w = csv.DictWriter(f, fieldnames=FIELDS)
     w.writeheader(); w.writerows(rows)
 
-print(f"{len(rows)} spell tables -> data/game-data/spell_effects.csv\n")
+print(f"{len(rows)} spell tables -> game-data/spell_effects.csv\n")
 total = sum(cats.values())
 for c, n in cats.most_common():
     print(f"  {c:12} {n:5}  ({100*n/total:4.1f}%)")

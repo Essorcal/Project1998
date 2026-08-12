@@ -1,4 +1,4 @@
-"""Apply the reviewed animation-id decisions to data/game-data/spell_effects.csv.
+"""Apply the reviewed animation-id decisions to game-data/spell_effects.csv.
 
 Every conflict between the CSV (RTK-derived) and nexusatlas was rendered side by side and settled by
 eye -- see re/fx/review/*.png. DECISIONS records that verdict per (gif, csv value, atlas value)

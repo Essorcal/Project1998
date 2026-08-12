@@ -164,7 +164,7 @@ public sealed class World
     // Ground-item forage spawns (RTK itemspawner.lua): keep up to Max stacks of a gatherable item scattered on
     // passable tiles within a box, topped up periodically. Chestnuts fill the Kugnae farm (map 0) and a Buya
     // patch (map 330) — the tutorial's stage-3 gather. A stack is MinQty..MaxQty items on one tile.
-    // Forage spawn boxes are data-driven (data/game-data/ForageAreas.csv -> Content.ForageAreas); hot-reloads
+    // Forage spawn boxes are data-driven (game-data/ForageAreas.csv -> Content.ForageAreas); hot-reloads
     // via @reload. See TopUpForageLocked.
     private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
 
@@ -235,9 +235,13 @@ public sealed class World
     private uint _nextPlayerId = 1;
     private uint _nextMobId = 100_000;
     private uint _nextNpcId = 300_000;    // NPCs get their own id band (disjoint from mobs) so a click can tell them apart
+
+    // The NpcDef each placed NPC was built from, so @reload can tell an edited row from an unchanged one
+    // (see ReconcileNpcToggles). Guarded by _lock, same as the maps it mirrors.
+    private readonly Dictionary<int, NpcDef> _npcPlaced = new();
     private uint _nextItemId = 500_000;
 
-    /// <summary>The scheduled-restart clock (@restart, or the data/restart_at file a deploy writes). Kept on
+    /// <summary>The scheduled-restart clock (@restart, or the run/restart_at file a deploy writes). Kept on
     /// the World because a restart warning is a server-wide broadcast and AllPlayers lives here.</summary>
     public RestartSchedule Restarts { get; }
 
@@ -247,9 +251,22 @@ public sealed class World
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
         LoadClock();                      // resume the in-game calendar where the last run left it
         Restarts = new RestartSchedule(this);
-        _ = Task.Run(TickLoop);           // start the shared mob-AI + respawn heartbeat
-        _ = Task.Run(AutoSaveLoop);       // periodic crash-safety backstop (idle-dirty players); see AutoSaveLoop
-        _ = Task.Run(Restarts.Loop);      // restart-warning ladder + the deploy's file trigger
+
+        // DEDICATED THREADS, not Task.Run. Both of these used to be thread-pool work items, which put the
+        // world heartbeat behind every other pool item in the process: session read-loop continuations, the
+        // synchronous SQLite saves below, Lua, and any stray blocking call. When the pool ran out of threads
+        // the runtime injected replacements at only ~1-2 per second, and the tick simply did not run in the
+        // meantime — a multi-second, self-recovering freeze of the entire world with nothing in the log to
+        // show for it. A dedicated thread cannot be starved by pool pressure.
+        new Thread(TickLoop)     { IsBackground = true, Name = "world-tick" }.Start();
+        new Thread(AutoSaveLoop) { IsBackground = true, Name = "world-autosave" }.Start();
+
+        // Pool headroom + the pool-latency and client-silence probes. Started here because this is the
+        // first point where a World exists for the silence scanner to walk.
+        Watchdog.RaiseMinThreads();
+        Watchdog.Start(this);
+
+        _ = Task.Run(Restarts.Loop);      // restart-warning ladder + the deploy's file trigger (1s cadence, not latency-critical)
     }
 
     // ---- persistent spawn roster --------------------------------------------------------------
@@ -361,7 +378,9 @@ public sealed class World
     /// Shared by startup placement and the live <see cref="EnableNpc"/> toggle. Caller holds <c>_lock</c>.</summary>
     private void PlaceNpc(NpcDef n)
     {
-        var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y);   // don't stack on a mob spawn sharing the tile
+        // Don't stack on a mob spawn sharing the tile, but DO stand where NPCs.csv says, wall or not.
+        var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y, avoidSolid: false);
+        _npcPlaced[n.Id] = n;   // the def this instance was built from — see ReconcileNpcToggles
         // RTK gives some NPCs (animals, town dogs, roaming merchants) a MoveTime + ReturnDistance so they
         // pace; the rest stand still. A leash of 0 means "don't stray", i.e. stationary.
         bool paces = n.MoveTime > 0 && n.ReturnDistance > 0;
@@ -387,6 +406,7 @@ public sealed class World
                 var gone = m.Mobs.Where(x => x.IsNpc && x.NpcDefId == npcId).ToList();
                 foreach (var g in gone) { m.Mobs.Remove(g); removed.Add((mapId, g.Id)); }
             }
+            _npcPlaced.Remove(npcId);
         }
         foreach (var (map, id) in removed)
             Broadcast(map, p => p.DespawnEntity(id));   // socket I/O — outside the lock
@@ -410,17 +430,23 @@ public sealed class World
     }
 
     /// <summary>Hot-reload hook (the <c>@reload</c> command, after <see cref="Content.Reload"/> re-reads
-    /// <c>NPCs.csv</c>): re-sync stationary-NPC placement against the just-reloaded Enabled flags — spawns any
-    /// NPC newly enabled, despawns any newly disabled. <see cref="EnableNpc"/>/<see cref="DisableNpc"/> are
-    /// already no-ops when there's nothing to change, so this is safe to run unconditionally on every reload.
+    /// <c>NPCs.csv</c>): re-sync stationary-NPC placement against the just-reloaded defs — spawns any NPC newly
+    /// enabled, despawns any newly disabled, and re-places any whose def CHANGED. That last case used to be
+    /// missed entirely: <see cref="EnableNpc"/> returns false as soon as the NPC is placed at all, so an edited
+    /// tile (or look, or colour) sat in the CSV doing nothing until the next full restart, and the world quietly
+    /// disagreed with the file. <see cref="NpcDef"/> is a record, so one structural compare covers every column.
     /// Returns how many NPCs' placement changed.</summary>
     public int ReconcileNpcToggles()
     {
         int changed = 0;
         foreach (var n in Content.Npcs)
         {
-            if (n.Enabled) { if (EnableNpc(n.Id)) changed++; }
-            else if (DisableNpc(n.Id) > 0) changed++;
+            if (!n.Enabled) { if (DisableNpc(n.Id) > 0) changed++; continue; }
+
+            bool moved;
+            lock (_lock) moved = _npcPlaced.TryGetValue(n.Id, out var prev) && !prev.Equals(n);
+            if (moved) DisableNpc(n.Id);          // drop the stale instance, then fall through and re-place it
+            if (EnableNpc(n.Id)) changed++;
         }
         return changed;
     }
@@ -451,10 +477,17 @@ public sealed class World
         sp.RespawnTick = 0;
     }
 
-    /// <summary>The spawn tile if it's open, else the nearest tile (within 2) that's in-bounds, not solid,
-    /// and not already occupied by a live mob — so two spawns on one tile (or a respawn onto a wanderer)
-    /// don't stack. Falls back to the spawn tile if everything nearby is taken. Caller holds <c>_lock</c>.</summary>
-    private (ushort x, ushort y) FreeSpawnTile(ushort mapId, ushort x, ushort y)
+    /// <summary>The spawn tile if it's open, else the nearest tile (within 2) that's in-bounds, not already
+    /// occupied by a live mob, and — for a real creature — not solid, so two spawns on one tile (or a respawn
+    /// onto a wanderer) don't stack. Falls back to the spawn tile if everything nearby is taken.
+    ///
+    /// <paramref name="avoidSolid"/> is false for NPCs: standing on solid ground is NORMAL for them and has to
+    /// be honoured, not corrected. RTK's own authored placements do it (Mignok 4716(4,9) and Tominaru 4716(13,8)
+    /// are both wall tiles), it's how an NPC stands behind a counter or on a shrine block, and nothing about an
+    /// NPC needs walkable ground: it renders through the same 0x07 creature path as any mob and
+    /// <see cref="Session.HandleClickInfo"/> opens its dialog by entity id with no adjacency check. Bumping them
+    /// silently moved every such NPC a few tiles off its authored spot. Caller holds <c>_lock</c>.</summary>
+    private (ushort x, ushort y) FreeSpawnTile(ushort mapId, ushort x, ushort y, bool avoidSolid = true)
     {
         var m = Map(mapId);
         var dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
@@ -463,7 +496,7 @@ public sealed class World
         bool Free(int tx, int ty)
         {
             if (tx < 0 || ty < 0 || (dims.Item1 > 0 && (tx >= dims.Item1 || ty >= dims.Item2))) return false;
-            if (terrain is not null && terrain.Solid(tx, ty)) return false;
+            if (avoidSolid && terrain is not null && terrain.Solid(tx, ty)) return false;
             foreach (var mo in m.Mobs) if (mo.Alive && mo.X == tx && mo.Y == ty) return false;
             return true;
         }
@@ -663,7 +696,7 @@ public sealed class World
             uint mobId = mob.Id;
             _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch { } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-            PlayerById(ownerId)?.AwardExp(reward, killExp: true);
+            PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y);
         }
     }
 
@@ -690,7 +723,7 @@ public sealed class World
             // The owner gets the kill: RTK credits a mob's damage to map_id2sd(mob->owner) the same way
             // (clif.c's `tmob->owner < MOB_START_NUM` lookup), so a pet kill counts as yours.
             uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
-            PlayerById(attacker.OwnerId)?.AwardExp(reward, killExp: true);
+            PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y);
             return;
         }
         lock (_lock) if (victim.Alive && victim.TargetId == 0) victim.TargetMobId = attacker.Id;
@@ -914,6 +947,12 @@ public sealed class World
     /// already there, and return the peers + mobs the caller should draw for the newcomer.</summary>
     public (Session[] peers, Mob[] mobs) EnterMap(Session s, ushort mapId)
     {
+        // BEFORE the lock: first entry to a map runs EnsureMaterialized, whose spawn placement reads the
+        // terrain (FreeSpawnTile -> MapData.For) — a disk read, a full cell decode and a SQLite query. Held
+        // under _lock that froze every player on every OTHER map too, for as long as the load took. Warming
+        // the cache out here makes the locked section a pure in-memory hit. See MapData.Prewarm.
+        MapData.Prewarm(mapId);
+
         Session[] peers; Mob[] mobs;
         lock (_lock)
         {
@@ -1221,7 +1260,7 @@ public sealed class World
     /// <summary>
     /// Hot-reload every file-backed registry and rebuild the world population from it — the work behind the
     /// <c>@reload</c> GM command, lifted out of <see cref="Session"/> because the OTHER caller has no session:
-    /// a content-only deploy drops a <c>data/reload_now</c> sentinel and <see cref="RestartSchedule.Loop"/>
+    /// a content-only deploy drops a <c>run/reload_now</c> sentinel and <see cref="RestartSchedule.Loop"/>
     /// calls this. That is the whole point of the content lane — a CSV or Lua fix ships without kicking anyone.
     ///
     /// <para>Returns (ok, report). A load error keeps the OLD content and comes back <c>ok: false</c> with the
@@ -1295,11 +1334,14 @@ public sealed class World
         foreach (var s in AllPlayers()) s.FlushNow();
     }
 
-    private async Task AutoSaveLoop()
+    // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
+    // a synchronous SQLite write, so a sweep of a full server is a long block. On the thread pool that was
+    // a pool thread held for the duration, competing with the heartbeat.
+    private void AutoSaveLoop()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Session.AutoSaveMs));
-        while (await timer.WaitForNextTickAsync())
+        while (true)
         {
+            Thread.Sleep(Session.AutoSaveMs);
             try { AutoSaveTick(); }
             catch (Exception e) { Log.Info($"!! autosave sweep error: {e.Message}"); }
         }
@@ -1485,14 +1527,56 @@ public sealed class World
 
     // ---- shared mob AI (one heartbeat drives every wandering mob on every map) -----------------
 
-    private async Task TickLoop()
+    /// <summary>A tick this slow (work OR scheduling delay, ms) gets a diagnostic line. 150ms is a quarter of
+    /// the heartbeat — well clear of normal jitter, low enough to catch a stall long before a player would
+    /// call it lag. <c>NEXUS_SLOW_TICK_MS</c> tunes it; 0 disables the watchdog.</summary>
+    private static readonly int SlowTickMs =
+        int.TryParse(Environment.GetEnvironmentVariable("NEXUS_SLOW_TICK_MS"), out var st) && st >= 0 ? st : 150;
+
+    private long _lockWaitMs;   // how long the last Tick() waited to acquire _lock (watchdog attribution)
+
+    // Fixed-cadence heartbeat on its own thread. Schedules against an absolute deadline rather than sleeping
+    // TickMs between iterations, so the tick's own work doesn't accumulate into drift (the old
+    // `await Task.Delay(600)` loop actually ran at ~612ms). If we fall a whole period behind we resync to
+    // now instead of trying to catch up — the world would rather skip a beat than run several back-to-back.
+    private void TickLoop()
     {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        long next = TickMs;
         while (true)
         {
-            try { await Task.Delay(TickMs); Tick(); }
+            int wait = (int)(next - clock.ElapsedMilliseconds);
+            if (wait > 0) Thread.Sleep(wait);
+
+            // Measured BEFORE the tick body: this is time the thread was not running at all (GC pause, OS
+            // preemption, the machine swapping) as opposed to time the tick spent working.
+            long late = clock.ElapsedMilliseconds - next;
+            next += TickMs;
+            if (next <= clock.ElapsedMilliseconds) next = clock.ElapsedMilliseconds + TickMs;
+
+            long t0 = clock.ElapsedMilliseconds;
+            var gc0 = GC.GetTotalPauseDuration();
+            _lockWaitMs = 0;
+            try { Tick(); }
             catch (Exception e) { Log.Info($"!! world tick error: {e.Message}"); }
+
+            if (SlowTickMs <= 0) continue;
+            long work = clock.ElapsedMilliseconds - t0;
+            if (work < SlowTickMs && late < SlowTickMs) continue;
+            long gcMs = (long)(GC.GetTotalPauseDuration() - gc0).TotalMilliseconds;
+            // Read this line as: LATE with gc ~= late  -> a GC pause. LATE with gc ~0 -> the OS didn't
+            // schedule us (machine-wide contention). WORK with lock ~= work -> a session thread was holding
+            // _lock (something slow ran inside a critical section). WORK with lock ~0 -> the tick body
+            // itself is genuinely too big for the population it's driving.
+            Log.Info($"!! SLOW TICK: work {work}ms (lock-wait {_lockWaitMs}ms), late {late}ms, gc {gcMs}ms — " +
+                     $"{PlayerCount} player(s), {MobCount} mob(s) on {ActiveMapCount} active map(s)");
         }
     }
+
+    /// <summary>Counts for the slow-tick diagnostic. Cheap, and only read on the watchdog path.</summary>
+    private int PlayerCount    { get { lock (_lock) return _maps.Sum(kv => kv.Value.Players.Count); } }
+    private int MobCount       { get { lock (_lock) return _maps.Sum(kv => kv.Value.Mobs.Count); } }
+    private int ActiveMapCount { get { lock (_lock) return _maps.Count(kv => kv.Value.Players.Count > 0); } }
 
     // One heartbeat: (1) refill dead spawn points that are due, (2) wander every live mob OR, if provoked,
     // chase and swing at its target instead (queuing any landed swings), (3) reconcile each player's
@@ -1522,8 +1606,23 @@ public sealed class World
         List<(ushort map, GroundItem gi)>? forage = null;
         bool timeChanged = false;
         List<(ushort map, byte weather)>? weatherChanges = null;
+
+        // (0) Warm every active map's terrain BEFORE taking the lock. Both the respawn refill (Materialize ->
+        // FreeSpawnTile) and the wander loop below call MapData.For, which on a miss reads the .map off disk,
+        // decodes every cell and runs a SQLite query. Under _lock that stalled the whole world; out here it
+        // costs nothing on the overwhelmingly common cache-hit path. See MapData.Prewarm.
+        ushort[] active;
+        lock (_lock) active = _maps.Where(kv => kv.Value.Players.Count > 0).Select(kv => kv.Key).ToArray();
+        foreach (var id in active) MapData.Prewarm(id);
+
+        long lockT0 = System.Diagnostics.Stopwatch.GetTimestamp();
         lock (_lock)
         {
+            // Time spent BLOCKED here means another thread was inside a _lock critical section. The
+            // slow-tick watchdog prints it, which is what distinguishes "someone else stalled us" from
+            // "this tick body is too slow".
+            _lockWaitMs = (System.Diagnostics.Stopwatch.GetTimestamp() - lockT0) * 1000 / System.Diagnostics.Stopwatch.Frequency;
+
             // (1) respawns: refill any due spawn point on a map someone is watching.
             foreach (var (mapId, list) in _spawns)
             {
@@ -1788,7 +1887,7 @@ public sealed class World
                         }
                     }
 
-                    // ---- PREY AI (MobDef.Flees, data/game-data/MobFlees.csv): a rabbit or a blue rooster does
+                    // ---- PREY AI (MobDef.Flees, game-data/MobFlees.csv): a rabbit or a blue rooster does
                     // not fight and does not stand there. It backs away at double its wander pace from anyone
                     // who gets within FleeRadius, and a swing (PanicMs) widens that radius and keeps it running
                     // after you back off. This runs BEFORE everything below because

@@ -4,7 +4,7 @@ using Shared;
 namespace Server;
 
 /// <summary>
-/// Hosts data-driven NPC dialog scripts in Lua (<c>data/game-data/npc_dialog.lua</c>) — the async cousin of the
+/// Hosts data-driven NPC dialog scripts in Lua (<c>game-data/npc_dialog.lua</c>) — the async cousin of the
 /// spell/item verb system. Where a spell verb is a one-shot function, an NPC conversation SUSPENDS on every
 /// prompt (menu / say / input) waiting for the player's 0x3A reply, so a script can't be a plain call. Instead
 /// each migrated NPC is a Lua <b>coroutine</b>: the script calls <c>ctx:say(...)</c> / <c>ctx:menu(...)</c>,
@@ -160,6 +160,14 @@ public static class NpcScript
             case "hasItem":    return DynValue.NewBoolean(ctx.HasItem(Str(t, "key"), Int(t, "n", 1)));
             case "countItem":  return DynValue.NewNumber(ctx.CountItem(Str(t, "key")));
             case "itemName":   return DynValue.NewString(ctx.ItemName(Str(t, "key")));
+            // Teach a spell by Spells.csv key. False on an unknown key OR a full spell book, and the
+            // script is expected to check — a silently-unlearned reward reads to the player as the quest
+            // having eaten their items.
+            case "learnSpell":
+            {
+                var sp = Content.SpellByKey(Str(t, "key"));
+                return DynValue.NewBoolean(sp is not null && ctx.LearnSpell(sp));
+            }
             case "awardExp":   ctx.AwardExp((uint)Math.Max(0, Int(t, "n")));     return DynValue.Nil;
             case "awardGold":  ctx.AwardGold((uint)Math.Max(0, Int(t, "n")));    return DynValue.Nil;
             case "stage":      return DynValue.NewNumber(ctx.Stage(Str(t, "key")));
@@ -173,6 +181,12 @@ public static class NpcScript
             case "level":      return DynValue.NewNumber(ctx.Level);
             case "sex":        return DynValue.NewNumber(ctx.Sex);
             case "nation":     return DynValue.NewNumber(ctx.Nation);
+            case "killCount":  return DynValue.NewNumber(ctx.KillCount(Str(t, "key")));
+            // Era gate (Server/Era.cs): does this dated feature exist at the server's target date? Scripts
+            // need it because a gated quest usually still has its NPC standing there — the giver predates
+            // the quest — so the script, not the placement, is what has to know.
+            case "eraHas":     return DynValue.NewBoolean(Era.Has(Str(t, "feature")));
+            case "mounted":    return DynValue.NewBoolean(ctx.Mounted);
             case "coins":      return DynValue.NewNumber(ctx.Coins);
             case "spendGold":  return DynValue.NewBoolean(ctx.SpendGold((uint)Math.Max(0, Int(t, "n"))));
             case "gameDate":   return DynValue.NewString(Character.GameDate);

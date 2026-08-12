@@ -6,9 +6,24 @@
 *.suo
 
 # ---- Game data ----
-# data/ is its OWN git repo (submodule, local remote for now — see data/.gitignore), tracked separately
-# from this logic-only server repo. Content: data/rtk-data/ (regenerable via the re/ tools), maps, SObj.tbl.
-# Its own .gitignore keeps live runtime state (char store, nexus.db) out of that history too.
+# game-data/ is its OWN git repo (submodule), tracked separately from this logic-only server repo: the CSVs,
+# the Lua, maps/ and SObj.tbl. Read-only at runtime; a deploy replaces it wholesale.
+
+# ---- Live instance state — NEVER committed, to EITHER repo ----
+# The counterpart to game-data/. Created by running the server, unique to this machine, and the entire
+# backup target (the nightly sqlite3 .backup lives in Project1998-infra, scripts/nexus-backup.sh):
+#   state/   nexus.db + its WAL sidecars, the legacy chars/*.json store, gm/tester_accounts.txt
+#   logs/    server.log / login.log and their rotations. Regenerable; 80 MB of them here right now.
+#   run/     restart_at / reload_now — deploy-to-server triggers, consumed and deleted on read.
+#
+# These are top-level SIBLINGS of game-data/ rather than living inside it, and that is what makes this
+# section three lines. When state sat in the same directory as content, the content repo needed its own
+# .gitignore listing every runtime filename, the deploy rsync needed the matching exclude list, and both
+# had to be updated in lockstep every time something new started being written. A directory the content
+# repo cannot see needs no rules at all.
+state/
+logs/
+run/
 
 *.log
 server_live.err

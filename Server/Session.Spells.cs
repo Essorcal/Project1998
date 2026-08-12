@@ -235,7 +235,7 @@ public sealed partial class Session
     // falls back to the keyword classifier (ApplyCastGeneric).
     private bool ApplyCast(SpellDef sp, uint? targetId, string? answer = null)
     {
-        // Data-driven Lua verb path (data/game-data/SpellParams.csv + spell_verbs.lua): if this spell has a
+        // Data-driven Lua verb path (game-data/SpellParams.csv + spell_verbs.lua): if this spell has a
         // params row naming a loaded Lua verb, run it and we're done. STRICTLY ADDITIVE — any spell without a
         // row (the other ~600) falls straight through to the C# dispatch below, unchanged. A Lua error falls
         // through too, so a broken verb can never take a spell offline. Both files hot-reload via @reload.
@@ -522,7 +522,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);   // AwardExp shows "+N experience"; no separate caster flavor
+                AwardKillExp(reward, _char.Map, mob!.X, mob.Y);   // AwardExp shows "+N experience"; no separate caster flavor
             }
             Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
         }
@@ -555,7 +555,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);   // AwardExp shows "+N experience"; no separate caster flavor
+                AwardKillExp(reward, _char.Map, mob!.X, mob.Y);   // AwardExp shows "+N experience"; no separate caster flavor
             }
             Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
         }
@@ -608,7 +608,7 @@ public sealed partial class Session
                 {
                     BroadcastFx(mob.Id, anim, snd);
                     ShowDamageResult(mob.Id, mob, died);
-                    if (died) AwardExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), killExp: true);
+                    if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y);
                     hitCount++;
                 }
                 continue;
@@ -1499,7 +1499,7 @@ public sealed partial class Session
     internal bool LuaTargetIsDead  => _pcSpellTarget?.IsDead ?? false;
     internal bool LuaTargetIsSelf  => _pcSpellTarget is not null && ReferenceEquals(_pcSpellTarget, this);
     internal bool LuaTargetInGroup => _pcSpellTarget is not null && _party is not null && ReferenceEquals(_pcSpellTarget._party, _party);
-    internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac - _pcSpellTarget.Totals().armor;  // effective AC (lower=better)
+    internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac + _pcSpellTarget.Totals().armor;  // effective AC (lower=better)
     internal int  LuaTargetWill    => _pcSpellTarget?.LuaWill ?? 0;
     internal void LuaSetTargetMana(int n)
     {
@@ -1859,7 +1859,7 @@ public sealed partial class Session
         _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
         BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
         ShowDamageResult(mob.Id, mob, died);
-        if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardExp(reward, killExp: true); }
+        if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardKillExp(reward, _char.Map, mob.X, mob.Y); }
         Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) dmg {netDamage} overkill {overkill}");
         return overkill;
     }
@@ -1909,7 +1909,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardExp(reward, killExp: true);
+                AwardKillExp(reward, _char.Map, mob.X, mob.Y);
                 TallyKill(mob);
             }
         }
@@ -2044,18 +2044,20 @@ public sealed partial class Session
     // Chung Ryong's Rage — the Warrior Chung Ryong subpath's incremental fury (Warrior Tutor SoulHunter's
     // board post, live-server truth; the boards outrank RTK). ONE spell key, recast every 120s to climb
     // tier 1→6: each tier costs more mana, multiplies the whole swing harder (6/9/12/18/27/81 — the era-
-    // matched 2001-02 values, NOT the later 8/14/…/81 rebalance), grants AC, and drains a slice of vita
-    // when it finally WEARS OUT (renewing before that — the reward for maintaining — costs no vita). Ac is a
-    // positive armor buff: Totals().armor is SUBTRACTED from _char.Ac (lower Ac = better), so +N means +N AC.
+    // matched 2001-02 values, NOT the later 8/14/…/81 rebalance), hardens your armour, and drains a slice of
+    // vita when it finally WEARS OUT (renewing before that — the reward for maintaining — costs no vita).
+    // Ac is an AC DELTA (more AC = more damage taken), so a tier's hardening is NEGATIVE.
+    // Mult/Mana/Ac here are a MIRROR of CHUNG_RYONG_RAGE in spell_verbs.lua, which is what actually drives a
+    // cast; only VitaLostPct is read from this table (by ChungRyongRageWearOff, below). Keep the two in step.
     private readonly record struct CrRageTier(int Mult, int Mana, int Ac, double VitaLostPct);
     private static readonly CrRageTier[] ChungRyongRageTiers =
     {
-        new(6,     2000,  0, 0.20),   // Rage 1
-        new(9,     7200,  0, 0.20),   // Rage 2
-        new(12,   16200,  5, 0.20),   // Rage 3
-        new(18,   28800, 15, 0.40),   // Rage 4
-        new(27,   64800, 30, 0.60),   // Rage 5
-        new(81,  145800, 50, 1.00),   // Rage 6 — leaves you at 1 vita/mana
+        new(6,     2000,   0, 0.20),   // Rage 1
+        new(9,     7200,   0, 0.20),   // Rage 2
+        new(12,   16200,  -5, 0.20),   // Rage 3
+        new(18,   28800, -15, 0.40),   // Rage 4
+        new(27,   64800, -30, 0.60),   // Rage 5
+        new(81,  145800, -50, 1.00),   // Rage 6 — leaves you at 1 vita/mana
     };
     // The spell's recast interval is enforced by the generic aether gate (spell_effects aether=120000); the
     // buff LIVES a bit longer than that gate so there's a window to recast-and-climb before it wears out and
@@ -2202,7 +2204,7 @@ public sealed partial class Session
             _world.TryDamage(_char.Map, mob, net, out bool died, _char.Id);
             BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
             ShowDamageResult(mob.Id, mob, died);
-            if (died) AwardExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), killExp: true);
+            if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y);
             if (overkill > 0) ApplyOverflow(overkill, x, y, fam);
         }
     }
@@ -2378,7 +2380,7 @@ public sealed partial class Session
     /// cone's mob targets take the real RTK number, not our clamped one.</summary>
     public int ApplyBladestormSelfDamage()
     {
-        int effectiveAc = _char.Ac - Totals().armor;
+        int effectiveAc = _char.Ac + Totals().armor;
         int raw = (int)(_char.Hp * 0.5) + Combat.ApplyArmor(35000, effectiveAc, floor: -80);
         int applied = Math.Min(raw, (int)_char.Hp - 1);
         if (applied > 0) _char.Hp -= (uint)applied;
@@ -2387,7 +2389,7 @@ public sealed partial class Session
         return raw;
     }
 
-    // Gateway destinations are data-driven (data/game-data/GatewayGates.csv -> Content.GatewayRegions): region
+    // Gateway destinations are data-driven (game-data/GatewayGates.csv -> Content.GatewayRegions): region
     // -> the kingdom's city map + the four gate spawn boxes. Casting Gateway warps you to a RANDOM tile inside
     // the box for the gate you answered (N/E/S/W), on the region's city map. Coords are 1:1 with RTK
     // (gateway.lua); only the four playable kingdoms (regions 0-3) have gates. Hot-reloads via @reload.
@@ -2490,7 +2492,7 @@ public sealed partial class Session
     // used to double as the return target, which is why Return dumped you at Jadespear). Country->tavern
     // lists + the (4,5)/(4,6) arrival tiles are verbatim from RTK; nations without their own tavern set
     // (Neutral/Shilla/Jinhan/Paekjae/Kaya) fall back to Kugnae's, matching RTK's own `country > 3 -> Ginger`.
-    // Tavern return tiles are data-driven (data/game-data/Inns.csv -> Content.Inns), grouped Kugnae/Buya/
+    // Tavern return tiles are data-driven (game-data/Inns.csv -> Content.Inns), grouped Kugnae/Buya/
     // Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae default) stays here. Hot-reloads via
     // @reload.
     private void ReturnToInn()

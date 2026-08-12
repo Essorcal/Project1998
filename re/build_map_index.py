@@ -31,7 +31,7 @@ Dim choice per map (cells = client filesize/4), in priority order:
 
 Name: RTK MapName if present, else "Map <id>" (still warpable by id / by that label).
 
-Output: data/game-data/map_index.csv (id,name,xs,ys) — gitignored (logic-only repo, docs §17.1).
+Output: game-data/map_index.csv (id,name,xs,ys) — gitignored (logic-only repo, docs §17.1).
 Env overrides: RTK_MAPS_CSV, RTK_MAPS_DIR, CLIENT_MAPS, OUT, RTK_WARPS_CSV.
 """
 import csv, os, struct, glob

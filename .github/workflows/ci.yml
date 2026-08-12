@@ -3,7 +3,7 @@ name: build / test / deploy
 # The pipeline has two lanes, decided by WHAT changed (see the `changes` job):
 #
 #   code    -> publish, stage a new release on the host, schedule a warned restart
-#   content -> rsync data/ and @reload; no restart, nobody gets kicked
+#   content -> mirror game-data/ and @reload; no restart, nobody gets kicked
 #
 # Content is by far the more common change, and it is hot-reloadable (Content.Load / @reload), so treating
 # every push as "restart the world" would be both wrong and rude.
@@ -31,7 +31,7 @@ jobs:
     outputs:
       code_changed: ${{ steps.changes.outputs.code }}
     steps:
-      - name: Checkout (with the data submodule)
+      - name: Checkout (with the game-data submodule)
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -52,12 +52,12 @@ jobs:
             echo "No usable base commit — running the full code lane."
             exit 0
           fi
-          # `data` is a submodule, so a content-only change shows up here as a one-line gitlink bump.
-          if git diff --name-only "$before" "${{ github.sha }}" | grep -qvE '^data$'; then
+          # `game-data` is a submodule, so a content-only change shows up here as a one-line gitlink bump.
+          if git diff --name-only "$before" "${{ github.sha }}" | grep -qvE '^game-data$'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "Content-only push (data submodule pointer moved)."
+            echo "Content-only push (game-data submodule pointer moved)."
           fi
 
       - uses: actions/setup-dotnet@v4
@@ -75,9 +75,12 @@ jobs:
       - name: Content smoke test
         run: dotnet test Tests/Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
 
-      # linux-arm64 because the host is an Oracle Ampere A1 (the only Always Free shape with usable specs).
-      # Nothing in the source is architecture-specific: MoonSharp and BCrypt.Net-Next are pure managed, and
-      # Microsoft.Data.Sqlite ships a native e_sqlite3 for linux-arm64.
+      # linux-x64 because the host is an OVH VPS (x86). Nothing in the source is architecture-specific:
+      # MoonSharp and BCrypt.Net-Next are pure managed, and Microsoft.Data.Sqlite ships a native e_sqlite3
+      # for both, so this is a one-word change if the host ever moves back to arm64.
+      #
+      # GET THIS WRONG AND THE FAILURE IS AT RUNTIME, NOT BUILD TIME: the deploy lands successfully and the
+      # apphost simply refuses to exec, which reads as a broken release rather than a wrong RID.
       #
       # SELF-CONTAINED on purpose. The runtime rides along in the release, so the host needs no .NET installed
       # and no Microsoft apt repo, and — the real reason — releases/<sha> becomes exactly what that commit ran.
@@ -89,29 +92,36 @@ jobs:
       - name: Publish (linux-arm64, self-contained)
         if: github.event_name != 'pull_request'
         run: |
-          dotnet publish Server/Server.csproj           -c Release -r linux-arm64 --self-contained true -o out/game
-          dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-arm64 --self-contained true -o out/login
+          dotnet publish Server/Server.csproj           -c Release -r linux-x64 --self-contained true -o out/game
+          dotnet publish LoginServer/LoginServer.csproj -c Release -r linux-x64 --self-contained true -o out/login
 
-      # data/ ships as part of the release payload. It is only ~9 MB tracked, and shipping it WITH the build
-      # keeps a release self-describing: whatever is in releases/<sha>/ is exactly what that commit ran.
+      # game-data/ ships as part of the release payload. It is only ~12 MB tracked, and shipping it WITH the
+      # build keeps a release self-describing: whatever is in releases/<sha>/ is exactly what that commit ran.
       - name: Bundle
         if: github.event_name != 'pull_request'
         run: |
           mkdir -p bundle
           cp -r out/game out/login bundle/
-          # deploy/ rides along because nexus-backup.service runs the script out of current/deploy — the
-          # backup then always matches the release it shipped with, instead of being a separate thing that
-          # has to be remembered and updated by hand.
-          cp -r deploy bundle/
-          chmod +x bundle/deploy/*.sh
+          # Binaries and content ONLY. The systemd units, the deploy script and the backup script used to
+          # ride along in this tarball; they now live in Project1998-infra and are checked out on the host
+          # at /opt/nexus/infra, so this repo carries nothing host-shaped and a fork's CI has nothing to
+          # trip over. The release is still self-describing about the thing it IS: the build and the
+          # content that build ran against.
+          #
           # The apphosts are what systemd execs now that the build is self-contained. publish sets the
           # executable bit, but tar/scp round-tripping is not worth trusting with the thing that decides
           # whether the server can start at all.
           chmod +x bundle/game/Server bundle/login/LoginServer
-          mkdir -p bundle/data
-          # Only the tracked content — not chars/, nexus.db or the logs, which live on the host and must
-          # never be overwritten by a deploy.
-          git -C data archive HEAD | tar -x -C bundle/data
+          mkdir -p bundle/game-data
+          # `git archive` ships the tracked content and nothing else. Under the old shared data/ directory this
+          # was load-bearing — the working tree there also held nexus.db and chars/. It no longer is: state
+          # lives in state/, which this job never even looks at. Kept because it is still the cheapest way to
+          # get exactly the committed tree.
+          git -C game-data archive HEAD | tar -x -C bundle/game-data
+          # Stamp the content revision INTO the payload. There is no git repo on the host (the release is an
+          # unpacked tarball), so this file is the only way the nightly backup can record which game-data a
+          # state snapshot belongs with — and without that pairing a restore is not a point in time.
+          git -C game-data rev-parse HEAD > bundle/game-data/.version
           tar czf nexus-${{ github.sha }}.tar.gz -C bundle .
 
       - uses: actions/upload-artifact@v4
@@ -144,12 +154,6 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     steps:
-      # Only for deploy/host-deploy.sh, which is piped to the host over SSH. No submodules needed — the data
-      # payload is already inside the artifact.
-      - uses: actions/checkout@v4
-        with:
-          submodules: false
-
       - uses: actions/download-artifact@v4
         with:
           name: nexus-${{ github.sha }}
@@ -172,6 +176,10 @@ jobs:
           scp -P "${{ secrets.DEPLOY_PORT || 22 }}" \
             "nexus-${{ github.sha }}.tar.gz" "$USER@$HOST:/tmp/"
 
+      # host-deploy.sh lives in Project1998-infra, checked out on the host at /opt/nexus/infra, and is
+      # invoked BY PATH rather than piped in over stdin. That inversion is what keeps this repo free of
+      # host-shaped files: CI's job ends at "here is a tarball", and how the host installs it is the infra
+      # repo's business, updated on its own cadence with `git -C /opt/nexus/infra pull`.
       - name: Stage and schedule
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
@@ -179,5 +187,4 @@ jobs:
           DELAY: ${{ github.event.inputs.restart_delay_minutes || '30' }}
         run: |
           ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" \
-            "bash -s -- ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}" \
-            < deploy/host-deploy.sh
+            "bash /opt/nexus/infra/scripts/host-deploy.sh ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}"
