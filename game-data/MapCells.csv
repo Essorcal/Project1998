@@ -4,12 +4,18 @@ Map,X,Y,Tile,Pass,Obj,Sources
 # client holding its own .map copy gets them replayed as 0x06 cell patches on map entry (MapData.PatchRuns).
 # Blank Tile/Pass/Obj = leave that component alone.
 #
-# Buya Salon doorway (map 330, 118-119,133). The .map ships objects 356/357 here, which are two mismatched
-# halves of two DIFFERENT door graphics (SObj frame pairs run 355/356 and 357/358) and have no open-graphic
+# Buya Salon doorway (map 330, 118-119,133). The .map ships objects 356/357 here, which have no open-graphic
 # counterpart anywhere in RTK's open.lua toggle table — so 'o' could never open them and the tile was
 # force-open'd as a workaround instead. The doorway's own wall pieces (416 left, 417 right) match Sanhae
 # Valley 1121 (17..20,18) exactly — 416 [344 345] 417 — so 344/345 is this wall style's real door pair, and
 # it already toggles to 362/363 via DoorObjects.csv's 344-345 -> +18 delta.
+#
+# CORRECTED 2026-08-12: this note used to also claim 356/357 were "two mismatched halves of two DIFFERENT
+# door graphics (SObj frame pairs run 355/356 and 357/358)". They are not — 356/357 is a proper pair. That
+# reading came from attributing an SObj record's frame list to the record's own index; in fact each object's
+# flag PRECEDES its frames, so a record's frames belong to the object one BEFORE it (see Server/ObjectFlags.cs).
+# Rendered correctly, 356/357 draw as a matched pair of shut leaves. The 344/345 swap above still stands on
+# its own evidence — the wall-piece match plus live observation — and is unaffected.
 330,118,133,,,344,live-obs-brian
 330,119,133,,,345,live-obs-brian
 #
