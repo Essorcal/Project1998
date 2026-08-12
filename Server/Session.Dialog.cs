@@ -1897,15 +1897,14 @@ public sealed partial class Session
         SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type} {t.Length}B");
     }
 
-    /// <summary>A server-wide announcement (restart warnings — see <see cref="RestartSchedule"/>), sent on
-    /// BOTH text channels on purpose. The 0x0A system line (type 5) is where an announcement belongs, but
-    /// that pane scrolls and a player fighting in a cave will miss it; the 0x0D chat-log line is the one
-    /// they are actually looking at. A restart notice is the one message it's worth saying twice.</summary>
-    internal void SystemAnnounce(string text)
-    {
-        SendMiniText(text, type: 5);
-        SendLog(text);
-    }
+    /// <summary>A server-wide announcement (restart warnings — see <see cref="RestartSchedule"/>).
+    ///
+    /// <para>The 0x0A system line (type 5) ONLY. This used to also call <see cref="SendLog"/> on the theory
+    /// that a restart notice is worth saying twice — but SendLog is <c>SendSpeech(0, _char.Id, …)</c>, the
+    /// very same call the normal say path uses, so the second copy came out as a SPEECH BUBBLE over the
+    /// player's own head: the server appeared to be putting words in their mouth, and it was truncated at
+    /// SendLog's 250-char chat cap into the bargain. One channel, and it's this one.</para></summary>
+    internal void SystemAnnounce(string text) => SendMiniText(text, type: 5);
 
     // ---- helpers ----
     private void SendMessage(string text)

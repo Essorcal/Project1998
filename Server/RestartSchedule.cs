@@ -258,7 +258,10 @@ public sealed class RestartSchedule
         string when = minutes >= 1
             ? $"in {Math.Round(minutes)} minute{(Math.Round(minutes) == 1 ? "" : "s")}"
             : "in less than a minute";
-        return $"The server will restart {when}. Please find a safe place to log out.{Suffix(reason)}";
+        // No reason suffix: the notice ends at the instruction. What players need is WHEN and WHAT TO DO,
+        // and "(staging release ef55003…)" is neither — it's deploy bookkeeping, and it's already in the
+        // server log via Schedule's own line, so nothing is lost by keeping it out of their faces.
+        return $"The server will restart {when}. Please find a safe place to log out.";
     }
 
     private static string WarnLine(int minutes, string reason)
