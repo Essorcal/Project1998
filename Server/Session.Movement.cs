@@ -480,12 +480,21 @@ public sealed partial class Session
         }
 
         ushort obj = md.Obj(fx, fy);
-        var door = Content.DoorToggleFor(obj);
-        Log.Info($"   -> OPEN('o') facing={_facing} front=({fx},{fy}) obj={obj} door={(door is null ? "no" : "yes")}");
-        if (door is null) return;
 
-        var (startDx, objs) = door.Value;
-        int sx = fx + startDx;
+        // A PER-TILE run (Doors.csv ClosedObj/OpenObj) wins over RTK's shared id-swap table. It's the only way
+        // to describe a door whose open and closed graphics aren't a function of the object id alone — see
+        // Doors.Toggle. Falls through to the shared table when this tile has no run configured, which is
+        // every door in the game bar the handful listed in Doors.csv.
+        // 0xFFFF is unreachable for a 14-bit object id, so an off-map cell simply fails the "is it open?"
+        // comparison rather than indexing past the row; the run-bounds check below then rejects it.
+        var perTile = Doors.Toggle(_char.Map, (ushort)fx, (ushort)fy,
+                                   cx => cx >= 0 && cx < _char.MapXs ? md.Obj(cx, fy) : (ushort)0xFFFF);
+        var door = perTile is null ? Content.DoorToggleFor(obj) : null;
+        Log.Info($"   -> OPEN('o') facing={_facing} front=({fx},{fy}) obj={obj} " +
+                 $"door={(perTile is not null ? "per-tile" : door is null ? "no" : "yes")}");
+        if (perTile is null && door is null) return;
+
+        var (sx, objs) = perTile ?? (fx + door!.Value.StartDx, door.Value.Objs);
         if (sx < 0 || sx + objs.Length > _char.MapXs) return;   // door run would fall off the map edge
 
         // Mutate the shared map (so a later 'o' can toggle it back), then tell every client on the map to redraw.

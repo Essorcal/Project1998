@@ -151,6 +151,13 @@ public static class NpcScript
             case "sayLook": await ctx.SayLook(Int(t, "look"), Int(t, "color"), Arr(t, "pages")); return DynValue.Nil;
             case "menu":    return DynValue.NewNumber(await ctx.Menu(Str(t, "prompt"), Arr(t, "options")));
             case "input":   { var s = await ctx.Input(Str(t, "prompt")); return s is null ? DynValue.Nil : DynValue.NewString(s); }
+            // The native shop grids, so a scripted NPC can offer Buy/Sell alongside its own menu entries
+            // instead of having to be a plain flag-driven ShopAbility. Both run the SAME flows the C# ability
+            // does: buy reads this NPC's catalogue (Shops.For -> ShopStock/ShopCatalogues, so an NPC with no
+            // stock politely says it has nothing — which is what Yon/Laptev's verified-empty "Buy" wants),
+            // sell offers the player's droppable, sellable pack, independent of the catalogue.
+            case "buy":     await ctx.Buy();                                      return DynValue.Nil;
+            case "sell":    await ctx.Sell();                                     return DynValue.Nil;
 
             // ---- immediate (no wait) ----
             case "bubble":     ctx.Bubble(Str(t, "text"));                       return DynValue.Nil;

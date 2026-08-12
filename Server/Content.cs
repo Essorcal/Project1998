@@ -1085,6 +1085,8 @@ public static partial class Content
         var bgmWant = new (ushort Map, string Track)[]
         {
             (137, "mist"), (3812, "mist"),        // Arctic Land / Arctic Tavern
+            (3815, "mist"), (3816, "mist"),       // Crystalline Chapel / Kamchatka Ballroom — same song
+            (3819, "mist"),                       // Lovers' Lake, an outdoor spot off the village
             (330, "tiger"), (365, "tiger"),       // Buya / Buya Salon
             (114, "dark"), (457, "dark"),         // Hamgyong Nam-Do / Ruined House (Haunted Houses)
             (3800, "sorrow"), (3806, "sorrow"),   // KaMing's Encampment / KaMing
@@ -1095,6 +1097,8 @@ public static partial class Content
             (367, "tiger"),                       // Eldritch Sanctum — 2 hops in from Buya (the login case)
             (2, "dragon"),                        // Walsuk Tavern — a shop off Kugnae
             (1013, "mist"),                       // Haeng Tavern — inside Arctic Village
+            (324, "mist"), (511, "mist"),         // Kwi-sin Shrine / Snow Dungeon — off the village, spill-only
+            (1121, "mist"),                       // Sanhae Valley — 3 hops out through the Arctic
         };
         bool bgmOk = true;
         foreach (var (map, want) in bgmWant)
@@ -2635,6 +2639,10 @@ public static partial class Content
                 Log.Info($"   !! Doors.csv ({m},{x},{y}): ClosedObj has {closed.Length} id(s) but OpenObj has {open.Length} — ignoring both");
                 closed = open = null;
             }
+            // StartDx: where the run begins relative to THIS tile, same convention as DoorObjects.csv's own
+            // startDx column. A two-tile door registers both of its halves, the right one with -1, so it
+            // toggles as a unit whichever half the player happens to be facing.
+            int.TryParse(col.GetValueOrDefault("StartDx"), out var startDx);
             d[(m, x, y)] = new Doors.DoorConfig(
                 Locked: B("Locked", false),
                 Key: string.IsNullOrWhiteSpace(key) ? null : key.Trim(),
@@ -2642,7 +2650,8 @@ public static partial class Content
                 ForceOpen: B("ForceOpen", false),
                 ClosedObjs: closed,
                 OpenObjs: open,
-                DefaultClosed: B("DefaultClosed", false));
+                DefaultClosed: B("DefaultClosed", false),
+                StartDx: startDx);
         }
         return d;
     }
