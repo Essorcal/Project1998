@@ -19,6 +19,34 @@ Map,X,Y,Tile,Pass,Obj,Sources
 330,118,133,,,344,live-obs-brian
 330,119,133,,,345,live-obs-brian
 #
+# Buya Marketplace (4601) gateway at 35,36. Row 36 is a wall: the whole row is pass=3 on ground tile 207,
+# and the wall itself is drawn from the OBJECT layer in capped segments — 675 opens a run, 676 continues it,
+# 677 closes it. At x=35 the object is 0, and both neighbouring segments are properly capped around it
+# (…676 677 | 0 | 675 676…), so this is a deliberate one-tile gateway through the wall, not a missing piece.
+# What was never done is clearing the ground's pass flag underneath it, so it draws as an opening you should
+# walk through and blocks anyway. Row 35 above and row 37 below are both open ground, so it joins two areas
+# that are otherwise walled apart. Only Pass is set here; the tile art and the (empty) object stay as shipped.
+4601,35,36,,0,,shipped-map-gap
+#
+# Kwi-sin Shrine approach, Arctic Village (3811, 55-57,19) — same class of bug, confirmed in game. The row
+# reads as plain snow and blocks anyway. The object layer is NOT the cause: 2802-2809 are the shrine's tall
+# 8-tile building sprites, drawn UPWARD from row 19, and every one of them is flag 0x00 (non-blocking). What
+# the player sees standing on row 19 is the BASE tile of that sprite, which is drawn as snow — while the
+# ground word underneath still carries pass=3 (tile 434, the map's under-structure ground, vs 859 for the
+# walkable snow everywhere else here). Clearing the pass flag is enough; nothing else blocks.
+#
+# Row 18 above stays blocked and is correct — that one really is the wall.
+# Tile AND Pass. The shipped ground here is 434, the brown dirt this map uses under its structures — row 19
+# was drawn as inside the shrine's footprint (and RTK's version of this map has a walkable corridor here that
+# the 4.95 re-tile walled off and painted over). Opening it without repainting would leave the map's only
+# brown-but-walkable cells: across all 2079 cells of Arctic Village that use these two tiles, 434 is blocked
+# 995/995 times and 859 is walkable 1084/1084 times, with no exceptions. 859 keeps that convention and
+# carries the snow from the step at row 20 up to the shrine's threshold rail (the 2804/2805/2806 sprite
+# base, which stays drawn on top). The warps into the shrine sit on these three tiles.
+3811,55,19,859,0,,live-obs-brian
+3811,56,19,859,0,,live-obs-brian
+3811,57,19,859,0,,live-obs-brian
+#
 # Arctic Village (3811) building doors — authored OPEN so they start open every restart. Door graphics live
 # in the RUNTIME layer (MapData.SetObj from 'o'), and nothing persists that layer — MapStore.Cells is only
 # ever READ, never written — so without these rows every door in the village would slam shut on restart.
@@ -41,6 +69,10 @@ Map,X,Y,Tile,Pass,Obj,Sources
 #       already closes back to 346), so the toggle is configured PER TILE in Doors.csv instead.
 3811,44,16,,,366,user-direction
 3811,45,16,,,367,user-direction
+#   Kamchatka Ballroom entrance: 338/339 <-> 1856/1857, also absent from open.lua. See Doors.csv.
+3811,36,26,,,1856,sobj-frame-match
+3811,37,26,,,1857,sobj-frame-match
+3811,38,26,,,1857,sobj-frame-match
 #
 # Sanhae Hall's door, Sanhae Valley (1121). Authored OPEN for the same reason as the Arctic Village doors,
 # but here it also UNSEALS the building: this door object sits one row in front of its warp tiles (33-34,17)
