@@ -267,6 +267,7 @@ public sealed class World
         Watchdog.Start(this);
 
         _ = Task.Run(Restarts.Loop);      // restart-warning ladder + the deploy's file trigger (1s cadence, not latency-critical)
+        _ = Task.Run(() => StatusFile.Loop(this));   // run/status.json for the launcher's "N online" pill
     }
 
     // ---- persistent spawn roster --------------------------------------------------------------
@@ -1294,6 +1295,19 @@ public sealed class World
     {
         lock (_lock)
             return _maps.Values.SelectMany(m => m.Players).ToList();
+    }
+
+    /// <summary>How many players are in the world right now. Separate from <see cref="AllPlayers"/> because
+    /// the status publisher wants only the number, and materialising every session into a list on a timer to
+    /// read <c>.Count</c> off it is pure garbage.</summary>
+    public int OnlinePlayerCount()
+    {
+        lock (_lock)
+        {
+            var n = 0;
+            foreach (var m in _maps.Values) n += m.Players.Count;
+            return n;
+        }
     }
 
     /// <summary>Duplicate-login guard: atomically register <paramref name="s"/> as the online session for
