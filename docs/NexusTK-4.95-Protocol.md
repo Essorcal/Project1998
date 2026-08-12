@@ -128,9 +128,10 @@ byte[] Crypt(ReadOnlySpan<byte> data, byte inc, byte[] key) // key.Length == 9
     var o = data.ToArray();
     for (int i = 0; i < o.Length; i++)
     {
+        byte group = (byte)(i / 9);      // block counter (which group of 9) — a BYTE, see below
         o[i] ^= key[i % 9];              // stage 1: keystream
-        o[i] ^= (byte)(i / 9);           // stage 2: block counter (which group of 9)
-        if ((i / 9) != inc)              // stage 3: mix in the increment, except on block == inc
+        o[i] ^= group;                   // stage 2: block counter
+        if (group != inc)                // stage 3: mix in the increment, except on block == inc
             o[i] ^= inc;
     }
     return o;
@@ -139,6 +140,16 @@ byte[] Crypt(ReadOnlySpan<byte> data, byte inc, byte[] key) // key.Length == 9
 
 It is **self-inverse**: the same function encrypts and decrypts. To send: `Crypt(plaintextBody, inc,
 key)`. To receive: `Crypt(encryptedBody, receivedInc, key)`.
+
+> **The block counter is 8-bit, and the stage-3 comparison must use the WRAPPED value.** The client's
+> decrypt (`0x478680`) holds the group index in `EBX` and tests it as `cmp byte ptr [ebp+8], bl` — `inc`
+> against the counter's **low byte** — then indexes the identity table with `ebx & 0xff`. Comparing an
+> unwrapped `int` instead is invisible until a body exceeds `9 * 256 = 2304` bytes: group `256 + inc`
+> carries the same byte value as `inc`, so the client skips the stage-3 XOR over those 9 bytes while a
+> naive implementation applies it. The symptom is 9 corrupt bytes in one otherwise-fine large packet,
+> only for `inc <= (bodyLen / 9) - 256`. Terrain streaming (§10.8) is the first thing the server sends
+> that is long enough to trip it: a 27x25 prime window is a 2706-byte body, so ~18% of them carried three
+> garbled cells until this was fixed.
 
 **Plaintext opcodes (bypass the cipher entirely):** received opcodes `0x00`, `0x03`, and `0x40` are
 handled as plaintext by the client. Most importantly for the server, the **game-channel arrival packet

@@ -27,14 +27,24 @@ public static class TkCrypt
     public static readonly byte[] SvKey1 = { 2, 3, 10, 64, 68, 94, 96, 98, 102, 111 };
 
     // ---- simple 3-stage XOR (login) ----
+    // The group counter is a BYTE on both sides. The client's decrypt (0x478680) keeps the group index in
+    // EBX and compares it as `cmp byte ptr [ebp+8], bl` — the LOW BYTE against inc — then indexes the
+    // identity table with `ebx & 0xff`. Comparing the unwrapped int here instead diverged the moment a body
+    // ran past 9*256 = 2304 bytes: group 256+inc has the same byte value as inc, so the client skipped the
+    // inc XOR for those 9 bytes while we applied it. Nothing we sent was ever that long until terrain
+    // streaming (a 27x25 prime window is a 2706-byte body), which is why it surfaced as "sometimes a few
+    // random tiles" — one 9-byte run, ~3 cells, in the window's bottom rows, and only for inc in 1..44
+    // (44/256 = 17% of sends; inc 0 is benign because the stray XOR is by zero). Same self-inverse cipher
+    // in both directions, so this stays symmetric.
     public static byte[] Crypt(ReadOnlySpan<byte> data, byte inc, byte[] key)
     {
         var o = data.ToArray();
         for (int i = 0; i < o.Length; i++)
         {
+            byte group = (byte)(i / 9);
             o[i] ^= key[i % 9];
-            o[i] ^= (byte)(i / 9);
-            if ((i / 9) != inc) o[i] ^= inc;
+            o[i] ^= group;
+            if (group != inc) o[i] ^= inc;
         }
         return o;
     }

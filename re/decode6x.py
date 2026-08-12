@@ -6,9 +6,10 @@ KEY = bytes.fromhex('4E65786F6E496E632E')  # "NexonInc."
 def crypt(body, inc):
     o = bytearray(body)
     for i in range(len(o)):
+        grp = (i // 9) & 0xFF   # the group counter is a BYTE on both sides (client: cmp inc, bl)
         o[i] ^= KEY[i % 9]
-        o[i] ^= (i // 9)
-        if (i // 9) != inc:
+        o[i] ^= grp
+        if grp != inc:
             o[i] ^= inc
     return bytes(o)
 

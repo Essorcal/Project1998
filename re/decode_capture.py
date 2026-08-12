@@ -48,8 +48,8 @@ def crypt(data: bytes, inc: int, key: bytes) -> bytes:
     o = bytearray(data)
     for i in range(len(o)):
         o[i] ^= key[i % 9]
-        grp = i // 9
-        o[i] ^= grp & 0xFF
+        grp = (i // 9) & 0xFF   # the group counter is a BYTE on both sides (client: cmp inc, bl)
+        o[i] ^= grp
         if grp != inc:
             o[i] ^= inc
     return bytes(o)
