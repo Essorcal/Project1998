@@ -255,6 +255,8 @@ end
 
 -- Timed self-buff: spend `mana`, then raise `stat` by `amount` for `duration` ms (default 60s). `stat` is one
 -- of the Totals() keys: might/will/grace/hp/mp/armor/hit/dam. Re-casting the same spell refreshes, not stacks.
+-- `armor` is the odd one out: it is an AC DELTA, and MORE AC = MORE DAMAGE TAKEN, so a ward is NEGATIVE
+-- (bolster -4) and a curse POSITIVE (pestilence +5). Same units as items and mobs.
 function verbs.buff(ctx, row)
   if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
   ctx:buff(row.stat, row.amount or 0, row.duration or 60000)
@@ -586,7 +588,7 @@ end
 -- Curse (RTK Spells/*/pestilence.lua & kin): apply a MUTUALLY-EXCLUSIVE categorized status to a curse target.
 -- Blocked if the target already carries a status in this category's BLOCK list (checkIfCast) — which is what
 -- makes self-pestilence a real defense (occupy your own 'curses' slot with a mild curse; row.amount is the stat
--- effect, e.g. armor -5 -> raises effective AC -> take MORE damage) AND what makes a protection curse-immune.
+-- effect, e.g. armor +5 -> raises effective AC -> take MORE damage) AND what makes a protection curse-immune.
 -- Row: mana, category (curses/disheartens/...), stat, amount, duration. Removed later by a Cure of that category.
 -- Take-hold chance per curse category. Like HOLD_CHANCE above these are OURS: RTK's curse scripts have no
 -- failure roll at all, so a curse always stuck. A per-spell `chance` column in SpellParams.csv overrides.
@@ -901,18 +903,19 @@ function verbs.mend_equipment(ctx, row)
 end
 
 -- Chung Ryong's Rage: the one fury that CLIMBS. Recasting inside its window steps you 1 -> 6, each tier
--- costing more mana, multiplying the swing harder and adding AC; letting it lapse charges a vita price
+-- costing more mana, multiplying the swing harder and hardening your armour (`ac` is an AC DELTA, so it is
+-- NEGATIVE — more AC means more damage taken); letting it lapse charges a vita price
 -- (applied by the engine's regen tick, which is why the TIER is recorded in C# rather than kept here).
 -- Recasting at 6 refreshes the timer without climbing further. The 120s recast gate is the spell's ordinary
 -- aether; the buff deliberately LIVES longer than that gate, so there is a window to recast and climb before
 -- the wear-out fires. This table is the whole balance surface — edit it and !reload, no rebuild.
 local CHUNG_RYONG_RAGE = {
-  { mult = 6,  mana =   2000, ac =  0 },
-  { mult = 9,  mana =   7200, ac =  0 },
-  { mult = 12, mana =  16200, ac =  5 },
-  { mult = 18, mana =  28800, ac = 15 },
-  { mult = 27, mana =  64800, ac = 30 },
-  { mult = 81, mana = 145800, ac = 50 },   -- tier 6 wear-out leaves you at 1 vita/mana
+  { mult = 6,  mana =   2000, ac =   0 },
+  { mult = 9,  mana =   7200, ac =   0 },
+  { mult = 12, mana =  16200, ac =  -5 },
+  { mult = 18, mana =  28800, ac = -15 },
+  { mult = 27, mana =  64800, ac = -30 },
+  { mult = 81, mana = 145800, ac = -50 },   -- tier 6 wear-out leaves you at 1 vita/mana
 }
 local CR_RAGE_DURATION_MS = 135000
 

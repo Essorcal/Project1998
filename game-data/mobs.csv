@@ -421,7 +421,7 @@ MobId,Identifier,Description,MobLook,MobLookColor,Vita,Exp,Level,Might,Grace,Wil
 510,cyclone_king,Cyclone king,99,17,9850000,140000000,99,0,99,99,11400,114000,3000,1,0,7,0,-95,Vita=rtk-db-restored(un-div5)
 511,bear,Bear,24,5,1350,1000,30,0,30,30,40,55,2000,0,0,3,0,40,Vita=rtk-db-restored(un-div5)
 512,tiger,Tiger,29,5,2200,1500,30,0,30,30,15,30,2000,0,0,0,0,0,Vita=rtk-db-restored(un-div5)
-513,lobster,Lobster,168,2,10750,65000,50,0,50,50,15,300,2000,0,0,1,0,-10,Vita=rtk-db-restored(un-div5)
+513,lobster,Lobster,168,2,10750,65000,50,0,50,50,15,300,2000,1,0,1,0,-10,Vita=rtk-db-restored(un-div5);MobBehavior=owner-design
 514,boa,Boa,33,11,4500,4400,40,0,50,50,35,55,2000,0,0,0,0,35,Vita=rtk-db-restored(un-div5)
 515,sand_lobster,Sand lobster,168,5,50550,300000,70,0,70,70,760,1100,2000,1,0,3,0,-45,Vita=rtk-db-restored(un-div5)
 516,rock_lobster,Rock lobster,168,13,55000,500000,70,0,70,70,1000,1500,2000,1,0,3,0,-55,Vita=rtk-db-restored(un-div5)

@@ -1,0 +1,21 @@
+# Date windows for era-gated content. Consumed by Server/Era.cs; see docs/Era-Gating.md.
+#
+# The server's target date lives in ServerTuning.csv as EraDate (yyyymmdd, default 20010709 = the day
+# client 4.95 shipped). Set EraDate to 0 to switch era gating off entirely.
+#
+# Feature      the key Era.Has() is called with. Server/Era.cs declares the ones our code asks about as
+#              consts; a row whose key nothing reads yet is fine and is the normal state for a date we
+#              have researched but not wired up.
+# Introduced   first day the feature existed (inclusive). Blank = as far back as we know.
+# Retired      first day it no longer existed (EXCLUSIVE — gone ON this date). Blank = still present.
+#              A feature that MOVED rather than vanished retires on the day its replacement is introduced.
+# Source       Sources.csv SourceId backing the date.
+# Notes        why this date, and anything that is deliberately NOT gated.
+#
+# SPARSE AND FAIL-OPEN: a feature with no row here is always present, and a missing file gates nothing.
+# Only add a row you can point at a source for — absence of evidence must never remove content.
+Feature,Introduced,Retired,Source,Notes
+newbie_tutorial_area,2000-10-06,,tswolf-newbie-guide,"The separate tutorial AREA (maps 4711-4718). Dated from the TSWolf news run 2000-09-29 'Friday! TGIF!!!' through 2000-10-09 'Little Break'; earliest surviving documentation of it is Jan 2001. The tutor NPCs themselves are older and are never gated."
+tutor_novice_chain,,2000-10-06,tswolf-newbie-guide,"The tutor-delivered first-steps beats (wooden saber, 10 rabbits, spring garb, 10 squirrels, Soothe). Did not vanish -- MOVED into the newbie area -- so it retires the day the area opens and exactly one of the pair is ever live. Server/NoviceQuest.cs."
+tutor_du_mountain_quest,2001-03-18,,tswolf-2001-03-18,"Tutorial stage 11, the missing-brother/Haguru quest. Du Mountain and Haguru himself are OLDER ('stranded on the mountain in early 4.0') and stay present when this is off -- only the quest is gated."
+tutor_student_cap_quest,2001-03-18,,tswolf-2001-03-18,"Tutorial stage 13. Shipped the same day as the Du Mountain quest: 'there are 2 new ones at the end. One of them is the Du mountain quest, and the other one is the Student cap quest' (TSWolf 2001-03-19)."

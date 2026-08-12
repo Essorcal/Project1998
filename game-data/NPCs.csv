@@ -2,9 +2,9 @@ NpcId,NpcIdentifier,NpcDescription,NpcType,NpcMapId,NpcX,NpcY,NpcTimer,NpcLook,N
 1,F1Npc,f1npc,5,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1
 2,TutorialNpc1,Woodland Poet,0,4714,11,9,0,87,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
 3,TutorialNpc2,Woodland Poet,0,4715,11,9,0,87,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
-4,MignokNpc,Mignok,0,4716,4,9,0,14,0,2,2,0,0,0,0,0,0,0,0,0,0,0,2,4000,0,1
+4,MignokNpc,Mignok,0,4716,3,7,0,14,0,2,2,0,0,0,0,0,0,0,0,0,0,0,2,4000,0,1
 5,MessengerNpc,Redcap,0,7,8,4,0,61,6,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
-6,TominaruNpc,Tominaru,0,4716,13,8,0,40,3,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
+6,TominaruNpc,Tominaru,0,4716,10,7,0,40,3,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
 7,WoodlandGuardNpc,Woodland Guard,0,4717,11,17,0,146,3,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
 8,WoodlandAngelNpc,Woodland Angel,0,4718,10,6,0,49,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
 9,NpcSpawnHandlerNpc,npcSpawnHandler,0,4,3,3,180000,49,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
@@ -361,3 +361,5 @@ NpcId,NpcIdentifier,NpcDescription,NpcType,NpcMapId,NpcX,NpcY,NpcTimer,NpcLook,N
 390,HyunMooNpc,Hyun Moo,0,1416,15,8,0,219,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
 391,JuJakNpc,Ju jak,0,1411,12,4,0,217,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
 392,ShamanNpc,Aura,0,1126,5,4,0,9,23,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
+393,WoodlandSmithNpc,Woodland Smith,0,4712,13,6,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1
+394,WoodlandArmorerNpc,Woodland Armorer,0,4713,9,7,0,38,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1

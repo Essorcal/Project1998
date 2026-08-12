@@ -2,15 +2,16 @@ MapId,X,Y,BoardId
 # Board-sign locations (RTK on_event.lua onSign / selectBulletinBoard). Each row is the TILE a board SPRITE
 # occupies. A player looking NORTH (back to screen) with this tile directly in front of them (one tile up)
 # opens board <BoardId> straight to its posts (RTK showBoard) — bypassing the `b` board-list menu.
-# BoardId maps to Server/Boards.cs (e.g. 4 = "Carnage Schedule" = the board outside the Buya arena).
+# BoardId maps to Server/Boards.cs (e.g. 5 = "Community Events" = the board outside the Buya arena).
 # The lookup tolerates X +/-1 (RTK "BoardX BETWEEN x-1 AND x+1") so a multi-column board opens from any column.
 # Comment lines (leading '#') and un-parseable rows are ignored. Hot-reloads via !reload.
 #
 # To calibrate: stand below the board facing NORTH, run !boardobj to read the sprite id + facing tile, then
 # add a row here (MapId,X,Y,BoardId) and !reload. Example once found (placeholder — do not enable as-is):
-# 356,10,4,4
+# 356,10,4,5
 #
 # --- live-calibrated boards ---------------------------------------------------------------------------------
-# Buya (330) Carnage & Minigames Schedule board, just south of the Mountain Arena warp (~126,74). Sprite obj
+# Buya (330) carnage & minigames schedule board, just south of the Mountain Arena warp (~126,74). Sprite obj
 # 1620 confirmed at (127,79) via !boardobj. The X +/-1 tolerance covers standing at x 126/127/128 (row 80).
-330,127,79,4
+# Points at "Community Events" (5) — the board that carries the carnage/minigame schedule in this roster.
+330,127,79,5

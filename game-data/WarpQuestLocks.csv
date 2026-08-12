@@ -1,0 +1,21 @@
+# Warp quest locks: a warp switched OFF until a quest has reached a stage.
+#
+# THIS IS NOT A BARRIER. Movement is untouched: the tile stays walkable, the player steps onto it exactly
+# as they would any other tile, and the only difference is that it doesn't carry them anywhere and they
+# get Message in the status box. Nothing is blocked and nobody is pushed back.
+#
+# Keyed on the PAIR of maps, so the lock is one-way — walking BACK the way you came always works.
+#
+# FromMap,ToMap   the warp's source and destination map ids
+# QuestKey        progress key (the registry name the quest script drives)
+# MinStage        the stage the player must have REACHED for the warp to carry them
+# Message         status-box text when it doesn't
+#
+# Newbie-area stages are set by npcs.* in npc_dialog.lua — keep these in step with that file:
+#   2 = rabbits done (smith)      4 = squirrels done (armorer)
+#   5 = coordinate lesson given   8 = Soothe learned and shown how to use it (magic teacher)
+FromMap,ToMap,QuestKey,MinStage,Message
+4712,4713,newbie_area_quest,2,You are not yet ready to proceed.
+4713,4714,newbie_area_quest,4,You are not yet ready to proceed.
+4714,4715,newbie_area_quest,5,You are not yet ready to proceed.
+4715,4717,newbie_area_quest,8,You are not yet ready to proceed.

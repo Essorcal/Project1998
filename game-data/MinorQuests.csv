@@ -11,7 +11,6 @@ Minor,tiger,Tiger,tiger,20,60,0,1000000000,0,5
 Minor,mouse,Mouse,mouse,4,20,0,1000000000,0,5
 Minor,rat,Rat,rat,5,20,0,1000000000,0,5
 Minor,white_rat,White rat,white_rat,5,20,0,1000000000,0,5
-Minor,green_squirrel,Green Squirrel,green_squirrel,9,25,0,1000000000,0,5
 Minor,mud_snake,Mud Snake,mud_snake,14,35,0,1000000000,0,5
 Minor,dark_fox,Dark fox,dark_fox,20,40,0,1000000000,0,5
 Minor,blood_fox,Blood fox,blood_fox,20,45,0,1000000000,0,5
@@ -23,14 +22,10 @@ Minor,sleet_ogre,Sleet ogre,sleet_ogre,60,95,0,1000000000,0,5
 Minor,slush_king,Slush king,slush_king,25,74,0,1000000000,0,5
 Minor,snow_king,Snow king,snow_king,35,100,0,14999,0,5
 Minor,sleet_king,Sleet king,sleet_king,55,100,0,59999,0,5
-Minor,mythic_rabbit,Mythic rabbit,golden_hare|mad_rabbit|giant_hare|golden_rabbit|mad_hare|giant_rabbit|hop|thump|fluff,25,100,0,1000000000,0,2
-Minor,mythic_monkey,Mythic monkey,plain_monkey|sly_monkey|spry_monkey|ugly_monkey|simple_monkey|quick_monkey|agile_monkey|monsterous_monkey|bright_monkey|fast_monkey|spunky_monkey|diamond_monkey,32,100,0,1000000000,0,2
-Minor,mythic_dog,Mythic dog,fierce_dog|fighting_dog|mad_dog|pale_dog|spotted_mutt|frothing_mutt|killer_mongrel|wolf-kin|dog_trooper|crazed_mongrel|spunky_dog|death_mongrel,39,100,0,1000000000,0,2
-Minor,mythic_rooster,Mythic rooster,black_chick|wild_chicken|wild_rooster|radiant_chick|red_chick|fiery_chick|white_chicken|white_rooster|wild_chick|black_chicken|great_roost|sunfeather,46,100,0,1000000000,0,2
-Minor,rabbit_leader,Rabbit leader,mythic_hare|hare_witch|divine_rabbit|rabbit_witch|spirit_rabbit|rabbit_avenger,25,100,0,1000000000,0,5
-Minor,monkey_leader,Monkey leader,mythic_monkey|monkey_mauler|divine_monkey|monkey_basher|spirit_monkey|monkey_avenger,32,100,0,1000000000,0,5
-Minor,dog_leader,Dog leader,mythic_dog|dog_assassin|divine_dog|dog_cutthroat|spirit_dog|dog_avenger,36,100,0,1000000000,0,5
-Minor,rooster_leader,Rooster leader,mythic_rooster|rooster_swordsman|divine_rooster|rooster_barbarian|spirit_rooster|rooster_avenger,46,100,0,1000000000,0,5
+Minor,mythic_rabbit,Mythic rabbit,fluff|giant_hare|giant_rabbit|golden_hare|golden_rabbit|hop|mad_hare|mad_rabbit|rabbit_defender|rabbit_guardian|rabbit_sentry|thump,25,100,0,1000000000,0,2
+Minor,mythic_monkey,Mythic monkey,agile_monkey|bright_monkey|diamond_monkey|fast_monkey|monkey_defender|monkey_guardian|monkey_sentry|monsterous_monkey|plain_monkey|quick_monkey|simple_monkey|sly_monkey|spry_monkey|spunky_monkey|ugly_monkey,32,100,0,1000000000,0,2
+Minor,mythic_dog,Mythic dog,crazed_mongrel|death_mongrel|dog_defender|dog_guardian|dog_sentry|dog_trooper|fierce_dog|fighting_dog|frothing_mutt|killer_mongrel|mad_dog|pale_dog|spotted_mutt|spunky_dog|wolf_kin,39,100,0,1000000000,0,2
+Minor,mythic_rooster,Mythic rooster,black_chick|black_chicken|fiery_chick|great_roost|radiant_chick|red_chick|rooster_defender|rooster_guardian|rooster_sentry|sunfeather|white_chicken|white_rooster|wild_chick|wild_chicken|wild_rooster,46,100,0,1000000000,0,2
 Minor,pale_zombie,Pale zombie,pale_zombie,36,100,0,14999,0,5
 Minor,lesser_ghost,Lesser ghost,lesser_ghost,36,100,0,14999,0,5
 Minor,vile_scorpion,Vile scorpion,vile_scorpion,50,100,0,59999,0,5
@@ -42,20 +37,20 @@ Minor,black_skeleton,Black skeleton,black_skeleton,60,100,0,1000000000,0,2
 Minor,skeleton_je,Skeleton Je,skeleton_je,70,100,0,1000000000,0,3
 Minor,skeleton_ja,Skeleton Ja,skeleton_ja,80,100,0,1000000000,0,4
 Minor,skeleton_ji,Skeleton Ji,skeleton_ji,90,100,0,1000000000,0,5
-Minor,mythic_rat,Mythic rat,mythic_mouse|vile_rat|blood_rat|killer_rat|divine_mouse|mud_rat|hunter_rat|lava_rat|spirit_mouse|earth_rat|fire_rat|beady_eyed_stalker,53,100,0,1000000000,0,3
-Minor,mythic_horse,Mythic horse,wild_horse|skilled_horse|elite_horse|horse_guardsman|spirited_horse|horse_swordsman|diamond_horse|golden_horse|wooden_horse|lake_winny|fire_snorter|hooves,60,100,0,1000000000,0,3
-Minor,mythic_ox,Mythic ox,large_bull|raging_bull|charging_ox|giant_bull|rampaging_bull|angry_ox|great_horns|pale_hunger|tough_fight,67,100,0,1000000000,0,3
-Minor,mythic_pig,Mythic pig,stubborn_piglet|stubborn_pig|fat_pig|stubborn_warthog|stout_piglet|stout_pig|obese_pig|stout_warthog|bold_piglet|bold_pig|bold_hog|bold_boar,74,100,0,1000000000,0,3
+Minor,mythic_rat,Mythic rat,beady_eyed_stalker|blood_rat|divine_mouse|earth_rat|fire_rat|hunter_rat|killer_rat|lava_rat|mud_rat|mythic_mouse|rat_defender|rat_guardian|rat_sentry|spirit_mouse|vile_rat,53,100,0,1000000000,0,3
+Minor,mythic_horse,Mythic horse,diamond_horse|elite_horse|fire_snorter|golden_horse|hooves|horse_defender|horse_guardian|horse_guardsman|horse_sentry|horse_swordsman|lake_winny|skilled_horse|spirited_horse|wild_horse|wooden_horse,60,100,0,1000000000,0,3
+Minor,mythic_ox,Mythic ox,angry_ox|charging_ox|giant_bull|great_horns|large_bull|ox_defender|ox_guardian|ox_sentry|pale_hunger|raging_bull|rampaging_bull|tough_fight,67,100,0,1000000000,0,3
+Minor,mythic_pig,Mythic pig,boar_defender|boar_sentry|bold_boar|bold_hog|bold_pig|bold_piglet|fat_pig|obese_pig|pig_guardian|stout_pig|stout_piglet|stout_warthog|stubborn_pig|stubborn_piglet|stubborn_warthog,74,100,0,1000000000,0,3
 Minor,deep_woods_mantis,Deep woods mantis,deep_woods_mantis,65,100,0,1000000000,0,1
 Minor,grim_ogre,Grim ogre,grim_ogre,70,100,0,1000000000,0,1
 Minor,southern_ogre,Southern ogre,southern_ogre,90,100,0,1000000000,0,2
 Minor,hail_ogre,Hail ogre,hail_ogre,80,100,0,1000000000,0,5
 Minor,flurry_ogre,Flurry ogre,flurry_ogre,99,100,0,1000000000,0,5
 Minor,blizzard_ogre,Blizzard ogre,blizzard_ogre,99,100,15000,1000000000,0,5
-Minor,mythic_snake,Mythic snake,plain_snake|blood_snake|radiant_snake|fire_snake|simple_snake|lava_snake|glowing_snake|dark_snake|meter_worm|spasm|slitherly|storm_snake,81,100,0,1000000000,0,5
-Minor,mythic_sheep,Mythic sheep,fierce_sheep|ugly_sheep|black_sheep|red_sheep|flaming_sheep|dark_sheep,88,100,0,1000000000,0,5
-Minor,mythic_tiger,Mythic tiger,restless_tiger|golden_tiger|dark_tiger|giant_tiger|raging_tiger|black_tiger|huge_tiger|brazen|knap|crazy_claw,95,100,0,1000000000,0,5
-Minor,mythic_dragon,Mythic dragon,drake|dragon_hatchling|young_dragon|ancient_drake|adolescent_dragon|mature_dragon|serpentine_dragon|great_wyrm|mighty_wyrm|old_dragon,99,100,0,1000000000,0,5
+Minor,mythic_snake,Mythic snake,blood_snake|dark_snake|fire_snake|glowing_snake|lava_snake|meter_worm|plain_snake|radiant_snake|simple_snake|slitherly|snake_defender|snake_guardian|snake_sentry|spasm|storm_snake,81,100,0,1000000000,0,5
+Minor,mythic_sheep,Mythic sheep,black_sheep|dark_sheep|fierce_sheep|flaming_sheep|red_sheep|sheep_defender|sheep_guardian|sheep_sentry|ugly_sheep,88,100,0,1000000000,0,5
+Minor,mythic_tiger,Mythic tiger,black_tiger|brazen|crazy_claw|dark_tiger|giant_tiger|golden_tiger|huge_tiger|knap|raging_tiger|restless_tiger|tiger_defender|tiger_guardian|tiger_sentry,95,100,0,1000000000,0,5
+Minor,mythic_dragon,Mythic dragon,adolescent_dragon|ancient_drake|dragon_defender|dragon_guardian|dragon_hatchling|dragon_sentry|drake|great_wyrm|mature_dragon|mighty_wyrm|old_dragon|serpentine_dragon|young_dragon,99,100,0,1000000000,0,5
 Minor,northern_ogre,Northern Ogre,northern_ogre,85,100,0,1000000000,0,5
 Minor,frost_ogre,Frost Ogre,frost_ogre,85,100,0,1000000000,0,5
 Minor,forest_mantis,Forest mantis,forest_mantis,99,100,0,1000000000,0,5
@@ -75,10 +70,6 @@ Major,witch_shaman,Witch shaman,witch_shaman,36,62,0,1000000000,0,5
 Major,scorpion_lurker,Scorpion lurker,scorpion_lurker,42,83,0,1000000000,0,5
 Major,trapdoor_spider,Trapdoor spider,trapdoor_spider,42,83,0,1000000000,0,5
 Major,massive_scorpion,Massive scorpion,massive_scorpion,42,83,0,1000000000,0,5
-Major,rat_leader,Rat leader,mythic_rat|mighty_mouse|divine_rat|rat_lord|spirit_rat|rat_avenger,53,100,0,1000000000,0,5
-Major,horse_leader,Horse leader,mythic_horse|horse_do|divine_horse|horse_chongun|spirit_horse|horse_avenger,60,100,0,1000000000,0,5
-Major,ox_leader,Ox leader,mythic_ox|ox_gorer|divine_ox|ox_charger|spirit_ox|ox_avenger,67,100,0,1000000000,0,5
-Major,pig_leader,Pig leader,mythic_boar|boar_champion|divine_pig|pig_champion|spirit_pig|pig_avenger,74,100,0,1000000000,0,5
 Major,shadow_mantis,Shadow mantis,shadow_mantis,63,100,0,1000000000,0,2
 Major,dirt_mantis,Dirt mantis,dirt_mantis,63,100,0,1000000000,0,2
 Major,sting,Sting,sting,63,100,0,1000000000,0,1000000000
@@ -107,9 +98,5 @@ Epic,dark_mantis,Dark mantis,dark_mantis,63,90,0,1000000000,0,5
 Epic,hill_ogre,Hill ogre,hill_ogre,63,90,0,1000000000,0,5
 Epic,log,Log,log,63,100,0,1000000000,0,5
 Epic,deathwish,Deathwish,deathwish,80,100,0,1000000000,0,5
-Epic,snake_leader,Snake leader,mythic_snake|snake_shaman|divine_snake|snake_mage|spirit_snake|snake_avenger,81,100,0,1000000000,0,5
-Epic,sheep_leader,Sheep leader,mythic_sheep|sheep_veteran|divine_sheep|sheep_shepherd|spirit_sheep|sheep_avenger,88,100,0,1000000000,0,5
-Epic,tiger_leader,Tiger leader,mythic_tiger|tiger_warrior|divine_tiger|tiger_slasher|spirit_tiger|tiger_avenger,95,100,0,1000000000,0,5
-Epic,dragon_leader,Dragon leader,mythic_dragon|dragon_mage|divine_dragon|dragon_slayer|spirit_dragon|dragon_avenger,99,100,0,1000000000,0,5
 Epic,maletic,Maletic,ogre_maletic,84,100,0,1000000000,0,5
 Epic,citelam,Citelam,ogre_citelam,84,100,0,1000000000,0,5
