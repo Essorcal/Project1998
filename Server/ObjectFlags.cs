@@ -9,14 +9,30 @@ namespace Server;
 /// per-object flag byte and mirror RTK's <c>clif_object_canmove</c> directional test so mob (and player)
 /// movement respects the same walls the client draws over otherwise-walkable ground.
 ///
-/// Format (confirmed: the record walk both consumes the file to the exact byte AND yields exactly the
-/// header's object count, then validated tile-by-tile against Buya's Jadespear-hut geometry — walls come
-/// out 0x0F solid, the doorway 0x00 walkable):
-///   <c>u32 count</c> | 1 lead byte | <c>count</c> records, each:
-///     <c>u8 tileCount</c> | <c>tileCount * u16</c> frame ids | 5-byte separator <c>FF FF FF FF 00</c> | <c>u8 flag</c>
-///   <c>flag[recordIndex]</c> (1-based) is indexed directly by the map's object-tile id; object id 0 = "no
-///   object" = flag 0 = never blocks.
-/// Flag bits (RTK <c>map.h</c>): UP=1 DOWN=2 RIGHT=4 LEFT=8; a solid wall piece = 0x0F (blocked on all sides).
+/// <para><b>Format.</b> Each object's flag PRECEDES its frame list, so the file is:</para>
+/// <code>
+///   u32 count
+///   u8  flag[0]                                     // object 0
+///   per object z = 0 .. count-1:
+///       u8  tileCount
+///       tileCount * u16                             // frame ids, object z's vertical sprite stack
+///       5-byte separator FF FF FF FF 00
+///       u8  flag[z+1]                               // the NEXT object's flag (absent after the last)
+/// </code>
+/// <para>The loop below walks it one object out of phase with that — iteration <i>z</i> parses object
+/// <i>z</i>-1's frames (which it skips) and then reads object <i>z</i>'s flag — which lands the right byte
+/// in <c>flags[z]</c>. Object id 0 = "no object" and never blocks; its flag byte is 0x01 in the shipped
+/// table, plainly unused, so the array's default 0 is left in place rather than read.</para>
+///
+/// <para><b>The trap</b> (walked into 2026-08-12): read a record's frames and its trailing flag as belonging
+/// to the same object and the FRAMES come out one object ahead, which makes it look as though collision is
+/// shifted. It isn't. The tell is doors, since RTK's <c>open.lua</c> gives independent shut/open pairings to
+/// check against: pair 346/347 with 366/367 and render them, and the frames only draw as a coherent door —
+/// two matched leaves, then that same doorway with the leaves swung aside — when attributed one record
+/// later, while the flags at 346/347 (0x0F solid) and 366/367 (0x00 walkable) are already correct as read
+/// here. Both facts are the layout above.</para>
+/// <para>Flag bits (RTK <c>map.h</c>): UP=1 DOWN=2 RIGHT=4 LEFT=8; a solid wall piece = 0x0F (all four sides).
+/// The walk consumes the file to the exact byte and yields exactly the header's object count.</para>
 /// </summary>
 public static class ObjectFlags
 {
