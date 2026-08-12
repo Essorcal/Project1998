@@ -885,7 +885,7 @@ public sealed partial class Session
         var (peers, mobs) = _world.EnterMap(this, _char.Map);
         foreach (var p in peers) ShowPlayer(p);   // existing players -> draw on our client (0x33)
         SyncMobs(mobs);                            // shared mobs in view -> draw on our client (0x07, streamed)
-        foreach (var gi in _world.ItemsOn(_char.Map)) ShowGroundItem(gi);  // floor items (0x16)
+        SyncGroundItems(_world.ItemsOn(_char.Map));   // floor items in view -> draw (0x07, viewport-gated)
         RefreshInventory();                       // fill the bag + equipment windows (0x0F / 0x37)
         RefreshSpells();                          // fill the spell/skill book (0x17) with learned spells
         // No login-time "you have mail" line: the HUD already says it. Unread mail raises the 0x08 mail-arrow
@@ -1162,6 +1162,13 @@ public sealed partial class Session
     // The client MAY have culled these; if one steps back into the strict rect we re-assert its 0x07 rather
     // than assume it's still there. This is what makes HidePad > ShowPad safe — see SyncMobs.
     private readonly HashSet<uint> _edgeMobs = new();
+    // Same story for GROUND ITEMS, and for the same reason: ShowGroundItem draws through the very same
+    // viewport-gated 0x07 path (see Session.ShowGroundItem's RE note), so a floor item spawned or replayed
+    // for an off-screen tile is silently dropped by the client and — because items never move — would never
+    // be re-sent. That is why forage drops (chestnuts) were invisible: the world spawns them across a whole
+    // farm-sized box while the player only ever has a screenful of it in view. SyncGroundItems reconciles
+    // this set exactly like SyncMobs does for mobs. Guarded by _viewLock alongside the mob sets.
+    private readonly HashSet<uint> _shownItems = new();
     private readonly object _viewLock = new();
     // SHOW at the strict 17x15 edge, HIDE at the drawn edge one tile further out.
     //

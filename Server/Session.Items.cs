@@ -106,10 +106,18 @@ public sealed partial class Session
     /// <para><see cref="GroundItem.Graphic"/> is the base <c>ItmIcon</c> (world state, shared by every viewer),
     /// so the per-client colour fold happens here rather than at drop time. Coin piles carry ItemId -1 and no
     /// def, and keep the graphic they were dropped with.</para>
+    /// <para>VIEWPORT-GATED, and tracked in <c>_shownItems</c>. The 0x07 gate above is not advisory: a draw
+    /// for an off-screen tile is thrown away by the client, and since floor items never move, nothing would
+    /// ever re-send it. So a call for an out-of-view tile is dropped here rather than pretended, and
+    /// <see cref="SyncGroundItems"/> draws the item for real once we walk it into view. (Callers that hand us
+    /// a synthetic marker — the spot-traps overlay in Session.Spells — are always at the caster's feet, so
+    /// they pass the gate on the same terms a drop at your own feet does.)</para>
     public void ShowGroundItem(GroundItem gi)
     {
+        if (!InView(gi.X, gi.Y, ShowPad)) return;
         var def = gi.ItemId >= 0 ? Content.ItemById(gi.ItemId) : null;
         SendCreatureList(new[] { (gi.Id, IconWire(def is null ? gi.Graphic : IconOf(def)), gi.X, gi.Y, (byte)0, (byte)0) });
+        lock (_viewLock) _shownItems.Add(gi.Id);
     }
 
     // The 4.95 type-0 form has three gear-driven look bytes: weapon [5], armor [3] and shield [6]. Weapon/

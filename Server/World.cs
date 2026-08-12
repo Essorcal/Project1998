@@ -2185,16 +2185,20 @@ public sealed class World
     // beyond the snapshot arrays.
     private void ReconcileViews()
     {
-        (Session[] players, Mob[] mobs)[] snapshot;
+        // Floor items ride along with the mobs: a forage top-up or another player's drop lands on the map
+        // while we're standing still, and its own broadcast is viewport-gated like every other 0x07 — so the
+        // tick is what eventually draws it for whoever is close enough. Hence `|| m.Items.Count > 0`: a map
+        // with items but no mobs still needs reconciling.
+        (Session[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
         lock (_lock)
         {
             snapshot = _maps.Values
-                .Where(m => m.Players.Count > 0 && m.Mobs.Count > 0)
-                .Select(m => (m.Players.ToArray(), m.Mobs.ToArray()))
+                .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0))
+                .Select(m => (m.Players.ToArray(), m.Mobs.ToArray(), m.Items.ToArray()))
                 .ToArray();
         }
-        foreach (var (players, mobs) in snapshot)
-            foreach (var p in players) Try(() => p.SyncMobs(mobs));
+        foreach (var (players, mobs, items) in snapshot)
+            foreach (var p in players) Try(() => { p.SyncMobs(mobs); p.SyncGroundItems(items); });
     }
 
     private static void Try(Action a)

@@ -179,6 +179,9 @@ public sealed partial class Session
                 return;
             }
             Log.Info($"   -> WARP ({nx},{ny}) on map {_char.Map} -> map {dest.m} '{dm.Name}' ({dest.x},{dest.y})");
+            // Quest beats that trigger on stepping THROUGH a warp tile, not on standing anywhere — the
+            // after-step hooks (OnScriptedTileStep) never run for a warp, since we leave the map here.
+            TryNewbieCoordinateLesson(_char.Map, (ushort)nx, (ushort)ny);
             EnterMap(dm.Id, dm.Xs, dm.Ys, dest.x, dest.y, dm.Name);
             return;
         }
@@ -224,6 +227,10 @@ public sealed partial class Session
 
         // Our viewport just shifted a tile: stream in mobs that entered view, drop ones that left.
         SyncMobs(_world.View(this, _char.Map).mobs);
+        // ...and the FLOOR ITEMS, which need it even more than mobs do: they never move, so an item whose
+        // 0x07 was dropped by the client's viewport gate (a forage chestnut across the farm, loot from a
+        // kill on the far side of the map) is invisible forever unless walking up to it re-draws it.
+        SyncGroundItems(_world.ItemsOn(_char.Map));
 
         // ...and the TERRAIN under that viewport. The client only requests map data (0x05) on map ENTRY, so
         // without this it runs off the edge of what was streamed and hits a black wall. Pushes just the newly

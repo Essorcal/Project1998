@@ -805,9 +805,15 @@ public sealed partial class Session
     /// <summary>Send the player a status/minitext line (RTK sendMinitext).</summary>
     internal void Notify(string text) => SendMiniText(text);
 
-    /// <summary>Make an NPC speak an over-head bubble to everyone on its map (RTK npc:talk).</summary>
+    /// <summary>Make an NPC speak an over-head bubble to everyone on its map (RTK npc:talk).
+    ///
+    /// <para>Prefixed "&lt;Name&gt;: " exactly like a player's own speech (see Session.Chat's say path): the
+    /// 0x0D bubble carries no speaker field, so the client draws whatever string it is handed and the name
+    /// has to be IN the text. Without it, everything an NPC says by voice — the whole "i buy &lt;item&gt;" /
+    /// "buy my &lt;item&gt;" / vault-command family, which answers over this channel rather than in a dialog
+    /// box — arrived as a bare unattributed line in the chat log.</para></summary>
     internal void NpcBubble(Mob npc, string text) =>
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(0, npc.Id, Encoding.ASCII.GetBytes(text)));
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(0, npc.Id, Encoding.ASCII.GetBytes($"{npc.Name}: {text}")));
 
     /// <summary>Is an item (by content key) currently worn?</summary>
     internal bool HasEquipped(string itemKey)

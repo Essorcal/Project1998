@@ -97,9 +97,36 @@ public sealed partial class Session
         }
     }
 
+    /// <summary>Reconcile the FLOOR ITEMS drawn on this client against what's in view — the ground-item twin
+    /// of <see cref="SyncMobs"/>, and needed for exactly the same reason: <see cref="ShowGroundItem"/> draws
+    /// through the viewport-gated 0x07 static-object path, so a 0x07 for an off-screen tile is discarded by
+    /// the client. Items never move, so a discarded draw is permanent — which is why forage drops
+    /// (chestnuts, scattered across a box far bigger than a screen) and loot dropped across the map read as
+    /// "not spawning". Called on world entry, after each of our walk steps, and every world tick.
+    ///
+    /// <para>No <c>_edgeMobs</c> equivalent: a stationary item can only leave or enter the band by US moving,
+    /// and re-showing it is a single idempotent 0x07, so the plain show/hide pair is enough.</para></summary>
+    public void SyncGroundItems(IReadOnlyList<GroundItem> items)
+    {
+        foreach (var gi in items)
+        {
+            bool shown;
+            lock (_viewLock) shown = _shownItems.Contains(gi.Id);
+            if (!shown)
+            {
+                if (InView(gi.X, gi.Y, ShowPad)) ShowGroundItem(gi);
+            }
+            else if (!InView(gi.X, gi.Y, HidePad))
+            {
+                lock (_viewLock) _shownItems.Remove(gi.Id);
+                SendDespawn(gi.Id);
+            }
+        }
+    }
+
     /// <summary>Reset the drawn-mob set (before a full 0x15 map rebuild, which drops all foreign entities
     /// client-side). The next SyncMobs then re-streams everything currently in view.</summary>
-    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); } }
+    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); } }
 
     /// <summary>Re-assert every co-located peer + mob on OUR client. Call after re-sending 0x15 mapinfo
     /// in place (the realm-center refresh), which makes the client rebuild the map and drop all FOREIGN
@@ -110,7 +137,7 @@ public sealed partial class Session
         foreach (var p in peers) ShowPlayer(p);
         ForgetShownMobs();     // the 0x15 rebuild dropped them client-side — re-stream what's in view
         SyncMobs(mobs);
-        foreach (var gi in _world.ItemsOn(_char.Map)) ShowGroundItem(gi);
+        SyncGroundItems(_world.ItemsOn(_char.Map));
     }
 
     // Move a peer entity one step. (x,y) is the SOURCE tile — the client's 0x0C overshoots one tile past it
@@ -136,7 +163,7 @@ public sealed partial class Session
     public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, type, time, param);  // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
-    public void DespawnEntity(uint id) { lock (_viewLock) { _shownMobs.Remove(id); _edgeMobs.Remove(id); } SendDespawn(id); }  // 0x0E
+    public void DespawnEntity(uint id) { lock (_viewLock) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); } SendDespawn(id); }  // 0x0E
 
     // Non-blocking enqueue. Peer broadcasts and mob AI call this ON the shared World.TickLoop thread, so it
     // must never block: it just hands the frame to the outbound channel (WriterLoop does the socket write).

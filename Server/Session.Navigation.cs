@@ -252,6 +252,28 @@ public sealed partial class Session
         TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
     }
 
+    // ---- Newbie area, quest 3: the coordinate lesson (npc_dialog.lua TutorialNpc1) ------------------
+    // The Deep Forest tutor's task is "walk from here to 0021 0020", and 21,20 is a warp tile (Warps.csv
+    // 4714 (21,20) -> 4715 (3,2)) — so the moment the lesson is passed is the moment the player steps onto
+    // it and is carried on, not the moment his dialog closes. Paying the exp at the end of his speech (which
+    // is where it used to be) rewarded clicking through pages; this rewards actually finding the tile.
+    //
+    // Called from the WARP branch of HandleWalk rather than OnScriptedTileStep, because a warp returns
+    // before the after-step hooks ever run — the player never "stands on" 21,20.
+    //
+    // Once only, via its own registry flag: the stage can't be used as the marker because stage 5 is also
+    // what TutorialNpc2 gates his magic lesson on, and bumping it here would skip that.
+    private const string NewbCoordsLearned = "newbie_coords_learned";
+
+    private void TryNewbieCoordinateLesson(ushort mapId, ushort x, ushort y)
+    {
+        if (mapId != 4714 || x != 21 || y != 20) return;
+        if (QuestStage("newbie_area_quest") < 5) return;         // hasn't been set the task yet
+        if (QuestCounter(NewbCoordsLearned) != 0) return;        // already paid
+        SetQuestStage(NewbCoordsLearned, 1);
+        AwardExp(50);                                            // NEWB_STAGE_EXP, same as every other beat
+    }
+
     // ---- Inter-continent travel ("world map" screen) ----
     // RTK triggers this from onScriptedTile on EVERY step (onScriptedTilesMap.lua checks the current
     // map's title + x/y against hardcoded edge coordinates), then opens a destination picker via
@@ -538,7 +560,7 @@ public sealed partial class Session
         var (peers, mobs) = _world.EnterMap(this, mapId);
         foreach (var p in peers) ShowPlayer(p);
         SyncMobs(mobs);   // stream the in-view mobs of the new map
-        foreach (var gi in _world.ItemsOn(mapId)) ShowGroundItem(gi);   // floor items on the new map (0x16)
+        SyncGroundItems(_world.ItemsOn(mapId));   // in-view floor items of the new map (0x07, viewport-gated)
         SyncMapDoors(mapId);
         if (warnPvp)
         {
