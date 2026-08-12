@@ -134,7 +134,7 @@ public sealed partial class Session
 
     // 0x20 = time-of-day (RTK clif_sendtime, clif.c:4524): hour(u8 0..23) year(u8). This server sent a
     // hardcoded placeholder here forever (0x10/0x32 at world-entry, 0x00/0x00 on the ARRIVAL path) — now
-    // fed by World's real hour/year clock (World.Time, ticked by World.Tick — see its HourTicks doc) so the
+    // fed by World's real hour/year clock (World.Time, re-derived each tick from World.Epoch) so the
     // client's day/night overlay actually advances, server-wide, exactly like RTK's own broadcast-to-every-
     // session change_time_char.
     internal void SendTime(byte hour, byte year) =>

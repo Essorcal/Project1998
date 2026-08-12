@@ -1148,12 +1148,22 @@ Gotchas that cost real debugging time:
   still shows).
 - **Dated legend text** (fixed 2026-07-26): several RTK legends stamp the in-game date, e.g.
   `player:addLegend("Aided Chu Rua (" .. curT() .. ")", ...)` (`chu_rua.lua`) and the "born" legend
-  (`login_map_tile.lua`: `"Born in " .. curT()`, `curT()` = `"Yuri <year>, <season>"`). We don't model
-  RTK's in-game calendar (no server-side clock tick), so `Character.GameDate` is a fixed constant —
-  `"Hyul 31, Winter"`, matching the live-captured self-profile reference above (§9.5's "Born in Hyul 31,
-  Winter"; the live text says "Hyul", not RTK's own "Yuri" — the live capture wins where they diverge) —
-  reused everywhere a legend needs "the current date". `ChuRuaAbility` (`NpcAbility.cs`) now grants
-  `$"Aided Chu Rua ({Character.GameDate})"` instead of the undated string it shipped with.
+  (`login_map_tile.lua`: `"Born in " .. curT()`, `curT()` = `"Yuri <year>, <season>"`). `Character.GameDate`
+  is now **live** (2026-08-12): a static property reading `GameCalendar.Stamp` (§"Day-night clock"), so it
+  produces a real `"Yuri <year>, <season>"` exactly like `curT()`. Every legend that stamps "the current
+  date" reads it — the seeded born mark, engagement/marriage (`Session.Spells.cs`), `ChuRuaAbility`
+  (`NpcAbility.cs`, which grants `$"Aided Chu Rua ({Character.GameDate})"` instead of the undated string it
+  shipped with), and the Lua `gameDate` binding (`NpcScript.cs`).
+  - The born mark is stamped **at construction**, in `Character.Legends`' field initializer, because that is
+    the moment the character is born; it must not re-read the clock later or every birthday would slide
+    forward with the world. Deserialization replaces the seeded list outright (System.Text.Json assigns a
+    new `List<Legend>` to a settable member rather than appending to the initializer's), so loading an
+    existing character does **not** add a second born mark — verified against the live DB.
+  - It used to be the fixed constant `"Hyul 31, Winter"` (there was no server-side clock when the legends
+    were written), matching the live-captured self-profile reference above (§9.5's "Born in Hyul 31,
+    Winter"). The live 4.95 text says **"Hyul"** where RTK's `curT()` says **"Yuri"** — the same king under
+    two names. We use RTK's word server-wide so legends and `@time` agree; characters created before
+    2026-08-12 keep the `"Hyul 31, Winter"` already persisted in their legend list.
 - 4.95's click popup has **no totem slot** (`TOTEM.EPF` is unreferenced in the client) — totem only
   appears on the HUD/self-profile, not here.
 - The **3 icon cells** (helm / left ring / right ring) are shared by BOTH views as three `u16BE` fields.
@@ -3757,11 +3767,33 @@ destCount   u8
 kingdom overview, `field11`-`field18` are the per-region maps Koguryo/Buya/Kaya/Jinhan/Nagnang/Paekjae/Shilla/
 Sonhi), identified by rendering them and reading each image's baked-in title banner. `NATION_E` is only a 20KB
 flag icon — too small for a 640x480 background, which is why it rendered black. Default `bgName = "field10"`.
-**The `x0,y0` dot coordinates and `x1,y1` landing tiles are RTK `sendWorldMap.lua`'s real hand-placed values**
-(`WorldDest.X0/Y0`), not an invented grid. RTK's coords target its 1024x768 `WMkru` canvas; 4.95's `field10`
-is 640x480, so `SendWorldMap` scales `x0,y0` by **0.625** (640/1024 = 480/768). LIVE-CONFIRMED: unscaled,
-every dot with `x0 > 640` fell off the right edge (only Mythic Nexus @380 and KaMing's @280 were visible);
-scaled, all seven land on-screen.
+**`x0,y0` is the CENTRE of the destination's label button, in `field10`'s own 640x480 pixel space** — not its
+top-left corner, and not a dot with the text hung off it. Proven in the client: the world-map window's draw
+loop (`0x423500`) calls `0x423600` once per entry, which computes
+
+```
+w    = textWidth(name) + 0x0c          ; 0x426ce0, the client's own bitmap-font measurer
+h    = fontHeight * 2                  ; 0x426d10  (measured live: h = 20, so fontHeight = 10)
+top  = y0 - h/2 ;  bottom = top  + h
+left = x0 - w/2 ;  right  = left + w
+```
+
+so the button grows symmetrically around the coordinate and its width depends on how long the name is.
+
+**Do NOT derive these from RTK.** An earlier version of this section claimed RTK's `sendWorldMap.lua` values
+were "real hand-placed" coordinates on a 1024x768 canvas that just needed scaling by 0.625 (640/1024). That
+is wrong on both counts: RTK's numbers are pixels in a **different background image** (its own `WMkru`, whose
+geography is framed differently — plotting RTK's nine coordinates onto the modern client's `WM.EPF` puts
+Kugnae, Hausson, Arctic Land and Hamgyong Nam-Do all out in the open sea), and no single scale factor maps
+that space onto `field10`. Scaling made every dot land *on-screen*, which is why it passed at the time, but
+it did not make any of them land in the *right place* — that is the bug this replaced.
+
+The direct method is to pick coordinates off the real artwork. `re/worldmap_plot.py` extracts `field10.epf`
+from the client's own `Inter.dat` (palette: the shared `Baram.pal` in `NexusTK.dat` — `Inter.dat` ships no
+`field10.pal`), renders it, and draws every `WorldMapDests.csv` row with the exact box geometry above,
+flagging any button that would land on the wooden frame or under the baked-in "Map of the Kingdom" banner.
+`--grid` overlays a 20px ruler; `--move Name:x,y` / `--add Name:x,y` try a change without touching the CSV.
+Its output has been verified pixel-for-pixel against a live in-client screenshot of the same five buttons.
 
 **The crashes were OUR one-byte framing bug, not a client bug (corrected 2026-07-26).** For a while this
 was written up as a confirmed "client memory-lifetime / dangling-pointer bug, dead end" — complete with a
@@ -3821,26 +3853,44 @@ case that ever regresses live.
 to `field10` when no name is given, for trying alternate backgrounds (`field1`, `title`, other `fieldNN`).
 The framing bug that used to crash this is fixed.
 
-**Destinations** (`Session.cs` `WorldDests`) — 7 of RTK's 9 real destinations; Hamgyong Nam-Do (map 99,
-RTK's own display-name mismatch against its actual map title) and Mount Baekdu (map 4259, the one
-quest-gated entry) are both omitted because neither has renderable map data in this project's
-`game-data/map_index.csv`:
+**Destinations** (`game-data/WorldMapDests.csv` -> `Content.WorldDests`) — 6 of RTK's 9. Dot pixels are
+`field10` centres picked with `re/worldmap_plot.py` (see above), *not* scaled RTK values:
 
-| Destination | Map | Landing (x,y) |
-|---|---|---|
-| Kugnae | 1011 | (18,14) |
-| Buya | 1012 | (1,11) |
-| Mythic Nexus | 41 | (30,4) |
-| Nagnang | 2520 | (8,8) |
-| Arctic Land | 1013 | (9,9) |
-| Hausson | 1025 | (10,8) |
-| KaMing's Encampment | 3800 | (31,3) |
+| Destination | Map | Landing (x,y) | Dot (x,y) |
+|---|---|---|---|
+| Kugnae | 1011 | (18,14) | (291,297) |
+| Buya | 1012 | (1,11) | (335,202) |
+| Mythic Nexus | 41 | (30,4) | (118,169) |
+| Arctic Land | 1013 | (9,9) | (426,75) |
+| KaMing's Encampment | 3800 | (31,3) | (89,269) |
+| Hamgyong Nam-Do | 114 | (21,8) | (419,334) |
 
-**Trigger tiles** (`Session.cs` `WorldMapTriggers`, keyed by the town map the player is standing in — each
-of the 7 towns above is also a trigger source, so the picker is reachable from any of them): Kugnae
-Gathering `x=19, y∈{12,13}`; Buya Gathering `x=0, y∈8..12`; Mythic Nexus `y=3, x∈28..32`; Nagnang Gathering
-`y=5, x∈7..9`; Haeng Tavern `x=10, y∈{7,8}`; Kafas Tavern `x=11, y∈7..9`; KaMing's Encampment `y∈{0,1},
-x∈30..34`. All seven fit inside their map's real dimensions per `map_index.csv`.
+These six are the project's own placement, hand-drawn on the rendered artwork and measured back off the
+annotated image — they deliberately do **not** follow the baked-in region labels (e.g. Buya's button sits
+well south of the italic "Buya"). Treat them as authored content, not something to re-derive.
+
+**Hamgyong Nam-Do is retargeted, not copied.** RTK sends it to map **99** ("North Hamgyong Valley"), which
+has no map data here — which is why it used to be dropped from the list entirely. Map **114** *is*
+renderable (30x30) and is the map literally titled "Hamgyong Nam-Do", so that is the target, landing on
+`(21,8)` — an already-proven warp arrival tile (`Warps.csv` 314, from map 141 (29,27)). RTK's trigger for it
+sits on map 99 (`y=0, x∈7..9`), which doesn't exist here; the 114-side trigger is its **north edge, `y=0,
+x∈12..15`**.
+
+Those four tiles are also `Warps.csv` 283-286 (114 -> map 99), and the two do **not** collide: `HandleWalk`
+only takes a warp when `Content.TryMap(dest.m)` succeeds, and 99 has no map data, so the warp silently
+doesn't fire, the step completes, and `OnScriptedTileStep` -> `TryWorldMapTravel` gets the tile. Because 114
+is both a destination row and a trigger map, ESC-cancel works from it like every other town.
+
+**Mount Baekdu** (map 4259, RTK's one quest-gated entry) is still omitted: no renderable map data.
+**Nagnang** (2520) and **Hausson** (1025) are renderable but simply aren't listed — adding them is a
+two-line change (one `WorldMapDests.csv` row + one `WorldMapTriggers.csv` row each).
+
+**Trigger tiles** (`game-data/WorldMapTriggers.csv` -> `Content.WorldMapTriggers`, keyed by the town map the
+player is standing in): Kugnae Gathering `x=19, y∈{12,13}`; Buya Gathering `x=0, y∈8..12`; Mythic Nexus
+`y=3, x∈28..32`; Haeng Tavern `x=10, y∈{7,8}`; KaMing's Encampment `y∈{0,1}, x∈30..34`; Hamgyong Nam-Do
+`y=0, x∈12..15`. All six fit inside their map's real dimensions per `map_index.csv`. Every trigger map is
+also a destination row, which is what makes ESC-cancel work (`SendWorldMap` puts the origin continent first,
+landing on the exact origin tile).
 
 **Live status (2026-07-26).** The trigger tiles are confirmed live. The framing bug that made the native
 `0x2e` screen crash (a spurious leading byte — see above) is fixed and the corrected packet builds clean,
@@ -3892,22 +3942,35 @@ WHEN weather changes (`setWeatherM`/`getWeatherM` are pure admin/quest-script le
 timer anywhere in the C engine) — `World.Tick` rolls a 20% chance per populated map every ~15 real minutes
 as our own substitute, clearly not an RTK-sourced cadence.
 
-**Day-night clock (`World.Time`/`_hour`/`_day`/`_season`/`_year`, `Session.SendTime`, opcode `0x20`).** Fully
-grounded: RTK's `clif_sendtime` (`clif.c:4524`, `hour(u8 0..23) year(u8)`) and `change_time_char`'s real timer
-(`map.c:1661`, `timer_insert(450000, 450000, ...)` — one in-game hour per 7.5 real minutes, broadcast
-server-wide to every connected session on each tick) are both complete C-engine code, ported 1:1 in
-`World.Tick`. This server had sent a hardcoded placeholder here since before this session (`0x10`/`0x32` at
-one entry path, `0x00`/`0x00` at another) — the starting hour/year values were kept as the live clock's
-initial state so deploying this doesn't jump the clock for anyone already playing.
+**Day-night clock (`World.Time`/`World.Epoch`, `Session.SendTime`, opcode `0x20`).** Fully grounded: RTK's
+`clif_sendtime` (`clif.c:4524`, `hour(u8 0..23) year(u8)`) and `change_time_char`'s real timer (`map.c:1661`,
+`timer_insert(450000, 450000, ...)` — one in-game hour per 7.5 real minutes, broadcast server-wide to every
+connected session on each tick) are both complete C-engine code. This server had sent a hardcoded placeholder
+here for a long time (`0x10`/`0x32` at one entry path, `0x00`/`0x00` at another) before the clock was wired
+up live.
 
-The wire packet itself only ever carries `hour`+`year`, but `_year`'s *cadence* depends on RTK's day/season
-rollover, so `World` tracks `_day`(1..91)/`_season`(1..4) internally purely to get that right, 1:1 with
-`change_time_char`: hour rolls to `_day++`, `_day==92` rolls to `_season++`, and only `_season==5` rolls
-`_year++` — i.e. one year is ~368 in-game days, not one in-game day. An earlier version of this port
-incremented `_year` on every 24-hour rollover instead (a bug, not an RTK deviation — fixed 2026-07-28), which
-would have made in-game years pass ~368x too fast. Cross-checked against the community "Time Chart" tutor
-post (`WiKiDWiND`, Poets board: "1 Yuri (365 days) ⟺ 41 days 18 hours" real time), which independently lands
-in the same ~41-46-real-day-per-year ballpark that RTK's actual 368-day cadence produces.
+**The calendar is anchored to a real-world epoch, not counted (2026-08-12).** `Shared/GameCalendar.cs` —
+`Epoch` = `2026-08-12T00:00:00-07:00`, at which the world reads **Yuri 1, Spring, day 1, hour 0**; the
+current date is then a pure function of wall-clock time (`World.SyncClock` re-reads it every tick and
+broadcasts `0x20` on each in-game hour rollover). It lives in `Shared`, not `Server`, because the LOGIN
+server — a separate process with no `World` — stamps a new character's "Born in ..." legend with it (§9.5
+"Dated legend text"). This is the one deliberate divergence from RTK, which increments a counter and
+reloads `cur_time`/`cur_day`/`cur_season`/`cur_year` from its `Time` table at boot — meaning RTK's calendar
+stops during downtime and slides by however long each restart took. Ours can't drift, needs no persistence
+(the old `world_state` `clock.*` keys are dead; `Shared/WorldState.cs` is now an empty table awaiting its
+next use), and gives the same answer to anyone who works it out from a calendar.
+
+The wire packet itself only ever carries `hour`+`year`, but `year`'s *cadence* depends on RTK's day/season
+rollover, so the derivation tracks day(1..91)/season(1..4) too, matching `change_time_char`'s constants: hour
+rolls to `cur_day++`, `cur_day==92` rolls to `cur_season++`, and only `cur_season==5` rolls `cur_year++` —
+i.e. **91 in-game days per season, 364 per year**, not one year per in-game day. An earlier version of this
+port incremented the year on every 24-hour rollover instead (a bug, not an RTK deviation — fixed 2026-07-28),
+which would have made in-game years pass ~364x too fast. 364 in-game days × 3 real hours = **45.5 real days
+per Yuri**, which lands on the community "Time Chart" tutor post (`WiKiDWiND`, Poets board) exactly: Nexus
+runs at 8× real time, so a 365-day year takes 365/8 = 45 5/8 real days. Season 1 = Spring per rtklua
+`sys.lua`'s `getCurSeason`, the mapping behind RTK's own `curT()` = `"Yuri <year>, <season>"` timemark
+(`scripts.lua`'s Mithia-lore `{Winter, Spring, Summer, Autumn}` table is a different game's ordering — don't
+use it). Season never goes on the wire; `@time` is the only place it surfaces.
 
 **Ambush (`Content.IsAmbushSpell`, `Session.CastAmbush`).** RTK `rogue/ambush.lua` ("Leap over your enemy to
 face their back while attacking") has no mana cost in the Lua at all. Ported as a real reposition: teleports

@@ -195,15 +195,18 @@ public sealed class Character
     public string ProfileText = "This character has not written a profile yet.";
     public byte[]? ProfilePic = null;
 
-    // RTK's in-game calendar (Scripts/scripts.lua curT(): "Yuri <year>, <season>") isn't modeled — no clock
-    // ticks server-side — so every legend that would normally stamp "the current date" uses this fixed
-    // constant instead. Value matches the live-captured self-profile reference below ("Hyul", not RTK's own
-    // "Yuri" text — the two diverge and the live capture wins). Reused anywhere else a legend needs a date
-    // (e.g. ChuRuaAbility's "Aided Chu Rua (...)").
-    public const string GameDate = "Hyul 31, Winter";
+    // The live in-game date, as RTK's Scripts/scripts.lua curT() writes it ("Yuri <year>, <season>") — used
+    // by every legend that stamps "the current date", and by the Lua `gameDate` binding. Reads the world
+    // calendar, so it is a real date now rather than the fixed "Hyul 31, Winter" constant this used to be
+    // (there was no server-side clock when the legends were written). A live 4.95 self-profile capture says
+    // "Hyul" where RTK says "Yuri" — same king, two names; we use RTK's word server-wide so legends and
+    // "@time" agree. Characters created before 2026-08-12 keep whatever their born legend already says.
+    public static string GameDate => GameCalendar.Stamp;
 
     // Legend marks: the scrollable list at the bottom of the profile. Each = icon + color + text.
-    // Seeded with a "born" entry (mirrors the real 6.x capture) so the window has visible content.
+    // Seeded with a "born" entry (mirrors the real 6.x capture) so the window has visible content. The date
+    // is stamped HERE, at construction — that is the moment the character is born, and it must not re-read
+    // the clock later or everyone's birthday would slide forward with the world.
     public List<Legend> Legends = new()
     {
         // color 0x80 matches the real 6.x capture (`01 00 80 17 "Born…"`); color 0 renders invisible.

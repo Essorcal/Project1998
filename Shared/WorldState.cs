@@ -3,10 +3,12 @@ namespace Shared;
 /// <summary>
 /// The <c>world_state</c> key/value table: state that belongs to the WORLD rather than to any character.
 ///
-/// <para>Currently just the in-game clock. RTK keeps the same thing in its <c>Time</c> table (cur_time /
-/// cur_day / cur_season / cur_year, loaded at boot); we had the compiled-in starting values instead, so
-/// every restart rewound the calendar. That was a harmless quirk while restarts were rare and stopped being
-/// one the moment deploys began scheduling them.</para>
+/// <para>Currently nothing — the table is empty of live keys and kept for the next world scalar that needs
+/// one. It used to hold the in-game clock (RTK keeps the same thing in its <c>Time</c> table: cur_time /
+/// cur_day / cur_season / cur_year, loaded at boot), because a counted calendar has to be saved or every
+/// restart rewinds it. The clock is now derived from a fixed real-world epoch instead (see
+/// <c>World.Epoch</c>), which makes it restart-proof by construction, so nothing writes the old
+/// <c>clock.*</c> keys any more; rows left in an existing database are stale and unread.</para>
 ///
 /// <para>Deliberately a key/value table rather than typed columns: what belongs here is a handful of small,
 /// unrelated scalars, and the alternative is a schema migration every time one is added.</para>

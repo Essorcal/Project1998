@@ -168,47 +168,31 @@ public sealed class World
     // via @reload. See TopUpForageLocked.
     private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
 
-    // ---- day/night clock (RTK map.c change_time_char, opcode 0x20) ----------------------------
-    // RTK: timer_insert(450000, 450000, change_time_char, ...) — every 450000ms (7.5min) real time, cur_time
-    // (hour, 0..23) ticks up by one and every connected session gets a fresh clif_sendtime broadcast; on
-    // hour rollover cur_day advances (1..91), and only once cur_day wraps (every 92 days) does cur_season
-    // advance (1..4) — cur_year only ticks once every 4 seasons (~368 in-game days, matching the community
-    // "1 Yuri ⟺ ~41-46 real days" Time Chart, NOT once a day). We model day/season internally purely to get
-    // that real-world cadence right, even though the 0x20 packet only ever carries hour+year (see
-    // Session.SendTime) — day/season have no client-visible effect via this packet.
-    private const int HourTicks = 750;    // 450000ms / TickMs(600) — one in-game hour per real 7.5 minutes
-    private int _hour = 16, _day, _season = 1, _year = 50;
-                                           // These are now only the FIRST-BOOT values, used until the clock
-                                           // has been persisted once. hour/year match what this server always
-                                           // sent before the clock was wired up live (the old hardcoded
-                                           // 0x10/0x32 placeholder), so a fresh database doesn't jump the
-                                           // clock for anyone already playing; day/season start mid-cycle
-                                           // arbitrarily. RTK loads the same four values from its `Time`
-                                           // table, and now so do we — see LoadClock/SaveClock.
+    // ---- world calendar (opcode 0x20) ---------------------------------------------------------
+    // The calendar itself lives in Shared.GameCalendar — a pure function of wall-clock time since a fixed
+    // epoch, with RTK's own cadence constants and the reasoning for deriving rather than counting. It is in
+    // Shared because the LOGIN server, a separate process with no World, stamps a new character's "Born in
+    // ..." legend with the same date this server is showing.
+    //
+    // What World adds is the broadcast: RTK's change_time_char (map.c:1661) pushes clif_sendtime to every
+    // connected session on each in-game hour, so we cache the calendar and watch for the hour to roll over.
+    // Only hour+year go on the wire (see Session.SendTime); day/season are tracked because the year cadence
+    // is defined in terms of them, and "@time" reports the season.
+    private int _hour, _day = 1, _season = 1, _year = 1;
+    private long _gameHour = -1;          // whole in-game hours since the epoch; -1 = not yet synced
     public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
+    public string SeasonName => GameCalendar.SeasonName(_season);
 
-    /// <summary>Resume the calendar from <c>world_state</c> (RTK loads cur_time/day/season/year from its
-    /// `Time` table the same way). A database with no clock rows yet — a brand-new deployment — keeps the
-    /// first-boot values above. Each field is range-clamped on the way in so a hand-edited or corrupt row
-    /// can't put the world at hour 97.</summary>
-    private void LoadClock()
+    /// <summary>Re-read the calendar; true when the in-game hour changed, i.e. it is time to broadcast
+    /// <c>0x20</c>.</summary>
+    private bool SyncClock()
     {
-        _hour   = Math.Clamp(WorldState.GetInt("clock.hour",   _hour),   0, 23);
-        _day    = Math.Clamp(WorldState.GetInt("clock.day",    _day),    0, 91);
-        _season = Math.Clamp(WorldState.GetInt("clock.season", _season), 1, 4);
-        _year   = Math.Clamp(WorldState.GetInt("clock.year",   _year),   0, 255);
-        Log.Info($"=== clock: Hyul {_year}, season {_season}, day {_day}, hour {_hour}");
+        long gameHour = GameCalendar.HoursNow();
+        if (gameHour == _gameHour) return false;
+        _gameHour = gameHour;
+        (_hour, _day, _season, _year) = GameCalendar.At(gameHour);
+        return true;
     }
-
-    /// <summary>Persist the calendar. Called on every in-game hour rollover — once per 7.5 real minutes, so
-    /// the cost is one tiny transaction per restart-survivable unit of game time, and a crash can lose at
-    /// most the hour in progress. All four fields go in ONE transaction: they are a single logical value.</summary>
-    private void SaveClock()
-        => WorldState.SetMany(
-            ("clock.hour",   _hour.ToString()),
-            ("clock.day",    _day.ToString()),
-            ("clock.season", _season.ToString()),
-            ("clock.year",   _year.ToString()));
 
     /// <summary>Whether the shared world clock is currently in <paramref name="totem"/>'s totem time
     /// (RTK isTotemTime) — the +5% kill-exp window. Reads the live hour; see <see cref="Content.IsTotemTime"/>.</summary>
@@ -249,7 +233,8 @@ public sealed class World
     {
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
-        LoadClock();                      // resume the in-game calendar where the last run left it
+        SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
+        Log.Info($"=== clock: Yuri {_year}, {SeasonName}, day {_day}, hour {_hour}:00");
         Restarts = new RestartSchedule(this);
 
         // DEDICATED THREADS, not Task.Run. Both of these used to be thread-pool work items, which put the
@@ -1665,24 +1650,11 @@ public sealed class World
             // (1.5) forage top-up: on a slow cadence, refill each forage box (chestnuts &c.) to its target count.
             if (_tick % ForageTicks == 0) forage = TopUpForageLocked();
 
-            // (1.6) day/night clock (RTK change_time_char, ported 1:1 — see HourTicks doc): advance the
-            // shared hour/year and flag every connected session for a fresh 0x20 broadcast this tick.
-            if (_tick % HourTicks == 0)
-            {
-                _hour++;
-                if (_hour >= 24)
-                {
-                    _hour = 0;
-                    _day++;
-                    if (_day >= 92)   // RTK: cur_day == 92 -> cur_day = 1, cur_season++
-                    {
-                        _day = 1;
-                        _season++;
-                        if (_season >= 5) { _season = 1; _year++; }   // RTK: cur_season == 5 -> cur_season = 1, cur_year++
-                    }
-                }
-                timeChanged = true;
-            }
+            // (1.6) day/night clock (see the Epoch doc): re-derive the shared calendar from wall-clock time
+            // and, on an in-game hour rollover, flag every connected session for a fresh 0x20 broadcast.
+            // Checked every tick rather than every 750th, so the broadcast lands within 600ms of the true
+            // rollover instead of drifting by however far into an hour the process happened to start.
+            if (SyncClock()) timeChanged = true;
 
             // (1.7) weather drift (see WeatherRollTicks doc — no real RTK scheduler exists to port): every
             // active map gets a low chance to shift to a new state on this slow cadence.
@@ -2170,10 +2142,7 @@ public sealed class World
         {
             var (h, y) = Time;
             foreach (var p in players2) Try(() => p.SendTime(h, y));
-            // Persist OUT HERE, not at the rollover inside the lock — a SQLite write while holding _lock
-            // would stall the whole world on disk I/O, the same reason the @reload terrain pre-warm was
-            // moved out. Once per in-game hour is once per 7.5 real minutes.
-            Try(SaveClock);
+            // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }
         if (weatherChanges is not null)
             foreach (var (map, w) in weatherChanges)

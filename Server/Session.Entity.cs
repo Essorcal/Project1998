@@ -234,14 +234,16 @@ public sealed partial class Session
         Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
     }
 
-    // "@time" — report the shared world clock (hour 0-23, year) and whether YOU are in your totem's totem-time
-    // window (the +5% kill-exp bonus). The clock advances one game hour per 7.5 real minutes (World.HourTicks).
+    // "@time" — report the shared world calendar and whether YOU are in your totem's totem-time window (the
+    // +5% kill-exp bonus). The clock advances one game hour per 7.5 real minutes, derived from a fixed epoch
+    // (World.Epoch) rather than counted, so it is the same after any restart. Season is server-side only —
+    // the 0x20 packet carries hour+year alone — so @time is the only place it shows.
     private void ShowTime()
     {
         var (h, y) = _world.Time;
         bool totem = _world.IsTotemTime(_char.Totem);
         string mine = Content.TotemName(_char.Totem);
-        SendLog($"Game time: hour {h}:00, year {y}. Your totem: {mine}. " +
+        SendLog($"Game time: hour {h}:00, Yuri {y}, {_world.SeasonName}. Your totem: {mine}. " +
                 (totem ? "TOTEM TIME — kill exp +5%." : "Not your totem time (no exp bonus)."));
     }
 
