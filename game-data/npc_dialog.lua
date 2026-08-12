@@ -21,6 +21,8 @@ function __make_ctx()
   function ctx:sayLook(look, color, ...) return coroutine.yield({op="sayLook", look=look, color=color, pages={...}}) end
   function ctx:menu(prompt, options)    return coroutine.yield({op="menu", prompt=prompt, options=options}) end
   function ctx:input(prompt)            return coroutine.yield({op="input", prompt=prompt}) end
+  function ctx:buy()                    return coroutine.yield({op="buy"}) end
+  function ctx:sell()                   return coroutine.yield({op="sell"}) end
   -- immediate
   function ctx:bubble(text)             return coroutine.yield({op="bubble", text=text}) end
   function ctx:notify(text)             return coroutine.yield({op="notify", text=text}) end
@@ -486,6 +488,135 @@ function npcs.WoodlandAngelNpc(ctx)
     "The last thing I have to teach you is how to talk, and whisper to people. Pressing ' allows you to talk out loud, to all the people around you.",
     "To whisper instead, press <shift> and ' together. Type the name of the person you wish to reach and press <enter>, then your message and <enter> again — only they will hear it, wherever in the land they stand.",
     "When you are ready to leave, say \"Finish\".")
+end
+
+-- RTK generalNPC.crafting_skills (NPCs/Common/generalNPC.lua) — the shared "tell me about crafting" explainer
+-- every crafting merchant in the game offers. Verbatim but for the last line, which names RTK's own server.
+-- Loops until the player takes the last option or closes the dialog, same as RTK's tail-recursive original.
+-- Purely informational: it describes the skill SYSTEM, and says nothing about the player's own progress, so
+-- it reads correctly even though the crafting skills themselves aren't implemented here yet.
+local function crafting_skills(ctx)
+  while true do
+    local choice = ctx:menu(
+      "I would be happy to tell you about crafting skills. What would you like to learn about?",
+      {"General information on crafting skills.", "Gathering skills.", "Manufacturing skills.",
+       "Refining skills.", "Thanks, nothing for now."})
+
+    if choice == 1 then
+      ctx:say("There are three types of crafting skills: Gathering, Manufacturing, and Refining. Initially, you have no training in any skills.",
+              "As you successfully use a skill, your ability in that skill will gradually increase. You will notice improvements occur faster when your skill level is still low.",
+              "As you become better, it takes longer to improve your ability. Becoming a 'Master', or higher, takes a very long time.",
+              "As your skill improves, you will fail less often and have positive results more often. Most skills require some tools or materials.",
+              "Throughout the land, you will find merchants who know different skills. Each merchant will explain to you the details of how his or her specific skill is performed.")
+    elseif choice == 2 then
+      ctx:say("Gathering skills are the simplest of all skills to acquire. Even unskilled people can perform these fairly well. They involve getting raw materials to sell or to use for more advanced skills.",
+              "Eventually, everyone can become a master at all gathering skills. Gathering skills usually require tools.",
+              "You must be at least level 8 to gather materials.")
+    elseif choice == 3 then
+      ctx:say("Manufacturing skills involve turning raw materials into more valuable forms. You can reach the 'Accomplished' skill level in any manufacturing skill.",
+              "You can also specialize in one specific manufacturing skill. With enough work, you can become a 'Master' or higher, in that one skill.",
+              "You will find that you still sometimes fail at manufacturing skills in which you possess great experience. Overall, however, you will be making better products and earning more money as you improve.",
+              "You must be at least level 25 to perform a manufacturing skill.")
+    elseif choice == 4 then
+      ctx:say("Refining skills are the most advanced of all skills. You can only learn one refining skill. These skills allow you to create useful items, like weapons and armor.",
+              "You must be at least level 50 to learn a refining skill.")
+    else
+      return
+    end
+  end
+end
+
+-- RTK crafting.checkSpecialization: you may hold only ONE manufacturing specialisation, so before granting a
+-- new one the merchant offers to abandon the one you have. Two confirmations deep, because it is destructive.
+-- Returns true if `skill` is no longer held afterwards (either it never was, or they abandoned it).
+--
+-- RTK clears the skill's accumulated POINTS here too (registry[skill] = 0). We have no skill points yet — only
+-- the legend mark that records the specialisation — so there is nothing else to clear.
+local SPEC_TRADE = {weaving = "weaver", smelting = "smelter", gemcutting = "gemcutter"}
+
+local function abandon_specialization(ctx, skill)
+  if not ctx:hasLegend("specialized_in_" .. skill) then return true end
+
+  ctx:say("You have already specialized in " .. skill .. ", another manufacturing skill. If you abandon it, you will lose ALL skill in that craft. Even if you return to it at a later time, you will have to begin anew.")
+  if ctx:menu("Are you absolutely certain you want to abandon your " .. skill .. " trade?",
+              {"Yes, I'm entirely certain.", "I'm not sure."}) ~= 1 then return false end
+
+  ctx:say("If you continue, you will lose your " .. skill .. " skill.")
+  if ctx:menu("This is your last chance to turn back! Do you REALLY want to do this?", {"Yes.", "No."}) ~= 1 then
+    return false
+  end
+
+  ctx:removeLegend("specialized_in_" .. skill)
+  ctx:removeLegend("recently_specialized_" .. SPEC_TRADE[skill])
+  ctx:say("It is done.")
+  return true
+end
+
+-- RTK crafting.addSpecialization, weaving branch: level 25 and 500 gold, recorded as two legend marks.
+local function specialize_in_weaving(ctx)
+  if ctx:level() < 25 then
+    ctx:say("You are not ready to specialize in a craft yet, come back later.")
+    return
+  end
+
+  ctx:say("You can only specialize in one manufacturing craft at a time. If you change your mind later, you will lose all of the skill you worked for in that craft.",
+          "For a mere 500 gold, I will help you specialize in Weaving.")
+  if ctx:menu("Are you willing to pay 500 gold?", {"Yes, I wish to become a weaver.", "No thanks."}) ~= 1 then
+    return
+  end
+  if not ctx:spendGold(500) then
+    ctx:say("You need to get 500 gold first.")
+    return
+  end
+
+  ctx:addLegend("Specialized in Weaving", "specialized_in_weaving", 7, 128)
+  ctx:addLegend("Recently specialized weaver", "recently_specialized_weaver", 64, 128)
+  ctx:say("It is done, welcome to the world of Weaving.")
+end
+
+-- Laptev, the Arctic Village weaver (Laptev Crafter, map 3817). Ported from RTK's Yon
+-- (NPCs/wilderness/yon.lua), the game's other weaving merchant — same menu, same wording.
+--
+-- The empty "Buy" is deliberate and is RTK's own note: it records that NexusTK was checked live and the
+-- weaver answered "I don't sell anything." She has no ShopStock row, so ctx:buy() finds no catalogue and says
+-- so, which is why the option can stay on the menu instead of being hidden.
+--
+-- NOT ported from Yon: the waypoint entry (no waypoint system here), the "Weave Magical Net" wind_armor quest
+-- step, and the `weave`/`twine` speech triggers — those need the crafting skill system, which is still just an
+-- era gate (Server/CraftingToggles.cs). "Weaving Specialization" IS ported because RTK records a
+-- specialisation as a legend mark, which we have; it is the skill POINTS that don't exist yet.
+function npcs.LaptevNpc(ctx)
+  local choice = ctx:menu("Hello! How can I help you today?",
+    {"Buy", "Sell", "Crafting Skills", "Joy of Weaving", "Weaving Specialization"})
+
+  if choice == 1 then
+    ctx:buy()
+  elseif choice == 2 then
+    ctx:sell()
+  elseif choice == 3 then
+    crafting_skills(ctx)
+  elseif choice == 4 then
+    ctx:say("I would be happy to tell you about weaving! Weaving requires three things: steady hands, some wool, and good weaving equipment.",
+            "You can get wool from sheep.\nYou'll have to see a woodworker in order to acquire your own weaving tools, but I can loan you the rest of the things you need. As for the steady hands, those come with practice.",
+            "Just say 'weave' to me when you're ready to give it a try!")
+  elseif choice == 5 then
+    if ctx:hasLegend("specialized_in_weaving") then
+      ctx:say("You have already specialized in Weaving.")
+      return
+    end
+    -- Weaving/smelting/gemcutting are the three manufacturing specialisations and you may hold one. RTK asks
+    -- about each competing one in turn, then falls through to addSpecialization REGARDLESS of the answer —
+    -- so declining to abandon smelting still made you a weaver as well. Guarded here: its own dialog promises
+    -- "only one manufacturing craft at a time", so granting a second one is plainly not the intent.
+    for _, other in ipairs({"smelting", "gemcutting"}) do
+      if not abandon_specialization(ctx, other) then
+        ctx:say("Then you must remain a " .. SPEC_TRADE[other] .. ". Come back if you change your mind.")
+        return
+      end
+    end
+    ctx:say("Weavers can make cloth from wool. Do you want to specialize in weaving? ((You need to be specialized to become better than 'Accomplished.'))")
+    specialize_in_weaving(ctx)
+  end
 end
 
 -- Speech-trigger handlers: npcs_say.<Identifier> = function(ctx, speech). `speech` is already lowercased +

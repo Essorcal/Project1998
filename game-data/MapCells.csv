@@ -12,3 +12,34 @@ Map,X,Y,Tile,Pass,Obj,Sources
 # it already toggles to 362/363 via DoorObjects.csv's 344-345 -> +18 delta.
 330,118,133,,,344,live-obs-brian
 330,119,133,,,345,live-obs-brian
+#
+# Arctic Village (3811) building doors — authored OPEN so they start open every restart. Door graphics live
+# in the RUNTIME layer (MapData.SetObj from 'o'), and nothing persists that layer — MapStore.Cells is only
+# ever READ, never written — so without these rows every door in the village would slam shut on restart.
+# Per-tile here rather than DoorObjects.csv's defaultOpen flag, which is keyed by object id and would swing
+# open every 340/346 door in the game.
+#   Arctic Tavern, both doors: 340/341 <-> 360/361 (RTK open.lua, +20)
+3811,24,16,,,360,rtk-open-lua
+3811,25,16,,,361,rtk-open-lua
+3811,28,16,,,360,rtk-open-lua
+3811,29,16,,,361,rtk-open-lua
+#   Taimyr Butcher: 346/347 <-> 366/367 (RTK open.lua, +20)
+3811,51,25,,,366,rtk-open-lua
+3811,52,25,,,367,rtk-open-lua
+#   Laptev Crafter: 356/357 <-> 366/367. Two corrections in one:
+#   (a) the .map draws this doorway as 356,356 — the LEFT leaf twice. Every other 356 door in the game
+#       (Buya Salon 330, plus 1002/1127/3689/3910) is drawn 356,357, so the right tile is wrong here; the
+#       closed run in Doors.csv restores 356,357.
+#   (b) RTK's open.lua has no rule for 356-359 at all, so 'o' silently no-opped on this door. It borrows the
+#       Taimyr door's open leaves (366/367) per user direction — an ID-keyed rule can't express that (366
+#       already closes back to 346), so the toggle is configured PER TILE in Doors.csv instead.
+3811,44,16,,,366,user-direction
+3811,45,16,,,367,user-direction
+#
+# Sanhae Hall's door, Sanhae Valley (1121). Authored OPEN for the same reason as the Arctic Village doors,
+# but here it also UNSEALS the building: this door object sits one row in front of its warp tiles (33-34,17)
+# rather than on them, so warp-beats-collision never applied and 265/266's solid SObj flags made the doorway
+# unreachable. See Doors.csv for how the 1852/1853 open pair was identified, and for the 266,266 -> 265,266
+# leaf correction the closed run carries.
+1121,33,18,,,1852,map-data-cross-ref
+1121,34,18,,,1853,map-data-cross-ref

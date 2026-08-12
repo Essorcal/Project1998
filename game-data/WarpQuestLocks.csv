@@ -14,6 +14,16 @@
 # Newbie-area stages are set by npcs.* in npc_dialog.lua — keep these in step with that file:
 #   2 = rabbits done (smith)      4 = squirrels done (armorer)
 #   5 = coordinate lesson given   8 = Soothe learned and shown how to use it (magic teacher)
+# KNOWN-GATED, REQUIREMENT UNKNOWN: Arctic Village -> Yakutsk Oracle (3811 -> 3818). The grand door at
+# (45,36),(46,36) is reported to have an entry requirement nobody has identified yet, and the room's purpose
+# is likewise unknown. It is wired OPEN for now (Warps.csv 5678-5681) so the room is at least reachable.
+# When the requirement turns up, it goes in one of two places depending on its shape:
+#   - a quest/progress gate  -> a row here: 3811,3818,<questKey>,<stage>,<denial text>
+#   - an item or key gate    -> Doors.csv, Locked + Key on tiles 3811 (45,36) and (46,36), which gates the
+#                               'o' toggle instead ("The door is locked.") the way the Iron Lab chest does
+# The door itself already toggles (487/488 <-> 380/381 via DoorObjects.csv) and is deliberately left shipped
+# CLOSED — unlike the other Arctic Village doors, which MapCells.csv authors open — so it reads as "not for
+# you yet" until the gate is known.
 FromMap,ToMap,QuestKey,MinStage,Message
 4712,4713,newbie_area_quest,2,You are not yet ready to proceed.
 4713,4714,newbie_area_quest,4,You are not yet ready to proceed.

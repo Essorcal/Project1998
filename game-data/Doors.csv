@@ -1,2 +1,31 @@
-Map,X,Y,Locked,Key,ConsumeKey,ForceOpen,ClosedObj,OpenObj,DefaultClosed,Sources
-4717,17,18,1,,1,0,5;6;7;8,15;16;17;18,1,tswolf-newbie-guide
+Map,X,Y,Locked,Key,ConsumeKey,ForceOpen,StartDx,ClosedObj,OpenObj,DefaultClosed,Sources
+4717,17,18,1,,1,0,0,5;6;7;8,15;16;17;18,1,tswolf-newbie-guide
+# Laptev Crafter's door, Arctic Village (3811). RTK's open.lua has NO rule for object ids 356-359, so 'o'
+# found nothing to toggle to and silently did nothing. Per user direction it borrows the Taimyr Butcher
+# door's open leaves (366/367).
+#
+# This has to be a PER-TILE rule, not a DoorObjects.csv id rule: 366/367 is already the open form of
+# 346/347, and that table is keyed by object id alone — an id rule would make every 366 tile in the game
+# close back to whichever family won the lookup, so opening a Laptev door would close a Taimyr one.
+#
+# ClosedObj also carries the map fix: the .map draws this doorway 356,356 (the left leaf twice), while every
+# other 356 door in the game is drawn 356,357. See MapCells.csv, which authors these two tiles OPEN at load.
+# StartDx is where the run begins relative to the faced tile, same convention as DoorObjects.csv — so the
+# door toggles as one unit whichever half you are standing in front of.
+3811,44,16,0,,1,0,0,356;357,366;367,0,user-direction
+3811,45,16,0,,1,0,-1,356;357,366;367,0,user-direction
+# Sanhae Hall's door, Sanhae Valley (1121, 33-34,18). Reported unopenable AND unwalkable, and both follow
+# from the same thing: object ids 265/266 aren't in RTK's open.lua either, so 'o' had nothing to swap to,
+# and 265/266 are solid on all four sides in SObj.tbl. Unlike the Arctic Village doors, this door object sits
+# one row IN FRONT of its warp tiles (33-34,17) instead of on them, so warp-beats-collision never applied and
+# the hall was sealed: you could not reach the doorway to step through it.
+#
+# Open pair identified from the map data, not guessed: Tiger's Steps (219) draws this doorway as
+# 259 [265 266] 260, and Kugnae (76,186) + Buya (126,74) draw the SAME 259/260 doorframe as 259 [1852 1853]
+# 260. SObj.tbl agrees — 1852/1853 carry open-door leaf art (frames 1610-1613) over the same step base, and
+# are walkable (flag 0x00) where 265/266 are solid (0x0f).
+#
+# ClosedObj also fixes the shipped map, which draws 266,266 — the right leaf twice. Tiger's Steps has the
+# correct 265,266. MapCells.csv authors these two tiles OPEN at load.
+1121,33,18,0,,1,0,0,265;266,1852;1853,0,map-data-cross-ref
+1121,34,18,0,,1,0,-1,265;266,1852;1853,0,map-data-cross-ref
