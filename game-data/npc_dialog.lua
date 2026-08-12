@@ -253,6 +253,11 @@ end
 -- way around the cities and towns.") fired ON the 21,20 tile, not from an NPC -- the guide says "a text
 -- box will pop up". That needs the scripted-tile trigger system, so those two pages are deliberately NOT
 -- spoken by anyone here rather than being relocated onto a speaker who couldn't have said them.
+--
+-- The REWARD, though, does belong on the tile, and now sits there: this stage is the only one in the area
+-- whose task is "walk somewhere", so paying it out when he finishes SPEAKING paid for listening, not for
+-- doing. Session.TryNewbieCoordinateLesson awards it as the player warps through 21,20 -- see
+-- Server/Session.Navigation.cs. He therefore sets the stage but awards nothing here.
 function npcs.TutorialNpc1(ctx)
   local stage = ctx:stage(NEWB)
 
@@ -267,8 +272,7 @@ function npcs.TutorialNpc1(ctx)
       "Hello there young one. You seem like your in a hurry. But where are you going to in such a rush? Do you even know?",
       "Look to the bottom right of your screen. Those two numbers are where you stand — the first across, the second down. Every place in the kingdoms is named that way.",
       "Learn to read them and you need never be lost again. Walk from here to 0021 0020, and I will know you have understood.")
-    ctx:awardExp(NEWB_STAGE_EXP)
-    ctx:setStage(NEWB, 5)
+    ctx:setStage(NEWB, 5)   -- the exp is paid on the 21,20 tile itself, not here (see the note above)
     return
   end
 
@@ -331,12 +335,23 @@ function npcs.MignokNpc(ctx)
   -- already carrying 5 acorns and 5 rabbit meats (both drop in the rooms before this one) used to skip
   -- straight to the reward and never hear a word of it. Told once, then hand them over on the next click.
   if ctx:reg(NEWB_MIGNOK_TOLD) ~= 0 and ctx:hasItem("acorn", 5) and ctx:hasItem("rabbit_meat", 5) then
+    -- TAKE FIRST, and only teach if the take actually succeeded. The old order (teach, then take) meant any
+    -- failure to collect -- and takeItem CAN return false -- handed over the spell for free and left the
+    -- items sitting in the pack, which is exactly what was reported. Consuming up front makes the trade
+    -- atomic in the direction that matters: the reward is now impossible to get without paying for it.
+    -- The acorns go first and the meat is only taken if they were, so a half-payment can't happen either.
+    if not (ctx:takeItem("acorn", 5) and ctx:takeItem("rabbit_meat", 5)) then
+      ctx:say("I need five acorns and five rabbit meats before I can teach you.")
+      return
+    end
     if not ctx:learnSpell("soothe") then
+      -- Only reachable with a full spell book, which a player standing here cannot have -- but taking the
+      -- payment first means the one case that could eat it has to hand it back.
+      ctx:giveItem("acorn", 5)
+      ctx:giveItem("rabbit_meat", 5)
       ctx:say("Your mind cannot hold any more secrets right now.")
       return
     end
-    ctx:takeItem("acorn", 5)
-    ctx:takeItem("rabbit_meat", 5)
     ctx:awardExp(NEWB_STAGE_EXP)
     ctx:setStage(NEWB, 7)
     ctx:say("Thank you for the items! Now here is your spell, Soothe. Go back and speak with my brother outside as to how to use it.")
@@ -444,8 +459,11 @@ end
 -- Saying "Finish" is what ends it (npcs_say.WoodlandAngelNpc below).
 --
 -- GAP: lastq02 and lastq08 did not survive the Wayback capture. lastq08 sat between the "talk out loud"
--- page and the farewell, so it was almost certainly the whisper key -- but "almost certainly" is not a
--- transcript, so it is left out.
+-- page and the farewell, and the page before it promises to teach "how to talk, AND WHISPER" while only
+-- ever teaching ' -- so the whisper key is what is missing. Written by us (2026-08-11, brian) to close
+-- that dangling promise rather than left blank: the mechanic is real and LIVE-confirmed (shift+' opens the
+-- prompt, name + enter, message + enter -- see Session.HandleWhisperPacket and docs 11g). Not a
+-- transcript; the wording is ours. lastq02 is still an unfilled hole.
 function npcs.WoodlandAngelNpc(ctx)
   local stage = ctx:stage(NEWB)
 
@@ -466,6 +484,7 @@ function npcs.WoodlandAngelNpc(ctx)
     "Some groups, such as Clans and Subpaths will not accept people with names that reflect modern life or current trends.",
     "This may harm your chances of joining important parts of the Nexus community and block you from a full and diverse adventure in Nexus.",
     "The last thing I have to teach you is how to talk, and whisper to people. Pressing ' allows you to talk out loud, to all the people around you.",
+    "To whisper instead, press <shift> and ' together. Type the name of the person you wish to reach and press <enter>, then your message and <enter> again — only they will hear it, wherever in the land they stand.",
     "When you are ready to leave, say \"Finish\".")
 end
 
