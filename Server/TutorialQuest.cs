@@ -265,7 +265,7 @@ public static class TutorialQuest
     }
 
     // stage 4: fishing (needs a minnow AND the learned_to_fish flag — both granted by FishNpc/Bate, see
-    // FishAbility; while on this stage the catch is guaranteed so the tutorial doesn't grind the 10% roll).
+    // FishAbility; the catch is the normal 25% roll here as everywhere else, so this takes a few casts).
     private static async Task Fishing(NpcContext ctx)
     {
         if (ctx.HasItem("minnow", 1) && ctx.Reg("learned_to_fish") == 1)

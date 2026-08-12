@@ -479,8 +479,8 @@ public sealed class TransportAbility : INpcAbility
 
 /// <summary>Fishing (RTK fishnpc.lua / Bate &amp; Wim). Ports the beginner branch: a chance per cast at a
 /// minnow + the <c>learned_to_fish</c> flag (the tutorial's stage-4 requirement). The level-15+ pole/bait/skill
-/// system, magical fish, and stuck-line death aren't modelled. While the player is on tutorial stage 4 the
-/// catch is guaranteed, so the tutorial doesn't hinge on the 25% roll. No click menu — say "fish" instead.</summary>
+/// system, magical fish, and stuck-line death aren't modelled. The 25% roll applies on every cast, tutorial
+/// or not. No click menu — say "fish" instead.</summary>
 public sealed class FishAbility : INpcAbility, INpcSayHandler
 {
     public static readonly FishAbility Instance = new();
@@ -499,10 +499,12 @@ public sealed class FishAbility : INpcAbility, INpcSayHandler
         await ctx.Say("You're still a youngin'! If you take up fishing now, you'll never amount to anything. " +
                       "Oh, why not? Here's some string and worms for you to try with, good luck!");
 
-        // 25% catch rate. Guarantee it while the player is on the tutorial's fishing stage so completing the
-        // quest isn't a grind.
-        bool guaranteed = ctx.Stage("tutorial_quest") == 4;
-        bool caught = guaranteed || ctx.Random(100) <= 25;
+        // 25% catch rate, ALWAYS — including on the tutorial's fishing stage. That stage used to guarantee
+        // the catch on the theory that a quest shouldn't hinge on a roll, but the quest is the only time
+        // most players ever fish, so the guarantee meant the 25% was effectively never the rate anyone saw:
+        // fishing read as 100%. Casting again is free and unthrottled, so the roll costs a few repeats, not
+        // progress.
+        bool caught = ctx.Random(100) <= 25;   // QuestRandom is 1..100 inclusive, so this is exactly 25/100
 
         if (caught)
         {
