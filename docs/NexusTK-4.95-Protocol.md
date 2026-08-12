@@ -3874,7 +3874,7 @@ The framing bug that used to crash this is fixed.
 | Mythic Nexus | 41 | (30,4) | (118,169) |
 | Arctic Land | 1013 | (9,9) | (426,75) |
 | KaMing's Encampment | 3800 | (31,3) | (89,269) |
-| Hamgyong Nam-Do | 114 | (21,8) | (419,334) |
+| Hamgyong Nam-Do | 114 | (13,1) | (419,334) |
 
 These six are the project's own placement, hand-drawn on the rendered artwork and measured back off the
 annotated image — they deliberately do **not** follow the baked-in region labels (e.g. Buya's button sits
@@ -3883,9 +3883,9 @@ well south of the italic "Buya"). Treat them as authored content, not something 
 **Hamgyong Nam-Do is retargeted, not copied.** RTK sends it to map **99** ("North Hamgyong Valley"), which
 has no map data here — which is why it used to be dropped from the list entirely. Map **114** *is*
 renderable (30x30) and is the map literally titled "Hamgyong Nam-Do", so that is the target, landing on
-`(21,8)` — an already-proven warp arrival tile (`Warps.csv` 314, from map 141 (29,27)). RTK's trigger for it
-sits on map 99 (`y=0, x∈7..9`), which doesn't exist here; the 114-side trigger is its **north edge, `y=0,
-x∈12..15`**.
+`(13,1)` — just inside the map's north gate, so the arrival tile sits directly below the return trigger the
+way every other town's does. RTK's trigger for it sits on map 99 (`y=0, x∈7..9`), which doesn't exist here;
+the 114-side trigger is its **north edge, `y=0, x∈12..15`**.
 
 Those four tiles are also `Warps.csv` 283-286 (114 -> map 99), and the two do **not** collide: `HandleWalk`
 only takes a warp when `Content.TryMap(dest.m)` succeeds, and 99 has no map data, so the warp silently

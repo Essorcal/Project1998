@@ -307,8 +307,8 @@ public sealed partial class Session
     // Mount Baekdu is omitted outright: its map 4259 has no renderable map data here (game-data/map_index.csv).
     // Hamgyong Nam-Do IS carried, but not to RTK's target: RTK warps it to map 99 ("North Hamgyong Valley"),
     // which has no map data, so it goes to map 114 -- the map literally NAMED "Hamgyong Nam-Do" -- landing on
-    // (21,8), an already-proven warp arrival tile (Warps.csv 314, from map 141). Its return trigger is 114's
-    // north edge, y=0 x∈12..15. Those four tiles are ALSO Warps.csv 283-286 (114 -> map 99), but that warp
+    // (13,1), just inside the map's north gate. Its return trigger is 114's north edge, y=0 x∈12..15, so the
+    // arrival tile sits directly below it. Those four tiles are ALSO Warps.csv 283-286 (114 -> map 99), but that warp
     // never fires here: the warp branch in HandleWalk is gated on Content.TryMap(dest.m), and 99 has no map
     // data, so the step completes normally and the after-step hook below gets the tile. Nagnang (2520) and
     // Hausson (1025) are renderable too and could be added the same way; they simply aren't listed yet.
