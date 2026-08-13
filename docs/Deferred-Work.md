@@ -95,14 +95,53 @@ The quest is complete and era-accurate as of the tswolf (Jan 2001) and nexusatla
   tiger you just sent south is still standing there, and because the flag is permanent the "too dangerous"
   gate never re-arms on a later visit. Fix needs either the map or per-player mob despawn.
 * **The Lost Legend mermaid song** (`chu_rua.lua:121-194`, the `"humm dee do dum do hee"` branch) is not
-  ported. It belongs to the wind-armour / Lost Legend chain, not to By the Sea, and gates on
-  `quest["wind_armor"]` and `quest["min_song_asked"]`, neither of which exists here.
+  ported. This is Chu Rua's *second*, unrelated role — a link in the Lost Legend chain that ends in the
+  Legend of the Winds and Kawlana, nothing to do with By the Sea. It gates on `quest["wind_armor"]` and
+  `quest["min_song_asked"]`, and failing that gate gives the same deliberately opaque `"I really have no
+  idea what you're talking about."` the Exp Seller uses — do not "improve" it into a helpful message.
+
+  The chain: a treasure chest in Buya hums a wordless tune (`"Humm dee do dum do hee"`) → say it to Min in
+  Hausson, then to Chu Rua → he sings five lines of lyrics → sing them back to the chest one line at a
+  time, each advancing `chu_rua_song_stanza`, and the fifth grants the `lost_legend` legend
+  (`NPCs/buya/lost_legend_chest.lua:61-110`).
+
+  **Port the randomisation with it, or the puzzle is pointless.** `chu_rua_song` is rolled 1 or 2 on first
+  asking and *persisted*, and the two variants of line three differ by one word — "a story **been**
+  retold" vs "a story **is** retold". The chest rebuilds its expected array from the player's own saved
+  variant, so a borrowed transcript fails on line three. It is an anti-sharing measure disguised as a typo,
+  and the period tutor guide knew the symptom without the cause: *"Copy down what the turtle sings. (Be
+  sure to have every letter the same!)"* (`boards_tutors/by_category/quests.md`, step 23).
+
+  Chu Rua's own part is ~30 lines; the blocker is everything around it — Min, the chest, Gloth, Pond, the
+  Sunset Weaver and the wind-armour chain, none of which exist here.
 
 ---
 
-## Level caps on quests
+## Level caps on quests — UNVERIFIED, single source
 
-nexusatlas lists By the Sea as "level 15 and lower"; the Jan 2001 tswolf page mentions only the level 3
-minimum, and RTK's `chu_rua.lua` has no level check at all. Read as a later-era addition and deliberately
-not implemented. If per-quest level caps are ever wanted, they are an era-gated rule, not a Chu Rua
+nexusatlas lists By the Sea as `Level Cap: 15 and lower`. Nothing else we have supports it:
+
+* the Jan 2001 tswolf page — the era-correct one — gives only the level 3 minimum and never mentions a cap;
+* RTK's `chu_rua.lua` has no level check at all;
+* the only `<= 15` anywhere in RTK is `fishnpc.lua:24`, the fishing NPC's under-15 branch, which is a
+  different thing that happens to share the number;
+* the scraped board archive has no "level cap" phrasing and no By the Sea walkthrough at all.
+
+**This was first written up here as "a later-era addition". That was an overstatement and is why the entry
+now leads with UNVERIFIED.** The argument does not hold in either direction: RTK's Lua is a fan server's
+*reimplementation*, not a dump of the original server, so its silence is weak evidence that the rule never
+existed — and equally weak evidence that it was added late and dropped. Three readings still fit:
+
+1. a real later addition that RTK simply never implemented;
+2. nexusatlas describing the practical newbie-questline context ("you'd only ever do this below 15") as
+   though it were a hard gate;
+3. a real rule enforced somewhere no surviving source captures.
+
+Deferred because it is **unverified and single-source**, not because it is dated. Left out on the principle
+that we do not invent gates the era-correct source does not describe.
+
+What would settle it: the jeedee 6.x or Mithia 7.x server sources (see `[[nexustk-reference-servers]]` —
+not currently on disk), or any period board post describing being refused the quest for being too high.
+
+If per-quest level caps are ever wanted, note they are a general rule and an era-gated one, not a Chu Rua
 special case — see `docs/Era-Gating.md`.
