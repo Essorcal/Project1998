@@ -170,12 +170,9 @@ public sealed partial class Session
         // this, an mp3 started over a midi (or vice versa) just layers on top of it.
         if (_bgmType != 0 && (bgm == 0 || _bgmType != type)) SendMusicStop(_bgmType);
 
-        if (bgm == 0)
-        {
-            if (_bgmType == type) SendMusicStop(type);   // same channel: the switch above didn't cover it
-            _bgm = 0; _bgmType = 0;
-            return;
-        }
+        // bgm 0 = "stop": the line above already emitted the stop for whatever channel was live (its
+        // `bgm == 0` arm fires regardless of which channel that was), so there is nothing left to send.
+        if (bgm == 0) { _bgm = 0; _bgmType = 0; return; }
 
         var d = new List<byte>();
         if (type == 1)
