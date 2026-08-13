@@ -371,7 +371,16 @@ public static class TutorialQuest
         // wooden saber was for), so the novice sword goes out HERE, with the task — same shape as BuyArmor's
         // gold and SellMeat's rabbit meat. Archive has it as "Tutor - Free" (tswolf swords table, Jan 2001),
         // later re-documented as the tutorial area's Angel Quiz. Once only; the Smith stocks no replacement.
-        if (ctx.Reg(GaveSword) == 0)
+        //
+        // Era gate: the sword is the ONE first-steps reward that doesn't sit in NoviceQuest (it hangs off this
+        // stage, which is not part of the moved chain), so the dispatch at the top of Run doesn't cover it —
+        // without this check the tutor hands out a second sword to a player who already earned one from the
+        // Woodland Guard's law quiz (npc_dialog.lua WoodlandGuardNpc). Keyed on the AREA existing rather than
+        // on Era.TutorNoviceChain because the area is where the replacement comes from: with gating switched
+        // off entirely every feature is on, new characters still spawn into 4711 (CharacterFactory.StartFor)
+        // and still pass the guard — the gate out of 4717 is HIS act, so the quiz can't be skipped — which
+        // makes "the area exists" the accurate reading of "they already have one" in that case too.
+        if (!Era.Has(Era.NewbieArea) && ctx.Reg(GaveSword) == 0)
         {
             ctx.GiveItem("novice_sword", 1);
             ctx.SetReg(GaveSword, 1);

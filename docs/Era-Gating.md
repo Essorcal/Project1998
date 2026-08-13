@@ -40,12 +40,19 @@ has to teach — content moved *into* the newbie area, and later new quests were
 |---|---|---|---|
 | Newbie area (4711-4718) | — | yes | yes |
 | Tutor teaches saber/rabbits/squirrels/Soothe | yes | — (moved to the area) | — |
+| Novice sword comes from | tutor, stage 8 | Woodland Guard's law quiz | Woodland Guard's law quiz |
 | Rest of the tutor chain | yes | yes | yes |
 | Du Mountain (stage 11) + student cap (stage 13) | — | — | yes |
 
 The seam is explicit in the area's own last line — the Woodland Angel closes with *"I now leave you in
 the hands of the tutor from the town you have picked as home"* and warps you to him. The area never
 replaced the tutor; it fed him.
+
+The novice sword is the one reward that crosses the seam without belonging to the moved chain: it hangs
+off the tutor's **stage 8** (the deer hunt, the first task that needs a real weapon), not off
+`NoviceQuest`, so `tutor_novice_chain` does not cover it. It is gated separately, on
+`newbie_tutorial_area` — the era that has the area is the era where the Woodland Guard hands the same
+sword out for passing his law quiz, and the tutor must not hand out a second one.
 
 ### What is *not* gated
 
