@@ -1,0 +1,30 @@
+# Idle creature flavour. This is what most of RTK's "custom mob AI" actually is: a `move` hook whose whole
+# body is `if math.random(1, N) == 1 then mob:talk(channel, line) end` before delegating straight back to
+# mob_ai_basic. Extracted from AI/normal_mobs/*.lua and Mobs/*.lua rather than invented.
+#
+# Chance    1-in-N per move tick, verbatim from the script.
+# Channel   RTK talk()'s first argument. 0 = attributed ("Mercenary: TO ARMS!"), 2 = unattributed, which is
+#           how the ogres and the mantis speak (`~Grroar!~` reads as a noise, not as dialogue).
+# Lines     |-separated; one is picked at random.
+MobKey,Chance,Channel,Lines
+grim_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+hill_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+log_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+marsh_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+muck_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+slime_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+southern_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+zangze_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+zinte_ogre,100,2,~Grroar!~|~Smash!~|~Crunch!~|~Grunt!~
+deep_woods_mantis,150,2,T'kttch|Return human ssssnack.
+dark_mantis,150,2,T'kttch|Return human ssssnack.
+dirt_mantis,150,2,T'kttch|Return human ssssnack.
+forest_mantis,150,2,T'kttch|Return human ssssnack.
+ghost_mantis,150,2,T'kttch|Return human ssssnack.
+shadow_mantis,150,2,T'kttch|Return human ssssnack.
+sonhi_stickman,300,0,Hi there. townie.|Why is our leader acting so strange?|Can we trust the Zibong?|Why do the Zibong listen to our leader?|*whistles a little tune*|Time for a little nap.
+mercenary,15,0,TO ARMS!|Get the Slime!|I wish I hadn't fallen behind the rest...|I wish I hadn't used all my compasses.|Must find my way to my tribe...|If I had just one more compass...
+nagnag_mercenary_1,15,0,TO ARMS!|Get the Slime!|Must find my way to my tribe...
+nagnag_mercenary_2,15,0,TO ARMS!|Get the Slime!|Must find my way to my tribe...
+nagnag_mercenary_3,15,0,TO ARMS!|Get the Slime!|Must find my way to my tribe...
+ice_beast,20,0,I'm coming to eat you!|Where did it go?
