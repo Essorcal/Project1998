@@ -7,8 +7,8 @@
 -- Suspending ops (wait for the player): say / sayItem / sayLook / menu (returns 1-based pick, 0 = cancel) /
 --   input (returns the typed string, or nil if cancelled).
 -- Immediate ops (no wait): giveItem/takeItem/hasItem/countItem/itemName/learnSpell, awardExp/awardGold,
---   stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp, level/sex/nation/coins/spendGold,
---   killCount/mounted, eraHas, bubble/notify, gameDate.
+--   stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp, level/sex/nation/setNation/map/
+--   coins/spendGold, killCount/mounted, eraHas, bubble/notify, gameDate.
 -- To expose a new primitive: add a stub here AND a case in Server/NpcScript.cs Dispatch. Edit this file and run
 -- !reload to see changes live -- no server restart. Any NPC with a script here takes precedence over its C#
 -- ability; an NPC with no entry (or a broken file) uses the C# abilities unchanged.
@@ -48,6 +48,8 @@ function __make_ctx()
   function ctx:mounted()                return coroutine.yield({op="mounted"}) end
   function ctx:sex()                    return coroutine.yield({op="sex"}) end
   function ctx:nation()                 return coroutine.yield({op="nation"}) end
+  function ctx:setNation(n)             return coroutine.yield({op="setNation", n=n}) end
+  function ctx:map()                    return coroutine.yield({op="map"}) end
   function ctx:coins()                  return coroutine.yield({op="coins"}) end
   function ctx:spendGold(n)             return coroutine.yield({op="spendGold", n=n}) end
   function ctx:gameDate()               return coroutine.yield({op="gameDate"}) end
@@ -59,6 +61,159 @@ npcs = {}
 -- RTK: Koguryo (country 1) home = map 36 (7,6); otherwise Buya = map 351 (8,8).
 local function warp_home(ctx)
   if ctx:nation() == 1 then ctx:warp(36, 7, 6) else ctx:warp(351, 8, 8) end
+end
+
+-- =====================================================================================================
+-- WHERE YOU LIVE. Two separate things, both ported from RTK:
+--
+--   * your NATION (RTK player.country) -- Neutral/wilderness 0, Kugnae 1, Buya 2, Nagnang 3. Changed by
+--     the town criers ("Move to <kingdom>") and by Rotah in the wilderness ("Become Neutral"), both of
+--     which call move_to_country below (RTK general_npc_funcs.moveToCountry).
+--   * a bound HOME in an outlying town (RTK registry["home"]) -- a room in a mayor's tavern that OVERRIDES
+--     your nation's taverns as the Return destination. Sanhae's mayor binds 10, Hausson's binds 11.
+--
+-- Both feed Session.HomeGroup -> game-data/Inns.csv, which is what Return / yellow scroll / qui hyang
+-- actually read. Moving kingdom clears a bound home (the room is in the country you just left) -- that is
+-- done C#-side in Session.SetNation, so every caller gets it, not just these scripts.
+local HOME_REG, HOME_NONE = "home", 0
+
+-- RTK general_npc_funcs.moveToCountry, verbatim in its rules:
+--   * level 20 minimum ("still too new to these lands"),
+--   * you may only join a kingdom FROM neutral -- kingdom-to-kingdom is refused, so leaving via Rotah is a
+--     deliberate, unskippable step with its own warning about what you give up,
+--   * joining a kingdom costs 20 gold acorns as tribute; going neutral is free,
+--   * every path clears the bound home.
+--
+-- NOT modelled, because this server has neither: RTK's "you will leave your clan" (clans) and its
+-- registry["home"] == 2 subpath hall. The warning line still says it -- it is the original's wording, and
+-- what it describes will be true again if clans ever land.
+local COUNTRY_NAMES = {[0] = "the wilderness", [1] = "Kugnae", [2] = "Buya", [3] = "Nagnang"}
+local MOVE_TRIBUTE_ITEM, MOVE_TRIBUTE_QTY = "gold_acorn", 20
+local MOVE_MIN_LEVEL = 20
+
+local function move_to_country(ctx, country)
+  if ctx:level() < MOVE_MIN_LEVEL then
+    ctx:say("Hello! You are still too new to these lands to consider moving to another kingdom. Perhaps when you are ready.")
+    return
+  end
+
+  local here = ctx:nation()
+
+  if here ~= 0 and country ~= 0 then
+    ctx:say("I cannot allow you to move here while you pledge your loyalty to another kingdom. Only someone who is neutral can join a kingdom.")
+    return
+  end
+
+  if country == 0 then
+    if here == 0 then
+      ctx:say("Ah, the free life. Isn't it great?")
+      return
+    end
+
+    ctx:say(
+      "Welcome there city dweller. Isn't it wonderful out here?",
+      "Would you like to leave the city behind, and become a member of the wilderness?",
+      "Doing so means you will leave all that you have behind, your clan, your loyalties, your home, and your companions.")
+
+    if ctx:menu("Are you still interested in becoming Neutral?",
+                {"No, I'd prefer not to.", "Yes, please."}) == 2 then
+      ctx:setNation(0)
+      ctx:say("Welcome to the wilderness.")
+    end
+    return
+  end
+
+  if here == country then
+    -- RTK writes this line out per kingdom; the only difference is the demonym.
+    local kin = {[1] = "fellow Koguryian", [2] = "fellow Buyan", [3] = "fellow Nagnang citizen"}
+    ctx:say("Greetings, " .. (kin[country] or "friend") .. ".")
+    return
+  end
+
+  local name = COUNTRY_NAMES[country] or "our city"
+  if ctx:menu("Would you like to become a citizen of our lovely city, " .. name .. "?",
+              {"No, thank you.", "Yes, very much."}) ~= 2 then
+    return
+  end
+
+  if not ctx:hasItem(MOVE_TRIBUTE_ITEM, MOVE_TRIBUTE_QTY) then
+    ctx:say(name .. " requests " .. MOVE_TRIBUTE_QTY .. " gold acorns as tribute to move, come back when you have that.")
+    return
+  end
+
+  ctx:takeItem(MOVE_TRIBUTE_ITEM, MOVE_TRIBUTE_QTY)
+  ctx:setNation(country)
+  ctx:say("Welcome to " .. name .. ".")
+end
+
+-- The mayors' "Live in <town>" option (RTK sanhae_mayor.lua / hausson_mayor.lua, which are the same script
+-- with two ids). Binding is a toggle: talk to him again to give the room up.
+--
+-- `nation` is the kingdom the town belongs to -- RTK gates both taverns on it ("only people who are Buyan
+-- may live in this town" / "...who are Koguryan..."), so an outlying home is a perk of citizenship rather
+-- than a free room for anyone passing through. Pass nil for a town with no such gate.
+local DEMONYMS = {[1] = "Koguryan", [2] = "Buyan", [3] = "Nagnang"}
+
+local function live_in_town(ctx, home_id, nation)
+  if nation and ctx:nation() ~= nation then
+    ctx:say("Greetings, I would love to let you live here, but only people who are " ..
+            (DEMONYMS[nation] or "of this kingdom") .. " may live in this town.")
+    return
+  end
+
+  if ctx:reg(HOME_REG) == home_id then
+    ctx:say("You already live in my towns tavern... do you wish to leave already?")
+    if ctx:menu("Do you wish to leave?", {"Yes, I do.", "No, I wish to stay."}) == 1 then
+      ctx:setReg(HOME_REG, HOME_NONE)
+      ctx:say("Well, nothing lasts forever. Good luck in the future.")
+    else
+      ctx:say("Ah, that is good to hear. I hope you like my service here.")
+    end
+    return
+  end
+
+  ctx:say("So you wish to live in my humble tavern, eh? Well, I can spare you some room. But remember, you will always return here, and not the taverns in the city if you do this.")
+
+  if ctx:menu("Are you sure you want to do this?", {"Yes, I wish to.", "No, I do not."}) == 1 then
+    ctx:setReg(HOME_REG, home_id)
+    ctx:say("Welcome to my tavern, I hope you enjoy your time here.")
+  else
+    ctx:say("That is your choice, plenty of room if you wish to come back later.")
+  end
+end
+
+-- Rotah, the old man in the Wilderness clearing (RTK NPCs/wilderness/rotah.lua) -- the ONLY way out of a
+-- kingdom, and so the hinge of the whole system: kingdom-to-kingdom moves are refused, so anyone changing
+-- allegiance passes through him and hears what they are giving up.
+--
+-- His clearing is also where neutrals wake up (Inns.csv "Wilderness", the 4x4 box he stands beside), which
+-- is RTK's own joke -- the wilderness has no tavern, so the wilderness IS the tavern.
+--
+-- Only "Become Neutral" is ported of his eleven options. The rest are systems this server doesn't have
+-- (Waypoint transport, clan rings and tribes, shadow stats, mass exchange, world shout, broadcast event,
+-- the Forgotten Past orb quest) or duplicates of services he already offers through his shop/repair/bank
+-- flags in NPCs.csv.
+function npcs.RotahNpc(ctx)
+  move_to_country(ctx, 0)
+end
+
+-- The town criers (RTK NPCs/Common/town_crier.lua): Yeoni in Kugnae, Honi in Buya, the Palace Concierge in
+-- Nagnang. RTK picks the kingdom from `npc.mapTitle`, i.e. from WHERE THE CRIER STANDS -- each one recruits
+-- for their own city and nothing else -- so this keys off the map the conversation happens on. A crier
+-- placed on any other map has nothing to offer and says so.
+--
+-- Not ported, same reasoning as Rotah: Broadcast Event, Wisdom clothes, and the three
+-- <Kingdom> Honor/Defender titles (all of which are "Prince Mhul must first bestow this on you" stubs in
+-- RTK anyway).
+local CRIER_COUNTRY = {[0] = 1, [330] = 2, [2500] = 3}   -- Kugnae / Buya / Nagnang city maps
+
+function npcs.TownCrierNpc(ctx)
+  local country = CRIER_COUNTRY[ctx:map()]
+  if not country then
+    ctx:say("Hear ye, hear ye! ... but not here, I am afraid. Seek me in the city itself.")
+    return
+  end
+  move_to_country(ctx, country)
 end
 
 -- Chu Rua, the Dragon King's turtle (RTK tutorial/chu_rua.lua). Tutorial stage 7: he asks for a young_ginseng
@@ -93,6 +248,71 @@ function npcs.ChuRuaNpc(ctx)
     "I... I wish I could point you in the way of the ginseng, but I know not where it grows. There is an old verse,",
     "'Skip north, until rabbits nibbling grass you find, is a path to a king's health and harmony,'",
     "The ginseng lies north, in the Tiger Pass — mind the tiger. Please get young ginseng for his highness's sake!")
+end
+
+-- The Sanhae Mayor (RTK NPCs/arctic/sanhae_mayor.lua), Sanhae Hall (1127), the only NPC in the room. He is
+-- the BREADCRUMB for tutorial stage 11: the tutor sends you here ("Talk to the Mayor there, he may be able
+-- to tell you what happened") and the mayor is what turns that into an actual direction -- his "Du Mountain?"
+-- topic names the mountain and where to turn off the northern pass. Without him the stage is completable but
+-- unfindable, since the tutor's own directions point at the Arctic and Haguru says nothing until you stand
+-- in front of him.
+--
+-- "Live in Sanhae" binds his tavern (the Spruce Inn, 1122) as your Return destination -- see live_in_town
+-- and Session.HomeGroup. RTK gates it on being Buyan, which Sanhae belongs to.
+--
+-- NOT ported from the Lua, deliberately: "Waypoint". RTK's waypoint fast-travel network doesn't exist in
+-- 4.x/5.x NexusTK -- the same call already made in Server/NpcAbility.cs's WaypointAbility stub.
+--
+-- ERA: the stage-11 branch is gated on the quest's own date as well as on the stage, because TutorialQuest
+-- deliberately does NOT rewrite a saved stage when a gate is off -- a character stored at 11 with the quest
+-- switched off dispatches as 12 at the tutor, and the mayor must not be the one place that still talks about
+-- it. Outside that window he is just the mayor of a town, which is what he was before 2001-03-18.
+--
+-- One topic per click, as in the Lua: RTK asks once and ends the conversation. Clicking him again re-opens
+-- the menu, so nothing is unreachable.
+function npcs.SanhaeMayorNpc(ctx)
+  if ctx:menu("Hello! How can I help you today?", {"Sanhae Mayor", "Live in Sanhae"}) == 2 then
+    live_in_town(ctx, 10, 2)   -- registry home 10; Buya-only, Sanhae being a Buyan town
+    return
+  end
+
+  ctx:say("Hello there. welcome to the town of Sanhae.")
+
+  if ctx:stage("tutorial_quest") ~= 11 or not ctx:eraHas("tutor_du_mountain_quest") then
+    return
+  end
+
+  ctx:say("You look troubled... And so you should be. There are some dark forces at work here.")
+
+  local choice = ctx:menu("So, what can I help you with today?",
+                          {"Missing Brother", "Dark Forces?", "Du Mountain?"})
+
+  if choice == 1 then
+    ctx:say(
+      "Poor, poor man. He went off with the others to hunt, and is lost with them.",
+      "Darn these evil forces, if only somebody brave enough would lift the curse.")
+  elseif choice == 2 then
+    ctx:say(
+      "Recently several of our men have gone missing from this town.",
+      "They go off to hunt at Du Mountain, and never return.",
+      "I fear it will be the end of our village if something is not done soon.")
+  elseif choice == 3 then
+    ctx:say(
+      "Oh, you are new to these lands. Du Mountain is to the west of our town.",
+      "If you go back the way you came, then head to the west side of the northern pass you will find it.",
+      "But I beg you not to go there, only evil resides there now.")
+  end
+end
+
+-- Lanwick, the Hausson Mayor (RTK NPCs/hausson/hausson_mayor.lua), Hausson Hall (1024). RTK's script is the
+-- Sanhae mayor's minus the tutorial branch and the waypoint: he has exactly ONE thing to offer, a room in
+-- the Haggard Mate Tavern (1027), so there is no menu to open -- clicking him IS asking about the room.
+--
+-- Koguryo's outlying town, so his gate is country 1 where Sanhae's is 2. That pairing is the whole point of
+-- the two of them: each kingdom gets one back-country home, and you can only take the one your own kingdom
+-- owns. Moving kingdom therefore has to give up the room, which Session.SetNation does.
+function npcs.HaussonMayorNpc(ctx)
+  live_in_town(ctx, 11, 1)   -- registry home 11; Koguryo-only
 end
 
 -- Haguru, the tutors' missing youngest brother (RTK NPCs/arctic/haguru.lua). He stands on Du Mountain, the

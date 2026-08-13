@@ -1,12 +1,27 @@
-Group,Map,X,Y,Sources
-Kugnae,38,4,5,rtk-lua
-Kugnae,37,4,5,rtk-lua
-Kugnae,2,4,5,rtk-lua
-Buya,362,4,5,rtk-lua
-Buya,332,4,5,rtk-lua
-Buya,361,4,5,rtk-lua
-Nagnang,2501,4,6,rtk-lua
-Nagnang,2502,4,6,rtk-lua
-Nagnang,2503,4,6,rtk-lua
-Nagnang,2504,4,6,rtk-lua
-Nagnang,2505,4,6,rtk-lua
+# Where Return / yellow scroll / qui hyang put you down (Session.ReturnToInn, RTK player.lua returnFunc +
+# returnToInn). A "group" is one named set of return spots; the server picks a row from the group at random,
+# then a random tile inside that row's box.
+#
+# Group  the set name. Kugnae/Buya/Nagnang are chosen by your NATION; Wilderness is the Neutral nation's
+#        set; Sanhae/Hausson are HOMES you bind by talking to that town's mayor (registry "home"), which
+#        override the nation set entirely. Server/Session.HomeGroup is what maps a player to a group.
+# Map    the tavern/clearing map id.
+# X,Y    the arrival tile, or the TOP-LEFT corner of the arrival box when X2/Y2 are given.
+# X2,Y2  optional bottom-right corner. Blank = a single tile (every tavern). The wilderness has no bed to
+#        wake up in, so RTK drops you on a random tile in a small clearing instead -- that is the only row
+#        that uses this.
+Group,Map,X,Y,X2,Y2,Sources
+Kugnae,38,4,5,,,rtk-lua
+Kugnae,37,4,5,,,rtk-lua
+Kugnae,2,4,5,,,rtk-lua
+Buya,362,4,5,,,rtk-lua
+Buya,332,4,5,,,rtk-lua
+Buya,361,4,5,,,rtk-lua
+Nagnang,2501,4,6,,,rtk-lua
+Nagnang,2502,4,6,,,rtk-lua
+Nagnang,2503,4,6,,,rtk-lua
+Nagnang,2504,4,6,,,rtk-lua
+Nagnang,2505,4,6,,,rtk-lua
+Wilderness,1002,206,139,209,142,rtk-lua
+Sanhae,1122,2,5,,,rtk-lua
+Hausson,1027,4,5,,,rtk-lua
