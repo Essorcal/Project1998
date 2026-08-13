@@ -244,7 +244,8 @@ public sealed partial class Session
         bool totem = _world.IsTotemTime(_char.Totem);
         string mine = Content.TotemName(_char.Totem);
         SendLog($"Game time: hour {h}:00, Yuri {y}, {_world.SeasonName}. Your totem: {mine}. " +
-                (totem ? "TOTEM TIME — kill exp +5%." : "Not your totem time (no exp bonus)."));
+                (totem ? "TOTEM TIME — kill exp +5%."
+                       : "Not your totem time (grouping with someone whose totem IS up shares the bonus)."));
     }
 
     // "@dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n

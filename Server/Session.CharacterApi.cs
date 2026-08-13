@@ -239,8 +239,10 @@ public sealed partial class Session
     /// <para>One deliberate divergence: the KILLER is always eligible, even if somehow out of range of the
     /// corpse. RTK would silently pay nobody in that case; here the swing that landed always pays the person
     /// who landed it. Everyone else is filtered exactly as RTK filters them.</para>
-    /// <para>Each share still goes through <see cref="AwardExp"/> per member, so the Peasant wall, the totem
-    /// window, level-ups and the save all apply to each of them individually.</para></summary>
+    /// <para>Each share still goes through <see cref="AwardExp"/> per member, so the Peasant wall, level-ups
+    /// and the save all apply to each of them individually.</para>
+    /// <para>The totem window is the exception, and a DELIBERATE divergence from RTK: retail spread it across
+    /// the group. See the <c>anyTotem</c> comment below.</para></summary>
     internal void AwardKillExp(uint reward, ushort mobMap, int mobX, int mobY)
     {
         if (reward == 0) return;
@@ -264,12 +266,29 @@ public sealed partial class Session
         if (highest <= 0) highest = 1;
         uint amount = (uint)Math.Ceiling(reward * ShareFor(eligible.Count));
 
+        // TOTEM TIME IS GROUP-WIDE (brian, played retail): if it is ANY member's totem time, EVERY member's
+        // share gets the +5%, not just the ones whose own totem is up. So the window is resolved once, here,
+        // across the group rather than per-member inside AwardExp.
+        //
+        // This is a deliberate divergence from RTK, which calls checkTotemTimeXP(finalxp) inside its
+        // per-member loop (Scripts/exp.lua:66) and so pays the bonus only to members whose own totem is in
+        // window. Retail behaviour wins over the reference server — the four windows partition the day, so
+        // under RTK's reading a mixed-totem group could never have more than one member bonused at a time,
+        // which is exactly the "group with people unlike you" incentive the tutor's stage-8 lecture is built
+        // around. Do not "fix" this back to the Lua.
+        //
+        // Scoped to the ELIGIBLE members — the ones actually being paid — rather than the whole party: a
+        // member out of range or on another map draws nothing from this kill, so letting their totem raise
+        // everyone else's share would pay a bonus sourced from someone the kill never touched.
+        bool anyTotem = eligible.Any(m => _world.IsTotemTime(m.CharTotem));
+
         foreach (var m in eligible)
         {
             uint share = (uint)Math.Ceiling(amount * (double)Eff(m) / highest);
-            m.AwardExp(share, killExp: true);
+            m.AwardExp(share, killExp: true, totemTime: anyTotem);
         }
-        Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members (highest eff {highest})");
+        Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members " +
+                 $"(highest eff {highest}{(anyTotem ? ", TOTEM TIME" : "")})");
     }
 
     /// <summary>How far from the corpse a group member may stand and still be paid, on each axis
@@ -283,7 +302,7 @@ public sealed partial class Session
     /// the same way regardless of who granted it. See LevelUp for the per-level stat/HP/MP gain formulas.
     /// <para>Kill experience should go through <see cref="AwardKillExp"/> instead, which splits it across the
     /// group first and then calls this once per member.</para></summary>
-    internal void AwardExp(uint amount, bool killExp = false)
+    internal void AwardExp(uint amount, bool killExp = false, bool? totemTime = null)
     {
         if (amount == 0) return;
         // THE PEASANT WALL (RTK player.lua giveXPStacked:4279). A Peasant at level 5 gains NOTHING — the Lua
@@ -302,7 +321,12 @@ public sealed partial class Session
         // six-hour window is multiplied by 1.05. Only combat kills opt in via killExp — quest/tutorial/NPC
         // rewards do NOT, matching RTK where the multiplier lives in the mob-kill exp split, not the generic
         // grant. Totem 4 (None), or a clock hour outside the window, yields no bonus.
-        bool totem = killExp && _world.IsTotemTime(_char.Totem);
+        //
+        // totemTime lets the caller answer the window question instead: AwardKillExp passes the GROUP's
+        // answer, because retail gives the bonus to everyone in the group whenever it is any member's totem
+        // time (see the anyTotem comment there). Null — every other caller — means "decide from my own
+        // totem", which is the solo case and identical to what this always did.
+        bool totem = killExp && (totemTime ?? _world.IsTotemTime(_char.Totem));
         if (totem) amount = (uint)Math.Round(amount * 1.05, MidpointRounding.AwayFromZero);
         // RTK player.lua giveXPStacked: every exp grant pops a status-box message, not just combat —
         // quest/tutorial/NPC rewards get the same notice retail players see on a kill.
@@ -582,6 +606,7 @@ public sealed partial class Session
     internal uint CharMaxHp  => _char.MaxHp;
     internal uint CharMaxMp  => _char.MaxMp;
     internal uint CharExp    => _char.Exp;
+    internal int  CharTotem  => _char.Totem;
     internal int  CharMight  => _char.Might;
     internal int  CharGrace  => _char.Grace;
     internal int  CharWill   => _char.Will;
