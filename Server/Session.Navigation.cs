@@ -529,14 +529,29 @@ public sealed partial class Session
         if (_char.Map != 1116) return;
         if (!((_char.X == 5 || _char.X == 6) && _char.Y >= 2 && _char.Y <= 4)) return;
         if (CountItem("young_ginseng") > 0) return;
+
+        var def = Content.ItemByKey("young_ginseng");
+        if (def is null) return;
+
+        // BOTH outcomes are a dialog pop-up carrying the ginseng's own icon, not a minitext: that is what RTK
+        // sends (dialogSeq against the item portrait) and what the screenshots on both walkthroughs show
+        // (tswolf grabthatdamginseng.gif, nexusatlas churuaginseng.gif / chuaruastrange.gif). Single page,
+        // fire-and-forget with the player's own entity id — exactly as the PvP-entry warning in EnterMap does
+        // it — because there is no NPC here to hang the dialog on and nothing needs to await the dismissal.
+        // (A stray 0x3A with no pending awaiter is a no-op; see HandleNpcDialog.)
+        var icon = DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0);
+
         if (_char.Quests.GetValueOrDefault("chu_rua_tiger_gone") != 1)
         {
-            SendMiniText("With the tiger nearby, it is too dangerous to climb up to the root.");
+            SendScriptMessageP(_char.Id, "You see a strange root in the rocks here. But with the tiger nearby, " +
+                                         "it is too dangerous to try to climb up to it.",
+                               icon, prev: false, next: false);
             return;
         }
-        var def = Content.ItemByKey("young_ginseng");
-        if (def is null || !GiveItem(def, 1)) return;
-        SendMiniText("Snuggled between the rocks is a young root of ginseng. Was this what Chu Rua meant?");
+
+        if (!GiveItem(def, 1)) return;
+        SendScriptMessageP(_char.Id, "Snuggled between the rocks is a young root of ginseng. Was this what Chu Rua meant?",
+                           icon, prev: false, next: false);
     }
 
     // Mythic cave "fall rooms": inside a zodiac cave, every step has a 1/500 chance to drop through the floor

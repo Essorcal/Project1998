@@ -66,6 +66,12 @@ public sealed class Character
     public byte Armor    = 0;
     public byte MaxInv   = 27;
 
+    // Karma (RTK player.karma). FRACTIONAL on purpose — RTK hands out quarter- and tenth-points as well as
+    // whole ones (reveal_fate 0.25, MinorQuest 0.1, fishing -0.001), and the named ladder in Server/Karma.cs
+    // reads bands rather than integers, so rounding here would quietly collapse those. Starts at 0 = "Cat".
+    // Persists with the rest of the character JSON blob; no schema change needed.
+    public double Karma  = 0;
+
     // Bag + worn gear. Inventory slots are 0-based (0..MaxInv-1); Equipment entries carry the EQ index
     // (Item.EquipSlot's source) in their Slot field. Both persist in the character JSON so a relog keeps
     // the bag. Resolved against Content.Items (Server) by id — Shared holds only the per-character state.

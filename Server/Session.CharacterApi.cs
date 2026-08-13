@@ -598,6 +598,8 @@ public sealed partial class Session
     internal int  CharFace   => _char.Face;
     internal int  CharNation => _char.Nation;
     internal bool CharMounted => _char.Mounted;
+    /// <summary>Karma score (RTK <c>player.karma</c>) — fractional; see <see cref="Karma"/>.</summary>
+    internal double CharKarma => _char.Karma;
     internal int  CharX      => _char.X;
     internal int  CharY      => _char.Y;
     internal uint CharCoins  => _char.Coins;

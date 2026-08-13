@@ -31,6 +31,27 @@ public sealed class NpcContext
     /// <summary>Like <see cref="Say"/> but drawn with an item-icon portrait (RTK Item(key).icon).</summary>
     public Task SayItem(string itemKey, params string[] pages) => _s.DlgSayItem(_npc, itemKey, pages);
 
+    // ---- karma (Server/Karma.cs; RTK player.karma + Tools.checkKarma) ----
+
+    /// <summary>The raw karma score. Fractional — see <see cref="Karma"/>.</summary>
+    public double KarmaValue => _s.CharKarma;
+
+    /// <summary>The karma tier as a display name ("Cat", "Tiger", …), for dialog that names it.</summary>
+    public string KarmaLevel() => Karma.LevelName(_s.CharKarma);
+
+    /// <summary>Does this player meet a named karma tier? The form every RTK gate is written in.</summary>
+    public bool KarmaCheck(string tier) => Karma.Meets(_s.CharKarma, tier);
+
+    /// <summary>Award karma (RTK addKarma) — sparkle + "Your karma has risen."</summary>
+    public void AddKarma(double amount) => _s.AddKarma(amount);
+
+    /// <summary>Dock karma (RTK removeKarma).</summary>
+    public void RemoveKarma(double amount) => _s.RemoveKarma(amount);
+
+    /// <summary>RTK Tools.checkKarma: true (and the player is told "Go away scum!") if they are below the
+    /// scum floor. Scripts read it as an early return at the top of a handler.</summary>
+    public bool KarmaTooLow() => _s.KarmaTooLow();
+
     /// <summary>Run the NPC's buy flow (its <see cref="Shops"/> catalogue, resolved by identifier).</summary>
     public Task Buy() => _s.DlgBuy(_npc, Shops.For(Def.Key));
 

@@ -181,6 +181,15 @@ public static class NpcScript
             case "setStage":   ctx.SetStage(Str(t, "key"), Int(t, "n"));         return DynValue.Nil;
             case "reg":        return DynValue.NewNumber(ctx.Reg(Str(t, "key")));
             case "setReg":     ctx.SetReg(Str(t, "key"), Int(t, "n"));           return DynValue.Nil;
+            // Karma (Server/Karma.cs). addKarma/removeKarma take FRACTIONS — RTK hands out 0.1 and 0.25 as
+            // readily as whole points. karmaCheck takes a tier NAME ("rabbit", "ox", "tiger"), which is the
+            // only form RTK's gates are ever written in.
+            case "karma":       return DynValue.NewNumber(ctx.KarmaValue);
+            case "karmaLevel":  return DynValue.NewString(ctx.KarmaLevel());
+            case "karmaCheck":  return DynValue.NewBoolean(ctx.KarmaCheck(Str(t, "tier")));
+            case "addKarma":    ctx.AddKarma(Num(t, "n"));                       return DynValue.Nil;
+            case "removeKarma": ctx.RemoveKarma(Num(t, "n"));                    return DynValue.Nil;
+            case "karmaTooLow": return DynValue.NewBoolean(ctx.KarmaTooLow());
             case "hasLegend":  return DynValue.NewBoolean(ctx.HasLegend(Str(t, "name")));
             case "addLegend":  ctx.AddLegend(Str(t, "text"), Str(t, "name"), (byte)Int(t, "icon"), (byte)Int(t, "color")); return DynValue.Nil;
             case "removeLegend": ctx.RemoveLegend(Str(t, "name"));               return DynValue.Nil;
@@ -211,6 +220,11 @@ public static class NpcScript
     private static string Str(Table t, string k) => t.Get(k).CastToString() ?? "";
     private static int Int(Table t, string k, int def = 0)
     { var v = t.Get(k); return v.Type == DataType.Number ? (int)v.Number : def; }
+
+    /// <summary>Like <see cref="Int"/> but keeps the fraction — karma awards are quarter- and tenth-points,
+    /// so reading them as int would silently zero every partial award.</summary>
+    private static double Num(Table t, string k, double def = 0)
+    { var v = t.Get(k); return v.Type == DataType.Number ? v.Number : def; }
 
     private static string[] Arr(Table t, string k)
     {

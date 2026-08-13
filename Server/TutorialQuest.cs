@@ -6,9 +6,12 @@ namespace Server;
 /// faithfully: each stage's dialog, item/creature portraits, gates and rewards match the Lua.
 ///
 /// Reality note — some stages gate on world content this server doesn't have yet (a fishing NPC that grants
-/// the <c>learned_to_fish</c> legend, Chu Rua's shore on map 1111, the ice-beast NPC). Those stages show the
-/// real dialog but can't be COMPLETED until that content exists — which is exactly "port as far as current
-/// content allows." Stage 11's missing brother IS implemented (Haguru on Du Mountain — see
+/// the <c>learned_to_fish</c> legend, the ice-beast NPC). Those stages show the real dialog but can't be
+/// COMPLETED until that content exists — which is exactly "port as far as current content allows."
+/// Stage 7's Chu Rua is NOT one of them: TK1111.map through TK1116.map are all present, so the shore, the
+/// rabbit, the dolmen and the Tiger Pass all render and the stage is completable end to end (the one map RTK
+/// uses that we lack is TK1117, the tiger-free copy — see Session.TryGinseng, which gates on a flag instead).
+/// Stage 11's missing brother IS implemented (Haguru on Du Mountain — see
 /// <see cref="FindBrother"/>). Most item-turn-in stages (armor, meat, rose+chestnut, ogre cider, antlers,
 /// mica) are completable via shops or <c>@item</c>; stage 13's student cap is NOT in any shop or drop table,
 /// so <c>@item</c> is currently its only route — the wool → Yon → cloth → Caretaker chain the dialog
@@ -327,8 +330,10 @@ public static class TutorialQuest
         await ctx.SayItem("ogre_cider", "I'll be waiting here for the cider. Don't get lost now!");
     }
 
-    // stage 7: By the Sea — Chu Rua (needs the aided_chu_rua legend from map 1111, which isn't renderable here,
-    // so the warp is declined gracefully and the gate can't clear yet).
+    // stage 7: By the Sea — Chu Rua (needs the aided_chu_rua legend, granted by the turtle on Guol Shore once
+    // you bring him the young ginseng; see npc_dialog.lua npcs.ChuRuaNpc). The whole chain renders and is
+    // completable. Note this warp is a ONE-WAY lift: Chu Rua does not send you back, so the player walks home
+    // and returns here on foot — which is what the era walkthroughs describe.
     private static async Task ChuRua(NpcContext ctx)
     {
         if (ctx.HasLegend("aided_chu_rua"))
