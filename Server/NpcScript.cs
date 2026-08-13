@@ -188,6 +188,9 @@ public static class NpcScript
             case "level":      return DynValue.NewNumber(ctx.Level);
             case "sex":        return DynValue.NewNumber(ctx.Sex);
             case "nation":     return DynValue.NewNumber(ctx.Nation);
+            // Emigration (RTK updateCountry): the town criers and Rotah. Persists + clears the bound home.
+            case "setNation":  ctx.SetNation(Int(t, "n"));                        return DynValue.Nil;
+            case "map":        return DynValue.NewNumber(ctx.MapId);
             case "killCount":  return DynValue.NewNumber(ctx.KillCount(Str(t, "key")));
             // Era gate (Server/Era.cs): does this dated feature exist at the server's target date? Scripts
             // need it because a gated quest usually still has its NPC standing there — the giver predates

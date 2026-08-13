@@ -148,8 +148,16 @@ public sealed class NpcContext
     public bool StripAllEquipment() => _s.StripAllEquipment();
     /// <summary>Flip sex, persist, and redraw self + peers.</summary>
     public void CommitSexChange() => _s.CommitSexChange();
-    /// <summary>The player's nation/kingdom id (RTK player.country; 1 = Koguryo/Kugnae).</summary>
+    /// <summary>The player's nation/kingdom id (RTK player.country; 0 = Neutral/wilderness, 1 = Koguryo/
+    /// Kugnae, 2 = Buya, 3 = Nagnang).</summary>
     public int  Nation => _s.CharNation;
+    /// <summary>Emigrate to another kingdom (RTK <c>player:updateCountry</c>) — persists, clears any bound
+    /// home, repaints the HUD crest. The town criers and Rotah are the only callers.</summary>
+    public void SetNation(int nation) => _s.SetNation((byte)Math.Clamp(nation, 0, 255));
+    /// <summary>The map the conversation is happening on. RTK's town-crier script branches on
+    /// <c>npc.mapTitle</c> to decide which kingdom it is recruiting for; the player is standing next to the
+    /// NPC, so their map is the same answer without a second lookup.</summary>
+    public int  MapId => _s.CharMap;
 
     /// <summary>Is the player sitting on a horse? (RTK checks <c>player.state == 3 and player.disguise == 26</c>
     /// — a mounted state plus the horse disguise; here the two are one flag, since the mount IS the appearance

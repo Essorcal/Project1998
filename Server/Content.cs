@@ -557,9 +557,12 @@ public static partial class Content
     /// "Default" row of MapBgm.csv. Null leaves such a session silent until it reaches a zoned map.</summary>
     public static (ushort bgm, byte type)? DefaultBgm { get; private set; }
 
-    // Nation tavern return tiles for Return / yellow_scroll / qui_hyang (Session.ReturnToInn). Grouped by
-    // Kugnae/Buya/Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae fallback) stays in code.
-    public sealed record InnDef(ushort Map, ushort X, ushort Y);
+    // Return tiles for Return / yellow_scroll / qui_hyang (Session.ReturnToInn). Grouped by Kugnae/Buya/
+    // Nagnang (chosen by nation), Wilderness (the Neutral nation's), and Sanhae/Hausson (bound by a mayor
+    // and overriding the nation set). The player->group choice stays in code (Session.HomeGroup).
+    // X2/Y2 are an optional bottom-right corner: the wilderness clearing has no bed, so RTK lands you on a
+    // random tile in a box there. Blank X2/Y2 -> the box is the single tile X,Y, which is every tavern.
+    public sealed record InnDef(ushort Map, ushort X, ushort Y, ushort X2, ushort Y2);
     public static IReadOnlyDictionary<string, IReadOnlyList<InnDef>> Inns { get; private set; } =
         new Dictionary<string, IReadOnlyList<InnDef>>(StringComparer.OrdinalIgnoreCase);
 
@@ -2373,8 +2376,11 @@ public static partial class Content
             if (g.Length == 0 || !ushort.TryParse(col.GetValueOrDefault("Map"), out var m)) continue;
             ushort.TryParse(col.GetValueOrDefault("X"), out var x);
             ushort.TryParse(col.GetValueOrDefault("Y"), out var y);
+            // Blank/unparseable X2,Y2 collapses the box to the single tile X,Y — the normal case.
+            if (!ushort.TryParse(col.GetValueOrDefault("X2"), out var x2) || x2 < x) x2 = x;
+            if (!ushort.TryParse(col.GetValueOrDefault("Y2"), out var y2) || y2 < y) y2 = y;
             if (!acc.TryGetValue(g, out var list)) acc[g] = list = new List<InnDef>();
-            list.Add(new InnDef(m, x, y));
+            list.Add(new InnDef(m, x, y, x2, y2));
         }
         return acc.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<InnDef>)kv.Value, StringComparer.OrdinalIgnoreCase);
     }

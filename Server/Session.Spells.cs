@@ -2486,28 +2486,60 @@ public sealed partial class Session
         return "Congratulations! You are both now married.";
     }
 
-    // RTK Player.returnToInn (player.lua:4607): "home" for Return / yellow_scroll / qui_hyang is a RANDOM
-    // tavern in your nation (each has a bed to wake up in), NOT the nation's home-city interior — that's
-    // CharacterFactory.HomeCityFor, which stays the fresh-character spawn + Silver-Thread revive point (it
-    // used to double as the return target, which is why Return dumped you at Jadespear). Country->tavern
-    // lists + the (4,5)/(4,6) arrival tiles are verbatim from RTK; nations without their own tavern set
-    // (Neutral/Shilla/Jinhan/Paekjae/Kaya) fall back to Kugnae's, matching RTK's own `country > 3 -> Ginger`.
-    // Tavern return tiles are data-driven (game-data/Inns.csv -> Content.Inns), grouped Kugnae/Buya/
-    // Nagnang; the nation->group choice (incl. RTK's country>3 -> Kugnae default) stays here. Hot-reloads via
-    // @reload.
-    private void ReturnToInn()
+    /// <summary>Which <c>Inns.csv</c> group this character returns to (RTK <c>Player.returnFunc</c>, which
+    /// reads <c>registry["home"]</c> before falling through to <c>returnToInn</c>'s country switch).
+    ///
+    /// <para>A BOUND HOME WINS OVER YOUR NATION. Talking to an outlying town's mayor sets
+    /// <see cref="HomeReg"/> and from then on Return puts you in HIS tavern no matter which kingdom you
+    /// belong to — that is the whole point of the option, and RTK checks it first for the same reason. The
+    /// mayors are the only writers; moving kingdom clears it back to 0 (see <see cref="SetNation"/>), which
+    /// is also what RTK does.</para>
+    ///
+    /// <para>Otherwise it is your nation's tavern set. Neutral is NOT a missing case — the wilderness is
+    /// where neutrals live, so it has its own group (a clearing by Rotah, RTK <c>country == 0</c>). Only the
+    /// nations with no tavern set of their own (Shilla/Jinhan/Paekjae/Kaya, none of them reachable in this
+    /// era) fall back, and they fall back to Kugnae's.</para></summary>
+    private string HomeGroup() => QuestCounter(HomeReg) switch
     {
-        string group = _char.Nation switch
+        HomeSanhae  => "Sanhae",
+        HomeHausson => "Hausson",
+        _ => _char.Nation switch
         {
+            0 => "Wilderness",   // Neutral — RTK's `country == 0` clearing, not a tavern at all
             2 => "Buya",
             3 => "Nagnang",
-            _ => "Kugnae",     // Kugnae + any nation without its own tavern set (RTK's country>3 default)
-        };
-        var inns = Content.Inns.GetValueOrDefault(group);
+            _ => "Kugnae",       // Kugnae + any nation without its own tavern set
+        },
+    };
+
+    /// <summary>The bound-home registry key and its values, RTK's <c>registry["home"]</c> verbatim: 0 = none
+    /// (use your nation), 10 = Sanhae, 11 = Hausson. RTK also defines 1 = clan hall and 2 = subpath hall;
+    /// neither exists on this server, so neither is listed — an unrecognised value falls through to the
+    /// nation set rather than stranding the player, which is why the switch above is a `_` default.
+    /// <para>Lives in the int quest registry (<c>Character.Quests</c>) exactly as it does in RTK, so it
+    /// persists and hot-reloads with no schema change. The Lua side reads/writes it by the same name.</para></summary>
+    internal const string HomeReg     = "home";
+    internal const int    HomeNone    = 0;
+    internal const int    HomeSanhae  = 10;
+    internal const int    HomeHausson = 11;
+
+    // RTK Player.returnToInn (player.lua:4607): "home" for Return / yellow_scroll / qui_hyang is a RANDOM
+    // tavern in your set (each has a bed to wake up in), NOT the nation's home-city interior — that's
+    // CharacterFactory.HomeCityFor, which stays the fresh-character spawn + Silver-Thread revive point (it
+    // used to double as the return target, which is why Return dumped you at Jadespear). The tavern lists
+    // and their (4,5)/(4,6) arrival tiles are verbatim from RTK, data-driven via game-data/Inns.csv ->
+    // Content.Inns, and hot-reload with @reload; which GROUP a given player uses is HomeGroup above.
+    private void ReturnToInn()
+    {
+        var inns = Content.Inns.GetValueOrDefault(HomeGroup());
         if (inns is { Count: > 0 })
         {
             var pick = inns[Random.Shared.Next(inns.Count)];
-            if (Content.TryMap(pick.Map, out var hm)) { EnterMap(hm.Id, hm.Xs, hm.Ys, pick.X, pick.Y, hm.Name); return; }
+            // A box, not a tile: every tavern row is a 1x1 box, the wilderness clearing is 4x4 (RTK
+            // `warp(1002, random(206,209), random(139,142))` — no bed out there to wake up in).
+            ushort px = (ushort)Random.Shared.Next(pick.X, pick.X2 + 1);
+            ushort py = (ushort)Random.Shared.Next(pick.Y, pick.Y2 + 1);
+            if (Content.TryMap(pick.Map, out var hm)) { EnterMap(hm.Id, hm.Xs, hm.Ys, px, py, hm.Name); return; }
         }
 
         // Safety net: if a nation's tavern map isn't loaded, fall back to the home city so the warp never

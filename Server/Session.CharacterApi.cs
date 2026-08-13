@@ -607,6 +607,31 @@ public sealed partial class Session
     internal uint CharMaxMp  => _char.MaxMp;
     internal uint CharExp    => _char.Exp;
     internal int  CharTotem  => _char.Totem;
+
+    /// <summary>Emigrate to another kingdom (RTK <c>player:updateCountry</c>, the town criers' "Move to …"
+    /// and Rotah's "Become Neutral"). Persists, clears any bound home, and repaints the HUD.
+    ///
+    /// <para>The bound home has to go: it is a room in a town of the kingdom you just left, and RTK clears it
+    /// on every one of its four move paths (<c>general_npc_funcs.moveToCountry</c>). Without that a Buyan who
+    /// took a room in Sanhae and then moved to Kugnae would still be sleeping in Buya's back country.</para>
+    ///
+    /// <para>The nation byte is HUD state the client only learns from the stats packet, so this repaints it —
+    /// otherwise the crest keeps showing the old kingdom until something else happens to push stats. Nothing
+    /// else needs telling: the revive point (<see cref="CharacterFactory.HomeCityFor"/>) and the tavern set
+    /// (<see cref="HomeGroup"/>) both read <c>_char.Nation</c> live, and the 0x33 appearance carries no
+    /// nation.</para>
+    ///
+    /// <para>NOT modelled, because neither exists here: RTK also drops your clan on the way out ("you will
+    /// leave all that you have behind, your clan, your loyalties, your home") and its subpath-hall home
+    /// (<c>registry["home"] == 2</c>).</para></summary>
+    internal void SetNation(byte nation)
+    {
+        _char.Nation = nation;
+        _char.Quests[HomeReg] = HomeNone;
+        SaveChar();
+        SendStats();
+    }
+
     internal int  CharMight  => _char.Might;
     internal int  CharGrace  => _char.Grace;
     internal int  CharWill   => _char.Will;

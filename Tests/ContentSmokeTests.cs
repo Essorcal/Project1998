@@ -182,4 +182,35 @@ public class ContentSmokeTests
             "Arena Master team colour(s) with no wind-armor (Palette 1) ramp in ArmorDyeRamps.csv: "
             + string.Join(", ", missing) + ". They will render the wrong colour on wind armor.");
     }
+
+    /// <summary>Every return-destination group <see cref="Session"/> can route a player to exists in
+    /// Inns.csv, and its maps are real.
+    ///
+    /// <para><c>Session.HomeGroup</c> names these groups as string literals, and a name that doesn't match a
+    /// row does not fail — <c>Inns.GetValueOrDefault</c> returns null and Return quietly falls through to the
+    /// home-city safety net. So a renamed or misspelled group would send a neutral to Kugnae's palace
+    /// forever with nothing in the log to say why.</para></summary>
+    [Fact]
+    public void EveryReturnDestinationGroupResolves()
+    {
+        EnsureLoaded();
+
+        foreach (var group in new[] { "Kugnae", "Buya", "Nagnang", "Wilderness", "Sanhae", "Hausson" })
+        {
+            var inns = Content.Inns.GetValueOrDefault(group);
+            Assert.True(inns is { Count: > 0 }, $"Inns.csv has no '{group}' group — Session.HomeGroup names it");
+            foreach (var inn in inns!)
+            {
+                Assert.True(Content.TryMap(inn.Map, out _), $"Inns.csv '{group}' points at unknown map {inn.Map}");
+                Assert.True(inn.X2 >= inn.X && inn.Y2 >= inn.Y,
+                    $"Inns.csv '{group}' map {inn.Map} has an inverted arrival box");
+            }
+        }
+
+        // The wilderness clearing is the one group that is a BOX rather than a bed — neutrals have no tavern
+        // to wake up in, so RTK scatters them across a few tiles. A collapsed box here means the X2/Y2
+        // columns stopped parsing and every neutral now lands on the same tile.
+        var wild = Content.Inns["Wilderness"][0];
+        Assert.True(wild.X2 > wild.X && wild.Y2 > wild.Y, "the Wilderness return box collapsed to one tile");
+    }
 }
