@@ -871,6 +871,32 @@ public sealed partial class Session
         return true;
     }
 
+    /// <summary>Amnesia (RTK Spells/rogue/amnesia.lua): the mob FORGETS you — your threat on it is wiped and
+    /// it will not pick you as a target again until the spell lapses, though it keeps fighting everyone else.
+    /// A boss shrugs it off in five seconds (RTK's own <c>if target.isBoss == 1 then duration = 5000</c>).
+    /// Hitting the creature again breaks it (World.TryDamage).
+    /// <para>This is the spell's REAL effect. Before the threat table existed there was nothing for it to act
+    /// on, so it fell through to its spell_effects archetype row — which the extractor had classified as
+    /// Debuff/"slow", i.e. it quietly applied a slow to the mob and nothing else.</para></summary>
+    internal bool LuaAmnesia(int durMs, int bossDurMs, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (mob is null || pc is not null) { LogNoTarget(sp); return false; }
+        if (mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
+
+        int dur = mob.IsBoss ? bossDurMs : durMs;
+        mob.AmnesiaBy = _char.Id;
+        mob.AmnesiaUntil = Environment.TickCount64 + dur;
+        mob.ClearThreat(_char.Id);
+        if (mob.TargetId == _char.Id) mob.TargetId = 0;   // it loses interest immediately, not next tick
+
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText($"You cast {sp.Name} on {mob.Name}");   // RTK's own wording, no trailing full stop
+        Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' forgot player {_char.Id} for {dur}ms");
+        return true;
+    }
+
     // Public speech from the caster (RTK player:talk(2, "…")) — Kamikaze shouts before it detonates. Same 0x0D
     // over-head bubble a typed chat line uses, broadcast to the whole map INCLUDING us, so it reads as the
     // caster actually shouting rather than as a private status line.

@@ -167,6 +167,11 @@ public sealed class SpellContext
     /// lapses. False (with the RTK notice) for a boss, an already-owned mob, or no target.</summary>
     public bool charmTarget(double durMs) => _s.LuaCharmTarget((int)durMs, _sp, _targetId);
 
+    /// <summary>Make the target mob forget YOU for <paramref name="durMs"/> (a boss for
+    /// <paramref name="bossDurMs"/>): your threat on it is wiped and it stops picking you. RTK amnesia.</summary>
+    public bool amnesiaTarget(double durMs, double bossDurMs) =>
+        _s.LuaAmnesia((int)durMs, (int)bossDurMs, _sp, _targetId);
+
     /// <summary>Shout as the caster — an over-head chat bubble everyone on the map sees (RTK player:talk).</summary>
     public void talk(string msg) => _s.LuaTalk(msg);
 

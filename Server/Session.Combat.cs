@@ -37,6 +37,18 @@ public sealed partial class Session
     internal uint PvpFoeId => Environment.TickCount64 < _pvpFoeUntil ? _pvpFoeId : 0;
     internal void MarkPvpFoe(uint playerId) { _pvpFoeId = playerId; _pvpFoeUntil = Environment.TickCount64 + PvpFoeMs; }
 
+    // RTK's `owner.attacker` — the last CREATURE to land a blow on this player, stamped by ApplyMobHit. Read
+    // by the pet AI as the second half of "things that are attacking you"; the first half (things you have
+    // attacked) is already recorded as threat on the mobs themselves. It expires for the same reason PvpFoeId
+    // does: a pet should defend you from what is happening, not avenge something you walked away from
+    // minutes ago.
+    private const int MobAttackerMs = 30_000;
+    internal uint LastMobAttackerId;
+    internal long LastMobAttackerAt;
+    /// <summary>The creature that last hit this player, or 0 once that has gone stale.</summary>
+    internal uint RecentMobAttackerId =>
+        Environment.TickCount64 < LastMobAttackerAt + MobAttackerMs ? LastMobAttackerId : 0;
+
     private void HandleAttack(byte[] dec)
     {
         if (_char.Hp == 0) { SendMiniText("Spirits can't attack."); return; }

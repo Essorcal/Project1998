@@ -664,6 +664,12 @@ public sealed partial class Session
     {
         if (IsDead) return;   // already down — don't re-trigger Die() while the revive delay is pending
         WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
+        // RTK's `owner.attacker`: the last creature to actually land a blow on you. A Call of the Wild pet
+        // reads this to decide what to defend you from — see World.Tick's pet block. Set on the LANDED hit,
+        // not on aggro, which is the whole difference between a pet that holds a corner and one that charges
+        // the moment anything looks at you.
+        LastMobAttackerId = mob.Id;
+        LastMobAttackerAt = Environment.TickCount64;
 
         // RTK hitCritChance.lua: mobs DO roll a crit chance, but real swingDamage.lua's _getMobSwingDamage
         // never multiplies mob damage by it — only a PLAYER's own swing gets the x3 (see
