@@ -182,6 +182,11 @@ public sealed partial class Session
         var def = Content.ItemById(it.ItemId); if (def is null) return;
         if (def.NoDrop) { SendLog($"You can't drop {def.Name}."); return; }
 
+        // Dropping a pick/axe/sickle beside a resource node is how you gather on 4.95 — the drop IS the
+        // swing, and the tool stays in the bag so you can keep dropping. Anything else (or nothing to
+        // harvest nearby) falls through and drops normally. See Session.Harvest.cs.
+        if (TryHarvest(def)) return;
+
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
         SendAction(_char.Id, 5, 20, 0);                                                     // our drop crouch + sound
