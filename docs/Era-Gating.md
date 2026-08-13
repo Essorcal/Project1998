@@ -61,12 +61,25 @@ him "the old guy named Haguru that was stranded on the mountain in early 4.0". W
 `tutor_du_mountain_quest` off he is still there and still answers; he just has no wolves to send you
 after. Same principle everywhere: gate the quest, keep the world.
 
-## Sources
+## Content from *after* our window
 
-- `tswolf-2001-03-18` — TSWolf/NexNet "Du Mountain opened", dating both 2001 quests to the day.
-- `tswolf-newbie-guide` — the three-page newbie quest guide the area's dialog is transcribed from.
+The tutorial gates above all sit near 2001, where the question is which version of a thing was live. The
+other direction is simpler and blunter: content that hadn't been invented yet.
 
-Both are in `game-data/Sources.csv` with the exact quotes and the surviving/missing screenshot list.
+**The Druid bouquet quest** (`druid_bouquet_quest`, 2005-05-31) is the first of these — nearly four years
+past the target date, in the last months of the 5.x client before 6.x shipped 2005-10-11. Nexus Atlas's
+reset post for the day lists *"Druids gain a new bouquet quest in Elder's Hideaway (public Room)"*, and the
+next three days are its bug tail (2005-06-01 "recently released", 06-02 a fix attempt plus Sebastian's
+Token made non-droppable, 06-03 "the problems with the Druid quest have been fixed").
+
+That gate removes **Yarlof** from Du Mountain, and he is the reason this section exists: he is the quest's
+flower-test NPC and has no other role, so there is no earlier Yarlof to leave standing. Every mention of
+him in the whole archive scrape is that one Mage-tutor walkthrough — *say Sophie, then Flower, then
+Bouquet with 12 flowers and a Fine cloth* — which is what dates the **NPC** and not merely the quest.
+
+**Haguru shares map 1321 and is deliberately untouched.** He is 4.0-era, and `tutor_du_mountain_quest`
+gates only his quest. Two NPCs on one mountain, gated by opposite rules, is the clearest illustration of
+the next section.
 
 ## Adding a gate
 
@@ -76,8 +89,33 @@ Both are in `game-data/Sources.csv` with the exact quotes and the surviving/miss
    so `@era` reports it.
 3. Call `Era.Has(...)` at the point that decides. From Lua, `ctx:eraHas("feature")`.
 
-Gate the *behaviour*, not the placement: a gated quest usually still has its NPC standing there, so the
-script is what needs to know, not `NPCs.csv`.
+### Behaviour or placement?
+
+**Default to gating the behaviour.** A gated quest normally still has its NPC standing there, so the script
+is what needs to know, not `NPCs.csv` — gate the quest, keep the world.
+
+**Gate the placement only when the NPC himself postdates the target date** — when there is no earlier
+version of him to leave in place. Put the feature key in the `EraFeature` column of `game-data/NPCs.csv`
+and write no code: `Content.LoadNpcs` folds the verdict into `Enabled`, so every spawn path already
+handles it, including `World.ReconcileNpcToggles` despawning him across an `@reload`. The row survives, so
+`NpcById` still resolves.
+
+The distinction is "did this being exist" versus "did he have this to say". An old NPC who gained a new
+quest is always the second one.
+
+> `Content.Load` calls `EraCalendar.Reload()` **before** `LoadNpcs` for this reason. Reading the calendar
+> after would place NPCs by the *previous* date across an `@reload`, and a wrong era never throws.
+
+`@npc` reports the two kinds of "off" separately — editing the `Enabled` column is useless advice for an
+NPC who isn't born yet, whose date lives in `ServerTuning.csv`.
+
+## Sources
+
+- `tswolf-2001-03-18` — TSWolf/NexNet "Du Mountain opened", dating both 2001 quests to the day.
+- `tswolf-newbie-guide` — the three-page newbie quest guide the area's dialog is transcribed from.
+- `atlas-2005-05-31-bouquet` — the Nexus Atlas reset run dating the Druid bouquet quest, and so Yarlof.
+
+All three are in `game-data/Sources.csv` with the exact quotes and the surviving/missing screenshot list.
 
 ## New-character placement
 

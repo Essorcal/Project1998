@@ -99,6 +99,23 @@ public class EraGatingTests
                     $"at {d} exactly one of the area / tutor-taught chain must be live"));
     }
 
+    /// <summary>The Druid bouquet quest (2005-05-31) is the first gate that lands far OUTSIDE our window
+    /// rather than near it, and the first whose subject is an NPC's existence: Yarlof runs that quest and
+    /// nothing else, so at 2001-07-09 he must not be in the world at all. Checked either side of the day, and
+    /// against the shipped default, so moving the date in EraFeatures.csv breaks the build.</summary>
+    [Fact]
+    public void DruidBouquetQuestIsFourYearsAfterOurEra()
+    {
+        WithEraDate(EraCalendar.DefaultDate, () =>
+            Assert.False(Era.Has(Era.DruidBouquetQuest), "bouquet quest is 2005; the 4.95 default must exclude it"));
+
+        WithEraDate(20050530, () =>
+            Assert.False(Era.Has(Era.DruidBouquetQuest), "quest is dated 2005-05-31; the day before must exclude it"));
+
+        WithEraDate(20050531, () =>
+            Assert.True(Era.Has(Era.DruidBouquetQuest), "the introduction date itself is INCLUSIVE"));
+    }
+
     /// <summary>A brand-new character starts in Welcome (4711) once the area exists, and at their nation's
     /// tutor before that. This is the behaviour the LOGIN server depends on, which is why the calendar
     /// lives in Shared at all.</summary>

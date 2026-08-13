@@ -57,14 +57,26 @@ public sealed partial class Session
     // "@npc" / "@npc list" — show which NPCs are switched off. Read-only: toggling an NPC means setting the
     // Enabled column in game-data/NPCs.csv and running @reload (World.ReconcileNpcToggles spawns/despawns
     // to match), not a live GM mutation command. The tavern-hand "small guy" NPCs (Ox/Taur) are off by default.
+    //
+    // The two ways to be off are reported separately because the fix differs: an era-gated NPC (NPCs.csv
+    // EraFeature — Yarlof, who arrives with the 2005 Druid bouquet quest) is absent because he does not exist
+    // yet, and no amount of editing the Enabled column will bring him back.
     private void NpcToggleCmd(string text)
     {
-        var off = Content.Npcs.Where(n => !n.Enabled)
-                              .OrderBy(n => n.Id)
-                              .Select(n => $"#{n.Id} {n.Name} (map {n.Map})").ToList();
-        SendLog((off.Count == 0 ? "No NPCs are switched off."
-                                : $"Switched-off NPCs ({off.Count}): " + string.Join(", ", off)) +
+        static string Describe(NpcDef n) => $"#{n.Id} {n.Name} (map {n.Map})";
+
+        var off = Content.Npcs.Where(n => !n.Enabled).OrderBy(n => n.Id).ToList();
+        var unborn = off.Where(n => n.EraFeature.Length > 0 && !Era.Has(n.EraFeature)).ToList();
+        var manual = off.Except(unborn).ToList();
+
+        SendLog((manual.Count == 0 ? "No NPCs are switched off."
+                                   : $"Switched-off NPCs ({manual.Count}): " + string.Join(", ", manual.Select(Describe))) +
                 "  (edit the Enabled column in game-data/NPCs.csv + @reload to change)");
+
+        if (unborn.Count > 0)
+            SendLog($"Not yet in this era ({unborn.Count}): " +
+                    string.Join(", ", unborn.Select(n => $"{Describe(n)} [{n.EraFeature}]")) +
+                    "  (move EraDate in game-data/ServerTuning.csv — see @era)");
     }
 
     // "@craft" / "@craft list" — show which crafting skills are era-gated on/off. Read-only: the toggle

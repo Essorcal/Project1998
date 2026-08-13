@@ -73,9 +73,19 @@ public static class Era
     /// "there are 2 new ones at the end" (TSWolf 2001-03-19).</summary>
     public const string StudentCapQuest = EraCalendar.StudentCapQuest;
 
+    /// <summary>The Druid bouquet quest (2005-05-31), and with it <b>Yarlof</b> on Du Mountain, who exists to
+    /// run its flower test and nothing else. Nearly four years past our target date, so he is not in the world
+    /// by default — the gate is on his PLACEMENT (<c>NPCs.csv</c> <c>EraFeature</c>), not on a script, because
+    /// there is no earlier version of him to leave standing. Haguru shares map 1321 and is untouched.
+    ///
+    /// <para>Declared here rather than in <see cref="EraCalendar"/>: only the game server places NPCs, and the
+    /// login server has no reason to know this key. <see cref="EraCalendar"/> owns the other four because
+    /// <see cref="CharacterFactory"/> names one of them.</para></summary>
+    public const string DruidBouquetQuest = "druid_bouquet_quest";
+
     /// <summary>Every key this server actually gates on, for the <c>@era</c> readout. A row in the CSV
     /// that isn't listed here is still honoured by <see cref="Has"/> — it just isn't something our code
     /// asks about yet, which is the normal state for a date we've researched but not wired up.</summary>
     public static readonly IReadOnlyList<string> KnownFeatures =
-        new[] { NewbieArea, TutorNoviceChain, DuMountainQuest, StudentCapQuest };
+        new[] { NewbieArea, TutorNoviceChain, DuMountainQuest, StudentCapQuest, DruidBouquetQuest };
 }
