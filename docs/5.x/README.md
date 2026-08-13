@@ -6,9 +6,18 @@ local C# `Project1998`. The 4.95 protocol is documented separately in
 [`../NexusTK-4.95-Protocol.md`](../NexusTK-4.95-Protocol.md); this folder only covers where 5.x
 **differs**.
 
-> **Status (2026-07): world entry + terrain both working.** The 5.33 client logs in, enters the
-> world, renders the character/UI, and now renders **terrain** (ground + objects) streamed from the
-> server. Movement, stats-panel fidelity, and multi-map coverage are the remaining polish items.
+> **Status (2026-08-13): terrain rendering SOLVED; 5.33 support paused here.** The 5.33 client logs in,
+> enters the world, and renders 4.x terrain correctly — verified offline at 1,719,261 / 1,719,261 drawn
+> cells across all 1,750 shipped maps. Door cell patches were fixed to the correct 3-short shape.
+>
+> **Known open item, deliberately parked:** 5.33 re-authored the `SObj.tbl` collision flags and collides
+> client-side, so ~18,025 cells (1.05%) the 4.x maps intend as walkable are impassable on 5.33 — Arctic
+> Village 35,32/36,32 is the reference case. The server cannot fix this without deleting object artwork
+> (graphic and collision are the same wire value); the lossless fix is a 362-byte patch to the client's
+> `SOBJ.TBL`, not taken because we keep the client stock. Default config is visually inert. See
+> [`Terrain-Streaming.md`](Terrain-Streaming.md) → "Object collision".
+>
+> Effort has moved back to the 4.95 client; pick 5.33 up again from that open item.
 
 ## The one thing to understand about 5.x
 
@@ -42,8 +51,31 @@ Ports: `2000`/`2005` = 4.95 login/game, `2001`/`2006` = 5.33 login/game.
 - **Same wire cipher as 4.95**: NexonInc static XOR (`TkCrypt.Crypt`, key `"NexonInc."`), both channels,
   every opcode used so far. No name-keyed/table cipher.
 - **Same framing**: `AA | len(u16 BE) | op | inc | body`, no trailer. `len = 2 + body.Length`.
-- **Terrain tile indices are RAW** — the 4.x ground index (e.g. floor `651`) renders as-is on 5.33; no
-  `+1`/`-1` offset. The `TILE.EPF` frames are a superset of the 4.x tiles at the same low indices.
+- **A 4.x ground word selects one of TWO sheets — this is the whole ballgame.** Read out of the 4.x
+  blitter (`sub_431820`): `v == 0` → draw nothing; `v < 0xC000` → `TileA[v-1]`; `v >= 0xC000` →
+  `TileB[v-0xC000]`. Those constants are the `base` u16 in each legacy `.tbl` header. The top two bits
+  are **not** passability, and masking them off (`tile = v & 0x3FFF`) rewrites **30.58% of all cells** —
+  526,619 of 1,722,232, across 1,492 of the 1,750 maps — into unrelated low tiles. That was the
+  "tiles don't make sense in particular places" bug.
+- **Sheet-1 ground needs NO shift for 5.33.** 5.33 prepended a null frame (`TileA[i]` ≡ `TILE[i+1]`) *and*
+  dropped the `dec eax`; the two cancel, so `TILE[v]` is exactly the frame 4.95 draws for `v`. A global
+  `+1` was shipped twice and was wrong both times — see `Reverse-Engineering.md` for why.
+- **Sheet-2 ground needs a LOOKUP TABLE.** TileB was re-packed into the merged sheet, not appended
+  (232 distinct deltas), so no offset can express it. `game-data/Tile533Map.csv`, applied by
+  `Server/TileTranslation.cs`.
+- **Verified offline, end to end**: all 1,719,261 drawn cells of the 1,750 shipped maps render
+  byte-identically under the 4.x and 5.33 pipelines. Re-run that check rather than eyeballing a map.
+- **Object indices are NOT renumbered** — the object short indexes `SObj.tbl`, whose id space both clients
+  share (5.33 appended entries; 7,582 of the first 7,608 records carry identical sprite frames). Shifting it
+  along with the ground — which the superseded single `P1998_TILE_OFF` knob did — moves every door, wall and
+  tree by one object.
+- **…but 5.33 RE-AUTHORED the object COLLISION flags, and it collides locally.** 362 flag bytes differ over
+  the shared id range; 234 ids block a direction on 5.33 that they did not on 4.x, making **18,025 cells
+  (1.05%, in 620 of 1,750 maps)** unwalkable on 5.33 even though the 4.x maps intend them to be walked.
+  The server never sees these — the client refuses before sending a walk request, so there is no `BLOCKED`
+  line in the log. Worked around by `game-data/Obj533Fix.csv` (`P1998_OBJ_FIX_533`, default `decor`).
+  Graphic and collision are the same wire value, so the workaround costs artwork; the lossless fix is
+  patching the client's `SOBJ.TBL`, deliberately not done. See `Terrain-Streaming.md`.
 - **`.cmp` local map files are a red herring** for rendering. The 5.33 client *does* stat/open
   `Maps\TK######.cmp`, and the format was fully reversed (see RE doc), but terrain visibly comes from
   the server stream, not the file. You do **not** need to ship `.cmp` files.

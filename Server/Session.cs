@@ -136,18 +136,24 @@ public sealed partial class Session
     private static readonly string LightFmt =
         (Environment.GetEnvironmentVariable("P1998_LIGHT_FMT") ?? "beu16").Trim().ToLowerInvariant();
 
-    // 5.33 terrain-stream tile offset. The 4.x .map stores raw frame indices (the 4.95 client draws
-    // them as-is); some client eras expect index+1 (0 = "no tile", client subtracts 1). Mithia 7.x
-    // streams raw, so default 0 — but if 5.33 terrain comes out shifted by one frame, set P1998_TILE_OFF=1
-    // (or -1) to correct it without a rebuild. Applied to the ground + object shorts, not passability.
-    private static readonly int CellOff =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_TILE_OFF"), out var co) ? co : 0;
+    // Per-version tile translation lives in TileTranslation. A 4.x ground word selects one of TWO legacy
+    // sheets (>= 0xC000 means "sheet 2, index v-0xC000"), which 5.33 merged into one: sheet 1 comes out as
+    // identity and sheet 2 needs a lookup table. The object short addresses the SObj.tbl id space and is
+    // NOT renumbered — though 5.33 re-authored its collision flags, which TileTranslation.Object works
+    // around. See that class for the evidence and the env knobs.
 
     // 5.33 terrain-render diagnostic for the 0x06 stream (set via a .bat so PowerShell's `set` quirk
     // can't bite). "" = real map tiles. "sweep" = ramp the ground index across the whole visible rect
     // over the FULL 16-bit range (0..28550) so we can read off which indices actually draw a tile.
-    // "solid:N" = fill with ground index N. Sweep/solid send the tile UNMASKED (real tiles are still
-    // masked to 14 bits since 4.x ground packs passability in the top 2 bits).
+    // "solid:N" = fill with ground index N. Both send the tile UNTRANSLATED and UNMASKED — they probe the
+    // client's own numbering, so running them through the translation would beg the question.
+    // "ground:N" is the opposite and usually the one you want: it puts the 4.x ground WORD N through the
+    // real translation, so it exercises the sheet selector (ground:49152 = sheet-2 frame 0).
+    //
+    // A uniform fill proves less than it looks like: tile sheets group related terrain, so several
+    // consecutive frames are often the same material and one screenshot can be consistent with three
+    // different offsets at once. The authoritative check is the offline both-pipelines render comparison
+    // in docs/5.x/Reverse-Engineering.md, which never involves the client.
     private static readonly string MapDiag =
         (Environment.GetEnvironmentVariable("P1998_MAP_DIAG") ?? "").Trim().ToLowerInvariant();
 
@@ -902,9 +908,11 @@ public sealed partial class Session
     // The REPLY differs in cell width, because the two clients pack passability differently:
     //   5.33 : x0 y0 w h | { tile(BE) pass(BE) obj(BE) } * w*h        -- 3 shorts, pass in its own short
     //   4.95 : x0 y0 w h | { ground(BE) object(BE) }    * w*h        -- 2 shorts, pass in ground's top 2 bits
-    // 4.95's form is the same cell shape SendObjRow already sends for doors (recv handler 0x44fb90, which
-    // writes each cell into the client's LIVE map array and then redraws the patched rect — so the write
-    // itself is not viewport-gated). No leading flag byte on either: the 5.33 handler reads x0 immediately
+    // SendObjRow (the door cell patch) emits the SAME per-version shape — it has to, because both go to
+    // this one opcode and each client's handler reads a fixed cell width with no length check. 4.95's is
+    // recv handler 0x44fb90 (4 bytes/cell), 5.33's is sub_469060 (6 bytes/cell); both write each cell into
+    // the client's LIVE map array and then redraw the patched rect, so the write is not viewport-gated.
+    // No leading flag byte on either: the 5.33 handler reads x0 immediately
     // after op+inc (a spurious 0x00 shifts every field by one, w reads as 0, and you get a black void).
     // Mithia 7.x's clif_sendmapdata DOES emit a leading 0 here; both of these clients differ.
     private void HandleMapRequest(byte[] dec)
@@ -951,6 +959,11 @@ public sealed partial class Session
         // purely collision from the `pass` short and any visual change is purely `pass` affecting render.
         // The exact same pattern is enforced by PassAt() in HandleWalk, so seen wall == blocked wall.
         bool passtest = MapDiag.StartsWith("passtest:");
+        // ground:N -> fill with the 4.x ground WORD N put through the real translation. Unlike solid:N
+        // (which is raw) this exercises the sheet selector, so `ground:49152` is sheet-2 frame 0 and
+        // `ground:652` is sheet-1 TileA[651]. This is the one to reach for when checking the tile map.
+        bool ground = MapDiag.StartsWith("ground:");
+        int groundN = ground && int.TryParse(MapDiag.AsSpan(7), out var gn) ? gn : 0;
         int ci = 0;
         for (int iy = 0; iy < h; iy++)
         for (int ix = 0; ix < w; ix++, ci++)
@@ -966,6 +979,10 @@ public sealed partial class Session
             {
                 tile = (ushort)solidN; pass = 0; obj = 0;
             }
+            else if (ground)
+            {
+                tile = TileTranslation.Ground((ushort)groundN, _ver); pass = 0; obj = 0;
+            }
             else if (passtest)
             {
                 // Floor 651 everywhere; put a VISIBLE object marker on the wall columns so the tester can
@@ -978,27 +995,21 @@ public sealed partial class Session
             }
             else
             {
-                tile = (ushort)((map.Tile(mx, my) + CellOff) & 0x3FFF);
+                // GroundWord, NOT Tile: the top two bits are a SHEET SELECTOR (>=0xC000 means "second
+                // legacy sheet, index v-0xC000"), not just a passability flag, so masking them off before
+                // translation silently rewrites 30% of the world into unrelated tiles. TileTranslation
+                // needs the whole word. The object id space is shared, so objects pass through.
+                tile = TileTranslation.Ground(map.GroundWord(mx, my), _ver);
                 pass = PassAt(map, mx, my);
-                obj  = (ushort)((map.Obj(mx, my) + CellOff) & 0x3FFF);
+                obj  = TileTranslation.Object(map.Obj(mx, my), _ver);
             }
-            if (_ver == ClientVersion.V533)
-            {
-                b.AddRange(Be(tile));
-                b.AddRange(Be(pass));
-                b.AddRange(Be(obj));
-            }
-            else
-            {
-                // 4.95 packs passability into the ground short's top 2 bits — the same word the .map file
-                // stores and MapData.GroundWord rebuilds, so a streamed cell is byte-identical to what the
-                // client would have read from its own local copy.
-                b.AddRange(Be((ushort)((tile & 0x3FFF) | (pass << 14))));
-                b.AddRange(Be(obj));
-            }
+            // One shared writer with the door cell patch — see MapCell for why that matters. On 4.95's real
+            // path `tile` already IS the ground word and the re-pack inside is an identity; on the diag
+            // paths it is a bare sheet-1 index with pass supplied separately, which needs packing.
+            MapCell.Write(b, tile, pass, obj, _ver);
         }
 
-        string mode = MapDiag.Length == 0 ? $"real tileOff={CellOff}" : $"DIAG={MapDiag}";
+        string mode = MapDiag.Length == 0 ? $"real {TileTranslation.Describe(_ver)}" : $"DIAG={MapDiag}";
         Log.Info($"   -> map-data(0x06) [{why}] rect ({x0},{y0}) req {reqW}x{reqH} -> {w}x{h} cells={total} " +
                  $"[{mode}] {(_ver == ClientVersion.V533 ? "3-short" : "2-short")} cells");
         Send(MapBuild(0x06, _gameInc++, b.ToArray()));

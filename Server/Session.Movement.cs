@@ -517,9 +517,26 @@ public sealed partial class Session
     // 4.95 counterparts nobody has identified — find them the same way, by matching run width against SObj flags.
 
     // Server->client 0x06 CELL PATCH: redraw a horizontal run of cells starting at (startX, y), setting each
-    // cell's object to objs[i] while keeping its ground word (tile + passability) unchanged. This is how doors
-    // open/close on the client (see HandleOpen). Wire: startX(u16BE) y(u16BE) width(u8) height=1(u8) then per
-    // cell ground(u16BE) object(u16BE). The ground word is read live from the map, so it reflects real terrain.
+    // cell's object to objs[i] while keeping its ground (tile + passability) unchanged. This is how doors
+    // open/close on the client (see HandleOpen). Header: startX(u16BE) y(u16BE) width(u8) height=1(u8).
+    //
+    // Wire: startX(u16BE) y(u16BE) width(u8) height=1(u8) then, PER CLIENT VERSION:
+    //   4.95  ground(u16BE) object(u16BE)                 -- 2 shorts, ground word carries passability
+    //   5.33  tile(u16BE) pass(u16BE) object(u16BE)       -- 3 shorts, same shape as the terrain stream
+    //
+    // The cell shape is NOT optional and NOT a guess. 5.33's handler (sub_469060) reads three BE u16 per
+    // cell unconditionally — three calls to the stream reader storing to [esi], [esi+2], [esi+4], with a
+    // six-byte stride (`lea ecx,[eax+eax*2]` then `[edx+ecx*2]`). There is no length check and no
+    // two-short path. Feeding it a 2-short run made it consume the NEXT cell's bytes as its own and read
+    // past the end of the body, so a door toggle repainted the strip with garbage that only corrected
+    // itself on the next full refresh. That was the reported 'o' bug.
+    //
+    // Note on the middle short: 5.33 merges it as `new = old ^ ((old ^ read) & 1)` — it takes ONLY bit 0
+    // and preserves the rest of whatever was already in the cell. So passability is a single bit there,
+    // and sending 3 (our 4.x-derived value) is equivalent to sending 1.
+    //
+    // Ground DOES go through TileTranslation: identity for sheet 1, table lookup for sheet 2. This strip
+    // has to move with the terrain around it rather than stay a tile off.
     private void SendObjRow(ushort startX, ushort y, ushort[] objs)
     {
         var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
@@ -531,10 +548,16 @@ public sealed partial class Session
         d.Add(1);                   // height (single row)
         for (int i = 0; i < objs.Length; i++)
         {
-            d.AddRange(Be(md.GroundWord(startX + i, y)));   // ground (tile+pass) unchanged
-            d.AddRange(Be(objs[i]));                        // new object graphic
+            int mx = startX + i;
+            // Source the WHOLE ground word: its top two bits are the legacy sheet selector, and
+            // TileTranslation needs them.
+            ushort word = md.GroundWord(mx, y);
+            MapCell.Write(d, TileTranslation.Ground(word, _ver), md.Pass(mx, y),
+                          TileTranslation.Object(objs[i], _ver), _ver);
         }
-        SendMap(0x06, _gameInc++, d.ToArray(), $"cellpatch(0x06) ({startX},{y}) w{objs.Length} objs=[{string.Join(",", objs)}]");
+        SendMap(0x06, _gameInc++, d.ToArray(),
+                $"cellpatch(0x06) ({startX},{y}) w{objs.Length} " +
+                $"{(_ver == ClientVersion.V533 ? "3-short" : "2-short")} cells objs=[{string.Join(",", objs)}]");
     }
     public void PatchObjRow(ushort startX, ushort y, ushort[] objs) => SendObjRow(startX, y, objs);   // peer-facing (0x06)
 

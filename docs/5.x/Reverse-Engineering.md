@@ -77,8 +77,137 @@ DAT archive at `NextAeon5\Tile.dat`, 8 entries:
 | `TILE.TBL` | 57 106 | tile frame table (≈ 2×28553) |
 | `TILEC.EPF/PAL/TBL` | — | second tile set |
 
-The 4.x `TileA` frames are a verbatim **prefix** of 5.x `TILE.EPF`, so low indices (like floor `651`)
-map to the same pixels — which is why the raw 4.x ground index renders correctly on 5.33.
+The 4.x `TileA` **pixel region** is a verbatim prefix of `TILE.EPF`'s — but the **frame indices are
+not**, and conflating the two is the trap here. `TILE.EPF`'s frame table has one extra entry at the
+front: TOC entry 0 is a NULL frame (`w=0, h=0`), where `TileA.epf` frame 0 is a real 24×24 tile. The
+4.x artwork therefore resumes at frame **1**.
+
+Verified byte-for-byte against both installs (compare each frame's TOC box + pixel bytes):
+
+| legacy sheet | 5.33 sheet | relationship |
+|---|---|---|
+| `TileA.epf` (9,922 frames) | `TILE.EPF` (28,551) | `TileA[i]` ≡ `TILE[i+1]`, identical for 9,921 / 9,922 |
+| `TileC.epf` (16,409) | `TILEC.EPF` (29,414) | `TileC[i]` ≡ `TILEC[i+1]`, identical for 16,408 / 16,409 |
+
+**But the client does not need a shift, because it also dropped the `-1`.** See the two blitters below.
+
+## The two ground blitters — the definitive comparison
+
+| | 4.x (`NextAeon\NexusTK.orig.exe`) | 5.33 (`NextAeon5\NexusTK.exe`) |
+|---|---|---|
+| per-cell redraw | `sub_44d0e0` | `sub_465b50` |
+| cell buffer | `[this+0x3ec]`, **4 bytes/cell** | `[this+0x3d0]`, **6 bytes/cell** |
+| ground blitter | `sub_431820` | `sub_4443d0` |
+
+```c
+/* 4.x  sub_431820 */                      /* 5.33  sub_4443d0 */
+if (v == 0) return;                        if ((v & 0xffff) == 0) return;
+if (v >= 0xC000) {                         idx = v & 0xffff;          /* no branch,      */
+    sheet = sheet2;  idx = v - 0xC000;     if (idx < 0) return;       /* no subtraction, */
+} else {                                   if (idx >= frameCount) return;
+    sheet = sheet1;  idx = v - 1;          entry = toc + idx*24;      /* one merged sheet */
+}
+```
+
+Three consequences:
+
+1. **The top two bits are a sheet selector, not passability.** `0xC000` is not a flag pair — it is the
+   `base` field in `TileB.tbl`'s header (`count u32, palCount u32, base u16`; `TileA.tbl` has `base = 1`,
+   which is the other subtrahend). 30.58% of all shipped cells are in the sheet-2 range.
+2. **Sheet-1 needs no shift.** 5.33 added a null frame at `TILE[0]` *and* removed the `dec`. `TILE[v]` ≡
+   `TileA[v-1]` ≡ what 4.95 draws for `v`. The changes cancel exactly.
+3. **5.33 ignores the second short when drawing** (`and ecx,0xffff`). That answers the long-standing
+   "what does `pass` control on 5.33" question for the *render* path: nothing.
+
+Sheet 2 is not a shift either — TileB was **re-packed** into `TILE.EPF` (232 distinct index deltas), so it
+needs the lookup table in `game-data/Tile533Map.csv`.
+
+### A global `+1` was shipped twice and was wrong both times — read this before changing it again
+
+The `+1` was inferred from rendered tile colours (`solid:67` "drew flowers where `TileA[67]` is water").
+**That evidence was an artifact of a broken renderer.** An EPF TOC entry is
+`[L,T,R,B (4× i16)][pixelOffset u32][pixelEnd u32]`; the tool used `pixelEnd`, which for a 24×24 frame is
+`pixelOffset + 576` — so it read 576 bytes into a 624-byte stride and returned mostly the *next* frame.
+Every colour identification built on it, including the calibration tile, was off by one.
+
+The first revert was *also* wrong, for a different reason: that build simultaneously changed
+`Session.SendObjRow` to a three-short cell patch, which can desync the whole `0x06` run. Two unverified
+changes, one observation, no attribution.
+
+Three lessons, all paid for: ship one speculative change at a time; **never settle a tile-index question
+from a screenshot of a map** (an off-by-one lands on a neighbouring variant of the same material, so whole
+maps render coherent-but-wrong); and **validate a measuring tool against a known answer before trusting
+it** — the renderer would have failed instantly on "does `TileA[i]` equal `TILE[i+1]`?"
+
+### How the mapping is actually established
+
+Not by eye, and not from the client. Every legacy frame is rendered to RGB *through its own palette* and
+matched against every frame of `TILE.EPF` rendered the same way; then every cell of all 1,750 maps is
+rendered under both pipelines and compared. Current result: **1,719,261 / 1,719,261 drawn cells identical**.
+Corroborating checks that all agree: `TileA[i]` ≡ `TILE[i+1]` for 9,907 of 9,908 uniquely-matched frames;
+TileA's 23 palette-run boundaries land at exactly `+1` in `TILE.TBL` (23/23, zero at any other offset);
+and legacy palette indices fit `palCount` exactly (23/23/40 against 24/24/41) once the TBL header is read
+as 10 bytes.
+
+The object short needs no shift, for a different reason: it indexes `SObj.tbl`, and 5.33's table is the
+4.x table with entries appended — 7,583 of the first 7,608 records are byte-identical.
+
+## Asset file formats (both eras)
+
+Getting either of these wrong silently produces plausible-but-shifted results rather than an error, and
+both did exactly that during this investigation.
+
+### `.epf` sprite sheet
+
+```
+u16 frameCount   u16 width   u16 height   u16 unknown   u32 tocRel
+<pixel data>                                  starts at file offset 12
+<TOC>                                         starts at 12 + tocRel, 16 bytes per frame
+```
+
+TOC entry: `i16 left, i16 top, i16 right, i16 bottom, u32 pixelOffset, u32 pixelEnd`.
+
+- **Use `pixelOffset` (entry+8), NOT `pixelEnd` (entry+12).** For a 24×24 frame `pixelEnd == pixelOffset+576`,
+  and the frame stride is 624 (576 pixels + a 48-byte stencil) — so reading at `pixelEnd` lands 576 bytes
+  into the stride and returns mostly the *next* frame. This single mistake produced two wrong `+1` shifts.
+- Pixel bytes are palette indices; the frame is `(right-left) * (bottom-top)` bytes at `12 + pixelOffset`.
+- `12 + tocRel + 16*frameCount` should equal the file size exactly — a cheap parse check.
+
+### `.tbl` frame table
+
+| | header | entry |
+|---|---|---|
+| 4.x (`TileA/B/C.tbl`) | **10 bytes**: `u32 count, u32 palCount, u16 base` | 2 bytes `[flag, palette]` — palette is the **high** byte |
+| 5.33 (`TILE/TILEC.TBL`) | **4 bytes**: `u32 count` | 2 bytes little-endian `palette | (flag << 15)` — palette is the **low** byte |
+
+- The 4.x header's third field, **`base`, is the constant the client subtracts** from a map's ground word
+  for that sheet: `0x0001` in `TileA.tbl`, `0xC000` in `TileB.tbl`, `0x0001` in `TileC.tbl`. It matches the
+  `dec eax` / `sub eax,0xC000` immediates in `sub_431820` exactly.
+- Reading the 4.x header as 8 bytes shifts every palette by one frame and pushes palette indices past
+  `palCount` (max 192 against 24 palettes). Read as 10, they fit exactly: 23/23/40 against 24/24/41.
+
+### `.pal` palette
+
+`u32 count`, then one block per palette, each containing the magic `"DLPalette"`. Block headers are
+**variable length**, so anchor the 256-entry × 4-byte colour table to the **end** of each block, not to a
+fixed offset after the magic.
+
+### `SObj.tbl` static-object table
+
+```
+u32 count
+u8  flag[0]
+per object z = 0 .. count-1:
+    u8 tileCount
+    tileCount * u16     frame ids
+    FF FF FF FF 00      separator
+    u8 flag[z+1]        the NEXT object's flag
+```
+
+The flag **precedes** its object's frame list, so a naive walk yields frames one record ahead of the flags.
+Attribute `realFrames[z] = rawFrames[z+1]`; the flags land correctly as read. With the phase corrected,
+7,582 of the 7,608 shared ids have identical frames across the two eras — the check that confirms the parse.
+Flag bits (RTK `map.h`): `UP=1 DOWN=2 RIGHT=4 LEFT=8`; `0x0F` = solid on all sides.
 
 ## Tooling
 

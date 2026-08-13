@@ -92,9 +92,9 @@ client's handler read `rect(0,2048) w=0 h=19`; without it, `rect(8,0) 19x17 firs
 
 | field | source (from the 4.x `.map`) | notes |
 |-------|------------------------------|-------|
-| `tile` | ground index = `g16 & 0x3FFF` | **raw**, no `+1`. Floor `651` renders correctly. `TILE.EPF` frame. |
-| `pass` | passability = `(g16 >> 14) & 3` | top 2 bits of the 4.x ground word. Exact render/movement role still being nailed down; `0` works for visible floor. |
-| `obj`  | object index = `o16 & 0x3FFF` | `TILE.EPF`/`SOBJ` object frame; `0` = none. Objects (e.g. `1542`) stream and render. |
+| `tile` | the **whole** ground `u16` (`MapData.GroundWord`), through `TileTranslation.Ground` | Do **not** mask it first. `v >= 0xC000` selects the second legacy sheet at index `v-0xC000` (30.58% of all cells) and needs the `game-data/Tile533Map.csv` lookup; `v < 0xC000` is sheet 1 and passes through **unchanged**. See `Reverse-Engineering.md` for the two blitters side by side. |
+| `pass` | `(g16 >> 14) & 3` | **Does not affect rendering on 5.33** — `sub_4443d0` does `and ecx,0xffff` and never looks at this short. Note the bits it is derived from are really the *sheet selector*, so this is currently "sheet 2 ⇒ pass 3", which is a coincidence of encoding rather than authored passability. Left as-is deliberately (it is what the collision path has always used); revisit separately. |
+| `obj`  | object index = `o16 & 0x3FFF` | An `SObj.tbl` entry id, **not** a TILEC frame — passed through unshifted, because both clients share that id space. `0` = none (a sentinel; never offset it). Objects (e.g. `1542`) stream and render. |
 
 ### Checksum
 
@@ -108,14 +108,88 @@ The `0x05` pull always sends because the client forces its checksum to `0`.
 - Tile source: `Server/MapData.cs` loads the 4.x `TK<id>.map` (searches `P1998_MAPS`, repo `game-data/maps/`,
   then the client installs) and exposes `Tile/Pass/Obj`. Map 32 is committed at `game-data/maps/TK32.map`;
   any other map loads on demand from the installed 4.x map set.
+- Translation: `Server/TileTranslation.cs` — ground `P1998_TILE_OFF_533` defaults to **`1`**, object
+  `P1998_OBJ_OFF_533` to **`0`** (the SObj id space is shared). The old single `P1998_TILE_OFF` still
+  works but now moves the **ground only** — it used to move the object index too, which meant using it
+  to straighten the ground silently shifted every door, wall and tree by one at the same time.
 - Diagnostics: `P1998_MAP_DIAG=sweep` ramps the ground index `0..28550` across the rect (to probe which
   indices render); `P1998_MAP_DIAG=solid:N` fills one index. Drive via `re/Run-Diag-Sweep.bat` /
   `re/Run-Diag-Solid.bat` (set env inside a `.bat` — PowerShell's `set VAR=val` is a no-op; use `$env:`).
+- **`P1998_MAP_DIAG=ground:N`** — fills the rect with the 4.x ground **word** `N` put through the real
+  translation, so it exercises the sheet selector. `ground:652` is sheet-1 `TileA[651]`; `ground:49152`
+  (`0xC000`) is sheet-2 frame 0. This is the one to reach for when checking the tile map, because it is
+  the only diag that covers the 30% of the world that lives on sheet 2.
+
+  The superseded `calib` mode is gone: it rested on a calibration tile chosen with a renderer that read the
+  wrong EPF TOC field, so both of its "expected" colours were the wrong frames. Note that a diag fill
+  proves less than it looks like it does — several consecutive frames are often the same material, so a
+  fill can be consistent with three different offsets at once. The authoritative check is the offline
+  both-pipelines render comparison described in `Reverse-Engineering.md`, not anything on screen.
+
+### Cell patches (doors) use the same opcode — RESOLVED
+
+`Session.SendObjRow` emits `0x06` too, and it must use the **same per-version cell shape** as the stream.
+It used to send two-short cells to both clients, which was wrong for 5.33 and produced the reported `o`
+bug: opening a door repainted the strip with garbage that only corrected itself on the next full refresh.
+
+The client leaves no room for interpretation — `sub_469060` reads **three** BE u16 per cell
+unconditionally (three reads storing to `[esi]`, `[esi+2]`, `[esi+4]`, six-byte stride
+`lea ecx,[eax+eax*2]` / `[edx+ecx*2]`), with no length check and no two-short path. Given 4 bytes per
+cell it consumes the next cell's bytes as its own and runs off the end of the body.
+
+Both call sites now go through one writer, `Server/MapCell.cs`, pinned by `Tests/MapCellTests.cs`.
+
+**The middle short is a single bit.** 5.33 merges it as `new = old ^ ((old ^ read) & 1)` — it takes only
+bit 0 and preserves the rest of the existing cell value. So our 4.x-derived `pass` of 3 is equivalent to
+1, and this is the same 0/1 field RTK 7.x calls `mid`.
+
+## Object collision: 5.33 re-authored `SObj.tbl`, and it collides client-side
+
+Both clients run object collision **locally**, against their own `SObj.tbl` — that is why you cannot walk
+through a hut wall that sits on `pass=0` ground. 5.33 ships a different table: **362 flag bytes differ over
+the shared id range 1..7608**, 234 ids block a direction there that they did not on 4.x, and 125 go the
+other way. The sprite data still lines up (7,582 of 7,608 shared ids have identical frames) — only the
+collision bytes were rewritten, presumably alongside 5.33's own map set, which we do not use.
+
+**Symptom and how to recognise it.** A tile the 4.x maps intend as walkable is impassable on 5.33, and the
+server log shows **nothing** — no `walk … BLOCKED` line — because the client refuses before it sends the
+request. Found via Arctic Village (3811) 35,32 / 36,32, a staircase under objects 327 and 320, both `0x00`
+on 4.x and `0x0F` (solid all four sides) on 5.33. Scope: **18,025 cells, 1.05%, in 620 of 1,750 maps.**
+
+**Why the server cannot fix it cleanly.** Object graphic and object collision are the *same* `u16` on the
+wire, so the only levers are "send a different object" or "send none". Matching on rendered sprite content
+(not frame ids — `TILEC` was re-packed like `TILE`) finds a visually identical, usably-flagged substitute
+for only **4 of 128** affected objects. The rest can only be blanked, which deletes their artwork.
+
+**What we do** — `game-data/Obj533Fix.csv`, applied in `TileTranslation.Object`, scoped by
+`P1998_OBJ_FIX_533`:
+
+| scope | applies | cells | cost |
+|---|---|---|---|
+| `off` | nothing | — | 18k cells stay unwalkable |
+| `free` **(default)** | the 4 look-alike substitutions | 969 | **none — visually inert** |
+| `decor` | + blank objects 4.x marks `0x00` | +1,915 | a decoration sprite disappears (the Arctic stair lip is a 24×7 strip) |
+| `all` | + blank objects with a real 4.x directional block | +15,141 | **deletes visible structures** (obj 1243 alone is 1,817 cells) |
+
+The default is `free` on purpose: every wider scope buys walkability by deleting artwork, and that trade
+belongs to whoever runs the server. At `free` the Arctic Village stairs remain impassable on 5.33 — fixing
+them without changing what is on screen requires the client-side patch below.
+
+Walkability is correct at every scope: the server enforces the 4.x flags itself (`ObjectFlags` in
+`HandleWalk`), so a blanked object still blocks exactly as 4.x intended — as a `0x04` snap-back rather than
+a client-side refusal. The trade is cosmetic (missing art, slight rubber-banding), not behavioural.
+
+**The lossless alternative, deliberately not taken.** Patch the client's `SOBJ.TBL` flag bytes to the 4.x
+values: 362 bytes, identical length, in place at offset 140 of `Tile.dat` — no repack needed. Rejected to
+keep the client stock; revisit if the `structural` over-blocking makes somewhere unreachable.
 
 ## Open questions
 
-- **Passability**: what exactly the `pass` short controls on 5.33 (collision only, or render). Currently
-  derived from the 4.x top-2-bits; walking restrictions not yet validated.
+- **Passability**: *render* is settled — 5.33's blitter masks the tile short with `0xffff` and never reads
+  `pass`. What remains is that `pass` is derived from bits that are actually the **sheet selector**, so
+  ~30% of cells report `pass=3` because they are sheet-2 tiles, not because they were authored solid.
+  Where 4.x collision really comes from (object layer / `SObj.tbl` flags?) is still open, and this is the
+  next thing to chase if walking restrictions look wrong.
 - **Multi-map / warps**: streaming works for any loaded map, but map transitions (server-side position +
   `0x15` + new stream) aren't exercised yet.
 - **Checksum**: implement `nexCRCC` to enable the no-change skip if refresh bandwidth becomes an issue.
