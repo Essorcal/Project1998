@@ -34,8 +34,9 @@ public sealed class NpcContext
     /// <summary>Run the NPC's buy flow (its <see cref="Shops"/> catalogue, resolved by identifier).</summary>
     public Task Buy() => _s.DlgBuy(_npc, Shops.For(Def.Key));
 
-    /// <summary>Run the sell flow (the player's droppable, sellable inventory).</summary>
-    public Task Sell() => _s.DlgSell(_npc);
+    /// <summary>Run the sell flow: the player's droppable, sellable inventory, narrowed to what this NPC
+    /// actually buys (<see cref="Shops.BuysFrom"/> — null there means it takes anything, as before).</summary>
+    public Task Sell() => _s.DlgSell(_npc, Shops.BuysFrom(Def.Key));
 
     /// <summary>Vault: put coin in. Each is its own top-level menu entry — 4.95 has no combined "Banking"
     /// submenu (that's a later-client thing RTK's inn_npc.lua shows).</summary>
@@ -55,7 +56,8 @@ public sealed class NpcContext
     /// <summary>Spoken "buy [my] [all|N] &lt;item&gt;" shortcut: sell `amount` (or the whole stack, if &lt;= 0)
     /// of a fuzzy-matched item by name. False if nothing in the bag matched the name, so the speech falls
     /// through instead of being silently swallowed.</summary>
-    public Task<bool> SellByName(string name, int amount) => _s.SellItemToNpcByName(_npc, name, amount);
+    public Task<bool> SellByName(string name, int amount) =>
+        _s.SellItemToNpcByName(_npc, name, amount, Shops.BuysFrom(Def.Key));
 
     /// <summary>Spoken "take my &lt;item|coin&gt; [count]" shortcut: deposit `amount` (or the whole stack, if
     /// &lt;= 0) of a fuzzy-matched item — or coin, if the word is "coin"/"coins" — into the vault.</summary>
@@ -307,9 +309,10 @@ public sealed class ShopAbility : INpcAbility, INpcSayHandler
     // The two real NexusTK shop voice commands (nexusatlas Voice Commands list):
     //   sell TO the shop:  "buy my <item>" / "buy my all <item>" / "buy my <item> number <N>"
     //   buy FROM the shop: "i buy <item>"  / "i buy all <item>"  / "i buy <item> number <N>"
-    // ("buy my" reads backwards but is verbatim from the game — the shopkeeper "buys" your item.) Selling is
-    // independent of this NPC's own catalogue — any shop-flagged NPC buys anything sellable, same as the Sell
-    // menu; buying is limited to what this NPC stocks.
+    // ("buy my" reads backwards but is verbatim from the game — the shopkeeper "buys" your item.) Each side
+    // has its OWN list: buying is limited to what this NPC stocks (Shops.For), selling to what it buys
+    // (Shops.BuysFrom) — the spoken form goes through the same gate as the Sell menu, so "buy my sword" at the
+    // butcher is refused the same way the sword never appears in her grid.
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         if (speech.StartsWith("buy my ") || speech == "buy my")
@@ -367,19 +370,25 @@ public sealed class InfoAbility : INpcAbility, INpcSayHandler
         }
         if (speech.StartsWith("what do you buy"))
         {
-            var names = Catalogue(ctx);
+            var names = BuyCatalogue(ctx);
             ctx.Bubble(names.Count == 0 ? "I don't buy anything" : "I buy " + Fit(names) + ".");
             return Task.FromResult(true);
         }
         return Task.FromResult(false);
     }
 
-    // The NPC's stocked item names, deduped. In RTK a shop's spoken buy-list and sell-list are the same
-    // catalogue (buyItems == sellItems for most NPCs), so both questions answer from this.
+    // The NPC's stocked item names, deduped — what it sells TO you.
     private static List<string> Catalogue(NpcContext ctx) =>
-        (Shops.For(ctx.Def.Key) ?? System.Array.Empty<Shops.Category>())
-            .SelectMany(c => c.Keys).Select(Content.ItemByKey).OfType<ItemDef>()
-            .Select(d => d.Name).Distinct().ToList();
+        Names((Shops.For(ctx.Def.Key) ?? System.Array.Empty<Shops.Category>()).SelectMany(c => c.Keys));
+
+    // What it buys FROM you — a different list (Shops.BuysFrom). An NPC with no accept list buys anything
+    // sellable, and there's no sane way to say that out loud, so it answers with its stock: the honest
+    // approximation, and the same thing this question answered before the accept lists existed.
+    private static List<string> BuyCatalogue(NpcContext ctx) =>
+        Shops.BuysFrom(ctx.Def.Key) is { } buys ? Names(buys) : Catalogue(ctx);
+
+    private static List<string> Names(IEnumerable<string> keys) =>
+        keys.Select(Content.ItemByKey).OfType<ItemDef>().Select(d => d.Name).Distinct().ToList();
 
     // Join item names into one over-head line, capped so it can't overflow the 0x0D speech buffer (u8 length).
     private static string Fit(List<string> names)

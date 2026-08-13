@@ -25,4 +25,14 @@ public static class Shops
             return new[] { new Category("Goods", keys) };
         return null;
     }
+
+    /// <summary>What this NPC will BUY FROM the player — the sell-side counterpart of <see cref="For"/>, and a
+    /// genuinely different list (see <see cref="Content.ShopBuysFrom"/>). <b>Null means "no list known, so buy
+    /// anything sellable"</b>, which is what every shop did before this existed. An EMPTY set is a different
+    /// answer and a real one: this shop buys nothing (the chapel, the druid) — so the two cases must not be
+    /// collapsed.</summary>
+    public static IReadOnlySet<string>? BuysFrom(string npcKey) =>
+        Content.ShopBuysFrom.TryGetValue(npcKey, out var keys)
+            ? new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase)
+            : null;
 }

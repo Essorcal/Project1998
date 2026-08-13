@@ -639,13 +639,18 @@ public sealed partial class Session
         }
     }
 
-    internal async Task DlgSell(Mob npc)
+    /// <summary><paramref name="buysFrom"/> is this NPC's accept list (item keys) — null for "buys anything
+    /// sellable", which is what every shop did before <see cref="Shops.BuysFrom"/> existed. The grid is built
+    /// from it, so an item the shop won't take simply isn't offered rather than being refused after the
+    /// player has picked it.</summary>
+    internal async Task DlgSell(Mob npc, IReadOnlySet<string>? buysFrom = null)
     {
         while (true)
         {
             var sellable = _char.Inventory.OrderBy(i => i.Slot)
                 .Select(inv => (inv, def: Content.ItemById(inv.ItemId)))
                 .Where(t => t.def is { NoDrop: false } && t.def.SellPrice > 0)
+                .Where(t => buysFrom is null || buysFrom.Contains(t.def!.Key))
                 .ToList();
             if (sellable.Count == 0) { await DlgSay(npc, "You have nothing I'd buy."); return; }
 
@@ -888,10 +893,14 @@ public sealed partial class Session
     // item, by name, from the bag. Tries the plural form as typed, then singularized (item names in the
     // registry are singular, e.g. "acorn", while the spoken word is often plural, "acorns"). Returns false
     // (not a dialog line) when nothing matches, so unrelated speech still falls through to normal chat.
-    internal async Task<bool> SellItemToNpcByName(Mob npc, string name, int amount)
+    internal async Task<bool> SellItemToNpcByName(Mob npc, string name, int amount, IReadOnlySet<string>? buysFrom = null)
     {
         var def = Content.FindItem(name) ?? Content.FindItem(Singularize(name));
         if (def is null || def.SellPrice <= 0 || def.NoDrop) return false;
+        // Not on this shop's accept list (see DlgSell): a real item, so the speech IS handled — it just gets a
+        // refusal rather than falling through to open chat and shouting "buy my sword" at the whole map.
+        if (buysFrom is not null && !buysFrom.Contains(def.Key))
+        { NpcBubble(npc, $"I don't buy {def.Name}."); return true; }
 
         var stack = _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList();
         if (stack.Count == 0) { NpcBubble(npc, "You don't have enough."); return true; }   // RTK sellNoConfirm
