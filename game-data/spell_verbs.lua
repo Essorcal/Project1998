@@ -961,3 +961,16 @@ function verbs.generic(ctx, row)
   -- "buff"/"other": mana is spent and HandleCast prints "You cast X." — nothing else is known about them.
   return true
 end
+
+-- Amnesia (RTK Spells/rogue/amnesia.lua): the target mob FORGETS you. Your threat on it is wiped and it will
+-- not choose you again for row.duration, though it keeps fighting anyone else -- so this is a peel, not a
+-- mez: the creature stays dangerous, just not to you. Hitting it again reminds it instantly (the engine
+-- clears the amnesia on any damage you deal). Bosses shake it off in row.durationMax instead, which is RTK's
+-- own `if target.isBoss == 1 then duration = 5000`.
+function verbs.amnesia(ctx, row)
+  local mana = row.mana or 30
+  if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
+  if not ctx:amnesiaTarget(row.duration or 900000, row.durationMax or 5000) then return false end
+  ctx:debitMana(mana)
+  return true
+end
