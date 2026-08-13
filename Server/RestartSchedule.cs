@@ -87,7 +87,7 @@ public sealed class RestartSchedule
             while (_nextWarn < WarnMinutes.Length && WarnMinutes[_nextWarn] >= minutes) _nextWarn++;
         }
         Log.Info($"=== restart scheduled in {minutes:0.##} min ({FormatReason(reason)}) ===");
-        Announce(OpeningLine(minutes, reason));
+        Announce(RestartLine(minutes));
     }
 
     /// <summary>Call off a booked restart. Returns false if nothing was booked (or it is already firing, at
@@ -128,6 +128,7 @@ public sealed class RestartSchedule
     private void TickWarnings()
     {
         string? line = null;
+        string reason = "";
         bool fire = false;
 
         lock (_lock)
@@ -147,12 +148,14 @@ public sealed class RestartSchedule
                 // announce only that.
                 while (_nextWarn + 1 < WarnMinutes.Length && remaining <= WarnMinutes[_nextWarn + 1] * 60_000L)
                     _nextWarn++;
-                line = WarnLine(WarnMinutes[_nextWarn], _reason);
+                line = RestartLine(WarnMinutes[_nextWarn]);
+                reason = _reason;
                 _nextWarn++;
             }
         }
 
-        if (line is not null) { Log.Info($"   -> restart warning: {line}"); Announce(line); }
+        // The reason rides along in the LOG only — see RestartLine.
+        if (line is not null) { Log.Info($"   -> restart warning: {line} ({FormatReason(reason)})"); Announce(line); }
         if (fire) _ = FireAsync();
     }
 
@@ -250,22 +253,20 @@ public sealed class RestartSchedule
     private static string FormatReason(string reason)
         => string.IsNullOrWhiteSpace(reason) ? "no reason given" : reason;
 
-    private static string Suffix(string reason)
-        => string.IsNullOrWhiteSpace(reason) ? "" : $" ({reason})";
-
-    private static string OpeningLine(double minutes, string reason)
+    /// <summary>The ONE player-facing countdown line, used by the booking announcement and by every rung of
+    /// the warning ladder alike. There used to be two wordings — an opening "The server will restart in N
+    /// minutes. Please find a safe place to log out." and a terser ladder line — which read to players like
+    /// two different events, and only the ladder one carried the reason, so "(deploying …)" leaked into the
+    /// game from the CI trigger. One sentence, said the same way every time, is what a countdown should
+    /// sound like.
+    ///
+    /// NO REASON SUFFIX, ANYWHERE. What players need is WHEN and WHAT TO DO; "(staging release ef55003…)" is
+    /// neither — it's deploy bookkeeping. It still reaches the server log (<see cref="Schedule"/> and the
+    /// warning log line below both print it), so nothing is lost by keeping it out of their faces.</summary>
+    private static string RestartLine(double minutes)
     {
-        string when = minutes >= 1
-            ? $"in {Math.Round(minutes)} minute{(Math.Round(minutes) == 1 ? "" : "s")}"
-            : "in less than a minute";
-        // No reason suffix: the notice ends at the instruction. What players need is WHEN and WHAT TO DO,
-        // and "(staging release ef55003…)" is neither — it's deploy bookkeeping, and it's already in the
-        // server log via Schedule's own line, so nothing is lost by keeping it out of their faces.
+        long m = (long)Math.Round(minutes);
+        string when = m >= 1 ? $"in {m} minute{(m == 1 ? "" : "s")}" : "in less than a minute";
         return $"The server will restart {when}. Please find a safe place to log out.";
     }
-
-    private static string WarnLine(int minutes, string reason)
-        => minutes == 1
-            ? $"The server restarts in 1 minute. Log out now to be safe.{Suffix(reason)}"
-            : $"The server restarts in {minutes} minutes.{Suffix(reason)}";
 }
