@@ -8,7 +8,8 @@
 --   input (returns the typed string, or nil if cancelled).
 -- Immediate ops (no wait): giveItem/takeItem/hasItem/countItem/itemName/learnSpell, awardExp/awardGold,
 --   stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp, level/sex/nation/setNation/map/
---   coins/spendGold, killCount/mounted, eraHas, bubble/notify, gameDate.
+--   coins/spendGold, killCount/mounted, eraHas, bubble/notify, gameDate,
+--   karma/karmaLevel/karmaCheck/addKarma/removeKarma/karmaTooLow.
 -- To expose a new primitive: add a stub here AND a case in Server/NpcScript.cs Dispatch. Edit this file and run
 -- !reload to see changes live -- no server restart. Any NPC with a script here takes precedence over its C#
 -- ability; an NPC with no entry (or a broken file) uses the C# abilities unchanged.
@@ -39,6 +40,15 @@ function __make_ctx()
   function ctx:setStage(key, n)         return coroutine.yield({op="setStage", key=key, n=n}) end
   function ctx:reg(key)                 return coroutine.yield({op="reg", key=key}) end
   function ctx:setReg(key, n)           return coroutine.yield({op="setReg", key=key, n=n}) end
+  -- karma (Server/Karma.cs). addKarma/removeKarma accept FRACTIONS (0.1, 0.25); karmaCheck takes a tier
+  -- NAME -- "cat"/"squirrel"/"rabbit"/"dog"/"monkey"/"ox"/"bear"/"tiger"/"dragon"/"spirit"/"angel's tear"/
+  -- "angel", plus "rat"/"snake" which read as "is this player that bad" rather than as a minimum.
+  function ctx:karma()                  return coroutine.yield({op="karma"}) end
+  function ctx:karmaLevel()             return coroutine.yield({op="karmaLevel"}) end
+  function ctx:karmaCheck(tier)         return coroutine.yield({op="karmaCheck", tier=tier}) end
+  function ctx:addKarma(n)              return coroutine.yield({op="addKarma", n=n}) end
+  function ctx:removeKarma(n)           return coroutine.yield({op="removeKarma", n=n}) end
+  function ctx:karmaTooLow()            return coroutine.yield({op="karmaTooLow"}) end
   function ctx:hasLegend(name)          return coroutine.yield({op="hasLegend", name=name}) end
   function ctx:addLegend(text, name, icon, color) return coroutine.yield({op="addLegend", text=text, name=name, icon=icon, color=color}) end
   function ctx:removeLegend(name)       return coroutine.yield({op="removeLegend", name=name}) end
@@ -218,23 +228,34 @@ end
 
 -- Chu Rua, the Dragon King's turtle (RTK tutorial/chu_rua.lua). Tutorial stage 7: he asks for a young_ginseng
 -- (a scripted-tile pickup on Guol Tiger Pass, map 1116); bring it and he grants the aided_chu_rua legend + a
--- sea ring + experience, then warps you home. The Lost-Legend "mermaid song" branch isn't ported.
+-- sea ring + experience. The Lost-Legend "mermaid song" branch isn't ported.
+--
+-- NO WARP HOME, deliberately, against RTK. RTK ends both the turn-in and every later click with "I will
+-- return you home now." + warp(36,7,6)/warp(351,8,8). The era says otherwise: the tutor sweeps you TO the
+-- shore and that is the only free ride -- you walk back. Neither the Jan-2001 tswolf walkthrough (its four
+-- turn-in screens end on the ring line) nor nexusatlas shows that dialog or mentions being returned, and the
+-- atlas tells you outright to "go back to your tutor and click him" afterwards. The false "I will return you
+-- home now." clause goes with the warp; the "Thank you again for your help!" greeting it was bolted onto is
+-- kept as-is.
 function npcs.ChuRuaNpc(ctx)
   if ctx:hasLegend("aided_chu_rua") then
-    ctx:say("Thank you again for your help! I will return you home now.")
-    warp_home(ctx)
+    ctx:say("Thank you again for your help!")
     return
   end
 
   if ctx:hasItem("young_ginseng", 1) then
-    ctx:say("Ginseng. What an odd looking root.", "The Dragon king shall live. Bless you, kind one.")
+    -- Turn-in, screen for screen as tswolf captured it in Jan 2001 (complete1-4). Two divergences from RTK,
+    -- both from those screenshots: the "Returned safe, I hope." greeting opens it (RTK drops the line), and
+    -- "Ginseng. What an odd looking root." is shown against the GINSENG icon, not Chu Rua's own portrait.
+    ctx:say("Returned safe, I hope.")
+    ctx:sayItem("young_ginseng", "Ginseng. What an odd looking root.")
+    ctx:say("The Dragon king shall live. Bless you, kind one.")
     ctx:awardExp(ctx:stage("tutorial_quest") == 7 and 600 or 400)   -- RTK: 400, +200 on the tutorial
+    ctx:addKarma(1)                                                 -- RTK chu_rua.lua:50; both walkthroughs list it
     ctx:takeItem("young_ginseng", 1)
     ctx:giveItem("sea_ring", 1)
     ctx:addLegend("Aided Chu Rua (" .. ctx:gameDate() .. ")", "aided_chu_rua", 5, 128)
     ctx:sayItem("sea_ring", "Humbly, I offer one of the finest jewels from the sea.")
-    ctx:say("Thank you again for your help! I will return you home now.")
-    warp_home(ctx)
     return
   end
 
@@ -244,10 +265,20 @@ function npcs.ChuRuaNpc(ctx)
     "I entreat you as a humble servant of the Dragon King, and the only servants who know of the land and the sea.",
     "Please, his highness's health depends upon a root of Young ginseng.")
   ctx:sayItem("sea_ring", "Give this to me, and this ring of the Mermaid Princess I would, in return, give to thee.")
+  -- The "Hello" hint is LOAD-BEARING and must not be paraphrased away: it is the only place in the game that
+  -- tells you to greet things, and with the rabbit gate below it is now a hard requirement, not just a nudge.
+  -- What was here before ("The ginseng lies north, in the Tiger Pass — mind the tiger.") was invented, and it
+  -- also spoiled the tiger, which is the rock's payoff to deliver.
+  --
+  -- Last line is the Jan-2001 wording (tswolf king9). Both captures run to exactly nine screens and differ
+  -- only on this one, so it is a substitution, not something RTK dropped: the later nexusatlas capture has
+  -- "Please get young ginseng for his highness's sake!" here instead, which is also what RTK carries. Swap
+  -- the two if you ever want the later reading.
   ctx:say(
     "I... I wish I could point you in the way of the ginseng, but I know not where it grows. There is an old verse,",
     "'Skip north, until rabbits nibbling grass you find, is a path to a king's health and harmony,'",
-    "The ginseng lies north, in the Tiger Pass — mind the tiger. Please get young ginseng for his highness's sake!")
+    "I can tell you, though, that you may greet some of the magic animals of the land. What is you people say, \"Hello\"?",
+    "Be sure to greet me again and not to hand the young ginseng until I ask. If you don't click on me first, the ginseng will fall into the sea.")
 end
 
 -- The Sanhae Mayor (RTK NPCs/arctic/sanhae_mayor.lua), Sanhae Hall (1127), the only NPC in the room. He is
@@ -859,9 +890,18 @@ function npcs_say.WoodlandAngelNpc(ctx, speech)
   return true
 end
 
--- The talking rabbit of Guol Valley (chu_rua_rabbit.lua) — hints at the ginseng quest.
+-- The talking rabbit of Guol Valley (chu_rua_rabbit.lua) — hints at the ginseng quest, and GATES the tiger.
+--
+-- Greeting him sets chu_rua_rabbit_greeted; until then the tiger will not take the "rabbit" gambit (see
+-- ChuRuaTigerNpc). RTK has no such gate -- neither do the tswolf or nexusatlas walkthroughs, and nothing in
+-- the scraped board archive describes one -- so this is a deliberate design fix rather than a port: without
+-- it the rabbit and the rock are skippable scenery and the whole dialog chain can be shortcut by anyone who
+-- already knows the word. Only "hello" arms it, which is the greeting Chu Rua actually teaches; "tiger" and
+-- "ginseng" are follow-ups you would only think to ask AFTER greeting him.
 function npcs_say.ChuRuaRabbitNpc(ctx, speech)
+  if ctx:karmaTooLow() then return true end   -- RTK Tools.checkKarma at the top of the handler
   if speech == "hello" then
+    ctx:setReg("chu_rua_rabbit_greeted", 1)
     ctx:say("Hmmm..", "What is it you want?")
     return true
   elseif speech == "tiger" then
@@ -880,6 +920,7 @@ end
 -- The Ancient dolmen of Guol Divide (chu_rua_rock.lua) — say "hello" for the tiger hint.
 function npcs_say.ChuRuaRockNpc(ctx, speech)
   if speech ~= "hello" then return false end
+  if ctx:karmaTooLow() then return true end   -- RTK Tools.checkKarma
   ctx:say(
     "O, it must be good to have feet.",
     "You've been to the sea I'll bet from the smell of you.",
@@ -891,7 +932,14 @@ end
 
 -- The tiger guarding the ginseng (chu_rua_tiger.lua). Say "rabbit", pick Forest, and he leaves (sets the
 -- chu_rua_tiger_gone flag so TryGinseng lets you take the root on map 1116).
+--
+-- "hello" answers OUT LOUD (a bubble over his head); "rabbit" opens a real dialog pop-up. That split is
+-- deliberate and matches RTK's own npc:talk-vs-dialogSeq split -- do not collapse them into one.
+--
+-- The "rabbit" branch is GATED on having greeted the rabbit (see ChuRuaRabbitNpc). Ungated, he just threatens
+-- to eat you, so the word buys you nothing until you have actually met the animal you are naming.
 function npcs_say.ChuRuaTigerNpc(ctx, speech)
+  if ctx:karmaTooLow() then return true end   -- RTK Tools.checkKarma
   if speech == "hello" then
     ctx:bubble("Hello, Dinner!")
     return true
@@ -899,6 +947,10 @@ function npcs_say.ChuRuaTigerNpc(ctx, speech)
     ctx:bubble("I'd rather eat you!")
     return true
   elseif speech == "rabbit" then
+    if ctx:reg("chu_rua_rabbit_greeted") ~= 1 then
+      ctx:say("Grrr... you look good to EAT! Come here!")
+      return true
+    end
     ctx:say("What? Rabbit? Was it that foul hopping furre that trapped me in a pit?")
     local choice = ctx:menu("I'd love to rend his neck. Where did you see him?",
       {"Warrior's Guild", "Forest", "Town", "Mage's Guild"})
