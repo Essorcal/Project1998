@@ -7,7 +7,10 @@ namespace Server;
 /// <see cref="Content.MinorQuestTiers"/> raises it) whose level/stat ranges the player falls in, snapshots
 /// the player's lifetime kill count for that target's mobs, and marks a legend. On completion it checks the
 /// player has killed one of them since (a kill-count delta), rewards experience scaled by tier, and records a
-/// "Completed N minor quests" legend. Abandoning locks out new quests for the tier's cooldown.
+/// "Completed N minor quests" legend. Finishing either way locks out new quests for a cooldown: abandoning for
+/// the tier's own <c>AbandonHours</c> (2 for Minor), completing for <see cref="Content.MinorQuestCooldownHours"/>
+/// — 24, i.e. ONE COMPLETED QUEST PER REAL DAY. That completion cooldown is the one deliberate departure from
+/// the Lua, which rate-limits only abandonment and so left the rewarded path unlimited.
 ///
 /// State (RTK registry) maps to the character store: the active quest key -> <c>QuestStr("minor_quest")</c>;
 /// tier / per-mob kill snapshots / cooldown timer / completed count -> the int quest registry
@@ -177,7 +180,8 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
         }
     }
 
-    // Reset the active quest's state. On abandon, start the tier cooldown; on completion, bump the count legend.
+    // Reset the active quest's state. Either way of finishing starts the cooldown; completion also bumps the
+    // count legend.
     private static void ClearQuest(NpcContext ctx, int tier, bool abandoned)
     {
         var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.QuestStr(KActive));
@@ -193,9 +197,27 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
             return;
         }
 
+        // The completion cooldown RTK doesn't have — without it the quest is an unlimited exp faucet, since
+        // nothing stops you turning one in and immediately asking for the next. See Content.MinorQuestCooldownHours.
+        if (Content.MinorQuestCooldownHours > 0)
+            ctx.SetReg(KTimer, (int)(ctx.NowUnix + Content.MinorQuestCooldownHours * 3600L));
+
         int completed = ctx.Reg(KCompleted) + 1;
         ctx.SetReg(KCompleted, completed);
         ctx.AddLegend($"Completed {completed} minor quests", KCompleted, 5, 128);
+    }
+
+    /// <summary>The "come back later" half of the thank-you, worded in whole days when the cooldown is one
+    /// (the configured case: one quest per real-world day), otherwise in hours. Empty when the cooldown is
+    /// switched off. The refusal line itself stays in hours — that one is RTK's own wording.</summary>
+    private static string RestLine()
+    {
+        int wait = Content.MinorQuestCooldownHours;
+        if (wait <= 0) return "";
+        string when = wait % 24 == 0
+            ? (wait == 24 ? "a day" : $"{wait / 24} days")
+            : $"{wait} hour{(wait > 1 ? "s" : "")}";
+        return $" Rest now. I will have another task for you in {when}.";
     }
 
     private static async Task AwardBonuses(NpcContext ctx, int tier)
@@ -208,6 +230,7 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
         uint expBonus = (uint)Math.Max(300, (long)Math.Ceiling(approxTnl * 0.20 * expFactor));
         ctx.AwardExp(expBonus);
 
-        await ctx.Say("Thank you for your efforts! You have served your path and kingdom well.");
+        // ASCII only: dialog text goes out through an ASCII encoder, so no em dash here.
+        await ctx.Say("Thank you for your efforts! You have served your path and kingdom well." + RestLine());
     }
 }
