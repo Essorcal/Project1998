@@ -23,7 +23,7 @@ public sealed record MapInfo(ushort Id, string Name, ushort Xs, ushort Ys);
 /// <paramref name="Grace"/> (SQL <c>Grace</c>, already in the CSV but previously unparsed like the rest of
 /// this list) is read as the DEFENDER's grace in <see cref="Session.PlayerSwingDamage"/>'s crit-chance roll
 /// when a player attacks this mob.</summary>
-public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime, int Will = 0, bool Aggressive = false, int MinDam = 1, int MaxDam = 1, bool IsBoss = false, int Protection = 0, int Hit = 0, int Ac = 0, int Grace = 0, bool Flees = false);
+public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime, int Will = 0, bool Aggressive = false, int MinDam = 1, int MaxDam = 1, bool IsBoss = false, int Protection = 0, int Hit = 0, int Ac = 0, int Grace = 0, bool Flees = false, bool Stationary = false);
 
 /// <summary>One independently-rolled line of a mob's RTK <c>loot</c> table (<c>MobDrops.lua</c>
 /// <c>_handleLoot</c>): a null <see cref="ItemKey"/> means gold rather than an item. The dropped amount is
@@ -74,12 +74,17 @@ public sealed record AreaSpawnDef(int MobId, ushort Map, int Count, ushort MinX,
 /// <summary>An NPC placement from our NPC table (<c>game-data/NPCs.csv</c>): a stationary being on a map
 /// tile. Nearly all render via the creature path (0x07) exactly like a mob — <c>Look</c>/<c>Color</c> mirror
 /// <see cref="MobDef"/> — so the world spawns them as non-fighting mobs. <c>IsChar</c> marks the rare
-/// human-composite NPC (0x33). The shop/repair/bank flags select the dialog behaviour on click. <c>Enabled</c>
-/// (the CSV's Enabled column) is the spawn on/off switch — a disabled NPC keeps its row but isn't placed.</summary>
+/// human-composite NPC (0x33). The shop/repair/bank flags select the dialog behaviour on click.
+///
+/// <para><c>Enabled</c> is the spawn on/off switch — a disabled NPC keeps its row but isn't placed. It is the
+/// CSV's <c>Enabled</c> column AND the era verdict on <c>EraFeature</c> folded together, so the one flag every
+/// spawn path already checks stays the whole answer to "does this being exist". <c>EraFeature</c> is kept
+/// alongside it purely so a reader (<c>@npc</c>) can say WHICH of the two switched him off — the remedies are
+/// different, and "edit the Enabled column" is the wrong advice for someone who isn't born yet.</para></summary>
 public sealed record NpcDef(
     int Id, string Key, string Name, ushort Map, ushort X, ushort Y, byte Dir,
     ushort Look, byte Color, bool IsChar, bool Shop, bool Repair, bool Bank,
-    int MoveTime, int ReturnDistance, bool Enabled = true);
+    int MoveTime, int ReturnDistance, bool Enabled = true, string EraFeature = "");
 
 /// <summary>
 /// An item definition from the RTK item db (Items.csv). Field names mirror the client's item_data
@@ -425,6 +430,20 @@ public static partial class Content
     public static IReadOnlyDictionary<string, string[]> ShopStock { get; private set; } =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
 
+    // NPC identifier -> what it will BUY FROM the player (item keys), auto-extracted from the same RTK NPC
+    // scripts (re/extract_shop_sell.py -> ShopBuysFrom.csv). A SEPARATE list from ShopStock: RTK's shops sell
+    // a short catalogue but buy a longer one (the butcher stocks 6 items and buys 22), which is why this
+    // can't be derived from the stock list. Before it existed every shop-flagged NPC bought anything with a
+    // sell price, so the butcher would take your platemail. See Shops.BuysFrom.
+    //
+    // Two deliberate imprecisions, both erring towards accepting rather than refusing a sale:
+    //   • RTK gates a few extras on the shop's MAP (Lien's butcher also buys tiger cuts and dragon's liver);
+    //     those are folded into the one list rather than modelled per-map, so any butcher takes them.
+    //   • An NPC with no row here still buys anything sellable, exactly as before — shops whose Lua list
+    //     can't be read statically (or that RTK has no script for) keep working instead of refusing everything.
+    public static IReadOnlyDictionary<string, string[]> ShopBuysFrom { get; private set; } =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
     // 4.95 client Monster.tbl "Palette" per look id (0..326), decoded from the client PAK (see
     // re/monster-matcher). This is the palette the CLIENT draws a given monster with — a DIFFERENT index
     // space than RTK's MobLookColor. The 0x07 spawn color byte must carry THIS value (not RTK's) or the
@@ -571,6 +590,73 @@ public static partial class Content
         int Max, int MinQty, int MaxQty);
     public static IReadOnlyList<ForageAreaDef> ForageAreas { get; private set; } = new List<ForageAreaDef>();
 
+    /// <summary>One gathering node (wheat/ore/tree) — see game-data/HarvestNodes.csv for the column meanings
+    /// and Server/Session.Harvest.cs for the loop. <see cref="Yield"/> and <see cref="Bonus"/> are weighted
+    /// tables: Yield's weights are relative (out of their own sum, so one always drops), Bonus's are absolute
+    /// percentages whose remainder is "nothing".</summary>
+    public sealed record HarvestNodeDef(string NodeMob, string[] Tools, string Skill,
+        (string Item, double Weight)[] Yield, int Rolls, (string Item, double Percent)[] Bonus,
+        int[] BreakChance, string Message)
+    {
+        /// <summary>Index of <paramref name="toolKey"/> in <see cref="Tools"/>, or -1 if this node doesn't
+        /// take that tool.</summary>
+        public int ToolIndex(string toolKey) =>
+            System.Array.FindIndex(Tools, t => t.Equals(toolKey, StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>Break chance for one tool: its own column entry, else the single shared value, else 0
+        /// (never breaks).</summary>
+        public int BreakChanceFor(int toolIndex) =>
+            BreakChance.Length == 0 ? 0 : BreakChance[Math.Min(Math.Max(toolIndex, 0), BreakChance.Length - 1)];
+    }
+
+    /// <summary>Gathering nodes by mob identifier. Empty = no node is harvestable, which is exactly how the
+    /// world behaved before this existed (the wheat in Kugnae's field was an inert 1200-HP shrub).</summary>
+    public static IReadOnlyDictionary<string, HarvestNodeDef> HarvestNodes { get; private set; } =
+        new Dictionary<string, HarvestNodeDef>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One spell a creature can throw at whoever it is fighting (RTK's <c>peck.cast(mob, target)</c>
+    /// family — its spell scripts take a caster "block" that may be a mob as easily as a player). See
+    /// game-data/MobSpells.csv for the columns and Server/Session.MobSpells.cs for the cast.</summary>
+    public sealed record MobSpellDef(string MobKey, string Name, string Effect, int Chance, int EveryMs,
+        int Range, int Amount, string Stat, string Category, int DurationMs, int Anim, int Sound, string Say);
+
+    /// <summary>Creature spell repertoires by mob identifier, in the order the CSV lists them.</summary>
+    public static IReadOnlyDictionary<string, MobSpellDef[]> MobSpells { get; private set; } =
+        new Dictionary<string, MobSpellDef[]>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Idle flavour lines (RTK's <c>if math.random(1,100) == 1 then mob:talk(…)</c>, which is all
+    /// most "custom AI" scripts actually are). Chance is 1-in-N per move tick.</summary>
+    public sealed record MobChatterDef(string MobKey, int Chance, byte Channel, string[] Lines);
+
+    public static IReadOnlyDictionary<string, MobChatterDef> MobChatter { get; private set; } =
+        new Dictionary<string, MobChatterDef>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>What happens when a creature spawns (RTK's <c>on_spawn</c> hooks, which are placement and
+    /// population rules rather than behaviour — see game-data/MobSpawnRules.csv).</summary>
+    /// <summary>Per-creature spawn and behaviour rules that RTK expresses as script rather than table.
+    /// <paramref name="SpawnChance"/> is a 1-in-N roll each time the spawn point tries to fire (RTK's trap
+    /// spawner: <c>local chance = math.random(1,10); if chance == 1 then</c>), and
+    /// <paramref name="DeathCooldownSec"/> is the floor between one being killed and the next being allowed
+    /// (its <c>lastDeath</c> map registry). Together with <paramref name="MaxAlive"/> they are what makes a
+    /// creature like Citelam a find rather than a fixture.</summary>
+    public sealed record MobSpawnRuleDef(string MobKey, (ushort Map, ushort X, ushort Y)[] Rooms,
+        int MaxAlive, ushort[] CapMaps, int FleeBelowPct = 0, int SpawnChance = 0, int DeathCooldownSec = 0);
+
+    public static IReadOnlyDictionary<string, MobSpawnRuleDef> MobSpawnRules { get; private set; } =
+        new Dictionary<string, MobSpawnRuleDef>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Is the global spawn HP jitter on (the <c>*</c> row)? RTK's mob_on_spawn.lua is the default
+    /// hook for every creature without its own, and it does exactly one thing: vary max HP.</summary>
+    public static bool MobHpJitter { get; private set; }
+
+    /// <summary>A mythic boss's survival kit (RTK mob_ai_mythic): it can shrug off a killing blow, break its
+    /// own paralysis, and regenerate while its Last Stand runs. See game-data/MobBosses.csv.</summary>
+    public sealed record MobBossDef(string MobKey, int HealAmount, int HealChance, int ParaBreakChance,
+        int LastStandMs, int Anim, int Sound);
+
+    public static IReadOnlyDictionary<string, MobBossDef> MobBosses { get; private set; } =
+        new Dictionary<string, MobBossDef>(StringComparer.OrdinalIgnoreCase);
+
     // Class path-hall doorways (Session.TryPathHallWarp), keyed by the hall map. Sanctum[0..3] indexed by
     // Character.Alignment (Unaligned/Kwisin/Mingken/Ohaeng). See PathHalls.csv.
     public sealed record PathHallDef(int BaseClass, ushort GuildMap, ushort[] Sanctum);
@@ -660,6 +746,17 @@ public static partial class Content
     // existed), 2 adds Major, 3 adds Epic. The Major/Epic rows stay in MinorQuests.csv either way; this only
     // gates whether the "which type of quest?" menu is offered at all. See Server/MinorQuest.cs.
     public static int MinorQuestTiers => (int)Tune("MinorQuestTiers", 1);
+    // Hours a path leader makes you wait after COMPLETING a minor quest before handing out another. RTK starts
+    // its cooldown only when you ABANDON one, which leaves the completion path with no limit at all: turn one
+    // in, say "quest" again, and the next is yours — an exp faucet whose only cost is one kill (the reward
+    // scales with level, so it's worth more the higher you climb). 24 = one quest per real-world day, per the
+    // user (2026-08-12). Real hours, not game time: the timer is a unix-second deadline like every other
+    // persisted cooldown, so logging out doesn't pause it. 0 restores RTK's behavior.
+    //
+    // The ABANDON cooldown stays on RTK's own per-tier value (Minor = 2h) rather than following this. It
+    // gates a quest you dropped without being paid for, so it isn't part of the reward rate limit — and
+    // making a failed quest cost a full day would just teach players to sit on one they can't finish.
+    public static int MinorQuestCooldownHours => (int)Tune("MinorQuestCooldownHours", 24);
     // (SilentDelReason is GONE, 2026-08-07. It existed to probe whether an out-of-range 0x10 reason was the
     // client's silent path; the live answer was no — 15 renders "<item> removed.", the same line reason 0
     // gives, so the handler clamps/defaults and NO reason byte is silent. Every path that used it has since
@@ -786,6 +883,7 @@ public static partial class Content
     {
         Maps = LoadMaps(ResolvePath("P1998_MAP_INDEX", "map_index.csv"));
         MobFleeOverrides = LoadMobFlees(ResolvePath("P1998_MOB_FLEES", "MobFlees.csv"));   // BEFORE Mobs: LoadMobs folds it in
+        MobStationaryOverrides = LoadMobStationary(ResolvePath("P1998_MOB_STATIONARY", "MobStationary.csv"));   // likewise
         Mobs = LoadMobs(ResolvePath("P1998_MOBS", "mobs.csv"));
         Items = LoadItems(ResolvePath("P1998_ITEMS", "Items.csv"));
         Warps = LoadWarps(ResolvePath("P1998_WARPS", "Warps.csv"));   // needs Maps
@@ -797,12 +895,21 @@ public static partial class Content
         // assign had that tear window).
         AreaSpawns = LoadAreaSpawns(ResolvePath("P1998_AREASPAWNS", "AreaSpawns.csv"))
             .Concat(LoadAreaSpawns(ResolvePath("P1998_AREASPAWNS_TRAP", "AreaSpawnsTrap.csv")))
+            // …plus the crafting nodes (ore veins, ginko trees), which come from RTK's OTHER two spawner
+            // NPCs — mining/woodcuttingSpawnHandler.lua. Kept in their own file for the same reason as the
+            // trap rows: re-running the main extractor must not be able to drop them.
+            .Concat(LoadAreaSpawns(ResolvePath("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv")))
             .ToList();
-        var npcs = LoadNpcs(ResolvePath("P1998_NPCS", "NPCs.csv"));   // needs Maps
+        Shared.EraCalendar.Reload();   // era date + windows live in Shared (login server shares them)
+        // BEFORE LoadNpcs, which now asks it whether an NPC existed yet (NPCs.csv EraFeature). Left where it
+        // was, this read the PREVIOUS calendar on @reload, so moving EraDate and reloading placed NPCs by the
+        // old date — with nothing to say so, since a wrong era never throws.
+        var npcs = LoadNpcs(ResolvePath("P1998_NPCS", "NPCs.csv"));   // needs Maps + the era calendar
         _npcById = npcs.ToDictionary(n => n.Id);   // assign the index BEFORE the public list, so a reader that
         Npcs = npcs;                               // sees the new Npcs always sees the matching new _npcById
         MinorQuests = LoadMinorQuests(ResolvePath("P1998_MINORQUESTS", "MinorQuests.csv"));
         ShopStock = LoadShopStock(ResolvePath("P1998_SHOPSTOCK", "ShopStock.csv"));
+        ShopBuysFrom = LoadShopBuysFrom(ResolvePath("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"));
         Paths = LoadPaths(ResolvePath("P1998_PATHS", "Paths.csv"));
         LevelExp = LoadLevelExp(ResolvePath("P1998_LEVELEXP", "LevelExp.csv"));
         SpellLevelOverrides = LoadSpellLevels(ResolvePath("P1998_SPELL_LEVELS", "SpellLevels.csv"));   // BEFORE Spells: LoadSpells reads it
@@ -835,7 +942,6 @@ public static partial class Content
         MapMeta = LoadMapMeta(ResolvePath("P1998_MAPS_FULL", "Maps.csv"));   // region + warpOut for Gateway
         MobDrops = LoadMobDrops(ResolvePath("P1998_MOB_DROPS", "MobDrops.csv"));
         CraftingToggleOverrides = LoadCraftingToggles(ResolvePath("P1998_CRAFTING_TOGGLES", "CraftingToggles.csv"));
-        Shared.EraCalendar.Reload();   // era date + windows live in Shared (login server shares them)
         WarpQuestLocks = LoadWarpQuestLocks(ResolvePath("P1998_WARP_QUEST_LOCKS", "WarpQuestLocks.csv"));
         var mythicCaves = LoadMythicCaves(ResolvePath("P1998_MYTHIC_CAVES", "MythicCaves.csv"));
         MythicCaveTiles = mythicCaves   // assign the derived tile index BEFORE the public list (same reason as Npcs/_npcById)
@@ -852,6 +958,11 @@ public static partial class Content
         _bgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
         Inns = LoadInns(ResolvePath("P1998_INNS", "Inns.csv"));
         ForageAreas = LoadForageAreas(ResolvePath("P1998_FORAGE", "ForageAreas.csv"));
+        HarvestNodes = LoadHarvestNodes(ResolvePath("P1998_HARVEST", "HarvestNodes.csv"));
+        MobSpells    = LoadMobSpells(ResolvePath("P1998_MOB_SPELLS", "MobSpells.csv"));
+        MobChatter   = LoadMobChatter(ResolvePath("P1998_MOB_CHATTER", "MobChatter.csv"));
+        MobSpawnRules = LoadMobSpawnRules(ResolvePath("P1998_MOB_SPAWN_RULES", "MobSpawnRules.csv"));
+        MobBosses    = LoadMobBosses(ResolvePath("P1998_MOB_BOSSES", "MobBosses.csv"));
         PathHalls = LoadPathHalls(ResolvePath("P1998_PATHHALLS", "PathHalls.csv"));
         GatewayRegions = LoadGatewayGates(ResolvePath("P1998_GATEWAY", "GatewayGates.csv"));
         WorldDests = LoadWorldDests(ResolvePath("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"));
@@ -868,6 +979,7 @@ public static partial class Content
         ItemParams = LoadKeyedRows(ResolvePath("P1998_ITEM_PARAMS", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
         if (!ItemScript.Load(ResolvePath("P1998_ITEM_VERBS", "item_verbs.lua"))) rejected.Add("item_verbs.lua");
         if (!NpcScript.Load(ResolvePath("P1998_NPC_DIALOG", "npc_dialog.lua"))) rejected.Add("npc_dialog.lua");
+        if (!MobScript.Load(ResolvePath("P1998_MOB_AI", "mob_ai.lua"))) rejected.Add("mob_ai.lua");
         RejectedScripts = rejected;
         // Phase-1 spell-DATA tables (extracted from Content.cs literals; see re/extract_spell_tables.py).
         PetSpells = LoadPets(ResolvePath("P1998_PETS", "Pets.csv"));
@@ -883,7 +995,7 @@ public static partial class Content
         (_mapCells, var mapCellCount) = LoadMapCells(ResolvePath("P1998_MAP_CELLS", "MapCells.csv"));
         MapCellCount = mapCellCount;
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks, {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check game-data/mobs.csv)"
                      : ""));
@@ -1363,6 +1475,15 @@ public static partial class Content
     private static readonly HashSet<string> UniversalBaseSpells = new(StringComparer.OrdinalIgnoreCase) { "soothe" };
     public static bool IsUniversalBaseSpell(SpellDef sp) => UniversalBaseSpells.Contains(sp.Key);
 
+    // Spells granted by ONE specific NPC flow and by nothing else — never teachable at a path trainer, never
+    // handed out by an @spells rebuild. Propose comes with the engagement ring you buy at the chapel
+    // (ChapelAbility.BuyRing), which is its real cost and its real gate; SpellCosts' doc has always said so,
+    // but the archive merge nonetheless wrote propose rows for Mage and Poet (level 11), and a SpellCosts row
+    // is exactly what makes SpellsForClass offer a spell — so path leaders were teaching it. Those rows stay
+    // in the CSV as the relearn-cost record they were extracted as; this is the gate.
+    private static readonly HashSet<string> NpcGrantedSpells = new(StringComparer.OrdinalIgnoreCase) { "propose" };
+    public static bool IsNpcGrantedOnly(SpellDef sp) => NpcGrantedSpells.Contains(sp.Key);
+
     /// <summary>Whether class <paramref name="pathId"/> may (re)learn <paramref name="sp"/> from a tutor NPC —
     /// the gate for the "Learn Secret" menu, distinct from the universal <c>@spells</c> grant. A universal
     /// base spell (Soothe) is granted to every class at the newbie quest, but if FORGOTTEN it can only be
@@ -1384,8 +1505,9 @@ public static partial class Content
     /// excluded, so an unaligned character never gets the Kwisin/Mingken/Ohaeng variants (which often share a
     /// display name → looked like duplicates). Deduped by display name as a safety net, preferring the
     /// exact-alignment version over a universal one. Ordered by level then name so the spellbook fills in a
-    /// sensible order. Spells switched off by an era gate (see <see cref="IsOutOfEraSplitTrap"/>) are dropped
-    /// outright, so they never reach a tutor menu, the character rebuild, or the Divine Secret preview.
+    /// sensible order. Spells switched off by an era gate (see <see cref="IsOutOfEraSplitTrap"/>) or owned by
+    /// a single NPC flow (see <see cref="IsNpcGrantedOnly"/> — Propose) are dropped outright, so they never
+    /// reach a tutor menu, the character rebuild, or the Divine Secret preview.
     /// <para><paramref name="mark"/> is the character's subpath rank, and gates the Il/Ee/Sam san secrets:
     /// they carry <c>SplMark</c> 1-3 and are pinned to <see cref="MarkSpellLevel"/>, so a level-99 base
     /// character sees none of them and an Ee san sees ranks 1 and 2 (ranks are cumulative — you keep what Il
@@ -1410,7 +1532,7 @@ public static partial class Content
                   : SpellCosts.TryGetValue(s.Key, out var perClass)
                       ? (perClass.TryGetValue(basePath, out var cost) ? s with { Level = cost.Level } : null)
                       : (s.PathId == basePath || s.PathId == 0 ? s : null))
-              .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s))
+              .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s) && !IsNpcGrantedOnly(s))
               .Select(s => s!)
               .GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .Select(g => g.OrderByDescending(s => s.Alignment == alignment).ThenBy(s => s.Level).First())
@@ -1799,6 +1921,28 @@ public static partial class Content
         return flees;
     }
 
+    private static Dictionary<string, bool> MobStationaryOverrides = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>game-data/MobStationary.csv (`Identifier,Stationary`) — creatures that never take a step.
+    /// <para>Our world gives every spawned mob the same idle wander (World.Materialize sets
+    /// <c>Wander = true</c>), because RTK's per-mob movement lives in each mob's own AI script rather than in
+    /// its DB row: <c>Mobs/captured_leviathan.lua</c>'s <c>move</c> only turns the sprite on the spot, never
+    /// calls <c>mob:move()</c>. A caged captive that strolls two tiles out of its pen looks broken AND breaks
+    /// the quest tile that has to find it (see Server/LeviathanQuest.cs). Sparse, same shape and reasoning as
+    /// <see cref="LoadMobFlees"/>: kept out of mobs.csv so re-running the mob extractor can't drop it, and it
+    /// hot-reloads with @reload.</para></summary>
+    private static Dictionary<string, bool> LoadMobStationary(string? path)
+    {
+        var still = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("Identifier", ""));
+            if (key.Length == 0) continue;
+            still[key] = col.GetValueOrDefault("Stationary", "0").Trim() != "0";
+        }
+        return still;
+    }
+
     private static List<MobDef> LoadMobs(string? path)
     {
         var mobs = new List<MobDef>();
@@ -1827,7 +1971,8 @@ public static partial class Content
             int.TryParse(col.GetValueOrDefault("MobArmor", "0"), out var ac);
             int.TryParse(col.GetValueOrDefault("Grace", "0"), out var grace);
             mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace,
-                Flees: MobFleeOverrides.GetValueOrDefault(key)));
+                Flees: MobFleeOverrides.GetValueOrDefault(key),
+                Stationary: MobStationaryOverrides.GetValueOrDefault(key)));
         }
         return mobs;
     }
@@ -1843,6 +1988,25 @@ public static partial class Content
             if (keys.Length > 0) stock[id] = keys;
         }
         return stock;
+    }
+
+    // ShopBuysFrom.csv is ShopStock.csv's shape with one addition: a lone "-" is an EXPLICIT empty list —
+    // "this shop buys nothing" (RTK's chapel, with boss-drop sales off, and the druid who won't take your
+    // meat). It has to survive as a present-but-empty entry, because an ABSENT key means the opposite:
+    // "no list known, so buy anything" (see ShopBuysFrom / Shops.BuysFrom).
+    private static Dictionary<string, string[]> LoadShopBuysFrom(string? path)
+    {
+        var lists = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var id = Clean(col.GetValueOrDefault("NpcIdentifier", ""));
+            if (string.IsNullOrEmpty(id)) continue;
+            lists[id] = Clean(col.GetValueOrDefault("ItemKeys", ""))
+                .Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Where(k => k != "-")
+                .ToArray();
+        }
+        return lists;
     }
 
     // MobDrops.csv "Loot"/"RareLoot" cells are pipe-separated "item:amount:rate" / "item:rate" triples/pairs
@@ -2123,10 +2287,18 @@ public static partial class Content
             if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"npc{id}" : key;
             // Enabled defaults ON: a blank/absent column means the NPC spawns (only an explicit 0 disables).
             bool enabled = col.GetValueOrDefault("Enabled", "1").Trim() != "0";
+            // ...and an NPC who did not EXIST yet at the target date doesn't spawn either. This is the one era
+            // gate that removes a being rather than muting one, and it is deliberately narrow: it is for an NPC
+            // whose whole reason to stand there postdates us (Yarlof arrived with the 2005 Druid bouquet quest),
+            // NOT for an old NPC who gained a new quest — gate that in his script and leave him standing. Blank
+            // is the overwhelming majority and means undated, and an unknown key reads as present, so a typo
+            // here can only leave someone in the world, never silently delete him.
+            var eraFeature = Clean(col.GetValueOrDefault("EraFeature", ""));
+            if (eraFeature.Length > 0 && !Era.Has(eraFeature)) enabled = false;
             npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
                 IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
                 Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
-                MoveTime: move, ReturnDistance: leash, Enabled: enabled));
+                MoveTime: move, ReturnDistance: leash, Enabled: enabled, EraFeature: eraFeature));
         }
         return npcs;
     }
@@ -2397,6 +2569,115 @@ public static partial class Content
                 I("Max"), I("MinQty"), I("MaxQty")));
         }
         return list;
+    }
+
+    // HarvestNodes.csv. Weighted cells are `key:number` pipe-separated; a cell with no number defaults to
+    // weight 1 so a single-item table can be written as just the key.
+    private static Dictionary<string, HarvestNodeDef> LoadHarvestNodes(string? path)
+    {
+        var d = new Dictionary<string, HarvestNodeDef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var node = Clean(col.GetValueOrDefault("NodeMob", ""));
+            if (node.Length == 0) continue;
+            int I(string k) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : 0;
+            (string, double)[] Weighted(string k) =>
+                Clean(col.GetValueOrDefault(k, "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(e => e.Split(':'))
+                    .Select(p => (p[0].Trim(),
+                                  p.Length > 1 && double.TryParse(p[1], System.Globalization.NumberStyles.Float,
+                                      System.Globalization.CultureInfo.InvariantCulture, out var w) ? w : 1))
+                    .Where(t => t.Item1.Length > 0).ToArray();
+
+            d[node] = new HarvestNodeDef(node,
+                Clean(col.GetValueOrDefault("Tools", "")).Split('|', StringSplitOptions.RemoveEmptyEntries),
+                Clean(col.GetValueOrDefault("Skill", "")),
+                Weighted("Yield"), I("Rolls"), Weighted("Bonus"),
+                Clean(col.GetValueOrDefault("BreakChance", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => int.TryParse(s, out var v) ? v : 0).ToArray(),
+                Clean(col.GetValueOrDefault("Message", "")));
+        }
+        return d;
+    }
+
+    // MobSpells.csv — several rows per mob, kept in file order (the roll walks them and takes the first hit).
+    private static Dictionary<string, MobSpellDef[]> LoadMobSpells(string? path)
+    {
+        var d = new Dictionary<string, List<MobSpellDef>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("MobKey", ""));
+            if (key.Length == 0) continue;
+            int I(string k, int dflt = 0) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : dflt;
+            d.TryAdd(key, new List<MobSpellDef>());
+            d[key].Add(new MobSpellDef(key,
+                Clean(col.GetValueOrDefault("Name", "")), Clean(col.GetValueOrDefault("Effect", "")).ToLowerInvariant(),
+                I("Chance", 1), I("EveryMs"), I("Range", 1), I("Amount"),
+                Clean(col.GetValueOrDefault("Stat", "")), Clean(col.GetValueOrDefault("Category", "")),
+                I("DurationMs"), I("Anim"), I("Sound"), Clean(col.GetValueOrDefault("Say", ""))));
+        }
+        return d.ToDictionary(e => e.Key, e => e.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    // MobSpawnRules.csv. The "*" row is the global default rather than a mob (see MobHpJitter).
+    private static Dictionary<string, MobSpawnRuleDef> LoadMobSpawnRules(string? path)
+    {
+        var d = new Dictionary<string, MobSpawnRuleDef>(StringComparer.OrdinalIgnoreCase);
+        MobHpJitter = false;
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("MobKey", ""));
+            if (key.Length == 0) continue;
+            if (key == "*") { MobHpJitter = Clean(col.GetValueOrDefault("HpJitter", "")) == "1"; continue; }
+
+            var rooms = Clean(col.GetValueOrDefault("Rooms", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(e => e.Split(':'))
+                .Where(p => p.Length == 3)
+                .Select(p => (ushort.TryParse(p[0], out var mp) ? mp : (ushort)0,
+                              ushort.TryParse(p[1], out var x) ? x : (ushort)0,
+                              ushort.TryParse(p[2], out var y) ? y : (ushort)0))
+                .Where(t => t.Item1 != 0).ToArray();
+            int.TryParse(col.GetValueOrDefault("MaxAlive"), out var max);
+            var capMaps = Clean(col.GetValueOrDefault("CapMaps", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => ushort.TryParse(s, out var v) ? v : (ushort)0).Where(v => v != 0).ToArray();
+            int.TryParse(col.GetValueOrDefault("FleeBelowPct"), out var fleePct);
+            int.TryParse(col.GetValueOrDefault("SpawnChance"), out var chance);
+            int.TryParse(col.GetValueOrDefault("DeathCooldownSec"), out var cooldown);
+            if (rooms.Length == 0 && max <= 0 && fleePct <= 0 && chance <= 0 && cooldown <= 0) continue;
+            d[key] = new MobSpawnRuleDef(key, rooms, max, capMaps, fleePct, chance, cooldown);
+        }
+        return d;
+    }
+
+    private static Dictionary<string, MobBossDef> LoadMobBosses(string? path)
+    {
+        var d = new Dictionary<string, MobBossDef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("MobKey", ""));
+            if (key.Length == 0) continue;
+            int I(string k, int dflt = 0) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : dflt;
+            d[key] = new MobBossDef(key, I("HealAmount"), I("HealChance", 2), I("ParaBreakChance", 2),
+                                    I("LastStandMs"), I("Anim"), I("Sound"));
+        }
+        return d;
+    }
+
+    // MobChatter.csv — Lines is |-separated.
+    private static Dictionary<string, MobChatterDef> LoadMobChatter(string? path)
+    {
+        var d = new Dictionary<string, MobChatterDef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("MobKey", ""));
+            if (key.Length == 0) continue;
+            var lines = Clean(col.GetValueOrDefault("Lines", "")).Split('|', StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length == 0) continue;
+            int.TryParse(col.GetValueOrDefault("Chance"), out var chance);
+            byte.TryParse(col.GetValueOrDefault("Channel"), out var channel);
+            d[key] = new MobChatterDef(key, Math.Max(1, chance), channel, lines);
+        }
+        return d;
     }
 
     private static Dictionary<ushort, PathHallDef> LoadPathHalls(string? path)

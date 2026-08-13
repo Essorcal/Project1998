@@ -12,6 +12,13 @@ public sealed class Mob
     public uint   Id;
     public string Name   = "";
     public string Key    = "";  // MobDef identifier ("squirrel", "white_rabbit") — used for quest kill-matching
+
+    // Gathering-node claim (Session.Harvest; RTK AI/crafting/*.lua's registry["attacker"]/["attackerTime"]).
+    // A node belongs to the first harvester for two minutes: nobody else's tool works on it, and when the
+    // claim lapses the node heals back to full so a half-mined vein is never left chipped. Meaningless for
+    // ordinary creatures, which never set it.
+    public uint   HarvestClaimBy;
+    public long   HarvestClaimUntil;   // Environment.TickCount64 ms; 0 = unclaimed
     public ushort Sprite;      // creature graphic id — wire as u16 BE in the 0x33 type-1 appearance
     public byte   Extra;       // the trailing appearance byte (state/variant; 0 = default)
     public byte   Color;       // 0x07 palette/recolor byte (world mobs carry their registry colour)
@@ -172,6 +179,62 @@ public sealed class Mob
     // World.Tick scans for a nearby player each move tick (RTK mob.c mob_find_target, gated on the engine-level
     // MobBehavior==1 "type", which is separate from and runs before the mob_ai_normal.lua script ever executes).
     public uint TargetId;
+
+    // ---- threat (RTK AI/threat.lua) --------------------------------------------------------------
+    // How much grief each player has caused this creature, accumulated from damage dealt (RTK's
+    // swing.lua `player:addThreat(mob.ID, damage)` and global_attack.lua's `threat + damage`). RTK's
+    // mob_ai_normal re-runs threat.calcHighestThreat on every move and attack, so a mob fights whoever has
+    // hurt it MOST rather than whoever hurt it LAST — which is the whole reason a group can peel a mob off
+    // the person who pulled it. Null until something actually lands a hit: there are ~21k mobs in the world
+    // and almost none of them are ever in a fight, so this must not allocate up front.
+    public Dictionary<uint, long>? Threat;
+
+    /// <summary>Add to a player's threat on this creature. Ignores 0 ids (debug/engine damage with no
+    /// attacker) so those can never win a retarget.</summary>
+    public void AddThreat(uint playerId, long amount)
+    {
+        if (playerId == 0 || amount <= 0) return;
+        Threat ??= new Dictionary<uint, long>();
+        Threat[playerId] = Threat.GetValueOrDefault(playerId) + amount;
+    }
+
+    /// <summary>This player's threat on the creature; 0 if they have never touched it.</summary>
+    public long ThreatOf(uint playerId) =>
+        Threat is not null && Threat.TryGetValue(playerId, out var v) ? v : 0;
+
+    /// <summary>Wipe one player's grudge (RTK <c>setThreat(mob.ID, 0)</c>) — what Amnesia does, and what a
+    /// passive creature does when its quarry leaves the map.</summary>
+    public void ClearThreat(uint playerId) => Threat?.Remove(playerId);
+
+    // Amnesia (RTK Spells/rogue/amnesia.lua): the mob has FORGOTTEN one specific player — their threat is
+    // gone and it will not target them again until this lapses, though it still fights everyone else
+    // normally. Hitting it again breaks the spell (RTK on_takedamage_while_cast). 0 = not amnesiac.
+    public uint AmnesiaBy;
+    public long AmnesiaUntil;   // Environment.TickCount64 ms
+
+    /// <summary>Is this player currently forgotten by this creature?</summary>
+    public bool HasForgotten(uint playerId, long nowMs) =>
+        AmnesiaBy != 0 && AmnesiaBy == playerId && nowMs < AmnesiaUntil;
+
+    /// <summary>Earliest tick this creature may cast again (MobSpells.csv <c>EveryMs</c>). RTK paces its
+    /// casters off the wall clock (<c>os.time() % 15 == 0</c>), which fires for every boss in the world on
+    /// the same second; a per-mob timer is the same cadence without the thundering herd.</summary>
+    public long SpellReadyAt;
+
+    // Mythic boss survival (RTK mob_ai_mythic + Spells/last_stand.lua). LastStandUntil is the 8-second window
+    // a boss enters the first time a blow would kill it: it scrubs its own curses, PARALYSES ITSELF and heals
+    // every tick until the window closes. SecondWindUsed is RTK's `mob.magic == 100` gate — the spell costs
+    // 100 magic and nothing gives it back, so a boss gets exactly one per life.
+    public long LastStandUntil;
+    public bool SecondWindUsed;
+    public long ParaBreakAt;    // next tick this boss may heal through a hold (RTK's `os.time() % 3` cadence)
+    public long CurseShrugAt;   // next tick this boss may scrub its own curses (RTK's `os.time() % 10`)
+
+    /// <summary>Walking home after giving up a chase (RTK <c>mob_ai_basic.move</c>'s <c>mob.returning</c>).
+    /// A creature that broke off a pursuit is standing outside its wander leash, where every wander candidate
+    /// tile fails the leash test — without this it would never move again. While it is set the creature
+    /// sprints back to its spawn tile (RTK <c>mob.newMove = 250</c>) and ignores the leash on the way.</summary>
+    public bool Returning;
 
     // The sideways shuffle a blocked chaser is currently committed to (World.StepMobToward): which way, and
     // how many more tiles of it are left. 0xFF = not shuffling. This exists ONLY to vary the length of the
