@@ -1796,7 +1796,20 @@ public sealed partial class Session
         Log.Info($"      Bladestorm(lua) -> trap placed at ({_char.X},{_char.Y}), expires in {lifetimeMs}ms");
     }
 
-    // Pet Summon core (see CastPetSummon): spawn this pet spell's mob one tile ahead (or on our tile if blocked).
+    // Pet Summon core (see CastPetSummon): spawn this pet spell's mob on the first free tile of a CLOCKWISE
+    // sweep that starts at the direction the caster is facing — front, then right, then behind, then left
+    // (facing dirs are 0=N 1=E 2=S 3=W, so clockwise is simply +1). With all four cardinal neighbours taken,
+    // the summon lands ON the poet's own tile and stacks there; the cap (Content.PetCapFor) is 4/6/8, so a
+    // high-level poet WILL stack, by design.
+    //
+    // This replaces a front-tile-or-stack rule, which is what RTK's cotw_SpawnSetThreat does. Ported straight,
+    // it meant a poet summoning four pets in a row got the first one in front and the other three piled on his
+    // own tile — the ring you actually want (and the reason summons work as a barricade) took four deliberate
+    // turns to build. Sweeping the neighbours instead builds it in one place, and the front tile is still
+    // preferred, so a single summon lands exactly where it always did.
+    //
+    // Each pet arrives facing back at the poet — computed from ITS OWN placement direction, not the caster's,
+    // so the one on your left looks right at you rather than copying whichever way you happened to be turned.
     internal int  LuaPetCount => _world.PetCountFor(_char.Map, _char.Id);
     internal int  LuaPetCap   => Content.PetCapFor(_char.Level);
     internal int  LuaPetMana(SpellDef sp)      => Content.PetSpellFor(sp) is (string _, int _, int m, int _) ? m : 0;
@@ -1806,16 +1819,25 @@ public sealed partial class Session
         if (Content.PetSpellFor(sp) is not (string mobKey, int _, int _, int _)) return false;
         var def = Content.MobByKey(mobKey);
         if (def is null) return false;
-        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
-        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
-        int fx2 = _char.X + dx, fy2 = _char.Y + dy;
         var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        bool frontFree = fx2 >= 0 && fy2 >= 0 && fx2 < _char.MapXs && fy2 < _char.MapYs
-                          && (md is null || !md.BlockedMove(fx2, fy2, _facing))
-                          && _world.MobAt(_char.Map, fx2, fy2) is null
-                          && _world.PeerAt(_char.Map, fx2, fy2) is null;
-        ushort sx = frontFree ? (ushort)fx2 : _char.X, sy = frontFree ? (ushort)fy2 : _char.Y;
-        var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3), color: def.Color,
+
+        ushort sx = _char.X, sy = _char.Y;           // fallback: stacked on the poet, once the ring is full
+        byte placeDir = (byte)((_facing + 2) & 3);   // …and a stacked pet just looks the way the poet came from
+        for (int step = 0; step < 4; step++)
+        {
+            byte dir = (byte)((_facing + step) & 3);
+            int tx = _char.X + dir switch { 1 => 1, 3 => -1, _ => 0 };
+            int ty = _char.Y + dir switch { 0 => -1, 2 => 1, _ => 0 };
+            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
+            if (md is not null && md.BlockedMove(tx, ty, dir)) continue;
+            if (_world.MobAt(_char.Map, tx, ty) is not null) continue;
+            if (_world.PeerAt(_char.Map, tx, ty) is not null) continue;
+            sx = (ushort)tx; sy = (ushort)ty;
+            placeDir = (byte)((dir + 2) & 3);   // face back at the poet from wherever it ended up
+            break;
+        }
+
+        var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: placeDir, color: def.Color,
                                   exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
         mob.OwnerId = _char.Id;
         mob.Summoned = true;   // conjured, so World.Tick DESPAWNS it at PetExpiresAt (an endeared mob reverts instead)

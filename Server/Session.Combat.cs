@@ -112,11 +112,18 @@ public sealed partial class Session
         var wmob = _world.MobAt(_char.Map, fx, fy);
         if (wmob is not null)
         {
-            // Your own creature is not a target. Without this, walking up to a mob you just Endear'd and
-            // holding the attack key killed it — the charm looked like it had done nothing at all — and a
-            // CotW pet standing between you and a monster ate the swing meant for the monster. Silent, like
-            // every other dropped swing: the animation already played.
-            if (wmob.OwnerId == _char.Id) return;
+            // YOUR OWN CREATURE IS A LEGITIMATE TARGET. There used to be an `if (wmob.OwnerId == _char.Id)
+            // return;` here, so a swing at anything you owned was silently eaten. It was well-intentioned —
+            // a pet standing between you and a monster shouldn't soak the swing meant for the monster — but
+            // it made two things unplayable:
+            //   * a CHARM weapon could not kill anything. Its 4% on_swing proc endears whatever you are
+            //     facing (see FireWeaponProcs / the `endear` verb) for 40-45s, and for all of that time
+            //     every swing at the mob returned right here. Re-procs refreshed it. The weapon read as
+            //     "melee does nothing", which is exactly what was reported.
+            //   * you could not put down your own Call of the Wild summons, so a badly-placed pet was a
+            //     wall you had to wait out.
+            // A pet in the way is the price of placing it there — that is what makes summons a barricade.
+            // Nothing else changes: TryDamage already let OTHER players hit your pets.
 
             // Prey (rabbit / blue rooster) bolts at being swung at, landed or not — this is BEFORE the hit roll
             // on purpose, since a whiff is exactly as alarming as a connect. No-op for every other creature.
@@ -133,11 +140,24 @@ public sealed partial class Session
                 Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg}{(crit ? " (CRIT)" : "")} -> {wmob.Hp}/{wmob.MaxHp}");
                 if (died)
                 {
-                    uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
-                    AwardKillExp(reward, _char.Map, wmob.X, wmob.Y);                             // killer + any group member in range (levels too)
-                    SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
-                    Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
-                    TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
+                    // A CONJURED creature (Mob.Summoned — a CotW pet, a Giasomo bird) pays NOTHING when it
+                    // dies: no exp, no quest tally. It was made out of mana seconds ago, and now that its
+                    // owner can hit it, paying out would be a summon-and-kill exp loop. An ENDEARED creature
+                    // is a real world mob that was always standing there, so it pays normally — charming it
+                    // first can't be worth more than walking up and killing it.
+                    if (wmob.Summoned)
+                    {
+                        SendMessage($"You defeated {wmob.Name}.");
+                        Log.Info($"   -> summoned mob {wmob.Id} '{wmob.Name}' destroyed (conjured — no exp)");
+                    }
+                    else
+                    {
+                        uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
+                        AwardKillExp(reward, _char.Map, wmob.X, wmob.Y);                             // killer + any group member in range (levels too)
+                        SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
+                        Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
+                        TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
+                    }
                 }
             }
             return;

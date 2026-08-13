@@ -845,8 +845,14 @@ public sealed class World
             _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(victimId)); } catch { } });
             // The owner gets the kill: RTK credits a mob's damage to map_id2sd(mob->owner) the same way
             // (clif.c's `tmob->owner < MOB_START_NUM` lookup), so a pet kill counts as yours.
-            uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
-            PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y);
+            // …but NOT for a conjured victim. Now that a poet's pets will turn on a sibling he has attacked,
+            // paying exp here would be the same summon-and-kill loop Session.ResolveSwing refuses, just
+            // routed through a second pet. Same rule, same reason.
+            if (!victim.Summoned)
+            {
+                uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
+                PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y);
+            }
             return;
         }
         lock (_lock) if (victim.Alive && victim.TargetId == 0) victim.TargetMobId = attacker.Id;
@@ -2138,7 +2144,8 @@ public sealed class World
                             // Rule 2, recomputed from scratch every tick (RTK's move and attack branches both
                             // re-walk the threat list; there is no sticky target) so the pet picks up a new
                             // attacker the moment its current one dies, leashes off, or is out-threatened.
-                            // Only wild mobs qualify: never an NPC, never another player's pet, never a sibling.
+                            // Never an NPC, and never the pet itself — everything else is fair game, gated
+                            // purely on threat (see the OWNED-CREATURE note below).
                             //
                             // A PET IS REACTIVE, NOT A BODYGUARD, and it fights exactly two kinds of creature:
                             //
@@ -2156,13 +2163,21 @@ public sealed class World
                             // makes the corner-wall real: stand in a corner with two summons and nothing moves
                             // until the first hit lands, in either direction.
                             //
+                            // AN OWNED CREATURE IS NOT EXEMPT. This used to filter `o.OwnerId == 0`, so a pet
+                            // would never look at another pet — and since the owner can now swing at his own
+                            // summons, that made hitting one of your own a fight nobody would join. The
+                            // threat test is the whole gate: a sibling only becomes a target once you have
+                            // actually hit it, so pets still ignore each other (and other poets' pets)
+                            // completely until someone starts something. `o.Id != mob.Id` keeps a pet from
+                            // picking ITSELF once you've hit it.
+                            //
                             // Bounded by AggroRadius because RTK's list comes from `getObjectsInArea` — the pet
                             // fights what is around it, and won't cross a dungeon to reach a high-threat mob it
                             // cannot see. Distance only breaks ties, so it still walks past a rabbit to reach
                             // whatever is actually killing you. The threat list is searched first and the
                             // attacker is the fallback, in RTK's order.
                             uint bit = owner.RecentMobAttackerId;
-                            var foe = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.OwnerId == 0
+                            var foe = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.Id != mob.Id
                                              && (o.ThreatOf(owner.PlayerId) > 0 || o.Id == bit)
                                              && Math.Max(Math.Abs(o.X - mob.X), Math.Abs(o.Y - mob.Y)) <= AggroRadius)
                                              .OrderByDescending(o => o.ThreatOf(owner.PlayerId))

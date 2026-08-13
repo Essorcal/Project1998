@@ -3114,9 +3114,14 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   - **Poet "Call of the Wild" pet-summon system** (28 of ~29 ids — 7 tiers `companion`/`assistant`/
     `protector`/`fighter`/`warrior`/`champion`/`avatar` x 4 alignment reskins each, level 68-99): spawns a
     real, correctly-statted shared-world `Mob` (via the pre-existing `Session.SummonWorldMob` — the same
-    helper `@summon` uses, so it already copies the full combat block) one tile ahead of the caster, falling
-    back to the caster's own tile if that's blocked/occupied by a mob or player — matching RTK
-    `cotw_SpawnSetThreat`'s exact fallback. Tagged `Mob.OwnerId` + `Mob.PetExpiresAt` (300s after cast, then a
+    helper `@summon` uses, so it already copies the full combat block) on the first free tile of a **clockwise
+    sweep starting at the direction the caster faces** — front, right, behind, left (facing dirs are 0=N 1=E
+    2=S 3=W, so clockwise is `+1`) — and, with all four cardinal neighbours taken, ON the caster's own tile,
+    where summons simply stack. Each pet arrives facing back at the poet, computed from its OWN placement
+    direction. *(Changed 2026-08-13. RTK `cotw_SpawnSetThreat` is front-tile-or-stack, and ported straight
+    that meant four summons in a row put one in front and piled the other three on the poet — building the
+    ring that makes pets a barricade took four deliberate turns. The sweep still prefers the front tile, so a
+    single summon lands exactly where it always did.)* Tagged `Mob.OwnerId` + `Mob.PetExpiresAt` (300s after cast, then a
     plain `World.DespawnMob` — no kill/loot/exp, same as riding a mob away), and capped at 4 concurrently
     alive pets (6 at level 90+, 8 at level 99 — `Content.PetCapFor`, RTK's `cotw_spawnCheck`), counted PER MAP
     via the new `World.PetCountFor` (matching RTK's own `getObjectsInMap` scope). The level-99 "avatar" tier
@@ -3126,7 +3131,23 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     its dismiss-all — both are later-server behaviour (4.95 pets leave play only by dying or timing out, and
     RTK's threat table isn't 4.95; see §"Call of the Wild: the controller and the Giasomo bird"). Pets heel
     and assist — see §"Pet AI" for the rules (that was added 2026-08-06; before it, an owned mob ran the plain
-    wander/aggro AI, so a `MobBehavior 0` pet just drifted off and never fought anything). The 29th
+    wander/aggro AI, so a `MobBehavior 0` pet just drifted off and never fought anything).
+
+    **A PET IS A LEGITIMATE TARGET — including its owner's** *(2026-08-13)*. `Session.ResolveSwing` used to
+    open with `if (wmob.OwnerId == _char.Id) return;`, silently eating any swing at something you owned. Two
+    things that broke: (1) **a Charm weapon could not kill anything** — its 4% `on_swing` proc endears the
+    faced mob for 40-45s (`WeaponProcs.csv` → the `endear` verb), and for all of that time every swing at it
+    returned right there, with re-procs refreshing the hold, so the weapon read as "melee does nothing";
+    (2) a badly-placed summon was a wall its own poet had to wait out. Other players could always hit your
+    pets — `World.TryDamage` never had an owner guard — so this only ever penalised the owner. Consequences
+    wired alongside it: the pet-assist foe filter in `World.Tick` dropped its `o.OwnerId == 0` clause (now
+    `o.Id != mob.Id`), so **hitting one of your own summons turns the rest of them on it** — the threat test
+    is the whole gate, so pets still ignore each other, and other poets' pets, until someone starts
+    something. The creature being beaten on does NOT retaliate, which is the pre-existing "a pet does not
+    fight back when something hits IT and only it" rule, unchanged. And a **conjured** victim (`Mob.Summoned`
+    — a CotW pet, a Giasomo bird) pays **no exp and no quest tally** on death, in both `ResolveSwing` and
+    `World.ApplyMobOnMobHit`, or summon-and-kill would be an exp loop. An *endeared* creature is a real world
+    mob that was always standing there, so it still pays normally. The 29th
     id, `cotw_giasomo_bird_poet`, asks for mob **807**, which exists nowhere — RTK's own SQL and our
     `mobs.csv` both put `giasomo_bird` at **600** and every other cotw id matches the SQL exactly, so it is an
     isolated typo (RTK's Lua flags itself: "I know this doesn't belong here, but the COTW structure is so
