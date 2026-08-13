@@ -121,15 +121,83 @@ public sealed partial class Session
         Log.Info($"   -> @hitsnd {id}");
     }
 
+    // The two channels need DIFFERENT packet bodies, because they leave the 0x19 handler at different points:
+    //
+    //   type 2 (midi) — handled inline at 0x450b1b and RETURNS at 0x450bab, before the TLV tail. It reads
+    //                   bgm(u16BE)@+3 and volume@+5 and nothing else, so a bare 6-byte body is correct.
+    //   type 1 (mp3)  — like type 0 (sfx), it falls THROUGH to the TLV tail at 0x450c48, which keeps reading
+    //                   past +5 to build a sound object whose MODE decides whether anything plays at all.
+    //                   Send it the 6-byte body and the tail walks off the end of the buffer, producing a
+    //                   garbage mode -> silence. It needs the same TLV that SendSound uses (see the long
+    //                   comment on Session.SendSound, which is live-verified): tagA=3, B0=0, C=1, skips 0.
+    //                   C=1 -> object mode 1 -> play wrapper 0x463ab0 branches to 0x463ae8 -> the play fn
+    //                   0x4798c0(id, type, gain, 0), and type==1 there is the sprintf("%03d.MP3") path.
+    //
+    // body[8] is the object MODE, and it is what decides play-once vs loop vs stop (jump table @0x463c88):
+    //
+    //   mode 0 -> 0x463ac9 -> StopSound(id, type) @0x479d20 — dispatches BY CHANNEL: type 1 stops the mp3
+    //             player (0x478eb0: XAudio cmd 3 STOP + cmd 9 INPUT_CLOSE), type 2 stops the midi player
+    //             ([0x4fd3ac] -> 0x4589b0), type 0 stops a matching sfx slot. This is our channel stop.
+    //   mode 1 -> 0x463ae8 -> 0x4798c0(id, type, gain, **0**)  — plays ONCE. This is what we sent first, and
+    //             it is why the mp3 didn't loop: the loop flag is a hardcoded 0 on that branch.
+    //   mode 2 -> 0x463b1d -> sub-dispatch on [obj+0x154] (= body[10], ctor 0x463950 <- ebp+0x24):
+    //                0 -> 0x463bb5: 0x4798c0(id, type, gain, **1**)  — plays LOOPED, then returns. <-- ours
+    //                1 -> 0x463b80: loop 0
+    //                2 -> 0x463b36: loop 1, plus a 0x41b5d0 follow-up we don't want
+    //             body[10] is already 0 in this layout, so mode 2 alone gets us a clean looping play.
+    private const byte ModeStop = 0x00, ModePlayOnce = 0x01, ModeLoop = 0x02;
+
+    // Which channel is currently playing (0 = none). The client runs the midi and mp3 players INDEPENDENTLY —
+    // starting one never stops the other, so switching channels without an explicit stop leaves both audible
+    // at once. We track the live channel and stop it before starting anything.
+    private byte _bgmType;
+
+    /// <summary>Stop one audio channel (1 = mp3, 2 = midi). The midi player has a dedicated stop path in the
+    /// handler itself (type 2 + bgm 0), so it needs no TLV; the mp3 goes through mode 0 = StopSound, which
+    /// ignores the id entirely on the type-1 branch (it stops the single player instance).</summary>
+    private void SendMusicStop(byte channel)
+    {
+        if (channel == 0) return;
+        var d = channel == 1
+            ? new List<byte> { 0x01, 0x03, 0x00, 0x01, 100, 0x03, 0x00, ModeStop, 0x00, 0x00, 0x00, 0x00 }
+            : new List<byte> { channel, 0x00, 0x00, 0x00, 100 };
+        SendMap(0x19, _gameInc++, d.ToArray(), $"music(0x19) STOP channel={channel}");
+    }
+
     private void SendMusic(ushort bgm, byte type = 2, byte volume = 100)
     {
+        // Silence whatever is already playing first — both when stopping and when switching tracks. Without
+        // this, an mp3 started over a midi (or vice versa) just layers on top of it.
+        if (_bgmType != 0 && (bgm == 0 || _bgmType != type)) SendMusicStop(_bgmType);
+
+        if (bgm == 0)
+        {
+            if (_bgmType == type) SendMusicStop(type);   // same channel: the switch above didn't cover it
+            _bgm = 0; _bgmType = 0;
+            return;
+        }
+
         var d = new List<byte>();
-        d.Add(type);            // +1 type/channel (2 = midi)
-        d.Add(0);               // +2 reserved
-        d.AddRange(Be(bgm));    // +3 track id (u16 BE)
-        d.Add(volume);          // +5 volume 0..100
+        if (type == 1)
+        {
+            d.Add(0x01);                              // +1 type 1 = mp3 (client loads "<bgm:D3>.MP3")
+            d.Add(0x03);                              // +2 P0=3 -> TLV tail starts after the 5-byte header
+            d.AddRange(Be(bgm));                      // +3 track id (u16BE)
+            d.Add(volume);                            // +5 volume (0..100 -> dB gain; 100 = 0 dB)
+            d.Add(0x03); d.Add(0x00); d.Add(ModeLoop);// +6..8 tagA=3, B0=0, mode=2 (loop; see table above)
+            d.Add(0x00); d.Add(0x00); d.Add(0x00);    // +9..11 B1=0, [obj+0x154]=0, skip=0 -> the loop=1 branch
+            d.Add(0x00);                              // +12 trailing pad
+        }
+        else
+        {
+            d.Add(type);            // +1 type/channel (2 = midi — returns before the TLV tail, so no tail)
+            d.Add(0);               // +2 reserved
+            d.AddRange(Be(bgm));    // +3 track id (u16 BE)
+            d.Add(volume);          // +5 volume 0..100
+        }
         SendMap(0x19, _gameInc++, d.ToArray(), $"music(0x19) bgm={bgm} type={type} vol={volume}");
         _bgm = bgm;
+        _bgmType = type;
     }
 
     // 0x20 = time-of-day (RTK clif_sendtime, clif.c:4524): hour(u8 0..23) year(u8). This server sent a
@@ -191,7 +259,7 @@ public sealed partial class Session
             if (pick is null) return;
         }
         var (bgm, type) = pick.Value;
-        if (bgm == _bgm) return;
+        if (bgm == _bgm && type == _bgmType) return;   // same song AND same channel — leave it playing
         SendMusic(bgm, type);
         Log.Info($"   -> music map {mapId} -> {bgm}.mid ({Content.TrackName(bgm)}) zone '{Content.BgmZoneOf(mapId)}' (0x19)");
     }
@@ -214,20 +282,47 @@ public sealed partial class Session
         PlayMapMusic(_char.Map);
     }
 
-    // "@music <name|id> [vol]" — play a specific track, by song name ("@music mist") or by raw id 1..12 (the
-    // stock client ships 12 midis, type 2); see MusicTracks.csv for the name table. vol is the raw volume
-    // byte the client log-scales: 100 is nominal "full", but the midi path compresses it, so values ABOVE 100
-    // (up to 255) push it louder. "@music 0" / "@music stop" stops the music. Bare "@music" lists the names.
+    // "@music <name|id> [vol] [mp3|midi]" — play a specific track, by song name ("@music mist") or by raw id
+    // (see MusicTracks.csv for the name table). vol is the raw volume byte the client log-scales: 100 is
+    // nominal "full", but the midi path compresses it, so values ABOVE 100 (up to 255) push it louder.
+    // "@music 0" / "@music stop" stops the music. Bare "@music" lists the names.
+    //
+    // The trailing "mp3"/"midi" token overrides the track's own channel (0x19 type), which is what makes this
+    // command a calibration tool for the SECOND music backend:
+    //
+    //   midi (type 2) — the 12 stock songs baked into NexusTK.snd. HARD-CAPPED at ids 1..12 by the client
+    //                   itself (`cmp si, 0xd / jge bail` at 0x4588b4), so no id above 12 will ever play here.
+    //   mp3  (type 1) — the client's XAudio MPEG decoder, fed a LOOSE FILE named "%03d.MP3" (the wide string
+    //                   at 0x4f3cc0) from the client's own directory. No id cap; the only guard is bgm > 0.
+    //                   Populate the files with re/extract_mus.py, which lifts them out of the 5.33 client's
+    //                   Mus000.dat and renumbers them onto this %03d naming.
+    //
+    // Looping is NOT yet confirmed on the mp3 path: the loop flag is the 4th arg of 0x4798c0, and which of
+    // the play-wrapper's branches we land in (0x463ab0, dispatching on the sound object's mode fields, which
+    // come from the 0x19 TLV) decides whether it is pushed as 1 or 0. Some branches pass 1, some pass 0 — so
+    // a track may simply stop at the end instead of repeating. That is what this command is for: find out.
     private void PlayMusicCmd(string text)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1)
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
+
+        // Pull the optional channel override out first, so it can trail any of the positional args.
+        byte? forceType = null;
+        for (int i = parts.Count - 1; i >= 0; i--)
+        {
+            if (parts[i].Equals("mp3", StringComparison.OrdinalIgnoreCase)) forceType = 1;
+            else if (parts[i].Equals("midi", StringComparison.OrdinalIgnoreCase)) forceType = 2;
+            else continue;
+            parts.RemoveAt(i);
+        }
+
+        if (parts.Count < 1)
         {
             var names = string.Join(", ", Content.MusicTracks
                 .Where(t => t.Name.Length > 0).OrderBy(t => t.Name)
                 .Select(t => $"{t.Name}({t.Id})"));
-            SendLog("usage: @music <name|1-12> [vol 0-255, default 100]   (@music 0 or @music stop = stop)");
+            SendLog("usage: @music <name|id> [vol 0-255, default 100] [mp3|midi]   (@music 0 or @music stop = stop)");
             SendLog($"tracks: {names}");
+            SendLog("midi = the 12 stock songs (ids 1-12 only); mp3 = a loose NNN.MP3 in the client dir");
             var zone = Content.BgmZoneOf(_char.Map);
             SendLog($"now playing: {(_bgm == NoBgm ? "nothing" : Describe(_bgm))}" +
                     (zone.Length > 0 ? $"   (this map's zone: {zone})" : "   (this map has no zone)"));
@@ -238,10 +333,18 @@ public sealed partial class Session
         var track = Content.FindTrack(parts[0]);
         if (track is null) { SendLog($"'{parts[0]}' is not a track name or number (@music with no argument lists them)"); return; }
 
-        byte vol = parts.Length > 1 && byte.TryParse(parts[1], out var v) ? v : (byte)100;
-        SendMusic(track.Id, track.Type, vol);
-        SendLog(track.Id == 0 ? "music stopped" : $"playing {Describe(track.Id)} (vol {vol})");
-        Log.Info($"   -> @music bgm={track.Id} vol={vol}");
+        byte type = forceType ?? track.Type;
+        byte vol = parts.Count > 1 && byte.TryParse(parts[1], out var v) ? v : (byte)100;
+
+        // The client silently ignores a midi id it can't hold, which reads as "the server is broken" — say so.
+        if (type == 2 && track.Id > 12)
+            SendLog($"note: track {track.Id} is above the client's midi cap (1-12) and will be silent — try 'mp3'");
+
+        SendMusic(track.Id, type, vol);
+        SendLog(track.Id == 0 ? "music stopped"
+                              : $"playing {Describe(track.Id)} (vol {vol}, " +
+                                $"{(type == 1 ? $"mp3 -> {track.Id:D3}.MP3" : $"midi -> {track.Id}.mid")})");
+        Log.Info($"   -> @music bgm={track.Id} type={type} vol={vol}");
 
         static string Describe(ushort id)
         {

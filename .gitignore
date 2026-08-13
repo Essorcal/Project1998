@@ -90,6 +90,9 @@ re/fx/*
 # ---- Bulk sprite extracts pulled out of the client PAK for one-off inspection ----
 re/out_*.epf
 
+# ---- Music extracted from the client PAK (15MB of MP3s; regenerable via re/extract_mus.py) ----
+re/mus/
+
 # ---- Timestamped snapshots the re/auto harness writes before each run ----
 re/auto/*.bak
 re/auto/*.bak.*

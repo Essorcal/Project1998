@@ -525,8 +525,48 @@ type(u8) pad(u8=0) bgm(u16BE) volume(u8)
 ```
 Handler `0x450ad0` (dispatch-table stub `0x44bb06` → real handler): `body[1] = type` selects the audio
 backend — **2 = MIDI** (the stock `1.mid`..`12.mid` in `NexusTK.snd`, played via the single-instance MIDI
-player `[0x4fd3ac]`), 1 = `%03d.MP3`, **0 = a positional wav/sfx**. Types 2/1 read `sound(u16BE)@+3` +
-`volume@+5` directly; `bgm 0` stops the music.
+player `[0x4fd3ac]`), **1 = MP3**, **0 = a positional wav/sfx**. `bgm 0` stops the music.
+
+**The two channels need DIFFERENT bodies** — they leave the handler at different points, and getting this
+wrong is silent, not an error (live-verified 2026-08-13):
+
+| type | exits at | body |
+|---|---|---|
+| 2 (midi) | inline `0x450b1b`, **returns `0x450bab` before the tail** | the 6-byte header above is complete |
+| 1 (mp3) | falls **through** to the TLV tail `0x450c48` | needs the full TLV, exactly like type 0 (§7.3) |
+| 0 (sfx) | falls **through** to the TLV tail `0x450c48` | full TLV |
+
+Send type 1 the short 6-byte body and the tail reads past the end of the buffer, builds a sound object with
+a garbage **mode**, and the play wrapper drops it — no sound, no log, no error. The working type-1 wire is
+the type-0 layout with `body[1]=1`:
+```
+19 | 01(type=mp3) | 03(P0) | bgm(u16BE) | 64(vol) | 03 00 01 | 00 00 00 00
+```
+(`tagA=3, B0=0, C=1` → object mode 1 → play wrapper `0x463ab0` → `0x463ae8` → play fn
+`0x4798c0(bgm, type, gain, 0)`; `type==1` there is the MP3 branch at `0x479c29`.)
+
+**MP3 (type 1) is the EXPANDABLE channel.** `0x479c29` does `sprintf(buf, L"%03d.MP3", bgm)` — the **wide**
+string at `0x4f3cc0`, which is why an ASCII strings scan of the exe finds nothing — then opens it through
+the **XAudio** MPEG-1/2 layer I/II/III decoder that 4.95 links statically (`XA_MSG_*`,
+`"MPEG %d, %s, %s, %d kbps, %d hz"`): `0x478e20` → XAudio cmd 8 `INPUT_OPEN` + cmd 1 `PLAY`. The file is a
+**loose `NNN.MP3` in the client directory**, not an archive entry; `%03d` is a minimum width, so ids above
+999 simply print more digits. There is **no id cap** — the only guard is `bgm > 0`.
+
+By contrast **MIDI (type 2) is hard-capped at ids 1..12** (`cmp si, 0xd / jge bail`, `0x4588b4`), which is
+why the stock game has exactly 12 songs and why you cannot add a 13th without patching the exe.
+
+Caveat: the mode-1 branch passes a hardcoded **0 as the loop flag**, so an mp3 sent this way plays once and
+stops. Other modes reach branches that push 1 (`0x463b49`, `0x463bc8`, gated on the object's `[+0x154]`), so
+looping is a packet-body change rather than a client patch — not yet calibrated.
+
+`re/extract_mus.py` lifts the 25 tracks out of the **5.33** client's `Mus000.dat` (same container as
+`NexusTK.snd`: `u32 count`, then `count × {u32 offset, char name[13]}`) and renumbers its `%08d` names onto
+this `%03d` scheme — every id in it happens to be ≤ 999, so they map with no collisions. 5.33 additionally
+supports `%08d.LST`/`%08d.LSR` playlists; **4.95 has neither string** and can only be told one track at a time.
+
+**Install gotcha.** The 4.95 client is **file-virtualized** by Windows: its own writes (`Maps\TK*.map`,
+`ddraw.ini`, `users\`) go to `%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Nexon\NextAeon\`. Drop the
+`.MP3` files in **both** that directory and the real install dir.
 `volume` is a raw byte the client **log-scales**: the handler computes `dB = 2000·log10(vol/100)` (so
 `vol=100` = 0 dB = nominal full, `vol>0` audible, `vol=0` silent), and the MIDI path then compresses it
 further against a base at `[snd+0x270]` — so the audible range is narrow and `>100` (up to 255) is the knob

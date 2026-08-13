@@ -122,7 +122,7 @@ public sealed partial class Session
         G("dye",    (s, a) => s.DyeProbe(a),         "<n>",             "war-paint dye: set appearance[4]"),
 
         // ---- media ----------------------------------------------------------------------------------
-        G("music",    (s, a) => s.PlayMusicCmd(a),  "<name|id>", "play a track (0x19)"),
+        G("music",    (s, a) => s.PlayMusicCmd(a),  "<name|id> [vol] [mp3|midi]", "play a track (0x19)"),
         G("snd",      (s, a) => s.SoundProbe(a),    "<id>",      "play a raw client sound id"),
         G("swingsnd", (s, a) => s.SetSwingSound(a), "<id>",      "set + audition the melee swing sfx"),
         G("fistsnd",  (s, a) => s.SetFistSound(a),  "<id>",      "set + audition the unarmed swing sfx"),
