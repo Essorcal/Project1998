@@ -36,6 +36,8 @@ public static class NpcScripts
         ["shadow_stats"] = ShadowStatsAbility.Instance,
         ["chapel"] = ChapelAbility.Instance,
         ["revive"] = ReviveAbility.Instance,
+        ["ancient_leviathan"] = AncientLeviathanAbility.Instance,
+        ["hermit"] = HermitAbility.Instance,
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via

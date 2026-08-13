@@ -248,8 +248,54 @@ public sealed partial class Session
     {
         TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
         TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
+        TryLeviathanRelease();               // Blight pen: talisman + a penned captive -> free it
+        if (TryLeviathanHermitDoor()) return;// the Hermit's hut door: in if you freed one, shoved back if not (warps)
         if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
         TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
+    }
+
+    // ---- Leviathan quest tiles (onScriptedTilesQuest.lua; see Server/LeviathanQuest.cs) -----------
+    // Blight pen: stand on the tile below one of the four penned captives holding the talisman and the spell
+    // breaks. The captive is DESPAWNED rather than killed — no exp, no loot, and its spawn point refills
+    // normally, so the next player finds a captive to free. (RTK removes 9,999,999 health from a mob with a
+    // million HP, which is the same thing said in the engine's only vocabulary.)
+    //
+    // Gated on the legend, not the stage: the legend is only handed out when you report back to Dae-Whan, and
+    // it is what stops a player farming the pen. The "you do not have the talisman" line is deliberately
+    // moved to AFTER the captive check — RTK tests the item first, so walking that row without a talisman
+    // (the normal case for anyone who has finished the quest) spams the status box on every step.
+    private void TryLeviathanRelease()
+    {
+        if (_char.Map != LeviathanQuest.PenMap || _char.Y != LeviathanQuest.PenPlayerY) return;
+        if (!LeviathanQuest.PenX.Contains(_char.X)) return;
+        if (HasLegend(LeviathanQuest.LegendFreed) || HasLegend(LeviathanQuest.LegendEnemy)) return;
+
+        var captive = _world.MobAt(_char.Map, _char.X, LeviathanQuest.PenCaptiveY);
+        if (captive is null || captive.Key != LeviathanQuest.CaptiveMob) return;
+
+        if (!TakeItem(LeviathanQuest.Talisman, 1)) { Notify("You do not have the talisman."); return; }
+
+        Notify("You cast Release leviathan.");
+        NpcBubble(captive, "Thank you puny one.");   // NpcBubble prefixes the speaker's own name
+        _world.DespawnMob(_char.Map, captive);
+        SetQuestStage(LeviathanQuest.Key, LeviathanQuest.StageFreed);
+        Log.Info($"   -> LEVIATHAN freed at ({_char.X},{LeviathanQuest.PenCaptiveY}) by {_char.Name}");
+    }
+
+    // The Hermit's hut door. Freed his kindred and it lets you in; otherwise it shoves you four tiles south
+    // with a "Go AWAY!". True when it moved the player (either way), so the remaining step hooks are skipped.
+    private bool TryLeviathanHermitDoor()
+    {
+        if (_char.Map != LeviathanQuest.DoorMap || _char.Y != LeviathanQuest.DoorY) return false;
+        if (!LeviathanQuest.DoorX.Contains(_char.X)) return false;
+
+        if (!HasLegend(LeviathanQuest.LegendFreed))
+        {
+            Warp(LeviathanQuest.DoorMap, (ushort)_char.X, LeviathanQuest.DoorPushToY);
+            Notify("Go AWAY!");
+            return true;
+        }
+        return Warp(LeviathanQuest.HutMap, LeviathanQuest.HutX, LeviathanQuest.HutY);
     }
 
     // ---- Newbie area, quest 3: the coordinate lesson (npc_dialog.lua TutorialNpc1) ------------------
