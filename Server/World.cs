@@ -117,6 +117,12 @@ public sealed class World
     // entry (EnsureMaterialized) so the world's ~21k hunting-map mobs don't all instantiate — and load their
     // map files — at boot; a cave stays a cheap point-list until someone actually walks into it.
     private readonly HashSet<ushort> _materialized = new();
+    /// <summary>When each creature was last killed on each map, in unix seconds — RTK's per-map registry
+    /// (<c>setMapRegistry(mob.m, "lastDeathCitelam", os.time())</c>, stamped by the boss's own after_death and
+    /// read by the trap spawner before it is allowed to roll for another). Only creatures whose
+    /// MobSpawnRules row asks for a cooldown are recorded, so this stays a handful of entries rather than one
+    /// per kill. Deliberately NOT persisted: a restart is already a world reset for spawns.</summary>
+    private readonly Dictionary<(ushort Map, string Key), long> _lastDeath = new();
     private long _tick;                                                  // heartbeat counter (600ms each)
 
     private const int TickMs = 600;         // world heartbeat period; also the unit MoveTimer accumulates in
@@ -135,6 +141,11 @@ public sealed class World
     // resuming normal wandering — bigger than WanderRadius so a fight can range beyond the idle-hop leash,
     // but still bounded so a player can outrun pursuit rather than being chased across the whole map.
     private const int ChaseLeash = 8;
+    // Mythic boss animations RTK hardcodes rather than carrying per-boss: Last Stand flashes 11
+    // (Spells/last_stand.lua `sendAnimation(11)`), a curse shrug flashes 10 and plays no sound
+    // (mob_ai_mythic.move). The heal animation/sound pair IS per-boss and lives in MobBosses.csv.
+    private const int LastStandAnim  = 11;
+    private const int CurseShrugAnim = 10;
     // How far (Chebyshev, from the mob's CURRENT tile) an aggressive mob (MobDef.Aggressive, RTK MobBehavior==1)
     // scans for an unprovoked target each move tick — RTK's mob_find_target runs over a full-screen-ish area;
     // this is scoped to roughly what the player can see on their own screen (17x15 viewport, Session.InView).
@@ -205,6 +216,73 @@ public sealed class World
     // sitting fixed at "clear" forever. 0=clear, 1=WRAIN, 2=WSNOW (RTK map.h enum).
     private const int WeatherRollTicks = 1500;     // ~15 minutes real time (1500 * 600ms)
     private const int WeatherChangePct = 20;       // 20% chance per eligible map each roll
+
+    // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
+    // Tick — TryDamage can't broadcast where it stands, and its callers only know how to draw the damage.
+    private readonly List<(ushort map, uint id, int anim, int sound)> _deferredFx = new();
+
+    // Lua mob hooks raised from inside the lock, run by the next Tick OUTSIDE it. This queue is the whole
+    // reason MobScript is safe: a hook is free to speak, heal, vanish or touch a player's quest registry,
+    // all of which re-enter the world — doing that while still holding _lock would deadlock it.
+    private readonly List<(string key, string hook, ushort map, Mob mob, Session? actor)> _hooks = new();
+
+    /// <summary>Queue a Lua AI hook for the creature, if it defines that hook. Cheap (one hash lookup) for
+    /// the overwhelming majority of mobs, which define none. Safe to call under <c>_lock</c>.</summary>
+    private void QueueHook(string hook, ushort map, Mob mob, Session? actor)
+    {
+        if (MobScript.Has(mob.Key, hook)) _hooks.Add((mob.Key, hook, map, mob, actor));
+    }
+
+    /// <summary>Point a creature at whoever has earned it (RTK <c>threat.calcHighestThreat</c>). Two rules,
+    /// and the order is the point:
+    /// <list type="number">
+    /// <item><b>Cornered.</b> If the mob is boxed in by players and the one it is fighting isn't within
+    /// reach, it turns on the highest-threat player it CAN reach. This is what stops a mob standing in a
+    /// crowd swinging uselessly at someone behind a wall.</item>
+    /// <item><b>Otherwise</b> it fights whoever has hurt it most, anywhere in sight.</item>
+    /// </list>
+    /// Threat only ever accrues from damage, so this can never make a mob attack an innocent bystander —
+    /// the worst it does is move aggro between people already in the fight, which is the intent (a group
+    /// CAN peel a mob off whoever pulled it, by out-damaging them).
+    /// <para>Callers hold <c>_lock</c>. Players who have left the map simply aren't considered; their threat
+    /// stays banked in case they come back, exactly as RTK's per-mob table does.</para></summary>
+    private static void RetargetByThreat(MapState m, Mob mob)
+    {
+        bool Adjacent(Session p) =>
+            (p.PlayerX == mob.X && Math.Abs(p.PlayerY - mob.Y) == 1) ||
+            (p.PlayerY == mob.Y && Math.Abs(p.PlayerX - mob.X) == 1);
+
+        // Rule 1's precondition: someone is in arm's reach and the current target is not.
+        bool cornered = false;
+        if (mob.TargetId != 0)
+        {
+            var current = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId);
+            if (current is null || !Adjacent(current))
+                cornered = m.Players.Any(p => !p.IsDead && Adjacent(p));
+        }
+
+        long now = Environment.TickCount64;
+        Session? best = null;
+        long bestThreat = 0;
+        foreach (var p in m.Players)
+        {
+            if (p.IsDead) continue;
+            // RTK's non-cornered scan is `mob:getObjectsInArea(BL_PC)` — what the creature can see, not the
+            // whole map. Without the bound a mob would swap onto someone who hurt it once and then walked to
+            // the far side of the level, and chase a player it has no way of knowing is there.
+            if (Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) > AggroRadius) continue;
+            if (cornered && !Adjacent(p)) continue;
+            if (mob.HasForgotten(p.PlayerId, now)) continue;   // Amnesia: this one isn't here as far as it knows
+            long t = mob.ThreatOf(p.PlayerId);
+            if (t > bestThreat) { bestThreat = t; best = p; }
+        }
+
+        if (best is null || best.PlayerId == mob.TargetId) return;
+        mob.TargetId = best.PlayerId;
+        mob.TargetMobId = 0;
+        mob.DetourDir = NoDetour;
+        mob.DetourLeft = 0;
+    }
 
     // Facing (0=N 1=E 2=S 3=W) toward a delta, preferring the larger axis — used to turn a mob to face
     // whatever it's about to melee.
@@ -441,6 +519,50 @@ public sealed class World
     private void Materialize(ushort mapId, Spawn sp)
     {
         var d = sp.Def;
+        Content.MobSpawnRules.TryGetValue(d.Key, out var rule);
+
+        // Population cap (RTK strange_thing's on_spawn, which counts its own kind across two maps and
+        // vanishes if one is already out there). Checked before anything is built: the spawn point simply
+        // doesn't fire, and will try again on its next refill.
+        if (rule is { MaxAlive: > 0 })
+        {
+            int alive = 0;
+            foreach (var capMap in rule.CapMaps.Length > 0 ? rule.CapMaps : new[] { mapId })
+                if (_maps.TryGetValue(capMap, out var cm))
+                    foreach (var other in cm.Mobs)
+                        if (other.Alive && other.Key == d.Key) alive++;
+            if (alive >= rule.MaxAlive) { sp.RespawnTick = NextRespawnTick(sp); return; }
+        }
+
+        // Death cooldown, then the roll — RTK's trap spawner asks all three questions in this order before it
+        // will put Citelam or Maletic on the ground:
+        //     if os.time() >= lastDeath + 1800 and bossAlive == 0 then
+        //         local chance = math.random(1, 10); if chance == 1 then ... spawn the boss
+        // Failing either just means the point tries again on its next refill, which is why the boss reads as
+        // a find: with a 1-in-10 roll on a 30-minute point you meet it every few hours, not every lap.
+        //
+        // RTK asks on a trap TILE being stepped on; we ask on the spawn point's own refill, because this
+        // server has no trap tiles (the whole ambush system is approximated by AreaSpawnsTrap.csv). The
+        // gating — one at a time, never within half an hour of its last death, and rarely even then — is the
+        // part that decides how often you actually see one, and that is reproduced exactly.
+        if (rule is { DeathCooldownSec: > 0 }
+            && _lastDeath.TryGetValue((mapId, d.Key), out var slain)
+            && DateTimeOffset.UtcNow.ToUnixTimeSeconds() < slain + rule.DeathCooldownSec)
+        { sp.RespawnTick = NextRespawnTick(sp); return; }
+
+        if (rule is { SpawnChance: > 1 } && Random.Shared.Next(rule.SpawnChance) != 0)
+        { sp.RespawnTick = NextRespawnTick(sp); return; }
+
+        // Boss placement (RTK's `on_spawn = function(mob) mob:warp(map, x, y) end`, usually a random pick
+        // among the boss's rooms). The spawn POINT stays where the table put it — respawn bookkeeping is
+        // keyed to it — but the creature is built in the room it belongs in. A room on an unrenderable map
+        // is ignored rather than stranding the boss nowhere.
+        if (rule is { Rooms.Length: > 0 })
+        {
+            var room = rule.Rooms[Random.Shared.Next(rule.Rooms.Length)];
+            if (Content.TryMap(room.Map, out _)) { mapId = room.Map; sp.X = room.X; sp.Y = room.Y; sp.Placed = true; }
+        }
+
         // Area spawn's first materialize: choose a walkable home tile inside its box (or anywhere on the map
         // for a zero box). Fixed once, so respawns hug the same patch like RTK's sentries.
         if (!sp.Placed) { (sp.X, sp.Y) = PickAreaHome(mapId, sp); sp.Placed = true; }
@@ -454,10 +576,25 @@ public sealed class World
             Key = d.Key,   // carry the MobDef identifier so quest kill-matching can key on it
             Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Aggressive = d.Aggressive, Flees = d.Flees,
             MinDam = d.MinDam, MaxDam = d.MaxDam, Hit = d.Hit, IsBoss = d.IsBoss, Protection = d.Protection, Ac = d.Ac, Grace = d.Grace,
-            Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = true, Leash = WanderRadius,
+            // Wander is the default; MobStationary.csv opts a creature out (a penned captive whose RTK AI
+            // script only ever turns on the spot — see Content.LoadMobStationary).
+            Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = !d.Stationary, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
         };
+
+        // Spawn HP jitter (RTK AI/mob_on_spawn.lua — the DEFAULT on_spawn every creature without its own
+        // gets): max HP moves by up to +/-(minDam + maxDam) * 2, so two of the same creature are never
+        // quite the same fight. Floored at 1 — RTK's own version can drive a small, hard-hitting mob to
+        // zero HP, which would spawn it already dead.
+        if (Content.MobHpJitter)
+        {
+            int swing = Math.Max(1, (d.MinDam + d.MaxDam) * 2);
+            int delta = Random.Shared.Next(1, swing + 1) * (Random.Shared.Next(2) == 0 ? 1 : -1);
+            mob.MaxHp = Math.Max(1, mob.MaxHp + delta);
+            mob.Hp = mob.MaxHp;
+        }
         Map(mapId).Mobs.Add(mob);
+        QueueHook(MobScript.OnSpawn, mapId, mob, null);
         _mobSpawn[mob.Id] = sp;
         sp.Live = mob;
         sp.RespawnTick = 0;
@@ -1240,8 +1377,13 @@ public sealed class World
     public Session? PlayerById(uint id)
     {
         lock (_lock)
-            return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+            return PlayerByIdLocked(id);
     }
+
+    /// <summary>Same lookup for callers that already hold <c>_lock</c>. The monitor is re-entrant so taking it
+    /// twice would work, but saying which methods expect it is how this file stays readable.</summary>
+    private Session? PlayerByIdLocked(uint id) =>
+        _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
 
     /// <summary>
     /// Hot-reload every file-backed registry and rebuild the world population from it — the work behind the
@@ -1400,8 +1542,59 @@ public sealed class World
             // over-head bar and any kill it causes both reflect the amplified number.
             double amp = mob.TakeDamageAmp(Environment.TickCount64);
             if (amp > 1.0) dmg = (int)Math.Round(dmg * amp);
+            // A mythic boss does not simply die (RTK mob_ai_mythic.on_attacked). Its lethal-blow ladder, in
+            // RTK's order, because the order is the mechanic:
+            //
+            //   1. FIRST lethal blow of its life -> Last Stand (RTK gates this on `mob.magic == 100`, and the
+            //      spell spends all 100 with nothing to give it back, so it is once per life).
+            //   2. Otherwise OVERKILL: a blow big enough to punch through its HP *and* the heal it would get
+            //      (`attacker.damage >= mob.health + healAmount`) kills it outright, no roll. This is the
+            //      whole reason a boss is beatable — you out-damage the save rather than out-waiting it.
+            //      Note RTK skips this test on the Last Stand branch, so the first brink is always survivable.
+            //   3. Then the save roll — 1/2, 2/3 or 3/4 by tier. Fail it and the blow lands normally.
+            //
+            // Runs BEFORE the subtraction, so the heal is what the blow lands on.
+            if (dmg >= mob.Hp && Content.MobBosses.TryGetValue(mob.Key, out var boss) && boss.HealAmount > 0)
+            {
+                bool lastStand = !mob.SecondWindUsed && boss.LastStandMs > 0;
+                // The save roll runs on the Last Stand branch too: RTK casts the spell and *then* rolls, so a
+                // boss really can go into its last stand and drop dead on the same blow.
+                bool overkill  = !lastStand && dmg >= mob.Hp + boss.HealAmount;
+                bool saved     = !overkill && Random.Shared.Next(Math.Max(2, boss.HealChance)) != 0;
+
+                if (lastStand)
+                {
+                    // RTK Spells/last_stand.lua: scrub own curses, animation 11, 8s duration, and PARALYSE
+                    // ITSELF for it. The boss stands frozen and heals every tick while the window runs — it
+                    // is a window to burst it down or back off, not an untouchable enrage.
+                    mob.SecondWindUsed = true;
+                    mob.LastStandUntil = Environment.TickCount64 + boss.LastStandMs;
+                    mob.FrozenUntil = Math.Max(mob.FrozenUntil, mob.LastStandUntil);
+                    mob.ClearStatus("curses"); mob.ClearStatus("minorcurses");
+                    _deferredFx.Add((mapId, mob.Id, LastStandAnim, boss.Sound));
+                }
+
+                if (saved)
+                {
+                    mob.Hp = Math.Min(mob.MaxHp, mob.Hp + boss.HealAmount);
+                    if (!lastStand) _deferredFx.Add((mapId, mob.Id, boss.Anim, boss.Sound));
+                }
+            }
+
             mob.Hp -= dmg;
             died = !mob.Alive;
+            // Threat accrues with the damage (RTK swing.lua `player:addThreat(mob.ID, damage)`), whether or
+            // not this hit takes the target — Tick's retarget then reads it. Counted BEFORE the death check
+            // so the killing blow still counts, which matters for a pet deciding what to assist against.
+            mob.AddThreat(attackerId, dmg);
+            // Hitting something that has forgotten you reminds it (RTK amnesia.lua on_takedamage_while_cast).
+            // Only the forgotten player breaks it — anyone else can keep hitting it without giving you away.
+            if (mob.AmnesiaBy != 0 && mob.AmnesiaBy == attackerId) { mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0; }
+
+            // Lua AI hooks for this creature, if it has any (queued — see QueueHook).
+            var actor = attackerId == 0 ? null : PlayerByIdLocked(attackerId);
+            QueueHook(MobScript.OnAttacked, mapId, mob, actor);
+            if (died) QueueHook(MobScript.AfterDeath, mapId, mob, actor);
             // Provoked -> fight back (mob_ai_normal on_attacked). Getting hit ALWAYS wins: it drops whatever
             // mob it was scrapping with (a pet) and re-points it at the player, and it overrides the
             // stuck-mob retarget in Tick — so zapping something always drags its aggro onto you, wall or no
@@ -1421,6 +1614,11 @@ public sealed class World
             if (died && _maps.TryGetValue(mapId, out var m))
             {
                 m.Mobs.Remove(mob);
+                // Stamp the death registry for creatures gated on it (RTK's boss after_death hooks). Written
+                // here rather than in the Lua hook so the clock starts on the kill itself, not on whether a
+                // script happens to be loaded.
+                if (Content.MobSpawnRules.TryGetValue(mob.Key, out var dRule) && dRule.DeathCooldownSec > 0)
+                    _lastDeath[(mapId, mob.Key)] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 if (_mobSpawn.TryGetValue(mob.Id, out var sp))
                 {
                     sp.Live = null;
@@ -1589,6 +1787,10 @@ public sealed class World
         var moves = new List<(ushort map, uint id, ushort x, ushort y, byte dir)>();
         var turns = new List<(ushort map, uint id, byte dir)>();
         var hits = new List<(ushort map, Mob mob, Session target)>();
+        // A creature's spell at a player (MobSpells.csv) and its idle flavour line — both queued for the same
+        // reason as `hits`: landing a spell broadcasts, curses, and can kill.
+        var mobCasts = new List<(Mob mob, Session target, Content.MobSpellDef spell)>();
+        var chatter = new List<(ushort map, Mob mob, byte channel, string line)>();
         // A pet's swing at another mob (mob-on-mob, the only place that happens) — deferred out of the lock
         // for the same reason as `hits`: applying it broadcasts and can award the owner exp.
         var mobHits = new List<(ushort map, Mob attacker, Mob victim)>();
@@ -1715,10 +1917,11 @@ public sealed class World
                     {
                         if (mob.Summoned) { expiredPets.Add((mapId, mob)); continue; }
                         mob.OwnerId = 0; mob.TargetId = 0; mob.TargetMobId = 0; mob.PetExpiresAt = 0;
-                        // Re-home it where it actually is. A creature that followed you across the map is
-                        // now nowhere near the Home it spawned at, and the wander step below leashes on
-                        // ABSOLUTE distance from Home — so without this it would fail every candidate step
-                        // and stand frozen forever. (Doesn't arise in RTK, which has no follow behaviour.)
+                        // Re-home it where it actually is. A charmed creature that chased something you were
+                        // fighting can end up well outside the leash box around the Home it spawned at, and
+                        // the wander step below leashes on ABSOLUTE distance from Home — without this it would
+                        // fail every candidate step and stand frozen. (The walk-home in the wander block
+                        // covers the same hazard for wild mobs; this one has no spawn point to walk back to.)
                         mob.HomeX = mob.X; mob.HomeY = mob.Y;
                     }
 
@@ -1750,6 +1953,51 @@ public sealed class World
                     }
                     else if (mob.FxRepeatUntil != 0) mob.FxRepeatUntil = 0;
 
+                    // Last Stand: while it runs, the boss claws HP back every heartbeat (RTK mob_ai_mythic
+                    // heals on every move tick that `mob:hasDuration("last_stand")`). Before the freeze check,
+                    // so a paralysed boss still regenerates — being held is not a free win against one.
+                    if (mob.LastStandUntil != 0 && Content.MobBosses.TryGetValue(mob.Key, out var lsBoss))
+                    {
+                        if (Environment.TickCount64 >= mob.LastStandUntil) mob.LastStandUntil = 0;
+                        else if (mob.Hp < mob.MaxHp)
+                        {
+                            mob.Hp = Math.Min(mob.MaxHp, mob.Hp + lsBoss.HealAmount);
+                            fxRepeats.Add((mapId, mob.Id, lsBoss.Anim, lsBoss.Sound));
+                        }
+                    }
+
+                    // …and while it is held it HEALS THROUGH the hold — every ~3s, a 1-in-2 roll for another
+                    // full heal (RTK mob_ai_mythic.move: `os.time() % 3 == 0 and mob.paralyzed`). Note it does
+                    // NOT break free: RTK never clears `mob.paralyzed` here, so paralysis on a boss still
+                    // holds it still — it just stops being a way to win, because the boss out-heals the hold.
+                    if (mob.FrozenUntil > Environment.TickCount64
+                        && Content.MobBosses.TryGetValue(mob.Key, out var pBoss) && pBoss.ParaBreakChance > 0
+                        && Environment.TickCount64 >= mob.ParaBreakAt)
+                    {
+                        mob.ParaBreakAt = Environment.TickCount64 + 3000;   // RTK's `os.time() % 3 == 0` cadence
+                        if (Random.Shared.Next(pBoss.ParaBreakChance) == 0 && mob.Hp < mob.MaxHp)
+                        {
+                            mob.Hp = Math.Min(mob.MaxHp, mob.Hp + pBoss.HealAmount);
+                            fxRepeats.Add((mapId, mob.Id, pBoss.Anim, pBoss.Sound));
+                        }
+                    }
+
+                    // Curse shrug (RTK mob_ai_mythic.move: `os.time() % 10 == 0` and not paralysed, a 1-in-3
+                    // roll to wipe EVERY curse on itself and flash animation 10). A mythic boss will not stay
+                    // debuffed: land one and you have a few seconds of it, not the fight.
+                    if (mob.FrozenUntil <= Environment.TickCount64
+                        && Content.MobBosses.TryGetValue(mob.Key, out var cBoss) && cBoss.HealAmount > 0
+                        && Environment.TickCount64 >= mob.CurseShrugAt)
+                    {
+                        mob.CurseShrugAt = Environment.TickCount64 + 10_000;
+                        if (Random.Shared.Next(3) == 0
+                            && (mob.HasStatus("curses", Environment.TickCount64) || mob.HasStatus("minorcurses", Environment.TickCount64)))
+                        {
+                            mob.ClearStatus("curses"); mob.ClearStatus("minorcurses");
+                            fxRepeats.Add((mapId, mob.Id, CurseShrugAnim, 0));
+                        }
+                    }
+
                     if (mob.FrozenUntil > Environment.TickCount64) continue;   // paralyzed/asleep — hold still
 
                     // Blind (RTK's `target.blind = true`): a blinded creature can't SEE. It drops whoever it
@@ -1780,22 +2028,72 @@ public sealed class World
                         continue;
                     }
 
+                    // Wounded rout (RTK bosses/nine_tailed_fox.lua + ogre_maletic.lua, which is Maletic AND
+                    // Citelam): below 15% of its max HP the creature STOPS FIGHTING for good and bolts —
+                    // `local rand = math.random(0,3); mob.side = rand; mob:move() mob:move() mob:move()`
+                    // replaces the whole of move AND attack, so it will not swing again even if you corner it.
+                    // Not our prey-flee (MobDef.Flees), which is about a rabbit backing away from anyone: this
+                    // is an unwounded boss fighting normally right up to the moment it breaks.
+                    //
+                    // RTK re-rolls the direction once per AI tick and then covers three tiles in it. This
+                    // heartbeat can only carry one tile per tick, so the direction is re-rolled on the
+                    // creature's own MoveTime and it steps EVERY tick in between — at their MoveTime of 2000ms
+                    // that is the same three tiles per direction, at the same speed.
+                    // (`Hp < MaxHp` first so an untouched creature — nearly all of them, every tick — costs a
+                    // comparison rather than a dictionary probe. A threshold of 100 would break this, which is
+                    // why the loader's range is capped below it.)
+                    if (mob.Hp < mob.MaxHp
+                        && Content.MobSpawnRules.TryGetValue(mob.Key, out var fleeRule) && fleeRule.FleeBelowPct > 0
+                        && mob.Hp * 100 <= mob.MaxHp * fleeRule.FleeBelowPct)
+                    {
+                        mob.TargetId = 0; mob.TargetMobId = 0; mob.AttackTimer = 0; mob.Returning = false;
+                        mob.MoveTimer += TickMs;
+                        if (mob.MoveTimer >= mob.MoveTime)
+                        {
+                            mob.MoveTimer -= mob.MoveTime;
+                            byte side = (byte)Random.Shared.Next(4);
+                            if (side != mob.Dir) { mob.Dir = side; turns.Add((mapId, mob.Id, side)); }
+                        }
+                        int fx = mob.X, fy = mob.Y;
+                        switch (mob.Dir) { case 0: fy--; break; case 1: fx++; break; case 2: fy++; break; default: fx--; break; }
+                        bool fok = fx >= 0 && fy >= 0
+                                   && (dims.Item1 == 0 || (fx < dims.Item1 && fy < dims.Item2))
+                                   && !occupied.Contains(((ushort)fx, (ushort)fy))
+                                   && !mobTiles.Contains((fx, fy))
+                                   && (terrain is null || !terrain.BlockedMove(fx, fy, mob.Dir));
+                        if (fok)                                     // no leash: it is running away, not wandering
+                        {
+                            ushort fox = mob.X, foy = mob.Y;
+                            mobTiles.Remove((mob.X, mob.Y));
+                            mob.X = (ushort)fx; mob.Y = (ushort)fy;
+                            mobTiles.Add((fx, fy));
+                            moves.Add((mapId, mob.Id, fox, foy, mob.Dir));
+                        }
+                        continue;
+                    }
+
                     // ---- PET AI: a mob with an OWNER (a Poet's Call of the Wild summon, or an Endear'd
                     // captive) does not behave like a wild one. Three rules, applied in order:
                     //   1. never fight your owner,
-                    //   2. fight whatever is fighting your owner,
-                    //   3. otherwise stay at their heel.
+                    //   2. fight what your owner has attacked, or what has attacked your owner,
+                    //   3. otherwise stand still — where you were summoned.
                     // Before this, Mob.OwnerId existed but drove NO behaviour at all, which is why both halves
                     // looked broken from the outside: a CotW pet (every cotw_* MobDef is MobBehavior 0) just
                     // wandered off on its spawn leash and never swung at anything, and Endear on an aggressive
                     // creature handed it to you for a fraction of a second before the unprovoked-aggro scan
                     // below re-acquired the nearest player — you — and it turned right back around.
                     //
-                    // NOT ported from RTK, because RTK has none of it: its mob_find_target only ever scans
-                    // BL_PC and has no owner check, and its cotw_controller (the threat-redirect half) is
-                    // later-server and ships disabled. What RTK does establish is that a mob's damage is
-                    // credited to `mob->owner` when that id is a player (clif.c) — that part is honoured by
-                    // ApplyMobOnMobHit.
+                    // All three are RTK's (mob_ai_cotw.move/attack), including the standing still: its move
+                    // ends `target = mob:getBlock(mob.owner)` and then `if target.blType == BL_PC then return
+                    // end`, so an idle pet never takes a step toward its owner. A summon is a thing you PLACE.
+                    //
+                    // NOT ported, deliberately: a pet does not fight back when something hits IT and only it.
+                    // RTK's `cotw.on_attacked` looks like retaliation (`if mob.target == mob.owner then
+                    // mob.target = attacker.ID`), but the very next move tick recomputes the target from the
+                    // owner's threat list and throws it away, so it never survives to be acted on.
+                    //
+                    // What RTK does establish, and we honour, is that a mob's damage is credited to
+                    // `mob->owner` when that id is a player (clif.c) — that part is ApplyMobOnMobHit.
                     if (mob.OwnerId != 0)
                     {
                         if (mob.TargetId == mob.OwnerId) mob.TargetId = 0;   // rule 1, every tick
@@ -1837,20 +2135,43 @@ public sealed class World
 
                         if (owner is not null && mob.TargetId == 0)   // no person to fight — serve the owner
                         {
-                            // Rule 2, re-evaluated every tick so the pet picks up a new attacker the moment
-                            // its current one dies, leashes off, or loses interest in the owner. Only wild
-                            // mobs qualify: never an NPC, never another player's pet, never a sibling of ours.
-                            var foe = mob.TargetMobId == 0 ? null : m.Mobs.FirstOrDefault(o => o.Alive && o.Id == mob.TargetMobId);
-                            if (foe is null || foe.TargetId != owner.PlayerId)
-                                foe = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.OwnerId == 0 && o.TargetId == owner.PlayerId)
-                                             .OrderBy(o => Math.Max(Math.Abs(o.X - mob.X), Math.Abs(o.Y - mob.Y)))
+                            // Rule 2, recomputed from scratch every tick (RTK's move and attack branches both
+                            // re-walk the threat list; there is no sticky target) so the pet picks up a new
+                            // attacker the moment its current one dies, leashes off, or is out-threatened.
+                            // Only wild mobs qualify: never an NPC, never another player's pet, never a sibling.
+                            //
+                            // A PET IS REACTIVE, NOT A BODYGUARD, and it fights exactly two kinds of creature:
+                            //
+                            //   what you have attacked   -> `o.ThreatOf(owner) > 0`. Our threat table is keyed
+                            //                               by the player who DEALT the damage, so any mob you
+                            //                               have hit carries threat from you. This is RTK's
+                            //                               `mobs[i]:checkThreat(mob.owner) > 0` list.
+                            //   what has attacked you    -> `owner.RecentMobAttackerId`, stamped by
+                            //                               Session.ApplyMobHit on a LANDED blow. RTK's
+                            //                               `owner.attacker` fallback, and the reason a pet
+                            //                               defends you from something you never touched.
+                            //
+                            // Both halves need a real blow to have been struck by somebody. A creature that has
+                            // merely noticed you, or is walking at you, is invisible to the pet — which is what
+                            // makes the corner-wall real: stand in a corner with two summons and nothing moves
+                            // until the first hit lands, in either direction.
+                            //
+                            // Bounded by AggroRadius because RTK's list comes from `getObjectsInArea` — the pet
+                            // fights what is around it, and won't cross a dungeon to reach a high-threat mob it
+                            // cannot see. Distance only breaks ties, so it still walks past a rabbit to reach
+                            // whatever is actually killing you. The threat list is searched first and the
+                            // attacker is the fallback, in RTK's order.
+                            uint bit = owner.RecentMobAttackerId;
+                            var foe = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.OwnerId == 0
+                                             && (o.ThreatOf(owner.PlayerId) > 0 || o.Id == bit)
+                                             && Math.Max(Math.Abs(o.X - mob.X), Math.Abs(o.Y - mob.Y)) <= AggroRadius)
+                                             .OrderByDescending(o => o.ThreatOf(owner.PlayerId))
+                                             .ThenBy(o => Math.Max(Math.Abs(o.X - mob.X), Math.Abs(o.Y - mob.Y)))
                                              .FirstOrDefault();
                             mob.TargetMobId = foe?.Id ?? 0;
 
                             // A pet steps EVERY heartbeat rather than on its own MobMoveTime. That cadence is a
-                            // wander timer (a panda's is 2s); pacing a follower by it would leave it hopelessly
-                            // behind a walking player. One tile per 600ms tick is the most this heartbeat can
-                            // express, so a pet still trails you while you're moving and closes up when you stop.
+                            // wander timer (a panda's is 2s), far too slow to close on something mid-fight.
                             if (foe is not null)
                             {
                                 int fdx = foe.X - mob.X, fdy = foe.Y - mob.Y;
@@ -1865,10 +2186,12 @@ public sealed class World
                                 continue;
                             }
 
-                            // Rule 3: heel. Stop once cardinally adjacent so the pet doesn't shove itself into
-                            // the owner's tile or jitter around them; standing still is the correct idle pose.
-                            if (Math.Abs(owner.PlayerX - mob.X) + Math.Abs(owner.PlayerY - mob.Y) > 1)
-                                StepMobToward(mapId, m, mob, owner.PlayerX, owner.PlayerY, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                            // Nothing to fight: a pet HOLDS ITS GROUND. It does not heel, does not follow, does
+                            // not drift — it stands where it was summoned until something hits you or you hit
+                            // something (RTK's move ends `target = getBlock(mob.owner)` and then bails on
+                            // `target.blType == BL_PC`, so its pet never paths to its owner either). Walk away
+                            // from your summons and you leave them behind, which is what makes them placeable:
+                            // two of them in a doorway are a wall, not an escort.
                             continue;
                         }
                     }
@@ -1928,12 +2251,42 @@ public sealed class World
                         if (victim is not null) mob.TargetId = victim.PlayerId;
                     }
 
+                    // Idle flavour (MobChatter.csv). RTK puts these in each mob's `move` hook — the whole
+                    // "custom AI" of the grim ogre is a 1-in-100 roll to grunt — so it belongs here, before
+                    // any of the targeting work and regardless of whether the mob is fighting.
+                    if (Content.MobChatter.TryGetValue(mob.Key, out var chat) && Random.Shared.Next(chat.Chance) == 0)
+                        chatter.Add((mapId, mob, chat.Channel, chat.Lines[Random.Shared.Next(chat.Lines.Length)]));
+
+                    // Amnesia (RTK amnesia.lua while_cast): the mob drops the player it has forgotten, then
+                    // re-picks from the rest of its threat table below. Checked before the retarget so the
+                    // forgotten player can't simply be chosen straight back.
+                    if (mob.AmnesiaBy != 0)
+                    {
+                        if (Environment.TickCount64 >= mob.AmnesiaUntil) { mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0; }
+                        else if (mob.TargetId == mob.AmnesiaBy) { mob.TargetId = 0; mob.AttackTimer = 0; }
+                    }
+
+                    // A PASSIVE creature forgets anyone who leaves the map entirely (RTK mob_ai_basic:
+                    // `if mob.behavior == 0 and target.m ~= mob.m then ... setThreat(mob.ID, 0)`). An
+                    // aggressive one keeps the grudge banked, so walking out and back in doesn't launder it.
+                    if (!mob.Aggressive && mob.TargetId != 0 && m.Players.All(p => p.PlayerId != mob.TargetId))
+                    {
+                        mob.ClearThreat(mob.TargetId);
+                        mob.TargetId = 0; mob.AttackTimer = 0;
+                    }
+
+                    // Threat (RTK mob_ai_normal calls threat.calcHighestThreat at the top of both its move and
+                    // attack branches, so it is re-evaluated every tick a mob is in a fight — not just when it
+                    // is hit). Owned creatures are exempt: a pet's target comes from its owner, above.
+                    if (mob.Threat is { Count: > 0 } && mob.OwnerId == 0) RetargetByThreat(m, mob);
+
                     // Combat AI (RTK mob_ai_normal: on_attacked sets the target; move/attack chase + swing at
                     // it): a provoked mob (World.TryDamage set TargetId) abandons wandering to path toward and
                     // melee its attacker instead, until the target dies/leaves/logs off or strays past
                     // ChaseLeash tiles from the mob's home — then it falls back to normal wandering below.
                     if (mob.TargetId != 0)
                     {
+                        mob.Returning = false;   // RTK: `if (mob.target ~= 0) then mob.returning = false end`
                         var target = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId);
                         // An OWNED creature has no leash: it belongs to a player, not to a spawn point, so
                         // tethering it to the tile it was summoned on would make it quit mid-fight.
@@ -1944,6 +2297,38 @@ public sealed class World
                         else
                         {
                             int tdx = target!.PlayerX - mob.X, tdy = target.PlayerY - mob.Y;
+
+                            // Spellcasting (MobSpells.csv). Rolled here rather than in the swing branch below
+                            // because RTK's casters do it from `move`, at their own range — a mythic boss
+                            // throws lightning from five tiles out, a raven pecks from arm's reach. Cast is IN
+                            // ADDITION to the swing, never instead of it (RTK's raven runs `peck.cast(...)`
+                            // and then falls straight through to mob_ai_basic.attack).
+                            if (Content.MobSpells.TryGetValue(mob.Key, out var repertoire)
+                                && Environment.TickCount64 >= mob.SpellReadyAt)
+                            {
+                                int reach = Math.Max(Math.Abs(tdx), Math.Abs(tdy));
+                                foreach (var sp in repertoire)
+                                {
+                                    if (reach > sp.Range || Random.Shared.Next(Math.Max(1, sp.Chance)) != 0) continue;
+                                    // A `melee` row is a BONUS SWING with the creature's own weapon rather
+                                    // than a spell — RTK's Gim Yi (bosses/gimyi.lua) casts `ambush`, whose
+                                    // whole payload for an already-adjacent mob is a shout and a second
+                                    // `mob:attack(target.ID)`. Routing it through the normal hit queue means
+                                    // it uses his real damage band, hit, crit and your AC, instead of a flat
+                                    // number in a CSV that would drift from him the moment his stats changed.
+                                    // (ApplyMobSpell says the line for a real cast, so a melee row says its
+                                    // own — RTK's ambush uses `mob:talk(2, ...)`, the unattributed channel.)
+                                    if (sp.Effect == "melee")
+                                    {
+                                        hits.Add((mapId, mob, target));
+                                        if (sp.Say.Length > 0) chatter.Add((mapId, mob, (byte)2, sp.Say));
+                                    }
+                                    else mobCasts.Add((mob, target, sp));
+                                    mob.SpellReadyAt = Environment.TickCount64 + sp.EveryMs;
+                                    break;   // one spell per opportunity, first match in file order wins
+                                }
+                            }
+
                             // Cardinal adjacency ONLY (matches the player's own melee, which only ever checks
                             // its single FrontTile — a diagonal target is neither attackable by the player nor,
                             // now, by a mob; RTK has no 8-way reach either). A diagonal target falls through to
@@ -2025,6 +2410,32 @@ public sealed class World
                     }
 
                     if (!mob.Wander) continue;
+
+                    // Walk home after giving up a chase (RTK mob_ai_basic.move's `returning` block: once the
+                    // creature is retDist from its start it sets `mob.newMove = 250` and paths back via
+                    // toStart, clearing the flag on arrival).
+                    //
+                    // This is not cosmetic. A mob that chased you to the ChaseLeash edge and gave up is
+                    // sitting several tiles outside its wander box, and EVERY candidate tile in the wander
+                    // block below fails its `|nx - HomeX| <= Leash` test — so it would stand frozen on that
+                    // tile forever, and a pulled-and-dropped patch of a map would slowly fill up with
+                    // statues. It sprints back (RTK's 250ms, which at this heartbeat is a tile per tick)
+                    // rather than strolling, so the patch resets promptly.
+                    if (!mob.Returning && mob.Leash > 1
+                        && Math.Max(Math.Abs(mob.X - mob.HomeX), Math.Abs(mob.Y - mob.HomeY)) > mob.Leash)
+                        mob.Returning = true;
+
+                    if (mob.Returning)
+                    {
+                        if (mob.X == mob.HomeX && mob.Y == mob.HomeY) { mob.Returning = false; mob.MoveTimer = 0; }
+                        else
+                        {
+                            StepMobToward(mapId, m, mob, mob.HomeX, mob.HomeY,
+                                          dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                            continue;
+                        }
+                    }
+
                     mob.MoveTimer += TickMs;
                     if (mob.MoveTimer < mob.MoveTime) continue;   // not this mob's turn yet
                     mob.MoveTimer -= mob.MoveTime;                // carry the remainder (steady cadence)
@@ -2085,6 +2496,21 @@ public sealed class World
         foreach (var fr in fxRepeats)
             Broadcast(fr.map, p => { p.EffectOver(fr.id, fr.anim); if (fr.sound > 0) p.SoundAt(fr.sound, fr.id); });
 
+        // …and anything raised from inside TryDamage, which has no way to send where it stands.
+        List<(ushort map, uint id, int anim, int sound)> deferred;
+        List<(string key, string hook, ushort map, Mob mob, Session? actor)> hooks;
+        lock (_lock)
+        {
+            deferred = new List<(ushort, uint, int, int)>(_deferredFx); _deferredFx.Clear();
+            hooks = new List<(string, string, ushort, Mob, Session?)>(_hooks); _hooks.Clear();
+        }
+        foreach (var fx in deferred)
+            Broadcast(fx.map, p => { if (fx.anim > 0) p.EffectOver(fx.id, fx.anim); if (fx.sound > 0) p.SoundAt(fx.sound, fx.id); });
+
+        // Lua AI hooks, run here and only here — outside the lock (see _hooks).
+        foreach (var h in hooks)
+            Try(() => MobScript.Fire(h.key, h.hook, new MobContext(this, h.map, h.mob, h.actor)));
+
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
@@ -2106,6 +2532,16 @@ public sealed class World
             Broadcast(h.map, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
             Try(() => h.target.ApplyMobHit(h.mob, dmg));
+        }
+
+        // Creature spells + idle flavour queued above — both broadcast, and a spell can kill, so neither can
+        // run under the lock.
+        foreach (var c in mobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell));
+        foreach (var ch in chatter)
+        {
+            var bytes = System.Text.Encoding.ASCII.GetBytes(
+                ch.channel == 0 ? $"{ch.mob.Name}: {ch.line}" : ch.line);   // RTK talk(0) attributes, talk(2) doesn't
+            Broadcast(ch.map, p => p.SpeakEntity(ch.channel, ch.mob.Id, bytes));
         }
 
         // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.

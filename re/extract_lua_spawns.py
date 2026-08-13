@@ -16,16 +16,30 @@ ignored — the server uses its own respawn cadence.
 
 Calls whose map/mob/count args are not integer literals (loop-computed `i+1`, etc.) are
 skipped and reported; those are a handful of programmatic dungeons we can add by hand later.
+
+RTK has THREE spawner NPCs with this identical call shape, not one — the other two place the crafting
+nodes, which are ordinary mobs to the engine (see game-data/HarvestNodes.csv):
+  * miningSpawnHandler.lua      — ore veins
+  * woodcuttingSpawnHandler.lua — ginko trees
+Reading only mobSpawnHandler.lua is why mining and woodcutting were switched on in CraftingToggles with
+nothing in the world to gather from. Those two go to their own AreaSpawnsCrafting.csv, concatenated at load
+like AreaSpawnsTrap.csv, so a re-run of the main extractor can't drop them and the counts stay easy to tune.
 """
 import csv
 import re
 import sys
 from pathlib import Path
 
-LUA = Path(__file__).parent / "RTK-Server" / "rtklua" / "Accepted" / "NPCs" / "mobSpawnHandler.lua"
-if not LUA.exists():
-    LUA = Path(__file__).parents[1] / "RTK-Server" / "rtklua" / "Accepted" / "NPCs" / "mobSpawnHandler.lua"
-OUT = Path(__file__).parent.parent / "data" / "game-data" / "AreaSpawns.csv"
+NPCS = Path(__file__).parents[1] / "RTK-Server" / "rtklua" / "Accepted" / "NPCs"
+if not NPCS.exists():
+    NPCS = Path(__file__).parent / "RTK-Server" / "rtklua" / "Accepted" / "NPCs"
+DATA = Path(__file__).parents[1] / "game-data"
+
+LUA = NPCS / "mobSpawnHandler.lua"
+OUT = DATA / "AreaSpawns.csv"
+# The crafting-node spawners, written separately (see the module docstring).
+CRAFT_LUA = [NPCS / "miningSpawnHandler.lua", NPCS / "woodcuttingSpawnHandler.lua"]
+CRAFT_OUT = DATA / "AreaSpawnsCrafting.csv"
 
 
 def balanced_args(text, open_idx):
@@ -74,8 +88,16 @@ def int_list(tok):
     return vals
 
 
-def main():
-    src = LUA.read_text(encoding="latin1")
+def strip_comments(src):
+    """Drop Lua line comments. miningSpawnHandler.lua opens with a COMMENTED-OUT handleSpawn for squirrels,
+    and reading it as live put 100 squirrels in the mining field — a scanner that ignores `--` is not a
+    scanner, it is a superset."""
+    return re.sub(r"--(?!\[\[).*", "", src)
+
+
+def scan(src):
+    """Every literal handleSpawn(...) call in one spawner script -> (rows, skipped, skipped_maps)."""
+    src = strip_comments(src)
     rows = []
     skipped = 0
     skipped_maps = set()
@@ -105,25 +127,48 @@ def main():
             if cnt <= 0:
                 continue
             rows.append((mp, mob, cnt, *box))
+    return rows, skipped, skipped_maps
 
-    # merge duplicate (map,mob,box) rows by summing counts
+
+def write(rows, out):
+    """Merge duplicate (map, mob, box) rows by summing counts, then write the CSV."""
     merged = {}
     for mp, mob, cnt, x0, y0, x1, y1 in rows:
         k = (mp, mob, x0, y0, x1, y1)
         merged[k] = merged.get(k, 0) + cnt
     out_rows = sorted((mp, mob, cnt, x0, y0, x1, y1) for (mp, mob, x0, y0, x1, y1), cnt in merged.items())
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUT.open("w", newline="", encoding="utf-8") as f:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["Map", "MobId", "Count", "MinX", "MinY", "MaxX", "MaxY"])
         w.writerows(out_rows)
+    return out_rows
 
-    maps = sorted({r[0] for r in out_rows})
-    total_mobs = sum(r[2] for r in out_rows)
-    print(f"wrote {len(out_rows)} area-spawn rows -> {OUT}")
-    print(f"  {len(maps)} maps, {total_mobs} total mobs")
-    print(f"  skipped {skipped} calls with non-literal args (computed maps: {sorted(skipped_maps)[:20]})")
+
+def main():
+    # AreaSpawns.csv is NOT rewritten by default. The committed file has diverged from a clean extraction --
+    # it carries hand-added newbie-area rows (maps 4712/4713) that no handleSpawn call produces -- so a
+    # regeneration silently DELETES tutorial spawns. Pass --rewrite-base only when you mean to, and diff it.
+    rows, skipped, skipped_maps = scan(LUA.read_text(encoding="latin1"))
+    if "--rewrite-base" in sys.argv:
+        out_rows = write(rows, OUT)
+        print(f"wrote {len(out_rows)} area-spawn rows -> {OUT}")
+        print(f"  {len(sorted({r[0] for r in out_rows}))} maps, {sum(r[2] for r in out_rows)} total mobs")
+        print(f"  skipped {skipped} calls with non-literal args (computed maps: {sorted(skipped_maps)[:20]})")
+    else:
+        print(f"parsed {len(rows)} base area-spawn rows (not written — pass --rewrite-base; see the note in main)")
+
+    craft_rows = []
+    for lua in CRAFT_LUA:
+        if not lua.exists():
+            print(f"  !! missing {lua.name} — crafting nodes not extracted")
+            continue
+        r, _, _ = scan(lua.read_text(encoding="latin1"))
+        craft_rows += r
+    craft_out = write(craft_rows, CRAFT_OUT)
+    print(f"wrote {len(craft_out)} crafting-node rows -> {CRAFT_OUT}")
+    print(f"  {len(sorted({r[0] for r in craft_out}))} maps, {sum(r[2] for r in craft_out)} total nodes")
 
 
 if __name__ == "__main__":
