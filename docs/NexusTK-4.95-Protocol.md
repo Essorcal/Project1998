@@ -396,7 +396,7 @@ by the live capture `02 0f 15 "Fast Move        :OFF"`.
 
 | sub | bit | label / behaviour |
 |---|---|---|
-| `0x00` | — | **'r' Ride key.** RTK `clif_findmount`; `Session.TryRideHorse` mounts by despawning a real nearby "horse" world mob and dismounts by spawning one back in front of you (§8). No flag bit. |
+| `0x00` | — | **'r' Ride key** — but sub-`0x00` is *overloaded*: opening the Options menu (F10) also sends it. Told apart by `dec[1]` (live-captured 2026-08-16): ride = `00 01 00` (`dec[1]=0x01`), F10 options-open = bare `00 00` (`dec[1]=0x00`). Only the ride shape drives `Session.TryRideHorse` (RTK `clif_findmount`: mounts by despawning a nearby "horse" world mob, dismounts by spawning one back in front, §8); the bare `00 00` is a no-op. Routing F10 into the ride path used to dismount anyone who opened options while mounted. No flag bit. |
 | `0x01` | 1 | `Listen to whisper` |
 | `0x02` | 2 | `Join a group` — Shift+G. A persisted **profile** status cell (§9.5), so it lives in `Character.Grouped`, not the flag word. Switching it OFF while grouped **leaves the group** — the only leave gesture (§11k) |
 | `0x03` | 4 | `Listen to shout` |

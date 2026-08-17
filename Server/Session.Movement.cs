@@ -598,12 +598,24 @@ public sealed partial class Session
         }
         else if (setting == 0x00)
         {
-            // 0x00 = the 'r' Ride key (RTK clif_changestatus case 0x00 -> clif_findmount). Unlike @ride/
-            // @mount (a plain GM toggle), this one is tied to a real world "horse" mob (MobDef key "horse",
-            // e.g. the wild horses roaming Buya/Horse Valley): mounting rides one away (despawns it) and
-            // dismounting sets it back down in front of you.
-            if (_char.Hp == 0) SendMiniText("Spirits can't do that.");
-            else TryRideHorse();
+            // 0x1b sub-0 is sent by TWO different gestures, told apart only by dec[1] (live-captured
+            // 2026-08-16): the 'r' Ride key sends `00 01 00` (dec[1]=0x01); opening the Options menu (F10)
+            // sends a bare `00 00` (dec[1]=0x00). Only the ride shape may drive TryRideHorse — routing the
+            // F10 packet there was dismounting anyone who opened their options while on a horse.
+            if (dec.Length >= 2 && dec[1] == 0x01)
+            {
+                // 'r' Ride (RTK clif_changestatus case 0x00 -> clif_findmount). Unlike @ride/@mount (a plain
+                // GM toggle), this is tied to a real world "horse" mob (MobDef key "horse", e.g. the wild
+                // horses roaming Buya/Horse Valley): mounting rides one away (despawns it) and dismounting
+                // sets it back down in front of you.
+                if (_char.Hp == 0) SendMiniText("Spirits can't do that.");
+                else TryRideHorse();
+            }
+            else
+            {
+                // F10 / Options-menu open — the client just announcing the menu is up. No state change.
+                Log.Info($"   -> setting 0x00 options-open (F10), no-op [{Convert.ToHexString(dec)}]");
+            }
         }
         else if (setting == 0x02)
         {
