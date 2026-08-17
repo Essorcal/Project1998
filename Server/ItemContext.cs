@@ -31,6 +31,9 @@ public sealed class ItemContext
     // ---- primitives (Lua: ctx:heal(n), ctx:setStatus(k, ms), ...) ----
     /// <summary>Play the shared eat/use animation + sound on self and peers (RTK action 8).</summary>
     public void animate()                    => _s.ItemEatAnim();
+    /// <summary>The sip/puff pose on self and peers, with NO eating sound (RTK action 7) — wine, liquor and
+    /// the pipes. See <see cref="Session.ItemSipAnim"/> for why they are not just quieter food.</summary>
+    public void sipAnim()                    => _s.ItemSipAnim();
     /// <summary>The harden-body cast pose on self (RTK action 6).</summary>
     public void castPose()                   => _s.ItemCastPose();
     /// <summary>Heal the eater's own HP (capped at effective max), "satiated" notice at full.</summary>
@@ -41,10 +44,19 @@ public sealed class ItemContext
     public void loseHp(double amt)           => _s.ItemLoseHp((int)System.Math.Round(amt));
     /// <summary>Kill the eater outright (poison_apple's always-lethal joke effect).</summary>
     public void kill()                       => _s.ItemKill();
-    /// <summary>Is the named timed status ward currently active on the eater?</summary>
+    /// <summary>Is the named timed status ward currently active on the eater? Same namespace the spell verbs'
+    /// <c>hasDuration</c> reads, so a potion's ward is visible to spells and vice versa (as in RTK).</summary>
     public bool hasStatus(string key)        => _s.ItemHasStatus(key);
     /// <summary>Set/refresh a timed status ward for <paramref name="ms"/> milliseconds.</summary>
     public void setStatus(string key, double ms) => _s.ItemSetStatus(key, (int)ms);
+    /// <summary>Is the categorised slot this ward would take already occupied — by its own spell version or by
+    /// anything else in the family? (RTK <c>checkIfCast(sanctuaries)</c> / <c>checkIfCast(hardarmors)</c>.)</summary>
+    public bool wardBlocked(string category)  => _s.ItemWardBlocked(category);
+    /// <summary>Apply a ward that has a spell equivalent, into the SAME slot the spell uses — so the two share
+    /// exclusivity, the stat really lands, and it persists across a relog. For wards with no spell twin, use
+    /// <see cref="setStatus"/> instead.</summary>
+    public void applyWard(string category, string stat, double amount, double ms, string key, string name)
+        => _s.ItemApplyWard(category, stat, amount, (int)ms, key, name);
     /// <summary>A percent success roll (1..100 &lt;= pct), for RTK's armor-scaled harden-body gate.</summary>
     public bool chance(double pct)           => _s.ItemChance((int)System.Math.Round(pct));
     /// <summary>Warp the eater to a random tavern in their nation (RTK returnToInn).</summary>

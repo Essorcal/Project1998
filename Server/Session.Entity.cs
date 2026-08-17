@@ -169,7 +169,11 @@ public sealed partial class Session
 
         // 2% of max per tick, scaled by the governing attribute (Grace->vita, Will->mana). Ceil keeps a
         // low-level character (small max) ticking up by at least 1 instead of rounding to nothing.
-        int hpGain = (int)Math.Ceiling(maxHp * 0.02 * (1 + (_char.Grace + eq.grace) / 100.0));
+        // Purple Potion adds a flat +20 to the vita term for its 300s (RTK Player.regen: `if
+        // player:hasDuration("purple_potion") then regen = regen + 20 end`, on top of RTK's `healing` stat,
+        // which is the stat Grace stands in for here). It is the only consumable that touches regeneration.
+        int regenBonus = HasStatusFlag("purple_potion") ? 20 : 0;
+        int hpGain = (int)Math.Ceiling(maxHp * 0.02 * (1 + (_char.Grace + eq.grace + regenBonus) / 100.0));
         int mpGain = (int)Math.Ceiling(maxMp * 0.02 * (1 + (_char.Will  + eq.will)  / 100.0));
 
         uint newHp = Math.Min(maxHp, _char.Hp + (uint)hpGain);
@@ -232,20 +236,6 @@ public sealed partial class Session
         SendStats();
         _char.Totem = save;
         Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
-    }
-
-    // "@time" — report the shared world calendar and whether YOU are in your totem's totem-time window (the
-    // +5% kill-exp bonus). The clock advances one game hour per 7.5 real minutes, derived from a fixed epoch
-    // (World.Epoch) rather than counted, so it is the same after any restart. Season is server-side only —
-    // the 0x20 packet carries hour+year alone — so @time is the only place it shows.
-    private void ShowTime()
-    {
-        var (h, y) = _world.Time;
-        bool totem = _world.IsTotemTime(_char.Totem);
-        string mine = Content.TotemName(_char.Totem);
-        SendLog($"Game time: hour {h}:00, Yuri {y}, {_world.SeasonName}. Your totem: {mine}. " +
-                (totem ? "TOTEM TIME — kill exp +5%."
-                       : "Not your totem time (grouping with someone whose totem IS up shares the bonus)."));
     }
 
     // "@dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n
@@ -414,7 +404,7 @@ public sealed partial class Session
     /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
     public bool IsDead => _char.Hp == 0;
 
-    private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; @weapon GM override
+    private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; 0xFF = bare hands
     private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
 
     /// <summary>appearance[4] — the body layer's colour. RE'd end-to-end 2026-08-07 (player draw 0x432320,
@@ -660,9 +650,27 @@ public sealed partial class Session
     // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
     // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
     // mob takes, just aimed at our own entity id) — dying (Hp hits 0) triggers Die() below.
+    // ---- Harden Body: total damage immunity ---------------------------------------------------------------
+    // RTK Player.removeHealthExtend (player.lua:163) opens by RETURNING OUTRIGHT if any of four wards is up:
+    //     harden_body_poet / deaths_guard_poet / lifes_protection_poet / body_of_alignment_poet
+    // — the poet spell and its three alignment reskins. No net-damage calc, no HP change: the blow simply does
+    // not land. The Scroll of Immortality grants the same ward (item_verbs.lua `hardenbody`, 16s, behind RTK's
+    // armor-scaled success roll), which is what makes the scroll worth its name.
+    //
+    // Deliberately checked at BOTH intake sites rather than inside one shared helper, because there is no
+    // shared helper: melee comes through ApplyMobHit and spell/PvP through ReceiveSpellDamage. Missing either
+    // would make "immunity" mean "immune to half of the game".
+    private static readonly string[] HardenBodyWards =
+        { "harden_body", "harden_body_poet", "deaths_guard_poet", "lifes_protection_poet", "body_of_alignment_poet" };
+    internal bool DamageImmune
+    {
+        get { foreach (var w in HardenBodyWards) if (HasStatusFlag(w)) return true; return false; }
+    }
+
     public void ApplyMobHit(Mob mob, int rawDmg)
     {
         if (IsDead) return;   // already down — don't re-trigger Die() while the revive delay is pending
+        if (DamageImmune) return;   // Harden Body — RTK returns before the damage calc even runs
         WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
         // RTK's `owner.attacker`: the last creature to actually land a blow on you. A Call of the Wild pet
         // reads this to decide what to defend you from — see World.Tick's pet block. Set on the LANDED hit,
@@ -723,6 +731,7 @@ public sealed partial class Session
     public void ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
     {
         if (IsDead) return;   // already down — don't re-trigger Die() while the revive gate is pending
+        if (DamageImmune) return;   // Harden Body — see ApplyMobHit; magic is no exception in RTK either
         WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
         if (rawDmg < 1) rawDmg = 1;
         double spellAmp = TakeDamageAmp();          // sleep-family amplifier — see ApplyMobHit

@@ -144,6 +144,14 @@ public sealed partial class Session
         SendAction(_char.Id, 4, 40, 0);                                                     // our crouch + sound
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 4, 40, 0), except: this);   // peers see it too
 
+        // The ATTEMPT is what drops Invisible, not a successful grab — bending down in plain sight gives you
+        // away whether or not there was anything there. So this sits with the crouch, ahead of the floor
+        // lookup, exactly as the action itself does. Covers both keys: ',' (top item) and Shift+, (the whole
+        // stack), since the client routes both through this one opcode and differs only in body[0].
+        // It used to live inside the loop below, after the null check, so an empty tile or someone else's
+        // death pile left you invisible — a free way to test a tile without breaking stealth.
+        BreakStealth();
+
         do
         {
             // Pass our id so someone else's death pile is passed over rather than pocketed (RTK canLoot).
@@ -153,7 +161,6 @@ public sealed partial class Session
                 if (locked) SendMiniText("That item does not belong to you.");   // RTK canLoot's own refusal
                 return;                                   // tile empty (or nothing here we may take)
             }
-            BreakStealth();                               // grabbing floor loot is an overt act — drops Invisible (RTK removeDuras(invis))
             if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); continue; }   // coins -> purse
             var def = Content.ItemById(gi.ItemId);
             if (def is null) continue;
@@ -362,6 +369,23 @@ public sealed partial class Session
         PlayEatSfx();   // the action sprite carries no sound of its own — 403+006 over 0x19 (see EatSfxA/B)
     }
 
+    /// <summary>The drink/smoke pose (RTK action 7), self and peers, with NO sound. Wine, liquor and the
+    /// pipes are a different gesture from eating in RTK, not a variant of it: every food script is
+    /// <c>sendAction(8, 25)</c> and plays nothing, while every drink and smoke script — wine.lua,
+    /// herb_pipe.lua, sonhi_pipe.lua and the rest — is <c>sendAction(7, 20)</c> followed by an explicit
+    /// <c>playSound(22)</c>. Ours ran both classes through the eat path, so a pipe chewed and gulped.
+    ///
+    /// The pose is ported; the sound deliberately is NOT. RTK's sound ids belong to a LATER client's sound
+    /// space than 4.95's (the same trap that made the combat ids wrong), and the eat pair we do play was
+    /// arrived at by ear on the live 4.95 client rather than read out of RTK. Playing 22 here would be
+    /// guessing in the wrong numbering; silence is the safe half of the fix, and a real sip/puff id can be
+    /// added the way the others were — by listening.</summary>
+    internal void ItemSipAnim()
+    {
+        SendAction(_char.Id, 7, 20, 0);
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 7, 20, 0), except: this);
+    }
+
     internal void ItemCastPose() => SendAction(_char.Id, 6, 40, 0);   // harden-body cast pose (self only, as RTK)
 
     internal void ItemHeal(int amt)
@@ -388,15 +412,42 @@ public sealed partial class Session
 
     internal bool ItemHasStatus(string key)          => HasStatusFlag(key);
     internal void ItemSetStatus(string key, int ms)  => SetStatusFlag(key, ms);
+
+    // ---- item wards that have a SPELL equivalent ---------------------------------------------------------
+    // Sanctuary (aqua/green/lime potion), Harden Armor (brown/muddy) and Curse Protection (scroll of
+    // protection/defense) are the same effects the spell system already implements, so the potion applies
+    // them through the SAME slot the spell uses rather than a parallel flag. That is what makes RTK's own
+    // guard work: aqua_potion.lua refuses on `checkIfCast(sanctuaries)`, which has to see the spell too.
+    // ItemParams.csv drives it — a `category` column on the row picks this route (see item_verbs.lua ward).
+    //
+    // "deduction" is the odd one out because the sanctuary line is not a stat delta but a damage MULTIPLIER
+    // living in its own slot (_sancDeduct), so it is checked and applied through that instead of _buffs.
+    internal bool ItemWardBlocked(string category) =>
+        category == "deduction" ? SancDeductActive : HasStatusCategory(category);
+
+    internal void ItemApplyWard(string category, string stat, double amount, int ms, string key, string name)
+    {
+        if (ms <= 0) return;
+        if (category == "deduction") { ApplySanctuaryDeduction(amount, ms, name); return; }
+        // A protection carries no stat at all — it is a pure category-slot occupier, which is what makes
+        // curses bounce off it (spell_verbs.lua BLOCKS: curses are blocked by "protections").
+        ReceiveCurse(stat ?? "", (int)Math.Round(amount), ms, key, name, category);
+    }
     internal bool ItemChance(int pct)                => Random.Shared.Next(1, 101) <= pct;   // 1..100 <= pct = success
     internal void ItemWarpHome()                     => ReturnToInn();   // RTK returnFunc -> a random tavern in your nation
 
-    // Timed status flags set by USE items whose RTK effect is a plain ward/marker rather than a numeric stat
-    // delta (the item_verbs.lua "ward"/"hardenbody" verbs) -- key -> Environment.TickCount64 expiry.
-    // Separate from _buffs (which models spell buffs with real Stat/Amount deltas): these carry no stat mod
-    // of their own in RTK either (e.g. Spells/common/curse_protection.lua has no recast function at all,
-    // just the duration flag), so tracking presence + honoring the re-cast guard IS the full faithful
-    // behavior, not a placeholder. Not persisted across a relog, same as _buffs.
+    // RTK's setDuration/hasDuration namespace: named timed flags, key -> Environment.TickCount64 expiry.
+    // Written by USE items (the item_verbs.lua "ward"/"hardenbody" verbs) AND by spell verbs through
+    // LuaSetDuration — one store, because RTK has one, and the cross-talk is the whole point: the black
+    // potion's `chin_baek_ho_ryung` is read by five warrior strike scripts. Persisted across a relog by
+    // Session.TimedEffects (absolute unix deadlines), so logging out cannot bank a ward.
+    //
+    // Distinct from _buffs, which models a stat DELTA plus a category slot. A ward that has a spell
+    // equivalent belongs there instead, not here — see ItemApplyWard, which routes Sanctuary, Harden Armor
+    // and Curse Protection into the very slots their spell versions use so the two share exclusivity. What
+    // stays here is the genuinely flag-shaped: `harden_body` (damage immunity), `chin_baek_ho_ryung` (a
+    // warrior strike multiplier), `purple_potion` (a regen bonus). Each has a real reader; a flag nothing
+    // reads is an item that silently does nothing, which is what this whole store used to be.
     private readonly Dictionary<string, long> _statusFlags = new();
     private bool HasStatusFlag(string key) => _statusFlags.TryGetValue(key, out var exp) && exp > Environment.TickCount64;
     private void SetStatusFlag(string key, int durationMs) => _statusFlags[key] = Environment.TickCount64 + durationMs;
@@ -435,10 +486,16 @@ public sealed partial class Session
 
     // A weapon's real swing range, summed across worn gear like EquipTotals (RTK pc_calcstat sums
     // itemdb_minSdam/maxSdam/minLdam/maxLdam over every equip slot, same loop as Armor/Hit/Dam — it isn't
-    // weapon-slot-only, though in practice only weapons carry nonzero values). Bare-handed is (0,0,0,0):
-    // matches RTK, where an unarmed player still swings via the dam/might/class terms in PlayerSwingDamage,
-    // just weaker. Previously unparsed entirely — Items.csv carries these columns but ItemDef never read
-    // them, so player melee had no real damage-range component at all (see PlayerSwingDamage).
+    // weapon-slot-only, though in practice only weapons carry nonzero values). Previously unparsed entirely
+    // — Items.csv carries these columns but ItemDef never read them, so player melee had no real
+    // damage-range component at all (see PlayerSwingDamage).
+    //
+    // BARE-HANDED IS S 1-2, NOT ZERO (live-measured 2026-08-15). A zero range is DETERMINISTIC, and every
+    // unarmed sample we own shows exactly two adjacent damage values in a ~50/50 split — a level-65 rogue
+    // reads 19/20 on a squirrel, 17/18 on a deer, 13/14 on fox and wolf. The endpoints were pinned by
+    // cross-referencing an armed run: a military fork (S 90-100) on the same character produced a window of
+    // 113-123, which fixes the non-weapon term to [9.00, 9.05), and the unarmed low roll then HAS to
+    // contribute 0.5. Hence minS 1. Do NOT "simplify" this back to zero.
     private (int minSDam, int maxSDam, int minLDam, int maxLDam) WeaponTotals()
     {
         int minS = 0, maxS = 0, minL = 0, maxL = 0;
@@ -447,13 +504,29 @@ public sealed partial class Session
             var def = Content.ItemById(e.ItemId); if (def is null) continue;
             minS += def.MinSDam; maxS += def.MaxSDam; minL += def.MinLDam; maxL += def.MaxLDam;
         }
+        if (maxS <= 0) { minS = 1; maxS = 2; }   // bare-handed
         return (minS, maxS, minL, maxL);
+    }
+
+    /// <summary>True when any equipped item sits in the weapon slot. Only feeds the Warrior's +2 Dam
+    /// bonus below, which is conditional on being armed at all.</summary>
+    private bool HasWeaponEquipped()
+    {
+        foreach (var e in _char.Equipment)
+        {
+            var def = Content.ItemById(e.ItemId);
+            if (def is not null && def.EquipSlot == 1) return true;
+        }
+        return false;
     }
 
     // RTK swingDamage.lua's per-class flat bonus (_classFactors, 1-indexed by baseClass+1): only Warrior
     // and Rogue get one; Peasant/Mage/Poet don't (magic users deal their real damage through spells, not
     // melee). pathId -1 (no class chosen yet) falls through to the Peasant case.
-    /// <summary>Flat path bonus added to the raw swing. MEASURED AT 0 (2026-08-02) — the
+    /// <summary>SUPERSEDED 2026-08-16 — see ClassFactor below. The "measured at 0" conclusion was
+    /// correct only for the LOW-LEVEL band it was taken in (a lvl 13-18 rogue at might 12); the term is
+    /// near zero there and climbs with level, reaching 5.5 on a lvl-65 rogue. Kept for the derivation.
+    /// ORIGINAL NOTE: Flat path bonus added to the raw swing. MEASURED AT 0 (2026-08-02) — the
     /// 9 (Warrior) / 7.5 (Rogue) from Rogue Tutor Melalye's post does not apply in this era.
     /// Derivation: with mob AC known independently (the Spark fixed-damage probe, base ~55.5),
     /// <c>K = observed/(1+ac/100) - (s/2 + dam*2.5 + might/8)</c> must be CONSTANT across mobs
@@ -467,7 +540,99 @@ public sealed partial class Session
     /// 99 it's noise. That asymmetry is exactly why the game felt wrong only in the early game.
     /// Rogue is measured; WARRIOR IS INFERRED — no warrior data exists, but its 9 comes from the
     /// same post as the disproven 7.5, so it is not evidence either. Re-measure with a warrior.</summary>
-    private static double ClassFactor(int pathId) => pathId switch { _ => 0 };
+    // Per-path bonus added to the raw swing. RTK's swingDamage.lua carries a FLAT table
+    // (_classFactors = {0, 9, 7.5, 0, 0} — warrior 9, rogue 7.5, everyone else 0) and Rogue Tutor
+    // Melalye's board post gives the same two numbers independently. Both are right about the VALUES and
+    // wrong about the SHAPE: applied flat, +9 predicts deer 45-54 for a level-28 warrior who actually
+    // hits for 28-37 (~60% high), and at level 1 it one-shots an 18hp squirrel. The term is ~0 in the
+    // early game and climbs with LEVEL (not with might — proven by holding a lvl-65 rogue's level fixed
+    // and walking might 35 -> 42: the damage moved by exactly the MightTerm step and nothing more).
+    //
+    // DELIBERATELY A LOOKUP, NOT A FORMULA. Four successive shapes were fitted and each was falsified by
+    // the next measurement: linear-to-99, saturating-at-90, sublinear, and finally plain monotonicity.
+    // The measured points below are each pinned to +/-0.05 by the collision method (see MightTerm) and
+    // are exact; the interpolation between them is a placeholder. Note they sit on the same 0.5 grid as
+    // MightTerm, so this likely STEPS rather than slopes — resolve that before inventing a fifth curve.
+    //
+    // NOT INCLUDED: warrior level 20, measured at 0.78. It is the only reading where two weapons on one
+    // character disagreed (fork [2.778,2.833] vs viperhead [2.723,2.777]) and the only one that breaks
+    // monotonicity; every other level was confirmed by 2+ independent runs that agreed exactly. Treated
+    // as contaminated. Re-measure before trusting it.
+    //
+    // The level-99 entries are NOT measured — they are RTK's table plus the board post, on the assumption
+    // those are endgame readings. Everything below level 28 (warrior) / 65 (rogue) is real data.
+    // The classes do NOT share a curve: no single spacing reproduces both warrior lvl28 = 0.5 and rogue
+    // lvl65 = 5.5. Keep them separate.
+    // MEASURING THIS: pick the mob by whether it SEPARATES the candidates, not by raw precision. Deer has
+    // the tightest signature (+/-0.028) but at level 30 both cf=0.17 and cf=0.5 produce the identical
+    // 28-37 window there, so the answer hides in which value collides — and 91 deer swings still tied
+    // three ways. Fox (ded 1.4) shifts the WINDOW between those two, and 33 swings settled it. Check that
+    // the windows differ before farming; endpoints need ~40 samples, a collision needs ~150.
+    // MEASURED BANDS (what the data permits, not point estimates):
+    //   lvl16 [0.000, 0.055] n=67 viperhead+unarmed | lvl25 [0.500, 0.571) n=60 fox, wolf agrees
+    //   lvl28 [0.500, 0.555] viperhead AND fork identical | lvl30 [0.214, 0.611) loosest
+    //   lvl32 [0.429, 1.143) window, collision picks 0.50 | lvl35 [1.000, 1.054] window AND collision
+    // IT IS A STAIRCASE, NOT A RAMP — it steps in 0.5s, the same quantum as MightTerm. Two step
+    // boundaries are now bracketed: 0 -> 0.5 within levels 17-25, and 0.5 -> 1.0 within levels 33-35.
+    // Flat 0.50 across 25-32 (four readings). Interpolation between measured levels should really be a
+    // step, not a line, but until the boundaries are pinned to a single level the difference is under
+    // half a damage point. lvl30 is the loosest reading; it sits between clean 0.50s either side.
+    // NOTE: a `WarriorDamFlipLevel` constant used to live here, for a level at which a warrior's own
+    // Dam line supposedly stepped -2 -> 0. It does not exist — see the long note in PlayerSwingDamage.
+    // The bracket kept moving (11, 15, 16, 23) because it was fitting the seam between two different
+    // characters, one of which was running with stale stats from a live-server bug. Do not re-add it.
+
+    /// <summary>A STAIRCASE in 0.5s, level-driven. Peasant/Mage/Poet are flat 0 (RTK's table says so and
+    /// a level-1 peasant measures it). Warrior/Rogue step, but the step LEVELS are irregular.
+    ///
+    /// A LOOKUP, NOT A FORMULA — and that is a considered decision, not laziness. A uniform-period fit
+    /// was derived and committed on 2026-08-16: the first step is exactly level 8 (lvl7 reads 0.0 and
+    /// lvl8 reads 0.5, adjacent), and with steps 2 and 3 then bracketed to 17-25 and 33-35, only
+    /// period 13 fits both, giving 8/21/34. It reproduced all eleven readings known at the time.
+    /// A level-18 run FALSIFIED it the same day: cf is already 1.0 at 18, so step 2 is at 17 or 18, not
+    /// 21. The gaps are 9-10 then 15-17 — they GROW. Five ramp/period shapes have now been fitted and
+    /// killed in turn; do not fit a sixth without a measurement in every gap it spans.
+    ///
+    /// WARRIOR — measured at levels 5,6,7 (0.0), 8,9,14,15,16 (0.5), 18,19,25,28,30,32 (1.0), 35 (1.5).
+    /// Steps: #1 EXACTLY 8. #2 in 17-18. #3 in 33-35. Nothing above 35 is measured; the table holds at
+    /// 1.5 rather than extrapolating, because the gap growth makes extrapolation guesswork.
+    /// ROGUE — lvl~15 = 1.0 (early, low precision), lvl18 and lvl19 = 1.0 (mined out of re/auto/swings.csv,
+    /// see below), lvl65 = 6.0. Its step SIZE has still never been observed. The interpolation between 19
+    /// and 65 is a placeholder; only the endpoints are real.
+    /// The lvl18/19 readings are the first ADJACENT rogue levels ever measured. Bands:
+    ///   lvl18 cf in [0.87, 1.14)  — green squirrel/novice sword INTERSECT big bat/swift sword, n=80+86
+    ///   lvl19 cf in [0.87, 1.34)  — green squirrel/novice sword, n=76
+    /// CAUTION: those bands are ~0.3 wide, so they do NOT establish that the rogue is FLAT across 15-19.
+    /// A smooth ramp of ~0.10/level fits both bands too (1.10 at 18, 1.21 at 19) — and a ramp of exactly
+    /// that slope is what it takes to reach the measured 6.0 at level 65. Do not quote "rogue is flat
+    /// through 19" as a finding; it is only "cf is within 0.3 of 1.0 at 18 and 19".
+    ///
+    /// RTK/board warrior 9 / rogue 7.5 are NOT encoded as level-99 anchors. They are real constants
+    /// from two independent sources, but flat in RTK, and nothing measured here is climbing toward them
+    /// at a rate that would arrive by 99.
+    ///
+    /// Values read 0.5 higher than the raw measurements quoted elsewhere in this file: MightTerm's
+    /// offset moved -0.5 -> -1.0 (pinned by a level-1 peasant) and this absorbed the same 0.5, so
+    /// warrior/rogue damage is bit-identical and Peasant lands on exactly 0.</summary>
+    private static readonly (int Level, double Cf)[] WarriorClassFactor =
+        { (1, 0.0), (7, 0.0), (8, 0.5), (16, 0.5), (18, 1.0), (32, 1.0), (35, 1.5) };
+    private static readonly (int Level, double Cf)[] RogueClassFactor =
+        { (1, 0.0), (15, 1.0), (19, 1.0), (65, 6.0) };
+
+    private static double ClassFactor(int pathId, int level)
+    {
+        var pts = pathId switch { 1 => WarriorClassFactor, 2 => RogueClassFactor, _ => null };
+        if (pts is null) return 0;                       // Peasant/Mage/Poet — 0 in RTK's table too
+        if (level <= pts[0].Level) return pts[0].Cf;
+        for (int i = 1; i < pts.Length; i++)
+        {
+            if (level > pts[i].Level) continue;
+            var (l0, c0) = pts[i - 1];
+            var (l1, c1) = pts[i];
+            return c0 + (c1 - c0) * (level - l0) / (double)(l1 - l0);
+        }
+        return pts[^1].Cf;                               // above the last reading: hold, do not extrapolate
+    }
 
     /// <summary>The Might contribution to a raw swing. TWO REGIMES, because the published formula is a
     /// local linearization (see nexustk-published-formulas-are-endgame-fits):
@@ -486,12 +651,26 @@ public sealed partial class Session
     /// bracket (starting the ramp at 0 would give might*0.25 = 3.0 at might 12, outside it).
     /// Applying the intercept unconditionally is what one-shot starter mobs; omitting it entirely
     /// under-powers endgame by ~35% of the Might term. Re-measure once a character reaches might 40+.</summary>
-    private static double MightTerm(double might)
-    {
-        double term = might / 8.0;
-        if (might > 40) term += 8.8125 * Math.Min(1.0, (might - 40) / 30.0);
-        return term;
-    }
+    /// <summary>SUPERSEDED 2026-08-16. The two-regime story above was an artifact of never having
+    /// measured a step boundary: the term is QUANTIZED, not sloped, and the 8.8125 "intercept" was almost
+    /// certainly the warrior's flat 9 from RTK's classFactor table leaking into a might-only fit.
+    /// Live-measured: +0.5 for every 4 points of Might, stepping at multiples of 4.
+    ///
+    /// STEP POSITIONS confirmed at might 16, 28, 32, 36 and 40 across two classes. The clinching evidence is
+    /// the FLAT stretches — a level-65 rogue reads identical damage at might 37, 38 and 39, which no
+    /// continuous term can produce, and a level-25 warrior reads identical damage with a sword at might
+    /// 16 and 19. STEP SIZE confirmed at 0.50 (not 0.33) by a fixed-level sweep on that rogue: at might
+    /// 39 with a military fork the observed collision set was {81,84,86}, chi2 3.41 vs 10.28 for the
+    /// 0.33 alternative, the tell being a damage value seen ONCE where 0.33 needs it doubled.
+    ///
+    /// THE -1.0 OFFSET IS FIXED BY A LEVEL-1 PEASANT, not chosen. A peasant has classFactor 0 (RTK's
+    /// table, and nothing else applies at level 1), so a peasant swing measures MightTerm directly with
+    /// no other unknown. Live: might 3, wooden saber S 5-10, Dam 0, vs an AC-100 squirrel gives a window
+    /// of 3-8 over n=25. Squirrel's x2 deduction makes dmg = s + 2M exactly, so 2M = -2 and M = -1.00.
+    /// It was -0.5 until 2026-08-16, which put every Peasant/Mage/Poet swing one damage high; warriors
+    /// and rogues were unaffected because their ClassFactor entries absorbed the same 0.5.
+    /// Equivalent to (floor(might/4) - 2)/2.</summary>
+    private static double MightTerm(double might) => Math.Floor(might / 4.0) / 2.0 - 1.0;
 
     // The player's real melee formula (RTK swingDamage.lua _getPlayerSwingDamage + the shared armor/
     // positional resolution in swingDamage() itself), replacing the old flat EffMight-based stand-in.
@@ -551,7 +730,42 @@ public sealed partial class Session
         // only reconciles to classFactor ~0 if dam=1 contributes 2.5, not 0. So the rate reading
         // is right and it was only the artificial floor that was wrong.
         double dam = eq.dam;
-        double classFactor = ClassFactor(pathId);
+        // WARRIOR WEAPON BONUS: equipping ANY weapon adds a flat +2 on top of the item's own Dam
+        // line, at EVERY level, from the moment the character joins the Warrior path. The warrior's
+        // own base Dam is 0, same as everyone else's. Absent from RTK's swingDamage.lua.
+        //
+        // The +2 is pinned by the client's own stat readout on ONE character at level 20, equipping two
+        // weapons back to back: military fork gave item Dam +1 and CHARACTER Dam 3; viperhead woodsaber
+        // gave item Dam +0 and character Dam 2. Items.csv agrees on both item lines (ItmDam 1 and 0),
+        // so the character total is item Dam + 2 in both cases. The bonus lives on the character, not
+        // on the item — the sword of power's tooltip is +1 might / +1 hit / +10 vita and no Dam at all,
+        // matching its row exactly, yet a warrior wearing it reads character Dam 2.
+        // Damage corroborates: a lvl15 warrior with the sword of power hits a wolf for 23-27, which
+        // needs effective Dam 2 (Dam 0 predicts 16-20).
+        //
+        // THERE IS NO LEVEL-BASED FLIP. A `WarriorDamFlipLevel` constant lived here for a day, on the
+        // theory that base Dam stepped -2 -> 0 somewhere in levels 20-28. It was an artifact of
+        // splicing TWO characters' runs at the seam between them: warrior #1 supplied levels 15-35 and
+        // warrior #2 supplied levels 1-19, and the boundary between the characters was read as a
+        // boundary between levels. Both characters were measured at level 15 with the SAME weapon and
+        // came out ten damage apart (#2: green squirrel 21-26, n=45, needs Dam 0; #1: wolf 23-27,
+        // needs Dam 2), which no level rule can produce.
+        //
+        // Warrior #2 was running on a LIVE-SERVER BUG, not a different rule: base Dam and base AC are
+        // stored stats that the real 4.95 server only recomputes when the character loads, so a
+        // character who joins the Warrior path mid-session keeps the peasant-era values until they log
+        // out and back in — and the server SWINGS with the stale value, it is not merely a display
+        // fault. That is why warrior #2's sheet read -2 base / 0 equipped for fifteen levels and its
+        // damage agreed with the sheet. We deliberately do NOT reproduce that bug.
+        //
+        // Warrior #2's runs remain valid evidence for MightTerm and ClassFactor: Dam was genuinely 0
+        // throughout them, which is what those fits assumed. Only the Dam conclusion was wrong.
+        if (pathId == 1 && HasWeaponEquipped()) dam += 2;
+        // FLOOR AT ZERO. RTK has math.max(player.dam, 1); we deleted that outright when a level-1
+        // peasant with a 0-dam weapon measured as contributing 0, not 2.5. Kept at 0 as a defensive
+        // floor against negative-Dam gear; with the flip gone nothing in the live data reaches it.
+        dam = Math.Max(0, dam);
+        double classFactor = ClassFactor(pathId, _char.Level);
         bool wasStealthed = Stealthed;   // read once — landing the hit clears it below
 
         double swing = (s / 2.0 * EffEnchant + dam * 2.5 + MightTerm(might) + classFactor) * EffRage * (wasStealthed ? 5 : 1) * (crit ? 3 : 1);
@@ -692,11 +906,12 @@ public sealed partial class Session
         // ItmSex: 0 = male-only, 1 = female-only, 2 = UNISEX (the common case — 1944/2545 items, incl. most
         // weapons). Character.Sex uses the same 0=M/1=F encoding, so a sex-locked item (0 or 1) must match;
         // anything >= 2 is unrestricted. (The old `!= 0` test wrongly blocked every unisex item.)
-        // The refusal wording is the real game's, verbatim (user-supplied 2026-08-07) — short, and naming
-        // neither the item nor the number you're missing.
+        // The refusal wording on all three is the real game's, verbatim (user-supplied 2026-08-07, might line
+        // 2026-08-15) — short, and naming neither the item nor the number you're missing. The might line used
+        // to be ours ("You need N might to wear X."), which leaked both.
         if (def.Sex < 2 && def.Sex != _char.Sex) { SendMiniText("This doesn't fit you."); return; }
         if (def.Level > _char.Level) { SendMiniText("You need more experience."); return; }
-        if (def.MightReq > EffMight) { SendMiniText($"You need {def.MightReq} might to wear {def.Name}."); return; }
+        if (def.MightReq > EffMight) { SendMiniText("You can't lift it above your waist much less wield it."); return; }
         // (The path/mark gate is NOT here — it's on the use funnel, HandleUseItem. See CanUsePath.)
         // Two-handed weapon vs shield (RTK pc_canequipitem, MAP_ERRITM2H): a weapon whose LOOK falls in
         // 10000..29999 is two-handed art, and the client has no way to draw it alongside a shield. Blocks the
