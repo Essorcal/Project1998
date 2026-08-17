@@ -255,6 +255,7 @@ public sealed class World
     // a low-probability per-active-map change on a slow tick so weather occasionally drifts rather than
     // sitting fixed at "clear" forever. 0=clear, 1=WRAIN, 2=WSNOW (RTK map.h enum).
     private const int WeatherRollTicks = 1500;     // ~15 minutes real time (1500 * 600ms)
+    private const int AdviceTicks = 1500;          // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer)
     private const int WeatherChangePct = 20;       // 20% chance per eligible map each roll
 
     // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
@@ -2727,6 +2728,12 @@ public sealed class World
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
         foreach (var s in AllPlayers()) { Try(s.TickSleep); Try(s.TickPoison); }
+
+        // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
+        // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
+        // same cadence as the weather roll. SendAdvice is a no-op for anyone with the option off.
+        if (_tick % AdviceTicks == 0)
+            foreach (var s in AllPlayers()) Try(s.SendAdvice);
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (forage is not null)

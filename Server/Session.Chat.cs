@@ -249,4 +249,14 @@ public sealed partial class Session
     /// rather than a status event. Type 3 puts it in the status/mini pane where group events belong.</summary>
     internal void NotifyGroup(string text) => SendMiniText(text, type: 3);
 
+    /// <summary>Wisdom / "Listen to advice" (0x1b sub-4): stream a periodic gameplay hint into the chat channel
+    /// (SendMiniText type 11 — RTK's advice type 99 -> 11, the "group & subpath" chat channel, which is where
+    /// the tips belong). A no-op for anyone who turned the option off. Fired on the world's ~15-minute advice
+    /// tick (World.Tick / AdviceTicks), mirroring RTK's per-player pc_timer advice cadence.</summary>
+    internal void SendAdvice()
+    {
+        if (!_char.HasSetting(0x04)) return;
+        if (Content.RandomAdvice() is string hint) SendMiniText(hint, type: 11);
+    }
+
 }

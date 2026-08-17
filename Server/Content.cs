@@ -3251,6 +3251,24 @@ public static partial class Content
     /// attack pose (0x1A type 1) rather than the magic cast pose (type 6). Everything else casts as normal.</summary>
     public static bool ShowsSwingAnim(SpellDef sp) => SacrificeFamilyFor(sp) is not null || TakesChinBaekHoRyung(sp);
 
+    // ---- Wisdom / "Listen to advice" hints -----------------------------------------------------------------
+    // The periodic gameplay tips the "Listen to advice" option (0x1b sub-4) streams into the chat channel every
+    // ~15 minutes (RTK pc_timer's advice[] via msg type 99 -> 11). Adapted from RTK's list to this server's own
+    // systems and wording (Central Functions, board-signs, the group-exp bonus, level-5 path choice).
+    private static readonly string[] AdviceHints =
+    {
+        "Your legend is the history of your character — from birth to every accomplishment since.",
+        "Press F1 to open Central Functions and learn more about your character.",
+        "Visit a trainer to learn new spells. At level 5, you may choose your path.",
+        "Be courteous to your fellow players and obey the laws of the land.",
+        "Subpaths are chosen at level 99 by seeking out the leader of the subpath you desire.",
+        "Travel to the neighboring towns and cities to learn how to craft finer gear.",
+        "Face a board and press it to read the notices there, or to post your own.",
+        "Group with others to share the hunt — a party earns more experience together.",
+    };
+    /// <summary>A random "Listen to advice" hint, or null if the list is empty. See Session.SendAdvice.</summary>
+    public static string? RandomAdvice() => AdviceHints.Length == 0 ? null : AdviceHints[Random.Shared.Next(AdviceHints.Length)];
+
     // Sam San one-offs that fit no existing archetype (nexusatlas 2004; the 2002-10-01 TSWolf announcement
     // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases whose other
     // identifiers we do not know - only the unaligned key is wired).
