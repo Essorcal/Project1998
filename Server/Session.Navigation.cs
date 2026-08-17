@@ -356,8 +356,10 @@ public sealed partial class Session
     // (13,1), just inside the map's north gate. Its return trigger is 114's north edge, y=0 x∈12..15, so the
     // arrival tile sits directly below it. Those four tiles are ALSO Warps.csv 283-286 (114 -> map 99), but that warp
     // never fires here: the warp branch in HandleWalk is gated on Content.TryMap(dest.m), and 99 has no map
-    // data, so the step completes normally and the after-step hook below gets the tile. Nagnang (2520) and
-    // Hausson (1025) are renderable too and could be added the same way; they simply aren't listed yet.
+    // data, so the step completes normally and the after-step hook below gets the tile. Nagnang IS carried at
+    // RTK's own numbers: trigger "Nagnang Gathering" (2520) y=5, x∈7..9 — the top row of that map's walkable
+    // corridor, with no competing Warps.csv row — landing back on (8,8). Hausson (1025) is renderable too and
+    // could be added the same way; it simply isn't listed yet.
     // X,Y = landing tile on the destination map. Destinations + their field10 dot pixels are data-driven
     // (game-data/WorldMapDests.csv -> Content.WorldDests, order-significant); the trigger tiles that open
     // the screen live in Content.WorldMapTriggers (WorldMapTriggers.csv). Both hot-reload via @reload.
@@ -690,6 +692,32 @@ public sealed partial class Session
         ushort y = (ushort)(cy ?? map.Ys / 2);
         EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
         SendLog($"Warped to {map.Name} (map {map.Id}, {map.Xs}x{map.Ys}) at ({_char.X},{_char.Y}).");
+    }
+
+    // "@go <x> <y>": jump to a tile on the map you are ALREADY on — the short, tester-safe half of @warp.
+    // Anything that isn't two in-bounds integers (missing argument, a word, a coordinate off the edge of this
+    // map) lands you on (0,0) rather than refusing: the command always moves you somewhere, and the reply
+    // says which of the two happened.
+    private void GoCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        int gx = 0, gy = 0;
+        bool ok = parts.Length >= 2 && int.TryParse(parts[0], out gx) && int.TryParse(parts[1], out gy)
+                  && gx >= 0 && gx < _char.MapXs && gy >= 0 && gy < _char.MapYs;
+        if (!ok) { gx = 0; gy = 0; }
+
+        // Same map, so the live dims are already right; the registry only supplies the 0x15 name string.
+        // EnterMap is the ONLY proven way to relocate the self entity on 4.95 — a bare 0x04 is a one-tile
+        // snap-back, not a teleport — which is why the Rogue leap spells jump the same way, and it is
+        // same-map-safe: the World leave/enter pair just re-registers us where we already were.
+        bool named = Content.TryMap(_char.Map, out var md);
+        string name = named ? md.Name : "Nexus";   // HandleRefresh's fallback: 0x15 needs SOME name string
+        string where = named ? $"{name} (map {_char.Map})" : $"map {_char.Map}";
+        EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)gx, (ushort)gy, name);
+
+        SendLog(ok
+            ? $"Moved to ({_char.X},{_char.Y}) on {where}."
+            : $"usage: {Prefix}go <x> <y>  —  0..{_char.MapXs - 1} / 0..{_char.MapYs - 1} on {where}; sent you to (0,0).");
     }
 
     // "@maps [filter]": list maps, fuzzy-ranked by name (blank = alphabetical). Capped so we don't flood.

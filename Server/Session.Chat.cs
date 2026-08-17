@@ -44,7 +44,7 @@ public sealed partial class Session
         if (text == "A") { UnequipAll(); return; }
 
         // Muted players may still run '@' commands (handled above) but cannot SPEAK. The gate sits here,
-        // after the command table, so a mute silences the player without also taking away @time or @party.
+        // after the command table, so a mute silences the player without also taking away @ignore or @friend.
         if (IsMuted()) { ReportMuted(); return; }
 
         // Real chat (not a ! command): everyone on the map hears it. Broadcast the over-head bubble (0x0D)
@@ -107,10 +107,10 @@ public sealed partial class Session
     // ---- whisper/tell (RTK clif_parsewisp, clif.c:7644-7790) ---------------------------------------------
     // Native client input: Shift+' opens the whisper prompt, then a name + Enter, then a message + Enter.
     // LIVE-confirmed 2026-07-26 (real capture): op=0x19 body = dstlen(u8) dst_name[dstlen] msglen(u8)
-    // msg[msglen] 00 — exactly RTK's wire layout. The "@whisper"/"@w" chat commands are kept as a fallback
-    // entry point (same DoWhisper core) for anyone who'd rather type it. Message TEXT is RTK's real wording
-    // wherever portable (not-found, map-silenced). Not modelled: per-player whisper on/off, silence/mute,
-    // and ignore lists — none of those exist yet.
+    // msg[msglen] 00 — exactly RTK's wire layout, and the ONLY entry point: the "@whisper"/"@w" chat
+    // commands that used to wrap DoWhisper were removed once this was confirmed real. Message TEXT is RTK's
+    // real wording wherever portable (not-found, map-silenced). Not modelled: per-player whisper on/off,
+    // silence/mute, and ignore lists — none of those exist yet.
     private void HandleWhisperPacket(byte[] dec)
     {
         if (dec.Length < 1) return;
@@ -122,15 +122,6 @@ public sealed partial class Session
         if (msgLen < 0 || msgStart + msgLen > dec.Length) return;
         string msg = Encoding.ASCII.GetString(dec, msgStart, msgLen);
         DoWhisper(name, msg);
-    }
-
-    // "@whisper <name> <message>" / "@w <name> <message>" — chat-command fallback for the same feature.
-    private void HandleWhisper(string rest)
-    {
-        rest = rest.Trim();
-        int sp = rest.IndexOf(' ');
-        if (sp < 0) { SendLog("Whisper what to whom? Try: @whisper <name> <message>"); return; }
-        DoWhisper(rest[..sp].Trim(), rest[(sp + 1)..].Trim());
     }
 
     private void DoWhisper(string name, string msg)
@@ -162,7 +153,8 @@ public sealed partial class Session
     // "@ignore" (list) / "@ignore add <name>" / "@ignore remove <name>" — RTK's ignorelist_add/remove
     // (clif.c:7523/7551), ported as a chat command rather than the raw 0x0D-sub-opcode client packet
     // (clif_parseignore) since that's a UI-driven right-click action from a later client's context menu —
-    // no evidence the 4.95 client has it at all (same "chat command primary" precedent as @party).
+    // no evidence the 4.95 client has it at all. That's the bar for a chat command surviving in the player
+    // tier: no native path exists, not merely "typing it is convenient".
     private void HandleIgnoreCommand(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);

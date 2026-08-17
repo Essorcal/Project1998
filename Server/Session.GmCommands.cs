@@ -135,95 +135,6 @@ public sealed partial class Session
         SendLog($"Gave {def.Name}{(amount > 1 ? $" x{amount}" : "")} (#{def.Id}, {(def.IsEquip ? $"equip slot {def.EquipSlot}" : def.IsConsumable ? "use" : "etc")}).");
     }
 
-    // "@iteminfo [slot] [sep]" / "@iteminfo url <template|off>" — drive the 0x66 examine reply.
-    //
-    // `url` switches to the AUTHENTIC path: `0x66` is a "navigate to this URL" packet, and with a template
-    // set the client opens it in its own embedded Internet Explorer control — the real item window (see
-    // Session.SendItemInfo for the proof). `{id}` and `{name}` are substituted. Anything servable works,
-    // so this is testable against any page before we host our own:
-    //     @iteminfo url http://localhost:8080/item/{id}
-    //     @iteminfo url off        (back to the text popup)
-    // Without a URL we answer with the kind-2 popup carrying the stat text, and `sep` tunes the character
-    // its text control breaks lines on (n / r / rn / t) — the one thing the binary can't settle, since the
-    // popup only measures text WIDTH.
-    // The kind byte is not exposed: kind 1 is kind 2 plus the dialog's "exit the game on OK" flag, and
-    // sending it once already killed a live client.
-    private void ItemInfoCmd(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        string arg = parts.Length > 1 ? parts[1] : "";
-
-        if (parts.Length > 0)
-            switch (parts[0].ToLowerInvariant())
-            {
-                // "type <n>" — the 0x0A message type the overlay rides on. 2, 3 and 8 all reach the
-                // client's word-wrap box (Session.SendItemOverlay); this is how we find which one paints.
-                case "type":
-                    if (byte.TryParse(arg, out var ty)) { _itemInfoType = ty; _itemInfoMode = ItemInfoMode.Overlay; }
-                    SendLog($"item-info: overlay on 0x0A type {_itemInfoType}  (sweep: {Prefix}iteminfo type 3 / 8)");
-                    return;
-
-                case "mode":
-                    _itemInfoMode = arg.ToLowerInvariant() switch
-                    {
-                        "overlay" => ItemInfoMode.Overlay,
-                        "popup"   => ItemInfoMode.Popup,
-                        "browser" => ItemInfoMode.Browser,
-                        _         => ItemInfoMode.Tooltip,
-                    };
-                    if (_itemInfoMode == ItemInfoMode.Browser)
-                        SendLog("WARNING: the in-game browser CRASHES this build (XBUTTON.EPF is missing).");
-                    SendLog($"item-info mode: {_itemInfoMode}");
-                    return;
-
-                // The browser is kept only for completeness — it is a confirmed client-killer here.
-                case "url":
-                    _itemInfoUrl = arg.Length > 0 && !arg.Equals("off", StringComparison.OrdinalIgnoreCase) ? arg : "";
-                    if (_itemInfoUrl.Length == 0 && _itemInfoMode == ItemInfoMode.Browser)
-                        _itemInfoMode = ItemInfoMode.Overlay;
-                    SendLog($"item-info url: {(_itemInfoUrl.Length > 0 ? _itemInfoUrl : "(none)")}");
-                    return;
-
-                case "sep":
-                    _itemInfoSep = arg.ToLowerInvariant() switch
-                    { "n" => "\n", "r" => "\r", "rn" => "\r\n", "t" => "\t", _ => _itemInfoSep };
-                    SendLog($"item-info sep: {(_itemInfoSep == "\n" ? "n" : _itemInfoSep == "\r" ? "r" : _itemInfoSep == "\r\n" ? "rn" : "t")}");
-                    return;
-            }
-
-        if (parts.Length == 0 || !int.TryParse(parts[0], out var slot))
-        {
-            SendLog($"usage: {Prefix}iteminfo <bag slot>  |  mode <tooltip|overlay|popup|browser>  |  type <n>  |  sep <n|r|rn|t>  |  url <tpl|off>");
-            SendLog($"  now: mode={_itemInfoMode} type={_itemInfoType}");
-            return;
-        }
-
-        var it = InvAt(slot - 1);                       // 1-based, matching the wire and the bag UI
-        var def = it is null ? null : Content.ItemById(it.ItemId);
-        if (it is null || def is null) { SendLog($"Bag slot {slot} is empty."); return; }
-        SendItemInfo(def, ItemInfoText(def, it), (byte)slot);
-    }
-
-    // "@bind <slot> [name|off]" — bind a bag item to a character (default: you), or clear the bind. Binding
-    // is a real mechanic — NPC subpath weapons arrive bound, and a quest upgrade binds its result — but
-    // nothing GRANTS a bound item automatically yet, so this is both the test path and the only way to
-    // produce one. See InvItem.Owner; the tooltip's "Owner:" line is driven by it.
-    private void BindItemCmd(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0 || !int.TryParse(parts[0], out var slot))
-        { SendLog($"usage: {Prefix}bind <bag slot> [name|off]   (default: bind to you)"); return; }
-
-        var it = InvAt(slot - 1);                       // 1-based, matching the bag UI
-        var def = it is null ? null : Content.ItemById(it.ItemId);
-        if (it is null || def is null) { SendLog($"Bag slot {slot} is empty."); return; }
-
-        bool clear = parts.Length > 1 && parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
-        it.Owner = clear ? "" : parts.Length > 1 ? parts[1] : _char.Name;
-        MarkDirty();
-        SendLog(clear ? $"{def.Name} is no longer bound." : $"{def.Name} is now bound to {it.Owner}.");
-    }
-
     // "@clearinv": empty the bag + gear (test reset).
     private void ClearInventory()
     {
@@ -405,16 +316,6 @@ public sealed partial class Session
         Log.Info($"   -> SPAWN monster pack look={look}");
     }
 
-    private void SetWeapon(string text)
-    {
-        var a = ParseInts(text);
-        _char.Weapon = (byte)(a.Length > 0 ? a[0] : 0);
-        if (_enteredWorld) StoreSave();
-        SendSelfLook();   // re-send the self appearance so the weapon shows (may need a relog to redraw)
-        SendMessage($"weapon set to {_char.Weapon}");
-        Log.Info($"   -> WEAPON set to {_char.Weapon}");
-    }
-
     // "@ride" / "@mount [0|1]" — toggle (or set) the mounted-on-horse state. Flips appearance[1] to the
     // form byte 3, which makes the client draw the horse+rider composite (SPR 344/345) instead of the human
     // sprite. Re-draws self and every co-located peer in place (same path ApplyAppearance uses for gear).
@@ -499,23 +400,6 @@ public sealed partial class Session
 
     // "@lvl N" / "@might N" — set a BASE character stat so wear-requirements can be exercised on the
     // fabricated bring-up character (default is level 1 / might 3, which gates out most real gear).
-    // "@hurt <n>" — GM test tool: take n damage to yourself, applied AFTER the deduction damage-reduction, so
-    // you can verify Sanctuary / Baekho's Cunning actually reduce incoming damage. Pure reduction test: it skips
-    // armor + positional (unlike a real mob swing), so `actual` is exactly raw x deduction. Reports both.
-    private void HurtSelfCmd(string text)
-    {
-        var a = ParseInts(text);
-        int raw = a.Length > 0 ? Math.Max(1, a[0]) : 100;
-        int actual = EffDeduction < 1.0 ? Math.Max(1, (int)Math.Round(raw * EffDeduction)) : raw;
-        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - actual);
-        SendStats();
-        byte hpPct = PlayerHpPercent();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
-        SendMiniText($"@hurt: {raw} raw -> {actual} taken (deduction x{EffDeduction:0.00}). HP {_char.Hp}/{EffMaxHp}");
-        Log.Info($"   -> @hurt {raw} -> {actual} (ded x{EffDeduction:0.00}) HP {_char.Hp}/{EffMaxHp}");
-        if (IsDead) Die();
-    }
-
     private void SetBaseStat(string which, string text)
     {
         var a = ParseInts(text);
@@ -561,6 +445,36 @@ public sealed partial class Session
         }
         RespecTo(99, Math.Max(0, a[0]));
     }
+
+    // "@dog [0|1]" — skip the bark/woof/grrowl chain and hand over (or take back) the Dog Linguist standing.
+    // This does NOT grant spells: the Dog itself still teaches those for kills and goods, so a GM testing the
+    // teach flow starts where a finished linguist starts. Eligibility for the spells is checked separately by
+    // the Dog and is base classes + NPC subpaths only (Content.CanLearnDogSpells) — said here too, because a
+    // PC subpath can hold the legend and still never be taught anything.
+    private void SetDogFlag(string text)
+    {
+        int p = Math.Max(0, CharClassId);
+        var a = ParseInts(text);
+        bool want = a.Length == 0 ? !HasDogFlag : a[0] != 0;      // bare "@dog" toggles
+
+        SetQuestStage(Content.DogFlagReg, want ? 1 : 0);
+        SetQuestStage(DogChainReg, want ? DogChainDone : 0);
+        if (want) AddLegend($"Dog linguist ({Character.GameDate})", DogChainReg, 3, 128);
+        else RemoveLegend(DogChainReg);
+
+        SendLog(want
+            ? $"Dog Linguist granted — say \"secret\" to your class's Dog to be taught." +
+              (Content.CanLearnDogSpells(p)
+                  ? ""
+                  : $" NOTE: {Content.PathTitle(p, _char.Mark)} is a PC subpath and will be refused — only the four " +
+                    $"base classes and the NPC subpaths (Chung ryong · Baekho · Ju jak · Hyun moo) may learn Dog spells.")
+            : "Dog Linguist cleared; the chain starts over at Mutt.");
+    }
+
+    /// <summary>The Dog Linguist chain's progress key and legend id — one name, as in RTK
+    /// (npc_dialog.lua <c>DOG_LEGEND</c>). Stage 4 is the finished chain.</summary>
+    private const string DogChainReg = "dog_linguist";
+    private const int DogChainDone = 4;
 
     // "@class <name>" — set the class/path and rebuild the character as one. `Character.ClassName` stores the
     // BASE name and is the single source of truth for the path id (Content.PathIdForClass), which drives spell

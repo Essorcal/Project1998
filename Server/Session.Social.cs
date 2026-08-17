@@ -12,18 +12,14 @@ public sealed partial class Session
     // ---- party / group (RTK clif_addgroup / clif_leavegroup / clif_updategroup, clif.c:13993-14148) -------
     // Ported rules, RTK's literal minitext wording where it has one. Not modelled: RTK's per-map "canGroup"
     // gate (no server-side concept of a no-group map here) and RTK's ghost-can-invite-others allowance (we
-    // don't special-case a dead inviter either way — nothing here stops a ghost from typing "@party").
-
-    /// <summary>"@party &lt;name&gt;" invites (or, from the leader onto an existing member of their OWN
-    /// party, KICKS — RTK's own self-referential special case in clif_addgroup) another player. "@party"
-    /// alone lists the roster. The chat command is the primary trigger; the 0x2E opcode case above is wired
-    /// defensively as a bonus since 4.95 has never been captured actually sending it.</summary>
-    private void HandlePartyCommand(string text)
-    {
-        string rest = text.Trim();
-        if (rest.Length == 0) { ShowPartyRoster(); return; }
-        TryPartyInvite(rest);
-    }
+    // don't special-case a dead inviter either way).
+    //
+    // Two native gestures, no chat commands (the "@party" / "@leaveparty" fallbacks are gone):
+    //   JOIN  — the "Group" button on another player's profile window -> 0x2E -> TryPartyInvite below.
+    //           Aimed by the LEADER at someone already in their own group, it kicks them instead (RTK's own
+    //           self-referential special case).
+    //   LEAVE — turning your own "Join a group" toggle OFF ('s' -> the Options menu, 0x1B sub-0x02). See
+    //           HandleSetting: that branch calls RemoveFromParty. There is no other way out.
 
     private void HandlePartyInvite(byte[] dec)
     {
@@ -47,22 +43,29 @@ public sealed partial class Session
         }
 
         if (_party is not null && _party.IsFull) { SendMiniText("Your group is already full.", type: 11); return; }
-        if (target.IsDead) { SendMiniText("They are unable to join your party.", type: 11); return; }
-        if (!target.WantsGroup) { SendMiniText("They have refused to join your party.", type: 11); return; }
-        if (target._party is not null) { SendMiniText("They have refused to join your party.", type: 11); return; }
+        if (target.IsDead) { SendMiniText("They are unable to join this group.", type: 11); return; }
+        // Their "Join a group" toggle is off, or they're already in someone's group. ONE line for both, as
+        // RTK does — the refusal must not tell you which, or it becomes a probe for who's already grouped.
+        if (!target.WantsGroup || target._party is not null)
+        { SendMiniText("They refuse to join this group.", type: 11); return; }
 
-        if (_party is null) _party = new Party(this, target);
+        // A group FORMING announces both of its founders, not just the invitee: the inviter is joining a
+        // group they weren't in a moment ago either, and the announcement always reaches everyone it names.
+        bool forming = _party is null;
+        if (forming) _party = new Party(this, target);
         else _party.Add(target);
         target._party = _party;
 
+        if (forming) _party.Broadcast($"{Snapshot().Name} is joining the group.");
         _party.Broadcast($"{target.Snapshot().Name} is joining the group.");
     }
 
-    /// <summary>Removes <paramref name="member"/> from their party — used for "@leaveparty", the leader-kick
-    /// special case above, and disconnect cleanup. Promotes the next member to leader (Party.Remove: the
-    /// leader is always Members[0]) and disbands (notifying the last straggler) if that drops the party to
-    /// one person. RTK sends the exact same "You have left the group." text whether you left or were kicked
-    /// (clif_addgroup's kick branch just calls clif_leavegroup(tsd) — no separate "removed" wording exists).</summary>
+    /// <summary>Removes <paramref name="member"/> from their party — the "Join a group" toggle going off
+    /// (the leave gesture), the leader-kick special case above, and disconnect cleanup all land here.
+    /// Promotes the next member to leader (Party.Remove: the leader is always Members[0]) and disbands
+    /// (notifying the last straggler) if that drops the party to one person. RTK sends the exact same
+    /// "You have left the group." text whether you left or were kicked (clif_addgroup's kick branch just
+    /// calls clif_leavegroup(tsd) — no separate "removed" wording exists).</summary>
     private static void RemoveFromParty(Session member)
     {
         var party = member._party;
@@ -80,20 +83,6 @@ public sealed partial class Session
         }
     }
 
-    private void LeaveParty()
-    {
-        if (_party is null) { SendMiniText("You are not in a group.", type: 11); return; }
-        RemoveFromParty(this);
-    }
-
-    private void ShowPartyRoster()
-    {
-        if (_party is null) { SendMiniText("You are not in a group.", type: 11); return; }
-        SendMiniText($"Party ({_party.Members.Count}/{Party.MaxMembers}):", type: 11);
-        foreach (var m in _party.Members)
-            SendMiniText($"{(ReferenceEquals(m, _party.Leader) ? "* " : "  ")}{m.Snapshot().Name} - HP {m.CharHp}/{m.CharMaxHp}", type: 11);
-    }
-
     // ---- trade / exchange (RTK clif_handitem / clif_handgold / clif_parse_exchange, clif.c:14548-15250) ---
     // See Trade.cs's doc comment for why this is dialog-driven instead of guessing RTK's real binary
     // exchange window. Rules ported: FLAG_EXCHANGE gate on both sides, same map, not already trading, not
@@ -104,18 +93,6 @@ public sealed partial class Session
     // A virtual "npc" purely for the dialog packet header (id/sprite/name) — never spawned or looked up.
     // Distinct sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) — see HandleClickInfo.
     private static readonly Mob TradeVirtualNpc = new(0xFFFFFFFD, 0, 0, 0, "Trade", 1);
-
-    /// <summary>"@trade &lt;name&gt;" — a name-based fallback trigger for testing/manual use. The REAL
-    /// trigger is the "Exchange" button on another player's profile window (see HandleExchangeRequest,
-    /// opcode 0x4A), which addresses the target by id since the client already has it from the click.</summary>
-    private void HandleTradeCommand(string text)
-    {
-        string name = text.Trim();
-        if (name.Length == 0) { SendLog("Trade with whom? Try: @trade <name>"); return; }
-        var target = _world.FindPlayer(name);
-        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
-        TryStartTrade(target);
-    }
 
     // 0x4A = RTK's exchange sub-protocol dispatch (clif_parse_exchange, clif.c:14647-14754): a type(u8)
     // byte then per-type args. Only type 0 ("initiate", body: 00 targetId(u32BE)) is wired — that's the
@@ -132,7 +109,7 @@ public sealed partial class Session
         if (target is not null) TryStartTrade(target);
     }
 
-    /// <summary>Shared start-of-trade path for both triggers above: RTK's gates (alive, same map, not
+    /// <summary>Start-of-trade path behind the 0x4A trigger above: RTK's gates (alive, same map, not
     /// already trading, target's FLAG_EXCHANGE on) then hands off to the dialog-driven negotiation.</summary>
     private void TryStartTrade(Session target)
     {
@@ -357,8 +334,8 @@ public sealed partial class Session
     // Sub-6 "Send nmail" — the NATIVE compose window's send packet, decoded from RTK nmail_write (map.c).
     // RTK reads the fields at raw fd offsets 8+; our `dec` begins at the subcmd byte (dec[i] == fd[i+5]), so:
     //   dec[3]=toLen, dec[4..]=recipient, then topicLen(u8), topic, msgLen(u16 BE), body, sendCopy(u8).
-    // Level-10 gated exactly like RTK. This is the authentic in-game "compose a letter" path (vs our
-    // @mail-send chat fallback). The leading Log.Info in HandleBoard + the dump here let us confirm live
+    // Level-10 gated exactly like RTK. This is the authentic in-game "compose a letter" path, and since the
+    // "@mail" fallback was removed, the only one. The leading Log.Info in HandleBoard + the dump here confirm
     // whether the 4.95 client's compose UI actually emits this.
     private void HandleNmailSend(byte[] dec)
     {
@@ -523,8 +500,8 @@ public sealed partial class Session
     // nmailFlag(u8: 1 when board==0) postId(u16BE) authorLen(u8) author[...] month(u8) day(u8)
     // topicLen(u8) topic[...] bodyLen(u16BE) body[...] — per RTK intif_parse_readpost/mapif_parse_readpost.
     // Board id 0 -> the mailbox: marks the letter read and auto-claims
-    // any attached parcel (see Mail.ClaimItem) the same way reading it via "@mail read" does, so a native
-    // mailbox UI and the chat-command fallback behave identically regardless of which one the player uses.
+    // any attached parcel (see Mail.ClaimItem), so opening a letter in the native mailbox UI both marks it
+    // read and hands over anything it was carrying.
     private void SendBoardReadPost(int boardId, int postId)
     {
         if (boardId == 0) { ReadMail(postId); return; }
@@ -599,8 +576,8 @@ public sealed partial class Session
     // ---- mail (RTK nmail — see Mail.cs's doc for why compose is chat-command-only) -------------
 
 
-    // Shared read path: RTK case 3 aimed at board 0 (SendBoardReadPost) and "@mail read <id>" both funnel
-    // through here so reading behaves identically either way — marks it read, and if it's carrying an
+    // The one read path: RTK case 3 aimed at board 0 (SendBoardReadPost) funnels through here — it marks the
+    // letter read, and if it's carrying an
     // unclaimed parcel, gives the item now (pack-full falls back to dropping it at your feet, same recovery
     // as CastGroundLoot). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
     // shape is unverified (see SendBoardReadPost's doc), so the chat log stays the one channel guaranteed
@@ -673,109 +650,12 @@ public sealed partial class Session
         RefreshMailFlags();   // reading (+ claiming any parcel) may clear the HUD mail/parcel arrow — refresh body[45]
     }
 
-    // "@mail" (inbox list) / "@mail read <id>" / "@mail delete <id>" / "@mail send <name> | <subject> | <body>"
-    // / "@mail sendItem <name> <itemKey> [amount] | <subject> | <body>". RTK gates nmail at level 10 (see
-    // MailMinLevel); everything else is our own design — the real nmail_write/boards_post wire format has no
-    // surviving source anywhere in this reference tree (Mail.cs's doc), so there's no RTK literal to port
-    // for composing. sendItem pulls straight from the caster's own bag (by inventory slot number, or by the
-    // item's Content key/display name — whichever matches) and removes it from their inventory immediately,
-    // same as handing it over in person.
-    private void HandleMailCommand(string text)
-    {
-        var rest = text.Trim();
-        if (rest.Length == 0) { ListMail(); return; }
-
-        int sp = rest.IndexOf(' ');
-        string sub = (sp < 0 ? rest : rest[..sp]).ToLowerInvariant();
-        string arg = sp < 0 ? "" : rest[(sp + 1)..].Trim();
-
-        switch (sub)
-        {
-            case "read":
-                if (!int.TryParse(arg, out var readId)) { SendLog("usage: @mail read <id>"); return; }
-                ReadMail(readId);
-                break;
-            case "delete":
-                if (!int.TryParse(arg, out var delId)) { SendLog("usage: @mail delete <id>"); return; }
-                SendLog(Mail.Delete(_char.Name, delId) ? "The letter has been deleted." : "That letter no longer exists.");
-                break;
-            case "send":
-                SendMailCommand(arg, itemArg: null);
-                break;
-            case "senditem":
-                {
-                    int isp = arg.IndexOf(' ');
-                    if (isp < 0) { SendLog("usage: @mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
-                    string toName = arg[..isp];
-                    SendMailCommand($"{toName} | {arg[(isp + 1)..]}", itemArg: arg[(isp + 1)..]);
-                }
-                break;
-            default:
-                ListMail();
-                break;
-        }
-    }
-
-    private void ListMail()
-    {
-        var inbox = Mail.InboxFor(_char.Name);
-        if (inbox.Count == 0) { SendLog("Your mailbox is empty."); return; }
-        foreach (var m in inbox)
-            SendLog($"[{m.Position}]{(m.IsRead ? "" : " *NEW*")} From {m.Sender} ({m.Month}/{m.Day}): {m.Topic}{(m.ItemId >= 0 && !m.Claimed ? " [parcel attached]" : "")}");
-        SendLog("@mail read <id> to open one, @mail delete <id> to remove it.");
-    }
-
-    // "<name> | <subject> | <body>" — pipe-delimited since names/subjects can contain spaces. itemArg, when
-    // set, is "<item> [amount] | <subject> | <body>" (senditem's own dispatch already stripped the name).
-    private void SendMailCommand(string spec, string? itemArg)
-    {
-        if (_char.Level < Content.MailMinLevel) { SendMiniText($"You must be at least level {Content.MailMinLevel} to view/send nmail."); return; }
-
-        var parts = spec.Split('|');
-        if (parts.Length < 3) { SendLog("usage: @mail send <name> | <subject> | <body>"); return; }
-        string toName = parts[0].Trim();
-        string subject = parts[1].Trim();
-        string body = parts[2].Trim();
-        if (toName.Length == 0 || subject.Length == 0 || body.Length == 0) { SendLog("Post must contain subject."); return; }
-        if (toName.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { SendLog("You can't mail yourself."); return; }
-
-        int itemId = -1, amount = 0, dura = 0;
-        if (itemArg is not null)
-        {
-            var iparts = itemArg.Split('|')[0].Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (iparts.Length < 1) { SendLog("usage: @mail sendItem <name> <item> [amount] | <subject> | <body>"); return; }
-            int amt = iparts.Length > 1 && int.TryParse(iparts[1], out var a) ? Math.Max(1, a) : 1;
-
-            InvItem? slot = null;
-            ItemDef? def = null;
-            if (int.TryParse(iparts[0], out var slotNum)) slot = InvAt(slotNum - 1);   // 1-based, matching the bag UI (same convention as HandleDropItem)
-            if (slot is not null) def = Content.ItemById(slot.ItemId);
-            if (def is null)
-            {
-                slot = _char.Inventory.FirstOrDefault(i =>
-                    (Content.ItemById(i.ItemId)?.Key.Equals(iparts[0], StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (Content.ItemById(i.ItemId)?.Name.Equals(iparts[0], StringComparison.OrdinalIgnoreCase) ?? false));
-                def = slot is null ? null : Content.ItemById(slot.ItemId);
-            }
-            if (slot is null || def is null) { SendLog($"You don't have '{iparts[0]}' to send."); return; }
-            amt = Math.Min(amt, slot.Amount);
-
-            // Same removal shape as HandleDropItem, but reason 7 = "You posted <item>." — that client line
-            // exists for exactly this, and reason 1 was announcing a parcel as "You dropped <item>."
-            int remaining = slot.Amount - amt;
-            if (remaining <= 0) { _char.Inventory.Remove(slot); SendDelItem(slot.Slot, 7); }
-            else { slot.Amount = remaining; SendAddItem(slot); }
-            MarkDirty();
-            itemId = def.Id; amount = amt; dura = slot.Dura;
-        }
-
-        var now = DateTime.UtcNow;
-        Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, itemId, amount, dura);
-        SendLog(itemId >= 0 ? $"Mailed {subject} to {toName} (with {amount}x parcel)." : $"Mailed {subject} to {toName}.");
-        // If the recipient is online, light their HUD arrow/bag right away (RTK's intif_parse_findmp does the
-        // same — sets the flag and re-sends status the moment mail lands, no relog needed).
-        _world.FindPlayer(toName)?.RefreshMailFlags();
-    }
+    // MAIL HAS NO CHAT COMMAND. The native 0x3B board window covers list, read, delete and compose (see
+    // HandleBoard / HandleBoardWrite / HandleBoardDelete above), so "@mail" was removed along with the other
+    // chat fallbacks for natively-reachable features. The one capability that went with it: attaching a
+    // PARCEL to an outgoing letter ("@mail sendItem"). Native compose always posts itemId -1, and nothing
+    // else in the server lets a player mail an item — Mail.Send still takes the item arguments and ReadMail
+    // still claims an attachment, so a scripted/quest sender works; only the player-facing path is gone.
 
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
     // handler that consumes the speech (runs a dialog) wins, so unrelated chatter just falls through. Async

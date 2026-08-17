@@ -10,8 +10,8 @@ namespace Server;
 /// doc). The real nmail_write/boards_post/boards_readpost implementations aren't present anywhere in this
 /// reference tree (checked rtk/src/map/board_db.c and clif.c both — only the dispatcher survives), so unlike
 /// Boards.cs there's no wire evidence at all for how mail gets COMPOSED (no recipient field visible in the
-/// dispatcher, no separate compose packet). Session.HandleMailCommand ports this as a "@mail" chat command
-/// instead (same "chat command primary" precedent as @party/@ignore/@friend); reading an existing mailbox
+/// dispatcher, no separate compose packet). Compose is therefore our own design, driven from the NATIVE
+/// board window (HandleBoardWrite): the "@mail" chat command that used to front it is gone. Reading a mailbox
 /// reuses the SAME wire builders as a normal board (SendBoardPosts/SendBoardReadPost) since that reply shape
 /// is at least cross-referenced against the char-server hop, just sourced from this table instead of
 /// board_posts when boardId==0.

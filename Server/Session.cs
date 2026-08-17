@@ -509,8 +509,15 @@ public sealed partial class Session
 
         RollActionWindow();
         if (_actionCount >= ActionBudget) return;               // still inside the spent window
-        while (_queuedCasts.Count > 0 && BumpActionTime() < ActionBudget)
+
+        // ONE PASS over what is queued right now. HandleCast can put a cast STRAIGHT BACK on the queue when
+        // the shared cast/swing slot is still busy (a held Invisible waiting out a swing), so an unbounded
+        // `while (_queuedCasts.Count > 0)` would dequeue and re-enqueue the same entry until the budget ran
+        // out. Bounding the pass leaves it queued for the next inbound packet instead — which is ~31ms away
+        // while a key is held, and is exactly when we want to retry.
+        for (int pass = _queuedCasts.Count; pass > 0 && _queuedCasts.Count > 0; pass--)
         {
+            if (BumpActionTime() >= ActionBudget) break;
             Log.Info("   -- queued cast released at window start");
             HandleCast(_queuedCasts.Dequeue().Body);
         }
@@ -643,9 +650,9 @@ public sealed partial class Session
             // a parcel needs (collect it from a MessengerNpc, see MessengerAbility), so we mirror it verbatim.
             case 0x41:                    SendMiniText("You should go see your kingdom's messenger to collect this parcel."); break;
             // 0x2E = RTK's party-invite opcode (clif_addgroup: body = nameLen(u8) name[nameLen], same shape
-            // as 0x19 whisper above). Unlike the items/0x0F/whisper opcodes this one has never been seen in
-            // a live 4.95 capture, so it's wired defensively (bad/garbage bytes just fail the name lookup —
-            // no risky reply is ever sent back). "@party <name>" is the confirmed-safe primary entry point.
+            // as 0x19 whisper above) — the "Group" button on another player's profile window, and since the
+            // "@party" chat fallback was removed, the ONLY way into a group. Bad/garbage bytes just fail the
+            // name lookup, so nothing risky is ever sent back.
             case 0x2E:                    HandlePartyInvite(dec); break;
             // 0x4A = RTK's exchange sub-protocol (clif_parse_exchange). Only sub-type 0 ("initiate exchange
             // with this target id") is handled — the click that opens a trade from another player's profile
@@ -1144,7 +1151,12 @@ public sealed partial class Session
     // Populated by the mob commands (@mob/@mobrow/@spawn); entries are removed on death (0x0E).
     private readonly List<Mob> _mobs = new();
     private uint _nextMobId = 5000;      // entity-id pool for spawned creatures (well above the self id)
-    private byte _facing = 0;            // last direction the player faced (0=N 1=E 2=S 3=W); drives melee
+    // Last direction the player faced (0=N 1=E 2=S 3=W); drives melee, the 'o'/open key, board signs, pet
+    // placement and everything else that needs a front tile. A VIEW over Character.Dir rather than a session
+    // field of its own, so it rides the character blob the same way X/Y do: every existing `_facing = …`
+    // write persists for free, and the loaded value is already in place by the time HandleArrival draws us.
+    // (It used to be session-local, which is why every login faced north no matter which way you logged out.)
+    private byte _facing { get => (byte)(_char.Dir & 3); set => _char.Dir = (byte)(value & 3); }
     private byte _realm = RealmCenter;   // realm-center camera lock; toggled live by F4 (0x1b sub-cmd 0x07)
     private int _lockOx, _lockOy;        // camera origin frozen when realm-center turned ON (map top-left tile)
     // Fast-move = the client's movement model (RTK clif_parsewalk gates on FLAG_FASTMOVE):

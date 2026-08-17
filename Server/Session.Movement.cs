@@ -391,6 +391,7 @@ public sealed partial class Session
 
         byte side = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(side & 3);
+        MarkDirty();   // facing persists (Character.Dir); like position it only rides the autosave/disconnect flush
         SendSide(_char.Id, _facing);
         _world.Broadcast(_char.Map, p => p.SideEntity(_char.Id, _facing), except: this);   // peers see us turn
         Log.Info($"   -> turn side={_facing} @ ({_char.X},{_char.Y})");
@@ -608,10 +609,17 @@ public sealed partial class Session
         {
             // Shift+G — toggle "sociable/group" (whether others may group with you). Persisted; the profile
             // window (0x39 group byte / 0x34 status cell) reads it, so reopening the profile shows the change.
+            //
+            // Turning it OFF while you are in a group LEAVES that group — this toggle is the native "leave"
+            // gesture, and the only one. It reads naturally ("I'm no longer grouping") and it's the sole
+            // group control the client offers a player who isn't looking at somebody else's profile: the
+            // profile Group button (0x2E) can only ADD, and its kick branch is the leader's alone. Without
+            // this a non-leader could only get out by logging off.
             _char.Grouped = !_char.Grouped;
             SaveChar();
             SendMessage(SettingLine("Join a group", _char.Grouped));
             Log.Info($"   -> setting 0x02 Group/sociable = {(_char.Grouped ? "ON" : "OFF")}");
+            if (!_char.Grouped && _party is not null) RemoveFromParty(this);
         }
         else if (setting == 0x08)
         {

@@ -212,6 +212,12 @@ public sealed partial class Session
     // progress tallies under composite counter keys. These internal helpers are the whole surface the quest
     // scripts (via NpcContext) and the kill hook touch, so quest logic never reaches into session internals.
     internal int  QuestStage(string questKey) => _char.Quests.GetValueOrDefault(questKey);
+
+    /// <summary>Has this character finished the Dog Linguist chain? Set by the Spotted dog (npc_dialog.lua
+    /// <c>npcs_say.DogLinguistNpc</c>) or by <c>@dog</c>; it is what lets you say "secret" to your own class's
+    /// Dog. Learning the spells ALSO needs an eligible path (Content.CanLearnDogSpells — base classes and NPC
+    /// subpaths, never a PC subpath), which the Dog checks separately.</summary>
+    internal bool HasDogFlag => QuestStage(Content.DogFlagReg) > 0;
     internal void SetQuestStage(string questKey, int stage) { _char.Quests[questKey] = stage; SaveChar(); }
     internal int  QuestCounter(string counterKey) => _char.Quests.GetValueOrDefault(counterKey);
 
@@ -242,25 +248,33 @@ public sealed partial class Session
     /// <para>Each share still goes through <see cref="AwardExp"/> per member, so the Peasant wall, level-ups
     /// and the save all apply to each of them individually.</para>
     /// <para>The totem window is the exception, and a DELIBERATE divergence from RTK: retail spread it across
-    /// the group. See the <c>anyTotem</c> comment below.</para></summary>
-    internal void AwardKillExp(uint reward, ushort mobMap, int mobX, int mobY)
+    /// the group. See the <c>anyTotem</c> comment below.</para>
+    /// <para><b>QUEST CREDIT FOLLOWS THE EXPERIENCE.</b> <paramref name="mobKey"/> is tallied for everyone
+    /// this kill pays, which is the rule the archived Poet's Restore page states in as many words — "You can
+    /// be part of a group as long as you get experience then your quest will succeed". It also closes a hole:
+    /// <see cref="TallyKill"/> used to be called by hand at three of the twelve kill sites, so a mob killed by
+    /// a SPELL or by a summoned pet counted toward no quest at all. Routing it through here means every path
+    /// that pays for a kill also records it, once, for the same set of people.</para></summary>
+    internal void AwardKillExp(uint reward, ushort mobMap, int mobX, int mobY, string? mobKey = null)
     {
-        if (reward == 0) return;
-
-        var party = _party;
-        if (party is null) { AwardExp(reward, killExp: true); return; }   // solo: the whole kill, unchanged
-
         static long Eff(Session s) => s.CharLevel + s.CharMark * 10L;
 
-        var eligible = new List<Session>();
-        foreach (var m in party.Members)
-        {
-            if (ReferenceEquals(m, this)) { eligible.Add(m); continue; }   // the killer, always
-            if (m.IsDead || m.CharMap != mobMap) continue;
-            if (Math.Abs(m.CharX - mobX) > GroupExpRange || Math.Abs(m.CharY - mobY) > GroupExpRange) continue;
-            eligible.Add(m);
-        }
-        if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // nobody else in range
+        // Who this kill counts for: the killer always, plus every group member alive, on the mob's map and
+        // within GroupExpRange of the corpse on both axes.
+        var eligible = new List<Session> { this };
+        if (_party is not null)
+            foreach (var m in _party.Members)
+            {
+                if (ReferenceEquals(m, this)) continue;                    // the killer, added above
+                if (m.IsDead || m.CharMap != mobMap) continue;
+                if (Math.Abs(m.CharX - mobX) > GroupExpRange || Math.Abs(m.CharY - mobY) > GroupExpRange) continue;
+                eligible.Add(m);
+            }
+
+        foreach (var m in eligible) m.TallyKill(mobKey);
+
+        if (reward == 0) return;
+        if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // solo, or nobody else in range
 
         long highest = eligible.Max(Eff);
         if (highest <= 0) highest = 1;
@@ -554,13 +568,15 @@ public sealed partial class Session
         return true;
     }
 
-    /// <summary>Called on every world-mob kill: bump the lifetime kill tally for that mob key (RTK's
-    /// per-mob kill count). Quests read a delta of this — kills since they were accepted — so nothing else is
-    /// needed here. Keyless kills (debug summons) are ignored.</summary>
-    private void TallyKill(Mob m)
+    /// <summary>Bump the lifetime kill tally for a mob key (RTK's per-mob kill count). Quests read a DELTA of
+    /// this — kills since they were accepted — so nothing else is needed here. Keyless kills (debug summons)
+    /// are ignored. Called only from <see cref="AwardKillExp"/>, for every player that kill pays; do not call
+    /// it at a kill site, or that site double-counts for the killer and still misses their group.</summary>
+    private void TallyKill(string? key)
     {
-        if (string.IsNullOrEmpty(m.Key)) return;
-        _char.Kills[m.Key] = _char.Kills.GetValueOrDefault(m.Key) + 1;
+        if (string.IsNullOrEmpty(key)) return;
+        _char.Kills[key] = _char.Kills.GetValueOrDefault(key) + 1;
+        _char.Kills[TotalKillsKey] = _char.Kills.GetValueOrDefault(TotalKillsKey) + 1;
         // Was SaveChar() (a full-blob rewrite per kill — the dominant write-amplification source while
         // grinding). MarkDirty lets the throttled autosave coalesce a whole grinding session into one
         // save every AutoSaveMs instead of one per kill.
@@ -569,6 +585,15 @@ public sealed partial class Session
 
     /// <summary>Lifetime kills recorded for a mob key (RTK's <c>player:killCount</c>).</summary>
     internal int KillCount(string mobKey) => _char.Kills.GetValueOrDefault(mobKey);
+
+    /// <summary>Tally key for "anything at all", kept in the same map so it persists with no schema change.
+    /// The leading space cannot collide with a mob key. Read by <see cref="TotalKills"/>, which the Old dog's
+    /// Restore quest uses to enforce its "do NOT kill anything else along the way" rule.</summary>
+    private const string TotalKillsKey = " total";
+
+    /// <summary>Lifetime kills of ANY mob. Only counts kills recorded since this tally was added, which is
+    /// fine for its only use: every reader compares a delta taken after the quest was accepted.</summary>
+    internal int TotalKills => _char.Kills.GetValueOrDefault(TotalKillsKey);
 
     // ---- string quest registry (RTK registryString): the active minor-quest key, etc. -----------
     internal string QuestStr(string key) => _char.QuestStrings.GetValueOrDefault(key, "");
@@ -822,6 +847,9 @@ public sealed partial class Session
                       .Where(s => Content.CanRelearnAtNpc(s, p))
                       .OrderBy(s => s.Level).ThenBy(s => s.Name).ToList();
     }
+
+    /// <summary>Does the spellbook hold this spell id?</summary>
+    internal bool KnowsSpellId(int spellId) => _char.Spells.Contains(spellId);
 
     /// <summary>Spells the player currently knows, for the "Forget Secret" menu.</summary>
     internal List<SpellDef> KnownSpellList() =>

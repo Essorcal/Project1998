@@ -7,11 +7,14 @@ namespace Server;
 /// superset of <see cref="Tester"/>.</summary>
 public enum AccessLevel
 {
-    /// <summary>An ordinary player: the handful of commands that are part of the game (@whisper, @party, …).</summary>
+    /// <summary>An ordinary player: the handful of commands with no native client path (@ignore, @friend,
+    /// @travel, @music).</summary>
     Player = 0,
     /// <summary>Someone testing CONTENT rather than running the world. They may rebuild their own character
-    /// (@lvl / @class / @mark / @stats / @align) and summon items and coin to try things with, plus the
-    /// harmless self-affecting toys (@ride, @weapon, @hurt). Deliberately NOT: teleporting (@warp), spawning
+    /// (@lvl / @class / @mark / @stats / @align), teach themselves a single ability (@spell), and summon
+    /// items and coin to try things with, plus the
+    /// harmless self-affecting toy (@ride), and move around WITHIN the map they're standing on (@go, which
+    /// reaches nowhere they couldn't have walked to). Deliberately NOT: teleporting between maps (@warp), spawning
     /// monsters (@summon / @spawn / @cre / @kill), the raw-protocol and sprite labs, or @reload — a tester who
     /// breaks their own character costs nothing, and everything withheld here affects the live world or can
     /// crash a client.</summary>

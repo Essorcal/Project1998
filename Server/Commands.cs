@@ -43,18 +43,17 @@ public sealed partial class Session
     private static readonly Command[] CommandTable =
     {
         // ---- player commands ------------------------------------------------------------------------
-        P("whisper|w",  (s, a) => s.HandleWhisper(a),          "<name> <message>", "private message one online player"),
+        // Deliberately SHORT. A command earns its place here only when the 4.95 client has no native way to
+        // reach the feature: whisper (0x19), mail (the 0x3B board window), party (0x2E) and trade (0x4A) all
+        // do, so their chat-command fallbacks were removed rather than kept as a second, non-authentic UI.
+        // @music qualifies too and is listed down in the media block, with the rest of the 0x19 tooling.
         P("ignore",     (s, a) => s.HandleIgnoreCommand(a),    "[add|remove <name>]", "block whispers both ways"),
         P("friend",     (s, a) => s.HandleFriendCommand(a),    "[add|remove <name>]", "saved name list + online check"),
-        P("mail",       (s, a) => s.HandleMailCommand(a),      "[read|send …]",    "mailbox (board 0)"),
-        P("party",      (s, a) => s.HandlePartyCommand(a),     "[name]",           "invite/kick, or list the group"),
-        P("leaveparty", (s, a) => s.LeaveParty(),              "",                 "leave the current group"),
-        P("trade",      (s, a) => s.HandleTradeCommand(a),     "<name>",           "open the trade menu with a player"),
         P("travel",     (s, a) => { _ = s.RunWorldMapMenuAsync(); }, "",           "world-map travel (dialog fallback)"),
-        P("time",       (s, a) => s.ShowTime(),                "",                 "game clock + totem-time status"),
 
         // ---- world / navigation ---------------------------------------------------------------------
         G("warp",    (s, a) => s.Warp(a),          "<map name|id> [x y]", "teleport"),
+        T("go",      (s, a) => s.GoCmd(a),         "<x> <y>",             "jump to a tile on the map you're already on (bad/out-of-range coords -> 0 0)"),
         G("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
@@ -71,27 +70,26 @@ public sealed partial class Session
                                                    "<1-99>",              "rebuild as level n: accurate stats + the matching spellbook"),
         T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
         T("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path and rebuild for it"),
+        T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),
         T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
                                                                           "set vitals and stats directly (overrides the curve)"),
         T("might",   (s, a) => s.SetBaseStat("might", a), "<n>",          "set base might"),
         T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
         T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
-        T("weapon",  (s, a) => s.SetWeapon(a),     "<sprite>",            "set the weapon appearance byte"),
-        T("hurt",    (s, a) => s.HurtSelfCmd(a),   "<n>",                 "take n damage (after deduction)"),
 
         // ---- items ----------------------------------------------------------------------------------
         T("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),
         T("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
         T("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
-        T("iteminfo", (s, a) => s.ItemInfoCmd(a),   "<slot> | mode <m> | sep <s>", "fire the examine reply; switch how it's rendered"),
-        T("bind",     (s, a) => s.BindItemCmd(a),   "<slot> [name|off]",  "bind a bag item to a character (or clear it)"),
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
 
         // ---- spells ---------------------------------------------------------------------------------
-        // @spells / @forgetspells are gone: @lvl / @class / @mark / @align each resync the whole book, so the
-        // only thing left worth doing by hand is granting ONE spell you wouldn't otherwise have.
-        T("spell|learnspell", (s, a) => s.LearnSpellCmd(a), "<name|id>",  "learn one specific spell, free"),
+        // @lvl / @class / @mark / @align each resync the WHOLE book to what the character is entitled to, and
+        // that stays the main path. @spell is the one additive exception — a single named ability, off-class
+        // and off-level, for testing one thing. The bulk grants (@spells, @forgetspells) are still gone: they
+        // could only ever grow the book, so a character who had been three classes carried all three.
+        T("spell",   (s, a) => s.TeachSpellCmd(a),  "<name|id>",           "learn one ability outright, any class or level (a rebuild forgets it)"),
 
         // ---- moderation -----------------------------------------------------------------------------
         // GM-only, all of them. See Session.Moderation.cs: no duration means PERMANENT, and anything applied
@@ -122,7 +120,10 @@ public sealed partial class Session
         G("dye",    (s, a) => s.DyeProbe(a),         "<n>",             "war-paint dye: set appearance[4]"),
 
         // ---- media ----------------------------------------------------------------------------------
-        G("music",    (s, a) => s.PlayMusicCmd(a),  "<name|id> [vol] [mp3|midi]", "play a track (0x19)"),
+        // @music is the one PLAYER-tier command in this block: it's a personal jukebox, not a probe. Every
+        // 0x19 it sends goes to the caller's own session, so the loudest a player can be is loud at himself,
+        // and the client's own Options menu has no way to pick a track. The rest of the block stays GM-only.
+        P("music",    (s, a) => s.PlayMusicCmd(a),  "[name|id] [vol] [mp3|midi] | stop", "play a music track (no argument lists them)"),
         G("snd",      (s, a) => s.SoundProbe(a),    "<id>",      "play a raw client sound id"),
         G("swingsnd", (s, a) => s.SetSwingSound(a), "<id>",      "set + audition the melee swing sfx"),
         G("fistsnd",  (s, a) => s.SetFistSound(a),  "<id>",      "set + audition the unarmed swing sfx"),
