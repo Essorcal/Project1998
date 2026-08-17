@@ -105,7 +105,10 @@ public sealed class NpcContext
     public int  Counter(string counterKey) => _s.QuestCounter(counterKey);
 
     /// <summary>Award experience (updates the HUD + persists).</summary>
-    public void AwardExp(uint amount)  => _s.AwardExp(amount);
+    /// <summary><paramref name="totemTime"/> opts the grant into the +5% totem-time bonus, which quest
+    /// rewards normally do NOT take (see <see cref="Session.AwardExp"/>). Only the Old dog's Restore reward
+    /// asks for it, because its archived page states the bonused figure alongside the base one.</summary>
+    public void AwardExp(uint amount, bool totemTime = false) => _s.AwardExp(amount, killExp: totemTime);
     /// <summary>Award coin (updates the HUD + persists).</summary>
     public void AwardGold(uint amount) => _s.AwardGold(amount);
 
@@ -118,6 +121,9 @@ public sealed class NpcContext
 
     /// <summary>Lifetime kills for a mob key (RTK <c>player:killCount</c>). Quests compare a snapshot delta.</summary>
     public int  KillCount(string mobKey) => _s.KillCount(mobKey);
+    /// <summary>Lifetime kills of ANY mob, for a quest that cares what ELSE you killed (the Old dog's
+    /// "do NOT kill anything else along the way"). Compare a snapshot delta, same as KillCount.</summary>
+    public int  TotalKills => _s.TotalKills;
 
     /// <summary>An int-valued quest registry entry (RTK registry), 0 if unset. General store for quest
     /// bookkeeping (counters, snapshots, timers) — distinct from <see cref="Stage"/>'s quest-stage meaning.</summary>
@@ -251,17 +257,40 @@ public sealed class NpcContext
     /// <summary>Set the player's noble title (RTK setTitle), persisted.</summary>
     public void SetTitle(string title) => _s.SetCharTitle(title);
 
-    /// <summary>Spells the player can learn now (class + level, minus known) — the Learn Secret menu.</summary>
-    public List<SpellDef> LearnableSpells() => _s.LearnableClassSpells();
+    /// <summary>The RTK region this conversation is happening in (0 Kugnae · 1 Buya · 3 Nagnang · …). The player
+    /// has to be standing on the NPC's map to click it, so their map IS the NPC's. -1 for a map with no region.</summary>
+    public int Region => Content.RegionOf(_s.CharMap);
+
+    /// <summary>Spells the player can learn now (class + level, minus known) — the Learn Secret menu. Filtered
+    /// to what THIS city's trainer may teach: a few secrets belong to one kingdom's trainer alone (see
+    /// <see cref="Content.TeachableInRegion"/> — the rogue Remedies), and every other trainer must refuse them.</summary>
+    public List<SpellDef> LearnableSpells() =>
+        _s.LearnableClassSpells().Where(s => Content.TeachableInRegion(s, Region)).ToList();
+    /// <summary>The other half of that split: secrets the player QUALIFIES for but that only another city's
+    /// trainer teaches. Not learnable here — this is what lets a trainer point the player at the right city
+    /// instead of the spell simply never appearing anywhere.</summary>
+    public List<SpellDef> ElsewhereOnlySpells() =>
+        _s.LearnableClassSpells().Where(s => !Content.TeachableInRegion(s, Region)).ToList();
     /// <summary>Spells the player's class unlocks over the next <paramref name="levelsAhead"/> insights — the
-    /// Divine Secret preview.</summary>
-    public List<SpellDef> FutureSpells(int levelsAhead = 5) => _s.FutureClassSpells(levelsAhead);
+    /// Divine Secret preview. City-locked to this trainer's own kingdom, same as <see cref="LearnableSpells"/>.</summary>
+    public List<SpellDef> FutureSpells(int levelsAhead = 5) =>
+        _s.FutureClassSpells(levelsAhead).Where(s => Content.TeachableInRegion(s, Region)).ToList();
     /// <summary>Spells the player currently knows — the Forget Secret menu.</summary>
     public List<SpellDef> KnownSpells() => _s.KnownSpellList();
     /// <summary>Teach one spell; false if the spellbook is full.</summary>
     public bool LearnSpell(SpellDef sp) => _s.LearnSpellFromNpc(sp);
     /// <summary>Forget one spell (resyncs the book so later slots realign).</summary>
     public void ForgetSpell(int spellId) => _s.ForgetOneSpell(spellId);
+    /// <summary>Does the player already know this spell (by Spells.csv key)? Unknown key = false.</summary>
+    public bool KnowsSpell(string key) =>
+        Content.SpellByKey(key) is SpellDef sp && _s.KnowsSpellId(sp.Id);
+    /// <summary>Forget a spell by key (the Dog "cleanse"). No-op for an unknown or unknown-to-the-player key.</summary>
+    public void ForgetSpellByKey(string key)
+    {
+        if (Content.SpellByKey(key) is SpellDef sp && _s.KnowsSpellId(sp.Id)) _s.ForgetOneSpell(sp.Id);
+    }
+    /// <summary>May this path hold Dog spells at all (base classes and NPC subpaths, never a PC subpath)?</summary>
+    public bool CanLearnDogSpells => Content.CanLearnDogSpells(_s.CharClassId);
 
     // ---- marriage (ChapelAbility; RTK NPCs/Common/chapel_npc.lua + Spells/common/propose.lua) -----
     /// <summary>Is the player currently engaged (not yet married)?</summary>
@@ -702,7 +731,21 @@ public sealed class ClassTrainerAbility : INpcAbility
     {
         var learn = ctx.LearnableSpells();
         if (learn.Count == 0)
-        { await ctx.Say("You have learned every secret I can teach you for now. Grow stronger, then return."); return; }
+        {
+            // Nothing left HERE isn't the same as nothing left: a city-locked secret the player already
+            // qualifies for (a rogue's Maro's/Maso's/Dagger's Remedy) is taught by exactly one kingdom's
+            // trainer, so send them to it by name rather than letting the spell look like it doesn't exist.
+            var elsewhere = ctx.ElsewhereOnlySpells();
+            if (elsewhere.Count > 0)
+            {
+                await ctx.Say(elsewhere
+                    .Select(s => $"{s.Name} is not mine to teach — seek it from my counterpart in {Content.RegionCityName(Content.CityLockOf(s))}.")
+                    .ToArray());
+                return;
+            }
+            await ctx.Say("You have learned every secret I can teach you for now. Grow stronger, then return.");
+            return;
+        }
 
         int pick = await ctx.Menu("Which secret shall I teach you?", learn.Select(s => s.Name).ToList());
         if (pick < 1 || pick > learn.Count) return;
@@ -741,7 +784,20 @@ public sealed class ClassTrainerAbility : INpcAbility
     private static async Task DivineSecret(NpcContext ctx)
     {
         var fut = ctx.FutureSpells();
-        if (fut.Count == 0) { await ctx.Say("There are no further secrets awaiting you."); return; }
+        if (fut.Count == 0)
+        {
+            // Same pointer as Learn Secret's: "what should I be saving for" is exactly the question a
+            // city-locked secret should answer, even though this trainer can't sell it.
+            var elsewhere = ctx.ElsewhereOnlySpells();
+            if (elsewhere.Count > 0)
+            {
+                await ctx.Say(elsewhere
+                    .Select(s => $"{s.Name} awaits you in {Content.RegionCityName(Content.CityLockOf(s))}, not here.")
+                    .ToArray());
+                return;
+            }
+            await ctx.Say("There are no further secrets awaiting you."); return;
+        }
 
         int pick = await ctx.Menu("Which secret would you like to learn more about?", fut.Select(s => s.Name).ToList());
         if (pick < 1 || pick > fut.Count) return;

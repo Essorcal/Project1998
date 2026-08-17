@@ -175,7 +175,12 @@ public static class NpcScript
                 var sp = Content.SpellByKey(Str(t, "key"));
                 return DynValue.NewBoolean(sp is not null && ctx.LearnSpell(sp));
             }
-            case "awardExp":   ctx.AwardExp((uint)Math.Max(0, Int(t, "n")));     return DynValue.Nil;
+            case "hasSpell":    return DynValue.NewBoolean(ctx.KnowsSpell(Str(t, "key")));
+            case "forgetSpell": ctx.ForgetSpellByKey(Str(t, "key"));              return DynValue.Nil;
+            // `totem` opts this grant into the +5% totem-time bonus. Off by default: quest/tutorial rewards
+            // normally don't take it (see Session.AwardExp). The Old dog's Restore reward DOES — its atlas
+            // page states both figures, "50,000,000 experience (52,500,000 at totem time)".
+            case "awardExp":   ctx.AwardExp((uint)Math.Max(0, Int(t, "n")), t.Get("totem").CastToBool()); return DynValue.Nil;
             case "awardGold":  ctx.AwardGold((uint)Math.Max(0, Int(t, "n")));    return DynValue.Nil;
             case "stage":      return DynValue.NewNumber(ctx.Stage(Str(t, "key")));
             case "setStage":   ctx.SetStage(Str(t, "key"), Int(t, "n"));         return DynValue.Nil;
@@ -201,6 +206,18 @@ public static class NpcScript
             case "setNation":  ctx.SetNation(Int(t, "n"));                        return DynValue.Nil;
             case "map":        return DynValue.NewNumber(ctx.MapId);
             case "killCount":  return DynValue.NewNumber(ctx.KillCount(Str(t, "key")));
+            case "totalKills": return DynValue.NewNumber(ctx.TotalKills);
+            case "maxHp":      return DynValue.NewNumber(ctx.MaxHp);
+            case "maxMp":      return DynValue.NewNumber(ctx.MaxMp);
+            // Class identity. `classId` is the exact path (Ju jak = 8), `basePathId` the base four it descends
+            // from (Ju jak -> 3 Mage) — which is what per-class content is keyed to. `canLearnDogSpells` is
+            // the PC-subpath exclusion (Content.CanLearnDogSpells), a rule the script must not re-derive.
+            case "classId":    return DynValue.NewNumber(ctx.ClassId);
+            case "basePathId": return DynValue.NewNumber(ctx.BasePathId);
+            case "canLearnDogSpells": return DynValue.NewBoolean(ctx.CanLearnDogSpells);
+            // This NPC's display name. Several NPCs share ONE identifier and differ only by name (the four
+            // Dogs are all DogLinguistNpc), so a handler needs it to know which of them it is speaking as.
+            case "npcName":    return DynValue.NewString(ctx.Def.Name);
             // Era gate (Server/Era.cs): does this dated feature exist at the server's target date? Scripts
             // need it because a gated quest usually still has its NPC standing there — the giver predates
             // the quest — so the script, not the placement, is what has to know.

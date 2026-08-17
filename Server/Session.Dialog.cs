@@ -104,13 +104,15 @@ public sealed partial class Session
     // 2026-08-07 with a real URL: the window's ctor asks for sprite category "X" (XBUTTON.EPF, its close
     // button), the load throws an uncaught allocation-failure (`_CxxThrowException` via 0x430c7a ->
     // 0x406cb6, the XBUTTON.EPF site) and the client dies on a null deref at 0x470ff4. The asset simply
-    // isn't in this install's archives, so the browser chrome can't build. Kept behind @iteminfo url for
-    // completeness; never the default.
+    // isn't in this install's archives, so the browser chrome can't build. Nothing can select it any more —
+    // @iteminfo, the only mode switch, was removed — but the branch is kept as the record of what NOT to
+    // route through, since the packet shape is otherwise inviting.
 
     /// <summary>How the examine reply is delivered. <c>Tooltip</c> = the `0x59` inventory-pane overlay — the
-    /// real one. <c>Overlay</c> = a `0x0A` message type. <c>Popup</c> = the `0x66` OK dialog (which the game
-    /// uses for the Rogue Judge/Spy spells, so it's the wrong frame here). <c>Browser</c> = `0x66` kind 0,
-    /// which crashes this build.</summary>
+    /// real one, and now the only reachable value (the @iteminfo switch is gone; change the initializer to
+    /// try another). <c>Overlay</c> = a `0x0A` message type. <c>Popup</c> = the `0x66` OK dialog (which the
+    /// game uses for the Rogue Judge/Spy spells, so it's the wrong frame here). <c>Browser</c> = `0x66`
+    /// kind 0, which crashes this build.</summary>
     private enum ItemInfoMode { Tooltip, Overlay, Popup, Browser }
     private ItemInfoMode _itemInfoMode = ItemInfoMode.Tooltip;
 
@@ -1540,14 +1542,15 @@ public sealed partial class Session
                  "(picSize 0 = the client couldn't read a valid 2844-byte file)");
     }
 
-    // 0x39 self-profile ("Mind's Eye"). Layout decoded from the 7.x clif_mystaytus builder and confirmed
-    // against a real 6.x capture (jeedee/TkServer) that decrypts to this exact shape (AC=99, class
-    // "Peasant", legend "Born in Hyul 31, Winter"). Body:
+    // 0x39 self-profile ("Mind's Eye"). This FIRST block is the 7.x/6.x shape — kept only to show what 4.95
+    // is NOT. Layout decoded from the 7.x clif_mystaytus builder and confirmed against a real 6.x capture
+    // (jeedee/TkServer) that decrypts to this exact shape (AC=99, class "Peasant", legend "Born in Hyul 31,
+    // Winter"). Body:
     //   [AC u8][dam u8][hit u8]
     //   [clan  : len u8 + bytes]        (len 0 = clanless)
     //   [clanTitle : len u8 + bytes]
     //   [title : len u8 + bytes]
-    //   [spouse : len u8 + bytes]
+    //   [spouse : len u8 + bytes]       <- 7.x ONLY. The 4.95 field in this position is the PARTY BOX.
     //   [group u8]  [TNL u32BE]
     //   [className : len u8 + bytes]
     //   14 × equip slot (each 10 bytes, all zero = empty)
@@ -1558,12 +1561,22 @@ public sealed partial class Session
     // WIRE FORMAT (reverse-engineered from the client parser at 0x4732a0 — the mode-0 widget picked by the
     // shared profile dispatcher 0x424820; the mode-1/other-view widget 0x48b6a0 is a DIFFERENT, larger layout):
     //   [AC u8][dam u8][hit u8]
-    //   [clan str][clanTitle str][title str][spouse str]       (each: u8 len + bytes)
+    //   [clan str][clanTitle str][title str][PARTY BOX str]    (each: u8 len + bytes)
     //   [group u8][TNL u32BE][className str]
     //   [g0 u16BE][g1 u16BE][g2 u16BE]                         (three portrait/graphic ids — see below)
-    //   [box str]                                              (multi-line box; client maps TAB->CR)
+    //   [BUFF BOX str]                                         (multi-line; client maps TAB->CR)
     //   [flag u8]
     //   [legendCount u8]  then legendCount × { icon u8, color u8, len u8, text }
+    //
+    // THE PROFILE PANE HAS THREE PAGES, and this packet feeds all three. The parser ends by pushing text
+    // into three separate controls on the widget:
+    //   +0x104  <- the 6th string (TAB->CR'd)   PAGE 1 — buffs      (BuffBoxText)
+    //   +0x108  <- the 4th string               PAGE 2 — the group  (PartyBoxText, above the stats)
+    //   +0x10c  <- the legend array             PAGE 3 — legend marks
+    // The 4th string was documented as "spouse" (from 7.x clif_mystaytus) until the page-2 box was found
+    // to be empty for a grouped player — see PartyBoxText for the disassembly that settles it. 4.95 has no
+    // spouse FIELD because it doesn't need one: marriage shows as a legend mark ("Married to <name>
+    // (<date>)", key "married" — Session.RunMarriageCeremony), i.e. on page 3 with every other legend.
     // CRITICAL: 4.95 has NO packed equipment-icon array and the legend count is a single u8. The old code
     // sent a 6.x/RTK-shaped 14-cell/113-byte equip region (that fork has more item slots — hence the bigger
     // block); on 4.95 it pushed the legend count into the padding (count read as 0 -> no legends) and spilled
@@ -1581,7 +1594,10 @@ public sealed partial class Session
         AddLenStr(d, _char.ClanName);
         AddLenStr(d, _char.ClanTitle);
         AddLenStr(d, _char.Title);
-        AddLenStr(d, _char.Spouse);
+        // The PAGE-2 text box (the scrollable window above VITA/MANA/AC/DAM/HIT) — the party list. This
+        // field was long mislabelled "spouse" by analogy with 7.x clif_mystaytus; the 4.95 parser proves
+        // otherwise (see PartyBoxText). Nothing else on the wire carries the group roster.
+        AddLenStr(d, PartyBoxText());
         d.Add((byte)(_char.Grouped ? 1 : 0));   // group/sociable flag (Shift+G)
         d.AddRange(Be32(_char.Tnl));    // experience to next level
         AddLenStr(d, ClassTitle);       // class + rank ("Inferno"), not the stored base name
@@ -1592,10 +1608,11 @@ public sealed partial class Session
         d.AddRange(Be(ProfileCellIcon(7)));   // left ring  (wire slot 7)
         d.AddRange(Be(ProfileCellIcon(8)));   // right ring (wire slot 8)
 
-        // The multi-line text BOX under the character. The client converts TAB(0x09)->CR(0x0d), so tab-separated
-        // entries become separate lines. This is the self-view's buff/effect box (issue #6): active buff/debuff
-        // names + remaining seconds. Empty when nothing is active. (The other-view 0x34 puts the GEAR list here
-        // instead; self-view = buffs, other-view = gear, exactly as requested.)
+        // The PAGE-1 text box: active buff/debuff names + remaining seconds, empty when nothing is active.
+        // CR-separated like the party box above. This field ALSO accepts TAB — the client rewrites TAB->CR
+        // here and only here (the loop at 0x47359b) — but CR is what the text control actually breaks on,
+        // so both boxes use it and read alike. (The other-view 0x34 puts the GEAR list in its own box
+        // instead — self=buffs, other=gear. That one is a DIFFERENT parser, 0x48b6a0, and still uses TAB.)
         AddLenStr(d, BuffBoxText());
         d.Add((byte)(_char.Exchange ? 1 : 0));   // trailing flag = exchange/trade status (client field +0x935)
 
@@ -1615,9 +1632,36 @@ public sealed partial class Session
             $"self-profile(0x39) ac={_char.Ac} class='{_char.ClassName}' buffs={_buffs.Count} legends={legs.Count}");
     }
 
-    // The self-view buff/effect box (issue #6): one tab-separated line per active buff/debuff with the remaining
-    // time in seconds. Grouped by spell so a multi-stat buff shows once. The client turns the tabs into line
-    // breaks (see SendSelfProfile). Reopening the profile re-reads the current durations.
+    /// <summary>The PAGE-2 box of the self-profile: your group roster, one name per line, sorted
+    /// alphabetically, the leader marked <c>*Name</c>. Empty (a blank box) when you aren't in a group.
+    ///
+    /// SEPARATOR IS CR, NOT TAB. The page-1 buff box gets a TAB->CR pass in the client (0x47359b) before it
+    /// is handed to the text control; this field does NOT — it goes straight from MultiByteToWideChar into
+    /// the control. The control's own copy loop (0x480b20) passes 0x0d/0x0a through as line breaks, so CR
+    /// separates lines here. A tab would render as one run-together line.
+    ///
+    /// WHY THIS FIELD. The 4th string of 0x39 was documented as "spouse", by analogy with 7.x
+    /// clif_mystaytus. It isn't: the 4.95 parser at 0x4732a0 copies it to the widget's +0x938 buffer and
+    /// then ADDs it to the text control at +0x108 — the same store-then-add shape it uses for the buff box
+    /// (+0xb38 -> control +0x104) and the legend list (control +0x10c). Those three controls are the
+    /// profile's three pages. A spouse name would be a label, not a scrolling list; this is the roster box,
+    /// and it was rendering blank because an unmarried character sends an empty spouse. 4.95 never wanted a
+    /// spouse field: marriage is a LEGEND MARK ("Married to &lt;name&gt; (&lt;date&gt;)", key "married" —
+    /// <see cref="RunMarriageCeremony"/>), so it already displays, on page 3.</summary>
+    private string PartyBoxText()
+    {
+        if (_party is null) return "";
+        var leader = _party.Leader;
+        return string.Join('\r', _party.Members
+            .Select(m => (Name: m.Snapshot().Name, IsLeader: ReferenceEquals(m, leader)))
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.IsLeader ? $"*{x.Name}" : x.Name));
+    }
+
+    // The self-view buff/effect box (issue #6), PAGE 1: one line per active buff/debuff with the remaining
+    // time in seconds. Grouped by spell so a multi-stat buff shows once. CR-separated, same as the party box
+    // — see PartyBoxText for why CR is the real separator for BOTH boxes and TAB works only here. Reopening
+    // the profile re-reads the current durations.
     private string BuffBoxText()
     {
         long now = Environment.TickCount64;
@@ -1651,7 +1695,7 @@ public sealed partial class Session
         // never showed a duration before — surface it here (works whether or not you're also morphed).
         if (Stealthed)                            lines.Add($"{_stealthName} {Secs(_stealthUntil, now)}s");
 
-        return string.Join('\t', lines);
+        return string.Join('\r', lines);
     }
 
     // length-prefixed ASCII string: [len u8][bytes]. Empty string -> a single 0 byte.
