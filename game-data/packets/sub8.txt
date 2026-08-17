@@ -27,4 +27,4 @@ $Which_spell?                   ; prompt (u16BE length)
 #0              ; the u16BE scalar -- NOT a count. Sweep it; it is the only knob this window has.
 
 ; If the grid comes up EMPTY, that is the spellbook being empty, not a bad packet.
-; Learn something first (@spell / a trainer) and re-fire.
+; Learn something first (@lvl rebuilds the book, or use a trainer) and re-fire.
