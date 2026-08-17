@@ -625,8 +625,15 @@ public sealed partial class Session
             }
             else
             {
-                // F10 / Options-menu open — the client just announcing the menu is up. No state change.
-                Log.Info($"   -> setting 0x00 options-open (F10), no-op [{Convert.ToHexString(dec)}]");
+                // F10 / Options-menu open. EXPERIMENT (testing the "is this a request for the option state?"
+                // hypothesis): re-assert the weather setting when the menu opens, so the WEATHER CHANGE checkbox
+                // can reflect the server-persisted HasSetting(0x06) instead of the client's compile-time default.
+                // The weather option only rides the mapinfo render byte (4=on/5=off), so RefreshMapInPlace is the
+                // carrier. If the checkbox syncs after this, F10's 0x1b 00 00 IS an options-request; if not, the
+                // checkbox is a client-local flag no server packet can set (RTK's clif_sendoptions is dead code).
+                Log.Info($"   -> setting 0x00 options-open (F10) [{Convert.ToHexString(dec)}] — re-asserting weather state (experiment)");
+                SendWeather();
+                RefreshMapInPlace();
             }
         }
         else if (setting == 0x02)
