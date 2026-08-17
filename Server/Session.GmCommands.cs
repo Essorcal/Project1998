@@ -456,6 +456,20 @@ public sealed partial class Session
     private void RezCmd() =>
         ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
 
+    // @shout <chatType> <text> (tester/GM): emit a bare over-head bubble (0x0D) at an arbitrary chatType, to
+    // find one the client draws OVER THE HEAD WITHOUT also writing a chat-box line (the spell-shout channel).
+    // Throwaway diagnostic — remove once the bubble-only chatType is pinned down.
+    private void ShoutTestCmd(string text)
+    {
+        var parts = text.Trim().Split(new[] { ' ' }, 2);
+        if (parts.Length == 0 || !byte.TryParse(parts[0], out var ct))
+        { SendLog("usage: @shout <chatType 0-255> <text>"); return; }
+        string msg = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : $"type {ct}";
+        var bytes = AsciiBytes(msg);
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(ct, _char.Id, bytes));
+        SendLog($"@shout chatType={ct}: \"{msg}\"");
+    }
+
     private void SetDogFlag(string text)
     {
         int p = Math.Max(0, CharClassId);

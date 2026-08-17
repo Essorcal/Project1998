@@ -55,6 +55,7 @@ public sealed partial class Session
         G("warp",    (s, a) => s.Warp(a),          "<map name|id> [x y]", "teleport"),
         T("go",      (s, a) => s.GoCmd(a),         "<x> <y>",             "jump to a tile on the map you're already on (bad/out-of-range coords -> 0 0)"),
         T("rez",     (s, a) => s.RezCmd(),         "",                    "resurrect yourself to full HP and MP (a full heal if already alive)"),
+        T("shout",   (s, a) => s.ShoutTestCmd(a),  "<chatType> <text>",   "diag: emit an over-head bubble at a given chatType (find the bubble-only one)"),
         G("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
