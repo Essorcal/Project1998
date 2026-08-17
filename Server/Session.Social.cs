@@ -33,7 +33,10 @@ public sealed partial class Session
     {
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK: silent nullpo_ret bail; we give feedback like whisper does
-        if (ReferenceEquals(target, this)) { SendMiniText("You can't group yourself...", type: 11); return; }
+        // Group-attempt feedback goes to the status pane (SendMiniText default type 3, same as NotifyGroup's
+        // join/leave lines) — NOT type 11, which is the group/subpath CHAT channel and drew these as blue chat
+        // text. Matches the trade-error lines just below, which already use the default.
+        if (ReferenceEquals(target, this)) { SendMiniText("You ask yourself to group, but get declined."); return; }
 
         // RTK special case: the LEADER re-"inviting" someone already in their own party kicks them.
         if (_party is not null && ReferenceEquals(target._party, _party) && ReferenceEquals(_party.Leader, this))
@@ -42,12 +45,12 @@ public sealed partial class Session
             return;
         }
 
-        if (_party is not null && _party.IsFull) { SendMiniText("Your group is already full.", type: 11); return; }
-        if (target.IsDead) { SendMiniText("They are unable to join this group.", type: 11); return; }
+        if (_party is not null && _party.IsFull) { SendMiniText("Your group is already full."); return; }
+        if (target.IsDead) { SendMiniText("They are unable to join this group."); return; }
         // Their "Join a group" toggle is off, or they're already in someone's group. ONE line for both, as
         // RTK does — the refusal must not tell you which, or it becomes a probe for who's already grouped.
         if (!target.WantsGroup || target._party is not null)
-        { SendMiniText("They refuse to join this group.", type: 11); return; }
+        { SendMiniText("They refuse to join this group."); return; }
 
         // A group FORMING announces both of its founders, not just the invitee: the inviter is joining a
         // group they weren't in a moment ago either, and the announcement always reaches everyone it names.
