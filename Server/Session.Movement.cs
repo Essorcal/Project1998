@@ -625,16 +625,14 @@ public sealed partial class Session
             }
             else
             {
-                // F10 / Options-menu open — the client just announcing the menu is up. No state change.
-                // (RTK treats this same 0x1b sub-0 / dec[1]!=1 as its ride case with the activate byte unset,
-                // i.e. a no-op too.) It is NOT a request for the option state: re-asserting the weather setting
-                // here — via 0x1F and the mapinfo render byte — was tested live and did NOT sync the WEATHER
-                // CHANGE checkbox. That checkbox is a client-local flag the client only sets from a server
-                // options packet (RTK clif_sendoptions / 0x23), which is dead in RTK and unhandled by the 4.95
-                // client (dispatch maps 0x23 to the default no-op). So the checkbox reverting to ON is original
-                // 4.95 behaviour and no server packet can change it. Weather itself is driven correctly by the
-                // render byte (see the sub-6 toggle + RefreshMapInPlace), so disabling still clears it live.
-                Log.Info($"   -> setting 0x00 options-open (F10), no-op [{Convert.ToHexString(dec)}]");
+                // F10 / Options-menu open. This is exactly when to seed the four server-synced checkboxes
+                // (weather/magic/advice/fastmove): the client has just created the options window, so its 0x23
+                // handler now exists to receive them. SendOptions pushes the current SettingFlags so the boxes
+                // reflect the server's state instead of reverting to the client's default. (0x23 is handled by
+                // the client's SECOND dispatcher, 0x4650d0 -> 0x465200 — see SendOptions; the earlier "0x23 is
+                // dead" read missed that path, and @sendopts failed only on the wrong RTK-format frame.)
+                Log.Info($"   -> setting 0x00 options-open (F10) [{Convert.ToHexString(dec)}] — seeding option checkboxes");
+                SendOptions();
             }
         }
         else if (setting == 0x02)

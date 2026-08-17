@@ -234,16 +234,21 @@ public sealed partial class Session
     /// effect immediately rather than at the next map change.</summary>
     internal void SendWeather() => SendWeather(_world.GetWeather(_char.Map));
 
-    // clif_sendoptions (RTK 0x23 sub-0x03): pushes the options-menu checkbox state to the client. 7 state bytes
-    // in RTK's fixed order [weather, magic, advice, fastmove, sound, helm, realm], each 0/1 from SettingFlags.
-    // The 4.95 client's receive dispatcher (RE 2026-08-16) maps opcode 0x23 to its DEFAULT no-op, and RTK never
-    // calls this function either — so this is EXPECTED to do nothing. Wired only to @sendopts to PROVE that
-    // live (the mail-button precedent: don't trust "no-op" from static RE alone).
+    // clif_sendoptions — seeds the options-menu checkboxes for the four SERVER-synced toggles. Opcode 0x23,
+    // handled NOT by the main receive table (which defaults it) but by the client's SECOND dispatcher (0x4650d0
+    // -> the options-window seed at 0x465200) — the mail-button precedent again. Wire format, RE-verified
+    // 2026-08-16 from that handler: four state bytes DIRECTLY after the opcode, in order
+    //     [weather(sub 6)] [magic(5)] [advice(4)] [fastmove(9)]
+    // and NO RTK-style 0x03 sub-command byte (that shape is a later client — sending it shifts every field by
+    // one, which is why the first @sendopts did nothing). The client sets a box CHECKED iff its byte == 0
+    // (handler does `sete` on the stored byte), so we send the INVERSE of the setting bit: 0 = on, 1 = off.
+    // The handler lives on the options-window object, so this only takes effect once that window exists — hence
+    // we send it on F10-open (HandleSetting's sub-0 branch) as well as at world entry.
     internal void SendOptions()
     {
-        byte On(int sub) => (byte)(_char.HasSetting(sub) ? 1 : 0);
-        var body = new byte[] { 0x03, On(0x06), On(0x05), On(0x04), On(0x09), On(0x0D), On(0x0E), On(0x07) };
-        SendMap(0x23, _gameInc++, body, "options(0x23/03) [weather,magic,advice,fastmove,sound,helm,realm]");
+        byte Box(int sub) => (byte)(_char.HasSetting(sub) ? 0 : 1);   // 0 = checked/on, 1 = unchecked/off
+        var body = new byte[] { Box(0x06), Box(0x05), Box(0x04), Box(0x09) };
+        SendMap(0x23, _gameInc++, body, "options(0x23) weather/magic/advice/fastmove");
     }
 
     // Music follows the AREA, not the map. Re-sending a track id restarts the song from the top, so a map
