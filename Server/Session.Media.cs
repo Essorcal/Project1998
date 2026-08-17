@@ -247,7 +247,11 @@ public sealed partial class Session
     internal void SendOptions()
     {
         byte Box(int sub) => (byte)(_char.HasSetting(sub) ? 0 : 1);   // 0 = checked/on, 1 = unchecked/off
-        var body = new byte[] { Box(0x06), Box(0x05), Box(0x04), Box(0x09) };
+        // Fast-move is the odd one out: it isn't a SettingFlags bit — the client is authoritative per-walk and
+        // the server mirrors it in _fastMove (see HandleSetting sub-9), so seed the checkbox from THAT, not
+        // HasSetting(0x09) (which is never set and left the box stuck off).
+        byte fastMoveBox = (byte)(_fastMove ? 0 : 1);
+        var body = new byte[] { Box(0x06), Box(0x05), Box(0x04), fastMoveBox };
         SendMap(0x23, _gameInc++, body, "options(0x23) weather/magic/advice/fastmove");
     }
 
