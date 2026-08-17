@@ -240,13 +240,18 @@ public sealed partial class Session
     // 2026-08-16 from that handler: four state bytes DIRECTLY after the opcode, in order
     //     [weather(sub 6)] [magic(5)] [advice(4)] [fastmove(9)]
     // and NO RTK-style 0x03 sub-command byte (that shape is a later client — sending it shifts every field by
-    // one, which is why the first @sendopts did nothing). The client sets a box CHECKED iff its byte == 0
-    // (handler does `sete` on the stored byte), so we send the INVERSE of the setting bit: 0 = on, 1 = off.
-    // The handler lives on the options-window object, so this only takes effect once that window exists — hence
-    // we send it on F10-open (HandleSetting's sub-0 branch) as well as at world entry.
+    // one, which is why the first @sendopts did nothing). The client sets its stored box byte CHECKED iff
+    // byte == 0 (seed handler 0x465200 does `sete` on the stored byte) — but that "checked" flag selects the
+    // OFF (right) radio, NOT ON. Confirmed by a live capture: with magic bit ON the server was seeding byte 0,
+    // the box showed OFF, and the effect still played (inverted). So the byte tracks the OPPOSITE radio: send
+    // byte = 1 when the feature is ON (leave the OFF radio unchecked → ON shown) and 0 when off. This also
+    // keeps the server bit in phase with the on-screen radio, so the bare `1b <sub>` toggle lands the way the
+    // user intended instead of flipping to the opposite state. The handler lives on the options-window object,
+    // so this only takes effect once that window exists — hence we send it on F10-open (HandleSetting's sub-0
+    // branch) and re-seed after every synced toggle.
     internal void SendOptions()
     {
-        byte Box(int sub) => (byte)(_char.HasSetting(sub) ? 0 : 1);   // 0 = checked/on, 1 = unchecked/off
+        byte Box(int sub) => (byte)(_char.HasSetting(sub) ? 1 : 0);   // 1 = feature ON (OFF-radio unchecked → ON shown)
         // Fast-move (bit 9) is now persisted in SettingFlags like the other three (set by the sub-9 toggle), so
         // it reads uniformly here and survives relog. Fast-move behaviour stays client-authoritative per walk;
         // this bit is just the remembered preference the checkbox reflects.

@@ -424,7 +424,9 @@ Fast Move (`0x09`)**. These are **radio pairs (ON | OFF)**, and they are *not* s
   `0x21`/`0x23`/`0x25`, told apart by `body[0]`; this is the same "there's another table" lesson as the mail
   button). `0x23` → handler `0x465200`: parses **4 bytes** into a stored array at `[window+0x278..0x27b]` and
   sets the 4 radio widgets (child indices **5, 4, 7, 8**) checked via `0x415160(widget, checked)` where
-  **checked = (storedByte == 0)**.
+  **checked = (storedByte == 0)** — and that "checked" flag selects the **OFF (right) radio**, so
+  `storedByte == 0` shows **OFF**, `storedByte != 0` shows **ON**. (Live-capture confirmed: a byte-0 seed with the
+  feature ON showed the box OFF and still played the effect — the byte tracks the OFF radio, not ON.)
 - **Outbound** — send primitive `0x4651a0(sub)` builds exactly **`1b <sub> 00`** and sends **2 bytes** — no
   state. Each row's click handler (jump table in the window command handler `0x464c00`) reads its widget's live
   checked flag `[widget+0x114]`, compares it to its stored byte, and sends **only if they differ**. A click
@@ -438,12 +440,15 @@ Fast Move (`0x09`)**. These are **radio pairs (ON | OFF)**, and they are *not* s
 | 8 | `+0x27b` | `0x09` | Fast Move |
 
 **Server contract:** seed all four with `0x23` (`Session.SendOptions`, body `[Box(0x06), Box(0x05), Box(0x04),
-Box(0x09)]`, `Box(sub) = HasSetting(sub) ? 0 : 1`) **and re-seed after every synced toggle**. The seed byte must
-track the server bit, because the client compares each click against that stored byte alone. If you seed only on
-F10-open (as an earlier build did) the stored byte goes stale after the first flip: the return click matches the
-stale value, the client sends nothing, and the box desyncs from the server — the "Magic Effect OFF but effects
-still show" inversion. It also explains why each row *looked* like it only sent one direction: only the direction
-*away from the last seed* is ever a change. `Session.HandleSetting` re-seeds via `SendOptions()` after each of the
+Box(0x09)]`, **`Box(sub) = HasSetting(sub) ? 1 : 0`** — 1 = feature ON, because the byte tracks the OFF radio)
+**and re-seed after every synced toggle**. The seed byte must track the server bit, because the client compares
+each click against that stored byte alone AND uses it to pick which radio to fill. Two things this gets you:
+(1) the box shows the right side, and (2) the server bit stays **in phase** with the on-screen radio, so the bare
+`1b <sub>` toggle — which carries no state, the server just XORs its bit — lands the way the user intended. Get the
+polarity wrong and every toggle inverts (server ends on the opposite of the clicked radio); get the re-seed wrong
+and the stored byte goes stale after the first flip (the return click matches the stale value, the client sends
+nothing, the box desyncs — and each row *looks* like it only sends one direction, because only the direction *away
+from the last seed* is ever a change). `Session.HandleSetting` re-seeds via `SendOptions()` after each of the
 four (weather/magic/advice branches + the fast-move branch). `0x1b` is **not** action-budget gated, so rapid
 clicks aren't dropped server-side; the residual rapid-toggle race is client-side (the async re-seed also rewrites
 the widget) and is inherent.
