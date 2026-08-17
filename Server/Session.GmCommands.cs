@@ -467,7 +467,9 @@ public sealed partial class Session
         string msg = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : $"type {ct}";
         var bytes = AsciiBytes(msg);
         _world.Broadcast(_char.Map, p => p.SpeakEntity(ct, _char.Id, bytes));
-        SendLog($"@shout chatType={ct}: \"{msg}\"");
+        // Confirm via the status/mini pane (0x0A type 3), NOT SendLog — SendLog is itself a 0x0D chatType-0
+        // over-head bubble, which would overwrite the very shout bubble we're trying to observe.
+        SendMiniText($"@shout chatType={ct} sent: \"{msg}\"");
     }
 
     private void SetDogFlag(string text)
