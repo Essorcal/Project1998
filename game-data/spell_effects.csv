@@ -4,9 +4,9 @@ kawlanas_guard,baseFunc,Utility,,,,,,,,,,,,,,
 pvp_balance,baseFunc,Buff,,,,,,,,,,,2,,,
 wisdom_star,baseFunc,Utility,,,,,,,,,,,,,,
 fascinate,dog,Buff,210,,,,,,,,,,39,34,6,3000
-fissure,dog,Damage,0,250,34,,,,,,,,41,88,6,
+fissure,dog,Damage,120,250,34,,,,,,,,41,88,6,
 greater_blessing,dog,Buff,60,,,hit,4,185000,,,blessings,,2,4,6,
-lava_surge,dog,Damage,0,400,35,,,,,,,,42,88,6,
+lava_surge,dog,Damage,210,400,35,,,,,,,,42,88,6,
 serpents_fury,dog,Buff,800,,,,,375000,,,,,11,4,6,25000
 spirit_fury,dog,Buff,1000,,,,,375000,,,furies,,18,4,6,
 spot_traps,dog,Utility,100,,,,,,,,,,-1,0,6,6000
@@ -99,10 +99,10 @@ consume_soul_mage,mage,Damage,1000,math.ceil(player.magic * 2.15),31,,,,,,,,54,8
 flesh_eaters_mage,mage,Damage,1000,math.ceil(player.magic * 2.15),32,,,,,,,,104,88,,19000
 hurricane_mage,mage,Damage,1000,math.ceil(player.magic * 2.15),33,,,,,,,,112,88,,19000
 hindrance_mage,mage,Debuff,1000,,,,,,slow,,,,1,5,6,
-ignite_mage,mage,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),0,,,,,,,,4,56,,
-spirit_strike_mage,mage,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,,
-wrath_of_nature_mage,mage,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,,
-thunderclap_mage,mage,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,,
+ignite_mage,mage,Damage,30,200 + (player.level + player.will),0,,,,,,,,4,56,,
+spirit_strike_mage,mage,Damage,30,200 + (player.level + player.will),1,,,,,,,,17,59,,
+wrath_of_nature_mage,mage,Damage,30,200 + (player.level + player.will),2,,,,,,,,30,57,,
+thunderclap_mage,mage,Damage,30,200 + (player.level + player.will),3,,,,,,,,4,701,,
 impact_mage,mage,Damage,120,100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2),0,,,,,,,,4,56,,
 soul_spike_mage,mage,Damage,120,100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2),1,,,,,,,,17,59,,
 treefall_mage,mage,Damage,120,100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2),2,,,,,,,,30,57,,
@@ -166,10 +166,10 @@ sanctuary_mage,mage,TargetBuff,60,,,deduction,0.5,300000,,,,,11,5,6,
 protect_soul_mage,mage,TargetBuff,60,,,deduction,0.5,300000,,,,,61,106,6,
 guard_life_mage,mage,TargetBuff,60,,,deduction,0.5,300000,,,,,56,77,6,
 magic_shield_mage,mage,TargetBuff,60,,,deduction,0.5,300000,,,,,98,70,6,
-singe_mage,mage,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),11,,,,,,,,28,701,,
-embrace_of_the_void_mage,mage,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,,
-lightning_mage,mage,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,,
-natures_storm_mage,mage,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,,
+singe_mage,mage,Damage,20,100 + math.floor((player.level + player.will) / 2),11,,,,,,,,28,701,,
+embrace_of_the_void_mage,mage,Damage,20,100 + math.floor((player.level + player.will) / 2),1,,,,,,,,17,59,,
+lightning_mage,mage,Damage,20,100 + math.floor((player.level + player.will) / 2),2,,,,,,,,30,57,,
+natures_storm_mage,mage,Damage,20,100 + math.floor((player.level + player.will) / 2),3,,,,,,,,4,701,,
 sleep_mage,mage,Debuff,300,,,,,8000,sleep,,,,2,305,6,18000
 sweet_musings_mage,mage,Debuff,300,,,,,8000,sleep,,,,2,305,6,18000
 essence_of_poppies_mage,mage,Debuff,300,,,,,8000,sleep,,,,2,305,6,18000
@@ -178,10 +178,10 @@ solace_mage,mage,Heal,600,2000,0,,,,,,,,5,4,,
 festival_of_souls_mage,mage,Heal,600,2000,1,,,,,,,,65,98,,
 natures_bounty_mage,mage,Heal,600,2000,2,,,,,,,,64,63,,
 ohaengs_blessing_mage,mage,Heal,600,2000,3,,,,,,,,63,4,,
-spark_mage,mage,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),11,,,,,,,,28,701,,
-glimpse_of_the_void_mage,mage,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,,
-bolt_mage,mage,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,,
-natures_ire_mage,mage,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,,
+spark_mage,mage,Damage,20,50 + math.floor((player.level + player.will) / 4),11,,,,,,,,28,701,,
+glimpse_of_the_void_mage,mage,Damage,20,50 + math.floor((player.level + player.will) / 4),1,,,,,,,,17,59,,
+bolt_mage,mage,Damage,20,50 + math.floor((player.level + player.will) / 4),2,,,,,,,,30,57,,
+natures_ire_mage,mage,Damage,20,50 + math.floor((player.level + player.will) / 4),3,,,,,,,,4,701,,
 static_mage,mage,Debuff,5,,,,,10000,paralyze,,,,1,7,6,
 stormstrike_mage,mage,Damage,150,125 + (player.level * 4) + math.ceil(((player.will + 1) / 2) * 3.5),0,,,,,,,,4,56,,
 river_of_blood_mage,mage,Damage,150,125 + (player.level * 4) + math.ceil(((player.will + 1) / 2) * 3.5),1,,,,,,,,17,59,,
@@ -204,7 +204,7 @@ vex_mage,mage,Debuff,60,,,,,,slow,,,,1,43,6,
 deaths_face_mage,mage,Debuff,60,,,,,,slow,,,,53,43,6,
 unnatural_selection_mage,mage,Debuff,60,,,,,,slow,,,,101,44,6,
 flaw_mage,mage,Debuff,60,,,,,,slow,,,,79,26,6,
-volcanic_blast_mage,mage,Damage,0,971 + math.ceil(((player.will + 4) / 5) * 18.325),35,,,,,,,,42,88,6,
+volcanic_blast_mage,mage,Damage,120,971 + math.ceil(((player.will + 4) / 5) * 18.325),35,,,,,,,,42,88,6,
 anoint_poet,poet,Heal,390,200,0,,,,,,,,5,4,6,
 brothers_of_spirit_poet,poet,Heal,390,200,1,,,,,,,,65,98,6,
 gathering_of_power_poet,poet,Heal,390,200,2,,,,,,,,64,63,6,
@@ -266,10 +266,10 @@ dispell_poet,poet,Utility,200,,,,,,,,,,10,34,6,
 remove_magic_poet,poet,Utility,200,,,,,,,,,,71,37,6,
 return_natural_poet,poet,Utility,200,,,,,,,,,,107,34,6,
 restore_balance_poet,poet,Utility,200,,,,,,,,,,58,95,6,
-earthquake_poet,poet,Damage,0,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),0,,,,,,,,4,56,6,
-tossing_the_bones_poet,poet,Damage,0,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,6,
-natures_fury_poet,poet,Damage,0,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,6,
-groundstrike_poet,poet,Damage,0,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,6,
+earthquake_poet,poet,Damage,90,200 + (player.level + player.will),0,,,,,,,,4,56,6,
+tossing_the_bones_poet,poet,Damage,90,200 + (player.level + player.will),1,,,,,,,,17,59,6,
+natures_fury_poet,poet,Damage,90,200 + (player.level + player.will),2,,,,,,,,30,57,6,
+groundstrike_poet,poet,Damage,90,200 + (player.level + player.will),3,,,,,,,,4,701,6,
 endear_poet,poet,Buff,300,,,,,,,,,,39,34,6,6000
 possess_soul_poet,poet,Buff,300,,,,,,,,,,39,34,6,6000
 charm_life_poet,poet,Buff,300,,,,,,,,,,39,34,6,6000
@@ -282,10 +282,10 @@ flare_poet,poet,Damage,80,100 + (player.level * 2) + math.floor(((player.will + 
 dance_of_death_poet,poet,Damage,80,100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2),1,,,,,,,,17,59,,
 breaking_of_the_world_poet,poet,Damage,80,100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2),2,,,,,,,,30,57,,
 storm_crow_poet,poet,Damage,80,100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2),3,,,,,,,,4,701,,
-fortify_poet,poet,Heal,0,500,0,,,,,,,,5,4,6,65000
-ancestors_kiss_poet,poet,Heal,0,500,1,,,,,,,,65,98,6,65000
-fertile_soil_poet,poet,Heal,0,500,2,,,,,,,,64,63,6,65000
-waters_of_purity_poet,poet,Heal,0,500,3,,,,,,,,63,4,6,65000
+fortify_poet,poet,Heal,200,500,0,,,,,,,,5,4,6,65000
+ancestors_kiss_poet,poet,Heal,200,500,1,,,,,,,,65,98,6,65000
+fertile_soil_poet,poet,Heal,200,500,2,,,,,,,,64,63,6,65000
+waters_of_purity_poet,poet,Heal,200,500,3,,,,,,,,63,4,6,65000
 harden_armor_poet,poet,TargetBuff,30,,,armor,10,300000,,,,,2,5,6,
 thicken_skin_poet,poet,TargetBuff,30,,,armor,10,300000,,,,,111,5,6,
 shield_of_life_poet,poet,TargetBuff,30,,,armor,10,300000,,,,,110,5,6,
@@ -304,10 +304,10 @@ clan_of_souls_poet,poet,Heal,390,1000,1,,,,,,,,65,98,6,
 healing_hand_poet,poet,Heal,390,1000,2,,,,,,,,64,63,6,
 earths_embrace_poet,poet,Heal,390,1000,3,,,,,,,,63,4,6,
 hyun_moo_spite_poet,poet,Damage,600,3500,0,,,,,,,,4,56,,
-ignite_poet,poet,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),0,,,,,,,,4,56,,
-spirit_strike_poet,poet,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,,
-wrath_of_nature_poet,poet,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,,
-thunderclap_poet,poet,Damage,30,40 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,,
+ignite_poet,poet,Damage,30,200 + (player.level + player.will),0,,,,,,,,4,56,,
+spirit_strike_poet,poet,Damage,30,200 + (player.level + player.will),1,,,,,,,,17,59,,
+wrath_of_nature_poet,poet,Damage,30,200 + (player.level + player.will),2,,,,,,,,30,57,,
+thunderclap_poet,poet,Damage,30,200 + (player.level + player.will),3,,,,,,,,4,701,,
 inspiration_poet,poet,Utility,,,,,,,,,,,11,22,6,
 draw_energy_poet,poet,Utility,,,,,,,,,,,16,22,6,
 harness_power_poet,poet,Utility,,,,,,,,,,,76,22,6,
@@ -345,7 +345,7 @@ remove_veil_poet,poet,Cure,60,,,,,,,,blinds,,10,10,6,
 clear_darkness_poet,poet,Cure,60,,,,,,,,blinds,,70,10,6,
 restore_sight_poet,poet,Cure,60,,,,,,,,blinds,,57,10,6,
 purge_darkness_poet,poet,Cure,60,,,,,,,,blinds,,108,95,6,
-restore_poet,poet,Heal,1000,,,,,,,,,,5,4,6,10000
+restore_poet,poet,Heal,1000,math.ceil(player.magic * 1.5),,,,,,,,,5,4,6,10000
 resurrect_poet,poet,Utility,3000,,,,,,,,,,11,,6,8000
 return_spirit_poet,poet,Utility,3000,,,,,,,,,,96,,6,8000
 mingken_blessing_poet,poet,Utility,3000,,,,,,,,,,116,,6,8000
@@ -370,14 +370,14 @@ second_sight_poet,poet,Buff,240,,,,,,,,,,-1,22,6,
 hear_spirits_poet,poet,Buff,240,,,,,,,,,,-1,22,6,
 improve_sight_poet,poet,Buff,240,,,,,,,,,,-1,22,6,
 show_hidden_poet,poet,Buff,240,,,,,,,,,,-1,22,6,
-singe_poet,poet,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),11,,,,,,,,28,701,,
-embrace_of_the_void_poet,poet,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,,
-lightning_poet,poet,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,,
-natures_storm_poet,poet,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,,
-spark_poet,poet,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),11,,,,,,,,28,701,,
-glimpse_of_the_void_poet,poet,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),1,,,,,,,,17,59,,
-bolt_poet,poet,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),2,,,,,,,,30,57,,
-natures_ire_poet,poet,Damage,20,15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),3,,,,,,,,4,701,,
+singe_poet,poet,Damage,20,100 + math.floor((player.level + player.will) / 2),11,,,,,,,,28,701,,
+embrace_of_the_void_poet,poet,Damage,20,100 + math.floor((player.level + player.will) / 2),1,,,,,,,,17,59,,
+lightning_poet,poet,Damage,20,100 + math.floor((player.level + player.will) / 2),2,,,,,,,,30,57,,
+natures_storm_poet,poet,Damage,20,100 + math.floor((player.level + player.will) / 2),3,,,,,,,,4,701,,
+spark_poet,poet,Damage,20,50 + math.floor((player.level + player.will) / 4),11,,,,,,,,28,701,,
+glimpse_of_the_void_poet,poet,Damage,20,50 + math.floor((player.level + player.will) / 4),1,,,,,,,,17,59,,
+bolt_poet,poet,Damage,20,50 + math.floor((player.level + player.will) / 4),2,,,,,,,,30,57,,
+natures_ire_poet,poet,Damage,20,50 + math.floor((player.level + player.will) / 4),3,,,,,,,,4,701,,
 stream_of_life_poet,poet,Heal,1000,10000,0,,,,,,,,5,4,,
 purity_of_spirit_poet,poet,Heal,1000,10000,1,,,,,,,,65,98,,
 natures_abundance_poet,poet,Heal,1000,10000,2,,,,,,,,64,63,,
@@ -453,10 +453,10 @@ ignite_rogue,rogue,Damage,30,260,250,,,,,,,,4,56,,
 spirit_strike_rogue,rogue,Damage,30,260,251,,,,,,,,17,59,,
 wrath_of_nature_rogue,rogue,Damage,30,260,252,,,,,,,,30,57,,
 thunderclap_rogue,rogue,Damage,30,260,253,,,,,,,,4,701,,
-invisible_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,1000
-spirits_form_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,1000
-lifes_cloak_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,1000
-glass_form_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,1000
+invisible_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,
+spirits_form_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,
+lifes_cloak_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,
+glass_form_rogue,rogue,Buff,0,,,,,156000,,,,,-1,,6,
 judge_rogue,rogue,Utility,,,,,,,,,,,-1,,,
 spiritual_advisor_rogue,rogue,Utility,,,,,,,,,,,-1,,,
 natural_talent_rogue,rogue,Utility,,,,,,,,,,,-1,,,
@@ -508,10 +508,10 @@ shadow_figure_rogue,rogue,Buff,60,,,grace,3,,,,shadowFigures,,2,4,6,
 spirit_warrior_rogue,rogue,Buff,60,,,grace,3,,,,shadowFigures,,20,4,6,
 natural_defense_rogue,rogue,Buff,60,,,grace,3,,,,shadowFigures,,20,4,6,
 ohaengs_armor_rogue,rogue,Buff,60,,,grace,3,,,,shadowFigures,,21,4,6,
-singe_rogue,rogue,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),12,,,,,,,,28,701,,
-embrace_of_the_void_rogue,rogue,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),251,,,,,,,,17,59,,
-lightning_rogue,rogue,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),252,,,,,,,,30,57,,
-natures_storm_rogue,rogue,Damage,20,25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4),253,,,,,,,,4,701,,
+singe_rogue,rogue,Damage,20,100 + math.floor((player.level + player.will) / 2),12,,,,,,,,28,701,,
+embrace_of_the_void_rogue,rogue,Damage,20,100 + math.floor((player.level + player.will) / 2),251,,,,,,,,17,59,,
+lightning_rogue,rogue,Damage,20,100 + math.floor((player.level + player.will) / 2),252,,,,,,,,30,57,,
+natures_storm_rogue,rogue,Damage,20,100 + math.floor((player.level + player.will) / 2),253,,,,,,,,4,701,,
 set_sleep_trap,rogue,Summon,2500,,,,,,,,,,2,0,6,20000
 set_snare_trap,rogue,Summon,120,,,,,,,,,,1,0,6,
 set_spear_trap,rogue,Summon,520,,,,,,,,,,6,0,6,
@@ -532,10 +532,10 @@ wolfs_fury_rogue,rogue,Buff,30,,,,,625000,,,,,11,4,6,
 souls_rage_rogue,rogue,Buff,30,,,,,625000,,,,,103,4,6,
 spirit_of_the_forest_rogue,rogue,Buff,30,,,,,625000,,,,,106,4,6,
 augmentation_rogue,rogue,Buff,30,,,,,625000,,,,,98,70,6,
-assault_warrior,warrior,Damage,0,math.ceil(player.health / 2),0,,,,,,,,4,56,1,80000
-deaths_challenge_warrior,warrior,Damage,0,math.ceil(player.health / 2),127,,,,,,,,17,59,1,80000
-cold_snap_warrior,warrior,Damage,0,math.ceil(player.health / 2),126,,,,,,,,30,57,1,80000
-volley_warrior,warrior,Damage,0,math.ceil(player.health / 2),3,,,,,,,,4,701,1,80000
+assault_warrior,warrior,Damage,5000,math.ceil(player.health / 2),0,,,,,,,,4,56,1,80000
+deaths_challenge_warrior,warrior,Damage,5000,math.ceil(player.health / 2),127,,,,,,,,17,59,1,80000
+cold_snap_warrior,warrior,Damage,5000,math.ceil(player.health / 2),126,,,,,,,,30,57,1,80000
+volley_warrior,warrior,Damage,5000,math.ceil(player.health / 2),3,,,,,,,,4,701,1,80000
 backstab_warrior,warrior,Buff,90,,,,,625000,,,backstabs,,2,4,6,
 back_battle_warrior,warrior,Buff,90,,,,,625000,,,backstabs,,-1,4,6,
 back_attack_warrior,warrior,Buff,90,,,,,625000,,,backstabs,,-1,4,6,
@@ -557,7 +557,7 @@ enchant_warrior,warrior,Utility,60,,,,,,,,,,2,,6,
 spiritual_aid_warrior,warrior,Utility,60,,,,,,,,,,-1,,6,
 oneness_warrior,warrior,Utility,60,,,,,,,,,,-1,,6,
 strengthen_weapon_warrior,warrior,Utility,60,,,,,,,,,,-1,,6,
-feral_berserk_warrior,warrior,Damage,0,math.ceil(player.health * 0.85),spellFX,,,,,,,,9,88,1,16000
+feral_berserk_warrior,warrior,Damage,60,math.ceil(player.health * 0.85),spellFX,,,,,,,,9,88,1,16000
 flank_warrior,warrior,Buff,90,,,,,625000,,,flanks,,2,4,6,
 flank_battle_warrior,warrior,Buff,90,,,,,625000,,,flanks,,-1,4,6,
 flank_attack_warrior,warrior,Buff,90,,,,,625000,,,flanks,,-1,4,6,
@@ -594,7 +594,7 @@ salvation_warrior,warrior,Heal,400,500,0,,,,,,,,5,4,,
 redemption_warrior,warrior,Heal,400,500,1,,,,,,,,65,98,,
 ointment_of_light_warrior,warrior,Heal,400,500,2,,,,,,,,64,63,,
 return_of_life_warrior,warrior,Heal,400,500,3,,,,,,,,63,4,,
-slash_warrior,warrior,Damage,60,,,,,,,,,,31,60,1,1000
+slash_warrior,warrior,Damage,180,math.ceil((player.health * 0.0245) + (player.might * 11.435)),,,,,,,,,31,60,1,1000
 taunt_warrior,warrior,Damage,1,1,13,,,,,,,,-1,58,,
 anger_warrior,warrior,Damage,1,1,13,,,,,,,,-1,58,,
 tease_warrior,warrior,Damage,1,1,13,,,,,,,,-1,58,,

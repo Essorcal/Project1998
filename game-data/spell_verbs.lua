@@ -33,50 +33,109 @@ function verbs.arch_heal(ctx, row)
   return true
 end
 
--- Split a '|'-separated CSV field into a list ("might|hit" -> {"might","hit"}; "" -> {}).
-local function split_bar(s)
-  local out = {}
-  if s == nil or s == "" then return out end
-  for part in string.gmatch(s, "([^|]+)") do out[#out + 1] = part end
-  return out
+-- The refusal line for a blocked exclusivity slot, shared by EVERY verb that has one (arch_buff,
+-- arch_targetbuff, arch_debuff, curse, ward). `already` = the slot is held by THIS VERY SPELL, still running.
+-- RTK words that case differently from somebody else's spell being in the way -- paralyze.lua answers "You
+-- already cast that spell." off its own `target.paralyzed`, static.lua answers "A more powerful spell is in
+-- effect." off the very same flag -- and the only reason it had to hand-write the choice per script is that a
+-- mob stored one boolean per mechanic, never the identity of whatever set it. Our slots carry the spell key,
+-- so the choice is made once, here. A protection keeps its own more specific line: that isn't a same-type
+-- collision, it's the target being immune, and it can never be the spell you just cast.
+-- (Declared up here, not next to its first curse/ward caller, because a `local` further down the file would be
+-- invisible to arch_buff/arch_debuff above it.)
+local function blockMsg(cat, already)
+  if cat == "protections" then return "The target is already protected." end
+  if already then return "You already cast that spell." end
+  return "Another spell of this type is in effect."
 end
 
--- Buff archetype: a timed SELF buff (the caster is the target). Spend mana, refresh (don't stack), then apply
--- each stat|amount pair from the export row for the spell's duration, play the aura fx once, and show the live
--- target-flavor line to yourself (e.g. Might -> "Your muscles develop." then the central "You cast Might.").
-function verbs.arch_buff(ctx, row)
-  if not ctx:enoughMana(ctx.mana) then return false end
-  ctx:debitMana(ctx.mana)
-  ctx:clearBuff()
-  local dur = ctx.durationMs > 0 and ctx.durationMs or 60000
-  local stats, amts = split_bar(ctx.buffStat), split_bar(ctx.buffAmt)
-  for i = 1, #stats do
-    local amt = math.floor(tonumber(amts[i]) or 0)      -- "3" or "3.0" -> 3; missing/0 -> skipped by addBuff
-    if amt ~= 0 then ctx:addBuff(stats[i], amt, dur) end
-  end
-  ctx:fxSelf()
-  ctx:flavorSelf()
-  return true
+-- BUFF EXCLUSIVITY SLOTS -- RTK Spells/spellTables.lua, verbatim. Buffs were the ONE family that skipped the
+-- checkIfCast guard every other status obeys: arch_buff only cleared its own key and re-applied, so Might was
+-- spammable and, worse, Might + Spirit Strength (same slot in RTK, different keys) STACKED into +6 might. RTK
+-- itself is inconsistent about which half of that it fixes -- rogue/might.lua refuses on checkIfCast(mights)
+-- while mage/might.lua calls removeDuras(mights) and refreshes -- so the refusal wins for both, matching the
+-- rest of this file and the player-visible rule "one spell of a type at a time".
+--
+-- Only the four slots whose members actually reach arch_buff / arch_targetbuff are listed. The rest of RTK's
+-- tables (furies, invis, morphs, backstabs, flanks, enchants) belong to spells that Session.ApplyCast
+-- intercepts BEFORE the archetype dispatch and that already own a dedicated timer slot with its own guard.
+-- Cross-slot blocking (BLOCKS, further down) doesn't apply here: RTK gives none of these a cross-guard, so a
+-- Might and a Bless deliberately still stack -- they're different slots.
+--
+-- The export ALREADY carries this for 17 of them, in spell_effects.csv's `cureCat` column: the extractor read
+-- the list argument of RTK's `removeDuras(mights)` and wrote it there, and on a Buff row (which has nothing to
+-- cure) that column can only mean the exclusivity slot -- so buff_slot() falls back to it. What the extractor
+-- could NOT see is `checkIfCast(mights)`, the refusal half, which is why the whole rogue Might family and the
+-- mage/poet Valor family come out blank; that gap is exactly this table.
+local BUFF_CATEGORY = {}
+local function set_slot(cat, keys) for _, k in ipairs(keys) do BUFF_CATEGORY[k] = cat end end
+set_slot("mights", {
+  "inspire_valor", "valor", "tigers_might",
+  "might_rogue", "spirit_strength_rogue", "inner_blessing_rogue", "temper_rogue",
+  "might_mage", "spirit_strength_mage", "inner_blessing_mage", "temper_mage",
+  -- the mage/poet half is cast ON a target (arch_targetbuff), same slot
+  "valor_poet", "strengthen_poet", "bless_muscles_poet", "power_burst_poet",
+  "valor_mage", "strengthen_mage", "bless_muscles_mage", "power_burst_mage",
+})
+set_slot("blessings", {
+  "greater_blessing", "bless_warrior", "sanctification_warrior",
+  "tribal_gathering_warrior", "strength_of_purpose_warrior",
+})
+set_slot("potency", { "potence_warrior", "spirit_arm_warrior", "touch_of_the_bear_warrior", "sharpen_warrior" })
+set_slot("shadowFigures", {
+  "shadow_figure_rogue", "spirit_warrior_rogue", "natural_defense_rogue", "ohaengs_armor_rogue",
+})
+-- This spell's exclusivity slot, or nil for a buff that has none (and so keeps the old refresh behaviour).
+local function buff_slot(ctx)
+  local cat = BUFF_CATEGORY[ctx.spellKey]
+  if cat then return cat end
+  local cc = ctx.cureCat
+  if cc ~= nil and cc ~= "" then return cc end
+  return nil
 end
 
--- TargetBuff archetype: a beneficial timed buff cast ON a target (another player, yourself, or a mob/NPC/pet).
--- Mana is CHECKED up front but DEBITED only once the cast commits, so a no-target abort spends nothing. The
--- verb owns the routing: deduction (a damage-reduction multiplier) is player-only; a plain stat buff applies to
--- a player (with their flavor line) or a mob. buffAmt is a fraction for deduction, an integer otherwise.
-function verbs.arch_targetbuff(ctx, row)
+-- Buff + TargetBuff: ONE body. The two archetypes differ only in WHO the buff lands on -- the caster (Buff has
+-- no target arg on the wire at all) or whatever the cast is aimed at -- and in the duration a row with no
+-- `durationMs` falls back to. Everything else is identical: the exclusivity slot, the mana ordering, the
+-- deduction routing, the fx + flavor line. Running them as two parallel bodies is exactly how the slot guard
+-- came to be enforced on one and not the other -- RTK has the same split, rogue/might.lua refusing where
+-- mage/might.lua refreshes -- so they share a body and can no longer drift.
+--
+-- Mirrors verbs.ward, which has always covered its own self-cast (protections) and ally-cast (bolster/harden)
+-- halves through one resolved-target primitive set: resolve once with ctx:buffTarget(mode), then every step
+-- reads that resolution.
+--
+-- Mana is CHECKED up front but DEBITED only once the cast commits, so neither a no-target abort nor an
+-- occupied slot spends anything.
+local function apply_buff(ctx, mode, fallbackDur)
   if not ctx:enoughMana(ctx.mana) then return false end
-  if ctx.targetKind == "none" then return false end   -- silent: a cast that finds nothing says nothing
-  local dur = ctx.durationMs > 0 and ctx.durationMs or 300000
+  if not ctx:buffTarget(mode) then return false end   -- silent: a cast that finds nothing says nothing
+  local cat = buff_slot(ctx)
+  -- Slot check before the debit: a re-cast into an occupied slot is a plain "no", not a refresh you paid for.
+  if cat and ctx:buffHasStatus(cat) then ctx:say(blockMsg(cat, ctx:buffAlreadyCast())); return false end
+  local dur = ctx.durationMs > 0 and ctx.durationMs or fallbackDur
+  -- Deduction is an incoming-damage MULTIPLIER in its own scalar slot, not a stat delta, and lands on players
+  -- only; applyDeduction refuses a mob without spending anything, so the debit comes after it commits.
   if ctx.buffStat == "deduction" then
-    if ctx.targetKind ~= "player" then ctx:say(ctx.spellName .. " has no effect on that."); return false end
+    if not ctx:applyDeduction(tonumber(ctx.buffAmt) or 1.0, dur) then
+      ctx:say(ctx.spellName .. " has no effect on that."); return false
+    end
     ctx:debitMana(ctx.mana)
-    ctx:deductionTarget(tonumber(ctx.buffAmt) or 1.0, dur)
     return true
   end
   ctx:debitMana(ctx.mana)
-  ctx:buffTarget(ctx.buffStat, math.floor(tonumber(ctx.buffAmt) or 0), dur)
+  -- Raw '|'-separated row fields: a multi-stat buff is split engine-side, so one call covers refresh-then-add
+  -- for every stat plus the single fx + flavor line (e.g. Might -> "Your muscles develop." then HandleCast's
+  -- central "You cast Might.").
+  ctx:applyBuff(ctx.buffStat, ctx.buffAmt, dur, cat or "")
   return true
 end
+
+-- The two archetype names both still have to exist: Session.ApplyCast dispatches on them by name, and
+-- SpellScript.HasVerb is what decides whether the archetype falls back to its C# handler. The fallback
+-- durations are the only per-archetype DATA, so they're arguments rather than a branch.
+function verbs.arch_buff(ctx, row)       return apply_buff(ctx, "self",   60000)  end
+function verbs.arch_targetbuff(ctx, row) return apply_buff(ctx, "target", 300000) end
 
 -- Debuff archetype: the hostile crowd-control family. The export row's `debuff` column says WHICH kind this
 -- spell is, and the four behave differently in RTK -- before this they all ran one generic freeze, so Blind
@@ -115,20 +174,6 @@ local AMP_BY_SPELL = { sleep_mage = 1.5, sweet_musings_mage = 1.5, essence_of_po
 -- others. They are the balance surface for "an offensive status should sometimes just fail" -- edit and
 -- @reload, no rebuild. A per-spell `chance` formula in spell_effects.csv always wins over the table.
 local HOLD_CHANCE = { blind = 75, sleep = 80, paralyze = 100, slow = 90 }
-
--- The refusal line for a blocked exclusivity slot, shared by every verb that has one (arch_debuff, curse,
--- ward). `already` = the slot is held by THIS VERY SPELL, still running. RTK words that case differently from
--- somebody else's spell being in the way -- paralyze.lua answers "You already cast that spell." off its own
--- `target.paralyzed`, static.lua answers "A more powerful spell is in effect." off the very same flag -- and
--- the only reason it had to hand-write the choice per script is that a mob stored one boolean per mechanic,
--- never the identity of whatever set it. Our slots carry the spell key, so the choice is made once, here.
--- A protection keeps its own more specific line: that isn't a same-type collision, it's the target being
--- immune, and it can never be the spell you just cast.
-local function blockMsg(cat, already)
-  if cat == "protections" then return "The target is already protected." end
-  if already then return "You already cast that spell." end
-  return "Another spell of this type is in effect."
-end
 
 function verbs.arch_debuff(ctx, row)
   local kind = ctx.debuffKind
@@ -391,6 +436,21 @@ function verbs.area_zap(ctx, row)
   return true
 end
 
+-- The dog (subpath) 5-way fire: Fissure (lvl 70, 120 mana) and Lava Surge (lvl 99, 210 mana).
+-- Head Tutor Nussan's board entry is the spec: "Ranged, targetable 5 way attack. Cast on yourself or
+-- monsters. Misses sometimes if you're too far away. When cast on the target, anything on the 4 sides gets
+-- hit as well, full damage. Can be cast extremely fast."
+-- Same order as the 4-way ladder -- mana first, sweep second, "You cast X." last and unconditional -- so a
+-- cast that range-misses still costs full price. "Extremely fast" is honoured in C# by these two carrying no
+-- cast delay (Content.CastDelayMs), which leaves them on the ordinary 3/sec action budget while every other
+-- zap is held to 1/sec.
+function verbs.target_area_zap(ctx, row)
+  if not ctx:enoughMana(ctx.mana) then return false end
+  ctx:debitMana(ctx.mana)
+  ctx:targetAreaZap(ctx.amount)    -- 0 hits is fine: an empty room, or a miss at range
+  return true
+end
+
 function verbs.area_heal(ctx, row)
   if not ctx:enoughMana(ctx.mana) then return false end
   ctx:debitMana(ctx.mana)
@@ -544,6 +604,24 @@ end
 
 -- Mana Battery (RTK invoke): trade HP for a full mana refill — costs 40% of max mana as HP (floored at 100 HP),
 -- refills mana to full. Needs >= 30 mana to invoke; 22s cooldown.
+-- Harden Body (RTK poet/harden_body.lua + its Death's Guard / Life's Protection / Body of Alignment reskins):
+-- "Grants temporary immortality." While it runs, Session.DamageImmune makes every blow simply not land —
+-- RTK's Player.removeHealthExtend returns before it computes anything. That is not a stat delta, so the
+-- generic arch_buff had no BuffStat/BuffAmt to apply and these four silently did nothing but cost mana.
+-- Order is RTK's and it matters: the mana goes FIRST, then the roll, so a failure still costs you the cast.
+-- Success scales with armour (better armour is more negative, so -armor/3 rewards it), and the Scroll of
+-- Immortality grants the same ward through item_verbs.lua's `hardenbody`.
+function verbs.harden_body(ctx, row)
+  if ctx.immune then ctx:say("You already cast that spell."); return false end
+  if not ctx:spendMana(row.mana or 300) then return false end
+  ctx:castPose()
+  if not ctx:roll(50 + math.floor(-ctx.armor / 3)) then ctx:say("Something went wrong."); return false end
+  ctx:setDuration(ctx.spellKey, row.duration or 12000)
+  ctx:fxSelf()
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  return true
+end
+
 function verbs.mana_battery(ctx, row)
   local minMana = row.mana or 30
   if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
@@ -583,7 +661,7 @@ local function blockedBy(hasFn, category)
   end
   return nil
 end
--- (blockMsg lives up by arch_debuff, its first caller -- a local declared here would be invisible there.)
+-- (blockMsg lives up by arch_buff, its first caller -- a local declared here would be invisible there.)
 
 -- Curse (RTK Spells/*/pestilence.lua & kin): apply a MUTUALLY-EXCLUSIVE categorized status to a curse target.
 -- Blocked if the target already carries a status in this category's BLOCK list (checkIfCast) — which is what
@@ -796,7 +874,10 @@ function verbs.sacrifice(ctx, row)
   if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
 
   local preHp, preMp = ctx.hp, ctx.mp
-  local baekho = ctx.baekhoRage
+  -- Chin-Baek-Ho-Ryung: the Black Potion's 10s ward, x1.5 on Berserk and Whirlwind (RTK berserk.lua:45,
+  -- whirlwind.lua:38). This used to read ctx.baekhoRage -- Baekho's RAGE, which is baekhos_rage_rogue, a
+  -- ROGUE fury, on two warrior-only strikes. The bonus could therefore never fire. Different Baekho.
+  local baekho = ctx:hasDuration("chin_baek_ho_ryung")
   local damage
   if     fam == "LethalStrike"    then damage = math.ceil(preHp / 2) + math.ceil(preMp * 2.5)
   elseif fam == "DesperateAttack" then damage = preHp + preMp
