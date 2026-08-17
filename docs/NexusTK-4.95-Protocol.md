@@ -383,7 +383,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x4f` | Change profile | `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit, **or** answered a `0x49` (§13a) — byte-identical either way. Persist the picture + blurb; reply with a `0x02` message. `picSize = 0` is the normal case and does **not** mean the packet or the server is broken: the picture is a file the PLAYER supplies, and every client-side failure still replies with 0 (see §9.5a). |
 | `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
-| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. The client reports only that a toggle **flipped**, never its state, so every one of these is a state the server has to keep in sync from a shared default. |
+| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. Two bytes only, **no state** — but it is *not* a plain flip notification: it is **edge-triggered against a client-stored byte** the server seeds via `0x23`. See "Edge-trigger" below — the server MUST re-seed after every synced toggle or the boxes invert. |
 | `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
 | `0x66` | **Examine item** (right-click a bag slot) | `00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00` | **`body[0] == 0`.** The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the raw cursor X, not an item reference. Reply with a `0x66` detail popup (§11c.1). |
 | `0x66` | **Town-table request** | `01 00 01 01 00 01 01 00` | **`body[0] == 1`** — the same opcode, split on the first byte. Fixed body, sent from `0x449ed0` only when the client's own town table is empty. Reply `0x59` sub-1 — §13c. |
@@ -413,6 +413,40 @@ by the live capture `02 0f 15 "Fast Move        :OFF"`.
 
 > RTK reads the sub-command at `RFIFOB(fd, 6)`; **4.95 puts it at `body[0]`** — confirmed by the capture
 > `1b 09 00` for fast-move. Don't copy RTK's offset.
+
+##### Edge-trigger: the four synced boxes and the `0x23` seed
+
+Four Options rows round-trip to the server: **Weather (`0x06`), Magic Effect (`0x05`), Wisdom/advice (`0x04`),
+Fast Move (`0x09`)**. These are **radio pairs (ON | OFF)**, and they are *not* symmetric toggles. Disassembly of
+`NexusTK_local.exe` (ImageBase `0x400000`, no ASLR):
+
+- **Inbound seed** — the client's options window has a **second packet dispatcher** at `0x4650d0` (sub-opcodes
+  `0x21`/`0x23`/`0x25`, told apart by `body[0]`; this is the same "there's another table" lesson as the mail
+  button). `0x23` → handler `0x465200`: parses **4 bytes** into a stored array at `[window+0x278..0x27b]` and
+  sets the 4 radio widgets (child indices **5, 4, 7, 8**) checked via `0x415160(widget, checked)` where
+  **checked = (storedByte == 0)**.
+- **Outbound** — send primitive `0x4651a0(sub)` builds exactly **`1b <sub> 00`** and sends **2 bytes** — no
+  state. Each row's click handler (jump table in the window command handler `0x464c00`) reads its widget's live
+  checked flag `[widget+0x114]`, compares it to its stored byte, and sends **only if they differ**. A click
+  **never updates the stored byte** — only an inbound `0x23` does.
+
+| widget idx | stored byte | subcommand sent | option |
+|---|---|---|---|
+| 5 | `+0x278` | `0x06` | Weather |
+| 4 | `+0x279` | `0x05` | Magic Effect |
+| 7 | `+0x27a` | `0x04` | Wisdom/advice |
+| 8 | `+0x27b` | `0x09` | Fast Move |
+
+**Server contract:** seed all four with `0x23` (`Session.SendOptions`, body `[Box(0x06), Box(0x05), Box(0x04),
+Box(0x09)]`, `Box(sub) = HasSetting(sub) ? 0 : 1`) **and re-seed after every synced toggle**. The seed byte must
+track the server bit, because the client compares each click against that stored byte alone. If you seed only on
+F10-open (as an earlier build did) the stored byte goes stale after the first flip: the return click matches the
+stale value, the client sends nothing, and the box desyncs from the server — the "Magic Effect OFF but effects
+still show" inversion. It also explains why each row *looked* like it only sent one direction: only the direction
+*away from the last seed* is ever a change. `Session.HandleSetting` re-seeds via `SendOptions()` after each of the
+four (weather/magic/advice branches + the fast-move branch). `0x1b` is **not** action-budget gated, so rapid
+clicks aren't dropped server-side; the residual rapid-toggle race is client-side (the async re-seed also rewrites
+the widget) and is inherent.
 
 #### `0x1F` — weather ⚠ *RTK's byte does not work here*
 
@@ -1380,6 +1414,10 @@ Read this per-packet. Do **not** try to track the `0x1b`/`09` toggle notificatio
 the client boots fast-move OFF, persists its state across launches, and never reports state on connect, so
 any default guess plus a toggle can invert and you end up sending corrections into a client-authoritative
 walk (→ the character "slides" with no animation). The per-walk bit is authoritative and self-correcting.
+
+> Not to be confused with the *checkbox preference*: `SettingFlags` bit 9 IS persisted, purely so the Options
+> menu's Fast Move box seeds correctly across relog (the `0x23` edge-trigger contract, §"the Options menu").
+> That bit never drives movement — the per-walk high bit above does. Two separate concerns, same name.
 
 ### 10.2 Fast-move ON = client-authoritative (the smooth path) ✅
 

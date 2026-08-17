@@ -613,6 +613,7 @@ public sealed partial class Session
             SaveChar();
             SendMessage(_fastMove ? "Fast Move        :ON" : "Fast Move        :OFF");   // RTK clif_changestatus case 0x09 (verbatim text)
             Log.Info($"   -> setting 0x09 Fast-move = {(_fastMove ? "ON (client-authoritative)" : "OFF (server-authoritative)")}");
+            SendOptions();   // re-seed: keep the client's stored box state in sync — see the note below
         }
         else if (setting == 0x00)
         {
@@ -676,13 +677,22 @@ public sealed partial class Session
         else if (SettingLabels.TryGetValue(setting, out var label))
         {
             // The remaining Options-menu toggles. Each is one bit of Character.SettingFlags (RTK
-            // clif_changestatus cases 1/3/4/5/6/13/14/15) and the client only reports the FLIP, never the
-            // state — so our stored bit and the client's checkbox stay in sync purely by both starting from
-            // the same defaults. Same contract as fast-move.
+            // clif_changestatus cases 1/3/4/5/6/13/14/15). The client sends a bare "1b <sub>" (2 bytes, NO
+            // state — confirmed by disassembly of the client's send primitive at 0x4651a0) and it fires that
+            // packet ONLY when the on-screen radio differs from a STORED byte the client keeps at
+            // [window+0x278..0x27b]. Crucially, that stored byte is written ONLY by our inbound 0x23 seed
+            // (handler 0x465200); a radio click never updates it. So after we flip a synced box's bit we MUST
+            // re-seed, or the stored byte goes stale: the next click back matches the stale stored value, the
+            // client sends nothing, and the box and the server desync (the "Magic OFF but effects still show"
+            // inversion). SendOptions() below re-asserts stored == server for the four synced boxes.
             bool on = _char.ToggleSetting(setting);
             SaveChar();
             SendMessage(SettingLine(label, on));
             Log.Info($"   -> setting 0x{setting:X2} {label} = {(on ? "ON" : "OFF")}");
+            // weather(6)/magic(5)/advice(4) are three of the four boxes seeded by SendOptions (fast-move(9) is
+            // the fourth, handled above). Re-seed after flipping any of them so the client's stored byte tracks
+            // the server. The other labels here (whisper/shout/sounds/helm/necklace) aren't in that window.
+            if (setting is 0x04 or 0x05 or 0x06) SendOptions();
             // Weather is the only one of these with a packet behind it, and it needs BOTH halves to take effect
             // live: the 0x1F state (intensity) AND the 0x15 mapinfo render byte (4=armed / 5=disarmed), which is
             // the master "draw weather on this map" switch — the 0x1F state alone isn't enough (see SendMapInfo).
