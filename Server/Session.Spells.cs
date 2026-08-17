@@ -2600,6 +2600,30 @@ public sealed partial class Session
         _flankUntil = 0;
     }
 
+    /// <summary>"@dispel" — strip EVERY timed effect on the caster, buff and debuff alike, and re-render.
+    /// A superset of <see cref="FlushDurations"/> (which only covers stat buffs + rage + stealth + the two
+    /// warrior stances): this also clears the curse/ward status flags, the Sanctuary/Cunning deduction
+    /// timers and the enchant multiplier, and reverts a stealth or morph disguise so the look snaps back.
+    /// Persists (MarkDirty), so a cleared effect can't be restored by a relog.</summary>
+    internal void DispelSelf()
+    {
+        RevertMorph();      // restore the real look before we wipe the buff that named the disguise
+        BreakStealth();     // clears _stealthUntil + the faded (form-5) sprite
+
+        _buffs.Clear();
+        _statusFlags.Clear();
+        _rageUntil = 0;            _rageAmount = 1;   _rageName = "";
+        _sancDeductUntil = 0;      _sancDeduct = 1.0; _sancDeductName = "";
+        _cunningDeductUntil = 0;   _cunningDeduct = 1.0;
+        _backstabUntil = 0;        _flankUntil = 0;
+        _enchantUntil = 0;         _enchantAmount = 1;
+
+        SendStats();          // drop the buff/debuff box + refresh any stat the buffs were bending
+        RefreshAppearance();  // belt-and-braces redraw (RevertMorph/BreakStealth already did, if they fired)
+        MarkDirty();
+        Log.Info($"   -> DISPEL: {_char.Name} cleared all timed effects");
+    }
+
     // One step from (x,y) in direction dir (0=N/1=E/2=S/3=W — same convention as FrontTile/_facing/Mob.Dir).
     private static (int x, int y) StepDir(int x, int y, int dir) => (dir & 3) switch
     {

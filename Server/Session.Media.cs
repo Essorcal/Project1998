@@ -409,8 +409,10 @@ public sealed partial class Session
         Log.Info($"   -> @mtx type={type} \"{msg}\"");
     }
 
-    // "@weather clear|rain|snow|0|1|2" — force THIS map's weather and broadcast it to everyone standing on
-    // it. "@weather raw <n>" instead sends one byte STRAIGHT to the 0x1F handler without the band mapping,
+    // "@weather clear|rain|snow|0|1|2" — pin THIS map's whole region-zone to a weather state (an admin
+    // override of the seasonal WeatherModel) and broadcast it to everyone on that zone. "@weather auto" drops
+    // the override so the zone returns to season-driven weather. "@weather raw <n>" instead sends one byte
+    // STRAIGHT to the 0x1F handler without the band mapping,
     // which is how to explore what each band actually draws: the handler buckets its byte (<0x0b -> 0,
     // 0x0b..0x63 -> 1, >=0x65 -> 2) rather than taking a state, so only three effects exist no matter what
     // you send. Raw 100 is the one value to avoid — it falls through the buckets with the value still in the
@@ -430,6 +432,15 @@ public sealed partial class Session
             return;
         }
 
+        if (parts.Length >= 1 && parts[0].Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            _world.ClearWeatherOverride(_char.Map);
+            byte now = _world.GetWeather(_char.Map);
+            SendLog($"map {_char.Map} weather override cleared; season-driven weather is now {WeatherNames[Math.Min(now, (byte)2)]}");
+            Log.Info($"   -> @weather auto (map {_char.Map})");
+            return;
+        }
+
         int w = -1;
         if (parts.Length >= 1)
         {
@@ -439,14 +450,16 @@ public sealed partial class Session
         if (w < 0)
         {
             byte cur = _world.GetWeather(_char.Map);
-            SendLog($"usage: @weather clear|rain|snow   |   @weather raw <0-255>");
+            SendLog($"usage: @weather clear|rain|snow   |   @weather auto   |   @weather raw <0-255>");
             SendLog($"map {_char.Map} is {WeatherNames[Math.Min(cur, (byte)2)]}" +
+                    (Content.IsIndoor(_char.Map) ? " (indoor - always clear)" : "") +
                     $"; your 'Weather change' toggle is {(_char.HasSetting(0x06) ? "ON" : "OFF - nothing will draw")}");
             return;
         }
 
         _world.SetWeather(_char.Map, (byte)w);
-        SendLog($"map {_char.Map} weather set to {WeatherNames[w]}" +
+        SendLog($"zone weather pinned to {WeatherNames[w]} (map {_char.Map} region; @weather auto to release)" +
+                (Content.IsIndoor(_char.Map) ? "   (this map is indoor - it stays clear regardless)" : "") +
                 (_char.HasSetting(0x06) ? "" : "   (your 'Weather change' toggle is OFF - @setting weather on)"));
         Log.Info($"   -> @weather {WeatherNames[w]} (map {_char.Map})");
     }

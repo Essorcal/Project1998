@@ -21,7 +21,8 @@ public sealed partial class Session
         SendMap(0x1E, 0, new byte[] { 0x06, 0x00 }, "ack(0x1E)");
         { var (h, y) = _world.Time; SendMap(0x20, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
         SendId();
-        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232);
+        string mapName = Content.TryMap(_char.Map, out var md) ? md.Name : "Nexus";
+        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, mapName, 232);
         Log.Info("   -> mapinfo(0x15)");
         SendStats();
         SendSelfLook();

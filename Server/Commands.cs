@@ -42,21 +42,17 @@ public sealed partial class Session
 
     private static readonly Command[] CommandTable =
     {
-        // ---- player commands ------------------------------------------------------------------------
-        // Deliberately SHORT. A command earns its place here only when the 4.95 client has no native way to
-        // reach the feature: whisper (0x19), mail (the 0x3B board window), party (0x2E) and trade (0x4A) all
-        // do, so their chat-command fallbacks were removed rather than kept as a second, non-authentic UI.
-        // @music qualifies too and is listed down in the media block, with the rest of the 0x19 tooling.
-        P("ignore",     (s, a) => s.HandleIgnoreCommand(a),    "[add|remove <name>]", "block whispers both ways"),
-        P("friend",     (s, a) => s.HandleFriendCommand(a),    "[add|remove <name>]", "saved name list + online check"),
-        P("travel",     (s, a) => { _ = s.RunWorldMapMenuAsync(); }, "",           "world-map travel (dialog fallback)"),
-
         // ---- world / navigation ---------------------------------------------------------------------
+        // A command earns its place here only when the 4.95 client has no native way to reach the feature:
+        // whisper (0x19), mail (the 0x3B board window), party (0x2E) and trade (0x4A) all do, so their
+        // chat-command fallbacks (and the old @friend/@ignore/@travel list-management fallbacks) were removed
+        // rather than kept as a second, non-authentic UI. @music is the one player-tier survivor and is listed
+        // down in the media block, with the rest of the 0x19 tooling.
         G("warp",    (s, a) => s.Warp(a),          "<map name|id> [x y]", "teleport"),
         T("go",      (s, a) => s.GoCmd(a),         "<x> <y>",             "jump to a tile on the map you're already on (bad/out-of-range coords -> 0 0)"),
-        T("rez",     (s, a) => s.RezCmd(),         "",                    "resurrect yourself to full HP and MP (a full heal if already alive)"),
-        T("shout",   (s, a) => s.ShoutTestCmd(a),  "<chatType> <text>",   "diag: emit an over-head bubble at a given chatType (find the bubble-only one)"),
-        T("sendopts",(s, a) => s.SendOptionsCmd(), "",                    "diag: send a 0x23/03 clif_sendoptions frame (does the client sync its option checkboxes?)"),
+        T("rez",     (s, a) => s.RezCmd(a),        "[username]",          "revive a player (or yourself) to full HP/MP (a full heal if already alive)"),
+        T("approach",(s, a) => s.ApproachCmd(a),   "<username>",          "teleport to an online player"),
+        T("die",     (s, a) => s.DieCmd(),         "",                    "kill yourself (ghost form + real death penalties; @rez to get back up)"),
         G("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
@@ -78,6 +74,13 @@ public sealed partial class Session
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
                                                                           "set vitals and stats directly (overrides the curve)"),
         T("might",   (s, a) => s.SetBaseStat("might", a), "<n>",          "set base might"),
+        T("will",    (s, a) => s.SetBaseStat("will", a),  "<n>",          "set base will"),
+        T("grace",   (s, a) => s.SetBaseStat("grace", a), "<n>",          "set base grace"),
+        T("hp",      (s, a) => s.SetMaxPool(hp: true, a), "<n>",          "set max HP (vita) and refill"),
+        T("mp",      (s, a) => s.SetMaxPool(hp: false, a),"<n>",          "set max MP (mana) and refill"),
+        T("nation",  (s, a) => s.SetNationCmd(a),   "<id>",               "set your nation crest (persists)"),
+        T("totem",   (s, a) => s.SetTotemCmd(a),    "<id>",               "set your totem crest (persists)"),
+        T("dispel",  (s, a) => s.DispelCmd(),       "",                   "strip every buff and debuff on you"),
         T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
         T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
 
@@ -139,7 +142,7 @@ public sealed partial class Session
 
         // ---- protocol probes ------------------------------------------------------------------------
         G("hit",      (s, a) => s.HitProbe(a),          "[dmg]",   "0x13 over-head HP bar on the faced mob"),
-        G("hp",       (s, a) => s.StatHpTest(a),        "<cur> <max>", "pin the maxHP/maxMP offsets"),
+        G("hpprobe",  (s, a) => s.StatHpTest(a),        "<cur> <max>", "diag: pin the maxHP/maxMP offsets (@hp is the setter)"),
         G("s",        (s, a) => s.StatProbe(a),         "<hexop> [hexflags]", "fire a sentinel status packet"),
         G("stg",      (s, a) => s.StatGradient(a),      "",        "self-describing gradient stats packet"),
         G("r6",       (s, a) => s.StatReplay6x(a),      "[hexop]", "replay a captured 6.x stats packet"),
@@ -149,7 +152,7 @@ public sealed partial class Session
         G("nat",      (s, a) => s.StatNation(a),        "<id>",    "sweep nation id -> HUD name"),
         G("users",    (s, a) => s.UserListCmd(a),       "[sort|sweep]", "0x36 user list (sweep = label every cell)"),
         G("askpic",   (s, a) => s.SendResendProfilePic(), "",      "0x49 - make the client re-upload users/<name>.epf"),
-        G("totem",    (s, a) => s.StatTotem(a),         "<id>",    "sweep totem id -> HUD name"),
+        G("totemsweep",(s, a) => s.StatTotem(a),        "<id>",    "diag: sweep totem id -> HUD name (@totem is the setter)"),
         G("self",     (s, a) => s.SendSelfProfile(),    "",        "native 0x39 self-profile"),
         G("leg",      (s, a) => s.SendProfileReplay6x(), "",       "exact 6.x 0x39 replay"),
         G("ckm",      (s, a) => s.SendClickMarker(),    "",        "0x34 with marker strings"),

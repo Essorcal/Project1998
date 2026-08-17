@@ -398,18 +398,127 @@ public sealed partial class Session
         return (_char.X, _char.Y, (byte)Opposite(_facing));   // fully boxed in — stack it on us
     }
 
-    // "@lvl N" / "@might N" — set a BASE character stat so wear-requirements can be exercised on the
-    // fabricated bring-up character (default is level 1 / might 3, which gates out most real gear).
+    // "@might N" / "@will N" / "@grace N" — set one BASE character stat so wear-requirements can be exercised
+    // on the fabricated bring-up character. The base stats are bytes, so they clamp to 0-255. A later @lvl/
+    // @class/@mark/@align recomputes the stats from the class curve and discards whatever was set here — set
+    // the class/level first, then poke individual stats. (@stats sets all three plus the pools in one shot.)
     private void SetBaseStat(string which, string text)
     {
         var a = ParseInts(text);
-        int v = a.Length > 0 ? a[0] : 0;
-        if (which == "level") _char.Level = (byte)Math.Clamp(v, 1, 99);
-        else                  _char.Might = (byte)Math.Clamp(v, 0, 255);
+        byte b = (byte)Math.Clamp(a.Length > 0 ? a[0] : 0, 0, 255);
+        switch (which)
+        {
+            case "level": _char.Level = (byte)Math.Clamp(a.Length > 0 ? a[0] : 1, 1, 99); break;
+            case "might": _char.Might = b; break;
+            case "will":  _char.Will  = b; break;
+            case "grace": _char.Grace = b; break;
+        }
         if (_enteredWorld) StoreSave();
         SendStats();
-        SendMessage($"{which} set to {(which == "level" ? _char.Level : _char.Might)}");
-        Log.Info($"   -> {which.ToUpper()} set to {(which == "level" ? _char.Level : _char.Might)}");
+        byte now = which switch { "level" => _char.Level, "will" => _char.Will, "grace" => _char.Grace, _ => _char.Might };
+        SendMessage($"{which} set to {now}");
+        Log.Info($"   -> {which.ToUpperInvariant()} set to {now}");
+    }
+
+    // "@hp <n>" / "@mp <n>" — set the BASE max pool (vita/mana) and top the current value up to the new max.
+    // The individual-stat counterpart to @stats' first two arguments; the reply shows the effective max after
+    // gear/buffs. Like @might/@will/@grace, a later @lvl/@class/@mark recomputes vitals from the curve and
+    // discards this — set the class/level first, then the pools.
+    private void SetMaxPool(bool hp, string text)
+    {
+        var a = ParseInts(text);
+        if (a.Length == 0) { SendLog($"usage: {Prefix}{(hp ? "hp" : "mp")} <n>"); return; }
+        if (hp) { _char.MaxHp = (uint)Math.Max(1, a[0]); _char.Hp = EffMaxHp; }
+        else    { _char.MaxMp = (uint)Math.Max(0, a[0]); _char.Mp = EffMaxMp; }
+        if (_enteredWorld) StoreSave();
+        SendStats();
+        SendMessage(hp ? $"max HP set to {_char.MaxHp:N0}{(EffMaxHp != _char.MaxHp ? $" ({EffMaxHp:N0} with gear)" : "")}, HP refilled."
+                       : $"max MP set to {_char.MaxMp:N0}{(EffMaxMp != _char.MaxMp ? $" ({EffMaxMp:N0} with gear)" : "")}, MP refilled.");
+        Log.Info($"   -> {(hp ? "MAXHP" : "MAXMP")} set to {(hp ? _char.MaxHp : _char.MaxMp)}");
+    }
+
+    // "@nation <id>" / "@totem <id>" — set the character's kingdom / totem crest and PERSIST it (survives
+    // relog), then push the HUD. Distinct from the GM @nat / @totemsweep RE probes, which only flash a crest
+    // at the HUD for a single packet without touching the saved character.
+    private void SetNationCmd(string text)
+    {
+        var a = ParseInts(text);
+        if (a.Length == 0)
+        { SendLog($"usage: {Prefix}nation <id>   (now: {_char.Nation} — {Character.NationName(_char.Nation)})"); return; }
+        _char.Nation = (byte)Math.Clamp(a[0], 0, 255);
+        if (_enteredWorld) StoreSave();
+        SendStats();
+        SendMessage($"nation set to {_char.Nation} ({Character.NationName(_char.Nation)}).");
+        Log.Info($"   -> NATION set to {_char.Nation}");
+    }
+
+    private void SetTotemCmd(string text)
+    {
+        var a = ParseInts(text);
+        if (a.Length == 0) { SendLog($"usage: {Prefix}totem <id>   (now: {_char.Totem})"); return; }
+        _char.Totem = (byte)Math.Clamp(a[0], 0, 255);
+        if (_enteredWorld) StoreSave();
+        SendStats();
+        SendMessage($"totem set to {_char.Totem}.");
+        Log.Info($"   -> TOTEM set to {_char.Totem}");
+    }
+
+    // "@dispel" — strip every buff and debuff currently on you (see DispelSelf). Handy for resetting a test
+    // character to a clean baseline between casts, or shaking off a curse/hold applied during a fight.
+    private void DispelCmd()
+    {
+        DispelSelf();
+        SendLog("All buffs and debuffs removed.");
+    }
+
+    // "@die" — lay yourself out exactly as a mob's killing blow would: ghost form plus the real death
+    // penalties, since a tester is an ordinary player as far as the world is concerned. Revive with @rez.
+    // Reuses the poison-apple lethal path (ItemKill: HP -> 0, push HUD, run Die()).
+    private void DieCmd()
+    {
+        if (IsDead) { SendLog($"You're already down — {Prefix}rez to get back up."); return; }
+        ItemKill();
+        Log.Info($"   -> @die by '{_char.Name}' on map {_char.Map}");
+    }
+
+    // "@approach <username>" — teleport to an online player: their map, on a free tile beside them (their own
+    // tile if they're boxed in). EnterMap is the only reliable self-relocate on 4.95 (a bare 0x04 snaps back —
+    // see GoCmd), so this jumps the same way the world-map/leap paths do.
+    private void ApproachCmd(string text)
+    {
+        string name = text.Trim();
+        if (name.Length == 0) { SendLog($"usage: {Prefix}approach <username>"); return; }
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"'{name}' isn't online."); return; }
+        if (ReferenceEquals(target, this)) { SendLog("You're already right here."); return; }
+
+        // A peer's character is directly reachable — private is type-scoped, and the reader is a Session too
+        // (same as LuaHealTarget reading pc._char). No accessor needed.
+        ushort map = target._char.Map, xs = target._char.MapXs, ys = target._char.MapYs;
+        var (x, y) = ApproachTile(target, map, xs, ys);
+        string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
+        EnterMap(map, xs, ys, x, y, mapName);
+        SendLog($"Approached {target._char.Name} on {mapName} at ({_char.X},{_char.Y}).");
+        Log.Info($"   -> @approach '{_char.Name}' -> '{target._char.Name}' at map {map} ({x},{y})");
+    }
+
+    // First free CARDINAL neighbour of the target (checked N/E/S/W), else the target's own tile (stack).
+    // Free = in bounds, not blocked (the same ground+object-wall test the player's walk uses), and holding
+    // neither a mob nor another player. The map may not be the one WE'RE on, so all lookups take it explicitly.
+    private (ushort x, ushort y) ApproachTile(Session target, ushort map, ushort xs, ushort ys)
+    {
+        int tx = target._char.X, ty = target._char.Y;
+        var md = MapData.For(map, xs, ys);
+        for (int dir = 0; dir < 4; dir++)
+        {
+            var (nx, ny) = Step(tx, ty, dir);
+            if (nx < 0 || ny < 0 || nx >= xs || ny >= ys) continue;
+            if (md is not null && md.BlockedMove(nx, ny, dir)) continue;
+            if (_world.PeerAt(map, nx, ny) is not null) continue;
+            if (_world.MobAt(map, nx, ny) is not null) continue;
+            return ((ushort)nx, (ushort)ny);
+        }
+        return ((ushort)tx, (ushort)ty);
     }
 
     // "@mark <0-3>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san · 2 Ee san · 3 Sam san) and
@@ -451,34 +560,22 @@ public sealed partial class Session
     // teach flow starts where a finished linguist starts. Eligibility for the spells is checked separately by
     // the Dog and is base classes + NPC subpaths only (Content.CanLearnDogSpells) — said here too, because a
     // PC subpath can hold the legend and still never be taught anything.
-    // @rez (tester/GM): bring yourself back to life at full HP/MP. ReviveInPlace drops the ghost form, refills
-    // both bars and pushes the HUD — harmless on a living character (just a full heal), so no dead-only guard.
-    private void RezCmd() =>
-        ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
-
-    // @shout <chatType> <text> (tester/GM): emit a bare over-head bubble (0x0D) at an arbitrary chatType, to
-    // find one the client draws OVER THE HEAD WITHOUT also writing a chat-box line (the spell-shout channel).
-    // Throwaway diagnostic — remove once the bubble-only chatType is pinned down.
-    private void ShoutTestCmd(string text)
+    // "@rez [username]" (tester/GM): bring a target player — or yourself, if no name is given — back to life at
+    // full HP/MP. ReviveInPlace drops the ghost form, refills both bars and pushes the HUD — harmless on a
+    // living character (just a full heal), so no dead-only guard.
+    private void RezCmd(string text)
     {
-        var parts = text.Trim().Split(new[] { ' ' }, 2);
-        if (parts.Length == 0 || !byte.TryParse(parts[0], out var ct))
-        { SendLog("usage: @shout <chatType 0-255> <text>"); return; }
-        string msg = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : $"type {ct}";
-        var bytes = AsciiBytes(msg);
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(ct, _char.Id, bytes));
-        // Confirm via the status/mini pane (0x0A type 3), NOT SendLog — SendLog is itself a 0x0D chatType-0
-        // over-head bubble, which would overwrite the very shout bubble we're trying to observe.
-        SendMiniText($"@shout chatType={ct} sent: \"{msg}\"");
-    }
-
-    // @sendopts (tester/GM): fire a 0x23/03 clif_sendoptions frame and see whether the client updates its
-    // options-menu checkboxes to match the server. RE says opcode 0x23 hits the client's default no-op, so this
-    // should do nothing — but this proves it live rather than trusting the disassembly (mail-button precedent).
-    private void SendOptionsCmd()
-    {
-        SendOptions();
-        SendMiniText("@sendopts: 0x23/03 options frame sent — open F10 and check the checkboxes.");
+        string name = text.Trim();
+        if (name.Length == 0)
+        {
+            ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
+            return;
+        }
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"'{name}' isn't online."); return; }
+        target.ReviveInPlace(target.IsDead ? "You have been restored to life." : "You are restored to full health.");
+        SendLog($"Restored {target._char.Name} to full health.");
+        Log.Info($"   -> @rez '{_char.Name}' -> '{target._char.Name}'");
     }
 
     private void SetDogFlag(string text)

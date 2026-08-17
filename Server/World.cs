@@ -77,9 +77,9 @@ public sealed class World
         public readonly List<Mob> Mobs = new();
         public readonly List<GroundItem> Items = new();
         public readonly List<Trap> Traps = new();
-        // RTK map[m].weather (map.h WRAIN=1/WSNOW=2, 0=clear) — sl.c's setWeatherM/getWeatherM Lua API is the
-        // only place RTK ever changes this itself (an admin/quest-script lever, no automatic scheduler exists
-        // anywhere in the C engine); see WeatherRollTicks below for our own periodic-drift substitute.
+        // The weather state (0 clear / 1 rain / 2 snow) last BROADCAST to players on this map. Not the source
+        // of truth — that is the deterministic WeatherModel (+ any zone override) — this is the cached
+        // last-sent value the tick compares against on a period rollover to decide whether to re-broadcast.
         public byte Weather;
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
@@ -249,14 +249,18 @@ public sealed class World
     /// (RTK isTotemTime) — the +5% kill-exp window. Reads the live hour; see <see cref="Content.IsTotemTime"/>.</summary>
     public bool IsTotemTime(int totem) => Content.IsTotemTime(_hour, totem);
 
-    // ---- weather (RTK map[m].weather / clif_sendweather, opcode 0x1F) --------------------------
-    // No automatic scheduler exists in the RTK C engine for this (setWeatherM/getWeatherM are pure admin/
-    // quest-script levers — see MapState.Weather's doc) so there's no real cadence/odds to port; this rolls
-    // a low-probability per-active-map change on a slow tick so weather occasionally drifts rather than
-    // sitting fixed at "clear" forever. 0=clear, 1=WRAIN, 2=WSNOW (RTK map.h enum).
-    private const int WeatherRollTicks = 1500;     // ~15 minutes real time (1500 * 600ms)
+    // ---- weather (opcode 0x1F / RTK clif_sendweather) ------------------------------------------
+    // Weather is now a deterministic function of region-zone + time-period + season (see WeatherModel) rather
+    // than the old per-map random roll: it is identical for every player, survives restarts, persists while a
+    // player steps indoors, and is driven by the season. This world only (a) broadcasts a change when the
+    // weather PERIOD rolls over for an active map and (b) holds optional admin OVERRIDES set via @weather.
+    // 0=clear, 1=WRAIN(rain), 2=WSNOW(snow) — the three states the 4.95 client can draw.
     private const int AdviceTicks = 1500;          // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer)
-    private const int WeatherChangePct = 20;       // 20% chance per eligible map each roll
+
+    // Admin/debug weather overrides keyed by WeatherModel.ZoneOf(map). When present, a zone shows this state
+    // instead of the seasonal model until "@weather auto" clears it (indoors still wins → clear). Guarded by _lock.
+    private readonly Dictionary<int, byte> _weatherOverride = new();
+    private long _lastWeatherPeriod = -1;          // last WeatherModel period broadcast; -1 forces the first tick to sync
 
     // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
     // Tick — TryDamage can't broadcast where it stands, and its callers only know how to draw the damage.
@@ -1265,6 +1269,11 @@ public sealed class World
             EnsureMaterialized(mapId);                 // instantiate this map's spawns on first entry
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
+            // Seed the weather cache to what the newcomer is about to be shown (Session sends it on entry via
+            // GetWeather), so the tick's period-rollover diff compares against the on-screen state and never
+            // skips a real change as a no-op — otherwise a player who entered mid-period could stay stuck on
+            // stale weather when the period rolls to a value that happens to match the default-0 cache.
+            m.Weather = WeatherForLocked(mapId);
             peers = m.Players.Where(p => p != s).ToArray();
             mobs = m.Mobs.ToArray();
         }
@@ -1313,17 +1322,54 @@ public sealed class World
         foreach (var p in peers) Try(() => send(p));
     }
 
-    /// <summary>Current weather for a map (0=clear/1=WRAIN/2=WSNOW), for a player entering/re-entering it —
-    /// see MapState.Weather. Unpopulated maps default to clear (never rolled — see the Tick's WeatherRollTicks
-    /// pass, which only touches maps with at least one player).</summary>
-    public byte GetWeather(ushort mapId) { lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.Weather : (byte)0; }
+    /// <summary>Current weather for a map (0=clear/1=rain/2=snow), for a player entering/re-entering it.
+    /// Deterministic from the season + the map's region-zone + the time period (WeatherModel), unless an
+    /// admin override is pinned on the zone; indoors is always clear. Needs no map to be "active".</summary>
+    public byte GetWeather(ushort mapId) { lock (_lock) return WeatherForLocked(mapId); }
 
-    /// <summary>Force a map's weather (the "@weather" debug command — RTK's own setWeatherM is the same kind
-    /// of admin/quest-script lever). Broadcasts immediately to everyone already on that map.</summary>
+    // The weather a map should currently show, computed under _lock: clear indoors, else a zone override if
+    // one is pinned, else the seasonal model. This is the single source of truth GetWeather and the tick share.
+    private byte WeatherForLocked(ushort mapId)
+    {
+        if (Content.IsIndoor(mapId)) return WeatherModel.Clear;
+        if (_weatherOverride.TryGetValue(WeatherModel.ZoneOf(mapId), out var forced)) return forced;
+        return WeatherModel.For(mapId);
+    }
+
+    /// <summary>Pin a weather state onto a map's whole region-zone (the "@weather" admin lever) until
+    /// <see cref="ClearWeatherOverride"/>. Broadcasts to everyone on any active map in that zone right away.</summary>
     public void SetWeather(ushort mapId, byte weather)
     {
-        lock (_lock) Map(mapId).Weather = weather;
-        Broadcast(mapId, p => p.SendWeather(weather));
+        lock (_lock) _weatherOverride[WeatherModel.ZoneOf(mapId)] = weather;
+        BroadcastZoneWeather(mapId);
+    }
+
+    /// <summary>Drop a zone's admin override so it returns to the seasonal model, and re-broadcast the now-live
+    /// weather to everyone on it.</summary>
+    public void ClearWeatherOverride(ushort mapId)
+    {
+        lock (_lock) _weatherOverride.Remove(WeatherModel.ZoneOf(mapId));
+        BroadcastZoneWeather(mapId);
+    }
+
+    // Re-broadcast the current weather to every active map sharing this map's zone, updating each map's
+    // last-sent cache. Used after an override is set or cleared so the change lands immediately, not at the
+    // next period rollover.
+    private void BroadcastZoneWeather(ushort mapId)
+    {
+        int zone = WeatherModel.ZoneOf(mapId);
+        List<(ushort map, byte w)> hits = new();
+        lock (_lock)
+        {
+            foreach (var (id, pm) in _maps)
+            {
+                if (pm.Players.Count == 0 || WeatherModel.ZoneOf(id) != zone) continue;
+                byte w = WeatherForLocked(id);
+                pm.Weather = w;
+                hits.Add((id, w));
+            }
+        }
+        foreach (var (id, w) in hits) Broadcast(id, p => p.SendWeather(w));
     }
 
     // ---- mobs ---------------------------------------------------------------------------------
@@ -2062,16 +2108,19 @@ public sealed class World
             // rollover instead of drifting by however far into an hour the process happened to start.
             if (SyncClock()) timeChanged = true;
 
-            // (1.7) weather drift (see WeatherRollTicks doc — no real RTK scheduler exists to port): every
-            // active map gets a low chance to shift to a new state on this slow cadence.
-            if (_tick % WeatherRollTicks == 0)
+            // (1.7) weather: when the deterministic weather PERIOD rolls over (WeatherModel.PeriodHours, ~15
+            // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
+            // A season change lands on a period boundary too, so this pass catches those as well. Cheap: the
+            // period only advances a couple of times an hour. Overrides are broadcast eagerly elsewhere.
+            long period = WeatherModel.PeriodNow();
+            if (period != _lastWeatherPeriod)
             {
+                _lastWeatherPeriod = period;
                 weatherChanges = new List<(ushort, byte)>();
                 foreach (var (mapId, pm) in _maps)
                 {
                     if (pm.Players.Count == 0) continue;
-                    if (Random.Shared.Next(100) >= WeatherChangePct) continue;
-                    byte w = (byte)Random.Shared.Next(3);   // 0 clear / 1 WRAIN / 2 WSNOW
+                    byte w = WeatherForLocked(mapId);
                     if (w == pm.Weather) continue;
                     pm.Weather = w;
                     weatherChanges.Add((mapId, w));

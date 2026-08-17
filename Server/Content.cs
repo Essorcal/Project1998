@@ -496,7 +496,7 @@ public static partial class Content
     // map.c:1102) and the PvP flag (MapPvP — durability loss is disabled on PvP maps, RTK clif.c:6650).
     // Loaded from the full RTK Maps.csv (map_index.csv, the renderable subset, doesn't carry these columns).
     public sealed record MapMetaInfo(int Region, bool WarpOut, bool Pvp, bool CanTalk, bool CanCast, int ReqLvl, int ReqPath, int ReqMark,
-        long ReqVita, long ReqMana, int LvlMax, long VitaMax, long ManaMax, string RejectMsg);
+        long ReqVita, long ReqMana, int LvlMax, long VitaMax, long ManaMax, string RejectMsg, bool Indoor);
 
     public static IReadOnlyDictionary<ushort, MapMetaInfo> MapMeta { get; private set; } =
         new Dictionary<ushort, MapMetaInfo>();
@@ -1068,6 +1068,11 @@ public static partial class Content
     /// <summary>The RTK region a map belongs to (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …), or -1 if the
     /// map has no region row. Used by the Gateway spell to resolve the caster's kingdom.</summary>
     public static int RegionOf(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) ? m.Region : -1;
+
+    /// <summary>Whether a map is indoors (RTK <c>MapIndoor</c> — town interiors, caves, dungeons). The weather
+    /// gate: <see cref="WeatherModel"/> never draws rain or snow here. Maps with no metadata row default to
+    /// outdoor.</summary>
+    public static bool IsIndoor(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) && m.Indoor;
 
     /// <summary>Whether a map allows warp-out spells (Gateway/Return). Unknown maps default to true (only an
     /// explicit MapWarpout==0 blocks); RTK shows "It doesn't work here" when this is false.</summary>
@@ -1809,7 +1814,15 @@ public static partial class Content
                                                                || (rung.Rung == best.Rung && s.Id > best.Spell.Id)))
                 top[rung.Ladder] = (s, rung.Rung);
 
-        return all.Where(s => !ladders.TryGetValue(s.Key, out var rung)
+        // Soothe is the exception to the collapse: a rebuilt character always keeps it ALONGSIDE the best
+        // self-heal it qualifies for, never instead of it. It sits at the BOTTOM rung of the Warrior/Rogue/
+        // Mage heal_self ladders, so the normal top-rung filter would drop it the moment a character out-levels
+        // it — but Soothe is the first-steps heal every class is expected to still have, so it is exempted here
+        // the same way an aether-bearing rung is. (Poet's heal_self ladder has no soothe rung — LadderRungs[4]
+        // — so Poet's Soothe, granted as a universal base spell, was already passing through untouched; this
+        // clause is a no-op there.)
+        return all.Where(s => s.Key.Equals("soothe", StringComparison.OrdinalIgnoreCase)
+                              || !ladders.TryGetValue(s.Key, out var rung)
                               || ReferenceEquals(top[rung.Ladder].Spell, s)).ToList();
     }
 
@@ -2021,9 +2034,13 @@ public static partial class Content
             // ALLOWED here, 0 = "That doesn't work here." (RTK map[m].spell, gated in clif.c's 0x0F case).
             // Unknown/blank defaults to allowed, so only an explicit 0 blocks.
             bool canCast = col.GetValueOrDefault("MapSpells", "1") != "0";
+            // MapIndoor (RTK map[m].indoor) — set on every town interior, cave and dungeon. Used here only as
+            // the weather gate (WeatherModel.For): no rain/snow indoors. Deliberately NOT reused as a casting
+            // gate — casting has to work in caves, which is why MapSpells above is the separate no-cast flag.
+            bool indoor = col.GetValueOrDefault("MapIndoor", "0") == "1";
             meta[id] = new MapMetaInfo(region, warpOut, pvp, canTalk, canCast,
                 Rd("MapReqLvl"), Rd("MapReqPath"), Rd("MapReqMark"), Rl("MapReqVita"), Rl("MapReqMana"),
-                Rd("MapLvlMax"), Rl("MapVitaMax"), Rl("MapManaMax"), Clean(col.GetValueOrDefault("MapRejectMsg", "")));
+                Rd("MapLvlMax"), Rl("MapVitaMax"), Rl("MapManaMax"), Clean(col.GetValueOrDefault("MapRejectMsg", "")), indoor);
         }
         return meta;
     }

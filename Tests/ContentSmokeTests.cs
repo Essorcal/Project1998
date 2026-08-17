@@ -354,6 +354,34 @@ public class ContentSmokeTests
                                       s => s.Key.Equals("propose", System.StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>A rebuilt character (@lvl / @class / @mark / @align) always keeps Soothe ALONGSIDE its best
+    /// self-heal — never instead of it. Soothe is the bottom rung of the Warrior/Rogue/Mage heal_self ladders,
+    /// so <see cref="Content.RespecSpellSet"/>'s top-rung collapse would drop it the moment a character
+    /// out-levels it; it is exempted so the first-steps heal stays in the book.</summary>
+    [Fact]
+    public void RespecAlwaysKeepsSootheAlongsideTheBestSelfHeal()
+    {
+        EnsureLoaded();
+
+        const int warrior = 1, rogue = 2, mage = 3;
+
+        foreach (int path in new[] { warrior, rogue, mage })
+        {
+            var book = Content.RespecSpellSet(path, 99, alignment: 0, mark: 0)
+                              .Select(s => s.Key).ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+            Assert.Contains("soothe", book);   // survives the collapse for every class whose ladder holds it
+        }
+
+        // The collapse still happens: a level-99 mage keeps Soothe AND its top self-heal (Relief), but NOT
+        // the middle rung (Lay Hands) it out-ranks — proving Soothe is exempted, not that the ladder stopped
+        // collapsing onto one rung.
+        var mageBook = Content.RespecSpellSet(mage, 99, alignment: 0, mark: 0)
+                              .Select(s => s.Key).ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("soothe", mageBook);
+        Assert.Contains("relief_mage", mageBook);
+        Assert.DoesNotContain("lay_hands_mage", mageBook);
+    }
+
     /// <summary>A PC subpath is never eligible for Dog spells, and no class ever sees one at a tutor.
     /// <para>Two rules, both previously broken. Eligibility was tested as <c>pathId != basePath</c>, exactly
     /// inverted: it let all twelve PC subpaths (Barbarian, Monk, Druid, Muse, …) learn Dog spells while
