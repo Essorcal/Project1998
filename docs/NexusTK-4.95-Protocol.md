@@ -398,7 +398,7 @@ by the live capture `02 0f 15 "Fast Move        :OFF"`.
 |---|---|---|
 | `0x00` | — | **'r' Ride key.** RTK `clif_findmount`; `Session.TryRideHorse` mounts by despawning a real nearby "horse" world mob and dismounts by spawning one back in front of you (§8). No flag bit. |
 | `0x01` | 1 | `Listen to whisper` |
-| `0x02` | 2 | `Join a group` — Shift+G. A persisted **profile** status cell (§9.5), so it lives in `Character.Grouped`, not the flag word |
+| `0x02` | 2 | `Join a group` — Shift+G. A persisted **profile** status cell (§9.5), so it lives in `Character.Grouped`, not the flag word. Switching it OFF while grouped **leaves the group** — the only leave gesture (§11k) |
 | `0x03` | 4 | `Listen to shout` |
 | `0x04` | 8 | `Listen to advice` |
 | `0x05` | 16 | `Believe in magic` |
@@ -1151,11 +1151,11 @@ profile dispatcher `0x424820`; vtable `0x4cdf88`, method +0x5c). Body:
 [clan : u8 len + bytes]           (len 0 = clanless)
 [clanTitle : u8 len + bytes]
 [title : u8 len + bytes]
-[spouse : u8 len + bytes]
+[PARTY box : u8 len + text]       ← PAGE 2, above the stats. CR(0x0d)-separated. NOT "spouse" — see below
 [group u8][TNL u32BE]             ← group u8 = the "sociable/group" status cell (Shift+G, 0x1b/0x02)
 [className : u8 len + bytes]
 [helmIcon u16BE][leftRingIcon u16BE][rightRingIcon u16BE]   ← the 3 equip-icon cells beside the doll
-[buff box : u8 len + text]        ← multi-line; client maps TAB(0x09)→CR(0x0d), one line per active buff
+[BUFF box : u8 len + text]        ← PAGE 1; CR-separated, one line per active buff (TAB also accepted here)
 [exchange u8]                     ← the "exchange/trade" status cell (0x1b/0x08); client field +0x935
 [legendCount u8]                  ← a single u8 (NOT u16)
 legendCount × { icon u8, color u8, textLen u8, text }
@@ -1169,6 +1169,50 @@ perfectly up to the legend count, then the 6.x equip block is left unconsumed. T
 LIVE on-map sprite (armor/weapon/shield only) — helm/rings have no sprite layer and show ONLY in the 3 icon
 cells. The **buff box** is the self-view analog of the click-profile's gear list (issue: self=buffs,
 other=gear); it holds `Name Ns` per active buff (no parentheses), grouped by spell (`Session.BuffBoxText`).
+
+**The profile pane has THREE pages, and `0x39` feeds all three.** The parser ends by pushing text into
+three separate controls on the widget — this is what the page arrows switch between:
+
+| Control | Fed by | Page |
+|---|---|---|
+| `+0x104` | the 6th string (after the TAB→CR pass at `0x47359b`) | **1** — active buffs |
+| `+0x108` | the **4th** string | **2** — the group roster, the box above VITA/MANA/AC/DAM/HIT |
+| `+0x10c` | the legend array | **3** — legend marks |
+
+**⚠ The 4th string is the party box, NOT "spouse"** (corrected 2026-08-13). It was named by analogy with
+7.x `clif_mystaytus`, and the mistake survived because an unmarried character sends an empty string —
+which is exactly what a groupless player's roster box looks like too. The parser settles it: `0x4732a0`
+copies that string to the widget's `+0x938` buffer and then **adds it to the text control at `+0x108`** —
+the same store-then-add shape used for the buff box (`+0xb38` → control `+0x104`). A spouse name would be
+a label, not a scrolling list. **4.95 has no spouse field because it doesn't need one:** marriage shows
+as a **legend mark** — `Married to <name> (<date>)`, key `"married"`, icon 6 colour 1, stamped on both
+sides by `Session.RunMarriageCeremony` — so it renders on page 3 with every other legend. `Character.Spouse`
+is the server-side state behind it (divorce clears both the legend and the field).
+
+`Session.PartyBoxText` builds it: one member per line, sorted alphabetically, leader marked `*Name`,
+joined with **CR**.
+
+**CR is the real separator for BOTH boxes.** `0x480b20`, the control's copy loop, is what turns a
+character into a line break, and its allow-list for sub-`0x20` characters is exactly `0x0d`/`0x0a`:
+
+```
+00480b57  cmp  ax, 0xd
+00480b5b  je   0x480b63      ; allowed through
+00480b5d  cmp  ax, 0xa
+00480b61  jne  0x480bb6      ; anything else below 0x20 is DROPPED
+```
+
+TAB (`0x09`) is not on that list, so it would be silently dropped and the entries would run together. It
+works in the **page-1** box only because the parser rewrites TAB→CR first (the loop at `0x47359b`), a
+pre-pass that exists for that one field and nothing else — most likely because the original 4.95 server
+sent it tab-separated. Both builders therefore use CR (`Session.BuffBoxText` was moved off TAB for this
+reason); `GearListText` still uses TAB because `0x34` is a different parser (`0x48b6a0`) with its own
+conversion. `0x480b20` also truncates at the first CR when the control is single-line (`+0x16e == 1`) —
+neither of these is, or the page-1 box would already stop after its first buff.
+
+**It refreshes on reopen, not live.** `0x39` is only sent in answer to a `0x2d` request, and pushing one
+unsolicited would risk opening the window under the player. Someone joining or leaving while you have the
+pane open doesn't redraw it — close and reopen.
 
 **Click-profile — request `0x43` → reply `0x34`.** Clicking a character sends `43 01 id(u32) 00`. Reply
 with `0x34`, the public two-page view (portrait + gear on page 1; nation + picture + writable blurb on
@@ -1213,7 +1257,7 @@ Gotchas that cost real debugging time:
   - It used to be the fixed constant `"Hyul 31, Winter"` (there was no server-side clock when the legends
     were written), matching the live-captured self-profile reference above (§9.5's "Born in Hyul 31,
     Winter"). The live 4.95 text says **"Hyul"** where RTK's `curT()` says **"Yuri"** — the same king under
-    two names. We use RTK's word server-wide so legends and `@time` agree; characters created before
+    two names. We use RTK's word server-wide so every date the server writes agrees; characters created before
     2026-08-12 keep the `"Hyul 31, Winter"` already persisted in their legend list.
 - 4.95's click popup has **no totem slot** (`TOTEM.EPF` is unreferenced in the client) — totem only
   appears on the HUD/self-profile, not here.
@@ -1390,6 +1434,11 @@ press walks. The client sends **`0x11`** (`side(u8) pad`) for the turn. Echo it 
 the client turns: the recv handler `0x450350` reads `id(u32)@+1, side(u8)@+5`, looks the entity up, and
 calls its turn method `0x462410`. Build `Be32(id), side, 00` (same as `SendSide`). Dropping `0x11` leaves
 facing unconfirmed until the next walk ("press a new direction, first step goes the OLD way").
+
+Facing is **persisted**, in `Character.Dir` — `Session._facing` is a view over it, so every walk/turn/warp
+that assigns facing rides the character blob exactly the way `X`/`Y` do, and the entry sequence's `0x33`
+draws the player looking the way they logged out. It used to be a session field, which is why every login
+snapped everyone back to north.
 
 ### 10.5 Realm-center camera lock (F4 / `0x1b` sub-cmd `0x07`)
 
@@ -1609,11 +1658,17 @@ entries `{u32 offset, char name[13]}` (first offset == header size).
 `color` = the `0x07` colour/recolor byte, see §11a.1), `@crecol <lookId> [loColor] [hiColor] [step]` (sweep
 the SAME look id across colour-byte values as a **grid**, 12/row, default `0..23`; the colour byte visibly
 wraps mod-24 with only 0-19 real), `@crow <lo> <hi> [step]` (row sweep of the Monster.tbl look space),
-`@spawn [lookId] [hp]` (a pack), `@kill`, `@weapon <n>`, `@ride`/`@mount [0|1]` (get on/off a horse — form
+`@spawn [lookId] [hp]` (a pack), `@kill`, `@ride`/`@mount [0|1]` (get on/off a horse — form
 byte 3, §8). The `0x16` item commands (`@mob`, `@mobrow`) are kept for item/object discovery.
 
 **Navigation & content commands** (data-driven, backed by the `Content` registry — §17.3): `@warp <name|id>
-[x y]` (fuzzy-match a map by name or id, optionally with coords, and enter it), `@maps [query]` /
+[x y]` (fuzzy-match a map by name or id, optionally with coords, and enter it), `@go <x> <y>` (jump to a tile
+on the map you are already on — the Tester-tier half of `@warp`, and the one teleport that reaches nowhere you
+couldn't have walked to; anything that isn't two in-bounds integers — a missing argument, a word, a coordinate
+off this map's edge — lands you on `(0,0)` rather than refusing, and the reply says which happened. It runs
+through the same `EnterMap` same-map jump the Rogue leap spells use, because the `0x15`/`0x04`/`0x33` entry
+trio is the only proven way to relocate the self entity: a bare `0x04` is a one-tile snap-back, not a
+teleport), `@maps [query]` /
 `@mobs [query]` (fuzzy list maps / mobs), `@summon <name|id>` (spawn a mob from the registry by name/id, into
 the shared world with wander/respawn-less one-off AI), `@rabbit` (one wandering, killable rabbit in front of
 you). The persistent, auto-populated spawns (with respawns + drops) are separate — see §11b.1.
@@ -2242,7 +2297,8 @@ Baekdu / Nagnang-shield / generic quest halls (host maps not renderable = 7.x co
 Carnage Hall minigames (maps render but need a full event-manager). See memory `nexustk-495-scripted-tile-warps`.
 
 **GM commands:** `@items [filter]` (browse registry), `@item <name/id> [amount]` (summon into bag),
-`@clearinv` (reset bag + gear), `@iteminfo <slot> [kind] [sep]` (fire + tune the examine popup, below).
+`@clearinv` (reset bag + gear). The examine reply below has no command any more — it fires from the
+client's own right-click, and its renderer is fixed at the `tooltip` default in `Session.Dialog.cs`.
 
 ### 11c.1 `0x66` — "examine item" (right-click a bag slot) ✅ *(both directions RE'd from the 4.95 binary, 2026-08-07)*
 
@@ -2352,7 +2408,7 @@ the game already uses for the Rogue Judge/Spy spells. `0x66` kind 0 crashes.
 **Server side.** `Session.HandleItemInfoRequest` → `ItemInfoText` → `SendItemInfo`, which supports both:
 
 - **`mode tooltip` (default)** — `SendItemTooltip`, the `0x59` inventory-pane overlay above. This is the one.
-- **`mode overlay`** — `SendMiniText(text, type)`; `@iteminfo type <n>` sweeps the `0x0A` types (status pane).
+- **`mode overlay`** — `SendMiniText(text, type)`, riding a `0x0A` type (status pane).
 - **`mode browser`** — 0x66 kind 0. **⚠ This CRASHES this build.** Live test with a real URL: the window's
   ctor asks for sprite category `"X"` (`XBUTTON.EPF`, its close button), the load throws an uncaught
   allocation failure (`_CxxThrowException` via `0x430c7a` → `0x406cb6`, the `XBUTTON.EPF` site) and the
@@ -2374,7 +2430,8 @@ arrive bound, and a quest upgrade binds its result (a Spike becoming an Enchante
 state — `InvItem.Owner`, persisted with the rest of the character JSON, so no schema change — because the
 same registry row can be bound in one player's bag and unbound in another's. The line is emitted only when
 that field is set. **Nothing binds automatically yet**: the two grant sites (subpath-weapon purchase, quest
-upgrade) still need wiring, and `@bind <slot> [name|off]` is the interim path.
+upgrade) still need wiring, and with `@bind` removed there is now NO way to produce a bound item in-game —
+wiring one of those two grant sites is the only path back to exercising this field.
 
 **`Break on death`** is a warning, not a field: emitted only when the item actually has `ItmBoD`, and always
 the **last** line, so it reads as the closing note on the item rather than another stat row.
@@ -2388,8 +2445,8 @@ Two gates the original's sample item didn't carry are kept because they decide "
 `EquipFromSlot` and `CanUsePath` enforce. **No sex line** (removed 2026-08-07): `ItmSex` is a wear gate, not
 a description, and the original box never printed one — `EquipFromSlot` simply refuses the item.
 
-`@iteminfo <slot>` fires the reply on demand; `mode` switches renderer, `sep` the line-break character
-(irrelevant for the tooltip, which accepts all three).
+The client fires the reply itself on right-click; the renderer and line-break character are compile-time
+defaults now (`_itemInfoMode` / `_itemInfoSep`), the tooltip accepting all three separators anyway.
 
 ---
 
@@ -2469,8 +2526,8 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   > **Real per-class learn COSTS (not just levels) are now enforced** for these 6 spells (Propose
   > deliberately excluded — see below) via `Content.LearnCosts` (`Dictionary<string, Dictionary<int,
   > LearnCost>>`), checked/charged in `ClassTrainerAbility.LearnSecret` (`NpcAbility.cs`) — NOT inside
-  > `Session.LearnSpellFromNpc` itself, so the staff `@lvl` rebuild and `@spell` (which never call that
-  > method — they mutate `_char.Spells` directly) stay free, matching prior behavior:
+  > `Session.LearnSpellFromNpc` itself, so the staff `@lvl` rebuild (which never calls that method — it
+  > mutates `_char.Spells` directly) stays free, matching prior behavior:
   > - Gateway (all): 10 acorn + 10 rabbit meat, free
   > - Return: Mage 30 acorn + 50g · Rogue 100 acorn + 100g · Poet 1 yellow_scroll
   > - Approach: Mage 50 acorn + 20 snake_meat · Rogue 100 acorn + 10 fox_fur + 100g · Poet 1 gold_acorn + 100g
@@ -2515,6 +2572,16 @@ entity id (u32BE); **type 5** → nothing.
 target attached even for combat spells), e.g. `0f 1a 00` = cast book slot 26. So the server can't rely on a
 packet-supplied target.
 
+**`0x0F` is gated on the MAP before the slot is even read.** RTK wraps the whole opcode in
+`if (map[sd->bl.m].spell || sd->status.gm_level) clif_parsemagic(sd); else clif_sendminitext(sd, "That doesn't
+work here.");` (clif.c:11427) — a blanket per-map no-casting flag, not a per-spell one, and the reason magic
+does not work inside a tavern, a shop, the three Gathering halls or a class trainer's building. The flag is the
+`Maps` table's **`MapSpells`** column (`Content.SpellsAllowed`; 0 = blocked). It is **not** `MapIndoor`, which
+is also set on every cave and dungeon in the game (Bat Cave, the Mythic caves) where casting must work —
+"indoors" is the flavour of the rule, `MapSpells` is the rule. RTK's own dump is inconsistent about the class
+trainers' buildings (Nagnang's and the later-era set are blocked, Kugnae's and Buya's — the same rooms one
+era earlier — are not), so those 40 rows are corrected in `Maps.csv`. GMs bypass the gate, as in RTK.
+
 `HandleCast` plays the cast animation (`0x1A` **type 6 = magic**) for the caster + peers, then applies the
 spell's effect via a **data-driven magic engine** (`Session.ApplyCast`). The effect data is extracted straight
 from RTK's Lua spell scripts by `re/extract_spell_formulas.py` → `game-data/spell_effects.csv` (gitignored),
@@ -2530,8 +2597,24 @@ have a row (100 % of the four caster classes' teachable sets); the rest fall bac
   cost, hits the packet target id if present else **the mob on the tile the caster faces** (like melee), reusing
   the world damage/despawn/exp path so a spell kill rewards exp/loot exactly like a melee kill.
 - **Heal** → evaluates the real heal amount and restores the caster's HP (clamped to effective max).
-- **Buff** → applies the spell's timed stat modifier(s) (might/hit/dam/…) for its RTK duration as a session-local
-  `ActiveBuff`, folded live into the HUD/profile/melee through `Session.Totals()` (gear + buffs). Recast refreshes.
+- **Buff** → applies the spell's timed stat modifier(s) (might/hit/dam/…) for its RTK duration as an
+  `ActiveBuff`, folded live into the HUD/profile/melee through `Session.Totals()` (gear + buffs) and persisted
+  across a relog (§ timed-effect persistence). A buff belongs to an **exclusivity slot** (RTK `checkIfCast` /
+  `spellTables.lua`: `mights`, `blessings`, `potency`, `shadowFigures`), and while that slot is running the
+  cast is **refused** — *"You already cast that spell."* for your own, *"Another spell of this type is in
+  effect."* for anyone's — rather than refreshed. Same slot machinery as curses, wards and holds, which is the
+  point: Might used to be the one status family with no guard at all, so it was spammable *and* Might + Spirit
+  Strength (one slot in RTK, two keys here) stacked into +6 might. The slot comes from
+  `spell_verbs.lua`'s `BUFF_CATEGORY`, falling back to `spell_effects.csv`'s `cureCat` (which the extractor
+  filled from RTK's `removeDuras(<table>)` calls; it could not see the `checkIfCast(<table>)` half, hence the
+  explicit table).
+- **TargetBuff** → the same thing cast on someone else (a poet's Valor, a harden on your pet) — **and the same
+  code**. `arch_buff` and `arch_targetbuff` are two names for one `apply_buff` body; they differ only in who
+  the buff lands on (`ctx:buffTarget("self"/"target")`, resolved once, exactly as `verbs.ward` has always done
+  for its self-cast and ally-cast halves) and in the duration a row with no `durationMs` falls back to (60s vs
+  300s). Deduction — Sanctuary's incoming-damage multiplier, which lives in its own scalar slot rather than as
+  a stat delta — is the one branch, and is players-only. Keeping these as two bodies is precisely how the slot
+  guard came to be enforced on one and not the other.
 - **Debuff** → paralyze/sleep: freezes the target mob's wandering (`Mob.FrozenUntil`, honoured by `World.Tick`)
   for the RTK duration, subject to the spell's hit-chance roll.
 - **ManaBattery** (Invoke / Spirit's Power / …) → verbatim RTK: HP cost = 40 % of *max* mana (HP floored at 100),
@@ -2620,11 +2703,16 @@ nothing from a previous class, level or rank survives.
   `_char.Level` goes back to 99 immediately afterwards, so the HUD, the character sheet, the exp table and
   every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
 - `@stats` still overrides the curve outright, and by design a later rebuild discards it.
-- `@spell <name|id>` learns one specific ability free, out of band: any class, any level, any rank. It is the
-  escape hatch for everything the rebuild withholds (a lower ladder rung, another class's ability, a mark
-  secret you haven't earned). A later rebuild takes it away again.
-- **`@spells` and `@forgetspells` are gone.** Both were additive-only — between them the book could only ever
-  grow, so a character that had been three classes carried all three books around. The rebuild subsumes them.
+- **`@spells` and `@forgetspells` are gone** — both were additive-only, so between them the book could only
+  ever grow, and a character that had been three classes carried all three books around. The rebuild
+  subsumes them, and stays the main grant path.
+- **`@spell <name|id>` is the one additive exception** (Tester tier, `Session.TeachSpellCmd`): teach a single
+  named ability out of band — a lower ladder rung, another class's ability, a mark secret you haven't
+  earned — matched by display name, then identifier, then raw row id via `Content.FindSpell`, and appended to
+  the book instead of rebuilding it. It is capped by `SpellBookCap`, refuses a duplicate, and refuses the 8
+  era-gated split-trap spells outright rather than handing over a spell that `RefreshSpells` would silently
+  prune at the next login. Because the rebuild is authoritative, **any `@lvl` / `@class` / `@mark` / `@align`
+  wipes what `@spell` taught** — teach after the rebuild, not before.
 
 ---
 
@@ -3341,8 +3429,8 @@ the default `type 3` — same `0x0A` minitext packet, different client-rendered 
 prompt, then a target name + Enter, then the message + Enter. LIVE-CONFIRMED 2026-07-26 by real capture —
 op `0x19`, body `dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00`, e.g. `07 'destine' 01 'd' 00` —
 matching RTK's wire layout exactly (`clif.c:7644`: `dstlen = RFIFOB(fd,5); msglen = RFIFOB(fd,6+dstlen)`).
-Dispatched to `Session.HandleWhisperPacket`. Chat commands `@whisper <name> <message>` / `@w <name>
-<message>` (over `0x0E`) remain as a fallback entry point into the same `DoWhisper` core. `Content.CanTalk`
+Dispatched to `Session.HandleWhisperPacket`, which is now the ONLY entry point — the `@whisper` / `@w`
+chat fallbacks were removed once this opcode was confirmed real. `Content.CanTalk`
 (RTK `cantalk`, 2/9850 maps) and the not-found message (`"<name> is nowhere to be found."`) are RTK's exact
 wording. `World.FindPlayer(name)` is the case-insensitive online-lookup this needed.
 
@@ -3706,21 +3794,31 @@ Ported rules (`Session.TryPartyInvite`, RTK's literal minitext wording where it 
    self-referential branch (`tsd->group_leader == sd->group_leader && sd->group_leader == sd->bl.id` →
    `clif_leavegroup(tsd)`).
 4. Your party already at the 6-member cap → *"Your group is already full."*
-5. Target is dead → *"They are unable to join your party."*
-6. Target's "sociable" flag (`Character.Grouped`, Shift+G / `0x1b` sub-`0x02`) is off → *"They have refused
-   to join your party."*
-7. Target already in a group (even a different one) → the same *"They have refused to join your party."*
-   text (RTK collapses both refusal reasons to the identical line).
-8. Otherwise: join (creating a new party if you had none), then broadcast *"X is joining the group."* to
-   the whole party on RTK's dedicated **type=11 "group"** minitext channel (`Session.NotifyGroup` —
-   see the `SendMiniText` type table, §9.5).
+5. Target is dead → *"They are unable to join this group."*
+6. Target's "Join a group" flag (`Character.Grouped`, `0x1b` sub-`0x02`) is off → *"They refuse to join
+   this group."*
+7. Target already in a group (even a different one) → the SAME *"They refuse to join this group."* line.
+   One wording for both, as RTK does: a distinct message would turn the refusal into a probe for who is
+   already grouped.
+8. Otherwise: join, then broadcast *"X is joining the group."* on RTK's dedicated **type=11 "group"**
+   minitext channel (`Session.NotifyGroup` — see the `SendMiniText` type table, §9.5). The broadcast goes
+   to the WHOLE party including the person it names, so you see your own join. When the invite CREATES the
+   party, both founders are announced (inviter first, then invitee) — the inviter wasn't in a group a
+   moment ago either.
 
 **Not modelled:** RTK's per-map `canGroup` gate (no such per-map concept exists here) and RTK's explicit
 allowance for a *dead* player to invite others (a ghost isn't specifically blocked from grouping here
 either — it just isn't specifically un-blocked, since nothing in `TryPartyInvite` checks the inviter's own
 state at all, matching RTK, which also only checks the TARGET's state).
 
-Leaving (`RemoveFromParty`) sends the exact same *"You have left the group."* text whether you left
+**Leaving: turn your own "Join a group" toggle OFF** (`s` → the Options menu → the group row, `0x1b`
+sub-`0x02`). `HandleSetting` calls `RemoveFromParty` when that flag goes on→off and you're in a party.
+This is the only way out — the profile Group button can only ADD, and its kick branch belongs to the
+leader alone — and it reads as what it is: you stop being someone who groups, so you stop being grouped.
+The flag is persisted, so leaving this way also means nobody can invite you again until you switch it
+back on.
+
+`RemoveFromParty` sends the exact same *"You have left the group."* text whether you left
 voluntarily or were kicked — RTK's kick branch literally calls `clif_leavegroup(tsd)`, so there is no
 separate "you were removed" wording to port. Dropping to one member disbands the party (*"Your group has
 disbanded."* to the straggler). Disconnecting mid-party runs the same cleanup (`Session`'s read-loop
@@ -3732,9 +3830,11 @@ cells are exactly what the client reads to enable those two buttons. Clicking "G
 (`HandlePartyInvite`) — RTK's real `clif_addgroup` wire shape, `nameLen(u8) name[nameLen]` (identical shape
 to `0x19` whisper, §11; the client already has the target's name from the profile it's showing). This is a
 CONFIRMED-real 4.95 opcode (seen in an earlier capture, unlike the untested `0x29`/`0x2A`), so it's wired as
-the primary path, not a defensive guess. `@party <name>` / `@party` (roster) / `@leaveparty` remain as
-name-based chat-command fallbacks for testing or when a button isn't available (there's no profile-window
-equivalent for "leave"/"list roster" to trigger from).
+the primary path, not a defensive guess — and since `@party` was removed, the only way INTO a group.
+
+> ⚠ **No roster read-out.** `@party` with no argument used to list the group; nothing replaced it, and no
+> native window shows party membership. You know who's in your group only from the join/leave lines as they
+> scroll past. Group exp still works regardless (§12b) — this is a visibility gap, not a mechanical one.
 
 ### Trade (RTK "exchange" — `clif_handitem`/`clif_handgold`/`clif_parse_exchange`, clif.c:14548-15250)
 
@@ -3752,7 +3852,7 @@ instead of a window (the exact same tradeoff already made for the buy/sell grid,
 note). `Server/Trade.cs` holds the plain data (`Trade`: two `Session`s + two `TradeOffer`s of items/gold/
 confirmed; `TradeOffer`).
 
-Ported rules (`Session.HandleTradeCommand` / `RunTradeMenuAsync`):
+Ported rules (`Session.TryStartTrade` / `RunTradeMenuAsync`):
 
 - Both sides must have the "exchange" flag on (`Character.Exchange`, `0x1b` sub-`0x08`), be alive, on the
   same map, and not already in another trade — any failure replies with RTK's literal *"They have refused
@@ -3781,15 +3881,16 @@ say once this server takes over with dialogs instead of RTK's real trade window.
 client that never saw the window opened, so they're intentionally not handled. Like `0x2e`, **`0x4a` is a
 CONFIRMED-real 4.95 opcode** (also seen in an earlier capture), not a speculative wiring — RTK's real
 hand-item/hand-gold gesture (face the target, opcodes `0x29`/`0x2A`) is a separate, never-captured path and
-still isn't wired. `@trade <name>` remains as a name-based chat-command fallback for testing.
+still isn't wired. The `@trade <name>` chat fallback was removed, so the profile button is the only trigger.
 
 **Not yet live-tested.** Both features are ported from RTK source with no live 4.95 client session behind
 them. Confirm: clicking another player renders their real profile with the Group/Exchange buttons enabled
 per their flags, that clicking either button actually sends `0x2e`/`0x4a` with the expected body shape (both
 opcodes are confirmed real, but their exact trigger — is it really "click a button on the profile window,"
-or some other gesture? — hasn't been pinned down live), and that `@party`/`@leaveparty`/`@trade` all produce
-visible chat-log/status-box text as a fallback (built entirely on already-proven `SendMiniText`/dialog
-primitives, so their main open question is UX, not wire-format risk).
+or some other gesture? — hasn't been pinned down live). This matters more than it did: with the `@party` /
+`@trade` chat fallbacks removed, these two buttons are the only way to START either one, so if the trigger
+turns out to be something else, both are unreachable rather than merely awkward. (Leaving a group is safe
+either way — it hangs off the `0x1b` group toggle, an opcode this server already handles live.)
 
 ---
 
@@ -3925,7 +4026,7 @@ case that ever regresses live.
 to `field10` when no name is given, for trying alternate backgrounds (`field1`, `title`, other `fieldNN`).
 The framing bug that used to crash this is fixed.
 
-**Destinations** (`game-data/WorldMapDests.csv` -> `Content.WorldDests`) — 6 of RTK's 9. Dot pixels are
+**Destinations** (`game-data/WorldMapDests.csv` -> `Content.WorldDests`) — 7 of RTK's 9. Dot pixels are
 `field10` centres picked with `re/worldmap_plot.py` (see above), *not* scaled RTK values:
 
 | Destination | Map | Landing (x,y) | Dot (x,y) |
@@ -3936,8 +4037,9 @@ The framing bug that used to crash this is fixed.
 | Arctic Land | 1013 | (9,9) | (426,75) |
 | KaMing's Encampment | 3800 | (31,3) | (89,269) |
 | Hamgyong Nam-Do | 114 | (13,1) | (419,334) |
+| Nagnang | 2520 | (8,8) | (249,379) |
 
-These six are the project's own placement, hand-drawn on the rendered artwork and measured back off the
+These seven are the project's own placement, hand-drawn on the rendered artwork and measured back off the
 annotated image — they deliberately do **not** follow the baked-in region labels (e.g. Buya's button sits
 well south of the italic "Buya"). Treat them as authored content, not something to re-derive.
 
@@ -3953,14 +4055,21 @@ only takes a warp when `Content.TryMap(dest.m)` succeeds, and 99 has no map data
 doesn't fire, the step completes, and `OnScriptedTileStep` -> `TryWorldMapTravel` gets the tile. Because 114
 is both a destination row and a trigger map, ESC-cancel works from it like every other town.
 
+**Nagnang keeps RTK's numbers.** Unlike Hamgyong, nothing had to be retargeted: RTK's `sendWorldMap.lua`
+sends it to map **2520** ("Nagnang Gathering", 18x20), which is renderable, landing on `(8,8)`; its trigger
+is that map's `y=5, x∈7..9`, the top row of the walkable corridor (`x∈6..10` at `y=5`, everything above is
+`pass=3`), with no `Warps.csv` row competing for those tiles. Its button was hand-placed on the coastal
+peninsula west of the baked-in italic "Nagnang", i.e. *not* on the region label.
+
 **Mount Baekdu** (map 4259, RTK's one quest-gated entry) is still omitted: no renderable map data.
-**Nagnang** (2520) and **Hausson** (1025) are renderable but simply aren't listed — adding them is a
-two-line change (one `WorldMapDests.csv` row + one `WorldMapTriggers.csv` row each).
+**Hausson** (1025) is renderable but simply isn't listed — adding it is a two-line change (one
+`WorldMapDests.csv` row + one `WorldMapTriggers.csv` row).
 
 **Trigger tiles** (`game-data/WorldMapTriggers.csv` -> `Content.WorldMapTriggers`, keyed by the town map the
 player is standing in): Kugnae Gathering `x=19, y∈{12,13}`; Buya Gathering `x=0, y∈8..12`; Mythic Nexus
 `y=3, x∈28..32`; Haeng Tavern `x=10, y∈{7,8}`; KaMing's Encampment `y∈{0,1}, x∈30..34`; Hamgyong Nam-Do
-`y=0, x∈12..15`. All six fit inside their map's real dimensions per `map_index.csv`. Every trigger map is
+`y=0, x∈12..15`; Nagnang Gathering `y=5, x∈7..9`. All seven fit inside their map's real dimensions per
+`map_index.csv`. Every trigger map is
 also a destination row, which is what makes ESC-cancel work (`SendWorldMap` puts the origin continent first,
 landing on the exact origin tile).
 
@@ -3979,19 +4088,22 @@ shape (still a guess, validated against `WorldDests` so a wrong guess is inert).
 Six independent additions from a single pass, each ported at a different confidence level — see each
 sub-entry for what's grounded vs. original.
 
-**Mail (`Server/Mail.cs`, `Session.HandleMailCommand`/`HandleBoard` sub-9).** RTK's nmail reuses the SAME
+**Mail (`Server/Mail.cs`, `Session.HandleBoard` sub-9).** RTK's nmail reuses the SAME
 `boards_showposts`/`boards_readpost` machinery as a normal bulletin board (§11h), just addressed at board id
 0 (a player's own mailbox). Confirmed the real `nmail_write`/`boards_post`/`boards_showposts`/
 `boards_readpost`/`boards_delete` implementations don't survive anywhere in the reference tree (checked
 `rtk/src/map/board_db.c` and `clif.c` both — only the `clif_handle_boards` dispatcher does), so there's no
 wire evidence at all for how mail gets COMPOSED (no recipient field visible in the dispatcher). Reading an
 existing mailbox reuses the same (already-`§11h`-unverified) `0x31` sub-2/sub-3 reply builders, now sourced
-from a new `mail_posts` SQLite table when `boardId==0` instead of `board_posts`; composing is chat-command
-only (`@mail send <name> | <subject> | <body>`, `@mail sendItem <name> <item> [amount] | <subject> | <body>`
-— the "parcel" half, pulling straight from the caster's bag and removing it same as handing it over in
-person). RTK gates nmail at level 10 (`clif_handle_boards` case 6's exact wording, kept verbatim); claiming
-an attached item is one-shot (`Mail.ClaimItem`) regardless of whether it's read via `@mail read` or (if a
-client ever sends it) the native `0x31` sub-3 path — both funnel through `Session.ReadMail`.
+from a new `mail_posts` SQLite table when `boardId==0` instead of `board_posts`; composing goes through the
+client's own compose window (`HandleNmailSend`, `0x3B` sub-6). RTK gates nmail at level 10
+(`clif_handle_boards` case 6's exact wording, kept verbatim); claiming an attached item is one-shot
+(`Mail.ClaimItem`), via `Session.ReadMail` on the native `0x31` sub-3 read.
+
+> ⚠ **Players can no longer mail a PARCEL.** That lived only in `@mail sendItem`, removed with the rest of
+> the chat fallbacks; native compose always posts `itemId -1`. `Mail.Send` still takes the item arguments
+> and `ReadMail` still claims an attachment, so a script or quest can deliver one — only the player-facing
+> send path is gone.
 
 **Friend & ignore lists (`Character.Friends`/`IgnoreList`, `Session.HandleFriendCommand`/`HandleIgnoreCommand`).**
 Ignore is real RTK (`map.h sd_ignorelist`, `clif.c` `ignorelist_add`/`ignorelist_remove`/`clif_isignore`) —
@@ -4042,7 +4154,8 @@ per Yuri**, which lands on the community "Time Chart" tutor post (`WiKiDWiND`, P
 runs at 8× real time, so a 365-day year takes 365/8 = 45 5/8 real days. Season 1 = Spring per rtklua
 `sys.lua`'s `getCurSeason`, the mapping behind RTK's own `curT()` = `"Yuri <year>, <season>"` timemark
 (`scripts.lua`'s Mithia-lore `{Winter, Spring, Summer, Autumn}` table is a different game's ordering — don't
-use it). Season never goes on the wire; `@time` is the only place it surfaces.
+use it). Season never goes on the wire, and with `@time` removed nothing reports it to a player directly —
+it reaches them only through legend text (`GameCalendar.Stamp`) and whatever scripts read it.
 
 **Ambush (`Content.IsAmbushSpell`, `Session.CastAmbush`).** RTK `rogue/ambush.lua` ("Leap over your enemy to
 face their back while attacking") has no mana cost in the Lua at all. Ported as a real reposition: teleports

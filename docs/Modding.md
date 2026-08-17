@@ -47,6 +47,22 @@ Two layers, use whichever fits:
      rage+enchant spells.
    Edit the number, `@reload`. Done.
 
+   **`Buff` and `TargetBuff` are one verb.** `arch_buff` and `arch_targetbuff` both call a single
+   `apply_buff(ctx, mode, fallbackDur)`; the only differences are `mode` (`"self"` vs `"target"` — which
+   `ctx:buffTarget` resolves, the same way `verbs.ward` resolves its self-cast and ally-cast halves) and the
+   fallback duration. Add behaviour there, not to one of the two names, or the halves drift.
+
+   **Buff exclusivity slots.** A `Buff`/`TargetBuff` spell can belong to an RTK `checkIfCast` slot
+   (`spellTables.lua`: `mights`, `blessings`, `potency`, `shadowFigures`, …). While a slot is running, every
+   spell in it is **refused**, not refreshed — so Might can't be spammed and Might + Spirit Strength can't be
+   stacked. The slot comes from `spell_verbs.lua`'s `BUFF_CATEGORY` table (edit + `@reload`), falling back to
+   `spell_effects.csv`'s `cureCat` column. A buff named in neither keeps the old refresh behaviour.
+
+   **City-locked secrets.** A few spells are taught by exactly one kingdom's trainer — the rogue Remedies
+   (Maro's = Kugnae, Maso's = Buya, Dagger's = Nagnang). That list is `Content.CityLockedSpells`, keyed by
+   `BaseKey` so one row covers all four alignment reskins, mapped to a `Maps.csv` `MapRegion`. Other trainers
+   drop the spell from Learn Secret / Divine Secret and point the player at the right city by name.
+
    **Archetype verbs (`arch_*`).** A whole archetype's *behaviour* is also scriptable: `spell_verbs.lua` may
    define `arch_damage` (and, as they're migrated, `arch_heal`/`arch_buff`/…). When present, every spell of
    that archetype runs the verb instead of the C# handler — the engine pre-evaluates the spell's formula and
@@ -127,6 +143,12 @@ Add a row, pick/author a verb, `@reload`.
   is applied per cell as the `.map` is read, so a multi-tile door needs the flag on every piece of the run
   (the city gates, `5-8` closed ↔ `15-18` open, are the ones that need it). A door is only a wall if its
   object id is flagged solid in `SObj.tbl` — check there before assuming which id is the open one.
+- **No-casting maps**: `Maps.csv`'s `MapSpells` column (`0` = *"That doesn't work here."*, the whole `0x0F`
+  cast opcode is refused; GMs bypass it, as in RTK). This is what keeps magic out of the towns' interiors —
+  taverns, kan shops, the three Gathering halls, the class trainers' buildings. **Not** `MapIndoor`, which is
+  set on every cave and dungeon too. Edit the row and `@reload`. RTK's dump is inconsistent here — Nagnang's
+  trainer buildings and the later-era set block casting while Kugnae's and Buya's (the same rooms one era
+  earlier) don't — so the 40 Kugnae/Buya path-hall, sanctum and alignment-room rows are corrected in place.
 - **Level-banded PvP arena doors**: `ArenaDoors.csv`
   (`Map,Tiles,DestMap,DestX,DestY,MinLevel,MaxLevel,MaxVita,MaxMana,Unmarked,Label`). These are *scripted
   tiles*, not warps — in RTK they live in `onScriptedTilesArena.lua`, and only each arena's way **back** is in
