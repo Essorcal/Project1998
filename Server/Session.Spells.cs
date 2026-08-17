@@ -296,7 +296,7 @@ public sealed partial class Session
         // sacrifice + Chin-Baek warrior-strike family, Content.ShowsSwingAnim) are swings, not spells: show the
         // attack pose (0x1A type 1) with the swing's own timing, not the magic cast pose. Everything else casts.
         bool swingAnim = Content.ShowsSwingAnim(sp);
-        byte animType   = swingAnim ? (byte)1 : (byte)6;
+        byte animType   = Content.CastActionType(sp);   // swing=1, an emote-range action override (furies=18 'h' rage), else magic pose 6
         ushort animTime = swingAnim ? (ushort)AttackSpeed : Content.CastAnimFrames;
         SendAction(_char.Id, animType, animTime, param: 0);                                                     // strike swing / cast pose
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, animType, animTime, 0), except: this);          // peers see it
@@ -410,6 +410,11 @@ public sealed partial class Session
             // a cooldown, it is the shared cast/swing slot (Content.CastDelayMs), which drops silently. The
             // aether column was where our extractor happened to record that delay, and keeping it produced a
             // bogus fourth message, "Invisible isn't ready yet (0s).".
+            // TRANSFORMED GATE. While morphed (Feral and the rest of the animal forms — see
+            // Content.MorphSpells/MorphDispatchSpells) the disguise IS a 0x07 creature sprite, so the faded
+            // stealth form can't co-exist with it; live refuses the cast rather than silently dropping it.
+            // Placed before the "already cast" no-op so a morphed rogue mashing Invisible always hears why.
+            if (IsMorphed) { SendMiniText("You can't cast that spell now."); return false; }
             if (Stealthed) { SendMiniText("You already cast that spell."); return false; }
             _stealthName = sp.Name;
             return Lua(CastStanceArch("stance_stealth", sp, fx, mana, 0), sp);
@@ -1961,7 +1966,7 @@ public sealed partial class Session
         string gate = dir switch { 'n' => "North", 'e' => "East", 'w' => "West", 's' => "South", _ => "" };
         EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
         SendSound(708, _char.Id);
-        SendMiniText($"You have arrived at {gate} Gate of {r.City}.");
+        SendMiniText($"You have arrived at the {gate} gate.");   // live wording — direction only, no city/map name
         _castNarrated = true;
         Log.Info($"      Gateway(lua) -> region {region} {r.City} {gate} gate: map {map.Id} ({x},{y})");
         return true;
@@ -2506,6 +2511,7 @@ public sealed partial class Session
         if (_morphLook == 0) return;
         _buffs.RemoveAll(b => b.Key == _morphKey);
         _morphLook = 0; _morphColor = 0; _morphUntil = 0; _morphKey = "";
+        BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
         ShowPlayer(this);   // restore our own view too (same 0x07-self-id path we used to morph)

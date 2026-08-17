@@ -1,0 +1,250 @@
+VIEW 1 — SOUND ID GROUPED WITHIN EACH ARCHETYPE
+(each block = one archetype; each line = one sound id and the spells using it)
+================================================================================
+
+### Buff
+  snd 4         : back_attack_warrior, back_battle_warrior, back_damage_warrior, backstab_warrior, baekhos_rage_rogue, bless_warrior, chung_ryongs_rage, dragons_fury_warrior, filling_the_soul_rogue, filling_the_soul_warrior, flank_attack_warrior, flank_battle_warrior, flank_damage_warrior, flank_warrior, greater_blessing, natural_defense_rogue, ohaengs_anger_warrior, ohaengs_armor_rogue, potence_warrior, sanctification_warrior, serpents_fury, shadow_figure_rogue, sharpen_warrior, souls_rage_rogue, souls_rage_warrior, spirit_arm_warrior, spirit_fury, spirit_of_the_dragon_warrior, spirit_of_the_forest_rogue, spirit_of_the_forest_warrior, spirit_of_the_wild_rogue, spirit_of_the_wild_warrior, spirit_warrior_rogue, strength_of_ancestors_warrior, strength_of_purpose_warrior, tigers_fury_rogue, tigers_fury_warrior, touch_of_the_bear_warrior, tribal_gathering_warrior, wolfs_fury_rogue, wolfs_fury_warrior
+  snd 5         : body_of_alignment_poet, harden_body_poet
+  snd 10        : forest_blessing_warrior, hoche_warrior, immunity_warrior, magics_shield_warrior
+  snd 12        : might_mage, might_rogue
+  snd 22        : hear_spirits_poet, improve_sight_poet, second_sight_poet, show_hidden_poet
+  snd 31        : inner_blessing_mage, inner_blessing_rogue, spirit_strength_mage, spirit_strength_rogue, temper_mage, temper_rogue
+  snd 34        : align_follower_poet, charm_life_poet, endear_poet, fascinate, possess_soul_poet
+  snd 50        : deaths_guard_poet
+  snd 70        : augmentation_rogue, augmentation_warrior, ohaengs_grace_rogue, ohaengs_grace_warrior
+  snd 108       : lifes_protection_poet
+  silent        : balance_barrier_poet, barrier_poet, beast_mage, beast_rogue, block_entry_poet, blockade_human_poet, dagger_uniform, distance_self_poet, dnd, drain_room, experience_shrine_spell, feral_rogue, gangrel_mage, gangrel_rogue, glass_form_rogue, healing_totem_aura, health_shrine_spell, invisible_rogue, kwisin_chameleon_mage, kwisin_chameleon_rogue, kwisin_cloak_rogue, kwisin_disguise_rogue, kwisin_mask_mage, kwisin_mask_rogue, life_barrier_poet, lifes_cloak_rogue, lokis_favor, magic_shrine_spell, mingken_chameleon_mage, mingken_chameleon_rogue, mingken_cloak_rogue, mingken_disguise_rogue, mingken_mask_mage, mingken_mask_rogue, ninja_disguise, ohaeng_chameleon_mage, ohaeng_chameleon_rogue, ohaeng_cloak_rogue, ohaeng_disguise_rogue, ohaeng_mask_mage, ohaeng_mask_rogue, protect_sides_poet, pvp_balance, rodent_rogue, set_repeating_dart_trap, spirit_barrier_poet, spirits_form_rogue, super_saiyan, wind_walk
+
+### Cure
+  snd 10        : align_armor_poet, atone_poet, clear_darkness_poet, cure_illness_mage, cure_illness_poet, cure_paralysis_mage, cure_paralysis_poet, free_movement_mage, purge_mage, purge_poet, raise_guard_poet, release_binds_mage, release_binds_poet, release_curse_mage, release_curse_poet, remove_curse_mage, remove_curse_poet, remove_poison_mage, remove_veil_poet, restore_armor_mage, restore_armor_poet, restore_health_mage, restore_health_poet, restore_sight_poet, return_movement_mage, return_movement_poet, undo_evil_mage, undo_evil_poet
+  snd 95        : free_movement_poet, purge_darkness_poet, remove_poison_poet
+  snd 108       : restore_will_poet
+
+### Damage
+  snd 14        : berserk_warrior
+  snd 56        : assault_warrior, call_lightning_mage, earthquake_poet, electrocute_mage, erupt_mage, explode_mage, flare_poet, healers_revenge_poet, hyun_moo_spite_poet, ignite_mage, ignite_poet, ignite_rogue, impact_mage, ion_charge_mage, ion_mage, stormstrike_mage, tempest_mage
+  snd 57        : avalanche_mage, bolt_mage, bolt_poet, breaking_of_the_world_poet, cold_snap_warrior, flight_of_arrows_mage, forests_discord_mage, lightning_mage, lightning_poet, lightning_rogue, natural_disaster_mage, natures_fury_poet, natures_wounding_mage, tree_dart_mage, treefall_mage, wilding_mage, winters_vortex_mage, wrath_of_nature_mage, wrath_of_nature_poet, wrath_of_nature_rogue
+  snd 58        : anger_warrior, mock_warrior, taunt_warrior, tease_warrior
+  snd 59        : crescendo_mage, dance_macabre_mage, dance_of_death_poet, death_scream_mage, deaths_challenge_warrior, eater_of_the_dead_mage, embrace_of_the_void_mage, embrace_of_the_void_poet, embrace_of_the_void_rogue, glimpse_of_the_void_mage, glimpse_of_the_void_poet, river_of_blood_mage, soul_chasm_mage, soul_spike_mage, soul_strike_mage, soulstorm_mage, spirit_strike_mage, spirit_strike_poet, spirit_strike_rogue, tossing_the_bones_poet
+  snd 60        : slash_warrior
+  snd 88        : consume_soul_mage, deaths_door_mage, desperate_attack_rogue, dooms_fire_mage, feral_berserk_warrior, fissure, flesh_eaters_mage, focused_blow_rogue, hellfire_mage, hurricane_mage, inferno_mage, lava_surge, lethal_strike_rogue, natures_denial_mage, palm_of_life_poet, retribution_poet, siege_warrior, spirit_puppet_poet, steel_storm_mage, tornado_poet, volcanic_blast_mage, whirlwind_warrior
+  snd 247  <DEAD>: furious_charge
+  snd 701       : blazing_sands_mage, chain_lightning_mage, deluge_mage, groundstrike_poet, natures_ire_mage, natures_ire_poet, natures_storm_mage, natures_storm_poet, natures_storm_rogue, rain_of_fire_mage, shatter_mage, shatter_storm_mage, singe_mage, singe_poet, singe_rogue, spark_mage, spark_poet, storm_crow_poet, sunstroke_mage, thunder_bolt_mage, thunderclap_mage, thunderclap_poet, thunderclap_rogue, volcano_mage, volley_warrior, winds_of_disaster_mage
+  silent        : lifes_end_warrior, souls_freedom_warrior, winter_chill_warrior
+
+### Debuff
+  snd 5         : dishearten_poet, hindrance_mage, ju_jak_curse_mage, pestilence_mage
+  snd 7         : static_mage
+  snd 20        : lockup_mage
+  snd 24        : corruption_mage, snake_bite_mage, spirits_leech_mage, venom_mage
+  snd 26        : break_will_poet, flaw_mage, harshen_attack_poet, unalign_armor_poet
+  snd 43        : damage_will_poet, dark_fear_poet, deaths_face_mage, scourge_poet, vex_mage
+  snd 44        : drop_guard_poet, unnatural_selection_mage
+  snd 48        : cold_binds_mage
+  snd 70        : blind_mage, dark_veil_mage, ice_glare_mage, paralyze_mage, winters_shadow_mage
+  snd 86        : spirit_leash_mage
+  snd 305       : doze_mage, essence_of_poppies_mage, sleep_mage, still_ethers_mage, still_waters_mage, stillness_mage, sweet_musings_mage, voids_touch_mage
+  silent        : amnesia_rogue, chaos_rain_mage, confuse_mage, curse_of_the_void_mage, despise_friend_mage, follow, forgetfulness_rogue, free_spirit_rogue, mislead_rogue, ninja_swap, snake_spell, spin
+
+### Heal
+  snd 4         : anoint_poet, balanced_touch_mage, bandage_rogue, bekyuns_heal_mage, breath_of_life_poet, charge_of_life_poet, cooling_touch_mage, cooling_touch_rogue, daggers_remedy_rogue, earths_cradle_poet, earths_embrace_poet, energy_flow_mage, essence_of_life_poet, explorers_remedy_rogue, fire_dance_rogue, fleshspeak_mage, fleshspeak_rogue, fleshspeak_warrior, forge_of_life_poet, fortify_poet, gathering_of_majesty_poet, heal_mage, heal_others_mage, heal_others_rogue, heal_others_warrior, heal_poet, healing_rain_mage, healths_return_warrior, heavens_kiss_poet, hunangs_relief_warrior, infuse_lifeforce_mage, infuse_lifeforce_poet, invigorate_rogue, lay_hands_mage, lay_hands_poet, lifes_essence_warrior, lifes_river_mage, lifes_river_poet, lifes_river_rogue, lifespring_poet, maros_remedy_rogue, masos_remedy_rogue, mend_wounds_mage, mend_wounds_rogue, natures_family_poet, ohaeng_daggers_remedy_rogue, ohaeng_maros_remedy_rogue, ohaeng_masos_remedy_rogue, ohaengs_blessing_mage, power_stream_rogue, quicken_mage, quicken_poet, recover_mage, recover_poet, recover_rogue, refresh_rogue, rejuvenate_mage, relief_mage, relief_warrior, remedy_poet, restoration_warrior, restore_poet, return_of_life_warrior, revitalize_poet, salvation_warrior, seal_wounds_rogue, solace_mage, stream_of_life_poet, sweet_waters_mage, sweet_waters_warrior, swift_recovery_rogue, vigor_warrior, vital_spark_poet, water_of_life_poet, water_of_nature_poet, waters_of_purity_poet
+  snd 22        : survive
+  snd 63        : balm_warrior, fertile_soil_poet, gathering_of_power_poet, gathering_of_the_flock_poet, heal_injury_rogue, healing_breath_poet, healing_hand_poet, healing_waters_rogue, helping_hand_mage, helping_hand_rogue, helping_hand_warrior, infuse_energy_mage, infuse_energy_poet, infuse_energy_rogue, infuse_life_mage, life_flow_mage, life_flow_poet, lifeforce_poet, lifes_embrace_poet, lifes_water_mage, lifes_water_poet, lifesong_mage, lifesong_warrior, loving_dew_rogue, mingken_daggers_remedy_rogue, mingken_maros_remedy_rogue, mingken_masos_remedy_rogue, natures_abundance_poet, natures_bounty_mage, natures_kiss_mage, natures_kiss_rogue, natures_slave_warrior, ointment_of_light_warrior, one_with_life_mage, spark_of_health_poet
+  snd 98        : ancestors_embrace_poet, ancestors_kiss_poet, ancestors_touch_mage, ancestors_touch_poet, breath_of_power_poet, brethren_of_spirits_poet, brothers_of_spirit_poet, clan_of_souls_poet, death_denied_mage, essence_of_spirit_poet, festival_of_souls_mage, from_the_brink_warrior, kwisin_daggers_remedy_rogue, kwisin_maros_remedy_rogue, kwisin_masos_remedy_rogue, purity_of_spirit_poet, redemption_warrior, renew_energy_rogue, renew_essence_mage, renew_essence_warrior, souls_awakening_rogue, spirit_caress_rogue, spirits_embrace_mage, spirits_embrace_poet, spirits_embrace_rogue, spirits_kiss_poet, spirits_smile_mage, spirits_smile_poet, spiritsong_mage, spiritsong_rogue, spiritsong_warrior, spiritual_cure_mage, spiritual_cure_rogue, still_embrace_mage, touch_of_health_warrior
+  snd 708       : soothe
+  silent        : absorb_rogue, drain_rogue, drink_of_souls_rogue, parasite_rogue
+
+### ManaBattery
+  snd 18        : spirits_power_mage, spirits_power_poet
+  snd 84        : blade_crawl
+  snd 85        : invoke_mage, invoke_poet
+  snd 97        : life_force_mage, life_force_poet
+  snd 105       : gather_magic_mage, gather_magic_poet
+
+### Summon
+  silent        : set_bladestorm_trap, set_cutting_edge_trap, set_dart_trap, set_death_trap, set_flash_trap, set_poison_dart_trap, set_sleep_trap, set_snare_trap, set_spear_trap, set_swords_dance_trap, set_tigers_ambush_trap, summon_healing_totem
+
+### TargetBuff
+  snd 5         : armor_of_elements_poet, bolster_poet, dark_armor_poet, elemental_armor_mage, elemental_armor_poet, harden_armor_mage, harden_armor_poet, life_armor_poet, sanctuary_mage, sanctuary_poet, shield_of_life_mage, shield_of_life_poet, thicken_skin_mage, thicken_skin_poet
+  snd 12        : valor_mage, valor_poet
+  snd 31        : bless_muscles_mage, bless_muscles_poet, power_burst_mage, power_burst_poet, strengthen_mage, strengthen_poet
+  snd 70        : magic_shield_mage, magic_shield_poet
+  snd 77        : guard_life_mage, guard_life_poet
+  snd 106       : protect_soul_mage, protect_soul_poet
+
+### Teleport
+  silent        : approach, instance_ambush, leap_of_faith_rogue, race_rogue, spiritual_jump_rogue, summon, transport_rogue
+
+### Utility
+  snd 4         : filch_rogue, hyun_moo_revival, ju_jak_evocation, light_touch_rogue, quick_fingers_rogue, spirits_hand_rogue
+  snd 10        : gm_push
+  snd 22        : bestow_power_poet, combine_focus_poet, cotw_caterpillar_poet, cotw_fluffy_dog_poet, cotw_giasomo_bird_poet, cotw_gorilla_poet, cotw_panda_bear_poet, cotw_wild_monkey_poet, cotw_wind_dancer_poet, cotw_wind_master_poet, cotw_wind_warrior_poet, draw_energy_poet, harness_power_poet, inspiration_poet, inspire_poet, kwisin_assistant_poet, kwisin_avatar_poet, kwisin_champion_poet, kwisin_companion_poet, kwisin_fighter_poet, kwisin_protector_poet, kwisin_warrior_poet, mingken_assistant_poet, mingken_avatar_poet, mingken_champion_poet, mingken_companion_poet, mingken_fighter_poet, mingken_protector_poet, mingken_warrior_poet, ohaeng_assistant_poet, ohaeng_avatar_poet, ohaeng_champion_poet, ohaeng_companion_poet, ohaeng_fighter_poet, ohaeng_protector_poet, ohaeng_warrior_poet, release_focus_poet, share_energy_poet
+  snd 34        : dispell_poet, gm_dispell, return_natural_poet
+  snd 37        : remove_magic_poet
+  snd 95        : restore_balance_poet
+  snd 112  <DEAD>: gm_res
+  silent        : afterlifes_embrace_rogue, ambush_rogue, appraise_rogue, baekhos_blade_rogue, beastly_frenzy_rogue, bladedance_warrior, blades_charm_rogue, calculating_blow_rogue, chance_rogue, creatures_guidance_warrior, death_save, death_undone_poet, deaths_angel_warrior, displacement_rogue, dragons_claw_warrior, dragons_flame_warrior, dragons_harness_warrior, enchant_warrior, gm_sage, hand_of_darkness_warrior, huge_swirl, infuse_warrior, ingress_warrior, inspect_mob_gm, judge_rogue, judgement_day_rogue, kawlanas_guard, killmobs, magis_bane, magis_bane_poet, mass_res, mend_equipment_warrior, mingken_blessing_poet, mingkens_judgement_rogue, natural_talent_rogue, natures_choice_rogue, natures_handiwork_rogue, natures_own_warrior, no_fear_warrior, oneness_warrior, randomness_rogue, razors_edge_warrior, reflect_rogue, resurrect_poet, return_spirit_poet, set_trap, spirits_whisper_warrior, spiritual_advisor_rogue, spiritual_aid_warrior, spiritual_guide_rogue, spot_traps, spot_unbalance_warrior, spy_rogue, strengthen_weapon_warrior, the_voids_measure_rogue, tigers_claw_warrior, tigers_fortitude_rogue, tigers_pounce_warrior, tilting_the_balance_rogue, tincture_of_the_unknown_warrior, trial_by_fire_rogue, vipers_venom_warrior, watchful_eye_warrior, waylay_rogue, whetstone_warrior, winds_blast_warrior, wisdom_star
+
+
+================================================================================
+VIEW 2 — DAMAGE SPELLS BY ANIMATION (visual family) → does the SOUND match across it?
+================================================================================
+
+ anim -1
+     snd 58        anger_warrior
+     snd 58        mock_warrior
+     snd 58        taunt_warrior
+     snd 58        tease_warrior
+
+ anim 
+     snd silent    lifes_end_warrior
+     snd silent    souls_freedom_warrior
+     snd silent    winter_chill_warrior
+
+ anim 4   <-- MIXED SOUNDS
+     snd 56        assault_warrior
+     snd 56        call_lightning_mage
+     snd 56        earthquake_poet
+     snd 56        electrocute_mage
+     snd 56        erupt_mage
+     snd 56        explode_mage
+     snd 56        flare_poet
+     snd 56        healers_revenge_poet
+     snd 56        hyun_moo_spite_poet
+     snd 56        ignite_mage
+     snd 56        ignite_poet
+     snd 56        ignite_rogue
+     snd 56        impact_mage
+     snd 56        ion_charge_mage
+     snd 56        ion_mage
+     snd 56        stormstrike_mage
+     snd 56        tempest_mage
+     snd 701       blazing_sands_mage
+     snd 701       chain_lightning_mage
+     snd 701       deluge_mage
+     snd 701       groundstrike_poet
+     snd 701       natures_ire_mage
+     snd 701       natures_ire_poet
+     snd 701       natures_storm_mage
+     snd 701       natures_storm_poet
+     snd 701       natures_storm_rogue
+     snd 701       rain_of_fire_mage
+     snd 701       shatter_mage
+     snd 701       shatter_storm_mage
+     snd 701       storm_crow_poet
+     snd 701       sunstroke_mage
+     snd 701       thunderclap_mage
+     snd 701       thunderclap_poet
+     snd 701       thunderclap_rogue
+     snd 701       volcano_mage
+     snd 701       volley_warrior
+     snd 701       winds_of_disaster_mage
+
+ anim 6
+     snd 14        berserk_warrior
+
+ anim 7
+     snd 88        desperate_attack_rogue
+     snd 88        focused_blow_rogue
+
+ anim 8
+     snd 88        dooms_fire_mage
+     snd 88        hellfire_mage
+     snd 88        inferno_mage
+
+ anim 9
+     snd 88        feral_berserk_warrior
+     snd 88        lethal_strike_rogue
+     snd 88        siege_warrior
+     snd 88        whirlwind_warrior
+
+ anim 17
+     snd 59        crescendo_mage
+     snd 59        dance_macabre_mage
+     snd 59        dance_of_death_poet
+     snd 59        death_scream_mage
+     snd 59        deaths_challenge_warrior
+     snd 59        eater_of_the_dead_mage
+     snd 59        embrace_of_the_void_mage
+     snd 59        embrace_of_the_void_poet
+     snd 59        embrace_of_the_void_rogue
+     snd 59        glimpse_of_the_void_mage
+     snd 59        glimpse_of_the_void_poet
+     snd 59        river_of_blood_mage
+     snd 59        soul_chasm_mage
+     snd 59        soul_spike_mage
+     snd 59        soul_strike_mage
+     snd 59        soulstorm_mage
+     snd 59        spirit_strike_mage
+     snd 59        spirit_strike_poet
+     snd 59        spirit_strike_rogue
+     snd 59        tossing_the_bones_poet
+
+ anim 27
+     snd 701       thunder_bolt_mage
+
+ anim 28
+     snd 701       singe_mage
+     snd 701       singe_poet
+     snd 701       singe_rogue
+     snd 701       spark_mage
+     snd 701       spark_poet
+
+ anim 30
+     snd 57        avalanche_mage
+     snd 57        bolt_mage
+     snd 57        bolt_poet
+     snd 57        breaking_of_the_world_poet
+     snd 57        cold_snap_warrior
+     snd 57        flight_of_arrows_mage
+     snd 57        forests_discord_mage
+     snd 57        lightning_mage
+     snd 57        lightning_poet
+     snd 57        lightning_rogue
+     snd 57        natural_disaster_mage
+     snd 57        natures_fury_poet
+     snd 57        natures_wounding_mage
+     snd 57        tree_dart_mage
+     snd 57        treefall_mage
+     snd 57        wilding_mage
+     snd 57        winters_vortex_mage
+     snd 57        wrath_of_nature_mage
+     snd 57        wrath_of_nature_poet
+     snd 57        wrath_of_nature_rogue
+
+ anim 31
+     snd 60        slash_warrior
+
+ anim 41
+     snd 88        fissure
+
+ anim 42
+     snd 88        lava_surge
+     snd 88        volcanic_blast_mage
+
+ anim 51
+     snd 88        retribution_poet
+
+ anim 54
+     snd 88        consume_soul_mage
+     snd 88        deaths_door_mage
+
+ anim 86
+     snd 88        palm_of_life_poet
+
+ anim 100
+     snd 88        spirit_puppet_poet
+
+ anim 104
+     snd 88        flesh_eaters_mage
+     snd 88        natures_denial_mage
+
+ anim 112
+     snd 88        hurricane_mage
+     snd 88        steel_storm_mage
+
+ anim 114
+     snd 88        tornado_poet
+
+ anim 396
+     snd 247 DEAD  furious_charge

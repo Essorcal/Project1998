@@ -244,7 +244,7 @@ public sealed record SpellDef(int Id, string Key, string Name, byte Type, int Pa
 public sealed record SpellFx(
     string Key, string Archetype, int Mana, string AmountExpr, string BuffStat, string BuffAmt,
     int DurationMs, string Debuff, string Chance, string HealthCost, int Animation, int Sound, int Aether,
-    int PcAlign, string CureCat = "", string Class = "");
+    int PcAlign, string CureCat = "", string Class = "", int Action = 0);
 
 /// <summary>Tiny arithmetic evaluator for the Lua damage/heal formulas RTK spells use, e.g.
 /// <c>"25 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4)"</c> or
@@ -3268,6 +3268,17 @@ public static partial class Content
     /// attack pose (0x1A type 1) rather than the magic cast pose (type 6). Everything else casts as normal.</summary>
     public static bool ShowsSwingAnim(SpellDef sp) => SacrificeFamilyFor(sp) is not null || TakesChinBaekHoRyung(sp);
 
+    /// <summary>The 0x1A action type the caster strikes when this spell is cast: a physical strike swings
+    /// (type 1); a spell whose <c>action</c> cell is an emote-range value (9–28) casts with that body emote —
+    /// e.g. the furies use 18, the 'h'/rage emote; everything else uses the default magic pose (type 6).</summary>
+    public static byte CastActionType(SpellDef sp)
+    {
+        if (ShowsSwingAnim(sp)) return 1;
+        var fx = FxFor(sp);
+        if (fx is not null && fx.Action >= 9 && fx.Action <= 28) return (byte)fx.Action;
+        return 6;
+    }
+
     // ---- Wisdom / "Listen to advice" hints -----------------------------------------------------------------
     // The periodic gameplay tips the "Listen to advice" option (0x1b sub-4) streams into the chat channel every
     // ~15 minutes (RTK pc_timer's advice[] via msg type 99 -> 11). Adapted from RTK's list to this server's own
@@ -4111,7 +4122,11 @@ public static partial class Content
                 // The `class` column was read and thrown away until the zap cast-rate work needed it:
                 // SplPthId can't stand in for it (Ion and Fissure are BOTH SplPthId 99, the shared path),
                 // so this is the only per-spell class signal we have. See IsRateLimitedZap.
-                Class: col.GetValueOrDefault("class", "").Trim());
+                Class: col.GetValueOrDefault("class", "").Trim(),
+                // Cast POSE override (0x1A action type). RTK's sendAction(N) for the cast; normally 6 (magic
+                // pose) and left at the default, but an emote-range value (>=9) lets a spell cast with a body
+                // emote instead — e.g. the Rogue/Warrior furies use 18 (the 'h' rage emote). See CastActionType.
+                Action: I(col, "action"));
         }
         return fx;
     }
