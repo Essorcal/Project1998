@@ -904,9 +904,16 @@ public sealed partial class Session
     // magic/type 6 -> soundId 0 -> silent regardless of the byte we send.)
     private void BroadcastFx(uint overId, int anim, int sound)
     {
-        if (anim >= 0)  _world.Broadcast(_char.Map, p => p.EffectOver(overId, anim));
-        if (sound > 0)  _world.Broadcast(_char.Map, p => p.SoundAt(sound, overId));
+        // "Believe in magic" / Magic Effect (0x1b sub-5, RTK FLAG_MAGIC): the 0x29 spell graphic — and, per the
+        // in-game description, its sound — are sent only to viewers who left the option ON (RTK gates this in
+        // clif_sendanimation). It's a per-RECIPIENT filter, so your cast still shows for everyone else.
+        if (anim >= 0)  _world.Broadcast(_char.Map, p => { if (p.WantsMagicFx) p.EffectOver(overId, anim); });
+        if (sound > 0)  _world.Broadcast(_char.Map, p => { if (p.WantsMagicFx) p.SoundAt(sound, overId); });
     }
+
+    /// <summary>"Believe in magic" / Magic Effect (0x1b sub-5): when off, this viewer is sent no spell graphics
+    /// or sounds (see <see cref="BroadcastFx"/>). On by default (SettingBit(5) is in the SettingFlags seed).</summary>
+    internal bool WantsMagicFx => _char.HasSetting(0x05);
 
     // Register a creature server-side AND draw it on the client (via 0x16). Used by the mob commands.
     private Mob SpawnMob(ushort sprite, ushort x, ushort y, string name, int hp, byte dir = 2)
