@@ -6,9 +6,10 @@
 --   local name = ctx:input("Your name?");        if name then ... end
 -- Suspending ops (wait for the player): say / sayItem / sayLook / menu (returns 1-based pick, 0 = cancel) /
 --   input (returns the typed string, or nil if cancelled).
--- Immediate ops (no wait): giveItem/takeItem/hasItem/countItem/itemName/learnSpell, awardExp/awardGold,
---   stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp, level/sex/nation/setNation/map/
---   coins/spendGold, killCount/mounted, eraHas, bubble/notify, gameDate,
+-- Immediate ops (no wait): giveItem/takeItem/hasItem/countItem/itemName, learnSpell/hasSpell/forgetSpell,
+--   awardExp/awardGold, stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp,
+--   level/maxHp/maxMp/sex/nation/setNation/map/coins/spendGold, classId/basePathId/canLearnDogSpells,
+--   npcName, killCount/totalKills/mounted, eraHas, bubble/notify, gameDate,
 --   karma/karmaLevel/karmaCheck/addKarma/removeKarma/karmaTooLow.
 -- To expose a new primitive: add a stub here AND a case in Server/NpcScript.cs Dispatch. Edit this file and run
 -- !reload to see changes live -- no server restart. Any NPC with a script here takes precedence over its C#
@@ -33,8 +34,11 @@ function __make_ctx()
   function ctx:countItem(key)           return coroutine.yield({op="countItem", key=key}) end
   function ctx:itemName(key)            return coroutine.yield({op="itemName", key=key}) end
   function ctx:learnSpell(key)          return coroutine.yield({op="learnSpell", key=key}) end
+  function ctx:hasSpell(key)            return coroutine.yield({op="hasSpell", key=key}) end
+  function ctx:forgetSpell(key)         return coroutine.yield({op="forgetSpell", key=key}) end
   function ctx:eraHas(feature)          return coroutine.yield({op="eraHas", feature=feature}) end
-  function ctx:awardExp(n)              return coroutine.yield({op="awardExp", n=n}) end
+  -- `totem` opts into the +5% totem-time bonus; quest rewards normally don't take it. See NpcScript.cs.
+  function ctx:awardExp(n, totem)       return coroutine.yield({op="awardExp", n=n, totem=totem}) end
   function ctx:awardGold(n)             return coroutine.yield({op="awardGold", n=n}) end
   function ctx:stage(key)               return coroutine.yield({op="stage", key=key}) end
   function ctx:setStage(key, n)         return coroutine.yield({op="setStage", key=key, n=n}) end
@@ -54,7 +58,17 @@ function __make_ctx()
   function ctx:removeLegend(name)       return coroutine.yield({op="removeLegend", name=name}) end
   function ctx:warp(map, x, y)          return coroutine.yield({op="warp", map=map, x=x, y=y}) end
   function ctx:level()                  return coroutine.yield({op="level"}) end
+  function ctx:maxHp()                  return coroutine.yield({op="maxHp"}) end
+  function ctx:maxMp()                  return coroutine.yield({op="maxMp"}) end
+  -- class identity: classId is the exact path (Ju jak = 8), basePathId the base four it descends from
+  -- (Ju jak -> 3 Mage). canLearnDogSpells is the PC-subpath exclusion, owned by C# so scripts can't drift.
+  function ctx:classId()                return coroutine.yield({op="classId"}) end
+  function ctx:basePathId()             return coroutine.yield({op="basePathId"}) end
+  function ctx:canLearnDogSpells()      return coroutine.yield({op="canLearnDogSpells"}) end
+  -- this NPC's display name -- needed when several NPCs share one identifier (the four Dogs).
+  function ctx:npcName()                return coroutine.yield({op="npcName"}) end
   function ctx:killCount(key)           return coroutine.yield({op="killCount", key=key}) end
+  function ctx:totalKills()             return coroutine.yield({op="totalKills"}) end
   function ctx:mounted()                return coroutine.yield({op="mounted"}) end
   function ctx:sex()                    return coroutine.yield({op="sex"}) end
   function ctx:nation()                 return coroutine.yield({op="nation"}) end
@@ -1032,4 +1046,374 @@ function npcs_say.BloodNpc(ctx, speech)
     ctx:say("\"As you wish... I suppose I will make a Frost sabre for another then.\"")
   end
   return true
+end
+
+-- =====================================================================================================
+-- THE DOG LINGUIST (RTK NPCs/Common/dog_linguist.lua) -- four dogs, one identifier.
+--
+-- All four are `DogLinguistNpc` and differ only by NAME, so this one handler speaks as whichever of them
+-- the player is standing next to (ctx:npcName()). It is speech-only: RTK's dogs have an onSayClick and no
+-- click menu, so clicking one still just shows the default greeting.
+--
+-- PART ONE -- learning to bark. Each dog answers one word with the next one; you repeat its word back to
+-- show you understood, and it passes you along. Per the tswolf walkthrough (Wayback 2001-03-11) you must
+-- hear each dog's answer THREE times before the echo counts -- RTK's rewrite dropped the repetition and
+-- took the first echo, which turns a four-stop chain into four one-word answers. The Spotted dog needs
+-- only the single "grrowl" and hands over the legend.
+--
+-- PART TWO -- "secret" to your OWN class's dog teaches its two spells, at 70 and 99, in that order (the
+-- level-99 one is gated on already knowing the level-70 one, which is RTK's ordering too). "The
+-- guildmaster is not involved in these spells" -- see Content.SpellsForClass, which deliberately does not
+-- carry them.
+--
+-- PART THREE -- "cleanse" gives the spells back. RTK wraps this in a "commit to NEVER join a subpath"
+-- prompt, which does not apply here: PC subpaths are what the exclusion is about and they are not joinable
+-- on this server, while NPC subpaths keep their dog spells (Content.CanLearnDogSpells). So the commitment
+-- prompt is dropped and only the undo remains. Like RTK -- and like the live game its comments say it was
+-- checked against -- it takes the SPELLS and the karma but leaves the legend: you are still a linguist,
+-- you have just given the secrets back.
+
+local DOG_LEGEND = "dog_linguist"          -- legend id, also the chain-progress registry key
+local DOG_FLAG   = "dog_flag"              -- Content.DogFlagReg -- set once the chain is finished
+local DOG_ECHO   = "dog_linguist_echo_"    -- prefix: how many times THIS dog has answered you. Per-dog, so a
+                                           -- count left over from another dog (or from a GM @dog reset) can
+                                           -- never pay for the next one's echo.
+local DOG_KILL   = "dog_kill_"             -- kill-count snapshot prefix
+local DOG_TASK   = "dog_task_"             -- "this dog has already set you this task" prefix
+
+-- step = position in the chain; path = the BASE class this dog teaches; hear/answer = the word it responds
+-- to and the word you must give back. Keys are NPCs.csv NpcDescription, matched exactly.
+local DOGS = {
+  ["Mutt"]        = { step = 1, path = 3, hear = "hello",  reply = "Bark!",   answer = "bark"   },
+  ["Jindo dog"]   = { step = 2, path = 2, hear = "bark",   reply = "Woof!",   answer = "woof"   },
+  ["Hunting dog"] = { step = 3, path = 1, hear = "woof",   reply = "Grrowl!", answer = "grrowl" },
+  ["Spotted dog"] = { step = 4, path = 4, hear = "grrowl"                                      },
+}
+
+local DOG_ECHOES_NEEDED = 3
+
+-- The eight Dog spells. `mob`/`mobs` + `kills` is the slaying half (snapshotted, so kills banked before the
+-- dog asked don't pay for it), `items`/`gold` the goods half; a `keep` tier is SHOWN the item and hands it
+-- back rather than sacrificing it. `bigGate` is the atlas's "Must have 20,000 Vita or 10,000 Mana", which
+-- every level-99 dog spell carries.
+--
+-- Numbers are the nexusatlas listing (capture 2002-12-30); where the earlier tswolf capture disagrees the
+-- divergence is recorded in Content.cs beside CanLearnDogSpells. RTK's Lua swapped both level-99 kill
+-- targets for a Golden lobster and Spirit Fury's Ambrosia for a Titanium glove -- not followed.
+local DOG_SPELLS = {
+  -- Warrior
+  [1] = {
+    { key = "greater_blessing", name = "Greater Blessing", level = 70,
+      mob = "trapdoor_spider", kills = 3,
+      mobName = "three Trapdoor spiders (the Ambushing spiders in the Kugnae Spider Cave)" },
+    { key = "spirit_fury", name = "Spirit Fury", level = 99, bigGate = true,
+      mob = "spirit_rabbit", kills = 1, mobName = "the Non-Corporeal Bunny, the boss of Rabbit 3",
+      items = { { "ambrosia", 1 } }, gold = 10000 },
+  },
+  -- Rogue
+  [2] = {
+    { key = "spot_traps", name = "Spot Traps", level = 70,
+      mob = "trapdoor_spider", kills = 3,
+      mobName = "three Trapdoor spiders (the Ambushing spiders in the Kugnae Spider Cave)" },
+    -- tswolf is explicit that the bracelet is SHOWN, "(Not Sacrifice)"; the atlas only says "bring", which
+    -- does not contradict it. So this is the one requirement you keep.
+    { key = "serpents_fury", name = "Serpent's Fury", level = 99, bigGate = true,
+      mobs = { "zinte_ogre", "zangze_ogre" }, kills = 1,
+      mobName = "both Zin-te and Zangze, the two Southern Ogre bosses",
+      items = { { "whisper_bracelet", 1 } }, keep = true },
+  },
+  -- Mage
+  [3] = {
+    { key = "fissure", name = "Fissure", level = 70,
+      items = { { "amber", 1 }, { "amethyst", 1 }, { "quartz", 1 }, { "topaz", 1 } } },
+    { key = "lava_surge", name = "Lava Surge", level = 99, bigGate = true,
+      mob = "ice_panther", kills = 1, mobName = "an Ice panther in the Northern Ogres",
+      items = { { "star_staff", 1 }, { "scribes_pen", 1 } } },
+  },
+  -- Poet
+  [4] = {
+    { key = "survive", name = "Survive", level = 70,
+      items = { { "mountain_ginseng", 10 }, { "pearl_charm", 1 } } },
+    { key = "fascinate", name = "Fascinate", level = 99, bigGate = true,
+      mob = "ice_panther", kills = 1, mobName = "an Ice panther in the Northern Ogres",
+      items = { { "titanium_lance", 1 }, { "purified_water", 1 } } },
+  },
+}
+
+local BIG_GATE_VITA, BIG_GATE_MANA = 20000, 10000
+
+-- Every dog spell, for "cleanse". RTK also strips the four NPC-subpath signature spells here, and its own
+-- comment says that was verified against the live game -- kept.
+local ALL_DOG_SPELLS = {
+  "greater_blessing", "spirit_fury", "spot_traps", "serpents_fury",
+  "fissure", "lava_surge", "survive", "fascinate",
+}
+local CLEANSE_ALSO = { "hyun_moo_revival", "chung_ryongs_rage", "ju_jak_evocation", "baekhos_cunning" }
+local CLEANSE_KARMA = 4.0
+
+-- Speech arrives lowercased and trimmed, but a player may or may not type the exclamation mark the dogs
+-- themselves use ("Bark!" vs "bark"), so compare on the bare word.
+local function bare_word(s)
+  return (string.gsub(s, "[!%.%?%s]+$", ""))
+end
+
+-- Kill requirements are DELTAS from the moment the dog SET the task (RTK calls flushKills for the same
+-- reason; we have no reset, so we snapshot instead). The task has to be assigned explicitly, in its own
+-- registry key, for two reasons: without it the first visit would silently accept a lifetime of old kills,
+-- and every later "am I done yet?" visit would re-snapshot and wipe the progress you had made.
+local function dog_mobs(tier)
+  return tier.mobs or (tier.mob and { tier.mob }) or {}
+end
+
+local function assign_kills(ctx, tier)
+  for _, mob in ipairs(dog_mobs(tier)) do ctx:setReg(DOG_KILL .. mob, ctx:killCount(mob)) end
+  ctx:setReg(DOG_TASK .. tier.key, 1)
+end
+
+local function kills_done(ctx, tier)
+  if ctx:reg(DOG_TASK .. tier.key) ~= 1 then return false end   -- never asked = never done
+  local need = tier.kills or 1
+  for _, mob in ipairs(dog_mobs(tier)) do
+    if ctx:killCount(mob) - ctx:reg(DOG_KILL .. mob) < need then return false end
+  end
+  return true
+end
+
+local function items_held(ctx, tier)
+  for _, it in ipairs(tier.items or {}) do
+    if not ctx:hasItem(it[1], it[2]) then return false end
+  end
+  return true
+end
+
+-- "(1) Star-staff\n(1) Scribe's pen" -- the shape RTK's own dogs use for their shopping lists.
+local function item_list(ctx, tier)
+  local lines = {}
+  for _, it in ipairs(tier.items or {}) do
+    lines[#lines + 1] = "(" .. it[2] .. ") " .. ctx:itemName(it[1])
+  end
+  if tier.gold and tier.gold > 0 then lines[#lines + 1] = tier.gold .. " gold" end
+  return table.concat(lines, "\n")
+end
+
+-- Take the price and teach. Nothing is spent unless the spell actually lands, so a full spellbook cannot
+-- silently eat the components.
+local function pay_and_teach(ctx, tier)
+  if tier.gold and tier.gold > 0 and ctx:coins() < tier.gold then
+    ctx:say("You have not brought the " .. tier.gold .. " gold I asked for.")
+    return false
+  end
+  if not ctx:learnSpell(tier.key) then
+    ctx:say("Your mind is too full of other secrets to hold this one.")
+    return false
+  end
+  if not tier.keep then
+    for _, it in ipairs(tier.items or {}) do ctx:takeItem(it[1], it[2]) end
+  end
+  if tier.gold and tier.gold > 0 then ctx:spendGold(tier.gold) end
+  ctx:notify("Your mind expands as you learn " .. tier.name)
+  return true
+end
+
+-- The two-stage teach for one spell: slay, then bring.
+local function teach_tier(ctx, tier)
+  if ctx:level() < tier.level then
+    ctx:say("Come back to me when you have gained some insight.")
+    return
+  end
+  if tier.bigGate and ctx:maxHp() < BIG_GATE_VITA and ctx:maxMp() < BIG_GATE_MANA then
+    ctx:say("You are not yet strong enough in body or in will to hold a secret of this weight.")
+    return
+  end
+
+  if #dog_mobs(tier) > 0 and not kills_done(ctx, tier) then
+    local asked = ctx:reg(DOG_TASK .. tier.key) == 1
+    if not asked then assign_kills(ctx, tier) end
+    ctx:say(asked and ("You have not yet slain " .. tier.mobName .. ".")
+                   or ("Ah yes, I believe I can help you. First, slay " .. tier.mobName .. "."),
+            "Return to me when you have done what I have asked.")
+    return
+  end
+
+  if not items_held(ctx, tier) then
+    ctx:say("Ah yes, I believe I can help you. Bring me the following:\n\n" .. item_list(ctx, tier),
+            "Return when you have acquired what I have asked.")
+    return
+  end
+
+  if tier.keep then
+    ctx:say("Show me the " .. ctx:itemName(tier.items[1][1]) ..
+            ". ... Good. Keep it -- it was the seeing I needed, not the taking.")
+  end
+  pay_and_teach(ctx, tier)
+end
+
+local function dog_secret(ctx, dog)
+  if ctx:karmaTooLow() then return end                      -- RTK Tools.checkKarma
+
+  -- Every dog answers to "secret", but only YOUR class's dog has anything to say. RTK returns in silence
+  -- when the pairing is wrong; a line is friendlier and gives away no more than the four dogs' own split.
+  if ctx:basePathId() ~= dog.path then
+    ctx:say("The dog listens politely, but has nothing to teach your kind.")
+    return
+  end
+  if not ctx:canLearnDogSpells() then
+    ctx:say("The dog sniffs at you and turns away. You have given yourself to a path it does not trust.")
+    return
+  end
+
+  local tiers = DOG_SPELLS[dog.path]
+  if not ctx:hasSpell(tiers[1].key) then
+    teach_tier(ctx, tiers[1])
+  elseif not ctx:hasSpell(tiers[2].key) then
+    teach_tier(ctx, tiers[2])
+  else
+    ctx:say("I have taught you all that I can.")
+  end
+end
+
+local function dog_cleanse(ctx, dog)
+  if ctx:karmaTooLow() then return end
+  if ctx:basePathId() ~= dog.path then return end
+
+  local confirm = ctx:menu("Do you wish to clear your mind, giving back what we taught you? It will cost much karma to do so.",
+    { "Yes, clear my mind.", "Nevermind." })
+  if confirm ~= 1 then return end
+
+  for _, key in ipairs(ALL_DOG_SPELLS) do
+    ctx:forgetSpell(key)
+    ctx:setReg(DOG_TASK .. key, 0)   -- RTK resets the teach progress too: earning them back is the whole quest again
+  end
+  for _, key in ipairs(CLEANSE_ALSO) do ctx:forgetSpell(key) end
+  ctx:removeKarma(CLEANSE_KARMA)
+  ctx:say("It is done.")
+end
+
+-- Finishing the chain: the legend, the karma, and the flag that unlocks "secret" at every dog.
+local function become_linguist(ctx)
+  ctx:setStage(DOG_FLAG, 1)
+  ctx:addLegend("Dog linguist (" .. ctx:gameDate() .. ")", DOG_LEGEND, 3, 128)
+  ctx:addKarma(1.0)
+  ctx:say("You think you could now hold a simple conversation in their language.")
+end
+
+function npcs_say.DogLinguistNpc(ctx, speech)
+  local dog = DOGS[ctx:npcName()]
+  if not dog then return false end
+  local word = bare_word(speech)
+
+  if ctx:hasLegend(DOG_LEGEND) then
+    if word == "secret"  then dog_secret(ctx, dog);  return true end
+    if word == "cleanse" then dog_cleanse(ctx, dog); return true end
+    return false                                    -- a linguist has no more chain to walk
+  end
+
+  -- The chain. Each dog only listens once the one before it has passed you along.
+  if ctx:stage(DOG_LEGEND) ~= dog.step - 1 then return false end
+  if word ~= dog.hear and word ~= dog.answer then return false end
+
+  -- The Spotted dog is the end of the chain: one "grrowl" and you are a linguist.
+  if not dog.reply then
+    ctx:setStage(DOG_LEGEND, dog.step)
+    become_linguist(ctx)
+    return true
+  end
+
+  local echo = DOG_ECHO .. dog.step
+
+  if word == dog.hear then
+    ctx:bubble(dog.reply)
+    ctx:setReg(echo, ctx:reg(echo) + 1)
+    return true
+  end
+
+  -- word == dog.answer: the echo only counts once you have heard the word enough times to have learned it.
+  if ctx:reg(echo) >= DOG_ECHOES_NEEDED then
+    ctx:setStage(DOG_LEGEND, dog.step)
+    ctx:setReg(echo, 0)
+  end
+  return true
+end
+
+-- =====================================================================================================
+-- THE OLD DOG -- Poet's Restore (nexusatlas /quests/poetsrestore.php; RTK NPCs/wilderness/old_dog.lua).
+--
+-- RESTORE IS NOT A DOG SPELL. The Dog Linguist legend is only the PREREQUISITE; the spell itself is a
+-- poet spell, so the gate is "any poet path" -- Poet, Hyun moo, Druid, Monk, Muse, i.e. basePathId 4 --
+-- and NOT Content.CanLearnDogSpells, which exists to keep PC subpaths away from the eight dog spells and
+-- would wrongly refuse a Druid or a Muse here. RTK gets this right too (`player.baseClass == 4`).
+--
+-- Level 99. Click the Old DOG -- the Old man beside him is a decoy and the page says so. He sends you to
+-- kill Storm; you come back and click him again to be taught.
+--
+-- "Do NOT kill anything else along the way" is quoted from the walkthrough and is enforced: the tally is
+-- taken when he sets the task, and on your return the ONLY thing you may have killed since is Storm. RTK
+-- has no such check. It is made recoverable rather than terminal -- a spoiled hunt re-arms the task
+-- instead of ending the quest -- because the page describes a fight players expect to die in.
+--
+-- Group play is supported and is the intended way to do it (Storm one-shots poets): quest credit follows
+-- the experience share, so a grouped poet who is paid for the kill is credited for it. See
+-- Session.AwardKillExp. The one thing the page describes that we do NOT reproduce is doing it while DEAD:
+-- a dead member draws no exp share here (an existing, deliberate RTK-matching rule), so they get no
+-- credit either.
+
+local OLD_DOG_QUEST  = "poet_restore"                            -- 0 = not asked, 1 = hunting Storm
+local OLD_DOG_LEGEND = "avenged_treachery_against_the_dogs"
+local STORM          = "tiger_storm"
+local RESTORE_EXP    = 50000000
+
+function npcs.OldDogNpc(ctx)
+  if ctx:hasLegend(OLD_DOG_LEGEND) then
+    -- RTK re-grants the spell to anyone who has the legend but not the spell, so forgetting it is not
+    -- permanent. Kept: the quest is a once-per-character kill of a boss most poets cannot solo.
+    if ctx:basePathId() == 4 and not ctx:hasSpell("restore_poet") then ctx:learnSpell("restore_poet") end
+    ctx:say("You have already avenged us.")
+    return
+  end
+
+  if ctx:basePathId() ~= 4 or ctx:level() < 99 or not ctx:hasLegend(DOG_LEGEND) then
+    ctx:say("The dog doesn't seem interested in you.")
+    return
+  end
+
+  -- Not yet asked: set the task and snapshot BOTH tallies (Storm's, and everything's).
+  if ctx:stage(OLD_DOG_QUEST) ~= 1 then
+    ctx:setStage(OLD_DOG_QUEST, 1)
+    ctx:setReg(DOG_KILL .. STORM, ctx:killCount(STORM))
+    ctx:setReg(DOG_KILL .. "any", ctx:totalKills())
+    ctx:say("In the Rose palace, you will find Storm. Please slay him and return to me.",
+            "Slay nothing else along the way -- come back with his blood on you and no other's.")
+    return
+  end
+
+  local storm = ctx:killCount(STORM) - ctx:reg(DOG_KILL .. STORM)
+  local any   = ctx:totalKills()     - ctx:reg(DOG_KILL .. "any")
+
+  if storm < 1 then
+    ctx:say("Return to me after you have slain Storm.")
+    return
+  end
+
+  if any > storm then
+    ctx:setReg(DOG_KILL .. STORM, ctx:killCount(STORM))    -- re-arm rather than end the quest
+    ctx:setReg(DOG_KILL .. "any", ctx:totalKills())
+    ctx:say("You reek of other blood. The hunt was to be for Storm alone.",
+            "Go back. Find him again, and touch nothing else.")
+    return
+  end
+
+  -- Teach FIRST: learnSpell fails on a full spellbook ("Make sure you have an empty spell slot"), and the
+  -- quest must survive that rather than paying out the legend and the fifty million for nothing.
+  if not ctx:learnSpell("restore_poet") then
+    ctx:say("Your mind is too full to hold what we would give you. Make room, and return.")
+    return
+  end
+
+  -- "Small Karma increase" (atlas). RTK writes math.random(0.1, 0.3), which in Lua truncates both bounds to
+  -- 0 and so awards NOTHING -- a flat mid-range 0.2 is the nearest thing its author clearly meant.
+  ctx:addKarma(0.2)
+  ctx:awardExp(RESTORE_EXP, true)                    -- takes the totem bonus: 52,500,000 at totem time
+  ctx:addLegend("Avenged treachery against the dogs (" .. ctx:gameDate() .. ")", OLD_DOG_LEGEND, 5, 128)
+  ctx:setStage(OLD_DOG_QUEST, 0)
+  ctx:say("Thank you for avenging us.")
 end
