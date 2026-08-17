@@ -566,6 +566,18 @@ public sealed partial class Session
     //   0x07 = Realm center (F4, camera lock)   0x09 = Fast move   (others logged, not yet acted on).
     // For realm-center we flip the flag and re-apply it via an in-place refresh (0x15 mapinfo carries the
     // realm byte to the client's camera rebuild @0x44c570), mirroring RTK's case 0x07 (sendmapinfo/setpos).
+    // Re-send the map-entry trio (0x15 mapinfo + position + self-look) in place, then re-assert the peers and
+    // mobs the 0x15 rebuild drops. Used whenever a byte the client reads ONLY at map-entry has to change live:
+    // both the F4 realm-center camera lock and the weather arm/disarm render byte ride the 0x15 mapinfo cell,
+    // and re-sending it is the only way to move them without an actual map change.
+    internal void RefreshMapInPlace()
+    {
+        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
+        SendXy();
+        SendSelfLook();
+        RedrawWorld();
+    }
+
     private void HandleSetting(byte[] dec)
     {
         byte setting = dec.Length > 0 ? dec[0] : (byte)0;
@@ -659,9 +671,13 @@ public sealed partial class Session
             SaveChar();
             SendMessage(SettingLine(label, on));
             Log.Info($"   -> setting 0x{setting:X2} {label} = {(on ? "ON" : "OFF")}");
-            // Weather is the only one of these with a packet behind it: turning it off must black out the
-            // effect immediately rather than waiting for the next map change (RTK case 0x06 -> clif_sendweather).
-            if (setting == 0x06) SendWeather();
+            // Weather is the only one of these with a packet behind it, and it needs BOTH halves to take effect
+            // live: the 0x1F state (intensity) AND the 0x15 mapinfo render byte (4=armed / 5=disarmed), which is
+            // the master "draw weather on this map" switch — the 0x1F state alone isn't enough (see SendMapInfo).
+            // That byte is normally only sent at map-entry, so without re-sending mapinfo here, toggling weather
+            // off left the map ARMED and the effect kept drawing until the next map change. RefreshMapInPlace
+            // re-sends it now (mirrors the F4 realm-center refresh, which moves the same cell the same way).
+            if (setting == 0x06) { SendWeather(); RefreshMapInPlace(); }
         }
         else
         {

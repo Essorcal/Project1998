@@ -1888,8 +1888,9 @@ public sealed partial class Session
         b.AddRange(Be(ys));
         // Render mode. RTK's clif_sendmapinfo writes 5 normally and 4 when the player's "Weather change"
         // toggle is on (clif.c:4600), so this cell arms the map for weather drawing — the 0x1F state alone
-        // isn't enough. Follows the same setting bit SendWeather gates on, which is why toggling it re-sends
-        // mapinfo nowhere: the next map change carries it, and 0x1F handles the immediate case.
+        // isn't enough. Follows the same setting bit SendWeather gates on. Because this byte is the master
+        // arm/disarm switch and only rides mapinfo, the 0x1b sub-6 toggle re-sends mapinfo in place
+        // (Session.RefreshMapInPlace) so disabling weather clears it NOW instead of at the next map change.
         b.Add(_char.HasSetting(0x06) ? (byte)4 : (byte)5);
         b.Add(_realm);       // realm-center camera lock (0=off edge-aware, 1=on centered); toggled by F4
         b.Add((byte)t.Length);
