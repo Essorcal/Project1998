@@ -625,15 +625,16 @@ public sealed partial class Session
             }
             else
             {
-                // F10 / Options-menu open. EXPERIMENT (testing the "is this a request for the option state?"
-                // hypothesis): re-assert the weather setting when the menu opens, so the WEATHER CHANGE checkbox
-                // can reflect the server-persisted HasSetting(0x06) instead of the client's compile-time default.
-                // The weather option only rides the mapinfo render byte (4=on/5=off), so RefreshMapInPlace is the
-                // carrier. If the checkbox syncs after this, F10's 0x1b 00 00 IS an options-request; if not, the
-                // checkbox is a client-local flag no server packet can set (RTK's clif_sendoptions is dead code).
-                Log.Info($"   -> setting 0x00 options-open (F10) [{Convert.ToHexString(dec)}] — re-asserting weather state (experiment)");
-                SendWeather();
-                RefreshMapInPlace();
+                // F10 / Options-menu open — the client just announcing the menu is up. No state change.
+                // (RTK treats this same 0x1b sub-0 / dec[1]!=1 as its ride case with the activate byte unset,
+                // i.e. a no-op too.) It is NOT a request for the option state: re-asserting the weather setting
+                // here — via 0x1F and the mapinfo render byte — was tested live and did NOT sync the WEATHER
+                // CHANGE checkbox. That checkbox is a client-local flag the client only sets from a server
+                // options packet (RTK clif_sendoptions / 0x23), which is dead in RTK and unhandled by the 4.95
+                // client (dispatch maps 0x23 to the default no-op). So the checkbox reverting to ON is original
+                // 4.95 behaviour and no server packet can change it. Weather itself is driven correctly by the
+                // render byte (see the sub-6 toggle + RefreshMapInPlace), so disabling still clears it live.
+                Log.Info($"   -> setting 0x00 options-open (F10), no-op [{Convert.ToHexString(dec)}]");
             }
         }
         else if (setting == 0x02)
