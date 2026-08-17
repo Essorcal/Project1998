@@ -2134,6 +2134,7 @@ public sealed partial class Session
     // overkill backflow/overflow, and (ambush) the leap + swing. Mirror CastSacrificeStrike/CastAmbush (kept as
     // fallback). A single stash holds the resolved target for the rest of the cast.
     private Mob? _frontStrikeMob;
+    private Session? _frontStrikePc;
     private int  _frontStrikeX, _frontStrikeY;
 
     internal string LuaSacrificeFamily(SpellDef sp) => Content.SacrificeFamilyFor(sp)?.ToString() ?? "";
@@ -2150,13 +2151,30 @@ public sealed partial class Session
     {
         var (fx, fy) = FrontTile();
         _frontStrikeX = fx; _frontStrikeY = fy;
-        _frontStrikeMob = _world.MobAt(_char.Map, fx, fy);
-        return _frontStrikeMob is not null && _frontStrikeMob.Alive;
+        _frontStrikePc = null;
+        var m = _world.MobAt(_char.Map, fx, fy);
+        _frontStrikeMob = (m is not null && m.Alive) ? m : null;
+        if (_frontStrikeMob is not null) return true;
+        // No mob on the faced tile: in a PvP map a player standing there is a legal target too (RTK canPK),
+        // so Whirlwind/Berserk & the rogue strikes land the same one-tile hit against a peer as against a mob.
+        // Off a PvP map there's nothing to hit — the strike swings at empty air (mana/cooldown still spent).
+        if (Content.IsPvpMap(_char.Map)) _frontStrikePc = _world.PeerAt(_char.Map, fx, fy);
+        return _frontStrikePc is not null;
     }
     internal int LuaSacApply(SpellDef sp, int damage)
     {
-        if (_frontStrikeMob is not { } mob) return 0;
         var fam = Content.SacrificeFamilyFor(sp) ?? Content.SacrificeFamily.Berserk;
+        // PvP: the strike landed on a player. Route through the canonical PvP damage path (deflect roll,
+        // Deduction, death penalty) — mana was already spent in the verb, so pass 0. No overkill backflow /
+        // AoE overflow against a peer (return 0), and the caster still pays the post-hit HP cost in the verb.
+        if (_frontStrikePc is { } pc)
+        {
+            if (HitPlayerWithSpell(pc, damage, 0, sp))
+                BroadcastFx(pc._char.Id, SacrificeAnim(fam), SacrificeSound(fam));
+            Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) on player '{pc._char.Name}' dmg {damage} (pvp)");
+            return 0;
+        }
+        if (_frontStrikeMob is not { } mob) return 0;
         int netDamage = Combat.ApplyArmor(damage, mob.Ac, floor: -95);
         int overkill = netDamage - (int)mob.Hp;   // overkill uses the mob's PRE-hit HP (RTK), read before TryDamage
         _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
