@@ -115,25 +115,59 @@ public sealed partial class Session
         Log.Info($"   -> ALIGN set to {_char.Alignment} ({Character.AlignmentName(_char.Alignment)})");
     }
 
-    // "@spell <name|id>" — learn a single spell/skill by fuzzy name or id, free and out of band: any class,
-    // any level, any rank. The one spell command left, and the escape hatch for everything the rebuild grant
-    // deliberately withholds — a lower rung of a ladder (@lvl gives you Hellfire, this gives you Spark back),
-    // another class's ability, or a mark secret before you have the mark. A later @lvl/@class/@mark/@align
-    // rebuilds the book and takes it away again, by design.
-    private void LearnSpellCmd(string text)
+    /// <summary>"@spell &lt;name or id&gt;" — teach ONE ability outright, ignoring class, level, mark and
+    /// alignment. Matches by display name, then by identifier, then by raw Spells row id (Content.FindSpell),
+    /// and appends to the book rather than rebuilding it.
+    ///
+    /// <para>This is deliberately the ONLY additive grant path, and it is the narrow one: a single named
+    /// ability, one at a time. The old learn-everything "@spells" is not coming back — it could only grow the
+    /// book, so a character who had been three classes carried all three books at once, which is exactly what
+    /// <see cref="SyncSpellbook"/> exists to prevent. Note the corollary: because @lvl / @class / @mark /
+    /// @align each REBUILD the book from the entitlement set, anything taught here is wiped by the next one
+    /// of those. Teach after the rebuild, not before.</para></summary>
+    private void TeachSpellCmd(string text)
     {
         string q = text.Trim();
-        if (q.Length == 0) { SendLog($"usage: {Prefix}spell <name or id>   (the class book itself comes from {Prefix}lvl / {Prefix}class / {Prefix}mark)"); return; }
+        if (q.Length == 0)
+        {
+            SendLog($"usage: {Prefix}spell <name or id>   (learn one ability, any class — {Content.Spells.Count} exist)");
+            return;
+        }
+
         var sp = Content.FindSpell(q);
-        if (sp is null) { SendLog($"no spell matches \"{q}\"."); return; }
+        if (sp is null)
+        {
+            SendLog($"no spell matches \"{q}\".");
+            var near = Content.SearchSpells(q, 8);
+            if (near.Count > 0) SendLog("  closest: " + string.Join(", ", near.Select(s => s.Name)));
+            return;
+        }
+
+        // The 8 post-2003 individual trap spells when the era gate is off. Teaching one would LOOK like it
+        // worked and then vanish on the next login, because RefreshSpells prunes them out of a saved book —
+        // so refuse here and name the toggle instead of handing over a spell that quietly evaporates.
         if (Content.IsOutOfEraSplitTrap(sp))
-        { SendLog($"{sp.Name} is a 2003-07-01 addition — out of era for 4.95. Use Set Trap, or set SplitTrapSpells=1 in ServerTuning.csv + @reload."); return; }
-        if (_char.Spells.Contains(sp.Id)) { SendLog($"You already know {sp.Name}."); return; }
-        if (_char.Spells.Count >= SpellBookCap) { SendLog($"Spellbook full ({SpellBookCap})."); return; }
+        {
+            SendLog($"{sp.Name} is post-4.95 content and is switched off — Set Trap still sets that trap. " +
+                    $"To enable it, set SplitTrapSpells=1 in game-data/ServerTuning.csv and {Prefix}reload.");
+            return;
+        }
+        if (_char.Spells.Contains(sp.Id)) { SendLog($"You already know {sp.Name} (slot {_char.Spells.IndexOf(sp.Id) + 1})."); return; }
+        if (_char.Spells.Count >= SpellBookCap)
+        {
+            SendLog($"Spellbook is full at {SpellBookCap} slots — rebuild it ({Prefix}lvl {_char.Level}) to clear " +
+                    $"room, or raise P1998_SPELLBOOK_CAP.");
+            return;
+        }
+
         _char.Spells.Add(sp.Id);
         SendAddSpell(_char.Spells.Count - 1, sp);
         if (_enteredWorld) StoreSave();
-        SendLog($"Learned {sp.Name} ({(sp.IsSkill ? "skill" : "spell")}, {Content.PathName(sp.PathId)}).");
+
+        SendLog($"Learned {sp.Name} — {(sp.IsSkill ? "skill" : "spell")} slot {_char.Spells.Count}, " +
+                $"{Content.PathName(sp.PathId)} lvl {sp.Level}. (A {Prefix}lvl/{Prefix}class/{Prefix}mark/{Prefix}align rebuild will forget it.)");
+        Log.Info($"   -> @spell taught '{sp.Name}' (id {sp.Id} key {sp.Key} type {sp.Type} path {sp.PathId}) " +
+                 $"to '{_char.Name}' -> slot {_char.Spells.Count - 1}");
     }
 
     /// <summary>Empty the book: one 0x18 remove per slot (highest first, so the client's array shifts under
@@ -162,6 +196,14 @@ public sealed partial class Session
         // before the slot is resolved: no spell is exempt, and there is nothing to be gained from letting a
         // sleeping caster pick which one they can't cast.
         if (Asleep) { SendMiniText("You are asleep."); return; }
+        // NO-CASTING MAP GATE (RTK clif.c:11427 — the whole 0x0F opcode is wrapped in
+        // `if (map[sd->bl.m].spell || sd->status.gm_level)`, else "That doesn't work here."). This is the
+        // rule that keeps magic out of the towns' interiors: taverns, shops, the Gathering halls, the class
+        // trainers' buildings. Blanket, before the slot is even resolved — no spell is exempt, including
+        // Hyun Moo Revival, and staff bypass it exactly as RTK's gm_level does (so a GM can still work in a
+        // locked room). See Content.SpellsAllowed for why MapIndoor is NOT the flag to key this off.
+        if (!Content.SpellsAllowed(_char.Map) && !IsGm)
+        { SendMiniText("That doesn't work here."); return; }
         // MOUNT GATE. You can't cast from horseback — same state gate the equip/use paths already apply
         // (Session.Items.cs), and the same clif_sendminitext wording. Checked before the slot is even
         // resolved: no spell is exempt, not even Hyun Moo Revival (you can't be dead AND mounted anyway).
@@ -202,6 +244,34 @@ public sealed partial class Session
             ? (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]) : null;
         Log.Info($"   -> CAST '{sp.Name}' slot {slot} type {sp.Type} base '{Content.BaseKey(sp)}'" +
                  $"{(answer is null ? "" : $" answer '{answer}'")} by {_char.Name}");
+
+        // CAST DELAY — the shared cast/swing slot (Session.Combat.cs _nextActionTick, Content.CastDelayMs).
+        // Placed here, ahead of ApplyCast, so a held cast spends NO mana, fires no animation and prints no
+        // "You cast X." until it actually goes off. Spells with no delay (every heal/buff, Ambush, and the
+        // dog 5-way) skip this entirely — they neither wait on the slot nor arm it, so they stay castable
+        // mid-swing at the ordinary 3/sec action budget.
+        //
+        // HELD, NOT DROPPED. Per the user: swing then cast Invisible too slowly to stack, and the cast is not
+        // lost — "the invis animation change will apply as soon as the swing is finished: full attack
+        // animation, become invisible animation". So a slot-blocked cast goes on the SAME queue the
+        // over-budget path already uses and fires when the slot frees (drained at the top of every inbound
+        // packet, and the client's ~31ms repeat means that lands within ~31ms of the boundary).
+        //
+        // The queue's 250ms expiry is what keeps this from contradicting the live capture, where 138 held
+        // spark casts produced only 36 confirmations: a 333ms swing frees the slot inside that window so the
+        // cast survives to fire, whereas a 1000ms cast delay outlives it and the queued cast is discarded.
+        // One mechanism, both behaviours, split by how long the block lasts.
+        int castDelay = Content.CastDelayMs(sp);
+        if (castDelay > 0)
+        {
+            if (!ActionSlotReady)
+            {
+                Log.Info($"   -- cast held: {ActionSlotLeft}ms left of the shared cast/swing slot");
+                if (CastQueueEnabled) QueueCast(dec);
+                return;
+            }
+            ArmActionSlot(castDelay);
+        }
 
         _castNarrated = false;   // reset each cast; a self-narrating spell sets it to skip the generic line below
         if (!ApplyCast(sp, targetId, answer)) return;   // couldn't cast (no mana / too weak) — a message was already sent
@@ -323,14 +393,20 @@ public sealed partial class Session
         if (Content.RageAmountFor(sp) is int rageAmt) return Lua(CastStanceArch("stance_rage", sp, fx, mana, rageAmt), sp);
         if (Content.IsStealthSpell(sp))
         {
-            // Guard + cooldown-arm live HERE (not in CastStealth) because the dispatch prefers the Lua verb
+            // The guard lives HERE (not in CastStealth) because the dispatch prefers the Lua verb
             // `stance_stealth`, which bypasses CastStealth entirely — so anything only CastStealth did would
             // silently not happen. Already invisible? Re-casting is a no-op (matches morph), no mana spent.
+            //
+            // NO COOLDOWN ARM. There used to be a `SetCooldown(sp.Key, fx.Aether)` here, fed by a 1000ms
+            // aether on all four stealth rows; both are gone (the CSV column is now blank). Live gives no
+            // cooldown warning for Invisible at all — its only three lines are "You cast Invisible.",
+            // "You already cast that spell." and "You are no longer invisible." — because the 1s wait is not
+            // a cooldown, it is the shared cast/swing slot (Content.CastDelayMs), which drops silently. The
+            // aether column was where our extractor happened to record that delay, and keeping it produced a
+            // bogus fourth message, "Invisible isn't ready yet (0s).".
             if (Stealthed) { SendMiniText("You already cast that spell."); return false; }
             _stealthName = sp.Name;
-            bool okStealth = Lua(CastStanceArch("stance_stealth", sp, fx, mana, 0), sp);
-            if (okStealth && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);   // anti-spam once stealth drops (RTK aether)
-            return okStealth;
+            return Lua(CastStanceArch("stance_stealth", sp, fx, mana, 0), sp);
         }
         if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return Lua(CastStanceArch("stance_enchant", sp, fx, enchantMana, enchantAmt), sp);
 
@@ -381,6 +457,18 @@ public sealed partial class Session
         if (Content.AreaSpellFor(sp) is (string areaVerb, int areaMana))
             return Lua(CastArch(areaVerb, sp, fx, null, areaMana), sp);
 
+        // The dog 5-way (Fissure / Lava Surge). Same reason for intercepting here as the 4-way above: their
+        // export rows are perfectly good Damage rows, so they reached the single-target archetype and hit
+        // exactly one thing instead of five. Their mana IS correct in the export (120 / 210), so unlike the
+        // 4-way family there is no side table — `mana` as computed above is right.
+        if (Content.IsTargetAreaZap(sp))
+            return Lua(CastArch("target_area_zap", sp, fx, targetId, mana), sp);
+
+        // Read the pool BEFORE the archetype spends anything: the post-cast drain below is a fraction of what
+        // you were holding when you cast, not of what's left after the row's own mana cost came out (RTK
+        // hellfire.lua computes its manaTaken on the line above its global_zap call, for exactly that reason).
+        uint preCastMp = _char.Mp;
+
         // Archetype dispatch — every archetype now runs its `arch_<name>` verb in spell_verbs.lua. There is no
         // C# handler behind any of them any more: the whole spell system is scriptable and hot-reloadable, and
         // Lua() turns "no such verb" into a visible failed cast rather than a silent fallthrough.
@@ -396,9 +484,30 @@ public sealed partial class Session
             // "debit the mana"; the caster line comes from HandleCast. 137 of the 640 exported spells land here.
             _            => Lua(CastArch("misc", sp, fx, targetId, mana), sp),
         };
-        // "Takes all mana" spells spend the whole pool AFTER the damage is computed from it (Content
-        // .ConsumesAllMana). Their rows say mana=0 precisely because the real cost is "everything".
-        if (ok && Content.ConsumesAllMana(sp)) { _char.Mp = 0; MarkDirty(); SendStats(); }
+        // Pool-fraction spells (Content.PostCastManaDrainFor — the whole pool for Inferno/Dooms Fire and the
+        // Retribution family, 70% for Hellfire's, a third for Restore) spend their share AFTER the damage or
+        // heal is computed, from the SAME pre-cast reading the amount came from. Which is the point: these
+        // scale off the pool at both ends, so taking the cost first would quietly halve the effect. Floors at
+        // zero rather than underflowing, matching RTK's own guard.
+        var (drainPct, gateOnly) = Content.PostCastManaDrainFor(sp);
+        if (ok && drainPct > 0)
+        {
+            // Restore's 1000 was a bar to clear, not a bill — the archetype charged it anyway, so put it back
+            // before taking the real share (never above what the cast started with).
+            if (gateOnly) _char.Mp = Math.Min(preCastMp, _char.Mp + (uint)Math.Max(0, mana));
+            uint drain = (uint)Math.Floor(preCastMp * drainPct);
+            _char.Mp = drain >= _char.Mp ? 0 : _char.Mp - drain;
+            MarkDirty(); SendStats();
+        }
+        // Same shape on the vita side (Content.PostCastVitaKeepFor): Slash keeps 90% of your health, the
+        // Assault family half. Only on a cast that landed — `ok` is false for a swing that found nothing, which
+        // is exactly the branch RTK guards these with. Ceiling so it can never take the last point and kill you.
+        double vitaKeep = Content.PostCastVitaKeepFor(sp);
+        if (ok && vitaKeep < 1.0)
+        {
+            _char.Hp = (uint)Math.Max(1, Math.Ceiling(_char.Hp * vitaKeep));
+            MarkDirty(); SendStats();
+        }
         if (ok && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
         return ok;
     }
@@ -412,6 +521,11 @@ public sealed partial class Session
     {
         if (!SpellScript.HasVerb(verb)) return null;
         double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
+        // Chin-Baek-Ho-Ryung (Black Potion, 10s): x1.5 on Slash / Assault / Feral Berserk, applied to the
+        // evaluated amount exactly where RTK applies it — right after the damage is computed and before
+        // anything is charged. Berserk and Whirlwind take the same bonus inside the sacrifice verb.
+        if (Content.TakesChinBaekHoRyung(sp) && HasStatusFlag(Content.ChinBaekHoRyung))
+            amount = Math.Ceiling(amount * 1.5);
         return SpellScript.Run(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
     }
 
@@ -522,7 +636,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardKillExp(reward, _char.Map, mob!.X, mob.Y);   // AwardExp shows "+N experience"; no separate caster flavor
+                AwardKillExp(reward, _char.Map, mob!.X, mob.Y, mob.Key);   // AwardExp shows "+N experience"; no separate caster flavor
             }
             Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
         }
@@ -555,7 +669,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardKillExp(reward, _char.Map, mob!.X, mob.Y);   // AwardExp shows "+N experience"; no separate caster flavor
+                AwardKillExp(reward, _char.Map, mob!.X, mob.Y, mob.Key);   // AwardExp shows "+N experience"; no separate caster flavor
             }
             Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
         }
@@ -608,7 +722,7 @@ public sealed partial class Session
                 {
                     BroadcastFx(mob.Id, anim, snd);
                     ShowDamageResult(mob.Id, mob, died);
-                    if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y);
+                    if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y, mob.Key);
                     hitCount++;
                 }
                 continue;
@@ -621,6 +735,88 @@ public sealed partial class Session
             hitCount++;
         }
         Log.Info($"      (lua) {sp.Name} -> 4-way zap {amt} dmg, {hitCount} target(s)");
+        return hitCount;
+    }
+
+    // The dog 5-way (Fissure / Lava Surge). RTK's offsets, in RTK's order — note the leading {0,0}, which is
+    // what makes this five cells and not four: the target's own tile is hit as well as its neighbours.
+    private static readonly (int dx, int dy)[] TargetAreaCells = { (0, 0), (-1, 0), (0, -1), (1, 0), (0, 1) };
+
+    // Fissure/Lava Surge miss ONLY on range. Head Tutor Nussan's board entry is the whole specification:
+    // "Ranged, targetable 5 way attack. Cast on yourself or monsters. Misses sometimes if you're too far
+    // away. When cast on the target, anything on the 4 sides gets hit as well, full damage. Can be cast
+    // extremely fast." — so no flat deflect roll (an earlier draft of this method used sp.CanFail/RollDeflect,
+    // which is the wrong failure mode), no damage falloff on the neighbours, and no cast delay.
+    //
+    // THE RAMP BELOW IS INFERRED. The corpus gives no percentage anywhere, only "sometimes if you're too far
+    // away", so the shape is ours: certain within FissureTrueRange, then climbing linearly to FissureMaxMiss
+    // at the engine's own reach limit. That limit is NOT invented — RTK's global_zap enforces
+    // `distanceSquare(player, target, 10)`, a 10-tile square, on every zap.
+    private const int FissureTrueRange = 3;      // never misses this close
+    private const int FissureMaxRange  = 10;     // RTK global_zap's own cap
+    private const double FissureMaxMiss = 0.50;  // miss chance at the cap
+
+    /// <summary>The dog 5-way fire: damage everything on the target's tile and its four neighbours, at FULL
+    /// damage on every cell. Unlike <see cref="LuaAreaZap"/> the sweep is centred on the TARGET, so it reaches
+    /// across the room; aimed at yourself (or at nothing) it centres on you, which the tutor explicitly allows
+    /// ("Cast on yourself or monsters"). Aimed at nothing it is still a legal cast that costs full price — RTK
+    /// spends the mana before the loop and prints the cast line after it, unconditionally.</summary>
+    internal int LuaTargetAreaZap(int amt, SpellDef sp, uint? targetId)
+    {
+        var (epMob, epPc) = ResolveDamageTarget(targetId);
+        // Self-cast is a documented mode, not a fallback: centre the blast on us and let the four sides catch
+        // whatever has closed to melee range.
+        int ox = epMob?.X ?? epPc?._char.X ?? _char.X;
+        int oy = epMob?.Y ?? epPc?._char.Y ?? _char.Y;
+
+        // One range roll for the whole cast — "misses" is about the spell not reaching, so it can't sensibly
+        // land on some cells of the blast and not others. Square distance, matching RTK's own reach test.
+        // DOG FAMILY ONLY: the Inferno and Earthquake ladders share this 5-way shape but nothing documents a
+        // range miss for them (Inferno is gated by a 70s aether instead), so they get the reach cap and no roll.
+        int dist = Math.Max(Math.Abs(ox - _char.X), Math.Abs(oy - _char.Y));
+        if (dist > FissureMaxRange)
+        { SendMiniText($"{sp.Name} cannot reach that far."); return 0; }
+        if (Content.IsDogFireSpell(sp) && dist > FissureTrueRange)
+        {
+            double miss = FissureMaxMiss * (dist - FissureTrueRange) / (double)(FissureMaxRange - FissureTrueRange);
+            if (Random.Shared.NextDouble() < miss)
+            { SendMiniText($"{sp.Name} misses."); Log.Info($"      (lua) {sp.Name} -> missed at range {dist} (p={miss:P0})"); return 0; }
+        }
+
+        if (amt < 1) amt = 1;
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
+        bool pvp = Content.IsPvpMap(_char.Map);
+        int hitCount = 0;
+        foreach (var (dx, dy) in TargetAreaCells)
+        {
+            int cx = ox + dx, cy = oy + dy;
+            if (cx < 0 || cy < 0) continue;
+            var mob = _world.MobAt(_char.Map, (ushort)cx, (ushort)cy);
+            if (mob is not null)
+            {
+                if (mob.IsNpc) continue;                       // NPCs are indestructible
+                if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+                {
+                    BroadcastFx(mob.Id, anim, snd);
+                    ShowDamageResult(mob.Id, mob, died);
+                    if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y, mob.Key);
+                    hitCount++;
+                }
+                continue;
+            }
+            var peer = _world.PeerAt(_char.Map, (ushort)cx, (ushort)cy);
+            if (peer is null || ReferenceEquals(peer, this) || !pvp) continue;
+            // No RollDeflectPvp here either: the range roll above is this spell's ONLY failure mode.
+            BroadcastFx(peer._char.Id, anim, snd);
+            // THIS victim, not the primary target — RTK sends every one of these lines to `target` instead
+            // (fissure.lua:36-38), so the centre player collected a line per bystander and the bystanders
+            // were told nothing. See Content.TargetAreaZapSpells.
+            peer.ReceiveSpellDamage(amt, this, sp.Name);
+            hitCount++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> 5-way zap {amt} dmg around ({ox},{oy}), {hitCount} target(s)");
         return hitCount;
     }
 
@@ -759,14 +955,19 @@ public sealed partial class Session
 
     // ---- extra primitives for COMPOSED spell verbs (e.g. Baekho's Cunning: a stateful multi-tier stance that
     // combines a rage multiplier + deduction + positional stances). A transient per-session int registry (NOT
-    // persisted — spell/combat state should reset on relog, unlike _char.Quests) and a named-duration map
-    // (mirrors RTK setDuration/hasDuration) let a verb hold its own state without any bespoke C# handler.
+    // persisted — spell/combat state should reset on relog, unlike _char.Quests) lets a verb hold its own
+    // state without any bespoke C# handler.
     private readonly Dictionary<string, int>  _spellReg  = new();
-    private readonly Dictionary<string, long> _durations = new();
     internal int  LuaReg(string key)                 => _spellReg.GetValueOrDefault(key, 0);
     internal void LuaSetReg(string key, int v)       => _spellReg[key] = v;
-    internal bool LuaHasDuration(string key)         => _durations.TryGetValue(key, out var e) && Environment.TickCount64 < e;
-    internal void LuaSetDuration(string key, int ms) => _durations[key] = Environment.TickCount64 + ms;
+
+    // setDuration/hasDuration are RTK's ONE named-timer namespace, and the spell side and the item side both
+    // live in it: black_potion sets `chin_baek_ho_ryung` and five warrior strike SCRIPTS read it. This used to
+    // be a second dictionary private to the spell system, which is precisely why nothing a potion set was ever
+    // visible to a spell (or vice versa) — three separate stores for one RTK concept. It is now the same
+    // _statusFlags map the item verbs write, so the two halves see each other exactly as RTK's do.
+    internal bool LuaHasDuration(string key)         => HasStatusFlag(key);
+    internal void LuaSetDuration(string key, int ms) => SetStatusFlag(key, ms);
     internal bool LuaOnCooldown(string key)          => OnCooldown(key, out _);
     internal void LuaSetCooldown(string key, int ms) => SetCooldown(key, ms);
     // Directly arm the rage multiplier (bypasses CastRage's "already raging" guard — Cunning sets its own tier).
@@ -943,25 +1144,102 @@ public sealed partial class Session
         SendStats();
     }
 
-    // Buff archetype pieces (mirror CastBuff): clear-then-add per stat, then one fx, then the self-flavor line.
-    internal void LuaClearBuff(SpellDef sp) => _buffs.RemoveAll(b => b.Key == sp.Key);   // refresh, don't stack
-    internal void LuaAddBuff(string stat, int amount, int durMs, SpellDef sp)
+    // ---- BUFF primitives (the single `apply_buff` body behind arch_buff AND arch_targetbuff) ------------------
+    // Deliberately shaped like the WARD set below (LuaWardTarget/LuaWardHasStatus/LuaWardAlreadyCast/
+    // LuaApplyWard), which has always covered its own self-cast and ally-cast halves through ONE resolved-target
+    // primitive set. The two buff archetypes differ only in WHO the buff lands on — the caster, or whatever the
+    // cast is aimed at — and keeping that as two parallel code paths is exactly how the exclusivity slot came to
+    // be enforced on one and not the other (RTK has the same split: rogue/might.lua refuses, mage/might.lua
+    // refreshes). Resolved once per cast, then every step reads the resolution.
+    private Session? _buffPc;    // the buff's resolved PC target (the caster for a self-cast, else a peer)
+    private Mob?     _buffMob;   // …or a mob (a stat buff on your pet); mobs carry no exclusivity categories
+
+    /// <summary>Resolve + validate the buff target. <c>"self"</c> → the caster (the Buff archetype, which has no
+    /// target arg on the wire at all). <c>"target"</c> → an explicit id or the faced tile: a PC (incl. yourself)
+    /// or a mob. False when nothing resolves, and SILENTLY — a cast that finds nothing says nothing, which is
+    /// the rule the TargetBuff path has always followed.</summary>
+    internal bool LuaBuffTarget(string mode, uint? targetId)
     {
-        if (string.IsNullOrEmpty(stat) || amount == 0 || durMs <= 0) return;
-        _buffs.Add(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durMs, Key = sp.Key, Name = sp.Name });
+        _buffPc = null; _buffMob = null;
+        if (mode == "self") { _buffPc = this; return true; }
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (pc is null && mob is null) return false;
+        _buffPc = pc; _buffMob = mob;
+        return true;
+    }
+
+    // The RTK checkIfCast guard, over the resolved target. Buffs were the one status family that skipped it:
+    // arch_buff just cleared its own key and re-applied, so Might could be spammed indefinitely and — worse —
+    // Might + Spirit Strength (RTK's SAME `mights` slot, different keys) stacked. Player-only, matching the
+    // curse/ward side: a mob carries no categories, so a buff on a pet is never refused.
+    internal bool LuaBuffHasStatus(string category) => _buffPc?.HasStatusCategory(category) ?? false;
+    internal bool LuaBuffAlreadyCast(SpellDef sp)   => _buffPc?.HasStatusFromSpell(sp.Key) ?? false;
+
+    /// <summary>Apply the buff to whatever <see cref="LuaBuffTarget"/> resolved, then play the fx and the
+    /// target's flavor line once. <paramref name="stats"/>/<paramref name="amounts"/> are the export row's raw
+    /// <c>'|'</c>-separated fields ("might" / "might|hit"), split here rather than in Lua so one call covers a
+    /// multi-stat buff without the verb having to sequence clear-then-add-then-fx by hand.
+    ///
+    /// <para><paramref name="category"/> is the RTK exclusivity slot, and passing it is what makes
+    /// <see cref="HasStatusCategory"/> see the buff at all — an uncategorised entry is invisible to every guard.
+    /// A categorised buff lands even with no stat of its own, because then the slot IS the effect (the same rule
+    /// <see cref="ReceiveCurse"/> follows for a protection).</para></summary>
+    internal void LuaApplyBuff(string stats, string amounts, int durMs, SpellDef sp, string category)
+    {
+        if (durMs <= 0) return;
+        var statList = SplitBar(stats);
+        var amtList  = SplitBar(amounts);
+        category ??= "";
+
+        if (_buffPc is not null)
+        {
+            _buffPc.ReceiveTimedBuff(statList, amtList, durMs, sp.Key, sp.Name, category);
+        }
+        else if (_buffMob is not null)
+        {
+            // Mobs carry no exclusivity category (matching the curse/ward side) — just the stat deltas.
+            for (int i = 0; i < statList.Count; i++)
+            {
+                int amt = i < amtList.Count && double.TryParse(amtList[i], out var d) ? (int)Math.Floor(d) : 0;
+                if (statList[i].Length == 0 || amt == 0) continue;
+                _world.ApplyMobBuff(_buffMob, statList[i], amt, durMs, sp.Key);   // under World._lock (races Tick revert)
+            }
+        }
+
+        var fx = Content.FxFor(sp);
+        uint fxId = _buffPc?._char.Id ?? _buffMob!.Id;
+        if (fx is not null) BroadcastFx(fxId, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        if (_buffPc is not null) TellTarget(_buffPc, sp);   // self: flavor, then HandleCast's "You cast X."; ally: "<caster> casts X on you."
+        Log.Info($"      (lua) {sp.Name} -> buff [{(category.Length > 0 ? category : "-")}] {stats}={amounts} {durMs}ms on " +
+                 (_buffPc is not null ? $"player {_buffPc._char.Id} '{_buffPc._char.Name}'" : $"mob {_buffMob!.Id} '{_buffMob.Name}'"));
         SendStats();
     }
+
+    /// <summary>Apply a damage-reduction multiplier (Sanctuary &amp;c) to the resolved target — its own scalar
+    /// slot, not a stat delta, and PLAYERS ONLY. False (having done nothing, spent nothing) if the cast resolved
+    /// to a mob, so the verb can say "<c>&lt;spell&gt; has no effect on that.</c>" and abort.</summary>
+    internal bool LuaApplyDeduction(double mult, int durMs, SpellDef sp)
+    {
+        if (_buffPc is null) return false;
+        _buffPc.ApplySanctuaryDeduction(mult, durMs, sp.Name);
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_buffPc._char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        TellTarget(_buffPc, sp);
+        SendStats();
+        Log.Info($"      (lua) {sp.Name} -> deduction x{mult} on player {_buffPc._char.Id} '{_buffPc._char.Name}' {durMs}ms");
+        return true;
+    }
+
+    /// <summary>Split an export row's <c>'|'</c>-separated field ("might|hit" → [might, hit]; "" → []).</summary>
+    private static List<string> SplitBar(string? s) =>
+        string.IsNullOrEmpty(s) ? new List<string>()
+                                : s.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).ToList();
+
     internal void LuaFxSelf(SpellDef sp)
     {
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
     }
-    internal void LuaFlavorSelf(SpellDef sp)
-    {
-        var flavor = Content.TargetTextFor(sp.Key);
-        if (flavor.Length > 0) SendMiniText(flavor);
-    }
-
     // TargetBuff resolution + apply (mirror CastTargetBuff): resolve the explicit target (id -> player else mob;
     // no id -> faced tile: peer else mob), classify for the verb, and apply the buff/deduction the verb chose.
     /// <param name="selfIfUnaimedInPvp">Land on the CASTER when nothing else resolves, <b>on a PvP map only</b> —
@@ -1004,37 +1282,8 @@ public sealed partial class Session
         ResolveTargetBuff(targetId, out var pc, out var mob);
         return pc is not null ? "player" : mob is not null ? "mob" : "none";
     }
-    internal void LuaBuffTarget(string stat, int amount, int durMs, SpellDef sp, uint? targetId)
-    {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
-        var anim = Content.EffectAnim(Content.FxFor(sp)!, sp.PathId);
-        var snd  = Content.EffectSound(Content.FxFor(sp)!, sp.PathId);
-        bool haveAmt = !string.IsNullOrEmpty(stat) && amount != 0;
-        if (pc is not null)
-        {
-            if (haveAmt) pc.ReceiveTimedBuff(stat, amount, durMs, sp.Key, sp.Name);
-            BroadcastFx(pc._char.Id, anim, snd);
-            TellTarget(pc, sp);
-            Log.Info($"      (lua) {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
-        }
-        else if (mob is not null)
-        {
-            if (haveAmt) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);   // under World._lock (races Tick revert)
-            BroadcastFx(mob.Id, anim, snd);   // mobs don't read text; caster gets the central "You cast X"
-            Log.Info($"      (lua) {sp.Name} -> buff {stat}{(haveAmt ? amount.ToString("+0;-0") : "?")} on mob {mob.Id} '{mob.Name}' {durMs}ms");
-        }
-        SendStats();
-    }
-    internal void LuaDeductionTarget(double mult, int durMs, SpellDef sp, uint? targetId)
-    {
-        ResolveTargetBuff(targetId, out var pc, out _);
-        if (pc is null) return;   // verb guards player-only via targetKind, but stay safe
-        pc.ApplySanctuaryDeduction(mult, durMs, sp.Name);
-        BroadcastFx(pc._char.Id, Content.EffectAnim(Content.FxFor(sp)!, sp.PathId), Content.EffectSound(Content.FxFor(sp)!, sp.PathId));
-        TellTarget(pc, sp);
-        SendStats();
-        Log.Info($"      (lua) {sp.Name} -> deduction x{mult} on player {pc._char.Id} '{pc._char.Name}' {durMs}ms");
-    }
+    // (The buff apply + deduction live up with the rest of the BUFF primitives — LuaApplyBuff /
+    // LuaApplyDeduction — since both archetypes now share one resolved target.)
 
     // Debuff pieces (mirror CastDebuff): deflect roll, chance-to-hold, freeze.
     internal bool LuaDeflected(SpellDef sp, uint? targetId)
@@ -1889,7 +2138,13 @@ public sealed partial class Session
 
     internal string LuaSacrificeFamily(SpellDef sp) => Content.SacrificeFamilyFor(sp)?.ToString() ?? "";
     internal int    LuaAlignment  => _char.Alignment;
-    internal bool   LuaBaekhoRage => _rageAmount == 5 && EffRage > 1;   // Baekho's Rage specifically, not a lesser Fury
+    // (There is deliberately no "is Baekho's Rage specifically active" primitive. One existed — `_rageAmount
+    // == 5 && EffRage > 1` — on the premise that Baekho's Rage was set apart from the ordinary furies. RTK's
+    // own spellTables.lua lists `baekhos_rage_rogue` inside `lesserFuries`, between Wolf's Fury and Soul's
+    // Rage, so there is no such distinction to test: it is a fury like the others, and the fury is already
+    // fully served by EffRage (the swing multiplier) and LuaRageActive (the exclusivity gate). Its only
+    // caller was the sacrifice verb's x1.5, which had misread CHIN-BAEK-HO-RYUNG — a Black Potion ward, a
+    // different mechanic with a near-identical name — for this. See Content.TakesChinBaekHoRyung.)
 
     internal bool LuaSacFrontMob()
     {
@@ -1907,7 +2162,7 @@ public sealed partial class Session
         _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
         BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
         ShowDamageResult(mob.Id, mob, died);
-        if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardKillExp(reward, _char.Map, mob.X, mob.Y); }
+        if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardKillExp(reward, _char.Map, mob.X, mob.Y, mob.Key); }
         Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) dmg {netDamage} overkill {overkill}");
         return overkill;
     }
@@ -1957,8 +2212,7 @@ public sealed partial class Session
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                AwardKillExp(reward, _char.Map, mob.X, mob.Y);
-                TallyKill(mob);
+                AwardKillExp(reward, _char.Map, mob.X, mob.Y, mob.Key);
             }
         }
     }
@@ -2012,13 +2266,34 @@ public sealed partial class Session
         else target.SendMiniText(flavor.Length > 0 ? flavor : $"{_char.Name} casts {sp.Name} on you.");
     }
 
-    // Apply a timed stat buff to THIS player — used for a buff another player casts on us AND our own self-cast.
-    // Refresh-not-stack by spell key; folds into Totals() -> HUD/melee live. The caster handles the cast fx/msg.
-    internal void ReceiveTimedBuff(string stat, int amount, int durMs, string key, string name)
+    /// <summary>Apply a spell's timed stat buff to THIS player — a buff someone else cast on us AND our own
+    /// self-cast, which are the same thing once <see cref="LuaBuffTarget"/> has resolved who the target is.
+    /// Refresh-not-stack: one sweep by spell key, then one entry per non-zero stat, all sharing a deadline (so
+    /// a multi-stat row can't lose all but the last, which a per-stat "remove then add" would). Folds into
+    /// Totals() → HUD/melee live; the caster owns the fx and the flavor line.
+    ///
+    /// <para><paramref name="category"/> is the RTK checkIfCast exclusivity slot, and passing it is what makes
+    /// <see cref="HasStatusCategory"/> see the buff at all. A categorised buff lands even with no stat of its
+    /// own — the slot IS the effect — while an uncategorised one with nothing to apply stays a no-op.</para></summary>
+    internal void ReceiveTimedBuff(IReadOnlyList<string> stats, IReadOnlyList<string> amounts,
+                                   int durMs, string key, string name, string category)
     {
-        if (string.IsNullOrEmpty(stat) || amount == 0 || durMs <= 0) return;
-        _buffs.RemoveAll(b => b.Key == key);   // refresh, don't stack
-        _buffs.Add(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durMs, Key = key, Name = name });
+        if (durMs <= 0) return;
+        category ??= "";
+        _buffs.RemoveAll(b => b.Key == key);   // refresh, don't stack — once, for every stat
+        long expires = Environment.TickCount64 + durMs;
+        int applied = 0;
+        for (int i = 0; i < stats.Count; i++)
+        {
+            int amt = i < amounts.Count && double.TryParse(amounts[i], out var d) ? (int)Math.Floor(d) : 0;
+            if (stats[i].Length == 0 || amt == 0) continue;
+            _buffs.Add(new ActiveBuff
+            { Stat = stats[i], Amount = amt, Expires = expires, Key = key, Name = name, Category = category });
+            applied++;
+        }
+        if (applied == 0 && category.Length > 0)
+            _buffs.Add(new ActiveBuff
+            { Stat = "", Amount = 0, Expires = expires, Key = key, Name = name, Category = category });
         SendStats();
     }
 
@@ -2252,7 +2527,7 @@ public sealed partial class Session
             _world.TryDamage(_char.Map, mob, net, out bool died, _char.Id);
             BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
             ShowDamageResult(mob.Id, mob, died);
-            if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y);
+            if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y, mob.Key);
             if (overkill > 0) ApplyOverflow(overkill, x, y, fam);
         }
     }

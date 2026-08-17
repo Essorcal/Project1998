@@ -108,10 +108,19 @@ public sealed class SpellContext
     public int  reg(string key)                       => _s.LuaReg(key);
     /// <summary>Set a transient per-caster integer registry value.</summary>
     public void setReg(string key, double v)          => _s.LuaSetReg(key, (int)v);
-    /// <summary>Is a named duration (RTK setDuration) still running?</summary>
+    /// <summary>Is a named duration (RTK setDuration) still running? One namespace shared with the item
+    /// verbs, so a spell sees a potion's ward — which is how the five warrior strikes read the Black Potion's
+    /// <c>chin_baek_ho_ryung</c>, exactly as RTK's scripts do.</summary>
     public bool hasDuration(string key)               => _s.LuaHasDuration(key);
     /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds.</summary>
     public void setDuration(string key, double ms)    => _s.LuaSetDuration(key, (int)ms);
+    /// <summary>The caster's effective armour, clamped to RTK's [-80, 70] — Harden Body's success roll
+    /// scales with it (better armour is MORE negative, hence better odds).</summary>
+    public double armor                               => _s.ItemArmor;
+    /// <summary>Is the caster currently untouchable (any Harden Body ward, spell or scroll)?</summary>
+    public bool immune                                => _s.DamageImmune;
+    /// <summary>The self-only cast pose (RTK action 6).</summary>
+    public void castPose()                            => _s.ItemCastPose();
     /// <summary>Is a named cooldown (RTK aether) still ticking?</summary>
     public bool onCooldown(string key)                => _s.LuaOnCooldown(key);
     /// <summary>Start a named cooldown for <paramref name="ms"/> milliseconds.</summary>
@@ -179,6 +188,11 @@ public sealed class SpellContext
     /// always, other players only on a PvP map, never the caster. Returns how many were hit — casting at empty
     /// air legitimately returns 0 and is still a successful cast.</summary>
     public double areaZap(double amt) => _s.LuaAreaZap((int)System.Math.Round(amt), _sp);
+
+    /// <summary>The dog 5-way fire (Fissure / Lava Surge): the target's own tile plus its four sides, full
+    /// damage on each, centred on the TARGET rather than on the caster. Returns how many were hit; 0 also
+    /// covers a range miss, which is this spell's only failure mode.</summary>
+    public double targetAreaZap(double amt) => _s.LuaTargetAreaZap((int)System.Math.Round(amt), _sp, _targetId);
     /// <summary>Heal every PLAYER on the four cardinally-adjacent cells (the poet 4-way heal ladder). Not the
     /// caster, not pets — RTK scans BL_PC only. Returns how many were healed.</summary>
     public double areaHeal(double amt) => _s.LuaAreaHeal((int)System.Math.Round(amt), _sp);
@@ -193,28 +207,41 @@ public sealed class SpellContext
     public bool enoughMana(double amt)  => _s.LuaEnoughMana((int)amt);
     /// <summary>Debit the caster's mana with no re-check and no message (guarded by an earlier <see cref="enoughMana"/>).</summary>
     public void debitMana(double amt)   => _s.LuaDebitMana((int)amt);
-    /// <summary>Remove any active buff from THIS spell before re-applying (refresh, don't stack).</summary>
-    public void clearBuff()             => _s.LuaClearBuff(_sp);
-    /// <summary>Add one timed stat buff to the caster (no fx/refresh — call <see cref="clearBuff"/> once first,
-    /// then <see cref="fxSelf"/> once after the loop). <paramref name="stat"/> is a Totals() key (might/hit/dam/…).</summary>
-    public void addBuff(string stat, double amount, double durMs) =>
-        _s.LuaAddBuff(stat, (int)System.Math.Round(amount), (int)durMs, _sp);
+    // ---- Buff / TargetBuff: ONE resolved-target primitive set, shaped like the ward one below --------------
+    /// <summary>Resolve who this buff lands on: <c>"self"</c> (the Buff archetype — no target arg exists on the
+    /// wire) or <c>"target"</c> (the TargetBuff archetype — the aimed id, else the faced tile: a player, incl.
+    /// yourself, or a mob/pet). False when nothing resolves; say nothing, a cast that finds nothing is silent.
+    /// Every other buff primitive reads this resolution, so call it first.</summary>
+    public bool buffTarget(string mode) => _s.LuaBuffTarget(mode, _targetId);
+    /// <summary>Does the resolved buff target already carry a status in this exclusivity category (RTK
+    /// checkIfCast)? Player targets only — mobs carry no categories, same rule as the curse/ward side.</summary>
+    public bool buffHasStatus(string category) => _s.LuaBuffHasStatus(category);
+    /// <summary>Is the occupied slot held by THIS very spell? Picks "You already cast that spell." over
+    /// "Another spell of this type is in effect."</summary>
+    public bool buffAlreadyCast()       => _s.LuaBuffAlreadyCast(_sp);
+    /// <summary>Apply the buff to the resolved target, then play the fx and its flavor line once.
+    /// <paramref name="stats"/>/<paramref name="amounts"/> are the export row's raw <c>'|'</c>-separated fields
+    /// (pass <see cref="buffStat"/>/<see cref="buffAmt"/> straight through — a multi-stat row is split engine-side).
+    /// <paramref name="category"/> is the exclusivity slot: pass it and <see cref="buffHasStatus"/> will see the
+    /// buff, omit it and the buff blocks nothing.</summary>
+    public void applyBuff(string stats, string amounts, double durMs, string category = "") =>
+        _s.LuaApplyBuff(stats, amounts, (int)durMs, _sp, category);
+    /// <summary>Apply a damage-reduction multiplier (Sanctuary &amp;c) to the resolved target — its own slot, not
+    /// a stat delta, and PLAYERS ONLY. <paramref name="mult"/> is the incoming-damage multiplier (0.5 = take
+    /// half). False (nothing applied, nothing spent) if the cast resolved to a mob.</summary>
+    public bool applyDeduction(double mult, double durMs) => _s.LuaApplyDeduction(mult, (int)durMs, _sp);
+
     /// <summary>Play this spell's cast anim/sound on the caster.</summary>
     public void fxSelf()                => _s.LuaFxSelf(_sp);
-    /// <summary>Show this spell's live TARGET-flavor line to the caster (self-cast: flavor before "You cast X").</summary>
-    public void flavorSelf()            => _s.LuaFlavorSelf(_sp);
+    // (flavorSelf is gone: applyBuff/applyWard show the flavor line for whoever the cast resolved to, via the
+    // one TellTarget that also words an ally's "<caster> casts X on you." A second way to print it is how the
+    // self and target halves drifted apart in the first place.)
 
-    /// <summary>What the TargetBuff cast is aimed at, resolved from the client target id or the faced tile:
-    /// "player" (incl. a self-cast), "mob" (a mob/NPC/pet), or "none". The verb branches on this.</summary>
+    /// <summary>What a targeted cast is aimed at, resolved from the client target id or the faced tile:
+    /// "player" (incl. a self-cast), "mob" (a mob/NPC/pet), or "none". Read by <c>arch_debuff</c>, which needs
+    /// the distinction (Doze can land on a player, so <see cref="hasTarget"/> — mobs only — would refuse it).
+    /// The buff verbs use <see cref="buffTarget"/> instead, which resolves AND remembers.</summary>
     public string targetKind            => _s.LuaTargetBuffKind(_targetId);
-    /// <summary>Apply a timed stat buff to the resolved TargetBuff target (player or mob), with fx + the target's
-    /// flavor line. Call after branching on <see cref="targetKind"/>.</summary>
-    public void buffTarget(string stat, double amount, double durMs) =>
-        _s.LuaBuffTarget(stat, (int)System.Math.Round(amount), (int)durMs, _sp, _targetId);
-    /// <summary>Apply a damage-reduction (deduction) to the resolved TargetBuff target — PLAYER only. <paramref
-    /// name="mult"/> is the incoming-damage multiplier (0.5 = take half). Plays fx + the target's flavor line.</summary>
-    public void deductionTarget(double mult, double durMs) =>
-        _s.LuaDeductionTarget(mult, (int)durMs, _sp, _targetId);
 
     /// <summary>Roll the RTK magic-deflect check against the resolved mob (only if the spell can fail); true if
     /// the cast was deflected (no mana is spent — the verb should return true without applying).</summary>
@@ -386,8 +413,6 @@ public sealed class SpellContext
     public string sacrificeFamily => _s.LuaSacrificeFamily(_sp);
     /// <summary>The caster's alignment stat (Whirlwind's damage factor + HP cost + cooldown branch on it).</summary>
     public double alignment       => _s.LuaAlignment;
-    /// <summary>Is Baekho's Rage specifically active (rage tier 5, not a lesser Fury)? Adds x1.5 to Berserk/Whirlwind.</summary>
-    public bool   baekhoRage      => _s.LuaBaekhoRage;
     /// <summary>Resolve + stash the mob on the faced tile for a sacrifice strike (alive). False if none — the
     /// strike lands nothing (no HP cost), though the mana/cooldown were already spent.</summary>
     public bool   sacFrontMob()   => _s.LuaSacFrontMob();

@@ -22,7 +22,76 @@ public sealed partial class Session
     // so a constant is the honest representation until something needs to modify it.
     private const int AttackSpeed = 20;                                   // RTK floors this at 3
     private const int SwingIntervalMs = AttackSpeed * 1000 / 60;          // = 333ms (clif.c:11450)
-    private long _nextSwingTick;
+
+    // ---- THE SHARED CAST/SWING SLOT ----------------------------------------------------------------------
+    // One tick governs BOTH melee swings and spells that carry a cast delay: casting a zap blocks the next
+    // swing, and swinging blocks the next zap. Confirmed by the user testing live ("I cannot attack and cast
+    // Singe in the same 1s window") and independently by a player feature request on the official Dreams
+    // board asking that Taunt and Invisible "no longer ha[ve] a cast delay" so they don't "interfere with
+    // swinging" — you only ask for that if the interference is real. See Content.CastDelayMs for the full
+    // source list and for which spells carry a delay.
+    //
+    // RTK has no such coupling: its swing gate (`sd->attacked` + pc_atkspeed) and its cast path never consult
+    // each other, and there is no cast-delay field on the user struct at all. The one place RTK DOES tie them
+    // together is the 3/sec action budget, where a swing pays in without being limited by it — that stays,
+    // and is separate from this. So this slot is a 4.95/7.x rule RTK dropped, sourced from live rather than code.
+    //
+    // Named _nextActionTick (was _nextSwingTick) because it is no longer only about swinging. A spell with a
+    // 0ms delay — every heal, buff, and the dog 5-way — neither waits on this nor arms it, and so is still
+    // free to be cast mid-swing at the ordinary 3/sec.
+    // THE GRACE WINDOW. A swing and a delayed cast issued close enough together BOTH resolve, in either
+    // order — user, from live: "invis -> atk and atk -> invis work the same, they can both stack if cast
+    // fast enough", and going slower gets the swing blocked for the rest of the second. So the slot is not
+    // a hard edge; one companion action may follow the claim that opened it, and only one.
+    //
+    // The tell that this is real (and that the two resolve in ARRIVAL ORDER rather than being merged) is
+    // what the user sees on atk -> invis: the character appears to strike and vanish together, but the swing
+    // gets NO 5x sneak bonus and the stealth SURVIVES the hit. That is precisely a swing resolving before
+    // the buff is applied — Session.PlayerSwingDamage reads `wasStealthed` up front and only strips stealth
+    // `if (wasStealthed)`. We reproduce that artifact for free by letting both through in order; it needs no
+    // special case, and it must NOT be "fixed".
+    //
+    // 100ms is INFERRED. The real mechanism is unknown -- it could be a genuine grace period, or the live
+    // server batching a tick's worth of packets and resolving both before asserting the block. The value only
+    // has to be wide enough for two keys mashed together (the client repeats a held key every ~31ms) and far
+    // below the 333ms swing interval, so no ordinary rhythm reaches it. Measurable with re/spell_rate_probe.py.
+    private const int ActionSlotGraceMs = 100;
+
+    private long _nextActionTick;
+    private long _slotArmedAt;       // when the STANDING claim was opened (not extended)
+    private bool _slotGraceUsed;     // a companion action already rode this claim in
+
+    /// <summary>Is the shared cast/swing slot free right now — either genuinely expired, or still inside the
+    /// grace window of a claim that hasn't yet carried a companion action?</summary>
+    internal bool ActionSlotReady
+    {
+        get
+        {
+            long now = Environment.TickCount64;
+            if (now >= _nextActionTick) return true;
+            return !_slotGraceUsed && now - _slotArmedAt <= ActionSlotGraceMs;
+        }
+    }
+
+    /// <summary>Milliseconds left on the shared slot (0 if it's free).</summary>
+    internal long ActionSlotLeft => Math.Max(0, _nextActionTick - Environment.TickCount64);
+
+    /// <summary>Occupy the shared cast/swing slot for <paramref name="ms"/>. A longer claim never shortens a
+    /// standing one — a 1s cast delay must not be cut to 333ms by a swing that stacked inside it, which is
+    /// why "invis then swing" still leaves you unable to swing again until the full second is up.</summary>
+    internal void ArmActionSlot(int ms)
+    {
+        long now = Environment.TickCount64;
+        if (now < _nextActionTick)
+            _slotGraceUsed = true;                       // rode in on the grace window; nobody else may
+        else
+        {
+            _slotArmedAt = now;                          // a fresh claim reopens the window
+            _slotGraceUsed = false;
+        }
+        long until = now + ms;
+        if (until > _nextActionTick) _nextActionTick = until;
+    }
 
     // ---- who this player is currently trading blows with, in PvP -----------------------------------------
     // Set on BOTH sides of a player-vs-player exchange (see ReceiveSpellDamage — spell damage is the only PvP
@@ -73,9 +142,10 @@ public sealed partial class Session
         // NOT YET MEASURED whether the 4.95 client paces 0x13 itself the way it clearly does NOT pace 0x0F.
         // If this line never appears while holding the attack key, the client is self-limiting and this gate
         // is inert belt-and-braces; if it floods, the gate is load-bearing.
-        long now = Environment.TickCount64;
-        if (now < _nextSwingTick) { Log.Info($"   -- swing dropped: {_nextSwingTick - now}ms left of the {SwingIntervalMs}ms gate"); return; }
-        _nextSwingTick = now + SwingIntervalMs;
+        // The gate is the SHARED cast/swing slot, so a zap's 1s cast delay drops swings for that whole second
+        // as well — that coupling is the point (see _nextActionTick).
+        if (!ActionSlotReady) { Log.Info($"   -- swing dropped: {ActionSlotLeft}ms left of the shared cast/swing slot"); return; }
+        ArmActionSlot(SwingIntervalMs);
 
         // Swing pose length == the swing interval, which is why RTK passes attack_speed as the action `time`.
         SendAction(_char.Id, type: 1, time: AttackSpeed, param: 0);                                 // our own swing anim
@@ -153,10 +223,9 @@ public sealed partial class Session
                     else
                     {
                         uint reward = (uint)(wmob.Exp > 0 ? wmob.Exp : wmob.MaxHp);   // real mob Exp; fallback to HP
-                        AwardKillExp(reward, _char.Map, wmob.X, wmob.Y);                             // killer + any group member in range (levels too)
+                        AwardKillExp(reward, _char.Map, wmob.X, wmob.Y, wmob.Key);                   // exp AND quest credit: killer + any group member in range
                         SendMessage($"You defeated {wmob.Name}. (+{reward} exp)");
                         Log.Info($"   -> world mob {wmob.Id} '{wmob.Name}' defeated (+{reward} exp)");
-                        TallyKill(wmob);   // bump the lifetime kill count for quests (see TallyKill / KillCount)
                     }
                 }
             }
@@ -306,9 +375,8 @@ public sealed partial class Session
                     if (died)
                     {
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-                        AwardKillExp(reward, _char.Map, mob.X, mob.Y);
+                        AwardKillExp(reward, _char.Map, mob.X, mob.Y, mob.Key);
                         SendMessage($"You defeated {mob.Name}. (+{reward} exp)");
-                        TallyKill(mob);
                     }
                 }
                 return;
