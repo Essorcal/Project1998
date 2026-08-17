@@ -604,7 +604,13 @@ public sealed partial class Session
         }
         else if (setting == 0x09)
         {
-            _fastMove = !_fastMove;   // client toggled fast-move; keep our model in sync
+            _fastMove = !_fastMove;   // client toggled fast-move; keep our per-walk model in sync
+            // Persist the CHOICE in SettingFlags bit 9 (like the other option toggles) so the checkbox — seeded
+            // via SendOptions/0x23 — survives relog. Fast-move itself stays client-authoritative per walk
+            // (_fastMove above / the per-walk sync); this bit is just the remembered preference the box reads.
+            if (_fastMove) _char.SettingFlags |= Character.SettingBit(9);
+            else           _char.SettingFlags &= ~Character.SettingBit(9);
+            SaveChar();
             SendMessage(_fastMove ? "Fast Move        :ON" : "Fast Move        :OFF");   // RTK clif_changestatus case 0x09 (verbatim text)
             Log.Info($"   -> setting 0x09 Fast-move = {(_fastMove ? "ON (client-authoritative)" : "OFF (server-authoritative)")}");
         }

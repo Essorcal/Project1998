@@ -182,7 +182,8 @@ public sealed class Character
     /// show-gear toggles ON. The client only ever tells us a toggle FLIPPED, never its state, so these
     /// defaults are also our only sync point — same deal as fast-move.</summary>
     public int SettingFlags = SettingBit(1) | SettingBit(3) | SettingBit(4) | SettingBit(5)    // whisper/shout/advice/magic
-                            | SettingBit(6) | SettingBit(13) | SettingBit(14) | SettingBit(15); // weather/sound/helm/necklace
+                            | SettingBit(6) | SettingBit(9)                                     // weather/fast-move
+                            | SettingBit(13) | SettingBit(14) | SettingBit(15);                 // sound/helm/necklace
 
     /// <summary>Setting bit for a <c>0x1b</c> sub-command (RTK: FLAG_WHISPER=1 for sub 1, FLAG_GROUP=2 for
     /// sub 2, … FLAG_NECKLACE=16384 for sub 15).</summary>
