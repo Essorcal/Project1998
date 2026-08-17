@@ -472,6 +472,15 @@ public sealed partial class Session
         SendMiniText($"@shout chatType={ct} sent: \"{msg}\"");
     }
 
+    // @sendopts (tester/GM): fire a 0x23/03 clif_sendoptions frame and see whether the client updates its
+    // options-menu checkboxes to match the server. RE says opcode 0x23 hits the client's default no-op, so this
+    // should do nothing — but this proves it live rather than trusting the disassembly (mail-button precedent).
+    private void SendOptionsCmd()
+    {
+        SendOptions();
+        SendMiniText("@sendopts: 0x23/03 options frame sent — open F10 and check the checkboxes.");
+    }
+
     private void SetDogFlag(string text)
     {
         int p = Math.Max(0, CharClassId);

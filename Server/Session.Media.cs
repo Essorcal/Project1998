@@ -234,6 +234,18 @@ public sealed partial class Session
     /// effect immediately rather than at the next map change.</summary>
     internal void SendWeather() => SendWeather(_world.GetWeather(_char.Map));
 
+    // clif_sendoptions (RTK 0x23 sub-0x03): pushes the options-menu checkbox state to the client. 7 state bytes
+    // in RTK's fixed order [weather, magic, advice, fastmove, sound, helm, realm], each 0/1 from SettingFlags.
+    // The 4.95 client's receive dispatcher (RE 2026-08-16) maps opcode 0x23 to its DEFAULT no-op, and RTK never
+    // calls this function either — so this is EXPECTED to do nothing. Wired only to @sendopts to PROVE that
+    // live (the mail-button precedent: don't trust "no-op" from static RE alone).
+    internal void SendOptions()
+    {
+        byte On(int sub) => (byte)(_char.HasSetting(sub) ? 1 : 0);
+        var body = new byte[] { 0x03, On(0x06), On(0x05), On(0x04), On(0x09), On(0x0D), On(0x0E), On(0x07) };
+        SendMap(0x23, _gameInc++, body, "options(0x23/03) [weather,magic,advice,fastmove,sound,helm,realm]");
+    }
+
     // Music follows the AREA, not the map. Re-sending a track id restarts the song from the top, so a map
     // change only touches the music when the new map's zone actually wants a DIFFERENT track (MapBgm.csv):
     //
