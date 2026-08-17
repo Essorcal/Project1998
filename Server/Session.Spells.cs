@@ -292,8 +292,14 @@ public sealed partial class Session
         // ~133ms the pose expires between the client's key repeats, whereas at 35 (~583ms) each repeat
         // re-asserts a pose that hasn't finished, so the three casts allowed per action-budget window read as
         // one continuous cast.
-        SendAction(_char.Id, type: 6, time: Content.CastAnimFrames, param: 0);                                  // cast anim (magic)
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 6, Content.CastAnimFrames, 0), except: this);   // peers see us cast
+        // Physical melee strikes (Berserk/Whirlwind/Assault/Desperate Attack/Lethal Strike & the rest of the
+        // sacrifice + Chin-Baek warrior-strike family, Content.ShowsSwingAnim) are swings, not spells: show the
+        // attack pose (0x1A type 1) with the swing's own timing, not the magic cast pose. Everything else casts.
+        bool swingAnim = Content.ShowsSwingAnim(sp);
+        byte animType   = swingAnim ? (byte)1 : (byte)6;
+        ushort animTime = swingAnim ? (ushort)AttackSpeed : Content.CastAnimFrames;
+        SendAction(_char.Id, animType, animTime, param: 0);                                                     // strike swing / cast pose
+        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, animType, animTime, 0), except: this);          // peers see it
         SendStats();                                                                        // push HP/MP to the HUD
     }
 

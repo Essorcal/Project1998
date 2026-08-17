@@ -3245,6 +3245,12 @@ public static partial class Content
         };
     }
 
+    /// <summary>Physical melee power-strikes: the sacrifice family (Berserk / Whirlwind / Desperate Attack /
+    /// Lethal Strike / Focused Blow / Siege) plus the vita-funded Chin-Baek warrior strikes (Slash, Assault &amp;
+    /// reskins, Feral Berserk). These are swings, not spells, so <see cref="Session.HandleCast"/> plays the
+    /// attack pose (0x1A type 1) rather than the magic cast pose (type 6). Everything else casts as normal.</summary>
+    public static bool ShowsSwingAnim(SpellDef sp) => SacrificeFamilyFor(sp) is not null || TakesChinBaekHoRyung(sp);
+
     // Sam San one-offs that fit no existing archetype (nexusatlas 2004; the 2002-10-01 TSWolf announcement
     // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases whose other
     // identifiers we do not know - only the unaligned key is wired).
