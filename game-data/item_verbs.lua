@@ -25,21 +25,40 @@ function verbs.fatal(ctx, row)
 end
 
 -- Drinks + smoke: restore mana by `amount` at a small HP cost (`hpcost`) -- RTK's mana-for-HP trade.
+-- Uses sipAnim, not animate: RTK gives this whole class its own gesture (sendAction(7, 20)) and its own
+-- sound, where food is sendAction(8, 25) and the eat noise. Sharing the eat animation made a pipe sound
+-- like a mouthful of food. sipAnim is silent for now -- see Session.ItemSipAnim on why the sound id isn't
+-- ported straight from RTK.
 function verbs.drink(ctx, row)
-  ctx:animate()
+  ctx:sipAnim()
   ctx:restoreMana(row.amount or 0)
   if row.hpcost then ctx:loseHp(row.hpcost) end
 end
 
--- Timed ward potion/scroll (sanctuary / harden_armor / curse_protection / ...): set a status flag for a
--- duration. If the ward is already up AND the item has a guard message (`activemsg`), refuse without
--- consuming (RTK's checkIfCast). A row with no activemsg (e.g. black_potion) has no guard and always re-applies.
+-- Timed ward potion/scroll, in two flavours picked by whether the row names a `category`.
+--
+-- WITH a category (sanctuary / harden_armor / curse_protection): the effect already exists on the spell side,
+-- so apply it into the SAME slot the spell uses. The stat really lands, the two share RTK's checkIfCast
+-- exclusivity (you cannot stack a potion Sanctuary on a cast one), and it persists across a relog for free.
+-- WITHOUT one (chin_baek_ho_ryung / purple_potion / harden_body): a genuinely flag-shaped ward the engine
+-- reads directly — a warrior strike multiplier, a regen bonus, damage immunity. Those set the plain flag.
+--
+-- Either way a live ward + an `activemsg` refuses WITHOUT consuming (RTK's own early return); a row with no
+-- activemsg has no guard and simply re-applies. RTK's potion scripts all sendAction(8, 25) before the effect
+-- — purple_potion is the lone exception and gets the pose here anyway, so drinking always looks like drinking.
 function verbs.ward(ctx, row)
-  if row.activemsg and ctx:hasStatus(row.statuskey) then
+  local blocked = row.category and ctx:wardBlocked(row.category) or ctx:hasStatus(row.statuskey)
+  if row.activemsg and blocked then
     ctx:say(row.activemsg)
     return false
   end
-  ctx:setStatus(row.statuskey, row.duration or 0)
+  ctx:animate()
+  if row.category then
+    ctx:applyWard(row.category, row.stat or "", row.amount or 0, row.duration or 0,
+                  row.statuskey, row.wardname or row.statuskey)
+  else
+    ctx:setStatus(row.statuskey, row.duration or 0)
+  end
   return true
 end
 
