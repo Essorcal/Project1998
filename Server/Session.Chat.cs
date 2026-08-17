@@ -243,9 +243,10 @@ public sealed partial class Session
     /// SendMiniText's type=3); only the type=0/"blue chat window, not the status box" routing is unconfirmed.</summary>
     internal void ReceiveWhisper(string fromName, string msg) => SendMiniText($"{fromName}: {msg}", type: 0);
 
-    /// <summary>Same status line as the existing <see cref="Notify"/> (used for trade's cross-session
-    /// messages below) but on RTK's type=11 "group" minitext channel (see SendMiniText's type-table
-    /// comment) — used for party join/leave/kick/disband broadcasts specifically.</summary>
-    internal void NotifyGroup(string text) => SendMiniText(text, type: 11);
+    /// <summary>Party join/leave/kick/disband broadcasts. Delivered on the SAME type=3 mini/status channel
+    /// as the "You cast X." casting info (SendMiniText's default), NOT the type=11 "group" channel: on the
+    /// 4.95 client type 11 lands in the scrolling chat box as blue text, which reads as someone talking
+    /// rather than a status event. Type 3 puts it in the status/mini pane where group events belong.</summary>
+    internal void NotifyGroup(string text) => SendMiniText(text, type: 3);
 
 }
