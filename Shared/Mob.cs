@@ -12,6 +12,10 @@ public sealed class Mob
     public uint   Id;
     public string Name   = "";
     public string Key    = "";  // MobDef identifier ("squirrel", "white_rabbit") — used for quest kill-matching
+    // MobDef.Id, the numeric RTK mob id. Not interchangeable with Key: six identifiers cover several ids
+    // apiece (buya_library_mob is one name for 198-203), so a spawn group counting its population by Key
+    // would treat six different creatures as one. RTK counts `mobBlocks[i].mobID == mobs[z]`, and so do we.
+    public int    DefId;
 
     // Gathering-node claim (Session.Harvest; RTK AI/crafting/*.lua's registry["attacker"]/["attackerTime"]).
     // A node belongs to the first harvester for two minutes: nobody else's tool works on it, and when the
@@ -83,6 +87,14 @@ public sealed class Mob
     // RTK's cotw pet vanishes when its spawnTime passes, but endear's `uncast` only does
     // `mob.owner = 0; mob.target = 0` — the creature stays in the world and turns on you again.
     public bool Summoned;
+
+    // True for a creature the WORLD placed — a static spawn point, a trap-ambush point, or a batch spawn
+    // group — and false for every ad-hoc one (a summon, a dismounted horse, a GM's colour-test dummy).
+    // Only these drop loot. It used to be implicit: drops were rolled inside the "did this mob belong to a
+    // spawn point" branch, so a conjured pet dropped nothing purely because it had no point. Once the
+    // hunting maps stopped using points that accident stopped protecting anything, and the intent had to
+    // become explicit or every cave mob would have quietly gone lootless.
+    public bool WorldSpawned;
 
     // Set by the Blind family (RTK Spells/NPCs/blind.lua + mage blind/dark_veil/winter's shadow/ice glare,
     // all of which just set `target.blind = true` for a duration). A blinded creature cannot SEE, so

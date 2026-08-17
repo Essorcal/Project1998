@@ -93,9 +93,25 @@ public sealed class World
     // nothing measurable against the map operations.
     private readonly Dictionary<string, Session> _online = new();
 
+    // ---- the two spawn systems ------------------------------------------------------------------
+    //
+    // RTK runs two, and so do we, because they behave nothing alike:
+    //
+    //   POINT (Spawn, below) — the C engine's static table. One mob per point, revived on its OWN tile
+    //   `MobSpawnTime` seconds after it dies. Towns, and the trap-ambush supplement. Per-kill, per-point.
+    //
+    //   GROUP (SpawnGroup, below) — the Lua spawner NPC, which is every hunting map. Kills do nothing at
+    //   all. One clock per handleSpawn call; when it elapses the whole group is topped back up to its caps
+    //   in a single batch at freshly-rolled tiles. That is what makes clearing a room mean something: the
+    //   room stays cleared for the full timer, and no amount of camping the corpse makes it come back.
+    //
+    // The old code ran everything on the point model with one global ~18s cadence, which turned every cave
+    // into a treadmill — kill, wait 18s, kill the same mob again — and is exactly the farming loop the
+    // group model exists to prevent.
+
     /// <summary>A spawn point: one <see cref="Live"/> mob at a time, respawned <see cref="RespawnTick"/>
     /// ticks after it dies. Built once from <see cref="Content.Spawns"/> (fixed tile, <see cref="Placed"/>
-    /// already true) and <see cref="Content.AreaSpawns"/> (a random home tile is chosen in the box the first
+    /// already true) and from the trap-ambush supplement (a random home tile is chosen in the box the first
     /// time the point materializes). Drives the persistent world roster.</summary>
     private sealed class Spawn
     {
@@ -111,7 +127,21 @@ public sealed class World
         public int    RespawnEvery;  // 0 ⇒ use the global RespawnTicks; >0 ⇒ this point's own respawn delay
         public bool   Rare;          // true ⇒ boss: delayed first appearance + jittered long respawn
     }
+    /// <summary>One <c>handleSpawn</c> call: a map, a bounding box, a batch clock, and the mobs it caps.
+    /// RTK keys the clock off the call's FIRST mob (<c>spawnTable[map][mobs[1]]</c>) and refills every mob in
+    /// the call together, so the twelve Wilderness creatures share one 300s cycle rather than each running
+    /// its own. <see cref="NextBatchUnix"/> is absolute unix seconds, so the clock keeps running while nobody
+    /// is on the map — walking out and back in neither pauses nor restarts it.</summary>
+    private sealed class SpawnGroup
+    {
+        public ushort Map;
+        public int    TimerSec;                          // seconds between batches (RTK's `timer` argument)
+        public long   NextBatchUnix;                     // when this group may next top up (0 = immediately)
+        public ushort MinX, MinY, MaxX, MaxY;            // placement box; all-zero ⇒ anywhere walkable
+        public readonly List<(MobDef Def, int Cap)> Members = new();
+    }
     private readonly Dictionary<ushort, List<Spawn>> _spawns = new();   // map -> its spawn points
+    private readonly Dictionary<ushort, List<SpawnGroup>> _groups = new();   // map -> its batch spawn groups
     private readonly Dictionary<uint, Spawn> _mobSpawn = new();          // live mob id -> its spawn point
     // Maps whose spawn roster has been materialized (mobs instantiated). Populated lazily on first player
     // entry (EnsureMaterialized) so the world's ~21k hunting-map mobs don't all instantiate — and load their
@@ -131,9 +161,18 @@ public sealed class World
     /// poison trap and the player-side venom, so the rate NexusAtlas quotes ("1000 damage a second") converts
     /// against one number in one place — see <see cref="Session.ReceivePoison"/>.</summary>
     public const int PoisonTickMs = 1500;
-    // A dead spawn point respawns after this many ticks (~18s at 600ms/tick), mirroring RTK's short town
-    // respawn cadence so a cleared patch of Buya refills while the player is still nearby.
+    // Fallback respawn delay for a spawn POINT whose creature somehow carries no SpawnTime (~18s at
+    // 600ms/tick). Every mob in the table does carry one, so this is a floor, not the cadence: a point's
+    // real delay is its own MobDef.SpawnTime — see SpawnTicksFor.
     private const int RespawnTicks = 30;
+    // How often the batch-refill sweep runs, in ticks. RTK's spawner NPC is an actiontime-driven NPC firing
+    // about once a second; its timers are whole seconds and the shortest in the table is 2s, so sampling at
+    // ~1.2s costs nothing and keeps the sweep off the 600ms hot path.
+    private const int BatchSweepTicks = 2;
+    // Placement attempts per mob when filling a group, as a multiple of the group's cap. RTK gives up the
+    // same way (`if fail >= maxMobs[z] * 4 then` treat the mob as done), which is what stops a boxed spawn
+    // from spinning forever when the box is mostly wall.
+    private const int PlacementTriesPerMob = 4;
     // How far a mob may wander from its spawn tile (Chebyshev). Kept small so town critters hug their
     // spawn points instead of clustering into a dense knot that constantly overlaps on screen.
     private const int WanderRadius = 2;
@@ -188,7 +227,8 @@ public sealed class World
     // What World adds is the broadcast: RTK's change_time_char (map.c:1661) pushes clif_sendtime to every
     // connected session on each in-game hour, so we cache the calendar and watch for the hour to roll over.
     // Only hour+year go on the wire (see Session.SendTime); day/season are tracked because the year cadence
-    // is defined in terms of them, and "@time" reports the season.
+    // is defined in terms of them. Nothing reports the season to a player any more (@time is gone) — it
+    // reaches them only through legend text (GameCalendar.Stamp) and whatever scripts read it.
     private int _hour, _day = 1, _season = 1, _year = 1;
     private long _gameHour = -1;          // whole in-game hours since the epoch; -1 = not yet synced
     public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
@@ -342,37 +382,61 @@ public sealed class World
     /// so the ~21k hunting-map mobs don't flood memory or stall boot. Dead points refill via <see cref="Tick"/>.</summary>
     private void PopulateSpawns()
     {
-        int points, skipped;
-        lock (_lock) (points, skipped) = BuildSpawnRosterLocked();
+        int points, skipped, groups, capped;
+        lock (_lock) (points, skipped, groups, capped) = BuildSpawnRosterLocked();
         Log.Info($"spawns: {points} spawn points (materialized lazily) across {_spawns.Count} map(s)" +
                  (skipped > 0 ? $" ({skipped} skipped — unknown map/mob)" : ""));
+        Log.Info($"spawns: {groups} batch groups capping {capped} mobs across {_groups.Count} map(s)");
     }
 
-    /// <summary>Build the <c>_spawns</c> roster from the current <see cref="Content.Spawns"/> +
-    /// <see cref="Content.AreaSpawns"/>. Caller holds <c>_lock</c> and has already cleared <c>_spawns</c> if
-    /// rebuilding. Returns (points, skipped). Shared by startup <see cref="PopulateSpawns"/> and the live
-    /// <see cref="RebuildPopulation"/>.</summary>
-    private (int points, int skipped) BuildSpawnRosterLocked()
+    /// <summary>Build the <c>_spawns</c> + <c>_groups</c> rosters from the current <see cref="Content.Spawns"/>
+    /// and <see cref="Content.AreaSpawns"/>. Caller holds <c>_lock</c> and has already cleared both if
+    /// rebuilding. Shared by startup <see cref="PopulateSpawns"/> and the live <see cref="RebuildPopulation"/>.</summary>
+    private (int points, int skipped, int groups, int capped) BuildSpawnRosterLocked()
     {
-        int points = 0, skipped = 0;
+        int points = 0, skipped = 0, capped = 0;
         foreach (var sd in Content.Spawns)
         {
             if (!Content.Maps.ContainsKey(sd.Map)) { skipped++; continue; }   // map the client can't render
             var def = Content.MobById(sd.MobId);
             if (def is null) { skipped++; continue; }                           // unknown mob id
 
-            AddSpawn(sd.Map, new Spawn { Def = def, X = sd.X, Y = sd.Y });
+            AddSpawn(sd.Map, new Spawn { Def = def, X = sd.X, Y = sd.Y, RespawnEvery = SpawnTicksFor(def) });
             points++;
         }
 
+        // Area rows fork by system (see AreaSpawnDef.Timer): a timer means one member of a batch group, no
+        // timer means the trap supplement, which stays on the point model it was ported to.
+        var byGroup = new Dictionary<(ushort Map, int Group), SpawnGroup>();
         foreach (var ad in Content.AreaSpawns)
         {
             if (!Content.Maps.ContainsKey(ad.Map)) { skipped += ad.Count; continue; }   // unrenderable map
             var def = Content.MobById(ad.MobId);
             if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
 
-            // RespawnSec > 0 ⇒ a rare trap-ambush boss: convert seconds → ticks for the per-point delay.
-            int respawnEvery = ad.RespawnSec > 0 ? Math.Max(1, ad.RespawnSec * 1000 / TickMs) : 0;
+            if (ad.Timer > 0)
+            {
+                if (!byGroup.TryGetValue((ad.Map, ad.Group), out var g))
+                {
+                    g = new SpawnGroup
+                    {
+                        Map = ad.Map, TimerSec = ad.Timer,
+                        MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
+                    };
+                    byGroup[(ad.Map, ad.Group)] = g;
+                    if (!_groups.TryGetValue(ad.Map, out var list)) { list = new(); _groups[ad.Map] = list; }
+                    list.Add(g);
+                }
+                g.Members.Add((def, ad.Count));
+                capped += ad.Count;
+                continue;
+            }
+
+            // RespawnSec > 0 ⇒ a rare trap-ambush boss with its own long delay; the rest of the trap rows
+            // respawn on their creature's own MobSpawnTime like any other point.
+            int respawnEvery = ad.RespawnSec > 0
+                ? Math.Max(1, ad.RespawnSec * 1000 / TickMs)
+                : SpawnTicksFor(def);
             for (int i = 0; i < ad.Count; i++)
                 AddSpawn(ad.Map, new Spawn
                 {
@@ -382,12 +446,18 @@ public sealed class World
                 });
             points += ad.Count;
         }
-        return (points, skipped);
+        return (points, skipped, byGroup.Count, capped);
     }
 
-    /// <summary>When a dead point may next refill. Ordinary points use the short global <see cref="RespawnTicks"/>
-    /// cadence; a rare trap-ambush boss uses its own long <see cref="Spawn.RespawnEvery"/> plus up to +50%
-    /// jitter, so it comes back as an irregular surprise rather than on a predictable clock.</summary>
+    /// <summary>A creature's static respawn delay in ticks — RTK's <c>Mobs.MobSpawnTime</c> (seconds), which
+    /// is per CREATURE: a town rat is back in 18s, a Mythic elite takes 360. A genuine 0 in that table means
+    /// "revive on the next pass", so it floors at one tick rather than being read as "unset".</summary>
+    private static int SpawnTicksFor(MobDef def) =>
+        def.SpawnTime > 0 ? Math.Max(1, def.SpawnTime * 1000 / TickMs) : 1;
+
+    /// <summary>When a dead point may next refill: its creature's own delay (or a rare boss's long override),
+    /// plus up to +50% jitter for a rare boss so it comes back as an irregular surprise rather than on a
+    /// predictable clock. Points only — a batch group's clock is <see cref="SpawnGroup.NextBatchUnix"/>.</summary>
     private long NextRespawnTick(Spawn sp)
     {
         if (sp.RespawnEvery <= 0) return _tick + RespawnTicks;
@@ -406,6 +476,12 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private void EnsureMaterialized(ushort mapId)
     {
+        // Batch groups get a chance to fill BEFORE the entering player's room list is read, so a room whose
+        // timer came due while nobody was in it is already full when they walk in rather than popping into
+        // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
+        // entry, since that is the only moment a due group on an unwatched map gets looked at.
+        RefillGroups(mapId);
+
         if (!_materialized.Add(mapId)) return;              // already done
         if (!_spawns.TryGetValue(mapId, out var list)) return;
         foreach (var sp in list)
@@ -415,6 +491,69 @@ public sealed class World
             // once due (and only while the map is being hunted, since that loop skips empty maps).
             if (sp.Rare) { sp.RespawnTick = _tick + 1 + Random.Shared.Next(sp.RespawnEvery); continue; }
             Materialize(mapId, sp);
+        }
+    }
+
+    /// <summary>Run every due batch group on one map: RTK's <c>spawnMob</c>. Caller holds <c>_lock</c>.
+    ///
+    /// The shape is RTK's, and each part of it is load-bearing:
+    ///   * one clock per GROUP, not per mob and never per kill — so killing something brings nothing back,
+    ///     and a cleared room is genuinely cleared until the timer comes round;
+    ///   * the live count is taken MAP-WIDE (RTK's <c>getObjectsInMap</c> filtered by mob id), not within the
+    ///     box, so survivors count against the cap and two groups naming the same creature can't stack it;
+    ///   * refill tops up to the cap and stops — never above it, never a fixed number per cycle;
+    ///   * the clock is stamped when the batch RUNS, so it is the refill cycle that paces the room, not how
+    ///     fast the room was emptied.
+    /// Deliberately NOT ported from RTK: its <c>deleteMob</c> (which wipes a group off a player-free map, so
+    /// mobs you walked away from are gone when you return) and its accelerator (which pulls the clock back
+    /// 10s every 10s on a mob-free map, roughly halving the wait on a fully cleared room). Continuity across
+    /// a visit is worth more than the re-randomisation, and a cleared room is supposed to stay dead.</summary>
+    private void RefillGroups(ushort mapId)
+    {
+        if (!_groups.TryGetValue(mapId, out var groups)) return;
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        HashSet<(int, int)>? taken = null;               // built once, only if something is actually due
+        foreach (var g in groups)
+        {
+            if (now < g.NextBatchUnix) continue;
+            taken ??= OccupiedTiles(mapId);
+            foreach (var (def, cap) in g.Members) FillMember(g, def, cap, taken);
+            g.NextBatchUnix = now + g.TimerSec;
+        }
+    }
+
+    /// <summary>Every tile on a map that something is standing on. Built once per refill sweep and updated as
+    /// mobs are placed: the placement test runs up to four times the group's cap, and the big woodcutting maps
+    /// cap at 500, so re-scanning the map's entity lists per attempt would be a quarter-million comparisons
+    /// under the world lock. Caller holds <c>_lock</c>.</summary>
+    private HashSet<(int, int)> OccupiedTiles(ushort mapId)
+    {
+        var map = Map(mapId);
+        var taken = new HashSet<(int, int)>(map.Mobs.Count + map.Players.Count);
+        foreach (var m in map.Mobs) if (m.Alive) taken.Add((m.X, m.Y));
+        foreach (var p in map.Players) taken.Add((p.PlayerX, p.PlayerY));
+        return taken;
+    }
+
+    /// <summary>Top one creature in a group back up to its cap, placing each new mob on a freshly-rolled tile
+    /// inside the group's box. Caller holds <c>_lock</c>.</summary>
+    private void FillMember(SpawnGroup g, MobDef def, int cap, HashSet<(int, int)> taken)
+    {
+        var map = Map(g.Map);
+        int alive = 0;
+        foreach (var m in map.Mobs)
+            if (m.Alive && !m.IsNpc && m.DefId == def.Id) alive++;
+        if (alive >= cap) return;                       // already full — this is the no-overfill guarantee
+
+        // RTK's give-up rule: a fixed budget of failed placements for the whole top-up, so a box that is
+        // mostly wall (or a room the party is standing in) ends the attempt instead of spinning.
+        int budget = cap * PlacementTriesPerMob;
+        while (alive < cap && budget-- > 0)
+        {
+            if (!TryPickGroupTile(g, taken, out var x, out var y)) continue;
+            BuildMob(g.Map, def, x, y);
+            taken.Add((x, y));
+            alive++;
         }
     }
 
@@ -569,17 +708,30 @@ public sealed class World
         // Don't stack: several RTK spawn points share a tile, and a respawn can land where another mob has
         // wandered. Place on the spawn tile if free, else the nearest open one (home stays the spawn tile).
         var (sx, sy) = FreeSpawnTile(mapId, sp.X, sp.Y);
-        var mob = new Mob(_nextMobId++, d.Look, sx, sy, d.Name, d.Hp)
+        var mob = BuildMob(mapId, d, sx, sy, sp.X, sp.Y);
+        _mobSpawn[mob.Id] = sp;
+        sp.Live = mob;
+        sp.RespawnTick = 0;
+    }
+
+    /// <summary>Build one live creature, add it to the map and fire its spawn hook. Shared by both spawn
+    /// systems so a batch-spawned cave mob is identical in every respect to a point-spawned town one — the
+    /// only difference between the two is what decides WHEN and WHERE. Home defaults to the spawn tile.
+    /// Caller holds <c>_lock</c>.</summary>
+    private Mob BuildMob(ushort mapId, MobDef d, ushort x, ushort y, ushort? homeX = null, ushort? homeY = null)
+    {
+        var mob = new Mob(_nextMobId++, d.Look, x, y, d.Name, d.Hp)
         {
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
             // rendered every mob green — so we use RTK's per-mob colour, which matches for most creatures.)
-            Key = d.Key,   // carry the MobDef identifier so quest kill-matching can key on it
+            Key = d.Key, DefId = d.Id,   // identifier for quest kill-matching, id for spawn-group counting
             Color = d.Color, Exp = d.Exp, Level = d.Level, Will = d.Will, Aggressive = d.Aggressive, Flees = d.Flees,
             MinDam = d.MinDam, MaxDam = d.MaxDam, Hit = d.Hit, IsBoss = d.IsBoss, Protection = d.Protection, Ac = d.Ac, Grace = d.Grace,
             // Wander is the default; MobStationary.csv opts a creature out (a penned captive whose RTK AI
             // script only ever turns on the spot — see Content.LoadMobStationary).
-            Dir = 2, HomeX = sp.X, HomeY = sp.Y, Wander = !d.Stationary, Leash = WanderRadius,
+            Dir = 2, HomeX = homeX ?? x, HomeY = homeY ?? y, Wander = !d.Stationary, Leash = WanderRadius,
             MoveTime = d.MoveTime, MoveTimer = Random.Shared.Next(d.MoveTime),   // stagger so they don't all step at once
+            WorldSpawned = true,           // placed by the world, so it drops loot (see Mob.WorldSpawned)
         };
 
         // Spawn HP jitter (RTK AI/mob_on_spawn.lua — the DEFAULT on_spawn every creature without its own
@@ -595,9 +747,33 @@ public sealed class World
         }
         Map(mapId).Mobs.Add(mob);
         QueueHook(MobScript.OnSpawn, mapId, mob, null);
-        _mobSpawn[mob.Id] = sp;
-        sp.Live = mob;
-        sp.RespawnTick = 0;
+        return mob;
+    }
+
+    /// <summary>Roll one placement tile for a batch group, or false if this attempt failed (the caller retries
+    /// against its budget). RTK's own test, tile for tile: passable ground, no object, nobody standing there —
+    /// player or mob — and not a warp tile, since a creature parked on a warp is one a player can't avoid
+    /// walking into. Caller holds <c>_lock</c>.</summary>
+    private bool TryPickGroupTile(SpawnGroup g, HashSet<(int, int)> taken, out ushort x, out ushort y)
+    {
+        x = y = 0;
+        var (xs, ys) = Content.Maps.TryGetValue(g.Map, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
+        if (xs == 0 || ys == 0) return false;
+
+        int minX = g.MinX, minY = g.MinY, maxX = g.MaxX, maxY = g.MaxY;
+        if (minX == 0 && minY == 0 && maxX == 0 && maxY == 0) { maxX = xs - 1; maxY = ys - 1; }
+        maxX = Math.Min(maxX, xs - 1);                  // RTK clamps the box to the map the same way
+        maxY = Math.Min(maxY, ys - 1);
+        if (maxX < minX || maxY < minY) return false;
+
+        int tx = Random.Shared.Next(minX, maxX + 1), ty = Random.Shared.Next(minY, maxY + 1);
+        if (taken.Contains((tx, ty))) return false;      // a mob or a player is already standing there
+        var terrain = MapData.For(g.Map, xs, ys);
+        if (terrain is not null && terrain.Solid(tx, ty)) return false;
+        if (Content.TryWarp(g.Map, (ushort)tx, (ushort)ty, out _)) return false;
+
+        x = (ushort)tx; y = (ushort)ty;
+        return true;
     }
 
     /// <summary>The spawn tile if it's open, else the nearest tile (within 2) that's in-bounds, not already
@@ -819,7 +995,7 @@ public sealed class World
             uint mobId = mob.Id;
             _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch { } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-            PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y);
+            PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
         }
     }
 
@@ -851,7 +1027,7 @@ public sealed class World
             if (!victim.Summoned)
             {
                 uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
-                PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y);
+                PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y, victim.Key);
             }
             return;
         }
@@ -1180,6 +1356,7 @@ public sealed class World
             // 2. rebuild the spawn roster + NPC placement from the just-reloaded Content (fresh defs, positions,
             //    and any added/removed rows). NPCs are placed on every map (cheap, ~340); mobs stay lazy.
             _spawns.Clear();
+            _groups.Clear();
             _materialized.Clear();
             BuildSpawnRosterLocked();
             foreach (var n in Content.Npcs) if (n.Enabled) { PlaceNpc(n); npcs++; }
@@ -1627,11 +1804,18 @@ public sealed class World
                     _lastDeath[(mapId, mob.Key)] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 if (_mobSpawn.TryGetValue(mob.Id, out var sp))
                 {
+                    // A spawn POINT frees up and starts its creature's respawn clock. A batch-group mob has
+                    // no point to free: its group refills on its own timer and this death changes nothing.
                     sp.Live = null;
                     sp.RespawnTick = NextRespawnTick(sp);    // refill shortly (rare bosses: long jittered delay)
                     _mobSpawn.Remove(mob.Id);
-                    drops = RollDropsLocked(m, mob, sp.Def);  // adds to m.Items under the lock
                 }
+                // Loot is a property of the CREATURE, not of which system placed it. Rolling it inside the
+                // spawn-point branch above meant a mob without a point dropped nothing at all — which, once
+                // the hunting maps moved to batch groups, would have been every mob in them. Gated on
+                // WorldSpawned so a conjured pet still can't be farmed for its wild counterpart's drops.
+                if (mob.WorldSpawned && Content.MobByKey(mob.Key) is { } dropDef)
+                    drops = RollDropsLocked(m, mob, dropDef);  // adds to m.Items under the lock
             }
         }
         if (drops is not null)
@@ -1830,7 +2014,8 @@ public sealed class World
             // "this tick body is too slow".
             _lockWaitMs = (System.Diagnostics.Stopwatch.GetTimestamp() - lockT0) * 1000 / System.Diagnostics.Stopwatch.Frequency;
 
-            // (1) respawns: refill any due spawn point on a map someone is watching.
+            // (1) respawns: refill any due spawn point on a map someone is watching. Points only — the
+            // hunting maps refill in batches at (1.1), not one mob at a time as they die.
             foreach (var (mapId, list) in _spawns)
             {
                 if (!_maps.TryGetValue(mapId, out var pm) || pm.Players.Count == 0) continue;
@@ -1838,6 +2023,18 @@ public sealed class World
                     if (sp.Live is null && sp.RespawnTick != 0 && _tick >= sp.RespawnTick)
                         Materialize(mapId, sp);
             }
+
+            // (1.1) batch refills: every due spawn group on a map someone is hunting (RTK's spawner NPC,
+            // whose own `#pc > 0` test this mirrors). A map nobody is on is skipped here and caught by
+            // EnsureMaterialized when someone walks in, so the room is full before their viewport is built
+            // rather than filling in around them. Sampled every BatchSweepTicks — these clocks are in whole
+            // seconds and the shortest is 2s, so there is nothing to gain from looking every 600ms.
+            if (_tick % BatchSweepTicks == 0)
+                foreach (var (mapId, _) in _groups)
+                {
+                    if (!_maps.TryGetValue(mapId, out var pm) || pm.Players.Count == 0) continue;
+                    RefillGroups(mapId);
+                }
 
             // (1.2) morph expiry (Session.CastMorph/RevertMorph): purely cosmetic per-player visual state
             // with no server-side entity of its own — the revert broadcast is socket I/O, so it's deferred
