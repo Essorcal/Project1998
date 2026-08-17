@@ -415,7 +415,12 @@ public sealed partial class Session
         // either (their CSV rows are all bare "Utility"), and each manages its own real RTK mana cost/cooldown
         // internally rather than trusting the generic `mana`/`fx.Aether` values above (which are blank for
         // all of them in the export — see each method's own hardcoded RTK constant).
-        if (Content.SacrificeFamilyFor(sp) is Content.SacrificeFamily fam) return Lua(CastWorldArch("sacrifice", sp, targetId, answer), sp);
+        if (Content.SacrificeFamilyFor(sp) is Content.SacrificeFamily)
+        {
+            bool okSac = Lua(CastWorldArch("sacrifice", sp, targetId, answer), sp);
+            if (okSac && Content.OverheadShoutFor(sp) is string sacShout) Shout(sacShout);   // "K'YA~!" / "Sa-AAA~~!" / "Ka~!" / "Ka~~!"
+            return okSac;
+        }
         if (Content.IsManaStealSpell(sp)) return Lua(CastUtilArch("mana_steal", sp, targetId), sp);
         if (Content.IsManaGiftSpell(sp)) return Lua(CastUtilArch("mana_gift", sp, targetId), sp);
         if (Content.IsCleanseSpell(sp)) return Lua(CastUtilArch("cleanse", sp, targetId), sp);
@@ -484,6 +489,9 @@ public sealed partial class Session
             // "debit the mana"; the caster line comes from HandleCast. 137 of the 640 exported spells land here.
             _            => Lua(CastArch("misc", sp, fx, targetId, mana), sp),
         };
+        // Overhead cast shout for the strikes that run the generic Damage archetype rather than the sacrifice
+        // verb — Assault and its reskins ("Assault~!"). The sacrifice four shout at their own dispatch above.
+        if (ok && Content.OverheadShoutFor(sp) is string archShout) Shout(archShout);
         // Pool-fraction spells (Content.PostCastManaDrainFor — the whole pool for Inferno/Dooms Fire and the
         // Retribution family, 70% for Hellfire's, a third for Restore) spend their share AFTER the damage or
         // heal is computed, from the SAME pre-cast reading the amount came from. Which is the point: these
@@ -1107,6 +1115,16 @@ public sealed partial class Session
         if (formatted.Length > 250) formatted = formatted[..250];
         var bytes = AsciiBytes(formatted);
         _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, bytes));   // RTK talk's own chatType 2
+    }
+
+    // The per-spell cast shout (Berserk's "K'YA~!", Whirlwind's "Sa-AAA~~!", …). Same blue chatType-2 over-head
+    // bubble as LuaTalk, but WITHOUT the "{name}! " prefix — the live game shows just the bare word over the
+    // head. Broadcast map-wide including the caster. See Content.OverheadShoutFor for the word list.
+    internal void Shout(string msg)
+    {
+        if (msg.Length > 250) msg = msg[..250];
+        var bytes = AsciiBytes(msg);
+        _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, bytes));
     }
 
     // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.

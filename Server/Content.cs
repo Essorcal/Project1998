@@ -3220,6 +3220,31 @@ public static partial class Content
     };
     public static SacrificeFamily? SacrificeFamilyFor(SpellDef sp) => SacrificeAliases.TryGetValue(sp.Key, out var f) ? f : null;
 
+    // ---- overhead cast shouts --------------------------------------------------------------------------------
+    // A handful of warrior/rogue power strikes make the caster SHOUT a short word in blue over their own head
+    // as they cast (the live game's own flavor; RTK player:talk(2, "…") without a name prefix). Berserk,
+    // Whirlwind, Desperate Attack and Lethal Strike route through the sacrifice verb; Assault runs the generic
+    // Damage archetype. Session.ApplyCast emits the shout (LuaShout) once the cast is confirmed. Keyed by the
+    // sacrifice family for the four strikes, and by key for the Assault reskins (same DisplayName "Assault").
+    private static readonly HashSet<string> AssaultShoutKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "assault_warrior", "deaths_challenge_warrior", "cold_snap_warrior", "volley_warrior", "assault",
+    };
+    /// <summary>The blue over-head word this spell shouts when cast, or null for the vast majority that shout
+    /// nothing. See AssaultShoutKeys / the SacrificeFamily switch.</summary>
+    public static string? OverheadShoutFor(SpellDef sp)
+    {
+        if (AssaultShoutKeys.Contains(sp.Key)) return "Assault~!";
+        return SacrificeFamilyFor(sp) switch
+        {
+            SacrificeFamily.Berserk         => "K'YA~!",
+            SacrificeFamily.Whirlwind       => "Sa-AAA~~!",
+            SacrificeFamily.DesperateAttack => "Ka~!",
+            SacrificeFamily.LethalStrike    => "Ka~~!",
+            _                               => null,
+        };
+    }
+
     // Sam San one-offs that fit no existing archetype (nexusatlas 2004; the 2002-10-01 TSWolf announcement
     // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases whose other
     // identifiers we do not know - only the unaligned key is wired).
