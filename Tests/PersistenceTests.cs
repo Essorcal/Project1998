@@ -177,6 +177,22 @@ public class PersistenceTests : IDisposable
         Assert.Equal(0, ParcelCount(_a));
     }
 
+    /// <summary>Facing survives a save/load round trip.
+    ///
+    /// <para>It didn't used to exist on the character at all — <c>Session._facing</c> was session-local, so
+    /// every login snapped the player back to north no matter which way they walked out. The character blob is
+    /// System.Text.Json over public FIELDS, and a field that isn't on <see cref="Character"/> serialises to
+    /// nothing at all silently, which is exactly how that stayed invisible.</para></summary>
+    [Fact]
+    public void Dir_SurvivesASaveAndLoad()
+    {
+        var c = Make(_a, 0);
+        c.Dir = 3;                                   // 0=N 1=E 2=S 3=W — anything but the default
+        Assert.True(_store.Save(c));
+
+        Assert.Equal(3, _store.Load(_a)!.Dir);
+    }
+
     private static int ParcelCount(string recipient)
     {
         using var cn = Db.Open();

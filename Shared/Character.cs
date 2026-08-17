@@ -21,6 +21,12 @@ public sealed class Character
     public ushort MapXs  = 12;
     public ushort MapYs  = 12;
 
+    // Which way the character is looking (0=N 1=E 2=S 3=W — the same convention as Mob.Dir and the 0x11
+    // "side" packet). Persisted alongside X/Y for the same reason: the entry sequence draws us with a
+    // facing (SendSelfLook/PlayerSnapshot), and a session-only value meant every login snapped everyone
+    // back to north regardless of where they'd walked in from. Session._facing IS this field.
+    public byte Dir      = 0;
+
     // appearance
     public ushort Sex    = 1;
     public ushort Face   = 0;
@@ -86,7 +92,8 @@ public sealed class Character
 
     // Learned spells/skills, in spellbook order. Each entry is a Content.Spells id; the book slot the client
     // uses (the 0x17 "pos" and the 0x0F cast "pos") is the index into this list. Persisted so the book
-    // survives a relog; re-sent on world entry. Taught by the @spells / @learnspell GM commands.
+    // survives a relog; re-sent on world entry. Filled by SyncSpellbook, which the @lvl / @class / @mark /
+    // @align rebuild drives — there is no per-spell grant command.
     public List<int> Spells = new();
 
     // Quest progress. Key = a quest id ("trial_of_iron"); value = its stage (0 = not started, 1 = active,
@@ -205,8 +212,8 @@ public sealed class Character
     // by every legend that stamps "the current date", and by the Lua `gameDate` binding. Reads the world
     // calendar, so it is a real date now rather than the fixed "Hyul 31, Winter" constant this used to be
     // (there was no server-side clock when the legends were written). A live 4.95 self-profile capture says
-    // "Hyul" where RTK says "Yuri" — same king, two names; we use RTK's word server-wide so legends and
-    // "@time" agree. Characters created before 2026-08-12 keep whatever their born legend already says.
+    // "Hyul" where RTK says "Yuri" — same king, two names; we use RTK's word server-wide so every date the
+    // server writes agrees. Characters created before 2026-08-12 keep whatever their born legend already says.
     public static string GameDate => GameCalendar.Stamp;
 
     // Legend marks: the scrollable list at the bottom of the profile. Each = icon + color + text.

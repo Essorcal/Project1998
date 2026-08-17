@@ -60,7 +60,7 @@ public static class GameCalendar
     /// <summary>"Yuri N, &lt;season&gt;" — the date as RTK's <c>curT()</c> writes it, for legend text and
     /// anywhere else a script asks for "the current date". "Yuri N" is the Nth year of King Yuri's reign,
     /// not a unit of time. (A live 4.95 self-profile capture reads "Born in Hyul 31, Winter" — same king,
-    /// the other name; we say Yuri server-wide so the profile and <c>@time</c> agree.)</summary>
+    /// the other name; we say Yuri server-wide so every date the server writes agrees.)</summary>
     public static string Stamp
     {
         get { var (_, _, season, year) = Now(); return $"Yuri {year}, {SeasonName(season)}"; }
