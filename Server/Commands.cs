@@ -54,6 +54,7 @@ public sealed partial class Session
         // ---- world / navigation ---------------------------------------------------------------------
         G("warp",    (s, a) => s.Warp(a),          "<map name|id> [x y]", "teleport"),
         T("go",      (s, a) => s.GoCmd(a),         "<x> <y>",             "jump to a tile on the map you're already on (bad/out-of-range coords -> 0 0)"),
+        T("rez",     (s, a) => s.RezCmd(),         "",                    "resurrect yourself to full HP and MP (a full heal if already alive)"),
         G("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),

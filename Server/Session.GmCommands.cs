@@ -451,6 +451,11 @@ public sealed partial class Session
     // teach flow starts where a finished linguist starts. Eligibility for the spells is checked separately by
     // the Dog and is base classes + NPC subpaths only (Content.CanLearnDogSpells) — said here too, because a
     // PC subpath can hold the legend and still never be taught anything.
+    // @rez (tester/GM): bring yourself back to life at full HP/MP. ReviveInPlace drops the ghost form, refills
+    // both bars and pushes the HUD — harmless on a living character (just a full heal), so no dead-only guard.
+    private void RezCmd() =>
+        ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
+
     private void SetDogFlag(string text)
     {
         int p = Math.Max(0, CharClassId);
