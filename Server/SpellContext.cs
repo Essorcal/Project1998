@@ -177,9 +177,17 @@ public sealed class SpellContext
     public bool charmTarget(double durMs) => _s.LuaCharmTarget((int)durMs, _sp, _targetId);
 
     /// <summary>Make the target mob forget YOU for <paramref name="durMs"/> (a boss for
-    /// <paramref name="bossDurMs"/>): your threat on it is wiped and it stops picking you. RTK amnesia.</summary>
-    public bool amnesiaTarget(double durMs, double bossDurMs) =>
-        _s.LuaAmnesia((int)durMs, (int)bossDurMs, _sp, _targetId);
+    /// <paramref name="bossDurMs"/>): your threat on it is wiped and it stops picking you. RTK amnesia.
+    /// <paramref name="chance"/> is the take-hold percent (a miss still spends mana — returns true — and just
+    /// prints that the creature shook it off; it applies no status, so re-casting is always allowed).</summary>
+    public bool amnesiaTarget(double durMs, double bossDurMs, double chance) =>
+        _s.LuaAmnesia((int)durMs, (int)bossDurMs, (int)chance, _sp, _targetId);
+
+    /// <summary>Confuse the target mob: a <paramref name="chance"/>% aggro RESET (NOT a status). On success its
+    /// whole threat table is wiped and it forgets everyone; a creature on an adjacent tile is turned on instead,
+    /// so two mobs side by side (blind them first) can be spammed into fighting each other. A miss still spends
+    /// mana (returns true) and just says the creature resisted. False only when there is no legal target.</summary>
+    public bool confuseTarget(double chance) => _s.LuaConfuse((int)chance, _sp, _targetId);
 
     /// <summary>Shout as the caster — an over-head chat bubble everyone on the map sees (RTK player:talk).</summary>
     public void talk(string msg) => _s.LuaTalk(msg);

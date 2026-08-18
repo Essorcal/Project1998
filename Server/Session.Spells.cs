@@ -180,6 +180,20 @@ public sealed partial class Session
         _char.Spells.Clear();
     }
 
+    /// <summary>0x30 spell-pane swap (Shift+C over the spellbook — RTK clif_parsechangespell, clif.c:10521).
+    /// The book is a DENSE list here (slot == list index, which is the "pos" the client casts back on 0x0F),
+    /// so only two OCCUPIED slots can trade places; dragging a spell onto an empty trailing slot would need a
+    /// gap the model doesn't carry, and is ignored. Re-send both slots (0x17 overwrites a book slot in place),
+    /// so the swap is silent — no removespell needed. Persisted via MarkDirty like every other book change.</summary>
+    private void SwapSpellSlots(int a, int b)
+    {
+        if (a == b || a < 0 || b < 0 || a >= _char.Spells.Count || b >= _char.Spells.Count) return;
+        (_char.Spells[a], _char.Spells[b]) = (_char.Spells[b], _char.Spells[a]);
+        if (Content.SpellById(_char.Spells[a]) is { } spA) SendAddSpell(a, spA);
+        if (Content.SpellById(_char.Spells[b]) is { } spB) SendAddSpell(b, spB);
+        MarkDirty();
+    }
+
     // 0x0F cast (RTK clif_parsemagic): body[0]=book slot+1; then per the learned spell's type: type 1 -> a
     // typed answer string, type 2 -> target entity id (u32BE), type 5 -> nothing. We play the cast animation
     // (0x1A type 6 = magic) for us + peers, spend a little mana, and apply a GENERIC effect: targeted (type 2)
@@ -1098,11 +1112,16 @@ public sealed partial class Session
     /// <para>This is the spell's REAL effect. Before the threat table existed there was nothing for it to act
     /// on, so it fell through to its spell_effects archetype row — which the extractor had classified as
     /// Debuff/"slow", i.e. it quietly applied a slow to the mob and nothing else.</para></summary>
-    internal bool LuaAmnesia(int durMs, int bossDurMs, SpellDef sp, uint? targetId)
+    internal bool LuaAmnesia(int durMs, int bossDurMs, int chance, SpellDef sp, uint? targetId)
     {
         ResolveTargetBuff(targetId, out var pc, out var mob);
         if (mob is null || pc is not null) { LogNoTarget(sp); return false; }
         if (mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
+
+        // Fail rate: the cast happened (the verb debits mana on this `true`), it just didn't take hold. No
+        // status and no re-cast lock, so a miss just means cast it again.
+        if (chance < 100 && Random.Shared.Next(100) >= chance)
+        { SendMiniText($"{mob.Name} shakes off the spell."); return true; }
 
         int dur = mob.IsBoss ? bossDurMs : durMs;
         mob.AmnesiaBy = _char.Id;
@@ -1117,25 +1136,53 @@ public sealed partial class Session
         return true;
     }
 
+    /// <summary>Confuse (RTK mage/confuse.lua): a FAIL-RATE aggro RESET, distinct from Amnesia's per-caster
+    /// peel. On success the mob's whole threat table is wiped and it forgets everyone (World.ConfuseMob); if
+    /// another creature is on an adjacent tile the confused mob turns on IT, so blinding two mobs side by side
+    /// and spamming Confuse sets them fighting each other. Nothing is applied on a miss. No status, no timer,
+    /// so it never reports "already cast". Mob-only.
+    /// <para>Returns true on BOTH a hit and a fizzle (the verb debits mana either way — re-casting until it
+    /// lands must cost something); false only when there is no legal target, in which case no mana is spent.</para></summary>
+    internal bool LuaConfuse(int chance, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob);
+        if (mob is null || pc is not null) { LogNoTarget(sp); return false; }
+        if (mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
+
+        if (chance < 100 && Random.Shared.Next(100) >= chance)
+        { SendMiniText($"{mob.Name} resists the confusion."); return true; }   // fizzle — still cast, no effect
+
+        _world.ConfuseMob(_char.Map, mob);
+
+        var fx = Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        SendMiniText($"You cast {sp.Name} on {mob.Name}");
+        Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' confused (aggro reset, mobTarget={mob.TargetMobId})");
+        return true;
+    }
+
     // Public speech from the caster (RTK player:talk(2, "…")) — Kamikaze shouts before it detonates. Same 0x0D
-    // over-head bubble a typed chat line uses, broadcast to the whole map INCLUDING us, so it reads as the
-    // caster actually shouting rather than as a private status line.
+    // over-head bubble a typed chat line uses, broadcast INCLUDING us so it reads as the caster actually
+    // speaking rather than as a private status line. RTK's :talk is proximity-gated (bll_talk ->
+    // map_foreachinarea(..., AREA, ...)), so despite the "! " prefix this carries only to nearby players.
     internal void LuaTalk(string msg)
     {
         string formatted = $"{_char.Name}! {msg}";
         if (formatted.Length > 250) formatted = formatted[..250];
         var bytes = AsciiBytes(formatted);
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, bytes));   // RTK talk's own chatType 2
+        _world.BroadcastArea(_char.Map, _char.X, _char.Y, SayHalfW, SayHalfH,
+            p => p.SpeakEntity(2, _char.Id, bytes));   // RTK talk's own chatType 2
     }
 
     // The per-spell cast shout (Berserk's "K'YA~!", Whirlwind's "Sa-AAA~~!", …). Same blue chatType-2 over-head
     // bubble as LuaTalk, but WITHOUT the "{name}! " prefix — the live game shows just the bare word over the
-    // head. Broadcast map-wide including the caster. See Content.OverheadShoutFor for the word list.
+    // head. Proximity-gated around the caster like every other RTK :talk. See Content.OverheadShoutFor.
     internal void Shout(string msg)
     {
         if (msg.Length > 250) msg = msg[..250];
         var bytes = AsciiBytes(msg);
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, bytes));
+        _world.BroadcastArea(_char.Map, _char.X, _char.Y, SayHalfW, SayHalfH,
+            p => p.SpeakEntity(2, _char.Id, bytes));
     }
 
     // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.
@@ -2008,7 +2055,7 @@ public sealed partial class Session
     // Spot Traps core (see CastSpotTraps): draw a caster-only marker on every hidden trap within 15 tiles.
     internal int LuaRevealTraps()
     {
-        var traps = _world.TrapsNear(_char.Map, _char.X, _char.Y, 15);
+        var traps = RevealableTrapsNear();
         ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
         foreach (var t in traps)
             ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
@@ -2247,7 +2294,7 @@ public sealed partial class Session
     internal void LuaAmbushStrike(SpellDef sp)
     {
         if (_frontStrikeMob is not { } mob) return;
-        var (dmg, crit) = PlayerSwingDamage(mob);
+        var (dmg, crit) = PlayerSwingDamage(SwingTarget.Of(mob));
         if (dmg <= 0) return;   // whiff (Combat.RollPlayerSwingRtk) — silent, no text
         if (_world.TryDamage(_char.Map, mob, dmg, out bool died, _char.Id))
         {
@@ -2606,12 +2653,12 @@ public sealed partial class Session
         _flankUntil = 0;
     }
 
-    /// <summary>"@dispel" — strip EVERY timed effect on the caster, buff and debuff alike, and re-render.
-    /// A superset of <see cref="FlushDurations"/> (which only covers stat buffs + rage + stealth + the two
-    /// warrior stances): this also clears the curse/ward status flags, the Sanctuary/Cunning deduction
-    /// timers and the enchant multiplier, and reverts a stealth or morph disguise so the look snaps back.
-    /// Persists (MarkDirty), so a cleared effect can't be restored by a relog.</summary>
-    internal void DispelSelf()
+    /// <summary>Strip EVERY running timed effect on this session in one shot — stat buffs, curse/ward status
+    /// flags, rage, the Sanctuary/Cunning deduction timers, the enchant multiplier, the two warrior stances,
+    /// and any stealth or morph disguise (reverted so the look snaps back). Does NOT render, push stats, or
+    /// persist — each caller owns that: <see cref="DispelSelf"/> refreshes + saves, and <see cref="Die"/> is
+    /// already redrawing as a ghost and saving. Shared so "@dispel" and death can't drift apart.</summary>
+    private void ClearAllTimedEffects()
     {
         RevertMorph();      // restore the real look before we wipe the buff that named the disguise
         BreakStealth();     // clears _stealthUntil + the faded (form-5) sprite
@@ -2623,6 +2670,16 @@ public sealed partial class Session
         _cunningDeductUntil = 0;   _cunningDeduct = 1.0;
         _backstabUntil = 0;        _flankUntil = 0;
         _enchantUntil = 0;         _enchantAmount = 1;
+    }
+
+    /// <summary>"@dispel" — strip EVERY timed effect on the caster, buff and debuff alike, and re-render.
+    /// A superset of <see cref="FlushDurations"/> (which only covers stat buffs + rage + stealth + the two
+    /// warrior stances): this also clears the curse/ward status flags, the Sanctuary/Cunning deduction
+    /// timers and the enchant multiplier, and reverts a stealth or morph disguise so the look snaps back.
+    /// Persists (MarkDirty), so a cleared effect can't be restored by a relog.</summary>
+    internal void DispelSelf()
+    {
+        ClearAllTimedEffects();
 
         SendStats();          // drop the buff/debuff box + refresh any stat the buffs were bending
         RefreshAppearance();  // belt-and-braces redraw (RevertMorph/BreakStealth already did, if they fired)
@@ -2671,9 +2728,27 @@ public sealed partial class Session
         return true;
     }
 
-    // RTK warrior/watchful_eye.lua family + dog/spot_traps.lua (see Content.IsSpotTrapsSpell): reveals every
-    // hidden rogue-trap NPC (dart/snare/repeating/flash/spear/poison/death/sleep) within 15 tiles (RTK
-    // seeSpotTraps: distanceSquare(player, npc, 15)) by drawing item 99 ("wooden sword" — RTK's own marker,
+    // RTK seeSpotTraps (spotTraps.lua) is CLASS-BRANCHED, and both branches route through this one reveal:
+    //   * class 1 (Warrior) — watchful_eye.lua family — reveals hidden AMBUSH tiles (RTK's MobSpawnNpc), the
+    //     cave mob-spawn traps; "Spots Ambushes on ground and marks them off as Steel daggers."
+    //   * class 2 (Rogue)   — dog/spot_traps.lua       — reveals the rogue combat-trap family (dart/snare/
+    //     repeating/flash/spear/poison/death/sleep).
+    // Neither reveals the cosmetic shiver echo (Session.TryMythicFallRoom), the tiger warp-traps, or a
+    // bladestorm decoy. A non-warrior caster of either spell gets the rogue set (RTK only special-cases class 1).
+    private Trap[] RevealableTrapsNear() =>
+        _world.TrapsNear(_char.Map, _char.X, _char.Y, 15)
+            .Where(t => CharBasePathId == 1
+                ? t.Kind == "ambush"
+                : t.Kind != "ambush" && t.Kind != "shiver" && t.Kind != "bladestorm")
+            .ToArray();
+
+    // Watchful Eye (warrior) + Spot Traps (dog/rogue), see Content.IsSpotTrapsSpell and RevealableTrapsNear:
+    // draws item 99 ("wooden sword" — RTK's own marker, its Lua comment calls it a "steel dagger" but the
+    // actual dropped id is 99 either way) on each revealed trap's tile within 15 tiles (RTK seeSpotTraps:
+    // distanceSquare(player, npc, 15)) — via ShowGroundItem directly (not World.DropItem), so only the caster's
+    // own client ever sees it, matching RTK's addTrapSpotters/getTrapSpotters per-player visibility tagging. No
+    // removal call exists yet (RTK's own removeSpotTraps is a separate GM-style command) — same "stays until
+    // you leave/re-enter the map" behaviour the Lua describes ("will remain on screen for as long as you want").
     // its Lua comment calls it a "steel dagger" but the actual dropped id is 99 either way) on each trap's
     // tile — via ShowGroundItem directly (not World.DropItem), so only the caster's own client ever sees it,
     // matching RTK's addTrapSpotters/getTrapSpotters per-player visibility tagging. No removal call exists
@@ -2689,7 +2764,7 @@ public sealed partial class Session
         BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
         SetCooldown(sp.Key, fx.Aether > 0 ? fx.Aether : 25000);   // RTK setAether(key, 25000) for the warrior family — missing from the export, spot_traps' own row already has a real aether
 
-        var traps = _world.TrapsNear(_char.Map, _char.X, _char.Y, 15);
+        var traps = RevealableTrapsNear();
         ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
         foreach (var t in traps)
             ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
@@ -2783,6 +2858,16 @@ public sealed partial class Session
         SendMiniText("AIEE~! A trap goes off right beneath you!");
         return raw;
     }
+
+    /// <summary>Called by World.CheckPlayerTrapTrigger when we step on a "shiver" fall-echo (see
+    /// Session.TryMythicFallRoom): pure flavor, no effect — RTK's WarpTrapShiverNpc, unified onto every mythic
+    /// fall cave. One-shot; the caller has already removed the trap.</summary>
+    public void FeelShiver() => SendMiniText("You feel a sudden shiver.");
+
+    /// <summary>Called by World.FireAmbushLocked when we step on a cave ambush tile: the burst mobs are already
+    /// spawned around us (our post-step SyncMobs renders them); this is just the "Rabbits ambush you!" style
+    /// status line. See Content.AmbushMapDef.</summary>
+    public void ShowAmbushText(string msg) => SendMiniText(msg);
 
     // Gateway destinations are data-driven (game-data/GatewayGates.csv -> Content.GatewayRegions): region
     // -> the kingdom's city map + the four gate spawn boxes. Casting Gateway warps you to a RANDOM tile inside

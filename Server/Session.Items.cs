@@ -505,6 +505,28 @@ public sealed partial class Session
             minS += def.MinSDam; maxS += def.MaxSDam; minL += def.MinLDam; maxL += def.MaxLDam;
         }
         if (maxS <= 0) { minS = 1; maxS = 2; }   // bare-handed
+        else if (Content.PathIdForClass(_char.ClassName) == 3)   // Mage
+        {
+            // MAGE WEAPON PENALTY — live-measured 2026-08-17, absent from RTK.
+            // A mage reads a weapon's S range at roughly a QUARTER of face value. The transform is
+            // applied to the RANGE ENDPOINTS and then rolled uniformly, exactly as for any other class
+            // (not applied per-roll — see below).
+            //   wooden saber S 5-10  -> 2-3     viperhead S 15-25 -> 5-7     Staff of Power S 15-20 -> 5-6
+            // Measured on a level 16 and level 18 mage vs squirrel (AC 100, x2.00 so no flooring) and
+            // green squirrel (x1.90), n = 13 + 27 + 23. All three ranges land exactly on
+            // floor((x+5)/4). Rival maps floor(x/4)+1 and ceil(x/4) both give 4 where 15 must give 5,
+            // and are beaten 8700:1 and infinitely (ceil cannot produce the 8s the staff run showed).
+            // ENDPOINT-TRANSFORM vs PER-ROLL-TRANSFORM: both produce these same three ranges, but they
+            // differ in the DISTRIBUTION inside the range. Endpoint-then-uniform fits better on all
+            // three weapons (total LL -54.62 vs -55.99, ~4:1) and is the more plausible implementation.
+            // NOT an off-path gate: the Staff of Power is ItmPthId 3 — the mage's OWN path weapon — and
+            // is scaled identically. It is a flat property of the class.
+            // Only the S range is affected; the item's Dam/Might/etc lines are untouched, and an
+            // unarmed mage keeps the normal 1-2 (no weapon, so no weapon transform).
+            // POET (PathId 4) IS UNTESTED — deliberately not included. Do not extend without measuring.
+            minS = (minS + 5) / 4;
+            maxS = (maxS + 5) / 4;
+        }
         return (minS, maxS, minL, maxL);
     }
 
@@ -582,8 +604,13 @@ public sealed partial class Session
     // The bracket kept moving (11, 15, 16, 23) because it was fitting the seam between two different
     // characters, one of which was running with stale stats from a live-server bug. Do not re-add it.
 
-    /// <summary>A STAIRCASE in 0.5s, level-driven. Peasant/Mage/Poet are flat 0 (RTK's table says so and
-    /// a level-1 peasant measures it). Warrior/Rogue step, but the step LEVELS are irregular.
+    /// <summary>A STAIRCASE in 0.5s, level-driven. Warrior/Rogue step, and the step LEVELS are irregular.
+    ///
+    /// MAGE IS NOT FLAT 0 — measured 0.5 at level 16 (see MageClassFactor). POET is still untested and
+    /// still returns 0; do not assume it is 0 just because we ship 0. RTK's flat {0, 9, 7.5, 0, 0} is
+    /// NOT evidence for either — it is the same source whose warrior/rogue entries we already proved to
+    /// be endgame constants rather than per-level behaviour.
+    /// See docs/Melee-Damage-Findings.md "The mage anomaly".
     ///
     /// A LOOKUP, NOT A FORMULA — and that is a considered decision, not laziness. A uniform-period fit
     /// was derived and committed on 2026-08-16: the first step is exactly level 8 (lvl7 reads 0.0 and
@@ -615,14 +642,63 @@ public sealed partial class Session
     /// offset moved -0.5 -> -1.0 (pinned by a level-1 peasant) and this absorbed the same 0.5, so
     /// warrior/rogue damage is bit-identical and Peasant lands on exactly 0.</summary>
     private static readonly (int Level, double Cf)[] WarriorClassFactor =
-        { (1, 0.0), (7, 0.0), (8, 0.5), (16, 0.5), (18, 1.0), (32, 1.0), (35, 1.5) };
+        { (1, 0.0), (7, 0.0), (8, 0.5), (16, 0.5), (18, 1.0), (32, 1.0), (35, 1.5), (36, 1.5), (37, 1.5), (38, 1.5) };
+    /// <summary>ROGUE — MEASURED: 0.0 @5, 0.5 @7, 1.0 @18 and @19, 6.0 @65.
+    ///
+    /// !! THE ROGUE IS NOT ON THE WARRIOR'S LADDER. Rogue step #1 is at EXACTLY 7, warrior step #1 at
+    /// EXACTLY 8 — both pinned on adjacent-level pairs with saturated windows:
+    ///   rogue   lvl6 = 0.0 (n=28)   lvl7 = 0.5 (n=26)
+    ///   warrior lvl6 = 0.0 (n=23)   lvl7 = 0.0 (n=15)   lvl8 = 0.5 (n=24)
+    /// The warrior half was re-run on a FRESH RELOGGED character and agrees with the original, which
+    /// also proves the stale-stat bug hit base Dam ONLY and never touched classFactor. The "one shared
+    /// level ladder for all classes" idea is dead; do not resurrect it without explaining level 7.
+    ///
+    /// STEP #1 IS PINNED TO EXACTLY LEVEL 7 — level 6 measures 0.0 (n=28, window 4-9, chi2 2.00/5df)
+    /// and level 7 measures 0.5 (n=26, window 5-10), adjacent levels, both windows saturated. The
+    /// rogue steps exactly ONE level before the warrior, whose step #1 is at 8. Step #2 is bracketed to a wide 8-17 and the table assumes 18, which is the
+    /// least-invented choice — but an older, low-precision reading put the rogue at ~1.0 by level 15,
+    /// which a rogue-runs-earlier ladder would make CORRECT. Levels 15/16 are the pending test.
+    /// Everything between 19 and 65 is a placeholder ramp; only the endpoints are real.</summary>
     private static readonly (int Level, double Cf)[] RogueClassFactor =
-        { (1, 0.0), (15, 1.0), (19, 1.0), (65, 6.0) };
+        { (1, 0.0), (6, 0.0), (7, 0.5), (17, 0.5), (18, 1.0), (19, 1.0), (65, 6.0) };
+    /// <summary>TWO MEASURED POINTS: level 16 = 0.5, level 18 = 1.0. Both live, unarmed, vs a green
+    /// squirrel (x1.90) and cross-checked at 16 on a plain squirrel (x2.00). Might was 9 then 10 —
+    /// BOTH in the 8-11 mightTerm band, so mightTerm is 0.0 in both runs and the change is PURE cf
+    /// with no confound.
+    ///
+    /// !! THE MAGE STEPS AT THE SAME LEVELS AS THE WARRIOR. Mage 0.5@16 -> 1.0@18 and warrior
+    /// 0.5@16 -> 1.0@18 are the same step in the same 17-18 window. At level 18 all three measured
+    /// classes read 1.0 (warrior, rogue, mage). See docs/Melee-Damage-Findings.md "Is classFactor
+    /// class-independent?" — if it is, these per-class tables collapse into one level ladder and RTK's
+    /// per-class constants are late/subpath artifacts. NOT yet assumed: the tables stay separate until
+    /// a mid-level rogue reading tests it.
+    ///
+    /// The step at level 8 is BORROWED FROM THE WARRIOR, not measured. Levels 4-15, 17 and everything
+    /// above 18 are unmeasured for a mage. Treat 8 as a guess.</summary>
+    private static readonly (int Level, double Cf)[] MageClassFactor =
+        { (1, 0.0), (7, 0.0), (8, 0.5), (16, 0.5), (18, 1.0) };
+
+    /// <summary>classFactor at level 99, per class — the endpoint the ramp above the last measured knot
+    /// climbs toward, then holds past 99. Warrior 9 and Rogue 7.5 are KNOWN: RTK's swingDamage.lua
+    /// _classFactors flat per-class bonus ({0, 9, 7.5, 0, 0}); we treat them as the level-99 saturation
+    /// value rather than a flat-from-level-1 constant, since low-level readings measured well below them.
+    /// Mage's RTK entry is 0 (known wrong — mage measured 1.0 by level 18), so its 99 target is still a
+    /// PLACEHOLDER guess to be tuned as high-level mage readings land.</summary>
+    private const double WarriorCf99 = 9.0;
+    private const double RogueCf99   = 7.5;
+    private const double MageCf99    = 3.0;
 
     private static double ClassFactor(int pathId, int level)
     {
-        var pts = pathId switch { 1 => WarriorClassFactor, 2 => RogueClassFactor, _ => null };
-        if (pts is null) return 0;                       // Peasant/Mage/Poet — 0 in RTK's table too
+        (int Level, double Cf)[] pts;
+        double cf99;
+        switch (pathId)
+        {
+            case 1: pts = WarriorClassFactor; cf99 = WarriorCf99; break;
+            case 2: pts = RogueClassFactor;   cf99 = RogueCf99;   break;
+            case 3: pts = MageClassFactor;    cf99 = MageCf99;     break;
+            default: return 0;                           // Peasant measured flat 0; POET UNTESTED
+        }
         if (level <= pts[0].Level) return pts[0].Cf;
         for (int i = 1; i < pts.Length; i++)
         {
@@ -631,7 +707,11 @@ public sealed partial class Session
             var (l1, c1) = pts[i];
             return c0 + (c1 - c0) * (level - l0) / (double)(l1 - l0);
         }
-        return pts[^1].Cf;                               // above the last reading: hold, do not extrapolate
+        // Above the last MEASURED knot: ramp linearly to the placeholder (99, cf99), then hold.
+        var (lastL, lastC) = pts[^1];
+        if (lastL >= 99) return lastC;                   // last reading already at/past 99: hold it
+        if (level >= 99) return cf99;                    // at/above 99: hold the placeholder max
+        return lastC + (cf99 - lastC) * (level - lastL) / (double)(99 - lastL);
     }
 
     /// <summary>The Might contribution to a raw swing. TWO REGIMES, because the published formula is a
@@ -702,7 +782,20 @@ public sealed partial class Session
     //           reaches a side one. Applied LAST, after armor and after the positional x2, because the
     //           source states it as a fraction of "the front attack damage" — i.e. of the whole result.
     //           Spell-driven attacks (lethal strike etc.) always pass the default 1.0.
-    private (int dmg, bool crit) PlayerSwingDamage(Mob target, double reach = 1.0)
+    // The defender stats a player swing needs, abstracted so a MOB and a PLAYER both feed the ONE live-validated
+    // formula below (no parallel PvP copy to drift). grace/level feed the hit+crit roll; Ac + ArmorFloor the
+    // armor mitigation (mob floor -95 = RTK minimumArmor for a mob; player floor -80 = RTK's human floor, same
+    // as ApplyMobHit); X/Y/Dir the positional rear-x2. Of(Session) folds in the target's gear/buff armor+grace
+    // exactly as ApplyMobHit computes a player's effective defense.
+    private readonly record struct SwingTarget(int Ac, int ArmorFloor, int Grace, int Level, int X, int Y, byte Dir)
+    {
+        public static SwingTarget Of(Mob m) => new(m.Ac, -95, m.Grace, m.Level, m.X, m.Y, m.Dir);
+        public static SwingTarget Of(Session s) => new(
+            s._char.Ac + s.Totals().armor, -80, s._char.Grace + s.Totals().grace, s._char.Level,
+            s._char.X, s._char.Y, (byte)(s._facing & 3));
+    }
+
+    private (int dmg, bool crit) PlayerSwingDamage(SwingTarget target, double reach = 1.0)
     {
         var eq = Totals();
         int pathId = Content.PathIdForClass(_char.ClassName);
@@ -771,7 +864,7 @@ public sealed partial class Session
         double swing = (s / 2.0 * EffEnchant + dam * 2.5 + MightTerm(might) + classFactor) * EffRage * (wasStealthed ? 5 : 1) * (crit ? 3 : 1);
         // Pass the RAW DOUBLE into ApplyArmor — do NOT truncate here. Flooring twice (once to int, once
         // inside ApplyArmor) is disproven live; see the ApplyArmor doc comment for the n=178 evidence.
-        int dmg = Combat.ApplyArmor(swing, target.Ac, floor: -95);   // RTK minimumArmor for a mob target
+        int dmg = Combat.ApplyArmor(swing, target.Ac, floor: target.ArmorFloor);   // -95 mob / -80 player (see SwingTarget)
         // POSITIONAL BONUS — AT MOST x2, EVER. This is deliberately ONE decision feeding ONE multiply
         // rather than the old pair of independent `if (...) dmg *= 2;` lines, which could in principle
         // compound to x4. They never actually did (IsBehindTarget requires attackerDir == targetDir while
@@ -1240,6 +1333,42 @@ public sealed partial class Session
         ushort gfx = amt < 2 ? (ushort)22 : amt < 100 ? (ushort)73 : (ushort)72;   // coins_1 / _2_99 / _100_999 icons
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = -1,
             X = _char.X, Y = _char.Y, Amount = (int)amt, Graphic = gfx });
+    }
+
+    // 0x30 (Shift+C) "rearrange a pane": dec[0] = which pane (0 = bag, 1 = spellbook), dec[1] = start slot,
+    // dec[2] = stop slot, both 1-based. RTK's case 0x30 splits on dec[0]: ==1 routes to the spellbook
+    // (clif_parsechangespell, clif.c:10521), ==0 swaps two bag slots (clif_parsechangepos -> pc_changeitem,
+    // clif.c:10281/1953), anything else answers "You are busy." Live-confirmed shape (user capture 2026-08-17):
+    // `30 01 01 02 00` = spell pane, swap slots 1 and 2.
+    private void HandleChangePos(byte[] dec)
+    {
+        if (dec.Length < 3) return;
+        int a = dec[1] - 1, b = dec[2] - 1;
+        switch (dec[0])
+        {
+            case 0: SwapBagSlots(a, b); break;
+            case 1: SwapSpellSlots(a, b); break;
+            default: SendMiniText("You are busy."); break;   // RTK clif_parsechangepos's own else-branch line
+        }
+    }
+
+    // Swap two bag slots in place (RTK pc_changeitem, pc.c:1953): move the entries, then redraw each affected
+    // slot — an occupied slot via 0x0F, a now-empty one via 0x10. The 0x10 is REQUIRED to clear the client's
+    // bag cell (it is the ONLY thing that clears one — see the 164-byte array note at the top of this file).
+    // Consequence: swapping two OCCUPIED slots is silent (two 0x0F redraws), but moving an item ONTO a
+    // previously-empty slot narrates one delitem line for the emptied source ("<item> removed."), because no
+    // 0x10 reason is silent on 4.95 (docs §11c). RTK sends the same delitem here, reason 0.
+    private void SwapBagSlots(int a, int b)
+    {
+        if (a == b || a < 0 || b < 0 || a >= _char.MaxInv || b >= _char.MaxInv) return;
+        var itA = InvAt(a);
+        var itB = InvAt(b);
+        if (itA is null && itB is null) return;
+        if (itA is not null) itA.Slot = (byte)b;
+        if (itB is not null) itB.Slot = (byte)a;
+        if (itB is not null) SendAddItem(itB); else SendDelItem((byte)a, 0);   // slot a now holds itB (or is empty)
+        if (itA is not null) SendAddItem(itA); else SendDelItem((byte)b, 0);   // slot b now holds itA (or is empty)
+        MarkDirty();
     }
 
 }
