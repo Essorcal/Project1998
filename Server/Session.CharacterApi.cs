@@ -327,8 +327,7 @@ public sealed partial class Session
         // "N experience!" notice because RTK's check does too — a refused grant is silent about the amount.
         if (CharBasePathId == 0 && _char.Level >= 5)
         {
-            SendMiniText("You cannot increase your level without choosing a path first.");
-            SendMiniText("Please visit your Kingdom's tutor or press F1 and select \"Choose a Path\" from the list.");
+            SendMiniText("Upon attaining level five, choose a Hero's Path.  You will not progress until you choose a path.");
             return;
         }
         // Totem time (RTK Scripts/exp.lua → Player.checkTotemTimeXP): kill exp earned during your totem's
@@ -357,7 +356,7 @@ public sealed partial class Session
             // gate existed — and those must not level either.
             if (path == 0 && _char.Level >= 5)
             {
-                SendMiniText("You cannot increase your level without choosing a path first.");
+                SendMiniText("Upon attaining level five, choose a Hero's Path.  You will not progress until you choose a path.");
                 break;
             }
             LevelUp(path);
@@ -893,7 +892,8 @@ public sealed partial class Session
     /// "buy my &lt;item&gt;" / vault-command family, which answers over this channel rather than in a dialog
     /// box — arrived as a bare unattributed line in the chat log.</para></summary>
     internal void NpcBubble(Mob npc, string text) =>
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(0, npc.Id, Encoding.ASCII.GetBytes($"{npc.Name}: {text}")));
+        _world.BroadcastArea(_char.Map, npc.X, npc.Y, SayHalfW, SayHalfH,
+            p => p.SpeakEntity(0, npc.Id, Encoding.ASCII.GetBytes($"{npc.Name}: {text}")));
 
     /// <summary>Is an item (by content key) currently worn?</summary>
     internal bool HasEquipped(string itemKey)

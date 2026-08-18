@@ -61,6 +61,27 @@ public sealed partial class Session
 
         if (forming) _party.Broadcast($"{Snapshot().Name} is joining the group.");
         _party.Broadcast($"{target.Snapshot().Name} is joining the group.");
+
+        // Being in a group lights your OWN "Join a group" status (RTK shows the flag ON for every party
+        // member). The invitee already had it on — the gate above required WantsGroup — so only the inviter
+        // can be newly transitioning here; SetGroupStatus no-ops when the flag already matches, so adding to
+        // an existing party (where the inviter is already grouped) announces nothing.
+        SetGroupStatus(true);
+    }
+
+    /// <summary>Sync the "Join a group" status flag — the sidebar toggle line, and the persisted profile
+    /// group/sociable cell (0x39/0x34) — to <paramref name="on"/>, announcing the change exactly once.
+    /// No-ops when the flag already matches, so the party-membership callers (form/join → ON,
+    /// leave/kick/disband → OFF) never re-announce a state the player is already in. Persists via MarkDirty
+    /// rather than an immediate FlushNow because RemoveFromParty (a caller) also runs on the disconnect
+    /// teardown: the write there must be left to the read-loop's own _replaced-guarded flush so a stale
+    /// session can't clobber a fresher login (see Session.cs's disconnect save guard).</summary>
+    private void SetGroupStatus(bool on)
+    {
+        if (_char.Grouped == on) return;
+        _char.Grouped = on;
+        MarkDirty();
+        SendMessage(SettingLine("Join a group", on));
     }
 
     /// <summary>Removes <paramref name="member"/> from their party — the "Join a group" toggle going off
@@ -77,12 +98,14 @@ public sealed partial class Session
         bool disband = party.Remove(member);
         member._party = null;
         member.NotifyGroup("You have left the group.");
+        member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
         party.Broadcast($"{name} is leaving the group.");
         if (disband && party.Members.Count == 1)
         {
             var last = party.Members[0];
             last._party = null;
             last.NotifyGroup("Your group has disbanded.");
+            last.SetGroupStatus(false);   // party fully disbanded -> the last member's status goes OFF too
         }
     }
 
@@ -184,25 +207,40 @@ public sealed partial class Session
             amount = Math.Min(amount, chosen.Amount);
         }
 
-        mine.Items.RemoveAll(x => x.ItemId == chosen.ItemId && x.Dura == chosen.Dura && x.CustomName == chosen.CustomName);
-        mine.Items.Add(new InvItem(0, chosen.ItemId, amount, chosen.Dura) { CustomName = chosen.CustomName });
+        RecordTradeItemOffer(trade, chosen.ItemId, amount, chosen.Dura, chosen.CustomName);
+        await DlgSay(npc, $"You offer {Content.ItemById(chosen.ItemId)?.Name ?? "?"} x{amount}.");
+    }
+
+    /// <summary>Stage an item into this side's offer (shared by the dialog "Offer an item" flow and the
+    /// native hand-item gesture, <see cref="HandItemToPlayer"/>). Replaces any existing offer of the same
+    /// item, un-confirms both sides so a stale confirm can't sneak the change through, and notifies the
+    /// other party. Nothing is escrowed — <see cref="TransferItems"/> re-checks at finalize (see Trade.cs).</summary>
+    private void RecordTradeItemOffer(Trade trade, int itemId, int amount, ushort dura, string customName)
+    {
+        var mine = trade.OfferOf(this);
+        mine.Items.RemoveAll(x => x.ItemId == itemId && x.Dura == dura && x.CustomName == customName);
+        mine.Items.Add(new InvItem(0, itemId, amount, dura) { CustomName = customName });
         UnconfirmBoth(trade);
-        string itemName = Content.ItemById(chosen.ItemId)?.Name ?? "?";
-        trade.Other(this).Notify($"{Snapshot().Name} offers {itemName} x{amount}.");
-        await DlgSay(npc, $"You offer {itemName} x{amount}.");
+        trade.Other(this).Notify($"{Snapshot().Name} offers {Content.ItemById(itemId)?.Name ?? "?"} x{amount}.");
     }
 
     private async Task TradeOfferGold(Trade trade)
     {
         var npc = TradeVirtualNpc;
-        var mine = trade.OfferOf(this);
         var s = await DlgInput(npc, $"You carry {_char.Coins} coins. How much will you offer?");
         if (trade.Ended || !uint.TryParse(s, out uint amount)) return;
         if (amount > _char.Coins) amount = _char.Coins;
-        mine.Gold = amount;
+        RecordTradeGoldOffer(trade, amount);
+        await DlgSay(npc, $"You offer {amount} gold.");
+    }
+
+    /// <summary>Stage gold into this side's offer — shared by the dialog "Offer gold" flow and the native
+    /// hand-gold gesture (<see cref="HandleHandGold"/>). Un-confirms both sides and notifies the other.</summary>
+    private void RecordTradeGoldOffer(Trade trade, uint amount)
+    {
+        trade.OfferOf(this).Gold = amount;
         UnconfirmBoth(trade);
         trade.Other(this).Notify($"{Snapshot().Name} offers {amount} gold.");
-        await DlgSay(npc, $"You offer {amount} gold.");
     }
 
     private async Task TradeReview(Trade trade)
@@ -285,6 +323,105 @@ public sealed partial class Session
         trade.Ended = true;
         if (ReferenceEquals(trade.A._trade, trade)) { trade.A._trade = null; trade.A.Notify(message); }
         if (ReferenceEquals(trade.B._trade, trade)) { trade.B._trade = null; trade.B.Notify(message); }
+    }
+
+    // ---- native "hand item" / "hand gold" gestures (RTK clif_handitem / clif_handgold, clif.c:14452-14644) --
+    // Select a bag item, face a tile and press 'h' (hand ONE) or 'H'/Shift+h (GIVE the whole stack) -> 0x29;
+    // the gold gesture -> 0x2A. RTK resolves the tile you're facing (the same front-cell lookup melee uses) and
+    // branches on what's there:
+    //   * a PLAYER with their Exchange flag on -> open/continue a trade with that item/gold PRE-OFFERED;
+    //   * an NPC -> run its receiveItem/handItem script (a quest turn-in), else RTK's "keep your junky X" line;
+    //   * a MOB  -> RTK stuffs the creature's OWN inventory (a few collection quests). No mob inventory exists
+    //               here yet, so that path is a deliberate no-op: the item stays in the bag rather than vanishing.
+    // The player path reuses the dialog-driven trade (Trade.cs) instead of RTK's never-captured binary exchange
+    // window — exactly as the 0x4A "Exchange" profile button does (see TryStartTrade), so handing and the button
+    // reach the same negotiation.
+
+    // 0x29 hand/give item: dec[0]=slot(1-based), dec[1]=handgive (0='h' one, 1='H' whole stack).
+    private void HandleHandItem(byte[] dec)
+    {
+        if (dec.Length < 1) return;
+        if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+        if (BlockedByMount()) return;
+        int slot = dec[0] - 1;
+        int handgive = dec.Length > 1 ? dec[1] : 0;
+        var it = InvAt(slot); if (it is null) return;
+        var def = Content.ItemById(it.ItemId); if (def is null) return;
+        int amount = handgive == 1 ? it.Amount : 1;
+
+        var (tx, ty) = FrontTile();
+        var peer = _world.PeerAt(_char.Map, tx, ty);
+        if (peer is not null) { HandItemToPlayer(peer, def, it, amount); return; }
+
+        var mob = _world.MobAt(_char.Map, tx, ty);
+        if (mob is not null && mob.IsNpc) { _ = HandItemToNpcAsync(mob, def, amount); return; }
+        // A real mob (RTK's BL_MOB collection path) has no inventory here, so there's nothing to receive it.
+        // Leave the item in the bag rather than deleting it — the honest no-op until mob inventories exist.
+    }
+
+    // 0x2A hand gold: dec[0..3]=amount(u32 BE). Players only (RTK clif_handgold has no NPC/mob branch).
+    private void HandleHandGold(byte[] dec)
+    {
+        if (dec.Length < 4) return;
+        if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+        if (BlockedByMount()) return;
+        uint gold = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
+        if (gold == 0) return;
+        if (gold > _char.Coins) gold = _char.Coins;
+
+        var (tx, ty) = FrontTile();
+        var target = _world.PeerAt(_char.Map, tx, ty);
+        if (target is null) return;
+        var trade = OpenOrContinueTradeWith(target);
+        if (trade is null) return;
+        RecordTradeGoldOffer(trade, gold);
+        SendMiniText($"You offer {gold} gold.");
+    }
+
+    private void HandItemToPlayer(Session target, ItemDef def, InvItem it, int amount)
+    {
+        var trade = OpenOrContinueTradeWith(target);
+        if (trade is null) return;   // refused / already trading elsewhere (message already sent)
+        RecordTradeItemOffer(trade, def.Id, amount, it.Dura, it.CustomName);
+        SendMiniText($"You offer {def.Name} x{amount}.");
+    }
+
+    /// <summary>Get a live trade with <paramref name="target"/> to fold a handed item/gold into: reuse an
+    /// existing trade with them, refuse if we're mid-trade with someone else, otherwise open a new one via
+    /// <see cref="TryStartTrade"/> (which applies RTK's Exchange-flag / same-map / alive gates and sends the
+    /// refusal itself). Returns null if no usable trade could be established.</summary>
+    private Trade? OpenOrContinueTradeWith(Session target)
+    {
+        var tr = _trade;
+        if (tr is not null && !tr.Ended)
+        {
+            if (ReferenceEquals(tr.Other(this), target)) return tr;
+            SendMiniText("You are already trading.");
+            return null;
+        }
+        TryStartTrade(target);
+        tr = _trade;
+        return tr is not null && !tr.Ended && ReferenceEquals(tr.Other(this), target) ? tr : null;
+    }
+
+    /// <summary>Offer a handed item to an NPC (RTK clif_handitem's BL_NPC branch): only NON-droppable (quest)
+    /// items reach an NPC — RTK silently ignores a droppable one. The first <see cref="INpcHandItemHandler"/>
+    /// that accepts owns taking the item and giving any reward (via <see cref="NpcContext.TakeItem"/>); if none
+    /// do, the NPC gives RTK's own refusal line. Async because a turn-in may run a dialog. No NPC ships a
+    /// handler yet, so today every hand to an NPC lands on the refusal — the hook is here for quest work.</summary>
+    private async Task HandItemToNpcAsync(Mob npc, ItemDef def, int amount)
+    {
+        if (!def.NoDrop) return;   // RTK: droppable/exchangeable items can't be handed to an NPC at all
+        var ndef = Content.NpcById(npc.NpcDefId);
+        if (ndef is null) return;
+        var ctx = new NpcContext(this, npc, ndef);
+        try
+        {
+            foreach (var h in NpcScripts.For(ndef).OfType<INpcHandItemHandler>())
+                if (await h.OnHandItem(ctx, def, amount)) return;   // consumed it (handler owns the delitem/reward)
+        }
+        catch (Exception e) { Log.Info($"!! NPC hand-item error: {e.Message}"); }
+        SendMiniText($"What are you trying to do? Keep your junky {def.Name} with you!");
     }
 
     // ---- bulletin boards (RTK clif_handle_boards, clif.c:11156-11201; wire shapes cross-checked against

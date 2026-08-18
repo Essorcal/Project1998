@@ -47,21 +47,26 @@ public sealed partial class Session
         // after the command table, so a mute silences the player without also taking away @ignore or @friend.
         if (IsMuted()) { ReportMuted(); return; }
 
-        // Real chat (not a ! command): everyone on the map hears it. Broadcast the over-head bubble (0x0D)
-        // to all co-located players INCLUDING us, so we see our own bubble too. Prefix with who said it
-        // (client keybind help, re/str_eng.res:102/105, documents dedicated Say ''' and Shout '!' hotkeys —
-        // this is the server-side text the client shows in both the bubble and the chat-log line for either).
-        // chatType is passed through UNCHANGED from the client's own byte: whatever mode it used to pick the
-        // hotkey ('=say vs !=shout) is presumably also what the client uses to pick bubble/log color on
-        // playback, so relaying its own value back should already render correctly without us inventing a
-        // color scheme. UNCONFIRMED which raw byte value means shout — logged below so a live '!' test can
-        // pin it down (say=0 is confirmed by every chat message that has worked so far).
+        // Real chat (not a ! command). Broadcast the over-head bubble (0x0D) to co-located players INCLUDING
+        // us, so we see our own bubble too. Prefix with who said it (client keybind help, re/str_eng.res:102/105,
+        // documents dedicated Say ''' and Shout '!' hotkeys — this is the server-side text the client shows in
+        // both the bubble and the chat-log line for either). chatType is passed through UNCHANGED from the
+        // client's own byte: whatever mode it used to pick the hotkey ('=say vs !=shout) is presumably also
+        // what the client uses to pick bubble/log color on playback, so relaying its own value back should
+        // already render correctly without us inventing a color scheme.
+        //
+        // HEARING RANGE (RTK speech.lua onSay: say distance 8, shout distance 16): both Say and Shout are
+        // proximity-gated, Shout just reaches twice as far. Say (type 0) uses the ±9/±8 SAMEAREA box; Shout
+        // (type 1) uses the ±16 box — the yellow shout bubble carries about double, but is NOT map-wide.
+        // (say=0 is confirmed by every chat message that has worked so far; type 1 = shout is RTK's talktype.)
         bool shout = chatType != 0;
         string formatted = shout ? $"{_char.Name}! {text}" : $"{_char.Name}: {text}";
         if (formatted.Length > 250) formatted = formatted[..250];
         var outMsg = Encoding.ASCII.GetBytes(formatted);
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(chatType, _char.Id, outMsg));
-        Log.Info($"   -> speech type={chatType}{(shout ? " (presumed SHOUT)" : "")}: \"{text}\" -> map {_char.Map}");
+        int halfW = shout ? ShoutHalfW : SayHalfW, halfH = shout ? ShoutHalfH : SayHalfH;
+        _world.BroadcastArea(_char.Map, _char.X, _char.Y, halfW, halfH,
+            p => p.SpeakEntity(chatType, _char.Id, outMsg));
+        Log.Info($"   -> speech type={chatType}{(shout ? " (shout, ±16)" : " (say, area)")}: \"{text}\" -> map {_char.Map}");
 
         // …and let a nearby NPC react to it (RTK onSayClick: "i'd like to fish", a tutor's name, …).
         DispatchSpeech(text);
@@ -134,6 +139,13 @@ public sealed partial class Session
         // RTK: map[sd->bl.m].cantalk == 1 blocks whisper with this exact line (only 2 maps set it).
         if (!Content.CanTalk(_char.Map)) { SendLog("Your voice is swept away by a strange wind."); return; }
 
+        // RTK clif_parsewisp routes special recipient "names" to a broadcast channel instead of a person:
+        // "!!" = group/party chat, "!" = clan chat. (RTK also has "@" = subpath and "?" = novice; subpath
+        // already has its own /sp entry point (DoSubpathChat) and novice chat isn't modelled.) These sit
+        // after the mute + cantalk gates so those apply to the channels too, exactly as RTK does.
+        if (name == "!!") { DoGroupChat(msg); return; }
+        if (name == "!")  { DoClanChat(msg);  return; }
+
         var target = _world.FindPlayer(name);
         if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK's literal wording
 
@@ -145,6 +157,40 @@ public sealed partial class Session
 
         target.ReceiveWhisper(_char.Name, msg);
         SendMiniText($"{_char.Name}: {msg}", type: 0);   // sender's own echo — same line the receiver sees
+    }
+
+    // "!!" whisper target — group/party chat (RTK clif_sendgroupmessage). Reaches every member of your group
+    // on ANY map (not proximity-scoped, unlike say), INCLUDING you, so it doubles as your own echo. Rendered
+    // on the type-11 group channel; label/format is RTK's "[!<name>] (<class>) <message>". A recipient who has
+    // either side on ignore is skipped (RTK clif_isignore), and you can't ignore yourself so the echo survives.
+    private void DoGroupChat(string msg)
+    {
+        if (_party is null) { SendLog("You are not in a group."); return; }   // RTK's literal wording
+        string line = $"[!{_char.Name}] ({ClassTitle}) {msg}";
+        if (line.Length > 250) line = line[..250];
+        foreach (var p in _party.Members)
+            if (!(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))
+                p.SendMiniText(line, type: 11);
+        Log.Info($"   -> group chat: \"{line}\"");
+    }
+
+    // "!" whisper target — clan chat (RTK clif_sendclanmessage). Reaches every ONLINE player who shares your
+    // clan AND has clan chat on, on any map, INCLUDING you. Both ends must have clan chat enabled — the sender
+    // gate here (RTK's status.clan_chat check in clif_parsewisp), the recipient gate in the loop. Clan
+    // membership is only a name string here (no clan roster/id like RTK's status.clan), so we match on that.
+    // Rendered on the type-12 clan channel; format is RTK's "<!<name>> (<class>) <message>".
+    private void DoClanChat(string msg)
+    {
+        if (string.IsNullOrEmpty(_char.ClanName)) { SendLog("You are not in a clan."); return; }   // RTK wording
+        if (!_char.ClanChat) { SendLog("Clan chat is off."); return; }                              // RTK wording
+        string line = $"<!{_char.Name}> ({ClassTitle}) {msg}";
+        if (line.Length > 250) line = line[..250];
+        foreach (var p in _world.AllPlayers())
+            if (p._char.ClanChat
+                && string.Equals(p._char.ClanName, _char.ClanName, StringComparison.Ordinal)
+                && !(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))
+                p.SendMiniText(line, type: 12);
+        Log.Info($"   -> clan chat: \"{line}\"");
     }
 
     // Case-insensitive membership check against THIS character's own ignore list (RTK strcmpi).

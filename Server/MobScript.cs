@@ -130,12 +130,14 @@ public sealed class MobContext
     public bool hasStatus(string category) => _mob.HasStatus(category, Environment.TickCount64);
 
     /// <summary>Speak over the creature's head. Channel 0 attributes the line to it, 2 does not — RTK's own
-    /// <c>mob:talk(0|2, …)</c> split.</summary>
+    /// <c>mob:talk(0|2, …)</c> split. Heard only by players near the creature: RTK's bll_talk broadcasts via
+    /// map_foreachinarea(..., AREA, ...) around the speaker, so it's proximity-gated like player say.</summary>
     public void say(string line, double channel = 0)
     {
         var text = channel == 0 ? $"{_mob.Name}: {line}" : line;
         var bytes = System.Text.Encoding.ASCII.GetBytes(text.Length > 250 ? text[..250] : text);
-        _world.Broadcast(_map, p => p.SpeakEntity((byte)channel, _mob.Id, bytes));
+        _world.BroadcastArea(_map, _mob.X, _mob.Y, Session.SayHalfW, Session.SayHalfH,
+            p => p.SpeakEntity((byte)channel, _mob.Id, bytes));
     }
 
     /// <summary>Heal the creature, capped at its maximum.</summary>

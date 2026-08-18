@@ -51,7 +51,8 @@ public sealed partial class Session
 
         // The creature announces itself first (RTK: mob:talk(0, mob.name .. ": ** summons power **")), so the
         // shout lands before the damage rather than after the corpse hits the floor.
-        if (spell.Say.Length > 0) _world.Broadcast(_char.Map, p => p.SpeakEntity(0, caster.Id, AsciiBytes($"{caster.Name}: {spell.Say}")));
+        if (spell.Say.Length > 0) _world.BroadcastArea(_char.Map, caster.X, caster.Y, SayHalfW, SayHalfH,
+            p => p.SpeakEntity(0, caster.Id, AsciiBytes($"{caster.Name}: {spell.Say}")));
         if (spell.Anim > 0 || spell.Sound > 0)
             _world.Broadcast(_char.Map, p => { if (spell.Anim > 0) p.EffectOver(_char.Id, spell.Anim); if (spell.Sound > 0) p.SoundAt(spell.Sound, _char.Id); });
 

@@ -485,8 +485,8 @@ public sealed partial class Session
         // (chatType 2, the same line Filch speaks), so anyone loitering over the pile sees who took it back.
         SendAction(_char.Id, 6, 20, 0);
         _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 6, 20, 0), except: this);
-        var line = AsciiBytes("I'll take that.");
-        _world.Broadcast(_char.Map, p => p.SpeakEntity(2, _char.Id, line));
+        var line = AsciiBytes("I'll take that.");   // RTK talk(2) — proximity-gated to onlookers near the pile
+        _world.BroadcastArea(_char.Map, _char.X, _char.Y, SayHalfW, SayHalfH, p => p.SpeakEntity(2, _char.Id, line));
         Log.Info($"   -> death pile recovered: {taken} stack(s) by {_char.Name} @({_char.X},{_char.Y}) facing {_facing}");
     }
 

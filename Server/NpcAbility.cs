@@ -337,6 +337,16 @@ public interface INpcSayHandler
     Task<bool> OnSay(NpcContext ctx, string speech);
 }
 
+/// <summary>An ability that accepts an item HANDED to the NPC — the native 'h'/'H' gesture (0x29, RTK
+/// clif_handitem's <c>receiveItem</c>/<c>handItem</c> branch), i.e. a quest turn-in. <see cref="OnHandItem"/>
+/// returns true if it consumed the hand; the handler owns taking the item (via <see cref="NpcContext.TakeItem"/>)
+/// and granting any reward, and the dispatcher then stops. Only NON-droppable (quest) items reach here — see
+/// <c>Session.HandItemToNpcAsync</c>, which gives RTK's refusal line when no ability accepts.</summary>
+public interface INpcHandItemHandler
+{
+    Task<bool> OnHandItem(NpcContext ctx, ItemDef item, int amount);
+}
+
 /// <summary>Shared empty menu for speech-only NPCs (they respond to <see cref="INpcSayHandler"/> but add no
 /// click options — clicking just shows the default greeting).</summary>
 internal static class NoClickMenu
