@@ -2168,6 +2168,9 @@ types with their own slots, so they need no such handling.)
 | `0x1C` | use / equip | `slot(u8=idx+1)` — equipment → wear, else consume |
 | `0x1F` | unequip | `wireSlot(u8)` |
 | `0x24` | drop gold | `amount(u32)` |
+| `0x30` | rearrange a pane (Shift+`c`) | `pane(u8: 0=bag, 1=spellbook) startSlot(u8=idx+1) stopSlot(u8=idx+1)` — swap two slots. RTK `clif_parsechangepos`/`clif_parsechangespell` → `pc_changeitem`. Live capture `30 01 01 02 00` = spell pane, slots 1↔2. `HandleChangePos`/`SwapBagSlots`/`SwapSpellSlots` |
+| `0x29` | hand / give item | `slot(u8=idx+1) handgive(u8: 0=hand one, 1=give whole stack)` — to the faced entity. RTK `clif_handitem`. See §Trade |
+| `0x2A` | hand gold | `amount(u32 BE)` — to the faced player. RTK `clif_handgold`. See §Trade |
 | `0x09` | look (`;` key) | *(no body — always the facing tile; RTK `clif_parselookat_2`)* |
 | `0x19` | whisper (Shift+`'`) | `dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00` — LIVE-confirmed 2026-07-26 |
 
@@ -3922,9 +3925,26 @@ that's the one sub-message that means "open a trade with this id," which is all 
 say once this server takes over with dialogs instead of RTK's real trade window. RTK's other sub-types
 (1 amount-ask, 2 add-item, 3 add-gold, 4 quit, 5 finish) all belong to that window and are never sent by a
 client that never saw the window opened, so they're intentionally not handled. Like `0x2e`, **`0x4a` is a
-CONFIRMED-real 4.95 opcode** (also seen in an earlier capture), not a speculative wiring — RTK's real
-hand-item/hand-gold gesture (face the target, opcodes `0x29`/`0x2A`) is a separate, never-captured path and
-still isn't wired. The `@trade <name>` chat fallback was removed, so the profile button is the only trigger.
+CONFIRMED-real 4.95 opcode** (also seen in an earlier capture), not a speculative wiring. The `@trade <name>`
+chat fallback was removed, so the profile button and the hand gesture below are the only triggers.
+
+**Native hand-item / hand-gold — NOW WIRED (2026-08-17).** RTK's real hand gesture (select a bag item, face
+a tile, press `h` to hand ONE / `H`/Shift+h to give the WHOLE stack → **`0x29`**; the gold gesture →
+**`0x2A`**) is now handled — both were seen live unhandled (a `0x29` body `03 00 00` = slot 3, "hand one",
+sat in the logs). Wire shapes match RTK `clif_handitem`/`clif_handgold` (`clif.c:14452`/`14548`): `0x29` =
+`slot(u8, 1-based) handgive(u8: 0=hand one, 1=give stack)`, `0x2A` = `gold(u32 BE)`. Both resolve the tile
+you're facing (the shared `FrontTile()` melee uses) and branch on what's there (`Session.HandleHandItem`/
+`HandleHandGold` in `Session.Social.cs`):
+- **a PLAYER** → open/continue the SAME dialog trade the `0x4a` button drives, with the item/gold
+  **pre-offered** (`OpenOrContinueTradeWith` + `RecordTradeItemOffer`/`RecordTradeGoldOffer`). RTK opens its
+  binary exchange window with `clif_exchange_additem`; we fold it into the dialog trade instead, for the same
+  reason `0x4a` does (§ above).
+- **an NPC** → the `INpcHandItemHandler.OnHandItem` hook (a quest turn-in), else RTK's own refusal line
+  *"What are you trying to do? Keep your junky X with you!"*. Only NON-droppable (quest) items reach an NPC —
+  RTK silently ignores a droppable one. No NPC ships a handler yet, so today every hand to an NPC lands on the
+  refusal; the hook is in place for quest work.
+- **a MOB** → RTK stuffs the creature's own inventory (a few collection quests); no mob inventory exists here
+  yet, so this is a deliberate no-op (the item stays in the bag rather than vanishing).
 
 **Not yet live-tested.** Both features are ported from RTK source with no live 4.95 client session behind
 them. Confirm: clicking another player renders their real profile with the Group/Exchange buttons enabled
@@ -4209,14 +4229,34 @@ targets world mobs (no PvP melee path exists in this server — §"no PvP damage
 reuse with `player.ambushTimer` (attack-speed-derived, not modeled here) — substituted with a flat 3s
 cooldown.
 
-**Watchful Eye / Spot Traps (`Content.IsSpotTrapsSpell`, `Session.CastSpotTraps`, `World.TrapsNear`).** RTK's
-`seeSpotTraps()` (`Scripts/spotTraps.lua`) reveals nearby hidden rogue-trap NPCs by dropping a marker item
-(id 99) at each trap's tile, tagged so only the caster sees it (`addTrapSpotters`/`getTrapSpotters`). Ported
-via `Session.ShowGroundItem` called directly (not `World.DropItem`) so the marker never broadcasts to the
-map — matching that same caster-only visibility without needing a new per-player-visibility concept. The
-warrior family (`watchful_eye_warrior` + 3 reskins) has a real RTK cooldown (`player:setAether(key, 25000)`)
-that never made it into the CSV export — 25000ms is hardcoded to match the Lua; the Rogue-side `spot_traps`
-already had a correct exported `aether` (6000ms) and mana (100), used as-is.
+**Watchful Eye / Spot Traps (`Content.IsSpotTrapsSpell`, `Session.CastSpotTraps`, `Session.RevealableTrapsNear`,
+`World.TrapsNear`).** RTK's `seeSpotTraps()` (`Scripts/spotTraps.lua`) reveals nearby hidden trap NPCs by
+dropping a marker item (id 99) at each trap's tile, tagged so only the caster sees it
+(`addTrapSpotters`/`getTrapSpotters`). Ported via `Session.ShowGroundItem` called directly (not
+`World.DropItem`) so the marker never broadcasts to the map — matching that same caster-only visibility
+without needing a new per-player-visibility concept. The warrior family (`watchful_eye_warrior` + 3 reskins)
+has a real RTK cooldown (`player:setAether(key, 25000)`) that never made it into the CSV export — 25000ms is
+hardcoded to match the Lua; the Rogue-side `spot_traps` already had a correct exported `aether` (6000ms) and
+mana (100), used as-is. **The reveal is CLASS-BRANCHED, matching RTK's `seeSpotTraps`: base-class Warrior
+(`CharBasePathId == 1`) reveals hidden `ambush` tiles (RTK's `MobSpawnNpc` — see below); everyone else
+(Rogue's `spot_traps`) reveals the rogue combat-trap family (dart/snare/repeating/flash/spear/poison/death/
+sleep). Neither reveals the cosmetic `shiver` fall-echo, the tiger warp-traps, or a `bladestorm` decoy.**
+
+**Ambush traps (`Content.AmbushMapDef`/`AmbushBursts`, `World.FireAmbushLocked`/`RefillAmbushLocked`;
+`game-data/AmbushConfig.csv` + `AmbushBursts.csv`).** RTK's mythic caves populate via hidden `MobSpawnNpc`
+tiles scattered on the floor (`NPCs/trap/mob_spawn.lua` + `rabbitTrap.lua` + `tigerTrap.lua` +
+`npcSpawnHandler.lua`): stepping on one spawns a burst of cave mobs and the trap relocates. Ported as a real
+`ambush` trap kind (this server DID gain trap tiles here, superseding the old AreaSpawnsTrap persistent
+approximation for the regular/sentry/big-mob/spider/scorpion/ogre layers). Each configured cave map holds up
+to `Count` hidden `ambush` traps, refilled on every entry and after each trigger but only while live mobs stay
+under `MobCap` (RTK's population governor). A player step (`World.CheckPlayerTrapTrigger`) fires the map's
+burst around them — the exact weighted variant tables (`rabbit_mob1/2/3`, `tiger_mob1/2/3`, `*_big*`,
+`*_sents*`) are extractor-generated from the Lua (`re/extract_ambush_tables.py`), so they can't drift by
+hand-transcription; the per-map branch (message, sentry y-split for Hare Summit/Guardroom, 1/10 big-mob roll
+for Dark Pen, spider/scorpion singles, ogre 4-tile bursts) is hand-authored config. **Bosses are deliberately
+NOT rolled by the ambush tiles** — they stay on the rare spawn-point system (the `RespawnSec=1500` rows still
+in `AreaSpawnsTrap.csv`), which already reproduces their 1/10 + death-cooldown surprise. Only warrior Watchful
+Eye reveals these tiles (see above).
 
 ---
 
