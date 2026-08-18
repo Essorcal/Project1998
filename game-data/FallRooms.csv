@@ -9,4 +9,5 @@ DestMap,DestX,DestY,SrcMaps,Tiered,Label,Sources
 196,11,38,192;194;199,1,Dog,rtk-lua
 255,12,34,253;254;258,1,Dragon,rtk-lua
 235,1,4,233;236;237,1,Snake,rtk-lua
+110,15,17,109,1,Tiger,rtk-lua-warptrap
 1307,4,5,1302;1303;1304;1305;1306,0,Iron Lab,rtk-lua
