@@ -1051,7 +1051,23 @@ end
 function verbs.amnesia(ctx, row)
   local mana = row.mana or 30
   if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
-  if not ctx:amnesiaTarget(row.duration or 900000, row.durationMax or 5000) then return false end
+  -- row.chance is the take-hold rate. A miss returns true (mana spent), the creature just shrugs it off; the
+  -- effect is never a status, so there is no re-cast lock and no "already cast" — cast it again.
+  if not ctx:amnesiaTarget(row.duration or 900000, row.durationMax or 5000, row.chance or 75) then return false end
+  ctx:debitMana(mana)
+  return true
+end
+
+-- Confuse (RTK Spells/mage/confuse.lua): NOT a debuff and NOT Amnesia's per-caster peel. It is a chance-based
+-- aggro RESET — on success the target mob's whole threat table is wiped and it forgets everyone; if a creature
+-- is standing right beside it, the confused mob turns on THAT creature (blind two mobs side by side and spam
+-- Confuse and they fight each other). No status is applied, so it never says "already cast" and can be cast as
+-- fast as you like. A miss still spends the mana (so re-casting until it lands isn't free) and just says the
+-- creature resisted. row.mana, row.chance.
+function verbs.confuse(ctx, row)
+  local mana = row.mana or 30
+  if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
+  if not ctx:confuseTarget(row.chance or 65) then return false end
   ctx:debitMana(mana)
   return true
 end
