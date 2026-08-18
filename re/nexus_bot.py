@@ -56,7 +56,7 @@ ENT_VTABLE   = 0x622f58                       # shared vtable of every MOB entit
 
 
 MAPCSV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                      "..", "data", "game-data", "map_index.csv")
+                      "..", "game-data", "map_index.csv")
 P_WARPS = os.path.join(NA.OUT, "warps.csv")
 P_STOP = os.path.join(NA.OUT, "STOP")   # touch this to stop the bot CLEANLY
                                         # (force-killing it can crash the client)
@@ -288,6 +288,15 @@ rpc.exports = {
       return true;
     }catch(e){ return false; }
   },
+  // post ONLY WM_CHAR -- no WM_KEYDOWN at all. Use this for text typed INTO an input box.
+  // postchar() above posts KEYDOWN + CHAR, and the client's message loop runs
+  // TranslateMessage on posted messages too, so the keydown yields a SECOND character --
+  // lowercase, since no physical Shift is down. That is why the gate prompt read "nN": one
+  // char from the client's translation, one from us. Sending the char alone types exactly
+  // what we asked for.
+  postchr: function(hwnd, ch){
+    try{ __PostMessageW(ptr(hwnd), 0x0102, ch, ptr(1)); return true; }catch(e){ return false; }
+  },
   // read the live VITALS (curhp,maxhp,curmana,maxmana,exp) from the self-struct in ONE round
   // trip -- so survival can watch HP every tick cheaply (a broken/slow HP feed is what let the
   // character die: it never healed). Offsets passed from Python (SELF_OFF).
@@ -377,6 +386,11 @@ rpc.exports = {
           // which is what made a look-based kill whitelist refuse nearly every mob -- the bot
           // stood still being beaten by a target it would not engage.
           const lk = a.add(0x178).readU16() & 0x7FFF;
+          // HP lives in the SAME struct as position: self reads curhp@+0x104, maxhp@+0x108
+          // (SELF_OFF), and self is just another entity in this pool, so every mob carries its
+          // HP at those offsets too. This is the direct, memory-only "is it alive" the bot was
+          // faking with wire hp-bar packets: a live mob has curhp>0, a dead/ghost slot 0.
+          const chp = a.add(0x104).readU32(), mhp = a.add(0x108).readU32();
           // VALIDATE HARD: a freed/uninitialised pool slot can still carry the vtable and
           // reads as e.g. uid=4 at (0,0). That phantom dragged the bot 20+ tiles to the map
           // corner chasing nothing. Real entity ids are large (>50k observed) and no real
@@ -385,7 +399,8 @@ rpc.exports = {
           // Mobs render ON TOP of drops, so the client must layer them separately -- this is
           // that discriminator. Filtering here keeps ground loot out of targeting entirely
           // (loot was the "mob" that never bled and burned swings before being blacklisted).
-          if (uid > 1000 && x > 0 && y > 0 && x < 1000 && y < 1000) out.push([uid, x, y, ty, lk]);
+          // HP is APPENDED (r[5], r[6]); every existing caller reads r[0..4] and is unaffected.
+          if (uid > 1000 && x > 0 && y > 0 && x < 1000 && y < 1000) out.push([uid, x, y, ty, lk, chp, mhp]);
         }catch(e){}
       }
     }catch(e){}
@@ -450,6 +465,19 @@ rpc.exports = {
       const old = new Uint8Array(s.bytes); const n = Math.min(cur.length, old.length) - 2;
       for (let o = 0; o + 2 <= n; o++){ const ov = old[o]|(old[o+1]<<8); const cv = cur[o]|(cur[o+1]<<8);
         if ((cv - ov) === delta && ov <= 4096 && cv <= 4096 && cv >= 0){ out.push(s.base.add(o).toString());
+          if (out.length > 4000) return out; } } }
+    return out;
+  },
+  // RISERS: u16 values that JUMPED UP by >= minjump since snap() -- the signature of a buff
+  // being cast (its timer is set from ~0 to full duration) against a background of everything
+  // else ticking down. Returns [addr, old, new] so the caller can confirm each is now a
+  // sensible duration AND then decreasing. Read-only.
+  risers: function(minjump){
+    const out = [];
+    for (const s of SNAP){ let cur; try{ cur = new Uint8Array(s.base.readByteArray(s.size)); }catch(e){ continue; }
+      const old = new Uint8Array(s.bytes); const n = Math.min(cur.length, old.length) - 2;
+      for (let o = 0; o + 2 <= n; o++){ const ov = old[o]|(old[o+1]<<8); const cv = cur[o]|(cur[o+1]<<8);
+        if (cv > ov && (cv - ov) >= minjump && cv <= 4096){ out.push([s.base.add(o).toString(), ov, cv]);
           if (out.length > 4000) return out; } } }
     return out;
   },
@@ -567,6 +595,8 @@ class World:
         self.warps = []              # (ts, from_room, from_xy, to_room, to_xy) observed warps
         self.last_name = None        # (name, ts) from the 0x0a right-click name reply
         self.last_exp_award = None   # (exp, ts) from the 0x0a "<N> experience!" kill text
+        self.pack_full_ts = 0.0      # ts of the last "you can't have more than N" server msg;
+        self.pack_full_item = None   # the item name that overflowed -- the pack is full of it
         self.items = {}              # item name -> record from 0x0f item-info (loot/browse)
         self.recent_moves = []       # (ts, eid, x, y, dir) ring, for self-calibration
         self.MOVE_KEEP = 400         # keep last N move events
@@ -674,6 +704,15 @@ class World:
                                 self.last_exp_award = (int(m.group(1)), ts)
                             _decide_log(f"EXP AWARD: {m.group(1)}")
                         else:
+                            # "<Item>, You can't have more than N." -- the pack is full of
+                            # that item. This is the AUTHORITATIVE full signal (direct from the
+                            # server), far faster and surer than inferring it from drops that
+                            # refuse pickup. Stamp it so the bot can give up on that item / farm.
+                            mf = re.search(r"can'?t have more than", txt, re.I)
+                            if mf:
+                                with self.lock:
+                                    self.pack_full_ts = ts
+                                    self.pack_full_item = txt.split(",")[0].strip() or None
                             _decide_log(f"EVENT: {txt!r}")
             except Exception:
                 pass

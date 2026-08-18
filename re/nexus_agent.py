@@ -222,7 +222,13 @@ def parse_statblock(d):
     if len(d) >= 63:
         s["tnl"] = be(d, 61, 2)
     if len(d) >= 65:
-        s["ac"], s["dam"] = d[63], d[64]
+        # SIGNED. AC counts down and goes negative -- a level-65 rogue in full gear reads
+        # -14. Read unsigned, that byte comes back as 242 and every number built on it is
+        # nonsense. The statblock's AC is the character's BASE armour, which is NOT the same
+        # quantity as the displayed/equipped AC in 0x08 sub 0x19 (byte 26); they must never
+        # share a field. See Agent.ac_base vs Agent.ac.
+        s["ac"] = d[63] - 256 if d[63] > 127 else d[63]
+        s["dam"] = d[64]
     return s
 
 
@@ -238,6 +244,7 @@ class Agent:
         self.exp = None
         self.tnl = None
         self.ac = self.dam = self.hit = None
+        self.ac_base = None         # BASE armour from the statblock; changes only on level
         # per-attempt (hit AND miss) logging -- see on_attack/resolve_attempts
         self.swing_ctx = {}         # set by the bot right before it fires: target + geometry
         self.attempts_open = []     # fired, not yet resolved to hit/miss
@@ -272,6 +279,8 @@ class Agent:
         self.spawned = set()        # eids we watched spawn -> we saw their FULL health bar
         self.fights = {}            # eid -> {look, total, swings, barmax}
         self.kills = []
+        self.kill_count = 0         # monotonic; self.kills is emptied on every flush, so a
+                                    # bot that wants a running total cannot count that list
         self.barmax = {}            # look -> largest hp-bar value ever seen
         self.await_exp = None       # (kill record, ts) waiting for the "N experience!" text
         # --- incoming damage: the ONE place we have ground truth, because YOUR AC is
@@ -495,7 +504,14 @@ class Agent:
         if "tnl" in s:
             self.tnl = s["tnl"]
         if "ac" in s:
-            self.ac, self.dam = s["ac"], s["dam"]
+            # BASE armour, from the statblock -- the value that only moves on level-up.
+            # Kept apart from self.ac (the displayed total, written by sub 0x19), because
+            # the two are different quantities and letting them share one field made the
+            # series meaningless: the same character-level read 7 from one source and 35
+            # from the other, and neither could be identified after the fact.
+            self.ac_base, self.dam = s["ac"], s["dam"]
+            if self.ac is None:
+                self.ac = s["ac"]
 
         if prev is None:                       # first sighting: nothing to diff
             self.cur, self.level = s, s["level"]
@@ -602,6 +618,7 @@ class Agent:
                 "level": self.cur["level"] if self.cur else "",
                 "exp": "",
             })
+            self.kill_count += 1
             self.await_exp = (self.kills[-1], ts)
             self.spawned.discard(eid)
 

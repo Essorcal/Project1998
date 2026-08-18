@@ -118,6 +118,8 @@ def buff_mods(body):
 
 rows = []
 cats = Counter()
+extra_mana_debits = []   # (spell key, expression) — a mana debit the `mana` column can't hold; see below
+vita_assignments = []    # (spell key, expression) — a self-vita price no column can hold; see below
 for path in glob.glob(os.path.join(SPELLS, '*', '*.lua')):
     cls = os.path.basename(os.path.dirname(path))
     if cls in ('NPCs', 'common'): continue
@@ -165,6 +167,27 @@ for path in glob.glob(os.path.join(SPELLS, '*', '*.lua')):
         if cm: chance = cm.group(1).strip()
         health_cost = num(r'local\s+healthCost\s*=\s*([^\n]+)', cast).strip()
 
+        # A script may debit mana a SECOND time, in its own body, on top of the global_zap/attack/heal manacost
+        # captured above -- and that second debit is often the real cost (hellfire.lua: global_zap takes 1000,
+        # then the script takes another floor(player.magic * .7)). Nothing in this schema can express it, and
+        # silently dropping it made Hellfire look free, so shout about every one instead of losing it. Anything
+        # listed here needs a Content.PostCastManaDrain entry (fractions) or a hand-checked mana column.
+        # Matched on the ASSIGNMENT, not on `player.magic = player.magic - x`: feral_berserk.lua stashes the
+        # pool in a local first (`player.magic = currentMana - manaCost`) and a narrower pattern walks past it.
+        for m in re.finditer(r'player\.magic\s*=\s*([^\n]+)', cast):
+            rhs = m.group(1).strip()
+            d = re.fullmatch(r'(?:player\.magic|\w+)\s*-\s*(.+)', rhs)
+            expr = ((resolve_local(cast, d.group(1).strip()) or d.group(1)) if d else rhs).strip()
+            if d and expr == str(mana).strip(): continue    # the helper's own debit, already in `mana`
+            extra_mana_debits.append((name, ('-= ' if d else '= ') + expr))
+
+        # Same blind spot on the vita side, and it hid more: a spell that ASSIGNS player.health a fraction of
+        # itself (slash.lua's `endvita`, assault.lua's `player.health = damage`) is paying a real vita price
+        # that only `healthCost` could have carried, and healthCost only matches the `local healthCost = ...`
+        # spelling. Those two therefore cost nothing at all until Content.PostCastVitaKeep was added.
+        for m in re.finditer(r'player\.health\s*=\s*(?!player\.health\s*[-+])([^\n]+)', cast):
+            vita_assignments.append((name, (resolve_local(cast, m.group(1).strip()) or m.group(1)).strip()))
+
         rows.append({
             'key': name, 'class': cls, 'archetype': cat,
             'mana': str(mana).strip(),
@@ -197,3 +220,15 @@ print(f"\n  core gameplay archetypes: {sum(cats[k] for k in core)}/{total} "
 dmg = [r for r in rows if r['archetype'] in ('Damage', 'Heal')]
 have = [r for r in dmg if r['amountExpr'] and re.match(r'^-?\d+$', r['mana'] or '')]
 print(f"  Damage/Heal with amountExpr + numeric mana: {len(have)}/{len(dmg)}")
+
+if extra_mana_debits:
+    print(f"\n  !! {len(extra_mana_debits)} extra mana debit(s) the `mana` column cannot express — each needs a")
+    print( "     Content.PostCastManaDrain entry or a hand-checked mana value:")
+    for key, expr in extra_mana_debits:
+        print(f"       {key:32} player.magic {expr}")
+
+if vita_assignments:
+    print(f"\n  !! {len(vita_assignments)} self-vita assignment(s) — each needs a Content.PostCastVitaKeep entry")
+    print( "     (or is already owned by the `sacrifice` verb / a mana-battery healthCost):")
+    for key, expr in vita_assignments:
+        print(f"       {key:32} player.health = {expr}")
