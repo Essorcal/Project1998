@@ -952,3 +952,443 @@ ts,eid,look,mob,zone,gear,hp_total,swings,last_dmg,bar_max,clean,level,exp
 1785724985422,640536,25,Green squirrel,Leviathan Mound,Novice sword|Farmer armor|Merchant helm|Black ring|Sea ring,158,12,13,90,1,19,577
 1785725038471,718908,25,Green squirrel,Leviathan Fields,Novice sword|Farmer armor|Merchant helm|Black ring|Sea ring,147,9,12,80,1,19,577
 1785725059026,727788,25,Green squirrel,Leviathan Fields,Novice sword|Farmer armor|Merchant helm|Black ring|Sea ring,167,13,14,92,1,19,577
+1786750924086,95582,,,Leviathan Hermit,Swift sword|Farmer armor|Merchant helm|Sea ring|Black ring,188,5,32,59,0,21,577
+1786750964642,95584,25,,Leviathan Hermit,Swift sword|Farmer armor|Merchant helm|Sea ring|Black ring,217,5,96,79,1,21,577
+1786750991173,95586,25,,Leviathan Hermit,Swift sword|Farmer armor|Merchant helm|Sea ring|Black ring,153,4,31,55,1,21,577
+1786761432298,576664,25,,,,172,6,27,81,1,24,577
+1786761469344,576672,25,,,,151,3,31,56,1,24,577
+1786761514387,576668,25,,,,140,4,30,59,1,24,577
+1786761715911,578396,25,,,,172,6,27,79,1,24,577
+1786761727929,578386,25,,,,177,6,27,80,1,24,577
+1786761732434,578380,25,,,,146,5,27,80,1,24,577
+1786761745445,578412,25,,,,176,4,91,81,1,24,577
+1786761750950,578390,25,,,,172,3,55,65,1,24,577
+1786761762467,578394,25,,,,150,5,30,79,1,24,577
+1786761774974,578382,25,,,,149,5,28,78,1,24,577
+1786761797996,578378,25,,,,151,3,28,35,1,24,577
+1786761808509,578388,25,,,,175,6,29,81,1,24,577
+1786761823522,578406,25,,,,183,4,30,66,1,24,577
+1786761868278,578398,25,,,,179,4,28,40,1,24,577
+1786771130655,201899,125,,,,2455,77,33,98,1,25,4725
+1786771263527,201894,125,,,,2664,81,34,94,1,25,4725
+1786771495493,201897,125,,,,2190,65,108,98,1,25,4725
+1786771623288,201900,,,,,544,18,27,18,0,25,4725
+1786771715914,675920,125,,,,2177,63,32,97,1,25,4725
+1786771983465,677527,125,,,,2816,84,30,98,1,25,4725
+1786772110192,201896,125,,,,365,9,105,9,1,25,4725
+1786773881424,674289,,,Mythic Waters 1,,2347,69,102,98,0,26,4500
+1786774001558,682307,,,Mythic Waters 1,,2523,67,33,98,0,26,4500
+1786774065126,679912,,,Mythic Waters 1,,2271,68,32,89,0,26,4500
+1786774161240,682311,,,Mythic Waters 1,,2511,74,25,98,0,26,4500
+1786776319869,703407,,,Mythic Waters 1,,2347,67,37,98,0,26,4500
+1786776745341,650380,,,Mythic Waters 1,,2077,57,30,93,0,26,4500
+1786776821926,703442,,,Mythic Waters 1,,2518,73,35,98,0,26,4500
+1786776906208,703444,,,Mythic Waters 1,,2527,72,32,98,0,26,4500
+1786777331717,703445,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2502,65,99,95,0,26,4500
+1786778157758,708271,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2487,74,29,98,0,26,4500
+1786778315426,711896,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2743,83,37,99,0,26,4500
+1786816223974,258361,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2732,75,38,98,0,27,4500
+1786816584350,208293,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2117,58,38,95,0,27,4500
+1786816644915,258360,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2195,66,33,97,0,27,4500
+1786817191601,430321,,,Mythic Waters 1,,2577,79,34,99,0,27,4500
+1786817331511,435618,125,,Mythic Waters 1,,2527,52,87,98,1,27,
+1786817340862,435620,125,,Mythic Waters 1,,2581,35,87,92,1,27,4500
+1786817343380,435622,125,,Mythic Waters 1,,2526,39,28,94,1,27,4500
+1786817419469,435617,125,,Mythic Waters 1,,2510,63,34,97,1,27,4500
+1786817485032,435509,,,Mythic Waters 1,,2856,82,39,98,0,27,4500
+1786818250668,435511,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2816,82,39,98,1,27,4500
+1786819343726,439408,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,1740,53,32,78,0,27,4500
+1786819424805,445270,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2690,81,30,98,0,27,4500
+1786819497897,445271,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2203,64,39,98,1,27,4500
+1786819813516,453746,,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2345,63,87,98,0,27,4500
+1786820010738,456818,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2409,71,30,98,1,27,4500
+1786820049270,460440,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2668,23,189,97,1,27,
+1786820049270,460442,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2616,24,179,97,1,27,
+1786820094417,460438,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2505,53,30,96,1,27,4500
+1786820144973,460443,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2506,63,37,96,1,27,4500
+1786820177838,462086,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2504,32,95,96,1,27,
+1786820177838,462089,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2584,32,87,97,1,27,
+1786820241571,462087,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2529,48,33,97,1,27,4500
+1786820257585,208291,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2549,53,29,98,1,27,4500
+1786820335683,462084,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2515,72,39,97,1,27,4500
+1786820475329,258359,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2438,75,36,98,1,27,4500
+1786820788161,465824,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2714,79,39,99,1,27,4500
+1786820880761,435510,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2307,69,36,98,1,27,4500
+1786821016893,456817,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2754,75,87,98,1,28,4500
+1786821115001,445269,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2163,55,27,98,1,28,4500
+1786821161397,468964,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2539,25,148,92,1,28,
+1786821239228,468961,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2561,67,81,98,1,28,4500
+1786821343339,468962,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2504,65,28,97,1,28,4500
+1786821404498,463281,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2367,67,90,98,1,28,4500
+1786821462058,468960,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2508,64,25,97,1,28,4500
+1786821547286,468051,125,,Mythic Waters 1,Viperhead woodsword|Royal armor|Black ring|Black ring,2634,78,35,98,1,28,4500
+1786847165430,111364,25,,,,166,5,34,81,1,65,550
+1786847174939,111366,25,,,,164,4,31,59,1,65,550
+1786847232515,111384,,,,,164,5,35,78,0,65,550
+1786847251033,111388,25,,,,170,4,31,55,1,65,550
+1786847283567,111382,,,,,135,4,35,74,0,65,550
+1786847294578,775158,,,,,199,4,34,81,0,65,550
+1786847305587,111376,,,,,138,4,36,73,0,65,550
+1786847314095,111362,,,,,140,4,36,73,0,65,550
+1786847325105,111390,25,,,,167,5,34,77,1,65,550
+1786847336117,111372,25,,,,138,4,35,76,1,65,550
+1786847342624,111380,25,,,,161,3,94,74,1,65,550
+1786847353134,111370,25,,,,170,4,33,51,1,65,550
+1786847366143,775160,25,,,,162,3,32,48,1,65,550
+1786847383163,111394,25,,,,173,5,35,79,1,65,550
+1786847394674,111386,25,,,,168,3,36,56,1,16,550
+1786847414203,111392,25,,,,166,4,32,58,1,16,550
+1786847431225,111368,25,,,,167,5,34,74,1,16,550
+1786847474768,111378,25,,,,132,4,33,73,1,16,550
+1786847700505,778455,25,,,,210,1,210,0,1,16,550
+1786847708013,778483,25,,,,177,4,35,58,1,16,550
+1786847716018,778453,25,,,,162,3,32,54,1,16,550
+1786847729040,778477,25,,,,171,5,35,75,1,16,550
+1786847735648,778485,25,,,,163,4,35,53,1,16,550
+1786847747162,778459,25,,,,134,4,33,73,1,16,550
+1786847758173,778461,25,,,,199,6,33,81,1,16,550
+1786847765807,778481,25,,,,206,4,108,80,1,16,550
+1786855626400,778469,,,,,185,6,34,82,0,16,550
+1786855641418,789386,25,,,,154,5,26,76,1,16,550
+1786855649426,778465,25,,,,189,5,33,63,1,16,550
+1786855656436,778457,25,,,,186,5,31,58,1,16,550
+1786855665452,778451,25,,,,176,6,29,81,1,17,550
+1786855671955,789388,25,,,,159,5,33,81,1,17,550
+1786855705502,789384,25,,,,155,5,32,83,1,17,550
+1786855717002,789396,25,,,,185,5,28,61,1,17,550
+1786855735527,789390,25,,,,146,5,26,78,1,17,550
+1786855745032,778467,25,,,,185,3,94,57,1,17,550
+1786855756042,778475,25,,,,176,5,33,62,1,17,550
+1786855763550,778479,25,,,,156,5,32,77,1,17,550
+1786855792081,778471,,,Southern Path,,158,5,35,77,0,17,550
+1786855821631,789394,25,,Southern Path,Viperhead woodsaber,172,3,34,51,1,17,550
+1786855828641,778463,25,,Southern Path,Viperhead woodsaber,157,3,34,52,1,17,550
+1786855854161,860855,25,,Southern Path,Viperhead woodsaber,171,1,171,0,1,17,550
+1786855862672,860867,25,,Southern Path,Viperhead woodsaber,159,4,36,53,1,17,550
+1786855876194,860869,25,,Southern Path,Viperhead woodsaber,159,3,31,47,1,17,550
+1786855885709,860879,25,,Southern Path,Viperhead woodsaber,150,5,26,79,1,17,550
+1786855899721,789392,25,,Southern Path,Viperhead woodsaber,228,6,82,83,1,17,550
+1786855916233,860871,25,,Southern Path,Viperhead woodsaber,168,4,36,53,1,17,550
+1786855933753,789398,,,,,60,2,28,5,0,17,550
+1786855951271,860881,,,Southern Path,Viperhead woodsaber,156,5,30,73,0,18,550
+1786855960278,860877,,,Southern Path,Viperhead woodsaber,158,5,29,75,0,18,550
+1786855965783,860857,,,Southern Path,Viperhead woodsaber,159,5,37,81,0,18,550
+1786855996321,860865,25,,Southern Path,Viperhead woodsaber,163,4,36,63,1,18,550
+1786856011839,778473,25,,Southern Path,Viperhead woodsaber,179,6,27,79,1,18,550
+1786856027350,860861,25,,Southern Path,Viperhead woodsaber,181,4,85,80,1,18,550
+1786856044995,860875,25,,Southern Path,Viperhead woodsaber,197,6,35,79,1,18,550
+1786856054982,860859,25,,Southern Path,Viperhead woodsaber,202,4,102,76,1,18,550
+1786856066781,860863,25,,Southern Path,Viperhead woodsaber,194,6,35,81,1,18,550
+1786856101542,860873,25,,Southern Path,Viperhead woodsaber,160,5,28,73,1,18,550
+1786856248693,105720,,,Southern Fork,Viperhead woodsaber,156,5,28,79,0,18,550
+1786856257209,105718,,,Southern Fork,Viperhead woodsaber,164,5,28,78,0,18,550
+1786856271222,105722,25,,Southern Fork,Viperhead woodsaber,136,4,31,74,1,18,550
+1786856286735,94994,25,,Leviathan Hermit,Viperhead woodsaber,164,3,34,48,1,18,550
+1786856314766,864364,25,,Southern Path,Viperhead woodsaber,156,5,33,78,1,18,550
+1786856322276,864344,25,,Southern Path,Viperhead woodsaber,157,5,37,81,1,18,550
+1786856350331,864334,25,,Southern Path,Viperhead woodsaber,186,6,30,82,1,18,550
+1786856359833,864362,25,,Southern Path,Viperhead woodsaber,186,4,30,60,1,18,550
+1786856369348,864346,25,,Southern Path,Viperhead woodsaber,181,5,34,66,1,18,550
+1786856375364,864358,25,,Southern Path,Viperhead woodsaber,173,5,34,77,1,18,550
+1786856395381,864336,25,,Southern Path,Viperhead woodsaber,194,6,37,83,1,18,550
+1786856406893,864352,25,,Southern Path,Viperhead woodsaber,170,2,96,50,1,18,550
+1786856420428,864354,25,,Southern Path,Viperhead woodsaber,172,6,30,83,1,18,550
+1786856430928,864340,25,,Southern Path,Viperhead woodsaber,150,4,34,61,1,18,550
+1786856477081,864342,,,Southern Path,,171,3,32,76,0,18,550
+1786856503109,864368,25,,Southern Path,Viperhead woodsaber,162,5,33,75,1,18,550
+1786856508113,864348,25,,Southern Path,Viperhead woodsaber,201,4,102,79,1,18,550
+1786856524138,864338,,,Southern Path,Viperhead woodsaber,162,5,37,80,0,18,550
+1786856543655,864366,25,,Southern Path,Viperhead woodsaber,184,5,30,62,1,18,550
+1786856623754,864356,25,,Southern Path,Viperhead woodsaber,168,4,33,52,1,18,550
+1786856718682,865878,,,Southern Fork,,185,6,28,83,0,18,550
+1786856734698,865876,25,,Southern Fork,Viperhead woodsaber,156,5,27,74,1,18,550
+1786856763734,865880,25,,Southern Fork,Viperhead woodsaber,171,5,35,74,1,18,550
+1786856786762,864350,,,Southern Path,Viperhead woodsaber,153,5,27,71,0,18,550
+1786856814800,864360,25,,Southern Path,Viperhead woodsaber,153,4,28,58,1,18,550
+1786856849412,869357,25,,Southern Path,Viperhead woodsaber,189,3,62,54,1,19,550
+1786856856921,869359,25,,Southern Path,Viperhead woodsaber,173,6,29,82,1,19,550
+1786856864426,869381,25,,Southern Path,Viperhead woodsaber,189,4,33,57,1,19,550
+1786856870936,869379,25,,Southern Path,Viperhead woodsaber,185,6,34,81,1,19,550
+1786856881443,869361,25,,Southern Path,Viperhead woodsaber,191,6,34,83,1,19,550
+1786856902468,869377,25,,Southern Path,Viperhead woodsaber,180,4,35,67,1,19,550
+1786856914482,869367,25,,Southern Path,Viperhead woodsaber,189,5,37,59,1,19,550
+1786856930502,869349,25,,Southern Path,Viperhead woodsaber,151,5,30,79,1,19,550
+1786856940014,869355,25,,Southern Path,Viperhead woodsaber,194,4,31,80,1,19,550
+1786856959529,869371,25,,Southern Path,Viperhead woodsaber,170,5,35,75,1,19,550
+1786856981562,869363,25,,Southern Path,Viperhead woodsaber,195,3,102,60,1,19,550
+1786856990575,869351,25,,Southern Path,Viperhead woodsaber,157,5,33,79,1,19,550
+1786856996576,869373,25,,Southern Path,Viperhead woodsaber,165,1,165,0,1,19,550
+1786857012606,869365,25,,Southern Path,Viperhead woodsaber,158,5,30,77,1,19,550
+1786857025618,869375,25,,Southern Path,Viperhead woodsaber,139,3,37,47,1,19,550
+1786857047642,869353,25,,Southern Path,Viperhead woodsaber,185,6,34,82,1,19,550
+1786857064174,869369,25,,Southern Path,Viperhead woodsaber,154,4,30,54,1,19,550
+1786857202829,871132,,,Southern Fork,,186,4,28,57,0,19,550
+1786857219350,871134,,,Southern Fork,Viperhead woodsaber,180,6,30,80,0,19,550
+1786857243379,871130,25,,Southern Fork,Viperhead woodsaber,157,5,29,80,1,19,550
+1786857353097,873652,,,Southern Path,Viperhead woodsaber,195,6,35,79,0,19,550
+1786857362615,873646,,,Southern Path,Viperhead woodsaber,167,4,37,57,0,19,550
+1786857368118,873634,,,Southern Path,Viperhead woodsaber,146,5,29,80,0,19,550
+1786857383135,873650,,,Southern Path,Viperhead woodsaber,161,4,28,48,0,19,550
+1786857407162,873656,,,Southern Path,Viperhead woodsaber,187,5,34,61,0,19,550
+1786857415672,873644,25,,Southern Path,Viperhead woodsaber,212,5,96,75,1,19,550
+1786857428182,873636,25,,Southern Path,Viperhead woodsaber,200,6,37,80,1,19,550
+1786857445703,873632,25,,Southern Path,Viperhead woodsaber,161,4,37,62,1,19,550
+1786857453716,873638,25,,Southern Path,Viperhead woodsaber,200,5,37,56,1,19,550
+1786857464726,873640,25,,Southern Path,Viperhead woodsaber,244,4,111,54,1,19,550
+1786857497966,873642,,,,,65,2,33,1,0,19,550
+1786857513277,873648,25,,Southern Path,Viperhead woodsaber,167,5,37,80,1,19,550
+1786857534810,873624,25,,Southern Path,Viperhead woodsaber,151,3,88,77,1,19,550
+1786859512137,91607,,,Buya,Military fork|Jade scale mail|Merchant helm,1138,11,132,85,0,20,2100
+1786859542163,91608,,,Buya,Military fork|Jade scale mail|Merchant helm,1822,13,142,93,0,20,2100
+1786859580207,91612,,,Buya,Military fork|Jade scale mail|Merchant helm,1152,10,134,84,0,20,2100
+1786859609734,91609,617,,Buya,Military fork|Jade scale mail|Merchant helm,1536,11,140,90,1,20,2100
+1786859648811,887155,617,,Buya,Military fork|Jade scale mail|Merchant helm,1792,13,140,92,1,20,2100
+1786859669833,887158,617,,Buya,Military fork|Jade scale mail|Merchant helm,374,7,136,81,1,20,2100
+1786859698863,885570,617,,Buya,Military fork|Jade scale mail|Merchant helm,1516,11,140,90,1,22,2100
+1786859724893,887159,617,,Buya,Military fork|Jade scale mail|Merchant helm,1672,12,138,91,1,22,2100
+1786859761931,887156,617,,Buya,Military fork|Jade scale mail|Merchant helm,744,8,142,81,1,22,2100
+1786859782463,887160,617,,Buya,Military fork|Jade scale mail|Merchant helm,1022,10,136,84,1,22,2100
+1786859809492,885573,617,,Buya,Military fork|Jade scale mail|Merchant helm,1774,13,134,91,1,22,2100
+1786859838528,887162,617,,Buya,Military fork|Jade scale mail|Merchant helm,1154,11,144,85,1,22,2100
+1786859871570,888526,617,,Buya,Military fork|Jade scale mail|Merchant helm,1670,13,132,85,1,22,2100
+1786859893593,888525,617,,Buya,Military fork|Jade scale mail|Merchant helm,878,8,140,82,1,22,2100
+1786859921630,888532,617,,Buya,Military fork|Jade scale mail|Merchant helm,1272,10,134,83,1,22,2100
+1786859953149,888530,617,,Buya,Military fork|Jade scale mail|Merchant helm,1918,14,136,92,1,22,2100
+1786859980178,887161,617,,Buya,Military fork|Jade scale mail|Merchant helm,1180,11,140,84,1,22,2100
+1786860000201,887157,617,,Buya,Military fork|Jade scale mail|Merchant helm,1652,12,142,90,1,22,2100
+1786860022285,888529,617,,Buya,Military fork|Jade scale mail|Merchant helm,1130,11,132,85,1,22,2100
+1786860044813,888531,617,,Buya,Military fork|Jade scale mail|Merchant helm,1372,10,134,90,1,22,2100
+1786860069336,888527,617,,Buya,Military fork|Jade scale mail|Merchant helm,1658,12,140,90,1,22,2100
+1786860130401,884327,617,,Buya,Military fork|Jade scale mail|Merchant helm,1577,13,134,91,1,22,2100
+1786860151424,888524,617,,Buya,Military fork|Jade scale mail|Merchant helm,1168,11,140,85,1,22,2100
+1786860175950,890679,617,,Buya,Military fork|Jade scale mail|Merchant helm,1018,9,134,83,1,22,2100
+1786860237015,888528,617,,Buya,Military fork|Jade scale mail|Merchant helm,1810,13,140,92,1,23,2100
+1786860262761,890675,617,,Buya,Military fork|Jade scale mail|Merchant helm,1670,12,134,92,1,23,2100
+1786860291796,890674,617,,Buya,Military fork|Jade scale mail|Merchant helm,1798,13,160,91,1,23,2100
+1786860320828,890685,617,,Buya,Military fork|Jade scale mail|Merchant helm,1648,12,134,91,1,23,2100
+1786860356366,892560,617,,Buya,Military fork|Jade scale mail|Merchant helm,1762,13,138,92,1,23,2100
+1786860377389,890677,617,,Buya,Military fork|Jade scale mail|Merchant helm,1372,11,140,81,1,23,2100
+1786860411433,890684,617,,Buya,Military fork|Jade scale mail|Merchant helm,1654,12,144,91,1,23,2100
+1786860437458,890680,617,,Buya,Military fork|Jade scale mail|Merchant helm,1652,12,138,91,1,23,2100
+1786860468491,885572,617,,Buya,Military fork|Jade scale mail|Merchant helm,1920,14,142,92,1,23,2100
+1786860504026,892562,617,,Buya,Military fork|Jade scale mail|Merchant helm,1940,14,140,92,1,23,2100
+1786860542064,890681,617,,Buya,Military fork|Jade scale mail|Merchant helm,1536,11,142,92,1,23,2100
+1786860583105,890683,617,,Buya,Military fork|Jade scale mail|Merchant helm,1530,11,134,92,1,23,2100
+1786860614650,892563,617,,Buya,Military fork|Jade scale mail|Merchant helm,1642,12,138,91,1,23,2100
+1786860634171,890676,617,,Buya,Military fork|Jade scale mail|Merchant helm,1036,10,144,84,1,23,2100
+1786860661196,894026,617,,Buya,Military fork|Jade scale mail|Merchant helm,1812,13,138,93,1,23,2100
+1786860693735,894024,617,,Buya,Military fork|Jade scale mail|Merchant helm,1006,11,134,85,1,23,2100
+1786860742292,894025,617,,Buya,Military fork|Jade scale mail|Merchant helm,1952,15,70,92,1,23,2100
+1786860796356,894027,617,,Buya,Military fork|Jade scale mail|Merchant helm,1502,20,69,95,1,23,2100
+1786860827385,892558,617,,Buya,Military fork|Jade scale mail|Merchant helm,1782,13,142,91,1,23,2100
+1786862467145,894921,,,Buya,,1561,8,213,89,0,24,2000
+1786862488173,894029,,,Buya,Military fork|Royal war platemail|Earth helm,1860,9,204,81,0,24,2000
+1786862503684,894030,,,Buya,Military fork|Royal war platemail|Earth helm,1159,6,210,71,0,24,2000
+1786862516705,894922,,,Buya,Military fork|Royal war platemail|Earth helm,1647,8,207,87,0,24,2000
+1786862536221,890682,617,,Buya,Military fork|Royal war platemail|Earth helm,1546,8,216,78,1,24,2000
+1786862555240,892561,617,,Buya,Military fork|Royal war platemail|Earth helm,1671,8,216,87,1,24,2000
+1786862564747,894919,617,,Buya,Military fork|Royal war platemail|Earth helm,1644,8,213,87,1,24,2000
+1786862576759,894022,617,,Buya,Military fork|Royal war platemail|Earth helm,1117,6,201,72,1,24,2000
+1786862582764,896774,,,Buya,Military fork|Royal war platemail|Earth helm,1665,8,210,86,0,24,2000
+1786862599790,894028,617,,Buya,Military fork|Royal war platemail|Earth helm,1680,8,216,86,1,24,2000
+1786862609806,894920,617,,Buya,Military fork|Royal war platemail|Earth helm,1110,6,207,74,1,24,2000
+1786862632826,62258,,,Buya,Military fork|Royal war platemail|Earth helm,2898,14,207,92,0,24,3000
+1786862654936,890678,617,,Buya,Military fork|Royal war platemail|Earth helm,1366,7,204,65,1,24,2000
+1786862671960,906907,617,,Buya,Military fork|Royal war platemail|Earth helm,1503,8,118,79,1,24,2000
+1786862686972,906909,617,,Buya,Military fork|Royal war platemail|Earth helm,1665,8,207,86,1,24,2000
+1786862698987,906910,617,,Buya,Military fork|Royal war platemail|Earth helm,1159,6,201,87,1,24,2000
+1786862727015,906908,617,,Buya,Military fork|Royal war platemail|Earth helm,1354,7,216,77,1,24,2000
+1786862780588,906905,617,,Buya,Military fork|Royal war platemail|Earth helm,1659,8,213,87,1,24,2000
+1786862789593,906911,617,,Buya,Military fork|Royal war platemail|Earth helm,2061,10,210,89,1,24,2000
+1786862802614,894023,617,,Buya,Military fork|Royal war platemail|Earth helm,1156,6,103,86,1,24,2000
+1786864214064,908711,,,Buya,,1656,8,204,87,0,25,2000
+1786864232582,908712,,,Buya,Military fork|Royal war platemail|Earth helm,1665,8,210,86,0,25,2000
+1786864252107,908713,,,Buya,Military fork|Royal war platemail|Earth helm,1884,9,204,89,0,25,2000
+1786864255611,908719,,,Buya,Military fork|Royal war platemail|Earth helm,1668,8,201,86,0,25,2000
+1786864276136,908709,,,Buya,Military fork|Royal war platemail|Earth helm,1665,8,216,87,0,25,2000
+1786864280134,908720,,,Buya,Military fork|Royal war platemail|Earth helm,1795,9,103,87,0,25,2000
+1786864299650,908717,,,Buya,Military fork|Royal war platemail|Earth helm,1677,8,213,87,0,25,2000
+1786864340700,908721,,,Buya,Military fork|Royal war platemail|Earth helm,1464,7,210,85,0,25,2000
+1786864344702,918851,617,,Buya,Military fork|Royal war platemail|Earth helm,1692,8,201,86,1,25,2000
+1786864362723,918847,617,,Buya,Military fork|Royal war platemail|Earth helm,1168,6,207,87,1,25,2000
+1786864378236,918852,617,,Buya,Military fork|Royal war platemail|Earth helm,1104,6,213,77,1,25,2000
+1786864386247,908716,,,Buya,Military fork|Royal war platemail|Earth helm,1123,6,207,58,0,25,2000
+1786864421296,906906,617,,Buya,Military fork|Royal war platemail|Earth helm,1698,8,213,86,1,25,2000
+1786901589334,397550,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,604,3,134,70,1,28,4500
+1786901636378,397549,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,697,7,122,97,1,28,4500
+1786901640382,397561,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,580,6,125,69,1,28,4500
+1786901645055,201274,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,776,7,119,84,0,28,4500
+1786901656107,397560,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,803,7,113,85,1,28,4500
+1786901663616,397551,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,734,8,98,85,1,28,4500
+1786901666620,201270,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,931,8,110,86,1,28,4500
+1786901668121,397547,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,919,9,101,97,1,28,4500
+1786901671122,397559,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,782,7,122,85,1,28,4500
+1786901680632,397562,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,770,7,107,85,1,28,4500
+1786901685635,201272,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,696,6,128,82,0,28,4500
+1786901964037,398277,125,,Mythic Waters 1,,392,4,71,82,1,28,4500
+1786902010086,201273,,,Mythic Waters 1,,794,7,98,85,0,28,4500
+1786902014587,398279,,,Mythic Waters 1,,690,6,101,82,0,28,4500
+1786902063141,201271,125,,Mythic Waters 1,,907,8,116,87,1,28,4500
+1786902066142,201276,125,,Mythic Waters 1,,672,6,125,82,1,28,4500
+1786902086162,400368,125,,Mythic Waters 1,,583,4,128,69,1,28,4500
+1786902090668,400366,125,,Mythic Waters 1,,580,5,104,84,1,28,4500
+1786902100678,400367,125,,Mythic Waters 1,,978,9,125,96,1,28,4500
+1786902106681,400370,125,,Mythic Waters 1,,936,9,98,97,1,28,4500
+1786902114688,201275,125,,Mythic Waters 1,,752,7,62,84,1,28,4500
+1786902120195,400395,125,,Mythic Waters 1,,734,7,80,85,1,28,4500
+1786902150234,201277,125,,Mythic Waters 1,,861,8,119,84,1,28,4500
+1786902176762,400730,125,,Mythic Waters 1,,2591,19,120,90,1,28,4500
+1786902184973,400729,125,,Mythic Waters 1,,2516,28,92,97,1,28,
+1786902203288,400394,125,,Mythic Waters 1,,2784,23,122,95,1,28,4500
+1786902226316,400727,125,,Mythic Waters 1,,2308,21,121,96,1,28,4500
+1786902242839,400731,125,,Mythic Waters 1,,2611,23,125,96,1,28,4500
+1786902288563,400396,125,,Mythic Waters 1,,1914,16,118,94,1,28,4500
+1786902352628,400397,125,,Mythic Waters 1,,2572,21,118,95,1,28,4725
+1786902371145,401879,125,,Mythic Waters 1,,2355,19,110,95,1,29,4725
+1786902378654,401878,125,,Mythic Waters 1,,955,8,113,86,1,29,4725
+1786902385160,401883,125,,Mythic Waters 1,,791,7,110,82,1,29,4725
+1786902455230,401880,,,Mythic Waters 1,,601,5,125,85,0,29,4725
+1786902465743,401882,,,Mythic Waters 1,,508,5,116,85,0,29,4725
+1786902535805,401877,125,,Mythic Waters 1,,883,8,113,87,1,29,4725
+1786902575853,401881,125,,Mythic Waters 1,,800,7,128,84,1,29,4725
+1786902621400,403028,125,,Mythic Waters 1,,1034,10,125,85,1,29,4725
+1786902625907,403032,125,,Mythic Waters 1,,1218,12,101,97,1,29,4725
+1786902629913,403030,125,,Mythic Waters 1,,1542,14,101,97,1,29,4725
+1786902641417,403033,125,,Mythic Waters 1,,1010,10,107,85,1,29,4725
+1786902648432,403412,125,,Mythic Waters 1,,788,7,104,85,1,29,4725
+1786902658951,403411,125,,Mythic Waters 1,,797,7,119,84,1,29,4725
+1786902687977,403415,125,,Mythic Waters 1,,812,7,107,85,1,29,4725
+1786909456678,404962,,,Mythic Waters 1,,922,8,128,85,0,29,4500
+1786909461183,404959,,,Mythic Waters 1,,630,6,116,86,0,29,4500
+1786909466188,403413,,,Mythic Waters 1,,708,6,116,86,0,29,4500
+1786909470194,404960,,,Mythic Waters 1,,672,6,101,86,0,29,4500
+1786909476702,403409,,,Mythic Waters 1,,702,6,101,82,0,29,4500
+1786909483205,403410,125,,Mythic Waters 1,,651,6,62,86,1,29,4500
+1786909498224,404963,,,Mythic Waters 1,,806,7,104,83,0,29,4500
+1786909520743,456424,125,,Mythic Waters 1,,865,8,122,85,1,29,4500
+1786909526249,456422,125,,Mythic Waters 1,,909,8,125,85,1,29,4500
+1786909528756,456423,125,,Mythic Waters 1,,842,5,104,69,1,29,4500
+1786909530757,456421,125,,Mythic Waters 1,,1414,13,116,94,1,29,4500
+1786909537263,404961,125,,Mythic Waters 1,,705,6,131,83,1,29,4500
+1786909566286,198573,,,Mythic Owsla 1,,1092,9,125,88,0,29,5500
+1786909576796,198575,,,Mythic Owsla 1,,1038,9,104,87,0,29,5500
+1786909587305,198576,125,,Mythic Owsla 1,,1101,9,113,87,1,29,5500
+1786909599319,200120,,,Mythic Owsla 1,,637,5,131,85,0,29,4500
+1786909612333,200121,125,,Mythic Owsla 1,,726,6,113,82,1,29,4500
+1786909690419,198577,125,,Mythic Owsla 1,,1071,9,128,87,1,29,5500
+1786909691420,200118,125,,Mythic Owsla 1,,913,8,101,86,1,30,4500
+1786909696928,197792,125,,Mythic Owsla 1,,854,7,125,85,1,30,4500
+1786909726962,198574,125,,Mythic Owsla 1,,1026,9,119,88,1,30,5500
+1786909732968,197794,125,,Mythic Owsla 1,,684,6,122,82,1,30,4500
+1786909750986,457706,125,,Mythic Owsla 1,,577,5,128,54,1,30,4500
+1786909756492,457703,125,,Mythic Owsla 1,,827,7,101,84,1,30,4500
+1786909765510,457704,125,,Mythic Owsla 1,,761,7,116,85,1,30,4500
+1786909775519,457727,125,,Mythic Owsla 1,,1065,9,119,87,1,30,5500
+1786909776019,457725,125,,Mythic Owsla 1,,979,8,107,87,1,30,5500
+1786909783025,457705,125,,Mythic Owsla 1,,848,7,131,84,1,30,4500
+1786909786528,457726,125,,Mythic Owsla 1,,782,7,131,87,1,30,5500
+1786909805549,456993,,,Mythic Waters 1,,937,8,113,86,0,30,4500
+1786909810566,456992,,,Mythic Waters 1,,842,7,116,85,0,30,4500
+1786909814069,456994,,,Mythic Waters 1,,455,4,128,49,0,30,4500
+1786909817571,456991,,,Mythic Waters 1,,559,5,116,83,0,30,4500
+1786909826579,456989,,,Mythic Waters 1,,833,7,119,84,0,30,4500
+1786909854112,456995,125,,Mythic Waters 1,,571,5,89,84,1,30,4500
+1786909866627,456990,125,,Mythic Waters 1,,705,6,125,82,1,30,4500
+1786909886846,456996,125,,Mythic Waters 1,,797,7,110,84,1,30,4500
+1786913274390,460063,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,791,7,116,84,0,32,4725
+1786913282900,460064,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,812,7,119,84,0,32,4725
+1786913294911,460062,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,544,5,107,85,0,32,4725
+1786913304428,460060,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,922,8,128,86,1,32,4725
+1786913312442,460059,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,821,7,110,84,1,32,4725
+1786913324448,460061,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,797,7,107,83,1,32,4725
+1786913328953,490806,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,565,5,125,85,1,32,
+1786913328953,490810,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,791,7,119,85,1,32,4725
+1786913329956,490807,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,976,9,122,85,1,32,4725
+1786913337959,490809,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1238,13,113,96,1,32,4725
+1786913347619,460058,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,833,7,128,85,1,32,4725
+1786913393666,490999,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,607,4,122,69,1,32,4725
+1786913400172,491000,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,574,5,122,55,1,32,4725
+1786913405677,490998,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,833,7,128,85,1,32,4725
+1786913406679,490997,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,657,6,89,84,1,32,4725
+1786913779571,491876,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,744,6,107,82,0,32,4725
+1786913787579,491872,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,541,5,116,84,1,32,4725
+1786913803598,494213,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,782,7,107,85,1,32,4725
+1786913808101,494214,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,824,7,101,84,1,32,4725
+1786913808604,494217,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1316,12,116,96,1,32,4725
+1786913812605,494215,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,913,7,128,69,1,32,4725
+1786913827623,494303,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,803,7,122,85,1,32,4725
+1786913831629,494300,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,565,5,113,84,1,32,4725
+1786913835130,494299,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,862,8,110,84,1,32,4725
+1786913836130,494302,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1273,11,113,96,1,32,4725
+1786913847145,491874,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,776,7,107,85,1,32,4725
+1786913861661,491873,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,931,8,101,86,1,32,4725
+1786913867665,491875,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,949,8,125,86,1,32,4725
+1786913873671,491878,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,708,6,128,82,1,32,4725
+1786913884184,494760,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,800,7,125,84,1,32,4725
+1786913891190,494763,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,580,5,131,85,1,32,4725
+1786913892191,494762,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,816,5,107,69,1,32,4725
+1786913894691,494761,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,782,6,110,84,1,32,4725
+1786913903206,495361,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,863,7,110,84,1,32,4725
+1786913907209,495364,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,839,7,116,84,1,32,
+1786913907209,495363,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,589,4,107,70,1,32,4725
+1786913912712,495362,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,872,7,128,84,1,32,4725
+1786913940738,482534,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,809,7,104,85,1,32,4725
+1786913947786,482535,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,946,8,119,86,1,33,4725
+1786913952798,485387,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,901,8,125,86,1,33,4725
+1786913960306,495491,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,836,7,113,85,1,33,4725
+1786913966808,495492,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,875,7,116,84,1,33,4725
+1786913972314,495493,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,824,7,134,85,1,33,4725
+1786913977822,495490,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,598,6,113,84,1,33,4725
+1786913984837,482536,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,812,7,131,85,1,33,4725
+1786913995848,485389,125,,Golden Warren 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,982,8,125,85,1,33,4725
+1786914038906,496981,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,854,5,134,70,1,33,4725
+1786914042908,496980,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,803,7,113,85,1,33,4725
+1786914047421,496979,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,830,7,110,84,1,33,4725
+1786914048421,496982,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,827,7,128,85,1,33,4725
+1786914088961,487515,21,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1235,10,125,89,1,33,6825
+1786914090470,195953,21,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1229,10,128,90,1,33,6825
+1786914095471,487518,21,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1315,11,113,90,1,33,6825
+1786914123500,498134,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1003,8,113,87,1,33,5775
+1786914125996,498136,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1053,8,250,88,1,33,5775
+1786914128999,498135,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,958,7,107,74,1,33,5775
+1786914138006,487512,21,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1148,10,119,90,1,33,6825
+1786914154021,498478,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1077,8,134,75,1,33,5775
+1786914154526,498477,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,699,6,116,87,1,33,5775
+1786914158027,498479,125,,Rabbit Leap 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,958,8,113,87,1,33,5775
+1786914185567,189879,,,Wilderness,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1071,9,122,87,0,33,6825
+1786914194074,186972,21,,Wilderness,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1336,11,143,89,1,33,6825
+1786914354866,497500,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,523,5,104,85,0,33,4725
+1786914364376,491877,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,854,7,122,85,0,33,4725
+1786914372386,497502,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,964,8,122,86,0,33,4725
+1786914377395,460065,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,702,6,128,83,1,33,4725
+1786914387403,497501,,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,896,7,134,85,0,33,4725
+1786914395911,501511,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,601,5,128,68,1,33,4725
+1786914398913,501508,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,919,8,113,85,1,33,4725
+1786914400416,501510,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,1160,11,119,97,1,33,4725
+1786914407922,501512,125,,Mythic Waters 1,Military fork|Sky war platemail|Earth helm|Purple ring|Purple ring,827,7,134,85,1,33,4725
+1786922072532,566631,,,Buya,,148,4,79,84,0,33,550
+1786922097058,566641,25,,Buya,Sword of power,166,7,26,85,1,33,550
+1786922105567,566629,25,,Buya,Sword of power,211,7,71,85,1,33,550
+1786922125593,566633,25,,Buya,Sword of power,149,4,82,83,1,33,550
+1786922141610,566643,25,,Buya,Sword of power,145,6,22,82,1,33,550
+1786922165628,566617,25,,Buya,Sword of power,173,5,24,67,1,33,550
+1786922182647,566619,25,,Buya,Sword of power,173,7,24,82,1,33,550
+1786922207677,566623,25,,Buya,Sword of power,142,6,22,81,1,33,550
+1786922218196,566615,25,,Buya,Sword of power,151,5,23,64,1,33,550
+1786922228206,566637,25,,Buya,Sword of power,174,5,74,86,1,33,550
+1786922261241,566645,25,,Buya,Sword of power,170,6,26,66,1,33,550
+1786922273251,566625,25,,Buya,Sword of power,147,6,26,80,1,33,550
+1786922303785,566635,25,,Buya,Sword of power,141,6,25,82,1,33,550
+1786922323807,566613,25,,Buya,Sword of power,166,6,23,69,1,33,550
+1786922343951,566621,25,,Buya,Sword of power,149,6,25,82,1,33,550
+1786922837146,571662,,,Buya,,178,7,28,86,0,33,550
+1786923131107,576259,,,Buya,,155,6,25,81,0,33,550
+1786923150127,576247,25,,Buya,Sword of power,148,6,23,84,1,33,550
+1786923157135,576265,25,,Buya,Sword of power,171,5,27,85,1,33,550
+1786923169145,576253,25,,Buya,Sword of power,143,6,23,81,1,33,550
+1786923177157,576267,25,,Buya,Sword of power,179,6,25,70,1,33,550
+1786923188164,576263,25,,Buya,Sword of power,155,6,23,83,1,33,550
+1786923197671,576251,25,,Buya,Sword of power,178,7,28,83,1,33,550
+1786923221696,576241,25,,Buya,Sword of power,240,4,76,66,1,33,550
+1786923232709,576271,25,,Buya,Sword of power,152,6,25,80,1,33,550
+1786923246229,576239,25,,Buya,Sword of power,178,6,25,66,1,33,550

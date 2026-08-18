@@ -8,15 +8,15 @@
  },
  "gear_known": false,
  "cur": {
-  "level": 19,
-  "might": 12,
-  "will": 10,
+  "level": 33,
+  "might": 36,
+  "will": 15,
   "grace": 19,
-  "maxhp": 1079,
-  "maxmana": 525
+  "maxhp": 2380,
+  "maxmana": 397
  },
- "ac": 54,
+ "ac": 99,
  "dam": 0,
- "hit": 3,
- "stats_ts": 1785725037470
+ "hit": 1,
+ "stats_ts": 1786922037498
 }

@@ -1,19 +1,19 @@
 {
- "level": 19,
- "exp": 66635,
- "tnl": 9205,
- "curhp": 830,
- "ac": 54,
+ "level": 33,
+ "exp": null,
+ "tnl": null,
+ "curhp": null,
+ "ac": 99,
  "dam": 0,
- "hit": 3,
- "attacks": 156,
+ "hit": 1,
+ "attacks": 0,
  "equipped": {
-  "level": 19,
-  "might": 12,
+  "level": 33,
+  "might": 36,
+  "will": 15,
   "grace": 19,
-  "will": 10,
-  "maxhp": 1079,
-  "maxmana": 525
+  "maxhp": 2380,
+  "maxmana": 397
  },
  "gear_bonus": {
   "might": 0,
@@ -23,11 +23,11 @@
   "maxmana": 0
  },
  "base": {
-  "might": 12,
+  "might": 36,
   "grace": 19,
-  "will": 10,
-  "maxhp": 1079,
-  "maxmana": 525
+  "will": 15,
+  "maxhp": 2380,
+  "maxmana": 397
  },
  "levels_captured": [
   2,
@@ -47,8 +47,39 @@
   16,
   17,
   18,
-  19
+  19,
+  20,
+  21,
+  22,
+  23,
+  24,
+  25,
+  26,
+  27,
+  28,
+  29,
+  30,
+  32,
+  33,
+  48,
+  49,
+  50,
+  51,
+  52,
+  53,
+  54,
+  55,
+  56,
+  57,
+  58,
+  59,
+  60,
+  61,
+  62,
+  63,
+  64,
+  65
  ],
  "swings": 0,
- "updated": "2026-08-02 19:44:24"
+ "updated": "2026-08-16 16:37:45"
 }

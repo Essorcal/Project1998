@@ -1,0 +1,45 @@
+ts,when,character,level,naked,ac_base,ac,might,grace,will,maxhp,maxmana,might_base,grace_base,will_base,gear_known,weapon,gear,exp,tnl
+1786824018835,13:00:18,rogue,48,0,,7,27,48,20,2783,1258,27,48,20,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,52471,
+1786824059200,13:00:59,rogue,48,0,,7,27,48,20,2783,1258,27,48,20,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,23316,
+1786824142227,13:02:22,rogue,49,0,,7,27,49,20,2840,1284,27,49,20,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,51959,
+1786824217370,13:03:37,rogue,49,0,,7,27,49,20,2840,1284,27,49,20,0,,,23580,
+1786824232878,13:03:52,rogue,50,0,,7,28,50,20,2903,1309,28,50,20,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,29516,
+1786824598501,13:09:58,rogue,51,0,,1,28,51,21,2965,1335,28,51,21,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,22390,
+1786824887590,13:14:47,rogue,52,0,,1,29,52,21,3021,1359,29,52,21,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,22390,
+1786825023635,13:17:03,rogue,53,0,,1,29,53,21,3083,1385,29,53,21,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,22390,
+1786825290220,13:21:30,rogue,54,0,,51,30,54,22,3143,1410,30,54,22,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,22390,
+1786825400256,13:23:20,rogue,55,0,,51,30,55,22,3199,1435,30,55,22,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,41846,
+1786825562307,13:26:02,rogue,56,0,,51,31,56,22,3260,1461,31,56,22,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,61302,
+1786825830391,13:30:30,rogue,57,0,,51,31,57,23,3321,1486,31,57,23,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,15222,
+1786826001447,13:33:21,rogue,58,0,,51,32,58,23,3378,1513,32,58,23,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,3958,
+1786826131486,13:35:31,rogue,59,0,,51,32,59,23,3438,1539,32,59,23,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,9654,
+1786826292536,13:38:12,rogue,60,0,,1,33,60,24,3500,1564,33,60,24,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,15350,
+1786826415574,13:40:15,rogue,61,0,,1,33,61,24,3563,1590,33,61,24,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,23542,
+1786826583628,13:43:03,rogue,62,0,,1,34,62,24,3620,1616,34,62,24,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,48694,
+1786826695664,13:44:55,rogue,63,0,,1,34,63,25,3677,1641,34,63,25,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,25270,
+1786826810698,13:46:50,rogue,64,0,,1,35,64,25,3740,1666,35,64,25,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,62134,
+1786826907728,13:48:27,rogue,65,0,,1,35,65,25,3803,1690,35,65,25,0,Steel dagger,Steel dagger|Sky armor|Earth helm|Black ring|Black ring,50422,
+1786827509322,13:58:29,rogue,65,0,,35,35,65,25,3803,1690,35,65,25,0,,,46326,
+1786827788719,14:03:08,rogue,65,0,,13,35,65,25,3803,1690,35,65,25,0,Sky armor,Sky armor,46326,
+1786828167237,14:09:27,rogue,65,0,,8,35,65,25,3803,1690,35,65,25,0,Earth helm,Earth helm|Black ring|Black ring,46326,
+1786855627853,21:47:07,Warrior,16,0,,67,17,11,9,1106,261,17,11,9,0,Viperhead woodsaber,Viperhead woodsaber|Jade scale mail|Merchant helm,45324,1476
+1786855657670,21:47:37,Warrior,17,0,67,67,17,11,9,1170,269,17,11,9,0,Viperhead woodsaber,Viperhead woodsaber|Jade scale mail|Merchant helm,46974,9426
+1786855794875,21:49:54,Warrior,17,0,,84,17,11,9,1170,269,17,11,9,0,Viperhead woodsaber,Viperhead woodsaber,51924,4476
+1786855944163,21:52:24,Warrior,18,0,84,84,18,12,10,1242,277,18,12,10,0,Viperhead woodsaber,Viperhead woodsaber,56874,18726
+1786856478282,22:01:18,Warrior,18,0,,84,18,12,10,1242,277,18,12,10,0,Viperhead woodsaber,Viperhead woodsaber,5088,4976
+1786856719760,22:05:19,Warrior,18,0,,84,18,12,10,1242,277,18,12,10,0,Viperhead woodsaber,Viperhead woodsaber,8388,1676
+1786856815872,22:06:55,Warrior,19,0,84,84,19,12,10,1316,285,19,12,10,0,Viperhead woodsaber,Viperhead woodsaber,10588,18676
+1786857203913,22:13:23,Warrior,19,0,,84,19,12,10,1316,285,19,12,10,0,Viperhead woodsaber,Viperhead woodsaber,20488,8776
+1786857501059,22:18:21,Warrior,19,0,,84,19,12,10,1316,285,19,12,10,0,Viperhead woodsaber,Viperhead woodsaber,28188,1076
+1786857535940,22:18:55,Warrior,20,0,84,84,20,13,10,1390,293,20,13,10,0,Viperhead woodsaber,Viperhead woodsaber,29288,19176
+1786859496691,22:51:36,Warrior,20,0,,67,20,13,10,1390,293,20,13,10,0,Military fork,Military fork|Jade scale mail|Merchant helm,9472,11856
+1786859670866,22:54:30,Warrior,22,0,67,67,22,14,11,1541,309,22,14,11,0,Military fork,Military fork|Jade scale mail|Merchant helm,22072,37656
+1786860177039,23:02:57,Warrior,23,0,67,67,23,14,11,1621,317,23,14,11,0,Military fork,Military fork|Jade scale mail|Merchant helm,59872,38256
+1786860829075,23:13:49,Warrior,24,0,67,67,24,15,12,1695,325,24,15,12,0,,,34236,9620
+1786862468266,23:41:08,Warrior,24,0,,38,24,15,12,1695,325,24,15,12,0,Military fork,Military fork|Royal war platemail|Earth helm,6515,37341
+1786862804228,23:46:44,Warrior,25,0,38,38,28,15,12,1772,333,28,15,12,0,,,45515,9605
+1786864215141,00:10:15,Warrior,25,0,,38,28,15,12,1772,333,28,15,12,0,Military fork,Military fork|Royal war platemail|Earth helm,49800,5320
+1786922038003,16:13:58,Warrior,33,0,,99,36,19,15,2380,397,36,19,15,0,Sword of power,Sword of power,63401,12199
+1786922073796,16:14:33,Warrior,33,0,,99,36,19,15,2380,397,36,19,15,0,Sword of power,Sword of power,63951,11649
+1786922838173,16:27:18,Warrior,33,0,,99,36,19,15,2380,397,36,19,15,0,Sword of power,Sword of power,13815,15449
+1786923134574,16:32:14,Warrior,33,0,,99,36,19,15,2380,397,36,19,15,0,Sword of power,Sword of power,24265,4999
