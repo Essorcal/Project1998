@@ -567,8 +567,16 @@ public sealed partial class Session
         if (!Content.FallRooms.TryGetValue(_char.Map, out var f)) return false;
         if (Random.Shared.Next(FallRate) != 0) return false;
         if (!Content.TryMap(f.Map, out var dm)) return false;   // dest not renderable -> no fall (don't strand)
+
+        // Leave a one-shot "shiver" echo on the tile we fall THROUGH so the next passer-by senses a trap
+        // sprang here (RTK's WarpTrapShiverNpc — tiger-only in RTK, unified onto every fall cave by design).
+        // Never expires (matches RTK: the marker sits until someone steps on it). PC-only cosmetic — mobs
+        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (CastSpotTraps skips it).
+        _world.PlaceTrap(_char.Map, _char.X, _char.Y, "shiver", _char.Id);
+
         Log.Info($"   -> FALL through map {_char.Map} -> {f.Map} '{dm.Name}' ({f.X},{f.Y})");
         EnterMap(dm.Id, dm.Xs, dm.Ys, f.X, f.Y, dm.Name);
+        SendMiniText("You fall into a steep winding passage.");   // RTK warp_trap flavor, unified to all fall caves
         return true;
     }
 
@@ -639,7 +647,7 @@ public sealed partial class Session
 
         // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
         var (peers, mobs) = _world.EnterMap(this, mapId);
-        foreach (var p in peers) ShowPlayer(p);
+        SyncPeers(peers);   // stream the in-view players of the new map (0x33, viewport-gated + tracked)
         SyncMobs(mobs);   // stream the in-view mobs of the new map
         SyncGroundItems(_world.ItemsOn(mapId));   // in-view floor items of the new map (0x07, viewport-gated)
         SyncMapDoors(mapId);

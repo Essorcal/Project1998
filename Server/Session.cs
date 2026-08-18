@@ -611,6 +611,14 @@ public sealed partial class Session
             // once the second's allowance is already gone. 0x12/0x1C (wield/use) are ungated in RTK too.
             case 0x1F:                    if (ActionBudgetLeft()) HandleUnequip(dec); break;   // remove a worn item back to the bag
             case 0x24:                    HandleDropGold(dec); break;  // drop a gold amount
+            // 0x30 = Shift+C "rearrange a pane" (RTK case 0x30 -> clif_parsechangepos/clif_parsechangespell):
+            // dec[0] picks the pane (0=bag, 1=spellbook), dec[1]/dec[2] = the two 1-based slots to swap.
+            // Live-confirmed shape (user capture 2026-08-17): `30 01 01 02 00`. See HandleChangePos.
+            case 0x30:                    HandleChangePos(dec); break;
+            // 0x29 / 0x2A = the native hand-item / hand-gold gestures ('h'/'H' with a bag item, and the gold
+            // gesture), aimed at the tile you're facing (RTK clif_handitem/clif_handgold). See Session.Social.
+            case 0x29:                    HandleHandItem(dec); break;
+            case 0x2A:                    HandleHandGold(dec); break;
             // 0x20 = the 'o' / Open key (RTK clif_parse case 0x20 "Clicked 'O'" -> clif_cancelafk + clif_open_sub
             // -> onOpen script). A deliberate action (RTK's handler clears AFK, so NOT a heartbeat): in NexusTK it
             // toggles the faced door object's open/closed graphic in place. See HandleOpen (swaps the object tile
@@ -896,7 +904,7 @@ public sealed partial class Session
         // Join the shared world: register on this map, draw everyone/everything already here for us, and
         // let EnterMap broadcast US to them. From now on peers see our moves/speech and we see theirs.
         var (peers, mobs) = _world.EnterMap(this, _char.Map);
-        foreach (var p in peers) ShowPlayer(p);   // existing players -> draw on our client (0x33)
+        SyncPeers(peers);                          // existing players in view -> draw on our client (0x33, viewport-gated + tracked)
         SyncMobs(mobs);                            // shared mobs in view -> draw on our client (0x07, streamed)
         SyncGroundItems(_world.ItemsOn(_char.Map));   // floor items in view -> draw (0x07, viewport-gated)
         RefreshInventory();                       // fill the bag + equipment windows (0x0F / 0x37)
@@ -1192,6 +1200,15 @@ public sealed partial class Session
     // farm-sized box while the player only ever has a screenful of it in view. SyncGroundItems reconciles
     // this set exactly like SyncMobs does for mobs. Guarded by _viewLock alongside the mob sets.
     private readonly HashSet<uint> _shownItems = new();
+    // And the SAME story for PEER PLAYERS. A peer's 0x33 look draw is viewport-gated by the client with the
+    // very same camera rect test as the 0x07 mob spawn, so a peer we're too far from at map-entry — or one who
+    // walks toward us from off-screen — has its draw silently dropped and, because nothing re-sends it as we
+    // move, stays invisible until a room change re-draws them in view (or a Ctrl+R, if they're in view then).
+    // That is the "can't see users I walk up to, but gating in next to them shows them" report. SyncPeers
+    // reconciles this set exactly like SyncMobs does for mobs; _edgePeers is its overdraw-band twin of
+    // _edgeMobs. Guarded by _viewLock alongside the mob/item sets.
+    private readonly HashSet<uint> _shownPeers = new();
+    private readonly HashSet<uint> _edgePeers = new();
     private readonly object _viewLock = new();
     // SHOW at the strict 17x15 edge, HIDE at the drawn edge one tile further out.
     //
@@ -1207,5 +1224,17 @@ public sealed partial class Session
     // spends time in the band gets a fresh 0x07 when it re-enters the strict rect.
     private const int ShowPad = 0;
     private const int HidePad = 1;
+
+    // Speech is proximity-gated: a player only hears a bubble from someone close enough. Two ranges, both
+    // half-extents of a box centered on the speaker (see Session.Chat.HandleChat + World.BroadcastArea):
+    //  • Say (type 0, ' / ':')  — box x±9, y±8, RTK's SAMEAREA (the 19×17 draw rect / speech.lua distance 8).
+    //  • Shout (type 1, '!')    — box ±16, DOUBLE the say range. speech.lua sets distance=16 for a shout, so
+    //    the yellow shout bubble carries about twice as far as normal speech but is NOT map-wide. (The engine's
+    //    clif_sendscriptsay hardcodes SAMEMAP for shout, but that whole-map reach doesn't match the live feel;
+    //    the Lua distance is the intent we follow.)
+    internal const int SayHalfW = 9;
+    internal const int SayHalfH = 8;
+    internal const int ShoutHalfW = 16;
+    internal const int ShoutHalfH = 16;
 
 }

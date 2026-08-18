@@ -85,6 +85,30 @@ public sealed record SpawnDef(int MobId, ushort Map, ushort X, ushort Y);
 /// ~RespawnSec (plus jitter) after each kill — see <c>World.NextRespawnTick</c>.</param>
 public sealed record AreaSpawnDef(int MobId, ushort Map, int Count, ushort MinX, ushort MinY, ushort MaxX, ushort MaxY, int RespawnSec = 0, int Timer = 0, int Group = 0);
 
+/// <summary>One ambush-cave map's trigger config (<c>game-data/AmbushConfig.csv</c>), already tier-resolved
+/// to a concrete map id. A hidden <c>ambush</c> trap on this map, when a player steps on it, spawns a burst
+/// of mobs — the <see cref="SentryTable"/> burst when the stepper stands at/above the top half
+/// (<c>y &lt;= SentryTopY</c>), else the <see cref="BigTable"/> burst on a 1-in-<see cref="BigChance"/> roll,
+/// else <see cref="PrimaryKind"/> — shows <see cref="Message"/>, then a replacement trap is placed while live
+/// mobs stay under <see cref="MobCap"/>. Mirrors RTK mob_spawn.lua / rabbitTrap.lua / tigerTrap.lua; see
+/// <c>World.RefillAmbush</c> / <c>World.FireAmbushLocked</c>. Bosses are NOT here — they stay on the rare
+/// spawn-point system (AreaSpawnsTrap rows), which already reproduces their 1/10 + cooldown surprise.</summary>
+public sealed class AmbushMapDef
+{
+    public int Count;            // target hidden traps per map
+    public int MobCap;           // stop placing traps once the map holds this many live (non-NPC) mobs
+    public string Message = "";
+    public string PrimaryKind = "";   // "burst" | "single" | "ogre" | "" (a sentry-only room like the guardroom)
+    public string PrimaryTable = "";  // burst-table name when PrimaryKind == "burst"
+    public int PrimaryMob;            // mob id when PrimaryKind is "single" or "ogre"
+    public int OgreAltMob;            // "ogre" only: a 1-in-OgreAltChance roll spawns this id instead (RTK map 135)
+    public int OgreAltChance;
+    public string SentryTable = "";   // burst used when the stepper is in the top half (y <= SentryTopY)
+    public int SentryTopY;
+    public string BigTable = "";      // 1-in-BigChance roll uses this burst instead of Primary (tiger Dark Pen)
+    public int BigChance;
+}
+
 /// <summary>An NPC placement from our NPC table (<c>game-data/NPCs.csv</c>): a stationary being on a map
 /// tile. Nearly all render via the creature path (0x07) exactly like a mob — <c>Look</c>/<c>Color</c> mirror
 /// <see cref="MobDef"/> — so the world spawns them as non-fighting mobs. <c>IsChar</c> marks the rare
@@ -709,9 +733,24 @@ public static partial class Content
         new Dictionary<ushort, WorldTriggerDef>();
 
     // Mythic cave fall-room landings (Session.TryMythicFallRoom), keyed by the source sub-map, ALREADY
-    // tier-expanded (+0/+3000/+4000) at load. See FallRooms.csv.
+    // tier-expanded (+0/+3000/+4000) at load. See FallRooms.csv. Most rows come straight from RTK's
+    // onScriptedTilesMythicFallRooms.lua (a 1/500-per-step roll). The Tiger row (Dark Pen 109 -> Guardroom
+    // 110) is an APPROXIMATION: RTK reaches the tiger guardroom via a single hidden warp-trap NPC on Dark Pen
+    // (trap/tiger_spawn/warp_trap_guardroom.lua), not a fall-room tile — but this server has no trap-NPC
+    // tiles, so we reuse the fall mechanic to make the pure-sentry guardroom reachable. Tagged
+    // rtk-lua-warptrap in the CSV to mark it as the one non-fall-room source.
     public static IReadOnlyDictionary<ushort, (ushort Map, ushort X, ushort Y)> FallRooms { get; private set; } =
         new Dictionary<ushort, (ushort, ushort, ushort)>();
+
+    // Ambush-trap system (game-data/AmbushBursts.csv + AmbushConfig.csv): RTK's hidden MobSpawnNpc tiles in the
+    // mythic caves (mob_spawn.lua + rabbitTrap.lua + tigerTrap.lua). AmbushBursts maps a burst-table name to
+    // its exact weighted variant lists (extractor-generated, re/extract_ambush_tables.py); Ambushes maps a
+    // (tier-resolved) cave map to its trigger config. Warrior Watchful Eye reveals these traps. See
+    // World.RefillAmbush / World.FireAmbushLocked and Session's spot-traps reveal fork.
+    public static IReadOnlyDictionary<string, IReadOnlyList<int[]>> AmbushBursts { get; private set; } =
+        new Dictionary<string, IReadOnlyList<int[]>>();
+    public static IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes { get; private set; } =
+        new Dictionary<ushort, AmbushMapDef>();
 
     // Curated shop catalogues (game-data/ShopCatalogues.csv) — hand-authored, ORDERED sub-category buy
     // menus (e.g. SmithNpc's armor menus) that the auto-extracted flat ShopStock can't represent. Keyed by
@@ -987,6 +1026,8 @@ public static partial class Content
         WorldDests = LoadWorldDests(ResolvePath("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"));
         WorldMapTriggers = LoadWorldTriggers(ResolvePath("P1998_WORLDMAP_TRIGGERS", "WorldMapTriggers.csv"));
         FallRooms = LoadFallRooms(ResolvePath("P1998_FALLROOMS", "FallRooms.csv"));
+        AmbushBursts = LoadAmbushBursts(ResolvePath("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"));
+        Ambushes = LoadAmbushConfig(ResolvePath("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"), AmbushBursts);
         BoardLocations = LoadBoardLocations(ResolvePath("P1998_BOARD_LOCATIONS", "BoardLocations.csv"));
         ShopCatalogues = LoadShopCatalogues(ResolvePath("P1998_SHOP_CATALOGUES", "ShopCatalogues.csv"));
         SpellParams = LoadKeyedRows(ResolvePath("P1998_SPELL_PARAMS", "SpellParams.csv"));
@@ -1014,7 +1055,7 @@ public static partial class Content
         (_mapCells, var mapCellCount) = LoadMapCells(ResolvePath("P1998_MAP_CELLS", "MapCells.csv"));
         MapCellCount = mapCellCount;
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check game-data/mobs.csv)"
                      : ""));
@@ -2914,6 +2955,76 @@ public static partial class Content
             }
         }
         return d;
+    }
+
+    // AmbushBursts.csv: burst-table name -> its list of weighted variant mob-id vectors. A trap firing picks
+    // one variant at random and spawns every id in it. Extractor-generated (re/extract_ambush_tables.py).
+    private static Dictionary<string, IReadOnlyList<int[]>> LoadAmbushBursts(string? path)
+    {
+        var acc = new Dictionary<string, List<int[]>>();
+        foreach (var col in ReadCsv(path))
+        {
+            var table = col.GetValueOrDefault("Table", "").Trim();
+            if (table.Length == 0) continue;
+            var ids = (col.GetValueOrDefault("MobIds") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => int.TryParse(s.Trim(), out var v) ? v : 0).Where(v => v > 0).ToArray();
+            if (ids.Length == 0) continue;
+            if (!acc.TryGetValue(table, out var list)) { list = new(); acc[table] = list; }
+            list.Add(ids);
+        }
+        return acc.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<int[]>)kv.Value);
+    }
+
+    // AmbushConfig.csv: per-map trap trigger config. Maps column is a ';'-list of single ids and "lo-hi"
+    // ranges (already the concrete tier maps — no auto-expansion, since each tier points at its own burst
+    // table). Primary is "burst:<table>" | "single:<id>" | "ogre:<id>[/<altId>/<altChance>]" | "".
+    private static Dictionary<ushort, AmbushMapDef> LoadAmbushConfig(string? path, IReadOnlyDictionary<string, IReadOnlyList<int[]>> bursts)
+    {
+        var d = new Dictionary<ushort, AmbushMapDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            var maps = ParseMapList(col.GetValueOrDefault("Maps", ""));
+            if (maps.Count == 0) continue;
+            int I(string k, int dflt) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : dflt;
+            var def = new AmbushMapDef
+            {
+                Count = I("Count", 12), MobCap = I("MobCap", 50),
+                Message = col.GetValueOrDefault("Message", "You stepped on a trap!"),
+                SentryTable = col.GetValueOrDefault("SentryTable", "").Trim(), SentryTopY = I("SentryTopY", 0),
+                BigTable = col.GetValueOrDefault("BigTable", "").Trim(), BigChance = I("BigChance", 0),
+            };
+            var primary = col.GetValueOrDefault("Primary", "").Trim();
+            if (primary.StartsWith("burst:")) { def.PrimaryKind = "burst"; def.PrimaryTable = primary["burst:".Length..]; }
+            else if (primary.StartsWith("single:")) { def.PrimaryKind = "single"; int.TryParse(primary["single:".Length..], out def.PrimaryMob); }
+            else if (primary.StartsWith("ogre:"))
+            {
+                def.PrimaryKind = "ogre";
+                var parts = primary["ogre:".Length..].Split('/');
+                int.TryParse(parts[0], out def.PrimaryMob);
+                if (parts.Length >= 3) { int.TryParse(parts[1], out def.OgreAltMob); int.TryParse(parts[2], out def.OgreAltChance); }
+            }
+            // Fail loud on a config that points at a burst table the extractor didn't produce (typo / stale name).
+            foreach (var t in new[] { def.PrimaryTable, def.SentryTable, def.BigTable })
+                if (t.Length > 0 && !bursts.ContainsKey(t))
+                    Log.Info($"WARN AmbushConfig: map(s) '{col.GetValueOrDefault("Maps")}' reference unknown burst table '{t}'");
+            foreach (var m in maps) d[m] = def;
+        }
+        return d;
+    }
+
+    // Parse a ';'-list of map ids where each entry is a single id ("208") or an inclusive "lo-hi" range ("90-96").
+    private static List<ushort> ParseMapList(string s)
+    {
+        var result = new List<ushort>();
+        foreach (var part in s.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var p = part.Trim();
+            int dash = p.IndexOf('-');
+            if (dash > 0 && ushort.TryParse(p[..dash], out var lo) && ushort.TryParse(p[(dash + 1)..], out var hi))
+                for (int m = lo; m <= hi; m++) result.Add((ushort)m);
+            else if (ushort.TryParse(p, out var one)) result.Add(one);
+        }
+        return result;
     }
 
     private static Dictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> LoadPathGrowth(string? path)

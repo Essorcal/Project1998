@@ -94,8 +94,8 @@ public sealed partial class Session
     }
 
     // ---- who this player is currently trading blows with, in PvP -----------------------------------------
-    // Set on BOTH sides of a player-vs-player exchange (see ReceiveSpellDamage — spell damage is the only PvP
-    // damage path today; there is no player-vs-player melee). Exists so a Poet's pets know who to go for on a
+    // Set on BOTH sides of a player-vs-player exchange (see ReceiveSpellDamage for spells and ReceiveMeleeDamage
+    // for melee — both PvP damage paths mark the foe). Exists so a Poet's pets know who to go for on a
     // PK map: RTK's own cotw AI refuses player targets outright (`blType == BL_PC -> return`), which is right
     // for the open world and wrong for an arena. It EXPIRES so a pet doesn't chase a grudge across the map
     // long after the fight moved on.
@@ -199,7 +199,7 @@ public sealed partial class Session
             // on purpose, since a whiff is exactly as alarming as a connect. No-op for every other creature.
             _world.Spook(wmob);
 
-            var (dmg, crit) = PlayerSwingDamage(wmob, reach);
+            var (dmg, crit) = PlayerSwingDamage(SwingTarget.Of(wmob), reach);
             if (dmg <= 0) return;   // whiff (Combat.RollPlayerSwingRtk) — swing anim already played; no damage/dura/reward, and no text
             if (_world.TryDamage(_char.Map, wmob, dmg, out bool died, _char.Id))
             {
@@ -232,10 +232,32 @@ public sealed partial class Session
             return;
         }
 
+        // A PLAYER on the tile is a target too, but ONLY in a PvP area (RTK gates its PC branch on canPK, which
+        // is our IsPvpMap). Never yourself, and never a ghost (dead players don't take hits). A living body still
+        // STOPS the swing whether or not the hit was legal — RTK returns after the PC branch either way — so a
+        // non-PvP bystander soaks the blow (no damage) instead of the swing passing through to a dummy behind them.
+        var pc = _world.PeerAt(_char.Map, fx, fy);
+        if (pc is not null)
+        {
+            if (!ReferenceEquals(pc, this) && !pc.IsDead && Content.IsPvpMap(_char.Map))
+            {
+                var (pdmg, pcrit) = PlayerSwingDamage(SwingTarget.Of(pc), reach);   // target AC + positional already applied
+                if (pdmg > 0)
+                {
+                    var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);   // EQ_WEAP: dura on a landed hit, same as vs a mob
+                    if (weapon is not null) DeductDura(weapon);
+                    PlayHitSfx(pc._char.Id);                                          // 0x19: our on-connect impact sfx
+                    pc.ReceiveMeleeDamage(pdmg, this, pcrit);                         // HP/death/PvP-foe/HP-bar on the defender side
+                    Log.Info($"   -> PvP MELEE hit player {pc._char.Id} '{pc._char.Name}' for {pdmg}{(pcrit ? " (CRIT)" : "")}");
+                }
+            }
+            return;   // a body blocks the swing regardless of whether the hit landed
+        }
+
         var mob = MobAt(fx, fy);
         if (mob is null) return;
 
-        var (dummyDmg, dummyCrit) = PlayerSwingDamage(mob, reach);
+        var (dummyDmg, dummyCrit) = PlayerSwingDamage(SwingTarget.Of(mob), reach);
         if (dummyDmg <= 0) return;   // whiff — silent, no text
         mob.Hp -= dummyDmg;
         bool dummyDied = !mob.Alive;

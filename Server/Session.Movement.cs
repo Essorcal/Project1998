@@ -137,11 +137,23 @@ public sealed partial class Session
         // A living mob occupies its tile too (the client also self-blocks on creatures — enforce it
         // server-side so a desync can't let a player stand on one). Warp tiles still win (checked below).
         bool mobHere = !offMap && _world.MobAt(_char.Map, nx, ny) is not null;
+        // A living OTHER PLAYER occupies its tile the same way: without this two players can share a tile and
+        // "no-clip" straight through each other when they walk together (both predict the step client-side, and
+        // nothing server-side refused it). A dead player is a ghost and does NOT block — you can step onto a
+        // corpse to reach it. Warp tiles still win (checked below). A held player still occupies its tile.
+        // A PvP ghost (see PvpGhostHidden) no-clips through the LIVING — it's invisible to them in the arena, so
+        // being stopped by an unseen living body (or stopping one) would be baffling — but it still CLIPS other
+        // GHOSTS: the dead share the arena and block each other, matching that ghosts can see each other. So a
+        // dead mover here is blocked only by another ghost; everyone else is blocked by a living player (the dead
+        // never block the living either way, since PlayerAt ignores the dead).
+        bool playerHere = !offMap && (PvpGhostHidden
+            ? _world.PvpGhostAt(_char.Map, nx, ny, this)
+            : _world.PlayerAt(_char.Map, nx, ny, this));
         // Collision = ground pass flag (Blocked, honors the passtest diag) OR the client's SObj.tbl directional
         // object-wall for this heading (ObjectFlags) — the layer that stops you walking through a hut's thin
         // side wall (pass=0 under it). Warp tiles still win: the warp check below returns before `blocked` is
         // consulted, so doorways sitting on object tiles keep working.
-        bool blocked = offMap || mobHere
+        bool blocked = offMap || mobHere || playerHere
             || (PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3)));
 
         // Doors/portals take precedence over collision: if the tile we're stepping toward is a warp
@@ -205,7 +217,7 @@ public sealed partial class Session
             _char.X = (ushort)fromX; _char.Y = (ushort)fromY;   // hold at the from-tile
             SendXy();                                           // 0x04 snap-back cancels the prediction
             TryOpenBoardSign();   // bumping north into a board sprite opens it (RTK onSign), same as a turn
-            Log.Info($"   -> walk dir={dir} BLOCKED at ({nx},{ny}) obj={obj}{(offMap ? " off-map" : "")}{(mobHere ? " mob" : "")} — held at ({_char.X},{_char.Y})");
+            Log.Info($"   -> walk dir={dir} BLOCKED at ({nx},{ny}) obj={obj}{(offMap ? " off-map" : "")}{(mobHere ? " mob" : "")}{(playerHere ? " player" : "")} — held at ({_char.X},{_char.Y})");
             return;
         }
 
@@ -225,8 +237,10 @@ public sealed partial class Session
         // a peer land on our true destination instead of one tile ahead. Same fix as the mob moves.
         _world.Broadcast(_char.Map, p => p.MoveEntity(_char.Id, (ushort)fromX, (ushort)fromY, dir), except: this);
 
-        // Our viewport just shifted a tile: stream in mobs that entered view, drop ones that left.
-        SyncMobs(_world.View(this, _char.Map).mobs);
+        // Our viewport just shifted a tile: stream in entities that entered view, drop ones that left.
+        var (viewPeers, viewMobs) = _world.View(this, _char.Map);
+        SyncPeers(viewPeers);   // OTHER PLAYERS — same viewport-gated redraw mobs get, so we see whoever we walk up to
+        SyncMobs(viewMobs);
         // ...and the FLOOR ITEMS, which need it even more than mobs do: they never move, so an item whose
         // 0x07 was dropped by the client's viewport gate (a forage chestnut across the farm, loot from a
         // kill on the far side of the map) is invisible forever unless walking up to it re-draws it.
@@ -644,19 +658,17 @@ public sealed partial class Session
         }
         else if (setting == 0x02)
         {
-            // Shift+G — toggle "sociable/group" (whether others may group with you). Persisted; the profile
-            // window (0x39 group byte / 0x34 status cell) reads it, so reopening the profile shows the change.
+            // Shift+G — the "Join a group" toggle (persisted; the profile window's 0x39 group byte / 0x34
+            // status cell reads the same flag, so reopening the profile shows the change).
             //
-            // Turning it OFF while you are in a group LEAVES that group — this toggle is the native "leave"
-            // gesture, and the only one. It reads naturally ("I'm no longer grouping") and it's the sole
-            // group control the client offers a player who isn't looking at somebody else's profile: the
-            // profile Group button (0x2E) can only ADD, and its kick branch is the leader's alone. Without
-            // this a non-leader could only get out by logging off.
-            _char.Grouped = !_char.Grouped;
-            SaveChar();
-            SendMessage(SettingLine("Join a group", _char.Grouped));
+            // While you ARE in a party this is the native LEAVE gesture, and the only one: the profile Group
+            // button (0x2E) can only ADD, and its kick branch is the leader's alone, so without this a
+            // non-leader could only get out by logging off. RemoveFromParty drops you and flips your status
+            // OFF (SetGroupStatus). Otherwise the key just flips your willingness-to-be-grouped preference —
+            // the flag a would-be inviter's gate checks (WantsGroup) — and announces the new state.
+            if (_party is not null) RemoveFromParty(this);
+            else SetGroupStatus(!_char.Grouped);
             Log.Info($"   -> setting 0x02 Group/sociable = {(_char.Grouped ? "ON" : "OFF")}");
-            if (!_char.Grouped && _party is not null) RemoveFromParty(this);
         }
         else if (setting == 0x08)
         {

@@ -486,6 +486,7 @@ public sealed class World
         // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
         // entry, since that is the only moment a due group on an unwatched map gets looked at.
         RefillGroups(mapId);
+        RefillAmbushLocked(mapId);   // top up this cave's hidden ambush traps (also every entry, same reason)
 
         if (!_materialized.Add(mapId)) return;              // already done
         if (!_spawns.TryGetValue(mapId, out var list)) return;
@@ -910,23 +911,117 @@ public sealed class World
     {
         Trap? trap;
         var coneTargets = new List<Mob>();
+        string? ambushMsg = null;
         lock (_lock)
         {
             var m = Map(mapId);
-            trap = m.Traps.FirstOrDefault(t => t.Kind == "bladestorm" && t.X == x && t.Y == y);
+            // The trap kinds a PLAYER sets off: bladestorm (an AoE decoy), shiver (a cosmetic fall echo — see
+            // Session.TryMythicFallRoom), and ambush (a cave mob-spawn tile — see Content.AmbushMapDef). The
+            // hazard family (dart/snare/…) stays mob-only.
+            trap = m.Traps.FirstOrDefault(t => (t.Kind == "bladestorm" || t.Kind == "shiver" || t.Kind == "ambush") && t.X == x && t.Y == y);
             if (trap is null) return;
             m.Traps.Remove(trap);
-            foreach (var (dx, dy) in BladestormFan[facing & 3])
-            {
-                var t = m.Mobs.FirstOrDefault(o => o.Alive && o.X == x + dx && o.Y == y + dy);
-                if (t is not null) coneTargets.Add(t);
-            }
+            if (trap.Kind == "bladestorm")
+                foreach (var (dx, dy) in BladestormFan[facing & 3])
+                {
+                    var t = m.Mobs.FirstOrDefault(o => o.Alive && o.X == x + dx && o.Y == y + dy);
+                    if (t is not null) coneTargets.Add(t);
+                }
+            else if (trap.Kind == "ambush")
+                ambushMsg = FireAmbushLocked(mapId, x, y);   // spawns the burst + relocates a replacement trap
         }
-        // ONE damage number, computed from the trigger (RTK applies it uniformly, not per-target) — Session
-        // owns the armor/HP math for a player trigger and caps its OWN loss to leave 1 HP; the cone targets
-        // it catches take the same (uncapped) value via the existing trap-damage pipeline.
+        // Shiver is pure flavor: sense the sprung trap, nothing else (RTK WarpTrapShiverNpc).
+        if (trap.Kind == "shiver") { player.FeelShiver(); return; }
+        // Ambush: the burst mobs are already on the map (built under the lock above); the caller's post-step
+        // SyncMobs renders them for the stepper. Just deliver the "Rabbits ambush you!" style status line.
+        if (trap.Kind == "ambush") { if (ambushMsg is not null) player.ShowAmbushText(ambushMsg); return; }
+        // Bladestorm: ONE damage number, computed from the trigger (RTK applies it uniformly, not per-target) —
+        // Session owns the armor/HP math for a player trigger and caps its OWN loss to leave 1 HP; the cone
+        // targets it catches take the same (uncapped) value via the existing trap-damage pipeline.
         int dmg = player.ApplyBladestormSelfDamage();
         foreach (var t in coneTargets) Try(() => ApplyTrapDamage(mapId, t, dmg, player.PlayerId));
+    }
+
+    // ---- Ambush traps (Content.Ambushes / AmbushBursts; RTK mob_spawn.lua + rabbitTrap.lua + tigerTrap.lua) ----
+    // A hidden "ambush" trap tile a player steps on spawns a burst of cave mobs around them, then a replacement
+    // trap is placed elsewhere (while live mobs stay under the map's cap). Caller holds _lock; the burst mobs
+    // are built here (BuildMob needs the lock) and the stepper's own post-step SyncMobs renders them. Returns
+    // the ambush status message to show the stepper. Bosses are NOT rolled here — they stay on the rare
+    // spawn-point system (AreaSpawnsTrap), which already reproduces their 1/10 + cooldown surprise.
+    private string? FireAmbushLocked(ushort mapId, ushort x, ushort y)
+    {
+        if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return null;
+        foreach (var mobId in SelectAmbushBurst(cfg, y))
+        {
+            var def = Content.MobById(mobId);
+            if (def is null) continue;
+            var (sx, sy) = FreeSpawnTile(mapId, x, y);   // the tile, or the nearest open one — spreads the burst out
+            BuildMob(mapId, def, sx, sy);
+        }
+        RefillAmbushLocked(mapId);   // relocate the sprung trap (and top up) while under the mob cap
+        return cfg.Message;
+    }
+
+    // Pick the mob-id list this trap fires: the sentry burst when the stepper is in the top half
+    // (y <= SentryTopY — RTK's Hare Summit split / the guardroom's always-on sentries), else a 1-in-BigChance
+    // "big mob" burst (tiger Dark Pen), else the primary — a random burst variant, a single creature
+    // (spider/scorpion), or an ogre 4-tile burst (RTK spawnMob).
+    private int[] SelectAmbushBurst(AmbushMapDef cfg, ushort y)
+    {
+        if (cfg.SentryTable.Length > 0 && y <= cfg.SentryTopY) return PickVariant(cfg.SentryTable);
+        if (cfg.BigTable.Length > 0 && cfg.BigChance > 0 && Random.Shared.Next(cfg.BigChance) == 0) return PickVariant(cfg.BigTable);
+        return cfg.PrimaryKind switch
+        {
+            "burst"  => PickVariant(cfg.PrimaryTable),
+            "single" => new[] { cfg.PrimaryMob },
+            "ogre"   => Enumerable.Repeat(
+                            cfg.OgreAltChance > 0 && Random.Shared.Next(cfg.OgreAltChance) == 0 ? cfg.OgreAltMob : cfg.PrimaryMob, 4)
+                        .ToArray(),
+            _        => Array.Empty<int>(),
+        };
+    }
+
+    private int[] PickVariant(string table) =>
+        Content.AmbushBursts.TryGetValue(table, out var vs) && vs.Count > 0 ? vs[Random.Shared.Next(vs.Count)] : Array.Empty<int>();
+
+    // Top a configured map's hidden ambush traps back up to its target count, but only while live mobs stay
+    // under the map's cap — RTK's population governor (its trap refiller stops adding while the map is already
+    // full of mobs). Caller holds _lock. Called on every map entry (EnsureMaterialized) and after a trap fires.
+    private void RefillAmbushLocked(ushort mapId)
+    {
+        if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return;
+        var m = Map(mapId);
+        int traps = 0; foreach (var t in m.Traps) if (t.Kind == "ambush") traps++;
+        if (traps >= cfg.Count) return;
+        int mobs = 0; foreach (var mob in m.Mobs) if (mob.Alive && !mob.IsNpc) mobs++;
+        if (mobs >= cfg.MobCap) return;
+
+        var taken = OccupiedTiles(mapId);
+        foreach (var t in m.Traps) taken.Add((t.X, t.Y));   // don't stack two traps on one tile
+        int budget = cfg.Count * PlacementTriesPerMob;
+        while (traps < cfg.Count && budget-- > 0)
+        {
+            if (!TryPickMapTile(mapId, taken, out var tx, out var ty)) continue;
+            m.Traps.Add(new Trap { Id = _nextTrapId++, X = tx, Y = ty, Kind = "ambush", OwnerId = 0 });
+            taken.Add((tx, ty));
+            traps++;
+        }
+    }
+
+    // A random passable, object-free, non-warp, unoccupied tile anywhere on a map (the whole-map analogue of
+    // TryPickGroupTile). Caller holds _lock.
+    private bool TryPickMapTile(ushort mapId, HashSet<(int, int)> taken, out ushort x, out ushort y)
+    {
+        x = y = 0;
+        var (xs, ys) = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
+        if (xs == 0 || ys == 0) return false;
+        int tx = Random.Shared.Next(1, xs), ty = Random.Shared.Next(1, ys);
+        if (taken.Contains((tx, ty))) return false;
+        var terrain = MapData.For(mapId, xs, ys);
+        if (terrain is not null && terrain.Solid(tx, ty)) return false;
+        if (Content.TryWarp(mapId, (ushort)tx, (ushort)ty, out _)) return false;
+        x = (ushort)tx; y = (ushort)ty;
+        return true;
     }
 
     /// <summary>Every trap within <paramref name="radius"/> tiles (Chebyshev) of a point — spot_traps'
@@ -1037,6 +1132,31 @@ public sealed class World
             return;
         }
         lock (_lock) if (victim.Alive && victim.TargetId == 0) victim.TargetMobId = attacker.Id;
+    }
+
+    /// <summary>Confuse (RTK mage/confuse.lua) SUCCESS effect: wipe the mob's ENTIRE threat table and drop its
+    /// current target so it forgets everyone. Confuse is a full aggro RESET, not the per-caster peel that
+    /// Amnesia is. If a creature is standing on a cardinally-adjacent tile, the confused mob is turned on THAT
+    /// creature (<see cref="Mob.TargetMobId"/>) — which is how two mobs side by side, Blinded first so they
+    /// don't simply re-aggro you, can be spammed with Confuse into fighting each other; the victim's own
+    /// retaliation (<see cref="ApplyMobOnMobHit"/>) then closes the loop. No status and no timer: this just
+    /// re-points the AI once, so a still-sighted aggressive mob is free to re-acquire the nearest player next
+    /// tick (blind it first if you want the redirect to stick). Caller need not hold the lock.</summary>
+    public void ConfuseMob(ushort mapId, Mob mob)
+    {
+        lock (_lock)
+        {
+            mob.Threat?.Clear();
+            mob.TargetId = 0;
+            mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0;   // a full reset supersedes any earlier Amnesia peel
+            mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+            mob.TargetMobId = 0;
+            if (!_maps.TryGetValue(mapId, out var m)) return;
+            var foes = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.Id != mob.Id
+                            && ((o.X == mob.X && Math.Abs(o.Y - mob.Y) == 1) || (o.Y == mob.Y && Math.Abs(o.X - mob.X) == 1)))
+                         .ToList();
+            if (foes.Count > 0) mob.TargetMobId = foes[Random.Shared.Next(foes.Count)].Id;
+        }
     }
 
     /// <summary>One step of a chase toward <c>(tx,ty)</c> — a port of RTK's <c>FindCoords</c>
@@ -1240,7 +1360,7 @@ public sealed class World
         mob.X = (ushort)nx; mob.Y = (ushort)ny;
         mobTiles.Add((nx, ny));
         moves.Add((mapId, mob.Id, ox, oy, dir));
-        var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny);
+        var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && t.Kind != "shiver");   // shiver is a PC-only cosmetic echo — mobs walk over it untouched
         if (trap is not null) { m.Traps.Remove(trap); TriggerTrapLocked(mapId, mob, trap, trapDamage); }
         return true;
     }
@@ -1277,7 +1397,7 @@ public sealed class World
             peers = m.Players.Where(p => p != s).ToArray();
             mobs = m.Mobs.ToArray();
         }
-        foreach (var p in peers) Try(() => p.ShowPlayer(s));   // tell the room about the newcomer
+        foreach (var p in peers) Try(() => p.SyncPeer(s));   // tell the room about the newcomer (view-gated + tracked)
         return (peers, mobs);
     }
 
@@ -1318,6 +1438,24 @@ public sealed class World
         {
             if (!_maps.TryGetValue(mapId, out var m)) return;
             peers = m.Players.Where(p => p != except).ToArray();
+        }
+        foreach (var p in peers) Try(() => send(p));
+    }
+
+    /// <summary>Like <see cref="Broadcast"/>, but only to players whose tile falls within a box of
+    /// ±<paramref name="halfW"/> × ±<paramref name="halfH"/> centered on (<paramref name="cx"/>,
+    /// <paramref name="cy"/>). This is RTK's SAMEAREA hearing range for normal speech: clif_sendsay sends a
+    /// Say line via clif_send(..., SAMEAREA), which map_foreachinarea walks as the box x±9, y±8 around the
+    /// speaker. Shout keeps using plain <see cref="Broadcast"/> (RTK's SAMEMAP — the whole map).</summary>
+    public void BroadcastArea(ushort mapId, int cx, int cy, int halfW, int halfH, Action<Session> send, Session? except = null)
+    {
+        Session[] peers;
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return;
+            peers = m.Players.Where(p => p != except
+                && Math.Abs(p.PlayerX - cx) <= halfW
+                && Math.Abs(p.PlayerY - cy) <= halfH).ToArray();
         }
         foreach (var p in peers) Try(() => send(p));
     }
@@ -1540,6 +1678,30 @@ public sealed class World
         {
             if (!_maps.TryGetValue(mapId, out var m)) return null;
             return m.Mobs.FirstOrDefault(mo => mo.Alive && mo.X == x && mo.Y == y);
+        }
+    }
+
+    /// <summary>Is a LIVING player (other than <paramref name="except"/>) standing on this tile? Used by the
+    /// walk handler to make players block each other — two players can no longer share or no-clip through a
+    /// tile. A dead player is a ghost and does NOT block (you can walk over a corpse to reach it).</summary>
+    public bool PlayerAt(ushort mapId, int x, int y, Session? except = null)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return false;
+            return m.Players.Any(p => !ReferenceEquals(p, except) && !p.IsDead && p.PlayerX == x && p.PlayerY == y);
+        }
+    }
+
+    /// <summary>Is another GHOST (dead player, other than <paramref name="except"/>) standing on this tile?
+    /// A PvP ghost no-clips through the LIVING but still CLIPS other ghosts — the dead share the arena and
+    /// block each other. Called only when the mover is a PvP ghost (see Session.HandleWalk / PvpGhostHidden).</summary>
+    public bool PvpGhostAt(ushort mapId, int x, int y, Session? except = null)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return false;
+            return m.Players.Any(p => !ReferenceEquals(p, except) && p.IsDead && p.PlayerX == x && p.PlayerY == y);
         }
     }
 
@@ -2262,7 +2424,27 @@ public sealed class World
                     // being blind doesn't stop you swinging at someone who walks into you.
                     if (mob.BlindUntil > Environment.TickCount64)
                     {
-                        mob.TargetId = 0; mob.TargetMobId = 0;
+                        mob.TargetId = 0;
+                        // Normally a blind creature forgets its mob target too. The one exception is CONFUSE,
+                        // which turns a mob on a neighbour (World.ConfuseMob sets TargetMobId): a blind mob
+                        // keeps swinging at a creature on the adjacent tile — it just can't CHASE one, so the
+                        // target clears the instant that creature isn't next to it. This is what lets two
+                        // blinded mobs, side by side, be spammed with Confuse into fighting each other.
+                        Mob? bfoe = mob.TargetMobId != 0 ? m.Mobs.FirstOrDefault(o => o.Alive && o.Id == mob.TargetMobId) : null;
+                        if (bfoe is not null)
+                        {
+                            int cfdx = bfoe.X - mob.X, cfdy = bfoe.Y - mob.Y;
+                            if ((cfdx == 0 && Math.Abs(cfdy) == 1) || (cfdy == 0 && Math.Abs(cfdx) == 1))
+                            {
+                                byte cff = FaceDelta(cfdx, cfdy);
+                                if (cff != mob.Dir) { mob.Dir = cff; turns.Add((mapId, mob.Id, cff)); }
+                                mob.AttackTimer += TickMs;
+                                if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; mobHits.Add((mapId, mob, bfoe)); }
+                                continue;
+                            }
+                            mob.TargetMobId = 0;   // not adjacent any more — a blind mob can't go looking for it
+                        }
+                        else mob.TargetMobId = 0;
                         // Prey never fights (see the flee block below), and an owned creature has no business
                         // swinging at people off a PK map — the same two exemptions the sighted paths apply.
                         Session? reach = null;
@@ -2734,7 +2916,7 @@ public sealed class World
                     // live trace), and for a single-stepping mob there's no 0x04 commit to correct it. Sending
                     // source makes client_final = source + forward(dir) = the real destination.
                     moves.Add((mapId, mob.Id, ox, oy, stepDir));
-                    var wanderTrap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny);
+                    var wanderTrap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && t.Kind != "shiver");   // mobs ignore the PC-only shiver echo
                     if (wanderTrap is not null) { m.Traps.Remove(wanderTrap); TriggerTrapLocked(mapId, mob, wanderTrap, trapDamage); }
                 }
             }
@@ -2809,7 +2991,9 @@ public sealed class World
         {
             var bytes = System.Text.Encoding.ASCII.GetBytes(
                 ch.channel == 0 ? $"{ch.mob.Name}: {ch.line}" : ch.line);   // RTK talk(0) attributes, talk(2) doesn't
-            Broadcast(ch.map, p => p.SpeakEntity(ch.channel, ch.mob.Id, bytes));
+            // Proximity-gated around the creature, matching RTK bll_talk's map_foreachinarea(..., AREA, ...).
+            BroadcastArea(ch.map, ch.mob.X, ch.mob.Y, Session.SayHalfW, Session.SayHalfH,
+                p => p.SpeakEntity(ch.channel, ch.mob.Id, bytes));
         }
 
         // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.
@@ -2861,17 +3045,19 @@ public sealed class World
         // Floor items ride along with the mobs: a forage top-up or another player's drop lands on the map
         // while we're standing still, and its own broadcast is viewport-gated like every other 0x07 — so the
         // tick is what eventually draws it for whoever is close enough. Hence `|| m.Items.Count > 0`: a map
-        // with items but no mobs still needs reconciling.
+        // with items but no mobs still needs reconciling. And `|| m.Players.Count > 1`: a peer walking toward
+        // us is viewport-gated the same way (0x33), so a mob-less, item-less map with two players still needs
+        // the tick to draw each into the other's view as they close the distance.
         (Session[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
         lock (_lock)
         {
             snapshot = _maps.Values
-                .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0))
+                .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0 || m.Players.Count > 1))
                 .Select(m => (m.Players.ToArray(), m.Mobs.ToArray(), m.Items.ToArray()))
                 .ToArray();
         }
         foreach (var (players, mobs, items) in snapshot)
-            foreach (var p in players) Try(() => { p.SyncMobs(mobs); p.SyncGroundItems(items); });
+            foreach (var p in players) Try(() => { p.SyncPeers(players); p.SyncMobs(mobs); p.SyncGroundItems(items); });
     }
 
     private static void Try(Action a)

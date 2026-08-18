@@ -364,7 +364,7 @@ public sealed partial class Session
         // morphed/faded on the last broadcast, peers may hold a creature sprite or nothing at all, so the
         // in-place patch would land on the wrong object or silently do nothing — take the full path and let
         // ShowPlayer re-decide per viewer. Same when we're special NOW.
-        bool special = _morphLook != 0 || Stealthed;
+        bool special = _morphLook != 0 || Stealthed || PvpGhostHidden;
         if (Content.LookUpdateInPlace && !special && _peersHoldHumanLook)
         {
             var look = SelfAppearance();
@@ -404,6 +404,17 @@ public sealed partial class Session
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
     /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
     public bool IsDead => _char.Hp == 0;
+
+    /// <summary>A dead player on a PvP map (Vale, the Sire Pit, any Content.IsPvpMap) is a HIDDEN ghost:
+    /// invisible to the LIVING and non-colliding with them (no-clip), so the living neither see nor bump the
+    /// corpse — but other GHOSTS still see it and still CLIP it (the dead share the arena). This is per-viewer
+    /// visibility exactly like Rogue stealth, so it MUST take ShowPlayer's full despawn+redraw path
+    /// (RefreshAppearance treats it as `special`, since the 0x1d in-place look patch can't express "invisible to
+    /// some viewers"). It gates: ShowPlayer (hide from LIVING viewers — see the `!IsDead` there), HandleWalk
+    /// (ghost mover clips other ghosts via PvpGhostAt, no-clips the living), and — because whether WE can see
+    /// ghosts flips when OUR OWN state changes — ResyncPeers on death/revive. The ghost still sees itself and
+    /// the living. Reviving (Hp>0) drops the predicate and the next RefreshAppearance/EnterMap redraws for all.</summary>
+    public bool PvpGhostHidden => IsDead && Content.IsPvpMap(_char.Map);
 
     private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; 0xFF = bare hands
     private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
@@ -753,6 +764,38 @@ public sealed partial class Session
         if (IsDead) Die();
     }
 
+    // Take incoming MELEE damage from another player (PvP). The melee twin of ReceiveSpellDamage — but the
+    // attacker-side PlayerSwingDamage has ALREADY applied our physical AC and the positional rear-x2 (it read
+    // our real defense via SwingTarget.Of(this)), so `rawDmg` is post-armor. Here we only add what the intake
+    // side owns: Harden Body immunity, the sleep-family amplifier, and the deduction reduction (sanctuary /
+    // Baekho's Cunning) — exactly the terms ApplyMobHit applies after armor. Then HP, per-hit durability (RTK
+    // clif_deductarmor rolls every worn slot on a hit, unlike magic), the over-head HP bar to the whole map,
+    // the mutual PvP-foe mark (so arena pets know who to go for), and death -> ghost. No "X hits you" chat line:
+    // melee shows only the HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll.
+    public void ReceiveMeleeDamage(int rawDmg, Session attacker, bool crit)
+    {
+        if (IsDead) return;            // already down — don't re-trigger Die() while the revive gate is pending
+        if (DamageImmune) return;      // Harden Body — RTK returns before the calc, melee included
+        WakeUp(byDamage: true);        // being hit ends a Doze (RTK on_takedamage_while_cast)
+        if (rawDmg < 1) rawDmg = 1;
+        double amp = TakeDamageAmp();  // sleep-family amplifier — one hit only, same as ApplyMobHit
+        if (amp > 1.0) rawDmg = (int)Math.Round(rawDmg * amp);
+        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
+        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
+        foreach (var worn in _char.Equipment.ToArray()) DeductDura(worn);   // RTK clif_deductarmor: every worn slot
+        SendStats();
+        byte critByte = crit ? (byte)0xFF : HitCritByte;
+        byte hpPct = PlayerHpPercent();
+        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, critByte));   // over-head bar + hit anim, whole map
+        if (!ReferenceEquals(attacker, this))
+        {
+            MarkPvpFoe(attacker._char.Id);
+            attacker.MarkPvpFoe(_char.Id);
+        }
+        Log.Info($"   -> {attacker._char.Name} MELEE hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
+        if (IsDead) Die();
+    }
+
     // Defeated by a mob: redraw as a ghost (appearance[1]=1 via MountForm(), see IsDead/Snapshot/ShowPlayer)
     // and STAY that way — RTK has no auto-revive timer at all. A ghost wakes up only by pressing F1 and
     // picking "Silver Thread" (RunF1MenuAsync/SilverThread, §11k), which offers a choice of Shaman to warp
@@ -762,7 +805,9 @@ public sealed partial class Session
     {
         Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
         _char.Mounted = false;                                            // a horse doesn't carry a ghost
+        ClearAllTimedEffects();                                           // RTK pc_diescript wipes every timer on death — buffs, curses, stances, and any morph/stealth disguise (must run before the ghost redraw so it draws from the real look, not the morph)
         RefreshAppearance();                                              // redraw self as a ghost + everyone watching
+        ResyncPeers();                                                    // we're a ghost now — reveal the OTHER ghosts to us (PvP), and re-evaluate what we can see
         ApplyDeathPenalties();                                            // exp/coin/gear/pile — see below
         SendMiniText("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
         SaveChar();                                                       // the penalties above must survive a crash, not just a clean logout
@@ -823,6 +868,7 @@ public sealed partial class Session
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
         RefreshAppearance();   // redraw self + everyone watching as living again (MountForm drops form 1)
+        ResyncPeers();         // living again — stop seeing the PvP ghosts we could see while dead
         SendStats();
         SendMiniText(message);
         MarkDirty();
