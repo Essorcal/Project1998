@@ -164,11 +164,12 @@ public sealed partial class Session
             if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); continue; }   // coins -> purse
             var def = Content.ItemById(gi.ItemId);
             if (def is null) continue;
-            if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+            if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName, owner: gi.Owner))   // preserve any bond off the ground
             {
                 // pack full — put it straight back on the floor so it isn't lost, and stop grabbing.
                 _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
-                    X = _char.X, Y = _char.Y, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+                    X = _char.X, Y = _char.Y, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName,
+                    Owner = gi.Owner });
                 return;
             }
         } while (pickAll);                                // ',' runs once; '<' loops until the tile is empty
@@ -205,7 +206,8 @@ public sealed partial class Session
         else { it.Amount = remaining; SendAddItem(it); }   // stack shrinks: redraw the slot with the new count
         MarkDirty();
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
-            X = _char.X, Y = _char.Y, Amount = count, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
+            X = _char.X, Y = _char.Y, Amount = count, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName,
+            Owner = it.Owner });   // a dropped bound item stays bound to its owner on the ground
     }
 
     // 0x17 throw: dec[0]=confirm, dec[1]=slot(1-based). Throw one, land it a few tiles ahead.
@@ -243,7 +245,8 @@ public sealed partial class Session
             tx = cx; ty = cy;
         }
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
-            X = (ushort)tx, Y = (ushort)ty, Amount = 1, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName });
+            X = (ushort)tx, Y = (ushort)ty, Amount = 1, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName,
+            Owner = it.Owner });   // a thrown bound item stays bound to its owner
     }
 
     // 0x09 ';' Look: name whatever occupies the tile we're facing, RTK's PC -> mob/NPC -> item order
@@ -994,6 +997,10 @@ public sealed partial class Session
         if (BlockedByMount()) return;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
+        // Bound gear (totem helms, subpath weapons — ItemDef.Bonded) only equips for the owner it was stamped
+        // with when obtained (InvItem.Owner). Anyone else may hold, drop or trade it, just never wear it.
+        if (!string.IsNullOrEmpty(it.Owner) && it.Owner != _char.Name)
+        { SendMiniText("This does not belong to you."); return; }
         // Wear requirements (RTK item_data): sex-locked gear, a minimum level, and a minimum MIGHT (checked
         // against effective might so already-worn +might gear counts).
         // ItmSex: 0 = male-only, 1 = female-only, 2 = UNISEX (the common case — 1944/2545 items, incl. most
@@ -1043,7 +1050,7 @@ public sealed partial class Session
             // Bag FIRST, gear second, and only proceed if it landed — see HandleUnequip for what the other
             // order costs. The incoming item's slot was freed just above so there is normally room; if there
             // somehow isn't, put the incoming item back rather than destroy the one being replaced.
-            if (pdef is not null && !GiveItem(pdef, 1, prev.Dura, prev.CustomName))
+            if (pdef is not null && !GiveItem(pdef, 1, prev.Dura, prev.CustomName, owner: prev.Owner))
             {
                 _char.Inventory.Add(it);
                 SendAddItem(it);
@@ -1079,7 +1086,7 @@ public sealed partial class Session
         // gear first and then ignored GiveItem's result, so taking anything off with a full pack DESTROYED
         // it outright. Failing here leaves the item worn, which is the only harmless outcome. (UnequipAll
         // already had this order; the single-slot path did not.)
-        if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName)) return;
+        if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName, owner: worn.Owner)) return;
         _char.Equipment.Remove(worn);
         InvalidateEquipTotals();
         SendUnequip(wire);
@@ -1098,7 +1105,7 @@ public sealed partial class Session
         foreach (var worn in _char.Equipment.ToList())
         {
             var def = Content.ItemById(worn.ItemId);
-            if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName)) break;   // bag full — stop, leave the rest equipped
+            if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName, owner: worn.Owner)) break;   // bag full — stop, leave the rest equipped
             _char.Equipment.Remove(worn);
             InvalidateEquipTotals();
             SendUnequip(worn.Slot);
@@ -1241,6 +1248,7 @@ public sealed partial class Session
             SendDelItem((byte)it.Slot, 1);                            // reason 1 = Drop
             _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
                 X = _char.X, Y = _char.Y, Amount = it.Amount, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName,
+                Owner = it.Owner,   // a bound item stays bound through a death pile (survives the looter-lock expiring)
                 LooterId = _char.Id, LockedUntil = Environment.TickCount64 + DeathPileLockMs });
             dropped = true;
         }
@@ -1289,7 +1297,7 @@ public sealed partial class Session
                 if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); taken++; continue; }
                 var def = Content.ItemById(gi.ItemId);
                 if (def is null) continue;
-                if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+                if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName, owner: gi.Owner))
                 {
                     // Pack full (GiveItem already said so). Put it back exactly as it was, lock intact.
                     _world.DropItem(_char.Map, gi);

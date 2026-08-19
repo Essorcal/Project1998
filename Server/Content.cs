@@ -177,6 +177,22 @@ public sealed record ItemDef(
 
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
+
+    /// <summary>Owner-bound + unrepairable gear (user 2026-08-18): the totem HELM-SLOT pieces (Ju Jak / Chung
+    /// Ryong / Baekho helm·circlet·casque·helmet — 12 fixed ids) and the NPC SUBPATH weapons (the 49xxx weapon
+    /// block — each subpath's base/enchanted + Il/Ee/Sam/Sa-san tiers, gated on a real <see cref="PathId"/> so
+    /// the stray non-subpath 49xxx rows and the 50xxx/60xxx bows &amp; novelty weapons are excluded). Both
+    /// properties cover the SAME set: these bind to whoever first obtains one (only the owner may equip it, and
+    /// the examine tooltip shows the owner — <see cref="InvItem.Owner"/>), and no smith or repair spell can
+    /// restore their durability. NOT the same as <see cref="NoDrop"/>: a bound item still drops/trades freely,
+    /// it just stays bound to its owner wherever it goes (which is why the owner rides on the ground item).</summary>
+    public bool Bonded       => IsBoundGear;
+    public bool Unrepairable => IsBoundGear;
+    private bool IsBoundGear =>
+        (Type == 6 && BoundTotemHelmIds.Contains(Id)) ||
+        (Type == 3 && Id is >= 49000 and < 50000 && PathId != 0);
+    private static readonly HashSet<int> BoundTotemHelmIds = new()
+    { 41008, 41009, 41011, 41258, 41259, 41260, 41266, 41267, 41268, 41508, 41509, 41511 };
     public bool IsConsumable => Type is 0 or 1 or 2;     // EAT / USE / SMOKE
     public bool Stackable => StackAmount > 1 || MaxAmount > 1;
 

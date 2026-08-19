@@ -32,17 +32,23 @@ public sealed partial class Session
     /// <para>Callers that TAKE the item from somewhere else must use <see cref="GivePlaced"/> instead — a
     /// bool can't distinguish "none of it fit" from "some of it fit", and deducting the full amount from the
     /// source after a partial give duplicates or destroys goods.</para></summary>
-    private bool GiveItem(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false)
-        => GivePlaced(def, amount, dura, customName, quiet) == Math.Max(1, amount);
+    private bool GiveItem(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false, string owner = "")
+        => GivePlaced(def, amount, dura, customName, quiet, owner) == Math.Max(1, amount);
 
     /// <summary>As <see cref="GiveItem"/>, but returns HOW MANY actually landed in the bag (0..amount). This
     /// is the form any hand-over needs — trade, vault withdrawal, mail attachment — so the source can be
     /// debited by exactly what the destination accepted and no more.</summary>
-    private int GivePlaced(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false)
+    private int GivePlaced(ItemDef def, int amount = 1, ushort dura = 0, string customName = "", bool quiet = false, string owner = "")
     {
         // Seed durability from the item DB: worn gear starts at full durability, and a charged consumable
         // (wine/liquor/cigarettes) starts with its full charge count -- see ItemDef.IsCharged / HandleUseItem.
         if (dura == 0 && (def.IsEquip || def.IsCharged)) dura = def.Durability;
+
+        // Bonded gear (totem helms, subpath weapons) binds to whoever obtains it: a caller that already knows
+        // the owner (a pickup carrying the ground item's owner, a trade) passes it through to PRESERVE the bond;
+        // otherwise a fresh bound item stamps THIS character as its owner. Ordinary items stay unowned. Bound
+        // gear is never stackable (it's equipment), so only the fresh-slot path below can carry an owner.
+        string boundOwner = !string.IsNullOrEmpty(owner) ? owner : (def.Bonded ? _char.Name : "");
 
         // Fill part-full stacks first, then spill into fresh slots, none of them past ItemDef.StackCap. This
         // used to be a single unbounded `stack.Amount += amount`, so a slot could hold any number at all.
@@ -72,7 +78,7 @@ public sealed partial class Session
             // buy passes quiet:true because the NPC speaks a longer line of its own instead.
             if (slot < 0) { if (!quiet) SendMiniText("You can't have more."); break; }
             int put = Math.Min(cap, left);
-            var it = new InvItem((byte)slot, def.Id, put, dura) { CustomName = customName };
+            var it = new InvItem((byte)slot, def.Id, put, dura) { CustomName = customName, Owner = boundOwner };
             _char.Inventory.Add(it);
             SendAddItem(it);
             left -= put;
@@ -770,7 +776,7 @@ public sealed partial class Session
             _char.Equipment.Remove(e);
             SendUnequip(e.Slot);
             var def = Content.ItemById(e.ItemId);
-            if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, e.Dura, e.CustomName); }
+            if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, e.Dura, e.CustomName, owner: e.Owner); }
         }
         SendStats();
         MarkDirty();

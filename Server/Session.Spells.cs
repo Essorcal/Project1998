@@ -1941,6 +1941,9 @@ public sealed partial class Session
         var def = it is null ? null : Content.ItemById(it.ItemId);
         if (it is null || def is null) return "empty";
         if (!def.IsEquip || def.Durability == 0) return "notgear";
+        // Bound gear (totem helms, subpath weapons) degrades permanently — no smith or repair spell restores it.
+        // "notgear" makes the repair verb say "<name> cannot be repaired." (spell_verbs.lua), the right line.
+        if (def.Unrepairable) return "notgear";
         return it.Dura >= def.Durability ? "perfect" : "ok";
     }
 
@@ -2079,9 +2082,10 @@ public sealed partial class Session
         if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); return; }
         var def = Content.ItemById(gi.ItemId);
         if (def is null) return;
-        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName, owner: gi.Owner))
             _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
-                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName,
+                Owner = gi.Owner });
         Log.Info($"      Filch(lua) -> grabbed item {gi.ItemId} from ({tx},{ty})");
     }
 
@@ -2720,10 +2724,11 @@ public sealed partial class Session
         if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); return true; }   // coins -> purse
         var def = Content.ItemById(gi.ItemId);
         if (def is null) return true;
-        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName))
+        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName, owner: gi.Owner))
             // pack full — put it straight back rather than losing it (same recovery as HandlePickup)
             _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
-                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName });
+                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName,
+                Owner = gi.Owner });
         Log.Info($"      {sp.Name} -> grabbed item {gi.ItemId} from ({tx},{ty})");
         return true;
     }

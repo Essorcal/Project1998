@@ -142,9 +142,9 @@ public sealed partial class Session
         if (IsDead) { SendMiniText("Spirits can't do that."); return; }
         if (_trade is not null) { SendMiniText("You are already trading."); return; }
         if (ReferenceEquals(target, this)) { SendMiniText("You can't trade with yourself..."); return; }
-        if (target.CharMap != CharMap) { SendMiniText("They have refused to exchange with you"); return; }
+        if (target.CharMap != CharMap) { SendMiniText("That person refuses to exchange with you."); return; }
         if (target._trade is not null || target.IsDead || !target.WantsExchange)
-        { SendMiniText("They have refused to exchange with you"); return; }   // RTK's literal wording
+        { SendMiniText("That person refuses to exchange with you."); return; }   // client's literal wording (esp. their Exchange flag off)
 
         var trade = new Trade(this, target);
         _trade = trade;
@@ -207,7 +207,7 @@ public sealed partial class Session
             amount = Math.Min(amount, chosen.Amount);
         }
 
-        RecordTradeItemOffer(trade, chosen.ItemId, amount, chosen.Dura, chosen.CustomName);
+        RecordTradeItemOffer(trade, chosen.ItemId, amount, chosen.Dura, chosen.CustomName, chosen.Owner);
         await DlgSay(npc, $"You offer {Content.ItemById(chosen.ItemId)?.Name ?? "?"} x{amount}.");
     }
 
@@ -215,11 +215,11 @@ public sealed partial class Session
     /// native hand-item gesture, <see cref="HandItemToPlayer"/>). Replaces any existing offer of the same
     /// item, un-confirms both sides so a stale confirm can't sneak the change through, and notifies the
     /// other party. Nothing is escrowed — <see cref="TransferItems"/> re-checks at finalize (see Trade.cs).</summary>
-    private void RecordTradeItemOffer(Trade trade, int itemId, int amount, ushort dura, string customName)
+    private void RecordTradeItemOffer(Trade trade, int itemId, int amount, ushort dura, string customName, string owner = "")
     {
         var mine = trade.OfferOf(this);
         mine.Items.RemoveAll(x => x.ItemId == itemId && x.Dura == dura && x.CustomName == customName);
-        mine.Items.Add(new InvItem(0, itemId, amount, dura) { CustomName = customName });
+        mine.Items.Add(new InvItem(0, itemId, amount, dura) { CustomName = customName, Owner = owner });
         UnconfirmBoth(trade);
         trade.Other(this).Notify($"{Snapshot().Name} offers {Content.ItemById(itemId)?.Name ?? "?"} x{amount}.");
     }
@@ -307,7 +307,7 @@ public sealed partial class Session
             // RECEIVER FIRST, and debit only what they actually took. The old order deducted from the sender
             // and then ignored the result, so trading into a full pack — or, since carry caps landed, into
             // someone already holding their limit — DESTROYED the goods outright.
-            int placed = to.GivePlaced(def, amount, snap.Dura, snap.CustomName);
+            int placed = to.GivePlaced(def, amount, snap.Dura, snap.CustomName, owner: snap.Owner);
             if (placed <= 0) continue;                  // wouldn't fit; it stays with its owner
             have.Amount -= placed;
             // reason 9 = "You gave <item>." — a trade hand-over is exactly what that client line is for
@@ -327,15 +327,21 @@ public sealed partial class Session
 
     // ---- native "hand item" / "hand gold" gestures (RTK clif_handitem / clif_handgold, clif.c:14452-14644) --
     // Select a bag item, face a tile and press 'h' (hand ONE) or 'H'/Shift+h (GIVE the whole stack) -> 0x29;
-    // the gold gesture -> 0x2A. RTK resolves the tile you're facing (the same front-cell lookup melee uses) and
-    // branches on what's there:
-    //   * a PLAYER with their Exchange flag on -> open/continue a trade with that item/gold PRE-OFFERED;
-    //   * an NPC -> run its receiveItem/handItem script (a quest turn-in), else RTK's "keep your junky X" line;
-    //   * a MOB  -> RTK stuffs the creature's OWN inventory (a few collection quests). No mob inventory exists
-    //               here yet, so that path is a deliberate no-op: the item stays in the bag rather than vanishing.
-    // The player path reuses the dialog-driven trade (Trade.cs) instead of RTK's never-captured binary exchange
-    // window — exactly as the 0x4A "Exchange" profile button does (see TryStartTrade), so handing and the button
-    // reach the same negotiation.
+    // the gold gesture ('h' then '\<amount>') -> 0x2A. Both resolve the tile you're facing (the same front-cell
+    // lookup melee uses) and branch on what's there. Two very different destinations (confirmed live by the user):
+    //
+    //   * a PLAYER -> this is an EXCHANGE, NOT a give. The item/gold is pre-offered into the trade window and
+    //     the two negotiate; if they aren't accepting exchanges the attempt is refused ("That person refuses to
+    //     exchange with you."). See HandItemToPlayer / HandleHandGold's player branch and TryStartTrade.
+    //   * a real MOB (a creature) -> mobs don't exchange, they just TAKE the item and it's gone. Because there's
+    //     no trade window to back out of, the give is a permanent one and we confirm first with the client's
+    //     "...no longer own it? (Y/N)" box, then say "You gave <item> (count)." — see HandItemToMobAsync. Mobs
+    //     do NOT take money, so handing GOLD to one just fails with "S/He can't take it."
+    //   * an NPC (a stationary mob) -> run its receiveItem/handItem script (a quest turn-in), else the refusal
+    //     line. Gold to an NPC fails the same way a real mob does. See HandItemToNpcAsync.
+    //
+    // The player EXCHANGE reuses the dialog-driven trade (Trade.cs) — exactly as the 0x4A "Exchange" profile
+    // button does — so handing to a player and the button reach the same negotiation.
 
     // 0x29 hand/give item: dec[0]=slot(1-based), dec[1]=handgive (0='h' one, 1='H' whole stack).
     private void HandleHandItem(byte[] dec)
@@ -350,16 +356,25 @@ public sealed partial class Session
         int amount = handgive == 1 ? it.Amount : 1;
 
         var (tx, ty) = FrontTile();
+
+        // PLAYER -> exchange (item pre-offered into the trade window).
         var peer = _world.PeerAt(_char.Map, tx, ty);
         if (peer is not null) { HandItemToPlayer(peer, def, it, amount); return; }
 
         var mob = _world.MobAt(_char.Map, tx, ty);
-        if (mob is not null && mob.IsNpc) { _ = HandItemToNpcAsync(mob, def, amount); return; }
-        // A real mob (RTK's BL_MOB collection path) has no inventory here, so there's nothing to receive it.
-        // Leave the item in the bag rather than deleting it — the honest no-op until mob inventories exist.
+        if (mob is null) return;                                   // empty tile -> nothing to hand to
+
+        // NPC -> quest turn-in script, else it refuses out loud and drops the item at your feet.
+        if (mob.IsNpc) { _ = HandItemToNpcAsync(mob, slot, def, amount); return; }
+
+        // Real creature -> it just takes the item. NO server confirm: the 4.95 client already ran the entire
+        // give gesture inline (it showed "What do you wish to give, and no longer own? [a-w\?]" in the chat
+        // input line and only sent this 0x29 once you answered). 4.95 has NO give-confirmation string — the
+        // "(Y/N)" box is a later-client feature, verified ABSENT from NexusTK.dat 2026-08-18.
+        GiveItemToMob(slot, def, amount);
     }
 
-    // 0x2A hand gold: dec[0..3]=amount(u32 BE). Players only (RTK clif_handgold has no NPC/mob branch).
+    // 0x2A hand gold: dec[0..3]=amount(u32 BE). Only PLAYERS exchange gold; a mob/NPC in front can't take money.
     private void HandleHandGold(byte[] dec)
     {
         if (dec.Length < 4) return;
@@ -371,9 +386,10 @@ public sealed partial class Session
 
         var (tx, ty) = FrontTile();
         var target = _world.PeerAt(_char.Map, tx, ty);
-        if (target is null) return;
+        if (target is null) return;                                // only players exchange; a mob/NPC in front is a silent no-op
+
         var trade = OpenOrContinueTradeWith(target);
-        if (trade is null) return;
+        if (trade is null) return;                                 // refused / busy (message already sent)
         RecordTradeGoldOffer(trade, gold);
         SendMiniText($"You offer {gold} gold.");
     }
@@ -382,7 +398,7 @@ public sealed partial class Session
     {
         var trade = OpenOrContinueTradeWith(target);
         if (trade is null) return;   // refused / already trading elsewhere (message already sent)
-        RecordTradeItemOffer(trade, def.Id, amount, it.Dura, it.CustomName);
+        RecordTradeItemOffer(trade, def.Id, amount, it.Dura, it.CustomName, it.Owner);
         SendMiniText($"You offer {def.Name} x{amount}.");
     }
 
@@ -404,14 +420,14 @@ public sealed partial class Session
         return tr is not null && !tr.Ended && ReferenceEquals(tr.Other(this), target) ? tr : null;
     }
 
-    /// <summary>Offer a handed item to an NPC (RTK clif_handitem's BL_NPC branch): only NON-droppable (quest)
-    /// items reach an NPC — RTK silently ignores a droppable one. The first <see cref="INpcHandItemHandler"/>
-    /// that accepts owns taking the item and giving any reward (via <see cref="NpcContext.TakeItem"/>); if none
-    /// do, the NPC gives RTK's own refusal line. Async because a turn-in may run a dialog. No NPC ships a
-    /// handler yet, so today every hand to an NPC lands on the refusal — the hook is here for quest work.</summary>
-    private async Task HandItemToNpcAsync(Mob npc, ItemDef def, int amount)
+    /// <summary>Hand an item to an NPC (a stationary, unkillable mob). The quest turn-in hooks get first refusal
+    /// — an <see cref="INpcHandItemHandler"/> that accepts owns taking the item and giving any reward. If none
+    /// want it, the NPC refuses OUT LOUD (an over-head bubble, not a status line): "What are you trying to do?
+    /// Keep your junky &lt;item&gt; with you!" — and shoves it back, so the item leaves your bag and lands on the
+    /// ground on your OWN tile. A NoDrop item can't be put on the ground, so for that the NPC just speaks and the
+    /// item stays. Async because a turn-in may run a dialog; the give re-reads the bag after any await.</summary>
+    private async Task HandItemToNpcAsync(Mob npc, int slot, ItemDef def, int amount)
     {
-        if (!def.NoDrop) return;   // RTK: droppable/exchangeable items can't be handed to an NPC at all
         var ndef = Content.NpcById(npc.NpcDefId);
         if (ndef is null) return;
         var ctx = new NpcContext(this, npc, ndef);
@@ -421,7 +437,47 @@ public sealed partial class Session
                 if (await h.OnHandItem(ctx, def, amount)) return;   // consumed it (handler owns the delitem/reward)
         }
         catch (Exception e) { Log.Info($"!! NPC hand-item error: {e.Message}"); }
-        SendMiniText($"What are you trying to do? Keep your junky {def.Name} with you!");
+
+        // Nobody wanted it: the NPC says so out loud and hands it right back onto the ground at your feet.
+        NpcBubble(npc, $"What are you trying to do? Keep your junky {def.Name} with you!");
+
+        // Re-read the slot after the await, then deduct + drop. A NoDrop item can't hit the ground (the drop
+        // handler forbids it too), so it just stays in the bag with the refusal.
+        var it = InvAt(slot);
+        if (it is null || it.ItemId != def.Id || def.NoDrop) return;
+        int give = Math.Min(amount, it.Amount);
+        if (give <= 0) return;
+        it.Amount -= give;
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 12); }  // 12 = silent; the NPC already spoke
+        else SendAddItem(it);
+        MarkDirty();
+        _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
+            X = _char.X, Y = _char.Y, Amount = give, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName,
+            Owner = it.Owner });
+    }
+
+    /// <summary>Hand an item to a real creature. Mobs don't exchange — they just TAKE it and it's gone. There's
+    /// no mob inventory here, so "the mob takes it" IS the item leaving the bag (a creature that must DO
+    /// something with a turn-in is an NPC, handled above). No confirmation: the 4.95 client already ran the give
+    /// gesture inline before sending 0x29 (see HandleHandItem), and 4.95 has no give-confirm string anyway.
+    /// Clearing the slot with del-reason 9 makes the client print its OWN native "You gave &lt;item&gt;." line —
+    /// the whole 4.95 del-reason family is name-only, there is no "(count)" variant, so we DON'T fabricate one.
+    /// A partial give (hand ONE of a stack) leaves the slot occupied, so it redraws via 0x0F and the 4.95 client
+    /// shows no line for it — matching the client, which prints "You gave" only on a full slot clear.</summary>
+    private void GiveItemToMob(int slot, ItemDef def, int amount)
+    {
+        var it = InvAt(slot);
+        // A bound (NoDrop) item — a mount, enchanted gear, most quest items — can't be given away, same as it
+        // can't be dropped or thrown (HandleDropItem/HandleThrow). Silent no-op so handing one to a creature
+        // can't DESTROY it (there's no mob inventory, so a give here just deletes it — must not for bound gear).
+        if (it is null || it.ItemId != def.Id || def.NoDrop) return;
+        int give = Math.Min(amount, it.Amount);
+        if (give <= 0) return;
+
+        it.Amount -= give;
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 9); }  // 9 = client "You gave %s."
+        else SendAddItem(it);
+        MarkDirty();
     }
 
     // ---- bulletin boards (RTK clif_handle_boards, clif.c:11156-11201; wire shapes cross-checked against

@@ -21,6 +21,10 @@ public sealed class GroundItem
     public ushort Dura;
     public ushort Graphic;       // Item.epf frame (item's Icon) — the 0x16 graphic id
     public string CustomName = "";
+    // Bound owner carried WITH the stack while it sits on the ground, so a bonded item (a totem helm, a subpath
+    // weapon) that its owner drops stays bound to them: whoever picks it up gets it still owned by the dropper
+    // and can't equip it. Empty for ordinary loot. See ItemDef.Bonded / Session.GivePlaced.
+    public string Owner = "";
 
     // LOOTER LOCK (RTK flooritem_data.looters[] + .timer, gated by player.lua's canLoot/isYours). 0 = ordinary
     // free-for-all floor loot, which is almost everything. Non-zero means this stack was torn off a corpse and

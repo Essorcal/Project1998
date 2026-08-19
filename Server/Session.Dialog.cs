@@ -774,7 +774,7 @@ public sealed partial class Session
         if (!RemoveInventoryStack(item, amount)) { await DlgSay(npc, $"You no longer have {amount} {def.Name}."); return; }
         _char.Coins -= (uint)fee;
         var d = DateTime.UtcNow;
-        Parcel.Send(recip2, _char.Name, def.Id, amount, item.Dura, item.CustomName, (byte)d.Month, (byte)d.Day);
+        Parcel.Send(recip2, _char.Name, def.Id, amount, item.Dura, item.CustomName, (byte)d.Month, (byte)d.Day, item.Owner);
         SendStats(); MarkDirty();
         NotifyParcelRecipient(recip2);
         await DlgSay(npc, "Your parcel has been sent.");
@@ -824,10 +824,11 @@ public sealed partial class Session
                     return true;   // still consume the row — an item id we can't resolve isn't deliverable
                 }
 
-                bool gotIt = GiveItem(def, got.Amount, (ushort)Math.Max(0, got.Dura), got.Engrave);
+                bool gotIt = GiveItem(def, got.Amount, (ushort)Math.Max(0, got.Dura), got.Engrave, owner: got.Owner);
                 if (!gotIt)
                     pendingDrop = new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
-                        X = _char.X, Y = _char.Y, Amount = got.Amount, Dura = (ushort)Math.Max(0, got.Dura), Graphic = def.Icon };
+                        X = _char.X, Y = _char.Y, Amount = got.Amount, Dura = (ushort)Math.Max(0, got.Dura), Graphic = def.Icon,
+                        Owner = got.Owner };
                 say = gotIt
                     ? $"You receive a parcel from {got.Sender}: {def.Name} x{got.Amount}."
                     : $"A parcel from {got.Sender} held {def.Name} x{got.Amount}, but your pack was full — it's at your feet.";

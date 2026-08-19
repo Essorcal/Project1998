@@ -24,6 +24,7 @@ public sealed class ParcelItem
     public int    Amount;           // item count, or gold amount when ItemId<0
     public int    Dura;
     public string Engrave   = "";   // RTK ParEngrave — the item's custom/real name, preserved across the send
+    public string Owner     = "";   // bound owner (InvItem.Owner) carried across the send so a bonded item stays bound
     public byte   Month;
     public byte   Day;
 
@@ -34,7 +35,7 @@ public sealed class ParcelItem
 /// <see cref="Mail"/> and <see cref="Boards"/>.</summary>
 public static class Parcel
 {
-    private const string Cols = "id, position, recipient, sender, item_id, item_amount, item_dura, engrave, month, day";
+    private const string Cols = "id, position, recipient, sender, item_id, item_amount, item_dura, engrave, month, day, item_owner";
 
     private static ParcelItem Read(SqliteDataReader r) => new()
     {
@@ -48,6 +49,7 @@ public static class Parcel
         Engrave   = r.IsDBNull(7) ? "" : r.GetString(7),
         Month     = r.IsDBNull(8) ? (byte)0 : (byte)r.GetInt32(8),
         Day       = r.IsDBNull(9) ? (byte)0 : (byte)r.GetInt32(9),
+        Owner     = r.IsDBNull(10) ? "" : r.GetString(10),
     };
 
     /// <summary>Every parcel waiting for a player, oldest first (FIFO — RTK claims the lowest position).</summary>
@@ -85,7 +87,7 @@ public static class Parcel
     /// <summary>Queue a parcel for a recipient, assigning the next position in their own queue (same
     /// collision-safe MAX(position)+1 in a transaction as Mail.Send/Boards.Post).</summary>
     public static ParcelItem Send(string recipient, string sender, int itemId, int amount, int dura,
-        string engrave, byte month, byte day)
+        string engrave, byte month, byte day, string owner = "")
     {
         using var cn = Db.Open();
         using var tx = cn.BeginTransaction();
@@ -101,8 +103,8 @@ public static class Parcel
         using (var ins = cn.CreateCommand())
         {
             ins.Transaction = tx;
-            ins.CommandText = @"INSERT INTO parcels(recipient, position, sender, item_id, item_amount, item_dura, engrave, month, day)
-                                VALUES($rec, $pos, $sender, $iid, $amt, $dura, $eng, $month, $day);";
+            ins.CommandText = @"INSERT INTO parcels(recipient, position, sender, item_id, item_amount, item_dura, engrave, month, day, item_owner)
+                                VALUES($rec, $pos, $sender, $iid, $amt, $dura, $eng, $month, $day, $owner);";
             ins.Parameters.AddWithValue("$rec", recipient);
             ins.Parameters.AddWithValue("$pos", nextPos);
             ins.Parameters.AddWithValue("$sender", sender);
@@ -112,12 +114,13 @@ public static class Parcel
             ins.Parameters.AddWithValue("$eng", engrave ?? "");
             ins.Parameters.AddWithValue("$month", month);
             ins.Parameters.AddWithValue("$day", day);
+            ins.Parameters.AddWithValue("$owner", owner ?? "");
             ins.ExecuteNonQuery();
         }
         tx.Commit();
 
         return new ParcelItem { Position = nextPos, Recipient = recipient, Sender = sender, ItemId = itemId,
-            Amount = amount, Dura = dura, Engrave = engrave ?? "", Month = month, Day = day };
+            Amount = amount, Dura = dura, Engrave = engrave ?? "", Month = month, Day = day, Owner = owner ?? "" };
     }
 
     /// <summary>

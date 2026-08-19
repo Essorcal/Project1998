@@ -2463,12 +2463,26 @@ the game already uses for the Rogue Judge/Spy spells. `0x66` kind 0 crashes.
 - **`mode popup`** — 0x66 kind 2, the same text in the OK dialog. Renders, but that dialog is what the game
   uses for the Rogue Judge/Spy spells, so it's the wrong frame here.
 
-**The text** (`ItemInfoText`) reproduces the original box's layout, taken from period screenshots: name,
-`Durability: cur / max`, the `Damage: Small: / Large:` pair (indented so the labels align), one combined
-`Armor: n  Hit: n  Dam: n` line, the `<stat> increase:` column (Vitality / Mana / Might / Will / Grace /
-Healing / Wisdom), `Protection:`, and `<Path> Level n`. Labels sit left with values at column 22 —
-measured off the original's alignment. Only lines an item earns are printed. `ItmHealing` and `ItmWisdom`
-were parsed nowhere until this needed them.
+**The text** (`ItemInfoText`) reproduces the original box's layout, taken from period screenshots (Ice garb,
+Sunrise fan, Titanium blade, Heavy/Military polearm, Molten blade, Warded robes, …): name, `Durability: cur
+/ max`, the `Damage: Small: / Large:` pair (`Large` indented 8 spaces to sit under `Small`), one combined
+`Armor: n  Hit: n  Dam: n` line (two spaces between fields), the `<stat> increase: n` lines (Vitality / Mana
+/ Might / Will / Grace / Healing / Wisdom), `Protection: n`, `Strength: n`, `Owner:`, then the class/rank
+requirement line. **Values follow the label with a single space — the box does NOT column-align them** (Ice
+garb shows `Grace increase: 1` and `Strength: 10` at different depths). Only lines an item earns are printed.
+`ItmHealing` and `ItmWisdom` were parsed nowhere until this needed them.
+
+**`Strength: n`** is `ItmMightRequired` — the STR the wearer needs to wield the item. The real box labels it
+**Strength**, not "Might required", and the shop's own blurb agrees ("Strength of 35 req"); it sits directly
+after `Protection`. Screenshot values: Titanium blade 100, Heavy polearm 130, Ice garb 10, Midnight cutlass
+0 (line omitted). It's a description, not enforcement — the wear gate stays in `CanWear`.
+
+**The requirement line is ONE line**, not a level row plus a mark row:
+- `Mark > 0` → the path's own rank title alone, **no level**: `Content.PathTitle(pathId, mark)` = `Il san (P)`
+  (Warded robes). The Peasant path names every rank "Peasant", so Molten blade (path 0 / mark 2 / level 99)
+  reads just `Peasant`.
+- else with a level → `<Path> Level n`: `Mage Level 99`, `Peasant Level 50`.
+- else (equip, level 0) → the bare path name `Peasant` (Heavy/Military polearm) — never `Peasant Level 0`.
 
 **`Owner:` is the BOUND owner**, not whoever is holding it — which is why it appears on some items in the
 original and not on others with an otherwise identical layout. Binding is real: NPC-sold subpath weapons
@@ -2486,10 +2500,8 @@ The damage range separator renders as a lowercase `m` in every surviving screens
 "55m65"); whether that's a literal `m` or the client's glyph for a range character is unknown, so
 `DamRangeSep` reproduces what is on screen and is one character to change.
 
-Two gates the original's sample item didn't carry are kept because they decide "later" vs "never" —
-`Might required:` and `Mark required:` — each annotated when *you* fail it, using the same tests
-`EquipFromSlot` and `CanUsePath` enforce. **No sex line** (removed 2026-08-07): `ItmSex` is a wear gate, not
-a description, and the original box never printed one — `EquipFromSlot` simply refuses the item.
+**No sex line** (removed 2026-08-07): `ItmSex` is a wear gate, not a description, and the original box never
+printed one — `EquipFromSlot` simply refuses the item.
 
 The client fires the reply itself on right-click; the renderer and line-break character are compile-time
 defaults now (`_itemInfoMode` / `_itemInfoSep`), the tooltip accepting all three separators anyway.
@@ -3935,16 +3947,39 @@ sat in the logs). Wire shapes match RTK `clif_handitem`/`clif_handgold` (`clif.c
 `slot(u8, 1-based) handgive(u8: 0=hand one, 1=give stack)`, `0x2A` = `gold(u32 BE)`. Both resolve the tile
 you're facing (the shared `FrontTile()` melee uses) and branch on what's there (`Session.HandleHandItem`/
 `HandleHandGold` in `Session.Social.cs`):
-- **a PLAYER** → open/continue the SAME dialog trade the `0x4a` button drives, with the item/gold
-  **pre-offered** (`OpenOrContinueTradeWith` + `RecordTradeItemOffer`/`RecordTradeGoldOffer`). RTK opens its
-  binary exchange window with `clif_exchange_additem`; we fold it into the dialog trade instead, for the same
-  reason `0x4a` does (§ above).
-- **an NPC** → the `INpcHandItemHandler.OnHandItem` hook (a quest turn-in), else RTK's own refusal line
-  *"What are you trying to do? Keep your junky X with you!"*. Only NON-droppable (quest) items reach an NPC —
-  RTK silently ignores a droppable one. No NPC ships a handler yet, so today every hand to an NPC lands on the
-  refusal; the hook is in place for quest work.
-- **a MOB** → RTK stuffs the creature's own inventory (a few collection quests); no mob inventory exists here
-  yet, so this is a deliberate no-op (the item stays in the bag rather than vanishing).
+- **a PLAYER** → this is an EXCHANGE, not a give: open/continue the SAME dialog trade the `0x4a` button drives,
+  with the item/gold **pre-offered** (`OpenOrContinueTradeWith` + `RecordTradeItemOffer`/`RecordTradeGoldOffer`).
+  If they aren't accepting exchanges the attempt is refused with the client's line *"That person refuses to
+  exchange with you."* (`TryStartTrade`). RTK opens its binary exchange window with `clif_exchange_additem`; we
+  fold it into the dialog trade instead, for the same reason `0x4a` does (§ above).
+- **a real MOB** (creature) → mobs don't exchange, they just TAKE the item and it's gone (no mob inventory, so
+  "the mob takes it" IS the item leaving the bag). **No server confirm** — the 4.95 client already ran the give
+  inline before sending `0x29`, and 4.95 has no give-confirm string (see below). `GiveItemToMob` clears the slot
+  with **del-reason 9**, so the client prints its OWN native `You gave <item>.` (a partial hand-ONE of a stack
+  leaves the slot occupied → 0x0F redraw, no line). Mobs do **not** accept money — `0x2A` to any mob/NPC is a
+  **silent no-op** (no deduction, no message; RTK `clif_handgold` has no BL_MOB/BL_NPC branch).
+- **an NPC** (stationary, unkillable mob) → the `INpcHandItemHandler.OnHandItem` hook (a quest turn-in) gets
+  first refusal; if none want it the NPC refuses **out loud** (an over-head `NpcBubble`, not a status line):
+  *"What are you trying to do? Keep your junky &lt;item&gt; with you!"* — and shoves it back: the item is
+  deducted and **dropped on the ground on the player's own tile** (`_world.DropItem` at `_char.X/Y`; silent del
+  reason 12 since the NPC already spoke). A NoDrop item can't hit the ground, so for that the NPC just speaks
+  and the item stays. (This corrects the earlier "only NoDrop items reach an NPC / droppable ones are ignored"
+  behavior — per the user, droppable junk handed to an NPC is refused-and-dropped-at-your-feet.)
+
+**The `(Y/N)` give-confirm and `(count)` are NOT 4.95 (RE'd 2026-08-18).** The user recalled the give showing
+a follow-up *"Are you sure you want to give this item, and no longer own it? (Y/N)"* box and a *"You gave X
+(30)"* count. Neither is in the 4.95 client. `NexusTK.dat` (the string table; the exe references these by id,
+so they don't appear as raw exe strings) contains the give INPUT prompt `What do you wish to give, and no
+longer own? [%s\?]` (and terse `Give what? [%s?]`) and the success line `You gave %s.` — **name only, the whole
+del-reason family is `%s` with no `(%d)` count variant anywhere.** There is **no** give-confirmation string and
+**no** `S/He can't take it.` string. `(Y/N)` confirms exist only for *leave*, *save profile*, and **throw**
+(`Do you really want to throw it, and loose ownership? (Y/N)`) — and note `0x17` throw even carries a *confirmed*
+byte (`dec[0]`), infrastructure the give packet `0x29` (slot + handgive, no confirm byte) simply doesn't have.
+So: the 4.95 give is a **one-step** inline gesture (the client shows the input prompt, you type the slot letter,
+it sends `0x29`), the success text is the client's own `You gave <item>.` via **del-reason 9**, and the whole
+give-confirm/count (plus the *"S/He can't take it."* failure line) are **later-client** behavior. We do NOT send
+any of them: handing money to a mob/NPC is simply a silent no-op (the user couldn't reproduce where the 4.95
+client shows that status text, so it was dropped rather than faked as server text).
 
 **Not yet live-tested.** Both features are ported from RTK source with no live 4.95 client session behind
 them. Confirm: clicking another player renders their real profile with the Group/Exchange buttons enabled

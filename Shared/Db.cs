@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS parcels (
   item_amount INTEGER NOT NULL DEFAULT 0,
   item_dura   INTEGER NOT NULL DEFAULT 0,
   engrave     TEXT,
+  item_owner  TEXT NOT NULL DEFAULT '',   -- bound owner carried with a parcelled item so the bond survives the mail
   month     INTEGER,
   day       INTEGER
 );
@@ -243,7 +244,10 @@ CREATE TABLE IF NOT EXISTS map_unlocks (
             // Migrations for databases created before a column existed. CREATE TABLE IF NOT EXISTS above is
             // a no-op on an existing table, so a new column has to be added explicitly; ALTER TABLE throws
             // "duplicate column name" once it is already there, which is the success case on every later run.
-            foreach (var alter in new[] { "ALTER TABLE handoff_tokens ADD COLUMN ip TEXT NOT NULL DEFAULT '';" })
+            foreach (var alter in new[] {
+                "ALTER TABLE handoff_tokens ADD COLUMN ip TEXT NOT NULL DEFAULT '';",
+                "ALTER TABLE parcels ADD COLUMN item_owner TEXT NOT NULL DEFAULT '';",
+            })
             {
                 try { using var mig = cn.CreateCommand(); mig.CommandText = alter; mig.ExecuteNonQuery(); }
                 catch (SqliteException) { /* column already present */ }
