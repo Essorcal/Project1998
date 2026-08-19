@@ -285,10 +285,14 @@ function verbs.baekhos_cunning(ctx, row)
   return true
 end
 
--- Restore the caster's own HP: flat `amount` plus optional Will scaling (`willcoeff`), costing `mana`.
+-- Heal the AIMED target: flat `amount` plus optional Will scaling (`willcoeff`), costing `mana`. Both spells
+-- that use this verb (heal_mage, mend_wounds_mage) are SplType 2 "Which target? >" spells, so the heal must
+-- land on whoever the cast is aimed at (player/pet/self), not always the caster. healTarget routes by SplType:
+-- a Type-5 self-skill would still heal the caster, a Type-2 lands on the target (self when nothing is aimed).
+-- (Using ctx:heal here made both spells self-cast unconditionally, ignoring the selected target.)
 function verbs.heal(ctx, row)
   if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
-  ctx:heal((row.amount or 0) + ctx.will * (row.willcoeff or 0))
+  ctx:healTarget((row.amount or 0) + ctx.will * (row.willcoeff or 0))
   return true
 end
 
