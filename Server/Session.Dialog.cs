@@ -193,20 +193,20 @@ public sealed partial class Session
     private IReadOnlyList<string> ItemInfoText(ItemDef def, InvItem it)
     {
         var L = new List<string> { string.IsNullOrEmpty(it.CustomName) ? def.Name : it.CustomName };
-        if (it.Amount > 1) L.Add(Row("Quantity:", it.Amount.ToString()));
+        if (it.Amount > 1) L.Add($"Quantity: {it.Amount}");
 
         // Charged consumables (wine/pipes) report their charges where gear reports durability.
         if (def.IsCharged)
-            L.Add(Row($"{def.Text}:", (it.Dura == 0 ? def.Durability : it.Dura).ToString()));
+            L.Add($"{def.Text}: {(it.Dura == 0 ? def.Durability : it.Dura)}");
         else if (def.Durability > 0)
             L.Add($"Durability: {(it.Dura == 0 ? def.Durability : it.Dura)} / {def.Durability}");
 
         // The weapon's real swing range (the S/L columns Combat rolls from), not the ItmDam bonus. The
-        // second line indents so "Large:" sits under "Small:", as in the original.
+        // second line indents by "Damage: " (8 chars) so "Large:" sits under "Small:", as in the original.
         if (def.MaxSDam > 0 || def.MaxLDam > 0)
         {
-            L.Add(Row("Damage: Small:", $"{def.MinSDam}{DamRangeSep}{def.MaxSDam}"));
-            L.Add(Row("        Large:", $"{def.MinLDam}{DamRangeSep}{def.MaxLDam}"));
+            L.Add($"Damage: Small: {def.MinSDam}{DamRangeSep}{def.MaxSDam}");
+            L.Add($"        Large: {def.MinLDam}{DamRangeSep}{def.MaxLDam}");
         }
 
         // One combined line, printed whole for anything wearable even when a term is 0 — that's how the
@@ -221,27 +221,33 @@ public sealed partial class Session
         Increase(L, "Grace",    def.Grace);
         Increase(L, "Healing",  def.Healing);
         Increase(L, "Wisdom",   def.Wisdom);
-        if (def.Protection != 0) L.Add(Row("Protection:", def.Protection.ToString()));
+        if (def.Protection != 0) L.Add($"Protection: {def.Protection}");
+
+        // "Strength:" is the STR the wearer must have to wield it (ItmMightRequired) — the real box labels
+        // the requirement "Strength", not "Might", and the shop blurb agrees ("Strength of 35 req"). It sits
+        // right after Protection in every surviving screenshot (Titanium 100, Heavy polearm 130, Ice garb 10).
+        // A description, not an enforcement: the wear gate lives in CanWear, this only states the number.
+        if (def.MightReq > 0) L.Add($"Strength: {def.MightReq}");
 
         // "Owner:" is the BOUND owner, not whoever is holding it — which is why it shows on some items in
         // the original and not on others with an otherwise identical layout. Binding is a real mechanic
         // (NPC subpath weapons arrive bound; a quest upgrade like Spike -> Enchanted Spike binds the result),
         // so this is keyed off the bind and stays absent for ordinary loot.
-        if (!string.IsNullOrEmpty(it.Owner)) L.Add(Row("Owner:", it.Owner));
+        if (!string.IsNullOrEmpty(it.Owner)) L.Add($"Owner: {it.Owner}");
 
-        // "<Path> Level <n>" — the level gate expressed with the path that has to meet it, exactly as the
-        // original prints it ("Peasant Level 90" for an unrestricted item, PathId 0 being Peasant). Skipped
-        // for ungated junk, where it would only ever read "Peasant Level 0".
-        if (def.IsEquip || def.Level > 0)
-            L.Add(Row($"{Content.PathName(def.PathId)} Level", def.Level.ToString()));
-
-        // Extra gates the original's sample item didn't happen to carry. Kept because they are the
-        // difference between "I can wear this later" and "I can never wear this". Stated flat, as
-        // requirements only: the box describes the ITEM, so it reads the same whoever is holding it and
-        // never annotates which gates the viewer currently fails. Failing one is the wear path's business
-        // (CanWear/CanUsePath), and it says so there with its own message.
-        if (def.MightReq > 0) L.Add(Row("Might required:", def.MightReq.ToString()));
-        if (def.Mark > 0)     L.Add(Row("Mark required:", MarkName(def.Mark)));
+        // The class/rank requirement, exactly as the original box prints it — ONE line, not the level and
+        // the mark on separate rows:
+        //   * Mark > 0 -> the path's own RANK TITLE alone, no level: "Il san (P)" (Warded robes), and for a
+        //     Peasant-path rank item just "Peasant" (Molten blade is mark 2 / level 99 yet reads "Peasant").
+        //   * else with a level -> "<Path> Level <n>": "Mage Level 99", "Peasant Level 50".
+        //   * else (equip, no level) -> the bare path name "Peasant" (Heavy/Military polearm), never "Level 0".
+        // Stated flat, as a requirement: the box describes the ITEM, so it reads the same whoever holds it and
+        // never annotates which gates the viewer currently fails — that's the wear path's business (CanWear).
+        if (def.Mark > 0)
+            L.Add(Content.PathTitle(def.PathId, def.Mark));
+        else if (def.IsEquip || def.Level > 0)
+            L.Add(def.Level > 0 ? $"{Content.PathName(def.PathId)} Level {def.Level}"
+                                : Content.PathName(def.PathId));
         // NO sex line. `ItmSex` is a wear gate, not a description: the original box never printed one, and
         // the enforcement lives where it belongs — EquipFromSlot refuses the item outright (2026-08-07).
         if (def.NoDrop) L.Add("Cannot be dropped.");
@@ -251,21 +257,18 @@ public sealed partial class Session
         return L;
     }
 
-    /// <summary>Value column for the tooltip's label/value rows, measured off the original's alignment
-    /// ("Vitality increase:" + 4 spaces, "Protection:" + 11, "Owner:" + 16 all land here).</summary>
-    private const int ValueColumn = 22;
-    private static string Row(string label, string value) => label.PadRight(ValueColumn) + value;
-
     /// <summary>What the original prints between a damage range's two numbers. It renders as a lowercase
     /// 'm' in every surviving screenshot of the box (English "90m140", French "55m65"); whether that is a
     /// literal 'm' or the client's glyph for a range character is unknown, so this reproduces what is on
     /// screen. One character to change if it turns out to be a tilde.</summary>
     private const string DamRangeSep = "m";
 
-    // "<Stat> increase:   N" — omitted entirely when the item doesn't touch that stat.
+    // "<Stat> increase: N" — a single space after the colon (the real box does NOT column-align the values;
+    // "Grace increase: 1" and "Strength: 10" sit at different depths in every screenshot). Omitted entirely
+    // when the item doesn't touch that stat.
     private static void Increase(List<string> lines, string stat, int v)
     {
-        if (v != 0) lines.Add(Row($"{stat} increase:", v.ToString()));
+        if (v != 0) lines.Add($"{stat} increase: {v}");
     }
 
     private void HandleProfileRequest(byte[] dec)
