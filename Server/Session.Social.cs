@@ -367,11 +367,11 @@ public sealed partial class Session
         // NPC -> quest turn-in script, else it refuses out loud and drops the item at your feet.
         if (mob.IsNpc) { _ = HandItemToNpcAsync(mob, slot, def, amount); return; }
 
-        // Real creature -> it just takes the item. NO server confirm: the 4.95 client already ran the entire
-        // give gesture inline (it showed "What do you wish to give, and no longer own? [a-w\?]" in the chat
-        // input line and only sent this 0x29 once you answered). 4.95 has NO give-confirmation string — the
-        // "(Y/N)" box is a later-client feature, verified ABSENT from NexusTK.dat 2026-08-18.
-        GiveItemToMob(slot, def, amount);
+        // Real creature -> it TAKES the item and carries it (drops on death). NO server confirm: the 4.95
+        // client already ran the entire give gesture inline (it showed "What do you wish to give, and no longer
+        // own? [a-w\?]" in the chat input line and only sent this 0x29 once you answered). 4.95 has NO
+        // give-confirmation string — the "(Y/N)" box is a later-client feature, ABSENT from NexusTK.dat.
+        GiveItemToMob(mob, slot, def, amount);
     }
 
     // 0x2A hand gold: dec[0..3]=amount(u32 BE). Only PLAYERS exchange gold; a mob/NPC in front can't take money.
@@ -463,21 +463,48 @@ public sealed partial class Session
     /// Clearing the slot with del-reason 9 makes the client print its OWN native "You gave &lt;item&gt;." line —
     /// the whole 4.95 del-reason family is name-only, there is no "(count)" variant, so we DON'T fabricate one.
     /// A partial give (hand ONE of a stack) leaves the slot occupied, so it redraws via 0x0F and the 4.95 client
-    /// shows no line for it — matching the client, which prints "You gave" only on a full slot clear.</summary>
-    private void GiveItemToMob(int slot, ItemDef def, int amount)
+    /// shows no line for it — matching the client, which prints "You gave" only on a full slot clear.
+    /// <para>The creature CARRIES what it takes (<see cref="Mob.Handed"/>) and drops it back when killed — a
+    /// sword handed to a cat is recoverable by killing the cat (World.TryDamage). A quest creature gets first
+    /// crack at the item (the Leviathan talisman frees a captive instead of being pocketed).</para></summary>
+    private void GiveItemToMob(Mob mob, int slot, ItemDef def, int amount)
     {
         var it = InvAt(slot);
-        // A bound (NoDrop) item — a mount, enchanted gear, most quest items — can't be given away, same as it
-        // can't be dropped or thrown (HandleDropItem/HandleThrow). Silent no-op so handing one to a creature
-        // can't DESTROY it (there's no mob inventory, so a give here just deletes it — must not for bound gear).
-        if (it is null || it.ItemId != def.Id || def.NoDrop) return;
+        if (it is null || it.ItemId != def.Id) return;
+        // A quest creature may want this specific item for something (the captured leviathan is freed by its
+        // talisman, exactly as stepping onto the tile beside it is). If so, that consumes the gesture.
+        if (TryQuestHandToMob(mob, def)) return;
+        // A bound (NoDrop) item — a mount — can't be given away, same as it can't be dropped or thrown
+        // (HandleDropItem/HandleThrow): it can't ride on a creature either, since the creature would drop it on
+        // death and a NoDrop item can't hit the ground. Silent no-op. (A bonded-but-droppable item like a totem
+        // helm is fine — it rides along and drops still bound to its owner.)
+        if (def.NoDrop) return;
         int give = Math.Min(amount, it.Amount);
         if (give <= 0) return;
 
+        ushort dura = it.Dura; string cname = it.CustomName; string owner = it.Owner;   // capture before the stack mutates
         it.Amount -= give;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 9); }  // 9 = client "You gave %s."
         else SendAddItem(it);
         MarkDirty();
+        // The creature is carrying it now; killing the creature drops it back (World.TryDamage).
+        (mob.Handed ??= new()).Add(new InvItem(0, def.Id, give, dura) { CustomName = cname, Owner = owner });
+    }
+
+    /// <summary>Quest reactions to handing a specific item to a specific creature (RTK's BL_MOB collection
+    /// path). Returns true if the gesture was a quest action and must NOT be pocketed as ordinary loot.</summary>
+    private bool TryQuestHandToMob(Mob mob, ItemDef def)
+    {
+        // Leviathan quest: handing the talisman to a captured leviathan frees it — the same effect, and the
+        // same one-time legend gate, as stepping onto the tile beside it (Session.TryLeviathanRelease).
+        if (mob.Key == LeviathanQuest.CaptiveMob && def.Key == LeviathanQuest.Talisman)
+        {
+            if (!HasLegend(LeviathanQuest.LegendFreed) && !HasLegend(LeviathanQuest.LegendEnemy)
+                && TakeItem(LeviathanQuest.Talisman, 1))
+                FreeLeviathanCaptive(mob);
+            return true;   // the talisman is a quest token either way — never stuffed into the creature
+        }
+        return false;
     }
 
     // ---- bulletin boards (RTK clif_handle_boards, clif.c:11156-11201; wire shapes cross-checked against

@@ -2029,6 +2029,23 @@ public sealed class World
                 // WorldSpawned so a conjured pet still can't be farmed for its wild counterpart's drops.
                 if (mob.WorldSpawned && Content.MobByKey(mob.Key) is { } dropDef)
                     drops = RollDropsLocked(m, mob, dropDef);  // adds to m.Items under the lock
+                // Anything a player HANDED this creature falls back to the floor when it dies — regardless of
+                // whether the creature is a loot-dropper (the sword handed to a cat). A no-kill DespawnMob never
+                // reaches here, so a ridden-away / quest-released creature keeps carrying them (they're lost,
+                // which is the intended "you gave it away" for those paths). Each keeps its Dura/name/owner.
+                if (mob.Handed is { Count: > 0 })
+                {
+                    drops ??= new List<GroundItem>();
+                    foreach (var h in mob.Handed)
+                    {
+                        var hdef = Content.ItemById(h.ItemId);
+                        if (hdef is null) continue;
+                        var gi = new GroundItem { Id = _nextItemId++, ItemId = h.ItemId, X = mob.X, Y = mob.Y,
+                            Amount = h.Amount, Dura = h.Dura, Graphic = hdef.Icon, CustomName = h.CustomName, Owner = h.Owner };
+                        m.Items.Add(gi);
+                        drops.Add(gi);
+                    }
+                }
             }
         }
         if (drops is not null)

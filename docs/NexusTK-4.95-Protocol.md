@@ -3952,12 +3952,17 @@ you're facing (the shared `FrontTile()` melee uses) and branch on what's there (
   If they aren't accepting exchanges the attempt is refused with the client's line *"That person refuses to
   exchange with you."* (`TryStartTrade`). RTK opens its binary exchange window with `clif_exchange_additem`; we
   fold it into the dialog trade instead, for the same reason `0x4a` does (§ above).
-- **a real MOB** (creature) → mobs don't exchange, they just TAKE the item and it's gone (no mob inventory, so
-  "the mob takes it" IS the item leaving the bag). **No server confirm** — the 4.95 client already ran the give
-  inline before sending `0x29`, and 4.95 has no give-confirm string (see below). `GiveItemToMob` clears the slot
-  with **del-reason 9**, so the client prints its OWN native `You gave <item>.` (a partial hand-ONE of a stack
-  leaves the slot occupied → 0x0F redraw, no line). Mobs do **not** accept money — `0x2A` to any mob/NPC is a
-  **silent no-op** (no deduction, no message; RTK `clif_handgold` has no BL_MOB/BL_NPC branch).
+- **a real MOB** (creature) → mobs don't exchange; the creature TAKES the item and **carries it** (`Mob.Handed`),
+  dropping it back on the floor when it is KILLED (`World.TryDamage`) — a sword handed to a cat is recoverable by
+  killing the cat. A no-kill `DespawnMob` (ridden away, quest release) does NOT drop them. **No server confirm** —
+  the 4.95 client already ran the give inline before sending `0x29`, and 4.95 has no give-confirm string (see
+  below). `GiveItemToMob` clears the slot with **del-reason 9**, so the client prints its OWN native
+  `You gave <item>.` (a partial hand-ONE of a stack leaves the slot occupied → 0x0F redraw, no line). A **NoDrop**
+  item (a mount) can't ride a creature (it can't hit the ground) → silent no-op; a bonded-but-droppable item
+  (totem helm) rides along and drops still bound to its owner. **Quest creatures get first crack** via
+  `TryQuestHandToMob` (RTK's BL_MOB collection path): handing the **leviathan talisman** to a *captured leviathan*
+  frees it, exactly as stepping onto the tile beside it does (same one-time legend gate). Mobs do **not** accept
+  money — `0x2A` to any mob/NPC is a **silent no-op** (RTK `clif_handgold` has no BL_MOB/BL_NPC branch).
 - **an NPC** (stationary, unkillable mob) → the `INpcHandItemHandler.OnHandItem` hook (a quest turn-in) gets
   first refusal; if none want it the NPC refuses **out loud** (an over-head `NpcBubble`, not a status line):
   *"What are you trying to do? Keep your junky &lt;item&gt; with you!"* — and shoves it back: the item is

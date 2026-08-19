@@ -274,12 +274,19 @@ public sealed partial class Session
         if (captive is null || captive.Key != LeviathanQuest.CaptiveMob) return;
 
         if (!TakeItem(LeviathanQuest.Talisman, 1)) { Notify("You do not have the talisman."); return; }
+        FreeLeviathanCaptive(captive);
+    }
 
+    /// <summary>Break the spell on a penned captive and send it home — shared by the tile trigger above and the
+    /// hand gesture (handing the talisman straight to the captive, Session.TryQuestHandToMob). The talisman is
+    /// consumed by the CALLER; this is only the release itself. The captive is on the caller's own map.</summary>
+    internal void FreeLeviathanCaptive(Mob captive)
+    {
         Notify("You cast Release leviathan.");
         NpcBubble(captive, "Thank you puny one.");   // NpcBubble prefixes the speaker's own name
         _world.DespawnMob(_char.Map, captive);
         SetQuestStage(LeviathanQuest.Key, LeviathanQuest.StageFreed);
-        Log.Info($"   -> LEVIATHAN freed at ({_char.X},{LeviathanQuest.PenCaptiveY}) by {_char.Name}");
+        Log.Info($"   -> LEVIATHAN freed at ({captive.X},{captive.Y}) by {_char.Name}");
     }
 
     // The Hermit's hut door. Freed his kindred and it lets you in; otherwise it shoves you four tiles south

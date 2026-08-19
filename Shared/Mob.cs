@@ -96,6 +96,13 @@ public sealed class Mob
     // become explicit or every cave mob would have quietly gone lootless.
     public bool WorldSpawned;
 
+    // Items a player HANDED to this creature (the 0x29 hand gesture — there's no real mob inventory otherwise).
+    // They ride on the creature and fall to the ground when it is KILLED (World.TryDamage), so a sword handed
+    // to a cat is recoverable by killing the cat; a no-kill DespawnMob (ridden away, quest release) does NOT
+    // drop them. Null until something is handed — almost no mob ever carries one. Each entry keeps its own
+    // Dura/CustomName/Owner so a bound item stays bound through the hand-and-drop.
+    public List<InvItem>? Handed;
+
     // Set by the Blind family (RTK Spells/NPCs/blind.lua + mage blind/dark_veil/winter's shadow/ice glare,
     // all of which just set `target.blind = true` for a duration). A blinded creature cannot SEE, so
     // World.Tick drops any target it had, skips its unprovoked-aggro scan, and — unlike a frozen mob, which
