@@ -20,8 +20,9 @@ Usage (server running; client will be spawned fresh so we catch the music baseli
     python re/frida_sound.py --attach
 """
 import sys, os, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sound_log.txt")
 
 # RVAs (VA - 0x400000) from static RE of NexusTK_local.exe.

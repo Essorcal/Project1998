@@ -16,6 +16,7 @@ Run (spawns the client itself, recommended so we catch the login-time map-info):
       python re\\frida_probe_533_map.py attach
 """
 import frida, sys, time
+from _paths import CLIENT5
 
 JS = r"""
 var _mod = (typeof Process.findModuleByName === 'function') ? Process.findModuleByName('NexusTK.exe') : null;
@@ -76,7 +77,7 @@ def on_message(msg, data):
 
 
 def main():
-    install = r"C:\Program Files (x86)\Nexon\NextAeon5"
+    install = CLIENT5
     exe = install + r"\NexusTK.exe"
     attach_mode = len(sys.argv) > 1 and sys.argv[1] == "attach"
     if attach_mode:

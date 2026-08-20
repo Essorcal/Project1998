@@ -3,7 +3,7 @@
 Distilled game content from **github.com/unkmc/RTK-Server** — a Mithia/7.x NexusTK server whose
 production MySQL dump (`database/2020-09-02-21-55-01_RTK.sql.bak`, 2 MB, 54 tables) is the best available
 source of monster/item/map/NPC **names + stats + placement**. Names/stats are *not* in the 4.95 client
-(see `docs/NexusTK-4.95-Protocol.md` §11a — client-data audit), so this is the canonical content source.
+(see `docs/4.x/Protocol.md` §11a — client-data audit), so this is the canonical content source.
 
 The RTK creature-spawn packet is **byte-identical to our 4.95 `0x07`** (`look = 0x8000|monsterId`, then a
 `look_color` palette byte), which independently confirms our reverse-engineered recolor model (§11a.1).

@@ -415,7 +415,7 @@ end
 -- Added ~2000-10-06 and era-gated on `newbie_tutorial_area`; before that date the tutor taught these
 -- beats himself (Server/NoviceQuest.cs, retired the same day) and new characters spawned at his feet.
 -- The tutor is NEVER gated -- all three eras end up at him, the area just changes what he still has to
--- teach. See Server/Era.cs and docs/Era-Gating.md.
+-- teach. See Server/Era.cs and docs/common/Era-Gating.md.
 --
 -- The dialog below is TRANSCRIBED, not reconstructed: every line is read off the screenshots archived on
 -- tswolf.com/newb/quest.shtml, quest2.shtml and quiz.shtml (Wayback 2001-06-27 / 2001-07-23), which

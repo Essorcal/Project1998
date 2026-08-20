@@ -38,7 +38,15 @@ if not RTK.exists() and (ROOT.parent / "RTK-Server").exists():
     RTK = ROOT.parent / "RTK-Server"
 RTK_LUA = RTK / "rtklua" / "Accepted"
 ARCHIVE = _env("P1998_ARCHIVE", ROOT.parent, "scraped_nexus_data")
+# The two client installs. NextAeon is the 4.95 target; NextAeon5 is the 5.33 one. These default to
+# the stock Nexon install location, which is right on most machines and wrong on any machine that
+# installed elsewhere -- hence the overrides.
 CLIENT = _env("P1998_CLIENT", r"C:\Program Files (x86)\Nexon\NextAeon")
+CLIENT5 = _env("P1998_CLIENT5", r"C:\Program Files (x86)\Nexon\NextAeon5")
+# The other two the probes attach to: the LIVE retail 7.x client, and 4.83 (the oldest we have).
+# Both ship under KRU rather than Nexon.
+CLIENT_LIVE = _env("P1998_CLIENT_LIVE", r"C:\Program Files (x86)\KRU\NexusTK")
+CLIENT483 = _env("P1998_CLIENT483", r"C:\Program Files (x86)\KRU\NexusTK483")
 
 
 def require(path: Path, what: str, env: str) -> Path:

@@ -871,7 +871,7 @@ public sealed partial class Session
         // the first walk: bit 9 set -> _fastMove ON -> body[46]=1 -> client self-paces AND we send the per-step
         // no-scroll 0x04 ack. (The earlier "always boot OFF" was a workaround for not knowing the stats packet
         // drove the flag; leaving body[46]=0 had been clobbering fast-move OFF on every stats refresh — see
-        // SendStats / docs/FastMove-Findings.md. RE'd 2026-08-19.)
+        // SendStats / docs/4.x/Fast-Move.md. RE'd 2026-08-19.)
         _fastMove = _char.HasSetting(9);
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
@@ -1203,7 +1203,7 @@ public sealed partial class Session
     // SESSION flag ([state+0x451] on the client, _fastMove here) toggled in lockstep via 0x1b/09. When ON the
     // client draws the step itself (selfWalkAnim @0x48f2c0) but its walk-active gate only clears on a server
     // ack, so we send a per-step NO-SCROLL 0x04 (HandleWalk clientFast branch); when OFF we send the 0x26.
-    // PERSISTENCE (RE'd 2026-08-19, docs/FastMove-Findings.md): the client's runtime flag [state+0x451] is
+    // PERSISTENCE (RE'd 2026-08-19, docs/4.x/Fast-Move.md): the client's runtime flag [state+0x451] is
     // driven straight off the 0x08 STATS packet — its handler copies body[46] verbatim into that byte on every
     // update. So the server owns the flag: _fastMove is restored from SettingFlags bit 9 at HandleArrival, the
     // login entry-burst stats packet sets the client flag to match before the first step, and every later stats

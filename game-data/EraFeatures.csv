@@ -1,4 +1,4 @@
-# Date windows for era-gated content. Consumed by Server/Era.cs; see docs/Era-Gating.md.
+# Date windows for era-gated content. Consumed by Server/Era.cs; see docs/common/Era-Gating.md.
 #
 # The server's target date lives in ServerTuning.csv as EraDate (yyyymmdd, default 20010709 = the day
 # client 4.95 shipped). Set EraDate to 0 to switch era gating off entirely.

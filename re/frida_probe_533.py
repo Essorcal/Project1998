@@ -22,8 +22,9 @@ Usage (run the C# server first; the NexusTK.dat Connaddr patch points 5.33 at 12
 Then log in through the GUI and walk into the void. Events stream to stdout + probe_log_533.txt.
 """
 import sys, os, frida
+from _paths import CLIENT5
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon5\NexusTK.exe"
+EXE = str(CLIENT5 / "NexusTK.exe")
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe_log_533.txt")
 
 JS = r"""

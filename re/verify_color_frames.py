@@ -28,7 +28,7 @@ def load_pal_blocks(path="monster.pal"):
         blocks.append(colors)
     return blocks
 
-# CORRECTED 2026-08-07 (see docs/NexusTK-4.95-Protocol.md §11c). The bottom/right pair at the end of TOC
+# CORRECTED 2026-08-07 (see docs/4.x/Protocol.md §11c). The bottom/right pair at the end of TOC
 # entry i belongs to the NEXT frame's origin, so frame i measures (left[i] - right[i-1]) x (top[i] -
 # bottom[i-1]). Exact for 1309/1309 Item.epf frames; the old same-entry box + "which dim divides pixbytes"
 # guesswork sheared any frame whose box was wrong. Frame 0 has no predecessor, hence frame N+1 == asset id N.

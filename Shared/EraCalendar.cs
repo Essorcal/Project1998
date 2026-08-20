@@ -25,7 +25,7 @@ public sealed record EraWindow(DateOnly? Introduced, DateOnly? Retired, string S
 /// login server after moving <c>EraDate</c>.</para>
 ///
 /// Semantics (sparse, fail-open, exclusive retirement) are documented on <c>Server.Era</c> and in
-/// docs/Era-Gating.md. Both files are read defensively: anything unparseable is treated as absent, because
+/// docs/common/Era-Gating.md. Both files are read defensively: anything unparseable is treated as absent, because
 /// the safe failure direction is "content is present" — never "content silently vanished".
 /// </summary>
 public static class EraCalendar

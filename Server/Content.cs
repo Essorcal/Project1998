@@ -552,7 +552,7 @@ public static partial class Content
     public static IReadOnlyDictionary<string, MobDropDef> MobDrops { get; private set; } =
         new Dictionary<string, MobDropDef>();
 
-    // Era-gating overrides for crafting skills (see Server/CraftingToggles.cs + docs/Crafting-Values.md).
+    // Era-gating overrides for crafting skills (see Server/CraftingToggles.cs + docs/common/Crafting-Values.md).
     // File is optional and sparse: only skills listed here override CraftingToggles.DefaultDisabled;
     // anything absent keeps the code-level default. Columns: Skill,Enabled(0/1).
     public static IReadOnlyDictionary<string, bool> CraftingToggleOverrides { get; private set; } =

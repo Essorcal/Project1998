@@ -25,8 +25,9 @@ Then log in through the client GUI and walk to the game-server handoff. All even
 stream to stdout AND to re/probe_log.txt.
 """
 import sys, os, time, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe_log.txt")
 
 # RVAs (VA - 0x400000), from static RE of NexusTK_local.exe

@@ -13,8 +13,8 @@ Rules for this file:
 * **Say why it was deferred**, so a stale reason is visible as stale. "Out of scope" ages badly on its own.
 * **Delete entries when they land.** A done item's record is the code and the commit, not this file.
 
-Related: `docs/Era-Gating.md` (whether a thing should exist *at our date* — a different question from whether
-it is built), `docs/Crafting-Values.md`.
+Related: `docs/common/Era-Gating.md` (whether a thing should exist *at our date* — a different question from whether
+it is built), `docs/common/Crafting-Values.md`.
 
 ---
 
@@ -144,4 +144,4 @@ What would settle it: the jeedee 6.x or Mithia 7.x server sources (see `[[nexust
 not currently on disk), or any period board post describing being refused the quest for being too high.
 
 If per-quest level caps are ever wanted, note they are a general rule and an era-gated one, not a Chu Rua
-special case — see `docs/Era-Gating.md`.
+special case — see `docs/common/Era-Gating.md`.

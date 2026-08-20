@@ -4,7 +4,8 @@ Format: u32 count, then `count` × {u32 offset, char name[13]}; wav data runs fr
 offset to the next (last -> EOF). Names are already 001.wav..197.wav. Lets us map RTK sound ids
 (Content.EffectSound) to the client's actual sounds by ear (the id spaces may be shifted)."""
 import struct, os
-SND = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK.snd"
+from _paths import CLIENT
+SND = str(CLIENT / "NexusTK.snd")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snd")
 def main():
     f = open(SND, "rb").read()

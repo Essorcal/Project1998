@@ -13,8 +13,9 @@ Run with the client already up:  python re/frida_selfwalk.py --attach
 Then walk a few steps on the 4.95 client and watch the console.
 """
 import sys, time, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 
 RVA = {
     "selfWalkAnim": 0x08f2c0,   # 0x48f2c0  start leg cycle in place (dir arg), no overshoot

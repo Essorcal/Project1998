@@ -3,7 +3,7 @@
 This folder documents everything specific to serving the **NexusTK 5.33 client**
 (`C:\Program Files (x86)\Nexon\NextAeon5`, build **5.3.3.384**, exe dated Jan 2003) from the
 local C# `Project1998`. The 4.95 protocol is documented separately in
-[`../NexusTK-4.95-Protocol.md`](../NexusTK-4.95-Protocol.md); this folder only covers where 5.x
+[`../4.x/Protocol.md`](../4.x/Protocol.md); this folder only covers where 5.x
 **differs**.
 
 > **Status (2026-08-13): terrain rendering SOLVED; 5.33 support paused here.** The 5.33 client logs in,
@@ -33,7 +33,7 @@ See [`Terrain-Streaming.md`](Terrain-Streaming.md) for the packet spec.
 
 | File | What it covers |
 |------|----------------|
-| [`Client-and-Server-Setup.md`](Client-and-Server-Setup.md) | Redirecting the 5.33 client to the local server, the unified dual-client (4.95 + 5.33) server design, and how to run/test. |
+| [`Client-Setup.md`](Client-Setup.md) | Redirecting the 5.33 client to the local server, the unified dual-client (4.95 + 5.33) server design, and how to run/test. |
 | [`Terrain-Streaming.md`](Terrain-Streaming.md) | The `0x05`/`0x06` map-data request/response protocol — the core 5.x rendering path. Definitive packet layouts. |
 | [`Reverse-Engineering.md`](Reverse-Engineering.md) | `NexusTK.exe` RE reference: function addresses, the `.cmp` map format, the opcode dispatcher, the cipher, `Tile.dat` layout, and the Frida/diagnostic tooling. |
 

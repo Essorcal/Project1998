@@ -8,7 +8,7 @@ wrong place), it never overruns or crashes. So we never drop a client map, we ju
 
 Dim choice per map (cells = client filesize/4), in priority order:
   1. **Wall-connectivity scoring** (primary, added 2026-07-27 after the Mythic Rabbit dungeon shipped
-     with 5 of its 8 rooms sheared by a bad guess — see docs/NexusTK-4.95-Protocol.md §8.2 and
+     with 5 of its 8 rooms sheared by a bad guess — see docs/4.x/Protocol.md §8.2 and
      memory/nexustk-495-mythic-rabbit-dims.md). For each candidate (w, h) factor pair of `cells`, read the
      ground-passability bit per cell and count what fraction of solid/wall cells have ZERO orthogonal
      solid neighbor ("isolated"). A correctly-strided hand-built room has almost no isolated wall pixels —
@@ -35,20 +35,21 @@ Output: game-data/map_index.csv (id,name,xs,ys) — gitignored (logic-only repo,
 Env overrides: RTK_MAPS_CSV, RTK_MAPS_DIR, CLIENT_MAPS, OUT, RTK_WARPS_CSV.
 """
 import csv, os, struct, glob
+from _paths import CLIENT
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
 DATA       = os.path.join(HERE, '..', 'data', 'game-data')
 MAPS_CSV   = os.environ.get('RTK_MAPS_CSV', os.path.join(DATA, 'Maps.csv'))
 WARPS_CSV  = os.environ.get('RTK_WARPS_CSV', os.path.join(DATA, 'Warps.csv'))
 RTK_MAPS   = os.environ.get('RTK_MAPS_DIR', os.path.join(HERE, '..', 'RTK-Server', 'rtkmaps', 'Accepted'))
-CLIENT_MAP = os.environ.get('CLIENT_MAPS', r'C:\Program Files (x86)\Nexon\NextAeon\Maps')
+CLIENT_MAP = os.environ.get('CLIENT_MAPS', str(CLIENT / "Maps"))
 OUT        = os.environ.get('OUT', os.path.join(DATA, 'map_index.csv'))
 
 WALL_MIN, DENSITY_MIN, MAX_ASPECT, MIN_DIM, IMPROVE_EPS = 20, 0.05, 3.2, 8, 0.02
 
 # Explicit overrides for maps confirmed by the STRONGEST evidence tier: wall-connectivity scoring AND
 # live in-game verification after a !reload (2026-07-27, Mythic Rabbit dungeon investigation -- see
-# docs/NexusTK-4.95-Protocol.md §8.2 and memory/nexustk-495-mythic-rabbit-dims.md). Two of these (Rabbit
+# docs/4.x/Protocol.md §8.2 and memory/nexustk-495-mythic-rabbit-dims.md). Two of these (Rabbit
 # Leap, Hare Depression) only clear the statistical bar by a small margin on their own, too close to the
 # general IMPROVE_EPS threshold to trust sight-unseen elsewhere in the file set -- but these five are
 # not "sight unseen": a human confirmed the fix live in the actual client. Covers all 3 depth tiers.
@@ -80,7 +81,7 @@ for ids, dims in {
         # least on maps with strongly periodic content (this one repeats every 10 tiles, so most candidate
         # widths "looked" structurally plausible without being right). Root lesson: for a map this
         # ambiguous, live human verification is the only real ground truth -- don't trust any single
-        # automated signal past a certain point. See docs/NexusTK-4.95-Protocol.md §17.4 and
+        # automated signal past a certain point. See docs/4.x/Protocol.md §17.4 and
         # memory/nexustk-495-mythic-rabbit-dims.md.
 }.items():
     for mid in ids:

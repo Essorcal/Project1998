@@ -29,8 +29,9 @@ Usage:
 Ctrl-C to stop, then:  python re/decode_capture.py --name "YourCharName"
 """
 import sys, os, time, json, frida
+from _paths import CLIENT_LIVE
 
-EXE = r"C:\Program Files (x86)\KRU\NexusTK\NexusTK.exe"
+EXE = str(CLIENT_LIVE / "NexusTK.exe")
 MOD = "NexusTK.exe"
 CAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "combat_capture.jsonl")
 

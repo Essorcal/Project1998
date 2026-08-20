@@ -36,8 +36,9 @@ Or spawn it (needs the dat redirect applied first so it can reach the local serv
 Then press:  i  b  m  p  o  s   and watch which ones do more than just enqueue.
 """
 import sys, frida
+from _paths import CLIENT483
 
-EXE = r"C:\Program Files (x86)\KRU\NexusTK483\NexusTK.exe"
+EXE = str(CLIENT483 / "NexusTK.exe")
 
 RVA_KEYDOWN = 0x11f220   # 0x41f220  per-mode keydown wrapper (arg0=VK, arg1=lParam)
 RVA_ROUTER  = 0x080b20   # 0x480b20  event router: (this=ecx, evtType, key&0xff, lParam)

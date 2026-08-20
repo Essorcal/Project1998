@@ -38,8 +38,9 @@ byteTable[0x40] @0x48eaf0 the same way if shift+m is ever wanted.)
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from patchlib import Patch, run
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 # Per-patch pristine backup (this captures the exe as of applying THIS patch — i.e. with the
 # no-nametag patch already in it, which is the desired baseline to revert to).
 BAK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NexusTK_local.exe.premailkeypatch.bak")

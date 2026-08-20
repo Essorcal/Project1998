@@ -628,7 +628,7 @@ public sealed partial class Session
     /// still returns 0; do not assume it is 0 just because we ship 0. RTK's flat {0, 9, 7.5, 0, 0} is
     /// NOT evidence for either — it is the same source whose warrior/rogue entries we already proved to
     /// be endgame constants rather than per-level behaviour.
-    /// See docs/Melee-Damage-Findings.md "The mage anomaly".
+    /// See docs/common/Melee-Damage.md "The mage anomaly".
     ///
     /// A LOOKUP, NOT A FORMULA — and that is a considered decision, not laziness. A uniform-period fit
     /// was derived and committed on 2026-08-16: the first step is exactly level 8 (lvl7 reads 0.0 and
@@ -686,7 +686,7 @@ public sealed partial class Session
     ///
     /// !! THE MAGE STEPS AT THE SAME LEVELS AS THE WARRIOR. Mage 0.5@16 -> 1.0@18 and warrior
     /// 0.5@16 -> 1.0@18 are the same step in the same 17-18 window. At level 18 all three measured
-    /// classes read 1.0 (warrior, rogue, mage). See docs/Melee-Damage-Findings.md "Is classFactor
+    /// classes read 1.0 (warrior, rogue, mage). See docs/common/Melee-Damage.md "Is classFactor
     /// class-independent?" — if it is, these per-class tables collapse into one level ladder and RTK's
     /// per-class constants are late/subpath artifacts. NOT yet assumed: the tables stay separate until
     /// a mid-level rogue reading tests it.

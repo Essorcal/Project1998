@@ -22,7 +22,7 @@ namespace Server;
 /// ERA — stages 11 and 13 were added 2001-03-18 and are gated on <see cref="Era.DuMountainQuest"/> /
 /// <see cref="Era.StudentCapQuest"/>; before that date the chain simply runs 10 → 12 and ends. The
 /// first-steps beats this chain dispatches into (<see cref="NoviceQuest"/>) move out of the tutor and into
-/// the newbie area on 2000-10-06. See <see cref="StageInEra"/> and docs/Era-Gating.md.
+/// the newbie area on 2000-10-06. See <see cref="StageInEra"/> and docs/common/Era-Gating.md.
 /// </summary>
 public static class TutorialQuest
 {

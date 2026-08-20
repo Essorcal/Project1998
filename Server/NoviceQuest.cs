@@ -19,7 +19,7 @@ namespace Server;
 /// in <c>game-data/npc_dialog.lua</c> (WoodlandSmithNpc, WoodlandArmorerNpc, TutorialNpc1/2,
 /// MignokNpc). Note the area asks for TEN rabbits and TEN squirrels where this asks for five: the tswolf
 /// guide states ten, and the five here is this file's own exp-budget tuning, described below.
-/// See docs/Era-Gating.md.
+/// See docs/common/Era-Gating.md.
 ///
 /// The MECHANICAL beats and the item/spell prices come from the surviving screenshots on
 /// tswolf.com/newb/quest.shtml and quest2.shtml (archived 2001-06-27 / 2001-07-23; saved under

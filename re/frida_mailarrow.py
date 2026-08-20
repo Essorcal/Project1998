@@ -29,6 +29,7 @@ Usage (client running, in-world):
     python re/frida_mailarrow.py --attach
 """
 import sys, frida
+from _paths import CLIENT
 
 EXE = "NexusTK_local.exe"
 RVA_RENDER     = 0x069480   # 0x469480 mail/parcel widget render (this=ecx/esi)
@@ -89,7 +90,7 @@ def main():
     if attach:
         pid = dev.get_process(EXE).pid; session = dev.attach(pid)
     else:
-        pid = dev.spawn([r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"]); session = dev.attach(pid)
+        pid = dev.spawn([str(CLIENT / "NexusTK_local.exe")]); session = dev.attach(pid)
     script = session.create_script(JS); script.on("message", on_message); script.load()
     if not attach: dev.resume(pid)
     print("Attached. In-world, watch the SetHasMail calls (who sets the flag) and RENDER dumps.")

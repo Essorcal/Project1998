@@ -25,8 +25,9 @@ Then, watching the console:
 Ctrl+C to stop. Paste the console output back.
 """
 import sys, time, json, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 
 RVA = {
     "selfWalkAnim": 0x08f2c0,   # 0x48f2c0

@@ -11,7 +11,7 @@ namespace Server;
 ///      2004-12-09, lived through 5.x for ~10 months before the 6.5 client shipped 2005-10-11 — an
 ///      ambiguous era fit, neither clearly in nor out) and Food Preparation/Chef (dated 2001-01-13/
 ///      2001-01-31 — technically predates 4.95 by ~5 months, so arguably in-era, but still off by
-///      default so a GM opts in deliberately). See docs/Crafting-Values.md for the full era research.
+///      default so a GM opts in deliberately). See docs/common/Crafting-Values.md for the full era research.
 ///   2. <see cref="Content.CraftingToggleOverrides"/> — rows from the CSV file. Only skills actually
 ///      listed there override the code default; anything absent falls through to (1). An override
 ///      always wins, so the file can enable a default-off skill or disable a default-on one.

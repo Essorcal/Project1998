@@ -21,8 +21,9 @@ with  33 c0 c2 14 00  (xor eax,eax; ret 0x14) -- return NULL and pop the caller'
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from patchlib import Patch, run
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 # Keep the pre-existing pristine backup so --revert still finds it (created by the original
 # re/patch_no_nametag.py before this script was reorganized into re/patches/).
 BAK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NexusTK_local.exe.prenametagpatch.bak")

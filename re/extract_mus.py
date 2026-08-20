@@ -37,9 +37,10 @@ Usage:
     python re/extract_mus.py --install --only 103
 """
 import argparse, os, shutil, struct
+from _paths import CLIENT, CLIENT5
 
-MUS = r"C:\Program Files (x86)\Nexon\NextAeon5\Mus000.dat"
-CLIENT = r"C:\Program Files (x86)\Nexon\NextAeon"
+MUS = str(CLIENT5 / "Mus000.dat")
+CLIENT = CLIENT
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mus")
 
 # MPEG audio header tables, for the format report (bitrate index -> kbps, by MPEG version).

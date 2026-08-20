@@ -21,12 +21,13 @@ import csv
 import os
 import re
 import sys
+from _paths import CLIENT, CLIENT5
 
 SEARCH_DIRS = [
     os.environ.get("P1998_MAPS"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "maps"),
-    r"C:\Program Files (x86)\Nexon\NextAeon\Maps",
-    r"C:\Program Files (x86)\Nexon\NextAeon5\Maps",
+    str(CLIENT / "Maps"),
+    str(CLIENT5 / "Maps"),
 ]
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

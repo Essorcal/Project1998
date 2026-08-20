@@ -1,5 +1,5 @@
 """List (and optionally extract) entries from a Nexon-PAK-format .dat archive.
-Format (confirmed via RE, see docs/NexusTK-4.95-Protocol.md #11a):
+Format (confirmed via RE, see docs/4.x/Protocol.md #11a):
   u32 count
   count * { u32 offset; char name[13] }   (17 bytes/entry)
   first offset == header size (count*17 + 4)

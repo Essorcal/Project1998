@@ -9,8 +9,9 @@ Usage:
 """
 import sys, pefile
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 pe = pefile.PE(EXE, fast_load=True)
 IB = pe.OPTIONAL_HEADER.ImageBase  # 0x400000
 data = pe.get_memory_mapped_image()  # indexed by RVA

@@ -18,8 +18,9 @@ To add a patch:
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from patchlib import Patch, run
+from _paths import CLIENT5
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon5\NexusTK.exe"
+EXE = str(CLIENT5 / "NexusTK.exe")
 BAK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups", "NexusTK533.exe.bak")
 
 PATCHES = [

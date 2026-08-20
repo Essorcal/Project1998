@@ -11,7 +11,7 @@ Kills the send-numbers-and-wait loop. Three modes:
          saturation warning if the window could still be something else.
   scan   Mine re/auto/swings.csv for anything already measurable.
 
-Model (docs/Melee-Damage-Findings.md):
+Model (docs/common/Melee-Damage.md):
   swing  = s/2 + Dam*2.5 + mightTerm(Might) + classFactor
   damage = max(1, floor(swing * (1 + mobAC/100)))
   mightTerm(m) = floor(m/4)/2 - 1

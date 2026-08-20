@@ -7,6 +7,7 @@ RTK is content data, NOT part of this (logic-only) repo. Clone it and point SQL/
 The output CSVs are gitignored on purpose (keep game data outside the repo). See docs §17.1.
 """
 import re, csv, os, glob
+from _paths import CLIENT
 
 SQL = os.environ.get('RTK_SQL', 'RTK-Server/database/2020-09-02-21-55-01_RTK.sql.bak')
 sql = open(SQL, encoding='latin1').read()
@@ -50,7 +51,7 @@ def dump(tbl):
 
 # our client's available map ids
 client_maps = set()
-for p in glob.glob(r'C:\Program Files (x86)\Nexon\NextAeon\Maps\TK*.map'):
+for p in glob.glob(str(CLIENT / "Maps" / "TK*.map")):
     m = re.match(r'TK(\d+)\.map', os.path.basename(p))
     if m:
         client_maps.add(int(m.group(1)))

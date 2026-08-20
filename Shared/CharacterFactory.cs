@@ -63,7 +63,7 @@ public static class CharacterFactory
     // in next to Jadespear or Ironheart then they added a small area before you entered your starting
     // nation"), so a new character starts in Welcome (map 4711) and only reaches their nation's tutor at
     // the end of it, when the Woodland Angel warps them there. Before that date there was no area and the
-    // tutor's home WAS the spawn. See Shared/EraCalendar.cs and docs/Era-Gating.md.
+    // tutor's home WAS the spawn. See Shared/EraCalendar.cs and docs/common/Era-Gating.md.
     //
     // Nation-independent on purpose: the area sits BEFORE you enter your kingdom, so both nations walk the
     // same rooms. The nation split re-appears at the far end, in the Angel's warp home.

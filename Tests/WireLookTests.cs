@@ -13,7 +13,7 @@ namespace Tests;
 /// two-handed weapon as an unrelated sword — Frozen spear (10011) truncated to sword 27 — while the bag
 /// icon (a separate Item.epf id space) stayed correct, so the bug read as "right item, wrong doll".
 /// Values here are pinned against the client's own art tables (NexusTK.dat: 95 swords, 31 spears, 0 bows,
-/// 4 fans, 13 shields, 67 bodies); see docs/NexusTK-4.95-Protocol.md §8.
+/// 4 fans, 13 shields, 67 bodies); see docs/4.x/Protocol.md §8.
 /// </summary>
 public class WireLookTests
 {

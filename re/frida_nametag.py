@@ -21,8 +21,9 @@ Then reproduce in-game (equip/unequip gear, mount/dismount a few times) and watc
     lines follow.
 """
 import sys, os, time, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nametag_log.txt")
 
 RVA = {

@@ -81,7 +81,7 @@ public sealed partial class Session
 
     // "@craft" / "@craft list" — show which crafting skills are era-gated on/off. Read-only: the toggle
     // itself is config, not live GM state — edit game-data/CraftingToggles.csv and run @reload to
-    // change it (see Server/CraftingToggles.cs + docs/Crafting-Values.md for why Jewelry and Food
+    // change it (see Server/CraftingToggles.cs + docs/common/Crafting-Values.md for why Jewelry and Food
     // Preparation/Chef default off).
     private void CraftToggleCmd(string text)
     {

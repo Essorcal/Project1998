@@ -26,8 +26,9 @@ Or spawn it:
 Then, with your character standing in the world (no dialog open), press: i  b  m  p  o
 """
 import sys, os, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 
 RVA_KEYDOWN = 0x01e9f0   # 0x41e9f0  per-mode keydown entry (arg0=VK, arg1=lParam)
 RVA_ENQUEUE = 0x085940   # 0x485940  event router: (this=ecx, evtType, key&0xff, lParam)

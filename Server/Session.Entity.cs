@@ -83,7 +83,7 @@ public sealed partial class Session
         // body[46] = the client's RUNTIME fast-move flag. The 0x08 handler (client 0x48fc40, reached from the
         // network dispatcher 0x48eb40) copies this byte VERBATIM into the game-state singleton at [state+0x451]
         // — the exact byte the walk path reads to decide client- vs server-authoritative movement (see
-        // docs/FastMove-Findings.md, RE 2026-08-19: 0x08 payload[47] == our body[46]; the getbyte helper
+        // docs/4.x/Fast-Move.md, RE 2026-08-19: 0x08 payload[47] == our body[46]; the getbyte helper
         // 0x475c90 is a plain `*ptr`, the store is `mov [state+0x451],al`, so it is a straight copy). This is
         // how fast-move actually persists: every stats packet reasserts the flag, and the login entry-burst
         // stats packet sets it before the first step. Leaving it 0 (the old behavior) FORCED fast-move OFF on

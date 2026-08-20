@@ -29,8 +29,9 @@ import struct
 import sys
 
 from PIL import Image, ImageDraw
+from _paths import CLIENT
 
-DAT = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK.dat"
+DAT = str(CLIENT / "NexusTK.dat")
 FAMILIES = ("sword", "spear", "fan", "shield", "bow")
 
 

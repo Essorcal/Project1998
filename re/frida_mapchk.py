@@ -32,8 +32,9 @@ Then: log in, walk onto a small map, and walk a dozen steps. Ctrl-C. Feed the JS
 re/solve_mapchk.py.
 """
 import sys, os, json, base64, frida
+from _paths import CLIENT
 
-EXE = r"C:\Program Files (x86)\Nexon\NextAeon\NexusTK_local.exe"
+EXE = str(CLIENT / "NexusTK_local.exe")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mapchk.jsonl")
 
 # RVAs (VA - 0x400000). No ASLR in this binary, but resolve via module base anyway.

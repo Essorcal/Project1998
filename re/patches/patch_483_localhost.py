@@ -36,8 +36,11 @@ import os, sys, shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))   # for pak_list
 from pak_list import parse
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from _paths import CLIENT483
 
-DAT   = r"C:\Program Files (x86)\KRU\NexusTK483\NexusTK.dat"
+DAT   = str(CLIENT483 / "NexusTK.dat")
 ENTRY = "Address"
 BAK   = os.path.join(HERE, "backups", "NexusTK483.Address.orig")
 LOCAL_UNIT = b"127.0.0.1.2000;"   # 15 bytes; one localhost:2000 slot

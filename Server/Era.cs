@@ -25,7 +25,7 @@ namespace Server;
 /// <para><b>Unset means off.</b> <c>EraDate=0</c> (or absent) leaves gating inert and every feature on, so
 /// a deployment that doesn't care about historical fidelity never has to think about this file.</para>
 ///
-/// See docs/Era-Gating.md for the timeline and the sources behind each date.
+/// See docs/common/Era-Gating.md for the timeline and the sources behind each date.
 ///
 /// <para><b>This is a facade.</b> The evaluation and both file reads live in
 /// <see cref="Shared.EraCalendar"/>, because the LOGIN server also needs the calendar — it is what decides
