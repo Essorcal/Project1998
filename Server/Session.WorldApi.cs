@@ -21,7 +21,7 @@ public sealed partial class Session
 
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
-        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, FaceLook(), _char.Armor, WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
+        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, FaceLook(), ArmorWireLook(_char.Armor), WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
             ArmorDye(), _morphLook, _morphColor, Stealthed);
 
     /// <summary>Draw player <paramref name="other"/> on our client. Normally the 0x33 player-look form; while

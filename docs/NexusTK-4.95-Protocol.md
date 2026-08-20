@@ -892,8 +892,8 @@ layout:**
 | `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head: 12 poses × facings, sub-frame 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
 | `[4]` | **Body-layer colour (ramp shift)** | Recolours the worn armor/coat. **Not a palette index — a ramp selector:** the tinted blit does `if (pixel >= 0x30) pixel += colour * 8` before the palette lookup, so garment colours live in 8-entry ramps from index `0x30` and this byte picks the ramp (skin/outline indices below `0x30` are untouched). See the ⚠ below. Driven by `Session.ArmorDye()` = the worn armor's `ItmLookColor` **when that is a real ramp (0..9)**, overridden by `Character.ArmorColor` (Arena Master war paint, §11e) when set. See the second ⚠ below. |
-| `[5]` | **Weapon** | Honor Sword, Flame Blade, Electra, Steelthorn, Blood, Primogen Blade… **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
-| `[6]` | **Shield** | Distinct shields. **`0` is a REAL shield — "no shield" is `0xFF` (`-1`).** |
+| `[5]` | **Weapon** | **FAMILY-RANGED, not a flat id — see the ⚠ below.** `0x00..0x7F` = Sword.epf art, `0x80..0xBF` = Spear.epf art−0x80, `0xC0..0xDF` = Bow.epf (no 4.95 art — empty hand), `0xE0..0xFE` = Fan.epf art−0xE0. **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
+| `[6]` | **Shield** | Direct Shield.epf art id, 13 arts (`0..12`). **`0` is a REAL shield — "no shield" is `0xFF` (`-1`).** |
 
 > **⚠ Byte `[4]` is a RAMP SHIFT on the body layer, and it must carry the armor's own `ItmLookColor`
 > (RE'd end-to-end 2026-08-07).** The real player draw is **`0x432320`** (reached from the entity draw at
@@ -961,6 +961,29 @@ layout:**
 > already exactly what an undyed one renders. Row `36,43,24,12` points it at a distinct periwinkle if a team
 > battle needs to tell them apart.
 
+> **⚠ Weapon byte `[5]` is FAMILY-RANGED, and `ItmLook` speaks a DIFFERENT space (RE'd 2026-08-19 —
+> the "Frozen spear / Might spear draw as random swords when equipped" bug).** The player-draw fn
+> `0x432320` pushes the weapon byte through the classifier **`0x432fe0`**:
+> ```
+> 0x00..0x7F -> 1    0x80..0xBF -> 2    0xC0..0xDF -> 3    0xE0..0xFE -> 4
+> ```
+> and its switch pushes the matching archive name (UTF-16 in the exe, which is why an ASCII string search
+> misses them): 1 → `SWORD.EPF` (`0x4f1b90`), 2 → `SPEAR.EPF` (`0x4f1ba4`), 4 → `FAN.EPF` (`0x4f1bb8`);
+> case 3 (bow) falls through and pushes **no archive at all** — and indeed `Bow.tbl` says `NumWeapons 0`,
+> so 4.95 cannot draw a bow, period (an equipped bow shows an empty hand, authentically). Art counts from
+> the client's own `NexusTK.dat` tables: **Sword 95 (`0..94`), Spear 31 (`0..30`), Bow 0, Fan 4 (`0..3`)**;
+> `Shield.tbl` has 13. `Items.csv`'s `ItmLook` is RTK's flat space — family = `look/10000` (0 sword,
+> 1 spear/2H, 2 bow, 3 fan), art = `look%10000` — sized for a LATER client with far more art. The server
+> converts via `Session.WeaponWireLook` / `ShieldWireLook` / `ArmorWireLook` (armor: `Body.tbl` has 67
+> bodies, later-era looks like `210`/`10008` clamp to the base body instead of truncating to a *wrong*
+> body). The old code sent `(byte)ItmLook`, so Frozen spear (10011) truncated to sword 27 while its **icon**
+> (a separate Item.epf id space, §11c) stayed correct — exactly the reported symptom. A 2026-08-19 data
+> sweep also re-pointed 65 Items.csv rows whose per-family art index only exists in later clients (Might
+> spear `10087→10015`, the out-of-range staves/blades/charms, etc.) at era-plausible 4.95 art — contact
+> sheets to retune any of them: `re/render_weapons.py` → `re/weapons_{sword,spear,fan,shield}.png`.
+> (Same script documents the variable-length `DLPalette` header: color data at `+32 + 2*count(u32@+24)`,
+> count 0 in Effect.pal which is why render_effects.py's flat `+32` worked.)
+>
 > **⚠ Weapon/shield "empty" = `0xFF`, not `0` (proven live 2026-07-25 + RTK `clif.c`).** A row-sweep of `[5]`/`[6]`
 > showed every value `0..15` renders a distinct blade/shield for **both** sexes; only `-1` (byte `0xFF`) is bare
 > hands. RTK sends `0xFFFF` for weapon/shield look when `!pc_isequip(slot)`. `SendSelfLook`/`ShowPlayer`/click-

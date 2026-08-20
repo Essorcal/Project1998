@@ -125,8 +125,8 @@ public sealed partial class Session
     // the three must re-draw self + peers; only armor still needs its cached _char.Armor byte written here.
     private void ApplyAppearance(ItemDef def, bool equip)
     {
-        if (def.Type == 4) _char.Armor = equip ? (byte)def.Look : (byte)0;        // ITM_ARMOR (cached in [3])
-        else if (def.Type == 3) _char.Weapon = equip ? (byte)def.Look : (byte)0;  // ITM_WEAP (kept for combat/GM)
+        if (def.Type == 4) _char.Armor = equip ? ArmorWireLook(def.Look) : (byte)0;         // ITM_ARMOR (cached in [3])
+        else if (def.Type == 3) _char.Weapon = equip ? WeaponWireLook(def.Look) : (byte)0;  // ITM_WEAP (kept for combat/GM; wire byte, see WeaponWireLook)
         else if (def.Type != 5) return;                                           // not weapon/armor/shield -> no look change
         RefreshAppearance();
     }

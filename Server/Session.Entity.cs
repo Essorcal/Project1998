@@ -323,7 +323,7 @@ public sealed partial class Session
         (byte)_char.Sex,
         face < 0 ? MountForm() : (byte)0,
         face < 0 ? FaceLook() : (byte)Math.Clamp(face, 0, FaceCount - 1),
-        (byte)_char.Armor, ArmorDye(), WeaponLook(), ShieldLook(),
+        ArmorWireLook(_char.Armor), ArmorDye(), WeaponLook(), ShieldLook(),
     };
 
     /// <summary>Head/face sprite byte for appearance[2], forced into the range the client actually has art
@@ -427,8 +427,54 @@ public sealed partial class Session
     /// the living. Reviving (Hp>0) drops the predicate and the next RefreshAppearance/EnterMap redraws for all.</summary>
     public bool PvpGhostHidden => IsDead && Content.IsPvpMap(_char.Map);
 
-    private byte WeaponLook() => EquippedLook(3, _char.Weapon != 0 ? _char.Weapon : (byte)0xFF);  // Type 3 = weapon; 0xFF = bare hands
-    private byte ShieldLook() => EquippedLook(5, 0xFF);                                            // Type 5 = shield
+    private byte WeaponLook()   // Type 3 = weapon; 0xFF = bare hands (_char.Weapon already holds a wire byte)
+    {
+        var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == 3);
+        if (e is not null) return WeaponWireLook(Content.ItemById(e.ItemId)?.Look ?? 0);
+        return _char.Weapon != 0 ? _char.Weapon : (byte)0xFF;
+    }
+    private byte ShieldLook()   // Type 5 = shield
+    {
+        var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == 5);
+        return e is null ? (byte)0xFF : ShieldWireLook(Content.ItemById(e.ItemId)?.Look ?? 0);
+    }
+
+    /// <summary>Translate an <c>ItmLook</c> into the 0x33 appearance[5] weapon byte. The two speak DIFFERENT
+    /// id spaces: ItmLook is RTK's flat space — family = look/10000 (0 sword, 1 spear/2H, 2 bow, 3 fan), art
+    /// = look%10000 — while the 4.95 client splits its single byte into family RANGES. RE'd 2026-08-19
+    /// (classifier <c>0x432fe0</c> + the art dispatch in the player-draw fn <c>0x432320</c>, which picks the
+    /// EPF archive by the classifier's 1..4):
+    /// <c>0x00..0x7F</c> Sword.epf art=byte · <c>0x80..0xBF</c> Spear.epf art=byte-0x80 ·
+    /// <c>0xC0..0xDF</c> Bow.epf art=byte-0xC0 · <c>0xE0..0xFE</c> Fan.epf art=byte-0xE0 · <c>0xFF</c> bare.
+    /// The old raw <c>(byte)Look</c> truncation is why every 2H weapon drew as a random sword (Frozen spear
+    /// 10011 → 27) — the icon (a separate Item.epf id space) was right all along.
+    /// <para>Art counts are the client's own (NexusTK.dat *.tbl "NumWeapons"): 95 swords, 31 spears, ZERO
+    /// bows, 4 fans. An art index the client has no art for draws as the family's art 0 instead of garbage
+    /// (Items.csv should stay within range — the 2026-08-19 sweep re-pointed every such row; this is the
+    /// backstop). Bows are the exception: with 0 arts nothing can render — the byte is kept in the bow range
+    /// (empty hand), which is the 4.95 client's authentic best. See re/render_weapons.py for the sheets.</para></summary>
+    public static byte WeaponWireLook(int look)
+    {
+        int family = look / 10000, art = look % 10000;
+        return family switch
+        {
+            0 => (byte)(art < 95 ? art : 0),
+            1 => (byte)(0x80 + (art < 31 ? art : 0)),
+            2 => (byte)(0xC0 + Math.Min(art, 0x1F)),   // no 4.95 bow art; any index draws an empty hand
+            _ => (byte)(0xE0 + (art < 4 ? art : 0)),
+        };
+    }
+
+    /// <summary>appearance[6] shield byte: a DIRECT Shield.epf art id (no family ranges — the draw fn
+    /// pushes SHIELD.EPF for any non-0xFF value). The 4.95 client ships 13 arts (Shield.tbl), so later-client
+    /// ids fall back to art 0 rather than drawing nothing.</summary>
+    public static byte ShieldWireLook(int look) => (byte)(look is >= 0 and < 13 ? look : 0);
+
+    /// <summary>appearance[3] body byte for a worn armor's <c>ItmLook</c>. Body.tbl has 67 bodies (0..66);
+    /// later-era cosmetics in Items.csv carry looks like 210 or 10008 that have no 4.95 body — clamp to the
+    /// naked base body instead of persisting a truncated byte that silently draws the WRONG armor
+    /// ((byte)10008 = 40, a wind armor).</summary>
+    public static byte ArmorWireLook(int look) => (byte)(look is >= 0 and <= 66 ? look : 0);
 
     /// <summary>appearance[4] — the body layer's colour. RE'd end-to-end 2026-08-07 (player draw 0x432320,
     /// tinted blit 0x428c10): the client draws the body through a SEPARATE blit entry whenever this byte is
@@ -465,11 +511,6 @@ public sealed partial class Session
         var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type is 4 or 16);
         byte lc = e is null ? (byte)0 : Content.ItemById(e.ItemId)?.LookColor ?? 0;
         return Content.DyeRampFor(_char.Armor, lc);
-    }
-    private byte EquippedLook(int itmType, byte none)
-    {
-        var e = _char.Equipment.FirstOrDefault(w => Content.ItemById(w.ItemId)?.Type == itmType);
-        return e is null ? none : (byte)(Content.ItemById(e.ItemId)?.Look ?? 0);
     }
 
     // The swing sfx of the weapon currently in hand, by weapon CATEGORY (see IsStaffWeapon) rather than
