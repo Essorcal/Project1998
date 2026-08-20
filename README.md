@@ -1,30 +1,198 @@
-# Project1998 (C#/.NET 8) — game-server prototype
+# Project1998
 
-A clean-architecture rebuild of the 4.95 NexusTK server, structured to become the
-foundation for a Unity-client game (Shared library is referenced by both sides later).
+**A working server for NexusTK 4.95, rebuilt from nothing.**
 
-## Projects
-- **Shared/**          protocol contract + (future) models & formulas — referenced by server AND your Unity client
-- **Protocol.Tk495/**  DISPOSABLE 4.95 adapter: `TkCrypt` (NexonInc XOR + index bytes), `TkPacket` (framing)
-- **Server/**          host: `TkListener` (accept loop), `Session` (per-conn read/dispatch), login + game handlers
-- **Tools/**           formalized `Inter.dat` client-redirect patcher
+NexusTK is a Korean-American 2D MMORPG that launched in 1999. Client build **4.95** shipped on
+**2001-07-09**. Its server was never open, its source was never released, and the world that ran on it is
+gone.
 
-## Build & run (offline)
+This is that server, rebuilt in C# on .NET 8 — reverse-engineered from the 2001 client binary, a later
+community server's source, and twenty years of fan archives. The real 4.95 client connects to it, enters
+the world, and plays.
+
 ```
-dotnet build Project1998.sln          # nuget.config clears online sources; no deps needed
-dotnet run --project Server -- --ports 2000,2005
+        1,840 maps          716 creatures        2,545 items
+          927 spells        368 NPCs           4,621 warps
 ```
 
-## Patch a client
+---
+
+## Status
+
+**Playable.** Login, character creation, world entry, movement, combat, spells, items, shops, NPC
+dialog, quests, parties, trade, mail, bulletin boards, marriage, pets, harvesting, weather, and a live
+world clock all work against the real client.
+
+Currently running on a live host. `master` is the deployed branch.
+
+| | |
+|---|---|
+| **Primary target** | 4.95 client (2001) — full support |
+| **Secondary** | 5.33 client (2003) — logs in, enters the world, renders terrain. Parked; see [`docs/5.x/README.md`](docs/5.x/README.md) |
+| **Era** | The world is pretending it is **2001-07-09**. Content is date-gated — see [`docs/common/Era-Gating.md`](docs/common/Era-Gating.md) |
+| **Scale** | ~35,000 lines of C#, 66 content CSVs, 4 Lua scripts, 98 tests |
+| **Licence** | **None yet** — see [below](#licence) |
+
+---
+
+## Quick start
+
+You need the [.NET 8 SDK](https://dotnet.microsoft.com/download). Nothing else.
+
+```bash
+git clone https://github.com/project1998/Project1998.git
 ```
-dotnet run --project Tools -- /path/to/Inter.dat            # -> Inter.dat.patched (127.100.10.1), backup kept
+```bash
+cd Project1998 && dotnet build Project1998.sln
+```
+
+The server is **two processes**. Start both:
+
+```bash
+dotnet run --project LoginServer -- --ports 2000,2001
+```
+```bash
+dotnet run --project Server -- --ports 2005,2006
+```
+
+On Windows, `run-server.bat` builds once and opens both in their own windows.
+
+To play, point a 4.95 client at your machine. `Tools/` rewrites the Nexon server IPs baked into the
+client's `Inter.dat`, writing `Inter.dat.patched` and keeping a backup:
+
+```bash
 dotnet run --project Tools -- /path/to/Inter.dat --target 127.100.10.1
 ```
 
-## Status
-Login + account creation + game-server handoff + arrival all working (verified against the live 2001 client).
-Next: world entry (the `0x15` map-load sequence) in `Session.HandleArrival`.
+The target must be exactly 12 characters, because it is an in-place string replacement over 12-character
+Nexon IP tokens. `127.100.10.1` is the default and is a valid loopback the client's resolver accepts.
 
-## Encryption knobs (Protocol.Tk495/TkCrypt.cs)
-- `MapKey`  — `NexonInc.` (4.95) or `Urk#nI7ni` (7.x)
-- `MapUseIndex` — append the `13 F7 60` index bytes (7.x) or not
+The other clients redirect differently — 4.83 and 5.33 read their address from a plaintext PAK entry
+inside `NexusTK.dat` rather than from `Inter.dat`. `re/patches/` handles those.
+
+Full client setup, including the 5.33 client: [`docs/4.x/README.md`](docs/4.x/README.md),
+[`docs/5.x/Client-Setup.md`](docs/5.x/Client-Setup.md).
+
+---
+
+## How it is put together
+
+```
+Server/          the game process -- world, movement, combat, items, NPCs
+LoginServer/     the login process -- accounts, auth, handoff
+Shared/          what both must agree on -- db, opcodes, tokens, paths
+Protocol.Tk495/  the wire adapter -- cipher + framing for the 2001 clients
+Tools/           the client-redirect patcher
+Tests/           98 guards on the failures that are SILENT
+game-data/       all game content: 66 CSVs, 4 Lua scripts, 1,840 .map files
+docs/            everything we know -- see docs/README.md
+re/              the reverse-engineering workbench (~155 Python scripts)
+```
+
+**Two processes, not one.** Login is the internet-facing front door; the game process holds the world.
+The game can be restarted to ship a change while players stay connected to login and reconnect. Login
+never proxies game traffic — it mints a single-use handoff token bound to the username *and* the client's
+IP, and the game server consumes it once.
+
+**Three tiers, in directories that cannot see each other.** This is the load-bearing idea:
+
+| Tier | Lives in | Changed by | Reload |
+|---|---|---|---|
+| **Content** | `game-data/` | Editing a CSV or a Lua file | `@reload` — **no restart** |
+| **Live state** | `state/project1998.db` | Playing the game | it *is* the live truth |
+| **Engine** | `Server/*.cs` | Editing code | rebuild + restart |
+
+> **Golden rule: data describes *what*; code implements *how*.** A monster's HP is data; the combat
+> formula is code. A spell's mana cost is data; the packet that draws its animation is code.
+
+Most of the game is therefore editable without touching C#. Spells, item effects, NPC dialog and creature
+AI are **Lua** (MoonSharp, pure managed) driven by CSV rows — a new spell is usually a row plus a
+function, hot-reloaded with a GM command while players are online.
+
+Full detail: [`docs/common/Architecture.md`](docs/common/Architecture.md).
+
+---
+
+## Where the game came from
+
+There is no authoritative record of NexusTK in 2001. Every value in `game-data/` was recovered, and the
+project tracks **how** — `game-data/Sources.csv` is a provenance registry where each source carries a
+weight, and content rows cite it. When sources disagree, the higher weight wins and the conflict is
+written down so nobody re-litigates it.
+
+| Source | What it gave us | Trust |
+|---|---|---|
+| **The 4.95 client binary** | The entire protocol: opcodes, wire formats, the cipher, world entry, terrain, sprites | Highest — it cannot lie |
+| **[RTK-Server](https://github.com/unkmc/RTK-Server)** | Names, stats, map geometry, NPC placement, drop tables — most of `game-data/` | Structure yes, **balance no** (it is 7.x) |
+| **[boards.nexustk.com](http://boards.nexustk.com)** | Class-tutor formula breakdowns — the best mechanics evidence outside live play | High, but dated: the game was rebalanced repeatedly |
+| **[nexusatlas.com](https://nexusatlas.com)** | Item icons, spell animations, monster art, walkthroughs | Shape evidence only; it is 5.x-era art |
+| **tswolf.com** | Period news archive and guides — closest to our era | High for *when* content existed |
+| **[The Wayback Machine](https://web.archive.org)** | How we reach the three above; most no longer exist as captured | The way in |
+
+The traps in each are documented in [`docs/research/README.md`](docs/research/README.md) — read it before
+mining any of them. Two that catch everyone:
+
+* **A capture's date is not the content's date.** A 2013 snapshot of a 2005 post is 2005 evidence.
+* **Published formulas are endgame fits.** Tutors derived them from level-99 characters, so their
+  intercept terms are regression artifacts that go wrong at low level.
+
+---
+
+## Reverse engineering
+
+`re/` holds ~155 Python scripts: static disassembly, live Frida instrumentation, PAK extraction, sprite
+matching, and client patchers. The 4.95 binary is PE32 x86, **ImageBase `0x400000`, no ASLR**, so every
+address in the docs is directly usable with no rebasing.
+
+[`docs/research/Toolkit.md`](docs/research/Toolkit.md) is the guide.
+[`docs/4.x/Protocol.md`](docs/4.x/Protocol.md) is the 5,400-line result — a self-contained reference
+complete enough to implement a 4.95 server from scratch.
+
+---
+
+## Documentation
+
+[`docs/`](docs/) is organised by **what would make a page wrong**, not by topic:
+
+| | |
+|---|---|
+| [`docs/common/`](docs/common/) | The game and this codebase — architecture, mechanics, content, era gating. Stale when *we* change something. |
+| [`docs/4.x/`](docs/4.x/) | Facts about the 4.95 client. Never stale — the binary is frozen. |
+| [`docs/5.x/`](docs/5.x/) | Facts about the 5.33 client, where it differs. Same. |
+| [`docs/research/`](docs/research/) | Where knowledge comes from, and how to get more. Stale when a source goes offline. |
+
+Start at [`docs/README.md`](docs/README.md), then
+[`docs/common/Architecture.md`](docs/common/Architecture.md).
+
+---
+
+## Contributing
+
+Yes, please. [CONTRIBUTING.md](CONTRIBUTING.md) is the guide; [AGENTS.md](AGENTS.md) is the same rules
+written for an AI coding agent, which is how most work here happens.
+
+The one thing worth knowing before you start: **this is archaeology before it is engineering.** The hard
+part of most changes is not implementing the behaviour — it is establishing what the behaviour *was* in
+2001, and being able to show how you know. An honest "we don't know" is a normal and valuable state here;
+[`docs/common/Deferred-Work.md`](docs/common/Deferred-Work.md) is an entire file of them.
+
+---
+
+## Related repositories
+
+| Repo | What |
+|---|---|
+| [Project1998-infra](https://github.com/project1998/Project1998-infra) | Everything host-shaped: the HAProxy edge, systemd units, deploy and backup scripts. Kept separate so this repo runs on your PC with `dotnet run` and carries no trace of our VPS. |
+| [dist](https://github.com/project1998/dist) | The launcher's update manifest. |
+
+---
+
+## Licence
+
+**Not yet chosen.** Default copyright therefore applies: there is no grant to use, modify or redistribute
+this code, and contributors have no explicit terms. This is a known gap and it is being resolved — if it
+affects you, raise an issue before investing significant work.
+
+Game content under `game-data/` is derived from the retail NexusTK client and from
+[RTK-Server](https://github.com/unkmc/RTK-Server). No client binary, executable, or Nexon-distributed
+archive is redistributed here.
