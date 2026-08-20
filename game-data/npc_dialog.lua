@@ -36,6 +36,9 @@ function __make_ctx()
   function ctx:learnSpell(key)          return coroutine.yield({op="learnSpell", key=key}) end
   function ctx:hasSpell(key)            return coroutine.yield({op="hasSpell", key=key}) end
   function ctx:forgetSpell(key)         return coroutine.yield({op="forgetSpell", key=key}) end
+  -- The shared "Forget Secret" picker (C# ForgetSecretAbility.Forget) -- the same flow the class
+  -- trainers show, so a scripted NPC can offer it without restating the list-and-confirm dialog.
+  function ctx:forgetSecret()           return coroutine.yield({op="forgetSecret"}) end
   function ctx:eraHas(feature)          return coroutine.yield({op="eraHas", feature=feature}) end
   -- `totem` opts into the +5% totem-time bonus; quest rewards normally don't take it. See NpcScript.cs.
   function ctx:awardExp(n, totem)       return coroutine.yield({op="awardExp", n=n, totem=totem}) end
@@ -1068,6 +1071,18 @@ function npcs.NamelessHermitNpc(ctx)
   else
     ctx:say("Okay. Say, I'd stay on this side of the lava were I you.")
   end
+end
+
+-- Blood's CLICK menu (RTK NPCs/kaming/blood.lua `click`), heading verbatim. RTK offers Buy / Sell /
+-- Forget Secret plus the blood-oath branches and a warrior-only Learn Spell; of those only Forget Secret
+-- is a system this server has, so his menu is that one entry -- but it is still a MENU. Without this
+-- handler he fell through to the C# abilities, where a lone entry dives straight into its service
+-- (Session.RunNpcAsync), so clicking him opened "Which secret do you wish to forget?" cold -- a
+-- destructive picker nobody asked for. His NpcAbilities.csv `forget_secret` row is kept as the fallback
+-- for a failed script load; while this handler exists it owns the click and the row is unused.
+function npcs.BloodNpc(ctx)
+  local choice = ctx:menu("Hello! How can I help you today?", {"Forget Secret"})
+  if choice == 1 then ctx:forgetSecret() end
 end
 
 -- Blood, the Sonhi trickster in Blood's Home off KaMing's Encampment (RTK NPCs/kaming/blood.lua, the
