@@ -142,7 +142,7 @@ public sealed partial class Session
     {
         bool pickAll = dec.Length > 0 && dec[0] != 0;
         SendAction(_char.Id, 4, 40, 0);                                                     // our crouch + sound
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 4, 40, 0), except: this);   // peers see it too
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 4, 40, 0), except: this);   // peers see it too
 
         // The ATTEMPT is what drops Invisible, not a successful grab — bending down in plain sight gives you
         // away whether or not there was anything there. So this sits with the crouch, ahead of the floor
@@ -198,7 +198,7 @@ public sealed partial class Session
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
         SendAction(_char.Id, 5, 20, 0);                                                     // our drop crouch + sound
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 5, 20, 0), except: this);   // peers see it too
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 5, 20, 0), except: this);   // peers see it too
 
         int count = dropAll ? it.Amount : 1;
         int remaining = it.Amount - count;
@@ -222,7 +222,7 @@ public sealed partial class Session
         var def = Content.ItemById(it.ItemId); if (def is null) return;
         if (def.NoDrop) { SendLog("You can't throw this item."); return; }   // same restriction as dropping (RTK itemdb_droppable)
         SendAction(_char.Id, 2, 20, 0);                                                    // throw animation (self)
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 2, 20, 0), except: this);   // peers see the throw too
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 2, 20, 0), except: this);   // peers see the throw too
         it.Amount -= 1;
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 4); }  // reason 4 = Throw
         else SendAddItem(it);
@@ -368,7 +368,7 @@ public sealed partial class Session
     internal void ItemEatAnim()   // the shared eat/use pose + sound, self and peers (RTK action 8)
     {
         SendAction(_char.Id, 8, 40, 0);
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
         PlayEatSfx();   // the action sprite carries no sound of its own — 403+006 over 0x19 (see EatSfxA/B)
     }
 
@@ -386,7 +386,7 @@ public sealed partial class Session
     internal void ItemSipAnim()
     {
         SendAction(_char.Id, 7, 20, 0);
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 7, 20, 0), except: this);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 7, 20, 0), except: this);
     }
 
     internal void ItemCastPose() => SendAction(_char.Id, 6, 40, 0);   // harden-body cast pose (self only, as RTK)

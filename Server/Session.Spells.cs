@@ -313,7 +313,7 @@ public sealed partial class Session
         byte animType   = Content.CastActionType(sp);   // swing=1, an emote-range action override (furies=18 'h' rage), else magic pose 6
         ushort animTime = swingAnim ? (ushort)AttackSpeed : Content.CastAnimFrames;
         SendAction(_char.Id, animType, animTime, param: 0);                                                     // strike swing / cast pose
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, animType, animTime, 0), except: this);          // peers see it
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, animType, animTime, 0), except: this);          // peers see it
         SendStats();                                                                        // push HP/MP to the HUD
     }
 
@@ -901,7 +901,7 @@ public sealed partial class Session
             var fx = Content.FxFor(sp);
             if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
             byte selfPct = PlayerHpPercent();   // over-head bar, same as taking a hit — see ReceiveHeal
-            _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, selfPct, HealBarCritByte));
+            _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, selfPct, HealBarCritByte));
         }
         SendStats();   // caster message is the central "You cast <name>." — no "restores N HP" flavor
     }
@@ -934,7 +934,7 @@ public sealed partial class Session
         if (amt > 0 && mob!.Alive)
         {
             mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amt);
-            _world.Broadcast(_char.Map, p => p.DamageOver(mob.Id, HpPercent(mob), 0));   // refresh its over-head bar
+            _world.BroadcastWideArea(_char.Map, mob.X, mob.Y, p => p.DamageOver(mob.Id, HpPercent(mob), 0));   // refresh its over-head bar
         }
         BroadcastFx(mob!.Id, anim, snd);
         Log.Info($"      (lua) {sp.Name} -> healed mob {mob.Id} '{mob.Name}' for {amt} -> {mob.Hp}/{mob.MaxHp}");
@@ -952,7 +952,7 @@ public sealed partial class Session
         _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
         SendStats();
         byte pct = PlayerHpPercent();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, pct, HealBarCritByte));
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, pct, HealBarCritByte));
     }
 
     /// <summary>The <c>0x13</c> critical byte a HEAL carries. RTK passes 0 (see <see cref="ReceiveHeal"/>);
@@ -1675,14 +1675,14 @@ public sealed partial class Session
         if (_poisonFxAnim > 0)
         {
             int a = _poisonFxAnim;
-            _world.Broadcast(_char.Map, p => p.EffectOver(_char.Id, a));
+            _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.EffectOver(_char.Id, a));
         }
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();
         byte pct = PlayerHpPercent();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, pct, HitCritByte));
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, pct, HitCritByte));
         if (_poisonBy != 0 && _poisonBy != _char.Id) MarkPvpFoe(_poisonBy);
     }
 
@@ -1754,7 +1754,7 @@ public sealed partial class Session
         if (_sleepFxAnim <= 0 || Environment.TickCount64 < _sleepFxNext) return;
         _sleepFxNext = Environment.TickCount64 + _sleepFxEvery;
         int a = _sleepFxAnim;
-        _world.Broadcast(_char.Map, p => p.EffectOver(_char.Id, a));
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.EffectOver(_char.Id, a));
     }
 
     // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
@@ -2290,7 +2290,7 @@ public sealed partial class Session
             string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
             EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)tx, (ushort)ty, mapName);
             SendAction(_char.Id, type: 1, time: 8, param: 0);
-            _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);
+            _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);
             return true;
         }
         return false;

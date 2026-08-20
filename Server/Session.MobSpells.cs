@@ -37,7 +37,7 @@ public sealed partial class Session
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         SendStats();
         byte hpPct = PlayerHpPercent();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
         SendMiniText($"{caster.Name} attacks you with {spellName} spell.");   // RTK peck.lua's own wording
         Log.Info($"   -> mob {caster.Id} '{caster.Name}' cast {spellName} on {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
@@ -54,7 +54,10 @@ public sealed partial class Session
         if (spell.Say.Length > 0) _world.BroadcastArea(_char.Map, caster.X, caster.Y, SayHalfW, SayHalfH,
             p => p.SpeakEntity(0, caster.Id, AsciiBytes($"{caster.Name}: {spell.Say}")));
         if (spell.Anim > 0 || spell.Sound > 0)
-            _world.Broadcast(_char.Map, p => { if (spell.Anim > 0) p.EffectOver(_char.Id, spell.Anim); if (spell.Sound > 0) p.SoundAt(spell.Sound, _char.Id); });
+            // Both halves ride OUR tile (the spell lands on us) and are range-gated the way RTK gates them:
+            // the graphic over the AREA box, the sound over the tighter SAMEAREA one. See World.SoundHalfW.
+            _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => { if (spell.Anim > 0) p.EffectOver(_char.Id, spell.Anim); });
+            if (spell.Sound > 0) _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(spell.Sound, _char.Id));
 
         switch (spell.Effect)
         {

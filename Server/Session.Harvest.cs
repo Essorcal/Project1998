@@ -69,7 +69,7 @@ public sealed partial class Session
         // Reuse the drop crouch as the harvest motion — it is already a bend-down-and-work pose, and both
         // the player and everyone watching get a visible swing out of it.
         SendAction(_char.Id, 5, 20, 0);
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 5, 20, 0), except: this);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 5, 20, 0), except: this);
 
         // attackerId 0 on purpose: a node must never aggro (World.TryDamage would set it chasing us).
         if (_world.TryDamage(_char.Map, node, damage, out bool broke))

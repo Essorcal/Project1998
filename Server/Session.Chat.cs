@@ -63,9 +63,12 @@ public sealed partial class Session
         string formatted = shout ? $"{_char.Name}! {text}" : $"{_char.Name}: {text}";
         if (formatted.Length > 250) formatted = formatted[..250];
         var outMsg = Encoding.ASCII.GetBytes(formatted);
+        // Say is a genuine RTK SAMEAREA send, so it gets the edge shift (World.ShiftedBox) — speaking with your
+        // back to a wall carries further the other way. Shout does NOT: its ±16 comes from speech.lua's distance,
+        // not from map_foreachinarea, so there is no RTK box to slide and it stays plainly centred on us.
         int halfW = shout ? ShoutHalfW : SayHalfW, halfH = shout ? ShoutHalfH : SayHalfH;
         _world.BroadcastArea(_char.Map, _char.X, _char.Y, halfW, halfH,
-            p => p.SpeakEntity(chatType, _char.Id, outMsg));
+            p => p.SpeakEntity(chatType, _char.Id, outMsg), edgeShift: !shout);
         Log.Info($"   -> speech type={chatType}{(shout ? " (shout, ±16)" : " (say, area)")}: \"{text}\" -> map {_char.Map}");
 
         // …and let a nearby NPC react to it (RTK onSayClick: "i'd like to fish", a tutor's name, …).

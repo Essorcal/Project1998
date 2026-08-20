@@ -72,18 +72,23 @@ public sealed partial class Session
     private const int EatSfxB = 6;
 
     /// <summary>Play the landed-melee impact sfx (<see cref="_hitSfx"/>) over <paramref name="targetId"/> for
-    /// everyone on the map. Call this ONLY on a swing that connected — the swing sfx itself is fired separately,
-    /// on every attempt.</summary>
+    /// everyone in earshot of the TARGET — RTK binds a landed hit to the thing that got hit, not to the swinger
+    /// (clif.c: <c>clif_playsound(&amp;mob-&gt;bl, itemdb_soundhit(...))</c>), and clif_playsound is a SAMEAREA
+    /// send. Falls back to our own tile if the target died on this very swing. Call this ONLY on a swing that
+    /// connected — the swing sfx itself is fired separately, on every attempt.</summary>
     private void PlayHitSfx(uint targetId)
     {
-        if (_hitSfx > 0) _world.Broadcast(_char.Map, p => p.SoundAt(_hitSfx, targetId));
+        if (_hitSfx <= 0) return;
+        var (cx, cy) = _world.EntityPos(_char.Map, targetId) ?? (_char.X, _char.Y);
+        _world.BroadcastSameArea(_char.Map, cx, cy, p => p.SoundAt(_hitSfx, targetId));
     }
 
-    /// <summary>Play the eat/use sfx pair over us, map-wide (the eat POSE is broadcast too — see ItemEatAnim).</summary>
+    /// <summary>Play the eat/use sfx pair over us, to everyone in earshot (the eat POSE is broadcast too — see
+    /// ItemEatAnim).</summary>
     private void PlayEatSfx()
     {
-        _world.Broadcast(_char.Map, p => p.SoundAt(EatSfxA, _char.Id));
-        _world.Broadcast(_char.Map, p => p.SoundAt(EatSfxB, _char.Id));
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(EatSfxA, _char.Id));
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(EatSfxB, _char.Id));
     }
 
     // Gear-change sfx (NexusTK.snd), calibrated live 2026-08-04. 410 and 411 are the two "dressing" sounds, but
@@ -551,7 +556,7 @@ public sealed partial class Session
         var wmob = _world.MobAt(_char.Map, fx, fy);
         if (wmob is not null)
         {
-            _world.Broadcast(_char.Map, p => p.ActionOver(wmob.Id, type, time, 0));   // play it NOW on the faced mob
+            _world.BroadcastSameArea(_char.Map, wmob.X, wmob.Y, p => p.ActionOver(wmob.Id, type, time, 0));   // play it NOW on the faced mob
             SendLog($"mob action type={type} time={time} -> played on '{wmob.Name}' ({wmob.Id})");
         }
         else SendLog($"mob action type={type} time={time} set (face a mob to preview it instantly)");
@@ -593,7 +598,7 @@ public sealed partial class Session
         var (fx, fy) = FrontTile();
         var wmob = _world.MobAt(_char.Map, fx, fy);
         uint target = wmob?.Id ?? MobAt(fx, fy)?.Id ?? _char.Id;
-        if (wmob is not null) _world.Broadcast(_char.Map, p => p.DamageOver(target, (byte)pct, crit));
+        if (wmob is not null) _world.BroadcastWideArea(_char.Map, wmob.X, wmob.Y, p => p.DamageOver(target, (byte)pct, crit));
         else                  SendDamage(target, (byte)pct, crit);
         SendLog($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
         Log.Info($"   -> @hit id={target} pct={pct} crit={crit}");

@@ -656,7 +656,7 @@ public sealed partial class Session
     private void ShowDamageResult(uint mobId, Mob mob, bool died, byte critical = 0, byte hitSound = 0)
     {
         byte pct = died ? (byte)0 : HpPercent(mob);
-        _world.Broadcast(_char.Map, p => p.DamageOver(mobId, pct, critical != 0 ? critical : HitCritByte, hitSound));
+        _world.BroadcastWideArea(_char.Map, mob.X, mob.Y, p => p.DamageOver(mobId, pct, critical != 0 ? critical : HitCritByte, hitSound));
         if (died) ScheduleDespawn(_char.Map, mobId, DeathDespawnMs);
     }
 
@@ -740,8 +740,8 @@ public sealed partial class Session
         SendStats();
         byte critByte = critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
         byte hpPct = PlayerHpPercent();   // same for every peer — compute once, not inside the per-peer lambda
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, critByte));
-        _world.BroadcastSound(_char.Map, _char.X, _char.Y, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played (RTK binds a landed hit to the VICTIM, so it rings from OUR tile)
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, critByte));
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played (RTK binds a landed hit to the VICTIM, so it rings from OUR tile)
         Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
     }
@@ -763,7 +763,7 @@ public sealed partial class Session
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         SendStats();
         byte hpPct = PlayerHpPercent();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
         if (!ReferenceEquals(attacker, this))
         {
             SendMiniText($"{attacker._char.Name} hits you with {spellName}.");
@@ -797,7 +797,7 @@ public sealed partial class Session
         SendStats();
         byte critByte = crit ? (byte)0xFF : HitCritByte;
         byte hpPct = PlayerHpPercent();
-        _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, critByte));   // over-head bar + hit anim, whole map
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, critByte));   // over-head bar + hit anim, whole map
         if (!ReferenceEquals(attacker, this))
         {
             MarkPvpFoe(attacker._char.Id);
@@ -972,8 +972,8 @@ public sealed partial class Session
         // see World.SoundHalfW). We fall back to our own tile when the target is already gone (a mob that died
         // to this very cast), which still covers everyone who could see the fight and keeps the caster in range.
         var (cx, cy) = _world.EntityPos(_char.Map, overId) ?? (_char.X, _char.Y);
-        if (anim >= 0)  _world.BroadcastFxNear(_char.Map, cx, cy, p => { if (p.WantsMagicFx) p.EffectOver(overId, anim); });
-        if (sound > 0)  _world.BroadcastSound(_char.Map, cx, cy, p => { if (p.WantsMagicFx) p.SoundAt(sound, overId); });
+        if (anim >= 0)  _world.BroadcastWideArea(_char.Map, cx, cy, p => { if (p.WantsMagicFx) p.EffectOver(overId, anim); });
+        if (sound > 0)  _world.BroadcastSameArea(_char.Map, cx, cy, p => { if (p.WantsMagicFx) p.SoundAt(sound, overId); });
     }
 
     /// <summary>"Believe in magic" / Magic Effect (0x1b sub-5): when off, this viewer is sent no spell graphics

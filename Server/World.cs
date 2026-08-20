@@ -278,7 +278,7 @@ public sealed class World
 
     // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
     // Tick — TryDamage can't broadcast where it stands, and its callers only know how to draw the damage.
-    private readonly List<(ushort map, uint id, int anim, int sound)> _deferredFx = new();
+    private readonly List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> _deferredFx = new();
 
     // Lua mob hooks raised from inside the lock, run by the next Tick OUTSIDE it. This queue is the whole
     // reason MobScript is safe: a hook is free to speak, heal, vanish or touch a player's quest registry,
@@ -1111,7 +1111,7 @@ public sealed class World
     {
         if (!TryDamage(mapId, mob, dmg, out bool died, ownerId)) return;
         byte pct = died ? (byte)0 : (byte)Math.Clamp(mob.Hp * 100 / Math.Max(1, mob.MaxHp), 1, 100);
-        Broadcast(mapId, p => p.DamageOver(mob.Id, pct, 33));
+        BroadcastWideArea(mapId, mob.X, mob.Y, p => p.DamageOver(mob.Id, pct, 33));
         if (died)
         {
             uint mobId = mob.Id;
@@ -1133,11 +1133,15 @@ public sealed class World
     {
         // Either side can have died to an earlier entry in this same batch — don't play a dead pet's swing.
         if (!attacker.Alive || !victim.Alive) return;
-        Broadcast(mapId, p => p.ActionOver(attacker.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));  // visibly swing
-        Broadcast(mapId, p => p.SoundAt(Session.MobSwingSfx, attacker.Id));   // 009.wav on the swing itself
+        BroadcastSameArea(mapId, attacker.X, attacker.Y, p => p.ActionOver(attacker.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));  // visibly swing
+        BroadcastSameArea(mapId, attacker.X, attacker.Y, p => p.SoundAt(Session.MobSwingSfx, attacker.Id));   // 009.wav on the swing itself, SAMEAREA like RTK's clif_playsound
         if (!TryDamage(mapId, victim, dmg, out bool died)) return;
-        Broadcast(mapId, p => p.DamageOver(victim.Id, died ? (byte)0 : (byte)Math.Clamp(victim.Hp * 100 / Math.Max(1, victim.MaxHp), 1, 100),
-                                            0, Session.MobHitSfx));
+        // The ONLY 0x13 that carries a hitSound byte, so this one is range-gated: 001.wav would otherwise ring
+        // map-wide every time a pet landed a swing. RTK sends 0x13 over AREA everywhere (clif.c ~1305), but the
+        // sound half belongs in the tighter SAMEAREA box, so the two go out separately.
+        byte vpct = died ? (byte)0 : (byte)Math.Clamp(victim.Hp * 100 / Math.Max(1, victim.MaxHp), 1, 100);
+        BroadcastWideArea(mapId, victim.X, victim.Y, p => p.DamageOver(victim.Id, vpct, 0));
+        BroadcastSameArea(mapId, victim.X, victim.Y, p => p.SoundAt(Session.MobHitSfx, victim.Id));
         if (died)
         {
             uint victimId = victim.Id;
@@ -1390,7 +1394,7 @@ public sealed class World
         if (mapId == IceBeastMap && mob.Key == IceBeastKey && IsIceBeastLava(nx, ny))
         {
             trapDamage.Add((mapId, mob, mob.MaxHp, 0));
-            _deferredFx.Add((mapId, mob.Id, IceBeastMeltAnim, 0));
+            _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, IceBeastMeltAnim, 0));
         }
         var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && t.Kind != "shiver");   // shiver is a PC-only cosmetic echo — mobs walk over it untouched
         if (trap is not null) { m.Traps.Remove(trap); TriggerTrapLocked(mapId, mob, trap, trapDamage); }
@@ -1474,22 +1478,105 @@ public sealed class World
         foreach (var p in peers) Try(() => send(p));
     }
 
-    /// <summary>Like <see cref="Broadcast"/>, but only to players whose tile falls within a box of
-    /// ±<paramref name="halfW"/> × ±<paramref name="halfH"/> centered on (<paramref name="cx"/>,
-    /// <paramref name="cy"/>). This is RTK's SAMEAREA hearing range for normal speech: clif_sendsay sends a
-    /// Say line via clif_send(..., SAMEAREA), which map_foreachinarea walks as the box x±9, y±8 around the
-    /// speaker. Shout keeps using plain <see cref="Broadcast"/> (RTK's SAMEMAP — the whole map).</summary>
-    public void BroadcastArea(ushort mapId, int cx, int cy, int halfW, int halfH, Action<Session> send, Session? except = null)
+    /// <summary>Like <see cref="Broadcast"/>, but only to players inside a box of ±<paramref name="halfW"/> ×
+    /// ±<paramref name="halfH"/> around (<paramref name="cx"/>, <paramref name="cy"/>) — RTK's SAMEAREA
+    /// proximity range, used for normal speech (clif_sendscriptsay's clif_send(..., SAMEAREA), the x±9/y±8 box)
+    /// and for every sound (clif_playsound). Shout is NOT one of these: RTK's engine sends it SAMEMAP and we
+    /// follow speech.lua's distance 16 instead, so it passes a bigger box and turns the shift off.
+    /// <para><paramref name="edgeShift"/> reproduces RTK's SAMEAREA edge behaviour — see
+    /// <see cref="ShiftedBox"/>. Leave it on for a SAMEAREA box; turn it off for anything else.</para></summary>
+    public void BroadcastArea(ushort mapId, int cx, int cy, int halfW, int halfH, Action<Session> send,
+                              Session? except = null, bool edgeShift = true)
     {
+        var (x0, y0, x1, y1) = edgeShift
+            ? ShiftedBox(mapId, cx, cy, halfW, halfH)
+            : (cx - halfW, cy - halfH, cx + halfW, cy + halfH);
         Session[] peers;
         lock (_lock)
         {
             if (!_maps.TryGetValue(mapId, out var m)) return;
             peers = m.Players.Where(p => p != except
-                && Math.Abs(p.PlayerX - cx) <= halfW
-                && Math.Abs(p.PlayerY - cy) <= halfH).ToArray();
+                && p.PlayerX >= x0 && p.PlayerX <= x1
+                && p.PlayerY >= y0 && p.PlayerY <= y1).ToArray();
         }
         foreach (var p in peers) Try(() => send(p));
+    }
+
+    /// <summary>The SAMEAREA box for a map id — <see cref="ShiftBox"/> against that map's dims. A map the
+    /// registry doesn't know has no edges to slide against, so it falls back to a plain centred box.</summary>
+    private static (int x0, int y0, int x1, int y1) ShiftedBox(ushort mapId, int cx, int cy, int halfW, int halfH)
+        => Content.Maps.TryGetValue(mapId, out var mi) && mi.Xs > 0 && mi.Ys > 0
+            ? ShiftBox(cx, cy, halfW, halfH, mi.Xs, mi.Ys)
+            : (cx - halfW, cy - halfH, cx + halfW, cy + halfH);
+
+    /// <summary>RTK's SAMEAREA box (map.c <c>map_foreachinarea</c>): a ±<paramref name="halfW"/>/±<paramref
+    /// name="halfH"/> rect around the source that is SLID back inside the map rather than clipped when it would
+    /// hang off an edge. Standing against the west wall therefore reaches twice as far east — the box keeps its
+    /// full size, it just stops being centred on you. Per axis, and SAMEAREA only: RTK's AREA case passes a
+    /// plain centred box that <c>map_foreachinblockva</c> merely clamps, which is why
+    /// <see cref="BroadcastWideArea"/> opts out.
+    /// <para>A map SMALLER than the box collapses to the whole map, exactly as RTK's does — both shifts fire
+    /// and cancel. Bounds are INCLUSIVE on both ends, matching map_foreachinblockva's <c>&gt;= x0 &amp;&amp;
+    /// &lt;= x1</c>.</para></summary>
+    public static (int x0, int y0, int x1, int y1) ShiftBox(int cx, int cy, int halfW, int halfH, int xs, int ys)
+    {
+        int x0 = cx - halfW, y0 = cy - halfH, x1 = cx + halfW, y1 = cy + halfH;
+        // Order matters and mirrors RTK exactly: push off the low edge first, then pull back off the high one.
+        if (x0 < 0)   { x1 += -x0; x0 = 0; if (x1 >= xs) x1 = xs - 1; }
+        if (y0 < 0)   { y1 += -y0; y0 = 0; if (y1 >= ys) y1 = ys - 1; }
+        if (x1 >= xs) { x0 -= x1 - xs + 1; x1 = xs - 1; if (x0 < 0) x0 = 0; }
+        if (y1 >= ys) { y0 -= y1 - ys + 1; y1 = ys - 1; if (y0 < 0) y0 = 0; }
+        return (x0, y0, x1, y1);
+    }
+
+    // ---- hearing / seeing ranges (RTK map.c map_foreachinarea) -----------------------------------
+    //
+    // RTK never sends a sound or a spell graphic to a whole map: clif_playsound ends in
+    // clif_send(..., SAMEAREA) and clif_sendanimation is always driven by map_foreachinarea(..., AREA),
+    // and BOTH resolve to a box around the SOURCE entity, not the map:
+    //
+    //   SAMEAREA (sound)     x +/- 9,  y +/- 8    -- map.c's x0/y0/x1/y1, i.e. one screen
+    //   AREA     (animation) x +/- 19, y +/- 17   -- AREAX_SIZE+1 / AREAY_SIZE+1, about two screens
+    //
+    // The sound box is deliberately the tighter one: it is roughly the 17x15 viewport, so the rule is
+    // "you hear what you can see". The animation box is looser because a 0x29 over an entity the client
+    // never drew is a no-op anyway, so RTK does not bother trimming it to the screen.
+    //
+    // The sound box also carries RTK's edge SHIFT (see ShiftedBox): against a wall it slides inward instead
+    // of being clipped, so hugging the west edge lets you hear twice as far east. That is SAMEAREA-only in
+    // RTK -- the AREA case passes a plain centred box -- so BroadcastWideArea below opts out of it.
+    public const int SoundHalfW = 9,  SoundHalfH = 8;
+    public const int FxHalfW    = 19, FxHalfH    = 17;
+
+    /// <summary>RTK's <c>SAMEAREA</c> box (+/-9/+/-8, edge-shifted) around the tile the thing happens ON.
+    /// Carries <c>clif_playsound</c> (every sfx) and <c>clif_sendaction</c> (the 0x1A pose). Centre it on the
+    /// entity the packet is BOUND to, not on whoever caused it — RTK binds a landed hit to the VICTIM
+    /// (<c>clif_playsound(&amp;mob-&gt;bl, itemdb_soundhit(...))</c>).</summary>
+    public void BroadcastSameArea(ushort mapId, int cx, int cy, Action<Session> send, Session? except = null)
+        => BroadcastArea(mapId, cx, cy, SoundHalfW, SoundHalfH, send, except);
+
+    /// <summary>RTK's looser <c>AREA</c> box (+/-19/+/-17, plain and centred — RTK does not edge-shift this
+    /// one). Carries <c>clif_sendanimation</c> (0x29) and <c>clif_damage</c> (0x13, the over-head HP bar).
+    /// Strictly contains the client's drawn rect (19x17 tiles = +/-9/+/-8), so it can never cut something a
+    /// viewer could actually have seen.</summary>
+    public void BroadcastWideArea(ushort mapId, int cx, int cy, Action<Session> send, Session? except = null)
+        => BroadcastArea(mapId, cx, cy, FxHalfW, FxHalfH, send, except, edgeShift: false);
+
+    /// <summary>The tile an entity id currently occupies on <paramref name="mapId"/> -- a live mob first,
+    /// then a connected player -- or null when it is already gone (a mob that died between queueing an
+    /// effect and flushing it). Callers use it to centre a sound/effect box on the thing making the noise.</summary>
+    public (ushort x, ushort y)? EntityPos(ushort mapId, uint id)
+    {
+        lock (_lock)
+        {
+            if (_maps.TryGetValue(mapId, out var m))
+            {
+                var mob = m.Mobs.FirstOrDefault(mo => mo.Alive && mo.Id == id);
+                if (mob is not null) return (mob.X, mob.Y);
+            }
+            var pc = PlayerByIdLocked(id);
+            return pc is null ? null : ((ushort, ushort)?)(pc.PlayerX, pc.PlayerY);
+        }
     }
 
     /// <summary>Current weather for a map (0=clear/1=rain/2=snow), for a player entering/re-entering it.
@@ -1995,13 +2082,13 @@ public sealed class World
                     mob.LastStandUntil = Environment.TickCount64 + boss.LastStandMs;
                     mob.FrozenUntil = Math.Max(mob.FrozenUntil, mob.LastStandUntil);
                     mob.ClearStatus("curses"); mob.ClearStatus("minorcurses");
-                    _deferredFx.Add((mapId, mob.Id, LastStandAnim, boss.Sound));
+                    _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, LastStandAnim, boss.Sound));
                 }
 
                 if (saved)
                 {
                     mob.Hp = Math.Min(mob.MaxHp, mob.Hp + boss.HealAmount);
-                    if (!lastStand) _deferredFx.Add((mapId, mob.Id, boss.Anim, boss.Sound));
+                    if (!lastStand) _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, boss.Anim, boss.Sound));
                 }
             }
 
@@ -2248,7 +2335,7 @@ public sealed class World
         // Repeating status effects (RTK `while_cast`): venom re-draws its animation every poison tick, doze
         // and sleep re-draw theirs for as long as the hold runs. Broadcasting is socket I/O, so — like every
         // other visual below — the tick only QUEUES them under the lock and sends them after it's released.
-        var fxRepeats = new List<(ushort map, uint id, int anim, int sound)>();
+        var fxRepeats = new List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)>();
         var expiredPets = new List<(ushort map, Mob mob)>();
         var expiredMorphs = new List<Session>();
         var expiredStealth = new List<Session>();
@@ -2412,7 +2499,7 @@ public sealed class World
                         if (Environment.TickCount64 >= mob.FxRepeatNext)
                         {
                             mob.FxRepeatNext = Environment.TickCount64 + mob.FxRepeatEvery;
-                            fxRepeats.Add((mapId, mob.Id, mob.FxRepeatAnim, mob.FxRepeatSound));
+                            fxRepeats.Add((mapId, mob.Id, mob.X, mob.Y, mob.FxRepeatAnim, mob.FxRepeatSound));
                         }
                     }
                     else if (mob.FxRepeatUntil != 0) mob.FxRepeatUntil = 0;
@@ -2426,7 +2513,7 @@ public sealed class World
                         else if (mob.Hp < mob.MaxHp)
                         {
                             mob.Hp = Math.Min(mob.MaxHp, mob.Hp + lsBoss.HealAmount);
-                            fxRepeats.Add((mapId, mob.Id, lsBoss.Anim, lsBoss.Sound));
+                            fxRepeats.Add((mapId, mob.Id, mob.X, mob.Y, lsBoss.Anim, lsBoss.Sound));
                         }
                     }
 
@@ -2442,7 +2529,7 @@ public sealed class World
                         if (Random.Shared.Next(pBoss.ParaBreakChance) == 0 && mob.Hp < mob.MaxHp)
                         {
                             mob.Hp = Math.Min(mob.MaxHp, mob.Hp + pBoss.HealAmount);
-                            fxRepeats.Add((mapId, mob.Id, pBoss.Anim, pBoss.Sound));
+                            fxRepeats.Add((mapId, mob.Id, mob.X, mob.Y, pBoss.Anim, pBoss.Sound));
                         }
                     }
 
@@ -2458,7 +2545,7 @@ public sealed class World
                             && (mob.HasStatus("curses", Environment.TickCount64) || mob.HasStatus("minorcurses", Environment.TickCount64)))
                         {
                             mob.ClearStatus("curses"); mob.ClearStatus("minorcurses");
-                            fxRepeats.Add((mapId, mob.Id, CurseShrugAnim, 0));
+                            fxRepeats.Add((mapId, mob.Id, mob.X, mob.Y, CurseShrugAnim, 0));
                         }
                     }
 
@@ -2991,18 +3078,27 @@ public sealed class World
         // Repeating status effects queued above (venom's per-tick zap, doze/sleep's drowse) — the same 0x29 +
         // 0x19 pair a cast plays, re-sent over the afflicted creature for as long as the status holds.
         foreach (var fr in fxRepeats)
-            Broadcast(fr.map, p => { p.EffectOver(fr.id, fr.anim); if (fr.sound > 0) p.SoundAt(fr.sound, fr.id); });
+        {
+            BroadcastWideArea(fr.map, fr.x, fr.y, p => p.EffectOver(fr.id, fr.anim));
+            if (fr.sound > 0) BroadcastSameArea(fr.map, fr.x, fr.y, p => p.SoundAt(fr.sound, fr.id));
+        }
 
         // …and anything raised from inside TryDamage, which has no way to send where it stands.
-        List<(ushort map, uint id, int anim, int sound)> deferred;
+        List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> deferred;
         List<(string key, string hook, ushort map, Mob mob, Session? actor)> hooks;
         lock (_lock)
         {
-            deferred = new List<(ushort, uint, int, int)>(_deferredFx); _deferredFx.Clear();
+            deferred = new List<(ushort, uint, ushort, ushort, int, int)>(_deferredFx); _deferredFx.Clear();
             hooks = new List<(string, string, ushort, Mob, Session?)>(_hooks); _hooks.Clear();
         }
         foreach (var fx in deferred)
-            Broadcast(fx.map, p => { if (fx.anim > 0) p.EffectOver(fx.id, fx.anim); if (fx.sound > 0) p.SoundAt(fx.sound, fx.id); });
+        {
+            // The tile was captured when the effect was queued, not looked up now — the mob that raised it may
+            // already be dead and off the map by the time this flushes, and a death effect still has to be seen
+            // and heard from where the body fell.
+            if (fx.anim  > 0) BroadcastWideArea(fx.map, fx.x, fx.y, p => p.EffectOver(fx.id, fx.anim));
+            if (fx.sound > 0) BroadcastSameArea(fx.map, fx.x, fx.y, p => p.SoundAt(fx.sound, fx.id));
+        }
 
         // Lua AI hooks, run here and only here — outside the lock (see _hooks).
         foreach (var h in hooks)
@@ -3032,8 +3128,8 @@ public sealed class World
             // On the SWING itself, hit or miss — this is the point where the mob commits to the attack. The
             // 0x1A action makes the mob visibly swing (matching the player's own swing anim in HandleAttack) and
             // 009.wav is the swing sfx; the landed-hit sound (001.wav) is layered on separately by ApplyMobHit.
-            Broadcast(h.map, p => p.ActionOver(h.mob.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));
-            Broadcast(h.map, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
+            BroadcastSameArea(h.map, h.mob.X, h.mob.Y, p => p.ActionOver(h.mob.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));
+            BroadcastSameArea(h.map, h.mob.X, h.mob.Y, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
             Try(() => h.target.ApplyMobHit(h.mob, dmg));
         }

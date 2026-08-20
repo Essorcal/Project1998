@@ -527,6 +527,31 @@ public class ContentSmokeTests
                      precision: 3);
     }
 
+    /// <summary>Blood's two halves, both of which fail silently when wrong.
+    ///
+    /// <para>His CLICK must be a menu. Without a Lua click handler he falls through to the C# abilities, and
+    /// a lone entry there dives straight into its service (Session.RunNpcAsync) — which for Blood meant a
+    /// click opened the "which secret do you wish to forget?" picker cold.</para>
+    ///
+    /// <para>And the Frost sabre he forges must be <see cref="ItemDef.Bonded"/> ("only YOU will be able to
+    /// wield your Frost sabre") but NOT <see cref="ItemDef.Unrepairable"/> ("it can be repaired with ease") —
+    /// the two used to be one flag, so adding the sabre to the bonded set would otherwise have quietly made
+    /// the repair spell refuse it.</para></summary>
+    [Fact]
+    public void BloodOpensAMenuAndForgesABondedFrostSabre()
+    {
+        EnsureLoaded();
+
+        Assert.NotNull(Content.Npcs.FirstOrDefault(n => n.Key == "BloodNpc"));
+        Assert.True(NpcScript.Has("BloodNpc"), "npc_dialog.lua registered no npcs.BloodNpc click handler");
+        Assert.True(NpcScript.HasSay("BloodNpc"), "npc_dialog.lua registered no npcs_say.BloodNpc (the 'ice beast' branch)");
+
+        var sabre = Content.ItemByKey("frost_sabre");
+        Assert.NotNull(sabre);
+        Assert.True(sabre!.Bonded, "the Frost sabre is forged for one person — it must bind to its owner");
+        Assert.False(sabre.Unrepairable, "Blood says the Frost sabre repairs with ease — it must stay repairable");
+    }
+
     /// <summary>The Leviathan chain is wired end to end (see Server/LeviathanQuest.cs). Every link here is
     /// data that fails SILENTLY: a composition row naming an ability nothing registers is skipped with a log
     /// line, a stock key that doesn't resolve is dropped from the grid, a captive that wanders off its spawn

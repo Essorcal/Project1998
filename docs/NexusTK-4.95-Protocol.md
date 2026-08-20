@@ -1702,7 +1702,8 @@ entries `{u32 offset, char name[13]}` (first offset == header size).
 the SAME look id across colour-byte values as a **grid**, 12/row, default `0..23`; the colour byte visibly
 wraps mod-24 with only 0-19 real), `@crow <lo> <hi> [step]` (row sweep of the Monster.tbl look space),
 `@spawn [lookId] [hp]` (a pack), `@kill`, `@ride`/`@mount [0|1]` (get on/off a horse — form
-byte 3, §8). The `0x16` item commands (`@mob`, `@mobrow`) are kept for item/object discovery.
+byte 3, §8). `@mob <look> [hp] [color]` spawns a **shared world** monster (`SummonWorldMob`, stationary —
+see below); the raw-sprite `0x16` probes (`@mobraw`, `@mobrow`) are kept for item/object discovery.
 
 **Navigation & content commands** (data-driven, backed by the `Content` registry — §17.3): `@warp <name|id>
 [x y]` (fuzzy-match a map by name or id, optionally with coords, and enter it), `@go <x> <y>` (jump to a tile
@@ -1813,8 +1814,10 @@ the self-walk modes (§10), so it's excluded from the `0x0C` broadcast.
 > makes `client_final = source + forward(dir) = the true destination`. Both `MoveEntity` (peers, in
 > `HandleWalk`) and `MoveMob` (mobs, in `World.Tick`) pass the pre-move tile for this reason.
 
-**Shared mobs + combat.** `@summon` / `@rabbit` spawn into the world (`SummonWorldMob`); the debug lab
-(`@cre`/`@mob`/`@crow`/look-lab) stays session-local. `HandleAttack` hits world mobs first: `World.TryDamage`
+**Shared mobs + combat.** `@summon` / `@rabbit` / `@mob` spawn into the world (`SummonWorldMob`) — `@mob`
+with `wander: false`, so a calibration dummy holds its tile (it still turns, chases and swings back once you
+hit it: the `!mob.Wander` gate sits *after* the chase/retaliate blocks in `World.Tick`). The rest of the debug
+lab (`@cre`/`@mobraw`/`@mobrow`/`@crow`/look-lab) stays session-local. `HandleAttack` hits world mobs first: `World.TryDamage`
 applies damage **under the world lock** so two players can't double-kill; the number + death despawn are
 broadcast to all, **loot is rolled onto the floor**, the spawn point is scheduled to respawn, and **exp
 (the mob's real `Exp`)** goes to the killer. Beyond the commands, the world is populated automatically — see
@@ -1959,7 +1962,7 @@ extraction is right for the rest of the table; when a sprite looks off, verify v
 `@crecol`) rather than trusting the row.
 
 **Look-key gap found + fixed alongside this:** `HandleLookAt` (`;` key, §11) only checked `_world.MobAt`
-(shared-world mobs), never the session-local debug-dummy list (`Session.MobAt`) that `@cre`/`@mob`/`@crow`/
+(shared-world mobs), never the session-local debug-dummy list (`Session.MobAt`) that `@cre`/`@mobraw`/`@crow`/
 `@crecol`/the look-lab spawn into — so pressing `;` at a `@crecol` row silently did nothing. Now checks both.
 
 **Player HP/MP regen (`Session.RegenTick`).** The same heartbeat also heals **every connected player** — a

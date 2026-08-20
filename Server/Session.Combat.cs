@@ -149,16 +149,17 @@ public sealed partial class Session
 
         // Swing pose length == the swing interval, which is why RTK passes attack_speed as the action `time`.
         SendAction(_char.Id, type: 1, time: AttackSpeed, param: 0);                                 // our own swing anim
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, 1, AttackSpeed, 0), except: this);  // peers see us swing
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 1, AttackSpeed, 0), except: this);  // peers see us swing
 
         // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 on
         // EVERY swing, armed or not — weapon in hand -> its own ItmSound (RTK's per-weapon mapping — most
         // swords 331, Sword of power 337, …); bare hands -> the calibratable fist fallback (_fistSfx, see its
         // doc — no real RTK id exists to port for "no weapon"). @swingsnd overrides either case for
-        // calibration. Everyone on the map hears it, bound to us.
+        // calibration. Everyone within earshot hears it, bound to us — RTK's clif_playsound is a SAMEAREA
+        // send (the +/-9/+/-8 box around the swinger), not a map-wide one.
         int weaponSwing = EquippedWeaponSound();
         int swing = _swingSfx > 0 ? _swingSfx : weaponSwing > 0 ? weaponSwing : _fistSfx;
-        if (swing > 0) _world.Broadcast(_char.Map, p => p.SoundAt(swing, _char.Id));
+        if (swing > 0) _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(swing, _char.Id));
 
         FireWeaponProcs();   // RTK item on_swing: rolls before damage resolves, and on a miss too
 
@@ -432,7 +433,7 @@ public sealed partial class Session
         byte action = (byte)(dec[0] + 11);
         const ushort time = 0x4E;
         SendAction(_char.Id, action, time, 0);                                       // play it on our own client
-        _world.Broadcast(_char.Map, p => p.ActionOver(_char.Id, action, time, 0), except: this);  // and for peers
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, action, time, 0), except: this);  // and for peers
         Log.Info($"   -> EMOTE idx={dec[0]} -> action {action} (0x1A)");
     }
 
