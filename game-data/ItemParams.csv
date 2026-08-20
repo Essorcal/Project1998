@@ -28,6 +28,7 @@ tigers_heart,heal,1000
 wolf_meat,heal,48
 acorn,heal,8
 gold_acorn,heal,8
+chestnut,heal,8,,,,,,,,,user-specified 2026-08-19 (no RTK script exists)
 blue_potion,heal,100
 violet_potion,heal,200
 yellow_potion,heal,50
