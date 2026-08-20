@@ -31,6 +31,7 @@ public static class NpcScripts
         ["rogue_trainer"] = ClassTrainerAbility.Rogue,
         ["mage_trainer"] = ClassTrainerAbility.Mage,
         ["poet_trainer"] = ClassTrainerAbility.Poet,
+        ["forget_secret"] = ForgetSecretAbility.Instance,
         ["appearance"] = AppearanceAbility.Instance,
         ["war_paint"] = WarPaintAbility.Instance,
         ["shadow_stats"] = ShadowStatsAbility.Instance,

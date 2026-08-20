@@ -596,6 +596,32 @@ public sealed class FishAbility : INpcAbility, INpcSayHandler
     }
 }
 
+/// <summary>Just the "Forget Secret" option (RTK forgetSpell): drop one spell/skill from the book. Class-
+/// agnostic — it depends only on <see cref="NpcContext.KnownSpells"/> / <see cref="NpcContext.ForgetSpell"/>,
+/// so it can be composed onto a non-trainer NPC (e.g. Blood) that only unlearns. <see cref="ClassTrainerAbility"/>
+/// reuses the same <see cref="Forget"/> handler so the behavior stays identical everywhere it appears.</summary>
+public sealed class ForgetSecretAbility : INpcAbility
+{
+    public static readonly ForgetSecretAbility Instance = new();
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ("Forget Secret", Forget);
+    }
+
+    public static async Task Forget(NpcContext ctx)
+    {
+        var known = ctx.KnownSpells();
+        if (known.Count == 0) { await ctx.Say("You know no secrets to forget."); return; }
+
+        int pick = await ctx.Menu("Which secret do you wish to forget?", known.Select(s => s.Name).ToList());
+        if (pick < 1 || pick > known.Count) return;
+
+        var sp = known[pick - 1];
+        ctx.ForgetSpell(sp.Id);
+        await ctx.Say($"You have forgotten {sp.Name}.");
+    }
+}
+
 /// <summary>A class-path trainer (RTK warrior_trainer.lua / rogue_trainer / mage_trainer / poet_trainer).
 /// Ports the new-player core: <b>Become a &lt;Class&gt;</b> at level 5 (sex-specific starter kit + 500 gold +
 /// path change), <b>Learn / Divine / Forget Secret</b> (the trainer's spell-teaching), and <b>Become Noble</b>
@@ -669,7 +695,7 @@ public sealed class ClassTrainerAbility : INpcAbility
             yield return ("Learn Secret", LearnSecret);
             yield return ("Divine Secret", DivineSecret);
         }
-        yield return ("Forget Secret", ForgetSecret);   // any book, any trainer (RTK shows this always)
+        yield return ("Forget Secret", ForgetSecretAbility.Forget);   // any book, any trainer (RTK shows this always)
         yield return ("Become Noble", BecomeNoble);     // level-75 title, any trainer
     }
 
@@ -816,19 +842,8 @@ public sealed class ClassTrainerAbility : INpcAbility
         await ctx.Say($"{sp.Name} can be learned at insight {sp.Level}.", FeeText(ctx, sp));
     }
 
-    // "Forget Secret" (RTK forgetSpell): drop one spell/skill from the book (works on any known ability).
-    private static async Task ForgetSecret(NpcContext ctx)
-    {
-        var known = ctx.KnownSpells();
-        if (known.Count == 0) { await ctx.Say("You know no secrets to forget."); return; }
-
-        int pick = await ctx.Menu("Which secret do you wish to forget?", known.Select(s => s.Name).ToList());
-        if (pick < 1 || pick > known.Count) return;
-
-        var sp = known[pick - 1];
-        ctx.ForgetSpell(sp.Id);
-        await ctx.Say($"You have forgotten {sp.Name}.");
-    }
+    // "Forget Secret" (RTK forgetSpell) lives in ForgetSecretAbility.Forget — shared so Blood and the trainers
+    // behave identically. Referenced from Entries above.
 
     // "Become Noble" (RTK general_npc_funcs.setTitle): a level-75 custom title, 200 gold per character.
     private static async Task BecomeNoble(NpcContext ctx)
