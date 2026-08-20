@@ -76,8 +76,9 @@ dotnet run --project Server -- --ports 2000,2005,2001,2006
 > ⚠️ Do **not** run with the old `--ports 2000,2005` — that omits the 5.x lane and the 5.33 client will
 > get the black void again.
 
-Build/run uses the user-local .NET 8 SDK (not on PATH):
-`C:\Users\brian\AppData\Local\Microsoft\dotnet\dotnet.exe`.
+Build/run uses whatever `dotnet` is on PATH. `run-server.bat` also falls back to the user-local SDK
+location (`%LOCALAPPDATA%\Microsoft\dotnet`), which the installer does not add to PATH; set
+`P1998_DOTNET` if yours is somewhere else.
 
 ## Test loop for 5.33 terrain
 

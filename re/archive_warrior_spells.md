@@ -1,6 +1,6 @@
 # Warrior spell levels/costs — archive extraction (2026-07-27)
 
-Source: C:\Users\brian\Desktop\scraped_nexus_data\ (boards_tutors spells_formulas.md BOARD: Warriors, 40 posts,
+Source: the scraped archive (`P1998_ARCHIVE`) (boards_tutors spells_formulas.md BOARD: Warriors, 40 posts,
 lines 3160-6848; official manual play_path_valor.html — names/flavor only, no numbers).
 
 ## Base Warrior spells (level 5-99), 22 total — all confirmed by 2 independent tutor posts agreeing

@@ -2599,7 +2599,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   > the universal-PathId-0 rule.
   >
   > **Return's levels were corrected again the same day (2026-07-27)** after cross-checking
-  > `C:\Users\brian\Desktop\scraped_nexus_data\` (tswolf.com + boards.nexustk.com tutor posts), which the
+  > the scraped archive (`P1998_ARCHIVE`; tswolf.com + boards.nexustk.com tutor posts), which the
   > user ranks above the RTK Lua for real game facts: **Return is Mage 13 / Rogue 45 / Poet 32**, not 32 for
   > all three as first believed — tswolf's `mage.shtml` and a Mage tutor-board post independently agree on
   > 13. Approach stayed **Mage 20 / Poet 29 / Rogue 35**; Summon stayed **Mage 30 / Poet 38 / Rogue 53** —

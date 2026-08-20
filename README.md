@@ -30,7 +30,7 @@ Currently running on a live host. `master` is the deployed branch.
 | **Primary target** | 4.95 client (2001) — full support |
 | **Secondary** | 5.33 client (2003) — logs in, enters the world, renders terrain. Parked; see [`docs/5.x/README.md`](docs/5.x/README.md) |
 | **Era** | The world is pretending it is **2001-07-09**. Content is date-gated — see [`docs/common/Era-Gating.md`](docs/common/Era-Gating.md) |
-| **Scale** | ~35,000 lines of C#, 66 content CSVs, 4 Lua scripts, 98 tests |
+| **Scale** | ~35,000 lines of C#, 66 content CSVs, 4 Lua scripts, 183 tests |
 | **Licence** | **None yet** — see [below](#licence) |
 
 ---
@@ -83,7 +83,7 @@ LoginServer/     the login process -- accounts, auth, handoff
 Shared/          what both must agree on -- db, opcodes, tokens, paths
 Protocol.Tk495/  the wire adapter -- cipher + framing for the 2001 clients
 Tools/           the client-redirect patcher
-Tests/           98 guards on the failures that are SILENT
+Tests/           183 guards on the failures that are SILENT
 game-data/       all game content: 66 CSVs, 4 Lua scripts, 1,840 .map files
 docs/            everything we know -- see docs/README.md
 re/              the reverse-engineering workbench (~155 Python scripts)
