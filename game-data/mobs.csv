@@ -47,7 +47,7 @@ MobId,Identifier,Description,MobLook,MobLookColor,Vita,Exp,Level,Might,Grace,Wil
 45,young_dragon,Young dragon,108,30,115750,1600000,99,0,99,99,3900,4900,1000,1,0,3,75,-57,Vita=rtk-db-restored(un-div5),30
 46,fierce_sheep,Fierce Sheep,173,4,45750,590000,88,0,88,88,1300,1500,3000,1,0,3,88,-45,Vita=rtk-db-restored(un-div5),30
 47,ugly_sheep,Ugly Sheep,173,23,85000,840000,88,0,88,88,1400,1600,3000,1,0,3,88,-50,Vita=rtk-db-restored(un-div5),30
-48,ice_beast,Ice Beast,158,24,10000,0,20,0,0,0,300,300,2000,1,0,0,75,0,Vita=rtk-db-restored(un-div5),30
+48,ice_beast,Ice Beast,158,24,10000,0,20,0,0,0,300000,350000,2000,1,0,0,75,0,Vita=rtk-db-restored(un-div5);Dmg=300k-350k one-shot per real-game source (CTK/RTK's 300 not used),30
 49,mouse,Mouse,90,10,55,25,5,0,0,0,2,3,2000,0,0,0,0,95,Vita=rtk-db-restored(un-div5),18
 50,white_rat,White rat,91,11,110,25,5,0,5,5,2,5,2000,1,0,0,5,90,Vita=rtk-db-restored(un-div5),18
 51,centipede,Centipede,32,5,30,30,1,0,0,0,5,10,2000,1,0,0,0,0,Vita=rtk-db-restored(un-div5),18

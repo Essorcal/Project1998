@@ -77,6 +77,9 @@ function __make_ctx()
   function ctx:coins()                  return coroutine.yield({op="coins"}) end
   function ctx:spendGold(n)             return coroutine.yield({op="spendGold", n=n}) end
   function ctx:gameDate()               return coroutine.yield({op="gameDate"}) end
+  -- Inclusive random integer in [lo, hi], backed by the server RNG (MoonSharp's own math.random is
+  -- unseeded and so repeats the same sequence every server start -- see Myung-Suck's grumpy gate).
+  function ctx:rand(lo, hi)             return coroutine.yield({op="rand", lo=lo, hi=hi}) end
   return ctx
 end
 
@@ -944,6 +947,27 @@ function npcs_say.ChuRuaRockNpc(ctx, speech)
   return true
 end
 
+-- Myung-Suck, the rock at 20,21 in Northeast Koguryo (map 3040), by the Nameless Hermit -- "Myung-Suck
+-- means long-lasting rock in Korean" (NexusAtlas). Say "hi" and it grumbles "Quit bugging me will ya?".
+-- The Hermit warns you it only talks "if he's in the mood... he's a grumpy fellow": the FIRST time you
+-- greet it, it ignores you a hidden 3-to-5 times before it answers. Once it has spoken to you it always
+-- does. State is per-character (persisted regs): a rolled threshold, a try-counter, and a spoken flag.
+-- (RTK's own rock had none of this -- it answered every time -- so this gate is deliberately new.)
+function npcs_say.RockNpc(ctx, speech)
+  if speech ~= "hi" then return false end
+  if ctx:karmaTooLow() then return true end   -- RTK Tools.checkKarma
+  if ctx:reg("myung_suck_spoken") ~= 1 then
+    local need = ctx:reg("myung_suck_threshold")
+    if need == 0 then need = ctx:rand(3, 5); ctx:setReg("myung_suck_threshold", need) end
+    local tries = ctx:reg("myung_suck_tries") + 1
+    ctx:setReg("myung_suck_tries", tries)
+    if tries < need then return true end      -- ignored you this time: consume the "hi", say nothing
+    ctx:setReg("myung_suck_spoken", 1)        -- reached the threshold: it talks now and forever after
+  end
+  ctx:say("\"Quit bugging me will ya?\"")
+  return true
+end
+
 -- The tiger guarding the ginseng (chu_rua_tiger.lua). Say "rabbit", pick Forest, and he leaves (sets the
 -- chu_rua_tiger_gone flag so TryGinseng lets you take the root on map 1116).
 --
@@ -981,6 +1005,69 @@ function npcs_say.ChuRuaTigerNpc(ctx, speech)
     return true
   end
   return false
+end
+
+-- The Nameless Hermit (RTK NPCs/tutorial/nameless_hermit.lua), the ragged old man in Northeast Koguryo
+-- (map 3040, standing at 4,2 on the near side of the lava). He is the "one who has dwelt here a long time"
+-- that Blood points you toward after you pay for a Frost sabre -- the ice-beast questline's breadcrumb. He
+-- tells you where the Ice Beast is (across the lava, on the far side of the SAME map -- our Spawns.csv puts
+-- it at 29,3) and warns you off it. Pure flavour, no state: killing the beast for its Ice heart is the real
+-- gate and Blood forges the sabre. See npcs_say.BloodNpc below for the other end of the chain.
+--
+-- He also runs a small side-trade: hand him an Aged wine and he gives you a pair of Traveling shoes. It
+-- opens automatically when you click him while carrying the wine. A completed hand-in ENDS there (we return
+-- rather than fall through to the greeting/menu -- a deliberate deviation from RTK, which kept going);
+-- declining ("I kind of need it") still drops into the usual greeting so he stays talkable.
+function npcs.NamelessHermitNpc(ctx)
+  local country = ""
+  if ctx:nation() == 1 then country = "Kugnae"
+  elseif ctx:nation() == 2 then country = "Buya" end
+
+  if ctx:hasItem("aged_wine", 1) then
+    if ctx:menu("Are you willing to part with that Aged wine?",
+        {"Of course!", "I kind of need it."}) == 1 then
+      ctx:takeItem("aged_wine", 1)
+      ctx:giveItem("traveling_shoes", 1)
+      ctx:say("\"Why thank you! Here.\" The hermit rummaged through a dusty chest. \"Take these shoes if you'd like.\"")
+      return                              -- the hand-in IS the conversation; don't fall through to the greeting/menu
+    else
+      ctx:say("The hermit sighs. \"That's too bad.\"")
+    end
+  end
+
+  ctx:say("Well, hello! Not too many visitors out in these parts.",
+          "You're from " .. country .. ", aren't you? I could tell by your urban mannerisms.")
+
+  -- Come to him cold and he offers two things to ask about; once Blood has taken your 100 gold and sent
+  -- you to find "one who has dwelt here a long time" (paid_gold_for_frost_sabre, or the completed-quest
+  -- legend afterward) two more open up: his little wine errand, and the story of the rock -- which is how
+  -- he hands you the "say Hi to the rock" tip.
+  local opts = {"What do you know about the dreaded Ice Beast?"}
+  if ctx:reg("paid_gold_for_frost_sabre") == 1 or ctx:hasLegend("defeated_ice_beast") then
+    opts[#opts + 1] = "Is there anything I can do for you?"
+    opts[#opts + 1] = "What's the story behind the big rock?"
+  end
+  opts[#opts + 1] = "I'm just looking around."
+
+  local pick = opts[ctx:menu("So, traveller. What brings you by?", opts)]
+  if pick == "What do you know about the dreaded Ice Beast?" then
+    ctx:say(
+      "You're here for the Ice Beast?!? I hope you're not serious. That Beast has been in this area for as long as I can remember.",
+      "They say that it's semi-immortal. It can be defeated, but it will later reform! I don't know if that's true. I'm not sure anyone has defeated it!",
+      "\"Thank goodness there's that lava between us. It stays on its side, I stay on mine.\" The haggard man laughs. \"Well, except when I dash over there to hunt rabbits. I'm real quick about it though.\"",
+      "When you see how big it is, you'll want to stand clear, too. One good 'SMACK' and you'll be done for, I reckon.",
+      "If you want some advice, leave that vile beast alone. The world is better off with you alive.")
+  elseif pick == "Is there anything I can do for you?" then
+    ctx:say(
+      "\"Hmm...well, now that you mention it, I am a bit parched. I could sure use same Aged Wine to wash down my rabbit meat.\"",
+      "\"Bring me back some Aged Wine and I'll make it worth your trouble.\"")
+  elseif pick == "What's the story behind the big rock?" then
+    ctx:say(
+      "\"Heh. Curious about the rock, are you? That lump of dirt has been here longer than I have.\"",
+      "\"Just say 'Hi' to him and he'll talk to you. If he's in the mood, that is. He's a grumpy fellow.\"")
+  else
+    ctx:say("Okay. Say, I'd stay on this side of the lava were I you.")
+  end
 end
 
 -- Blood, the Sonhi trickster in Blood's Home off KaMing's Encampment (RTK NPCs/kaming/blood.lua, the

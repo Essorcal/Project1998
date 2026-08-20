@@ -38,6 +38,15 @@ mobs.void_mouse  = { on_attacked = squeak }
 -- but the in-game instructions are explicit that it is killing one that counts ("do not kill any
 -- Leviathans"), and a million-coin penalty for one mis-click is not the quest anyone played. The player-facing
 -- text wins over RTK's script here. after_death is the hook, so the actor is the killer.
+-- The Ice Beast greets the world every time it reforms (RTK Mobs/ice_beast.lua on_spawn). Channel 0
+-- attributes the line to it, so this shows as "Ice Beast: Ho, ho! ...". Its chase taunts are data
+-- (MobChatter.csv); the lava self-destruct that makes this greeting recur is engine (World.StepMobTo, keyed
+-- IceBeastKey). The rest of the questline: Blood + the Nameless Hermit (npc_dialog.lua) and the lava/shoes
+-- gate (Session.Navigation.cs, TryIceBeastLava).
+mobs.ice_beast = {
+  on_spawn = function(ctx) ctx:say("Ho, ho! It is good to be back!") end
+}
+
 mobs.leviathan = {
   after_death = function(ctx)
     if ctx:actorHasLegend("leviathan_sworn_enemy") or ctx:actorHasLegend("leviathan_freed") then return end
