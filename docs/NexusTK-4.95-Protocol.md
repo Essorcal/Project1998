@@ -3478,7 +3478,12 @@ every RTK script checked (`ExpSeller.lua`, `harden_armor.lua` family, `spark.lua
 so ~90 call sites across `Session.cs`'s spell-casting, quest, mount, trap, and status-toggle code were
 silently landing on the wrong (or no-op-looking) channel. Converted all of them to `SendMiniText`, **except**:
 the four `clif_changestatus` status-line toggles (Realm-centered/Fast-Move/Sociable/Exchange — a different
-RTK function, verbatim chat text), the re-login "Incorrect password." and profile-save confirmation (both
+RTK function, verbatim chat text) — *an exception since found to be wrong: `clif_changestatus`'s announces
+are themselves `clif_sendminitext` calls (clif.c:14240ff). 2026-08-19 the Sociable ("Join a group") and
+Exchange lines moved to `SendMiniText` type 3 with user-specified tab formatting
+(`Join a group\t:ON|OFF`, `EXCHANGE\t\t:ON|OFF`); the remaining toggles (Fast Move, Realm-centered, clan
+whisper, the `SettingLabels` set) still ride `SendMessage` and should probably follow* — the re-login
+"Incorrect password." and profile-save confirmation (both
 documented, intentional `0x02` uses — see §9.5/§11k above), and our own invented combat-kill flavor lines
 ("Your Fireball destroys Rat! (+50 exp)") which have no RTK equivalent at all (real RTK conveys a kill purely
 via the HP-bar/hit-animation, no text) and were kept as a deliberate enhancement. Durability warnings
@@ -3493,7 +3498,14 @@ matching RTK's wire layout exactly (`clif.c:7644`: `dstlen = RFIFOB(fd,5); msgle
 Dispatched to `Session.HandleWhisperPacket`, which is now the ONLY entry point — the `@whisper` / `@w`
 chat fallbacks were removed once this opcode was confirmed real. `Content.CanTalk`
 (RTK `cantalk`, 2/9850 maps) and the not-found message (`"<name> is nowhere to be found."`) are RTK's exact
-wording. `World.FindPlayer(name)` is the case-insensitive online-lookup this needed.
+wording. `World.FindPlayer(name)` is the case-insensitive online-lookup this needed. **Error channels fixed
+2026-08-19** (they had drifted onto `SendLog` = `0x0D` self-speech, so the client spoke the failure aloud
+as the player's own words): the not-found and can't-hear lines are **blue** (`SendBlueMessage` =
+`SendMiniText` type 0 — RTK `clif_sendbluemessage`, which writes an `0x0A` with type 0), and the cantalk
+line is plain minitext type 3 (RTK `clif_parsewisp` uses `clif_sendminitext` for that one). The ignore-block
+wording is RTK's literal `"They cannot hear you right now."` (was "can't"). Same date, the `!!`/`!` channel
+errors ("You are not in a group", "You are not in a clan", "Clan chat is off.") moved to blue too — all
+four are `clif_sendbluemessage` in RTK's `clif_parsewisp`, and the first two carry no period there.
 
 **Delivery, fixed + LIVE-CONFIRMED 2026-07-27 — was a same-head self-bubble, now rides the `0x0A` mini-text
 channel.** Originally delivery rode `SendLog` (`0x0D`, chatType 0, attributed to the *recipient's own*
@@ -3506,10 +3518,13 @@ entity id instead would silently vanish whenever sender and recipient aren't on 
 case, since whisper has no range limit). Fixed by switching delivery to **`Session.SendMiniText`** (`0x0A`,
 the client's mini-text/status channel below the inventory, RTK `clif_sendmsg`/`clif_sendminitext` — already
 proven live via the look-at-name and item-pickup-name fixes earlier this session) with **`type = 0`**,
-matching RTK's own `clif_sendwisp`/`clif_retrwisp` type value for "Wisp" text. Both directions now send the
-literal line `"SenderName: message"` — the sender's own echo (`DoWhisper`) and the recipient's copy
-(`ReceiveWhisper`) are the same string, no RTK-style class-name suffix (dropped; it added no information
-the player didn't already have and doesn't match the plain "Name: message" shape used elsewhere).
+matching RTK's own `clif_sendwisp`/`clif_retrwisp` type value for "Wisp" text. **Line formats fixed
+2026-08-19 to RTK's real shapes** (both had been a uniform `"SenderName: message"`): the sender's own echo
+(`DoWhisper`) is **`Target> message`** — RTK `clif_retrwisp`'s verbatim `"%s> %s"` with the TARGET's
+proper-cased name, so you see who you whispered — and the recipient's copy (`ReceiveWhisper`) is
+**`Sender" message`** — RTK `clif_sendwisp`'s double-quote separator. RTK additionally inserts the sender's
+class in parens (`Sender" (Class) message`, clif.c:6539); that half is deliberately dropped
+(user-specified 2026-08-19).
 **Live-confirmed:** with `type = 0`, the line lands in the main chat window in blue with no head bubble,
 exactly matching RTK's "Wisp" intent — so `0x0A`'s `type` field really does route to a different pane/color
 per value (`type = 3`, used elsewhere for look-at/item names, renders in the mini-status box instead). Not
@@ -3849,7 +3864,8 @@ rule, so it isn't copied.
 Ported rules (`Session.TryPartyInvite`, RTK's literal minitext wording where it has one):
 
 1. Target not found → *"X is nowhere to be found."* (RTK's `clif_addgroup` just `nullpo_ret`s silently on a
-   bad name; this server gives feedback here, matching how whisper already handles the same case — §11.)
+   bad name; this server gives feedback here, matching how whisper already handles the same case — §11 —
+   including the channel: blue wisp text, `SendBlueMessage`, since 2026-08-19.)
 2. Inviting yourself → *"You can't group yourself..."*
 3. **Special case:** the leader "inviting" someone already in their OWN party **kicks** them — RTK's own
    self-referential branch (`tsd->group_leader == sd->group_leader && sd->group_leader == sd->bl.id` →

@@ -140,7 +140,8 @@ public sealed partial class Session
         if (IsMuted()) { ReportMuted(); return; }
 
         // RTK: map[sd->bl.m].cantalk == 1 blocks whisper with this exact line (only 2 maps set it).
-        if (!Content.CanTalk(_char.Map)) { SendLog("Your voice is swept away by a strange wind."); return; }
+        // clif_parsewisp delivers it via clif_sendminitext — the type-3 status pane, not blue.
+        if (!Content.CanTalk(_char.Map)) { SendMiniText("Your voice is swept away by a strange wind."); return; }
 
         // RTK clif_parsewisp routes special recipient "names" to a broadcast channel instead of a person:
         // "!!" = group/party chat, "!" = clan chat. (RTK also has "@" = subpath and "?" = novice; subpath
@@ -150,16 +151,20 @@ public sealed partial class Session
         if (name == "!")  { DoClanChat(msg);  return; }
 
         var target = _world.FindPlayer(name);
-        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }   // RTK's literal wording
+        // RTK's literal wording, on the BLUE wisp channel (clif_sendbluemessage) — same channel the whisper
+        // itself would have used, NOT self-speech.
+        if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
 
         // RTK clif_isignore: a whisper is blocked if EITHER side has the other on their ignore list — not
         // just the recipient blocking the sender, but also the sender's own list (so you can't be pestered
-        // by someone you've muted even if THEY never muted you). canwhisper's real wording on failure.
+        // by someone you've muted even if THEY never muted you). canwhisper's real wording on failure, blue.
         if (IsIgnoring(target._char.Name) || target.IsIgnoring(_char.Name))
-        { SendLog("They can't hear you right now."); return; }
+        { SendBlueMessage("They cannot hear you right now."); return; }
 
         target.ReceiveWhisper(_char.Name, msg);
-        SendMiniText($"{_char.Name}: {msg}", type: 0);   // sender's own echo — same line the receiver sees
+        // Sender's own echo — RTK clif_retrwisp, verbatim "%s> %s": the TARGET's name (proper-cased from
+        // their session, not as typed) + "> " + the message, on the blue wisp channel.
+        SendBlueMessage($"{target._char.Name}> {msg}");
     }
 
     // "!!" whisper target — group/party chat (RTK clif_sendgroupmessage). Reaches every member of your group
@@ -168,7 +173,7 @@ public sealed partial class Session
     // either side on ignore is skipped (RTK clif_isignore), and you can't ignore yourself so the echo survives.
     private void DoGroupChat(string msg)
     {
-        if (_party is null) { SendLog("You are not in a group."); return; }   // RTK's literal wording
+        if (_party is null) { SendBlueMessage("You are not in a group"); return; }   // RTK's literal wording (blue, no period)
         string line = $"[!{_char.Name}] ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
         foreach (var p in _party.Members)
@@ -184,8 +189,8 @@ public sealed partial class Session
     // Rendered on the type-12 clan channel; format is RTK's "<!<name>> (<class>) <message>".
     private void DoClanChat(string msg)
     {
-        if (string.IsNullOrEmpty(_char.ClanName)) { SendLog("You are not in a clan."); return; }   // RTK wording
-        if (!_char.ClanChat) { SendLog("Clan chat is off."); return; }                              // RTK wording
+        if (string.IsNullOrEmpty(_char.ClanName)) { SendBlueMessage("You are not in a clan"); return; }   // RTK wording (blue, no period)
+        if (!_char.ClanChat) { SendBlueMessage("Clan chat is off."); return; }                            // RTK wording (blue)
         string line = $"<!{_char.Name}> ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
         foreach (var p in _world.AllPlayers())
@@ -289,8 +294,12 @@ public sealed partial class Session
     /// shown; delivering via our own entity would misattribute it as self-speech, delivering via the
     /// sender's entity id would silently vanish whenever sender/recipient aren't on the same map — the
     /// common case). 0x0A itself is already proven live (look-at names, item-pickup text both use it via
-    /// SendMiniText's type=3); only the type=0/"blue chat window, not the status box" routing is unconfirmed.</summary>
-    internal void ReceiveWhisper(string fromName, string msg) => SendMiniText($"{fromName}: {msg}", type: 0);
+    /// SendMiniText's type=3); only the type=0/"blue chat window, not the status box" routing is unconfirmed.
+    ///
+    /// <para>Format: RTK clif_sendwisp is sender + '"' + message — the double-quote IS the whisper marker
+    /// (vs the sender echo's '>'). RTK also inserts the sender's class in parens (<c>Sender" (Class) msg</c>);
+    /// we deliberately drop that half — user-specified 2026-08-19: incoming reads <c>Sender" message</c>.</para></summary>
+    internal void ReceiveWhisper(string fromName, string msg) => SendBlueMessage($"{fromName}\" {msg}");
 
     /// <summary>Party join/leave/kick/disband broadcasts. Delivered on the SAME type=3 mini/status channel
     /// as the "You cast X." casting info (SendMiniText's default), NOT the type=11 "group" channel: on the

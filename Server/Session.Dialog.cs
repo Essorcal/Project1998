@@ -1851,7 +1851,7 @@ public sealed partial class Session
         string name = text.Trim();
         if (name.Length == 0) { SendClickProfile(this); return; }
         var target = _world.FindPlayer(name);
-        if (target is null) { SendLog($"{name} is nowhere to be found."); return; }
+        if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
         SendClickProfile(target);
     }
 
@@ -1954,6 +1954,12 @@ public sealed partial class Session
         body.AddRange(t);
         SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type} {t.Length}B");
     }
+
+    /// <summary>RTK's clif_sendbluemessage — the whisper/wisp BLUE chat channel (0x0A type 0, the same
+    /// channel whispers themselves render on). Whisper-family feedback (target not found, can't hear you,
+    /// not-in-a-group/clan) belongs HERE, not on SendLog: SendLog is 0x0D self-speech, so routing an error
+    /// line through it made the client speak the failure out loud as the player's own words.</summary>
+    private void SendBlueMessage(string text) => SendMiniText(text, type: 0);
 
     /// <summary>A server-wide announcement (restart warnings — see <see cref="RestartSchedule"/>).
     ///

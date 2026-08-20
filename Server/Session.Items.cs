@@ -298,7 +298,16 @@ public sealed partial class Session
         if (eat && def.Type != 0) { SendMiniText("You can't eat that."); return; }   // ITM_EAT only — same line as gear
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
 
+        _useGesturePlayed = false;
         if (!ApplyItemEffect(def)) return;   // gate refused (e.g. ward already active) -> not consumed, RTK's own early-return
+
+        // EVERY food (ITM_EAT) consume shows the eat pose + sound, even a zero-effect one. Chestnuts, meat
+        // scraps and the like carry no ItemParams row and no Vita, so the fallback below never animated and
+        // they vanished silently — RTK is no better (no chestnut script, empty global `use` hook), so this
+        // is a deliberate rule of ours (user-specified 2026-08-19), not a port. Guarded by the gesture flag
+        // so an effect verb that already showed its own gesture (heal/fatal's eat, a drink's sip, harden-
+        // body's cast pose) doesn't play twice — and the mana items (wine, pipes) keep their sip, not this.
+        if (def.Type == 0 && !_useGesturePlayed) ItemEatAnim();
 
         // Narration (user-specified, 2026-08-07): a consumable is SILENT until it's gone, and speaks exactly
         // once — on the use that removes the last of it. The line comes from the CLIENT itself, off the
@@ -365,8 +374,13 @@ public sealed partial class Session
     // defined in Session.Spells.cs; say/message/restoreMana reuse LuaSay/LuaMessage/LuaRestoreMana.)
     internal int ItemArmor => Math.Clamp(_char.Ac + Totals().armor, -80, 70);   // RTK harden-body's clamped armor
 
+    // Set by each gesture primitive during one HandleUseItem run (reset there before ApplyItemEffect), so
+    // the "every food animates" guarantee knows whether the item's effect verb already showed a gesture.
+    private bool _useGesturePlayed;
+
     internal void ItemEatAnim()   // the shared eat/use pose + sound, self and peers (RTK action 8)
     {
+        _useGesturePlayed = true;
         SendAction(_char.Id, 8, 40, 0);
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
         PlayEatSfx();   // the action sprite carries no sound of its own — 403+006 over 0x19 (see EatSfxA/B)
@@ -385,11 +399,12 @@ public sealed partial class Session
     /// added the way the others were — by listening.</summary>
     internal void ItemSipAnim()
     {
+        _useGesturePlayed = true;
         SendAction(_char.Id, 7, 20, 0);
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 7, 20, 0), except: this);
     }
 
-    internal void ItemCastPose() => SendAction(_char.Id, 6, 40, 0);   // harden-body cast pose (self only, as RTK)
+    internal void ItemCastPose() { _useGesturePlayed = true; SendAction(_char.Id, 6, 40, 0); }   // harden-body cast pose (self only, as RTK)
 
     internal void ItemHeal(int amt)
     {

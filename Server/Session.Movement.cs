@@ -697,9 +697,12 @@ public sealed partial class Session
         else if (setting == 0x08)
         {
             // Toggle "exchange/trade" (whether others may exchange with you). Same profile cells; persisted.
+            // Minitext into the status/"spell cast" pane (RTK clif_changestatus case 8 -> clif_sendminitext).
+            // Uppercase EXCHANGE + double tab (vs RTK's "Exchange" space-padded) is the user's 2026-08-19
+            // spec of the real 4.95 client's line.
             _char.Exchange = !_char.Exchange;
             SaveChar();
-            SendMessage(SettingLine("Exchange", _char.Exchange));
+            SendMiniText($"EXCHANGE\t\t:{(_char.Exchange ? "ON" : "OFF")}");
             Log.Info($"   -> setting 0x08 Exchange = {(_char.Exchange ? "ON" : "OFF")}");
         }
         else if (setting == 0x0A)
