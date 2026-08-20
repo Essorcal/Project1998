@@ -5,9 +5,10 @@
  2. LEVEL: Atlas "Level 1" and our 0 both mean "no level requirement" - not a difference.
 """
 import csv, json, re, collections
+from _paths import DATA, RE, ROOT, RTK_LUA, ARCHIVE
 
-ITEMS = r'C:\Users\brian\Desktop\NexusServer\game-data\Items.csv'
-PATHS = r'C:\Users\brian\Desktop\NexusServer\game-data\Paths.csv'
+ITEMS = DATA / 'Items.csv'
+PATHS = DATA / 'Paths.csv'
 
 _paths = list(csv.DictReader(open(PATHS, encoding='utf-8')))
 BASE = {int(r['PthId']): int(r['PthType']) for r in _paths}

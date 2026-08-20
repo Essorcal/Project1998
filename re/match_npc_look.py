@@ -15,9 +15,10 @@ fourth answer means nothing.
 import os, struct, sys
 from PIL import Image
 
-RE = r"C:\Users\brian\Desktop\Project1998\re"
+# RE comes from _paths (this directory).
 sys.path.insert(0, RE)
 from render_pets import Epf, load_tbl, load_pal          # noqa: E402  (reuse the proven decoders)
+from _paths import DATA, RE, ROOT, RTK_LUA, ARCHIVE
 
 DARK = 170          # sum(rgb) below this counts as outline
 

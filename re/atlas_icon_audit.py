@@ -9,12 +9,13 @@ steelflash 46, star_staff 64) which all land < 10. So:
 """
 import csv, json, os, re, collections, warnings
 warnings.filterwarnings('ignore')
-from match_icon import best
+from match_item_icon import best
+from _paths import DATA, RE, ROOT, RTK_LUA, ARCHIVE
 
 FRAMES_495 = 1310
 CONFIDENT, PLAUSIBLE = 12, 35
 
-rows = list(csv.DictReader(open(r'C:\Users\brian\Desktop\NexusServer\game-data\Items.csv', encoding='utf-8')))
+rows = list(csv.DictReader(open(DATA / 'Items.csv', encoding='utf-8')))
 atlas = json.load(open('atlas_weapons.json'))
 
 def norm(s):

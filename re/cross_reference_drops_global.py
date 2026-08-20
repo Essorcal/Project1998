@@ -15,9 +15,10 @@ import json
 import re
 from pathlib import Path
 from collections import defaultdict
+from _paths import DATA, RE, ROOT, RTK_LUA, ARCHIVE
 
 ROOT = Path(__file__).parent.parent
-ARCHIVE = Path(r"C:\Users\brian\Desktop\scraped_nexus_data\artifacts\game_data")
+ARCHIVE = ARCHIVE / "artifacts" / "game_data"
 DATA = ROOT / "data" / "game-data"
 
 VORTEX_ERA_PAGES = {"events", "gogoonisland", "assassin", "bandit", "greyhand", "hillmen", "hunter",

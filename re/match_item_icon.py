@@ -6,8 +6,9 @@ must rank staff_of_power's icon 60 first) so a good score means something.
 """
 import struct, sys, os
 from PIL import Image
+from _paths import DATA, RE, ROOT, RTK_LUA, ARCHIVE
 
-RE = r'C:\Users\brian\Desktop\NexusServer\re'
+# RE comes from _paths (this directory).
 
 def load_pal_blocks(path):
     d = open(path, 'rb').read()

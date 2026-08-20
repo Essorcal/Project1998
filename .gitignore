@@ -5,11 +5,13 @@
 *.user
 *.suo
 
-# ---- Game data ----
-# game-data/ is its OWN git repo (submodule), tracked separately from this logic-only server repo: the CSVs,
-# the Lua, maps/ and SObj.tbl. Read-only at runtime; a deploy replaces it wholesale.
+# ---- Per-user editor/agent config ----
+# .claude/settings.json is the PROJECT's config and is tracked. settings.local.json is the per-user
+# overlay Claude Code writes as you approve things; it is full of one machine's absolute paths and means
+# nothing to anyone else.
+.claude/settings.local.json
 
-# ---- Live instance state — NEVER committed, to EITHER repo ----
+# ---- Live instance state — NEVER committed ----
 # The counterpart to game-data/. Created by running the server, unique to this machine, and the entire
 # backup target (the nightly sqlite3 .backup lives in Project1998-infra, scripts/p1998-backup.sh):
 #   state/   project1998.db + its WAL sidecars, the legacy chars/*.json store, gm/tester_accounts.txt
@@ -17,10 +19,10 @@
 #   run/     restart_at / reload_now — deploy-to-server triggers, consumed and deleted on read.
 #
 # These are top-level SIBLINGS of game-data/ rather than living inside it, and that is what makes this
-# section three lines. When state sat in the same directory as content, the content repo needed its own
+# section three lines. When state sat in the same directory as content, the content tree needed its own
 # .gitignore listing every runtime filename, the deploy rsync needed the matching exclude list, and both
 # had to be updated in lockstep every time something new started being written. A directory the content
-# repo cannot see needs no rules at all.
+# tree cannot see needs no rules at all.
 state/
 logs/
 run/
@@ -29,71 +31,81 @@ run/
 server_live.err
 server-err.log
 
-# ---- RE tooling byproducts ----
-re/__pycache__/
-re/probe_log.txt
-re/probe_log_533.txt
-re/nametag_log.txt
+# Ad-hoc capture/scratch dropped at the repo root by a probe or a bot run.
 scratch_*.html
+char_levels.csv
 
-# ---- client exe backups made by re/patch_*.py before an on-disk binary patch (never commit a full game exe) ----
-re/*.exe
-re/*.exe.bak
-re/*.prenametagpatch.bak
-re/patches/backups/
-re/patches/**/__pycache__/
+# ---- Third-party trees cloned next to the source, never vendored ----
+# RTK-Server: unkmc/RTK-Server, ~190 MB. The 7.x reference server; the single most-cited source in this
+#   codebase, and the origin of most of game-data/. Clone it yourself — see docs/research/README.md.
+# cnc-ddraw: 8 MB of prebuilt DirectDraw shim binaries for running the 2001 client on Windows 11.
+# client-5.33-redirect: written by the 5.33 client at runtime.
+RTK-Server/
+re/cnc-ddraw/
+client-5.33-redirect/
 
-# ---- RE-tool byproducts extracted from the client PAK (regenerable via re/pak_extract.py) ----
-re/monster.epf
-re/monster.tbl
-re/monster.pal
-re/monster0.pal
-re/item.tbl
-re/Item.epf
-re/Item.pal
-re/Item.tbl
-re/items_*.png
+# =================================================================================================
+# re/ — the reverse-engineering workbench
+#
+# What IS tracked here: the ~155 Python extractors, probes and Frida scripts, plus the small CSV/JSON/MD
+# files that are the FINDINGS. Forty-five of those scripts are cited by name from C# doc comments as the
+# provenance of a generated table ("extracted by re/extract_mob_drops.py"), so they are part of the
+# product's documentation, not scratch.
+#
+# What is NOT: everything below. Two kinds of thing, both regenerable, ~28 MB between them —
+#   1. extracts from the client PAK and the RTK dump (art, palettes, tables, audio, maps)
+#   2. captures and renders produced by a probe run (packet dumps, sprite sheets, row-level swing logs)
+#
+# The rule to apply when adding a file here: if re-running a script would recreate it, it is a byproduct.
+# If a human decided it, it is a finding. Findings are small; that is not a coincidence.
+# =================================================================================================
+re/**/__pycache__/
+re/**/*.pyc
+re/**/*.jsonl
+re/**/*.png
+re/**/*.gif
+re/**/*.bat
+re/**/*.bak
+re/**/*.bak.*
+re/**/*.csv.*.bak
+
+# Client/RTK extracts: art, palettes, lookup tables, terrain, audio, and the exe backups that
+# re/patch_*.py writes before an on-disk binary patch. NEVER commit a full game exe.
+re/**/*.epf
+re/**/*.pal
+re/**/*.tbl
+re/**/*.frm
+re/**/*.cmp
+re/**/*.exe
 re/snd/
+re/mus/
+re/probe_log*.txt
+re/nametag_log.txt
 re/sound_log.txt
-re/monsfrm.tbl
 re/str_eng.res
-re/nexustk_dat_list.txt
+re/*_dat_list.txt
 re/interdat_list.txt
-# Compiled/converted client maps (game data; e.g. from re/map2cmp.py):
-re/*.cmp
-# Extracted from the RTK reference server / Nexus Atlas (regenerable via the tools in re/; output now lands
-# in data/rtk-data/, covered by the blanket data/ rule above):
+
+# Row-level live-capture tables. Megabyte-scale dumps of one probe session; the finding they produced is
+# in docs/4.x/, and the rows themselves say nothing without the harness that read them.
+re/auto/swings.csv
+re/auto/attempts.csv
+re/auto/incoming.csv
+re/auto/kills.csv
+
+# Generated reports. Rebuild: re/build_zone_drop_report.py, re/monster-matcher/monster_matcher.py.
+re/zone_drop_report.json
+re/zone_drop_report.md
+re/monster-matcher/monsters.json
 re/monster-matcher/atlas_img/
 re/monster-matcher/atlas_ref.json
 re/monster-matcher/cdx_monsternpc.json
-re/monster-matcher/*.png
 
-# ---- Third-party client shim (8 MB of prebuilt binaries; re-downloadable) ----
-re/cnc-ddraw/
-
-# ---- Reference server source (unkmc/RTK-Server, ~190MB; cloned for protocol reference only) ----
-RTK-Server/
-
-# runtime redirect dir written by the client
-client-5.33-redirect/
-
-re/monster-matcher/server.log
-
-# ---- Spell-FX RE workspace (re/fx/): 19MB of PAK extracts (Effect.epf/tbl/pal/frm), scraped nexusatlas
-# GIFs/HTML and the montage sheets built from them. All regenerable via re/pak_extract.py + the atlas
-# scrapers. The three derived CSVs below ARE the findings, so they stay tracked.
+# re/fx/ is 19 MB of Effect.epf extracts and scraped Atlas GIFs. The three CSVs ARE the findings.
 re/fx/*
 !re/fx/animation_map.csv
 !re/fx/spell_animation_join.csv
 !re/fx/triage.csv
 
-# ---- Bulk sprite extracts pulled out of the client PAK for one-off inspection ----
-re/out_*.epf
-
-# ---- Music extracted from the client PAK (15MB of MP3s; regenerable via re/extract_mus.py) ----
-re/mus/
-
-# ---- Timestamped snapshots the re/auto harness writes before each run ----
-re/auto/*.bak
-re/auto/*.bak.*
-re/auto/*.csv.*.bak
+# Pre-patch backups of client files taken by re/patches/*.py.
+re/patches/backups/

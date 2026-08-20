@@ -6,11 +6,12 @@ Page layout: each weapon is a PAIR of <tr>s --
 We split on the rowspan cell, so each chunk = one weapon.
 """
 import re, json, sys, csv
+from _paths import DATA, RE, ROOT, RTK_LUA, ARCHIVE
 
 # Class display names straight out of Paths.csv (PthMark0), longest-first so "Chung ryong" wins over "Do".
 CLASS_NAMES = sorted(
     {r['PthMark0'].strip() for r in csv.DictReader(
-        open(r'C:\Users\brian\Desktop\NexusServer\game-data\Paths.csv', encoding='utf-8'))
+        open(DATA / 'Paths.csv', encoding='utf-8'))
      if r['PthMark0'].strip()},
     key=len, reverse=True)
 CLASS_ALT = '|'.join(re.escape(c) for c in CLASS_NAMES)

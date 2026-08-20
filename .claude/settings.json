@@ -1,0 +1,39 @@
+{
+  "//": [
+    "Project-wide Claude Code config, tracked so every contributor's agent starts from the same place.",
+    "Personal approvals belong in .claude/settings.local.json, which is gitignored.",
+    "",
+    "The allow list below is deliberately limited to commands that only READ, plus the build and test",
+    "commands an agent runs constantly. Anything that writes to the world -- git push, a deploy, a GM",
+    "command against the live server, killing a process -- is left to prompt, every time."
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet run --project Tools:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git blame:*)",
+      "Bash(git branch:*)",
+      "Bash(git grep:*)",
+      "Bash(python re/:*)",
+      "Bash(python -c:*)",
+      "WebFetch(domain:web.archive.org)",
+      "WebFetch(domain:nexusatlas.com)",
+      "WebFetch(domain:www.tswolf.com)",
+      "WebFetch(domain:tswolf.com)",
+      "WebFetch(domain:boards.nexustk.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ],
+    "deny": [
+      "Read(./state/**)",
+      "Read(./logs/**)"
+    ]
+  }
+}

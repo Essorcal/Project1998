@@ -9,11 +9,22 @@ REM
 REM Split deployment: set P1998_GAME_HOST to the game box's public IP before launching login, so the
 REM handoff redirects clients to the right machine (defaults to 127.0.0.1 = same box).
 REM
-REM Uses the user-local .NET 8 SDK (not on PATH). Close a window (or Ctrl+C in it) to stop that process.
-REM dotnet is NOT on PATH (user-local SDK); reference it by full path. Fall back to a PATH dotnet if the
-REM hardcoded location ever moves.
-set "DOTNET=C:\Users\brian\AppData\Local\Microsoft\dotnet\dotnet.exe"
-if not exist "%DOTNET%" set "DOTNET=dotnet"
+REM Close a window (or Ctrl+C in it) to stop that process.
+REM
+REM Finding dotnet: a PATH install is the normal case and is tried first. The fallbacks cover the
+REM user-local SDK layout, where the installer does NOT put dotnet on PATH -- a machine can have a
+REM perfectly good .NET 8 and still fail here with "'dotnet' is not recognized". Set P1998_DOTNET if
+REM yours is somewhere else again.
+set "DOTNET=%P1998_DOTNET%"
+if not defined DOTNET (where dotnet >nul 2>&1 && set "DOTNET=dotnet")
+if not defined DOTNET if exist "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" set "DOTNET=%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe"
+if not defined DOTNET if exist "%ProgramFiles%\dotnet\dotnet.exe" set "DOTNET=%ProgramFiles%\dotnet\dotnet.exe"
+if not defined DOTNET (
+    echo *** No .NET SDK found. Install .NET 8 from https://dotnet.microsoft.com/download ***
+    echo *** or set P1998_DOTNET to the full path of dotnet.exe.                          ***
+    pause
+    exit /b 1
+)
 
 REM Build the whole solution ONCE, up front, before launching anything. Two reasons:
 REM   1. Fail-fast: if the code doesn't compile we stop here and show the errors, instead of opening two

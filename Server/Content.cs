@@ -1535,7 +1535,7 @@ public static partial class Content
     /// <summary>Per-spell, per-class real learn data — key → {pathId → cost}. Generated 2026-07-27 by
     /// <c>re/merge_spell_costs.py</c> from two sources, per the user's explicit ranking (archive beats Lua):
     /// <list type="bullet">
-    /// <item>Archive-sourced (149 rows): cross-checked against <c>C:\Users\brian\Desktop\scraped_nexus_data\</c>
+    /// <item>Archive-sourced (149 rows): cross-checked against the tswolf.com + boards.nexustk.com scrape
     /// (tswolf.com class spell-list pages, Wayback-dated 2001, + boards.nexustk.com tutor-board posts) —
     /// covers the base 1-99 spell list for all 4 classes plus the "peasant commons" spells (which turned out
     /// to NOT be flat-universal: Return/Approach/Summon are Rogue/Mage/Poet only at different levels each,
