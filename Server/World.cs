@@ -189,6 +189,16 @@ public sealed class World
     // (mob_ai_mythic.move). The heal animation/sound pair IS per-boss and lives in MobBosses.csv.
     private const int LastStandAnim  = 11;
     private const int CurseShrugAnim = 10;
+    // The Ice Beast questline (Northeast Koguryo, map 3040). RTK Mobs/ice_beast.lua ends its `move` hook by
+    // checking the lava row at 29-30 x 14-16 and, if it is standing on it, removing its own full health — so
+    // you defeat the beast by luring it onto the lava, not by out-trading its 300k one-shot. It is UNLEASHED for
+    // that (see the chase-leash test in Tick), because its spawn (29,3) is farther than ChaseLeash from the
+    // lava and an ordinary mob would give up the pursuit long before reaching it. IceBeastMeltAnim is the
+    // burst it flashes as it melts (RTK's sendAnimation on the same tiles).
+    private const ushort IceBeastMap      = 3040;
+    private const string IceBeastKey      = "ice_beast";
+    private const int    IceBeastMeltAnim = 5;
+    private static bool IsIceBeastLava(int x, int y) => (x == 29 || x == 30) && y >= 14 && y <= 16;
     // How far (Chebyshev, from the mob's CURRENT tile) an aggressive mob (MobDef.Aggressive, RTK MobBehavior==1)
     // scans for an unprovoked target each move tick — RTK's mob_find_target runs over a full-screen-ish area;
     // this is scoped to roughly what the player can see on their own screen (17x15 viewport, Session.InView).
@@ -751,9 +761,17 @@ public sealed class World
         if (Content.MobHpJitter)
         {
             int swing = Math.Max(1, (d.MinDam + d.MaxDam) * 2);
-            int delta = Random.Shared.Next(1, swing + 1) * (Random.Shared.Next(2) == 0 ? 1 : -1);
-            mob.MaxHp = Math.Max(1, mob.MaxHp + delta);
-            mob.Hp = mob.MaxHp;
+            // The jitter is scaled by DAMAGE, which assumes damage and HP share a rough scale — true of an
+            // ordinary creature. A hard-hitter whose swing dwarfs its own HP (the Ice Beast one-shots for
+            // 300k but has only 10k HP) would otherwise have its HP scrambled to anywhere from 1 to ~1.2M,
+            // half the time spawning AT 1 HP — which for the Ice Beast would let a player one-hit it and
+            // skip the lava-lure entirely. Only jitter when the swing fits inside the mob's own health.
+            if (swing < mob.MaxHp)
+            {
+                int delta = Random.Shared.Next(1, swing + 1) * (Random.Shared.Next(2) == 0 ? 1 : -1);
+                mob.MaxHp = Math.Max(1, mob.MaxHp + delta);
+                mob.Hp = mob.MaxHp;
+            }
         }
         Map(mapId).Mobs.Add(mob);
         QueueHook(MobScript.OnSpawn, mapId, mob, null);
@@ -1364,6 +1382,15 @@ public sealed class World
         mob.X = (ushort)nx; mob.Y = (ushort)ny;
         mobTiles.Add((nx, ny));
         moves.Add((mapId, mob.Id, ox, oy, dir));
+        // The Ice Beast melts the instant it steps onto its lava (RTK ice_beast.lua move hook). Lethal
+        // self-damage is queued like a trap hit so it flows through the normal death path: its Ice heart drops
+        // on the tile (MobDrops 100%) and its spawn frees. ownerId 0 pays no exp — which is what RTK's lava
+        // kill does; the beast is worth none, the reward is the heart on the floor.
+        if (mapId == IceBeastMap && mob.Key == IceBeastKey && IsIceBeastLava(nx, ny))
+        {
+            trapDamage.Add((mapId, mob, mob.MaxHp, 0));
+            _deferredFx.Add((mapId, mob.Id, IceBeastMeltAnim, 0));
+        }
         var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && t.Kind != "shiver");   // shiver is a PC-only cosmetic echo — mobs walk over it untouched
         if (trap is not null) { m.Traps.Remove(trap); TriggerTrapLocked(mapId, mob, trap, trapDamage); }
         return true;
@@ -2757,6 +2784,10 @@ public sealed class World
                         // tethering it to the tile it was summoned on would make it quit mid-fight.
                         bool inRange = target is not null && !target.IsDead
                                        && (mob.OwnerId != 0
+                                           // The Ice Beast is unleashed so it can be pulled onto its lava (its
+                                           // spawn sits farther than ChaseLeash from those tiles); it dies the
+                                           // moment it reaches them, so the pursuit is self-limiting.
+                                           || mob.Key == IceBeastKey
                                            || Math.Max(Math.Abs(target.PlayerX - mob.HomeX), Math.Abs(target.PlayerY - mob.HomeY)) <= ChaseLeash);
                         if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
                         else

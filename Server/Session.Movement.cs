@@ -194,7 +194,11 @@ public sealed partial class Session
             // Quest beats that trigger on stepping THROUGH a warp tile, not on standing anywhere — the
             // after-step hooks (OnScriptedTileStep) never run for a warp, since we leave the map here.
             TryNewbieCoordinateLesson(_char.Map, (ushort)nx, (ushort)ny);
+            // Arrival flavor for the Dae Shore -> Northeast Koguryo crossing (warps 926/927, the only warps
+            // into map 3040): pure minitext, no effect. Decide before EnterMap swaps _char.Map to the dest.
+            bool rockyPass = _char.Map == 1004 && dest.m == 3040;
             EnterMap(dm.Id, dm.Xs, dm.Ys, dest.x, dest.y, dm.Name);
+            if (rockyPass) SendMiniText("You traverse a rocky pass.");
             return;
         }
 

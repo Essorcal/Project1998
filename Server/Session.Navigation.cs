@@ -250,8 +250,38 @@ public sealed partial class Session
         TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
         TryLeviathanRelease();               // Blight pen: talisman + a penned captive -> free it
         if (TryLeviathanHermitDoor()) return;// the Hermit's hut door: in if you freed one, shoved back if not (warps)
+        if (TryIceBeastLava()) return;       // Northeast Koguryo lava row: shoes gate + spend-on-return (warps)
         if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
         TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
+    }
+
+    // The lava row that splits Northeast Koguryo (map 3040, tiles 29-30 x 14-16) — the Nameless Hermit on the
+    // near bank, the Ice Beast on the far one (RTK onScriptedTilesQuest.lua, the "Northeast Koguryo" block).
+    // Traveling shoes, the Hermit's gift for an Aged wine, are what let you cross to reach the beast:
+    //   * carrying the beast's Ice heart  -> the shoes are spent making the crossing back: consumed, and you
+    //     land on the south bank at 30,17 (this is checked FIRST, exactly as RTK orders it, so the trip home
+    //     always takes the shoes even though you are still wearing them);
+    //   * shoes but no heart              -> you cross freely (the outbound trip to the beast);
+    //   * no shoes                        -> the heat throws you back to the south bank at 30,17.
+    // Returns true when it moved the player, so the remaining step hooks are skipped.
+    private bool TryIceBeastLava()
+    {
+        if (_char.Map != 3040) return false;
+        if (!((_char.X == 29 || _char.X == 30) && _char.Y >= 14 && _char.Y <= 16)) return false;
+
+        if (CountItem("ice_heart") > 0)
+        {
+            TakeItem("traveling_shoes", 1);   // RTK removeItem — the return crossing spends them
+            SendMiniText("Your shoes protect your feet as you cross.");
+            return Warp(_char.Map, 30, 17);
+        }
+        if (CountItem("traveling_shoes") > 0)
+        {
+            SendMiniText("Your shoes protect your feet as you cross.");
+            return false;                     // let them walk the lava to reach (or lure) the beast
+        }
+        SendMiniText("You'll burn your feet if you walk there!");
+        return Warp(_char.Map, 30, 17);       // no shoes -> thrown back onto the south bank
     }
 
     // ---- Leviathan quest tiles (onScriptedTilesQuest.lua; see Server/LeviathanQuest.cs) -----------

@@ -226,6 +226,9 @@ public static class NpcScript
             case "coins":      return DynValue.NewNumber(ctx.Coins);
             case "spendGold":  return DynValue.NewBoolean(ctx.SpendGold((uint)Math.Max(0, Int(t, "n"))));
             case "gameDate":   return DynValue.NewString(Character.GameDate);
+            // Inclusive [lo,hi] random int. Backed by the C# RNG on purpose: MoonSharp's math.random is
+            // unseeded (deterministic per server start) and the sandbox has no os.time to seed it with.
+            case "rand":       { int lo = Int(t, "lo"), hi = Int(t, "hi"); if (hi < lo) (lo, hi) = (hi, lo); return DynValue.NewNumber(Random.Shared.Next(lo, hi + 1)); }
 
             default:
                 Log.Info($"!! npc_dialog: unknown op '{op}' — ignored");
