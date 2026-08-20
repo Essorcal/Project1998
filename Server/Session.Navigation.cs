@@ -85,13 +85,17 @@ public sealed partial class Session
     // damage, 0 AC) rather than silently under-tuned — previously EVERY debug/GM summon (@rabbit/@summon/
     // the ridden-horse re-spawn) dropped these fields entirely, so testing a fix like this one via @summon
     // would never have shown the real numbers.
+    /// <param name="wander">Leave true for a gameplay summon. false pins it to its tile — what a GM test
+    /// spawn (<c>@mob</c>) wants, since a dummy that strolls off mid-measurement is useless for the melee /
+    /// sound / sprite calibration those commands exist for.</param>
     private Mob SummonWorldMob(ushort look, ushort x, ushort y, string name, int hp, byte dir, byte color,
-                               int exp = 0, int moveTime = 2500, string key = "", MobDef? def = null)
+                               int exp = 0, int moveTime = 2500, string key = "", MobDef? def = null,
+                               bool wander = true)
     {
         var mob = new Mob(_world.AllocateMobId(), look, x, y, name, hp)
         {
             Key = key,   // MobDef identifier (for quest kill-matching); empty for keyless debug summons
-            Dir = dir, Color = color, Exp = exp, HomeX = x, HomeY = y, Wander = true,
+            Dir = dir, Color = color, Exp = exp, HomeX = x, HomeY = y, Wander = wander,
             MoveTime = moveTime, MoveTimer = Random.Shared.Next(moveTime),
             Level = def?.Level ?? 0, Will = def?.Will ?? 0, Aggressive = def?.Aggressive ?? false, Flees = def?.Flees ?? false,
             MinDam = def?.MinDam ?? 1, MaxDam = def?.MaxDam ?? 1, Hit = def?.Hit ?? 0,

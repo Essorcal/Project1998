@@ -121,8 +121,9 @@ public sealed partial class Session
         G("cre",    (s, a) => s.CreatureOne(a),      "[look] [hp] [color]", "spawn one real monster (0x07)"),
         G("crow",   (s, a) => s.CreatureRow(a),      "<lo> <hi> [step]", "sweep monster look ids across a row"),
         G("crecol", (s, a) => s.CreatureColorRow(a), "<look> [lo] [hi] [step]", "sweep the 0x07 colour byte"),
-        G("mob",    (s, a) => s.MobOne(a),           "<hi> <lo> [hp]",  "spawn one creature by raw sprite"),
-        G("mobrow", (s, a) => s.MobRow(a),           "<lo> <hi> [step]", "sweep graphic ids"),
+        G("mob",    (s, a) => s.MobOne(a),           "<look> [hp] [color]", "spawn one SHARED world monster everyone sees"),
+        G("mobraw", (s, a) => s.MobRaw(a),           "<hi> <lo> [hp]",  "raw-sprite 0x16 probe (self-only)"),
+        G("mobrow", (s, a) => s.MobRow(a),           "<lo> <hi> [step]", "sweep graphic ids (0x16, self-only)"),
         G("spawn",  (s, a) => s.SpawnCritters(a),    "[look] [hp]",     "a small pack around you"),
         G("dye",    (s, a) => s.DyeProbe(a),         "<n>",             "war-paint dye: set appearance[4]"),
 

@@ -260,7 +260,40 @@ public sealed partial class Session
         Log.Info($"   -> CREATURE row: monster look sweep {lo}..{hi} step {step} ({es.Count} sent)");
     }
 
+    // "@mob <look> [hp] [color]": drop one monster on the tile in front of you as a REAL, SHARED world
+    // entity — registered with World, streamed to every player whose viewport it enters, and fought by all
+    // of them against one authoritative HP pool. Same path as @rabbit / @summon; the difference is that this
+    // one takes a bare Monster.tbl look id and needs no registry row, so it can show anything in Monster.epf.
+    //
+    // It used to be a SESSION-LOCAL dummy (drawn straight to the caller over 0x16, never registered), which
+    // meant nobody else could see what a GM spawned — and, more quietly, that it sat outside the _shownMobs
+    // bookkeeping every other entity is tracked by. The raw-sprite 0x16 probe that behaviour existed for is
+    // still available, under @mobraw.
+    //
+    // Stationary on purpose (wander: false): these are calibration dummies for melee / sfx / sprite work, and
+    // one that wanders off mid-measurement is worthless. Use @summon for a mob with its registry AI.
     private void MobOne(string text)
+    {
+        var a = ParseInts(text);
+        int look = a.Length > 0 ? a[0] : 0;
+        int hp = a.Length > 1 ? a[1] : 6;
+        int color = a.Length > 2 ? a[2] : 0;
+        var (fx, fy) = FrontTile();
+        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
+        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
+        var mob = SummonWorldMob((ushort)look, x, y, $"m{look}", hp,
+                                 dir: (byte)((_facing + 2) & 3),   // face the spawner on arrival
+                                 color: (byte)color, wander: false);
+        SendMessage($"spawned look {look} (hp {hp}, colour {color}) — everyone on this map can see it");
+        Log.Info($"   -> MOB world spawn {mob.Id} look={look} c{color} hp={hp} @({x},{y}) map {_char.Map}");
+    }
+
+    // "@mobraw <hi> <lo> [hp]": the OLD @mob — one creature drawn straight to the caller over 0x16, from a
+    // RAW 16-bit sprite word rather than a Monster.tbl look id. Kept because 0x16 is a genuinely different
+    // client path (its own graphic field, no viewport gate) whose id-space is still unmapped, and it is the
+    // only way to poke at it. Session-local by nature: the shared world draws mobs over 0x07, so anything
+    // spawned here CANNOT be a world entity. See SendCreature for the divide-by-zero crash it dodges.
+    private void MobRaw(string text)
     {
         var a = ParseInts(text);
         int hi = a.Length > 0 ? a[0] : 0;
@@ -271,6 +304,7 @@ public sealed partial class Session
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         SpawnMob(sprite, x, y, $"m{sprite}", hp);
+        SendMessage($"raw sprite 0x{sprite:X4} over 0x16 — visible to you only (use @mob for a shared one)");
     }
 
     private void MobRow(string text)
