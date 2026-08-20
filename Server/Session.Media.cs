@@ -52,6 +52,20 @@ public sealed partial class Session
     internal const int MobSwingSfx = 9;   // 009.wav — every mob swing, hit or miss
     internal const int MobHitSfx   = 1;   // 001.wav — additionally, when that swing connects
 
+    // The 0x1A action that makes a mob visibly SWING, not just play the sound above. RTK's native mob:attack
+    // broadcasts this from the C engine; its boss AI does the same thing explicitly with sendAction(2, 20)
+    // (rtklua Accepted/Instances/instance_boss.lua) — action type 2, pose length 20 ticks. That's the only RTK
+    // reference we have for a MONSTER's melee-pose index: players swing on type 1 (Session.HandleAttack), but a
+    // monster sprite sheet indexes its poses differently, and the boss script is a mob using type 2. Broadcast
+    // alongside MobSwingSfx wherever a mob commits to a swing (World.Tick's mob->player pass and ApplyMobOnMobHit).
+    // TODO(live): confirm type (2 vs 1) and the pose length against the 4.95 client — these two knobs are why
+    // they're named constants here rather than inline literals.
+    // NOT const: live-tunable via "@mobact <type> [time]" so the attack-pose index can be swept against the
+    // client in ONE server session (the creature entity uses vtable 0x4cd098, not the player's, so its type->
+    // Monster.tbl-frame mapping isn't the player's 0=stand/1=attack/2=throw table and has to be found by eye).
+    internal static byte   MobSwingActionType = 1;    // action type for a mob's attack pose (player attack = 1)
+    internal static ushort MobSwingActionTime = 20;   // pose length in ticks (RTK boss uses 20)
+
     // Eating/using a consumable (Session.ItemEatAnim): TWO ids played together, live 2026-08-04 — 403.wav is
     // the chew and 006.wav the gulp; the client mixes them into the one "eat" sound.
     private const int EatSfxA = 403;
@@ -516,6 +530,32 @@ public sealed partial class Session
         if (id > 0) SendSound(id, _char.Id);
         SendLog($"swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
         Log.Info($"   -> @swingsnd {id}");
+    }
+
+    // "@mobact <type> [time]" — calibrate the mob attack-pose action (0x1A). Sets the global MobSwingActionType/
+    // Time used by every real mob swing (World.cs), AND immediately plays that action on the mob you're facing so
+    // you can eyeball it without waiting for a swing. Sweep <type> 0..8 to find which one drives a creature's
+    // Attack frames (Monster.tbl has a per-id Attack field, so the frames exist — the question is the type index
+    // for the CREATURE entity vtable, which differs from the player's 1=attack). No mob faced = just sets + says.
+    private void MobActionProbe(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 1 || !byte.TryParse(parts[0], out var type))
+        { SendLog($"usage: @mobact <type> [time]   (current: type={MobSwingActionType} time={MobSwingActionTime})"); return; }
+        ushort time = MobSwingActionTime;
+        if (parts.Length >= 2 && ushort.TryParse(parts[1], out var t)) time = t;
+        MobSwingActionType = type;
+        MobSwingActionTime = time;
+
+        var (fx, fy) = FrontTile();
+        var wmob = _world.MobAt(_char.Map, fx, fy);
+        if (wmob is not null)
+        {
+            _world.Broadcast(_char.Map, p => p.ActionOver(wmob.Id, type, time, 0));   // play it NOW on the faced mob
+            SendLog($"mob action type={type} time={time} -> played on '{wmob.Name}' ({wmob.Id})");
+        }
+        else SendLog($"mob action type={type} time={time} set (face a mob to preview it instantly)");
+        Log.Info($"   -> @mobact type={type} time={time} faced={(wmob?.Name ?? "none")}");
     }
 
     // Play raw Effect.tbl animation ids (0x29) over the caster, to calibrate the 4.95 effect id space vs RTK's

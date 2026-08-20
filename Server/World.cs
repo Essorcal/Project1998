@@ -1133,6 +1133,7 @@ public sealed class World
     {
         // Either side can have died to an earlier entry in this same batch — don't play a dead pet's swing.
         if (!attacker.Alive || !victim.Alive) return;
+        Broadcast(mapId, p => p.ActionOver(attacker.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));  // visibly swing
         Broadcast(mapId, p => p.SoundAt(Session.MobSwingSfx, attacker.Id));   // 009.wav on the swing itself
         if (!TryDamage(mapId, victim, dmg, out bool died)) return;
         Broadcast(mapId, p => p.DamageOver(victim.Id, died ? (byte)0 : (byte)Math.Clamp(victim.Hp * 100 / Math.Max(1, victim.MaxHp), 1, 100),
@@ -3028,9 +3029,10 @@ public sealed class World
         // every other socket-touching step.
         foreach (var h in hits)
         {
-            // 009.wav on the SWING itself, hit or miss — this is the point where the mob commits to the attack.
-            // The landed-hit sound (001.wav) is layered on separately by ApplyMobHit. Mobs play no swing ACTION
-            // (0x1A) today, so this sound is the only cue a bystander gets that a mob took a swing at someone.
+            // On the SWING itself, hit or miss — this is the point where the mob commits to the attack. The
+            // 0x1A action makes the mob visibly swing (matching the player's own swing anim in HandleAttack) and
+            // 009.wav is the swing sfx; the landed-hit sound (001.wav) is layered on separately by ApplyMobHit.
+            Broadcast(h.map, p => p.ActionOver(h.mob.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));
             Broadcast(h.map, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
             Try(() => h.target.ApplyMobHit(h.mob, dmg));
