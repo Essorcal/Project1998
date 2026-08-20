@@ -1,0 +1,3 @@
+ItemKey,Map,MinX,MaxX,MinY,MaxY,Max,MinQty,MaxQty,Sources
+chestnut,0,102,115,132,155,20,1,3,rtk-lua
+chestnut,330,20,27,37,47,20,1,3,rtk-lua

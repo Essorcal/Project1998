@@ -1,0 +1,21 @@
+Maps,Count,MobCap,Message,Primary,SentryTable,SentryTopY,BigTable,BigChance
+90-96,5,5,You stepped on a trap!,single:102,,,,
+410-419,4,5,You stepped on a trap!,single:555,,,,
+135,15,15,You stepped on a trap!,ogre:149/152/3,,,,
+136,3,12,You stepped on a trap!,ogre:151,,,,
+140,10,12,You stepped on a trap!,ogre:149,,,,
+201-207,20,64,Rabbits ambush you!,burst:rabbit_mob1,,,,
+208,25,64,Rabbits ambush you!,burst:rabbit_mob1,rabbit_sents1,23,,
+3201-3207,20,64,Rabbits ambush you!,burst:rabbit_mob2,,,,
+3208,25,64,Rabbits ambush you!,burst:rabbit_mob2,rabbit_sents2,23,,
+4201-4207,20,64,Rabbits ambush you!,burst:rabbit_mob3,,,,
+4208,25,64,Rabbits ambush you!,burst:rabbit_mob3,rabbit_sents3,23,,
+100-108,20,50,Tigers ambush you!,burst:tiger_mob1,,,,
+109,20,50,Tigers ambush you!,burst:tiger_mob1,,,tiger_big1,10
+110,20,50,Tigers ambush you!,,tiger_sents1,9999,,
+3100-3108,20,50,Tigers ambush you!,burst:tiger_mob2,,,,
+3109,20,50,Tigers ambush you!,burst:tiger_mob2,,,tiger_big2,10
+3110,20,50,Tigers ambush you!,,tiger_sents2,9999,,
+4100-4108,20,50,Tigers ambush you!,burst:tiger_mob3,,,,
+4109,20,50,Tigers ambush you!,burst:tiger_mob3,,,tiger_big3,10
+4110,20,50,Tigers ambush you!,,tiger_sents3,9999,,

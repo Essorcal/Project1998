@@ -1,0 +1,23 @@
+# This repository is CONTENT ONLY: the CSV/Lua registry, the ~1750 .map terrain files, SObj.tbl. Everything
+# here is authored, is identical on every deployment, and is READ-ONLY to a running server.
+#
+# It used to also be the directory the server WROTE into — the SQLite database, the character store, the
+# staff rosters and the logs all sat alongside these files — and most of this .gitignore was the list of
+# runtime filenames that had to be kept out of the history. That list is gone because the thing it was
+# guarding against is gone: live state now lives in state/, a sibling of this repo's working directory that
+# nothing here can see (see Shared/RepoPaths.cs in Project1998, and docs/hosting.md §1 in Project1998-infra).
+#
+# The one guard kept below is for the case where somebody points P1998_STATE back at a content checkout. It
+# should never happen, and committing a database full of player accounts into the content repo is expensive
+# enough to be worth three lines of insurance.
+project1998.db
+project1998.db-*
+chars/
+*.log
+
+# ---- Editor/tool backups made before a bulk CSV rewrite ----
+# The rewritten file is the content; the pre-image is scratch. Includes the one-off *.pre-<thing>-restore
+# snapshots taken before a destructive bulk edit.
+*.bak
+*.bak[0-9]
+*.pre-*

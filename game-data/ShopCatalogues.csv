@@ -1,0 +1,12 @@
+NpcKey,Category,ItemKeys,Sources
+SmithNpc,Projectiles,spring_bow,rtk-lua
+SmithNpc,Other items,wooden_saber|wooden_sword|viperhead_woodsaber|viperhead_woodsword|steel_dagger|steel_saber|steel_sword|steel_blade,rtk-lua
+SmithNpc,Peasant clothes,war_platemail|spring_mail_dress|spring_war_dress|scale_mail|merchant_armor|spring_armor_dress,rtk-lua
+SmithNpc,Male helms,merchant_helm|farmer_helm|royal_helm|sky_helm|ancient_helm|blood_helm|earth_helm,rtk-lua
+SmithNpc,Female helmets,spring_helmet|summer_helmet|autumn_helmet|winter_helmet|ancient_helmet|blood_helmet|earth_helmet,rtk-lua
+SmithNpc,Warrior's platemail,jade_war_platemail|royal_war_platemail|sky_war_platemail|ancient_war_platemail|blood_war_platemail|earth_war_platemail|summer_war_dress|autumn_war_dress|winter_war_dress|ancient_war_dress|blood_war_dress|earth_war_dress,rtk-lua
+SmithNpc,Rogue's armor,farmer_armor|royal_armor|sky_armor|ancient_armor|blood_armor|earth_armor|summer_armor_dress|autumn_armor_dress|winter_armor_dress|ancient_armor_dress|blood_armor_dress|earth_armor_dress,rtk-lua
+SmithNpc,Warrior's scalemail,jade_scale_mail|royal_scale_mail|sky_scale_mail|ancient_scale_mail|blood_scale_mail|earth_scale_mail|summer_mail_dress|autumn_mail_dress|winter_mail_dress|ancient_mail_dress|blood_mail_dress|earth_mail_dress,rtk-lua
+InnNpc,Goods,apple|wine|thick_wine|yellow_scroll|soup_bowl|comb|rice_wine|root_liquor,rtk-lua
+HermitNpc,Tainted weapons,tainted_blade|tainted_staff|tainted_ring,rtk-lua
+HermitNpc,Fans,fighting_fan|ferocity_fan|fury_fan|fatality_fan|spider_fan|mongoose_fan|serpent_fan|death_fan|evening_fan|starry_fan|meteor_fan|comet_fan|pond_fan|tindered_fan|hill_fan|breeze_fan,user-2026-08-12

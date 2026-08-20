@@ -1,0 +1,29 @@
+# Gathering nodes (Server/Session.Harvest.cs). RTK spawns wheat/ore/trees as MOBS and puts the whole
+# gathering loop in their AI scripts (AI/crafting/{wheat,ore,ginko_tree}.lua). We keep the nodes-as-mobs part
+# and the numbers, but NOT the trigger: RTK harvests when you SWING at the node with the tool equipped, and
+# on 4.95 you harvest by DROPPING the tool next to it (per the user, and corroborated by the archived mines
+# walkthrough: "Keep on dropping your mining pick, 'till you have Mud, and Clay"). The tool is never really
+# dropped -- the drop keypress IS the swing.
+#
+# NodeMob      mobs.csv identifier of the node.
+# Tools        item keys that work on it (|-separated). Any other item dropped nearby drops normally.
+# Skill        crafting skill this trains, and the CraftingToggles switch that gates it. A node whose skill
+#              is switched off is inert. "farming" has no toggle row at all and is always on (see
+#              CraftingToggles: farming was excluded from the crafting port, but its wheat is the only node
+#              type actually placed in our world).
+# Yield        weighted item table for each unit gathered -- `key:weight|key:weight`, weights out of their
+#              own sum. RTK's ore table is skill-tiered; with no crafting-skill system yet these are its
+#              NOVICE rows (the lowest real tier), which is what an unskilled character would roll.
+# Rolls        extra 50/50 rolls of Yield after the first guaranteed one (RTK's `for z = 1, N` loops).
+# Bonus        one extra roll over a weighted table, out of 100, remainder = nothing (wheat's rice/peas).
+# BreakChance  1-in-(N + hit damage) chance per swing that the tool is destroyed; 0 = never. Only RTK's ginko
+#              tree does this. Per-tool when |-separated in Tools order, so a better axe survives longer --
+#              which is RTK's `if hunangs_axe then breakChance = breakChance * 2` said as data.
+# Message      status line on a completed harvest.
+NodeMob,Tools,Skill,Yield,Rolls,Bonus,BreakChance,Message
+very_tall_wheat,basic_sickle,farming,wheat:100,2,rice:33|peas:33,0,You have gathered some Wheat.
+tall_wheat,basic_sickle,farming,wheat:100,2,rice:33|peas:33,0,You have gathered some Wheat.
+damp_wheat,basic_sickle,farming,wheat:100,2,rice:33|peas:33,0,You have gathered some Wheat.
+bent_grain,basic_sickle,farming,wheat:100,2,rice:33|peas:33,0,You have gathered some Wheat.
+ore,mining_pick,mining,ore_poor:65|ore_med:35,8,,0,You have gathered some Ore.
+ginko_tree,axe|hunangs_axe,woodcutting,ginko_wood:100,5,silver_tree_branch:0.4,300|600,You have gathered some Ginko wood.

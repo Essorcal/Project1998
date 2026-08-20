@@ -1,0 +1,17 @@
+key,value
+EraDate,20010709
+MailMinLevel,10
+SpeechRange,8
+BankMax,100000000
+SplitTrapSpells,0
+MinorQuestTiers,1
+MinorQuestCooldownHours,24
+EquipDelReason,12
+MailFirstOnBoard,0
+LookUpdateInPlace,1
+ShowNameplates,1
+UserListNationMask,7
+UserListColorDefault,15
+UserListColorClan,10
+UserListColorGm,12
+UserListColorSelf,14

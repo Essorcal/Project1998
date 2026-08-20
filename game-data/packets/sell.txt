@@ -1,0 +1,25 @@
+; Sell grid  --  0x2f sub-kind 5 (RTK clif_selldialog).  Fire with:  @pkt file sell
+; Same prefix as the buy grid; the list is just YOUR bag slots, so there are no names,
+; prices or icons on the wire -- the client already has them.
+
+2f              ; opcode
+
+05              ; body[0]  sub-kind 5 = sell grid
+04              ; body[1]  reply tag "sell" -- comes back on inbound 0x39 body[0]
+
+%1              ; body[2:6] NPC entity id
+01              ; body[6]  not read
+01 #33992 00    ; look descriptor: kind 1, creature graphic 0x8000|200, colour 0
+01 #33992 00    ; skipped copy
+
+$What_would_you_like_to_sell?
+
+#0              ; the same unknown u16BE as the buy grid
+02              ; count -- a u8 here, NOT the buy grid's u16BE
+
+; The SAME one-based wire slots 0x0F uses. The row loop (0x455541) reads
+; [invBase + 164*byte + 0x13e] -- byte-for-byte the address the 0x0F store (0x48f070) writes to,
+; and the 0x0F handler range-checks its slot as 1..0x34. So 01 02 offers the first two bag slots.
+; Anything lower draws each row further down the bag, and the loop's `test cl,cl; je` renders the
+; overshoot as a BLANK row -- which looks like a shifted list rather than a wrong index.
+01 02

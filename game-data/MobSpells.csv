@@ -1,0 +1,293 @@
+MobKey,Name,Effect,Chance,EveryMs,Range,Amount,Stat,Category,DurationMs,Anim,Sound,Say
+raven,Peck,blind,5,6000,1,0,,blinds,5000,39,0,
+man_shik_raven,Peck,blind,5,6000,1,0,,blinds,5000,39,0,
+buya_library_mob,Venom,poison,10,12000,1,40,,,20000,6,0,
+boar_champion,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+boar_champion,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+boar_champion,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+boar_champion,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+divine_dog,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+divine_dog,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+divine_dog,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_dog,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+divine_dragon,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_dragon,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_dragon,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_dragon,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+divine_horse,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_horse,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_horse,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_horse,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+divine_monkey,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+divine_monkey,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+divine_monkey,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_monkey,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+divine_ox,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_ox,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_ox,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_ox,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+divine_pig,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_pig,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_pig,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_pig,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+divine_rabbit,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+divine_rabbit,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+divine_rabbit,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_rabbit,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+divine_rat,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+divine_rat,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+divine_rat,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_rat,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+divine_rooster,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+divine_rooster,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+divine_rooster,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_rooster,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+divine_sheep,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_sheep,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_sheep,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_sheep,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+divine_snake,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_snake,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_snake,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_snake,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+divine_tiger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+divine_tiger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+divine_tiger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+divine_tiger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+dog_assassin,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+dog_assassin,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+dog_assassin,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+dog_assassin,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+dog_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+dog_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+dog_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+dog_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+dog_cutthroat,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+dog_cutthroat,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+dog_cutthroat,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+dog_cutthroat,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+dragon_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+dragon_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+dragon_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+dragon_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+dragon_mage,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+dragon_mage,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+dragon_mage,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+dragon_mage,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+dragon_slayer,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+dragon_slayer,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+dragon_slayer,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+dragon_slayer,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+hare_witch,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+hare_witch,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+hare_witch,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+hare_witch,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+horse_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+horse_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+horse_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+horse_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+horse_chongun,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+horse_chongun,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+horse_chongun,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+horse_chongun,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+horse_do,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+horse_do,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+horse_do,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+horse_do,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+mighty_mouse,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+mighty_mouse,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+mighty_mouse,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mighty_mouse,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+monkey_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+monkey_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+monkey_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+monkey_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+monkey_basher,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+monkey_basher,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+monkey_basher,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+monkey_basher,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+monkey_mauler,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+monkey_mauler,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+monkey_mauler,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+monkey_mauler,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+mythic_boar,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+mythic_boar,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+mythic_boar,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_boar,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+mythic_dog,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+mythic_dog,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+mythic_dog,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_dog,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+mythic_dragon,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+mythic_dragon,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+mythic_dragon,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_dragon,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+mythic_hare,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+mythic_hare,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+mythic_hare,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_hare,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+mythic_horse,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+mythic_horse,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+mythic_horse,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_horse,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+mythic_monkey,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+mythic_monkey,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+mythic_monkey,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_monkey,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+mythic_ox,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+mythic_ox,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+mythic_ox,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_ox,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+mythic_rat,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+mythic_rat,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+mythic_rat,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_rat,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+mythic_rooster,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+mythic_rooster,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+mythic_rooster,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_rooster,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+mythic_sheep,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+mythic_sheep,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+mythic_sheep,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_sheep,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+mythic_snake,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+mythic_snake,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+mythic_snake,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_snake,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+mythic_tiger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+mythic_tiger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+mythic_tiger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+mythic_tiger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+ox_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+ox_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+ox_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+ox_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+ox_charger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+ox_charger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+ox_charger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+ox_charger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+ox_gorer,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+ox_gorer,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+ox_gorer,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+ox_gorer,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+pig_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+pig_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+pig_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+pig_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+pig_champion,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+pig_champion,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+pig_champion,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+pig_champion,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+rabbit_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+rabbit_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+rabbit_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rabbit_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+rabbit_witch,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+rabbit_witch,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+rabbit_witch,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rabbit_witch,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+rat_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+rat_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+rat_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rat_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+rat_lord,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+rat_lord,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+rat_lord,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rat_lord,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+rooster_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+rooster_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+rooster_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rooster_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+rooster_barbarian,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+rooster_barbarian,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+rooster_barbarian,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rooster_barbarian,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+rooster_swordsman,Vex,curse,10,15000,5,5,might,disheartens,30000,10,0,** summons power **
+rooster_swordsman,Venom,poison,10,15000,5,100,,,20000,6,0,** summons power **
+rooster_swordsman,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+rooster_swordsman,Ion,damage,1,15000,5,120,,,0,4,0,** summons power **
+sheep_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+sheep_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+sheep_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+sheep_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+sheep_shepherd,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+sheep_shepherd,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+sheep_shepherd,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+sheep_shepherd,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+sheep_veteran,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+sheep_veteran,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+sheep_veteran,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+sheep_veteran,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+snake_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+snake_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+snake_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+snake_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+snake_mage,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+snake_mage,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+snake_mage,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+snake_mage,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+snake_shaman,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
+snake_shaman,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **
+snake_shaman,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+snake_shaman,Call lightning,damage,1,15000,5,260,,,0,4,0,** summons power **
+spirit_dog,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_dog,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_dog,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_dog,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_dragon,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_dragon,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_dragon,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_dragon,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_horse,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_horse,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_horse,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_horse,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_monkey,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_monkey,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_monkey,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_monkey,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_ox,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_ox,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_ox,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_ox,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_pig,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_pig,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_pig,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_pig,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_rabbit,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_rabbit,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_rabbit,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_rabbit,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_rat,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_rat,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_rat,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_rat,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_rooster,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_rooster,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_rooster,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_rooster,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_sheep,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_sheep,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_sheep,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_sheep,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_snake,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_snake,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_snake,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_snake,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+spirit_tiger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+spirit_tiger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+spirit_tiger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+spirit_tiger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+tiger_avenger,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+tiger_avenger,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+tiger_avenger,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+tiger_avenger,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+tiger_slasher,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+tiger_slasher,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+tiger_slasher,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+tiger_slasher,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+tiger_warrior,Scourge,curse,10,15000,5,15,might,disheartens,30000,10,0,** summons power **
+tiger_warrior,Venom,poison,10,15000,5,300,,,20000,6,0,** summons power **
+tiger_warrior,Blind,blind,10,15000,5,0,,blinds,8000,39,0,** summons power **
+tiger_warrior,Thunder touch,damage,1,15000,5,480,,,0,4,0,** summons power **
+gimyi,Ambush,melee,1,3000,1,0,,,0,0,0,Ambush~~~!

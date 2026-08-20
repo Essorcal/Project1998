@@ -1,0 +1,22 @@
+; 0x2f SUB-KIND 2  --  fire with:  @pkt file sub2
+;
+; Sub-kind 2 dispatches to parse 0x454240 -- the SAME function sub-kind 3 (input amount) uses, and the
+; same 0x48c object. So 2 is a VARIANT of the quantity prompt we already send as sub-kind 3. Diff this
+; against the same file with 03 on the sub-kind line.
+;
+; Amount body, read in this order by 0x454240:
+;   tag(u8)  npcId(u32BE)  look  prompt(u16BE len)  itemName(u8 len)  max(u16BE)
+
+2f              ; opcode
+
+02              ; body[0]  SUB-KIND -- change to 03 to see the one we already use
+03              ; body[1]  reply tag (RTK uses 3 for input-amount)
+%1              ; npc entity id
+01              ; not read by 4.95
+01 #33992 00    ; look descriptor
+01 #33992 00    ; skipped copy
+
+$How_many_would_you_like?       ; prompt   (u16BE length)
+0a :Rice_Balls                  ; item name (u8 length) -- "Rice Balls" = 10 = 0x0a
+
+#99             ; max amount (u16BE)

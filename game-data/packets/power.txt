@@ -1,0 +1,14 @@
+; Power board  --  0x46 (RTK clif_sendpowerboard).  Fire with:  @pkt file power
+; A roster of the players on YOUR map: path, a "power rating", their armour dye and name.
+; RTK gates it to the arena map (7001) or gmLevel >= 50, and clicking a row re-dyes that
+; player's armour -- so it reads as an arena/team-colour tool, not a global who's-online list.
+
+46
+01              ; subtype
+#2              ; row count (u16BE)
+
+; row = id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]
+;       power in RTK is basehp + basemp. dye is the armour colour ramp; RTK only lets a
+;       non-GM set 0, 60, 61, 63 or 65, so those are the sanctioned team colours.
+%1  01  %5000  00  05 :Brian
+%2  02  %3200  3c  06 :Gruffy

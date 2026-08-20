@@ -1,0 +1,24 @@
+# A submodule does NOT inherit the superproject's .gitattributes — attributes are per-repository. This file
+# is the one that actually protects the game data, so it deliberately repeats the parent's rules rather than
+# assuming them.
+#
+# The stakes here are higher than in the code repo: data/ is ~1750 binary terrain files plus the CSV/Lua
+# content registry, authored on Windows and checked out on a Linux host.
+
+* text=auto eol=lf
+
+# ---- content registry (read as text by Content.Load / MoonSharp) ----
+*.csv       text eol=lf
+*.lua       text eol=lf
+*.txt       text eol=lf
+*.json      text eol=lf
+
+# ---- terrain and client tables (read as raw bytes) ----
+# A CRLF substitution inside one of these does not fail — it silently corrupts collision or a lookup table.
+*.map       binary
+*.cmp       binary
+*.tbl       binary
+*.epf       binary
+*.pal       binary
+*.frm       binary
+*.db        binary

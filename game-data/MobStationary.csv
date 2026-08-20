@@ -1,0 +1,17 @@
+Identifier,Stationary
+captured_leviathan,1
+# Gathering nodes (HarvestNodes.csv): wheat, ore veins and trees are spawned as mobs, and RTK's AI scripts
+# for them define a `move` that only ever runs a timer -- it never calls mob:move(). Without this the whole
+# Kugnae wheat field slowly walks off its rows.
+bent_grain,1
+tall_wheat,1
+very_tall_wheat,1
+damp_wheat,1
+ore,1
+ore_poor,1
+ore_med,1
+ore_high,1
+ore_very_high,1
+gold_ore,1
+silver_ore,1
+ginko_tree,1

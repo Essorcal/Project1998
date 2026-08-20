@@ -1,0 +1,928 @@
+SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLevel,SplQuestion,SplDispel,SplAether,SplMute,SplActive,SplCanFail,SplTicker
+0,==BASEFUNCSPELLS==,==BASEFUNCSPELLS==,5,0,0,0,0,NO,0,0,0,0,1,1
+1,ping,ping,5,99,-1,0,0,NO,0,0,0,1,1,1
+2,wisdom_star,Wisdom star,5,99,-1,0,0,,0,0,0,1,1,1
+3,duel_request,Duel request,5,99,-1,0,0,,0,0,0,1,1,1
+4,refresh_spell,refresh,5,99,-1,0,0,,0,0,0,1,1,1
+5,kawlanas_guard,Kawlana\'s guard,5,99,0,0,0,,0,0,0,1,1,1
+6,received_fortune,Received fortune,5,99,0,0,0,,0,0,0,1,0,1
+7,pvp_balance,PVP Balance,5,99,-1,0,0,,0,0,0,1,1,1
+8,death_save,Death save,5,99,-1,0,0,,99,0,0,1,0,0
+9,crafting_bonus,Crafting bonus,5,99,-1,0,0,,99,0,0,1,0,1
+10,beach_war_respawn,Respawning in,5,99,-1,0,0,,99,0,0,1,0,1
+11,love_ring_delay,love ring delay,5,99,-1,0,0,,99,0,0,1,0,0
+12,,,5,5,-1,0,0,,0,0,0,1,1,1
+100,==COMMONSPELLS==,==COMMONSPELLS==,5,5,0,0,0,,0,0,0,0,1,1
+101,soothe,Soothe,5,0,-1,0,1,NO,0,0,0,1,0,1
+102,light,Light,2,99,-1,0,1,Which target? >,0,0,0,1,0,1
+103,gateway,Gateway,1,0,-1,0,1,"Which Gate(N,E,S,W)?",0,0,0,1,0,1
+104,approach_spell,Approach,1,0,-1,0,25,Approach who?>,0,0,0,1,0,1
+105,summon_spell,Summon,1,0,-1,0,25,Summon who?>,0,0,0,1,0,1
+106,mentor,Mentor,5,0,-1,0,0,,0,0,0,1,0,1
+107,tutor_warp,Tutor warp,5,99,-1,0,0,,0,0,0,1,1,1
+108,fireworks,Fireworks,5,99,-1,0,0,,0,0,0,1,1,1
+109,spin,Spin,2,99,-1,0,0,> Which target?,0,0,0,1,0,1
+110,snake_spell,Snake,5,99,-1,0,0,,0,0,0,1,0,1
+400,===Sage Spells===,===Sage Spells,5,0,0,0,0,,0,0,0,0,0,1
+401,share_wisdom,Share Wisdom,1,99,0,0,0,>,0,0,0,1,0,1
+402,mentors_wisdom,Mentor\'s Wisdom,1,99,0,0,0,>,0,0,0,1,0,1
+403,apprentices_wisdom,Apprentice\'s Wisdom,1,99,0,0,0,>,0,0,0,1,0,1
+404,adepts_wisdom,Adept\'s Wisdom,1,99,0,0,0,>,0,0,0,1,0,1
+405,sages_wisdom,Sage\'s Wisdom,1,99,0,0,0,>,0,0,0,1,0,1
+406,horse_spawn,Horse spawn,5,99,0,0,0,,0,0,0,0,0,1
+407,spot_traps,Spot traps,5,99,0,0,0,,0,0,0,1,0,1
+408,return_spell,Return,5,0,-1,0,0,,0,0,0,1,0,1
+409,propose,Propose,5,99,-1,0,0,>,0,0,0,1,0,1
+410,blood_oath,Blood oath,5,99,-1,0,0,>,0,0,0,1,0,1
+411,dragons_form,Dragon\'s form,5,99,-1,0,0,,0,0,0,1,1,1
+412,curse_protection,Curse protection,5,99,-1,0,0,,0,0,0,1,0,1
+413,enthrall_charm,Enthrall,5,99,-1,0,0,,0,0,0,1,0,1
+414,,,5,5,0,0,0,,0,0,0,1,1,1
+415,,,5,5,0,0,0,,0,0,0,1,1,1
+416,,,5,5,0,0,0,,0,0,0,1,1,1
+417,,,5,5,0,0,0,,0,0,0,1,1,1
+418,,,5,5,0,0,0,,0,0,0,1,1,1
+419,,,5,5,0,0,0,,0,0,0,1,1,1
+420,,,5,5,0,0,0,,0,0,0,1,1,1
+500,===TRAPS===,===TRAPS===,5,5,0,0,0,,0,0,0,0,1,1
+501,snare_trap,Snare Trap,5,99,0,0,0,,0,0,0,1,0,1
+502,poison_dart_trap,Poison Dart Trap,5,99,0,0,0,,0,0,0,1,0,1
+503,sleep_trap,Sleep Trap,5,99,0,0,0,,0,0,0,1,0,1
+1000,==WARRIORSPELLS==,==WARRIORSPELLS==,5,5,0,0,0,,0,0,0,0,1,1
+1001,taunt_warrior,Taunt,2,1,0,0,0,Which target? >,0,0,0,1,0,1
+1002,anger_warrior,Anger,2,1,1,0,0,Which target? >,0,0,0,1,0,1
+1003,tease_warrior,Tease,2,1,2,0,0,Which target? >,0,0,0,1,0,1
+1004,mock_warrior,Mock,2,1,3,0,0,Which target? >,0,0,0,1,0,1
+1005,wolfs_fury_warrior,Wolf\'s Fury,5,1,0,0,0,,0,0,0,1,0,1
+1006,souls_rage_warrior,Soul\'s Rage,5,1,1,0,0,,0,0,0,1,0,1
+1007,spirit_of_the_forest_warrior,Spirit of the Forest,5,1,2,0,0,,0,0,0,1,0,1
+1008,augmentation_warrior,Augmentation,5,1,3,0,0,,0,0,0,1,0,1
+1009,bless_warrior,Bless,5,1,0,0,0,,0,0,0,1,0,1
+1010,sanctification_warrior,Sancification,5,1,1,0,0,,0,0,0,1,0,1
+1011,tribal_gathering_warrior,Tribal Gathering,5,1,2,0,0,,0,0,0,1,0,1
+1012,strength_of_purpose_warrior,Strength of Purpose,5,1,3,0,0,,0,0,0,1,0,1
+1013,fleshspeak_warrior,Fleshspeak,2,1,0,0,0,Which target? >,0,0,0,1,0,1
+1014,spiritsong_warrior,Spiritsong,2,1,1,0,0,Which target? >,0,0,0,1,0,1
+1015,helping_hand_warrior,Helping Hand,2,1,2,0,0,Which target? >,0,0,0,1,0,1
+1016,heal_others_warrior,Heal Others,2,1,3,0,0,Which target? >,0,0,0,1,0,1
+1017,backstab_warrior,Backstab,5,1,0,0,0,,0,0,0,1,0,1
+1018,back_battle_warrior,Back Battle,5,1,1,0,0,,0,0,0,1,0,1
+1024,back_attack_warrior,Back Attack,5,1,2,0,0,,0,0,0,1,0,1
+1025,back_damage_warrior,Back Damage,5,1,3,0,0,,0,0,0,1,0,1
+1026,flank_warrior,Flank,5,1,0,0,0,,0,0,0,1,0,1
+1027,flank_battle_warrior,Flank Battle,5,1,1,0,0,,0,0,0,1,0,1
+1028,flank_attack_warrior,Flank Attack,5,1,2,0,0,,0,0,0,1,0,1
+1029,flank_damage_warrior,Flank Damage,5,1,3,0,0,,0,0,0,1,0,1
+1030,tigers_fury_warrior,Tiger\'s Fury,5,1,0,0,0,,0,0,0,1,0,1
+1031,filling_the_soul_warrior,Filling the Soul,5,1,1,0,0,,0,0,0,1,0,1
+1032,spirit_of_the_wild_warrior,Spirit of the Wild,5,1,2,0,0,,0,0,0,1,0,1
+1033,ohaengs_grace_warrior,Ohaeng\'s Grace,5,1,3,0,0,,0,0,0,1,0,1
+1034,enchant_warrior,Enchant,5,1,0,0,0,,0,0,0,1,0,1
+1035,spiritual_aid_warrior,Spiritual Aid,5,1,1,0,0,,0,0,0,1,0,1
+1036,oneness_warrior,Oneness,5,1,2,0,0,,0,0,0,1,0,1
+1037,strengthen_weapon_warrior,Strengthen Weapon,5,1,3,0,0,,0,0,0,1,0,1
+1038,relief_warrior,Relief,5,1,0,0,0,,0,0,0,1,0,1
+1039,renew_essence_warrior,Renew Essence,5,1,1,0,0,,0,0,0,1,0,1
+1040,lifesong_warrior,Lifesong,5,1,2,0,0,,0,0,0,1,0,1
+1041,sweet_waters_warrior,Sweet Waters,5,1,3,0,0,,0,0,0,1,0,1
+1042,potence_warrior,Potence,5,1,0,0,0,,0,0,0,1,0,1
+1043,spirit_arm_warrior,Spirit Arm,5,1,1,0,0,,0,0,0,1,0,1
+1044,touch_of_the_bear_warrior,Touch of the Bear,5,1,2,0,0,,0,0,0,1,0,1
+1045,sharpen_warrior,Sharpen,5,1,3,0,0,,0,0,0,1,0,1
+1046,watchful_eye_warrior,Watchful Eye,5,1,0,0,0,,0,0,0,1,0,1
+1047,spirits_whisper_warrior,Spirit\'s Whisper,5,1,1,0,0,,0,0,0,1,0,1
+1048,creatures_guidance_warrior,Creature\'s Guidance,5,1,2,0,0,,0,0,0,1,0,1
+1049,spot_unbalance_warrior,Spot Unbalance,5,1,3,0,0,,0,0,0,1,0,1
+1050,dragons_fury_warrior,Dragon\'s Fury,5,1,0,0,0,,0,0,0,1,0,1
+1051,strength_of_ancestors_warrior,Strength of Ancestors,5,1,1,0,0,,0,0,0,1,0,1
+1052,spirit_of_the_dragon_warrior,Spirit of the Dragon,5,1,2,0,0,,0,0,0,1,0,1
+1053,ohaengs_anger_warrior,Ohaeng\'s Anger,5,1,3,0,0,,0,0,0,1,0,1
+1054,infuse_warrior,Infuse,5,1,0,0,0,,0,0,0,1,0,1
+1055,tincture_of_the_unknown_warrior,Tincture of the Unknown,5,1,1,0,0,,0,0,0,1,0,1
+1056,tigers_claw_warrior,Tiger\'s Claw,5,1,2,0,0,,0,0,0,1,0,1
+1057,whetstone_warrior,Whetstone,5,1,3,0,0,,0,0,0,1,0,1
+1058,slash_warrior,Slash,5,99,-1,0,0,,0,0,0,1,0,1
+1059,ingress_warrior,Ingress,5,1,0,0,0,,0,0,0,1,0,1
+1060,hand_of_darkness_warrior,Hand of Darkness,5,1,1,0,0,,0,0,0,1,0,1
+1061,dragons_claw_warrior,Dragon\'s Claw,5,1,2,0,0,,0,0,0,1,0,1
+1062,razors_edge_warrior,Razor\'s Edge,5,1,3,0,0,,0,0,0,1,0,1
+1063,feral_berserk_warrior,Feral Berserk,5,99,-1,0,0,,0,0,0,1,0,1
+1064,berserk_warrior,Berserk,5,1,0,0,0,,0,0,0,1,0,1
+1065,no_fear_warrior,No Fear,5,1,1,0,0,,0,0,0,1,0,1
+1066,tigers_pounce_warrior,Tiger\'s Pounce,5,1,2,0,0,,0,0,0,1,0,1
+1067,winds_blast_warrior,Wind\'s Blast,5,1,3,0,0,,0,0,0,1,0,1
+1068,vigor_warrior,Vigor,5,1,0,0,0,,0,0,0,1,0,1
+1069,touch_of_health_warrior,Touch of Health,5,1,1,0,0,,0,0,0,1,0,1
+1070,balm_warrior,Balm,5,1,2,0,0,,0,0,0,1,0,1
+1071,restoration_warrior,Restoration,5,1,3,0,0,,0,0,0,1,0,1
+1072,whirlwind_warrior,Whirlwind,5,1,0,0,0,,0,0,0,1,0,1
+1073,deaths_angel_warrior,Death\'s Angel,5,1,1,0,0,,0,0,0,1,0,1
+1074,natures_own_warrior,Nature\'s Own,5,1,2,0,0,,0,0,0,1,0,1
+1075,bladedance_warrior,Bladedance,5,1,3,0,0,,0,0,0,1,0,1
+1076,hoche_warrior,Hoche,5,1,0,1,0,,0,0,0,1,0,1
+1077,immunity_warrior,Immunity,5,1,1,1,0,,0,0,0,1,0,1
+1078,forest_blessing_warrior,Forest Blessing,5,1,2,1,0,,0,0,0,1,0,1
+1079,magics_shield_warrior,Magic Shield,5,1,3,1,0,,0,0,0,1,0,1
+1080,salvation_warrior,Salvation,5,1,0,1,0,,0,0,0,1,0,1
+1081,redemption_warrior,Redemption,5,1,1,1,0,,0,0,0,1,0,1
+1082,ointment_of_light_warrior,Ointment of Light,5,1,2,1,0,,0,0,0,1,0,1
+1083,return_of_life_warrior,Return of Life,5,1,3,1,0,,0,0,0,1,0,1
+1084,vipers_venom_warrior,Viper\'s Venom,5,1,-1,1,0,,0,0,0,1,0,1
+1085,assault_warrior,Assault,5,1,0,2,0,,0,0,0,1,0,1
+1086,deaths_challenge_warrior,Death\'s Challenge,5,1,1,2,0,,0,0,0,1,0,1
+1087,cold_snap_warrior,Cold Snap,5,1,2,2,0,,0,0,0,1,0,1
+1088,volley_warrior,Volley,5,1,3,2,0,,0,0,0,1,0,1
+1089,dragons_flame_warrior,Dragon\'s Flame,5,1,-1,2,0,,0,0,0,1,0,1
+1090,hunangs_relief_warrior,Hunang\'s Relief,5,1,0,2,0,,0,0,0,1,0,1
+1091,from_the_brink_warrior,From the Brink,5,1,1,2,0,,0,0,0,1,0,1
+1092,natures_slave_warrior,Nature\'s Slave,5,1,2,2,0,,0,0,0,1,0,1
+1093,lifes_essence_warrior,Life\'s Essence,5,1,3,2,0,,0,0,0,1,0,1
+2000,==ROGUESPELLS==,==ROGUESPELLS==,5,5,0,0,0,,0,0,0,0,1,1
+2001,fleshspeak_rogue,Fleshspeak,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2002,spiritsong_rogue,Spiritsong,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2003,helping_hand_rogue,Helping Hand,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2004,heal_others_rogue,Heal Others,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2005,feral_rogue,Feral,1,2,0,0,0,Become what?,0,0,0,1,0,1
+2006,kwisin_cloak_rogue,Kwi-Sin Cloak,5,5,1,0,0,,0,0,0,1,0,1
+2007,mingken_cloak_rogue,Ming-Ken Cloak,5,5,2,0,0,,0,0,0,1,0,1
+2008,ohaeng_cloak_rogue,Ohaeng Cloak,5,5,3,0,0,,0,0,0,1,0,1
+2009,might_rogue,Might,5,2,0,0,0,,0,0,0,1,0,1
+2010,spirit_strength_rogue,Spirit Strength,5,2,1,0,0,,0,0,0,1,0,1
+2011,inner_blessing_rogue,Inner Blessing,5,2,2,0,0,,0,0,0,1,0,1
+2012,temper_rogue,Temper,5,2,3,0,0,,0,0,0,1,0,1
+2013,judge_rogue,Judge,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2014,spiritual_advisor_rogue,Spiritual Advisor,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2015,natural_talent_rogue,Natural Talent,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2016,appraise_rogue,Appraise,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2017,singe_rogue,Singe,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2018,embrace_of_the_void_rogue,Embrace of the Void,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2019,lightning_rogue,Lightning,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2020,natures_storm_rogue,Nature\'s Storm,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2021,mend_wounds_rogue,Mend Wounds,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2022,spiritual_cure_rogue,Spiritual Cure,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2023,natures_kiss_rogue,Nature\'s Kiss,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2024,cooling_touch_rogue,Cooling Touch,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2025,ignite_rogue,Ignite,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2026,spirit_strike_rogue,Spirit Strike,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2027,wrath_of_nature_rogue,Wrath of Nature,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2028,thunderclap_rogue,Thunderclap,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2029,shadow_figure_rogue,Shadow Figure,5,2,0,0,0,,0,0,0,1,0,1
+2030,spirit_warrior_rogue,Spirit Warrior,5,2,1,0,0,,0,0,0,1,0,1
+2031,natural_defense_rogue,Natural Defense,5,2,2,0,0,,0,0,0,1,0,1
+2032,ohaengs_armor_rogue,Ohaeng\'s Armor,5,2,3,0,0,,0,0,0,1,0,1
+2033,rodent_rogue,Rodent,1,2,0,0,0,Become what?,0,0,0,1,0,1
+2034,kwisin_disguise_rogue,Kwi-Sin Disguise,5,5,1,0,0,,0,0,0,1,0,1
+2035,mingken_disguise_rogue,Ming-Ken Disguise,5,5,1,0,0,,0,0,0,1,0,1
+2036,ohaeng_disguise_rogue,Ohaeng Disguise,5,5,2,0,0,,0,0,0,1,0,1
+2037,spy_rogue,Spy,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2038,spiritual_guide_rogue,Spiritual Guide,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2039,natures_handiwork_rogue,Nature\'s Handiwork,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2040,judgement_day_rogue,Judgement Day,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2041,wolfs_fury_rogue,Wolf\'s Fury,5,2,0,0,0,,0,0,0,1,0,1
+2042,souls_rage_rogue,Soul\'s Rage,5,2,1,0,0,,0,0,0,1,0,1
+2043,spirit_of_the_forest_rogue,Spirit of the Forest,5,2,2,0,0,,0,0,0,1,0,1
+2044,augmentation_rogue,Augmentation,5,2,3,0,0,,0,0,0,1,0,1
+2045,gangrel_rogue,Gangrel,1,2,0,0,0,Become what?,0,0,0,1,0,1
+2046,kwisin_mask_rogue,Kwi-Sin Mask,5,2,1,0,0,,0,0,0,1,0,1
+2047,mingken_mask_rogue,Ming-Ken Mask,5,2,2,0,0,,0,0,0,1,0,1
+2048,ohaeng_mask_rogue,Ohaeng Mask,5,2,3,0,0,,0,0,0,1,0,1
+2049,invisible_rogue,Invisible,5,2,0,0,0,,0,0,0,1,0,1
+2050,spirits_form_rogue,Spirit\'s Form,5,2,1,0,0,,0,0,0,1,0,1
+2051,lifes_cloak_rogue,Life\'s Cloak,5,2,2,0,0,,0,0,0,1,0,1
+2052,glass_form_rogue,Glass Form,5,2,3,0,0,,0,0,0,1,0,1
+2053,ambush_rogue,Ambush,5,2,0,0,0,,0,0,0,1,0,1
+2054,displacement_rogue,Displacement,5,2,1,0,0,,0,0,0,1,0,1
+2055,waylay_rogue,Waylay,5,2,2,0,0,,0,0,0,1,0,1
+2056,reflect_rogue,Reflect,5,2,3,0,0,,0,0,0,1,0,1
+2057,beast_rogue,Beast,1,2,0,0,0,Become what?,0,0,0,1,0,1
+2058,kwisin_chameleon_rogue,Kwi-Sin Chameleon,5,5,1,0,0,,0,0,0,1,0,1
+2059,mingken_chameleon_rogue,Ming-Ken Chameleon,5,5,2,0,0,,0,0,0,1,0,1
+2060,ohaeng_chameleon_rogue,Ohaeng Chameleon,5,5,3,0,0,,0,0,0,1,0,1
+2061,amnesia_rogue,Amnesia,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2062,forgetfulness_rogue,Forgetfulness,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2063,free_spirit_rogue,Free Spirit,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2064,mislead_rogue,Mislead,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2065,recover_rogue,Recover,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2066,spirits_embrace_rogue,Spiritual Embrace,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2067,infuse_energy_rogue,Infuse Energy,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2068,lifes_river_rogue,Life\'s River,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2069,desperate_attack_rogue,Desperate Attack,5,2,0,0,0,,0,0,0,1,0,1
+2070,the_voids_measure_rogue,The Void\'s Measure,5,2,1,0,0,,0,0,0,1,0,1
+2071,beastly_frenzy_rogue,Beastly Frenzy,5,2,2,0,0,,0,0,0,1,0,1
+2072,tilting_the_balance_rogue,Tilting the Balance,5,2,3,0,0,,0,0,0,1,0,1
+2073,tigers_fury_rogue,Tiger\'s Fury,5,2,0,0,0,,0,0,0,1,0,1
+2074,filling_the_soul_rogue,Filling the Soul,5,2,1,0,0,,0,0,0,1,0,1
+2075,spirit_of_the_wild_rogue,Spirit of the Wild,5,2,2,0,0,,0,0,0,1,0,1
+2076,ohaengs_grace_rogue,Ohaeng\'s Grace,5,2,3,0,0,,0,0,0,1,0,1
+2077,filch_rogue,Filch,5,2,0,0,0,,0,0,0,1,0,1
+2078,spirits_hand_rogue,Spirit\'s Hand,5,2,1,0,0,,0,0,0,1,0,1
+2079,quick_fingers_rogue,Quick Fingers,5,2,2,0,0,,0,0,0,1,0,1
+2080,light_touch_rogue,Light Touch,5,2,3,0,0,,0,0,0,1,0,1
+2081,drain_rogue,Drain,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2082,drink_of_souls_rogue,Drink of Souls,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2083,parasite_rogue,Parasite,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2084,absorb_rogue,Absorb,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2085,seal_wounds_rogue,Seal Wounds,2,2,0,0,0,Which target? >,0,0,0,1,0,1
+2086,spirit_caress_rogue,Spirit Caress,2,2,1,0,0,Which target? >,0,0,0,1,0,1
+2087,heal_injury_rogue,Heal Injury,2,2,2,0,0,Which target? >,0,0,0,1,0,1
+2088,bandage_rogue,Bandage,2,2,3,0,0,Which target? >,0,0,0,1,0,1
+2089,lethal_strike_rogue,Lethal Strike,5,2,0,0,0,,0,0,0,1,0,1
+2090,afterlifes_embrace_rogue,Afterlife\'s Embrace,5,2,1,0,0,,0,0,0,1,0,1
+2091,mingkens_judgement_rogue,Ming-Ken\'s Judgement,5,2,2,0,0,,0,0,0,1,0,1
+2092,calculating_blow_rogue,Calculating Blow,5,2,3,0,0,,0,0,0,1,0,1
+2093,maros_remedy_rogue,Maro\'s Remedy,5,2,0,0,0,,0,0,0,1,0,1
+2094,kwisin_maros_remedy_rogue,Maro\'s Remedy,5,2,1,0,0,,0,0,0,1,0,1
+2095,mingken_maros_remedy_rogue,Maro\'s Remedy,5,2,2,0,0,,0,0,0,1,0,1
+2096,ohaeng_maros_remedy_rogue,Maro\'s Remedy,5,2,3,0,0,,0,0,0,1,0,1
+2097,baekhos_rage_rogue,Baekho\'s rage,5,2,-1,1,0,,0,0,0,1,0,1
+2098,masos_remedy_rogue,Maso\'s Remedy,5,2,0,1,0,,0,0,0,1,0,1
+2099,kwisin_masos_remedy_rogue,Maso\'s Remedy,5,2,1,1,0,,0,0,0,1,0,1
+2100,mingken_masos_remedy_rogue,Maso\'s Remedy,5,2,2,1,0,,0,0,0,1,0,1
+2101,ohaeng_masos_remedy_rogue,Maso\'s Remedy,5,2,3,1,0,,0,0,0,1,0,1
+2102,race_rogue,Race,5,2,0,1,0,,0,0,0,1,0,1
+2103,spiritual_jump_rogue,Spiritual Jump,5,2,1,1,0,,0,0,0,1,0,1
+2104,leap_of_faith_rogue,Leap of Faith,5,2,2,1,0,,0,0,0,1,0,1
+2105,transport_rogue,Transport,5,2,3,1,0,,0,0,0,1,0,1
+2106,refresh_rogue,Refresh,2,2,0,1,0,Which target? >,0,0,0,1,0,1
+2107,souls_awakening_rogue,Soul\'s Awakening,2,2,1,1,0,Which target? >,0,0,0,1,0,1
+2108,healing_waters_rogue,Healing Waters,2,2,2,1,0,Which target? >,0,0,0,1,0,1
+2109,fire_dance_rogue,Fire Dance,2,2,3,1,0,Which target? >,0,0,0,1,0,1
+2110,tigers_fortitude_rogue,Tiger\'s Fortitude,5,2,-1,1,0,,0,0,0,1,0,1
+2111,baekhos_blade_rogue,Baekho\'s Blade,5,2,-1,2,0,,0,0,0,1,0,1
+2112,chance_rogue,Chance,5,2,0,2,0,,0,0,0,1,0,1
+2113,randomness_rogue,Randomness,5,2,1,2,0,,0,0,0,1,0,1
+2114,natures_choice_rogue,Nature\'s Choice,5,2,2,2,0,,0,0,0,1,0,1
+2115,trial_by_fire_rogue,Trial by Fire,5,2,3,2,0,,0,0,0,1,0,1
+2116,daggers_remedy_rogue,Dagger\'s Remedy,5,99,0,2,0,,0,0,0,1,0,1
+2117,kwisin_daggers_remedy_rogue,Kwi-Sin Dagger\'s Remedy,5,99,1,2,0,,0,0,0,1,0,1
+2118,mingken_daggers_remedy_rogue,Mingken Dagger\'s Remedy,5,99,2,2,0,,0,0,0,1,0,1
+2119,ohaeng_daggers_remedy_rogue,Ohaeng Dagger\'s Remedy,5,99,3,2,0,,0,0,0,1,0,1
+2120,swift_recovery_rogue,Swift Recovery,2,2,0,2,0,Which target? >,0,0,0,1,0,1
+2121,renew_energy_rogue,Renew Energy,2,2,1,2,0,Which target? >,0,0,0,1,0,1
+2122,loving_dew_rogue,Loving Dew,2,2,2,2,0,Which target? >,0,0,0,1,0,1
+2123,invigorate_rogue,Invigorate,2,2,3,2,0,Which target? >,0,0,0,1,0,1
+2124,dagger_uniform,Dagger Uniform,5,5,-1,0,0,,0,0,0,1,0,1
+2700,==ROGUE TRAPS==,==ROGUE TRAPS==,5,5,0,0,0,,0,0,0,0,1,1
+2701,set_trap,Set Trap,1,2,-1,0,0,What trap? >,0,0,0,1,0,1
+2702,set_dart_trap,Dart Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2703,set_flash_trap,Flash Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2704,set_repeating_dart_trap,Repeating Dart,5,2,-1,0,0,,0,0,0,1,0,1
+2705,set_snare_trap,Snare Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2706,set_spear_trap,Spear Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2707,set_poison_dart_trap,Poison Dart Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2708,set_death_trap,Death Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2709,set_sleep_trap,Sleep Trap,5,2,-1,0,0,,0,0,0,1,0,1
+2710,set_bladestorm_trap,Bladestorm,5,2,0,2,0,,0,0,0,1,0,1
+2711,set_swords_dance_trap,Sword\'s Dance,5,2,1,2,0,,0,0,0,1,0,1
+2712,set_tigers_ambush_trap,Tiger\'s Ambush,5,2,2,2,0,,0,0,0,1,0,1
+2713,set_cutting_edge_trap,Cutting Edge,5,2,3,2,0,,0,0,0,1,0,1
+2714,,,5,5,-1,0,0,,0,0,0,1,1,1
+3000,==MAGESPELLS==,==MAGESPELLS==,5,5,0,0,0,,0,0,0,0,1,1
+3001,thunder_bolt_mage,Thunder Bolt,2,3,-1,0,0,Which target? >,0,0,0,1,1,1
+3002,might_mage,Might,5,3,0,0,0,,0,0,0,1,0,1
+3003,spirit_strength_mage,Spirit Strength,5,3,1,0,0,,0,0,0,1,0,1
+3004,inner_blessing_mage,Inner Blessing,5,3,2,0,0,,0,0,0,1,0,1
+3005,temper_mage,Temper,5,3,3,0,0,,0,0,0,1,0,1
+3006,pestilence_mage,Pestilence,2,3,-1,0,0,Which target? >,0,0,0,1,1,1
+3007,static_mage,Static,2,3,-1,0,0,Which target? >,0,0,0,1,1,1
+3008,spark_mage,Spark,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3009,glimpse_of_the_void_mage,Glimpse of the Void,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3010,bolt_mage,Bolt,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3011,natures_ire_mage,Nature\'s Ire,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3012,fleshspeak_mage,Fleshspeak,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3013,spiritsong_mage,Spiritsong,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3014,helping_hand_mage,Helping Hand,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3015,heal_others_mage,Heal Others,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3016,singe_mage,Singe,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3017,embrace_of_the_void_mage,Embrace of the Void,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3018,lightning_mage,Lightning,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3019,natures_storm_mage,Nature\'s Storm,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3020,harden_armor_mage,Harden armor,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3021,thicken_skin_mage,Thicken Skin,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3022,shield_of_life_mage,Shield of Life,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3023,elemental_armor_mage,Elemental Armor,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3024,ignite_mage,Ignite,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3025,spirit_strike_mage,Spirit Strike,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3026,wrath_of_nature_mage,Wrath of Nature,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3027,thunderclap_mage,Thunder Clap,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3028,lay_hands_mage,Lay hands,5,3,0,0,0,,0,0,0,1,0,1
+3029,spirits_smile_mage,Spirit\'s Smile,5,3,1,0,0,,0,0,0,1,0,1
+3030,lifes_water_mage,Life\'s Water,5,3,2,0,0,,0,0,0,1,0,1
+3031,quicken_mage,Quicken,5,3,3,0,0,,0,0,0,1,0,1
+3032,erupt_mage,Erupt,5,3,0,0,0,,0,0,0,1,1,1
+3033,soulstorm_mage,Soulstorm,5,3,1,0,0,,0,0,0,1,1,1
+3034,avalanche_mage,Avalanche,5,3,2,0,0,,0,0,0,1,1,1
+3035,deluge_mage,Deluge,5,3,3,0,0,,0,0,0,1,1,1
+3036,mend_wounds_mage,Mend wounds,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3037,spiritual_cure_mage,Spiritual Cure,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3038,natures_kiss_mage,Nature\'s Kiss,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3039,cooling_touch_mage,Cooling Touch,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3040,valor_mage,Valor,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3041,strengthen_mage,Strengthen,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3042,bless_muscles_mage,Bless Muscles,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3043,power_burst_mage,Power Burst,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3044,ion_mage,Ion,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3045,soul_strike_mage,Soul Strike,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3046,tree_dart_mage,Tree Dart,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3047,sunstroke_mage,Sunstroke,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3048,relief_mage,Relief,5,3,0,0,0,,0,0,0,1,0,1
+3049,renew_essence_mage,Renew Essence,5,3,1,0,0,,0,0,0,1,0,1
+3050,lifesong_mage,Lifesong,5,3,2,0,0,,0,0,0,1,0,1
+3051,sweet_waters_mage,Sweet Waters,5,3,3,0,0,,0,0,0,1,0,1
+3052,purge_mage,Purge,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3053,cure_illness_mage,Cure Illness,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3054,restore_health_mage,Restore Health,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3055,remove_poison_mage,Remove Poison,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3056,ion_charge_mage,Ion Charge,5,3,0,0,0,,0,0,0,1,1,1
+3057,crescendo_mage,Crescendo,5,3,1,0,0,,0,0,0,1,1,1
+3058,flight_of_arrows_mage,Flight of Arrows,5,3,2,0,0,,0,0,0,1,1,1
+3059,blazing_sands_mage,Blazing Sands,5,3,3,0,0,,0,0,0,1,1,1
+3060,recover_mage,Recover,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3061,spirits_embrace_mage,Spirit\'s Embrace,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3062,infuse_energy_mage,Infuse Energy,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3063,lifes_river_mage,Life\'s River,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3064,cure_paralysis_mage,Cure paralysis,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3065,release_binds_mage,Release Binds,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3066,return_movement_mage,Return Movement,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3067,free_movement_mage,Free Movement,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3068,sanctuary_mage,Sanctuary,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3069,protect_soul_mage,Protect Soul,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3070,guard_life_mage,Guard Life,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3071,magic_shield_mage,Magic Shield,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3072,invoke_mage,Invoke,5,3,0,0,0,,0,0,0,1,0,1
+3073,spirits_power_mage,Spirit\'s Power,5,3,1,0,0,,0,0,0,1,0,1
+3074,life_force_mage,Life Force,5,3,2,0,0,,0,0,0,1,0,1
+3075,gather_magic_mage,Gather Magic,5,3,3,0,0,,0,0,0,1,0,1
+3076,gangrel_mage,Gangrel,1,3,0,0,0,Become what?,0,0,0,1,0,1
+3077,kwisin_mask_mage,Kwi-Sin Mask,5,3,1,0,0,,0,0,0,1,0,1
+3078,mingken_mask_mage,Ming-Ken Mask,5,3,2,0,0,,0,0,0,1,0,1
+3079,ohaeng_mask_mage,Ohaeng Mask,5,3,3,0,0,,0,0,0,1,0,1
+3080,heal_mage,Heal,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3081,ancestors_touch_mage,Ancestor\'s Touch,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3082,life_flow_mage,Life Flow,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3083,infuse_lifeforce_mage,Infuse Life-Force,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3084,impact_mage,Impact,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3085,soul_spike_mage,Soul Spike,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3086,treefall_mage,Treefall,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3087,shatter_mage,Shatter,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3088,explode_mage,Explode,5,3,0,0,0,,0,0,0,1,1,1
+3089,soul_chasm_mage,Soul Chasm,5,3,1,0,0,,0,0,0,1,1,1
+3090,winters_vortex_mage,Winter\'s Vortex,5,3,2,0,0,,0,0,0,1,1,1
+3091,volcano_mage,Volcano,5,3,3,0,0,,0,0,0,1,1,1
+3092,remove_curse_mage,Remove Curse,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3093,release_curse_mage,Release Curse,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3094,undo_evil_mage,Undo Evil,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3095,restore_armor_mage,Restore Armor,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3096,beast_mage,Beast,1,3,0,0,0,Become what?,0,0,0,1,0,1
+3097,kwisin_chameleon_mage,Kwi-Sin Chameleon,5,5,1,0,0,,0,0,0,1,0,1
+3098,mingken_chameleon_mage,Ming-Ken Chameleon,5,5,2,0,0,,0,0,0,1,0,1
+3099,ohaeng_chameleon_mage,Ohaeng Chameleon,5,5,3,0,0,,0,0,0,1,0,1
+3100,call_lightning_mage,Call Lightning,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3101,death_scream_mage,Death Scream,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3102,natures_wounding_mage,Nature\'s Wounding,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3103,rain_of_fire_mage,Rain of Fire,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3104,vex_mage,Vex,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3105,deaths_face_mage,Death\'s Face,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3106,unnatural_selection_mage,Unnatural Selection,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3107,flaw_mage,Flaw,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3108,venom_mage,Venom,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3109,spirits_leech_mage,Spirit\'s Leech,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3110,snake_bite_mage,Snake Bite,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3111,corruption_mage,Corruption,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3112,blind_mage,Blind,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3113,dark_veil_mage,Dark Veil,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3114,winters_shadow_mage,Winter\'s Shadow,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3115,ice_glare_mage,Ice Glare,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3116,paralyze_mage,Paralyze,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3117,spirit_leash_mage,Spirit Leash,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3118,cold_binds_mage,Cold Binds,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3119,lockup_mage,Lockup,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3120,electrocute_mage,Electrocute,5,3,0,0,0,,0,0,0,1,1,1
+3121,eater_of_the_dead_mage,Eater of the Dead,5,3,1,0,0,,0,0,0,1,1,1
+3122,forests_discord_mage,Forest\'s Discord,5,3,2,0,0,,0,0,0,1,1,1
+3123,shatter_storm_mage,Shatter Storm,5,3,3,0,0,,0,0,0,1,1,1
+3124,confuse_mage,Confuse,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3125,curse_of_the_void_mage,Curse of the Void,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3126,despise_friend_mage,Despise Friend,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3127,chaos_rain_mage,Chaos Rain,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3128,sleep_mage,Sleep,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3129,sweet_musings_mage,Sweet Musings,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3130,essence_of_poppies_mage,Essence of Poppies,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3131,stillness_mage,Stillness,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3132,stormstrike_mage,Stormstrike,2,3,0,0,0,Which target? >,0,0,0,1,1,1
+3133,river_of_blood_mage,River of Blood,2,3,1,0,0,Which target? >,0,0,0,1,1,1
+3134,natural_disaster_mage,Natural Disaster,2,3,2,0,0,Which target? >,0,0,0,1,1,1
+3135,winds_of_disaster_mage,Winds of Disaster,2,3,3,0,0,Which target? >,0,0,0,1,1,1
+3136,doze_mage,Doze,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3137,voids_touch_mage,Void\'s Touch,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3138,still_ethers_mage,Still Ethers,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3139,still_waters_mage,Still Waters,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3140,tempest_mage,Tempest,5,3,0,0,0,,0,0,0,1,1,1
+3141,dance_macabre_mage,Dance Macabre,5,3,1,0,0,,0,0,0,1,1,1
+3142,wilding_mage,Wilding,5,3,2,0,0,,0,0,0,1,1,1
+3143,chain_lightning_mage,Chain Lightning,5,3,3,0,0,,0,0,0,1,1,1
+3144,rejuvenate_mage,Rejuvenate,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3145,still_embrace_mage,Still Embrace,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3146,infuse_life_mage,Infuse Life,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3147,healing_rain_mage,Healing Rain,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3148,hellfire_mage,Hellfire,2,3,0,0,0,Which target? >,0,0,0,1,0,1
+3149,consume_soul_mage,Consume Soul,2,3,1,0,0,Which target? >,0,0,0,1,0,1
+3150,flesh_eaters_mage,Flesh Eaters,2,3,2,0,0,Which target? >,0,0,0,1,0,1
+3151,hurricane_mage,Hurricane,2,3,3,0,0,Which target? >,0,0,0,1,0,1
+3152,hindrance_mage,Hindrance,2,3,-1,1,0,Which target? >,0,0,0,1,1,1
+3153,solace_mage,Solace,2,3,0,1,0,Which target? >,0,0,0,1,0,1
+3154,festival_of_souls_mage,Festival of Souls,2,3,1,1,0,Which target? >,0,0,0,1,0,1
+3155,natures_bounty_mage,Nature\'s Bounty,2,3,2,1,0,Which target? >,0,0,0,1,0,1
+3156,ohaengs_blessing_mage,Ohaeng\'s Blessing,2,3,3,1,0,Which target? >,0,0,0,1,0,1
+3157,volcanic_blast_mage,Volcanic Blast,2,3,-1,1,0,Which target? >,0,0,0,1,1,1
+3158,bekyuns_heal_mage,Bekyun\'s Heal,2,3,0,2,0,Which target? >,0,0,0,1,0,1
+3159,death_denied_mage,Death Denied,2,3,1,2,0,Which target? >,0,0,0,1,0,1
+3160,one_with_life_mage,One with Life,2,3,2,2,0,Which target? >,0,0,0,1,0,1
+3161,balanced_touch_mage,Balanced Touch,2,3,3,2,0,Which target? >,0,0,0,1,0,1
+3162,inferno_mage,Inferno,2,3,0,2,0,Which target? >,0,0,0,1,0,1
+3163,deaths_door_mage,Death\'s Door,2,3,1,2,0,Which target? >,0,0,0,1,0,1
+3164,natures_denial_mage,Nature\'s Denial,2,3,2,2,0,Which target? >,0,0,0,1,0,1
+3165,steel_storm_mage,Steel Storm,2,3,3,2,0,Which target? >,0,0,0,1,0,1
+3166,ju_jak_curse_mage,Ju Jak Curse,2,3,-1,2,0,Which target? >,0,0,0,1,1,1
+3167,magis_bane,Magi\'s bane,5,99,-1,0,0,,0,0,0,1,1,1
+4000,==POETSPELLS==,==POETSPELLS==,5,5,0,0,0,,0,0,0,0,1,1
+4001,invoke_poet,Invoke,5,4,0,0,0,,0,36,0,1,0,1
+4002,spirits_power_poet,Spirit\'s Power,5,4,1,0,0,,0,0,0,1,0,1
+4003,life_force_poet,Life Force,5,4,2,0,0,,0,0,0,1,0,1
+4004,gather_magic_poet,Gather Magic,5,4,3,0,0,,0,0,0,1,0,1
+4005,lay_hands_poet,Lay Hands,5,4,0,0,0,,0,0,0,1,0,1
+4006,spirits_smile_poet,Spirit\'s Smile,5,4,1,0,0,,0,0,0,1,0,1
+4007,lifes_water_poet,Life\'s Water,5,4,2,0,0,,0,0,0,1,0,1
+4008,quicken_poet,Quicken,5,4,3,0,0,,0,0,0,1,0,1
+4009,recover_poet,Recover,2,4,0,0,9,Which target? >,0,0,0,1,0,1
+4010,spirits_embrace_poet,Spirit\'s Embrace,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4011,infuse_energy_poet,Infuse Energy,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4012,lifes_river_poet,Life\'s River,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4013,spark_poet,Spark,2,4,0,0,0,Which target? >,0,0,0,1,1,1
+4014,glimpse_of_the_void_poet,Glimpse of the Void,2,4,1,0,0,Which target? >,0,0,0,1,1,1
+4015,bolt_poet,Bolt,2,4,2,0,0,Which target? >,0,0,0,1,1,1
+4016,natures_ire_poet,Nature\'s Ire,2,4,3,0,0,Which target? >,0,0,0,1,1,1
+4017,purge_poet,Purge,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4018,cure_illness_poet,Cure Illness,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4019,restore_health_poet,Restore Health,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4020,remove_poison_poet,Remove Poison,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4021,harden_armor_poet,Harden Armor,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4022,thicken_skin_poet,Thicken Skin,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4023,shield_of_life_poet,Shield of Life,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4024,elemental_armor_poet,Elemental Armor,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4025,vital_spark_poet,Vital Spark,5,4,0,0,0,,0,0,0,1,0,1
+4026,spirits_kiss_poet,Spirit\'s Kiss,5,4,1,0,0,,0,0,0,1,0,1
+4027,spark_of_health_poet,Spark of Health,5,4,2,0,0,,0,0,0,1,0,1
+4028,water_of_nature_poet,Water of Nature,5,4,3,0,0,,0,0,0,1,0,1
+4029,singe_poet,Singe,2,4,0,0,0,Which target? >,0,0,0,1,1,1
+4030,embrace_of_the_void_poet,Embrace of the Void,2,4,1,0,0,Which target? >,0,0,0,1,1,1
+4031,lightning_poet,Lightning,2,4,2,0,0,Which target? >,0,0,0,1,1,1
+4032,natures_storm_poet,Nature\'s Storm,2,4,3,0,0,Which target? >,0,0,0,1,1,1
+4033,remove_curse_poet,Remove curse,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4034,release_curse_poet,Release Curse,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4035,undo_evil_poet,Undo Evil,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4036,restore_armor_poet,Restore Armor,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4037,valor_poet,Valor,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4038,strengthen_poet,Strengthen,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4039,bless_muscles_poet,Bless Muscles,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4040,power_burst_poet,Power Burst,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4041,ignite_poet,Ignite,2,4,0,0,0,Which target? >,0,0,0,1,1,1
+4042,spirit_strike_poet,Spirit Strike,2,4,1,0,0,Which target? >,0,0,0,1,1,1
+4043,wrath_of_nature_poet,Wrath of Nature,2,4,2,0,0,Which target? >,0,0,0,1,1,1
+4044,thunderclap_poet,Thunderclap,2,4,3,0,0,Which target? >,0,0,0,1,1,1
+4045,heal_poet,Heal,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4046,ancestors_touch_poet,Ancestor\'s Touch,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4047,life_flow_poet,Life Flow,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4048,infuse_lifeforce_poet,Infuse Life-Force,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4049,anoint_poet,Anoint,5,4,0,0,0,,0,0,0,1,0,1
+4050,brothers_of_spirit_poet,Brother\'s of Spirit,5,4,1,0,0,,0,0,0,1,0,1
+4051,gathering_of_power_poet,Gathering of Power,5,4,2,0,0,,0,0,0,1,0,1
+4052,natures_family_poet,Nature\'s Family,5,4,3,0,0,,0,0,0,1,0,1
+4053,sanctuary_poet,Sanctuary,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4054,protect_soul_poet,Protect Soul,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4055,guard_life_poet,Guard Life,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4056,magic_shield_poet,Magic Shield,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4057,remove_veil_poet,Remove Veil,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4058,clear_darkness_poet,Clear Darkness,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4059,restore_sight_poet,Restore Sight,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4060,purge_darkness_poet,Purge Darkness,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4061,endear_poet,Endear,5,4,0,0,0,,0,0,0,1,1,1
+4062,possess_soul_poet,Possess Soul,5,4,1,0,0,,0,0,0,1,1,1
+4063,charm_life_poet,Charm Life,5,4,2,0,0,,0,0,0,1,1,1
+4064,align_follower_poet,Align Follower,5,4,3,0,0,,0,0,0,1,1,1
+4065,cure_paralysis_poet,Cure paralysis,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4066,release_binds_poet,Release Binds,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4067,return_movement_poet,Return Movement,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4068,free_movement_poet,Free Movement,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4069,revitalize_poet,Revitalize,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4070,ancestors_embrace_poet,Ancestor\'s Embrace,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4071,lifeforce_poet,Life-Force,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4072,lifespring_poet,Lifespring,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4073,inspiration_poet,Inspiration,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4074,draw_energy_poet,Draw Energy,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4075,harness_power_poet,Harness Power,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4076,combine_focus_poet,Combine Focus,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4077,remedy_poet,Remedy,5,4,0,0,0,,0,0,0,1,0,1
+4078,brethren_of_spirits_poet,Brethren of Spirits,5,4,1,0,0,,0,0,0,1,0,1
+4079,gathering_of_the_flock_poet,Gathering of the Flock,5,4,2,0,0,,0,0,0,1,0,1
+4080,gathering_of_majesty_poet,Gathering of Majesty,5,4,3,0,0,,0,0,0,1,0,1
+4081,atone_poet,Atone,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4082,restore_will_poet,Restore Will,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4083,raise_guard_poet,Raise Guard,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4084,align_armor_poet,Align Armor,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4085,fortify_poet,Fortify,5,4,0,0,0,,0,0,0,1,0,1
+4086,ancestors_kiss_poet,Ancestor\'s Kiss,5,4,1,0,0,,0,0,0,1,0,1
+4087,fertile_soil_poet,Fertile Soil,5,4,2,0,0,,0,0,0,1,0,1
+4088,waters_of_purity_poet,Waters of Purity,5,4,3,0,0,,0,0,0,1,0,1
+4089,second_sight_poet,Second sight,5,4,0,0,0,,0,0,0,1,0,1
+4090,hear_spirits_poet,Hear Spirits,5,4,1,0,0,,0,0,0,1,0,1
+4091,improve_sight_poet,Improve Sight,5,4,2,0,0,,0,0,0,1,0,1
+4092,show_hidden_poet,Show Hidden,5,4,3,0,0,,0,0,0,1,0,1
+4093,retribution_poet,Retribution,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4094,spirit_puppet_poet,Spirit Puppet,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4095,palm_of_life_poet,Palm of Life,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4096,tornado_poet,Tornado,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4097,barrier_poet,Barrier,5,4,0,0,0,,0,0,0,1,0,1
+4098,spirit_barrier_poet,Spirit Barrier,5,4,1,0,0,,0,0,0,1,0,1
+4099,life_barrier_poet,Life Barrier,5,4,2,0,0,,0,0,0,1,0,1
+4100,balance_barrier_poet,Balance Barrier,5,4,3,0,0,,0,0,0,1,0,1
+4101,inspire_poet,Inspire,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4102,share_energy_poet,Share Energy,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4103,bestow_power_poet,Bestow Power,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4104,release_focus_poet,Release Focus,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4105,scourge_poet,Scourge,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4106,damage_will_poet,Damage Will,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4107,drop_guard_poet,Drop Guard,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4108,unalign_armor_poet,Unalign Armor,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4109,earthquake_poet,Earthquake,2,4,0,0,0,Which target? >,0,0,0,1,1,1
+4110,tossing_the_bones_poet,Tossing the Bones,2,4,1,0,0,Which target? >,0,0,0,1,1,1
+4111,natures_fury_poet,Nature\'s Fury,2,4,2,0,0,Which target? >,0,0,0,1,1,1
+4112,groundstrike_poet,Groundstrike,2,4,3,0,0,Which target? >,0,0,0,1,1,1
+4113,blockade_human_poet,Human Barrier,5,4,0,0,0,,0,0,0,1,0,1
+4114,block_entry_poet,Block Entry,5,4,1,0,0,,0,0,0,1,0,1
+4115,distance_self_poet,Distance Self,5,4,2,0,0,,0,0,0,1,0,1
+4116,protect_sides_poet,Protect Sides,5,4,3,0,0,,0,0,0,1,0,1
+4117,heavens_kiss_poet,Heaven\'s Kiss,5,4,0,0,0,,0,0,0,1,0,1
+4118,clan_of_souls_poet,Clan of Souls,5,4,1,0,0,,0,0,0,1,0,1
+4119,healing_hand_poet,Healing Hand,5,4,2,0,0,,0,0,0,1,0,1
+4120,earths_embrace_poet,Earth\'s Embrace,5,4,3,0,0,,0,0,0,1,0,1
+4121,harden_body_poet,Harden body,5,4,0,0,0,,0,0,0,1,0,1
+4122,deaths_guard_poet,Death\'s Guard,5,4,1,0,0,,0,0,0,1,0,1
+4123,lifes_protection_poet,Life\'s Protection,5,4,2,0,0,,0,0,0,1,0,1
+4124,body_of_alignment_poet,Body of Alignment,5,4,3,0,0,,0,0,0,1,0,1
+4125,dispell_poet,Dispell,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4126,remove_magic_poet,Remove Magic,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4127,return_natural_poet,Return Natural,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4128,restore_balance_poet,Restore Balance,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4129,flare_poet,Flare,2,4,0,0,0,Which target? >,0,0,0,1,1,1
+4130,dance_of_death_poet,Dance of Death,2,4,1,0,0,Which target? >,0,0,0,1,1,1
+4131,breaking_of_the_world_poet,Breaking of the World,2,4,2,0,0,Which target? >,0,0,0,1,1,1
+4132,storm_crow_poet,Storm Crow,2,4,3,0,0,Which target? >,0,0,0,1,1,1
+4133,water_of_life_poet,Water of life,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4134,breath_of_power_poet,Breath of Power,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4135,healing_breath_poet,Healing Breath,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4136,breath_of_life_poet,Breath of Life,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4137,restore_poet,Restore,2,99,-1,0,0,Which target? >,0,0,0,1,0,1
+4138,resurrect_poet,Resurrect,2,4,0,0,0,Which target? >,0,0,0,1,0,1
+4139,return_spirit_poet,Return Spirit,2,4,1,0,0,Which target? >,0,0,0,1,0,1
+4140,mingken_blessing_poet,Ming-Ken Blessing,2,4,2,0,0,Which target? >,0,0,0,1,0,1
+4141,death_undone_poet,Death Undone,2,4,3,0,0,Which target? >,0,0,0,1,0,1
+4142,healers_revenge_poet,Healer\'s Revenge,2,4,-1,1,0,Which target? >,0,0,0,1,1,1
+4143,stream_of_life_poet,Stream of life,2,4,0,1,0,Which target? >,0,0,0,1,0,1
+4144,purity_of_spirit_poet,Purity of Spirit,2,4,1,1,0,Which target? >,0,0,0,1,0,1
+4145,natures_abundance_poet,Nature\'s Abundance,2,4,2,1,0,Which target? >,0,0,0,1,0,1
+4146,forge_of_life_poet,Forge of Life,2,4,3,1,0,Which target? >,0,0,0,1,0,1
+4147,bolster_poet,Bolster,2,4,0,2,0,Which target? >,0,0,0,1,0,1
+4148,dark_armor_poet,Dark Armor,2,4,1,2,0,Which target? >,0,0,0,1,0,1
+4149,life_armor_poet,Life Armor,2,4,2,2,0,Which target? >,0,0,0,1,0,1
+4150,armor_of_elements_poet,Armor of Elements,2,4,3,2,0,Which target? >,0,0,0,1,0,1
+4151,dishearten_poet,Dishearten,2,4,0,2,0,Which target? >,0,0,0,1,1,1
+4152,dark_fear_poet,Dark Fear,2,4,1,2,0,Which target? >,0,0,0,1,1,1
+4153,break_will_poet,Break Will,2,4,2,2,0,Which target? >,0,0,0,1,1,1
+4154,harshen_attack_poet,Harshen Attack,2,4,3,2,0,Which target? >,0,0,0,1,1,1
+4155,essence_of_life_poet,Essence of life,2,4,0,2,0,Which target? >,0,0,0,1,0,1
+4156,essence_of_spirit_poet,Essence of Spirit,2,4,1,2,0,Which target? >,0,0,0,1,0,1
+4157,lifes_embrace_poet,Life\'s Embrace,2,4,2,2,0,Which target? >,0,0,0,1,0,1
+4158,earths_cradle_poet,Earth\'s Cradle,2,4,3,2,0,Which target? >,0,0,0,1,0,1
+4159,hyun_moo_spite_poet,Hyun Moo Spite,2,4,-1,2,0,Which target? >,0,0,0,1,1,1
+4700,cotw_controller_poet,Call of the Wild,5,99,-1,0,0,,0,0,0,0,0,1
+4701,cotw_caterpillar_poet,Call of the Wild (Caterpillar),5,4,0,0,0,,0,0,0,1,0,1
+4702,cotw_fluffy_dog_poet,Call of the Wild (Fluffy Dog),5,4,0,0,0,,0,0,0,1,0,1
+4703,cotw_panda_bear_poet,Call of the Wild (Panda Bear),5,4,0,0,0,,0,0,0,1,0,1
+4704,cotw_wild_monkey_poet,Call of the Wild (Wild Monkey),5,4,0,0,0,,0,0,0,1,0,1
+4705,cotw_gorilla_poet,Call of the Wild (Gorilla),5,4,0,0,0,,0,0,0,1,0,1
+4706,kwisin_companion_poet,Companion of Kwi-Sin,5,4,1,0,0,,0,0,0,1,0,1
+4707,mingken_companion_poet,Companion of Ming-Ken,5,4,2,0,0,,0,0,0,1,0,1
+4708,ohaeng_companion_poet,Companion of Ohaeng,5,4,3,0,0,,0,0,0,1,0,1
+4709,kwisin_assistant_poet,Kwi-Sin Assistant,5,4,1,0,0,,0,0,0,1,0,1
+4710,mingken_assistant_poet,Ming-Ken Assistant,5,4,2,0,0,,0,0,0,1,0,1
+4711,ohaeng_assistant_poet,Ohaeng Assistant,5,4,3,0,0,,0,0,0,1,0,1
+4712,kwisin_protector_poet,Kwi-Sin Protector,5,4,1,0,0,,0,0,0,1,0,1
+4713,mingken_protector_poet,Ming-Ken Protector,5,4,2,0,0,,0,0,0,1,0,1
+4714,ohaeng_protector_poet,Ohaeng Protector,5,4,3,0,0,,0,0,0,1,0,1
+4715,kwisin_fighter_poet,Fighter of Kwi-Sin,5,4,1,0,0,,0,0,0,1,0,1
+4716,mingken_fighter_poet,Fighter of Ming-Ken,5,4,2,0,0,,0,0,0,1,0,1
+4717,ohaeng_fighter_poet,Fighter of Ohaeng,5,4,3,0,0,,0,0,0,1,0,1
+4718,kwisin_warrior_poet,Warrior of Kwi-Sin,5,4,1,0,0,,0,0,0,1,0,1
+4719,mingken_warrior_poet,Ming-Ken Warrior,5,4,2,0,0,,0,0,0,1,0,1
+4720,ohaeng_warrior_poet,Warrior of Ohaeng,5,4,3,0,0,,0,0,0,1,0,1
+4721,kwisin_champion_poet,Kwi-Sin Champion,5,4,1,1,0,,0,0,0,1,0,1
+4722,mingken_champion_poet,Ming-Ken Champion,5,4,2,1,0,,0,0,0,1,0,1
+4723,ohaeng_champion_poet,Ohaeng Champion,5,4,3,1,0,,0,0,0,1,0,1
+4724,kwisin_avatar_poet,Avatar of Kwi-Sin,5,4,1,2,0,,0,0,0,1,0,1
+4725,mingken_avatar_poet,Ming-Ken Avatar,5,4,2,2,0,,0,0,0,1,0,1
+4726,ohaeng_avatar_poet,Avatar of Ohaeng,5,4,3,2,0,,0,0,0,1,0,1
+4727,cotw_wind_dancer_poet,Wind dancer,5,4,0,1,0,,0,0,0,1,0,1
+4728,cotw_wind_warrior_poet,Wind warrior,5,4,0,2,0,,0,0,0,1,0,1
+10000,===GM SPELLS===,===GM SPELLS,5,5,0,0,0,,0,0,0,0,1,1
+10001,map_editor,Map Editor,5,5,0,0,0,,0,0,0,1,0,1
+10002,add_script,Add script,1,5,0,0,0,"R, B, G, Y, P, C, S >",0,0,0,1,0,1
+10003,delete_spawn,Delete espawn,2,5,0,0,0,Which target? >,0,0,0,1,0,1
+10004,instance_ambush,Instance Ambush,5,5,-1,0,0,,0,0,0,1,1,1
+10500,ninja_disguise,Ninja disguise,2,5,0,0,0,Which target? >,0,0,0,1,0,1
+10501,ninja_swap,Ninja swap,2,5,0,0,0,Which target? >,0,0,0,1,0,1
+10502,dnd,Dnd,5,5,0,0,0,,0,0,0,1,0,1
+10504,lokis_favor,Loki\'s Favor,5,99,-1,0,0,,0,0,0,1,1,1
+11503,blade_crawl,Blade crawl,5,5,0,0,0,,0,0,0,1,0,1
+11993,gm_dispell,GM Dispell,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+11994,gm_res,GM Res,5,99,0,0,0,,0,0,0,1,0,1
+11995,spawn_tool,Spawn Tool,5,5,0,0,0,,0,0,0,1,0,1
+11996,random_spawn_scrolls,Random Spawn Scrolls,5,5,0,0,0,,0,0,0,1,0,1
+11997,killmobs,kill mobs,5,5,0,0,0,,0,0,0,1,0,1
+11998,mass_res,Mass resurrect,5,5,0,0,0,,0,0,0,1,0,1
+11999,gm_sage,GM Sage,1,5,0,0,0,> ,0,0,0,1,0,1
+12000,==Editor Spells===,===Editor Spells===,5,5,0,0,0,,0,0,0,0,1,1
+12001,editor_exit,editor exit,5,5,0,0,0,,0,0,0,1,0,1
+12002,tile_next,tile next,5,5,0,0,0,,0,0,0,1,0,1
+12003,tile_prev,tile prev,5,5,0,0,0,,0,0,0,1,0,1
+12004,toggle_pass,toggle pass,5,5,0,0,0,,0,0,0,1,0,1
+12005,obj_next,obj next,5,5,0,0,0,,0,0,0,1,0,1
+12006,obj_prev,obj prev,5,5,0,0,0,,0,0,0,1,0,1
+12007,tile_copy,tile copy,5,5,0,0,0,,0,0,0,1,0,1
+12008,tile_paste,tile paste,5,5,0,0,0,,0,0,0,1,0,1
+12009,obj_copy,obj copy,5,5,0,0,0,,0,0,0,1,0,1
+12010,obj_paste,obj paste,5,5,0,0,0,,0,0,0,1,0,1
+12011,tile_check,tile check,5,5,0,0,0,,0,0,0,1,0,1
+12012,tile_find,tile find,1,5,0,0,0,>,0,0,0,1,0,1
+12013,obj_check,obj check,5,5,0,0,0,,0,0,0,1,0,1
+12014,obj_find,obj find,1,5,0,0,0,>,0,0,0,1,0,1
+12015,editor_save,editor save,5,99,0,0,0,,0,0,0,1,0,1
+12016,toggle_highlight_pass,toggle highlight pass,5,99,0,0,0,,0,0,0,1,0,1
+12017,super_saiyan,Super Saiyan,5,5,0,1,0,,0,0,0,1,0,1
+12018,healing_totem,Healing totem,5,99,0,0,0,,0,0,0,1,1,1
+12019,summon_healing_totem,Summon healing totem,5,99,0,0,0,,0,0,0,1,1,1
+12020,healing_totem_aura,Healing totem aura,5,99,0,0,0,,0,0,0,1,1,1
+12021,furious_charge,Furious Charge,5,99,0,0,0,,0,0,0,1,1,1
+12022,inspect_mob_gm,Inspect Mob,2,5,-1,0,0,Which target? >,0,0,0,1,0,1
+12023,creative,Creative,5,99,-1,0,0,,0,0,0,1,1,1
+12024,follow,Follow,2,99,-1,0,0,,0,0,0,1,0,1
+12025,wind_walk,Wind walk,5,99,-1,0,0,,0,0,0,1,1,1
+12026,gm_push,GM Push,5,99,-1,0,0,,0,0,0,1,1,1
+12027,,,5,5,-1,0,0,,0,0,0,1,1,1
+29500,===DOG SPELLS===,===DOG SPELLS===,5,5,0,0,0,,0,0,0,0,1,1
+29501,fissure,Fissure,2,99,-1,0,0,Which target? >,0,0,0,1,1,1
+29502,lava_surge,Lava surge,2,99,-1,0,0,Which target? >,0,0,0,1,0,1
+29503,serpents_fury,Serpent\'s Fury,5,99,-1,0,0,,0,0,0,1,0,1
+29504,greater_blessing,Greater blessing,5,99,-1,0,0,,0,0,0,1,0,1
+29505,spirit_fury,Spirit Fury,5,99,-1,0,0,,0,0,0,1,0,1
+29506,fascinate,Fascinate,2,99,-1,0,0,Which target? >,0,0,0,1,1,1
+29507,survive,Survive,5,99,-1,0,0,,0,0,0,1,1,1
+30000,===SUBPATH SPELLS===,===SUBPATH SPELLS===,5,5,0,0,0,,0,0,0,0,1,1
+30100,====Chung Ryong====,====Chung Ryong===,5,6,0,0,0,,0,0,0,0,1,1
+30101,chung_ryongs_rage,Chung ryong\'s rage,5,6,-1,0,0,,1,0,0,1,0,1
+30200,====Barbarian=======,====Barbarian====,5,10,0,0,0,,0,0,0,0,1,1
+30201,sonhi_rage,Sonhi rage,5,10,-1,0,0,,0,0,0,1,1,1
+30202,dash_barbarian,Dash,5,10,-1,0,0,,0,0,0,1,1,1
+30203,barbarian_cry,Barbarian cry,5,10,-1,0,0,,0,0,0,1,1,1
+30204,mount,Mount,5,10,-1,0,0,,0,0,0,1,1,1
+30205,wilderness_guise,Wilderness guise,5,10,-1,0,0,,0,0,0,1,1,1
+30206,push,Push,5,10,-1,0,0,,0,0,0,1,1,1
+30207,envigorate,Envigorate,5,10,-1,0,0,,0,0,0,1,1,1
+30208,insult,Insult,5,10,-1,0,0,,0,0,0,1,1,1
+30209,rend,Rend,5,10,-1,0,0,,0,0,0,1,1,1
+30210,break_jaw,Break jaw,5,10,-1,0,0,,0,0,0,1,1,1
+30211,tigers_might,Tiger\'s might,5,10,-1,0,0,,0,0,0,1,1,1
+30212,barbarian_rage,Barbarian rage,5,10,-1,0,0,,0,0,0,1,1,1
+30213,wilderness_weapon,Wilderness weapon,5,10,-1,1,0,,0,0,0,1,1,1
+30214,nomadic_blade,Nomadic blade,5,10,-1,2,0,,0,0,0,1,1,1
+30215,dishonor,Dishonor,5,10,-1,0,0,,0,0,0,1,1,1
+30216,survival_challenge,Survival challenge,5,10,-1,0,0,,0,0,0,1,1,1
+30217,wolf_guise,Wolf guise,5,99,-1,0,0,,0,0,0,1,1,1
+30218,rabbit_guise,Rabbit guise,5,99,-1,0,0,,0,0,0,1,1,1
+30219,deer_guise,Deer guise,5,99,-1,0,0,,0,0,0,1,1,1
+30220,sheep_guise,Sheep guise,5,99,-1,0,0,,0,0,0,1,1,1
+30221,thirsty_ogre_guise,Thirsty ogre guise,5,99,-1,0,0,,0,0,0,1,1,1
+30222,,,5,5,-1,0,0,,0,0,0,1,1,1
+30223,,,5,5,-1,0,0,,0,0,0,1,1,1
+30224,,,5,5,-1,0,0,,0,0,0,1,1,1
+30225,,,5,5,-1,0,0,,0,0,0,1,1,1
+30300,====Chongun======,====Chongun===,5,14,0,0,0,,0,0,0,0,1,1
+30301,evaluate_opponent,Evaluate opponent,2,14,-1,0,99,Which target? >,0,0,0,1,0,1
+30302,inspire_valor,Inspire valor,5,14,-1,0,99,,0,0,0,1,1,1
+30303,art_of_war,Art of war,5,14,-1,0,99,,0,0,0,1,1,1
+30304,invincibility,Invincibility,5,14,-1,0,99,,0,0,0,1,1,1
+30305,protectors_fury,Protectors fury,5,14,-1,0,99,,0,0,0,1,1,1
+30306,harden_weapon,Harden weapon,5,14,-1,1,99,,0,0,0,1,1,1
+30307,charge_weapon,Charge weapon,5,14,-1,2,99,,0,0,0,1,1,1
+30308,enhanced_drink,Enhanced drink,1,14,-1,0,99,Bless what?,0,0,0,1,1,1
+30309,chongun_uniform,Chongun uniform,5,14,-1,0,99,,0,0,0,1,1,1
+30310,employ_troop,Employ troop,5,14,-1,0,99,,0,0,0,1,1,1
+30311,recognize_honorable_act,Recognize honorable act,5,14,-1,0,99,,0,0,0,1,1,1
+30312,sharpen_weapon,Sharpen weapon,5,14,-1,0,99,,0,0,0,1,1,1
+30313,title_of_nobility,Title of nobility,5,14,-1,0,99,,0,0,0,1,1,1
+30314,spirit_of_war,Spirit of war,5,14,-1,0,99,,0,0,0,1,1,1
+30315,protectors_bulwark,Protector\'s Bulwark,5,99,-1,0,0,,0,0,0,1,1,1
+30400,====Do==========,====Do======,5,18,0,0,0,,0,0,0,0,1,1
+30401,dash_do,Dash,5,18,-1,0,0,,0,0,0,1,1,1
+30402,spirit_blade,Spirit blade,5,18,-1,0,0,,0,0,0,1,1,1
+30403,blend,Blend,5,18,-1,0,0,,0,0,0,1,1,1
+30404,hear_footstep_do,Hear footstep,5,18,-1,0,0,,0,0,0,1,1,1
+30405,assess_opponent_do,Assess opponent,2,18,-1,0,0,Which target? >,0,0,0,1,1,1
+30406,balance_weapon,Balance weapon,5,18,-1,1,0,,0,0,0,1,1,1
+30407,master_weapon,Master weapon,5,18,-1,2,0,,0,0,0,1,1,1
+30408,ki_strike,Ki strike,2,18,-1,0,0,Which target? >,0,0,0,1,1,1
+30409,crossing_swords,Crossing swords,5,18,-1,0,0,,0,0,0,1,1,1
+30410,,,5,5,-1,0,0,,0,0,0,1,1,1
+30500,====Baekho======,====Baekho====,5,7,0,0,0,,0,0,0,0,1,1
+30501,baekhos_cunning,Baekho\'s cunning,5,7,-1,0,0,,1,0,0,1,0,1
+30600,====Merchant====,====Merchant===,5,11,0,0,0,,0,0,0,0,1,1
+30601,skill_up_merchant,Skill up,5,11,0,0,0,,0,0,0,1,0,1
+30602,engrave,Engrave,2,11,-1,0,0,Which target? >,0,0,0,1,0,1
+30603,marketer_guise,Marketer guise,5,11,-1,0,0,,0,0,0,1,1,1
+30604,pilfer,Pilfer,5,11,-1,0,0,,0,0,0,1,1,1
+30605,bekyunarrow,BekyunArrow,5,11,-1,0,0,,0,0,0,1,1,1
+30606,gambling,Gambling,5,11,-1,0,0,,0,0,0,1,1,1
+30607,golden_fist,Golden fist,5,11,-1,0,0,,0,0,0,1,1,1
+30608,,,5,5,-1,0,0,,0,0,0,1,1,1
+30609,,,5,5,-1,0,0,,0,0,0,1,1,1
+30610,,,5,5,-1,0,0,,0,0,0,1,1,1
+30700,====Ranger=====,====Ranger====,5,15,0,0,0,,0,0,0,0,1,1
+30701,skill_up_ranger,Skill up,5,15,0,0,0,,0,0,0,1,0,1
+30702,forest_cover,Forest cover,5,15,-1,0,0,,0,0,0,1,1,1
+30703,tree_bark,Tree bark,5,15,-1,0,0,,0,0,0,1,1,1
+30704,set_pit_trap,Pit trap,5,15,-1,0,0,,0,0,0,1,1,1
+30705,carve_arrow,Carve arrow,5,15,-1,0,0,,0,0,0,1,1,1
+30706,call_companion,Call companion,5,15,-1,0,0,,0,0,0,1,1,1
+30707,scouting_trip,Scouting trip,5,15,-1,0,0,,0,0,0,1,1,1
+30708,,,5,5,-1,0,0,,0,0,0,1,1,1
+30709,,,5,5,-1,0,0,,0,0,0,1,1,1
+30710,,,5,5,-1,0,0,,0,0,0,1,1,1
+30800,====Spy======,====Spy======,5,19,0,0,0,,0,0,0,0,1,1
+30801,skill_up_spy,Skill up,5,19,0,0,0,,0,0,0,1,0,1
+30802,incognito,Incognito,5,19,-1,0,0,,0,0,0,1,1,1
+30803,hear_footstep_spy,Hear footstep,5,19,-1,0,0,,0,0,0,1,1,1
+30804,spy_kit,Spy kit,5,19,-1,0,0,,0,0,0,1,1,1
+30805,mimic_spy,Mimic,5,19,-1,0,0,,0,0,0,1,1,1
+30806,assassinate,Assassinate,5,19,-1,0,0,,0,0,0,1,1,1
+30807,apply_stealth,Apply stealth,5,19,-1,0,0,,0,0,0,1,1,1
+30808,assess_opponent_spy,Assess opponent,2,19,-1,0,0,Which target? >,0,0,0,1,1,1
+30809,dagger_to_throat,Dagger to throat,5,19,-1,0,0,,0,0,0,1,1,1
+30810,apply_stealth,Apply stealth,5,19,-1,0,0,,0,0,0,1,1,1
+30811,,,5,19,-1,0,0,,0,0,0,1,1,1
+30812,,,5,5,-1,0,0,,0,0,0,1,1,1
+30813,,,5,5,-1,0,0,,0,0,0,1,1,1
+30814,,,5,5,-1,0,0,,0,0,0,1,1,1
+30815,,,5,5,-1,0,0,,0,0,0,1,1,1
+30900,====Ju Jak=====,====Ju Jak====,5,8,0,0,0,,0,0,0,0,1,1
+30901,ju_jak_evocation,Ju jak evocation,5,8,-1,0,0,,0,0,0,1,0,1
+31000,====Diviner===,====Diviner===,5,12,0,0,0,,0,0,0,0,0,1
+31001,read_karma_diviner,Read karma,5,12,-1,0,0,,0,0,0,1,1,1
+31002,hear_footstep_diviner,Hear footstep,5,12,-1,0,0,,0,0,0,1,1,1
+31003,darken_fate,Darken fate,5,12,-1,0,0,,0,0,0,1,1,1
+31004,divine_time,Divine time,5,12,-1,0,0,,0,0,0,1,1,1
+31005,vanish,Vanish,5,12,-1,0,0,,0,0,0,1,1,1
+31006,seal_fate,Seal fate,5,12,-1,0,0,,0,0,0,1,1,1
+31007,voids_vengeance,Voids vengeance,5,12,-1,0,0,,0,0,0,1,1,1
+31008,augury,Augury,5,12,-1,0,0,,0,0,0,1,1,1
+31009,reveal_fortune,Reveal fortune,5,12,-1,0,0,,0,0,0,1,1,1
+31010,witness_of_ritual,Witness of ritual,5,12,-1,0,0,,0,0,0,1,1,1
+31011,reveal_alignment,Reveal alignment,5,12,-1,0,0,,0,0,0,1,1,1
+31100,====Geomancer===,====Geomancer===,5,16,0,0,0,,0,0,0,0,1,1
+31101,reveal_fate,Reveal fate,5,16,-1,0,0,,0,0,0,1,0,1
+31102,exhume,Exhume,5,16,-1,0,0,,0,0,0,1,1,1
+31103,read_karma_geomancer,Read karma,5,16,-1,0,0,,0,0,0,1,1,1
+31104,create_green_potion,GreenPotion,5,16,-1,0,0,,0,0,0,1,1,1
+31105,elemental_mastery,Elemental mastery,5,16,-1,0,0,,0,0,0,1,1,1
+31106,honor_of_the_three_sects,Honor of the Three Sects,5,16,-1,0,0,,0,0,0,1,1,1
+31107,balance_recognition,Balance recognition,5,16,-1,0,0,,0,0,0,1,1,1
+31108,inner_sect_recognition,Inner sect recognition,5,16,-1,0,0,,0,0,0,1,1,1
+31109,neutrality_recognition,Neutrality recognition,5,16,-1,0,0,,0,0,0,1,1,1
+31110,elementalists_mark,Elementalist\'s mark,5,16,-1,0,0,,0,0,0,1,1,1
+31111,good_earth,Goodearth,5,16,-1,0,0,,0,0,0,1,1,1
+31112,hailstorm,Hailstorm,2,16,-1,0,0,,0,0,0,1,0,1
+31113,soften_skin,Soften skin,2,16,-1,0,0,,0,0,0,1,1,1
+31114,earths_spite,Earths Spite,2,16,-1,1,0,,0,0,0,1,1,1
+31115,ice_bombardment,Ice bombardment,2,16,-1,0,0,,0,0,0,1,1,1
+31116,stone_casing,Stone Casing,2,16,-1,0,0,,0,0,0,1,0,1
+31117,,,5,5,-1,0,0,,0,0,0,1,1,1
+31200,====Shaman====,====Shaman====,5,20,0,0,0,,0,0,0,0,1,1
+31201,shamans_solace,Shaman\'s solace,2,20,-1,1,0,,0,0,0,1,0,1
+31202,phoenix_flames,Phoenix flames,5,20,-1,0,0,,0,0,0,1,1,1
+31203,reincarnate,Reincarnate,5,20,-1,0,0,,0,0,0,1,0,1
+31204,,,5,5,-1,0,0,,0,0,0,1,1,1
+31205,,,5,5,-1,0,0,,0,0,0,1,1,1
+31206,,,5,5,-1,0,0,,0,0,0,1,1,1
+31207,,,5,5,-1,0,0,,0,0,0,1,1,1
+31208,,,5,5,-1,0,0,,0,0,0,1,1,1
+31209,,,5,5,-1,0,0,,0,0,0,1,1,1
+31210,shamans_torment,Shaman\'s torment,2,5,-1,0,0,Which target?,0,0,0,1,0,1
+31300,====Hyun Moo====,====Hyun Moo====,5,9,0,0,0,,0,0,0,0,1,1
+31301,hyun_moo_revival,Hyun moo revival,5,9,-1,0,0,,0,0,0,1,0,1
+31400,====Druid=====,====Druid=====,5,13,0,0,0,,0,0,0,0,1,1
+31401,control_flames,Control flames,5,13,-1,0,0,,0,0,0,1,0,1
+31402,druids_rodent,Druid\'s rodent,1,13,-1,0,0,Become what?,0,0,0,1,1,1
+31403,steed,Steed,5,13,-1,0,0,,0,0,0,1,1,1
+31404,lightning_storm,Lightning storm,5,13,-1,0,0,,0,0,0,1,1,1
+31405,sea_breeze,Sea breeze,5,13,-1,0,0,,0,0,0,1,0,1
+31406,natures_bloom,Nature\'s bloom,5,13,-1,0,0,,0,0,0,1,1,1
+31407,earth_strike,Earth strike,2,13,-1,0,0,,0,0,0,1,1,1
+31408,energy_bloom,Energy bloom,2,13,-1,1,0,,0,0,0,1,1,1
+31409,natures_smite,Nature\'s smite,2,13,-1,2,0,,0,0,0,1,1,1
+31410,efflorescence,Efflorescence,5,13,-1,0,0,,0,0,0,1,1,1
+31500,====Monk========,====Monk=====,5,17,0,0,0,,0,0,0,0,1,1
+31501,read_karma_monk,Read karma,5,17,0,0,0,,0,0,0,1,0,1
+31502,forgive,Forgive,2,17,0,0,0,Which target? >,0,0,0,1,0,1
+31503,second_life,Second life,2,17,-1,0,0,Which target? >,0,0,0,1,0,1
+31504,bless_food,Bless food,1,17,-1,0,0,Bless what? >,0,0,0,1,0,1
+31505,bless_drink,Bless drink,1,17,-1,0,0,Bless what? >,0,0,0,1,0,1
+31506,awe,Awe,5,17,-1,0,0,,0,0,0,1,1,1
+31507,son_kal,Son-Kal,5,17,-1,0,0,,0,0,0,1,1,1
+31508,faiths_call,Faiths call,2,17,-1,0,0,Which target? >,0,0,0,1,1,1
+31509,mass_resurrect,Mass resurrect,5,17,-1,0,0,,0,0,0,1,1,1
+31600,====Muse========,====Muse=====,5,21,0,0,0,,0,0,0,0,1,1
+31601,song_of_the_goddess,Song of the Goddess,2,21,-1,0,0,Which target? >,0,0,0,1,0,1
+31602,sacred_verse,Sacred verse,5,21,-1,1,0,,0,0,0,1,1,1
+31603,tranquil_symphony,Tranquil symphony,5,21,-1,2,0,,0,0,0,1,1,1
+31604,costume,Costume,5,21,-1,0,0,,0,0,0,1,1,1
+31605,warmusic,WarMusic,5,21,-1,0,0,,0,0,0,1,1,1
+50000,===NPC SPELLS==,===NPC SPELLS===,5,5,0,0,0,,0,0,0,0,1,1
+50001,sanctuary,Sanctuary,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50002,blind,Blind,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50003,snare,Snare,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50004,venom,Venom,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50005,rebirth,Rebirth,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50006,stormstrike,Stormstrike,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50007,peck,Peck,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50008,ambush,Ambush,2,99,0,0,0,Which target? >,0,0,0,1,0,1
+50009,resurrect,Resurrect,2,99,0,0,0,Which target? >,0,0,0,1,1,1
+50010,mass_resurrect,Mass resurrect,5,99,0,0,0,,0,0,0,1,1,1
+50011,scourge,Scourge,2,99,0,0,0,Which target? >,0,0,0,1,1,1
+50012,thunder_touch,Thunder touch,2,99,0,0,0,Which target? >,0,0,0,1,1,1
+50013,last_stand,Last stand,5,99,0,0,0,,0,0,0,1,1,1
+50014,call_lightning,Call lightning,2,99,0,0,0,Which target? >,0,0,0,1,1,1
+50015,ion,Ion,2,99,0,0,0,Which target? >,0,0,0,1,1,1
+50016,vex,Vex,2,99,0,0,0,Which target? >,0,0,0,1,1,1
+50017,battle_preparation,Battle Preparation,5,99,0,0,0,,0,0,0,1,1,1
+50018,paralyze,Paralyze,5,99,0,0,0,,0,0,0,1,1,1
+50019,harden_body,Harden body,5,99,0,0,0,,0,0,0,1,1,1
+50020,purge,Purge,5,99,0,0,0,,0,0,0,1,1,1
+50021,chill,Chill,5,99,0,0,0,,0,0,0,1,1,1
+50022,taint,Taint,5,99,0,0,0,,0,0,0,1,1,1
+50023,curse,Curse,5,99,0,0,0,,0,0,0,1,1,1
+50024,corrupt,Corrupt,5,99,0,0,0,,0,0,0,1,1,1
+50025,kamikaze,Kamikaze,2,99,0,0,0,,0,0,0,1,1,1
+50026,mind_control,Mind control,5,99,0,0,0,,0,0,0,1,1,1
+50027,dispell,Dispell,5,99,-1,0,0,,0,0,0,1,1,1
+50028,harden_armor,Harden armor,5,99,-1,0,0,,0,0,0,1,1,1
+50029,valor,Valor,5,99,-1,0,0,,0,0,0,1,1,1
+50030,invoke,Invoke,5,99,-1,0,0,,0,0,0,1,1,1
+50031,dishearten,Dishearten,5,99,-1,0,0,,0,0,0,1,1,1
+50032,assault,Assault,5,99,-1,0,0,,0,0,0,1,1,1
+50033,stagger,Stagger,5,99,-1,0,0,,0,0,0,1,1,1
+50034,endear,Endear,5,99,-1,0,0,,0,0,0,1,1,1
+50035,freeze,Freeze,5,99,-1,0,0,,0,0,0,1,1,1
+50036,chin_baek_ho_ryung,Chin-Baek-Ho-Ryung,5,99,-1,0,0,,0,0,0,1,1,1
+50037,health_shrine_spell,Health shrine,5,99,-1,0,0,,0,0,0,1,1,1
+50038,magic_shrine_spell,Magic shrine,5,99,-1,0,0,,0,0,0,1,1,1
+50039,experience_shrine_spell,Experience shrine,5,99,-1,0,0,,0,0,0,1,1,1
+50040,boss296freeze,Frozen,5,99,-1,0,0,,0,0,0,1,1,1
+50041,favor_of_the_gods,Favor of the Gods,5,99,-1,0,0,,0,0,0,1,1,1
+50042,botchecker,Bot Checker,5,99,-1,0,0,,0,0,0,1,1,1
+50043,smoke_screen,Smoke screen,5,99,-1,0,0,,0,0,0,1,1,1
+50044,toxic_spray,Toxic spray,5,99,-1,0,0,,0,0,0,1,1,1
+50045,tripwire,Tripwire,5,99,-1,0,0,,0,0,0,1,1,1
+50046,faded,Faded,5,99,-1,0,0,,0,0,0,1,1,1
+50047,purple_potion,Purple potion,5,99,-1,0,0,,0,0,0,1,1,1
+50048,poisoned_bracelet_spell,Poisoned Bracelet,5,99,-1,0,0,,0,0,0,1,1,0
+50049,hwan_spell,hwan_spell,5,99,-1,0,0,,0,0,0,1,1,0
+50050,burn,Burn,5,99,0,0,0,,0,0,0,1,1,1
+50051,forsake,Forsake,5,99,0,0,0,,0,0,0,1,1,1
+50052,cotw_giasomo_bird_poet,Call of the Wild,5,99,-1,0,50,,0,0,0,1,0,1
+1094,dragons_harness_warrior,Dragon\'s Harness,5,1,-1,3,0,,0,0,0,1,0,1
+1095,healths_return_warrior,Health\'s Return,5,1,0,3,0,,0,0,0,1,0,1
+1096,mend_equipment_warrior,Mend Equipment,5,1,0,3,0,,0,0,0,1,0,1
+1097,siege_warrior,Siege,5,1,0,3,0,,0,0,0,1,0,1
+2125,blades_charm_rogue,Blade\'s Charm,5,2,-1,3,0,,0,0,0,1,0,1
+2126,explorers_remedy_rogue,Explorer\'s Remedy,5,2,0,3,0,,0,0,0,1,0,1
+2127,focused_blow_rogue,Focused Blow,5,2,0,3,0,,0,0,0,1,0,1
+2128,power_stream_rogue,Power Stream,2,2,0,3,0,Which target? >,0,0,0,1,0,1
+3168,dooms_fire_mage,Dooms Fire,2,3,0,3,0,Which target? >,0,0,0,1,0,1
+3169,energy_flow_mage,Energy Flow,2,3,0,3,0,Which target? >,0,0,0,1,0,1
+3170,suppress_mage,Suppress,2,3,-1,3,0,Which target? >,0,0,0,1,1,1
+4160,charge_of_life_poet,Charge of Life,2,4,0,3,0,Which target? >,0,0,0,1,0,1
+4161,deteriorate_poet,Deteriorate,2,4,-1,3,0,Which target? >,0,0,0,1,1,1
+4162,ensure_poet,Ensure,2,4,0,3,0,Which target? >,0,0,0,1,0,1
+4729,cotw_wind_master_poet,Wind master,5,4,0,3,0,,0,0,0,1,0,1
+1098,souls_freedom_warrior,Soul\'s Freedom,5,1,1,3,0,,0,0,0,1,0,1
+1099,lifes_end_warrior,Life\'s End,5,1,2,3,0,,0,0,0,1,0,1
+1100,winter_chill_warrior,Winter Chill,5,1,3,3,0,,0,0,0,1,0,1

@@ -1,0 +1,102 @@
+Tier,Key,DisplayName,Mobs,MinLevel,MaxLevel,MinStat,MaxStat,MinMark,MaxMark
+Minor,squirrel,Squirrel,squirrel,0,10,0,1000000000,0,5
+Minor,rabbit,Rabbit,rabbit|white_rabbit,0,15,0,1000000000,0,5
+Minor,deer,Deer,deer|doe,3,15,0,1000000000,0,5
+Minor,horse,Horse,horse,3,15,0,1000000000,0,5
+Minor,fox,Fox,fox,5,15,0,1000000000,0,5
+Minor,wolf,Wolf,wolf,5,15,0,1000000000,0,5
+Minor,snake,Snake,snake,20,60,0,1000000000,0,5
+Minor,bear,Bear,bear,20,60,0,1000000000,0,5
+Minor,tiger,Tiger,tiger,20,60,0,1000000000,0,5
+Minor,mouse,Mouse,mouse,4,20,0,1000000000,0,5
+Minor,rat,Rat,rat,5,20,0,1000000000,0,5
+Minor,white_rat,White rat,white_rat,5,20,0,1000000000,0,5
+Minor,mud_snake,Mud Snake,mud_snake,14,35,0,1000000000,0,5
+Minor,dark_fox,Dark fox,dark_fox,20,40,0,1000000000,0,5
+Minor,blood_fox,Blood fox,blood_fox,20,45,0,1000000000,0,5
+Minor,lava_fox,Lava fox,lava_fox,20,50,0,1000000000,0,5
+Minor,sun_fox,Sun fox,sun_fox,25,55,0,1000000000,0,5
+Minor,slush_ogre,Slush ogre,slush_ogre,25,50,0,1000000000,0,5
+Minor,snow_ogre,Snow ogre,snow_ogre,40,75,0,1000000000,0,5
+Minor,sleet_ogre,Sleet ogre,sleet_ogre,60,95,0,1000000000,0,5
+Minor,slush_king,Slush king,slush_king,25,74,0,1000000000,0,5
+Minor,snow_king,Snow king,snow_king,35,100,0,14999,0,5
+Minor,sleet_king,Sleet king,sleet_king,55,100,0,59999,0,5
+Minor,mythic_rabbit,Mythic rabbit,fluff|giant_hare|giant_rabbit|golden_hare|golden_rabbit|hop|mad_hare|mad_rabbit|rabbit_defender|rabbit_guardian|rabbit_sentry|thump,25,100,0,1000000000,0,2
+Minor,mythic_monkey,Mythic monkey,agile_monkey|bright_monkey|diamond_monkey|fast_monkey|monkey_defender|monkey_guardian|monkey_sentry|monsterous_monkey|plain_monkey|quick_monkey|simple_monkey|sly_monkey|spry_monkey|spunky_monkey|ugly_monkey,32,100,0,1000000000,0,2
+Minor,mythic_dog,Mythic dog,crazed_mongrel|death_mongrel|dog_defender|dog_guardian|dog_sentry|dog_trooper|fierce_dog|fighting_dog|frothing_mutt|killer_mongrel|mad_dog|pale_dog|spotted_mutt|spunky_dog|wolf_kin,39,100,0,1000000000,0,2
+Minor,mythic_rooster,Mythic rooster,black_chick|black_chicken|fiery_chick|great_roost|radiant_chick|red_chick|rooster_defender|rooster_guardian|rooster_sentry|sunfeather|white_chicken|white_rooster|wild_chick|wild_chicken|wild_rooster,46,100,0,1000000000,0,2
+Minor,pale_zombie,Pale zombie,pale_zombie,36,100,0,14999,0,5
+Minor,lesser_ghost,Lesser ghost,lesser_ghost,36,100,0,14999,0,5
+Minor,vile_scorpion,Vile scorpion,vile_scorpion,50,100,0,59999,0,5
+Minor,radiant_scorpion,Radiant scorpion,radiant_scorpion,60,100,0,1000000000,0,5
+Minor,giant_scorpion,Giant scorpion,giant_scorpion,50,100,0,59999,0,5
+Minor,pale_scorpion,Pale scorpion,pale_scorpion,60,100,0,1000000000,0,5
+Minor,lesser_skeleton,Lesser skeleton,lesser_skeleton,50,100,0,1000000000,0,5
+Minor,black_skeleton,Black skeleton,black_skeleton,60,100,0,1000000000,0,2
+Minor,skeleton_je,Skeleton Je,skeleton_je,70,100,0,1000000000,0,3
+Minor,skeleton_ja,Skeleton Ja,skeleton_ja,80,100,0,1000000000,0,4
+Minor,skeleton_ji,Skeleton Ji,skeleton_ji,90,100,0,1000000000,0,5
+Minor,mythic_rat,Mythic rat,beady_eyed_stalker|blood_rat|divine_mouse|earth_rat|fire_rat|hunter_rat|killer_rat|lava_rat|mud_rat|mythic_mouse|rat_defender|rat_guardian|rat_sentry|spirit_mouse|vile_rat,53,100,0,1000000000,0,3
+Minor,mythic_horse,Mythic horse,diamond_horse|elite_horse|fire_snorter|golden_horse|hooves|horse_defender|horse_guardian|horse_guardsman|horse_sentry|horse_swordsman|lake_winny|skilled_horse|spirited_horse|wild_horse|wooden_horse,60,100,0,1000000000,0,3
+Minor,mythic_ox,Mythic ox,angry_ox|charging_ox|giant_bull|great_horns|large_bull|ox_defender|ox_guardian|ox_sentry|pale_hunger|raging_bull|rampaging_bull|tough_fight,67,100,0,1000000000,0,3
+Minor,mythic_pig,Mythic pig,boar_defender|boar_sentry|bold_boar|bold_hog|bold_pig|bold_piglet|fat_pig|obese_pig|pig_guardian|stout_pig|stout_piglet|stout_warthog|stubborn_pig|stubborn_piglet|stubborn_warthog,74,100,0,1000000000,0,3
+Minor,deep_woods_mantis,Deep woods mantis,deep_woods_mantis,65,100,0,1000000000,0,1
+Minor,grim_ogre,Grim ogre,grim_ogre,70,100,0,1000000000,0,1
+Minor,southern_ogre,Southern ogre,southern_ogre,90,100,0,1000000000,0,2
+Minor,hail_ogre,Hail ogre,hail_ogre,80,100,0,1000000000,0,5
+Minor,flurry_ogre,Flurry ogre,flurry_ogre,99,100,0,1000000000,0,5
+Minor,blizzard_ogre,Blizzard ogre,blizzard_ogre,99,100,15000,1000000000,0,5
+Minor,mythic_snake,Mythic snake,blood_snake|dark_snake|fire_snake|glowing_snake|lava_snake|meter_worm|plain_snake|radiant_snake|simple_snake|slitherly|snake_defender|snake_guardian|snake_sentry|spasm|storm_snake,81,100,0,1000000000,0,5
+Minor,mythic_sheep,Mythic sheep,black_sheep|dark_sheep|fierce_sheep|flaming_sheep|red_sheep|sheep_defender|sheep_guardian|sheep_sentry|ugly_sheep,88,100,0,1000000000,0,5
+Minor,mythic_tiger,Mythic tiger,black_tiger|brazen|crazy_claw|dark_tiger|giant_tiger|golden_tiger|huge_tiger|knap|raging_tiger|restless_tiger|tiger_defender|tiger_guardian|tiger_sentry,95,100,0,1000000000,0,5
+Minor,mythic_dragon,Mythic dragon,adolescent_dragon|ancient_drake|dragon_defender|dragon_guardian|dragon_hatchling|dragon_sentry|drake|great_wyrm|mature_dragon|mighty_wyrm|old_dragon|serpentine_dragon|young_dragon,99,100,0,1000000000,0,5
+Minor,northern_ogre,Northern Ogre,northern_ogre,85,100,0,1000000000,0,5
+Minor,frost_ogre,Frost Ogre,frost_ogre,85,100,0,1000000000,0,5
+Minor,forest_mantis,Forest mantis,forest_mantis,99,100,0,1000000000,0,5
+Minor,dark_mantis,Dark mantis,dark_mantis,99,100,0,1000000000,0,5
+Minor,ghost_mantis,Ghost mantis,ghost_mantis,99,100,0,1000000000,0,5
+Minor,hill_ogre,Hill ogre,hill_ogre,99,100,0,1000000000,0,5
+Minor,marsh_ogre,Marsh ogre,marsh_ogre,99,100,0,1000000000,0,5
+Major,bat,Bat,bat|big_bat,1,20,0,1000000000,0,5
+Major,blood_wolf,Blood wolf,blood_wolf,10,41,0,1000000000,0,5
+Major,black_buck,Black buck,black_buck,10,41,0,1000000000,0,5
+Major,warthog,Warthog,warthog,14,35,0,1000000000,0,5
+Major,albino_buck,Albino Buck,albino_buck,20,41,0,1000000000,0,5
+Major,white_wolf,White wolf,white_wolf,20,41,0,1000000000,0,5
+Major,lightning_wolf,Lightning wolf,lightning_wolf,20,41,0,1000000000,0,5
+Major,wicked_ghost,Wicked ghost,wicked_ghost,36,62,0,1000000000,0,5
+Major,witch_shaman,Witch shaman,witch_shaman,36,62,0,1000000000,0,5
+Major,scorpion_lurker,Scorpion lurker,scorpion_lurker,42,83,0,1000000000,0,5
+Major,trapdoor_spider,Trapdoor spider,trapdoor_spider,42,83,0,1000000000,0,5
+Major,massive_scorpion,Massive scorpion,massive_scorpion,42,83,0,1000000000,0,5
+Major,shadow_mantis,Shadow mantis,shadow_mantis,63,100,0,1000000000,0,2
+Major,dirt_mantis,Dirt mantis,dirt_mantis,63,100,0,1000000000,0,2
+Major,sting,Sting,sting,63,100,0,1000000000,0,1000000000
+Major,slime_ogre,Slime ogre,slime_ogre,63,100,0,1000000000,0,2
+Major,muck_ogre,Muck ogre,muck_ogre,63,100,0,1000000000,0,2
+Major,hail_king,Hail king,hail_king,65,100,0,1000000000,0,2
+Major,flurry_king,Flurry king,flurry_king,80,100,0,1000000000,0,3
+Major,blizzard_king,Blizzard king,blizzard_king,95,100,0,1000000000,0,5
+Major,golden_lobster,Golden lobster,golden_lobster,70,100,0,1000000000,0,2
+Major,ice_panther,Ice panther,ice_panther,84,100,0,1000000000,0,100
+Major,chtan,Ch'tan,chtan,91,100,0,1000000000,0,5
+Major,sintu,Sin-tu,sintu,91,100,0,1000000000,0,5
+Major,zinte_ogre,Zin-te,zinte_ogre,91,100,0,1000000000,0,5
+Major,zangze_ogre,Zangze,zangze_ogre,91,100,0,1000000000,0,5
+Epic,blood_mantis,Blood Mantis,blood_mantis,9,48,0,1000000000,0,0
+Epic,giant_mantis,Giant Mantis,giant_mantis,9,48,0,1000000000,0,0
+Epic,golden_hare_wild,wild Golden hare,golden_hare_wild,20,100,0,1000000000,0,5
+Epic,nine_tailed_fox,Nine-tailed fox,nine_tailed_fox,20,49,0,1000000000,0,5
+Epic,gimyi,Gim Yi,gimyi,20,100,0,1000000000,0,5
+Epic,crimson_scorpion,Crimson scorpion,crimson_scorpion,42,100,0,1000000000,0,5
+Epic,skeleton_mage,Skeleton mage,skeleton_mage,49,100,0,1000000000,0,5
+Epic,skeleton_warrior,Skeleton warrior,skeleton_warrior,49,100,0,1000000000,0,5
+Epic,skeleton_ju,Skeleton Ju,skeleton_ju,49,100,0,1000000000,0,5
+Epic,skeleton_sa,Skeleton Sa,skeleton_sa,50,100,0,1000000000,0,5
+Epic,dark_mantis,Dark mantis,dark_mantis,63,90,0,1000000000,0,5
+Epic,hill_ogre,Hill ogre,hill_ogre,63,90,0,1000000000,0,5
+Epic,log,Log,log,63,100,0,1000000000,0,5
+Epic,deathwish,Deathwish,deathwish,80,100,0,1000000000,0,5
+Epic,maletic,Maletic,ogre_maletic,84,100,0,1000000000,0,5
+Epic,citelam,Citelam,ogre_citelam,84,100,0,1000000000,0,5

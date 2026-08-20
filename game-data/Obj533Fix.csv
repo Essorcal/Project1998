@@ -1,0 +1,157 @@
+# Obj533Fix.csv - works around 5.33's re-authored SObj collision flags.
+#
+# THE PROBLEM. The 5.33 client runs its own collision locally against its own SOBJ.TBL, and Nexon
+# re-authored those flags relative to 4.x: 362 flag bytes differ over the shared id range 1..7608.
+# 234 ids block a direction on 5.33 that they did not on 4.x, which makes 18,025 cells (1.05%, in 620
+# of 1,750 maps) unwalkable on 5.33 even though the 4.x maps intend them to be walked. Arctic Village
+# (3811) 35,32 and 36,32 - a staircase carrying objects 327 and 320, both 0x00 on 4.x and 0x0F on 5.33
+# - is the case that surfaced it.
+#
+# WHY THE SERVER CANNOT JUST FIX IT. Graphic and collision are the SAME number on the wire (one u16 per
+# cell), so the only levers are "send a different object" or "send none". Matching on rendered sprite
+# content (not frame ids, since TILEC was re-packed) finds a visually identical, usably-flagged
+# substitute for just 4 of 128 objects. The rest can only be blanked, which deletes their artwork.
+#
+# SCOPES (P1998_OBJ_FIX_533): off | decor (default) | all
+#   free        substitute a visually identical object - no cost, always applied
+#   decor       4.x flag 0x00: pure decoration that should never block. Blanking loses a small sprite.
+#   structural  4.x flag has a real directional block (a building front, a fence). Blanking these opens
+#               the path but DELETES VISIBLE STRUCTURES, so they are off by default and left
+#               over-blocking instead. Turn on only if the over-blocking makes somewhere unreachable.
+#
+# Walkability stays correct either way: the server enforces the 4.x flags itself (ObjectFlags in
+# HandleWalk), so a blanked object still blocks exactly as 4.x intended - just as a 0x04 snap-back
+# rather than a client-side refusal.
+#
+# The lossless alternative is patching the client's SOBJ.TBL (362 bytes, in place at offset 140 of
+# Tile.dat). Deliberately not done - the client is kept stock.
+#
+# objId,action,replacement,cells,flag4x,flag533,scope
+1243,suppress,0,1817,0x01,0x0F,structural
+1244,suppress,0,1033,0x01,0x0F,structural
+313,suppress,0,979,0x01,0x0F,structural
+598,suppress,0,865,0x01,0x0F,structural
+549,suppress,0,813,0x01,0x0F,structural
+302,suppress,0,659,0x01,0x0F,structural
+501,suppress,0,563,0x01,0x0F,structural
+534,suppress,0,529,0x01,0x0F,structural
+311,suppress,0,440,0x04,0x0F,structural
+323,suppress,0,420,0x00,0x0F,decor
+312,suppress,0,378,0x08,0x0F,structural
+1086,suppress,0,365,0x04,0x0F,structural
+301,suppress,0,327,0x08,0x0F,structural
+514,suppress,0,324,0x01,0x0F,structural
+300,suppress,0,317,0x04,0x0F,structural
+317,suppress,0,308,0x08,0x0F,structural
+316,suppress,0,304,0x04,0x0F,structural
+552,suppress,0,291,0x01,0x0F,structural
+553,substitute,554,291,0x01,0x0F,free
+571,substitute,572,280,0x01,0x0F,free
+578,suppress,0,266,0x01,0x0F,structural
+327,suppress,0,265,0x00,0x0F,decor
+599,suppress,0,252,0x01,0x0F,structural
+321,suppress,0,243,0x00,0x0F,decor
+922,suppress,0,237,0x01,0x0F,structural
+1001,suppress,0,227,0x01,0x0F,structural
+1004,suppress,0,221,0x01,0x0F,structural
+694,substitute,695,213,0x01,0x0F,free
+515,suppress,0,200,0x01,0x0F,structural
+539,suppress,0,199,0x01,0x04,structural
+541,suppress,0,192,0x01,0x08,structural
+600,substitute,601,185,0x01,0x0F,free
+294,suppress,0,172,0x04,0x0F,structural
+1830,suppress,0,157,0x0D,0x0F,structural
+293,suppress,0,152,0x08,0x0F,structural
+1829,suppress,0,139,0x0D,0x0F,structural
+269,suppress,0,131,0x01,0x0F,structural
+725,suppress,0,126,0x01,0x0F,structural
+503,suppress,0,111,0x01,0x0F,structural
+724,suppress,0,111,0x01,0x0F,structural
+500,suppress,0,104,0x01,0x0F,structural
+502,suppress,0,103,0x01,0x0F,structural
+291,suppress,0,101,0x01,0x0F,structural
+1121,suppress,0,93,0x01,0x0F,structural
+320,suppress,0,87,0x00,0x0F,decor
+545,suppress,0,85,0x01,0x08,structural
+314,suppress,0,84,0x05,0x0F,structural
+542,suppress,0,84,0x01,0x04,structural
+315,suppress,0,83,0x09,0x0F,structural
+322,suppress,0,73,0x00,0x0F,decor
+328,suppress,0,70,0x00,0x0F,decor
+497,suppress,0,69,0x01,0x0F,structural
+304,suppress,0,68,0x09,0x0F,structural
+326,suppress,0,66,0x00,0x0F,decor
+305,suppress,0,65,0x04,0x0F,structural
+498,suppress,0,64,0x01,0x0F,structural
+270,suppress,0,61,0x01,0x0F,structural
+303,suppress,0,61,0x05,0x0F,structural
+306,suppress,0,60,0x08,0x0F,structural
+325,suppress,0,58,0x00,0x0F,decor
+712,suppress,0,58,0x00,0x08,decor
+713,suppress,0,58,0x01,0x0F,structural
+714,suppress,0,58,0x00,0x04,decor
+721,suppress,0,58,0x00,0x08,decor
+722,suppress,0,58,0x01,0x0F,structural
+723,suppress,0,58,0x00,0x04,decor
+324,suppress,0,57,0x00,0x0F,decor
+1353,suppress,0,57,0x0B,0x0F,structural
+504,suppress,0,53,0x0D,0x0F,structural
+715,suppress,0,52,0x00,0x08,decor
+716,suppress,0,52,0x01,0x0F,structural
+717,suppress,0,52,0x00,0x04,decor
+718,suppress,0,48,0x00,0x08,decor
+719,suppress,0,48,0x01,0x0F,structural
+720,suppress,0,48,0x00,0x04,decor
+437,suppress,0,44,0x00,0x0F,decor
+438,suppress,0,44,0x00,0x0F,decor
+499,suppress,0,38,0x0D,0x0F,structural
+519,suppress,0,32,0x01,0x0F,structural
+518,suppress,0,29,0x01,0x0F,structural
+307,suppress,0,28,0x01,0x0F,structural
+1668,suppress,0,22,0x05,0x0F,structural
+308,suppress,0,21,0x01,0x0F,structural
+2117,suppress,0,20,0x00,0x0F,decor
+1099,suppress,0,18,0x05,0x06,structural
+1101,suppress,0,18,0x09,0x0A,structural
+5935,suppress,0,16,0x01,0x0F,structural
+319,suppress,0,15,0x01,0x0F,structural
+318,suppress,0,14,0x01,0x0F,structural
+290,suppress,0,12,0x05,0x0F,structural
+292,suppress,0,12,0x09,0x0F,structural
+533,suppress,0,12,0x01,0x0F,structural
+1089,suppress,0,12,0x00,0x02,decor
+1090,suppress,0,12,0x00,0x02,decor
+5937,suppress,0,12,0x01,0x0F,structural
+509,suppress,0,10,0x01,0x0F,structural
+513,suppress,0,10,0x01,0x0F,structural
+1105,suppress,0,9,0x01,0x06,structural
+1106,suppress,0,9,0x01,0x0A,structural
+1122,suppress,0,8,0x01,0x0F,structural
+2742,suppress,0,7,0x01,0x0F,structural
+2743,suppress,0,7,0x01,0x0F,structural
+2740,suppress,0,6,0x01,0x0F,structural
+2741,suppress,0,6,0x01,0x0F,structural
+5932,suppress,0,6,0x01,0x0F,structural
+5933,suppress,0,6,0x01,0x0F,structural
+5938,suppress,0,6,0x01,0x0F,structural
+1095,suppress,0,4,0x00,0x02,decor
+1096,suppress,0,4,0x00,0x02,decor
+5904,suppress,0,4,0x09,0x0F,structural
+5909,suppress,0,4,0x05,0x0F,structural
+1010,suppress,0,3,0x01,0x0F,structural
+1011,suppress,0,3,0x01,0x0F,structural
+2862,suppress,0,3,0x01,0x0F,structural
+255,suppress,0,2,0x07,0x0F,structural
+1102,suppress,0,2,0x05,0x06,structural
+1104,suppress,0,2,0x09,0x0A,structural
+2143,suppress,0,2,0x00,0x0F,decor
+2737,suppress,0,2,0x01,0x0F,structural
+2861,suppress,0,2,0x05,0x0F,structural
+2863,suppress,0,2,0x09,0x0F,structural
+5934,suppress,0,2,0x01,0x0F,structural
+5936,suppress,0,2,0x01,0x0F,structural
+1008,suppress,0,1,0x01,0x0F,structural
+1009,suppress,0,1,0x01,0x0F,structural
+2142,suppress,0,1,0x00,0x0F,decor
+2144,suppress,0,1,0x00,0x0F,decor
+5939,suppress,0,1,0x01,0x0F,structural

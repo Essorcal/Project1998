@@ -1,0 +1,8 @@
+Map,FixedAxis,FixedLo,FixedHi,RangeLo,RangeHi,Sources
+1011,x,19,19,12,13,rtk-lua
+1012,x,0,0,8,12,rtk-lua
+41,y,3,3,28,32,rtk-lua
+1013,x,10,10,7,8,rtk-lua
+3800,y,0,1,30,34,rtk-lua
+114,y,0,0,12,15,user-supplied
+2520,y,5,5,7,9,rtk-lua

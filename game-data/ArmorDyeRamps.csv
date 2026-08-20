@@ -1,0 +1,44 @@
+# ArmorDyeRamps.csv — per-body-palette remap for the 0x33 appearance[4] armor colour.
+#
+# appearance[4] is a RAMP SHIFT, not a colour: the client's tinted blit does `if (px >= 0x30) px += colour*8`
+# and then looks the result up in THE BODY SPRITE'S OWN PALETTE (Body.tbl assigns one per body). So the same
+# number is a different hue on different armor. Ramp 10 is the grayscale/black ramp in Palette 0 and a BROWN
+# ramp in Palette 1 — which is why a Hyun moo (black team) dye came out brown on wind armor.
+#
+# Body.tbl palettes on the 4.95 client:
+#   bodies  0..35  Palette 0  the shared "seasonal" palette every ItmLookColor 0..9 indexes  -> no remap needed
+#   bodies 36..43  Palette 1  the WIND armors                                                -> remapped below
+#   bodies 44..56  Palette 2  ice + late gear; ramps 0..31 are byte-identical to Palette 0   -> no remap needed
+#   bodies 57..62  Palette 3 | 63..65 Palette 4 | 66 Palette 5   no armor uses these looks yet
+#
+# Palette 1 shares only ramps 24/28/29/30/31 with Palette 0 (the system rows), and all 24 of its OWN ramps run
+# light->dark where Palette 0's run dark->light. Ramps chosen below by matching each sprite's whole garment
+# against how that same sprite would look under Palette 0 with the canonical dye — see re/wind_dye_final.png.
+#
+# Dye  = the canonical value the rest of the server speaks (RTK's WarPaintAbility colours, and ItmLookColor).
+# Ramp = what to actually put in appearance[4] for a body in this range. Anything not listed passes through
+# unchanged, so this file only ever needs rows where a palette disagrees with Palette 0.
+#
+# Reload with @reload. Verify in-game by wearing the armor and sweeping @dye <n>.
+BodyLookLo,BodyLookHi,Dye,Ramp
+# --- wind armors (bodies 36..43, Palette 1) : the 8 Arena Master team dyes ---
+# Hyun moo BLACK  -> Palette 1's grayscale row (its own ramp 10 is a BROWN, which is the bug this file fixes)
+36,43,10,28
+# Ju jak VERMILION -> 31 is one of the five rows Palette 1 shares with Palette 0, so it needs no shifting
+36,43,31,31
+# Chung ryong BLUE -> also a shared row. NOTE this equals wind armor's own ItmLookColor, so it is the one dye
+# that cannot visibly change a wind armor. Use 36,43,24,12 (periwinkle) if a team battle needs them apart.
+36,43,24,24
+# Baekho WHITE
+36,43,11,29
+# Ash GREY / Snow WHITE — shared rows, and near-duplicates of Hyun moo / Baekho on Palette 0 too
+36,43,28,28
+36,43,29,29
+# River BLUE -> Palette 1's own steel blue, kept distinct from Chung ryong's azure
+36,43,17,3
+# Fire ORANGE -> Palette 1 has no orange at ramp 20 (that row is khaki); 16 is its orange->brick row
+36,43,20,16
+# --- wind armors : the level-99 special dyes (Brown / Wasabi / Super Wasabi) ---
+36,43,12,10
+36,43,16,8
+36,43,36,4

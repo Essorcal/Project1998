@@ -1,0 +1,27 @@
+; 0x2f SUB-KIND 10 (0x0a)  --  fire with:  @pkt file sub10
+;
+; Same 0x284 GRID object again, parser 0x456c40. Its row loop (0x456d95..0x456e88) reads TWO
+; length-prefixed strings per row -- so it is a two-column text grid: label + description, and still
+; no icon or price. Halfway between sub-kind 6 (one string) and the buy grid (icon + price + two
+; strings).
+;
+; Body, read in this order by 0x456c40:
+;   tag(u8)  npcId(u32BE)  look  prompt(u16BE len)  scalar(u16BE)  count(u16BE)
+;   count x [ label(u8 len) description(u8 len) ]
+
+2f              ; opcode
+
+0a              ; body[0]  sub-kind 10
+02              ; body[1]  reply tag -- borrowed from the buy grid
+%1              ; npc entity id
+01              ; not read by 4.95
+01 #33992 00    ; look descriptor
+01 #33992 00    ; skipped copy
+
+$Pick_one                       ; prompt (u16BE length)
+
+#0              ; the unread u16BE scalar
+#2              ; row count (u16BE)
+
+05 :Alpha  0b :First_entry      ; "Alpha" = 5, "First entry"  = 11 = 0x0b
+05 :Bravo  0c :Second_entry     ; "Bravo" = 5, "Second entry" = 12 = 0x0c

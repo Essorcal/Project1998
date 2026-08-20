@@ -1,0 +1,6 @@
+Map,Tiles,DestMap,DestX,DestY,MinLevel,MaxLevel,MaxVita,MaxMana,Unmarked,Label,Sources
+31,0:5;0:6,3004,15-16,3,6,35,0,0,0,Kugnae Adventure,rtk-lua
+31,0:11;0:12,3005,15-16,3,36,65,0,0,0,Kugnae Heroes,rtk-lua
+31,0:17;0:18,3006,15-16,3,66,85,0,0,0,Kugnae Glory,rtk-lua
+31,21:5;21:6,3007,15-16,3,86,98,0,0,0,Kugnae Legends,rtk-lua
+31,21:11;21:12,3008,15-16,3,99,0,49999,24999,1,Kugnae Ancients,rtk-lua

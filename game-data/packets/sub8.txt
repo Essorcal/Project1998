@@ -1,0 +1,30 @@
+; 0x2f SUB-KIND 8  --  fire with:  @pkt file sub8
+;
+; THE SPELLBOOK GRID. Same 0x284 object as the other grids, parser 0x4564b0 -- but it carries NO ROWS
+; AT ALL. After the prompt it reads one u16BE (handed straight to the widget ctor 0x4569c0, not a
+; count) and then fills the grid from the CLIENT'S OWN SPELLBOOK: the loop at 0x4565e7 walks
+; [state + 0x21ec + i*0x148] for i = 1..0x34, skipping empty entries. That array is the spellbook the
+; 0x17/0x18 opcodes maintain.
+;
+; So this is the spell-picker counterpart to the sell grid (which fills itself from the bag): "choose
+; one of your spells". Nothing to encode -- if your character knows spells they will appear.
+;
+; Body, read in this order by 0x4564b0:
+;   tag(u8)  npcId(u32BE)  look  prompt(u16BE len)  scalar(u16BE)
+;   <no rows>
+
+2f              ; opcode
+
+08              ; body[0]  sub-kind 8
+02              ; body[1]  reply tag -- borrowed; the real one is unknown, watch the inbound 0x39
+%1              ; npc entity id
+01              ; not read by 4.95
+01 #33992 00    ; look descriptor
+01 #33992 00    ; skipped copy
+
+$Which_spell?                   ; prompt (u16BE length)
+
+#0              ; the u16BE scalar -- NOT a count. Sweep it; it is the only knob this window has.
+
+; If the grid comes up EMPTY, that is the spellbook being empty, not a bad packet.
+; Learn something first (@lvl rebuilds the book, or use a trainer) and re-fire.

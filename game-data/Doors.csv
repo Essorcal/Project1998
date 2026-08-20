@@ -1,0 +1,51 @@
+Map,X,Y,Locked,Key,ConsumeKey,ForceOpen,StartDx,ClosedObj,OpenObj,DefaultClosed,Sources
+4717,17,18,1,,1,0,0,5;6;7;8,15;16;17;18,1,tswolf-newbie-guide
+# Laptev Crafter's door, Arctic Village (3811). RTK's open.lua has NO rule for object ids 356-359, so 'o'
+# found nothing to toggle to and silently did nothing. Per user direction it borrows the Taimyr Butcher
+# door's open leaves (366/367).
+#
+# This has to be a PER-TILE rule, not a DoorObjects.csv id rule: 366/367 is already the open form of
+# 346/347, and that table is keyed by object id alone — an id rule would make every 366 tile in the game
+# close back to whichever family won the lookup, so opening a Laptev door would close a Taimyr one.
+#
+# ClosedObj also carries the map fix: the .map draws this doorway 356,356 (the left leaf twice), while every
+# other 356 door in the game is drawn 356,357. See MapCells.csv, which authors these two tiles OPEN at load.
+#
+# ONE ROW PER LEAF, each a single-object run, so the two halves swing INDEPENDENTLY. That matches every other
+# door in the game: RTK's open.lua handles this family with `setObject(m, x, y, obj + N)`, which rewrites the
+# faced tile alone, so the smith's and butcher's doors have always opened a leaf at a time. A single 2-object
+# run here would have been tidier to look at but would have made this the only door in the world that swings
+# as a unit. (StartDx and multi-object runs still exist for doors that genuinely are one object, like the
+# 4-wide city gate.)
+3811,44,16,0,,1,0,0,356,366,0,user-direction
+3811,45,16,0,,1,0,0,357,367,0,user-direction
+# Sanhae Hall's door, Sanhae Valley (1121, 33-34,18). Reported unopenable AND unwalkable, and both follow
+# from the same thing: object ids 265/266 aren't in RTK's open.lua either, so 'o' had nothing to swap to,
+# and 265/266 are solid on all four sides in SObj.tbl. Unlike the Arctic Village doors, this door object sits
+# one row IN FRONT of its warp tiles (33-34,17) instead of on them, so warp-beats-collision never applied and
+# the hall was sealed: you could not reach the doorway to step through it.
+#
+# Open pair identified from the map data, not guessed: Tiger's Steps (219) draws this doorway as
+# 259 [265 266] 260, and Kugnae (76,186) + Buya (126,74) draw the SAME 259/260 doorframe as 259 [1852 1853]
+# 260. SObj.tbl agrees — 1852/1853 carry open-door leaf art (frames 1610-1613) over the same step base, and
+# are walkable (flag 0x00) where 265/266 are solid (0x0f).
+#
+# ClosedObj also fixes the shipped map, which draws 266,266 — the right leaf twice. Tiger's Steps has the
+# correct 265,266. MapCells.csv authors these two tiles OPEN at load. Per leaf, same as Laptev above.
+1121,33,18,0,,1,0,0,265,1852,0,map-data-cross-ref
+1121,34,18,0,,1,0,0,266,1853,0,map-data-cross-ref
+# Kamchatka Ballroom's entrance, Arctic Village (3811, 36-38,26). Third door in this village whose object ids
+# (338/339) RTK's open.lua never covered, so 'o' did nothing.
+#
+# The open pair falls out of SObj.tbl exactly: 338/339 carry door-leaf frames 753/751 and 754/752, and
+# 1856/1857 carry 1612/1610 and 1613/1611 — the identical relationship as Sanhae Hall's 265/266 -> 1852/1853,
+# which are those very same leaves with a step base (frame 699) added underneath. So 338/339 is the no-steps
+# variant of the Sanhae door and 1856/1857 is its no-steps open form. Flags agree: 338/339 solid (0x0f),
+# 1856/1857 walkable (0x00). No independent map cross-check was possible here — the 1163/1160 doorframe
+# appears nowhere else in the game with leaves in it — so this one rests on the sprite data alone.
+#
+# The opening is 3 tiles but the art is a 2-leaf door with the right leaf repeated (338,339,339), the same
+# duplicated-leaf quirk this map has at Laptev (356,356) and Sanhae has at its hall (266,266). Left as drawn.
+3811,36,26,0,,1,0,0,338,1856,0,sobj-frame-match
+3811,37,26,0,,1,0,0,339,1857,0,sobj-frame-match
+3811,38,26,0,,1,0,0,339,1857,0,sobj-frame-match

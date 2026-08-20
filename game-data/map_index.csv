@@ -1,0 +1,1841 @@
+id,name,xs,ys
+0,Kugnae,220,220
+2,Walsuk Tavern,30,14
+3,Beard Smith,17,11
+4,NPC Chamber,12,12
+5,Cuti Seams,12,12
+6,Cry Seams,12,12
+7,Redcap Message,12,12
+8,Dusk Shaman,10,10
+9,Dawn Shaman,10,10
+10,Lotus Chapel,18,16
+11,Warrior Tebaek,18,24
+12,Tebaek Sanctum,12,20
+13,Mage Haedu,18,24
+14,Haedu Sanctum,12,20
+15,Rogue Maro,18,24
+16,Maro Sanctum,12,20
+17,Poet Jinsun,18,24
+18,Jinsun Sanctum,12,20
+19,Sunset Weaver,12,20
+20,Stoney Goh,14,14
+21,Left stone Board,23,25
+22,Right stone Board,23,25
+24,Kugnae Donjon,12,12
+27,Gen Sanctum,15,15
+28,Baegil Shop,12,12
+29,Baegi Shop,12,12
+30,Baek Shop,12,12
+31,Tower Arena,22,22
+32,Yusa Arena,33,33
+33,Stone Valley Arena,33,33
+34,Buchi Shop,12,12
+35,Yusa Pit,16,16
+36,IronHeart\'s Home,12,12
+37,Bamboo Tavern,30,14
+38,Ginger Tavern,30,14
+41,Mythic Nexus,60,60
+42,Home of Ugh,12,12
+43,Suni Butcher,12,12
+44,Mythic Gateway,25,19
+45,Divine Gateway,25,19
+46,Spirit Gateway,25,19
+47,Jail Exit,3,5
+50,Cat\'s Delight,30,20
+51,Cat\'s Fright,20,20
+52,Bat Cave,10,30
+53,Rat Maze,20,20
+54,Rat Den,24,18
+55,Bats and Rats,20,20
+56,Worm Pits,20,26
+57,Muddy Delta,20,20
+58,Golden Soil,20,16
+59,EarthWorks,20,20
+60,Ringworm,26,22
+61,Tremor,30,20
+62,Snake Coil,30,26
+63,Snake Food,20,24
+64,Dugout Cave,30,30
+65,Chamber Den,32,32
+66,Bear Corridor,28,28
+67,Black Paw Cave,30,30
+68,Mother Den,28,28
+69,Gingko Tunnel,30,30
+70,Fox Crossroads,30,30
+71,Coal Cells,30,30
+72,Green Pastures,30,30
+73,*Fire Den,30,30
+74,Misplaced Roost,30,30
+75,*Greener Pastures,30,30
+76,*Fox Gauntlet,30,30
+77,*Dark Den,30,30
+78,*Buck Bridge,30,30
+79,Fox Plateau,30,24
+80,Serene Valley,30,30
+81,Sparse Grazing,28,28
+82,Hare Glen,24,30
+83,Rock Forest,30,30
+84,Hare Sands,30,30
+85,Sheep Refuge,28,28
+86,Deadly Aerie,30,30
+87,Guarded Pass,30,30
+88,Mantis Trap,20,30
+89,Insect\'s Bane,30,30
+90,Spider\'s Web,28,28
+91,Glow Spider,28,28
+92,Bug\'s Bane,28,28
+93,Spider Bite,28,28
+94,Restless Dead,28,28
+95,Spider Climb,28,28
+96,Spider Nest,28,28
+100,Restless Cage 1,32,32
+101,Tiger Pelt 1,30,30
+102,Undergrowth 1,30,30
+103,Jungle Prowl 1,30,30
+104,Tiger Stretch 1,30,30
+105,Tiger\'s Revenge 1,30,31
+106,Dark Stripes 1,30,30
+107,Declawed 1,30,30
+108,Pounce 1,30,30
+109,Dark Pen 1,30,30
+110,Tiger Guardroom 1,30,30
+111,Zin-te,30,30
+112,Dim,30,30
+113,Marsh Divide,28,28
+114,Hamgyong Nam-Do,30,30
+115,Five Rings,30,30
+116,Decayed Forest,30,30
+117,Harsh Echo,30,30
+118,Twilight Wall,30,30
+119,Zangze\'s Parlor,30,30
+120,Zangze,30,30
+121,Slime Field,32,32
+122,Witches\' Brew,30,30
+123,Death\'s Playground,30,30
+124,Mover\'s Nightmare,30,30
+125,Final Rest,20,30
+126,Worm Eaten,30,30
+127,Ghoul\'s Block,30,30
+128,Crying Room,30,30
+129,Dogrun Death,24,24
+130,Scream Dream,30,30
+131,Ogre Crossroads,30,30
+132,Frozen Labyrinth,30,30
+133,Frozen Corridor,30,30
+134,Ogre Meeting Room,30,30
+135,Ice Canyon,30,30
+136,*Sacred Grove,30,30
+137,Arctic Land,30,30
+138,Northern Ogre Caves,20,20
+139,Thin Ice,20,39
+140,*Crystaline Isle,30,18
+141,The Flats,32,32
+142,Amber Ponds,30,30
+143,Lime Canals,30,30
+144,Northern Reaches,20,36
+145,Northern Mines,30,30
+146,Northern Hordes,30,30
+147,Southern Reaches,30,30
+148,Southern Mines,24,28
+149,Southern Hordes,30,30
+150,Petrified,30,30
+151,Rat Trap 1,30,20
+152,Pestilence 1,20,20
+153,Night Watchmen 1,28,30
+154,Rat Ear 1,20,20
+155,Rat Eyes 1,30,28
+156,Gnash 1,28,28
+157,Gnaw 1,30,30
+158,Plague 1,30,30
+159,Nibble 1,30,30
+160,Monkey Curl 1,24,24
+161,Monkey Crest 1,28,24
+162,Monkey Swamp 1,28,30
+163,Monkey Flow 1,30,30
+164,Monkey Dance 1,20,30
+165,Monkey Mountain 1,30,28
+166,Monkey Blood 1,26,28
+167,Monkey Wasteland 1*,28,28
+168,Monkey Divide 1*,30,30
+169,Monkey Barracks 1,30,30
+170,Red Bull 1,30,30
+171,Rice Fields 1,30,30
+172,Oxen Pull 1,30,30
+173,Deep Furrow 1,30,30
+174,Dry Plantings 1,30,30
+175,Bull\'s Song 1,30,30
+176,Ox Fury 1,30,30
+177,Sunset 1*,24,30
+178,Ox Path 1*,30,27
+179,Bull\'s Fury 1,24,30
+180,Ox Pasture 1,28,28
+181,Pig Path 1,30,30
+182,Mudbath 1,30,30
+183,Mud Fields 1,20,20
+184,Fire Clove 1,20,30
+185,Pig Mound 1,20,20
+186,Grub Hunt 1*,30,30
+187,Clove Hill 1*,28,28
+188,Pig\'s Snout 1,24,24
+189,Boar Rise 1,28,28
+190,Boar Fields 1*,30,30
+191,Dog Prowl 1,28,30
+192,Run 1*,30,20
+193,Mongrel Snack 1,24,24
+194,Mongrel Gateway 1*,24,24
+195,Dog\'s Bite 1,30,30
+196,Alarm 1,15,40
+197,Rabid Mongrel 1,30,24
+198,Chaser 1,24,24
+199,Gnawed Bones 1*,24,24
+200,Drool 1,20,20
+201,Mythic Waters 1,24,24
+202,Golden Warren 1,25,25
+203,*Rabbit Hole 1*,26,26
+204,Rabbit Leap 1,20,60
+205,*Foraged Fields 1*,30,39
+206,Hare Depression 1,30,30
+207,Mythic Owsla 1,20,20
+208,*Hare Summit 1*,20,40
+210,Stained Isle 1,30,30
+211,Fox\'s Paradise 1,20,20
+212,Peck 1*,25,25
+213,Rooster Rows 1,30,30
+214,Swarmed Steps 1,20,60
+215,Rooster Terraces 1,30,30
+216,Chicken Conquest 1*,23,23
+217,Rooster Gateway 1,20,20
+218,Angry Roost 1*,20,70
+219,Tiger\'s Steps,30,30
+220,Earth Palace,24,24
+221,Sea Palace,30,30
+222,Labyrinth,20,20
+223,Sun Palace,24,24
+224,Earth Stripes,30,30
+225,Sun Splash,20,20
+226,Elancia,24,24
+227,Cross Palace,20,30
+228,Rose Palace,28,20
+229,Sun Heart,30,20
+230,Last Remorse,20,20
+231,Venom\'s Bite 1,20,20
+232,Fang 1,20,30
+233,Snake Sleep 1*,30,30
+234,Sidewinder 1,30,28
+235,Slither Patch 1,20,20
+236,Snake Fields 1*,30,30
+237,Final Rest 1*,20,20
+238,Molten Viper 1,20,30
+239,Conscience\'s Bite 1,10,30
+240,Muddy Pasture 1,30,40
+241,Prancing Path 1,28,20
+242,Horse Valley 1,18,36
+243,Island of Light 1*,20,30
+244,Horse Passage 1,20,30
+245,Clovers 1*,20,20
+246,Dirt Fields 1,16,30
+247,Hooved Sands 1*,40,40
+248,Horse Stand 1,20,20
+250,Hatchery 1,20,30
+251,Hot Beds 1,38,20
+252,Dragon Maze 1,20,40
+253,Dragon Death 1*,20,30
+254,Dragon\'s Gold 1*,20,30
+255,Scales 1,20,40
+256,Dragon\'s Mist 1,20,20
+257,Dragon\'s Breath 1,20,20
+258,Jeweled Dragon 1*,18,36
+260,Yuri\'s Flower Garden,80,80
+261,Map 261,80,80
+262,Map 262,80,80
+263,Map 263,80,80
+264,Map 264,80,80
+265,Map 265,80,80
+266,Map 266,80,80
+267,Map 267,80,80
+268,Map 268,80,80
+269,Map 269,80,80
+300,Kwi-Sin Tebaek,12,20
+301,Ming-Ken Tebaek,12,20
+302,Ohaeng Tebaek,12,20
+303,Kwi-Sin Yebaek,12,20
+304,Ming-Ken Yebaek,12,20
+305,Ohaeng Yebaek,12,20
+306,Kwi-Sin Haedu,12,20
+307,Ming-Ken Haedu,12,20
+308,Ohaeng Haedu,12,20
+309,Kwi-Sin Eldritch,12,20
+310,Ming-Ken Eldritch,12,20
+311,Ohaeng Eldritch,12,20
+312,Kwi-Sin Maro,12,20
+313,Ming-Ken Maro,12,20
+314,Ohaeng Maro,12,20
+315,Kwi-Sin Maso,12,20
+316,Ming-Ken Maso,12,20
+317,Ohaeng Maso,12,20
+318,Kwi-Sin Jinsun,12,20
+319,Ming-Ken Jinsun,12,20
+320,Ohaeng Jinsun,12,20
+321,Kwi-Sin Song,12,20
+322,Ming-Ken Song,12,20
+323,Ohaeng Song,12,20
+324,Kwi-sin Shrine,20,20
+325,Ming-ken Shrine,20,20
+326,Ohaeng Shrine,20,20
+330,Buya,146,156
+332,Spring Tavern,30,14
+333,Dok Smith,17,11
+334,Ogi Butcher,12,12
+335,Blossom Seams,17,11
+336,Chi Seams,12,12
+337,Paryu Message,12,12
+338,Felis Shaman,10,10
+339,Storm Shaman,10,10
+340,Peach Chapel,18,16
+341,Warrior Yebaek,18,24
+342,Mage Eldritch,18,24
+343,Rogue Maso,18,24
+344,Poet Song,18,24
+345,Shadow Dragon,12,20
+346,Budol Goh,14,14
+347,Beginner Budol Board,23,25
+348,Expert Budol Board,23,25
+350,Final Donjon,12,12
+351,JadeSpear\'s Home,12,12
+352,Buya Gen,15,15
+356,Mountain Arena,20,22
+357,Chonsa Arena,33,33
+358,Zin-Zi Arena,33,33
+359,Pyung Shop,12,12
+360,Sire Pit,16,16
+361,Pepper Tavern,30,14
+362,Yunsil Tavern,30,14
+363,Bagai Shop,12,12
+364,Pitch Shop,12,12
+365,Buya Salon,12,12
+366,Yebaek Sanctum,12,20
+367,Eldritch Sanctum,12,20
+368,Maso Sanctum,12,20
+369,Song  Sanctum,12,20
+370,Dirt Cave,30,20
+371,Vermin Cavern,20,20
+372,Rat Race,10,30
+373,Sonar Central,20,20
+374,Thousand Legs,24,18
+375,Rat Burrough,20,20
+376,Foul Pond,20,26
+377,Coil Cave,20,20
+378,Sick Man Pond,20,16
+379,Fang Gouge,20,20
+380,Serpent Secret,26,22
+381,Serpent Cove,30,20
+382,Serpent Falls,30,26
+383,Cromlech,20,24
+384,Gangrel Cave,30,30
+385,Bear Chamber,32,32
+386,Curtain Den,28,28
+387,Winding Cave,30,30
+388,Cub Cavern,28,28
+389,Paw Catacomb,30,30
+390,Fox Landscape,30,30
+391,Barren Cave,30,30
+392,Lush Tunnels,30,30
+393,*Lava Cave,30,30
+394,*Wolf Cavern,30,30
+395,*Raven\'s Roost,30,30
+396,*Tall Tunnels,30,30
+397,*Winding Cavern,30,30
+398,*Water hole,30,30
+399,*Twenty-eight Tails,30,24
+400,Radiant Valley,30,30
+401,Deer Field,28,28
+402,Barren Slopes,24,30
+403,Grazing Rows,30,30
+404,Warm Sands,30,30
+405,Deer Edge,28,28
+406,Disturbed Nests,30,30
+407,Narrow Pass,30,30
+408,Albino Way,20,30
+409,Prey,30,30
+410,Sand Glen,30,30
+411,Sand Edge,30,30
+412,Scorpion Tail,30,30
+413,Sting,24,36
+414,Venom Den,30,28
+415,Stream Sands,30,30
+416,Sand Den,30,30
+417,Desert Claw,24,30
+418,South Sand Den,30,28
+419,Green\'s End,28,28
+420,Map 420,30,30
+421,Map 421,25,25
+422,Map 422,20,25
+423,Map 423,30,30
+424,Map 424,25,25
+425,Map 425,20,20
+426,Map 426,25,40
+427,Map 427,20,20
+428,Map 428,26,26
+431,Map 431,30,30
+432,Map 432,20,20
+433,Map 433,20,20
+434,Map 434,26,30
+435,Map 435,30,30
+436,Map 436,20,20
+437,Map 437,25,25
+438,Map 438,15,15
+439,Map 439,20,20
+441,Barren Graves,32,32
+442,Sute\'s Nest,30,30
+443,Forsaken Grotto,30,28
+444,The Black Lake,30,30
+445,Death\'s Isthmus,28,20
+446,Sute\'s Welcome,28,24
+447,Dark Pools,30,30
+450,Old Shanty,32,32
+451,Dagger House,30,30
+452,Wicked Yard,30,30
+453,Condemned,30,30
+454,Broken Floor,20,30
+455,Sorrow Well,30,30
+456,Sorrow Yard,30,30
+457,Ruined House,30,30
+458,Dagger Yard,24,24
+459,Wicked House,30,30
+460,Map 460,30,30
+461,Map 461,30,20
+462,Map 462,30,30
+463,Map 463,30,30
+464,Map 464,30,30
+465,Map 465,20,30
+466,Map 466,20,30
+467,Map 467,30,40
+468,Map 468,24,25
+469,Map 469,30,30
+470,Sheep Chasm 1,20,20
+471,Good Grazing 1,20,20
+472,Woolen Squeeze 1,10,30
+473,Blood Wool 1,40,20
+474,Spinning 1,20,20
+475,Sheep Patrol 1,20,20
+476,Ewe Haven 1,15,28
+477,Ram 1,20,20
+478,Sheep Sacrifice 1,20,20
+479,Sheep Stronghold 1,15,17
+480,Green Pass 1,20,40
+481,Sheep Bridge 1,20,20
+482,Shadow Grove 1*,20,20
+483,Shepherd\'s Crook 1,20,20
+484,Shepherd\'s Nook 1*,15,17
+485,Buya Legend,8,8
+486,Buya Library,31,16
+487,Buya Theater,30,30
+501,Dirge,32,20
+502,Bone Feet,28,20
+503,Lost Pen,24,24
+504,Bone Finger,20,21
+505,Muffled Drum,20,32
+506,Torn Shroud,16,24
+507,Vile Pit,18,20
+508,Death March,24,24
+511,Snow Dungeon,32,56
+512,Stone Frost,32,100
+513,Rock Ice,32,100
+514,Frozen Fire,32,100
+515,Latitudes,32,100
+516,Snow Blind,64,64
+517,Icebound,64,64
+518,Ice Palace,64,64
+521,Forest Crossroads,30,30
+522,Cave,12,12
+523,Flowery Dell,30,30
+524,Poplar Forest,30,30
+525,Silent Watchers,30,30
+526,Field of Flags,30,30
+527,Golden Boughs,32,32
+528,Stone Sentinels,30,30
+529,Shrubbery,30,30
+530,Apple Orchard,30,30
+531,Mantis Meadow,32,32
+532,Spirit Grove,30,30
+533,Lilac Walk,30,30
+534,Crumbling Steps,30,30
+535,Infested Granary,30,30
+536,Oak Pathway,30,30
+537,Meeting Field,25,36
+538,Pine Grove,30,30
+539,Open Pasture,30,30
+540,Tangled Thicket,30,30
+541,Stone Bridge,30,30
+542,Southern Valley,25,18
+600,Purgatory,50,50
+601,Purgatory,50,50
+602,Purgatory,50,50
+603,Purgatory,50,50
+604,Purgatory,50,50
+605,Purgatory,50,50
+1000,Koguryo Valley,18,25
+1001,Buya Valley,25,18
+1002,Wilderness,220,220
+1003,Northern Pass,54,29
+1004,Dae Shore,80,64
+1005,Vale,250,180
+1006,Kugnae Houses,50,50
+1007,Limbo,15,15
+1008,Islets,80,200
+1009,Southern Koguryo,80,100
+1010,Mythic Limbo,15,15
+1011,Kugnae Gathering,20,20
+1012,Buya Gathering,20,20
+1013,Haeng Tavern,12,12
+1014,Sonhi Valley,25,18
+1015,Wilderness Valley,18,25
+1016,Vale Valley,18,18
+1018,Dae Vallley,30,15
+1019,Hamgyong Valley,25,18
+1020,Islet valley,25,18
+1021,Lonwik\'s Shop,10,10
+1022,Quentor\'s Shop,10,10
+1023,Hausson,100,90
+1024,Hausson Hall,20,20
+1025,Kafas Tavern,12,12
+1026,Di Jin Shaman,8,10
+1027,Haggard Mate Tavern,30,15
+1028,Northern Shore,60,40
+1029,Min\'s Shop,10,10
+1030,Runag Smith,12,14
+1031,Noxhil Home,12,30
+1051,Map 1051,70,70
+1052,Map 1052,24,24
+1053,Map 1053,24,24
+1054,Map 1054,24,24
+1060,Court of Justice,24,22
+1061,Conference Room,15,15
+1062,Corridors of Justice,8,16
+1063,East Courtroom,16,16
+1064,Equita\'s Chamber,12,13
+1065,Holding Cells,11,12
+1066,Judges Office,12,13
+1067,Jury Room,15,15
+1068,Kugnae Summoning,8,9
+1069,West Courtroom,16,16
+1070,West Wing,12,7
+1101,Great Tree,32,32
+1102,Sunken Tree,16,16
+1103,Abandoned Mine,17,17
+1111,Guol Shore,20,20
+1112,Guol Valley,16,20
+1113,Guol Divide,16,24
+1114,West Guol Pass,10,16
+1115,East Guol,16,16
+1116,Guol Tiger Pass,16,18
+1120,Sanhae Pass,40,29
+1121,Sanhae Valley,50,50
+1122,Spruce Inn,20,15
+1123,Lin Cloth,10,11
+1124,Lan Shop,12,12
+1125,Gruff Smith,16,11
+1126,Aura Shaman,10,10
+1127,Sanhae Hall,20,20
+1141,Splinter\'s House,12,12
+1142,Yon\'s Home,14,12
+1143,Sel\'s Home,18,12
+1144,Thane\'s Cave,12,12
+1151,Orchard Grove,30,30
+1152,Pine Grove,30,30
+1153,Northern Grove,30,30
+1154,Golden Grove,60,60
+1201,Small Plague Den,18,17
+1202,Hidden Lair,18,17
+1203,Large Plague Den,18,17
+1204,Huge Plague Den,18,17
+1205,Monstrous Plague Den,18,17
+1206,Great Gate,22,21
+1211,Fire\'s Realm,12,14
+1212,Wooden Chest,8,8
+1213,Fiery Transition,10,7
+1214,Fire Meets Water,18,17
+1221,Soo\'s Abode,12,12
+1222,Namu\'s Abode,12,12
+1223,Bul\'s Abode,12,12
+1224,Karima\'s Abode,12,12
+1225,Tang\'s Abode,12,12
+1226,The Old Man,12,12
+1228,The Forever Tree,24,24
+1229,Bon-Hwa,17,17
+1230,The Sage,12,12
+1271,White Pine Valley,24,24
+1272,Pyramid Mountain,30,20
+1273,Frost Valley,40,20
+1274,Twin Passes,30,30
+1275,Lake Placid,40,24
+1276,Frozen Plateau,40,40
+1277,Secret Snow,20,30
+1301,Iron Labyrinth,40,40
+1302,Iron Labyrinth*,40,40
+1303,Iron Labyrinth*,40,40
+1304,Iron Labyrinth*,40,40
+1305,Iron Labyrinth*,40,40
+1306,Iron Labyrinth*,40,40
+1307,Treasure Room,12,12
+1308,Gim Yi\'s Den,24,24
+1311,Washed Shores,30,24
+1312,Lobster Maze,34,24
+1313,Sandy Burrow,30,20
+1314,Lobster Claw,34,24
+1315,Sandy Niche,34,24
+1316,Sandy Mounds,30,24
+1317,Sand Trap,24,24
+1321,Du Mountain,36,36
+1351,Inner Niche,26,20
+1352,Winding Passage,26,20
+1353,Cracked Root,26,20
+1354,Echo Cavern,26,20
+1355,Fissure Crossroads,26,20
+1356,Basin Viaduct,26,20
+1357,Upper Peninsula,26,20
+1358,Fractured Terrace,26,20
+1359,Grotto Triad,26,20
+1401,Chung Ryong Shrine,32,32
+1403,Chung Ryong Altar,16,16
+1406,Baekho Shrine,24,52
+1408,Baekho Altar,16,16
+1411,Jujak Shrine,24,48
+1413,Ju Jak Altar,16,16
+1416,Hyun Moo Shrine,32,32
+1418,Hyun Moo Altar,16,16
+1451,Mountain Ascent,16,42
+1452,Small Valley,24,32
+1453,Forgotten Falls,40,40
+1454,Mountain Pass,24,32
+1455,Mountain Top,18,18
+1456,Serene Grotto,20,20
+1601,Map 1601,16,24
+1610,Map 1610,36,40
+1611,Map 1611,32,33
+1612,Map 1612,33,36
+1613,Map 1613,27,45
+1614,Map 1614,64,64
+1615,Map 1615,32,40
+1616,Map 1616,20,64
+1617,Map 1617,32,40
+1618,Map 1618,20,64
+1619,Map 1619,48,48
+1620,Map 1620,36,40
+1621,Map 1621,32,33
+1622,Map 1622,33,36
+1623,Map 1623,27,45
+1624,Map 1624,64,64
+1625,Map 1625,32,40
+1626,Map 1626,20,64
+1627,Map 1627,32,40
+1628,Map 1628,20,64
+1629,Map 1629,48,48
+1630,Map 1630,36,40
+1631,Map 1631,32,33
+1632,Map 1632,33,36
+1633,Map 1633,27,45
+1634,Map 1634,64,64
+1635,Map 1635,32,40
+1636,Map 1636,20,64
+1637,Map 1637,32,40
+1638,Map 1638,20,64
+1639,Map 1639,48,48
+1640,Map 1640,36,40
+1641,Map 1641,32,33
+1642,Map 1642,33,36
+1643,Map 1643,27,45
+1644,Map 1644,64,64
+1645,Map 1645,32,40
+1646,Map 1646,20,64
+1647,Map 1647,32,40
+1648,Map 1648,20,64
+1649,Map 1649,48,48
+1650,Map 1650,36,40
+1651,Map 1651,32,33
+1652,Map 1652,33,36
+1653,Map 1653,27,45
+1654,Map 1654,64,64
+1655,Map 1655,32,40
+1656,Map 1656,20,64
+1657,Map 1657,32,40
+1658,Map 1658,20,64
+1659,Map 1659,48,48
+1661,Map 1661,10,10
+1662,Map 1662,10,10
+1663,Map 1663,10,10
+1664,Map 1664,10,10
+1665,Map 1665,10,10
+1666,Map 1666,10,10
+1667,Map 1667,10,10
+1668,Map 1668,10,10
+1669,Map 1669,10,10
+1670,Map 1670,35,35
+1671,Map 1671,12,12
+1672,Map 1672,12,12
+1673,Map 1673,12,12
+1674,Map 1674,12,12
+1701,Map 1701,40,42
+1702,Map 1702,31,31
+1703,Map 1703,24,30
+1704,Map 1704,32,34
+1705,Map 1705,32,35
+1706,Map 1706,30,40
+1707,Map 1707,32,32
+1708,Map 1708,32,48
+1709,Map 1709,40,34
+1710,Map 1710,32,48
+1711,Map 1711,18,18
+1712,Map 1712,32,36
+1713,Map 1713,28,31
+1714,Map 1714,50,54
+1721,Map 1721,40,42
+1722,Map 1722,31,31
+1723,Map 1723,24,30
+1724,Map 1724,32,34
+1725,Map 1725,32,35
+1726,Map 1726,30,40
+1727,Map 1727,32,32
+1728,Map 1728,32,48
+1729,Map 1729,40,34
+1730,Map 1730,32,48
+1731,Map 1731,18,18
+1732,Map 1732,32,36
+1733,Map 1733,28,31
+1734,Map 1734,50,54
+1741,Map 1741,40,42
+1742,Map 1742,31,31
+1743,Map 1743,24,30
+1744,Map 1744,32,34
+1745,Map 1745,32,35
+1746,Map 1746,30,40
+1747,Map 1747,32,32
+1748,Map 1748,32,48
+1749,Map 1749,40,34
+1750,Map 1750,32,48
+1751,Map 1751,18,18
+1752,Map 1752,32,36
+1753,Map 1753,28,31
+1754,Map 1754,50,54
+1761,Map 1761,40,42
+1762,Map 1762,31,31
+1763,Map 1763,24,30
+1764,Map 1764,32,34
+1765,Map 1765,32,35
+1766,Map 1766,30,40
+1767,Map 1767,32,32
+1768,Map 1768,32,48
+1769,Map 1769,40,34
+1770,Map 1770,32,48
+1771,Map 1771,18,18
+1772,Map 1772,32,36
+1773,Map 1773,28,31
+1774,Map 1774,50,54
+1781,Map 1781,40,42
+1782,Map 1782,31,31
+1783,Map 1783,24,30
+1784,Map 1784,32,34
+1785,Map 1785,32,35
+1786,Map 1786,30,40
+1787,Map 1787,32,32
+1788,Map 1788,32,48
+1789,Map 1789,40,34
+1790,Map 1790,32,48
+1791,Map 1791,18,18
+1792,Map 1792,32,36
+1793,Map 1793,28,31
+1794,Map 1794,50,54
+1799,Map 1799,20,20
+1801,Map 1801,32,24
+1802,Map 1802,24,32
+1803,Map 1803,24,32
+1804,Map 1804,24,30
+1805,Map 1805,30,30
+1806,Map 1806,30,36
+1807,Map 1807,30,30
+1808,Map 1808,16,24
+1809,Map 1809,16,10
+1811,Map 1811,32,24
+1812,Map 1812,24,32
+1813,Map 1813,24,32
+1814,Map 1814,24,30
+1815,Map 1815,30,30
+1816,Map 1816,30,36
+1817,Map 1817,30,30
+1818,Map 1818,16,24
+1819,Map 1819,16,10
+1821,Map 1821,32,24
+1822,Map 1822,24,32
+1823,Map 1823,24,32
+1824,Map 1824,24,30
+1825,Map 1825,30,30
+1826,Map 1826,30,36
+1827,Map 1827,30,30
+1828,Map 1828,16,24
+1829,Map 1829,16,10
+1831,Map 1831,32,24
+1832,Map 1832,24,32
+1833,Map 1833,24,32
+1834,Map 1834,24,30
+1835,Map 1835,30,30
+1836,Map 1836,30,36
+1837,Map 1837,30,30
+1838,Map 1838,16,24
+1839,Map 1839,16,10
+1841,Map 1841,32,24
+1842,Map 1842,24,32
+1843,Map 1843,24,32
+1844,Map 1844,24,30
+1845,Map 1845,30,30
+1846,Map 1846,30,36
+1847,Map 1847,30,30
+1848,Map 1848,16,24
+1849,Map 1849,16,10
+1851,Map 1851,32,24
+1852,Map 1852,24,32
+1853,Map 1853,24,32
+1854,Map 1854,24,30
+1855,Map 1855,30,30
+1856,Map 1856,30,36
+1857,Map 1857,30,30
+1858,Map 1858,16,24
+1859,Map 1859,16,10
+1861,Map 1861,32,24
+1862,Map 1862,24,32
+1863,Map 1863,24,32
+1864,Map 1864,24,30
+1865,Map 1865,30,30
+1866,Map 1866,30,36
+1867,Map 1867,30,30
+1868,Map 1868,16,24
+1869,Map 1869,16,10
+2000,Koguryo Gate,3,3
+2001,Buya Gate,3,3
+2002,Winds1 Gate,3,3
+2003,Winds2 Gate,3,3
+2004,Winds3 Gate,3,3
+2005,Winds4 Gate,3,3
+2040,Cold Woods,50,32
+2041,Ice Path,70,40
+2042,Snow Pass,50,40
+2043,Frozen Forest,100,60
+2044,Tundra Bridge,45,20
+2045,Freezing River,64,20
+2046,Snow Steppes,50,32
+2047,Onyx Castle,75,40
+2048,Dark Caverns,45,20
+2049,Shadow Hall,30,20
+2050,Crimson Lair,50,40
+2051,Starfall Plateau,25,36
+2052,Starfall Ends,30,45
+2053,Snow Ribbon,40,48
+2054,Dual Pass,50,27
+2055,Chilly Crossroads,50,32
+2056,Ice Tower Pass,60,32
+2057,Ice Tower Loop,50,27
+2058,Snowy Caverns,45,20
+2059,Ice Forest Pass,50,32
+2060,Snow Corral,45,20
+2061,Ice Maze,45,20
+2062,Frozen Maze,45,20
+2063,Chill\'s Pass,45,20
+2064,Blizzard\'s Way,45,20
+2065,Blizzard\'s Mahem,45,20
+2066,Frozen Folly,45,20
+2067,Slashed Ice,45,20
+2068,Frozen River\'s Way,45,20
+2069,Ice Crystal Lake,20,20
+2070,Frost Island,40,32
+2071,Blizzard\'s Gauntlet,40,25
+2072,Frozen Lake Forest,30,30
+2073,Winter\'s Grove,45,20
+2074,Thaw Grotto,25,16
+2075,River\'s End,30,18
+2076,Blizzard\'s Twist,45,20
+2077,Hermit Hidaway,32,18
+2100,Map 2100,32,32
+2101,Map 2101,32,32
+2102,Map 2102,32,32
+2103,Map 2103,32,32
+2104,Map 2104,32,32
+2105,Map 2105,32,32
+2106,Map 2106,32,32
+2107,Map 2107,32,32
+2108,Map 2108,32,32
+2109,Map 2109,32,32
+2110,Map 2110,24,24
+2111,Map 2111,32,32
+2112,Map 2112,32,32
+2113,Map 2113,24,24
+2114,Map 2114,24,24
+2115,Map 2115,32,32
+2116,Map 2116,32,32
+2117,Map 2117,32,32
+2118,Map 2118,24,24
+2119,Map 2119,24,24
+2120,Map 2120,32,32
+2121,Map 2121,32,32
+2122,Map 2122,32,32
+2123,Map 2123,24,24
+2124,Map 2124,24,24
+2125,Map 2125,32,32
+2126,Map 2126,32,32
+2127,Map 2127,32,32
+2128,Map 2128,24,24
+2129,Map 2129,24,24
+2130,Map 2130,32,32
+2131,Map 2131,32,32
+2132,Map 2132,32,32
+2133,Map 2133,24,24
+2134,Map 2134,24,24
+2135,Map 2135,32,32
+2136,Map 2136,32,32
+2137,Map 2137,32,32
+2138,Map 2138,24,24
+2139,Map 2139,24,24
+2140,Map 2140,32,32
+2141,Map 2141,32,32
+2200,Cemetery,32,32
+2201,Il-mudum crypt,32,32
+2202,Ee-mudum crypt,32,32
+2203,Sam-mudum crypt,32,32
+2204,Sa-mudum crypt,32,32
+2205,Oh-mudum crypt,32,32
+2206,Uk-mudum crypt,32,32
+2207,Chil-mudum crypt,32,32
+2208,Pal-mudum crypt,32,32
+2209,Gu-mudum crypt,32,32
+2210,Hallowed Pass,24,24
+2211,Map 2211,32,32
+2212,Map 2212,32,32
+2213,Map 2213,24,24
+2214,Map 2214,24,24
+2215,Map 2215,32,32
+2216,Map 2216,32,32
+2217,Map 2217,32,32
+2218,Map 2218,24,24
+2219,Map 2219,24,24
+2220,Map 2220,32,32
+2221,Map 2221,32,32
+2222,Map 2222,32,32
+2223,Map 2223,24,24
+2224,Map 2224,24,24
+2225,Map 2225,32,32
+2226,Map 2226,32,32
+2227,Map 2227,32,32
+2228,Map 2228,24,24
+2229,Map 2229,24,24
+2230,Map 2230,32,32
+2231,Map 2231,32,32
+2232,Map 2232,32,32
+2233,Map 2233,24,24
+2234,Map 2234,24,24
+2235,Map 2235,32,32
+2236,Map 2236,32,32
+2237,Map 2237,32,32
+2238,Map 2238,24,24
+2239,Map 2239,24,24
+2240,Map 2240,32,32
+2241,Map 2241,32,32
+2242,Map 2242,32,32
+2243,Map 2243,24,24
+2244,Map 2244,24,24
+2245,Map 2245,32,32
+2246,Map 2246,32,32
+2247,Map 2247,32,32
+2248,Map 2248,32,32
+2249,Map 2249,32,32
+2250,Map 2250,32,32
+2251,Map 2251,32,32
+2252,Map 2252,32,32
+2255,Map 2255,36,36
+2500,Nagnang,146,156
+2501,Tavern of Fire,18,14
+2502,Tavern of Water,18,14
+2503,Tavern of Wind,18,14
+2504,Tavern of Wood,18,14
+2505,Tavern of Metal,18,14
+2506,Hanso Butcher,12,12
+2507,Timpe Weavers,12,12
+2508,Tilsa Tailors,12,12
+2509,Mountain Shaman,10,10
+2510,Warrior Sword,18,24
+2511,Gale Chapel,12,12
+2512,Mage Wand,18,24
+2513,Map 2513,12,12
+2514,Rogue Dagger,18,24
+2515,Soldier\'s Quarters,16,9
+2516,Poet Staff,18,24
+2517,Nagnang Valley,12,12
+2518,Chul Smith,12,12
+2519,Tinbae Message,12,12
+2520,Nagnang Gathering,18,20
+2521,Path of Yin,40,40
+2522,Path of Choice,40,40
+2523,Path of Yang,40,40
+2524,Yin Pathway,40,40
+2525,Path of the Arrow,35,55
+2526,Yang Pathway,40,40
+2527,Yin Entrance,40,40
+2528,Oblivion,40,40
+2529,Yang Entrance,40,40
+2530,Subvoid,17,17
+2531,Subvoid,17,17
+2532,Test,17,17
+2533,Blight\'s area,24,12
+2535,Southern Path,20,30
+2536,Southern Fork,20,20
+2537,Leviathan Mound,30,30
+2538,Leviathan Fields,50,40
+2539,Leviathan Hermit,30,30
+2540,Hermit Home,13,12
+2542,Worn path,20,20
+2543,Worn trail,20,32
+2544,Blight pen,24,24
+2545,Gauntlet Entrance,12,12
+2546,Crystal Fields,16,20
+2547,Havok,16,20
+2548,Malestrom,16,20
+2549,Objective,17,18
+2550,Gauntlet Entrance,12,12
+2551,Crystal Fields,16,20
+2552,Havok,16,20
+2553,Malestrom,16,20
+2554,Objective,17,18
+2555,Gauntlet Entrance,12,12
+2556,Crystal Fields,16,20
+2557,Havok,16,20
+2558,Malestrom,16,20
+2559,Objective,17,18
+2560,Gauntlet Entrance,12,12
+2561,Crystal Fields,16,20
+2562,Havok,16,20
+2563,Malestrom,16,20
+2564,Objective,17,18
+2565,Gauntlet Entrance,12,12
+2566,Crystal Fields,16,20
+2567,Havok,16,20
+2568,Malestrom,16,20
+2569,Objective,17,18
+2570,Prophets,28,28
+2571,Prophet Yin,16,16
+2572,Prophet Yang,16,16
+2573,Prophet Void,16,16
+3001,Monty Hall,12,20
+3002,Bloodlust League Hall,13,18
+3003,Ratty Hole,12,12
+3004,Kugnae Adventure,33,33
+3005,Kugnae Heroes,33,33
+3006,Kugnae Glory,33,33
+3007,Kugnae Legends,33,33
+3008,Kugnae Ancients,33,33
+3009,Arctic Arena,33,33
+3010,Carnage Hall,33,33
+3011,Bringer Arena,33,33
+3012,Bloodlust Hall,28,31
+3013,League Hall,12,12
+3014,Elixir Arena,32,42
+3015,Bloodlust Arena,33,33
+3020,Mythic Rabbit,17,15
+3021,Mythic Monkey,17,15
+3022,Mythic Dog,17,15
+3023,Mythic Rooster,17,15
+3024,Mythic Horse,17,15
+3025,Mythic Rat,17,15
+3026,Mythic Ox,17,15
+3027,Mythic Pig,17,15
+3028,Mythic Snake,17,15
+3029,Mythic Sheep,17,15
+3030,Mythic Tiger,17,15
+3031,Mythic Dragon,17,15
+3040,Northeast Koguryo,36,22
+3041,Chonsa Den,10,10
+3051,Judge\'s Chambers,20,20
+3052,Test,12,12
+3053,Test,12,12
+3054,Test,20,20
+3055,Test,20,20
+3056,Test,20,20
+3057,Test,20,20
+3100,Restless Cage 2,32,32
+3101,Tiger Pelt 2,30,30
+3102,Undergrowth 2,30,30
+3103,Jungle Prowl 2,30,30
+3104,Tiger Stretch 2,30,30
+3105,Tiger\'s Revenge 2,30,31
+3106,Dark Stripes 2,30,30
+3107,Declawed 2,30,30
+3108,Pounce 2,30,30
+3109,Dark Pen 2,30,30
+3110,Tiger Guardroom 2,30,30
+3151,Rat Trap 2,30,20
+3152,Pestilence 2,20,20
+3153,Night Watchmen 2,28,30
+3154,Rat Ear 2,20,20
+3155,Rat Eyes 2,30,28
+3156,Gnash 2,28,28
+3157,Gnaw 2,30,30
+3158,Plague 2,30,30
+3159,Nibble 2,30,30
+3160,Monkey Curl 2,24,24
+3161,Monkey Crest 2,28,24
+3162,Monkey Swamp 2,28,30
+3163,Monkey Flow 2,30,30
+3164,Monkey Dance 2,20,30
+3165,Monkey Mountain 2,30,28
+3166,Monkey Blood 2,26,28
+3167,Monkey Wasteland 2*,28,28
+3168,Monkey Divide 2*,30,30
+3169,Monkey Barracks 2,30,30
+3170,Red Bull 2,30,30
+3171,Rice Fields 2,30,30
+3172,Oxen Pull 2,30,30
+3173,Deep Furrow 2,30,30
+3174,Dry Plantings 2,30,30
+3175,Bull\'s Song 2,30,30
+3176,Ox Fury 2,30,30
+3177,Sunset 2*,24,30
+3178,Ox Path 2*,30,27
+3179,Bull\'s Fury 2,24,30
+3180,Ox Pasture 2,28,28
+3181,Pig Path 2,30,30
+3182,Mudbath 2,30,30
+3183,Mud Fields 2,20,20
+3184,Fire Clove 2,20,30
+3185,Pig Mound 2,20,20
+3186,Grub Hunt 2*,30,30
+3187,Clove Hill 2*,28,28
+3188,Pig\'s Snout 2,24,24
+3189,Boar Rise 2,28,28
+3190,Boar Fields 2*,30,30
+3191,Dog Prowl 2,28,30
+3192,Run 2*,30,20
+3193,Mongrel Snack 2,24,24
+3194,Mongrel Gateway 2*,24,24
+3195,Dog\'s Bite 2,30,30
+3196,Alarm 2,15,40
+3197,Rabid Mongrel 2,30,24
+3198,Chaser 2,24,24
+3199,Gnawed Bones 2*,24,24
+3200,Drool 2,20,20
+3201,Mythic Waters 2,24,24
+3202,Golden Warren 2,25,25
+3203,*Rabbit Hole 2*,26,26
+3204,Rabbit Leap 2,20,60
+3205,*Foraged Fields 2*,30,39
+3206,Hare Depression 2,30,30
+3207,Mythic Owsla 2,20,20
+3208,*Hare Summit 2*,20,40
+3210,Stained Isle 2,30,30
+3211,Fox\'s Paradise 2,20,20
+3212,Peck 2*,25,25
+3213,Rooster Rows 2,30,30
+3214,Swarmed Steps 2,20,60
+3215,Rooster Terraces 2,30,30
+3216,Chicken Conquest 2*,23,23
+3217,Rooster Gateway 2,20,20
+3218,Angry Roost 2*,20,70
+3231,Venom\'s Bite 2,20,20
+3232,Fang 2,20,30
+3233,Snake Sleep 2*,30,30
+3234,Sidewinder 2,30,28
+3235,Slither Patch 2,20,20
+3236,Snake Fields 2*,30,30
+3237,Final Rest 2*,20,20
+3238,Molten Viper 2,20,30
+3239,Conscience\'s Bite 2,10,30
+3240,Muddy Pasture 2,30,40
+3241,Prancing Path 2,28,20
+3242,Horse Valley 2,18,36
+3243,Island of Light 2*,20,30
+3244,Horse Passage 2,20,30
+3245,Clovers 2*,20,20
+3246,Dirt Fields 2,16,30
+3247,Hooved Sands 2*,40,40
+3248,Horse Stand 2,20,20
+3250,Hatchery 2,20,30
+3251,Hot Beds 2,38,20
+3252,Dragon Maze 2,20,40
+3253,Dragon Death 2*,20,30
+3254,Dragon\'s Gold 2*,20,30
+3255,Scales 2,20,40
+3256,Dragon\'s Mist 2,20,20
+3257,Dragon\'s Breath 2,20,20
+3258,Jeweled Dragon 2*,18,36
+3333,Slave Pits,17,21
+3334,Crossroads,30,24
+3335,Shangri-la,25,16
+3336,Divine Judgment,20,20
+3400,Pond\'s Library,31,16
+3401,Inner Library,8,8
+3402,Center Cellar,20,20
+3410,Map 3410,15,15
+3411,Map 3411,15,15
+3470,Sheep Chasm 2,20,20
+3471,Good Grazing 2,20,20
+3472,Woolen Squeeze 2,10,30
+3473,Blood Wool 2,40,20
+3474,Spinning 2,20,20
+3475,Sheep Patrol 2,20,20
+3476,Ewe Haven 2,15,28
+3477,Ram 2,20,20
+3478,Sheep Sacrifice 2,20,20
+3479,Sheep Stronghold 2,15,17
+3480,Green Pass 2,20,40
+3481,Sheep Bridge 2,20,20
+3482,Shadow Grove 2*,20,20
+3483,Shepherd\'s Crook 2,20,20
+3484,Shepherd\'s Nook 2*,15,17
+3500,Jury\'s Room,12,12
+3501,Final Judgement,20,20
+3502,Kugnae Palace\'s Prison,12,12
+3510,Barbarian Circle,23,23
+3511,Barbarian Guide,23,23
+3512,Barbarian Cave,7,7
+3515,Spy Circle,23,23
+3516,Spy Guide,23,23
+3517,Interrogation chambers,7,7
+3520,Merchant Circle,23,23
+3521,Merchant Guide,23,23
+3522,Kubera Shrine,7,7
+3525,Monk Circle,23,23
+3526,Monk Guide,23,23
+3527,Tomes of the Ages,7,7
+3530,Shaman Circle,23,23
+3531,Shaman Guide,23,23
+3532,Soul Haven,7,7
+3535,Diviner Circle,23,23
+3536,Diviner Guide,23,23
+3537,Tai Chi,7,7
+3539,Elders\' Haven,21,21
+3540,Tao Te Ching,9,9
+3541,Fairland,9,9
+3542,Circus,9,9
+3543,Grand Circus Tent,9,9
+3544,Immortals Niche,9,9
+3545,Map 3545,9,9
+3546,Map 3546,9,9
+3547,Map 3547,9,9
+3548,Map 3548,9,9
+3549,Map 3549,9,9
+3550,Map 3550,9,9
+3551,Map 3551,9,9
+3560,Map 3560,11,14
+3561,Map 3561,11,14
+3562,Map 3562,11,14
+3563,Map 3563,11,14
+3564,Map 3564,11,14
+3565,Map 3565,11,14
+3571,Map 3571,12,18
+3572,Map 3572,12,18
+3600,Map 3600,15,15
+3601,Map 3601,15,15
+3605,Do Circle,23,23
+3606,Do Guide,23,23
+3607,Spiritual Garden,7,7
+3610,Chongun Circle,23,23
+3611,Chongun Guide,23,23
+3612,Chongun Kitchen,7,7
+3615,Ranger Circle,23,23
+3616,Ranger Guide,23,23
+3617,Angel\'s Hideaway,7,7
+3620,Geomancer Circle,23,23
+3621,Geomancer Guide,23,23
+3622,Circle of Creation,7,7
+3625,Muse Circle,23,23
+3626,Muse Guide,23,23
+3627,Poetic Justice,7,7
+3630,Druid Circle,23,23
+3631,Druid Guide,23,23
+3632,Sacred Grove,7,7
+3640,The Road Not Taken,9,9
+3641,Lotus Dojo,9,9
+3642,Open Monk,9,9
+3643,Master Kyun\'s Enclave,9,9
+3644,Open Monk,9,9
+3645,Map 3645,9,9
+3646,Map 3646,9,9
+3647,Map 3647,9,9
+3661,Mystic Garden,11,14
+3662,Cluichi,11,14
+3663,Open Druid,14,11
+3671,Map 3671,12,18
+3681,Stable Entrance,18,18
+3682,Buyan Stables,36,18
+3683,Janath Hall,30,20
+3684,Wanar Hall,21,21
+3685,Kentao Hall,29,29
+3686,Mankal Hall,25,25
+3687,Ice Arena,30,20
+3688,East Hall,25,25
+3689,South Hall,25,25
+3690,West Hall,31,31
+3691,Chung Ryong Hall,25,25
+3692,Baekho Hall,25,25
+3693,Ju Jak Hall,25,25
+3694,Stronghold Arena,25,25
+3701,Kugnae Warrior\'s Hall,16,16
+3702,Kugnae Rogue\'s Hall,16,16
+3703,Kugnae Mage\'s Hall,16,16
+3704,Kugnae Poet\'s Hall,16,16
+3705,Buya Warrior\'s Hall,16,16
+3706,Buya Rogue\'s Hall,16,16
+3707,Buya Mage\'s Halll,16,16
+3708,Buya Poet\'s Hall,16,16
+3800,KaMing\'s Encampment,64,64
+3801,Sya\'s Shop,12,12
+3802,Sying\'s Shop,12,12
+3803,Gan\'s Shop,12,12
+3804,Lien\'s Shop,12,12
+3805,Blood\'s Home,12,12
+3806,KaMing,12,12
+3811,Arctic Village,72,72
+3812,Arctic Tavern,24,14
+3813,Othotsk Blacksmith,16,16
+3814,Taimyr Butcher,12,12
+3815,Crystalline Chapel,26,40
+3816,Kamchatka Ballroom,32,36
+3817,Laptev Crafter,12,12
+3818,Yakutsk Oracle,16,16
+3819,Lovers\' Lake,30,40
+3825,Kwi-Sin Dagger,64,64
+3826,Ming-Ken Dagger,64,64
+3827,Ohaeng Dagger,64,64
+3828,Wand,64,64
+3829,Kwi-Sin Wand,64,64
+3830,Ming-Ken Wand,64,64
+3831,Ohaeng Wand,64,64
+3835,Ohaeng Staff,100,100
+3836,Sa San\'s Haven,125,80
+3837,Warrior\'s Rage,100,100
+3838,Rogue\'s Strike,100,100
+3910,Heavens Clan,30,20
+3911,Heavens Hall,31,31
+3912,Heavens Arena,40,40
+3913,Heavens Servant,15,15
+3914,Heavens Shop,15,15
+3915,Heavens Secret,10,10
+3916,Heavens Primogen,15,15
+3917,Heavens G\'oh,21,21
+3918,Paradise,25,25
+3920,Sun Moon Clan,30,20
+3921,Sun Moon Hall,32,32
+3922,Sun Moon Arena,35,35
+3923,Sun Moon Primogen,18,18
+3924,Sun Moon Shop,20,18
+3925,Sun Moon Meeting Hall,20,18
+3926,Sun Moon Rocks,16,25
+3927,Sky Lounge,40,20
+3930,Bear Clan,30,20
+3931,Bear Hall,31,31
+3932,Bear Arena,35,35
+3933,Bear Primogen,15,15
+3934,Bear Shop,15,15
+3935,Bear Den,14,15
+3936,Echo\'s Refuge,15,15
+3940,Phoenix Clan Garden,30,20
+3941,Phoenix Hall,30,30
+3942,Phoenix Arena,30,20
+3943,Phoenix Primogen,15,15
+3944,Phoenix Council Room,15,15
+3950,Enigma Clan,30,20
+3951,Enigma Hall,31,31
+3953,Enigma Primogen,15,15
+3954,Enigma Treasury,10,10
+3960,Lost Kingdom Clan,30,20
+3961,Lost Kingdom Hall,33,35
+3962,Lost Kingdom Arena,38,30
+3963,Lost Kingdom Primogen,19,20
+3964,Crafting Chambers,15,15
+3965,Lost Springs,10,10
+3966,Sentra\'s Gardens,58,26
+3970,Dharma Clan,29,30
+3971,Dharma,32,32
+3973,Dharma Primogen,16,16
+3974,Dharma Council Chambers,10,10
+3975,Dharma Marketplace,20,15
+4000,Archon Antichamber,16,16
+4001,Clan/Royal Archon\'s Office,12,14
+4002,Carnage test,16,16
+4003,Test,16,16
+4004,Wony\'s Office,20,20
+4005,Neul\'s Office,16,16
+4006,Primogen\'s Haven,21,21
+4007,Kinung\'s Haven,21,21
+4008,Poetic Enchantment,15,15
+4010,Temple of Oceana,36,48
+4100,Restless Cage 3,32,32
+4101,Tiger Pelt 3,30,30
+4102,Undergrowth 3,30,30
+4103,Jungle Prowl 3,30,30
+4104,Tiger Stretch 3,30,30
+4105,Tiger\'s Revenge 3,30,31
+4106,Dark Stripes 3,30,30
+4107,Declawed 3,30,30
+4108,Pounce 3,30,30
+4109,Dark Pen 3,30,30
+4110,Tiger Guardroom 3,30,30
+4151,Rat Trap 3,30,20
+4152,Pestilence 3,20,20
+4153,Night Watchmen 3,28,30
+4154,Rat Ear 3,20,20
+4155,Rat Eyes 3,30,28
+4156,Gnash 3,28,28
+4157,Gnaw 3,30,30
+4158,Plague 3,30,30
+4159,Nibble 3,30,30
+4160,Monkey Curl 3,24,24
+4161,Monkey Crest 3,28,24
+4162,Monkey Swamp 3,28,30
+4163,Monkey Flow 3,30,30
+4164,Monkey Dance 3,20,30
+4165,Monkey Mountain 3,30,28
+4166,Monkey Blood 3,26,28
+4167,Monkey Wasteland 3*,28,28
+4168,Monkey Divide 3*,30,30
+4169,Monkey Barracks 3,30,30
+4170,Red Bull 3,30,30
+4171,Rice Fields 3,30,30
+4172,Oxen Pull 3,30,30
+4173,Deep Furrow 3,30,30
+4174,Dry Plantings 3,30,30
+4175,Bull\'s Song 3,30,30
+4176,Ox Fury 3,30,30
+4177,Sunset 3*,24,30
+4178,Ox Path 3*,30,27
+4179,Bull\'s Fury 3,24,30
+4180,Ox Pasture 3,28,28
+4181,Pig Path 3,30,30
+4182,Mudbath 3,30,30
+4183,Mud Fields 3,20,20
+4184,Fire Clove 3,20,30
+4185,Pig Mound 3,20,20
+4186,Grub Hunt 3*,30,30
+4187,Clove Hill 3*,28,28
+4188,Pig\'s Snout 3,24,24
+4189,Boar Rise 3,28,28
+4190,Boar Fields 3*,30,30
+4191,Dog Prowl 3,28,30
+4192,Run 3*,30,20
+4193,Mongrel Snack 3,24,24
+4194,Mongrel Gateway 3*,24,24
+4195,Dog\'s Bite 3,30,30
+4196,Alarm 3,15,40
+4197,Rabid Mongrel 3,30,24
+4198,Chaser 3,24,24
+4199,Gnawed Bones 3*,24,24
+4200,Drool 3,20,20
+4201,Mythic Waters 3,24,24
+4202,Golden Warren 3,25,25
+4203,*Rabbit Hole 3*,26,26
+4204,Rabbit Leap 3,20,60
+4205,*Foraged Fields 3*,30,39
+4206,Hare Depression 3,30,30
+4207,Mythic Owsla 3,20,20
+4208,*Hare Summit 3*,20,40
+4210,Stained Isle 3,30,30
+4211,Fox\'s Paradise 3,20,20
+4212,Peck 3*,25,25
+4213,Rooster Rows 3,30,30
+4214,Swarmed Steps 3,20,60
+4215,Rooster Terraces 3,30,30
+4216,Chicken Conquest 3*,23,23
+4217,Rooster Gateway 3,20,20
+4218,Angry Roost 3*,20,70
+4231,Venom\'s Bite 3,20,20
+4232,Fang 3,20,30
+4233,Snake Sleep 3*,30,30
+4234,Sidewinder 3,30,28
+4235,Slither Patch 3,20,20
+4236,Snake Fields 3*,30,30
+4237,Final Rest 3*,20,20
+4238,Molten Viper 3,20,30
+4239,Conscience\'s Bite 3,10,30
+4240,Muddy Pasture 3,30,40
+4241,Prancing Path 3,28,20
+4242,Horse Valley 3,18,36
+4243,Island of Light 3*,20,30
+4244,Horse Passage 3,20,30
+4245,Clovers 3*,20,20
+4246,Dirt Fields 3,16,30
+4247,Hooved Sands 3*,40,40
+4248,Horse Stand 3,20,20
+4250,Hatchery 3,20,30
+4251,Hot Beds 3,38,20
+4252,Dragon Maze 3,20,40
+4253,Dragon Death 3*,20,30
+4254,Dragon\'s Gold 3*,20,30
+4255,Scales 3,20,40
+4256,Dragon\'s Mist 3,20,20
+4257,Dragon\'s Breath 3,20,20
+4258,Jeweled Dragon 3*,18,36
+4444,Map 4444,30,30
+4470,Sheep Chasm 3,20,20
+4471,Good Grazing 3,20,20
+4472,Woolen Squeeze 3,10,30
+4473,Blood Wool 3,40,20
+4474,Spinning 3,20,20
+4475,Sheep Patrol 3,20,20
+4476,Ewe Haven 3,15,28
+4477,Ram 3,20,20
+4478,Sheep Sacrifice 3,20,20
+4479,Sheep Stronghold 3,15,17
+4480,Green Pass 3,20,40
+4481,Sheep Bridge 3,20,20
+4482,Shadow Grove 3*,20,20
+4483,Shepherd\'s Crook 3,20,20
+4484,Shepherd\'s Nook 3*,15,17
+4500,Kugnae Market Entry,8,6
+4501,Kugnae Marketplace,48,44
+4503,Koguryo Tribunal Hall,22,25
+4504,Koguryo Palace Courtyard,30,30
+4505,Royal Palace Mezzanine,14,15
+4506,Koguryo Throne Room,30,30
+4507,Kugnae Theater,30,30
+4508,Koguryo Royal Court,12,12
+4509,Koguryo Royal Ministry,12,12
+4510,KRA Training Area,32,42
+4511,Mhul\'s Chambers,12,10
+4513,Kugnae Palace Baths,40,30
+4514,Royal Palace Stairway,16,16
+4515,Royal Army Barracks,16,16
+4525,Backstage Event,16,16
+4600,Buya Market Entry,8,6
+4601,Buya Marketplace,48,44
+4603,Buya Tribunal Hall,24,24
+4604,Buya Courtyard,31,31
+4606,Buya Throne Room,22,40
+4608,Imperial Ministry,12,12
+4609,Buya Royal Court,12,12
+4610,Buya Training Hall,32,42
+4611,Lasahn\'s Chambers,12,10
+4612,Imperial Promenade,8,10
+4613,Secret Garden,48,48
+4614,Map 4614,16,16
+4615,Buya Imperial Army,16,16
+4701,Museum,40,30
+4702,Main Gallery,26,28
+4703,The Mighty Totems,20,22
+4704,Nexus Wildlife,24,24
+4705,Shipwreck Shore,25,16
+4706,Conflicts through time,20,20
+4707,Continuing Conflicts,16,20
+4708,The Shattering,24,24
+4709,Caretaker\'s room,16,20
+4711,Welcome,16,16
+4712,Open Field,20,20
+4713,Forest Path,20,20
+4714,Deep Forest,30,30
+4715,Country Farm,24,18
+4716,Mignok\'s Home,14,16
+4717,City Limits,31,26
+4718,Angel\'s Blessing,21,20
+4901,First Gen Sanctum,15,15
+4902,Second Gen Sanctum,15,15
+4903,Third Gen Sanctum,15,15
+4904,Fourth Gen Sanctum,15,15
+4905,Fifth Gen Sanctum,15,15
+4906,Sixth Gen Sanctum,15,15
+4907,Seventh Gen Sanctum,15,15
+4908,Eighth Gen Sanctum,15,15
+4909,Ninth Gen Sanctum,15,15
+4910,Tenth Gen Sanctum,15,15
+4911,Eleventh Gen Sanctum,15,15
+4912,Twelth Gen Sanctum,15,15
+4913,Thirteenth Gen Sanctum,15,15
+4914,Fourteenth Gen Sanctum,15,15
+4915,Fifteenth Gen Sanctum,15,15
+4916,Sixteenth Gen Sanctum,25,9
+4917,Seventeenth Gen Sanctum,15,15
+4918,Eighteenth Gen Sanctum,15,15
+4920,First Check\'s Realm,15,15
+4921,Second Check\'s Realm,15,15
+4922,Third Check\'s Realm,15,15
+4923,Fourth Check\'s Realm,15,15
+4924,Fifth Check\'s Realm,15,15
+4925,Kugnae Gen Sanctum,15,15
+4926,Buya Gen Sanctum,15,15
+4927,Mythic Gen Sanctum,15,15
+4928,Divine Gen Sanctum,15,15
+4929,Spirit Gen Sanctum,15,15
+4930,Vale Gen Sanctum,15,15
+4931,Wilderness Gen Sanctum,15,15
+4932,Nagnang Check Sanctum,15,15
+4933,Nagnang Gen Sanctum,15,15
+4951,Map 4951,103,200
+5999,Forsaken Clan,10,10
+6300,Desert,40,40
+6301,Desert,20,20
+6302,Desert,30,30
+6303,Desert,70,40
+6304,Desert,50,40
+6305,Desert,100,60
+6306,Desert,16,16
+6307,Desert,40,32
+6308,Desert,50,32
+6309,Desert,30,30
+6310,Desert,40,32
+6311,Desert,50,32
+6312,Desert,50,32
+6313,Desert,30,30
+6314,Desert,30,30
+6315,Desert,10,100
+6316,Desert,45,20
+6317,Desert,45,20
+6318,Desert,45,20
+6319,Desert,45,20
+6320,Desert,45,20
+6321,Desert,24,24
+6322,Desert,45,20
+6323,Desert,45,20
+6324,Desert,30,18
+6325,Desert,45,20
+6326,Desert,45,20
+6327,Desert,50,27
+6328,Desert,60,32
+6329,Desert,50,32
+6330,Desert,50,27
+6331,Desert,60,32
+6332,Desert,50,27
+6333,Desert,45,20
+6334,Desert,75,40
+6335,Desert,20,20
+6336,Desert,16,16
+6340,Desert,50,32
+6341,Desert,20,20
+6342,Desert,30,30
+6343,Desert,50,56
+6344,Desert,40,50
+6345,Desert,75,80
+6346,Desert,16,16
+6347,Desert,32,40
+6348,Desert,40,40
+6349,Desert,30,30
+6350,Desert,32,40
+6351,Desert,40,40
+6352,Desert,40,40
+6353,Desert,30,30
+6354,Desert,30,30
+6355,Desert,10,100
+6356,Desert,45,20
+6357,Desert,45,20
+6358,Desert,45,20
+6359,Desert,45,20
+6360,Desert,45,20
+6361,Desert,24,24
+6362,Desert,45,20
+6363,Desert,45,20
+6364,Desert,30,18
+6365,Desert,45,20
+6366,Desert,45,20
+6367,Desert,50,27
+6368,Desert,60,32
+6369,Desert,50,32
+6370,Desert,50,27
+6371,Desert,60,32
+6372,Desert,50,27
+6373,Desert,45,20
+6374,Desert,75,40
+6375,Desert,20,20
+6376,Desert,16,16
+6380,Desert,50,32
+6381,Desert,20,20
+6382,Desert,30,30
+6383,Desert,70,40
+6384,Desert,50,40
+6385,Desert,100,60
+6386,Desert,16,16
+6387,Desert,40,32
+6388,Desert,50,32
+6389,Desert,30,30
+6390,Desert,40,32
+6391,Desert,50,32
+6392,Desert,50,32
+6393,Desert,45,20
+6394,Desert,45,20
+6395,Desert,40,25
+6396,Desert,45,20
+6397,Desert,45,20
+6398,Desert,45,20
+6399,Desert,30,30
+6400,Gypsy Camp,30,30
+6401,Gypsy Tent,24,24
+6402,Desert Cave,30,30
+6403,Desert Cave,30,30
+6404,Desert Cave,20,27
+6405,Desert Cave,45,20
+6406,Desert Cave,30,30
+6407,Desert Cave,50,27
+6408,Desert Cave,60,32
+6409,Desert Cave,40,40
+6410,Desert Cave,30,45
+6411,Guol Well,40,48
+6412,Western Forest,25,54
+6413,North Camp,36,25
+6414,Guards tent,50,60
+6415,Generals camp,25,16
+6416,Generals tent,16,16
+6420,Generals tent,40,40
+6421,Generals tent,20,20
+6422,Generals tent,30,30
+6423,Generals tent,50,56
+6424,Generals tent,40,50
+6425,Generals tent,75,80
+6426,Generals tent,16,16
+6427,Ogre kitchen,40,32
+6428,Ogre hall,40,40
+6429,Slave pen,30,30
+6430,Slave training area,40,32
+6431,South camp,50,32
+6432,Slave quarters,50,32
+6433,Prison,30,30
+6434,Cells,50,18
+6435,Mess hall,10,100
+6436,Ogre scribe,30,30
+6437,Ogre tailor,30,30
+6438,Ogre weaponry,30,30
+6439,Ogre smith,30,30
+6440,Ogre store,30,30
+6441,Ogre clinic,24,24
+6442,Ogre stable,30,30
+6443,Officers mess,30,30
+6444,Officers quarters,20,27
+6445,Barracks,30,30
+6446,Barracks,30,30
+6447,Barracks,30,45
+6448,Barracks,40,48
+6449,Barracks,40,40
+6450,Battle field,30,45
+6451,Great stairs,20,96
+6452,Temple clearing,30,45
+6453,Lovers hut,30,30
+6454,Shrine of Fire,50,60
+6455,Shrine of Ice,20,20
+6456,Temple,16,16
+6460,Temple,40,40
+6461,Temple,20,20
+6462,Temple,30,30
+6463,Temple,50,56
+6464,Temple,40,50
+6465,Temple,75,80
+6466,Temple,16,16
+6467,Temple,32,40
+6468,Temple,40,40
+6469,Temple,30,30
+6470,Temple,32,40
+6471,Temple,40,40
+6472,Temple,40,40
+6473,Temple,30,30
+6474,Temple,30,30
+6475,Temple,10,100
+6476,Temple,30,30
+6477,Temple,30,30
+6478,Temple,30,30
+6479,Temple,30,30
+6480,Temple,30,30
+6481,Temple,24,24
+6482,Temple,30,30
+6483,Temple,30,30
+6484,Temple,20,27
+6485,Temple,30,30
+6486,Map 6486,30,30
+6487,Map 6487,30,45
+6488,Map 6488,40,48
+6489,Map 6489,40,40
+6490,Map 6490,30,45
+6491,Map 6491,40,48
+6492,Map 6492,30,45
+6493,Map 6493,30,30
+6494,Map 6494,50,60
+6495,Map 6495,20,20
+6496,Map 6496,16,16
+6502,Buya Library Caverns,30,30
+6503,Buya Library Caverns,30,28
+6504,Buya Library Caverns,24,36
+6505,Buya Library Caverns,30,28
+6506,Buya Library Caverns,24,30
+6507,Buya Library Caverns,30,30
+6508,Buya Library Caverns,30,30
+6509,Buya Library Caverns,30,30
+6510,Buya Library Caverns,30,30
+6511,Buya Library Caverns,28,28
+6512,Buya Library Caverns,18,18
+6513,Buya Library Caverns,30,30
+6514,Buya Library Caverns,30,30
+6515,Buya Library Caverns,32,32
+6516,Buya Library Caverns,30,30
+6517,Buya Library Caverns,30,30
+6518,Buya Library Caverns,30,30
+6519,Buya Library Caverns,20,45
+6522,Buya Library Caverns,30,30
+6523,Buya Library Caverns,30,28
+6524,Buya Library Caverns,24,36
+6525,Buya Library Caverns,30,28
+6526,Buya Library Caverns,24,30
+6527,Buya Library Caverns,30,30
+6528,Buya Library Caverns,30,30
+6529,Buya Library Caverns,30,30
+6530,Buya Library Caverns,30,30
+6531,Buya Library Caverns,28,28
+6532,Buya Library Caverns,18,18
+6533,Buya Library Caverns,30,30
+6534,Buya Library Caverns,30,30
+6535,Buya Library Caverns,32,32
+6536,Buya Library Caverns,30,30
+6537,Buya Library Caverns,30,30
+6538,Buya Library Caverns,30,30
+6539,Buya Library Caverns,20,45
+6542,Buya Library Caverns,30,30
+6543,Buya Library Caverns,30,28
+6544,Buya Library Caverns,24,36
+6545,Buya Library Caverns,30,28
+6546,Buya Library Caverns,24,30
+6547,Buya Library Caverns,30,30
+6548,Buya Library Caverns,30,30
+6549,Buya Library Caverns,30,30
+6550,Buya Library Caverns,30,30
+6551,Buya Library Caverns,28,28
+6552,Buya Library Caverns,18,18
+6553,Buya Library Caverns,30,30
+6554,Buya Library Caverns,30,30
+6555,Buya Library Caverns,32,32
+6556,Buya Library Caverns,30,30
+6557,Buya Library Caverns,30,30
+6558,Buya Library Caverns,30,30
+6559,Buya Library Caverns,20,45
+6562,Buya Library Caverns,30,30
+6563,Buya Library Caverns,30,28
+6564,Buya Library Caverns,24,36
+6565,Buya Library Caverns,30,28
+6566,Buya Library Caverns,24,30
+6567,Buya Library Caverns,30,30
+6568,Buya Library Caverns,30,30
+6569,Buya Library Caverns,30,30
+6570,Buya Library Caverns,30,30
+6571,Buya Library Caverns,28,28
+6572,Buya Library Caverns,18,18
+6573,Buya Library Caverns,30,30
+6574,Buya Library Caverns,30,30
+6575,Buya Library Caverns,32,32
+6576,Buya Library Caverns,30,30
+6577,Buya Library Caverns,30,30
+6578,Buya Library Caverns,30,30
+6579,Buya Library Caverns,20,45
+6582,Buya Library Caverns,30,30
+6583,Buya Library Caverns,30,28
+6584,Buya Library Caverns,24,36
+6585,Buya Library Caverns,30,28
+6586,Buya Library Caverns,24,30
+6587,Buya Library Caverns,30,30
+6588,Buya Library Caverns,30,30
+6589,Buya Library Caverns,30,30
+6590,Buya Library Caverns,30,30
+6591,Buya Library Caverns,28,28
+6592,Buya Library Caverns,18,18
+6593,Buya Library Caverns,30,30
+6594,Buya Library Caverns,30,30
+6595,Buya Library Caverns,32,32
+6596,Buya Library Caverns,30,30
+6597,Buya Library Caverns,30,30
+6598,Buya Library Caverns,30,30
+6599,Buya Library Caverns,20,45
