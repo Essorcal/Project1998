@@ -62,6 +62,27 @@ public static class Karma
             if (string.Equals(name, tier, StringComparison.OrdinalIgnoreCase)) return karma >= min;
         return false;
     }
+
+    /// <summary>Every named band, best-first: the Ladder plus the two below-zero bands. For GM tooling and
+    /// usage strings — the vocabulary <see cref="ValueForName"/> accepts.</summary>
+    public static IReadOnlyList<string> TierNames { get; } =
+        Ladder.Select(t => t.Name).Append("Rat").Append("Snake").ToArray();
+
+    /// <summary>The setter half of <see cref="LevelName"/>: resolve a tier NAME to a karma value that lands
+    /// squarely in that band, so setting "dog" and reading the level back agree. Case- and space-insensitive;
+    /// null for anything that isn't a known tier (so a caller can fall through to parsing a raw number). The
+    /// two below-zero bands are open-ended, so they get a representative interior value: "rat" halfway between
+    /// the scum floor and zero, "snake" one step past the floor.</summary>
+    public static double? ValueForName(string name)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length == 0) return null;
+        if (string.Equals(name, "snake", StringComparison.OrdinalIgnoreCase)) return ScumFloor - 1;
+        if (string.Equals(name, "rat",   StringComparison.OrdinalIgnoreCase)) return ScumFloor / 2;
+        foreach (var (min, tier) in Ladder)
+            if (string.Equals(tier, name, StringComparison.OrdinalIgnoreCase)) return min;
+        return null;
+    }
 }
 
 public sealed partial class Session

@@ -82,6 +82,29 @@ public class KarmaTests
     }
 
     [Fact]
+    public void ValueForName_lands_a_character_in_that_very_band()
+    {
+        // The @karma setter (Karma.ValueForName) is the inverse of the reader: setting a tier by name and
+        // reading the level back must return the same tier — otherwise "@karma dog" could leave you a Rabbit.
+        // Covers the open-ended below-zero bands too, which have no single threshold to snap to.
+        foreach (var tier in Karma.TierNames)
+        {
+            var v = Karma.ValueForName(tier);
+            Assert.True(v is not null, $"'{tier}' should resolve to a value");
+            Assert.Equal(tier, Karma.LevelName(v!.Value));
+        }
+    }
+
+    [Fact]
+    public void ValueForName_is_case_insensitive_and_rejects_unknowns()
+    {
+        Assert.Equal(3.0, Karma.ValueForName("DOG"));
+        Assert.Equal(3.0, Karma.ValueForName("  dog  "));
+        Assert.Null(Karma.ValueForName("archangel"));
+        Assert.Null(Karma.ValueForName(""));
+    }
+
+    [Fact]
     public void LevelName_round_trips_through_Meets()
     {
         // Every named band must satisfy its own tier: the two functions are separate ports of the same

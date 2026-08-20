@@ -463,6 +463,35 @@ public sealed partial class Session
         Log.Info($"   -> TOTEM set to {_char.Totem}");
     }
 
+    // "@karma <value|tier>" — set the hidden virtue score outright. A number sets it exactly (may be negative
+    // or fractional); a tier NAME (cat, dog, angel, …) snaps it into that band, using the same ladder every
+    // gate reads (see Karma.ValueForName). Persisted like the other character setters. Note karma is NOT on
+    // the 4.95 profile (Karma.cs remarks), so this reply is the only feedback — and a later @lvl/@class/@mark
+    // rebuild leaves karma alone, unlike the stat curve, so it doesn't get discarded.
+    private void SetKarmaCmd(string text)
+    {
+        string arg = text.Trim();
+        if (arg.Length == 0)
+        {
+            SendLog($"karma is {_char.Karma:0.###} ({Karma.LevelName(_char.Karma)}).");
+            SendLog($"usage: {Prefix}karma <value | tier>   tiers: {string.Join(" · ", Karma.TierNames)}");
+            return;
+        }
+
+        // A tier name wins over number parsing, but no tier name is a number, so there's no ambiguity.
+        double value;
+        if (Karma.ValueForName(arg) is { } byName) value = byName;
+        else if (double.TryParse(arg, System.Globalization.NumberStyles.Float,
+                                 System.Globalization.CultureInfo.InvariantCulture, out var byNum)) value = byNum;
+        else { SendLog($"'{arg}' isn't a number or a karma tier. Tiers: {string.Join(" · ", Karma.TierNames)}"); return; }
+
+        _char.Karma = value;
+        if (_enteredWorld) StoreSave();
+        SendEffect(_char.Id, Karma.Effect);        // the same sparkle a real karma change plays
+        SendLog($"karma set to {_char.Karma:0.###} ({Karma.LevelName(_char.Karma)}).");
+        Log.Info($"   -> KARMA set to {_char.Karma:0.###} ({Karma.LevelName(_char.Karma)}) by '{_char.Name}'");
+    }
+
     // "@dispel" — strip every buff and debuff currently on you (see DispelSelf). Handy for resetting a test
     // character to a clean baseline between casts, or shaking off a curse/hold applied during a fight.
     private void DispelCmd()

@@ -80,6 +80,7 @@ public sealed partial class Session
         T("mp",      (s, a) => s.SetMaxPool(hp: false, a),"<n>",          "set max MP (mana) and refill"),
         T("nation",  (s, a) => s.SetNationCmd(a),   "<id>",               "set your nation crest (persists)"),
         T("totem",   (s, a) => s.SetTotemCmd(a),    "<id>",               "set your totem crest (persists)"),
+        T("karma",   (s, a) => s.SetKarmaCmd(a),    "<value|tier>",       "set karma outright: a number, or a tier (cat, dog, angel, …)"),
         T("dispel",  (s, a) => s.DispelCmd(),       "",                   "strip every buff and debuff on you"),
         T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
         T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
