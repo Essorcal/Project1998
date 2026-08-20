@@ -41,7 +41,7 @@ NpcId,NpcIdentifier,NpcDescription,NpcType,NpcMapId,NpcX,NpcY,NpcTimer,NpcLook,N
 40,PoetTrainerNpc,Song,0,369,6,3,0,87,7,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 41,WarriorTrainerNpc,Yabaek,0,366,6,2,0,39,6,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 42,RogueTrainerNpc,Maso,0,368,6,2,0,38,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,
-43,BloodNpc,Blood,0,3805,6,5,0,64,8,0,2,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,
+43,BloodNpc,Blood,0,3805,6,5,0,64,8,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 44,NamelessHermitNpc,Nameless Hermit,0,3040,4,2,0,6,9,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 45,RockNpc,Rock,0,3040,20,21,0,175,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 46,YonNpc,Yon,0,1142,1,7,0,5,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,

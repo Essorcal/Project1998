@@ -9,6 +9,7 @@ WarriorTrainerNpc,warrior_trainer|minor_quest
 RogueTrainerNpc,rogue_trainer|minor_quest
 MageTrainerNpc,mage_trainer|minor_quest
 PoetTrainerNpc,poet_trainer|minor_quest
+BloodNpc,forget_secret
 RogueGuildShamanNpc,appearance
 ArenaMasterNpc,war_paint
 ExpSeller,shadow_stats
