@@ -1,15 +1,16 @@
-# This repository is CONTENT ONLY: the CSV/Lua registry, the ~1750 .map terrain files, SObj.tbl. Everything
+# game-data/ is CONTENT ONLY: the CSV/Lua registry, the ~1750 .map terrain files, SObj.tbl. Everything
 # here is authored, is identical on every deployment, and is READ-ONLY to a running server.
 #
-# It used to also be the directory the server WROTE into — the SQLite database, the character store, the
-# staff rosters and the logs all sat alongside these files — and most of this .gitignore was the list of
-# runtime filenames that had to be kept out of the history. That list is gone because the thing it was
-# guarding against is gone: live state now lives in state/, a sibling of this repo's working directory that
-# nothing here can see (see Shared/RepoPaths.cs in Project1998, and docs/hosting.md §1 in Project1998-infra).
+# This was its own repository until game-data merged into Project1998, and it used to also be the directory
+# the server WROTE into — the SQLite database, the character store, the staff rosters and the logs all sat
+# alongside these files — and most of this file was the list of runtime filenames that had to be kept out of
+# the history. That list is gone because the thing it was guarding against is gone: live state now lives in
+# state/, a sibling directory nothing here can see (see Shared/RepoPaths.cs).
 #
-# The one guard kept below is for the case where somebody points P1998_STATE back at a content checkout. It
-# should never happen, and committing a database full of player accounts into the content repo is expensive
-# enough to be worth three lines of insurance.
+# The rules kept below are local to content authoring, which is why they stay here next to the content
+# rather than moving up to the root .gitignore. The first is insurance for the case where somebody points
+# P1998_STATE back at a content checkout: it should never happen, and committing a database full of player
+# accounts is expensive enough to be worth three lines.
 project1998.db
 project1998.db-*
 chars/

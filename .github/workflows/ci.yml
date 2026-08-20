@@ -31,14 +31,11 @@ jobs:
     outputs:
       code_changed: ${{ steps.changes.outputs.code }}
     steps:
-      - name: Checkout (with the game-data submodule)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Full history: the lane check below diffs against github.event.before.
           fetch-depth: 0
-          # The default GITHUB_TOKEN is scoped to THIS repository only, so it cannot clone the private
-          # Project1998-data submodule. This must be a PAT (or GitHub App token) with read access to both.
-          token: ${{ secrets.SUBMODULE_TOKEN }}
 
       - name: Which lane is this?
         id: changes
@@ -52,12 +49,13 @@ jobs:
             echo "No usable base commit — running the full code lane."
             exit 0
           fi
-          # `game-data` is a submodule, so a content-only change shows up here as a one-line gitlink bump.
-          if git diff --name-only "$before" "${{ github.sha }}" | grep -qvE '^game-data$'; then
+          # Content lives at game-data/. A push that touches nothing else is hot-reloadable, so it takes the
+          # content lane. Anything outside that prefix -- one .cs file, one .csproj -- forces the code lane.
+          if git diff --name-only "$before" "${{ github.sha }}" | grep -qvE '^game-data/'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "Content-only push (game-data submodule pointer moved)."
+            echo "Content-only push (game-data/ only) — hot reload, no restart."
           fi
 
       - uses: actions/setup-dotnet@v4
@@ -113,15 +111,17 @@ jobs:
           # whether the server can start at all.
           chmod +x bundle/game/Server bundle/login/LoginServer
           mkdir -p bundle/game-data
-          # `git archive` ships the tracked content and nothing else. Under the old shared data/ directory this
-          # was load-bearing — the working tree there also held project1998.db and chars/. It no longer is: state
-          # lives in state/, which this job never even looks at. Kept because it is still the cheapest way to
-          # get exactly the committed tree.
-          git -C game-data archive HEAD | tar -x -C bundle/game-data
+          # `git archive HEAD:game-data` ships the committed content subtree and nothing else — no working-tree
+          # scratch, no .bak file a content author left lying around. Under the old shared data/ directory this
+          # was load-bearing: the working tree there also held project1998.db and chars/. It no longer is — state
+          # lives in state/, which this job never even looks at — but it is still the cheapest way to get exactly
+          # the committed tree.
+          git archive "HEAD:game-data" | tar -x -C bundle/game-data
           # Stamp the content revision INTO the payload. There is no git repo on the host (the release is an
-          # unpacked tarball), so this file is the only way the nightly backup can record which game-data a
-          # state snapshot belongs with — and without that pairing a restore is not a point in time.
-          git -C game-data rev-parse HEAD > bundle/game-data/.version
+          # unpacked tarball), so this file is the only way the nightly backup can record which content a state
+          # snapshot belongs with — and without that pairing a restore is not a point in time. Now that game-data
+          # has merged in, the content revision IS the build revision; the file stays because the host reads it.
+          git rev-parse HEAD > bundle/game-data/.version
           tar czf p1998-${{ github.sha }}.tar.gz -C bundle .
 
       - uses: actions/upload-artifact@v4

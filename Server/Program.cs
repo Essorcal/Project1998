@@ -44,8 +44,8 @@ Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) �
 if (Content.Maps.Count == 0)
     Log.Info("!!! NO CONTENT LOADED — game-data was not found. Expected it under the repo root " +
              $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
-             "The world will be empty. Did you clone with --recurse-submodules? " +
-             "Fix: git submodule update --init, or set P1998_GAME_DATA to the content directory.");
+             "The world will be empty. Fix: run from a full checkout, or set P1998_GAME_DATA to the " +
+             "content directory.");
 
 // Terrain availability. Missing .map files don't throw — collision and spawn placement just silently
 // degrade (players and mobs walk through walls) — so say so at startup instead. The Windows fallback dirs

@@ -29,10 +29,15 @@
 *.ps1       text eol=crlf
 
 # ---- binary ----
-# These are the ones that matter. A .map is 1750 files of terrain the server reads as raw bytes; a single
-# CRLF substitution inside one silently corrupts collision for that map rather than failing loudly. Git's
-# heuristic almost certainly classifies them binary already — "almost certainly" is not a good enough
+# These are the ones that matter, and game-data/ is where the stakes are: ~1750 .map terrain files plus
+# SObj.tbl, authored on Windows and checked out on a Linux host, all read as raw bytes. A single CRLF
+# substitution inside one does not fail — it silently corrupts collision for that map, or a lookup table.
+# Git's heuristic almost certainly classifies them binary already; "almost certainly" is not a good enough
 # guarantee for the thing that decides whether players can walk through walls.
+#
+# game-data/ carried its own copy of these rules while it was a submodule (attributes are per-repository
+# and are NOT inherited across a submodule boundary). It is a plain directory now, so it inherits these
+# and the duplicate is gone.
 *.map       binary
 *.cmp       binary
 *.tbl       binary

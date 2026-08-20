@@ -8,8 +8,8 @@ namespace Shared;
 ///
 /// THE SPLIT. There are two kinds of data here and they must never share a directory:
 ///
-///   game-data/  CONTENT. The CSVs, the Lua, the .map terrain, SObj.tbl. Authored, versioned in its own
-///               git repo (a submodule), identical on every deployment, and READ-ONLY at runtime. A
+///   game-data/  CONTENT. The CSVs, the Lua, the .map terrain, SObj.tbl. Authored, versioned alongside
+///               the code that reads it, identical on every deployment, and READ-ONLY at runtime. A
 ///               deploy replaces this wholesale.
 ///   state/      INSTANCE. The SQLite database, the character store, the staff rosters. Created by
 ///               running the server, unique to this one deployment, irreplaceable. A deploy must never
