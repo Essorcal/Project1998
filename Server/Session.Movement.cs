@@ -102,13 +102,19 @@ public sealed partial class Session
         byte dir = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(dir & 3);   // remember which way we're facing so melee (0x13) knows the front tile
 
-        // Fast-move (client-authoritative) is flagged PER WALK: the client sets the high bit of the step
-        // counter (dec[1]) on every predicted step. This is authoritative per-packet, so we read it here
-        // instead of tracking the 0x1b/09 toggle (which desyncs if we guess the client's startup state).
-        //   high bit SET   -> client already moved/animated -> we send NOTHING (only correct on block).
-        //   high bit CLEAR -> server-authoritative -> the client waits; we assign the tile with 0x04.
-        bool clientFast = dec.Length > 1 && (dec[1] & 0x80) != 0;
-        _fastMove = clientFast;   // keep the tracked flag in sync for logging/other uses
+        // Fast-move is a SESSION toggle (0x1b/09 -> _fastMove), NOT a per-walk bit. HandleWalk originally
+        // re-derived it from the high bit of the step counter (dec[1]) every walk, on the theory the client
+        // sets that bit on every predicted step. Production logs disprove it: the bit is never set — even on
+        // the walks IMMEDIATELY after the client sends Fast-move=ON — so `clientFast` was ~always false, the
+        // silent client-authoritative branch below never engaged, and EVERY step (mounted included) took the
+        // server-authoritative 0x26 path (32924 of 33219 commits). That path is tolerable at ~360ms/step, but
+        // a horse halves that to ~180ms and each fresh 0x26 restarts the ~360ms leg animation before it
+        // finishes -> the reported stutter (worst in uncached areas, where the per-step terrain blit also
+        // steals client frame time). FastMoveTrustToggle drives the silent path off the tracked toggle
+        // instead (defaults ON, kept in sync by the 0x1b/09 handler, persisted in SettingFlags bit 9); it
+        // stays opt-in until a fast-move-ON client is proven to self-pace live (vs. block one step then await
+        // an ack, per mode 3). Either way we no longer clobber _fastMove here — the toggle owns it.
+        bool clientFast = FastMoveTrustToggle ? _fastMove : (dec.Length > 1 && (dec[1] & 0x80) != 0);
 
         // Both 4.95 and 5.33 report the client's believed current tile at body[2..5] (BE u16 x,y). We step
         // from THAT tile (client-authoritative resync), so collision runs on the cell the client is really
@@ -312,9 +318,18 @@ public sealed partial class Session
             // clientFast comes straight from this walk's step-counter high bit (no toggle tracking needed).
             if (clientFast)
             {
-                // Client-authoritative: the client already moved/animated/scrolled itself. Send NOTHING on
-                // a good step (RTK skips the self-walk packet here). 0x04 stays reserved for corrections
-                // (desync/block, handled above). This is the smooth, self-paced walk.
+                // Client-authoritative (fast-move ON): the client animates the legs AND scrolls its own
+                // camera locally on the keypress — proven live (selfWalkAnim @0x48f2c0 fires per step with
+                // the flag set). But sending NOTHING is wrong for THIS 4.95 client: its own key-driven
+                // self-walk does NOT set the "complete-locally" flag [+0x65f3] that the 0x26 path sets via
+                // handlerB, so the step freezes at frameCtr 2 with its walk-active gate still latched, and the
+                // client stalls until an 0x04 arrives (exactly the "quarter-step, refresh" symptom; live RE
+                // 2026-08-19: passGate @0x44c8f0 ALWAYS passes, so it is the walk gate, not passability).
+                // So we send a NO-SCROLL 0x04: its handler runs 0x44b140, which advances logical->dest and
+                // CLEARS the walk-active gate (releasing the next step) while the out-of-range view anchor
+                // makes the camera fn a no-op — no fight with the client's own scroll, no leg restart. This
+                // is the real client-authoritative walk: client draws, server only acks the gate.
+                SendXyCommitNoScroll();
             }
             else if (V495SlowMove == 5)
             {
@@ -622,16 +637,21 @@ public sealed partial class Session
         }
         else if (setting == 0x09)
         {
-            _fastMove = !_fastMove;   // client toggled fast-move; keep our per-walk model in sync
-            // Persist the CHOICE in SettingFlags bit 9 (like the other option toggles) so the checkbox — seeded
-            // via SendOptions/0x23 — survives relog. Fast-move itself stays client-authoritative per walk
-            // (_fastMove above / the per-walk sync); this bit is just the remembered preference the box reads.
+            _fastMove = !_fastMove;   // client toggled fast-move; keep our model in lockstep with the client's flag
+            // Persist the CHOICE in SettingFlags bit 9 so it's remembered, but do NOT re-seed the client via
+            // SendOptions/0x23 here. Unlike the cosmetic radios (weather/magic/advice), fast-move's checkbox
+            // and the client's RUNTIME movement flag are the SAME byte ([state+0x451], live RE 2026-08-19),
+            // and the 0x23 seed handler writes it through a `sete` = INVERTED polarity: re-seeding right after
+            // the user toggles ON drove [state+0x451] back to 0 within ~1s (proven live: the flag flickered
+            // 0->1->0 on a single toggle), desyncing the client (OFF, waiting) from the server (ON, sending
+            // the fast-move ack) and breaking movement. The client already flipped its own flag on the
+            // keypress and told us via this 0x1b/09; that IS the lockstep — no seed needed (RTK doesn't send
+            // one either). See HandleWalk's clientFast branch.
             if (_fastMove) _char.SettingFlags |= Character.SettingBit(9);
             else           _char.SettingFlags &= ~Character.SettingBit(9);
             SaveChar();
             SendMessage(_fastMove ? "Fast Move        :ON" : "Fast Move        :OFF");   // RTK clif_changestatus case 0x09 (verbatim text)
             Log.Info($"   -> setting 0x09 Fast-move = {(_fastMove ? "ON (client-authoritative)" : "OFF (server-authoritative)")}");
-            SendOptions();   // re-seed: keep the client's stored box state in sync — see the note below
         }
         else if (setting == 0x00)
         {

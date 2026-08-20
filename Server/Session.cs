@@ -864,6 +864,17 @@ public sealed partial class Session
         RestoreTimedEffects();                     // buffs/curses/stances/morph/stealth that were still running at logout
         LoadModerationState();                     // mute deadline onto the session, so the chat path needs no DB read
         _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);   // naked base AC = 100-level; recompute on load so records saved under the old decrement/gate logic self-correct
+        // Fast-move (movement authority) ALWAYS starts OFF at login, no matter what the checkbox persisted.
+        // Proven live (2026-08-19): a character whose SettingFlags bit 9 was ON logged in, took exactly one
+        // step while the server (correctly, for ON) sent nothing, then froze awaiting an ack — because the
+        // 4.95 client boots SERVER-AUTHORITATIVE regardless of the saved checkbox. It only enters the
+        // self-pacing (client-authoritative) walk after it processes a LIVE 0x1b/09 toggle; the persisted bit
+        // restores the checkbox VISUAL (SendOptions reads HasSetting(9)) but NOT the runtime walk mode. So the
+        // server must also boot OFF (send the 0x26 self-walk each step) and only go silent once a live 0x1b/09
+        // turns fast-move ON this session. Restoring _fastMove from the bit here was the freeze bug. Making
+        // fast-move survive relog needs the client-side re-engage mechanism (a login packet that flips the
+        // client's runtime flag) — still to be reverse-engineered; see HandleWalk / docs.
+        _fastMove = false;
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
         // collide on the shared-world broadcast key). This id binds the client's camera (0x05/SendId) and
@@ -1173,15 +1184,33 @@ public sealed partial class Session
     //   OFF = server-authoritative: the client will NOT move until the server assigns the tile, so every
     //         step must be answered with a position/move packet.
     // The client toggles it locally and notifies us via 0x1b sub-cmd 0x09 (it does NOT report its state on
-    // connect). The client PERSISTS fast-move across launches, and the working/smooth setup is fast-move
-    // ON (client-authoritative), so we default ON to match a client that already has it enabled. Each
-    // 0x1b/09 notification flips it to stay in sync. (If a fresh client actually boots OFF, one toggle
-    // re-syncs; P1998_V495_FASTMOVE_DEFAULT can override the assumed startup state.)
+    // connect). The client PERSISTS fast-move across launches; RTK keeps server and client in lockstep by
+    // ALSO persisting it server-side (SettingFlags bit 9) and restoring it at login, then flipping both only
+    // together via 0x1b/09 (RTK never seeds it over the wire — clif_sendoptions is dead code). So the real
+    // value is loaded from the character at world entry (see HandleArrival: `_fastMove = _char.HasSetting(9)`);
+    // this field initializer is only the pre-entry placeholder and must match a FRESH character (bit 9 clear
+    // = OFF), so a brand-new player and a fresh client agree. The old ON default was the desync bug: it
+    // assumed every client booted with fast-move enabled. P1998_V495_FASTMOVE_DEFAULT=1 forces the old
+    // assumed-ON placeholder if ever needed.
     private bool _fastMove = FastMoveDefault;
 
 
     private static readonly bool FastMoveDefault =
-        Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_DEFAULT") == "0" ? false : true;
+        Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_DEFAULT") == "1";
+
+    // Fast-move engagement model. The per-walk high-bit read (dec[1] & 0x80) HandleWalk originally shipped
+    // with is never true on the wire — the client sets that 0x80 only on a LOCAL self-move command, never in
+    // the network packet (live RE) — so the branch never engaged and every step took the server-authoritative
+    // 0x26 path. The real model (verified live 2026-08-19, corroborated by RTK clif_parsewalk): fast-move is a
+    // SESSION flag ([state+0x451] on the client, _fastMove here) toggled in lockstep via 0x1b/09. When ON the
+    // client draws the step itself (selfWalkAnim @0x48f2c0) but its walk-active gate only clears on a server
+    // ack, so we send a per-step NO-SCROLL 0x04 (HandleWalk clientFast branch); when OFF we send the 0x26. The
+    // freeze saga was two bugs, both fixed: (1) we never restored _fastMove from the persisted bit -> boots OFF
+    // now (HandleArrival), and (2) the post-toggle 0x23 re-seed inverted the client's runtime flag -> removed
+    // (HandleSetting 0x09). Now DEFAULT ON (proven smooth on a horse); P1998_V495_FASTMOVE_TRUST_TOGGLE=0
+    // forces the old always-0x26 behavior if ever needed.
+    private static readonly bool FastMoveTrustToggle =
+        Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_TRUST_TOGGLE") != "0";
 
     // Viewport-streamed world mobs: the set of shared-mob ids currently drawn on THIS client. The client's
     // 0x07 spawn silently drops entities outside the camera rect, so a 400-mob map can't be blanket-sent —
