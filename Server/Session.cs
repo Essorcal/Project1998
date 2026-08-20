@@ -864,17 +864,15 @@ public sealed partial class Session
         RestoreTimedEffects();                     // buffs/curses/stances/morph/stealth that were still running at logout
         LoadModerationState();                     // mute deadline onto the session, so the chat path needs no DB read
         _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);   // naked base AC = 100-level; recompute on load so records saved under the old decrement/gate logic self-correct
-        // Fast-move (movement authority) ALWAYS starts OFF at login, no matter what the checkbox persisted.
-        // Proven live (2026-08-19): a character whose SettingFlags bit 9 was ON logged in, took exactly one
-        // step while the server (correctly, for ON) sent nothing, then froze awaiting an ack — because the
-        // 4.95 client boots SERVER-AUTHORITATIVE regardless of the saved checkbox. It only enters the
-        // self-pacing (client-authoritative) walk after it processes a LIVE 0x1b/09 toggle; the persisted bit
-        // restores the checkbox VISUAL (SendOptions reads HasSetting(9)) but NOT the runtime walk mode. So the
-        // server must also boot OFF (send the 0x26 self-walk each step) and only go silent once a live 0x1b/09
-        // turns fast-move ON this session. Restoring _fastMove from the bit here was the freeze bug. Making
-        // fast-move survive relog needs the client-side re-engage mechanism (a login packet that flips the
-        // client's runtime flag) — still to be reverse-engineered; see HandleWalk / docs.
-        _fastMove = false;
+        // Fast-move (movement authority) is restored from the persisted preference (SettingFlags bit 9). The
+        // client boots its runtime flag [state+0x451] OFF, but the entry-burst stats packet (SendStats body[46],
+        // sent below in HandleArrival) copies THIS value straight into that flag before the first step — that
+        // packet IS the "login re-engage mechanism" that was thought missing. So server and client agree from
+        // the first walk: bit 9 set -> _fastMove ON -> body[46]=1 -> client self-paces AND we send the per-step
+        // no-scroll 0x04 ack. (The earlier "always boot OFF" was a workaround for not knowing the stats packet
+        // drove the flag; leaving body[46]=0 had been clobbering fast-move OFF on every stats refresh — see
+        // SendStats / docs/FastMove-Findings.md. RE'd 2026-08-19.)
+        _fastMove = _char.HasSetting(9);
         _enteredWorld = true;
         // Assign a UNIQUE world entity id (the old default was 1 for everyone, which made every player
         // collide on the shared-world broadcast key). This id binds the client's camera (0x05/SendId) and
@@ -1204,11 +1202,16 @@ public sealed partial class Session
     // 0x26 path. The real model (verified live 2026-08-19, corroborated by RTK clif_parsewalk): fast-move is a
     // SESSION flag ([state+0x451] on the client, _fastMove here) toggled in lockstep via 0x1b/09. When ON the
     // client draws the step itself (selfWalkAnim @0x48f2c0) but its walk-active gate only clears on a server
-    // ack, so we send a per-step NO-SCROLL 0x04 (HandleWalk clientFast branch); when OFF we send the 0x26. The
-    // freeze saga was two bugs, both fixed: (1) we never restored _fastMove from the persisted bit -> boots OFF
-    // now (HandleArrival), and (2) the post-toggle 0x23 re-seed inverted the client's runtime flag -> removed
-    // (HandleSetting 0x09). Now DEFAULT ON (proven smooth on a horse); P1998_V495_FASTMOVE_TRUST_TOGGLE=0
-    // forces the old always-0x26 behavior if ever needed.
+    // ack, so we send a per-step NO-SCROLL 0x04 (HandleWalk clientFast branch); when OFF we send the 0x26.
+    // PERSISTENCE (RE'd 2026-08-19, docs/FastMove-Findings.md): the client's runtime flag [state+0x451] is
+    // driven straight off the 0x08 STATS packet — its handler copies body[46] verbatim into that byte on every
+    // update. So the server owns the flag: _fastMove is restored from SettingFlags bit 9 at HandleArrival, the
+    // login entry-burst stats packet sets the client flag to match before the first step, and every later stats
+    // packet reasserts it. The freeze/desync saga was three bugs, all fixed: (1) SendStats left body[46]=0,
+    // which CLOBBERED fast-move OFF on every stats refresh -> now driven from _fastMove; (2) the post-toggle
+    // 0x23 re-seed nudged the flag via the options apply path -> removed (HandleSetting 0x09); (3) the per-walk
+    // high-bit (dec[1] & 0x80) is never set on the wire -> drive off _fastMove (FastMoveTrustToggle). DEFAULT ON
+    // (proven smooth on a horse); P1998_V495_FASTMOVE_TRUST_TOGGLE=0 forces the old always-0x26 behavior.
     private static readonly bool FastMoveTrustToggle =
         Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_TRUST_TOGGLE") != "0";
 

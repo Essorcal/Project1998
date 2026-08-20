@@ -80,6 +80,17 @@ public sealed partial class Session
         WriteBe32(d, 36, _char.Coins);      // coins      (confirmed)
         if (!_mailFlagsSeeded) { _mailFlags = ComputeMailFlags(); _mailFlagsSeeded = true; }   // one SQLite read at first stats (login)
         d[45] = _mailFlags;                 // bottom-left HUD notify: 0x10=n-mail arrow, 0x01=parcel bag (body[45] confirmed live 2026-07-28)
+        // body[46] = the client's RUNTIME fast-move flag. The 0x08 handler (client 0x48fc40, reached from the
+        // network dispatcher 0x48eb40) copies this byte VERBATIM into the game-state singleton at [state+0x451]
+        // — the exact byte the walk path reads to decide client- vs server-authoritative movement (see
+        // docs/FastMove-Findings.md, RE 2026-08-19: 0x08 payload[47] == our body[46]; the getbyte helper
+        // 0x475c90 is a plain `*ptr`, the store is `mov [state+0x451],al`, so it is a straight copy). This is
+        // how fast-move actually persists: every stats packet reasserts the flag, and the login entry-burst
+        // stats packet sets it before the first step. Leaving it 0 (the old behavior) FORCED fast-move OFF on
+        // every stats refresh — every mob swing / heal / regen silently clobbered a live toggle back to OFF,
+        // which is why it never "stuck". _fastMove is the server's authority (persisted in SettingFlags bit 9,
+        // restored at HandleArrival); driving the client from it here keeps the two in lockstep.
+        d[46] = (byte)(FastMoveTrustToggle && _fastMove ? 1 : 0);
         SendMap(0x08, _gameInc++, d, "stats(0x08)");
     }
 
@@ -730,7 +741,7 @@ public sealed partial class Session
         byte critByte = critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
         byte hpPct = PlayerHpPercent();   // same for every peer — compute once, not inside the per-peer lambda
         _world.Broadcast(_char.Map, p => p.DamageOver(_char.Id, hpPct, critByte));
-        _world.Broadcast(_char.Map, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played
+        _world.BroadcastSound(_char.Map, _char.X, _char.Y, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played (RTK binds a landed hit to the VICTIM, so it rings from OUR tile)
         Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
     }
@@ -940,22 +951,29 @@ public sealed partial class Session
     }
     public void SoundAt(int soundId, uint entityId) => SendSound(soundId, entityId);   // peer-facing (broadcast)
 
-    // Broadcast a cast's effect graphic (0x29) + its sound (0x19) over `overId` to everyone on the map, caster
-    // included, so visuals + audio match RTK. Effect id / sound id come from the pcalign ladder
-    // (Content.EffectAnim / EffectSound). anim/sound < 0 are skipped.
+    // Broadcast a cast's effect graphic (0x29) + its sound (0x19) over `overId` to everyone within range of it
+    // (see RANGE below), caster included, so visuals + audio match RTK. Effect id / sound id come from the
+    // pcalign ladder (Content.EffectAnim / EffectSound). anim/sound < 0 are skipped.
     //
-    // Sound uses RTK's clif_playsound layout (0x19 type 3 = a positional sound bound to the source entity). Static
-    // RE of the 4.95 client confirms this path IS wired to the audio player: 0x19 handler (0x450ad0) routes type>=2
-    // through the TLV tail 0x450c48 -> spatial builder 0x44e6c0 -> 0x463ab0 -> play fn 0x4798c0. (The earlier
-    // action-4th-byte route was a dead end: the client picks an action's sound from a fixed type->sound table, so
-    // magic/type 6 -> soundId 0 -> silent regardless of the byte we send.)
+    // The sound itself goes out as a 0x19 type 0 (a GLOBAL, full-volume sfx) — RTK's clif_playsound uses type 3,
+    // a positional descriptor bound to the source entity, but that is a LATER-client layout the 4.95 TLV parser
+    // mis-walks into silence (see the long note on SendSound). So the 4.95 client gives us NO distance falloff:
+    // a sound is either at full volume or not sent at all, which makes the recipient box below the ONLY thing
+    // keeping a swing on one side of a map from being heard on the other.
     private void BroadcastFx(uint overId, int anim, int sound)
     {
         // "Believe in magic" / Magic Effect (0x1b sub-5, RTK FLAG_MAGIC): the 0x29 spell graphic — and, per the
         // in-game description, its sound — are sent only to viewers who left the option ON (RTK gates this in
         // clif_sendanimation). It's a per-RECIPIENT filter, so your cast still shows for everyone else.
-        if (anim >= 0)  _world.Broadcast(_char.Map, p => { if (p.WantsMagicFx) p.EffectOver(overId, anim); });
-        if (sound > 0)  _world.Broadcast(_char.Map, p => { if (p.WantsMagicFx) p.SoundAt(sound, overId); });
+        //
+        // RANGE: RTK binds both halves to the ENTITY the effect plays over -- clif_playsound(&mob->bl, ...)
+        // and map_foreachinarea(clif_sendanimation, ..., mob->bl.x, mob->bl.y, AREA) -- so a spell landing
+        // across the room is heard FROM THERE, and only inside that box (sound +/-9/+/-8, graphic +/-19/+/-17;
+        // see World.SoundHalfW). We fall back to our own tile when the target is already gone (a mob that died
+        // to this very cast), which still covers everyone who could see the fight and keeps the caster in range.
+        var (cx, cy) = _world.EntityPos(_char.Map, overId) ?? (_char.X, _char.Y);
+        if (anim >= 0)  _world.BroadcastFxNear(_char.Map, cx, cy, p => { if (p.WantsMagicFx) p.EffectOver(overId, anim); });
+        if (sound > 0)  _world.BroadcastSound(_char.Map, cx, cy, p => { if (p.WantsMagicFx) p.SoundAt(sound, overId); });
     }
 
     /// <summary>"Believe in magic" / Magic Effect (0x1b sub-5): when off, this viewer is sent no spell graphics
