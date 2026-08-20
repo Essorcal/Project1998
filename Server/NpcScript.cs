@@ -177,6 +177,10 @@ public static class NpcScript
             }
             case "hasSpell":    return DynValue.NewBoolean(ctx.KnowsSpell(Str(t, "key")));
             case "forgetSpell": ctx.ForgetSpellByKey(Str(t, "key"));              return DynValue.Nil;
+            // The "Forget Secret" picker itself (pick from your spell book, then forget it). Suspending —
+            // it runs a menu of its own. Shared with the class trainers' menu entry so the wording and the
+            // "you know no secrets" case can only ever live in one place.
+            case "forgetSecret": await ForgetSecretAbility.Forget(ctx);           return DynValue.Nil;
             // `totem` opts this grant into the +5% totem-time bonus. Off by default: quest/tutorial rewards
             // normally don't take it (see Session.AwardExp). The Old dog's Restore reward DOES — its atlas
             // page states both figures, "50,000,000 experience (52,500,000 at totem time)".
