@@ -185,9 +185,15 @@ public sealed record ItemDef(
     /// properties cover the SAME set: these bind to whoever first obtains one (only the owner may equip it, and
     /// the examine tooltip shows the owner — <see cref="InvItem.Owner"/>), and no smith or repair spell can
     /// restore their durability. NOT the same as <see cref="NoDrop"/>: a bound item still drops/trades freely,
-    /// it just stays bound to its owner wherever it goes (which is why the owner rides on the ground item).</summary>
-    public bool Bonded       => IsBoundGear;
+    /// it just stays bound to its owner wherever it goes (which is why the owner rides on the ground item).
+    /// <para>The Frost sabre takes the BOND HALF ONLY. Blood's own pitch (npc_dialog.lua BloodNpc, from RTK
+    /// NPCs/kaming/blood.lua) promises both properties in one breath and they point opposite ways: "only YOU
+    /// will be able to wield your Frost sabre if it is crafted for you" — bound — but "when it is worn, it can
+    /// be repaired with ease" — expressly repairable. So it is listed as bonded and left out of
+    /// <see cref="Unrepairable"/>, which is why the two are no longer the same set.</para></summary>
+    public bool Bonded       => IsBoundGear || Id == FrostSabreId;
     public bool Unrepairable => IsBoundGear;
+    private const int FrostSabreId = 1004;                // frost_sabre — forged for one person, repairable
     private bool IsBoundGear =>
         (Type == 6 && BoundTotemHelmIds.Contains(Id)) ||
         (Type == 3 && Id is >= 49000 and < 50000 && PathId != 0);
