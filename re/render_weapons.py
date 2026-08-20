@@ -105,8 +105,21 @@ class Epf:
         return img
 
 
+# Frame layout within an art's 20-frame block (verified 2026-08-20 by rendering all 20 of sw8/sw24/sw28):
+# 0..12 are the STATIC HOLD / walk poses -- the weapon as it hangs in the character's hand, which is what
+# you actually see in game and what the Atlas hand/ reference gifs show. 13/15/17/19 are SWING ARCS: a
+# smeared motion trail that looks nothing like the weapon. `best_frame` below picks the meatiest frame,
+# which is ALWAYS one of the arcs -- that made the old sheets unusable for identifying a weapon, and is how
+# several ItmLook values got mis-picked. Default to the hold pose; keep the arc picker for motion checks.
+HOLD_POSE = 0
+
+def hold_frame(epf, start, pal, pose=HOLD_POSE):
+    """The static held pose -- what the player sees standing still. Use this to identify a weapon."""
+    return epf.frame(start + pose, pal)
+
+
 def best_frame(epf, start, pal):
-    """Pick the meatiest of the art's 20 frames (poses vary; some are near-empty)."""
+    """Meatiest of the art's 20 frames. NOTE: this lands on a swing ARC, not the weapon -- see HOLD_POSE."""
     best, best_n = None, -1
     for i in range(start, min(start + 20, epf.count)):
         img = epf.frame(i, pal)
@@ -132,7 +145,7 @@ def sheet(fam, out=None, scale=2):
     draw = ImageDraw.Draw(canvas)
     for aid, palix, start in tbl:
         pal = pals[palix] if palix < len(pals) else pals[0]
-        img = best_frame(epf, start, pal)
+        img = hold_frame(epf, start, pal)   # the weapon as held; see HOLD_POSE
         cx = (aid % cols) * cell_w * scale
         cy = (aid // cols) * (cell_h + label_h) * scale
         if img is not None:
