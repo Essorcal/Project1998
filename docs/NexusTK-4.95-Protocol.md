@@ -3502,10 +3502,10 @@ so ~90 call sites across `Session.cs`'s spell-casting, quest, mount, trap, and s
 silently landing on the wrong (or no-op-looking) channel. Converted all of them to `SendMiniText`, **except**:
 the four `clif_changestatus` status-line toggles (Realm-centered/Fast-Move/Sociable/Exchange — a different
 RTK function, verbatim chat text) — *an exception since found to be wrong: `clif_changestatus`'s announces
-are themselves `clif_sendminitext` calls (clif.c:14240ff). 2026-08-19 the Sociable ("Join a group") and
-Exchange lines moved to `SendMiniText` type 3 with user-specified tab formatting
-(`Join a group\t:ON|OFF`, `EXCHANGE\t\t:ON|OFF`); the remaining toggles (Fast Move, Realm-centered, clan
-whisper, the `SettingLabels` set) still ride `SendMessage` and should probably follow* — the re-login
+are themselves `clif_sendminitext` calls (clif.c:14240ff). 2026-08-19 ALL toggle announces moved to
+`SendMiniText` type 3: Sociable ("Join a group") and Exchange with user-specified tab formatting
+(`Join a group\t:ON|OFF`, `EXCHANGE\t\t:ON|OFF`), and Fast Move, Realm-centered, Clan whisper, the
+`SettingLabels` set and `@setting` with RTK's verbatim space-padded column-17 lines* — the re-login
 "Incorrect password." and profile-save confirmation (both
 documented, intentional `0x02` uses — see §9.5/§11k above), and our own invented combat-kill flavor lines
 ("Your Fireball destroys Rat! (+50 exp)") which have no RTK equivalent at all (real RTK conveys a kill purely

@@ -511,7 +511,7 @@ public sealed partial class Session
             : !_char.HasSetting(hit.Key);
         if (on != _char.HasSetting(hit.Key)) _char.ToggleSetting(hit.Key);
         SaveChar();
-        SendMessage(SettingLine(hit.Value, on));
+        SendMiniText(SettingLine(hit.Value, on));   // same status-pane line the native 0x1b toggles show
 
         if (hit.Key == 0x06) SendWeather();
         // Show Helmet / Show Necklace are stored and announced, but 4.95 has nothing to apply them to: the

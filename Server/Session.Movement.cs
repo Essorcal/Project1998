@@ -632,7 +632,7 @@ public sealed partial class Session
             SendXy();
             SendSelfLook();
             RedrawWorld();   // 0x15 rebuild drops FOREIGN entities — re-assert peers + mobs so they don't vanish
-            SendMessage(_realm != 0 ? "Realm-centered   :ON" : "Realm-centered   :OFF");   // RTK clif_changestatus case 0x07 (verbatim text)
+            SendMiniText(_realm != 0 ? "Realm-centered   :ON" : "Realm-centered   :OFF");   // RTK clif_changestatus case 0x07 (verbatim text, via clif_sendminitext)
             Log.Info($"   -> setting 0x07 Realm-center = {(_realm != 0 ? "ON" : "OFF")} (refreshed in place)");
         }
         else if (setting == 0x09)
@@ -650,7 +650,7 @@ public sealed partial class Session
             if (_fastMove) _char.SettingFlags |= Character.SettingBit(9);
             else           _char.SettingFlags &= ~Character.SettingBit(9);
             SaveChar();
-            SendMessage(_fastMove ? "Fast Move        :ON" : "Fast Move        :OFF");   // RTK clif_changestatus case 0x09 (verbatim text)
+            SendMiniText(_fastMove ? "Fast Move        :ON" : "Fast Move        :OFF");   // RTK clif_changestatus case 0x09 (verbatim text, via clif_sendminitext)
             Log.Info($"   -> setting 0x09 Fast-move = {(_fastMove ? "ON (client-authoritative)" : "OFF (server-authoritative)")}");
         }
         else if (setting == 0x00)
@@ -710,7 +710,7 @@ public sealed partial class Session
             // Clan whisper. RTK keeps this one OUT of the settingFlags word (status.clan_chat), so we do too.
             _char.ClanChat = !_char.ClanChat;
             SaveChar();
-            SendMessage(SettingLine("Clan whisper", _char.ClanChat));
+            SendMiniText(SettingLine("Clan whisper", _char.ClanChat));
             Log.Info($"   -> setting 0x0A Clan whisper = {(_char.ClanChat ? "ON" : "OFF")}");
         }
         else if (SettingLabels.TryGetValue(setting, out var label))
@@ -726,7 +726,7 @@ public sealed partial class Session
             // inversion). SendOptions() below re-asserts stored == server for the four synced boxes.
             bool on = _char.ToggleSetting(setting);
             SaveChar();
-            SendMessage(SettingLine(label, on));
+            SendMiniText(SettingLine(label, on));
             Log.Info($"   -> setting 0x{setting:X2} {label} = {(on ? "ON" : "OFF")}");
             // weather(6)/magic(5)/advice(4) are three of the four boxes seeded by SendOptions (fast-move(9) is
             // the fourth, handled above). Re-seed after flipping any of them so the client's stored byte tracks
