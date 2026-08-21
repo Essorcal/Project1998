@@ -37,27 +37,32 @@ Currently running on a live host. `master` is the deployed branch.
 
 ## Quick start
 
-You need the [.NET 8 SDK](https://dotnet.microsoft.com/download). Nothing else.
-
 ```bash
-git clone https://github.com/project1998/Project1998.git
-```
-```bash
-cd Project1998 && dotnet build Project1998.sln
+git clone https://github.com/project1998/Project1998.git && cd Project1998
 ```
 
-The server is **two processes**. Start both:
+**Windows** — no prerequisites:
 
+```bash
+run-server.bat
+```
+
+It finds a .NET 8 SDK or offers to fetch a private one into `.dotnet\` beside the source -- no admin,
+no PATH change, delete the folder to undo -- then builds the solution and opens the login and game
+servers in their own windows.
+
+**Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
+the **two processes**:
+
+```bash
+dotnet build Project1998.sln
+```
 ```bash
 dotnet run --project LoginServer -- --ports 2000,2001
 ```
 ```bash
 dotnet run --project Server -- --ports 2005,2006
 ```
-
-On Windows, `run-server.bat` builds once and opens both in their own windows. If that machine has
-no SDK, it offers to install a private .NET 8 into `.dotnet\` beside the source -- no admin, no
-PATH change, delete the folder to undo -- so a fresh clone can start the server with no setup.
 
 To play, point a 4.95 client at your machine. `Tools/` rewrites the Nexon server IPs baked into the
 client's `Inter.dat`, writing `Inter.dat.patched` and keeping a backup:

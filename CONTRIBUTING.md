@@ -14,21 +14,20 @@ If you internalise one thing from this document, make it that. Everything below 
 
 ## Getting set up
 
-You need [.NET 8 SDK](https://dotnet.microsoft.com/download). Nothing else is required to build.
-On Windows without one, `run-server.bat` offers to fetch a private copy into `.dotnet\`.
-
 ```bash
-git clone https://github.com/project1998/Project1998.git
-```
-```bash
-cd Project1998 && dotnet build Project1998.sln
-```
-```bash
-dotnet test Tests/Tests.csproj
+git clone https://github.com/project1998/Project1998.git && cd Project1998
 ```
 
-Then run it — two processes, login and game:
+**Windows** — no prerequisites. `run-server.bat` finds a .NET 8 SDK or offers to fetch a private copy
+into `.dotnet\` (no admin, no PATH change, delete the folder to undo), builds first, and starts login
+and game in separate windows.
 
+**Linux/macOS** — install [.NET 8 SDK](https://dotnet.microsoft.com/download), then build and start the
+two processes yourself:
+
+```bash
+dotnet build Project1998.sln
+```
 ```bash
 dotnet run --project LoginServer -- --ports 2000,2001
 ```
@@ -36,7 +35,14 @@ dotnet run --project LoginServer -- --ports 2000,2001
 dotnet run --project Server -- --ports 2005,2006
 ```
 
-On Windows, `run-server.bat` does both in separate windows and builds first.
+Either way, the tests must pass before you send anything:
+
+```bash
+dotnet test Tests/Tests.csproj
+```
+
+If you took the bootstrap SDK, it is deliberately not on PATH — call it directly:
+`.dotnet\dotnet.exe test Tests/Tests.csproj`.
 
 To actually *play*, you need a 4.95 client pointed at your machine. See
 [`docs/4.x/README.md`](docs/4.x/README.md) and `Tools/` (the `Inter.dat` redirect patcher).
