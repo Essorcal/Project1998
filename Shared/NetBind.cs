@@ -10,7 +10,7 @@ namespace Shared;
 /// loopback alike.
 ///
 /// The escape hatch is P1998_BIND. Set it to a specific interface — e.g. your LAN IP
-/// 192.168.68.59 — to keep the servers OFF the loopback interface. That matters only when the
+/// 192.168.1.50 — to keep the servers OFF the loopback interface. That matters only when the
 /// launcher's loopback proxy runs on the SAME machine as the server: with a 0.0.0.0 bind the
 /// server also answers 127.0.0.1:&lt;port&gt; and competes with the proxy for the client's
 /// connection, which splits the login and game legs across two source IPs and breaks the
