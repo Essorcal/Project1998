@@ -15,6 +15,7 @@ If you internalise one thing from this document, make it that. Everything below 
 ## Getting set up
 
 You need [.NET 8 SDK](https://dotnet.microsoft.com/download). Nothing else is required to build.
+On Windows without one, `run-server.bat` offers to fetch a private copy into `.dotnet\`.
 
 ```bash
 git clone https://github.com/project1998/Project1998.git

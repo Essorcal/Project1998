@@ -76,9 +76,23 @@ dotnet run --project Server -- --ports 2000,2005,2001,2006
 > ⚠️ Do **not** run with the old `--ports 2000,2005` — that omits the 5.x lane and the 5.33 client will
 > get the black void again.
 
-Build/run uses whatever `dotnet` is on PATH. `run-server.bat` also falls back to the user-local SDK
-location (`%LOCALAPPDATA%\Microsoft\dotnet`), which the installer does not add to PATH; set
-`P1998_DOTNET` if yours is somewhere else.
+Build/run needs a dotnet with an **SDK**, not just a runtime, and `run-server.bat` probes candidates
+with `--list-sdks` rather than trusting that some `dotnet.exe` exists -- a runtime-only
+`C:\Program Files\dotnet` on PATH answers `where dotnet` happily and then fails every build with
+"No .NET SDKs were found". Order: `P1998_DOTNET`, the private `.dotnet\`, PATH,
+`%LOCALAPPDATA%\Microsoft\dotnet` (which that installer does not add to PATH), `%ProgramFiles%\dotnet`.
+
+If none of them has an SDK, the script offers to download .NET 8 from Microsoft into `.dotnet\` beside
+the source -- no admin rights, no PATH or registry change, and deleting the folder undoes it. Two
+things it sets up front matter more than they look:
+
+- `DOTNET_NOLOGO` and `DOTNET_GENERATE_ASPNET_CERTIFICATE=0`, because the .NET first-run experience
+  otherwise drops an HTTPS dev certificate in the user's certificate store -- outside `.dotnet\`, and
+  still there after you delete it, for a feature this server never uses.
+- `DOTNET_ROOT`, pointing at the SDK it chose. An apphost looks for its runtime in `DOTNET_ROOT`, then
+  the registry, then `C:\Program Files\dotnet` -- so without it the launched `Server.exe` can find a
+  machine-wide install with no .NET 8 runtime and exit 150 ("You must install or update .NET") before
+  logging a single line. The registry knows nothing about `.dotnet\` at all.
 
 ## Test loop for 5.33 terrain
 

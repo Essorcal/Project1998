@@ -55,7 +55,9 @@ dotnet run --project LoginServer -- --ports 2000,2001
 dotnet run --project Server -- --ports 2005,2006
 ```
 
-On Windows, `run-server.bat` builds once and opens both in their own windows.
+On Windows, `run-server.bat` builds once and opens both in their own windows. If that machine has
+no SDK, it offers to install a private .NET 8 into `.dotnet\` beside the source -- no admin, no
+PATH change, delete the folder to undo -- so a fresh clone can start the server with no setup.
 
 To play, point a 4.95 client at your machine. `Tools/` rewrites the Nexon server IPs baked into the
 client's `Inter.dat`, writing `Inter.dat.patched` and keeping a backup:

@@ -5,6 +5,11 @@
 *.user
 *.suo
 
+# ---- Private .NET SDK ----
+# What run-server.bat offers to fetch when the machine has no SDK of its own. ~800 MB of
+# Microsoft's, reproducible from scratch -- delete the folder and the next run re-offers it.
+.dotnet/
+
 # ---- Per-user editor/agent config ----
 # .claude/settings.json is the PROJECT's config and is tracked. settings.local.json is the per-user
 # overlay Claude Code writes as you approve things; it is full of one machine's absolute paths and means
