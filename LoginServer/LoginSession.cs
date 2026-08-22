@@ -338,21 +338,12 @@ public sealed class LoginSession
 
         // handoff: send the client to the GAME server (reversed IP octets + port). Keep the version's
         // channel together: a V533 login (port 2001) hands off to the V533 game port 2006; V495 -> 2005.
-        int gport = _port == 2001 ? 2006 : 2005;
-        var p = new List<byte>
-        {
-            0xAA, 0, 0, Opcode.Login,
-            GameHost[3], GameHost[2], GameHost[1], GameHost[0],   // reversed octets, as the client expects
-            (byte)(gport >> 8), (byte)(gport & 0xFF),
-            23, 0, 9
-        };
-        p.AddRange(TkCrypt.LoginKey);
-        var uname = Encoding.ASCII.GetBytes(_user);
-        p.Add((byte)uname.Length);
-        p.AddRange(uname);
-        p.AddRange(nonce);   // 5-byte single-use handoff token (was the static {0,1,18,17,0}); echoed in 0x10
-        p[2] = (byte)(p.Count - 3);
-        Send(p.ToArray());
+        int gport = ChannelPorts.GameFor(_port);
+        // Shared builder (Protocol.Tk495/LoginRedirect): the game server sends this same struct back the other
+        // way when the client exits to the select screen (0x0B), and the client parses it as a fixed-size
+        // record — so a byte of drift between the two processes hangs a screen instead of throwing.
+        // `nonce` = the 5-byte single-use handoff token (was the static {0,1,18,17,0}); echoed back in 0x10.
+        Send(LoginRedirect.Build(GameHost, gport, _user, nonce));
         Log.Info($"   -> game handoff -> {GameHost[0]}.{GameHost[1]}.{GameHost[2]}.{GameHost[3]}:{gport} (token minted {Log.Hex(nonce)})");
     }
 

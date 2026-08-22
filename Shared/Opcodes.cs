@@ -15,5 +15,6 @@ public static class Opcode
 
     // ---- game server ----
     public const byte Arrival          = 0x10; // client arrives with handoff token (plaintext)
+    public const byte ExitToSelect     = 0x0B; // client -> game: "I left the world for the select screen"
     public const byte MapInfo          = 0x15; // server -> client: load map
 }

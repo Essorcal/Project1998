@@ -537,11 +537,14 @@ public sealed partial class Session
         switch (pkt.Opcode)
         {
             case Opcode.Arrival:          HandleArrival(pkt); break;
-            // NameCheck (0x02) and CreateAppearance (0x04) are account-creation opcodes handled by the
-            // separate LoginServer process and never arrive on the game port. Login (0x03) DOES arrive here:
-            // when the client exits to the select screen (Alt+X) it re-sends 0x03 on the still-open game
-            // connection, so the game server must answer it (re-auth + hand back) like the old unified
-            // server did — otherwise re-login hangs. See HandleReLogin.
+            // 0x0B = "I just left the world for the select screen" (Alt+X). Answer it by sending the client
+            // BACK to the login server, which is what RTK does and the only reason account creation from
+            // that screen can work at all: NameCheck (0x02) and CreateAppearance (0x04) are handled by the
+            // LoginServer process and there is no dispatch for them here. See HandleExitToSelect.
+            case Opcode.ExitToSelect:     HandleExitToSelect(); break;   // body is a constant 00
+            // Login (0x03) arrives here when the client stayed on the game socket anyway — the pre-0x0B
+            // behaviour, kept as a fallback: re-authenticate and hand it back to this same game port like
+            // the old unified server did, so a client that ignores the bounce still gets in. See HandleReLogin.
             case Opcode.Login:            HandleReLogin(dec); break;
             case 0x32:                    HandleWalk(dec); break;   // client walk step -> confirm move
             // 0x11 = "side" (turn to face a direction, NO movement) for BOTH clients. The 4.95 client's
@@ -750,29 +753,64 @@ public sealed partial class Session
         var nonce = HandoffTokens.Mint(user, _remoteIp);
         var host = ParseGameHost();
         int gport = _port;   // redirect back to this same game port (2005 V495 / 2006 V533)
-        var p = new List<byte>
-        {
-            0xAA, 0, 0, Opcode.Login,
-            host[3], host[2], host[1], host[0],
-            (byte)(gport >> 8), (byte)(gport & 0xFF),
-            23, 0, 9
-        };
-        p.AddRange(TkCrypt.LoginKey);
-        var uname = Encoding.ASCII.GetBytes(user);
-        p.Add((byte)uname.Length);
-        p.AddRange(uname);
-        p.AddRange(nonce);   // 5-byte single-use token; validated on the next 0x10 arrival
-        p[2] = (byte)(p.Count - 3);
-        Send(p.ToArray());
+        Send(LoginRedirect.Build(host, gport, user, nonce));
         Log.Info($"   -> RE-LOGIN ok for '{user}' — handoff back to {host[0]}.{host[1]}.{host[2]}.{host[3]}:{gport} (token minted)");
+    }
+
+    // Exit to the select screen (Alt+X). This is the RTK `case 0x0B -> clif_closeit` path (rtk/src/map/
+    // clif.c:11397, :655) and the whole reason character CREATION used to hang: the client leaves the world
+    // and drives the select screen over whatever socket the reply names, and the game process has no
+    // name-check (0x02) or create (0x04) handler to drive it with. RTK's answer is not to build one — its
+    // map dispatch has no 0x02/0x03/0x04 case at all — it is to send the SAME 0x03 redirect struct the login
+    // handoff uses, pointed BACK at the login server (its `log_ip`/`log_port`, i.e. map.conf loginip/
+    // loginport). The client reconnects there and creation/login run where they already live.
+    //
+    // Live 4.95 evidence this is the right opcode: a session that exited to select sent exactly
+    // `aa 00 03 0b <inc> <..>` (body `00`) and then NOTHING until the player typed a different character's
+    // credentials six seconds later, which arrived as a 0x03 on the still-open GAME socket. The client was
+    // never told to go back to login, so it didn't — the doc's old claim that it "never reconnects to the
+    // login server" described our silence, not the client.
+    //
+    // Confirmed in the binary too (Protocol.md §4.2): sender 0x44ed50, whose single caller 0x44a6e2 sits in
+    // the WORLD OBJECT'S TEARDOWN — every cached resource is released first, 0x0B goes out, and the
+    // replacement screen is constructed in the next instructions. That ordering is what makes replying
+    // safe: 0x03 means "download/URL" to the world dispatcher (0x44f0e0) and "redirect" to the login
+    // screen, and by the time this reply crosses the wire the world dispatcher is already gone.
+    //
+    // Deliberately NO world teardown here (RTK's 0x0B doesn't call clif_handle_disconnect either): the
+    // client drops the game socket once it acts on the redirect, and the read loop's finally block does the
+    // real leave/persist. If the client does NOT act on it, the player is simply still in the world and
+    // HandleReLogin above still answers the 0x03 — the old behaviour, unchanged, as a fallback.
+    private void HandleExitToSelect()
+    {
+        var host = ParseLoginHost();
+        int lport = LoginRedirectPort;
+        // No handoff token: this redirect points at the LOGIN server, which never sees a 0x10 and mints its
+        // own nonce when the player logs back in. The 5 bytes are padding that keeps the reply the exact
+        // width of the proven-working handoff — the client parses it as a FIXED-SIZE redirect struct and a
+        // different length breaks the parse (see Protocol.md §4.1).
+        Send(LoginRedirect.Build(host, lport, _user, new byte[LoginRedirect.TailBytes]));
+        Log.Info($"   -> EXIT-TO-SELECT for '{_user}' — redirect to login {host[0]}.{host[1]}.{host[2]}.{host[3]}:{lport}");
     }
 
     // Game host the re-login handoff redirects to (must match how the client reached this game server).
     // Defaults to loopback; set P1998_GAME_HOST for a split-box deployment (same var the login server uses).
-    private static byte[] ParseGameHost()
+    private static byte[] ParseGameHost() => ParseHost("P1998_GAME_HOST");
+
+    // Login host the exit-to-select bounce redirects to. Falls back to P1998_GAME_HOST because the common
+    // deployment runs both processes on one box (and behind HAProxy both front doors share the ONE public
+    // address — see the infra split), so a single var usually covers both. P1998_LOGIN_HOST overrides for a
+    // genuinely split deployment. Either way this must be the address the CLIENT can reach, not the bind.
+    private static byte[] ParseLoginHost()
+    {
+        var h = Environment.GetEnvironmentVariable("P1998_LOGIN_HOST");
+        return string.IsNullOrWhiteSpace(h) ? ParseGameHost() : ParseHost("P1998_LOGIN_HOST");
+    }
+
+    private static byte[] ParseHost(string env)
     {
         var def = new byte[] { 127, 0, 0, 1 };
-        var h = Environment.GetEnvironmentVariable("P1998_GAME_HOST");
+        var h = Environment.GetEnvironmentVariable(env);
         if (string.IsNullOrWhiteSpace(h)) return def;
         var parts = h.Split('.');
         if (parts.Length != 4) return def;
@@ -780,6 +818,15 @@ public sealed partial class Session
         for (int i = 0; i < 4; i++) if (!byte.TryParse(parts[i], out o[i])) return def;
         return o;
     }
+
+    // Which login port the exit-to-select bounce names. The two channels are PAIRED by client version (see
+    // Shared/ChannelPorts), so the default is derived from the port this session arrived on rather than
+    // hardcoded — bouncing a 5.33 player onto the 4.95 login would round-trip them back to the 4.95 game
+    // port. P1998_LOGIN_PORT overrides for a custom layout.
+    private int LoginRedirectPort =>
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_LOGIN_PORT"), out var lp) && lp > 0
+            ? lp
+            : ChannelPorts.LoginFor(_port);
 
     private void HandleArrival(TkPacket pkt)
     {
