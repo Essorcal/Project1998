@@ -1,6 +1,12 @@
 # ---- .NET build output ----
 [Bb]in/
 [Oo]bj/
+# Ad-hoc `dotnet build -o` targets. A running Server locks the DLLs under bin/, so a rebuild while
+# the server is up has to land somewhere else; these are the names that habit settled on. Same
+# artifacts as bin/, ~140 MB of them.
+build-out/
+build-login-out/
+build-test-out/
 .vs/
 *.user
 *.suo
@@ -85,7 +91,15 @@ re/**/*.exe
 re/snd/
 re/mus/
 re/probe_log*.txt
+re/dispatch_log*.txt
 re/nametag_log.txt
+# 5.33 probe traces: re/dispatch_533.py, re/grammar_533.py and re/frida_window_533.py each rewrite
+# their own log on every run. Hundreds of KB of one session's reads; the findings they produced are
+# in docs/5.x/Wire-Divergences.md.
+re/dispatch_live.txt
+re/grammar_533_live*.txt
+re/window_live.txt
+re/window_log_533.txt
 re/sound_log.txt
 re/str_eng.res
 re/*_dat_list.txt
