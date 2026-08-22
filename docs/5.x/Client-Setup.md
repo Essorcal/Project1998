@@ -19,9 +19,20 @@ To point 5.33 at this server's 5.x lane, patch every entry to `127.0.0.1 2001` (
 dual-client section). `2000`→`2001` is the same byte length, so the 77-byte layout is preserved
 trivially. Tooling:
 
-- `client-5.33-redirect\NexusTK.dat.patched` — the ready-to-install patched archive (Connaddr = `127.0.0.1 2001`).
-- `client-5.33-redirect\Deploy-Connaddr-2001.bat` — right-click → **Run as administrator** to copy it
-  over `NextAeon5\NexusTK.dat` (Program Files needs UAC).
+- **`re/patches/patch_533_connaddr.py`** — the current tool. Rewrites the 77-byte `Connaddr` entry in
+  place on any install, with `--check` / `--revert` / `--client <dir>` / `--host` / `--port`. It generates
+  the padding and then cross-checks it byte-for-byte against the proven-good dat below, so it cannot
+  drift from the layout known to work.
+
+  ```
+  python re/patches/patch_533_connaddr.py --client "C:\Users\you\Desktop\NextAeon533"
+  ```
+
+- `client-5.33-redirect\NexusTK.dat.patched` — the original ready-made patched archive
+  (Connaddr = `127.0.0.1 2001`); now kept as the reference layout the patcher validates against.
+- `client-5.33-redirect\Deploy-Connaddr-2001.bat` — **superseded.** It copies that whole 1.9 MB archive
+  over a *hardcoded* `NextAeon5` path, which clobbers every other entry in the dat and only works for one
+  install location. Prefer the patcher.
 
 Verify with `Get-NetTCPConnection` after login: the client connects loopback to `:2001` (login) then
 `:2006` (game).

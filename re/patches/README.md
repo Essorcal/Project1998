@@ -10,11 +10,25 @@ up once before the first write, and supports `--check` / `--revert`.
 | 4.83 | `KRU\NexusTK483\NexusTK.dat` (`Address` entry) | [`patch_483_localhost.py`](patch_483_localhost.py) | working — redirects the client to `127.0.0.1:2000` |
 | 4.95 | `Nexon\NextAeon\NexusTK_local.exe` | [`patch_495_no_nametag.py`](patch_495_no_nametag.py) | working — removes the floating nameplate marker |
 | 5.33 | `Nexon\NextAeon5\NexusTK.exe` (+ its dat host list) | [`patch_533.py`](patch_533.py) | scaffold — no patches defined |
+| 5.33 | `NextAeon533\Tile.dat` (`SOBJ.TBL` entry) | [`patch_533_sobj_flags.py`](patch_533_sobj_flags.py) | working — restores the 4.x object-collision flags so 4.x maps are walkable as authored |
+| 5.33 | `NextAeon533\NexusTK.dat` (`Connaddr` entry) | [`patch_533_connaddr.py`](patch_533_connaddr.py) | working — points the client at `127.0.0.1:2001` (the V533 lane) |
+
+**Setting up a fresh 5.33 install** takes both, in either order:
+
+```bash
+python re/patches/patch_533_connaddr.py   --client "<install>"   # login target -> 127.0.0.1:2001
+python re/patches/patch_533_sobj_flags.py --client "<install>"   # 4.x-accurate object collision
+```
 
 ## Two patch mechanisms
 
 - **Exe code/string patches** (`patchlib.py` engine): overwrite bytes at a virtual address in the
   client exe. Used by `patch_495_no_nametag.py`. Refuses unless the recorded original bytes match.
+- **Dat data-entry patch** (`patch_533_sobj_flags.py`): rewrite a *data table* inside a PAK `.dat` in
+  place. The byte list is **derived at run time** by diffing the client's `SOBJ.TBL` against the repo's
+  4.x `game-data/SObj.tbl`, rather than hardcoded — so it cannot rot against a different build or an
+  edited reference table. Backs up the whole 179 KB entry (not the 34 MB dat) and re-parses after writing
+  to confirm the record structure survived.
 - **Dat host-list patch** (`patch_483_localhost.py`): the *server address* isn't hardcoded in the
   exe — the exe strings are stale defaults. The live address is a plaintext PAK entry named
   `Address` inside `NexusTK.dat`: a `<ip>.<port>;` list (last dotted segment = port). Redirecting

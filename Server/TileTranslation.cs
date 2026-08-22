@@ -180,11 +180,22 @@ public static class TileTranslation
     /// 5.33 — is the case that surfaced it.</para>
     ///
     /// <para><b>Why the server cannot fix this cleanly.</b> Graphic and collision are the SAME wire value, so
-    /// the only moves are "send a different object" or "send none". Matching on rendered sprite content (not
-    /// frame ids — <c>TILEC</c> was re-packed too) finds a look-alike with usable flags for only 4 of 128
-    /// objects. Everything else can only be blanked, losing its artwork. The lossless fix is patching the
-    /// client's <c>SOBJ.TBL</c> (362 bytes, in place at offset 140 of <c>Tile.dat</c>); we keep the client
-    /// stock instead and accept the trade.</para>
+    /// the only moves are "send a different object" or "send none". Matching on rendered sprite content finds
+    /// a look-alike with usable flags for only 4 of 128 objects; everything else can only be blanked, losing
+    /// its artwork.</para>
+    ///
+    /// <para><b>So we patch the client instead (2026-08-20).</b>
+    /// <c>re/patches/patch_533_sobj_flags.py</c> rewrites the 362 differing flag bytes in the client's own
+    /// <c>SOBJ.TBL</c> to their 4.x values — same length, in place, no repack. Verified across all 1,840 maps:
+    /// cells reachable on 4.x but not on 5.33 goes <b>17,841 to 0</b>, with zero artwork loss, and the 3,296
+    /// under-blocked cells (5.33 starts a step the server then refuses) go with it. This table is now the
+    /// FALLBACK for an unpatched client; run a patched one with <c>P1998_OBJ_FIX_533=off</c>.</para>
+    ///
+    /// <para>The divergence was <b>structural, not cosmetic</b> — a 4.95 and a 5.33 player in the same room
+    /// had different walkable geometry — which is why no server-side scope was an acceptable answer. Note
+    /// also that <c>TILEC</c> was NOT re-packed (this comment used to claim it was): it is 4.x's
+    /// <c>TileC.epf</c> with a null frame prepended and frames appended, TOC entry <c>i</c> == 5.33's
+    /// <c>i+1</c> for all 16,408 frames, so object ARTWORK never needed translating — only the flags.</para>
     ///
     /// <para><b>Walkability stays correct regardless</b> — the server enforces the 4.x flags itself
     /// (<c>ObjectFlags</c> in <c>HandleWalk</c>), so a blanked object still blocks exactly as 4.x intended,

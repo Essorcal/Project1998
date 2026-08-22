@@ -10,14 +10,24 @@ local C# `Project1998`. The 4.95 protocol is documented separately in
 > enters the world, and renders 4.x terrain correctly — verified offline at 1,719,261 / 1,719,261 drawn
 > cells across all 1,750 shipped maps. Door cell patches were fixed to the correct 3-short shape.
 >
-> **Known open item, deliberately parked:** 5.33 re-authored the `SObj.tbl` collision flags and collides
-> client-side, so ~18,025 cells (1.05%) the 4.x maps intend as walkable are impassable on 5.33 — Arctic
-> Village 35,32/36,32 is the reference case. The server cannot fix this without deleting object artwork
-> (graphic and collision are the same wire value); the lossless fix is a 362-byte patch to the client's
-> `SOBJ.TBL`, not taken because we keep the client stock. Default config is visually inert. See
+> **Object collision: SOLVED 2026-08-20 by patching the client.** 5.33 re-authored the `SObj.tbl`
+> collision flags and collides client-side, so 17,841 cells across 397 maps that the 4.x maps intend as
+> walkable were impassable on 5.33 — Arctic Village 35,32/36,32 is the reference case. This is a
+> *structural* divergence, not a cosmetic one: a 4.95 and a 5.33 player standing in the same room had
+> different walkable geometry. The server cannot fix it (graphic and collision are the same wire value —
+> every server-side scope buys walkability by deleting artwork, and only `all` reaches parity).
+>
+> The fix is [`re/patches/patch_533_sobj_flags.py`](../../re/patches/patch_533_sobj_flags.py): rewrite the
+> 362 differing flag bytes in the client's own `SOBJ.TBL` to their 4.x values. Same length, in place, no
+> repack. **Verified against all 1,840 maps: cells reachable on 4.x but not 5.33 goes 17,841 → 0, with
+> zero artwork loss.** It also fixes the other direction — 3,296 cells where 5.33 started a step the
+> server then refused, producing rubber-band snap-backs. A patched client should run
+> `P1998_OBJ_FIX_533=off`; the server-side workaround is redundant. See
 > [`Terrain-Streaming.md`](Terrain-Streaming.md) → "Object collision".
 >
-> Effort has moved back to the 4.95 client; pick 5.33 up again from that open item.
+> With rendering and collision both settled, **object flags were the only structural divergence left** —
+> ground passability cannot diverge by construction (the `.map` pass field only ever holds 0 or 3, which
+> is exactly the sheet-2 selector, and 5.33 reads bit 0 of it).
 
 ## The one thing to understand about 5.x
 
@@ -35,6 +45,7 @@ See [`Terrain-Streaming.md`](Terrain-Streaming.md) for the packet spec.
 |------|----------------|
 | [`Client-Setup.md`](Client-Setup.md) | Redirecting the 5.33 client to the local server, the unified dual-client (4.95 + 5.33) server design, and how to run/test. |
 | [`Terrain-Streaming.md`](Terrain-Streaming.md) | The `0x05`/`0x06` map-data request/response protocol — the core 5.x rendering path. Definitive packet layouts. |
+| [`Wire-Divergences.md`](Wire-Divergences.md) | **Where the 5.x wire differs from 4.95** — the four-dispatcher model, the zero-probe method, every confirmed packet delta, the confirmed NON-deltas, and the open questions. Read this before touching a 5.x packet. |
 | [`Reverse-Engineering.md`](Reverse-Engineering.md) | `NexusTK.exe` RE reference: function addresses, the `.cmp` map format, the opcode dispatcher, the cipher, `Tile.dat` layout, and the Frida/diagnostic tooling. |
 
 ## Quick start (run both clients against one server)
@@ -73,9 +84,10 @@ Ports: `2000`/`2005` = 4.95 login/game, `2001`/`2006` = 5.33 login/game.
   the shared id range; 234 ids block a direction on 5.33 that they did not on 4.x, making **18,025 cells
   (1.05%, in 620 of 1,750 maps)** unwalkable on 5.33 even though the 4.x maps intend them to be walked.
   The server never sees these — the client refuses before sending a walk request, so there is no `BLOCKED`
-  line in the log. Worked around by `game-data/Obj533Fix.csv` (`P1998_OBJ_FIX_533`, default `decor`).
-  Graphic and collision are the same wire value, so the workaround costs artwork; the lossless fix is
-  patching the client's `SOBJ.TBL`, deliberately not done. See `Terrain-Streaming.md`.
+  line in the log. **Fixed by patching the client** (`re/patches/patch_533_sobj_flags.py`, 362 bytes in
+  place). The server-side fallback for an unpatched client is `game-data/Obj533Fix.csv`
+  (`P1998_OBJ_FIX_533`, default `free`), which buys walkability by deleting artwork and only reaches full
+  parity at `all`. See `Terrain-Streaming.md`.
 - **`.cmp` local map files are a red herring** for rendering. The 5.33 client *does* stat/open
   `Maps\TK######.cmp`, and the format was fully reversed (see RE doc), but terrain visibly comes from
   the server stream, not the file. You do **not** need to ship `.cmp` files.

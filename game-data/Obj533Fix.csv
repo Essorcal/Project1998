@@ -9,10 +9,15 @@
 #
 # WHY THE SERVER CANNOT JUST FIX IT. Graphic and collision are the SAME number on the wire (one u16 per
 # cell), so the only levers are "send a different object" or "send none". Matching on rendered sprite
-# content (not frame ids, since TILEC was re-packed) finds a visually identical, usably-flagged
+# content (frame ids would have worked too - see the note below) finds a visually identical, usably-flagged
 # substitute for just 4 of 128 objects. The rest can only be blanked, which deletes their artwork.
 #
-# SCOPES (P1998_OBJ_FIX_533): off | decor (default) | all
+# SUPERSEDED for a PATCHED client: re/patches/patch_533_sobj_flags.py rewrites the client's own SOBJ.TBL
+# flag bytes to the 4.x values (362 bytes, in place, no artwork lost) and reaches FULL parity - 17,841
+# over-blocked cells -> 0 across all 1,840 maps. Run a patched client with P1998_OBJ_FIX_533=off. This
+# table remains the fallback for a STOCK client, where no scope reaches parity without deleting art.
+#
+# SCOPES (P1998_OBJ_FIX_533): off | free (default) | decor | all
 #   free        substitute a visually identical object - no cost, always applied
 #   decor       4.x flag 0x00: pure decoration that should never block. Blanking loses a small sprite.
 #   structural  4.x flag has a real directional block (a building front, a fence). Blanking these opens

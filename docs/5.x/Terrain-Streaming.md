@@ -158,7 +158,7 @@ on 4.x and `0x0F` (solid all four sides) on 5.33. Scope: **18,025 cells, 1.05%, 
 
 **Why the server cannot fix it cleanly.** Object graphic and object collision are the *same* `u16` on the
 wire, so the only levers are "send a different object" or "send none". Matching on rendered sprite content
-(not frame ids — `TILEC` was re-packed like `TILE`) finds a visually identical, usably-flagged substitute
+(frame ids would have served equally well — see the correction below) finds a visually identical, usably-flagged substitute
 for only **4 of 128** affected objects. The rest can only be blanked, which deletes their artwork.
 
 **What we do** — `game-data/Obj533Fix.csv`, applied in `TileTranslation.Object`, scoped by
@@ -179,9 +179,34 @@ Walkability is correct at every scope: the server enforces the 4.x flags itself 
 `HandleWalk`), so a blanked object still blocks exactly as 4.x intended — as a `0x04` snap-back rather than
 a client-side refusal. The trade is cosmetic (missing art, slight rubber-banding), not behavioural.
 
-**The lossless alternative, deliberately not taken.** Patch the client's `SOBJ.TBL` flag bytes to the 4.x
-values: 362 bytes, identical length, in place at offset 140 of `Tile.dat` — no repack needed. Rejected to
-keep the client stock; revisit if the `structural` over-blocking makes somewhere unreachable.
+**The lossless fix — TAKEN, 2026-08-20.** Patch the client's `SOBJ.TBL` flag bytes to the 4.x values: 362
+bytes, identical length, in place (the `SOBJ.TBL` PAK entry, at offset 140 of the stock `Tile.dat`) — no
+repack. [`re/patches/patch_533_sobj_flags.py`](../../re/patches/patch_533_sobj_flags.py) derives the byte
+list at run time from both tables, so it cannot rot against a different build or an edited
+`game-data/SObj.tbl`; `--check` / `--revert` / `--minimal` as usual.
+
+**Verified end to end against the patched install:** `Tile.dat` size and all 8 PAK entries unchanged, 0
+flag mismatches vs 4.x over ids 1..7608, the 5,088 5.33-only records untouched, and across all 1,840 maps
+**cells reachable on 4.x but not on 5.33 goes 17,841 → 0** with zero artwork loss (Arctic Village: 2,437 →
+2,921 reachable == exact 4.x parity). It fixes the under-blocking direction too — 3,296 cells where 5.33
+let the client start a step the server then refused, i.e. rubber-band snap-backs.
+
+Why patch rather than keep the client stock: this is a **structural** divergence, not a cosmetic one. Two
+players in the same room had different walkable geometry, and no server-side scope fixes that without
+deleting artwork. It is also not a step away from later eras — RTK/7.x's own `SObj.tbl` agrees with **4.x**
+on 352 of these 362 ids (4.x vs 7.x differ by 21 bytes over the shared range; 5.33 vs 7.x by 367), so 5.33's
+re-authoring is a one-generation outlier that the next era undid.
+
+A patched client should run `P1998_OBJ_FIX_533=off` — the workaround below exists only to paper over this.
+
+**Correction (2026-08-20): `TILEC` was NOT re-packed.** This page and `TileTranslation.cs` both used to say
+it was, by analogy with `TileB`. Measured: 5.33's `TILEC.EPF` is 4.x's `TileC.epf` with one null frame
+prepended and new frames appended — TOC entry `i` equals 5.33's entry `i+1` for **all 16,408** frames, and
+the pixel region is byte-identical over the 4.x length. Same cancelling `+1` as `TILE`/`TileA`. Combined
+with `SObj` frame lists being identical for every shared id our maps place (the 25 that differ are empty
+tail padding in 4.x, used by 0 cells), **object artwork needs no translation at all** — only the collision
+flags ever differed. Frame-id matching would have worked for finding substitutes; rendered-content matching
+was simply a more conservative method.
 
 ## Open questions
 
