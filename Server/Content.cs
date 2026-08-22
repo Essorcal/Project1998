@@ -516,6 +516,18 @@ public static partial class Content
     public static IReadOnlyDictionary<ushort, byte> LookPalettes { get; private set; } =
         new Dictionary<ushort, byte>();
 
+    // Per-look 0x07 colour-byte override for the 5.33 client ONLY. The Monster.epf palette index space
+    // differs between clients, so a colour tuned for 4.95 (mobs.csv MobLookColor) can pick a wrong hue on
+    // 5.33 — e.g. every horse (look 17) draws BLUE there at 4.95's colour. Populated from
+    // Mob5xPalettes.csv; only looks that disagree have a row. See Palette5x and Session.SendCreatureList.
+    public static IReadOnlyDictionary<ushort, byte> Mob5xPalettes { get; private set; } =
+        new Dictionary<ushort, byte>();
+
+    /// <summary>The colour byte to send a V533 client for <paramref name="look"/>, given the colour the
+    /// 4.95 path would use. Returns the 5.33 override when one exists, else the unchanged fallback.</summary>
+    public static byte Palette5x(ushort look, byte fallback) =>
+        Mob5xPalettes.TryGetValue(look, out var p) ? p : fallback;
+
     // Armor-dye ramp remap, keyed (bodyLook, canonicalDye) -> the ramp to actually send in appearance[4].
     // The PLAYER equivalent of LookPalettes above, and it exists for the same reason: appearance[4] is a ramp
     // shift resolved against the body sprite's OWN Body.tbl palette, so one canonical number is a different
@@ -1039,6 +1051,7 @@ public static partial class Content
         SpellTexts = LoadSpellTexts(ResolvePath("P1998_SPELL_TEXT", "SpellText.csv"));
         SpellCosts = LoadSpellCosts(ResolvePath("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
         LookPalettes = LoadLookPalettes(ResolvePath("P1998_MOB_PALETTES", "MobLookPalettes.csv"));
+        Mob5xPalettes = LoadLookPalettes(ResolvePath("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // same Look,Palette shape, V533-only override
         ArmorDyeRamps = LoadArmorDyeRamps(ResolvePath("P1998_ARMOR_DYE_RAMPS", "ArmorDyeRamps.csv"));
         MapMeta = LoadMapMeta(ResolvePath("P1998_MAPS_FULL", "Maps.csv"));   // region + warpOut for Gateway
         MobDrops = LoadMobDrops(ResolvePath("P1998_MOB_DROPS", "MobDrops.csv"));

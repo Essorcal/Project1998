@@ -445,6 +445,77 @@ public sealed partial class Session
     // read as bgNameLen=0, misaligning every field -- see the class comment above SendWorldMap). Once that
     // byte is removed and a real background name is used (field10 = "Map of the Kingdom"), the packet parses
     // correctly. The retail client is not buggy. "@wmtest <name>" tries alternate background graphics.
+    // 5.33 ADDENDUM -- the world map is a GRAPH there, and the 4.95 body CRASHES it.
+    // Recovered by disassembling NextAeon533\NexusTK.exe (full write-up in docs/5.x/Wire-Divergences.md
+    // section 10). 0x2e is owned by the world dispatcher, case 0x4636f9 -> parser sub_469c80. The header
+    // and the per-entry prefix are byte-identical to 4.95's sub_450580, but every entry ends with a LINK
+    // LIST that 4.95 does not have:
+    //     u16BE linkCount ; linkCount x u16BE nodeIndex
+    // which the parser folds into an n x n adjacency bitset (bit[i*n + j] = "from i you can reach j", set
+    // at 0x469fa8). Sending the 4.95 shape makes the client read the NEXT entry's dot-x as linkCount -- a
+    // several-hundred-iteration inner loop that runs off the end of the packet and ORs bits at unbounded
+    // indexes into a heap block sized for n*n bits. THAT is the "Win32Error: not enough memory resources"
+    // crash: our packet, not a client bug -- same lesson as the 4.95 one-byte framing error above.
+    //
+    // The graph is not decoration. sub_4e6360 BFSes it from the origin node and stores predecessors at
+    // [obj+0x1e0]; the draw loop sub_4e51a0 DIMS any node the BFS did not reach, and clicking a lit one
+    // walks an animated marker hop-by-hop along the edges before the reply goes out. Edges are DIRECTED
+    // (the BFS only follows i->j), so we emit a complete graph: every node links to every other, which
+    // leaves every destination lit and exactly one hop away. Model real routes here later if the marker
+    // should follow roads instead of flying straight.
+    //
+    // The byte after the count -- "unexplained" on 4.95 -- is the ORIGIN NODE INDEX. sub_4e4b80 stores it
+    // at [obj+0x174]/[obj+0x178] and uses it three ways: BFS root, the "you are here" icon (WMICON.EPF
+    // frame 1 instead of frame 0), and the centre of the scrolling camera. It is also what ESC sends
+    // back -- the key table at 0x4e6fb0 maps VK_ESCAPE (0x1b) to 0x4e6bcf, which transmits node[origin]'s
+    // own map/x/y. So 5.33 cancels explicitly rather than by 4.95's "ESC replies with entry 0" accident;
+    // since we already put the origin first for 4.95's sake, index 0 satisfies both.
+    //
+    // Two more 5.33 findings, both already satisfied by what we send:
+    //   * mapId. The parser reads it as two u16s and the wrapper at 0x467870 DROPS the high half, so the
+    //     client only ever knows the low 16 bits -- and echoes back a u16. We keep sending u32BE (the
+    //     parser consumes both halves either way); the narrower reply is decoded in HandleWorldMapSelect.
+    //   * assets. The background is "<bgName>.EPF" plus "<bgName>.PAL" (name literals at 0x555678 /
+    //     0x5556b4) and the dots come from WMICON.EPF. field10.epf is BYTE-IDENTICAL between the two
+    //     clients' archives (4.95 Inter.dat vs 5.33 NInt.dat, md5 c29f3007..), so the WorldMapDests.csv
+    //     dot pixels carry straight over -- with one caveat to eyeball: 4.95 centres the label box on
+    //     DotX/DotY, while 5.33 centres only horizontally and hangs the text BELOW the anchor (0x4e52e9:
+    //     top = y + 8). Expect 5.33 labels to sit about a half-line lower than 4.95's.
+    //
+    // Limits the client will not check for us: bgName <= 23 chars (its wide buffer is 0x18), entry names
+    // <= 63 chars (the node struct's inline name field is 0x80 bytes), at most 256 entries.
+    public readonly record struct WorldMapEntry(string Name, ushort Map, ushort X, ushort Y, int DotX, int DotY);
+
+    /// <summary>
+    /// The 0x2e body for one client. Pure and static so Tests/ClientVersionWireTests can pin both shapes:
+    /// V495 is byte-for-byte what the working client has always received, V533 adds the per-entry link
+    /// list and puts the origin node index in the byte after the count.
+    /// </summary>
+    public static byte[] WorldMapBody(ClientVersion ver, string bgName, IReadOnlyList<WorldMapEntry> entries, int originIndex)
+    {
+        bool v533 = ver == ClientVersion.V533;
+        int n = Math.Min(entries.Count, 255);
+        var d = new List<byte>();
+        AddLenStr(d, bgName);                       // payload[0] IS the length -- no leading kind byte
+        d.Add((byte)n);
+        // 4.95 ignores this byte (we have always sent 0); 5.33 reads it as the origin node index.
+        d.Add((byte)(v533 && n > 0 ? Math.Clamp(originIndex, 0, n - 1) : 0));
+        for (int i = 0; i < n; i++)
+        {
+            var e = entries[i];
+            d.AddRange(Be((ushort)e.DotX));
+            d.AddRange(Be((ushort)e.DotY));
+            AddLenStr(d, e.Name);
+            d.AddRange(Be32(e.Map));                // 5.33 keeps only the low half of this
+            d.AddRange(Be(e.X));
+            d.AddRange(Be(e.Y));
+            if (!v533) continue;
+            d.AddRange(Be((ushort)(n - 1)));        // complete graph: every other node is one hop away
+            for (int j = 0; j < n; j++) if (j != i) d.AddRange(Be((ushort)j));
+        }
+        return d.ToArray();
+    }
+
     private void SendWorldMap(string bgName)
     {
         var dests = Content.WorldDests;
@@ -467,10 +538,7 @@ public sealed partial class Session
         if (order.Count == 0 || dests[order[0]].Map != originMap)
             Log.Info($"   -> WORLDMAP WARN: opened on map {originMap} with no matching destination row; ESC-cancel will not work (add a WorldMapDests row for this map)");
 
-        var d = new List<byte>();       // NO leading kind byte: payload[0] IS the bgName length (see comment)
-        AddLenStr(d, bgName);
-        d.Add((byte)dests.Count);
-        d.Add(0);                        // unexplained byte after the count -- see class-comment note above
+        var entries = new List<WorldMapEntry>(order.Count);
         foreach (int i in order)
         {
             var dest = dests[i];
@@ -478,43 +546,62 @@ public sealed partial class Session
             // "@wmpos" tweak is overriding it this session -- placed directly on the displayed map, not scaled
             // from RTK. Clamp defensively to the 640x480 art.
             var (dotX, dotY) = WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dest.DotX, dest.DotY);
-            int sx = Math.Clamp(dotX, 0, 639);
-            int sy = Math.Clamp(dotY, 0, 479);
             // The current-continent entry (position 0) lands on the EXACT origin tile, so an ESC that
             // selects it returns the player precisely where they stood -- not the continent's default tile.
             bool isOrigin = dest.Map == originMap;
-            ushort landX = isOrigin ? originX : dest.X;
-            ushort landY = isOrigin ? originY : dest.Y;
-            d.AddRange(Be((ushort)sx));   // x0 (field10 pixel)
-            d.AddRange(Be((ushort)sy));   // y0 (field10 pixel)
-            AddLenStr(d, dest.Name);
-            d.AddRange(Be32(dest.Map));
-            d.AddRange(Be(landX));
-            d.AddRange(Be(landY));
+            entries.Add(new WorldMapEntry(dest.Name, dest.Map,
+                                          isOrigin ? originX : dest.X,
+                                          isOrigin ? originY : dest.Y,
+                                          Math.Clamp(dotX, 0, 639), Math.Clamp(dotY, 0, 479)));
         }
+        // Origin-first ordering above means the origin is entry 0 whenever it was found at all; 5.33 wants
+        // that index explicitly (BFS root / "you are here" icon / camera centre / what ESC echoes back).
+        int originIndex = entries.FindIndex(e => e.Map == originMap);
+        if (originIndex < 0) originIndex = 0;
         _worldMapPending = true;
         _worldMapReturnMap = originMap;
         _worldMapReturnX   = originX;
         _worldMapReturnY   = originY;
-        SendMap(0x2e, _gameInc++, d.ToArray(), $"worldmap(0x2e) bg='{bgName}' {dests.Count} dests (origin map {originMap} first)");
+        SendMap(0x2e, _gameInc++, WorldMapBody(_ver, bgName, entries, originIndex),
+                $"worldmap(0x2e) bg='{bgName}' {entries.Count} dests (origin map {originMap} @ index {originIndex}){(_ver == ClientVersion.V533 ? " +graph" : "")}");
     }
 
-    // Parses the client's world-map click / ESC reply. Body: mapId(u32BE) x(u16BE) y(u16BE) 00 -- RTK's
-    // case 0x3F map-change (clif.c:11619, pc_warp with the client-supplied map/x/y). There is NO separate
-    // cancel opcode: opening the map makes the client "leave the world", and BOTH a destination click and
-    // ESC send this same 0x3F. ESC does NOT echo the origin (old comment was wrong -- see SendWorldMap's
-    // ESC-CANCEL FIX); it echoes the FIRST list entry, which we make the player's current continent landing
-    // on the origin tile. So: if the reply is the origin tile, treat it as ESC/cancel and restore in place;
+    // Parses the client's world-map click / ESC reply -- RTK's case 0x3F map-change (clif.c:11619, pc_warp
+    // with the client-supplied map/x/y). There is NO separate cancel opcode on either client: opening the
+    // map makes the client "leave the world", and BOTH a destination click and ESC send this same 0x3F.
+    // The body is one of two widths (see the version split below):
+    //     4.95   mapId(u32BE) x(u16BE) y(u16BE) 00
+    //     5.33   mapId(u16BE) x(u16BE) y(u16BE)          -- no high half, no trailing NUL
+    // ESC does NOT echo the origin TILE on either (the old comment was wrong -- see SendWorldMap's
+    // ESC-CANCEL FIX): 4.95 echoes the FIRST list entry, and 5.33 echoes node[originIndex] outright. We
+    // make both the same thing -- the player's current continent, landing on the exact origin tile. So:
+    // if the reply is the origin tile, treat it as ESC/cancel and restore in place;
     // else warp to the matching known destination; else (unrecognized) also fall back to restoring origin,
     // so the player can never be stranded on the map screen or mis-warped to arbitrary client-chosen coords.
     private void HandleWorldMapSelect(byte[] dec)
     {
         if (!_worldMapPending) return;
         _worldMapPending = false;
-        if (dec.Length < 8) return;
-        uint   map = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
-        ushort x   = (ushort)((dec[4] << 8) | dec[5]);
-        ushort y   = (ushort)((dec[6] << 8) | dec[7]);
+        uint map; ushort x, y;
+        if (_ver == ClientVersion.V533)
+        {
+            // 5.33's reply is SIX body bytes, not eight: its 0x2e wrapper (0x467870) throws away the high
+            // half of the map id we sent, so the node only ever holds a u16 and all five send sites
+            // (0x4e5cd3 click-confirm, 0x4e5daf marker-arrived, 0x4e6960 clicked-own-node, 0x4e6b00,
+            // 0x4e6be9 ESC) emit the same 7-byte frame: 3F mapId(u16BE) x(u16BE) y(u16BE). The trailing
+            // NUL those builders write at buf[7] is NOT transmitted -- the send call passes length 7.
+            if (dec.Length < 6) return;
+            map = (uint)((dec[0] << 8) | dec[1]);
+            x   = (ushort)((dec[2] << 8) | dec[3]);
+            y   = (ushort)((dec[4] << 8) | dec[5]);
+        }
+        else
+        {
+            if (dec.Length < 8) return;
+            map = (uint)((dec[0] << 24) | (dec[1] << 16) | (dec[2] << 8) | dec[3]);
+            x   = (ushort)((dec[4] << 8) | dec[5]);
+            y   = (ushort)((dec[6] << 8) | dec[7]);
+        }
         // ESC / clicked own location: the reply is the origin tile (entry 0). Restore in place -- must
         // still EnterMap to rebuild the view the modal world-map screen tore down.
         if (map == _worldMapReturnMap && x == _worldMapReturnX && y == _worldMapReturnY)

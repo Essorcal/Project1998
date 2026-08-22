@@ -1,0 +1,13 @@
+# 5.33-client mob palette overrides. The 0x07 spawn colour byte indexes the CLIENT's Monster.epf
+# palette, and that index space differs between the 4.95 and 5.33 clients: a colour that renders a
+# sprite correctly on 4.95 can select a completely different hue on 5.33. mobs.csv (MobLookColor) and
+# MobLookPalettes.csv are tuned for 4.95; this file remaps, PER LOOK, the colour a V533 client is sent
+# so the same monster looks right there too. Only looks that actually disagree need a row; everything
+# else passes 4.95's colour through unchanged. Found by @crecol <look> (sweep the colour byte live on
+# the 5.33 client) and reading off the index that renders correctly.
+#
+# Look = Monster.tbl look id (same id space as mobs.csv MobLook). Palette = the colour byte to send V533.
+Look,Palette
+# Horses (rideable + wild/skilled/elite/spirited tiers, look 17): 4.95's 35/21/12/10 all read BLUE on
+# 5.33; index 3 is the correct brown. (@crecol 17 -> col3, confirmed live 2026-08-21.)
+17,3

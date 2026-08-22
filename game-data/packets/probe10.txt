@@ -1,0 +1,12 @@
+; Remove-item ISOLATION PROBE — 0x10 against the 5.33 client.  Fire with:  @pkt file probe10
+;
+; Part of the pane-wipe bisection (docs/5.x/Wire-Divergences.md §6.5 follow-up): the equip burst is
+; 0x10 + 0x37(ignored) + 0x33 + 0x08 + 0x19, and the wipe survived body[46]=0 — so fire each packet
+; ALONE with the inventory pane open and see which one wipes it.
+;
+; Slot 0x34 = 52, the last bag slot, expected EMPTY: the 5.33 handler (case 0x4d5fd1) validates
+; 1 <= slot <= 0x34 and zeroes that slot's 176-byte record — clearing an already-empty slot changes
+; nothing visually, so any pane-wipe this causes is the HANDLER's doing, not the content change.
+
+10              ; opcode: remove item from a bag slot
+34              ; slot 52 (empty)

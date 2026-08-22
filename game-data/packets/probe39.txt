@@ -1,0 +1,29 @@
+; Self-profile GRAMMAR PROBE  --  0x39 against the 5.33 client.  Fire with:  @pkt file probe39
+;
+; Purpose: recover 5.33's 0x39 field layout exactly, instead of inferring it from a branchy
+; disassembly of the parser (0x49cdd0) or from reads driven by a body of the wrong shape.
+;
+; The trick is that the body is ALL ZEROS. Every length-prefixed string is therefore empty and every
+; count is zero, so nothing in the record has variable width and the cursor advances by a fixed amount
+; per field. Run re/grammar_533.py --attach --op 39 while firing this and the read offsets it prints
+; ARE the layout: one entry per field, in order, at its exact offset, with its exact width.
+;
+; Feed it plenty of room -- over-reading past the end is precisely the failure being measured, and a
+; short body would make a real field look like an over-read. 96 bytes is far more than the minimal
+; record needs.
+;
+; Read the output against the 4.95 grammar (Session.SendSelfProfile, docs/4.x/Protocol.md):
+;   AC u8 | Dam u8 | Hit u8 | clan$ | clanTitle$ | title$ | partyBox$ | grouped u8 | tnl u32BE
+;   | classTitle$ | helm u16 | ring1 u16 | ring2 u16 | buffBox$ | exchange u8 | legendCount u8 | legends
+; The known divergence to confirm: 4.95 has THREE bare u16 equipment icons where 5.33's parser reads
+; FIVE (u16 icon, u8 colour) cells -- 15 bytes against 6 -- which shifts everything after it.
+
+39              ; opcode: self-profile
+
+; 96 zero bytes.
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00

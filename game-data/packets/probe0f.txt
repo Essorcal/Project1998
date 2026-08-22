@@ -1,0 +1,34 @@
+; Add-item GRAMMAR PROBE  --  0x0F against the 5.33 client.  Fire with:  @pkt file probe0f
+;
+; Why this packet. The inventory pane on 5.33 renders BLANK, which reads as "the window keeps closing"
+; but is not: sub_435790 no-ops when the requested panel index is already current, so an empty pane
+; stays open and `i` cannot reopen it. The pane is empty because its contents never arrive intact —
+; 0x0F is what puts an item in a bag slot.
+;
+; 0x0F is owned by the SECOND dispatcher (0x4d5f80), not the world one (0x463320). Hooking only the
+; world dispatcher reported it "DROPPED" for a whole session and sent this investigation down a false
+; path; re/grammar_533.py and re/frida_dispatch_533.py now bracket all four. See
+; docs/5.x/Wire-Divergences.md §0.
+;
+; Method (same one that recovered 0x33, 0x0E, 0x39 and 0x34): the body is ALL ZEROS, so every
+; length-prefixed string is empty and every count is zero. Nothing has variable width, so the offsets
+; the client reads ARE the minimal record. Run
+;
+;     python re/grammar_533.py --attach --op 0f,17
+;
+; while firing this, and read the layout straight off the offsets.
+;
+; For reference, what we send today (Session.SendAddItem, 4.95 shape + one 5.x byte):
+;   slot(u8) icon(u16BE) [iconColor(u8) — V533 only] nameLen(u8) name amount(u32BE) ...
+; If 5.33 has grown a field the way 0x39 and 0x34 did — both went from three bare u16 icons to five
+; (u16, u8) cells — expect the divergence to start at or just after the icon.
+;
+; 64 zero bytes: comfortably more than the record needs, so a real field is never mistaken for the
+; over-read a short body would cause.
+
+0f              ; opcode: add item to a bag slot
+
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00

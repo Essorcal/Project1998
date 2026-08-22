@@ -303,6 +303,16 @@ public sealed partial class Session
         if (id == F1MenuSentinel) { OpenF1Menu(); return; }
 
         // id 0 (or explicitly our own id, e.g. "@click") -> our own public profile.
+        //
+        // 5.33 note. This fires a LOT there — the client sends 0x43 with a self id repeatedly, unprompted
+        // by any click — and the 0x34 reply opens window index 1 while the character sheet is index 0. The
+        // four panels are mutually exclusive (one switcher, sub_435790), so each reply visibly evicts the
+        // sheet. That is NOT a reason to stop replying: suppressing it was tried and made things worse
+        // (clicking yourself stopped working, and `s` only opened the sheet after `i` had been pressed
+        // first), which means the client is WAITING on this answer and its panel state stalls without one.
+        // The real defect is that our 0x34 body is still the 4.95 shape while 5.33's parser (sub_4d19c0)
+        // reads a much larger record — so panel 1 opens onto a failed parse and looks like a closed sheet.
+        // Fix the body, not the reply. See SendClickProfile and game-data/packets/probe34.txt.
         if (id == 0 || id == _char.Id) { SendClickProfile(this); return; }
 
         // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
@@ -1416,7 +1426,12 @@ public sealed partial class Session
         if (p.Doll is not null)
         {
             d.Add(0);                         // [7] tag 0 -> player paperdoll
-            d.AddRange(p.Doll);               // [8..14] the 7 appearance bytes (sex, form, face, armor, dye, weapon, shield)
+            // Same union, same divergence as 0x33/0x1d: on 5.33 tag 0 resolves to appearance parser
+            // 0x449880, which reads ELEVEN bytes in a different order (see AppearanceRecord). Sending
+            // the 4.95 seven here would shift the paperdoll's face/armor/dye/weapon/shield exactly the
+            // way the on-map sprite was shifted — and it would also mis-size the head, so every field
+            // after it in the dialog (text, options) would land four bytes early.
+            WriteAppearance(d, p.Doll);       // 4.95: the 7 bytes as-is. 5.33: the 11-byte form.
         }
         else
         {
@@ -1590,6 +1605,7 @@ public sealed partial class Session
     // packet, so g0/g1/g2 = 0 (default) exactly matches the known-good capture.
     private void SendSelfProfile()
     {
+        if (_ver == ClientVersion.V533) { SendSelfProfile533(); return; }
         var eq = Totals();                    // fold worn-gear bonuses + active buffs into the displayed AC/dam/hit
         var d = new List<byte>();
         d.Add((byte)(sbyte)Math.Clamp(_char.Ac + eq.armor, -128, 127));   // AC: lower is better; gear/buff armor is a signed AC delta
@@ -1634,6 +1650,99 @@ public sealed partial class Session
 
         SendMap(0x39, _gameInc++, d.ToArray(),
             $"self-profile(0x39) ac={_char.Ac} class='{_char.ClassName}' buffs={_buffs.Count} legends={legs.Count}");
+    }
+
+    /// <summary>The 5.33 self-profile. Same opcode, materially different record — parser <c>sub_49cdd0</c>.
+    ///
+    /// <para>The layout was recovered by firing an ALL-ZERO body (game-data/packets/probe39.txt) and watching
+    /// which offsets the client read. With every string empty and every count zero nothing has variable
+    /// width, so the read offsets are the minimal record exactly:</para>
+    /// <code>
+    ///   [0][1][2] u8 x3   [3] u8+str   u8+str   u8+str   u8+str   u8
+    ///   u32BE             u8+str
+    ///   (u16,u8) x5                                              <- FIVE (icon, colour) cells
+    ///   u8+str            u8   u8
+    /// </code>
+    /// <para>31 bytes minimum against 4.95's 22. The ONE structural break is the equipment cells: 4.95 puts
+    /// THREE bare u16 icons where 5.33 reads FIVE cells of (u16 icon + u8 colour) — 15 bytes against 6.
+    /// Sending the 4.95 record shifted everything from there onward, which is why the gear boxes, buff box,
+    /// profile text and legend list were all empty or garbage at once, and why the parser ran off the end of
+    /// the body (observed reading at offset 146 of a 130-byte packet).</para>
+    ///
+    /// <para>THE STRING REGION IS 4.95's, UNCHANGED — clan, clan title, title, party box. The zero probe read
+    /// it as "three strings plus a loose u8 at [4]" because the tracer only sees a string when the parser
+    /// routes it through the stack copy helper <c>0x46cbc0</c>, and the SECOND string skips that helper: it
+    /// goes straight from the body into <c>MultiByteToWideChar</c> at <c>0x49ceb1</c>, so only its length byte
+    /// was recorded. Widths matched either way (an empty string and a zero byte are the same byte), so the
+    /// packet parsed — the strings just landed one slot late: clan title in the title line, title in the party
+    /// box, and the title line of the pane blank. Disassembling <c>sub_49cdd0</c> settles it; the four strings
+    /// are copied to the widget's <c>+0x112 / +0x312 / +0x512</c> wide buffers and the <c>+0x932</c> list box,
+    /// and the draw method <c>sub_49d590</c> paints the first three at y=48/65/82 in that order.</para>
+    ///
+    /// <para>Also settled by the same disassembly: the legend record kept its 4.95 <c>icon/colour/len/text</c>
+    /// shape (loop at <c>0x49d32d</c>). Still open: which equipment slots the two extra cells are for.</para></summary>
+    private void SendSelfProfile533()
+    {
+        var eq = Totals();
+        var d = new List<byte>();
+        d.Add((byte)(sbyte)Math.Clamp(_char.Ac + eq.armor, -128, 127));   // AC
+        d.Add((byte)Math.Clamp(_char.Dam + eq.dam, 0, 255));              // Dam
+        d.Add((byte)Math.Clamp(_char.Hit + eq.hit, 0, 255));              // Hit
+        // Four strings, 4.95's order. The first three are the stacked lines at the top of the pane —
+        // widget +0x112 / +0x312 / +0x512, painted at y=48/65/82 by sub_49d590 — and the fourth is the
+        // page-2 roster list box (+0x932). See the summary above for why the zero probe missed one.
+        AddLenStr(d, _char.ClanName);                                     // line 1
+        AddLenStr(d, _char.ClanTitle);                                    // line 2
+        AddLenStr(d, _char.Title);                                        // line 3
+        AddLenStr(d, PartyBoxText());                                     // party roster box
+        d.Add((byte)(_char.Grouped ? 1 : 0));                             // group/sociable flag
+        d.AddRange(Be32(_char.Tnl));                                      // experience to next level
+        AddLenStr(d, ClassTitle);                                         // class + rank
+
+        // FIVE (icon u16, colour u8) cells. 4.95 folds the colour into the frame id; 5.x carries it as its
+        // own byte, which is what IconOf/IconColor already split for 0x0F and 0x37 — same rule here.
+        WriteProfileCell533(d, 4);   // helm
+        WriteProfileCell533(d, 7);   // left ring
+        WriteProfileCell533(d, 8);   // right ring
+        WriteProfileCell533(d, 0);   // 4th cell — slot unidentified, sends an empty box
+        WriteProfileCell533(d, 0);   // 5th cell — ditto
+
+        AddLenStr(d, BuffBoxText());                                      // buff/debuff box
+        d.Add((byte)(_char.Exchange ? 1 : 0));                            // exchange/trade status
+
+        // Legend record is 4.95's, confirmed against the parser loop at 0x49d32d: count u8, then each
+        // { icon u8, colour u8, len u8, text }.
+        var legs = _char.Legends ?? new List<Legend>();
+        d.Add((byte)Math.Min(legs.Count, 255));                           // legend count
+        foreach (var lg in legs)
+        {
+            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
+            if (t.Length > 255) t = t[..255];
+            d.Add(lg.Icon);
+            d.Add(lg.Color);
+            d.Add((byte)t.Length);
+            d.AddRange(t);
+        }
+
+        SendMap(0x39, _gameInc++, d.ToArray(),
+            $"self-profile533(0x39) {d.Count}B ac={_char.Ac} class='{_char.ClassName}' " +
+            $"buffs={_buffs.Count} legends={legs.Count}");
+    }
+
+    /// <summary>One 5.33 profile equipment cell: icon u16BE + colour u8. Slot 0 means "no such slot here",
+    /// which writes an empty box rather than whatever happens to be in equipment slot 0.</summary>
+    private void WriteProfileCell533(List<byte> d, byte wireSlot) => WriteProfileCell533(d, this, wireSlot);
+
+    /// <summary>As above, for a cell describing SOMEONE ELSE (the 0x34 view panel). The icon id-space is
+    /// chosen by the VIEWER's client version — <see cref="IconOf"/> reads this session's <c>_ver</c>, not
+    /// the target's — because the bytes have to make sense to the client that will draw them.</summary>
+    private void WriteProfileCell533(List<byte> d, Session target, byte wireSlot)
+    {
+        if (wireSlot == 0) { d.AddRange(Be(0)); d.Add(0); return; }
+        var worn = target._char.Equipment.FirstOrDefault(e => e.Slot == wireSlot);
+        var def = worn is null ? null : Content.ItemById(worn.ItemId);
+        d.AddRange(Be(def is null ? (ushort)0 : IconWire(IconOf(def))));
+        d.Add(def?.IconColor ?? 0);
     }
 
     /// <summary>The PAGE-2 box of the self-profile: your group roster, one name per line, sorted
@@ -1768,26 +1877,63 @@ public sealed partial class Session
         AddLenStr(d, ClassTitleOf(tc));   // class + rank, same as the self-profile shows
         AddLenStr(d, tc.Name);
 
-        // appearance descriptor — tag 0 selects the 7-byte player look (identical to 0x33 self-look,
-        // which already renders this character correctly): [sex, form, face, armor, 0, 0, 0]
+        // appearance descriptor — tag 0 selects the player look, identical to the 0x33 self-look that
+        // already renders this character correctly on the map. Which is the point: this window's doll and
+        // the on-map sprite must agree, and they only do if BOTH go through WriteAppearance — 5.33's
+        // click-profile parser (0x4d19c0) resolves tag 0 to the same 11-byte reader (0x449880) as 0x33, so
+        // handing it the 4.95 seven here reproduces the shifted-slot ragdoll on this window alone.
         d.Add(0);
-        d.AddRange(new byte[] { (byte)tc.Sex, 0, target.FaceLook(), tc.Armor, target.ArmorDye(), target.WeaponLook(), target.ShieldLook() });
+        WriteAppearance(d, new byte[]
+        {
+            (byte)tc.Sex, 0, target.FaceLook(), tc.Armor,
+            target.ArmorDye(), target.WeaponLook(), target.ShieldLook(),
+        });
 
-        // three equipment ICON cells beside the doll: helm, left ring, right ring (no sprite layer for these
-        // in 4.95, so they render as ground-icon boxes). Same IconWire encoding as the 0x37 equip window.
-        d.AddRange(Be(target.ProfileCellIcon(4)));   // helm  (wire slot 4)
-        d.AddRange(Be(target.ProfileCellIcon(7)));   // left ring  (wire slot 7)
-        d.AddRange(Be(target.ProfileCellIcon(8)));   // right ring (wire slot 8)
+        // Equipment ICON cells beside the doll (no sprite layer for these slots in 4.95, so they render as
+        // ground-icon boxes). Same IconWire encoding as the 0x37 equip window.
+        //
+        // 4.95 reads THREE bare u16 icons here; 5.33 reads FIVE cells of (u16 icon + u8 colour) — 15 bytes
+        // against 6 — exactly as on 0x39. Recovered by firing an all-zero body and watching the offsets
+        // (game-data/packets/probe34.txt): the cells land at body[17..31], right after the 11-byte
+        // appearance record at [6..16]. Sending 4.95's six bytes shifted the gear list, the status flags,
+        // the profile picture and the legends all nine bytes early, which is why this panel came up blank.
+        if (_ver == ClientVersion.V533)
+        {
+            WriteProfileCell533(d, target, 4);   // helm
+            WriteProfileCell533(d, target, 7);   // left ring
+            WriteProfileCell533(d, target, 8);   // right ring
+            WriteProfileCell533(d, target, 0);   // 4th cell — slot unidentified, empty box
+            WriteProfileCell533(d, target, 0);   // 5th cell — ditto
+        }
+        else
+        {
+            d.AddRange(Be(target.ProfileCellIcon(4)));   // helm  (wire slot 4)
+            d.AddRange(Be(target.ProfileCellIcon(7)));   // left ring  (wire slot 7)
+            d.AddRange(Be(target.ProfileCellIcon(8)));   // right ring (wire slot 8)
+        }
 
         // FIELD #10 — PAGE-1 gear/item list (u8 len + text). Item names are TAB-separated (client
         // converts 0x09 -> CR for multiline). Empty until inventory/equipment exists.
         AddLenStr(d, target.GearListText());
 
-        d.AddRange(Be32(0));      // numeric scalar — unknown, 0 for now
-        // The two status cells beside the name — group (sociable) and exchange (trade). 0xff rendered as blank
-        // WHITE boxes; a real 0/1 shows the off/on indicator. THIS is what the client reads to decide whether
-        // the "Group"/"Exchange" buttons on this window are enabled — so a self-view always shows your own
-        // flags, and (now that this takes a real target) another player's view shows THEIRS, matching RTK.
+        // The TARGET'S ENTITY ID — not a spare scalar. RE'd 2026-08-21 from BOTH clients' 0x34 parsers
+        // (4.95 0x48b6a0 reads it with the u32BE helper 0x475ce0 into the window field +0xb24; 5.33
+        // 0x4d19c0 does the same via 0x4a1250 into +0xa88), and confirmed against RTK
+        // clif_clickonplayer, which writes SWAP32(bl->id) in exactly this slot. The window STORES it and
+        // the "Exchange" button hands it straight back: 4.95 0x48c7c7 does `mov eax,[edi+0xb24]` -> the
+        // 0x4a builder at 0x48cd00 (`00 targetId(u32BE) 00`), 5.33 0x4d2cb2 the same from +0xa88. Sending
+        // 0 here is why exchange did nothing on either client: the button fired, but every 0x4a arrived as
+        // `00 00 00 00 00 00` and HandleExchangeRequest's PlayerById(0) found nobody. The click that OPENS
+        // this window (0x43) already carries the id, so the client never needed to remember it — it reads
+        // it back out of the reply.
+        d.AddRange(Be32(tc.Id));
+        // The two status cells beside the name — group (sociable) and exchange (trade), in RTK's order
+        // (clif_clickonplayer writes FLAG_GROUP then FLAG_EXCHANGE right after the id). 0xff renders a cell
+        // as a blank WHITE box; a real 0/1 shows the off/on indicator. Note what actually gates the two
+        // BUTTONS: 4.95 stores this first byte at +0xb28 and BOTH handlers (Group 0x48c7ae, Exchange
+        // 0x48c7c7) test only `cmp byte [edi+0xb28], 0xff` — 0xff kills both buttons, any other value
+        // enables both. So these bytes are indicators, not per-button enables; whether a trade is actually
+        // allowed is decided server-side in TryStartTrade (RTK does the same, in clif_startexchange).
         d.Add((byte)(tc.Grouped  ? 1 : 0));   // group / sociable status
         d.Add((byte)(tc.Exchange ? 1 : 0));   // exchange / trade status
         d.Add(tc.Nation);      // nation index -> NATION_E.EPF

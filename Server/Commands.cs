@@ -167,6 +167,7 @@ public sealed partial class Session
         G("pkt",      (s, a) => s.RawPacketCmd(a),      "<hexop> [tokens] | add | send | show | clear | file <name>",
                                                         "send a raw server->client packet"),
         G("delreason", (s, a) => s.DelReasonSweep(a),   "[lo] [hi]", "sweep the 0x10 reason byte for a silent one"),
+        G("look533",  (s, a) => s.Look533Cmd(a),        "[i v | clear]", "5.33: override one of the 11 appearance bytes and redraw"),
     };
 
     /// <summary>name -> command, aliases included. Built once; a duplicate name is a programming error and

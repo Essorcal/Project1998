@@ -22,7 +22,7 @@ public sealed partial class Session
     /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
     public PlayerSnapshot Snapshot() =>
         new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, FaceLook(), ArmorWireLook(_char.Armor), WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
-            ArmorDye(), _morphLook, _morphColor, Stealthed);
+            ArmorDye(), _morphLook, _morphColor, Stealthed, _char.HairColor);
 
     /// <summary>Draw player <paramref name="other"/> on our client. Normally the 0x33 player-look form; while
     /// morphed (see CastMorph/Content.MorphSpells), reroutes to the SAME 0x07 Monster.epf creature-spawn a
@@ -47,7 +47,8 @@ public sealed partial class Session
         // The nameplate is drawn straight off this string, so an empty name is the whole "hide nameplates"
         // mechanism — server-side, no client patch (see Content.ShowNameplates).
         string plate = Content.ShowNameplates ? s.Name : "";
-        SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, plate, $"peer(0x33) id={s.Id} '{s.Name}'");
+        // hairColor from the SUBJECT's snapshot — `this` is the viewer, so AppearanceFor must NOT read our own.
+        SendLook(s.Id, s.X, s.Y, s.Dir, app, renderKind: 1, plate, $"peer(0x33) id={s.Id} '{s.Name}'", hairColor: s.HairColor);
     }
 
     /// <summary>Do the viewer (this) and <paramref name="other"/> share a party? (Used to gate who can see a

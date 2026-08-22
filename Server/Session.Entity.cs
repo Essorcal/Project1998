@@ -73,10 +73,16 @@ public sealed partial class Session
         if (_char.Hp > maxHp) _char.Hp = maxHp;
         if (_char.Mp > maxMp) _char.Mp = maxMp;
 
+        // 5.33 uses the SAME 0x08 field offsets as 4.95 (verified against BOTH consumers: the HUD parser
+        // sub_4e2450 reads flags at body[1], HP at body[25], grace at body[18] — which in PAYLOAD terms,
+        // where SendMap prepends the opcode so d[k]==body[k+1], is d[0]=flags, d[24]=HP, d[17]=grace,
+        // i.e. exactly the 4.95 layout @stg pinned live. An earlier "composite offsets differ by a few
+        // bytes" reading was an off-by-one — it shifted every field +1 and produced 1.6-billion HP and
+        // grace 0. Do NOT reintroduce a V533-specific layout here. See docs/5.x/Wire-Divergences.md §6.5.
         var d = new byte[58];
         d[0] = 0x78;                        // flags: full-stats form
         d[1] = _char.Nation;
-        d[2] = _char.Totem;
+        d[2] = TotemWire();                 // 5.33 clamps totem to 0..3; "None" (4) must go out as 0xFF — see below
         d[4] = _char.Level;
         WriteBe32(d, 5, maxHp);             // maxHP  (offset [5] confirmed via @hp bar-fill test) — base + gear
         WriteBe32(d, 9, maxMp);             // maxMP  (offset [9] confirmed) — base + gear
@@ -99,9 +105,31 @@ public sealed partial class Session
         // every stats refresh — every mob swing / heal / regen silently clobbered a live toggle back to OFF,
         // which is why it never "stuck". _fastMove is the server's authority (persisted in SettingFlags bit 9,
         // restored at HandleArrival); driving the client from it here keeps the two in lockstep.
-        d[46] = (byte)(FastMoveTrustToggle && _fastMove ? 1 : 0);
+        // 5.33 DIVERGENCE (RE 2026-08-21, docs/5.x/Wire-Divergences.md): the 5.33 0x08 parser (case
+        // 0x4d5fa9 -> sub_4d8160) also reads this trailing byte (its parser offset 0x2f == our body[46])
+        // — but there a NONZERO value additionally fires sub_4857c0, a deferred move-commit/view rebuild,
+        // whenever its pending-move gate [state+0x6878] is set. Live symptom: every stats refresh (equip,
+        // eat, cast, regen "doing nothing") made the client re-request the full map rect (0x05) and redraw
+        // the scene, visually wiping whatever pane was open while the panel-manager index still said
+        // "open" — so `i` could not reopen the inventory. 4.95 fast-move was never negotiated with 5.33,
+        // so send 0 and leave its walk machinery alone.
+        d[46] = (byte)(_ver != ClientVersion.V533 && FastMoveTrustToggle && _fastMove ? 1 : 0);
         SendMap(0x08, _gameInc++, d, "stats(0x08)");
     }
+
+    /// <summary>Totem index for the 0x08 HUD, made ROUND-TRIP STABLE for the receiving client.
+    ///
+    /// This was the 5.33 pane-wipe (live-traced 2026-08-21, docs/5.x/Wire-Divergences.md §6.5). Our totem
+    /// table has 4 = "None" (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None). 5.33's 0x08 parser
+    /// (sub_4e2450) CLAMPS the totem field to 0..3 before storing it, and fires the totem widget's
+    /// change-notify whenever the byte it reads differs from what it stored. Sending 4 meant the client
+    /// stored 3 but kept reading 4 — a phantom "totem changed" on EVERY stats packet (equip, eat, cast,
+    /// kill, idle regen) — and that notify schedules a full sidebar rebuild that paints over any open pane
+    /// (inventory, and the click-profile page while it is up). The clamp treats 0xFF as the stable
+    /// "no totem" sentinel (0xFF stores as 0xFF, so a resend matches and no notify fires). 4.95 accepts 4
+    /// directly and is left unchanged. Any totem in 0..3 already round-trips on both clients.</summary>
+    private byte TotemWire() =>
+        _ver == ClientVersion.V533 && _char.Totem > 3 ? (byte)0xFF : _char.Totem;
 
     // The 0x08 body[45] mail/parcel HUD-notification byte (RTK FLAG_MAIL=0x10 / FLAG_PARCEL=0x01, both=0x11).
     // Confirmed live: the 4.95 client draws the bottom-left arrow (unread n-mail) / bag (unclaimed parcel)
@@ -388,7 +416,8 @@ public sealed partial class Session
         if (Content.LookUpdateInPlace && !special && _peersHoldHumanLook)
         {
             var look = SelfAppearance();
-            _world.Broadcast(_char.Map, p => p.UpdatePlayerLook(_char.Id, look), except: this);
+            byte hair = _char.HairColor;   // OUR colour, captured here — peers must not paint us with their own
+            _world.Broadcast(_char.Map, p => p.UpdatePlayerLook(_char.Id, look, hair), except: this);
             return;
         }
 
@@ -412,13 +441,18 @@ public sealed partial class Session
     /// same "can see hidden" byte the user-list window checks before drawing a hidden row (§13c). So form 2 is
     /// a GM-invisibility the CLIENT enforces; we don't use it (stealth is server-side per-viewer), but don't
     /// send 2 by accident.</para></summary>
-    internal void UpdatePlayerLook(uint id, byte[] look)
+    internal void UpdatePlayerLook(uint id, byte[] look, byte hairColor = 0)
     {
-        var d = new byte[12];
-        WriteBe32(d, 0, id);
-        d[4] = 0;                     // kind 0 = the 7-byte player look
-        Array.Copy(look, 0, d, 5, 7);
-        SendMap(0x1d, _gameInc++, d, $"look-update(0x1d) id={id}");
+        var d = new List<byte>();
+        d.AddRange(Be32(id));
+        d.Add(0);                     // kind 0 = the player look
+        // Same record, same divergence as 0x33: the 5.33 handler (0x46a6d0) calls the very same appearance
+        // parser 0x449880, so an in-place patch has to carry the 11-byte form or it re-introduces exactly
+        // the shift SendLook just fixed — and this path runs on every equip/unequip, which is where the
+        // symptom was reported. hairColor is the SUBJECT's (this is the viewer's session), same reason as
+        // ShowPlayer/SendLook.
+        WriteAppearance(d, look, hairColor);
+        SendMap(0x1d, _gameInc++, d.ToArray(), $"look-update(0x1d) id={id}");
     }
 
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
@@ -462,6 +496,30 @@ public sealed partial class Session
     /// (Items.csv should stay within range — the 2026-08-19 sweep re-pointed every such row; this is the
     /// backstop). Bows are the exception: with 0 arts nothing can render — the byte is kept in the bow range
     /// (empty hand), which is the 4.95 client's authentic best. See re/render_weapons.py for the sheets.</para></summary>
+    /// <summary>The 5.33 weapon field: a <b>u16 in RTK's flat <c>ItmLook</c> space</b> (family = value/10000),
+    /// carried big-endian at appearance wire[6..7] — <i>not</i> 4.95's packed byte.
+    ///
+    /// <para>Established live: pinning wire[6] to 50 (u16 12800, family 1) drew a two-handed spear and 100
+    /// (u16 25600, family 2) drew a bow, which is the flat space's own family arithmetic and nothing like the
+    /// 4.95 byte ranges, where both values sit in Sword.epf. Sending 0 here — as this did before the field was
+    /// identified — is flat-space sword art 0, a REAL sword, which is why an unarmed character was drawn
+    /// holding one.</para>
+    ///
+    /// <para>Derived by inverting <see cref="WeaponWireLook"/> rather than by threading the raw look through
+    /// every caller, because the appearance record is passed around as an opaque 7-byte array. That inverse is
+    /// exact for every art index 4.95 actually has, and only loses out-of-range indices that WeaponWireLook
+    /// has already clamped to the family base — which today is none of them, since Items.csv was re-pointed
+    /// into range. If 5.33-only weapon art is ever used, this is the seam that needs the real look threaded
+    /// through instead.</para></summary>
+    public static ushort Weapon533(byte packed) => packed switch
+    {
+        0xFF => 0xFFFF,                                    // bare hands — RTK sends 0xFFFF when !pc_isequip
+        <= 0x7F => packed,                                 // sword: flat art == the byte
+        <= 0xBF => (ushort)(10000 + (packed - 0x80)),      // spear / two-handed
+        <= 0xDF => (ushort)(20000 + (packed - 0xC0)),      // bow
+        _ => (ushort)(30000 + (packed - 0xE0)),            // fan
+    };
+
     public static byte WeaponWireLook(int look)
     {
         int family = look / 10000, art = look % 10000;
@@ -550,7 +608,7 @@ public sealed partial class Session
     // or handler 0x44fef0 bails before allocating the sprite (1 = player sprite). appearance[0] is the
     // body form; [1]/[2] are the sprite layers whose valid id space we're mapping with the look-lab.
     private void SendLook(uint id, ushort x, ushort y, byte dir, byte[] app, byte renderKind,
-                          string name, string label)
+                          string name, string label, byte? hairColor = null)
     {
         var nm = Encoding.ASCII.GetBytes(name);
         var d = new List<byte>();
@@ -558,12 +616,155 @@ public sealed partial class Session
         d.AddRange(Be(y));
         d.Add(dir);
         d.AddRange(Be32(id));
-        d.Add(0);                                   // type = 0 (7-byte appearance form)
-        for (int i = 0; i < 7; i++) d.Add(i < app.Length ? app[i] : (byte)0);
+        d.Add(0);                                   // type = 0 (player appearance form) — same on both clients
+        WriteAppearance(d, app, hairColor);         // hairColor set only when drawing a peer (the subject's, not the viewer's)
         d.Add(renderKind);
         d.Add((byte)nm.Length);
         d.AddRange(nm);
         SendMap(0x33, _gameInc++, d.ToArray(), label);
+    }
+
+    /// <summary>Write the 0x33 type-0 appearance in the <b>11-byte 5.33 form</b>, from our canonical 7-byte
+    /// 4.95 record (<see cref="SelfAppearance"/>).
+    ///
+    /// <para>5.33 re-authored this record; it did not merely extend it. Its parser is <c>sub_449880</c>
+    /// (returns <b>11</b>, where 4.95's <c>sub_436120</c> returns <b>7</b>). The slot meanings below were
+    /// established by sweeping each byte live against the rendered sprite with <c>@look533</c> — the
+    /// disassembly gives the widths and the read order, but only the sweep says what a field DRAWS, and
+    /// where the two disagreed the sweep won:</para>
+    /// <code>
+    ///   wire  4.95                     5.33                       how we know
+    ///   [0]   body/sex                 body/sex                   swept: 0 male, 1 female
+    ///   [1]   form/state               form/state                 swept: 0/4 normal, 1 dead, 2+5 faded,
+    ///                                                             3 mounted, 6+ no sprite
+    ///   [2]   face/head                FACE/HEAD                  swept
+    ///   [3]   armor                    HAIR COLOUR  (new in 5.33) swept
+    ///   [4]   colour ramp              armor/coat                 swept: 0 unequipped, 1+ armors
+    ///   [5]   weapon                   armor colour ramp          swept (needs a coat on to show)
+    ///   [6-7] --                       WEAPON, u16 BE flat look   swept: 50 -> spear, 100 -> bow
+    ///   [8]   --                       unknown                    swept, no visible effect
+    ///   [9]   --                       shield                     swept
+    ///   [10]  --                       shield colour?             swept: also moves the shield
+    /// </code>
+    /// <para>Note [2]/[3]: 4.95 has ONE head byte carrying hairstyle and all; 5.33 split hair colour into its
+    /// own field directly after it. That split is why the first version of this sent the face id into the
+    /// hair-colour slot and 0 into face — hair rendered an arbitrary colour and the head was always id 0.</para>
+    ///
+    /// <para>Sending the 4.95 seven bytes to 5.33 shifted every slot from face onward: face read our armor
+    /// (equipping a coat restyled your hair), armor read our dye ramp (a naked character wore a coat), the
+    /// ramp read our weapon, and weapon/shield read the name-length byte and the first character of the
+    /// name (a naked character carrying a shield).</para>
+    ///
+    /// <para>The slots 4.95 has no equivalent for default to 0. <c>P1998_LOOK533_EXTRA="hair,tail"</c>
+    /// changes those defaults, and <c>@look533 &lt;i&gt; &lt;v&gt;</c> pins any of the eleven live, which is how
+    /// the table above was filled in and how the remaining "unconfirmed" rows should be settled.</para></summary>
+    private static readonly (byte Hair, byte Tail) Look533Extra = ParseLook533Extra();
+
+    private static (byte, byte) ParseLook533Extra()
+    {
+        var raw = Environment.GetEnvironmentVariable("P1998_LOOK533_EXTRA");
+        if (string.IsNullOrWhiteSpace(raw)) return ((byte)0, (byte)0);
+        var p = raw.Split(',');
+        byte a = p.Length > 0 && byte.TryParse(p[0].Trim(), out var x) ? x : (byte)0;
+        byte c = p.Length > 1 && byte.TryParse(p[1].Trim(), out var z) ? z : (byte)0;
+        Log.Info($"[look533] extra appearance fields: hair[3]={a} tail[10]={c}");
+        return (a, c);
+    }
+
+    internal const int Look533Len = 11;
+
+    /// <summary>Per-session per-byte overrides for the 5.33 appearance record, set by <c>@look533</c>.
+    /// Null = send the derived value. This exists because three of the eleven fields have no 4.95
+    /// equivalent and no reference server documents them, and the only way to learn what a field drives
+    /// is to change it and look at the sprite — which is a two-second job in-game and a rebuild-and-relog
+    /// job in code.</summary>
+    private readonly byte?[] _look533Override = new byte?[Look533Len];
+
+    /// <summary>The appearance record as the given client parses it, from our canonical 7-byte 4.95 one.
+    /// <b>Pure and static so both shapes can be pinned by test</b> (Tests/AppearanceRecordTests) — the whole
+    /// point of the version split is that adding 5.33 must not move a single 4.95 byte, and that is a claim
+    /// worth enforcing rather than repeating.
+    /// <para>V495 returns the 7 bytes unchanged. V533 returns the 11-byte form described above.</para></summary>
+    public static byte[] AppearanceRecord(ClientVersion ver, byte[] app, byte hair = 0, byte tail = 0)
+    {
+        byte At(int i) => i < app.Length ? app[i] : (byte)0;
+        if (ver != ClientVersion.V533)
+        {
+            var seven = new byte[7];
+            for (int i = 0; i < 7; i++) seven[i] = At(i);
+            return seven;
+        }
+        ushort weapon = Weapon533(At(5));
+        return new[]
+        {
+            At(0),                    // [0]     body / sex
+            At(1),                    // [1]     form / state (ghost, mounted, invisible)
+            At(2),                    // [2]     face / head          <- 4.95 [2], same slot
+            hair,                     // [3]     hair colour          <- new in 5.33
+            At(3),                    // [4]     armor / coat         <- 4.95 [3]
+            At(4),                    // [5]     armor colour ramp    <- 4.95 [4]
+            (byte)(weapon >> 8),      // [6..7]  WEAPON, u16 BE in the flat ItmLook space (4.95 packs it
+            (byte)(weapon & 0xFF),    //         into the single byte [5] instead)
+            (byte)0,                  // [8]     unknown — swept with no visible effect; weapon colour?
+            At(6),                    // [9]     shield               <- 4.95 [6]
+            tail,                     // [10]    new in 5.33 — also moves the shield (shield colour?)
+        };
+    }
+
+    /// <summary>The record this session should send, with any <c>@look533</c> pins applied (V533 only).</summary>
+    // hairColor: the SUBJECT's hair-colour palette index. Non-null when drawing a PEER (ShowPlayer passes the
+    // subject's colour from its snapshot) — because `this` is then the VIEWER, so reading this._char would paint
+    // every peer with the viewer's hair. Null when drawing self / a paperdoll, where our own colour (plus any
+    // in-progress dye preview) is correct.
+    private byte[] AppearanceFor(byte[] app, byte? hairColor = null)
+    {
+        // Hair colour is per-character (Character.HairColor), the byte the rogue-hall dye service sets, with a
+        // transient _hairPreview override so the dye menu can live-preview a candidate without persisting it.
+        // (Look533Extra's hair component is superseded by this; its tail component still feeds appearance[10].
+        // The @look533 live-pin loop below still wins for ad-hoc testing.)
+        var (_, tail) = Look533Extra;
+        byte hair = hairColor ?? _hairPreview ?? _char.HairColor;
+        var r = AppearanceRecord(_ver, app, hair, tail);
+        if (_ver == ClientVersion.V533)
+            for (int i = 0; i < r.Length; i++)
+                if (_look533Override[i] is byte ov) r[i] = ov;
+        return r;
+    }
+
+    // Transient hair-colour preview: while the dye menu is browsing, this holds the candidate palette index so
+    // the player's own sprite shows it (via RefreshAppearance) WITHOUT touching persisted Character.HairColor.
+    // Null = show the real colour. Cleared on commit or cancel.
+    private byte? _hairPreview;
+
+    /// <summary>Append the appearance record in whichever shape this session's client parses. Every packet
+    /// that carries one (0x33 look, 0x1d in-place patch, 0x30 dialog paperdoll) goes through here, because
+    /// the 5.33 client resolves all three to the same parser (0x449880) and they must not disagree.</summary>
+    private void WriteAppearance(List<byte> d, byte[] app, byte? hairColor = null) => d.AddRange(AppearanceFor(app, hairColor));
+
+    /// <summary>"@look533" — show the 11 bytes we're sending; "@look533 &lt;i&gt; &lt;v&gt;" — pin byte i to v
+    /// and redraw; "@look533 clear" — drop the pins. Each set redraws self and every peer watching, so the
+    /// effect is visible immediately without a server restart.</summary>
+    internal void Look533Cmd(string args)
+    {
+        var a = (args ?? "").Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (a.Length >= 1 && a[0].Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            Array.Clear(_look533Override);
+            RefreshAppearance();
+            SendLog("look533: overrides cleared");
+            return;
+        }
+        if (a.Length >= 2 && int.TryParse(a[0], out var idx) && int.TryParse(a[1], out var val))
+        {
+            if (idx < 0 || idx >= Look533Len) { SendLog($"look533: index must be 0..{Look533Len - 1}"); return; }
+            _look533Override[idx] = (byte)(val & 0xFF);
+            RefreshAppearance();
+            SendLog($"look533: [{idx}] = {val & 0xFF}");
+            return;
+        }
+        var cur = AppearanceFor(SelfAppearance());
+        SendLog("look533 " + string.Join(" ", cur.Select((b, i) => $"{i}:{b}")));
+        SendLog("0 sex 1 form 2 face 3 haircolour 4 armor 5 dye 6-7 weapon(u16 flat look) 8 ? 9 shield 10 shield?");
     }
 
     // 0x16 CREATURE spawn (handler 0x450a00 -> builder 0x44dbc0 -> ctor 0x463020 -> base 0x462ec0).
@@ -615,7 +816,10 @@ public sealed partial class Session
     //   +0 X(u16)  +2 Y(u16)  +4 id(u32)  +8 look(u16=0x8000|monsterLookId)  +10 color(u8)  +11 dir(u8)
     // color -> palette (ent+0x18e via resolver), dir/state -> ent+0x18d. Unlike 0x16 there IS a viewport
     // gate (0x424310): entries outside the camera rect are silently skipped, so spawn inside view.
-    private void SendCreatureList(IReadOnlyList<(uint id, ushort look, ushort x, ushort y, byte color, byte dir)> es)
+    // rawColor: send the colour byte exactly as given, bypassing the V533 palette remap below. The colour/
+    // look SWEEP tools (@crecol, @crow) set this — they exist to FIND the right 5.33 index, so the override
+    // must not pre-empt them. Real spawns leave it false so horses (etc.) get the corrected hue.
+    private void SendCreatureList(IReadOnlyList<(uint id, ushort look, ushort x, ushort y, byte color, byte dir)> es, bool rawColor = false)
     {
         if (es.Count == 0) return;
         var d = new List<byte>();
@@ -626,7 +830,11 @@ public sealed partial class Session
             d.AddRange(Be(e.y));                    // +2  Y
             d.AddRange(Be32(e.id));                 // +4  entity id
             d.AddRange(Be(e.look));                 // +8  look (0x8000|monsterId => Monster.epf)
-            d.Add(e.color);                         // +10 palette/color
+            // +10 palette/color. On 5.33 the Monster.epf palette index space differs, so a colour tuned
+            // for 4.95 can pick the wrong hue (every horse — look 17 — draws BLUE at 4.95's colour there).
+            // Remap per look for V533 only; 4.95 sends the colour unchanged. See Content.Mob5xPalettes.
+            byte color = !rawColor && _ver == ClientVersion.V533 ? Content.Palette5x((ushort)(e.look & 0x7fff), e.color) : e.color;
+            d.Add(color);
             d.Add(e.dir);                           // +11 dir/state
         }
         SendMap(0x07, _gameInc++, d.ToArray(), $"creature-list(0x07) x{es.Count}");
@@ -643,14 +851,43 @@ public sealed partial class Session
         return mob;
     }
 
-    // 0x0E despawn (server->client; handler 0x450440): count(u8) then that many entity ids (u32BE).
-    // The client destroys each by id (0x44d9f0) and stops early on a 0 id, so never pass id 0.
+    // 0x0E despawn (server->client).
+    //
+    // 4.95 (handler 0x450440): count(u8) then that many entity ids (u32BE). The client destroys each by
+    // id (0x44d9f0) and stops early on a 0 id, so never pass id 0.
+    //
+    // *** 5.33 IS NOT A LIST. *** Its case body (0x46369f) is four instructions long:
+    //     inc esi                     ; body base -> body+1, i.e. body offset 0
+    //     push esi / call 0x4a1250    ; ONE u32 BE
+    //     test eax,eax / je done      ; id 0 -> no-op
+    //     push eax / call 0x466550    ; destroy that entity
+    // No count byte, no loop. Sending the 4.95 shape makes the client read `count<<24 | id>>8` — a
+    // nonexistent id — so it destroys nothing and silently returns 1 (handled). That is the whole of
+    // "mobs don't disappear when killed" and "ground items don't disappear when picked up": Ctrl+R
+    // appeared to fix them only because a map reload wipes every entity and re-streams from scratch.
+    // A multi-id despawn therefore has to go out as N packets on this client.
     private void SendDespawn(params uint[] ids)
     {
-        if (ids.Length == 0) return;
-        var d = new List<byte> { (byte)Math.Min(ids.Length, 255) };
-        foreach (var id in ids) d.AddRange(Be32(id));
-        SendMap(0x0E, _gameInc++, d.ToArray(), $"despawn(0x0E) x{ids.Length}");
+        foreach (var body in DespawnBodies(_ver, ids))
+            SendMap(0x0E, _gameInc++, body, $"despawn(0x0E) {body.Length}B");
+    }
+
+    /// <summary>The 0x0E bodies to send for these ids — one list-shaped body on 4.95, one 4-byte body per
+    /// id on 5.33. Pure and static so both framings are pinned by test (Tests/DespawnFramingTests).</summary>
+    public static List<byte[]> DespawnBodies(ClientVersion ver, params uint[] ids)
+    {
+        var live = ids.Where(i => i != 0).ToArray();   // id 0 stops the 4.95 loop and no-ops on 5.33
+        var outp = new List<byte[]>();
+        if (live.Length == 0) return outp;
+        if (ver == ClientVersion.V533)
+        {
+            foreach (var id in live) outp.Add(Be32(id));
+            return outp;
+        }
+        var d = new List<byte> { (byte)Math.Min(live.Length, 255) };
+        foreach (var id in live) d.AddRange(Be32(id));
+        outp.Add(d.ToArray());
+        return outp;
     }
 
     // NexusTK has NO floating combat numbers — combat feedback is the over-head HP bar (0x13, below) plus the

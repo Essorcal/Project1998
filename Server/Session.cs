@@ -908,6 +908,15 @@ public sealed partial class Session
         // (and then broadcast that to every peer) on the first lowercase login.
         if (string.IsNullOrEmpty(_char.Name)) _char.Name = _user;
         CharacterFactory.ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
+        // Totem is picked at creation and can be changed, but NEVER "unset" — the valid crests are 0..3
+        // (JuJak/Baekho/HyunMoo/ChungRyong). Force any stored out-of-range value into range at login so a
+        // bad record self-heals. This matters beyond tidiness on 5.33: that client clamps the 0x08 totem
+        // field to 0..3 and stores the clamped value, then reports a phantom "totem changed" on every
+        // stats packet if what we keep sending differs — which rebuilds the sidebar and wipes any open
+        // pane (the equip/eat/cast/kill/idle pane-wipe, live-traced 2026-08-21). A character sitting at
+        // the legacy 4 ("none") default is exactly that case; clamping here removes the divergence at the
+        // source. (TotemWire is the belt-and-suspenders at the wire boundary; SetTotem clamps the setter.)
+        if (_char.Totem > 3) _char.Totem = 3;
         RestoreTimedEffects();                     // buffs/curses/stances/morph/stealth that were still running at logout
         LoadModerationState();                     // mute deadline onto the session, so the chat path needs no DB read
         _char.Ac = (sbyte)Math.Clamp(100 - _char.Level, -128, 127);   // naked base AC = 100-level; recompute on load so records saved under the old decrement/gate logic self-correct

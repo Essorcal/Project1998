@@ -40,7 +40,20 @@ public sealed partial class Session
         // garbled "⊥Poison appl"). See docs §11c.
         if (_ver == ClientVersion.V533) d.Add(def.IconColor);
         var dn = Ascii(disp); d.Add((byte)dn.Length); d.AddRange(dn);
-        var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
+        // 4.95 carries a SECOND, base-name string here; 5.33 does NOT — its parser (sub_4d8290) reads
+        // slot, icon, iconColor, one length-prefixed name, and then goes straight to the u32 amount.
+        // Confirmed two ways: the disassembly's call order, and a live read trace whose offsets line up
+        // only under this layout (name len 13 at body[4], name body[5..17], amount body[18..21], next
+        // field body[22]). Sending 4.95's second string made 5.33 eat its length byte as part of the
+        // amount and shift every field after it — which is why the inventory pane drew nothing.
+        //
+        // Worth knowing for the next packet: the amount is read through 0x4a3ec0, an ADVANCING u32BE
+        // helper that was missing from re/grammar_533.py's primitive list, so those reads were invisible
+        // in every trace before this. See docs/5.x/Wire-Divergences.md §8.
+        if (_ver != ClientVersion.V533)
+        {
+            var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
+        }
         d.AddRange(Be32((uint)it.Amount));
         if (def.IsEquip) { d.Add(0); d.AddRange(Be32(it.Dura)); d.Add(0); }
         else { d.Add((byte)(def.Stackable ? 1 : 0)); d.AddRange(Be32(0)); d.Add(0); }

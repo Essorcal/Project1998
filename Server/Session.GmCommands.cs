@@ -234,7 +234,7 @@ public sealed partial class Session
             _mobs.Add(mob);
             es.Add((mob.Id, (ushort)(0x8000 | look), x, y, (byte)c, (byte)2));
         }
-        SendCreatureList(es);
+        SendCreatureList(es, rawColor: true);   // sweep tool: send raw colours so the V533 palette remap can't pre-empt the very index it's meant to find
         Log.Info($"   -> CREATURE color row: look {look}, color {lo}..{hi} step {step} ({es.Count} sent, {cols}/row)");
     }
 
@@ -256,7 +256,7 @@ public sealed partial class Session
             _mobs.Add(mob);
             es.Add((mob.Id, (ushort)(0x8000 | v), x, y, (byte)0, (byte)2));
         }
-        SendCreatureList(es);
+        SendCreatureList(es, rawColor: true);   // look sweep: raw colours too (see @crecol)
         Log.Info($"   -> CREATURE row: monster look sweep {lo}..{hi} step {step} ({es.Count} sent)");
     }
 
@@ -489,8 +489,8 @@ public sealed partial class Session
     private void SetTotemCmd(string text)
     {
         var a = ParseInts(text);
-        if (a.Length == 0) { SendLog($"usage: {Prefix}totem <id>   (now: {_char.Totem})"); return; }
-        _char.Totem = (byte)Math.Clamp(a[0], 0, 255);
+        if (a.Length == 0) { SendLog($"usage: {Prefix}totem <0..3>   (now: {_char.Totem})   0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong"); return; }
+        _char.Totem = (byte)Math.Clamp(a[0], 0, 3);   // 0..3 only — 5.33 clamps out-of-range and then reports a phantom change every stats packet (pane wipe); see TotemWire
         if (_enteredWorld) StoreSave();
         SendStats();
         SendMessage($"totem set to {_char.Totem}.");
@@ -825,7 +825,7 @@ public sealed partial class Session
         uint maxMp = (uint)Math.Max(0, (int)_char.MaxMp + eq.mp);
         var d = new byte[Math.Max(58, off + 1)];
         d[0] = 0x78;
-        d[1] = _char.Nation; d[2] = _char.Totem; d[4] = _char.Level;
+        d[1] = _char.Nation; d[2] = TotemWire(); d[4] = _char.Level;   // TotemWire: 5.33 clamps 4->3, so send 0xFF — see SendStats
         WriteBe32(d, 5, maxHp); WriteBe32(d, 9, maxMp);
         d[13] = (byte)Math.Clamp(_char.Might + eq.might, 0, 255);
         d[14] = (byte)Math.Clamp(_char.Will  + eq.will,  0, 255);

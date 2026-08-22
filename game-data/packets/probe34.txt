@@ -1,0 +1,37 @@
+; Click-profile GRAMMAR PROBE  --  0x34 against the 5.33 client.  Fire with:  @pkt file probe34
+;
+; Same trick as probe39: the body is ALL ZEROS, so every length-prefixed string is empty, every count is
+; zero, and nothing in the record has variable width. The offsets the client reads are therefore the
+; minimal record exactly, one entry per field, in order. Run
+;
+;     python re/grammar_533.py --attach --op 34
+;
+; while firing this, and read the offsets straight off.
+;
+; Why this packet matters. 0x34 is the "view" panel (window index 1) — the one with the paperdoll. The
+; 5.33 client asks for it by sending 0x43 with a self id, repeatedly and unprompted, and it WAITS for the
+; answer: not replying leaves its panel state stalled (`s` then only opens the character sheet if `i` was
+; pressed first). So the reply is required; what is wrong today is the body. We still send 4.95's shape,
+; while 5.33's parser sub_4d19c0 reads a materially bigger record. From a static read of that parser it
+; wants, in order:
+;
+;   u8 · string · u8 · string · u8 u8 · string · u8 · string · u8 u8
+;   APPEARANCE (the 11-byte record, sub_449880 — same one 0x33/0x1d/0x30 use)
+;   (u16,u8) x5      <- five equipment cells with a colour byte each, as on 0x39
+;   u8 · string
+;   u32BE · u8 · u8 · u8 · u16BE
+;
+; ...which is close to 0x39's shape plus a paperdoll, and nothing like the three bare u16 icons 4.95
+; sends. The zero probe is what turns that sketch into exact offsets.
+;
+; 96 zero bytes: far more than the minimal record needs, so a real field is never mistaken for the
+; over-read that a short body would cause.
+
+34              ; opcode: click / view profile
+
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00

@@ -30,7 +30,13 @@ public sealed class Character
     // appearance
     public ushort Sex    = 1;
     public ushort Face   = 0;
-    public ushort Hair   = 0;
+    public ushort Hair   = 0;   // hair STYLE (creation blob[4]); no render slot on 4.95, appearance[?] on later clients
+
+    // Hair COLOUR — the 5.33 appearance[3] palette byte (4.95 has no hair-colour slot, so this is inert there).
+    // 0 = the base/undyed colour. Set by the rogue-hall shaman's hair-dye service (AppearanceAbility, adapted
+    // from RTK salon.lua / general_npc_funcs.hairdye). Persisted so a dye survives relog and re-broadcast to
+    // peers via PlayerSnapshot, exactly like the armor-dye ArmorColor byte below.
+    public byte HairColor = 0;
 
     // War-paint dye applied to the worn armor/coat — renders as the 0x33 type-0 appearance[4] palette byte
     // (0 = undyed base color). Set by the Arena Master (WarPaintAbility, RTK arena_master.lua's "War paint").

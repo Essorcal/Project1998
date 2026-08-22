@@ -31,7 +31,12 @@ public static class CharacterFactory
         c.Sex  = b[1];   // gender: 0=male, 1=female
         c.Face = b[0];   // -> render appearance[2]
         if (b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
-        if (b.Length > 3 && b[3] <= 4) c.Totem = b[3];
+        // Totem crest, valid range 0..3 (JuJak/Baekho/HyunMoo/ChungRyong). Only apply a VALID pick from the
+        // creation blob: this runs on every login (a migration for pre-appearance records), so a stale or
+        // wrong blob byte of 4 ("none", the legacy default) must NOT re-clobber a totem the player has since
+        // set — otherwise an @totem / shrine change silently reverts on the next relog. Out-of-range simply
+        // leaves the loaded value in place; Session arrival then clamps it into range.
+        if (b.Length > 3 && b[3] <= 3) c.Totem = b[3];
         if (b.Length > 4) c.Hair = b[4];   // persisted; no 4.95 render slot yet
     }
 

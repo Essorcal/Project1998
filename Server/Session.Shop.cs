@@ -55,16 +55,12 @@ public sealed partial class Session
         d.AddRange(p);
     }
 
-    /// <summary>Buy grid (sub-kind 4). Each row is <c>icon(u16BE) price(u32BE) nameLen(u8) name[] textLen(u8)
-    /// text[]</c>.</summary>
+    /// <summary>Buy grid (sub-kind 4). Each row is <c>icon(u16BE) [iconColor(u8), 5.x only] price(u32BE)
+    /// nameLen(u8) name[] textLen(u8) text[]</c> — see <see cref="BuyGridRowBody"/> for the colour byte.</summary>
     /// <remarks>
-    /// Two places RTK is a bad guide here, both because it is a 7.x server:
-    /// <para>• It writes a colour byte after the icon. The 4.95 client reads the price <c>u32BE</c> at
-    /// descriptor+2 — there is no colour byte in a row. Colour is folded into the frame by
-    /// <see cref="IconOf"/>/<c>IconWire</c> instead, the same as the bag.</para>
-    /// <para>• Its "normal item" branch sends the raw <c>ItmIcon</c> and only its custom-icon branch adds
-    /// 49152. For 4.95 the +49152 form (== <c>IconWire</c>) is correct for EVERY row; a raw frame draws
-    /// nothing at all.</para>
+    /// One place RTK is still a bad guide here, because it is a 7.x server: its "normal item" branch sends
+    /// the raw <c>ItmIcon</c> and only its custom-icon branch adds 49152. On BOTH our clients the +49152 form
+    /// (== <c>IconWire</c>) is correct for every row; a raw frame draws nothing at all.
     /// The reply identifies the row by NAME, not index, so two rows with the same name are indistinguishable —
     /// the lookup takes the first match.
     /// </remarks>
@@ -76,25 +72,49 @@ public sealed partial class Session
         // strlen(dialog) UNSWAPPED, which cannot be meaningful, so 0 is as good a value as any until it's swept.
         d.AddRange(Be(0));
         d.AddRange(Be((ushort)rows.Count));
-        foreach (var r in rows)
-        {
-            d.AddRange(Be(r.Icon));
-            d.AddRange(Be32((uint)Math.Max(0, r.Number)));
-            WriteAscii8(d, r.Name);
-            WriteAscii8(d, r.Blurb);
-        }
+        foreach (var r in rows) d.AddRange(BuyGridRowBody(_ver, r.Icon, r.Color, r.Number, r.Name, r.Blurb));
         SendMap(0x2F, _gameInc++, d.ToArray(), $"buy-grid(0x2f) npc={npc.Id} x{rows.Count}");
+    }
+
+    /// <summary>One buy-grid row in the shape THIS client's row loop expects. Pure and static so
+    /// <c>Tests/ClientVersionWireTests</c> can pin both shapes.</summary>
+    /// <remarks>
+    /// <para><b>5.x carries an icon-colour byte between the icon and the price; 4.95 does NOT.</b> This is
+    /// the same split <see cref="SendAddItem"/> and <see cref="SendEquip"/> already make for <c>0x0F</c> and
+    /// <c>0x37</c> — 4.95 has no colour channel anywhere in the item graphics path and folds it into the
+    /// frame (<see cref="IconOf"/>), 5.x keeps the two apart. RTK <c>clif_buydialog</c> (clif.c:12432-12447)
+    /// writes <c>WFIFOW(icon); WFIFOB(iconColor); len += 3;</c> and agrees.</para>
+    /// <para>Omitting it on 5.33 does not just tint a row wrong — it shifts the whole row. The client reads
+    /// the price one byte late, so the price swallows the name-length byte, and the FIRST LETTER OF THE NAME
+    /// becomes the length. Live symptom (2026-08-21): the Kugnae grocer drew "pple♦Peasant level 0ÀL" priced
+    /// 2565 for an Apple, and the bank drew "corn…" for an Acorn. Both decode exactly: Apple costs 10, so the
+    /// client's u32 was <c>00 00 0A</c> + the name length 5 = 0x0A05 = 2565, and the name length it then used
+    /// was 'A' = 65, which ate the blurb, the next row's <c>0xC0</c> icon byte ("À") and everything after.
+    /// The trailing junk in those rows is the rest of the grid being read as one string.</para>
+    /// </remarks>
+    public static byte[] BuyGridRowBody(ClientVersion ver, ushort icon, byte iconColor, int number,
+                                        string name, string blurb)
+    {
+        var d = new List<byte>();
+        d.AddRange(Be(icon));
+        if (ver == ClientVersion.V533) d.Add(iconColor);
+        d.AddRange(Be32((uint)Math.Max(0, number)));
+        WriteAscii8(d, name);
+        WriteAscii8(d, blurb);
+        return d.ToArray();
     }
 
     /// <summary>One buy-grid row. <see cref="Number"/> is the big figure beside the icon — a price in a shop,
     /// but the bank puts the STORED COUNT there, which is what RTK does too (its Lua hands `bankCountTable`
     /// to the argument `clif_buydialog` calls `price[]`). <see cref="Name"/> is what comes back in the reply,
-    /// so it must be unique across the grid.</summary>
-    private readonly record struct GridRow(ushort Icon, int Number, string Name, string Blurb);
+    /// so it must be unique across the grid. <see cref="Color"/> only reaches the wire on 5.x.</summary>
+    private readonly record struct GridRow(ushort Icon, byte Color, int Number, string Name, string Blurb);
 
-    /// <summary>A row for an ordinary shop item: real icon, price, catalogue name and buy blurb.</summary>
+    /// <summary>A row for an ordinary shop item: real icon, palette, price, catalogue name and buy blurb.
+    /// <see cref="IconOf"/> already picks the folded (4.95) or base (5.x) frame, so the colour rides along
+    /// unconditionally and <see cref="BuyGridRowBody"/> decides whether it goes out.</summary>
     private GridRow ShopRow(ItemDef def, int price) =>
-        new(IconWire(IconOf(def)), price, def.Name, BuyBlurb(def));
+        new(IconWire(IconOf(def)), def.IconColor, price, def.Name, BuyBlurb(def));
 
     /// <summary>Open the amount window and return the number typed, or null if it was cancelled. Deliberately
     /// NOT clamped to <paramref name="max"/> — the caller decides whether too-large is a clamp or a refusal,

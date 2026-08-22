@@ -1,0 +1,59 @@
+; Self-profile MARKER PROBE  --  0x39 against the 5.33 client.  Fire with:  @pkt file probe39b
+;
+; probe39 (all zeros) gave the STRUCTURE: with every string empty and every count zero, the offsets the
+; client read are the minimal record, and they came out as
+;
+;   [0] u8  [1] u8  [2] u8  [3] u8+str  [4] u8  [5] u8+str  [6] u8+str  [7] u8
+;   [8..11] u32BE  [12] u8+str
+;   [13..14] u16 [15] u8  |  [16..17] u16 [18] u8  |  [19..20] u16 [21] u8
+;   [22..23] u16 [24] u8  |  [25..26] u16 [27] u8            <- FIVE (icon u16, colour u8) cells
+;   [28] u8+str  [29] u8  [30] u8
+;
+; ...which is 31 bytes minimum against 4.95's 22. The divergence that matters: 4.95 puts THREE bare u16
+; equipment icons at [13..18]; 5.33 wants FIVE cells of (u16 icon + u8 colour), 15 bytes against 6.
+;
+; Structure is not meaning, though, and a zero body cannot give meaning -- every field looks alike. So
+; this one makes each field UNMISTAKABLE and asks the screen which slot is which. Report back where each
+; marker shows up in the profile window:
+;
+;   AAA BBB CCC DDD EEE   the five strings, in wire order
+;   AC = -11, Dam = 11, Hit = 22, the u32 = 12345
+;   the five equip cells carry icons 101..105 with colours 1..5
+;
+; Against 4.95's known order (AC, Dam, Hit, clan$, clanTitle$, title$, partyBox$, grouped, tnl,
+; classTitle$, helm/ring/ring, buffBox$, exchange, legendCount) the open question is what 5.33 put at
+; [4] and [7]: 4.95 has FOUR strings between Hit and the u32, 5.33 has three plus two loose bytes.
+;
+; Legend count is left at 0 deliberately -- the legend record shape is a separate probe, and a wrong
+; count here would run the parser off the end and tell us nothing. The zero tail is padding so any
+; count-driven loop reads zeros rather than heap.
+
+39              ; opcode: self-profile
+
+f5              ; [0]  AC  = -11 (signed)
+0b              ; [1]  Dam = 11
+16              ; [2]  Hit = 22
+
+03 :AAA         ; [3]  len + string A
+21              ; [4]  = 33   <- no 4.95 equivalent at this position
+03 :BBB         ; [5]  len + string B
+03 :CCC         ; [6]  len + string C
+01              ; [7]  = 1    <- 4.95 has "grouped" here
+
+%12345          ; [8..11] u32BE
+03 :DDD         ; [12] len + string D  (4.95: class title)
+
+; five equipment cells: icon u16BE + colour u8
+#101 01
+#102 02
+#103 03
+#104 04
+#105 05
+
+03 :EEE         ; [28] len + string E  (4.95: buff box)
+06              ; [29] = 6
+00              ; [30] = 0    <- legend count, kept at 0 on purpose
+
+; tail padding so anything count-driven reads zeros instead of running past the body
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
