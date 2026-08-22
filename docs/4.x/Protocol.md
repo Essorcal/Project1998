@@ -269,13 +269,68 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 
 2. The server now drives the **world-entry burst** (§5, §6).
 
-3. **Re-login on the game port (Alt+X).** Exiting to the select screen does **not** drop the game socket —
-   the client re-sends **`0x03`** (login, full credentials) on the still-open game connection and waits for
-   a handoff redirect, exactly as on the login channel. The game server therefore also handles `0x03`
-   (`Session.HandleReLogin`): re-authenticate, mint a fresh single-use token, and redirect back to its own
-   game port. Without this the re-login hangs (the client never reconnects to the login server, so that
-   process shows no new activity). The original single-process server answered `0x03` on every port; the
-   split had to restore it on the game side.
+3. **Exit to the select screen (Alt+X) — `0x0B`, and the answer is a bounce BACK to login** ✅
+   *(corrected 2026-08-20; this section previously had cause and effect backwards)*
+
+   Leaving the world does **not** drop the game socket. The client sends **`0x0B`** (body: a constant `00`)
+   on it and then waits. The correct answer is the **`0x03` redirect struct pointed at the LOGIN server** —
+   the same packet as the handoff in §4.1, just with the login address in it. The client reconnects to the
+   login port and the whole select screen (name check `0x02`, login `0x03`, create `0x04`) runs there, where
+   those handlers already live. `Session.HandleExitToSelect`.
+
+   **This is verbatim what RTK does.** `case 0x0B: clif_cancelafk(sd); clif_closeit(sd);`
+   (`rtk/src/map/clif.c:11397`), and `clif_closeit` (`:655`) builds the redirect from `log_ip`/`log_port` —
+   `map.conf`'s `loginip:` / `loginport:`. The corroboration that makes it conclusive: **RTK's map dispatch
+   has no `0x02`, `0x03` or `0x04` case at all** (pre-session it accepts only `0x10`; in-world it runs
+   `0x05`–`0x85`). Its map server is structurally incapable of serving a select screen, so its clients must
+   be going back to login — there is no other path.
+
+   **What this section used to say, and why it was wrong.** It claimed "the client never reconnects to the
+   login server" and had the game server answer the select screen's `0x03` itself, redirecting back to its
+   own game port. The client *does* then re-login successfully — which is why the bug hid for so long — but
+   it is stranded on the game socket, where character **creation** has no handler and hangs forever at the
+   name field. The client never reconnected because **we never sent it the bounce**; the observed behaviour
+   was our own silence, not a client limitation. Live trace of the broken flow:
+   ```
+   [08:31:38]  <~ RAW 6B on :2005: aa 00 03 0b 2c 62      <- exit to select
+   [08:31:38]  <- pkt op=0x0b inc=0x2c len=3 body=1B   dec: 00
+   [08:31:38]  ?? no handler for opcode 0x0b            <- dropped; nothing sent back
+   [08:31:44]  <- pkt op=0x03 ... dec: 09 'facethree' 05 'asdf1' 00   <- 6s later, SAME game socket
+   ```
+
+   **`Session.HandleReLogin` is kept as a fallback** for exactly that case: a `0x03` arriving on the game
+   port is re-authenticated and handed back to this same game port, which is the old behaviour unchanged.
+   Nothing depends on it once the bounce works, but a client that ignores the redirect still gets in.
+
+   **Where the client sends it — RE'd 2026-08-20.** `0x0044ed50` is a no-argument sender that emits exactly
+   the 6-byte packet in the trace: `push 0xb` → write-byte helper `0x475bf0`, `[ebp-0x7f] = 0` (the body),
+   `push 1` (body length) → `0x4759f0` (fetch the connection object at `[0x50214c]`) → `0x475ab0` (send). It
+   has **one** caller, `0x0044a6e2`, and that call site settles the timing question below:
+
+   ```
+   0x0044a660..0x0044a6d6   release every cached world resource (a dozen `if (g) release(g)` globals)
+   0x0044a6db   cmp byte ptr [ebp+8], bl      ; teardown takes a "notify the server" bool
+   0x0044a6de   je   0x44a6e7                 ;   -> skip the send when it is 0
+   0x0044a6e2   call 0x44ed50                 ; *** send 0x0B ***
+   0x0044a6f7   push 1 / call 0x4759f0 / call 0x475bd0   ; conn[+0x3aa52] = 1
+   0x0044a711   push 0x20c / call 0x43fd80 / call 0x4404e0  ; allocate + construct the replacement screen
+   0x0044a730   push 0 / call 0x4759f0 / call 0x475bd0   ; conn[+0x3aa52] = 0
+   ```
+
+   So `0x0B` is sent from the **world object's teardown** (the ctor is `0x44a090`, §5) — *after* the world's
+   resources are released and *immediately before* the replacement screen object is built, with a
+   connection-object flag at `[+0x3aa52]` raised across the swap and cleared once the new screen is live.
+   (`0x4759f0` is a getter for the global connection object, not a packet builder; `0x475bd0` writes that
+   one flag byte. The receive-mode byte documented in §4.2's opening note lives 6 bytes earlier at
+   `+0x3aa4c`.)
+
+   > **Why the timing works.** The client's `0x03` dispatch is **state-dependent**: at the login/select
+   > screen it is the redirect (proven — the fallback path above works), but the *world* dispatcher routes
+   > `0x03` to `0x44f0e0`, download/URL (§13). The disassembly above shows the world object is already
+   > dismantled when `0x0B` goes out and the replacement screen is constructed in the very next
+   > instructions, so a reply that crosses the network cannot land in the world dispatcher. **Still worth
+   > watching on a live run** — the flag-guarded window is inferred from its shape, not measured, and this
+   > is the one part of the flow with no behavioural trace behind it.
 
 ### 4.3 Robustness / DDoS hardening (app-layer, 2026-07-27)
 
@@ -371,6 +426,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x04` | CreateAppearance | 5 bytes (see §9) | Creation step 2. |
 | `0x03` | Login | `nameLen name pwLen pw 00` | Login channel. |
 | `0x10` | Arrival | `09 "NexonInc." nameLen name <token>` | Game channel, **plaintext**, client speaks first. |
+| `0x0b` | **Exit to select screen** (Alt+X) | `00` (constant) | Game channel. "I left the world." Answer with the `0x03` redirect struct (§4.1) pointed at the **login** port, or the select screen stays bound to the game socket and character creation hangs. RTK `case 0x0B → clif_closeit`. See §4.2. (server→client `0x0b` is a client-side no-op — §13.) |
 | `0x32` | Walk step | `dir(u8) stepCounter(u8) X(u16) Y(u16) pad` | Self-walk request (see §10). |
 | `0x05` | **Map-data request** (view rect) | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + 4 junk bytes | **The terrain stream request — 4.95 sends this too** (corrected 2026-08-07; this table previously said 4.95 never sent `0x05`). Reply with an `0x06` cell block covering the rect (§13). See §10.7. |
 | `0x06` | Walk (long form) | `dir(u8) step(u8) X(u16BE) Y(u16BE)` + the same 4 junk bytes | Sent every few steps instead of `0x32`. Handle identically for movement. **Both** client packets are 10 bytes = a 6-byte payload + 4 trailing bytes; `0x32` is the same walk without them (7 bytes). **Those 4 bytes are UNINITIALIZED STACK, not a checksum** — ignore them (see §10.7). |
@@ -602,6 +658,10 @@ looping is a packet-body change rather than a client patch — not yet calibrate
 `NexusTK.snd`: `u32 count`, then `count × {u32 offset, char name[13]}`) and renumbers its `%08d` names onto
 this `%03d` scheme — every id in it happens to be ≤ 999, so they map with no collisions. 5.33 additionally
 supports `%08d.LST`/`%08d.LSR` playlists; **4.95 has neither string** and can only be told one track at a time.
+That asymmetry is why the second soundtrack is offered to 5.33 sessions only (`@music new`,
+`Character.NewMusic`) — a single mp3 gets a hardcoded loop flag of 0 on **both** clients, so only 5.33's
+playlist ids give looping background music. Its type-1 body is a different shape too:
+**docs/5.x/Wire-Divergences.md §6.8**.
 
 **Install gotcha.** The 4.95 client is **file-virtualized** by Windows: its own writes (`Maps\TK*.map`,
 `ddraw.ini`, `users\`) go to `%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Nexon\NextAeon\`. Drop the
@@ -1289,7 +1349,7 @@ gear/item list (u8 len + text)                        PAGE 1; TAB-separated (cli
                                                       slot (empty slots omitted), in slot order:
                                                       `w:Weapon:<n>` `a:Armor:<n>` `s:Shield:<n>` `h:Helmet:<n>`
                                                       `l:LHand:<n>` `r:RHand:<n>`
-scalar (u32BE)                                        (unknown; 0)
+targetId (u32BE)                                      THIS profile's entity id -- the Exchange button echoes it
 group (u8), exchange (u8)                             the two status cells; 0/1 = off/on, 0xff = blank WHITE box
 nation (u8)                                           PAGE 2; drawn via NATION_E.EPF
 picture (u16BE len + bitmap bytes)                    PAGE 2; empty = 00 00
@@ -1330,6 +1390,15 @@ Gotchas that cost real debugging time:
   helm box) proved they take an `IconWire` value. Order confirmed live: helm, left ring, right ring.
   Wire slots come from the client's own `0x1F` unequip captures: **helm=4, left ring=7, right ring=8**.
   Fed by `Session.ProfileCellIcon(wireSlot)`.
+- **The `u32BE` before the two status cells is the TARGET'S ENTITY ID, not a spare scalar** (RE'd
+  2026-08-21; it was shipped as a hardcoded `0` for a month). The window keeps it (4.95 parser `0x48b6a0`
+  reads it with the `u32BE` helper `0x475ce0` into `[window+0xb24]`; 5.33's `0x4d19c0` does the same via
+  `0x4a1250` into `+0xa88`) and the **"Exchange" button hands it straight back** in `0x4a` — 4.95
+  `0x48c7c7` is literally `mov eax,[edi+0xb24]` → the packet builder `0x48cd00`, 5.33 `0x4d2cb2` the same
+  from `+0xa88`. The button does **not** reuse the id from the `0x43` click that opened the window, so a
+  zero here makes exchange silently dead: the client sends `4a 00 00 00 00 00 00` and the server's
+  `PlayerById(0)` matches nobody. RTK agrees — `clif_clickonplayer` writes `SWAP32(bl->id)` in exactly
+  this slot, immediately before the `FLAG_GROUP` / `FLAG_EXCHANGE` bytes.
 - **Group / exchange status cells.** Both views show a **group** (sociable) and **exchange** (trade)
   indicator. In `0x34` they're the two `u8` cells after the scalar (were briefly guessed as "look-selectors");
   in `0x39` they're the `group` byte (after `spouse`) and the `exchange` byte (the trailing flag before the
@@ -1338,10 +1407,13 @@ Gotchas that cost real debugging time:
   by the `0x1b` setting opcode — **`0x02` = group (Shift+G), `0x08` = exchange** — and persisted on the
   character (`Character.Grouped` / `Character.Exchange`) so they survive reopening the profile and a relog.
   NOTE this is only the joinable/tradeable *flag* + its display; the actual party/trade **request** flows
-  are built now — see §11l. The client's `0x2e` / `0x4a` packets seen in earlier captures are exactly RTK's
-  party-invite (`0x2e`) and an undecoded opcode respectively; §11l wires `0x2e` defensively but leans on
-  chat commands as the confirmed-safe interface (real binary trade/party windows are still unconfirmed on
-  4.95).
+  are built now — see §11l. The client's `0x2e` / `0x4a` packets seen in earlier captures are RTK's
+  party-invite and exchange-initiate; **both are decoded and both are the profile window's own buttons**
+  (`0x2e` from the Group button at `0x48c7ae`, `0x4a` from the Exchange button at `0x48c7c7`, dispatched
+  through the hit-test jump table at `0x48c84c`). Note what actually **enables** the two buttons: 4.95
+  stores the *group* byte at `[window+0xb28]` and BOTH handlers test only `cmp byte [edi+0xb28], 0xff` —
+  `0xff` kills both buttons, any other value enables both. So these two `u8`s are indicators, not
+  per-button enables; refusal is server-side (`TryStartTrade`, as in RTK's `clif_startexchange`).
 
 **Editing — client `0x4f`.** Saving the profile edit sends
 `4f | picSize(u16BE) | pic[] | blurbLen(u8) | blurb[] | 00`. Parse both (mirrors the client's own
@@ -3060,6 +3132,32 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   target), then the positional 2x. `rage`/`invisible` multipliers are hardcoded to 1 — no rage buff or
   stealth state exists in this server yet, matching RTK's own unbuffed default.
 
+- **DAMAGE SPELLS TAKE THE TARGET'S AC TOO (2026-08-21).** They did not until this date: `Combat.ApplyArmor`
+  was reached only by melee, mob-on-player hits and the sacrifice strikes, so every nuke in the game dealt
+  face value to any mob no matter how armored. The live Spark probe refutes that outright — it solves
+  `Spark = floor((50 + level/2) × (1 + ac/100))` across **19 readings with zero residual**, spanning 9 mobs at
+  AC 40–100 *and* 10 self-casts with the caster's own AC varied by swapping gear. So the same armor term
+  governs magic and melee alike, and the old `ReceiveSpellDamage` comment claiming *"physical AC does not
+  apply to magic (the caster's deflect roll already gates a spell)"* was simply wrong.
+  - Mob side: `Session.SpellNet` at each damage site — `LuaDamageTarget`, `LuaMagicDamage` (the `Damage`
+    archetype), `LuaAreaZap` (4-way) and `LuaTargetAreaZap` (the dog 5-way). It lives at the call sites
+    because `World.TryDamage` deliberately knows nothing about armor.
+  - Player side: centralised **inside `ReceiveSpellDamage`**, so every PvP spell path nets exactly once and
+    none can forget. Callers pass RAW; `LuaSacApply` and `ApplyOverflow` used to pre-net and no longer do.
+  - Scale of the change: positive AC amplifies, so a rabbit (+100) now takes **double** from a nuke, while a
+    marsh ogre (−65) takes **35%**. Every damage number in the game moved.
+  - NOT extended to traps, pet mob-on-mob hits or harvest nodes — no measurement exists for any of them, and
+    guessing would move balance with nothing behind it. Ambush and melee already net attacker-side.
+  - **Still open:** the same probe says Spark scales off `level/2` and explicitly rules will out ("a +1 will
+    item changed nothing"), but our exported row is `50 + floor((level + will)/4)`. The AC term is fixed; the
+    base term is still the RTK export and disagrees with the measurement.
+
+- **`ApplyArmor` forms its deduction as `(100 + armor)/100.0`, not `1.0 + armor/100.0`** — equal in real
+  arithmetic, not in IEEE754. The latter evaluates to 0.19999999999999996 at the human floor, so a maximally
+  armored player took 19% of a hit instead of 20%, a full point of error at exactly the value the clamp makes
+  most common. Fixed 2026-08-21 when the formula became load-bearing for spells as well as swings; all 19
+  Spark readings are unchanged by it. `Tests/CombatArmorTests.cs` pins both.
+
 - **The positional "attacked from behind" 2x** (`Combat.IsBehindTarget`) applies to BOTH directions,
   UNCONDITIONALLY: RTK `swingDamage.lua`'s base `side==target.side` rule (attacker and target facing the
   SAME direction, attacker on the target's blind side) — every swing gets this check regardless of class.
@@ -3185,15 +3283,111 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     `warrior/overflow.lua`): a facing-tile physical attack (not a targeted cast) computed from the CASTER's
     OWN pre-cast HP/MP, armor-netted the same way melee is (`Combat.ApplyArmor`) to find any overkill. The
     Rogue pair "backflows" overkill — up to half refunds to the caster as HP+MP, each capped at half their
-    pre-cast values; the Warrior pair "overflows" instead — splashes overkill recursively onto up to 4
-    adjacent mobs. Landing the hit ALWAYS costs the caster a big chunk of their own HP (halved/thirded/
+    pre-cast values. Landing the hit ALWAYS costs the caster a big chunk of their own HP (halved/thirded/
     nearly wiped, family-dependent) regardless of overkill. Whirlwind's damage factor AND post-hit HP cost
     differ by the caster's own `_char.Alignment` (RTK reads the caster's real alignment stat directly, not
     which of the 4 aliases was cast — matches since a player would only ever be granted the alias matching
-    their own alignment). Baekho's Rage specifically (rage tier 5, checked via `_rageAmount==5`, not any
-    lesser Fury) adds a further 1.5x to Berserk/Whirlwind. `Content.SacrificeFamilyFor`/
-    `Session.CastSacrificeStrike`/`ApplyBackflow`/`ApplyOverflow`. PC targets are skipped — no PvP damage
-    path exists (same precedent as `CastDebuff`'s existing PC-immune mob-only crowd control).
+    their own alignment). Chin-Baek-Ho-Ryung (the Black Potion's 10s ward — *not* `baekhos_rage_rogue`, which
+    is a rogue fury and could never fire on these two) adds a further 1.5x to Berserk/Whirlwind. All of the
+    above now lives in `verbs.sacrifice` (`game-data/spell_verbs.lua`), hot-reloadable; the engine side is
+    `Content.SacrificeFamilyFor` + the `LuaSacFrontMob`/`LuaSacApply`/`ApplyBackflow` primitives. On a PvP
+    map the faced tile may hold a **player**, who takes the hit through the normal PvP path
+    (`HitPlayerWithSpell`: deflect roll, Deduction, death penalty); off a PvP map peers are skipped.
+  - **What happens to the OVERKILL is ERA-GATED, and off by default.** Both mechanisms that spend the
+    leftover damage were added to the live game *years* after our 2001-07-09 target, so at the shipped
+    `EraDate` all four strikes are a plain one-tile hit. The strikes themselves are era-appropriate and are
+    never gated — only the disposal of the overkill is. See `docs/common/Era-Gating.md`.
+
+    | Mechanic | Class | Introduced | Era key | Gate |
+    |---|---|---|---|---|
+    | Overflow — splash onto adjacent tiles | Warrior | 2007-04-10 | `warrior_overflow` | `Session.LuaOverflow` |
+    | Overkill ("backflow") — refund to caster | Rogue | 2008-09-18 | `rogue_overkill` | `Session.LuaBackflow` |
+
+    Two keys, not one, because the seventeen-month gap between them is itself a playable era — the window in
+    which warriors had overflow and rogues had no answer, which is the whole subject of Nexus Atlas's
+    2008-09-19 "Rogue balance" editorial. Gated in C# rather than in `verbs.sacrifice` so a script edit alone
+    cannot lift them.
+
+    **Overflow's formula is disputed and we implement the later one.** The Warrior tutor board's *Overflow
+    Damage FAQ v1.6* (Tynan) gives `(done − needed) × 0.2` to each target, **not** divided. Yttribium/Ixeus's
+    *Revised overflow formula*, posted explicitly to correct it and the only one of the two reporting
+    measurements, gives `((done − needed) ÷ targetCount) × 1.05` — split, with a 5% bonus. We implement the
+    revision, and RTK's `warrior/overflow.lua` independently lands on the same shape, which is corroboration
+    from a source that never read either post. Both agree on the rest: an "Inferno cross" of the four
+    orthogonal tiles **around the target**, computed at 0 AC then modified by each recipient's AC, and kills
+    award full exp even on a mob that was never touched directly.
+
+    **One hop only.** RTK's Lua recurses — each splashed kill re-splashes from its own tile — and we ported
+    that. The FAQ is explicit that *"a target killed by overflow damage will not cause more overflow
+    damage"*, so the recursion was removed; do not reintroduce it from the RTK Lua. Because one of the four
+    cells is always the caster's own, a ground-level splash reaches **at most three** mobs.
+
+    **Rogue overkill's ordering is load-bearing.** The strike's own HP/MP cost is charged *before* the
+    refund, because that is the only order in which the tutor board's arithmetic works: Lethal Strike takes
+    50% vita and the refund restores up to 50%, so *"a person has the potential to gain all of their current
+    stats back"*; Desperate Attack zeroes mana and the refund restores *"50% mana, nothing more"*. We had it
+    the other way round, which halved LS's refund and destroyed DA's mana refund entirely. Two distinct
+    caps, both enforced: the refund is at most 50% of the pre-cast pool, and it can never carry a pool above
+    what it held at cast time (so a wounded rogue cannot use a vita strike as a heal).
+
+    **Both work in PvP, against RTK.** *"Does overflow damage work in PK? Yes, it does"* (FAQ VI), and the
+    rogue doc's central worked example is itself a PK kill — a Desperate Attack on a player, ending *"890k
+    is split between vita/mana; 445k healed to both stats"*. RTK does neither: its `overflow.lua` is
+    mob-only, and `berserk.lua` calls `Overflow.Cast` from its mob branch but not its PC branch. The archive
+    describes the live game and outranks the reimplementation, so:
+
+    - `LuaSacApply` returns real overkill from a player kill instead of a flat 0, which is what feeds both
+      mechanisms. `ReceiveSpellDamage` now returns the damage it applied *uncapped by remaining HP*, so a
+      killing blow can report how far past zero it went; a deflect reports 0 and yields no overkill.
+    - `ApplyOverflow` splashes peers on a PvP map, sharing one pool with the adjacent mobs rather than
+      taking a second helping. **The caster is excluded explicitly** — the struck tile is adjacent to us by
+      construction, so we are always standing on one of the four cells (the FAQ draws exactly that picture),
+      and without the test every overflow would splash its own caster.
+
+    **The target's physical AC applies**, on both sides. The archive computes these strikes against armor —
+    *"XRogueX DA's iPoeti for 1800k damage to 0 AC. AC modifier -50, damage done is 900k"*, i.e. our own
+    `dmg × (1 + ac/100)`. Mob targets net in `LuaSacApply`; player targets net inside `ReceiveSpellDamage`,
+    which now armor-nets **every** PvP spell path (see the section above on spells and AC), so neither the
+    strike nor the splash pre-nets — doing so would apply it twice. Load-bearing for the rogue side in
+    particular, since the refund is computed from post-armor overkill.
+
+    **Slash and Feral Berserk overflow too, via a second hook.** The FAQ lists Slash among the warrior
+    triggers and Ixeus's revision names Feral Berserk directly (*"the usual formulae like 0.75 x V for old
+    Zerk, 0.85 x V for Feral Zerk"*); Nexus Atlas agrees the list is broad (*"overflow works on all of the
+    warrior attacks, including their Sam san attack"*). Neither is in `SacrificeAliases` — they are ordinary
+    `Damage`-archetype spells whose RTK scripts export cleanly — so they reach the splash through
+    `Session.TryArchetypeOverflow` on the `LuaMagicDamage` path instead, gated on the same
+    `Era.WarriorOverflow` key. RTK gave neither of them overflow (`warrior/slash.lua` calls
+    `removeHealthExtend` and stops, with no `Overflow.Cast` anywhere in it), so this is the archive
+    overriding the reimplementation again. **Assault is deliberately excluded** — a vita-funded warrior
+    strike like these two, and an easy fifth entry, but no source lists it, and absence of evidence must not
+    add content any more than it removes it.
+
+    > **Units.** The FAQ derives overkill from the *post-armor* hit (its example nets a Whirlwind to 787,500
+    > against −50 AC and calls 287,500 of that excess), and `TryArchetypeOverflow` is handed a netted figure
+    > to match. That was impossible while the `Damage` archetype applied no armor at all; it does now, via
+    > `Session.SpellNet`.
+
+    Separately, the FAQ flags rogue **Focused Blade** overflow as a bug and a later Atlas post records it
+    *"fixed to remove the overflow or splash damage"* — so its presence in `SacrificeAliases` is
+    period-correct for a window, not an error.
+
+    **No group exemption**, and the evidence for adding one is thinner than it first looks. RTK's
+    `slash.lua` does skip same-group players — but not in any splash. Its `getAliveObjectsInCell(m, x, y,
+    BL_PC)` reads **one cell**, the faced tile, and returns everyone standing on it; players may stack on a
+    tile in NexusTK, so that list can hold several, and the script loops them. (Note the asymmetry in the
+    same script: the mob branch takes only `d[1]`, the first mob, while the PC branch hits all of them.) So
+    the group check is "don't hit the party member standing on the enemy you're attacking", a different
+    situation from a cross-tile splash, and it says nothing directly about overflow. Our PvP layer has no
+    group concept anywhere, so overflow doesn't either — flagged because an arena splash currently hits your
+    own party.
+
+    > Related pre-existing divergence: `World.PeerAt` is a `FirstOrDefault`, so we hit exactly **one** player
+    > per tile — on the primary strike as well as the splash. RTK's stacked-tile multi-hit is not reproduced.
+
+    **Feral Berserk is unrelated** and was never multi-tile: it runs the ordinary `Damage` archetype through
+    `ResolveDamageTarget`. None of this is client-dependent either — it is server-authoritative damage end
+    to end, unaffected by whether a 4.95 or 5.33 client is connected.
   - **Poet mana-transfer families** (8 spells): Draw Energy/Harness Power/Combine Focus/Inspiration drain a
     **group member's** entire current mana into the caster (`Content.IsManaStealSpell`/`CastManaSteal`, party
     check via the existing `Party` object); Inspire/Share Energy/Bestow Power/Release Focus top off **any
@@ -3938,49 +4132,111 @@ the primary path, not a defensive guess — and since `@party` was removed, the 
 
 ### Trade (RTK "exchange" — `clif_handitem`/`clif_handgold`/`clif_parse_exchange`, clif.c:14548-15250)
 
-RTK's real exchange is a dedicated **binary trade window**: hand an item/gold to the player you're facing
-(`0x29`/`0x2A`, resolved via the SAME front-tile lookup this server's melee already uses), which opens a
-two-sided add-item/add-gold/confirm/cancel window (a further sub-opcode dispatch keyed off a `type` byte).
-None of that window's 4.95 wire format has ever been captured live — and after the profile system (§9.5)
-and the password-length client crash (see memory), guessing a new binary UI packet's shape and being wrong
-is a real way to crash the client, not just get an ignored packet.
+**The real binary window — BUILT 2026-08-21 (`Server/Session.Exchange.cs`).** Trade runs on the client's own
+purpose-built exchange window, not on a dialog stand-in. Outgoing it is opcode **`0x42`** (RTK
+`clif_startexchange` / `clif_exchange_additem` / `clif_exchange_money` / `clif_exchange_message` /
+`clif_exchange_sendok`); incoming it is **`0x4a`** (`clif_parse_exchange`). Both halves were read out of the
+two client binaries rather than copied from RTK, because RTK is a 7.x server and this packet family diverges
+from it exactly the way the bag and profile packets do (see sub-type 2 below).
 
-So this server's trade reuses the **same async dialog primitives** NPC shops/the bank already drive
-(`DlgMenu`/`DlgSay`/`DlgInput`, built on the live-confirmed `0x30`/`0x3a` NPC dialog packets — §11e) instead
-of inventing a new opcode. The RULES are still ported straight from RTK; only the presentation is a menu
-instead of a window (the exact same tradeoff already made for the buy/sell grid, §11e's "Remaining"
-note). `Server/Trade.cs` holds the plain data (`Trade`: two `Session`s + two `TradeOffer`s of items/gold/
-confirmed; `TradeOffer`).
+**Why it looked like a dead protocol.** §13a lists `0x42`'s handler as `0x451120` and notes it is *"the only
+one with a guard: `body[0]` must be `0`"*. That is true and it is the whole trap: `0x451120` only ever
+**creates** the window (a `0x288` object, ctor `0x420e80`) and returns `al=0` for every other sub-type, which
+falls through the dispatcher chain to an object that does not exist until sub-type 0 has been sent. The rest
+of the conversation is handled by the WINDOW's own packet handler, `0x4216a0` (vtable `0x4caf14` slot
+`+0x4c`): it re-checks the opcode is `0x42` and jumps `body[0]` 1..5 through the table at `0x421704` —
+1 → `0x421830`, 2 → `0x4218a0`, 3 → `0x421980`, 4 → `0x421a00`, 5 → `0x421b00`. **5.33 is the same design:**
+trampoline `0x463971` (window `0x264`, ctor `0x42b300`), window handler `0x42be60`, table `0x42bfb4`.
 
-Ported rules (`Session.TryStartTrade` / `RunTradeMenuAsync`):
+**Outgoing `0x42` bodies** (`body[0]` = sub-type; RTK's `WFIFOB(fd,5)` is `body[0]`):
 
-- Both sides must have the "exchange" flag on (`Character.Exchange`, `0x1b` sub-`0x08`), be alive, on the
-  same map, and not already in another trade — any failure replies with RTK's literal *"They have refused
-  to exchange with you"*.
-- Offering an item or gold **un-confirms both sides** — needed so a stale confirm can't sneak a changed
-  offer through; RTK's own two-step `clif_exchange_sendok` confirm dance depends on the same invariant even
-  though RTK's source doesn't show an explicit reset (its escrow model makes it structurally impossible to
-  change an offer post-confirm, which this server doesn't replicate — see next point).
-- **Deliberate simplification:** RTK escrows an item out of your bag the instant you offer it. This server
-  does **not** — offering just records a snapshot (item id/durability/custom name/amount); finalize
-  (`TransferItems`) re-checks you still actually hold it, and can only transfer LESS than promised (skipped
-  silently) if you spent it elsewhere mid-negotiation, never more. This trades one authentic behavior
-  (you can keep using an offered item until the trade actually closes) for ruling out an entire class of
-  dupe/loss bug from an unescrowed, dialog-driven reimplementation.
-- Finalizing (both sides confirm) moves gold and items in one `FinalizeTrade` call and sends RTK's literal
-  closing line, *"You exchanged, and gave away ownership of the items."*, to both sides.
-- Cancelling (either side) or disconnecting mid-trade ends it for both with RTK's *"Exchange cancelled."*
-  and nothing moves (nothing was ever escrowed, so there's nothing to roll back).
+| sub | body | notes |
+|---|---|---|
+| 0 | `00 targetId(u32BE) nameLen(u8) name[] level(u16BE)` | opens the window. Sent to BOTH sides, each naming the OTHER as `"<name>(<class>)"`. The ctor reads the id and the name and stops — **neither client reads the level**; it is sent because RTK does |
+| 1 | `01 slot(u8, 1-based)` | pops the client's own quantity prompt for that bag slot; it answers with incoming type 2 |
+| 2 | `02 side(u8) rowKey(u8) icon(u16BE) [colour(u8) — 5.33 ONLY] nameLen(u8) name[]` | adds/replaces one row. `side` 0 = the recipient's OWN list (control 5), non-0 = the other party's (control 8) |
+| 3 | `03 side(u8) gold(u32BE)` | one side's gold cell (controls 6 / 9) |
+| 4 | `04 extra(u8) len(u8) text[]` | pops an OK box and **closes the window** — the cancel/refusal path, not a status line |
+| 5 | `05 extra(u8) len(u8) text[]` | the confirm latch — see below |
 
-**Real trigger: the "Exchange" button on another player's profile window.** Same click-profile window as
-party above; clicking "Exchange" fires **`0x4a`** — RTK's `clif_parse_exchange` sub-protocol dispatcher.
-Only its `type=0` ("initiate", body `00 targetId(u32BE)`) sub-case is handled (`HandleExchangeRequest`):
-that's the one sub-message that means "open a trade with this id," which is all the button click needs to
-say once this server takes over with dialogs instead of RTK's real trade window. RTK's other sub-types
-(1 amount-ask, 2 add-item, 3 add-gold, 4 quit, 5 finish) all belong to that window and are never sent by a
-client that never saw the window opened, so they're intentionally not handled. Like `0x2e`, **`0x4a` is a
-CONFIRMED-real 4.95 opcode** (also seen in an earlier capture), not a speculative wiring. The `@trade <name>`
+**Sub-type 2 is where 4.95 and 5.33 disagree, and it is the same one-byte divergence as everywhere else.**
+4.95's parser `0x4218a0` reads the name length at `body[5]`, straight after the icon; 5.33's `0x42c240` reads
+an icon-**colour** byte there first. Send 4.95 the extra byte and it takes the colour index as the name
+length — the identical failure already lived through on `0x0F` (§11c) and on `0x39`/`0x34` (§9.5). Pinned by
+`Tests/ExchangeWireTests.cs`. The icon itself goes through the client's ordinary item-sprite resolver
+(`0x435ab0`, the `+0x4000` one), so it takes an `IconWire`-encoded frame like every other grid.
+
+**`rowKey` is a KEY, not a position.** `0x421d60` looks it up with `0x421dd0` — a linear scan comparing each
+row's stored first byte — and REPLACES the matching row, appending only when there is none. We key rows by
+the offerer's **bag slot**, so re-offering a slot rewrites its row instead of stacking up duplicates.
+
+> ⚠ **The slot on the wire is 1-BASED** (the same number `WireSlot` puts in the `0x0F` that drew the item;
+> RTK converts it with `id = RFIFOB(fd,10) - 1` before indexing its own array), while `InvItem.Slot` is
+> 0-based. Handing the raw wire byte to `InvAt` offers the item ONE ROW DOWN from the one that was clicked —
+> caught live 2026-08-22, exactly the same off-by-one the `0x29` hand gesture already accounts for.
+
+**Sub-type 5 is a two-flag latch, and the order matters.** `extra != 0` sets the window's "them" flag,
+`extra == 0` sets its "me" flag, and the box pops (and the window closes) only once BOTH are set. So the
+FIRST confirm must go out as `extra=1` **to both sides** and the finalizing one as `extra=0` to both —
+exactly what RTK's `clif_exchange_sendok` does. Get that backwards and the trade completes server-side with
+two windows still sitting open.
+
+**Incoming `0x4a` bodies** — every one carries the target id, so a stale window can be told from the live
+one: `00 id(u32BE) 00` initiate · `01 id(u32BE) slot(u8) 00` offer a bag slot · `02 id(u32BE) slot(u8)
+amount(u8) 00` offer N of it (the amount is a **u8**; 5.33 clamps it to 255 at `0x42d489`) · `03 id(u32BE)
+gold(u32BE) 00` · `04 id(u32BE) 00` cancel · `05 id(u32BE) 00` confirm. Client builders: 4.95 `0x422300` /
+`0x4229b0` / `0x4217c0` / `0x421770` / `0x421720`.
+
+**The client does more than it looks.** The window carries its own bag list (control 3) and gold edit box, so
+picking what to offer never touches the server — you get a `0x4a` type 1 with the slot already chosen, and
+the gold field posts a type 3 on focus-out. It also disables your own side's controls once you press OK
+(`0x421460` reads the confirm flags at `[win+0x27c..0x27e]`), and flashes a 10-second warning when the other
+party's gold offer **decreases** (`0x421600`) — the stock anti-scam cue, entirely client-side.
+
+`Server/Trade.cs` holds the plain data (`Trade`: two `Session`s + two `TradeOffer`s of items/gold/confirmed;
+`TradeOffer`), and `Server/Session.Exchange.cs` is the protocol. An earlier implementation drove the whole
+negotiation through `DlgMenu`/`DlgSay`/`DlgInput` because this layout had not been read yet; none of it
+remains.
+
+Ported rules (`Session.TryStartTrade` / `Session.Exchange.cs`):
+
+- The target must have the "exchange" flag on (`Character.Exchange`, `0x1b` sub-`0x08`), be alive, on the
+  same map, and not already in another trade — any failure replies with the client's own literal *"That
+  person refuses to exchange with you."* Exchanging with yourself gets RTK's line for it, *"You move your
+  items from one hand to another, but quickly get bored."*
+- Offering an item or gold **un-confirms both sides** — so a stale confirm can't sneak a changed offer
+  through. RTK gets this for free from escrow (an escrowed offer can only grow) rather than resetting
+  anything explicitly. There is no "un-confirm" packet, so a window that already latched its indicator keeps
+  showing it; that is cosmetic, because completion only ever happens on the sub-5 `extra=0` the server
+  chooses to send.
+- **Deliberate simplification:** RTK escrows an item out of your bag the instant you offer it
+  (`pc_delitem`, restored by `clif_exchange_close`). This server does **not** — offering records a snapshot
+  (bag slot / item id / durability / custom name / amount); finalize (`TransferItems`) re-checks you still
+  actually hold that slot, and can only transfer LESS than promised (skipped silently) if you spent it
+  elsewhere mid-negotiation, never more. That keeps an interrupted trade from eating anything, at the cost
+  of one authentic behavior: an offered item is still usable until the trade closes.
+- Finalizing (both sides confirm) moves gold and items in one `FinalizeTrade` call and closes both windows
+  with the sub-5 `extra=0` half of the latch, carrying RTK's literal closing line, *"You exchanged, and gave
+  away ownership of the items."*
+- Cancelling (either side) or disconnecting mid-trade closes both windows with a sub-4 box carrying RTK's
+  *"Exchange cancelled."*, and nothing moves (nothing was escrowed, so there is nothing to roll back).
+- RTK also XORs `FLAG_EXCHANGE` off on both players in `clif_startexchange` and never restores it
+  (`clif_exchange_close`/`_cleanup` both leave it flipped), silently corrupting a setting the profile window
+  displays. That is **not** ported — the "already trading" checks do the same job without touching the flag.
+
+**Real trigger: the "Exchange" button on another player's profile window — LIVE-CONFIRMED 2026-08-21.**
+Same click-profile window as party above; clicking "Exchange" fires **`0x4a`** type 0. The `@trade <name>`
 chat fallback was removed, so the profile button and the hand gesture below are the only triggers.
+
+The captured body is **six bytes**, `00 targetId(u32BE) 00`: the builder (4.95 `0x48cd00`, 5.33
+`0x4d3280`) writes the opcode, the type byte `0`, the id big-endian, a trailing `0`, and sends body length
+6. **Where the id comes from is the whole game.** The button does not remember the id from the `0x43`
+click that opened the window — it re-reads it out of the field the `0x34` reply parsed into
+(`[window+0xb24]` on 4.95, `+0xa88` on 5.33), i.e. the `u32BE` this server puts in the click-profile
+packet. That field shipped as a hardcoded `0` (documented as an unknown "scalar", §9.5) until 2026-08-21,
+so **every** exchange attempt on **both** clients arrived as `4a 00 00 00 00 00 00` and died in
+`PlayerById(0)` — the button was firing correctly the whole time. `SendClickProfile` sends the real
+`Character.Id` now.
 
 **Native hand-item / hand-gold — NOW WIRED (2026-08-17).** RTK's real hand gesture (select a bag item, face
 a tile, press `h` to hand ONE / `H`/Shift+h to give the WHOLE stack → **`0x29`**; the gold gesture →
@@ -3989,11 +4245,11 @@ sat in the logs). Wire shapes match RTK `clif_handitem`/`clif_handgold` (`clif.c
 `slot(u8, 1-based) handgive(u8: 0=hand one, 1=give stack)`, `0x2A` = `gold(u32 BE)`. Both resolve the tile
 you're facing (the shared `FrontTile()` melee uses) and branch on what's there (`Session.HandleHandItem`/
 `HandleHandGold` in `Session.Social.cs`):
-- **a PLAYER** → this is an EXCHANGE, not a give: open/continue the SAME dialog trade the `0x4a` button drives,
-  with the item/gold **pre-offered** (`OpenOrContinueTradeWith` + `RecordTradeItemOffer`/`RecordTradeGoldOffer`).
+- **a PLAYER** → this is an EXCHANGE, not a give: open/continue the SAME native trade window the `0x4a` button
+  drives, with the item/gold **pre-offered** (`OpenOrContinueTradeWith` + `RecordTradeItemOffer`/`OfferGold`).
   If they aren't accepting exchanges the attempt is refused with the client's line *"That person refuses to
   exchange with you."* (`TryStartTrade`). RTK opens its binary exchange window with `clif_exchange_additem`; we
-  fold it into the dialog trade instead, for the same reason `0x4a` does (§ above).
+  fold it into the same window `0x4a` opens, so both triggers reach one negotiation.
 - **a real MOB** (creature) → mobs don't exchange; the creature TAKES the item and **carries it** (`Mob.Handed`),
   dropping it back on the floor when it is KILLED (`World.TryDamage`) — a sword handed to a cat is recoverable by
   killing the cat. A no-kill `DespawnMob` (ridden away, quest release) does NOT drop them. **No server confirm** —
@@ -4028,14 +4284,18 @@ give-confirm/count (plus the *"S/He can't take it."* failure line) are **later-c
 any of them: handing money to a mob/NPC is simply a silent no-op (the user couldn't reproduce where the 4.95
 client shows that status text, so it was dropped rather than faked as server text).
 
-**Not yet live-tested.** Both features are ported from RTK source with no live 4.95 client session behind
-them. Confirm: clicking another player renders their real profile with the Group/Exchange buttons enabled
-per their flags, that clicking either button actually sends `0x2e`/`0x4a` with the expected body shape (both
-opcodes are confirmed real, but their exact trigger — is it really "click a button on the profile window,"
-or some other gesture? — hasn't been pinned down live). This matters more than it did: with the `@party` /
-`@trade` chat fallbacks removed, these two buttons are the only way to START either one, so if the trigger
-turns out to be something else, both are unreachable rather than merely awkward. (Leaving a group is safe
-either way — it hangs off the `0x1b` group toggle, an opcode this server already handles live.)
+**Trigger confirmed, negotiation still untested (2026-08-21).** The open question in this section used
+to be whether "click a button on the profile window" was really the trigger for `0x2e`/`0x4a`. It is: the
+window's hit-test jump table (`0x48c84c`) routes button 0 → the `0x4a` exchange send at `0x48c7c7` and
+button 1 → the `0x2e` party send at `0x48c7ae`, and a live 4.95 client was captured sending `0x4a` from
+that click. Note both handlers gate on the SAME byte — `cmp byte [edi+0xb28], 0xff`, which is the *group*
+indicator cell — so `0xff` there disables both buttons and any other value enables both; the two `u8`
+cells are display state, not per-button enables, and the real refusal is server-side (`TryStartTrade`,
+matching RTK's `clif_startexchange`).
+
+Still to confirm live: that the dialog negotiation that follows (offer / confirm / finalize) behaves, and
+the party side end-to-end. Leaving a group is safe either way — it hangs off the `0x1b` group toggle, an
+opcode this server already handles live.
 
 ---
 
@@ -4069,7 +4329,10 @@ bgNameLen   u8        <- payload[0] IS the length. There is NO leading "kind" by
                           this doc invented one; the client reads payload[0] straight into the string length).
 bgName      bgNameLen bytes
 destCount   u8
-?           u8        -- read by the parser (stored, [ebp-0x20]) but not referenced further; sent as 0
+originIndex u8        -- read by the parser (stored, [ebp-0x20]) but not referenced further on 4.95; sent as
+                          0. NOT a mystery byte: 5.33's screen reads the same field as the index of the node
+                          you are standing at, and 4.95 simply has nowhere to show it (its camera cannot
+                          scroll a 640x480 background and it has no node graph). See docs/5.x §6.7.
 -- destCount times:
   x0        u16BE     -- dot position on the background art (hand-placed per destination; NOT a warp coord)
   y0        u16BE
@@ -4080,7 +4343,9 @@ destCount   u8
   y1        u16BE
 ```
 
-`Session.SendWorldMap(bgName)` builds exactly this. **The background is `field10` = "Map of the Kingdom":**
+`Session.WorldMapBody(V495, ...)` builds exactly this. **5.33 does NOT take this body** — it appends a
+per-entry link list and replies with a narrower `0x3F`; sending the 4.95 shape there crashes the client
+outright. See `docs/5.x/Wire-Divergences.md` §6.7. **The background is `field10` = "Map of the Kingdom":**
 `Inter.dat` holds `field10.epf`..`field18.epf` (640x480 single-frame backgrounds — `field10` is the whole-
 kingdom overview, `field11`-`field18` are the per-region maps Koguryo/Buya/Kaya/Jinhan/Nagnang/Paekjae/Shilla/
 Sonhi), identified by rendering them and reading each image's baked-in title banner. `NATION_E` is only a 20KB
@@ -4418,7 +4683,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x05` | — | ✓ self entity id (server→client) |
 | `0x06` | `0x44fb90` | ✓ **map CELL-PATCH** (server→client): `startX(u16BE) startY(u16BE) width(u8) height(u8)` then `width*height` cells row-major, each = `ground(u16BE) object(u16BE)`. Writes each cell into the client's live map array and redraws the object layer over the patched rect (tail `0x44df30`, independent of ground change). This is the door open/close primitive (`SendObjRow`/`HandleOpen`) — and the 5.x terrain-stream reply. (client→server `0x06` = walk+view variant, unrelated.) |
 | `0x07` | `0x44fdb0` | ✓ **creature/monster list** (server→client): `count(u16)` + 12B entries `X Y id look color dir`; `look=0x8000\|monsterId` → Monster.epf. §7.2/§11a |
-| `0x0b` | `0x44fb70` | **no-op** |
+| `0x0b` | `0x44fb70` | **no-op** (client→server `0x0b` = **exit to select screen**, and it needs an answer — §4.2) |
 | `0x0c` | `0x4502c0` | ✓ move / animate entity |
 | `0x0d` | `0x450170` | ✓ over-head speech |
 | `0x0e` | `0x450440` | ✓ **despawn list** (server→client): `count(u8)` + `id(u32)`× (client→server = chat) |
@@ -4451,7 +4716,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x38` | — | ⏳ **unequip-window** (server→client) — §11c |
 | `0x39` | `0x4510f0` | ✓ **self-profile** ("Mind's Eye", UI `0x198`): AC/clan/title/class/legend. See §9.5 |
 | `0x3b` | `0x450fe0` | ✳ **a u16BE split into its two bytes**: reads `u16BE @body[0]`, runs the LOW byte and the HIGH byte separately through `0x44cb90(x, 0)` and hands both results to `0x44ed00`. So it is one packed pair, not a scalar — not the heartbeat companion this row used to guess |
-| `0x42` | `0x451120` | **trade/exchange window** — **gated on `body[0]==0`**, then `00 targetId(u32BE) nameLen(u8) name[] level(u16BE)` (RTK `clif_startexchange`). §13a |
+| `0x42` | `0x451120` | **trade/exchange window** — ✓ WIRED (§11l). This trampoline is gated on `body[0]==0` (`00 targetId(u32BE) nameLen(u8) name[] level(u16BE)`, RTK `clif_startexchange`) and only opens the window; subtypes 1-5 go to the window’s own handler `0x4216a0`. §13a |
 | `0x44` | `0x4511a0` | no-op (`mov al,1; ret`) |
 | `0x49` | `0x44edc0` | **"resend your profile picture"** — empty body (the trampoline passes no packet pointer). Client reads `<cwd>/users/<name>.epf` (fallback `.face`) and answers on `0x4f`. §13a |
 | `0x46` | `0x451020` | **"Power" board** (RTK `clif_sendpowerboard`): `01 count(u16BE)` then `count` × `id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]`. §13a |
@@ -4507,12 +4772,15 @@ offsets map to ours as `WFIFOB(fd, 5)` = `body[0]` (offset 4 is our `inc`).
 |---|---|---|---|---|
 | `0x2f` | `0x44f490` | temp stack obj, vtable `0x4cc3cc` | `0x452c50` | **sub-kind dispatcher** — `body[0]` selects one of 11 windows. Decoded below |
 | `0x36` | `0x4515d0` | `0x294` | `0x48a0c0` | ✓ **user list** — DECODED 2026-08-08, §13c. (This row used to read "No RTK builder exists — still undecoded". Both halves were wrong: the builder is `clif_user_list` + `intif_parse_userlist`, and the format is now pinned.) |
-| `0x42` | `0x451120` | `0x288` | `0x420e80` | trade (`DLGEXC1.EPF`). `00 targetId(u32BE) nameLen(u8) name[] level(u16BE)` |
+| `0x42` | `0x451120` | `0x288` | `0x420e80` | ✓ **trade window** (`DLGEXC1.EPF`) — WIRED 2026-08-21, §11l. Sub-0 `00 targetId(u32BE) nameLen(u8) name[] level(u16BE)` opens it; sub-types 1-5 are handled by the WINDOW (`0x4216a0`), not by this trampoline |
 | `0x46` | `0x451020` | `0x2f0` | `0x46ac00` | "Power" board, category `"P"`. `01 count(u16BE)` then `count` × `id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]` |
 
 `0x42` is the only one with a guard: `body[0]` must be `0` or the handler returns without building anything —
-which is also RTK's "initiation" subtype. Its other subtypes (`01` = ask amount, `02` = add item) drive an
-already-open window.
+which is also RTK's "initiation" subtype. **Read that guard carefully:** it does not mean the other subtypes
+are unsupported, it means they are somebody else's. `0x451120` returns `al=0` for them, the packet falls
+through the dispatcher chain, and the WINDOW it built for subtype 0 picks them up on its own handler
+`0x4216a0` (jump table `0x421704`, subtypes 1..5). Believing the guard was the whole story is what left
+trade running on dialogs for a month — see §11l for the full decode.
 
 #### `0x2f` — the merchant/menu family
 
@@ -4764,6 +5032,12 @@ is the sell grid and "withdraw" is the buy grid; there is no third window to fin
 > **4.95 vs RTK divergence, one byte per row.** RTK writes `icon(u16BE) iconColour(u8) price(u32BE)`. The 4.95
 > client reads the `u32BE` at descriptor+2 — **there is no colour byte in a shop row here**. Follow the client;
 > RTK is a 7.x server and this is exactly the kind of field later clients grew.
+>
+> **And it grew it by 5.33** (2026-08-21). The 5.x client wants RTK's shape, colour byte and all. Sending it
+> the 4.95 row shifts the price one byte late, which then swallows the name-length byte and leaves the name's
+> *first letter* serving as the length — the grocer drew `pple…` at 2565 for a 10-gold Apple. The row builder
+> is `Session.BuyGridRowBody`, version-split like `0x0F`/`0x37`; see `docs/5.x/Wire-Divergences.md` §6.9. This
+> paragraph's prediction was right, which is the reason to keep writing them down.
 
 
 **Testing these.** `@pkt <hexop> [tokens]` puts an arbitrary server→client packet on the wire — raw hex bytes,
@@ -4774,7 +5048,7 @@ length or a level *after* the text). Watch the client's own outgoing side with `
 
 **RTK is the shortcut here.** Four of these nine (`0x67`, `0x68`, `0x49`, `0x35`) were decoded from the client
 and then found verbatim in `RTK-Server/rtk/src/map/clif.c` — `clif_send_timer`, the ping, `clif_retrieveprofile`,
-`clif_paperpopup`. Two more (`0x42`, `0x46`) only have an RTK builder. Grep `WFIFOB(sd->fd, 3) = 0xNN` there
+`clif_paperpopup`. `0x46` still only has an RTK builder (`0x42` is decoded and wired — §11l). Grep `WFIFOB(sd->fd, 3) = 0xNN` there
 *before* disassembling a window's parse function.
 
 
@@ -4871,7 +5145,7 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x66` | open URL / parchment OK | ✅ done | kind 1 EXITS the game; kind 0 crashes this build |
 | `0x1b` | writable paper popup | 🔧 decoded, not wired | invSlot(u8) width(u8) height(u8) 00 len(u16BE) text[] |
 | `0x35` | paper popup | 🔧 decoded, not wired | 00 width(u8) height(u8) 00 len(u16BE) text[] |
-| `0x42` | trade window | 🔧 decoded, not wired | 00 targetId(u32BE) nameLen(u8) name[] level(u16BE); body[0] must be 0 |
+| `0x42` | trade window | ✅ done | 6 sub-types; sub-0 opens (`00 targetId(u32BE) nameLen(u8) name[] level(u16BE)`), 1-5 drive the open window. §11l |
 | `0x46` | "Power" board | 🔧 decoded, not wired | 01 count(u16BE), then id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[] |
 | `0x49` | resend profile picture | ✅ done | `@askpic`. Client answers on 0x4f; picSize 0 = it couldn't read a valid file, §9.5a |
 | `0x4b` | remote send | 🔧 decoded, not wired | len(u16BE) bytes[] — client re-emits them verbatim as its own packet |
@@ -4938,7 +5212,7 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x66` | open URL / parchment OK | DONE | kind 1 EXITS the game; kind 0 crashes this build |
 | `0x1b` | writable paper popup | DECODED, not wired | invSlot(u8) width(u8) height(u8) 00 len(u16BE) text[] |
 | `0x35` | paper popup | DECODED, not wired | 00 width(u8) height(u8) 00 len(u16BE) text[] |
-| `0x42` | trade window | DECODED, not wired | 00 targetId(u32BE) nameLen(u8) name[] level(u16BE); body[0] must be 0 |
+| `0x42` | trade window | DONE | 6 sub-types; sub-0 opens, 1-5 drive the open window. See §11l |
 | `0x46` | "Power" board | DECODED, not wired | 01 count(u16BE), then id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[] |
 | `0x49` | resend profile picture | DONE | `@askpic`; client answers on 0x4f, §9.5a |
 | `0x4b` | remote send | DECODED, not wired | len(u16BE) bytes[] - the client re-emits them verbatim as its own packet |
@@ -5361,6 +5635,12 @@ whether to redirect it or remove it outright (see `memory/nexustk-495-mythic-rab
 |---|---|
 | `0x444de0` | connection-state `0x02` handler (enter-world) |
 | `0x44a090` | game-world object ctor |
+| `0x44a640`(ish)–`0x44a744` | game-world object **teardown** — releases the cached globals, conditionally sends `0x0B`, then builds the replacement screen (§4.2) |
+| `0x44ed50` | **`0x0B` sender** (exit to select screen): `push 0xb` → `0x475bf0`, body `00`, len 1 → send. One caller: `0x44a6e2` |
+| `0x4759f0` | get the global connection object (`[0x50214c]`) — **not** a packet builder |
+| `0x475ab0` | send the staged packet |
+| `0x475bf0` / `0x475c10` | write u8 / write u16BE into a send buffer (the opcode is a `push` operand — see §16) |
+| `0x475bd0` | write the connection-object flag `[+0x3aa52]` (raised across the world→login screen swap; the receive-mode byte is `+0x3aa4c`) |
 | `0x44b9c0` | world dispatcher (opcodes 0x03–0x68) |
 | `0x44bc80` | remap table (`remap[opcode-3]`) |
 | `0x44bbd4` | jump table |
