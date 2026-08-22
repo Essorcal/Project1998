@@ -113,38 +113,27 @@ public sealed partial class Session
     }
 
     // ---- trade / exchange (RTK clif_handitem / clif_handgold / clif_parse_exchange, clif.c:14548-15250) ---
-    // See Trade.cs's doc comment for why this is dialog-driven instead of guessing RTK's real binary
-    // exchange window. Rules ported: FLAG_EXCHANGE gate on both sides, same map, not already trading, not
-    // dead; any offer change un-confirms both sides (needed so a stale confirm can't sneak a changed offer
-    // through — RTK's own two-step clif_exchange_sendok confirm dance depends on the same invariant); finalize
+    // The negotiation itself runs on the client's REAL exchange window (opcode 0x42 out, 0x4a in) — see
+    // Session.Exchange.cs for the full wire format and the RE behind it. What lives here is the part either
+    // trigger shares: the gates that decide a trade may start at all, the finalize/transfer, and the native
+    // hand-item / hand-gold gestures that fold into the same window.
+    //
+    // Rules ported from RTK: FLAG_EXCHANGE gate on the target, same map, not already trading, not dead; any
+    // offer change un-confirms both sides (RTK gets that free from escrow — see Session.Exchange.cs); finalize
     // re-validates each item is still actually held (TransferItems) since nothing is escrowed at offer time.
 
-    // A virtual "npc" purely for the dialog packet header (id/sprite/name) — never spawned or looked up.
-    // Distinct sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) — see HandleClickInfo.
-    private static readonly Mob TradeVirtualNpc = new(0xFFFFFFFD, 0, 0, 0, "Trade", 1);
-
-    // 0x4A = RTK's exchange sub-protocol dispatch (clif_parse_exchange, clif.c:14647-14754): a type(u8)
-    // byte then per-type args. Only type 0 ("initiate", body: 00 targetId(u32BE)) is wired — that's the
-    // "Exchange" button click on a profile window (§11l), which is the only sub-message the client would
-    // ever send while THIS server is driving the rest of the negotiation through dialogs instead of RTK's
-    // real trade-window sub-opcodes (types 1-5: amount-ask, add-item, add-gold, quit, finish all belong to
-    // that window, which this server never opens). CONFIRMED wire-real: 4.95 has been captured actually
-    // sending 0x4A before (see docs §9.5), unlike the untested 0x29/0x2A hand-item/hand-gold gesture.
-    private void HandleExchangeRequest(byte[] dec)
-    {
-        if (dec.Length < 5 || dec[0] != 0) return;   // only "initiate" is handled; other sub-types are no-ops
-        uint targetId = (uint)((dec[1] << 24) | (dec[2] << 16) | (dec[3] << 8) | dec[4]);
-        var target = _world.PlayerById(targetId);
-        if (target is not null) TryStartTrade(target);
-    }
-
-    /// <summary>Start-of-trade path behind the 0x4A trigger above: RTK's gates (alive, same map, not
-    /// already trading, target's FLAG_EXCHANGE on) then hands off to the dialog-driven negotiation.</summary>
+    /// <summary>Start-of-trade path behind the profile window's "Exchange" button (0x4a type 0) and behind the
+    /// hand gestures: RTK <c>clif_startexchange</c>'s gates, then the native window opens on BOTH sides, each
+    /// naming the other. Refusals are RTK's own lines and go to the status text, since there is no window yet
+    /// to put a message box on.</summary>
     private void TryStartTrade(Session target)
     {
         if (IsDead) { SendMiniText("Spirits can't do that."); return; }
         if (_trade is not null) { SendMiniText("You are already trading."); return; }
-        if (ReferenceEquals(target, this)) { SendMiniText("You can't trade with yourself..."); return; }
+        // RTK's own line for this (clif_startexchange's `target == sd->bl.id` branch). Reachable because the
+        // self-view profile carries a real id too, so its Exchange button sends OUR id back.
+        if (ReferenceEquals(target, this))
+        { SendMiniText("You move your items from one hand to another, but quickly get bored."); return; }
         if (target.CharMap != CharMap) { SendMiniText("That person refuses to exchange with you."); return; }
         if (target._trade is not null || target.IsDead || !target.WantsExchange)
         { SendMiniText("That person refuses to exchange with you."); return; }   // client's literal wording (esp. their Exchange flag off)
@@ -152,123 +141,14 @@ public sealed partial class Session
         var trade = new Trade(this, target);
         _trade = trade;
         target._trade = trade;
-        SendMiniText($"You offer to trade with {target.Snapshot().Name}.");
-        target.Notify($"{Snapshot().Name} wants to trade with you.");
-        _ = RunTradeMenuAsync(trade);
-        _ = target.RunTradeMenuAsync(trade);
-    }
-
-    /// <summary>The per-player trade menu loop — runs independently on EACH side's own Session, same
-    /// pattern as every other Dlg* flow (this session's own async dialog state; a shared Trade object is
-    /// the only cross-talk). Exits as soon as the trade is cancelled/finalized or this player dismisses the
-    /// menu (0 = cancel, matching every other DlgMenu loop in this file).</summary>
-    private async Task RunTradeMenuAsync(Trade trade)
-    {
-        var npc = TradeVirtualNpc;
-        while (!trade.Ended)
-        {
-            bool theirsConfirmed = trade.OfferOf(trade.Other(this)).Confirmed;
-            var opts = new List<string>
-            {
-                "Offer an item", "Offer gold", "Review offer",
-                trade.OfferOf(this).Confirmed ? "Un-confirm" : "Confirm trade",
-                "Cancel trade",
-            };
-            int choice = await DlgMenu(npc,
-                $"Trading with {trade.Other(this).Snapshot().Name} - they have {(theirsConfirmed ? "" : "NOT ")}confirmed.",
-                opts);
-            if (trade.Ended) return;
-
-            switch (choice)
-            {
-                case 1: await TradeOfferItem(trade); break;
-                case 2: await TradeOfferGold(trade); break;
-                case 3: await TradeReview(trade); break;
-                case 4: TradeToggleConfirm(trade); break;
-                default: EndTrade(trade, "Exchange cancelled."); return;   // 5, or 0 = dismissed the menu
-            }
-        }
-    }
-
-    private async Task TradeOfferItem(Trade trade)
-    {
-        var npc = TradeVirtualNpc;
-        var mine = trade.OfferOf(this);
-        var bag = _char.Inventory.OrderBy(i => i.Slot).ToList();
-        if (bag.Count == 0) { await DlgSay(npc, "You have nothing to offer."); return; }
-
-        int i = await DlgMenu(npc, "Which item will you offer?",
-            bag.Select(it => $"{Content.ItemById(it.ItemId)?.Name ?? "?"} x{it.Amount}").ToList());
-        if (trade.Ended || i < 1 || i > bag.Count) return;
-        var chosen = bag[i - 1];
-
-        int amount = 1;
-        if (chosen.Amount > 1)
-        {
-            var s = await DlgInput(npc, $"You have {chosen.Amount}. How many will you offer?");
-            if (trade.Ended || !int.TryParse(s, out amount) || amount <= 0) return;
-            amount = Math.Min(amount, chosen.Amount);
-        }
-
-        RecordTradeItemOffer(trade, chosen.ItemId, amount, chosen.Dura, chosen.CustomName, chosen.Owner);
-        await DlgSay(npc, $"You offer {Content.ItemById(chosen.ItemId)?.Name ?? "?"} x{amount}.");
-    }
-
-    /// <summary>Stage an item into this side's offer (shared by the dialog "Offer an item" flow and the
-    /// native hand-item gesture, <see cref="HandItemToPlayer"/>). Replaces any existing offer of the same
-    /// item, un-confirms both sides so a stale confirm can't sneak the change through, and notifies the
-    /// other party. Nothing is escrowed — <see cref="TransferItems"/> re-checks at finalize (see Trade.cs).</summary>
-    private void RecordTradeItemOffer(Trade trade, int itemId, int amount, ushort dura, string customName, string owner = "")
-    {
-        var mine = trade.OfferOf(this);
-        mine.Items.RemoveAll(x => x.ItemId == itemId && x.Dura == dura && x.CustomName == customName);
-        mine.Items.Add(new InvItem(0, itemId, amount, dura) { CustomName = customName, Owner = owner });
-        UnconfirmBoth(trade);
-        trade.Other(this).Notify($"{Snapshot().Name} offers {Content.ItemById(itemId)?.Name ?? "?"} x{amount}.");
-    }
-
-    private async Task TradeOfferGold(Trade trade)
-    {
-        var npc = TradeVirtualNpc;
-        var s = await DlgInput(npc, $"You carry {_char.Coins} coins. How much will you offer?");
-        if (trade.Ended || !uint.TryParse(s, out uint amount)) return;
-        if (amount > _char.Coins) amount = _char.Coins;
-        RecordTradeGoldOffer(trade, amount);
-        await DlgSay(npc, $"You offer {amount} gold.");
-    }
-
-    /// <summary>Stage gold into this side's offer — shared by the dialog "Offer gold" flow and the native
-    /// hand-gold gesture (<see cref="HandleHandGold"/>). Un-confirms both sides and notifies the other.</summary>
-    private void RecordTradeGoldOffer(Trade trade, uint amount)
-    {
-        trade.OfferOf(this).Gold = amount;
-        UnconfirmBoth(trade);
-        trade.Other(this).Notify($"{Snapshot().Name} offers {amount} gold.");
-    }
-
-    private async Task TradeReview(Trade trade)
-    {
-        var npc = TradeVirtualNpc;
-        await DlgSay(npc, $"You offer: {DescribeOffer(trade.OfferOf(this))}");
-        if (!trade.Ended) await DlgSay(npc, $"{trade.Other(this).Snapshot().Name} offers: {DescribeOffer(trade.OfferOf(trade.Other(this)))}");
-    }
-
-    private static string DescribeOffer(TradeOffer o)
-    {
-        var parts = o.Items.Select(it => $"{Content.ItemById(it.ItemId)?.Name ?? "?"} x{it.Amount}").ToList();
-        if (o.Gold > 0) parts.Add($"{o.Gold} gold");
-        return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+        // RTK also XORs FLAG_EXCHANGE off on both players here and never restores it (clif_exchange_close and
+        // clif_exchange_cleanup both leave it flipped), which silently corrupts a setting the profile window
+        // displays. The `_trade is not null` checks above already do the "busy" job, so that is not ported.
+        SendExchangeOpen(target);
+        target.SendExchangeOpen(this);
     }
 
     private static void UnconfirmBoth(Trade trade) { trade.OfferA.Confirmed = false; trade.OfferB.Confirmed = false; }
-
-    private void TradeToggleConfirm(Trade trade)
-    {
-        var mine = trade.OfferOf(this);
-        mine.Confirmed = !mine.Confirmed;
-        trade.Other(this).Notify(mine.Confirmed ? $"{Snapshot().Name} has confirmed the trade." : $"{Snapshot().Name} has un-confirmed.");
-        if (trade.OfferA.Confirmed && trade.OfferB.Confirmed) FinalizeTrade(trade);
-    }
 
     private static void FinalizeTrade(Trade trade)
     {
@@ -290,7 +170,7 @@ public sealed partial class Session
         if (!FlushPair(a, b))
             Log.Info($"!! trade save FAILED for '{a._char.Name}' <-> '{b._char.Name}' — both left dirty for retry");
 
-        EndTrade(trade, "You exchanged, and gave away ownership of the items.");
+        EndTrade(trade, TradeDoneText, done: true);
     }
 
     /// <summary>Moves each offered stack from <paramref name="from"/> to <paramref name="to"/>, re-checking
@@ -301,7 +181,10 @@ public sealed partial class Session
     {
         foreach (var snap in offered)
         {
-            var have = from._char.Inventory.FirstOrDefault(i => i.ItemId == snap.ItemId && i.Dura == snap.Dura && i.CustomName == snap.CustomName);
+            // Match the SLOT that was actually offered (the exchange window keys its rows by slot too), and
+            // re-check the identity in case the slot was emptied and refilled with something else mid-trade.
+            var have = from._char.Inventory.FirstOrDefault(i => i.Slot == snap.Slot && i.ItemId == snap.ItemId
+                                                             && i.Dura == snap.Dura && i.CustomName == snap.CustomName);
             if (have is null) continue;
             int amount = Math.Min(have.Amount, snap.Amount);
             if (amount <= 0) continue;
@@ -320,12 +203,22 @@ public sealed partial class Session
         }
     }
 
-    private static void EndTrade(Trade trade, string message)
+    /// <summary>Tear the trade down on both sides and CLOSE both windows. <paramref name="done"/> picks which
+    /// packet does the closing: a finished exchange lands the second half of the 0x42 sub-5 confirm latch
+    /// (sub-5 <c>extra=0</c>, which the client only acts on because it already saw <c>extra=1</c> from the
+    /// first confirm), while everything else — cancel, walk-away, disconnect — uses sub-4, which pops its box
+    /// and closes unconditionally. Both are message boxes, so no status-line notify is needed.</summary>
+    private static void EndTrade(Trade trade, string message, bool done = false)
     {
         if (trade.Ended) return;
         trade.Ended = true;
-        if (ReferenceEquals(trade.A._trade, trade)) { trade.A._trade = null; trade.A.Notify(message); }
-        if (ReferenceEquals(trade.B._trade, trade)) { trade.B._trade = null; trade.B.Notify(message); }
+        foreach (var s in new[] { trade.A, trade.B })
+        {
+            if (!ReferenceEquals(s._trade, trade)) continue;
+            s._trade = null;
+            if (done) s.SendExchangeFinish(0, message);
+            else      s.SendExchangeMessage(message);
+        }
     }
 
     // ---- native "hand item" / "hand gold" gestures (RTK clif_handitem / clif_handgold, clif.c:14452-14644) --
@@ -393,16 +286,14 @@ public sealed partial class Session
 
         var trade = OpenOrContinueTradeWith(target);
         if (trade is null) return;                                 // refused / busy (message already sent)
-        RecordTradeGoldOffer(trade, gold);
-        SendMiniText($"You offer {gold} gold.");
+        OfferGold(trade, gold);                                    // stages it and paints both windows' gold cells
     }
 
     private void HandItemToPlayer(Session target, ItemDef def, InvItem it, int amount)
     {
         var trade = OpenOrContinueTradeWith(target);
         if (trade is null) return;   // refused / already trading elsewhere (message already sent)
-        RecordTradeItemOffer(trade, def.Id, amount, it.Dura, it.CustomName, it.Owner);
-        SendMiniText($"You offer {def.Name} x{amount}.");
+        RecordTradeItemOffer(trade, it, amount);   // stages it and draws the row on both windows
     }
 
     /// <summary>Get a live trade with <paramref name="target"/> to fold a handed item/gold into: reuse an

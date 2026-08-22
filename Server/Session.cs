@@ -346,7 +346,8 @@ public sealed partial class Session
         {
             // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's
             // gone (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is
-            // exactly what a disconnect does here too — the difference is we also say so in chat).
+            // exactly what a disconnect does here too — the difference is we also close the survivor's
+            // exchange window with RTK's own "Exchange cancelled." box rather than leaving it open on a ghost).
             if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
             if (_party is not null) RemoveFromParty(this);
 
@@ -665,11 +666,10 @@ public sealed partial class Session
             // "@party" chat fallback was removed, the ONLY way into a group. Bad/garbage bytes just fail the
             // name lookup, so nothing risky is ever sent back.
             case 0x2E:                    HandlePartyInvite(dec); break;
-            // 0x4A = RTK's exchange sub-protocol (clif_parse_exchange). Only sub-type 0 ("initiate exchange
-            // with this target id") is handled — the click that opens a trade from another player's profile
-            // window (§11l); RTK's other sub-types (1-5) belong to its real trade WINDOW, which this server
-            // doesn't render (dialogs drive the rest instead). Like 0x2E, this is a real opcode 4.95 has
-            // been seen sending before, not a speculative wiring.
+            // 0x4A = RTK's exchange sub-protocol (clif_parse_exchange) — every message the client's real
+            // trade WINDOW sends: 0 initiate (the profile window's "Exchange" button), 1/2 offer a bag slot,
+            // 3 offer gold, 4 cancel, 5 confirm. The window itself is opcode 0x42 going the other way. Full
+            // wire format + the client RE behind it: Session.Exchange.cs, docs §11l.
             case 0x4A:                    HandleExchangeRequest(dec); break;
             // 0x3F = world-map click / ESC reply (§11m). LIVE-CONFIRMED 2026-07-26: body =
             // mapId(u32BE) x(u16BE) y(u16BE) 00 -- RTK's case 0x3F map-change. See HandleWorldMapSelect.
