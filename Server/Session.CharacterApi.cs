@@ -763,6 +763,9 @@ public sealed partial class Session
     internal bool HasVisibleArmor => _char.Armor != 0;
     internal void SetArmorColor(byte color) { _char.ArmorColor = color; RefreshAppearance(); SaveChar(); }
 
+    /// <summary>Is this session the 5.33 client? Read by anything whose behaviour differs per client.</summary>
+    internal bool IsV533 => _ver == ClientVersion.V533;
+
     internal bool IsEquipped => _char.Equipment.Count > 0;
     internal int FreeSlotCount => _char.MaxInv - _char.Inventory.Count;
 

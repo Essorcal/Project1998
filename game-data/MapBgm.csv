@@ -1,8 +1,8 @@
-Zone,Track,Maps,Names,Notes
-Default,earth,,,"last resort: a map in no zone AND with no warp path to one (arenas, gateways, scripted-tile dungeons)"
-Kugnae,dragon,0,Kugnae *,
-Buya,tiger,330,Buya *,
-Arctic Land,mist,137;3811-3819,Arctic *,"3811-3819 = the whole Arctic Village block (village, tavern, Othotsk Blacksmith, Taimyr Butcher, Crystalline Chapel, Kamchatka Ballroom, Laptev Crafter, Yakutsk Oracle, Lovers' Lake). Only three of those are named 'Arctic *', so the glob misses the rest; they would still reach mist through the warp-graph spill, but listing them makes it hops-0 and independent of the door wiring. Kwi-sin Shrine (324), Snow Dungeon (511) and Haeng Tavern (1013) sit outside the id block and still inherit by spill."
-Hamgyong Nam-Do,dark,114;450-459;20214,,"450-459 = the Old Shanty / Dagger-Wicked-Ruined house cluster (the Haunted Houses); 20214 = Nagnang Haunted House"
-KaMing's Encampment,sorrow,3800;3806,,
-Mythic Nexus,lake,41,,
+Zone,Track,Track5x,Maps,Names,Notes
+Default,earth,town2,,,"last resort: a map in no zone AND with no warp path to one (arenas, gateways, scripted-tile dungeons). Track5x = 902, which is what ClassicTK put on 9473 of its 9524 maps"
+Kugnae,dragon,town2,0,Kugnae *,
+Buya,tiger,town3,330,Buya *,
+Arctic Land,mist,town10,137;3811-3819,Arctic *,"3811-3819 = the whole Arctic Village block (village, tavern, Othotsk Blacksmith, Taimyr Butcher, Crystalline Chapel, Kamchatka Ballroom, Laptev Crafter, Yakutsk Oracle, Lovers' Lake). Only three of those are named 'Arctic *', so the glob misses the rest; they would still reach mist through the warp-graph spill, but listing them makes it hops-0 and independent of the door wiring. Kwi-sin Shrine (324), Snow Dungeon (511) and Haeng Tavern (1013) sit outside the id block and still inherit by spill. Track5x 973 opens on THE POLE."
+Hamgyong Nam-Do,dark,cave5,114;450-459;20214,,"450-459 = the Old Shanty / Dagger-Wicked-Ruined house cluster (the Haunted Houses); 20214 = Nagnang Haunted House. Track5x 914 is the darkest of the stock lists"
+KaMing's Encampment,sorrow,field3,3800;3806,,
+Mythic Nexus,lake,nexus,41,,"Track5x = 908, ClassicTK's own assignment for this map"

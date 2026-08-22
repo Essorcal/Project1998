@@ -28,8 +28,11 @@ every id in it happens to be <= 999, so they renumber onto 4.95's %03d with zero
 silently overwriting a track).
 
 5.33 also ships .lst/.lsr playlists in here. Those are a 5.33-only feature (its exe has
-"%08d.LST"/"%08d.LSR"; 4.95's has neither), so they are dumped to re/mus/playlists/ purely as a
-reference for how Nexon grouped the songs -- the 4.95 client can only be told one track at a time.
+"%08d.LST"/"%08d.LSR"; 4.95's has neither) and are dumped to re/mus/playlists/. They are not just a
+reference any more: the server plays them to 5.33 sessions by id, and MUST, because a single mp3 is
+handed a hardcoded loop flag of 0 on both clients and so plays once and stops. See
+docs/5.x/Wire-Divergences.md 6.8 and game-data/MusicTracks.csv. The 4.95 client can only be told one
+track at a time, which is the other half of why the 5.x soundtrack is offered to 5.33 only.
 
 Usage:
     python re/extract_mus.py                    # -> re/mus/NNN.MP3 + re/mus/playlists/

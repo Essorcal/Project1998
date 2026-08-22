@@ -197,6 +197,13 @@ public sealed class Character
     /// <summary>Clan whisper is a plain on/off in RTK (status.clan_chat), not part of the flag word.</summary>
     public bool   ClanChat  = false;
 
+    /// <summary>Which background soundtrack this character hears: false = the 12 stock midis (both clients
+    /// ship them), true = the 5.x mp3 playlists out of the 5.33 client's Mus000.dat. Set by "@music new" /
+    /// "@music old" and honoured only on a 5.33 session — the 4.95 client has the mp3 engine but none of the
+    /// files, so a 4.95 player left on `true` (by playing on both) simply keeps hearing the midis rather than
+    /// going silent. Not a 0x1b Options bit: the client's own menu has no such checkbox.</summary>
+    public bool   NewMusic = false;
+
     // Subpath chat (F2 toggle, RTK clif_handle_clickgetinfo's 0xFFFFFFFE sentinel + clif_sendsubpathmessage):
     // a server-wide chat channel reaching every OTHER online player who shares this character's ClassName and
     // also has it on. Off by default, like RTK. See Session.ToggleSubpathChat / DoSubpathChat.

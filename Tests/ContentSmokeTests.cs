@@ -1,3 +1,4 @@
+using System.Linq;
 using Server;
 using Xunit;
 
@@ -853,6 +854,37 @@ public class ContentSmokeTests
             Assert.True(fx!.Archetype is "Buff" or "TargetBuff",
                 $"'{key}' is archetype '{fx.Archetype}' — it no longer reaches the verb that owns the slot guard");
             Assert.Equal("might", fx.BuffStat);
+        }
+    }
+
+    /// <summary>The two soundtracks are separate id SPACES, not one list. mp3 2 ("buyeo", 5.x) and midi 2
+    /// ("dragon", stock) are different songs on different 0x19 channels, so a set-blind lookup would hand a
+    /// 5.x player the midi. A name unique to one set must still resolve from the other, so a player can name
+    /// anything he can hear without switching first.</summary>
+    [Fact]
+    public void TheTwoSoundtracksAreSeparateIdSpaces()
+    {
+        EnsureLoaded();
+
+        Assert.Equal("dragon", Content.FindTrack("2", Content.MusicSet.Old)!.Name);
+        Assert.Equal("buyeo",  Content.FindTrack("2", Content.MusicSet.New)!.Name);
+        Assert.Equal(121,      Content.FindTrack("underwater", Content.MusicSet.Old)!.Id);
+    }
+
+    /// <summary>Every zone's 5.x pick must be a PLAYLIST (a .LST/.LSR id), not a single mp3. Both clients hand
+    /// the play function a hardcoded loop flag of 0 for a single track, so an mp3 assigned as background music
+    /// plays once and then leaves the area silent — and nothing reports that.</summary>
+    [Fact]
+    public void EveryFiveXMapPickIsALoopingPlaylist()
+    {
+        EnsureLoaded();
+
+        Assert.NotEmpty(Content.BgmZones);
+        foreach (var z in Content.BgmZones)
+        {
+            Assert.True(z.Type5x == 1, $"zone '{z.Zone}' resolved its Track5x to a midi ({z.Track5x})");
+            Assert.True(Content.MusicTracks.Any(t => t.Set == Content.MusicSet.New && t.Id == z.Track5x && t.Playlist),
+                $"zone '{z.Zone}' 5.x track {z.Track5x} is not a playlist — it will play once and stop");
         }
     }
 }

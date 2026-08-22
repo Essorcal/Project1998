@@ -140,7 +140,27 @@ public sealed partial class Session
         Log.Info($"   -> @hitsnd {id}");
     }
 
-    // The two channels need DIFFERENT packet bodies, because they leave the 0x19 handler at different points:
+    // ---- 0x19 background music ------------------------------------------------------------------------
+    //
+    // 5.33 DIVERGES on the type-1 (mp3) body — see docs/5.x/Wire-Divergences.md. Its handler is 0x46a420
+    // (world dispatcher case 0x19 @ 0x463870) and the type-1 arm reads a flat, TLV-free record:
+    //
+    //     19 | 01 | 00 | id(u16BE @+3) | fallback(u16BE @+5) | vol(u8 @+7)
+    //
+    // then calls the resolver 0x4a6360(id, fallback, vol, 0), which sprintf()s THREE candidate names in the
+    // wide format strings at 0x5541dc/f0/0x554204 and takes the first that exists in Mus000.dat:
+    //
+    //     %08d.LST -> an ordered ten-track playlist; plays entry 1, loop flag forced to 1
+    //     %08d.LSR -> the same file format; starts at a RANDOM entry (rand % count + 1), loop flag 1
+    //     %08d.MP3 -> one song, and the loop flag here is the packet's 4th arg, which the handler
+    //                 hardcodes to 0 — so a single mp3 plays ONCE and stops. Background music must be a
+    //                 playlist id; single ids are for auditioning with "@music <name>".
+    //
+    // `fallback` is only reached when none of the three exist, and id 0 matches nothing, so
+    // id = fallback = 0 lands on 0x4a5f80(0, …) -> stop-current-then-return: that is the 5.33 mp3 stop.
+    //
+    // Everything below this line is the 4.95 shape, unchanged. The two channels need DIFFERENT packet
+    // bodies there, because they leave 4.95's 0x19 handler at different points:
     //
     //   type 2 (midi) — handled inline at 0x450b1b and RETURNS at 0x450bab, before the TLV tail. It reads
     //                   bgm(u16BE)@+3 and volume@+5 and nothing else, so a bare 6-byte body is correct.
@@ -172,16 +192,21 @@ public sealed partial class Session
     private byte _bgmType;
 
     /// <summary>Stop one audio channel (1 = mp3, 2 = midi). The midi player has a dedicated stop path in the
-    /// handler itself (type 2 + bgm 0), so it needs no TLV; the mp3 goes through mode 0 = StopSound, which
-    /// ignores the id entirely on the type-1 branch (it stops the single player instance).</summary>
+    /// handler itself (type 2 + bgm 0), so it needs no TLV; on 4.95 the mp3 goes through mode 0 = StopSound,
+    /// which ignores the id entirely on the type-1 branch (it stops the single player instance), and on 5.33
+    /// through the id-0 resolver miss described above.</summary>
     private void SendMusicStop(byte channel)
     {
         if (channel == 0) return;
-        var d = channel == 1
-            ? new List<byte> { 0x01, 0x03, 0x00, 0x01, 100, 0x03, 0x00, ModeStop, 0x00, 0x00, 0x00, 0x00 }
-            : new List<byte> { channel, 0x00, 0x00, 0x00, 100 };
-        SendMap(0x19, _gameInc++, d.ToArray(), $"music(0x19) STOP channel={channel}");
+        SendMap(0x19, _gameInc++, MusicStopBody(_ver, channel), $"music(0x19) STOP channel={channel}");
     }
+
+    /// <summary>The 0x19 body that silences one audio channel (1 = mp3, 2 = midi), per client. Static and
+    /// internal so <c>Tests/ClientVersionWireTests</c> can pin both shapes.</summary>
+    public static byte[] MusicStopBody(ClientVersion ver, byte channel) =>
+        channel != 1                ? new byte[] { channel, 0x00, 0x00, 0x00, 100 }
+      : ver == ClientVersion.V533   ? new byte[] { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 100 }
+                                    : new byte[] { 0x01, 0x03, 0x00, 0x01, 100, 0x03, 0x00, ModeStop, 0x00, 0x00, 0x00, 0x00 };
 
     private void SendMusic(ushort bgm, byte type = 2, byte volume = 100)
     {
@@ -193,8 +218,28 @@ public sealed partial class Session
         // `bgm == 0` arm fires regardless of which channel that was), so there is nothing left to send.
         if (bgm == 0) { _bgm = 0; _bgmType = 0; return; }
 
+        SendMap(0x19, _gameInc++, MusicBody(_ver, bgm, type, volume),
+                $"music(0x19) bgm={bgm} type={type} vol={volume}");
+        _bgm = bgm;
+        _bgmType = type;
+    }
+
+    /// <summary>The 0x19 body that starts <paramref name="bgm"/> on <paramref name="type"/>, per client — the
+    /// three shapes described at the top of this file. Static and internal so the wire tests can pin them.</summary>
+    public static byte[] MusicBody(ClientVersion ver, ushort bgm, byte type, byte volume)
+    {
         var d = new List<byte>();
-        if (type == 1)
+        if (type == 1 && ver == ClientVersion.V533)
+        {
+            d.Add(0x01);                // +1 type 1 = mp3/playlist (client opens %08d.LST / .LSR / .MP3)
+            d.Add(0x00);                // +2 unread on this arm
+            d.AddRange(Be(bgm));        // +3 track or playlist id (u16BE)
+            d.AddRange(Be((ushort)0));  // +5 fallback id, reached only if NOTHING resolves for +3. 0 = stop,
+                                        //    i.e. a track we don't actually have goes quiet instead of
+                                        //    driving the player at a resource that isn't there.
+            d.Add(volume);              // +7 volume 0..100
+        }
+        else if (type == 1)
         {
             d.Add(0x01);                              // +1 type 1 = mp3 (client loads "<bgm:D3>.MP3")
             d.Add(0x03);                              // +2 P0=3 -> TLV tail starts after the 5-byte header
@@ -211,9 +256,7 @@ public sealed partial class Session
             d.AddRange(Be(bgm));    // +3 track id (u16 BE)
             d.Add(volume);          // +5 volume 0..100
         }
-        SendMap(0x19, _gameInc++, d.ToArray(), $"music(0x19) bgm={bgm} type={type} vol={volume}");
-        _bgm = bgm;
-        _bgmType = type;
+        return d.ToArray();
     }
 
     // 0x20 = time-of-day (RTK clif_sendtime, clif.c:4524): hour(u8 0..23) year(u8). This server sent a
@@ -270,6 +313,17 @@ public sealed partial class Session
     // branch) and re-seed after every synced toggle.
     internal void SendOptions()
     {
+        // 5.33 DIVERGENCE (live-captured 2026-08-21): do NOT re-seed the 5.33 options window. Its inbound
+        // 0x1b toggles carry the SAME sub-commands as 4.95 (0x04 advice / 0x05 magic / 0x06 weather /
+        // 0x09 fast-move / 0x0D sounds — verified from the server log), and each toggle already updates
+        // that client's own radio correctly, so the server state stays right without any seed. But 0x23
+        // is NOT handled by any of 5.33's three receive dispatchers (all resolve it to the shared no-op),
+        // so our 4.95-format seed lands somewhere it shouldn't and visibly flips the NEIGHBOURING radios —
+        // the reported "toggling Magic also flips Weather/Wisdom/Sound" intermingling. 5.33 tracks its own
+        // option state client-side; sending nothing is correct. If 5.33's real seed opcode/format is ever
+        // found, seed through that instead. 4.95 keeps the re-seed it needs (stored-byte sync, §9.5).
+        if (_ver == ClientVersion.V533) return;
+
         byte Box(int sub) => (byte)(_char.HasSetting(sub) ? 1 : 0);   // 1 = feature ON (OFF-radio unchecked → ON shown)
         // Fast-move (bit 9) is now persisted in SettingFlags like the other three (set by the sub-9 toggle), so
         // it reads uniformly here and survives relog. Fast-move behaviour stays client-authoritative per walk;
@@ -290,19 +344,27 @@ public sealed partial class Session
     // send) — it gets away with it because its Maps table gives 9799 of 9850 maps the SAME track, so the
     // client is nearly always being told to (re)start the song it's already playing. We assign per area
     // instead, which means we have to do the "is it already playing?" check ourselves.
+    /// <summary>Which soundtrack this session hears. The 5.x set needs the 5.33 client's Mus000.dat, so a
+    /// 4.95 session stays on the midis no matter what the character's stored preference says (the same
+    /// account can be played from either client).</summary>
+    private Content.MusicSet MusicSet =>
+        _char.NewMusic && IsV533 ? Content.MusicSet.New : Content.MusicSet.Old;
+
     private void PlayMapMusic(ushort mapId)
     {
-        var pick = Content.BgmFor(mapId);
+        var set = MusicSet;
+        var pick = Content.BgmFor(mapId, set);
         if (pick is null)
         {
             if (_bgm != NoBgm) return;          // sticky: keep the area's song playing into its buildings
-            pick = Content.DefaultBgm;          // ... unless nothing is playing at all yet
+            pick = Content.DefaultBgmFor(set);  // ... unless nothing is playing at all yet
             if (pick is null) return;
         }
         var (bgm, type) = pick.Value;
         if (bgm == _bgm && type == _bgmType) return;   // same song AND same channel — leave it playing
         SendMusic(bgm, type);
-        Log.Info($"   -> music map {mapId} -> {bgm}.mid ({Content.TrackName(bgm)}) zone '{Content.BgmZoneOf(mapId)}' (0x19)");
+        Log.Info($"   -> music map {mapId} -> {(type == 1 ? $"{bgm:D8}" : $"{bgm}.mid")} " +
+                 $"({Content.TrackName(bgm, set)}) zone '{Content.BgmZoneOf(mapId)}' set={set} (0x19)");
     }
 
     // Login music. The entry burst runs while the client is still building its world object and hasn't even
@@ -328,20 +390,27 @@ public sealed partial class Session
     // nominal "full", but the midi path compresses it, so values ABOVE 100 (up to 255) push it louder.
     // "@music 0" / "@music stop" stops the music. Bare "@music" lists the names.
     //
+    // "@music old" / "@music new" pick which of the two SOUNDTRACKS the server draws map music from, and the
+    // choice is remembered on the character (Character.NewMusic):
+    //
+    //   old — the 12 stock midis. Both clients ship them (4.95 NexusTK.snd / 5.33 Snd.dat). The default.
+    //   new — the 25 mp3s and 52 playlists in the 5.33 client's Mus000.dat. 5.33 ONLY: 4.95 has the mp3
+    //         engine but not one of the files, so offering it there just means silence. Refused with an
+    //         explanation on a 4.95 session rather than accepted-and-ignored.
+    //
     // The trailing "mp3"/"midi" token overrides the track's own channel (0x19 type), which is what makes this
-    // command a calibration tool for the SECOND music backend:
+    // command a calibration tool for the second music backend:
     //
-    //   midi (type 2) — the 12 stock songs baked into NexusTK.snd. HARD-CAPPED at ids 1..12 by the client
-    //                   itself (`cmp si, 0xd / jge bail` at 0x4588b4), so no id above 12 will ever play here.
-    //   mp3  (type 1) — the client's XAudio MPEG decoder, fed a LOOSE FILE named "%03d.MP3" (the wide string
-    //                   at 0x4f3cc0) from the client's own directory. No id cap; the only guard is bgm > 0.
-    //                   Populate the files with re/extract_mus.py, which lifts them out of the 5.33 client's
-    //                   Mus000.dat and renumbers them onto this %03d naming.
+    //   midi (type 2) — the 12 stock songs. HARD-CAPPED at ids 1..12 by BOTH clients (`cmp si, 0xd / jge
+    //                   bail`, 4.95 @0x4588b4 / 5.33 @0x475286), so no id above 12 will ever play here.
+    //   mp3  (type 1) — 4.95: its XAudio MPEG decoder, fed a LOOSE FILE named "%03d.MP3" (the wide string at
+    //                   0x4f3cc0) from the client's own directory — populate those with re/extract_mus.py.
+    //                   5.33: an archive lookup in Mus000.dat, and the id may name a playlist (see the wire
+    //                   comment above SendMusicStop). No id cap on either; the only guard is bgm > 0.
     //
-    // Looping is NOT yet confirmed on the mp3 path: the loop flag is the 4th arg of 0x4798c0, and which of
-    // the play-wrapper's branches we land in (0x463ab0, dispatching on the sound object's mode fields, which
-    // come from the 0x19 TLV) decides whether it is pushed as 1 or 0. Some branches pass 1, some pass 0 — so
-    // a track may simply stop at the end instead of repeating. That is what this command is for: find out.
+    // A single mp3 does not loop on either client — the loop flag reaching the play function is a hardcoded
+    // 0 (4.95's mode-1 branch @0x463ae8, 5.33's handler pushing 0 as 0x4a6360's 4th arg). Only the 5.33
+    // playlist ids get loop=1, which is why the map assignments in MapBgm.csv use them.
     private void PlayMusicCmd(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
@@ -356,22 +425,32 @@ public sealed partial class Session
             parts.RemoveAt(i);
         }
 
+        var set = MusicSet;
+
         if (parts.Count < 1)
         {
             var names = string.Join(", ", Content.MusicTracks
-                .Where(t => t.Name.Length > 0).OrderBy(t => t.Name)
+                .Where(t => t.Set == set && t.Name.Length > 0).OrderBy(t => t.Name)
                 .Select(t => $"{t.Name}({t.Id})"));
             SendLog("usage: @music <name|id> [vol 0-255, default 100] [mp3|midi]   (@music 0 or @music stop = stop)");
-            SendLog($"tracks: {names}");
-            SendLog("midi = the 12 stock songs (ids 1-12 only); mp3 = a loose NNN.MP3 in the client dir");
+            SendLog($"tracks ({(set == Content.MusicSet.New ? "new" : "old")}): {names}");
+            if (set == Content.MusicSet.New)
+                SendLog("the -seq names are the same ten tracks in order; the plain ones start at a random song");
+            SendLog(IsV533
+                ? $"soundtrack: {(set == Content.MusicSet.New ? "NEW (5.x mp3 playlists)" : "OLD (the 12 stock midis)")}" +
+                  "   — switch with '@music old' or '@music new'"
+                : "soundtrack: OLD (the 12 stock midis) — the 5.x set needs a 5.x client, which ships the files");
             var zone = Content.BgmZoneOf(_char.Map);
             SendLog($"now playing: {(_bgm == NoBgm ? "nothing" : Describe(_bgm))}" +
                     (zone.Length > 0 ? $"   (this map's zone: {zone})" : "   (this map has no zone)"));
             return;
         }
         if (parts[0].Equals("stop", StringComparison.OrdinalIgnoreCase)) { SendMusic(0); SendLog("music stopped"); return; }
+        if (parts[0].Equals("old", StringComparison.OrdinalIgnoreCase) ||
+            parts[0].Equals("new", StringComparison.OrdinalIgnoreCase))
+        { SetMusicSet(parts[0].Equals("new", StringComparison.OrdinalIgnoreCase)); return; }
 
-        var track = Content.FindTrack(parts[0]);
+        var track = Content.FindTrack(parts[0], set);
         if (track is null) { SendLog($"'{parts[0]}' is not a track name or number (@music with no argument lists them)"); return; }
 
         byte type = forceType ?? track.Type;
@@ -380,18 +459,45 @@ public sealed partial class Session
         // The client silently ignores a midi id it can't hold, which reads as "the server is broken" — say so.
         if (type == 2 && track.Id > 12)
             SendLog($"note: track {track.Id} is above the client's midi cap (1-12) and will be silent — try 'mp3'");
+        if (type == 1 && !IsV533)
+            SendLog($"note: this client has no {track.Id:D3}.MP3 unless you installed one (re/extract_mus.py)");
 
         SendMusic(track.Id, type, vol);
         SendLog(track.Id == 0 ? "music stopped"
                               : $"playing {Describe(track.Id)} (vol {vol}, " +
-                                $"{(type == 1 ? $"mp3 -> {track.Id:D3}.MP3" : $"midi -> {track.Id}.mid")})");
-        Log.Info($"   -> @music bgm={track.Id} type={type} vol={vol}");
+                                $"{(type != 1 ? $"midi -> {track.Id}.mid" : IsV533 ? $"mp3 -> {track.Id:D8}" : $"mp3 -> {track.Id:D3}.MP3")}" +
+                                $"{(track.Playlist ? ", a 10-track playlist" : type == 1 ? ", plays once" : "")})");
+        Log.Info($"   -> @music bgm={track.Id} type={type} vol={vol} set={set}");
 
-        static string Describe(ushort id)
+        string Describe(ushort id)
         {
-            var name = Content.TrackName(id);
+            var name = Content.TrackName(id, set);
             return name.Length > 0 ? $"{name} (track {id})" : $"track {id}";
         }
+    }
+
+    /// <summary>"@music old" / "@music new" — pick the soundtrack for this character and restart the current
+    /// map's track from it. 4.95 is refused outright: it ships none of the 5.x files, so switching there would
+    /// be a silent world rather than a different one.</summary>
+    private void SetMusicSet(bool wantNew)
+    {
+        if (wantNew && !IsV533)
+        {
+            SendLog("the new soundtrack lives in the 5.x client's Mus000.dat — this client doesn't have it.");
+            SendLog("staying on the old music (the 12 stock songs).");
+            return;
+        }
+        if (_char.NewMusic == wantNew)
+        {
+            SendLog($"already on the {(wantNew ? "new" : "old")} music.");
+            return;
+        }
+        _char.NewMusic = wantNew;
+        _bgm = NoBgm;                        // forget what was playing so the new set's track is actually sent
+        PlayMapMusic(_char.Map);
+        SendLog(wantNew ? "new music: the 5.x soundtrack (mp3 playlists)."
+                        : "old music: the original twelve songs.");
+        Log.Info($"   -> @music set={(wantNew ? "new" : "old")} for {_char.Name}");
     }
 
     // Play raw client sound ids (0x19 sfx) to calibrate the 4.95 NexusTK.snd id space. RTK's per-spell sound

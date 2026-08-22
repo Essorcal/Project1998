@@ -616,17 +616,30 @@ public static partial class Content
     // RTK/RE geometry that used to be hard-coded in the game logic, moved to flat files so it hot-reloads via
     // @reload like every other registry. Consumers read these Content.* properties.
 
-    // The stock client's background tracks, by id and by NAME (the midis in NexusTK.snd are numbered, but the
-    // songs have real names — see MusicTracks.csv, which is also what lets "@music mist" work). Type is the
-    // 0x19 channel: 2 = midi (everything the stock client ships), 1 = mp3/lsr.
-    public sealed record MusicTrack(ushort Id, string Name, byte Type);
+    // Which of the two soundtracks a track belongs to. They are separate id SPACES, not one list — mp3 ids
+    // 2/3/4 in the 5.x set collide with midi ids 2/3/4 in the old one — so every lookup takes a set.
+    //   Old = the 12 stock midis (1.mid..12.mid). In NexusTK.snd on 4.95 and Snd.dat on 5.33, so BOTH
+    //         clients can play them, and they stay the default.
+    //   New = the 25 mp3s + 52 playlists in the 5.33 client's Mus000.dat. 5.33 ONLY: the 4.95 client has
+    //         an mp3 engine (see Session.SendMusic) but ships none of the files, so offering it there
+    //         would be silence. See docs/5.x/Wire-Divergences.md §"0x19 music".
+    public enum MusicSet { Old, New }
+
+    // The client's background tracks, by id and by NAME (the files are numbered, but the songs have real
+    // names — see MusicTracks.csv, which is also what lets "@music mist" work). Type is the 0x19 channel:
+    // 2 = midi, 1 = mp3. Playlist is true for the 5.x .LST/.LSR entries, where the id names a list of ten
+    // tracks the client cycles by itself rather than one song — which is also the only way to get music that
+    // LOOPS out of the mp3 channel (a single mp3 is handed a hardcoded loop flag of 0 by both clients).
+    public sealed record MusicTrack(ushort Id, string Name, byte Type, MusicSet Set, bool Playlist);
     public static IReadOnlyList<MusicTrack> MusicTracks { get; private set; } = new List<MusicTrack>();
 
     // Area -> BGM track (BgmFor). A design assignment, not RTK data: RTK's own Maps table has one track
     // (902) on 9799 of 9850 maps, and the 4.95 client files carry no map->track table at all. Zones match by
     // explicit map id/range first, then by map-NAME glob; a map in no zone keeps whatever is already playing
     // (see Session.PlayMapMusic) so walking into a shop or a cave never restarts the song. See MapBgm.csv.
-    public sealed record BgmZone(string Zone, ushort Track, byte Type,
+    // Track/Type is the Old (midi) pick, Track5x/Type5x the New (5.x mp3-playlist) one; a zone that names no
+    // Track5x falls back to its midi, which on 5.33 still plays.
+    public sealed record BgmZone(string Zone, ushort Track, byte Type, ushort Track5x, byte Type5x,
         IReadOnlyList<(ushort Lo, ushort Hi)> Maps, IReadOnlyList<string> Names);
     public static IReadOnlyList<BgmZone> BgmZones { get; private set; } = new List<BgmZone>();
 
@@ -634,12 +647,20 @@ public static partial class Content
     // other map inherits its NEAREST zone through the warp graph. That spill is what makes a building or a
     // cave play its area's theme without being listed, and — unlike leaving it to "whatever is already
     // playing" — it also works when you LOG IN inside one, where there is no previous song to inherit.
-    public sealed record BgmPick(ushort Track, byte Type, string Zone, int Hops);
+    public sealed record BgmPick(ushort Track, byte Type, ushort Track5x, byte Type5x, string Zone, int Hops);
     private static Dictionary<ushort, BgmPick> _bgmByMap = new();
 
     /// <summary>The track to start on a zone-less map when nothing is playing yet (a fresh session): the
     /// "Default" row of MapBgm.csv. Null leaves such a session silent until it reaches a zoned map.</summary>
     public static (ushort bgm, byte type)? DefaultBgm { get; private set; }
+
+    /// <summary>The <see cref="MusicSet.New"/> half of the "Default" row (its <c>Track5x</c>).</summary>
+    public static (ushort bgm, byte type)? DefaultBgmNew { get; private set; }
+
+    /// <summary>The fresh-session fallback for one soundtrack, falling back to the midi when the Default row
+    /// names no 5.x track.</summary>
+    public static (ushort bgm, byte type)? DefaultBgmFor(MusicSet set) =>
+        set == MusicSet.New ? DefaultBgmNew ?? DefaultBgm : DefaultBgm;
 
     // Return tiles for Return / yellow_scroll / qui_hyang (Session.ReturnToInn). Grouped by Kugnae/Buya/
     // Nagnang (chosen by nation), Wilderness (the Neutral nation's), and Sanhae/Hausson (bound by a mayor
@@ -1034,7 +1055,7 @@ public static partial class Content
             .ToDictionary(e => e.key, e => e.door);
         ArenaDoors = arenaDoors;
         MusicTracks = LoadMusicTracks(ResolvePath("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
-        (BgmZones, DefaultBgm) = LoadBgmZones(ResolvePath("P1998_MAP_BGM", "MapBgm.csv"));
+        (BgmZones, DefaultBgm, DefaultBgmNew) = LoadBgmZones(ResolvePath("P1998_MAP_BGM", "MapBgm.csv"));
         _bgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
         Inns = LoadInns(ResolvePath("P1998_INNS", "Inns.csv"));
         ForageAreas = LoadForageAreas(ResolvePath("P1998_FORAGE", "ForageAreas.csv"));
@@ -1294,11 +1315,18 @@ public static partial class Content
             && SpellFx.TryGetValue("heal_mage", out var hl) && EffectAnim(hl, 3) == 5;   // unaligned heal → 5
 
         // --- Background music: track names + area zoning (MusicTracks.csv / MapBgm.csv) ---
-        Line($"--- Music: {MusicTracks.Count(t => t.Name.Length > 0)} named tracks, {BgmZones.Count} zones, " +
+        Line($"--- Music: {MusicTracks.Count(t => t.Set == MusicSet.Old && t.Name.Length > 0)} named midis + " +
+             $"{MusicTracks.Count(t => t.Set == MusicSet.New && !t.Playlist)} 5.x mp3s / " +
+             $"{MusicTracks.Count(t => t.Playlist)} playlists, {BgmZones.Count} zones, " +
              $"{_bgmByMap.Count} maps resolved, " +
-             $"default {(DefaultBgm is null ? "(none)" : $"{DefaultBgm.Value.bgm} '{TrackName(DefaultBgm.Value.bgm)}'")} ---");
+             $"default {(DefaultBgm is null ? "(none)" : $"{DefaultBgm.Value.bgm} '{TrackName(DefaultBgm.Value.bgm)}'")}" +
+             $" / 5.x {(DefaultBgmNew is null ? "(none)" : $"{DefaultBgmNew.Value.bgm} '{TrackName(DefaultBgmNew.Value.bgm, MusicSet.New)}'")} ---");
         foreach (var q in new[] { "mist", "tiger", "mon", "6", "10", "nope" })
             Line($"    @music {q,-6} -> " + (FindTrack(q) is { } t ? $"track {t.Id} '{t.Name}' type{t.Type}" : "(no match)"));
+        // The 5.x set is a SEPARATE id space: 2/3/4 must resolve to the mp3s, not the midis of the same id.
+        foreach (var q in new[] { "2", "underwater", "nexus", "902", "pole" })
+            Line($"    @music {q,-10} (new) -> " + (FindTrack(q, MusicSet.New) is { } t
+                ? $"track {t.Id} '{t.Name}' type{t.Type}{(t.Playlist ? " playlist" : "")}" : "(no match)"));
         // (map, expected track) — the six areas the assignment was specified for, plus a building inside each
         // hub (which must resolve to the SAME track so walking through a door never restarts the song).
         var bgmWant = new (ushort Map, string Track)[]
@@ -1334,6 +1362,32 @@ public static partial class Content
         Line($"    {resolved}/{Maps.Count} maps resolved to a track; the rest keep whatever is playing " +
              $"(and start on the default at login)");
 
+        // The 5.x soundtrack rides the SAME zone/spill resolution, so the only thing that can go wrong is a
+        // zone whose Track5x didn't resolve — which shows up as a midi id leaking onto the mp3 channel. Every
+        // 5.x map pick must be a PLAYLIST: a single mp3 is handed loop=0 by the client and stops after one
+        // song, which is exactly the bug this check exists to catch.
+        var bgm5xWant = new (ushort Map, string Track)[]
+        {
+            (0, "town2"), (2, "town2"),           // Kugnae / Walsuk Tavern (spill)
+            (330, "town3"), (332, "town3"),       // Buya / Spring Tavern (spill)
+            (137, "town10"), (1013, "town10"),    // Arctic Land / Haeng Tavern (spill)
+            (114, "cave5"), (457, "cave5"),       // Hamgyong Nam-Do / Ruined House
+            (3800, "field3"),                     // KaMing's Encampment
+            (41, "nexus"),                        // Mythic Nexus — ClassicTK's own 908
+        };
+        bool bgm5xOk = true;
+        foreach (var (map, want) in bgm5xWant)
+        {
+            var got = BgmFor(map, MusicSet.New);
+            string name = got is null ? "(none)" : TrackName(got.Value.bgm, MusicSet.New);
+            bool list = got is not null
+                && MusicTracks.Any(t => t.Set == MusicSet.New && t.Id == got.Value.bgm && t.Playlist);
+            bool hit = name.Equals(want, StringComparison.OrdinalIgnoreCase) && got?.type == 1 && list;
+            bgm5xOk &= hit;
+            Line($"    {(hit ? "ok " : "XX ")}map {map,-6} (5.x) -> {name,-8} " +
+                 $"id {(got?.bgm.ToString() ?? "-"),-4} type{got?.type} {(list ? "playlist" : "SINGLE — will not loop")} (want {want})");
+        }
+
         // --- PvP arena doors: every configured door must lead somewhere renderable, and each destination
         // must have its return leg in Warps.csv (a one-way door strands the player in the arena).
         Line($"--- Arena doors: {ArenaDoors.Count} doors / {ArenaDoorTiles.Count} tiles ---");
@@ -1353,7 +1407,7 @@ public static partial class Content
 
         bool ok = Maps.Count > 0 && Mobs.Count > 0 && Items.Count > 0
                   && FindMap("kugnae") is not null && FindMob("rabbit") is not null && spellsOk
-                  && bgmOk && sticky && doorsOk;
+                  && bgmOk && bgm5xOk && sticky && doorsOk;
         Line(ok ? "SELFTEST: PASS" : "SELFTEST: FAIL (empty registry or missing expected entry)");
     }
 
@@ -1361,12 +1415,19 @@ public static partial class Content
     // The stock 4.95 client keeps its audio in NexusTK.snd, which ships exactly 12 background tracks
     // (1.mid .. 12.mid); the 0x19 music packet plays one by id with type 2 = MIDI. There is no original
     // map->track table in the client files, so we assign them ourselves — by AREA, not by map (MapBgm.csv).
+    //
+    // The 5.33 client keeps those same 12 midis (in Snd.dat) AND a second, larger soundtrack in Mus000.dat:
+    // 25 mp3s plus 52 playlists, played over 0x19 type 1. That is the MusicSet.New half of every table here,
+    // and it is 5.33-only because 4.95 ships none of those files. Players opt in per character with
+    // "@music new" (Session.PlayMusicCmd); the midis stay the default for everyone.
 
-    /// <summary>The background track for a map: (bgm id, type 2 = MIDI), or null only for a map that no zone
-    /// claims AND that has no warp path to one — in which case the caller keeps whatever is already playing
-    /// (see Session.PlayMapMusic).</summary>
-    public static (ushort bgm, byte type)? BgmFor(ushort mapId) =>
-        _bgmByMap.TryGetValue(mapId, out var p) ? (p.Track, p.Type) : null;
+    /// <summary>The background track for a map in one soundtrack: (bgm id, 0x19 type), or null only for a map
+    /// that no zone claims AND that has no warp path to one — in which case the caller keeps whatever is
+    /// already playing (see Session.PlayMapMusic).</summary>
+    public static (ushort bgm, byte type)? BgmFor(ushort mapId, MusicSet set = MusicSet.Old) =>
+        _bgmByMap.TryGetValue(mapId, out var p)
+            ? (set == MusicSet.New ? (p.Track5x, p.Type5x) : (p.Track, p.Type))
+            : null;
 
     /// <summary>The zone a map's music comes from, for "@music" feedback ("" if none). Maps that inherited
     /// it through the warp graph rather than being listed are shown with their hop distance.</summary>
@@ -1387,13 +1448,13 @@ public static partial class Content
             foreach (var (lo, hi) in z.Maps)
                 for (int id = lo; id <= hi; id++)
                     if ((Maps.ContainsKey((ushort)id) || lo == hi) && !byMap.ContainsKey((ushort)id))
-                        byMap[(ushort)id] = new BgmPick(z.Track, z.Type, z.Zone, 0);
+                        byMap[(ushort)id] = new BgmPick(z.Track, z.Type, z.Track5x, z.Type5x, z.Zone, 0);
 
         foreach (var z in BgmZones)
             foreach (var pat in z.Names)
                 foreach (var m in Maps.Values)
                     if (!byMap.ContainsKey(m.Id) && GlobMatch(m.Name, pat))
-                        byMap[m.Id] = new BgmPick(z.Track, z.Type, z.Zone, 0);
+                        byMap[m.Id] = new BgmPick(z.Track, z.Type, z.Track5x, z.Type5x, z.Zone, 0);
 
         // Map-level adjacency from the tile warp table, treated as undirected: a one-way drop still tells us
         // the two maps are the same neighbourhood, and most warps are paired anyway.
@@ -1428,20 +1489,31 @@ public static partial class Content
     }
 
     /// <summary>A track by name ("mist") or by number ("6"); prefix match as a fallback so "mon" finds
-    /// "monkey". Null when nothing matches.</summary>
-    public static MusicTrack? FindTrack(string query)
+    /// "monkey". Null when nothing matches.
+    ///
+    /// <para><paramref name="set"/> is searched FIRST and the other set second, so the id spaces can overlap
+    /// (midi 2 = "dragon", mp3 2 = "buyeo") while a player in either mode can still name any track he can
+    /// hear. An id with no row resolves to an unnamed track in <paramref name="set"/> rather than to null —
+    /// the client will happily play a number we have never given a name.</para></summary>
+    public static MusicTrack? FindTrack(string query, MusicSet set = MusicSet.Old)
     {
         query = query.Trim();
         if (query.Length == 0) return null;
+        var (mine, theirs) = (MusicTracks.Where(t => t.Set == set), MusicTracks.Where(t => t.Set != set));
         if (ushort.TryParse(query, out var id))
-            return MusicTracks.FirstOrDefault(t => t.Id == id) ?? new MusicTrack(id, "", 2);   // unnamed ids still play
-        return MusicTracks.FirstOrDefault(t => t.Name.Equals(query, StringComparison.OrdinalIgnoreCase))
-            ?? MusicTracks.FirstOrDefault(t => t.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase));
+            return mine.FirstOrDefault(t => t.Id == id)
+                ?? theirs.FirstOrDefault(t => t.Id == id)
+                ?? new MusicTrack(id, "", set == MusicSet.New ? (byte)1 : (byte)2, set, false);
+        return mine.FirstOrDefault(t => t.Name.Equals(query, StringComparison.OrdinalIgnoreCase))
+            ?? theirs.FirstOrDefault(t => t.Name.Equals(query, StringComparison.OrdinalIgnoreCase))
+            ?? mine.FirstOrDefault(t => t.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+            ?? theirs.FirstOrDefault(t => t.Name.StartsWith(query, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>The name of a track id, or "" if it has none (only some of the 12 stock midis are named).</summary>
-    public static string TrackName(ushort id) =>
-        MusicTracks.FirstOrDefault(t => t.Id == id)?.Name ?? "";
+    /// <summary>The name of a track id within one soundtrack, or "" if it has none (only some of the 12 stock
+    /// midis are named).</summary>
+    public static string TrackName(ushort id, MusicSet set = MusicSet.Old) =>
+        MusicTracks.FirstOrDefault(t => t.Id == id && t.Set == set)?.Name ?? "";
 
     // Case-insensitive '*' glob (no '?', no escaping — map names have neither). Used for the MapBgm.csv
     // name patterns, e.g. "Buya *" matching "Buya Kan Shop" but not "Buyan Stables".
@@ -2713,7 +2785,14 @@ public static partial class Content
 
     // ---- Location / warp geometry loaders (see the Content.* registries near MythicCaves) ----------------
 
-    // MusicTracks.csv: Track,Name[,Type] — the id<->name table for the stock midis. Type defaults to 2 (midi).
+    // MusicTracks.csv: Track,Name,Kind[,Set] — the id<->name table for both soundtracks. `Kind` is what the
+    // client will be asked to open, and it implies the rest:
+    //   midi    -> 0x19 type 2, MusicSet.Old   (N.mid, ids 1-12 only — both clients hard-cap there)
+    //   mp3     -> 0x19 type 1, MusicSet.New   (one song; does NOT loop, see the MusicTrack doc)
+    //   list    -> 0x19 type 1, MusicSet.New   (%08d.LST — ten tracks in order, loops)
+    //   shuffle -> 0x19 type 1, MusicSet.New   (%08d.LSR — the same ten, starting at a random one, loops)
+    // An explicit `Set` column overrides the Kind's default set; a row with neither reads as an old midi,
+    // which is what every row of this file was before the 5.x set existed.
     private static List<MusicTrack> LoadMusicTracks(string? path)
     {
         var list = new List<MusicTrack>();
@@ -2721,27 +2800,41 @@ public static partial class Content
         {
             if (!ushort.TryParse(col.GetValueOrDefault("Track"), out var id)) continue;
             var name = col.GetValueOrDefault("Name", "").Trim();
-            if (!byte.TryParse(col.GetValueOrDefault("Type"), out var type)) type = 2;
-            list.Add(new MusicTrack(id, name, type));
+            var kind = col.GetValueOrDefault("Kind", "").Trim().ToLowerInvariant();
+            bool playlist = kind is "list" or "shuffle";
+            byte type = kind is "mp3" or "list" or "shuffle" ? (byte)1 : (byte)2;
+            // Legacy `Type` column still wins if a deployed CSV predates `Kind`.
+            if (kind.Length == 0 && byte.TryParse(col.GetValueOrDefault("Type"), out var t)) type = t;
+            var set = col.GetValueOrDefault("Set", "").Trim()
+                .Equals("new", StringComparison.OrdinalIgnoreCase) || type == 1 ? MusicSet.New : MusicSet.Old;
+            list.Add(new MusicTrack(id, name, type, set, playlist));
         }
         return list;
     }
 
-    // MapBgm.csv: Zone,Track,Maps,Names — one row per AREA. `Track` is a MusicTracks.csv name or a raw id;
-    // `Maps` is a ';'-separated list of ids and lo-hi ranges; `Names` is a ';'-separated list of map-name
-    // globs. The row whose Zone is "Default" is pulled out as the fresh-session fallback (DefaultBgm).
-    private static (List<BgmZone>, (ushort, byte)?) LoadBgmZones(string? path)
+    // MapBgm.csv: Zone,Track,Track5x,Maps,Names — one row per AREA. `Track` (the old/midi soundtrack) and
+    // `Track5x` (the 5.x one) are each a MusicTracks.csv name or a raw id; `Maps` is a ';'-separated list of
+    // ids and lo-hi ranges; `Names` is a ';'-separated list of map-name globs. The row whose Zone is
+    // "Default" is pulled out as the fresh-session fallback (DefaultBgm / DefaultBgmNew).
+    private static (List<BgmZone>, (ushort, byte)?, (ushort, byte)?) LoadBgmZones(string? path)
     {
         var zones = new List<BgmZone>();
-        (ushort, byte)? def = null;
+        (ushort, byte)? def = null, defNew = null;
 
         foreach (var col in ReadCsv(path))
         {
             var zone = col.GetValueOrDefault("Zone", "").Trim();
             var track = FindTrack(col.GetValueOrDefault("Track", ""));
             if (zone.Length == 0 || track is null) continue;
+            // No Track5x -> the zone's midi, which 5.33 plays too (its Snd.dat carries the same 12 files).
+            var track5x = FindTrack(col.GetValueOrDefault("Track5x", ""), MusicSet.New) ?? track;
 
-            if (zone.Equals("Default", StringComparison.OrdinalIgnoreCase)) { def = (track.Id, track.Type); continue; }
+            if (zone.Equals("Default", StringComparison.OrdinalIgnoreCase))
+            {
+                def = (track.Id, track.Type);
+                defNew = (track5x.Id, track5x.Type);
+                continue;
+            }
 
             var maps = new List<(ushort, ushort)>();
             foreach (var part in col.GetValueOrDefault("Maps", "").Split(';', StringSplitOptions.RemoveEmptyEntries))
@@ -2753,9 +2846,9 @@ public static partial class Content
             var names = col.GetValueOrDefault("Names", "")
                 .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
-            zones.Add(new BgmZone(zone, track.Id, track.Type, maps, names));
+            zones.Add(new BgmZone(zone, track.Id, track.Type, track5x.Id, track5x.Type, maps, names));
         }
-        return (zones, def);
+        return (zones, def, defNew);
     }
 
     private static Dictionary<string, IReadOnlyList<InnDef>> LoadInns(string? path)

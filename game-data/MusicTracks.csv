@@ -1,13 +1,90 @@
-Track,Name,Type,Notes
-1,dark,2,
-2,dragon,2,
-3,earth,2,
-4,horse,2,
-5,lake,2,
-6,mist,2,
-7,monkey,2,
-8,ox,2,
-9,pig,2,
-10,,2,"unnamed — the one stock midi with no known song name; play it with !music 10"
-11,sorrow,2,
-12,tiger,2,
+Track,Name,Kind,Set,Notes
+1,dark,midi,old,
+2,dragon,midi,old,
+3,earth,midi,old,
+4,horse,midi,old,
+5,lake,midi,old,
+6,mist,midi,old,
+7,monkey,midi,old,
+8,ox,midi,old,
+9,pig,midi,old,
+10,,midi,old,"unnamed — the one stock midi with no known song name; play it with @music 10"
+11,sorrow,midi,old,
+12,tiger,midi,old,
+2,buyeo,mp3,new,"5.x set. ID3 title 부여성 (Buyeo Fortress). Ids 2/3/4 collide with the midi set — that is why Set exists"
+3,goguryeo1,mp3,new,"ID3 고구려 던전 #1"
+4,goguryeo2,mp3,new,"ID3 고구려 던전 #2"
+103,border,mp3,new,"ID3 고구려-중국 국경지대 (the Goguryeo/China borderland)"
+107,cdungeon2,mp3,new,"ID3 중국던전 #2"
+108,cdungeon3,mp3,new,"ID3 중국던전 #3"
+109,cdungeon4,mp3,new,"ID3 중국던전 #4 — in no stock playlist"
+116,pole,mp3,new,"ID3 THE POLE"
+117,mystery,mp3,new,"ID3 is literally '???' — Nexon shipped it untitled; the name is ours"
+118,,mp3,new,"ID3 title is '-'; in no stock playlist"
+119,forest,mp3,new,"ID3 FOREST version2"
+121,underwater,mp3,new,"ID3 underwater"
+123,kfield,mp3,new,"ID3 K FIELD"
+131,prince,mp3,new,"ID3 prince, dressed in blue"
+133,puredark,mp3,new,"ID3 king of the pure dark"
+135,plain1,mp3,new,"ID3 N PLAIN #1"
+136,plain2,mp3,new,"ID3 N PLAIN #2"
+137,plain3,mp3,new,"ID3 N PLAIN #3"
+141,castle,mp3,new,"ID3 SOUTH CHINESE CASTLE"
+142,seaside,mp3,new,"ID3 SEASIDE TOWN"
+144,mtd1,mp3,new,"ID3 Mt.D1"
+145,mtd2,mp3,new,"ID3 Mt.D2"
+148,deepforest,mp3,new,"ID3 deep forest"
+149,waitfour,mp3,new,"ID3 wait four hours"
+999,winds,mp3,new,"ID3 winds (take 2) — in no stock playlist"
+901,town1,shuffle,new,"103 2 116 103 117 103 136 2 103 121"
+902,town2,shuffle,new,"116 117 2 103 117 103 135 121 103 136 — ClassicTK put this on 9473 of its 9524 maps"
+903,town3,shuffle,new,"136 2 103 135 117 116 103 136 121 135"
+904,field1,shuffle,new,"108 119 121 123 145 149 123 141 108 142"
+905,field2,shuffle,new,"145 123 121 144 149 108 119 136 142 135"
+906,cave1,shuffle,new,"141 3 131 142 148 133 107 4 145 123"
+907,cave2,shuffle,new,"107 4 145 142 3 141 131 148 123 133"
+908,nexus,shuffle,new,"108 103 2 123 117 116 137 103 108 135 — ClassicTK's own pick for Mythic Nexus (map 41)"
+909,cave3,shuffle,new,"4 107 133 148 145 148 4 131 119 123"
+910,cave4,shuffle,new,"119 123 145 133 107 4 131 148 141 149"
+911,town4,shuffle,new,"117 103 135 108 119 149 123 116 121 136"
+912,town5,shuffle,new,"103 116 2 135 103 136 108 117 103 121"
+913,town6,shuffle,new,"103 116 117 2 137 103 2 116 117 137"
+914,cave5,shuffle,new,"145 133 131 3 149 145 133 149 131 3 — the darkest of the lists"
+970,town7,shuffle,new,"103 137 117 2 103 116 117 137 2 103"
+971,town8,shuffle,new,"117 2 103 117 116 2 137 103 116 103"
+972,town9,shuffle,new,"103 123 116 137 136 103 119 2 116 123"
+973,town10,shuffle,new,"116 136 108 119 2 103 121 117 103 123 — opens on THE POLE"
+980,field3,shuffle,new,"108 119 121 123 135 136 141 142 144 149"
+981,field4,shuffle,new,"119 121 117 137 142 144 149 108 136 123"
+982,field5,shuffle,new,"144 145 123 136 108 119 121 142 116 137"
+983,field6,shuffle,new,"145 149 135 121 144 108 142 121 137 141"
+990,cave6,shuffle,new,"144 136 121 3 131 145 133 123 142 107"
+991,cave7,shuffle,new,"4 107 131 133 145 3 121 136 142 148"
+992,cave8,shuffle,new,"121 145 133 136 131 4 3 107 148 145"
+993,cave9,shuffle,new,"3 145 136 149 144 123 4 107 131 148"
+801,town1-seq,list,new,"same ten tracks as 901, played in order instead of shuffled"
+802,town2-seq,list,new,
+803,town3-seq,list,new,
+804,field1-seq,list,new,
+805,field2-seq,list,new,
+806,cave1-seq,list,new,
+807,cave2-seq,list,new,
+808,nexus-seq,list,new,
+809,cave3-seq,list,new,
+810,cave4-seq,list,new,
+811,town4-seq,list,new,
+812,town5-seq,list,new,
+813,town6-seq,list,new,
+814,cave5-seq,list,new,
+870,town7-seq,list,new,
+871,town8-seq,list,new,
+872,town9-seq,list,new,
+873,town10-seq,list,new,
+880,field3-seq,list,new,
+881,field4-seq,list,new,
+882,field5-seq,list,new,
+883,field6-seq,list,new,
+890,cave6-seq,list,new,
+891,cave7-seq,list,new,
+892,cave8-seq,list,new,
+893,cave9-seq,list,new,

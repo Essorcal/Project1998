@@ -131,7 +131,8 @@ public sealed partial class Session
         // @music is the one PLAYER-tier command in this block: it's a personal jukebox, not a probe. Every
         // 0x19 it sends goes to the caller's own session, so the loudest a player can be is loud at himself,
         // and the client's own Options menu has no way to pick a track. The rest of the block stays GM-only.
-        P("music",    (s, a) => s.PlayMusicCmd(a),  "[name|id] [vol] [mp3|midi] | stop", "play a music track (no argument lists them)"),
+        P("music",    (s, a) => s.PlayMusicCmd(a),  "[name|id] [vol] [mp3|midi] | old|new | stop",
+                                                    "play a music track, or pick the soundtrack (no argument lists them)"),
         G("snd",      (s, a) => s.SoundProbe(a),    "<id>",      "play a raw client sound id"),
         G("swingsnd", (s, a) => s.SetSwingSound(a), "<id>",      "set + audition the melee swing sfx"),
         G("fistsnd",  (s, a) => s.SetFistSound(a),  "<id>",      "set + audition the unarmed swing sfx"),
