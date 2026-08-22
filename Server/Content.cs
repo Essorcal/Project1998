@@ -3535,6 +3535,32 @@ public static partial class Content
     /// are absent on purpose — the sacrifice verb applies theirs.)</summary>
     public static bool TakesChinBaekHoRyung(SpellDef sp) => ChinBaekHoRyungStrikes.Contains(sp.Key);
 
+    // ---- OVERFLOW from outside the sacrifice family ---------------------------------------------------------
+    // The Overflow FAQ's warrior trigger list is "Slash, Berserk, Whirlwind, Siege", and Ixeus's revision adds
+    // Feral Berserk by name — "the usual formulae like 0.75 x V for old Zerk, 0.85 x V for Feral Zerk". Nexus
+    // Atlas agrees the list is broad: "Warrior overflow works on all of the warrior attacks, including their
+    // Sam san attack" (Siege).
+    //
+    // Berserk / Whirlwind / Siege reach the splash from inside `verbs.sacrifice`. These two cannot: they are
+    // ordinary Damage-archetype spells (their RTK scripts export cleanly, which is exactly why they are not in
+    // SacrificeAliases — see PostCastVitaKeep), so the splash needs its own hook on that path. RTK gave neither
+    // of them overflow — warrior/slash.lua calls removeHealthExtend and stops, with no Overflow.Cast in it at
+    // all — so this list is the archive overriding the reimplementation, the same call as the PvP splash.
+    //
+    // Neither spell has alignment aliases (Spells.csv has exactly one row each), so the set is literal.
+    // Era-gated with everything else (Era.WarriorOverflow), hence inert at the default 2001-07-09 date.
+    //
+    // ASSAULT IS DELIBERATELY ABSENT. It is a vita-funded warrior strike like these two and would be an easy
+    // fifth entry, but no source lists it as an overflow trigger — and "absence of evidence never adds
+    // content" cuts the same way here as it does for an era row.
+    private static readonly HashSet<string> ArchetypeOverflowStrikes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "slash_warrior", "feral_berserk_warrior",
+    };
+    /// <summary>Does this spell splash its overkill even though it runs the generic <c>Damage</c> archetype
+    /// rather than <c>verbs.sacrifice</c>? Slash and Feral Berserk only — see the note above.</summary>
+    public static bool OverflowsFromDamageArchetype(SpellDef sp) => ArchetypeOverflowStrikes.Contains(sp.Key);
+
     // ---- flag-shaped wards that the engine ACTUALLY reads --------------------------------------------------
     // A ward set into the setDuration/hasDuration namespace does nothing on its own — it is a name and an
     // expiry. It matters only if something looks it up. Every one of these was, for a long time, written by a

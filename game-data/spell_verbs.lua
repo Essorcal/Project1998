@@ -862,9 +862,21 @@ end
 
 -- Sacrifice strikes (RTK rogue/lethal_strike + desperate_attack, warrior/berserk + whirlwind & reskins): trade
 -- the caster's OWN pre-cast HP/MP for one oversized facing-tile hit. Damage, mana, cooldown, and post-hit HP
--- cost all differ by family (ctx.sacrificeFamily); Baekho's Rage adds x1.5 to the warrior pair. Overkill either
--- "backflows" up to half back to the rogue (HP+MP) or "overflows" as an AoE splash for the warrior pair. NOTE:
--- casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
+-- cost all differ by family (ctx.sacrificeFamily); Baekho's Rage adds x1.5 to the warrior pair.
+--
+-- OVERKILL — the damage the killing blow did not need — is spent differently by class, and BOTH mechanisms
+-- are ERA-GATED OFF at our 2001-07-09 target date, because both were added to the live game years later:
+--   * ctx:overflow  warrior, 2007-04-10 — splashes it onto the tiles around the TARGET (era warrior_overflow)
+--   * ctx:backflow  rogue,   2008-09-18 — refunds it to the caster as vita+mana  (era rogue_overkill)
+-- Both primitives self-gate in C# (Session.LuaOverflow / LuaBackflow), so calling them unconditionally here
+-- is correct: at an era that has them they fire, otherwise they are no-ops and the strike is a plain one-tile
+-- hit. Do NOT add an era check here — the gate is deliberately not script-liftable. See Server/Era.cs.
+--
+-- ORDER: the strike's own HP/MP cost is charged BEFORE the refund. The rogue-board doc's arithmetic only
+-- works this way round (LS takes 50% vita then overkill refills 50%; DA zeroes mana then overkill refills to
+-- half). Refunding first — which this used to do — halved LS's refund and wiped DA's mana refund entirely.
+--
+-- NOTE: casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
 function verbs.sacrifice(ctx, row)
   local fam = ctx.sacrificeFamily
   local mana, aether
@@ -895,11 +907,8 @@ function verbs.sacrifice(ctx, row)
 
   if ctx:sacFrontMob() then
     local overkill = ctx:sacApply(damage)
-    if overkill > 0 then
-      if fam == "LethalStrike" or fam == "DesperateAttack" then ctx:backflow(overkill, preHp, preMp)
-      else ctx:overflow(overkill) end
-    end
-    -- post-hit self HP cost — reads CURRENT hp, which a rogue backflow may have topped up first
+
+    -- 1. the strike's own cost. Charged FIRST -- see the ORDER note in the header.
     local newHp
     if     fam == "LethalStrike"    then newHp = math.ceil(ctx.hp / 2)
     elseif fam == "DesperateAttack" then newHp = math.ceil(ctx.hp / 2)
@@ -908,6 +917,12 @@ function verbs.sacrifice(ctx, row)
     else                                 newHp = ctx.hp end
     ctx:setHp(newHp)
     if fam == "DesperateAttack" then ctx:setMana(0) end
+
+    -- 2. then spend the overkill. Both branches no-op outside their era (see header).
+    if overkill > 0 then
+      if fam == "LethalStrike" or fam == "DesperateAttack" then ctx:backflow(overkill, preHp, preMp)
+      else ctx:overflow(overkill) end
+    end
   end   -- nothing in front: the mana and cooldown are still spent (RTK), and nothing is said
   return true
 end

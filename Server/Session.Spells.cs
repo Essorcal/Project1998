@@ -705,7 +705,16 @@ public sealed partial class Session
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
         var (mob, pc) = ResolveDamageTarget(targetId);
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
-        if (pc is not null) return HitPlayerWithSpell(pc, amt, mana, sp);   // PvP / self-cast
+        if (pc is not null)   // PvP / self-cast
+        {
+            // Read position and HP BEFORE the blow: a kill drops them to ghost form, and any overflow is
+            // centred on where the strike landed.
+            uint prePcHp = pc._char.Hp;
+            int px = pc._char.X, py = pc._char.Y;
+            if (!HitPlayerWithSpell(pc, amt, mana, sp, out int landedPvp)) return false;
+            TryArchetypeOverflow(sp, landedPvp - (int)prePcHp, px, py);
+            return true;
+        }
         // A DEFLECT STILL COSTS THE MANA. The spell was cast and the power left you; the target resisting it
         // is their achievement, not a refund. (RTK returns before its debit here, but a free deflect means a
         // resistant target costs nothing to keep hammering, which drains the mechanic of any meaning.)
@@ -713,7 +722,10 @@ public sealed partial class Session
         if (sp.CanFail && RollDeflect(mob!)) { SendStats(); SendMiniText("The magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
-        if (_world.TryDamage(_char.Map, mob!, amt, out bool died, _char.Id))
+        int preMobHp = (int)mob!.Hp;
+        int mx = mob.X, my = mob.Y;
+        int net = SpellNet(amt, mob!);
+        if (_world.TryDamage(_char.Map, mob!, net, out bool died, _char.Id))
         {
             if (fx is not null) BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
             ShowDamageResult(mob!.Id, mob, died);
@@ -722,9 +734,30 @@ public sealed partial class Session
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardKillExp(reward, _char.Map, mob!.X, mob.Y, mob.Key);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
+            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {net} (raw {amt}, ac {mob.Ac}, died={died})");
+            // Overkill off the NET figure, which is what the FAQ's own worked example uses.
+            TryArchetypeOverflow(sp, net - preMobHp, mx, my);
         }
         return true;
+    }
+
+    /// <summary>Overflow for the two strikes that splash but do NOT run <c>verbs.sacrifice</c> — Slash and
+    /// Feral Berserk (<see cref="Content.OverflowsFromDamageArchetype"/>). Era-gated identically to the
+    /// sacrifice families' <see cref="LuaOverflow"/>, so it is inert at the default 2001-07-09 date, and a
+    /// no-op for every other spell on this path.</summary>
+    ///
+    /// <remarks>ON UNITS: the caller must pass POST-ARMOR overkill, which is what the FAQ's worked example
+    /// uses — it nets a Whirlwind to 787,500 against a -50 AC target and calls 287,500 of that excess. That
+    /// used to be impossible here, because the Damage archetype applied no armor at all; since
+    /// <see cref="SpellNet"/> it does, and both call sites hand over a netted figure. (One simplification
+    /// shared with <see cref="LuaSacApply"/>: neither accounts for <c>TryDamage</c> amplifying the blow
+    /// afterwards against a sleeping target, so overkill slightly understates in that case.)</remarks>
+    private void TryArchetypeOverflow(SpellDef sp, int overkill, int x, int y)
+    {
+        if (overkill < 1) return;
+        if (!Content.OverflowsFromDamageArchetype(sp)) return;
+        if (!Era.Has(Era.WarriorOverflow)) return;
+        ApplyOverflow(overkill, x, y, sp);
     }
 
     // ---- AREA (4-way) spells: the mage zap ladder and the poet heal ladder --------------------------------
@@ -2266,15 +2299,28 @@ public sealed partial class Session
     internal int LuaSacApply(SpellDef sp, int damage)
     {
         var fam = Content.SacrificeFamilyFor(sp) ?? Content.SacrificeFamily.Berserk;
-        // PvP: the strike landed on a player. Route through the canonical PvP damage path (deflect roll,
-        // Deduction, death penalty) — mana was already spent in the verb, so pass 0. No overkill backflow /
-        // AoE overflow against a peer (return 0), and the caster still pays the post-hit HP cost in the verb.
+        // PvP: the strike landed on a player. Routed through the canonical PvP damage path (deflect roll,
+        // Deduction, death penalty) — mana was already spent in the verb, so pass 0.
+        //
+        // OVERKILL IS RETURNED, so the strike feeds backflow/overflow off a player kill exactly as off a mob
+        // kill. This used to return 0 flat. The Rogue tutor doc's central example is a PK kill and ends "890k
+        // is split between vita/mana; 445k healed to both stats", and the Overflow FAQ answers "Does overflow
+        // damage work in PK? Yes, it does" — so refusing overkill in PvP was our invention, not the game's.
+        // Both consumers stay era-gated (see LuaOverflow / LuaBackflow).
+        //
+        // The target's armor is NOT applied here: ReceiveSpellDamage nets it at intake for every PvP path
+        // (see the note there), so netting it again would land twice. The archive's worked example — "DA's
+        // iPoeti for 1800k damage to 0 AC. AC modifier -50, damage done is 900k" — is satisfied there.
         if (_frontStrikePc is { } pc)
         {
-            if (HitPlayerWithSpell(pc, damage, 0, sp))
-                BroadcastFx(pc._char.Id, SacrificeAnim(fam), SacrificeSound(fam));
-            Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) on player '{pc._char.Name}' dmg {damage} (pvp)");
-            return 0;
+            uint prePcHp = pc._char.Hp;
+            if (!HitPlayerWithSpell(pc, damage, 0, sp, out int landedPvp)) return 0;   // refused (not a PvP map)
+            BroadcastFx(pc._char.Id, SacrificeAnim(fam), SacrificeSound(fam));
+            // A deflect reports landed=0, which makes this negative — no overkill from a resisted strike.
+            int pvpOverkill = landedPvp - (int)prePcHp;
+            Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) on player '{pc._char.Name}' " +
+                     $"raw {damage}, landed {landedPvp}, overkill {pvpOverkill} (pvp)");
+            return pvpOverkill;
         }
         if (_frontStrikeMob is not { } mob) return 0;
         int netDamage = Combat.ApplyArmor(damage, mob.Ac, floor: -95);
@@ -2286,9 +2332,24 @@ public sealed partial class Session
         Log.Info($"      {sp.Name}(lua) -> sacrifice strike ({fam}) dmg {netDamage} overkill {overkill}");
         return overkill;
     }
-    internal void LuaBackflow(int overkill, int preHp, int preMp) => ApplyBackflow(overkill, (uint)preHp, (uint)preMp);
-    internal void LuaOverflow(SpellDef sp, int overkill) =>
-        ApplyOverflow(overkill, _frontStrikeX, _frontStrikeY, Content.SacrificeFamilyFor(sp) ?? Content.SacrificeFamily.Berserk);
+    // ERA GATES. Both of these mechanics postdate our 2001-07-09 target by years — warrior overflow by six
+    // (2007-04-10), the rogue refund by seven (2008-09-18) — so both are OFF in the default configuration and
+    // the four strikes resolve as a plain one-tile hit. The gate lives here rather than in spell_verbs.lua so
+    // it cannot be lifted by a script edit alone; see Server/Era.cs and docs/common/Era-Gating.md.
+    //
+    // Deliberately TWO keys, not one. KRU shipped the rogue side seventeen months after the warrior side as an
+    // explicit balance patch, so 2007-04-10..2008-09-18 is a real era in which warriors had overflow and rogues
+    // had nothing — the window the whole path-balance controversy happened in. One key could not express it.
+    internal void LuaBackflow(int overkill, int preHp, int preMp)
+    {
+        if (!Era.Has(Era.RogueOverkill)) return;
+        ApplyBackflow(overkill, (uint)preHp, (uint)preMp);
+    }
+    internal void LuaOverflow(SpellDef sp, int overkill)
+    {
+        if (!Era.Has(Era.WarriorOverflow)) return;
+        ApplyOverflow(overkill, _frontStrikeX, _frontStrikeY, sp);
+    }
 
     internal bool LuaAmbushMob()
     {
@@ -2613,44 +2674,116 @@ public sealed partial class Session
     private static int SacrificeAnim(Content.SacrificeFamily fam) => SacrificeFx(fam).anim;
     private static int SacrificeSound(Content.SacrificeFamily fam) => SacrificeFx(fam).sound;
 
-    // RTK rogue/backflow.lua: half the OVERKILL (post-armor damage beyond what was needed to kill) refunds
-    // to the caster as HP and as MP, each capped at half of whatever HP/MP the caster had BEFORE this cast.
+    // ROGUE OVERKILL — "backflow" in this codebase (2008-09-18, era-gated: see LuaBackflow). A killing Lethal
+    // Strike or Desperate Attack refunds the damage it did not need to the caster, "divided equally between
+    // vitality and mana" (Rogue tutor board, Amaroq/Destyn). So each pool gets HALF the overkill, not half
+    // between them — the doc's own example is 100k damage on a 50k mob refunding 25k to each.
+    //
+    // TWO caps, both from that doc, and they are different rules:
+    //   * amount — "a rogue can at max get 50% of their current stats back", current meaning at cast time;
+    //   * ceiling — "never healed to more than the amount they had at the time of casting the attack. A rogue
+    //     with 50/25 stats, 100/50 if fully healed, will never be able to heal themself past 50/25."
+    // The ceiling is against the PRE-CAST pools, not the character's maximum, which is why EffMaxHp/EffMaxMp
+    // are only the outer bound here. A wounded rogue cannot use a vita strike as a heal.
+    //
+    // ORDER MATTERS AND IS THE CALLER'S JOB: verbs.sacrifice charges the strike's own HP/MP cost BEFORE
+    // calling this, because the doc's arithmetic only works that way round. LS takes 50% vita and overkill
+    // refills 50%, so "a person has the potential to gain all of their current stats back"; DA zeroes mana
+    // and overkill refills to "50% mana, nothing more". Refunding first and charging afterwards — which is
+    // what this used to do — halves LS's refund and destroys DA's mana refund outright.
     private void ApplyBackflow(int overkill, uint preHealth, uint preMagic)
     {
         if (overkill < 1) return;
         int refund = (int)Math.Ceiling(overkill / 2.0);
-        int hpCap = (int)Math.Ceiling(preHealth / 2.0);
-        int mpCap = (int)Math.Ceiling(preMagic / 2.0);
-        _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)Math.Min(refund, hpCap));
-        _char.Mp = Math.Min(EffMaxMp, _char.Mp + (uint)Math.Min(refund, mpCap));
+        int hpCap  = (int)Math.Ceiling(preHealth / 2.0);
+        int mpCap  = (int)Math.Ceiling(preMagic / 2.0);
+        _char.Hp = Math.Min(Math.Min(EffMaxHp, preHealth), _char.Hp + (uint)Math.Min(refund, hpCap));
+        _char.Mp = Math.Min(Math.Min(EffMaxMp, preMagic),  _char.Mp + (uint)Math.Min(refund, mpCap));
     }
 
-    // RTK warrior/overflow.lua: overkill splashes onto up to 4 adjacent-tile mobs (N/S/E/W of the point),
-    // evenly split; each further net-armored hit's own overkill recursively re-splashes outward — a rare
-    // but real chain-kill cleave. Only mobs are valid splash targets in RTK's own Lua (no PC branch here).
-    private void ApplyOverflow(int baseDamage, int srcX, int srcY, Content.SacrificeFamily fam)
+    // WARRIOR OVERFLOW (2007-04-10, era-gated — see LuaOverflow). A vita strike that kills its target splashes
+    // the damage it did not need onto the four orthogonally-adjacent tiles of THE TARGET's cell, not ours.
+    //
+    // The archive documents this twice and the two disagree, so which one we implement is a real decision:
+    //
+    //   Tutor FAQ  (Overflow Damage FAQ v1.6, Tynan)  each target takes (done - needed) * 0.2, NOT divided.
+    //   Revision   (Yttribium/Ixeus, "Revised overflow formula", test-derived, explicitly revising the FAQ)
+    //              each target takes ((done - needed) / targetCount) * 1.05 — split, with a 5% bonus.
+    //
+    // We implement the REVISION, for three reasons: it is later, it is the only one of the two that reports
+    // actual measurements, and RTK's warrior/overflow.lua independently arrives at the same shape — which is
+    // corroboration from a source that never read either post. The FAQ number is kept above so nobody has to
+    // rediscover the conflict. (Both agree on everything else: the pattern, the exp, and 0 AC.)
+    //
+    // ONE HOP ONLY. RTK's Lua recurses — each splashed kill re-splashes from its own tile — and we ported that,
+    // but the FAQ is explicit that "a target killed by overflow damage will not cause more overflow damage",
+    // and the revision describes a single transfer to a fixed set. A chain-kill cleave is also a far bigger
+    // thing than either source describes. The recursion is gone; do not reintroduce it from the RTK Lua.
+    //
+    // MOBS AND PLAYERS BOTH. "Does overflow damage work in PK? Yes, it does." (FAQ VI.) RTK's overflow.lua
+    // splashes mobs only — its berserk.lua calls Overflow.Cast from the mob branch and not from its PC branch —
+    // but the FAQ is a description of the live game and outranks the reimplementation, so peers on a PvP map
+    // are splashed too, sharing the pool with the mobs rather than getting a second helping of it.
+    private void ApplyOverflow(int baseDamage, int srcX, int srcY, SpellDef sp)
     {
         if (baseDamage < 1) return;
+        // Splash FX. A sacrifice-family strike shows its FAMILY's effect, so all four alignment aliases splash
+        // with the base spell's animation; Slash and Feral Berserk are in no family (they reach here via
+        // TryArchetypeOverflow) and show their own row instead — without this they would splash in Berserk's
+        // colours, since SacrificeFamilyFor returns null for them.
+        var (ovAnim, ovSnd) = Content.SacrificeFamilyFor(sp) is { } fam
+            ? SacrificeFx(fam)
+            : Content.FxFor(sp) is { } ofx
+                ? (Content.EffectAnim(ofx, sp.PathId), Content.EffectSound(ofx, sp.PathId))
+                : (0, 0);
         int total = (int)Math.Ceiling(baseDamage * 1.05);
         var offsets = new (int dx, int dy)[] { (0, 1), (0, -1), (1, 0), (-1, 0) };
-        var targets = new List<(Mob mob, int x, int y)>();
+        bool pvp = Content.IsPvpMap(_char.Map);
+        var mobs = new List<Mob>();
+        var peers = new List<Session>();
         foreach (var (dx, dy) in offsets)
         {
-            var m = _world.MobAt(_char.Map, srcX + dx, srcY + dy);
-            if (m is not null && m.Alive) targets.Add((m, srcX + dx, srcY + dy));
+            int cx = srcX + dx, cy = srcY + dy;
+            if (cx < 0 || cy < 0) continue;
+            var m = _world.MobAt(_char.Map, cx, cy);
+            if (m is not null && m.Alive) { mobs.Add(m); continue; }
+            if (!pvp) continue;
+            var peer = _world.PeerAt(_char.Map, (ushort)cx, (ushort)cy);
+            // EXCLUDING OURSELVES, WHICH IS NOT OPTIONAL. The struck tile is adjacent to us by construction,
+            // so the caster is ALWAYS standing on one of these four cells — the FAQ draws exactly that picture
+            // ("The Warrior himself is in one of the spots!"). Without this test every overflow would splash
+            // its own caster for a share of a number derived from the caster's own vita.
+            // Skipping the DEAD matters for more than tidiness: the share is `total / count`, so counting a
+            // corpse would dilute every real victim's hit while ReceiveSpellDamage silently absorbed its
+            // portion (it returns immediately for a dead target). Ghosts share tiles with the living in an
+            // arena — see Session.Movement's PvpGhostHidden no-clip — so this is reachable, not theoretical.
+            if (peer is not null && !ReferenceEquals(peer, this) && !peer.IsDead) peers.Add(peer);
         }
-        if (targets.Count == 0) return;
-        int share = (int)Math.Ceiling((double)total / targets.Count);
-        foreach (var (mob, x, y) in targets)
+        // That occupied cell is also why a ground-level splash reaches at most THREE targets — the FAQ's
+        // "unless the Warrior is stacked on an enemy, or Throw Axe is used, the maximum number of overflow
+        // targets is three".
+        int count = mobs.Count + peers.Count;
+        if (count == 0) return;
+        int share = (int)Math.Ceiling((double)total / count);
+        foreach (var mob in mobs)
         {
             int net = Combat.ApplyArmor(share, mob.Ac, floor: -95);
-            int overkill = net - mob.Hp;
             _world.TryDamage(_char.Map, mob, net, out bool died, _char.Id);
-            BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
+            BroadcastFx(mob.Id, ovAnim, ovSnd);
             ShowDamageResult(mob.Id, mob, died);
+            // "Do enemies killed by overflow damage yield experience? Yes, they do, even when not previously
+            // damaged." (FAQ V.) Their own overkill is DISCARDED — see the one-hop note above.
             if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y, mob.Key);
-            if (overkill > 0) ApplyOverflow(overkill, x, y, fam);
         }
+        foreach (var peer in peers)
+        {
+            // RAW share — ReceiveSpellDamage nets the recipient's own armor and Deduction at intake, so
+            // pre-netting here would apply it twice. Each peer therefore takes the same share against its
+            // own AC, exactly as each mob above does.
+            BroadcastFx(peer._char.Id, ovAnim, ovSnd);
+            peer.ReceiveSpellDamage(share, this, sp.Name);
+        }
+        Log.Info($"      {sp.Name} -> overflow {total} split over {mobs.Count} mob(s) + {peers.Count} peer(s)");
     }
 
     // Resolve a spell's PLAYER target: an explicit targetId (client-supplied entity id, same convention as
@@ -3128,8 +3261,14 @@ public sealed partial class Session
     // here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns false with a
     // notice (mana NOT spent) if disallowed. Rolls the PvP magic-deflect (SplCanFail spells only) before the
     // debit — a deflected cast spends no mana but still "happened" (returns true), matching the mob path.
-    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp)
+    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp) =>
+        HitPlayerWithSpell(pc, amt, mana, sp, out _);
+
+    /// <param name="landed">Damage actually applied, uncapped by the victim's remaining HP — 0 if the cast was
+    /// refused or deflected. Only the vita strikes read it, to find their overkill; see LuaSacApply.</param>
+    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp, out int landed)
     {
+        landed = 0;
         bool isSelf = ReferenceEquals(pc, this);
         // The PvP-map gate covers YOURSELF too. It used to exempt a self-cast on the reasoning that it only
         // hurts you — but "only hurts you" isn't true of a game with a death penalty and a corpse run, and it
@@ -3145,7 +3284,7 @@ public sealed partial class Session
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(pc._char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        pc.ReceiveSpellDamage(amt, this, sp.Name);
+        landed = pc.ReceiveSpellDamage(amt, this, sp.Name);
         SendStats();
         Log.Info($"      {sp.Name} -> player {pc._char.Id} '{pc._char.Name}' for {amt} (pvp{(isSelf ? "/self" : "")})");
         return true;

@@ -83,9 +83,31 @@ public static class Era
     /// <see cref="CharacterFactory"/> names one of them.</para></summary>
     public const string DruidBouquetQuest = "druid_bouquet_quest";
 
+    /// <summary>Warrior <b>overflow</b> (2007-04-10): a vita strike that kills its target splashes the
+    /// damage it did not need onto the orthogonally-adjacent tiles. Nexus Atlas dates its arrival exactly —
+    /// "A feature in Baram (Korean Nexus) from day one with Vitality attacks, 'Overflow' damage has been
+    /// introduced with the last server reset" — which puts it <b>six years past</b> our 2001-07-09 target,
+    /// so it is off by default and Berserk/Whirlwind/Siege hit only the faced tile.
+    ///
+    /// <para>Gated at <see cref="Session.LuaOverflow"/> rather than in Lua, so the splash cannot be
+    /// re-enabled by a script edit alone. Everything else about the strikes — damage, mana, cooldown, the
+    /// caster's own HP cost — is era-independent and unaffected.</para></summary>
+    public const string WarriorOverflow = "warrior_overflow";
+
+    /// <summary>Rogue <b>overkill</b> (2008-09-18), which this codebase calls <i>backflow</i>: a killing
+    /// Lethal Strike or Desperate Attack refunds its excess damage to the caster, split evenly between
+    /// vitality and mana. KRU shipped it as the explicit counterweight to <see cref="WarriorOverflow"/> —
+    /// "you will now have a special overflow balance for rogues" — a year and a half later, and later still
+    /// than overflow itself, so an era that has one need not have the other.
+    ///
+    /// <para>Gated at <see cref="Session.LuaBackflow"/>. The strikes themselves are much older and stay
+    /// fully functional; only the refund disappears.</para></summary>
+    public const string RogueOverkill = "rogue_overkill";
+
     /// <summary>Every key this server actually gates on, for the <c>@era</c> readout. A row in the CSV
     /// that isn't listed here is still honoured by <see cref="Has"/> — it just isn't something our code
     /// asks about yet, which is the normal state for a date we've researched but not wired up.</summary>
     public static readonly IReadOnlyList<string> KnownFeatures =
-        new[] { NewbieArea, TutorNoviceChain, DuMountainQuest, StudentCapQuest, DruidBouquetQuest };
+        new[] { NewbieArea, TutorNoviceChain, DuMountainQuest, StudentCapQuest, DruidBouquetQuest,
+                WarriorOverflow, RogueOverkill };
 }

@@ -155,6 +155,62 @@ public class EraGatingTests
         });
     }
 
+    /// <summary>The two overkill-spending mechanics on the vita strikes, both of which postdate our window by
+    /// years: warrior <b>overflow</b> (2007-04-10) and the rogue <b>overkill</b> refund (2008-09-18). At the
+    /// shipped default neither exists, which is what makes Berserk/Whirlwind a plain one-tile hit.
+    ///
+    /// <para>They are two keys rather than one because KRU shipped them seventeen months apart, and the gap
+    /// is the point: 2007-04-10 → 2008-09-18 is a real, playable era in which warriors had overflow and
+    /// rogues had no answer to it. Both edges are checked so neither date can drift unnoticed.</para></summary>
+    [Fact]
+    public void OverflowAndOverkillAreYearsAfterOurEra()
+    {
+        WithEraDate(EraCalendar.DefaultDate, () =>
+        {
+            Assert.False(Era.Has(Era.WarriorOverflow), "overflow is 2007; the 4.95 default must exclude it");
+            Assert.False(Era.Has(Era.RogueOverkill),   "rogue overkill is 2008; the 4.95 default must exclude it");
+        });
+
+        WithEraDate(20070409, () =>
+            Assert.False(Era.Has(Era.WarriorOverflow), "overflow is dated 2007-04-10; the day before excludes it"));
+
+        WithEraDate(20070410, () =>
+        {
+            Assert.True(Era.Has(Era.WarriorOverflow), "the introduction date itself is INCLUSIVE");
+            Assert.False(Era.Has(Era.RogueOverkill),  "rogues waited another 17 months for their counterweight");
+        });
+
+        WithEraDate(20080917, () =>
+            Assert.False(Era.Has(Era.RogueOverkill), "overkill is dated 2008-09-18; the day before excludes it"));
+
+        WithEraDate(20080918, () =>
+        {
+            Assert.True(Era.Has(Era.RogueOverkill),   "the introduction date itself is INCLUSIVE");
+            Assert.True(Era.Has(Era.WarriorOverflow), "and overflow is still live by then");
+        });
+    }
+
+    /// <summary>Every key our code gates on must actually HAVE a row in <c>EraFeatures.csv</c>. This is the
+    /// one failure the fail-open design cannot report: a key with no row reads as PRESENT, so a misspelling,
+    /// a dropped row, or a const added without its data silently leaves the feature switched on forever —
+    /// and looks identical to a deliberate "we haven't dated this yet".
+    ///
+    /// <para>The guard lives here rather than in <c>Has</c> because fail-open is correct at RUNTIME (absence
+    /// of evidence must never delete content) and wrong at BUILD time (a key we wrote code against is
+    /// evidence we meant to date it). <c>KnownFeatures</c> is exactly the set where that distinction
+    /// applies — a researched row nothing reads yet is fine and deliberately not checked.</para></summary>
+    [Fact]
+    public void EveryGatedFeatureHasADatedRow()
+    {
+        WithEraDate(EraCalendar.DefaultDate, () =>
+        {
+            foreach (var f in Era.KnownFeatures)
+                Assert.True(Era.Window(f) is not null,
+                    $"Era.KnownFeatures names '{f}' but EraFeatures.csv has no row for it — the gate is " +
+                    "silently always-on. Add the row (with a Source), or drop the const.");
+        });
+    }
+
     /// <summary>EraDate=0 switches gating off entirely: every dated feature reads as present, including
     /// pairs that are mutually exclusive under a real date. That's the documented escape hatch.</summary>
     [Fact]

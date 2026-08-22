@@ -81,13 +81,53 @@ Bouquet with 12 flowers and a Fine cloth* — which is what dates the **NPC** an
 gates only his quest. Two NPCs on one mountain, gated by opposite rules, is the clearest illustration of
 the next section.
 
+### Overflow and overkill — gating a *mechanic* rather than content
+
+The two gates above hide a quest and an NPC. `warrior_overflow` and `rogue_overkill` are the first that
+hide part of how an existing ability *behaves*, and they are the furthest from our window of anything here.
+
+| | `warrior_overflow` | `rogue_overkill` |
+|---|---|---|
+| What | a killing vita strike splashes its unused damage onto the tiles around the target | a killing vita strike refunds its unused damage to the caster, split vita/mana |
+| Who | Warrior — Berserk, Whirlwind (+ Slash, Siege on live) | Rogue — Lethal Strike, Desperate Attack |
+| Introduced | **2007-04-10** | **2008-09-18** |
+| Gated at | `Session.LuaOverflow` | `Session.LuaBackflow` |
+
+Both are six and seven years past the target date, so both are **off** by default and the four strikes
+resolve as an ordinary one-tile hit. This is the fix for a real bug report — *"Berserk is hitting multiple
+tiles"* — and the era system is the honest place for it: the behaviour was never wrong, it was just from
+the wrong decade. Because they scale off caster vita, overkill happened on nearly every cast, so the
+splash was effectively permanent rather than the rare cleave the port assumed.
+
+**They are two keys on purpose.** KRU shipped the rogue refund seventeen months after warrior overflow, as
+its explicit counterweight — *"you will now have a special overflow balance for rogues"*. The gap between
+them is a real playable era in which warriors had overflow and rogues had nothing, and it is the entire
+subject of Nexus Atlas's 2008-09-19 "Rogue balance" editorial. Folding them into one key would erase the
+period the sources talk about most.
+
+**What is *not* gated:** the strikes. Berserk, Whirlwind, Lethal Strike and Desperate Attack are all
+era-appropriate and fully functional — damage, mana, cooldown and the caster's own HP cost are untouched.
+Gate the mechanic, keep the ability; the same principle as gating the quest and keeping the NPC.
+
+**Gated in C#, not in Lua.** Every other spell behaviour in this server is tunable from `spell_verbs.lua`
+without a rebuild, and these two deliberately are not: the primitives self-gate, so `verbs.sacrifice` calls
+them unconditionally and they no-op outside their era. A date-correctness rule that any script edit could
+lift is not a rule. `ctx:eraHas` exists in **NPC dialog scripts** (`npc_dialog.lua`), not in spell verbs,
+for the same reason.
+
+> The formulas themselves are disputed between two archive sources, and which one we implement is written
+> up where the code is, in `docs/4.x/Protocol.md` under the self-sacrifice strike family.
+
 ## Adding a gate
 
 1. Add a row to `EraFeatures.csv` with a `Source`.
 2. Add a `const` to `Server/Era.cs` (bare strings at call sites mean a typo becomes a silently always-on
    gate — the fail-open default makes a misspelling invisible at runtime) and list it in `KnownFeatures`
    so `@era` reports it.
-3. Call `Era.Has(...)` at the point that decides. From Lua, `ctx:eraHas("feature")`.
+3. Call `Era.Has(...)` at the point that decides. From an **NPC dialog** script, `ctx:eraHas("feature")`
+   (`npc_dialog.lua`); spell verbs have no such hook by design — see the overflow section above.
+4. Add a case to `EraGatingTests` pinning both edges of the date. `EveryGatedFeatureHasADatedRow` will
+   already fail the build if you add the const in step 2 and forget step 1.
 
 ### Behaviour or placement?
 
@@ -114,8 +154,12 @@ NPC who isn't born yet, whose date lives in `ServerTuning.csv`.
 - `tswolf-2001-03-18` — TSWolf/NexNet "Du Mountain opened", dating both 2001 quests to the day.
 - `tswolf-newbie-guide` — the three-page newbie quest guide the area's dialog is transcribed from.
 - `atlas-2005-05-31-bouquet` — the Nexus Atlas reset run dating the Druid bouquet quest, and so Yarlof.
+- `atlas-2007-04-10-overflow` — Nexus Atlas "Overflow introduced", plus the two later posts that
+  corroborate it (Ixeus still deriving the formula seven months on; Rachel's editorial a year on).
+- `atlas-2008-09-18-rogue-overflow` — KRU's own reset notes for the rogue refund, corroborated by the
+  Rogue tutor board's "Rogues Overkill ability", which is also where the two refund caps come from.
 
-All three are in `game-data/Sources.csv` with the exact quotes and the surviving/missing screenshot list.
+All five are in `game-data/Sources.csv` with the exact quotes and the surviving/missing screenshot list.
 
 ## New-character placement
 
