@@ -31,6 +31,24 @@ def _env(var: str, *default: object) -> Path:
     return Path(v) if v else Path(*[str(d) for d in default])
 
 
+def _pick(var: str, *candidates: object) -> Path:
+    """The env var if set, else the first candidate that exists, else the first candidate.
+
+    A client install is not always where its installer put it. The working 5.33 tree here is a
+    patched *copy* beside the shipped one, because patching under Program Files needs admin and one
+    bad write to the only install costs a reinstall. Falling back to candidates[0] when none exist
+    leaves require() free to name the canonical location in its error.
+    """
+    v = os.environ.get(var)
+    if v:
+        return Path(v)
+    for c in candidates:
+        p = Path(str(c))
+        if p.exists():
+            return p
+    return Path(str(candidates[0]))
+
+
 # ---- external trees (not in this repo; see docs/research/README.md) ----
 # RTK-Server is cloned INTO the repo root (it is in .gitignore); a sibling checkout also works.
 RTK = _env("P1998_RTK", ROOT, "RTK-Server")
@@ -38,11 +56,22 @@ if not RTK.exists() and (ROOT.parent / "RTK-Server").exists():
     RTK = ROOT.parent / "RTK-Server"
 RTK_LUA = RTK / "rtklua" / "Accepted"
 ARCHIVE = _env("P1998_ARCHIVE", ROOT.parent, "scraped_nexus_data")
-# The two client installs. NextAeon is the 4.95 target; NextAeon5 is the 5.33 one. These default to
-# the stock Nexon install location, which is right on most machines and wrong on any machine that
-# installed elsewhere -- hence the overrides.
-CLIENT = _env("P1998_CLIENT", r"C:\Program Files (x86)\Nexon\NextAeon")
-CLIENT5 = _env("P1998_CLIENT5", r"C:\Program Files (x86)\Nexon\NextAeon5")
+# The two client installs. NextAeon is the 4.95 target; the 5.33 one is whichever NextAeon533 /
+# NextAeon5 tree exists. These default to the stock Nexon install location, which is right on most
+# machines and wrong on any machine that installed elsewhere -- hence the overrides.
+#
+# For 5.33, what every script here wants is the *patched* tree: patch_533_connaddr.py points it at
+# 127.0.0.1:2001, and patch_533_sobj_flags.py restores the 4.x object-collision flags. Attaching a
+# probe to a stock NextAeon5 instead means it never reaches the local server, and walls stand where
+# the 4.x maps have none -- neither of which announces itself; the probe log just looks quiet. So
+# prefer a side-by-side NextAeon533, which is where that patched tree normally lives.
+CLIENT = _pick("P1998_CLIENT", r"C:\Program Files (x86)\Nexon\NextAeon")
+CLIENT5 = _pick(
+    "P1998_CLIENT5",
+    Path.home() / "Desktop" / "NextAeon533",
+    r"C:\Program Files (x86)\Nexon\NextAeon533",
+    r"C:\Program Files (x86)\Nexon\NextAeon5",
+)
 # The other two the probes attach to: the LIVE retail 7.x client, and 4.83 (the oldest we have).
 # Both ship under KRU rather than Nexon.
 CLIENT_LIVE = _env("P1998_CLIENT_LIVE", r"C:\Program Files (x86)\KRU\NexusTK")

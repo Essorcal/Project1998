@@ -14,9 +14,16 @@ Run (spawns the client itself, recommended so we catch the login-time map-info):
       python re\\frida_probe_533_map.py
  or attach to an already-running client:
       python re\\frida_probe_533_map.py attach
+ or against an install other than _paths.CLIENT5:
+      python re\\frida_probe_533_map.py --client "D:\\NextAeon533"
+
+The addresses above are 5.3.3.384-specific, so the install must be that build -- and the patched
+one (see patch_533_connaddr.py / patch_533_sobj_flags.py), or the client never reaches the local
+server and no hook ever fires.
 """
 import frida, sys, time
-from _paths import CLIENT5
+from pathlib import Path
+from _paths import CLIENT5, require
 
 JS = r"""
 var _mod = (typeof Process.findModuleByName === 'function') ? Process.findModuleByName('NexusTK.exe') : null;
@@ -78,13 +85,18 @@ def on_message(msg, data):
 
 def main():
     install = CLIENT5
-    exe = install + r"\NexusTK.exe"
+    for i, a in enumerate(sys.argv):
+        if a == "--client" and i + 1 < len(sys.argv):
+            install = Path(sys.argv[i + 1])
+    require(install, "5.33 client install", "P1998_CLIENT5")
+    exe = str(require(install / "NexusTK.exe", "5.33 client exe", "P1998_CLIENT5"))
+    print(f"[probe] client: {install}")
     attach_mode = len(sys.argv) > 1 and sys.argv[1] == "attach"
     if attach_mode:
         session = frida.attach("NexusTK.exe")
         pid = None
     else:
-        pid = frida.spawn([exe], cwd=install)   # cwd so the client finds its .DAT files
+        pid = frida.spawn([exe], cwd=str(install))   # cwd so the client finds its .DAT files
         session = frida.attach(pid)
     script = session.create_script(JS)
     script.on("message", on_message)
@@ -92,7 +104,14 @@ def main():
     if pid is not None:
         frida.resume(pid)
     print("[probe] running — log in and watch. Ctrl-C to stop.")
-    sys.stdin.read()
+    # Not sys.stdin.read(): under a launcher that never types, stdin is a tty already at EOF, so the
+    # read returns at once and the exiting Python takes the spawned client with it. Ctrl-C
+    # interrupts the sleep just as well.
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

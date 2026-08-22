@@ -159,9 +159,9 @@ Add a row, pick/author a verb, `@reload`.
   *"Nightmarish visions of your own death repel you."*; over-qualified gets *"Your honor forbids you from
   entering."* Don't add the PvP entry warning here — every arena map is `MapPvP=1`, so `EnterMap` sends it.
 - Progression: `LevelExp.csv` (exp curve), `PathGrowth.csv` (per-class HP/MP gain per level).
-- Background music: `MusicTracks.csv` (`Track,Name,Type` — the id↔song-name table the `@music <name>` command
-  reads; the stock client has 12 midis and 11 of them are named) and `MapBgm.csv` (`Zone,Track,Maps,Names` —
-  `Maps` a `;`-list of ids and `lo-hi` ranges, `Names` a `;`-list of map-name globs like `Buya *`).
+- Background music: `MusicTracks.csv` (`Track,Name,Kind,Set` — the id↔song-name table the `@music <name>`
+  command reads) and `MapBgm.csv` (`Zone,Track,Track5x,Maps,Names` — `Maps` a `;`-list of ids and `lo-hi`
+  ranges, `Names` a `;`-list of map-name globs like `Buya *`).
   Resolution order for a map is **explicit id/range → name glob → warp-graph spill → nothing**:
   - a **zone** is a row that casts a wide net — `Buya,tiger,330,Buya *`;
   - a **single-map override** is just a row with one id and no globs — `Kugnae Donjon,sorrow,24,` — and
@@ -176,6 +176,15 @@ Add a row, pick/author a verb, `@reload`.
 
   Because assignment is by position rather than by history, the music is the same whichever way you arrive —
   walking in, warping in, or logging in.
+
+  **Two soundtracks.** `Set` splits `MusicTracks.csv` into `old` (the 12 stock midis, ids 1-12, both clients
+  ship them) and `new` (the 25 mp3s and 52 playlists in the 5.x client's `Mus000.dat`). They are separate id
+  spaces — mp3 2 and midi 2 are different songs — so `Kind` says which file the client opens: `midi`, `mp3`,
+  `list` (an ordered ten-track playlist) or `shuffle` (the same ten, starting at a random one). `Track` on a
+  `MapBgm.csv` row is the old pick and `Track5x` the new one; `Track5x` must name a `list`/`shuffle`, because
+  a single mp3 gets a loop flag of 0 from the client and stops after one song. Players choose with
+  `@music old` / `@music new`, remembered per character. The new set is **5.x only** — the 4.95 client has the
+  mp3 engine but none of the files, so `@music new` is refused there rather than accepted and silent.
 - Server scalars: `ServerTuning.csv` (`key,value`) — `MailMinLevel`, `SpeechRange` (NPC hearing radius),
   `BankMax` (coin cap), `SplitTrapSpells` (0/1, default 0 — the 8 individual `set_X_trap` rogue spells are a
   2003-07-01 addition, out of era for 4.95, so only the `Set Trap` typed prompt is learnable/castable; set 1

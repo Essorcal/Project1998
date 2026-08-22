@@ -1,17 +1,26 @@
 #!/usr/bin/env python
-"""Tiny linear disassembler for NexusTK_local.exe (ImageBase 0x400000, no ASLR).
+"""Tiny linear disassembler for a NexusTK client (ImageBase 0x400000, no ASLR on either build).
+
+Defaults to the 4.95 client. `--533` (or P1998_DISX_EXE) points it at the 5.33 one instead -- the
+VAs in docs/5.x/Reverse-Engineering.md are from that binary and mean nothing in the 4.95 one, so
+reading a 5.x address without the flag prints plausible, entirely unrelated instructions.
 
 Usage:
   python re/disx.py 0x44a780            # disassemble from VA until RET/limit
   python re/disx.py 0x44a780 400        # ...for up to N bytes
+  python re/disx.py --533 0x469060      # ...in the 5.33 client
   python re/disx.py xref 0x50211c       # find code that references an address/const
   python re/disx.py str Maps            # find ASCII strings containing substring + their VA
 """
-import sys, pefile
+import os, sys, pefile
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32
-from _paths import CLIENT
+from _paths import CLIENT, CLIENT5
 
-EXE = str(CLIENT / "NexusTK_local.exe")
+if "--533" in sys.argv:
+    sys.argv.remove("--533")
+    EXE = str(CLIENT5 / "NexusTK.exe")
+else:
+    EXE = os.environ.get("P1998_DISX_EXE") or str(CLIENT / "NexusTK_local.exe")
 pe = pefile.PE(EXE, fast_load=True)
 IB = pe.OPTIONAL_HEADER.ImageBase  # 0x400000
 data = pe.get_memory_mapped_image()  # indexed by RVA
@@ -67,7 +76,22 @@ def find_str(sub):
 
 if __name__ == "__main__":
     a = sys.argv
-    if len(a) >= 2 and a[1] == "xref":
+    if len(a) >= 2 and a[1] == "callxref":
+        # Direct E8 rel32 CALLs to a target. `xref` below only finds ABSOLUTE 4-byte references, which a
+        # near call never contains -- so a function reached only by `call` looks unreferenced there.
+        # Use this to enumerate every packet handler that shares one parser.
+        t = int(a[2], 0)
+        for sec in pe.sections:
+            if not (sec.Characteristics & 0x20000000):
+                continue
+            base, blob = IB + sec.VirtualAddress, sec.get_data()
+            for i in range(len(blob) - 5):
+                if blob[i] != 0xE8:
+                    continue
+                rel = int.from_bytes(blob[i + 1:i + 5], "little", signed=True)
+                if base + i + 5 + rel == t:
+                    print(f"call @ 0x{base + i:08x} -> 0x{t:08x}")
+    elif len(a) >= 2 and a[1] == "xref":
         t = int(a[2], 0)
         for h in find_xref(t):
             print(f"xref @ 0x{h:08x} -> 0x{t:08x}")

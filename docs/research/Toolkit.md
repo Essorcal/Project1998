@@ -12,7 +12,7 @@ data** (PAK). Most real answers come from combining two of them.
 > | Variable | Default | What |
 > |---|---|---|
 > | `P1998_CLIENT` | `…\Nexon\NextAeon` | the 4.95 client |
-> | `P1998_CLIENT5` | `…\Nexon\NextAeon5` | the 5.33 client |
+> | `P1998_CLIENT5` | `~\Desktop\NextAeon533`, else `…\Nexon\NextAeon5` | the 5.33 client — wants the **patched** tree (`re/patches/patch_533_connaddr.py`, `patch_533_sobj_flags.py`) |
 > | `P1998_CLIENT_LIVE` | `…\KRU\NexusTK` | the live retail 7.x client |
 > | `P1998_CLIENT483` | `…\KRU\NexusTK483` | the 4.83 client |
 > | `P1998_RTK` | `<repo>/RTK-Server` | the RTK reference server clone |
