@@ -171,6 +171,19 @@ public sealed class NpcContext
     public bool HasVisibleArmor => _s.HasVisibleArmor;
     /// <summary>Dye (or bleach, with 0) the worn armor — persists + redraws self &amp; peers (RTK player:refresh).</summary>
     public void SetArmorColor(int color) => _s.SetArmorColor((byte)color);
+
+    // ---- hair dye (AppearanceAbility; RTK salon.lua / general_npc_funcs.hairdye) ---
+    /// <summary>The current hair-colour palette index (RTK player.hairColor; 0 = base). 5.33 appearance[3].</summary>
+    public int HairColor => _s.CharHairColor;
+    /// <summary>Whether this client actually renders hair colour — only 5.33 has the appearance[3] slot, so the
+    /// dye service is offered to V533 sessions only (on 4.95 it would take gold for an invisible change).</summary>
+    public bool RendersHairColor => _s.IsV533;
+    /// <summary>Dye the hair — persists + redraws self &amp; peers, clearing any preview (RTK player:refresh).</summary>
+    public void SetHairColor(int color) => _s.SetHairColor((byte)color);
+    /// <summary>Live-preview a hair colour on the player's own sprite WITHOUT persisting (RTK gfxHairC).</summary>
+    public void PreviewHairColor(int color) => _s.PreviewHairColor((byte)color);
+    /// <summary>Drop any hair-colour preview and redraw the real colour (browse cancelled).</summary>
+    public void ClearHairPreview() => _s.ClearHairPreview();
     /// <summary>Free bag slots remaining.</summary>
     public int  FreeSlotCount => _s.FreeSlotCount;
     /// <summary>Unequip everything back into the bag; false (unchanged) if the bag lacks room for it all.</summary>
@@ -945,10 +958,60 @@ public sealed class AppearanceAbility : INpcAbility
     // starts on the face you're already wearing (RTK started at its first entry, but it only had 17).
     private const int FaceJump = 10;
 
+    private const uint HairDyeCost = 2000;   // RTK general_npc_funcs.hairdye
+
+    // RTK's Kugnae Salon palette (general_npc_funcs.hairdye): ten named dyes, each an appearance[3] index.
+    // These are RTK-client indices; on the 5.33 client the index->hue map can differ (same divergence the mob
+    // palettes and armor dye hit), so the NAMES are the intent and the numbers are a starting point to VERIFY
+    // live — browse them in-game and, for any that render wrong, sweep the real 5.33 index and correct it here.
+    private static readonly (string Name, byte Color)[] HairDyes =
+    {
+        ("Black",      0), ("Silver",    1), ("Brown",      2), ("Sky blue",  8), ("Dark blue",  7),
+        ("Royal blue", 24), ("Orange",   10), ("Red",       11), ("Green",     22), ("Scarlet",   21),
+    };
+
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
         yield return ("Change Face", ChangeFace);
         yield return ("Change Gender", ChangeGender);
+        // Hair colour only renders on 5.33 (appearance[3]); don't sell an invisible change to a 4.95 client.
+        if (ctx.RendersHairColor) yield return ("Change Hair Color", ChangeHairColor);
+    }
+
+    // Adapted from RTK salon.lua / general_npc_funcs.hairdye: 2,000 coins, browse named dyes with a LIVE
+    // preview on your own sprite (RTK previews via gfxHairC), commit on confirm. Because the preview never
+    // touches persisted state, backing out — or closing the dialog mid-browse — restores the real colour and
+    // costs nothing. RTK gates the salon on no helmet worn; hair colour draws regardless of a helm on this
+    // client, so that gate isn't reproduced.
+    private static async Task ChangeHairColor(NpcContext ctx)
+    {
+        if (ctx.Coins < HairDyeCost) { await ctx.Say($"A new dye is {HairDyeCost:N0} coins. Come back when you have it, dearie."); return; }
+
+        int index = 0;
+        try
+        {
+            while (true)
+            {
+                var (name, color) = HairDyes[index];
+                ctx.PreviewHairColor(color);   // show it on the player's own sprite now (transient, not persisted)
+                int choice = await ctx.Menu($"Color: {name}  ({index + 1} of {HairDyes.Length}). Is this the one?",
+                    new[] { "Yes, dye it", "Next color", "Previous color", "Nevermind" });
+                if (choice == 1)
+                {
+                    if (ctx.Coins < HairDyeCost) { await ctx.Say($"A new dye is {HairDyeCost:N0} coins. Come back when you have it, dearie."); return; }
+                    ctx.SpendGold(HairDyeCost);
+                    ctx.SetHairColor(color);   // persists the new colour + redraws + clears the preview
+                    await ctx.Say("There! Now don't you look so much better!");
+                    return;
+                }
+                if (choice == 2) index = (index + 1) % HairDyes.Length;
+                else if (choice == 3) index = (index + HairDyes.Length - 1) % HairDyes.Length;
+                else return;   // Nevermind / dialog closed
+            }
+        }
+        // Drop any un-committed preview and repaint the real colour. Correct in BOTH exits: a commit already
+        // cleared the preview (so this is a no-op showing the new colour), and a cancel/close shows the old one.
+        finally { ctx.ClearHairPreview(); }
     }
 
     private static async Task ChangeFace(NpcContext ctx)

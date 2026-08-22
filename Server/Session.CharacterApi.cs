@@ -766,6 +766,17 @@ public sealed partial class Session
     /// <summary>Is this session the 5.33 client? Read by anything whose behaviour differs per client.</summary>
     internal bool IsV533 => _ver == ClientVersion.V533;
 
+    // Hair dye (rogue-hall shaman, AppearanceAbility — adapted from RTK salon.lua / general_npc_funcs.hairdye).
+    // HairColor is the 5.33 appearance[3] palette byte; on 4.95 it's inert (no hair-colour slot), so the dye
+    // menu is only offered to V533 sessions. Commit persists + redraws self & peers (RTK player:refresh); the
+    // preview path redraws WITHOUT persisting so browsing costs nothing to undo. Cancel restores the real hue.
+    internal byte CharHairColor => _char.HairColor;
+    internal void SetHairColor(byte color) { _char.HairColor = color; _hairPreview = null; RefreshAppearance(); SaveChar(); }
+    // Preview/clear redraw SELF ONLY (SendSelfLook) — a preview is transient and shouldn't flicker the dye
+    // across every peer's screen while you browse; only the committed SetHairColor broadcasts (RefreshAppearance).
+    internal void PreviewHairColor(byte color) { _hairPreview = color; SendSelfLook(); }
+    internal void ClearHairPreview() { if (_hairPreview is null) return; _hairPreview = null; SendSelfLook(); }
+
     internal bool IsEquipped => _char.Equipment.Count > 0;
     internal int FreeSlotCount => _char.MaxInv - _char.Inventory.Count;
 
