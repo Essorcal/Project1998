@@ -945,7 +945,7 @@ public sealed partial class Session
         SendMap(0x1E, _gameInc++, new byte[] { 0x06, 0x00, 0x00 }, "ack(0x1E)");
         { var (h, y) = _world.Time; SendTime(h, y); }
         SendId();
-        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
+        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232, _gameInc++);
         Log.Info("   -> mapinfo(0x15)");
         SendXy();
         SendSelfLook();

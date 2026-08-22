@@ -605,7 +605,7 @@ public sealed partial class Session
     // and re-sending it is the only way to move them without an actual map change.
     internal void RefreshMapInPlace()
     {
-        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
+        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232, _gameInc++);
         SendXy();
         SendSelfLook();
         RedrawWorld();
@@ -628,7 +628,7 @@ public sealed partial class Session
             }
             // Re-send the entry trio in place so the 0x15 realm byte reconfigures the camera at the
             // current position (no map change; same map/coords).
-            SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
+            SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232, _gameInc++);
             SendXy();
             SendSelfLook();
             RedrawWorld();   // 0x15 rebuild drops FOREIGN entities — re-assert peers + mobs so they don't vanish
@@ -784,7 +784,7 @@ public sealed partial class Session
             _lockOx = _char.X - cvx;
             _lockOy = _char.Y - cvy;
         }
-        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, "Nexus", 232, _gameInc++);
+        SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232, _gameInc++);
         SendXy();          // 0x04: authoritative (X,Y) + recentered camera (now centered even under realm)
         SendSelfLook();    // 0x33: redraw self on the reloaded map
         PrimeViewport("refresh");   // 0x06: re-fill the window — Ctrl+R is the player's "fix my screen" key
