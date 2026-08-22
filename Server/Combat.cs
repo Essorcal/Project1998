@@ -206,10 +206,17 @@ public static class Combat
     /// live (2026-08-03): a Novice sword (S 10-12, dam 0) at might 12 vs an AC-90 green squirrel produced
     /// exactly {12,13,14} over n=178, which single-flooring reproduces 3/3 (6.5/7.0/7.5 × 1.9 =
     /// 12.35/13.30/14.25) and pre-truncation does not (it yields {11,13}, losing 12 and 14 entirely).
-    /// Int callers still bind here via implicit conversion and are unaffected.</summary>
+    /// Int callers still bind here via implicit conversion and are unaffected.
+    ///
+    /// <para>THE DEDUCTION IS FORMED AS <c>(100 + armor) / 100.0</c>, one integer add then one division, and
+    /// NOT as <c>1.0 + armor/100.0</c>. The two are equal in real arithmetic and not in IEEE754: at the human
+    /// floor, <c>1.0 + (-80/100.0)</c> evaluates to 0.19999999999999996, so a maximally armored player took
+    /// 19% of a hit where the model says 20% — off by a whole point at exactly the value the clamp makes most
+    /// common. The integer form is exact at every hundredth and reproduces all 19 live Spark readings
+    /// unchanged; <see cref="Tests"/>' CombatArmorTests pins both that and this case.</para></summary>
     public static int ApplyArmor(double rawDamage, int armor, int floor)
     {
-        double deduction = 1.0 + Math.Max(armor, floor) / 100.0;
+        double deduction = (100 + Math.Max(armor, floor)) / 100.0;
         return Math.Max(1, (int)Math.Floor(rawDamage * deduction));
     }
 }

@@ -654,6 +654,23 @@ public sealed partial class Session
         return true;
     }
 
+    // ---- ARMOR ON SPELL DAMAGE ------------------------------------------------------------------------------
+    // A damage spell takes the target's physical AC, exactly like a swing does. LIVE-MEASURED: the Spark probe
+    // solves 19/19 readings with ZERO residual as floor((50 + level/2) * (1 + ac/100)) — across 9 mobs spanning
+    // AC 40-100, and on 10 self-casts with the caster's own AC varied by swapping gear. So `1 + ac/100` is an
+    // exact reproduction of live behaviour for MAGIC, not only for melee. Positive AC amplifies (a rabbit at
+    // +100 takes double); negative resists (a marsh ogre at -65 takes 35%).
+    //
+    // This was missing entirely until 2026-08-21: Combat.ApplyArmor's callers were melee, mob-on-player hits,
+    // the sacrifice strikes and overflow — never a damage spell — so every nuke in the game dealt face value
+    // to any mob. Applied at the mob-side sites because World.TryDamage deliberately knows nothing about
+    // armor; the PLAYER side is centralised one layer down in ReceiveSpellDamage. Exactly once either way.
+    //
+    // DELIBERATELY NOT APPLIED to: the sacrifice strikes and overflow (they net their own, see LuaSacApply);
+    // ambush and melee (PlayerSwingDamage nets attacker-side); traps and pet mob-on-mob hits (no measurement
+    // exists for either, and guessing would move balance with nothing behind it).
+    private static int SpellNet(int amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
+
     internal bool LuaDamageTarget(int amt, SpellDef sp, uint? targetId)
     {
         var (mob, pc) = ResolveDamageTarget(targetId);
@@ -662,7 +679,8 @@ public sealed partial class Session
         if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
-        if (_world.TryDamage(_char.Map, mob!, amt, out bool died, _char.Id))
+        int net = SpellNet(amt, mob!);
+        if (_world.TryDamage(_char.Map, mob!, net, out bool died, _char.Id))
         {
             if (fx is not null) BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
             ShowDamageResult(mob!.Id, mob, died);
@@ -671,7 +689,7 @@ public sealed partial class Session
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardKillExp(reward, _char.Map, mob!.X, mob.Y, mob.Key);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {amt} (died={died})");
+            Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {net} (raw {amt}, ac {mob.Ac}, died={died})");
         }
         return true;
     }
@@ -751,7 +769,9 @@ public sealed partial class Session
             {
                 if (mob.IsNpc) continue;                       // NPCs are indestructible — don't waste the beat on them
                 if (sp.CanFail && RollDeflect(mob)) continue;  // resisted this one; the others still land
-                if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+                // Per-victim armor (SpellNet) — each cell's occupant nets the same raw amount against its OWN
+                // AC, so a 4-way can land four different numbers.
+                if (_world.TryDamage(_char.Map, mob, SpellNet(amt, mob), out bool died, _char.Id))
                 {
                     BroadcastFx(mob.Id, anim, snd);
                     ShowDamageResult(mob.Id, mob, died);
@@ -830,7 +850,9 @@ public sealed partial class Session
             if (mob is not null)
             {
                 if (mob.IsNpc) continue;                       // NPCs are indestructible
-                if (_world.TryDamage(_char.Map, mob, amt, out bool died, _char.Id))
+                // Per-victim armor, same as the 4-way — "full damage" on the neighbours means the same RAW
+                // amount, which each still nets against its own AC.
+                if (_world.TryDamage(_char.Map, mob, SpellNet(amt, mob), out bool died, _char.Id))
                 {
                     BroadcastFx(mob.Id, anim, snd);
                     ShowDamageResult(mob.Id, mob, died);

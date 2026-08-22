@@ -792,14 +792,29 @@ public sealed partial class Session
     // deduction damage-reduction (sanctuary line / Baekho's Cunning) DOES, applied the same as a melee hit. The
     // over-head HP bar goes to the whole map; a hit BY someone else prints "<name> hits you with <spell>."; dying
     // drops you to ghost form via Die(), exactly like a mob kill. attacker==this on a self-cast (no "hits you").
-    public void ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
+    /// <returns>The damage this hit actually applied, AFTER the sleep amplifier and Deduction but NOT capped
+    /// by the victim's remaining HP — so a killing blow reports the full figure and the caller can see how far
+    /// past zero it went. 0 when nothing landed (already dead, or immune). Overkill is
+    /// <c>returned - hpBeforeTheCall</c>, which is what the vita strikes' overflow/backflow are computed from;
+    /// every other caller ignores it.</returns>
+    public int ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
     {
-        if (IsDead) return;   // already down — don't re-trigger Die() while the revive gate is pending
-        if (DamageImmune) return;   // Harden Body — see ApplyMobHit; magic is no exception in RTK either
+        if (IsDead) return 0;   // already down — don't re-trigger Die() while the revive gate is pending
+        if (DamageImmune) return 0;   // Harden Body — see ApplyMobHit; magic is no exception in RTK either
         WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
         if (rawDmg < 1) rawDmg = 1;
         double spellAmp = TakeDamageAmp();          // sleep-family amplifier — see ApplyMobHit
         if (spellAmp > 1.0) rawDmg = (int)Math.Round(rawDmg * spellAmp);
+        // PHYSICAL AC APPLIES TO MAGIC. This used to be skipped on the reasoning that "the caster's deflect
+        // roll already gates a spell" — refuted by the Spark probe, whose ten self-cast readings tracked the
+        // caster's OWN AC as it was varied by swapping gear, solving to floor(base * (1 + ac/100)) with zero
+        // residual. Same term, same -80 human floor as ApplyMobHit and ReceiveMeleeDamage.
+        //
+        // CENTRALISED HERE, so every PvP spell path gets it exactly once and none of them can forget: the
+        // archetype damage spells, the 4-way and 5-way zaps, the sacrifice strikes and the overflow splash all
+        // arrive through this method. Callers must pass the RAW figure — LuaSacApply and ApplyOverflow used to
+        // net it themselves and no longer do, or it would land twice.
+        rawDmg = Combat.ApplyArmor(rawDmg, _char.Ac + Totals().armor, floor: -80);
         int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         SendStats();
@@ -814,6 +829,7 @@ public sealed partial class Session
         }
         Log.Info($"   -> {(ReferenceEquals(attacker, this) ? "self" : attacker._char.Name)} '{spellName}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
         if (IsDead) Die();
+        return dmg;
     }
 
     // Take incoming MELEE damage from another player (PvP). The melee twin of ReceiveSpellDamage — but the

@@ -391,10 +391,13 @@ public sealed partial class Session
             var mob = _world.MobAt(_char.Map, (ushort)tx, (ushort)ty);
             if (mob is not null && !mob.IsNpc)
             {
-                if (_world.TryDamage(_char.Map, mob, dam, out bool died, _char.Id))
+                // Armor, same as every other ranged/spell hit. Its PvP branch below gets this for free inside
+                // ReceiveSpellDamage, so without it here the same proc would net against a player and not
+                // against a mob.
+                if (_world.TryDamage(_char.Map, mob, Combat.ApplyArmor(dam, mob.Ac, floor: -95), out bool died, _char.Id))
                 {
                     ShowDamageResult(mob.Id, mob, died, HitCritByte);
-                    Log.Info($"   -> weapon proc: shot gun hits mob {mob.Id} '{mob.Name}' at range {i} for {dam}");
+                    Log.Info($"   -> weapon proc: shot gun hits mob {mob.Id} '{mob.Name}' at range {i} for {dam} raw (ac {mob.Ac})");
                     if (died)
                     {
                         uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
