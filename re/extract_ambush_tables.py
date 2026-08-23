@@ -19,6 +19,10 @@ script only pins the exact composition tables so they can't drift from the Lua b
 Tiger sentries (spawnTigerSentries) take the sentry mob id as a PARAMETER (RTK ids 804/805/806), so their
 "5x <param>" burst is expressed in AmbushConfig.csv, not here. The fixed-id tables below are all that vary.
 
+Two buckets are appended after the parse, and they are NOT the same kind of claim: SYNTH is RTK behaviour
+whose ids are param-driven (the tiger sentries above); OBSERVED is a table with no RTK source at all,
+reconstructed from live-server eyewitness. Keep them apart — one is transcription, the other is a guess.
+
 Run:  python re/extract_ambush_tables.py
 """
 import re
@@ -99,15 +103,26 @@ SYNTH = {
     "tiger_sents3": [902, 902, 902, 902, 902],
 }
 
+# NOT from RTK — kept in its own bucket so nobody reads it as extracted. RTK has no trap tile in Buya town at
+# all (mobSpawnHandler.lua flat-spawns rats in the CAVES: `handleSpawn(npc, 370, {10, 49}, {12, 4}, ...)`).
+# This one is reconstructed from live 7.x eyewitness (2026-08-22): "You have disturbed a nest of rats." and
+# rats standing on every side. Four rats = one per burst slot, and World.AmbushBurstTile puts slots 0-3 east /
+# west / north / south, which is the "surrounded" the sighting describes. Composition is a calibration, not a
+# measurement — the count came from a screenshot, not a table.
+OBSERVED = {
+    "rat_nest": [10, 10, 10, 10],   # 10 = rat (Rat, 25 exp) — the creature in the sighting
+}
+
 
 def main():
     rows = collect()
-    for key, ids in SYNTH.items():
+    for key, ids in list(SYNTH.items()) + list(OBSERVED.items()):
         rows.append((key, 1, ids))
     lines = ["Table,Variant,MobIds"]
     for key, variant, ids in rows:
         lines.append(f"{key},{variant}," + ";".join(str(x) for x in ids))
-    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # newline="\n": the checked-in CSV is LF, and text mode would rewrite the WHOLE file as CRLF on Windows.
+    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     # Console summary so a human can eyeball it against the Lua.
     print(f"wrote {OUT} ({len(rows)} variant rows)")
     cur = None
