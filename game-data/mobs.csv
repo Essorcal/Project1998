@@ -712,6 +712,6 @@ MobId,Identifier,Description,MobLook,MobLookColor,Vita,Exp,Level,Might,Grace,Wil
 801,abyssal_dragonbossa,Flammie,1842,0,2650000,850000,99,0,99,173,20000,25000,1000,1,0,3,99,-75,Vita=rtk-db-restored(un-div5),24
 802,abyssal_dragonbossb,Fafnir,1488,0,1500000,850000,99,0,99,173,19500,22500,1000,1,0,3,99,-75,Vita=rtk-db-restored(un-div5),24
 803,abyssal_dragonf,Tiamat,1578,0,3500000,850000,99,0,99,173,25000,30000,1000,1,0,3,99,-75,Vita=rtk-db-restored(un-div5),24
-900,tiger_sentry,Tiger sentry,130,31,55700,1675000,94,0,99,94,2600,4050,1000,1,0,0,0,0,,30
-901,tiger_guardian,Tiger guardian,130,32,213950,7850000,99,0,99,99,13000,20250,1000,1,0,0,0,0,,30
-902,tiger_defender,Tiger defender,130,33,1110350,10000000,99,0,130,173,72750,113750,1000,1,0,0,0,0,,30
+900,tiger_sentry,Tiger sentry,130,31,278500,1675000,94,0,99,94,2600,4050,1000,1,0,5,94,-72,rtk-migration-tigersentries,30
+901,tiger_guardian,Tiger guardian,130,32,1075000,7850000,99,0,99,99,13000,20250,1000,1,0,5,99,-83,rtk-migration-tigersentries,30
+902,tiger_defender,Tiger defender,130,33,5550000,10000000,99,0,130,173,72750,113750,1000,1,0,5,99,-95,rtk-migration-tigersentries,30
