@@ -141,6 +141,11 @@ disagree — the file's own header says which rows are contested and why, and
 - **Prey creatures**: `MobFlees.csv` (`Identifier,Flees`). A listed mob never attacks and never holds a target;
   it backs away from any player within 2 tiles at **double** its normal move rate, and for 4 s after being
   *swung at* (hit **or** miss, or damaged by anything) it keeps running and notices you from 4 tiles.
+- An `AreaSpawns.csv` **count is a cap and a guarantee**: the refill tops up to it and never past it, and if
+  the random tile rolls come up short it enumerates the box rather than giving up (`World.FillMember` →
+  `World.OpenTiles`). It only places fewer when the box genuinely has no free walkable non-warp tile left.
+  This matters most for the `1`s — a lone boss used to be decided by four rolls over the whole map, which is
+  how Sute went missing from ~7% of visits to his own nest.
   **Ceiling:** the world steps a mob at most once per 600 ms tick, so a creature whose `MobMoveTime` is already
   ≤1200 ms — the blue rooster is 500 — is *already* at max speed and its flee shows as direction, not pace.
   Everything else about it — HP, drops, exp — is unchanged, so it's

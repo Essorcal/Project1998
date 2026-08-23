@@ -247,6 +247,20 @@ one was found by playing it — none was reachable by reading the code or by any
    over-head bar is drawn by `Session.ShowDamageResult`, which only runs on a hit, so the bar sat where the
    last blow left it and the heal was invisible to the player fighting him. World now queues a bar redraw
    alongside the heal's animation.
+5. **He wasn't always there at all — a shared rule whose failure only shows at a cap of one.** Reported as
+   "Sute isn't spawning in Sute's Nest" (2026-08-23). The batch spawner ported RTK's give-up rule literally
+   (`mobSpawnHandler.lua:3003`, `if fail >= maxMobs[z] * 4`): roll a random tile, and abandon the creature
+   after `cap * 4` failures. Every `handleSpawn` row extracts to a ZERO box, so each roll is uniform over the
+   *whole* map — and Sute's Nest is 52% walkable ground. Yachi (cap 15) gets 60 rolls for 15 tiles and never
+   comes up short; Sute gets **four coin flips**, and was measured missing from **6.9% of refills** (2000
+   trials against the real map), each miss lasting the full 300s group cycle. The rule reads as a spin guard
+   and is fine as one; it was doing a second job — deciding coverage — that it does badly, and badly in
+   inverse proportion to how much the creature matters. The roll now falls back to `World.OpenTiles`, which
+   enumerates the box, so a cap is a guarantee whenever a free tile exists (0/2000 misses after; the
+   last-free-tile case places 200/200). This is a deliberate deviation from RTK, and it brings the batch
+   system into line with the point system, which never had the hole — `PickAreaHome` falls back to the box
+   centre and `FreeSpawnTile` to the spawn tile, so a point spawn cannot silently vanish.
+   **A give-up budget scaled to a population is not a budget at all for a population of one.**
 
 ### The two armour chains that need Sute
 
