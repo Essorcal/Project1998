@@ -1960,6 +1960,52 @@ public sealed partial class Session
         return true;
     }
 
+    // ---- the two spells the mythic alliance NPCs cast (Server/MythicAlliance.cs) -----------------
+    // Both are "NPC SPELLS" in Spells.csv (the 50000 block) — named, so the client-facing wording is right,
+    // but carrying no SpellParams row of their own, because neither is castable by a player and neither is a
+    // ward. They are scripted acts, so they are written as acts here rather than run through the ward path.
+
+    /// <summary>Rebirth: "a full healing, ressurection spell" (Atlas). The mythic casts it on an ally who
+    /// comes back and says its enemy's name again — the standing reward for the alliance, and the reason
+    /// players kept a guard room in walking distance. Identical restoration to a shaman's revival, so it
+    /// works on a ghost and on a merely-battered ally alike.</summary>
+    internal void NpcCastRebirth(string casterName)
+    {
+        PlayNpcSpellFx("rebirth");
+        ReviveInPlace(IsDead ? $"{casterName} casts Rebirth on you." : $"{casterName} restores you.");
+    }
+
+    /// <summary>Stormstrike, then home: what the mythic does to someone who is sworn to its enemy, or who
+    /// turns down the alliance to its face. Nussan is the source for the pairing — "If you try to do an
+    /// alliance with the enemy of an animal you already alli'ed with, it will zap you and send you to
+    /// tavern" — and RTK's script is the same two beats (<c>stormstrike.cast</c> then <c>returnToInn</c>).
+    ///
+    /// <para>The damage is the ONLY Stormstrike figure in our data — spell_effects.csv's
+    /// <c>stormstrike_mage</c>, <c>125 + level*4 + ceil(((will+1)/2)*3.5)</c> — read against the VICTIM,
+    /// because the mythic has no caster stat block to read it against. That keeps the blow proportionate at
+    /// both ends of the level range instead of picking a constant out of the air, and it lands where the
+    /// sources leave it: a hard slap and a long walk back, not an execution. It can still finish someone who
+    /// was already nearly dead, which is what "Die scum!" is doing in the line above it.</para></summary>
+    internal void NpcCastStormstrike(string casterName)
+    {
+        PlayNpcSpellFx("stormstrike");
+        int dmg = 125 + CharLevel * 4 + (int)Math.Ceiling(((CharWill + 1) / 2.0) * 3.5);
+        ReceiveEnvironmentDamage(dmg, $"{casterName} attacks you with Stormstrike spell.");
+        ReturnToInn();
+        SendStats();
+    }
+
+    // Play a scripted NPC cast's animation over the player. The 50000-block spells carry no spell_effects row
+    // of their own; where a player-castable twin exists (stormstrike_mage) its row holds the animation, so try
+    // the NPC key first and fall back to the twin. No fx anywhere is not an error — the act still happened.
+    private void PlayNpcSpellFx(string key)
+    {
+        var sp = Content.SpellByKey(key) ?? Content.SpellByKey(key + "_mage");
+        var fx = sp is null ? null : Content.FxFor(sp) ?? (Content.SpellByKey(key + "_mage") is SpellDef twin ? Content.FxFor(twin) : null);
+        if (sp is null || fx is null) return;
+        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+    }
+
     // Cure: remove every active status of this category from the caster (RTK removes durations by category). No
     // fade line (a cure is a deliberate cleanse, not a lapse). Returns how many were cleared.
     internal int LuaCureCategory(string category)

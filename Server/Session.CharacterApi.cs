@@ -688,6 +688,7 @@ public sealed partial class Session
         if (string.IsNullOrEmpty(key)) return;
         _char.Kills[key] = _char.Kills.GetValueOrDefault(key) + 1;
         _char.Kills[TotalKillsKey] = _char.Kills.GetValueOrDefault(TotalKillsKey) + 1;
+        KillTrack.Push(_char.KillTrack, key);
         // Was SaveChar() (a full-blob rewrite per kill — the dominant write-amplification source while
         // grinding). MarkDirty lets the throttled autosave coalesce a whole grinding session into one
         // save every AutoSaveMs instead of one per kill.
@@ -696,6 +697,24 @@ public sealed partial class Session
 
     /// <summary>Lifetime kills recorded for a mob key (RTK's <c>player:killCount</c>).</summary>
     internal int KillCount(string mobKey) => _char.Kills.GetValueOrDefault(mobKey);
+
+    // ---- the kill track (Character.KillTrack; rules in Shared.KillTrack) --------------------------
+    // The last eight KINDS of creature killed, most recent first. This is what the mythic alliances count,
+    // and it is deliberately not the lifetime tally above: entries fall off, taking their counts with them,
+    // which is what turns "avoid killing anything else" from a rule into arithmetic. See MythicAlliance.cs.
+
+    /// <summary>Kills of a kind still ON the track — 0 both for "never killed" and for "killed, but pushed
+    /// off the end", which the game does not distinguish either.</summary>
+    internal int TrackedKills(string mobKey) => KillTrack.Count(_char.KillTrack, mobKey);
+
+    /// <summary>Wipe the track ("When you start a Lesser or a Greater Alliance, it resets your Kill Track to
+    /// zero. Therefore, you can not use bosses from a previous alliance for the new one"). Lifetime
+    /// <see cref="_char.Kills"/> is untouched — every other quest counts from that and must not be disturbed
+    /// by someone starting an alliance.</summary>
+    internal void ClearKillTrack() { _char.KillTrack.Clear(); SaveChar(); }
+
+    /// <summary>The track as it stands, most-recent-first. Read-only; for GM readouts and tests.</summary>
+    internal IReadOnlyList<KillTrackEntry> KillTrackRows => _char.KillTrack;
 
     /// <summary>Tally key for "anything at all", kept in the same map so it persists with no schema change.
     /// The leading space cannot collide with a mob key. Read by <see cref="TotalKills"/>, which the Old dog's

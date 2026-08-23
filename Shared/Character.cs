@@ -116,6 +116,17 @@ public sealed class Character
     // this (RTK's player:killCount) — kill-since-accept — so a fresh kill after accepting counts. Persisted.
     public Dictionary<string, int> Kills = new();
 
+    // The KILL TRACK: the last 8 kind of creature killed, most-recent-first, each with how many of it have
+    // been killed since it (re-)entered the list. This is NOT a second lifetime tally — it is the array the
+    // real Nexus kept and the mythic alliances read, and its whole point is that entries FALL OFF: kill a
+    // ninth kind of creature and the least-recently-killed one is pushed out, taking its count with it.
+    // Period primary is the Alliance Tips page (Moraghul, via Nexus Atlas and the poet-tutor board): "The
+    // Kill Track saves ONLY the last 8 types of creatures you have killed... the database will record up to
+    // 255 kills of a single creature." Every documented alliance quirk falls out of those two sentences —
+    // the six free creature types, the four-simultaneous-lesser-alliances ceiling, and the trick of killing
+    // one more of each boss to push a mistake back off the end. See Server/MythicAlliance.cs.
+    public List<KillTrackEntry> KillTrack = new();
+
     // Sub-alignment: 0 = Unaligned (base), 1 = Kwisin, 2 = Mingken, 3 = Ohaeng. Gates which spell set @spells
     // teaches — a character learns only universal spells + their own alignment's set, never the other
     // sub-alignments' parallel spells. Set with @align.
@@ -355,4 +366,56 @@ public sealed class Legend
 
     public Legend() { }
     public Legend(byte icon, byte color, string text, string name = "") { Icon = icon; Color = color; Text = text; Name = name; }
+}
+
+/// <summary>One row of the <see cref="Character.KillTrack"/>: a creature kind and how many of it have been
+/// killed since this row entered the list. <see cref="Count"/> saturates at 255 — the real track's per-type
+/// ceiling ("the database will record up to 255 kills of a single creature"), and the reason no alliance ever
+/// asks for more than a handful.</summary>
+public sealed class KillTrackEntry
+{
+    public string Mob   = "";
+    public int    Count = 0;
+
+    public KillTrackEntry() { }
+    public KillTrackEntry(string mob, int count) { Mob = mob; Count = count; }
+}
+
+/// <summary>The kill track's two rules, kept here rather than in the server so they can be exercised on
+/// their own. Everything the mythic alliances document about "don't kill anything else" is these two
+/// methods: an entry moves to the FRONT when its kind is killed, and the ninth kind pushes the oldest one
+/// (and its count) off the end.</summary>
+public static class KillTrack
+{
+    /// <summary>How many kinds of creature are remembered. "The Kill Track saves ONLY the last 8 types of
+    /// creatures you have killed" (Alliance Tips).</summary>
+    public const int Slots = 8;
+    /// <summary>Per-kind ceiling: "the database will record up to 255 kills of a single creature".</summary>
+    public const int Cap = 255;
+
+    /// <summary>Record one kill. The kind moves to the front whether or not it was already listed, its count
+    /// rises (saturating at <see cref="Cap"/>), and anything past <see cref="Slots"/> falls off for good.</summary>
+    public static void Push(List<KillTrackEntry> track, string mob)
+    {
+        if (track is null || string.IsNullOrEmpty(mob)) return;
+
+        int at = track.FindIndex(e => string.Equals(e.Mob, mob, StringComparison.OrdinalIgnoreCase));
+        KillTrackEntry entry;
+        if (at >= 0) { entry = track[at]; track.RemoveAt(at); }
+        else entry = new KillTrackEntry(mob, 0);
+
+        if (entry.Count < Cap) entry.Count++;
+        track.Insert(0, entry);
+        if (track.Count > Slots) track.RemoveRange(Slots, track.Count - Slots);
+    }
+
+    /// <summary>Kills of a kind still on the track. 0 covers both "never killed" and "killed, then pushed
+    /// off" — the game draws no distinction between them either.</summary>
+    public static int Count(IReadOnlyList<KillTrackEntry> track, string mob)
+    {
+        if (track is null || string.IsNullOrEmpty(mob)) return 0;
+        foreach (var e in track)
+            if (string.Equals(e.Mob, mob, StringComparison.OrdinalIgnoreCase)) return e.Count;
+        return 0;
+    }
 }

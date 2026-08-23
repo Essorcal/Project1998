@@ -667,6 +667,13 @@ public static partial class Content
     public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), MythicCaveDef> MythicCaveTiles { get; private set; }
         = new Dictionary<(ushort, ushort, ushort), MythicCaveDef>();
 
+    // ---- Mythic alliances (game-data/MythicAlliances.csv) -------------------------------------------
+    // One row per zodiac animal, describing its OWN cave: its enemy, its two sets of bosses, and the
+    // tribute an ally of its enemy must steal from it. Consumed by Server/MythicAlliance.cs, which reads a
+    // quest off the ENEMY's row. An empty file simply means no mythic answers to anything, the same
+    // fail-soft posture as every other table here.
+    public static IReadOnlyList<MythicAllianceDef> MythicAlliances { get; private set; } = new List<MythicAllianceDef>();
+
     // ---- Tiered "event cave" entrances (game-data/EventCaves.csv + EventCaveTiers.csv) --------------
     // A doorway that reads the character and drops them into one of FIVE parallel copies of the same
     // dungeon. RTK keeps the ladder in one shared place (Player.getEventCaveLevel / eventCaveLevelPrompt in
@@ -1224,6 +1231,7 @@ public static partial class Content
             .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
             .ToDictionary(e => e.key, e => e.cave);
         MythicCaves = mythicCaves;
+        MythicAlliances = LoadMythicAlliances(ResolvePath("P1998_MYTHIC_ALLIANCES", "MythicAlliances.csv"));
         var arenaDoors = LoadArenaDoors(ResolvePath("P1998_ARENA_DOORS", "ArenaDoors.csv"));
         ArenaDoorTiles = arenaDoors   // derived tile index first, public list second (same reason as Npcs/_npcById)
             .SelectMany(d => d.Tiles.Select(t => (key: (d.Map, t.X, t.Y), door: d)))
@@ -1279,7 +1287,7 @@ public static partial class Content
         (_mapCells, var mapCellCount) = LoadMapCells(ResolvePath("P1998_MAP_CELLS", "MapCells.csv"));
         MapCellCount = mapCellCount;
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {EventCaves.Count} event-caves ({EventCaveTiles.Count} entrance tiles, {EventCaveBands.Count} tier bands), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {MythicAlliances.Count} mythic-alliances, {EventCaves.Count} event-caves ({EventCaveTiles.Count} entrance tiles, {EventCaveBands.Count} tier bands), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check game-data/mobs.csv)"
                      : ""));
@@ -3126,6 +3134,39 @@ public static partial class Content
 
             list.Add(new MythicCaveDef(animal, U("EntranceMap"), tiles.ToArray(),
                 U("DestMap"), U("DestX"), U("DestY"), tiers, col.GetValueOrDefault("Sources", "")));
+        }
+        return list;
+    }
+
+    // See MythicAlliances above. One row per zodiac animal. KeyBosses/ItemBosses are ';'-separated, cave 1
+    // first; a row is dropped unless BOTH name at least one boss and the row names an enemy, because a
+    // half-declared alliance would offer a quest that can never be finished and would look to a player
+    // exactly like a very hard one.
+    private static List<MythicAllianceDef> LoadMythicAlliances(string? path)
+    {
+        var list = new List<MythicAllianceDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            var animal = col.GetValueOrDefault("Animal", "").Trim();
+            var enemy  = col.GetValueOrDefault("Enemy", "").Trim();
+            if (animal.Length == 0 || enemy.Length == 0) continue;
+
+            static string[] Split(string? v) =>
+                (v ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            int I(string k, int dflt = 0) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : dflt;
+
+            var keyBosses  = Split(col.GetValueOrDefault("KeyBosses"));
+            var itemBosses = Split(col.GetValueOrDefault("ItemBosses"));
+            if (keyBosses.Length == 0 || itemBosses.Length == 0) continue;
+
+            list.Add(new MythicAllianceDef(
+                animal, I("NpcId"), enemy, keyBosses, itemBosses,
+                col.GetValueOrDefault("KeyDrop", "").Trim(),  I("KeyTribute"),
+                col.GetValueOrDefault("ItemDrop", "").Trim(), I("ItemTribute"),
+                col.GetValueOrDefault("Favor", "").Trim(),
+                uint.TryParse(col.GetValueOrDefault("Exp"), out var xp) ? xp : 0u,
+                double.TryParse(col.GetValueOrDefault("Karma"), out var km) ? km : 0.0,
+                col.GetValueOrDefault("Sources", "")));
         }
         return list;
     }

@@ -126,10 +126,26 @@ disagree — the file's own header says which rows are contested and why, and
 [Armor-Quests.md](Armor-Quests.md) has the full walkthrough. The steps themselves are code
 (`Server/ArmorQuest.cs`), because several of them gate on systems rather than counts.
 
+## Recipe: retune the **mythic alliances**
+
+`MythicAlliances.csv` is one row per zodiac animal, describing its OWN cave: its enemy, its three pairs of
+bosses, and the tribute an ally of its enemy must steal from it (plus the favour, experience and karma it
+pays). A mythic reads its quest off its ENEMY's row, so a tribute is edited on the cave it is looted from,
+never on the cave that asks for it. Edit + `@reload`; no rebuild.
+
+The one thing NOT in the file is the eight-slot kill track the quest counts on (`Shared.KillTrack`) — that
+is the mechanic, not a tunable. [Mythic-Alliances.md](Mythic-Alliances.md) explains what it does and why
+four simultaneous lesser alliances is the ceiling.
+
 ## Recipe: a **monster**, **shop**, **drop table**, **map**, **level curve**
 
 - Monster stats/looks: `mobs.csv`. Spawns: `Spawns.csv` (fixed points) / `AreaSpawns.csv` (per-map/box counts)
   / `AreaSpawnsTrap.csv` (rare trap-ambush bosses).
+- An `AreaSpawns.csv` **count is a cap and a guarantee**: the refill tops up to it and never past it, and if
+  the random tile rolls come up short it enumerates the box rather than giving up (`World.FillMember` →
+  `World.OpenTiles`). It only places fewer when the box genuinely has no free walkable non-warp tile left.
+  This matters most for the `1`s — a lone boss used to be decided by four rolls over the whole map, which is
+  how Sute went missing from ~7% of visits to his own nest.
 - **Hidden ambush tiles**: `AmbushConfig.csv` (per map: how many tiles, the `MobCap` that governs refills, the
   message, and which burst fires) + `AmbushBursts.csv` (what each burst is made of). Step on one and the burst
   spawns *around* you — slots 0-3 land east/west/north/south, a 5th and beyond on your own tile — then the
@@ -141,11 +157,6 @@ disagree — the file's own header says which rows are contested and why, and
 - **Prey creatures**: `MobFlees.csv` (`Identifier,Flees`). A listed mob never attacks and never holds a target;
   it backs away from any player within 2 tiles at **double** its normal move rate, and for 4 s after being
   *swung at* (hit **or** miss, or damaged by anything) it keeps running and notices you from 4 tiles.
-- An `AreaSpawns.csv` **count is a cap and a guarantee**: the refill tops up to it and never past it, and if
-  the random tile rolls come up short it enumerates the box rather than giving up (`World.FillMember` →
-  `World.OpenTiles`). It only places fewer when the box genuinely has no free walkable non-warp tile left.
-  This matters most for the `1`s — a lone boss used to be decided by four rolls over the whole map, which is
-  how Sute went missing from ~7% of visits to his own nest.
   **Ceiling:** the world steps a mob at most once per 600 ms tick, so a creature whose `MobMoveTime` is already
   ≤1200 ms — the blue rooster is 500 — is *already* at max speed and its flee shows as direction, not pace.
   Everything else about it — HP, drops, exp — is unchanged, so it's
@@ -155,7 +166,8 @@ disagree — the file's own header says which rows are contested and why, and
   (`Mobs/mob.lua`, used by `Instances/mysterious_merchant.lua`). Ships with `rabbit` and `blue_rooster`; add a
   row + `@reload` for any other critter. Kept out of `mobs.csv` so re-running the mob extractor can't drop it.
 - Shops: `ShopStock.csv` (flat stock) or `ShopCatalogues.csv` (sub-category menus).
-- Drops: `MobDrops.csv`.
+- Drops: `MobDrops.csv`. (The four mythic caves whose item drops were corrected against the period
+  tables are covered in [Mythic-Alliances.md](Mythic-Alliances.md) — the alliances depend on them.)
 - Maps/warps: `map_index.csv`, `Maps.csv`, `Warps.csv`; location/warp geometry in `Inns.csv`,
   `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `EventCaves.csv`,
   `EventCaveTiers.csv`, `FallRooms.csv`,

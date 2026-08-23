@@ -121,6 +121,26 @@ public sealed partial class Session
                 "(edit EraDate in game-data/ServerTuning.csv + @reload to change)");
     }
 
+    // "@killtrack [clear]" — the eight-slot kill track, most-recent-first, which is what the mythic
+    // alliances count (NOT the lifetime tally). Without this there is no way to see WHY a hand-in was
+    // refused: a boss that has been pushed off the end looks exactly like a boss that was never killed.
+    // `clear` wipes it, which is what accepting an alliance does. See Server/MythicAlliance.cs.
+    private void KillTrackCmd(string text)
+    {
+        if (text.Trim().Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            ClearKillTrack();
+            SendLog("Kill track cleared (this is what accepting a mythic alliance does).");
+            return;
+        }
+
+        var rows = KillTrackRows;
+        if (rows.Count == 0) { SendLog("Kill track is empty."); return; }
+
+        var lines = rows.Select((e, i) => $"{i + 1}. {Content.MobByKey(e.Mob)?.Name ?? e.Mob} x{e.Count}");
+        SendLog($"Kill track ({rows.Count}/{KillTrack.Slots} kinds, newest first): " + string.Join(", ", lines));
+    }
+
     private void GiveItemCmd(string text)
     {
         string q = text.Trim();

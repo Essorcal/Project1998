@@ -44,6 +44,7 @@ public static class NpcScripts
         ["armor_quest"] = ArmorQuestAbility.Instance,
         ["stars_hint"] = StarHintAbility.Instance,
         ["totem_worship"] = TotemWorshipAbility.Instance,
+        ["mythic_alliance"] = MythicAllianceAbility.Instance,
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via

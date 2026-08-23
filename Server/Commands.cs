@@ -85,6 +85,7 @@ public sealed partial class Session
         T("totem",   (s, a) => s.SetTotemCmd(a),    "<id>",               "set your totem crest (persists)"),
         T("karma",   (s, a) => s.SetKarmaCmd(a),    "<value|tier>",       "set karma outright: a number, or a tier (cat, dog, angel, …)"),
         T("dispel",  (s, a) => s.DispelCmd(),       "",                   "strip every buff and debuff on you"),
+        T("killtrack", (s, a) => s.KillTrackCmd(a), "[clear]",         "the 8-slot kill track the mythic alliances count (clear = what accepting one does)"),
         T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
         T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
 

@@ -1,0 +1,36 @@
+# The twelve LESSER alliances with the mythic animals. Consumed by Server/MythicAlliance.cs; see
+# docs/common/Mythic-Alliances.md for the sources and the two places they disagree.
+#
+# ONE ROW PER ANIMAL, and a row describes its OWN cave. The quest an animal offers is read off its ENEMY's
+# row: the Dragon NPC's ally must kill the bosses on the Dog row and bring the Dog row's KeyDrop/ItemDrop in
+# the Dog row's tribute amounts. That is not a modelling trick -- it is what the period pages say the quest
+# IS ("bring a tribute of items and keys stolen from the enemies cave"), so writing the tribute on the cave
+# it is stolen FROM keeps the two halves from drifting apart.
+#
+# Animal        display name; also the word an ALLY of the enemy says to this NPC (case-insensitive).
+# NpcId         the alliance NPC in NPCs.csv (all twelve are identifier MythicAllianceNpc).
+# Enemy         the animal this one is at war with. Always mutual -- the pairs are fixed.
+# KeyBosses     this cave's key bosses, cave 1;2;3. They drop KeyDrop. ("Mythic", "Divine", "Spirit".)
+# ItemBosses    this cave's item bosses, cave 1;2;3. They drop ItemDrop. (Cave 3's are all "Avenger".)
+# KeyDrop       the key this cave's key bosses drop, and the key an ally of the ENEMY must bring.
+# KeyTribute    how many of it. Eight for the eight per-cave keys; four for the four TOTEM keys, which are
+#               the same keys the shrines take -- except the Dragon's, which two period sources put at 3.
+# ItemDrop      the item this cave's item bosses drop, and the item an ally of the ENEMY must bring.
+# ItemTribute   how many of it. Four everywhere.
+# Favor         the reward item, "used for joining an NPC subpath" (Atlas).
+# Exp           experience paid on completion. Ten million, stated identically by Atlas and by the tutors.
+# Karma         karma paid on completion. Sources spread 1-4; see the doc for why this is 3.
+# Sources       Sources.csv SourceIds backing the row, '|'-separated.
+Animal,NpcId,Enemy,KeyBosses,ItemBosses,KeyDrop,KeyTribute,ItemDrop,ItemTribute,Favor,Exp,Karma,Sources
+Rat,125,Horse,mythic_rat;divine_rat;spirit_rat,mighty_mouse;rat_lord;rat_avenger,key_to_pond,8,ambrosia,4,rats_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Horse,124,Rat,mythic_horse;divine_horse;spirit_horse,horse_do;horse_chongun;horse_avenger,key_to_thunder,8,pearl_charm,4,horses_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Dragon,131,Dog,mythic_dragon;divine_dragon;spirit_dragon,dragon_mage;dragon_slayer;dragon_avenger,chung_ryong_key,3,dragons_liver,4,dragons_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Dog,122,Dragon,mythic_dog;divine_dog;spirit_dog,dog_assassin;dog_cutthroat;dog_avenger,key_to_wind,8,fragile_rose,4,dogs_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Rabbit,120,Rooster,mythic_hare;divine_rabbit;spirit_rabbit,hare_witch;rabbit_witch;rabbit_avenger,key_to_earth,8,lucky_coin,4,rabbits_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Rooster,123,Rabbit,mythic_rooster;divine_rooster;spirit_rooster,rooster_swordsman;rooster_barbarian;rooster_avenger,key_to_heaven,8,tao_stone,4,roosters_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Snake,128,Pig,mythic_snake;divine_snake;spirit_snake,snake_shaman;snake_mage;snake_avenger,hyun_moo_key,4,scribes_book,4,snakes_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Pig,127,Snake,mythic_boar;divine_pig;spirit_pig,boar_champion;pig_champion;pig_avenger,key_to_mountain,8,magical_dust,4,pigs_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Sheep,129,Ox,mythic_sheep;divine_sheep;spirit_sheep,sheep_veteran;sheep_shepherd;sheep_avenger,ju_jak_key,4,lucky_silver_coin,4,sheeps_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Ox,126,Sheep,mythic_ox;divine_ox;spirit_ox,ox_gorer;ox_charger;ox_avenger,key_to_water,8,scribes_pen,4,oxs_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Tiger,130,Monkey,mythic_tiger;divine_tiger;spirit_tiger,tiger_warrior;tiger_slasher;tiger_avenger,baekho_key,4,purified_water,4,tigers_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x
+Monkey,121,Tiger,mythic_monkey;divine_monkey;spirit_monkey,monkey_mauler;monkey_basher;monkey_avenger,key_to_fire,8,battle_helm,4,monkeys_favor,10000000,3,atlas-alliance-quests|tutor-alliances-nussan|atlas-caves-5x

@@ -185,6 +185,21 @@ public sealed class NpcContext
     /// version. False (nothing changed) if the key is not a ward or that slot is already taken.</summary>
     public bool CastWard(string spellKey) => _s.NpcCastWard(spellKey, _npc.Name);
 
+    // ---- the mythic alliances (Server/MythicAlliance.cs) -----------------------------------------
+    /// <summary>Kills of a creature kind still on the player's KILL TRACK — the last eight kinds killed, most
+    /// recent first (<see cref="Session.TrackedKills"/>). 0 means either never killed or killed and since
+    /// pushed off the end, a distinction the game does not draw either. This, and not lifetime
+    /// <see cref="KillCount"/>, is what an alliance counts.</summary>
+    public int TrackedKills(string mobKey) => _s.TrackedKills(mobKey);
+    /// <summary>Wipe the kill track — what accepting an alliance does.</summary>
+    public void ClearKillTrack() => _s.ClearKillTrack();
+
+    /// <summary>Have this NPC cast Rebirth on the player: full heal, and resurrection if they are a ghost.</summary>
+    public void CastRebirth() => _s.NpcCastRebirth(_npc.Name);
+    /// <summary>Have this NPC cast Stormstrike on the player and send them home to a tavern — the mythic's
+    /// answer to an enemy's sworn ally standing in its chamber.</summary>
+    public void CastStormstrikeAndBanish() => _s.NpcCastStormstrike(_npc.Name);
+
     // ---- hair dye (AppearanceAbility; RTK salon.lua / general_npc_funcs.hairdye) ---
     /// <summary>The current hair-colour palette index (RTK player.hairColor; 0 = base). 5.33 appearance[3].</summary>
     public int HairColor => _s.CharHairColor;
