@@ -833,9 +833,19 @@ public sealed partial class Session
     // Bush/tree foraging (onScriptedTilesBushTree.lua): standing next to an apple tree (object ids 860-864)
     // or a rose bush (876-889), each step has a 1/50 chance to pick an apple / rose. Objects are read from the
     // map's OWN object layer (same ids RTK's checkProximityObjects uses), scanned in the 3x3 around the player.
+    //
+    // GATED TO THE TWO CAPITALS FOR NOW. The trigger is a SPRITE id, not a placed script, so unrestricted it
+    // fires on all 829 apple trees / 37 maps the 4.95 terrain ships — 13720 walkable tiles inside a tree's 3x3
+    // apron, 73% of Orchard Grove's floor, 32% of Southern Koguryo's. (RTK ran the same script over far fewer
+    // trees: its own .map files were re-landscaped, and its Vale and Orchard Grove have none at all.) Kugnae
+    // and Buya alone is a deliberate holding position while the real scope is decided — revisit and widen or
+    // move this to content data then.
+    private static readonly ushort[] ForageMaps = { 0, 330 };   // Kugnae, Buya
     private const int ForageRate = 50;
     private void TryForage()
     {
+        if (Array.IndexOf(ForageMaps, _char.Map) < 0) return;
+
         var map = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
         if (map is null) return;
 
