@@ -658,10 +658,12 @@ looping is a packet-body change rather than a client patch — not yet calibrate
 `NexusTK.snd`: `u32 count`, then `count × {u32 offset, char name[13]}`) and renumbers its `%08d` names onto
 this `%03d` scheme — every id in it happens to be ≤ 999, so they map with no collisions. 5.33 additionally
 supports `%08d.LST`/`%08d.LSR` playlists; **4.95 has neither string** and can only be told one track at a time.
-That asymmetry is why the second soundtrack is offered to 5.33 sessions only (`@music new`,
-`Character.NewMusic`) — a single mp3 gets a hardcoded loop flag of 0 on **both** clients, so only 5.33's
-playlist ids give looping background music. Its type-1 body is a different shape too:
-**docs/5.x/Wire-Divergences.md §6.8**.
+That asymmetry, plus the fact that stock 4.95 ships none of the files, is why the second soundtrack is
+offered to 5.33 sessions only (`@music new`, `Character.NewMusic`). Note the two clients do not even share
+an audio engine — 4.95 is DirectSound + its statically linked XAudio decoder, where the loop flag above is
+literally "loop or not", while 5.33 is **Miles (`mss32.dll`)**, where the same field is a loop *count* and
+**0 means repeat forever**. Its type-1 body is a different shape too, and its playlists advance themselves
+on a window message: **docs/5.x/Wire-Divergences.md §6.8**.
 
 **Install gotcha.** The 4.95 client is **file-virtualized** by Windows: its own writes (`Maps\TK*.map`,
 `ddraw.ini`, `users\`) go to `%LOCALAPPDATA%\VirtualStore\Program Files (x86)\Nexon\NextAeon\`. Drop the
@@ -1290,7 +1292,8 @@ fields (gear in wrong cells). Decoding a real 6.x capture with the grammar above
 perfectly up to the legend count, then the 6.x equip block is left unconsumed. The self-view doll BODY is the
 LIVE on-map sprite (armor/weapon/shield only) — helm/rings have no sprite layer and show ONLY in the 3 icon
 cells. The **buff box** is the self-view analog of the click-profile's gear list (issue: self=buffs,
-other=gear); it holds `Name Ns` per active buff (no parentheses), grouped by spell (`Session.BuffBoxText`).
+other=gear); it holds `Name Ns` per active buff (no parentheses), grouped by spell (`Session.BuffBoxText`),
+TAB-separated (see the separator note below — 5.33 parses this field, 4.95 only prints it).
 
 **The profile pane has THREE pages, and `0x39` feeds all three.** The parser ends by pushing text into
 three separate controls on the widget — this is what the page arrows switch between:
@@ -1314,8 +1317,8 @@ is the server-side state behind it (divorce clears both the legend and the field
 `Session.PartyBoxText` builds it: one member per line, sorted alphabetically, leader marked `*Name`,
 joined with **CR**.
 
-**CR is the real separator for BOTH boxes.** `0x480b20`, the control's copy loop, is what turns a
-character into a line break, and its allow-list for sub-`0x20` characters is exactly `0x0d`/`0x0a`:
+**Page 2 uses CR; page 1 uses TAB.** `0x480b20`, the control's copy loop, is what turns a character into
+a line break, and its allow-list for sub-`0x20` characters is exactly `0x0d`/`0x0a`:
 
 ```
 00480b57  cmp  ax, 0xd
@@ -1324,17 +1327,25 @@ character into a line break, and its allow-list for sub-`0x20` characters is exa
 00480b61  jne  0x480bb6      ; anything else below 0x20 is DROPPED
 ```
 
-TAB (`0x09`) is not on that list, so it would be silently dropped and the entries would run together. It
-works in the **page-1** box only because the parser rewrites TAB→CR first (the loop at `0x47359b`), a
-pre-pass that exists for that one field and nothing else — most likely because the original 4.95 server
-sent it tab-separated. Both builders therefore use CR (`Session.BuffBoxText` was moved off TAB for this
-reason); `GearListText` still uses TAB because `0x34` is a different parser (`0x48b6a0`) with its own
-conversion. `0x480b20` also truncates at the first CR when the control is single-line (`+0x16e == 1`) —
-neither of these is, or the page-1 box would already stop after its first buff.
+TAB (`0x09`) is not on that list, so in the **party box** it would be silently dropped and the roster would
+run together — `Session.PartyBoxText` joins with CR. The **buff box** is the exception: the parser rewrites
+TAB→CR there first (the loop at `0x47359b`), a pre-pass that exists for that one field and nothing else.
+
+That pre-pass is the original server telling us what it sent, and `Session.BuffBoxText` now joins with **TAB**
+(`Session.BuffBoxSep`) because of it. On 4.95 the choice is cosmetic — TAB→CR lands on the same bytes CR
+would have — but **5.33 rewrites the same field to LF instead and then PARSES it into a live countdown
+list**, and its reader breaks on LF only. Sending CR there collapsed the whole box into a single timer entry:
+every buff still rendered, but only the last line's seconds counted down. See
+[5.x/Wire-Divergences § `0x39` buff box](../5.x/Wire-Divergences.md#4b-0x39-buff-box--a-live-countdown-list-on-533-solved-2026-08-22).
+`GearListText` also uses TAB, because `0x34` is a different parser (`0x48b6a0`) with its own conversion.
+`0x480b20` also truncates at the first CR when the control is single-line (`+0x16e == 1`) — neither of
+these is, or the page-1 box would already stop after its first buff.
 
 **It refreshes on reopen, not live.** `0x39` is only sent in answer to a `0x2d` request, and pushing one
 unsolicited would risk opening the window under the player. Someone joining or leaving while you have the
-pane open doesn't redraw it — close and reopen.
+pane open doesn't redraw it — close and reopen. (**5.33 differs on page 1 only:** it drives its own
+one-second countdown off the buff box, so those numbers stay live between refreshes and a buff that runs
+out disappears from the list on its own. Everything else on the pane is still reopen-only there too.)
 
 **Click-profile — request `0x43` → reply `0x34`.** Clicking a character sends `43 01 id(u32) 00`. Reply
 with `0x34`, the public two-page view (portrait + gear on page 1; nation + picture + writable blurb on
@@ -2583,13 +2594,40 @@ after `Protection`. Screenshot values: Titanium blade 100, Heavy polearm 130, Ic
 - else (equip, level 0) → the bare path name `Peasant` (Heavy/Military polearm) — never `Peasant Level 0`.
 
 **`Owner:` is the BOUND owner**, not whoever is holding it — which is why it appears on some items in the
-original and not on others with an otherwise identical layout. Binding is real: NPC-sold subpath weapons
-arrive bound, and a quest upgrade binds its result (a Spike becoming an Enchanted Spike). It is per-STACK
-state — `InvItem.Owner`, persisted with the rest of the character JSON, so no schema change — because the
-same registry row can be bound in one player's bag and unbound in another's. The line is emitted only when
-that field is set. **Nothing binds automatically yet**: the two grant sites (subpath-weapon purchase, quest
-upgrade) still need wiring, and with `@bind` removed there is now NO way to produce a bound item in-game —
-wiring one of those two grant sites is the only path back to exercising this field.
+original and not on others with an otherwise identical layout. It is per-STACK state — `InvItem.Owner`,
+persisted with the rest of the character JSON, so no schema change — because the same registry row can be
+bound in one player's bag and unbound in another's. The line is emitted only when that field is set.
+
+Binding is a property of **the grant, not the item**. RTK's `player:addItem(key, n, dura, ownerId)` takes an
+owner argument, and only the scripts that forge something FOR you pass `player.ID`. Nothing in `Items.csv`
+records it, so the set comes from the Nexus Atlas's per-item **Special Info** field — which uses exactly this
+three-flag vocabulary ("bonded, break on death, unrepairable and much more", says its own armor index) — mined
+by `re/atlas_special_info.py` and matched to the registry by display name. Of the 521 rows that match an Atlas
+entry, the Atlas and the CSV columns agree on break-on-death for 502 and on repairability for 505; that
+calibration is what earns the field the casting vote on the one flag the CSV does not carry.
+`ItemDef.BondedItemIds` is the result (120 ids), and `GivePlaced` stamps the holder as owner on any
+acquisition path that doesn't already carry one.
+
+Three properties, three independent sources — do not derive any of them from another:
+
+| property | source | example |
+| --- | --- | --- |
+| bonded | Atlas *Special Info* (`re/atlas_special_info.py`), RTK grant sites where it is silent | Nimble blade — bound, not BoD |
+| break on death | `ItmBoD` column, 77 rows | Spike — BoD, binds to nobody (a boss drop, and Gan sells it) |
+| unrepairable | `ItmRepairable` column (**positive**: 1 = repairable) | Frost sabre — bound *and* repairable |
+
+**They overlap, unevenly — 14 ids are both.** The subpath weapon families show the shape of it: the base tier
+(Spike, Blood, Surge, Charm) reads `Break on Death` and nothing more, while the Enchanted and san tiers an NPC
+upgrades for you read `Bonded / Break on Death`. Enchanted charm is the one the Atlas marks `Non-Bonded`.
+
+**Some bonds are per-INSTANCE, not per-item.** The Giasomo stick, Frozen spear and Student cap rows are plain
+break-on-death drops; their bonded copies are a different instance of the same id — *"Bonded, non-break on
+death ones can be bought for 400,000 coins at the Arctic Smith by saying Laptev"*. RTK produces that by
+stamping an owner at the grant (`smith.lua`'s Laptev branch, `museum_caretaker.lua`); neither NPC is wired
+here yet, and when they are they pass `owner:` to `GivePlaced` rather than joining the id list.
+
+A rule that swept the whole `49xxx` weapon block into the bonded set once made every break-on-death subpath
+weapon look bound; `ContentSmokeTests.BondedBreakOnDeathAndUnrepairableAreIndependent` guards it.
 
 **`Break on death`** is a warning, not a field: emitted only when the item actually has `ItmBoD`, and always
 the **last** line, so it reads as the closing note on the item rather than another stat row.
@@ -2626,9 +2664,10 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   >
   > An NPC subpath **is its base class plus a little**. `SpellsForClass` resolves `PathBaseOf` (RTK
   > `classdb_path`, the same PthType the gear gate already uses) and runs the whole base-class list through
-  > it, then adds two things: the subpath's own signature spell (`chung_ryongs_rage` / `baekhos_cunning` /
+  > it, then adds the subpath's own signature spell (`chung_ryongs_rage` / `baekhos_cunning` /
   > `ju_jak_evocation` / `hyun_moo_revival` — one row each, `SplLevel` 0, pinned to 99 since you subpath at
-  > the cap) and the base class's two **Dog spells** (below). Level-up growth and the exp table also go
+  > the cap). It does **not** add the base class's two **Dog spells** (below) — those never pass through
+  > `SpellsForClass`, because it is also the tutor menu. Level-up growth and the exp table also go
   > through the base path, since `PathGrowth.csv` and `LevelExp.csv` stop at 4 — without that a Chung ryong
   > would silently level on the Peasant curve.
 - **Rank titles are the same axis as `SplMark`.** Paths.csv gives a Warrior "Il san (W) … Oh san (W)" and a
@@ -2828,24 +2867,36 @@ a time is the point of it.
 > `AreaZapMana`'s 20 keys and `AreaHealSpells`'s 16 from their 5 and 4 base keys — both hand-curated from the
 > RTK Lua years earlier, both come back exact.
 
-**Dog spells (`Content.DogSpellsByBasePath`).** Two per base class, taught by that class's **Dog** rather
+**Dog spells (`Content.DogSpellTiers` / `Content.DogSpellsFor`).** Two per base class, taught by that class's **Dog** rather
 than the guild master — "the guildmaster is not involved in these spells": you kill something, come back, and
 hand over items. Warrior **Greater Blessing 70 / Spirit Fury 99**, Rogue **Spot Traps 70 / Serpent's Fury
 99**, Mage **Fissure 70 / Lava Surge 99**, Poet **Survive 70 / Fascinate 99**. Source: the archived nexusatlas
 *Dog Spells* page (`re/fx/atlas_html/class_dog.html`, capture **2002-12-30** — in era, same timeline as Sam
 San). They sit in Spells.csv under the `===DOG SPELLS===` divider with `SplPthId 99` and `SplLevel 0`, so no
-class filter could ever match them — **dead data until 2026-08-08**. Granted to **NPC subpaths only**, which
-is inside the page's own rule ("people in PC subpaths cannot learn these spells" — and the PC subpaths it
-excludes aren't playable here at all). Where the fan tutor-board posts disagree on the level (Greater Blessing
+class filter could ever match them — **dead data until 2026-08-08**. Eligible paths are the **four base
+classes and the four NPC subpaths**, never a PC subpath (`Content.CanLearnDogSpells`), which is the page's own
+rule: "people in PC subpaths cannot learn these spells". Where the fan tutor-board posts disagree on the level (Greater Blessing
 60-vs-70, Spirit Fury 91-vs-99, `re/archive_warrior_spells.md`), **the official listing wins** — the same
 tie-break already used for Siege's aether count. They are deliberately **not** on any ladder: Fissure → Lava
 Surge is a genuine tier pair, but collapsing it would erase half of the only thing a subpath grants outright.
 
+> **The rebuild grants them too, gated on the linguist flag.** The pairing and the two levels live in
+> `Content.DogSpellTiers`; `npc_dialog.lua`'s `DOG_SPELLS` owns the other half of each tier — the kills, the
+> goods, and the atlas's *"must have 20,000 Vita or 10,000 Mana"* gate on the level-99 one — because that data
+> *is* the dialog. `RespecSpellSet` takes a `dogFlag`, which `SyncSpellbook` passes as
+> `HasDogFlag && CanLearnDogSpells(path)`, and merges the qualifying tiers in level-stamped. So `@dog 1` then
+> `@lvl 99` produces the book a level-99 linguist of that class really holds, and `@dog 0` then a rebuild
+> takes them back. **The flag alone still grants nothing** — set it and walk to the Dog and you start exactly
+> where a finished linguist starts, which is what makes the teach flow testable. Before this the rebuild had
+> no idea the Dog set existed and silently forgot every Dog spell, *including* ones earned at the Dog, since
+> `@lvl`/`@class`/`@mark`/`@align` replace the book rather than top it up. The Dog's price is deliberately not
+> re-checked by the rebuild, the same way it hands over tutor spells without charging the tutor's fee.
+
 **Staff commands.** `@lvl <1-99>`, `@class <class or rank name>`, `@mark <0-3>` and
 `@align <Unaligned|Kwisin|Mingken|Ohaeng>` all funnel into **one rebuild** (`Session.RespecTo`): reset to the
 level-1 baseline, re-apply real `LevelUp`s on the current path, then **replace** the book with exactly
-`RespecSpellSet(class, level, alignment, mark)`. It is a rebuild, not a top-up — the book can shrink, and
-nothing from a previous class, level or rank survives.
+`RespecSpellSet(class, level, alignment, mark, dogFlag)`. It is a rebuild, not a top-up — the book can shrink,
+and nothing from a previous class, level or rank survives.
 - `@mark n` forces level 99 first, then runs `n` further `LevelUp`s with the counter reading 100, 101, … so a
   rank keeps growing on the same curve and its AC keeps falling past 1 (`100 − effective level`). The *stored*
   level goes back to 99, which is what the character sheet and the exp table understand. Nothing in the live
@@ -2859,6 +2910,9 @@ nothing from a previous class, level or rank survives.
   `_char.Level` goes back to 99 immediately afterwards, so the HUD, the character sheet, the exp table and
   every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
 - `@stats` still overrides the curve outright, and by design a later rebuild discards it.
+- `@dog [0|1]` is **not** a rebuild — it only sets or clears the Dog Linguist flag (`Content.DogFlagReg`) and
+  its legend. But the flag is an input to the rebuild, so the next `@lvl`/`@class`/`@mark`/`@align` is what
+  actually hands the class's Dog spells over or takes them back (see *Dog spells* above).
 - **`@spells` and `@forgetspells` are gone** — both were additive-only, so between them the book could only
   ever grow, and a character that had been three classes carried all three books around. The rebuild
   subsumes them, and stays the main grant path.
@@ -4878,6 +4932,9 @@ empty window. Trampoline `0x44b9e9` gates on `body[0] == 1` and hands `&body[2]`
 
 * **`rank(u32BE)` is 4.95-only.** RTK's row goes straight from the hunter byte to a colour byte and then
   the name length. Porting it verbatim shears every row from the 4th byte on.
+* **The row above is 4.95's. 5.33's is FOUR bytes + name** — same five-byte header, no rank, no hidden
+  nibble, and the mark moved into byte `+1`. See `docs/5.x/Wire-Divergences.md` §6.10; sending this row
+  to a 5.x client leaves only the nation, the column and the subpath badge intact.
 * **Name length is 4 bits** — it shares a byte with the tier nibble, so **15 characters is a hard wire
   limit**, not a style choice.
 * **Sorting is client-side after the first paint.** The window's own toggle re-runs `0x48b390`/`0x48b3b0`

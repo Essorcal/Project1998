@@ -145,3 +145,247 @@ not currently on disk), or any period board post describing being refused the qu
 
 If per-quest level caps are ever wanted, note they are a general rule and an era-gated one, not a Chu Rua
 special case — see `docs/common/Era-Gating.md`.
+
+---
+
+## Sute — what is built, and on what evidence
+
+The quest is built (`Server/SuteQuest.cs`): Eldritch's tale, the 200-gold powder, the cave-mouth tile, the
+key, the legend. So is Sute's combat kit (`Server/SuteAi.cs`): two ranged zaps, a wounded self-heal,
+hit-and-run, a cornered rout, and the cave's cold-blast tiles. The first rests on period sources; the
+second rests on one player's account of one fight, which is why it is written up here rather than only in
+code. What is genuinely still missing is the two armour chains that consume this quest's outputs.
+
+### Sute's combat kit is built from ONE eyewitness report
+
+Built 2026-08-22 (`Server/SuteAi.cs`, `Tests/SuteAiTests.cs`, two `MobSpells.csv` rows). Recorded here not
+as a gap but as a **provenance warning**: unlike everything else in the Sute quest, none of it comes from a
+period source. RTK has no AI script for him at all, and the only thing the archive says is Nexus Atlas
+quoting the Gods' launch notice — the cave "offers a spellcasting enemy, magical traps, and makes the old
+'Super Wasabi' dye color available to many". Everything concrete came from the user fighting him once and
+reporting what happened. Anyone re-tuning this should know they are re-tuning a single observation:
+
+| Thing | Where it came from |
+|---|---|
+| Ice ray, 405 damage, "Feel my power!" | measured once, at AC -22 |
+| Ice storms, "Chilly in here isn't it?" / "You will never get my jewels!" | shouts observed; damage **never measured** — 810 is the user's authorised "let's say 2x Ice ray" |
+| "A blast of frigid cold hits you.", 257 damage | measured once, at AC -22 |
+| 4-hit burst / back off 2 / pause / return, repeat | described, not timed precisely — see the burst-size note below |
+| Ice ray animation (the dart trap's, 12), Ice storms 24, heal = Soothe's (5 / sound 708) | given by the user, by eye, after seeing the wrong ones in game |
+| self-heal 200 HP at or below 25% | described |
+| flee below 25%, fight back when cornered | described |
+| ~1-in-8 magic deflect | **already correct before this work** — his `MobProtection=1` in mobs.csv gives 10% against a Will-25 caster, and nothing was changed |
+
+Two numbers are softer than the rest and are called out at their constants:
+
+* **Sute's cadence forced the world heartbeat down from 600ms to 333.** Worth reading before touching
+  `World.TickMs`. He was observed moving two tiles a second and striking twice a second, both in a
+  **333 / 333 / 333-rest** rhythm — the same shape a player gets from the 3-actions-per-second budget, using
+  two of its three slots. A mob may act at most once per world beat, so at 600ms the fastest creature
+  possible managed 1.7 actions/sec and simply could not represent him.
+
+  **Lowering the beat speeds nothing up.** Every timer is `timer += TickMs` against a per-mob interval in
+  real milliseconds, carrying the remainder rather than resetting, so a 2000ms creature still moves every
+  2000ms. What changes is the granularity — the smallest interval the world can express. The four
+  tick-COUNT constants (`RespawnTicks`, `BatchSweepTicks`, `ForageTicks`, `AdviceTicks`) were converted to
+  derive from `TickMs`, so their real-world periods are unchanged. Cost is ~1.8x the tick body, which only
+  walks maps with players; the slow-tick watchdog has never fired in this repo's logs and now scales off the
+  period. `P1998_TICK_MS` overrides it if that turns out to be wrong.
+
+  Movement went through three readings before landing. "Rabbit speed" was first taken as a walking *pace*;
+  the user clarified it meant the rabbit's **two-tiles-in-one-turn dart**, which is RTK's own idiom
+  (`AI/bosses/nine_tailed_fox.lua` calls `mob:move()` three times in one invocation) — and that unified the
+  world's three fleers onto one `World.Dart`. Then Sute turned out not to want it at all: he walks, one tile
+  per beat, animated, and it is the beat that is fast. So:
+
+  | Fleer | Tiles per turn | Pace | Source |
+  |---|---|---|---|
+  | Prey (rabbit, blue rooster) | 2 (a hop) | own `MobMoveTime` | user's observation; RTK has no rabbit AI |
+  | Wounded rout (fox, Maletic, Citelam) | 3 (a hop) | own `MobMoveTime` | RTK's literal `mob:move()` x3 |
+  | **Sute** | **1 (a walk)** | **333ms, acting 2 beats in 3** | user's observation |
+
+  Side effects of the unification: a routing boss can now trip trap tiles (the old hand-rolled rout moved
+  the mob directly and skipped that check), and the blue rooster got quicker — at `MoveTime` 500 it was
+  pinned at the one-tile-per-beat ceiling, which has now moved.
+* **AC and spell damage.** Both damage figures were measured on a player wearing AC -22, but our engine
+  does not run creature-spell damage through AC at all (`Session.ReceiveMobSpell`: magic ignores physical
+  AC, the same rule player spells follow). The observed numbers are therefore used raw and reproduce the
+  observation exactly *for that player*. If spell damage is ever put through AC these want re-deriving
+  (405 / 0.78 ≈ 519).
+
+Still not built: the "magical traps" of the launch notice are modelled ONLY as the cold-blast tiles. If the
+original had a second trap kind in the cave, no source describes it.
+
+**What this shipped wrong, kept because each one is a class of bug rather than a typo. Every single
+one was found by playing it — none was reachable by reading the code or by any test that existed:**
+
+1. **Animations are invisible to tests.** Ice ray, Ice storms and the self-heal all went out with ids picked
+   by theme rather than from a source — the heal in particular used the ICE GLARE effect, so it drew an
+   attack over him. Nothing failed; it just looked wrong, and only playing it caught that. The ids are now
+   pinned against the rows they come from (`set_dart_trap`, `soothe`) rather than as bare numbers, so a
+   retuned source row moves them together.
+2. **Every burst after the first was two swings, not four.** The description read "4 hits … then comes
+   back for two attacks repeating process", which was implemented as a 4-hit opener and 2-hit follow-ups.
+   In play that meant he hit four times once and twice forever after. The user's correction: above half
+   health it is **four every time**. There is now one `SuteAi.BurstHits`, and a test that drives three whole
+   cycles counting real swings — the old shape was internally self-consistent, so reading the constant back
+   would never have caught it.
+3. **He never fled — three separate causes, fixed over three rounds.** All the same shape: a rule that is
+   correct in isolation but only reachable when some other state permits it.
+   * `OnDamaged` re-armed the one owed retaliation on every hit, so a player swinging faster than his
+     attack timer kept the debt permanently above zero. Added `SuteAi.RetaliateLockoutMs`.
+   * That lockout armed when the debt reached ZERO. Cornered he is owed *two*, so a hit landing between the
+     first and second answer topped the debt back to two, zero never arrived, and the lockout never armed.
+     It now arms when the debt is CREATED.
+   * **`SuteCornered` was latched.** `Decide` read the flag and returned Normal while it was set — but
+     returning Normal meant World never entered the branch that recomputes it, so one blocked step pinned
+     him for the rest of the fight. That is why a boss on 15% health stood and fought to the death. He now
+     asks to run on *every* beat unconditionally, and World falls through to a swing only when the step
+     genuinely fails. **Never latch a "can't do X" flag whose only writer is the code path that doing X
+     would reach.**
+4. **Feedback that isn't damage has no path of its own.** The self-heal changed his HP silently: the
+   over-head bar is drawn by `Session.ShowDamageResult`, which only runs on a hit, so the bar sat where the
+   last blow left it and the heal was invisible to the player fighting him. World now queues a bar redraw
+   alongside the heal's animation.
+
+### The two armour chains that need Sute
+
+Sute's key and Sute's corpse are both *ingredients* of chains listed under "Star / Moon / Sun armour chains"
+above, which is why `SuteQuestAbility` deliberately stops eating the key once you hold the legend:
+
+* **Mage, Moon armour** — `mage_trainer.lua:595` asks for nine keys at once: "Key to Earth / Fire / Heaven /
+  Mountain / Wind / Pond / Thunder / Water / **Sute's Key**". Atlas's quest page says the same ("Mages need
+  the key for their Moon armor quest").
+* **Poet, Sun armour** — `poet_trainer.lua:826` gates on `killCount("massive_scorpion") >= 1 and
+  killCount("sute") >= 1`. Atlas: "Poets must kill Sute as part of their Sun armor quest."
+
+Nothing needs to change in `SuteQuest.cs` when those land; the key already survives repeat runs.
+
+### Nexus Atlas says the cooldown is a day, not an hour
+
+Recorded because it is a genuine three-way disagreement and the next person will re-find it.
+`SuteQuest.RecoatSeconds` is **3600**, following the NPC's own words in the tswolf screenshot ("it is
+dangeous to apply the powder more than once per hour") and that page's walkthrough ("wait an hour and pay
+again for the dye"). RTK's code says 86,400 while RTK's own dialog text says "once per hour". Nexus Atlas,
+years later, says "once a day (a Nexus day is 3 hours in real time)". Its parenthetical is exactly right —
+`Shared/GameCalendar.cs` has `MsPerHour = 450_000` (7.5 real minutes) and `HoursPerDay = 24`, so a game day
+is precisely 3 real hours — which makes the claim a considered one rather than a slip, but it still
+contradicts the era-correct dialog.
+Reading: the hour is right for 4.95 and Atlas may be describing a later retune. What would settle it: a
+period board post about waiting to be re-coated.
+
+---
+
+## Tiger Mail — what is built, and the three source conflicts
+
+The Warrior armour ladder is built (`Server/TigerMailQuest.cs`, `Tests/TigerMailQuestTests.cs`): Claw in
+Chonsa Den, all seven rungs, the per-rung experience sacrifice, the reset hatch, and the tutor's Tiger
+Essence briefing (`TutorialQuest.TigerEssence`). Recorded here for the two things that are *not* built and
+the three places the sources disagree, because all five will be re-found by the next person.
+
+### The dragon / shard branch of `claw.lua` is not ported
+
+`RTK-Server/rtklua/Accepted/NPCs/buya/claw.lua` has a second, unrelated conversation gated on level 99:
+saying `"dragon"`, then `"earth dragon"`, then `"shard"` walks `quest["claw_soe"]` 1 → 2 → 3 and ends by
+pointing the player at **Baegi** to have an Amethyst hollowed into a Dragon Shard. That is the opening of
+the Dragon Shard / Kawlana chain, not the tiger ladder, and it dead-ends without Baegi's ring shop
+(`ring_shop.lua`) and the Sonhi Desert — neither of which exists here. When they land, the three keywords
+belong on `TigerMailAbility` beside `"chongun"`; the registry key to use is RTK's own, `claw_soe`.
+
+### Claw's ladder stops at Earth, and Star / Moon / Sun tiger mail is NOT its continuation
+
+RTK's `claw.lua` ends with "you have seen what I know for I have only lived on earth — perhaps a **celestial
+being elsewhere** would know more", and RTK backs that up with a tiger-mail continuation. **That
+continuation is RTK's own invention.** The line is kept as flavour; nothing should ever be built behind it.
+
+What the period sources actually say:
+
+* Star / Moon / Sun **Tiger Mail** and **Tigress** are real items — tswolf's 2001 armour archive
+  (`armor/warrior.shtml`) lists all six with sell values, and nexusatlas later files Moon and Sun tiger mail
+  and tigress on its **extinct** page ("Armor that no longer exists in the Kingdoms").
+* But **nothing grants them.** tswolf's source column for all six reads **"Unknown"** — in the same table
+  where Star/Moon/Sun *Scale Mail* reads "Quest" and Star/Moon/Sun *War Platemail* reads "Tailor+Smith". A
+  source of "Unknown" next to two families whose sources are named is evidence, not an omission.
+* nexusatlas' walkthrough closes the same way: "You cannot get another level of Tiger mail any longer."
+
+The real Warrior Star / Moon / Sun / Wind chain is **Scale Mail / Mail Dress**, and it is a different quest
+in a different place — tswolf `quests/armor/warrior.shtml` (Wayback 2001-01-28):
+
+| Tier | Level | Where | Gate | Shape |
+|---|---|---|---|---|
+| Star | 66 | Kugnae Guildmaster, say `"Star"` | Blessed by the Stars | 18 Agile Monkeys solo → 2 Titanium gloves → 1 Electra → 1 karma + 1 might |
+| Moon | 76 | same, say `"Moon"` | Dog karma | 30 Crazed Mongrels → the Pig 1 glowing boss → 20 Grim Ogres → 1 Titanium glove, 3 Electras, 20 Ambers, 2 might, 1 grace → Star armour + 2 karma |
+| Sun | 86 | same, say `"Sun"` | Tiger karma | 60 Ice + 60 Frost Ogres → 20 White ambers, 2 Titanium gloves, 2 Corrupted blades, 4 Electras → 200 rabbits → 14 self-killed Gold acorns → both Monkey bosses → Moon armour, 20,000 coins, 3 karma |
+| Wind | 96 | Scribe atop Scribe's Mountain, Vale, say `"Wind"` | Spirit karma | undocumented in period ("Nexon has not officially released them") |
+
+Every kill step must be solo, at full experience, and the LAST thing killed before returning. The rewards
+are **BONDED**, and each tier's turn-in accepts an unbonded predecessor bought from a tailor. Unported —
+it belongs with the "Star / Moon / Sun armour chains" entry above, whose karma table already covers its
+gates. `game-data/Items.csv` already carries the whole scale mail / mail dress ladder (35001-35009,
+36001-36009), so it is a quest-script gap, not a data gap.
+
+### Three source conflicts, and how each was called
+
+All three are documented at their constants in `TigerMailQuest`; this is the short version.
+
+| Question | RTK `claw.lua` | tswolf (2001) | nexusatlas | Board tutor (KoyaSoto) | Built |
+|---|---|---|---|---|---|
+| Starting level | 5 | — | **6** ("Level Required : 6") | **6** ("cannot be started till level 6") | **6** |
+| Rung 2 catalyst | **gold acorn** | — | mountain ginseng *(2006-09 … 2007-08)*, **gold acorn** *(2007-10 on)* | **gold acorn** | **gold acorn** |
+| Female rung names | Jade / Royal / Sky tigress | **Summer / Autumn / Winter** | **Summer / Autumn / Winter** (`warriorarmor-old.php`); quest page says "Autumn tigress" | — (male names only) | **Summer / Autumn / Winter** |
+
+* **Level 6** is also the self-consistent answer: a Peasant is walled at 5, and the quest demands the
+  Warrior path, so 6 is the first level at which a Warrior has earned anything.
+* **The catalyst** is the one place this port picks a side against the nexusatlas snapshot it was checked
+  against. What decided it: the page *changed* between its 2007-08-11 and 2007-10-13 captures, and it
+  changed toward what the other two sources already said. A page correcting itself is a better reading than
+  a game change nobody else recorded. `mountain_ginseng` (10045) exists, so flipping it back is a one-word
+  edit if a period source ever turns up.
+* **The female names** were called the wrong way round on the first pass — nexusatlas' "Autumn tigress" was
+  read as a slip for RTK's `royal_tigress`, and it is not. Every other female warrior line is seasonal where
+  the male is mineral (war dress and mail dress both run spring/summer/autumn/winter), tswolf's 2001 archive
+  lists "Summer Tigress 6 / Autumn Tigress 16 / Winter Tigress 26", and nexusatlas' `warriorarmor-old.php`
+  pairs them explicitly: Jade tiger mail ↔ Summer tigress, Royal ↔ Autumn, Sky ↔ Winter. RTK named the female
+  ladder after the male one. `Items.csv` rows 42014-42016 are renamed to the seasonal names; the KEYS stay
+  `jade_/royal_/sky_tigress` so they still line up with the RTK reference tree a porter will read beside this.
+  (nexusatlas' *current* `warriorarmor.php` lists BOTH sets, which is what a later rename with the old rows
+  retained looks like — its `extinct.php` exists for exactly that.)
+
+### Two RTK behaviours deliberately changed
+
+* **The experience sacrifice is actually charged.** `claw.lua` computes `player.exp - cost` but only writes
+  it back inside `if exp < 0`, so the deduction silently vanishes for everyone who can afford it — the
+  sacrifice the whole quest is named for never happens. Charged here, clamped at zero, which is what the
+  clamp branch was plainly meant to do. The seven costs (664 / 2,556 / 11,200 / 34,784 / 70,344 / 178,032 /
+  428,544) are corroborated: they are RTK's constants *and* KoyaSoto's "TNL penalty" column.
+* **The tutor's block releases on MEETING Claw, not on quest progress.** RTK's condition is
+  `quest["tiger_armor"] == 0`, which only clears when the first rung is actually claimed — so a Warrior who
+  walked to Chonsa Den, heard Claw out, and could not yet afford an antler and a war platemail would have
+  done everything the briefing asked and still be locked out of their own tutor. `TigerMailQuest.MetClawReg`
+  is stamped the moment Claw engages, ahead of his own level and ingredient checks. **The block itself is
+  kept** — the briefing repeats on every click until you have been. The branch also reads
+  `TigerMailQuest.MinLevel` rather than the Lua's literal 5: RTK's briefing level was only right because
+  RTK's quest also started at 5, and briefing below the quest gate sends the player across Buya to be
+  bounced. `TutorBriefsExactlyWhenClawWill` and `TutorBlockReleasesOnMeetingClawNotOnProgress` pin both.
+
+### The briefing arrives on its own, and the tutor is the fallback
+
+nexusatlas: "The Tutor **will eventually give** warriors a quest called Tiger Essence." It is pushed the
+moment a Warrior reaches `TigerMailQuest.MinLevel` — no NPC, no click (`Session.PushTigerEssence`, fired from
+`AwardExp` after a real level-up, deliberately not from `LevelUp`, which the `@lvl`/`@class` rebuild replays
+dozens of times). The dialog goes out on the player's own entity id with the tutor's portrait read off his
+NPCs.csv row, since he is typically a city away (`Session.DlgPush`).
+
+The tutor's click branch plays the SAME script (`TigerMailQuest.Briefing`, so they cannot drift) and exists
+for everyone the push cannot reach: characters already past the gate when this shipped, characters rebuilt by
+`@lvl`, and anyone who dismissed the push. The push fires once; the tutor repeats until you have been to
+Claw.
+
+### Harden Armor lands on the Jade and Blood rungs only
+
+nexusatlas says "The tiger will cast Harden armor on you" under steps 2 and 6 — the Jade and Blood rungs —
+and under no other step; RTK casts nothing anywhere. An earlier pass cast it on all seven, reasoning that
+every rung is the same transaction so the split looked like patchy coverage. It is not: the user confirms
+the two-rung split is real. `Rung.Harden` carries it, so it is data rather than a rule
+(`TigerMailQuest.HardenSpell` → `Session.NpcCastWard`, which is a general "an NPC casts a ward on you"
+primitive and stays available to anything else that wants it).

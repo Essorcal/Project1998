@@ -170,7 +170,7 @@ u8                   grouped
 u32BE                TNL
 u8+str               class title     -> widget +0x712
 (u16,u8) x5                          <- FIVE (icon, colour) cells
-u8+str               buff box        -> widget +0xb32, the page-1 list control
+u8+str               buff box        -> widget +0xb32, the page-1 list control (PARSED: see 4b)
 u8                   exchange
 u8 + records         legend count, then { icon u8, colour u8, len u8, text }
 ```
@@ -204,6 +204,70 @@ Implementation: `Session.SendSelfProfile533`.
 
 ---
 
+## 4b. `0x39` buff box — a live countdown list on 5.33 (SOLVED 2026-08-22)
+
+**Symptom:** the profile's page-1 buff list ticked down in real time — but only the **bottom** line. Every
+other buff sat frozen at whatever second it had when the window opened.
+
+4.95 treats this field as dead text. 5.33 **parses** it, and the whole difference is one character.
+
+**The pre-pass gives it away.** Both parsers rewrite TAB in this field and this field only, but to
+different characters:
+
+| | loop | TAB (`0x09`) becomes |
+|---|---|---|
+| 4.95 | `0x47359b` | **CR** `0x0d` |
+| 5.33 | `0x49d131` | **LF** `0x0a` |
+
+5.33 changed the target because it added a reader that needs LF. After the pre-pass, `sub_49cdd0` copies
+the text to `widget+0xb32` and hands it to **`sub_49f6a0`** (4.95 hands its copy straight to the generic
+text control at `0x480b20` instead — no parse, no timer):
+
+```
+0049d2ce  mov  eax, [ebp-0x10]        ; wide char count
+0049d2d1  mov  ecx, [edi+0xe4]        ; the PAGE-1 control
+0049d2d7  push eax
+0049d2d8  lea  eax, [edi+0xb32]       ; the buff text
+0049d2de  push eax
+0049d2df  call 0x49f6a0               ; <- parse into the countdown list
+```
+
+`sub_49f6a0` clears the control's vector at `[ctrl+0x158..0x160]` and then loops:
+
+1. **`getline` (`sub_453b80`) — splits on `0x0a` ONLY.** `cmp word ptr [edx+eax*2], 0xa`. CR is not a
+   break here, and an empty line ends the loop.
+2. `find_last_of(L" \t")` (constant at `0x553a2c`) → the **last** space in the line. No separator at all
+   and the line is silently **dropped**.
+3. name = `substr(0, find_last_not_of(...)+1)` — trimmed, so a name may contain spaces.
+4. seconds = `atoi` of the tail (`sub_4ab540`), which stops at the `s` in `300s`.
+5. push an 8-byte entry `{ name, seconds }`.
+
+A vtable timer, **`sub_49f4e0`**, then walks that vector once a second from the last index down,
+decrementing each `entry.seconds`, erasing any that reach 0, and re-rendering the whole list through
+**`sub_49f5a0`** with `Str.res[220]` = **`"%s %3ds"`** — the same shape the server already writes, so the
+box reads identically whether the client or the server formatted the line.
+
+**So CR made the entire box ONE entry.** `getline` never split it, `find_last_of` landed on the final
+space in the whole blob, and the client stored:
+
+```
+name    = "Might 300s\rProtection 60s\rFury"      <- the control still breaks on CR, so it LOOKS like 3 lines
+seconds = 20                                       <- the only value the timer owns
+```
+
+Every buff rendered, exactly one counted down, and the other lines' seconds were frozen because they were
+part of a name string.
+
+**Fix:** `Session.BuffBoxSep` — join buff-box lines with **TAB**. Each client's own pre-pass turns it into
+the character that client wants (CR on 4.95, LF on 5.33), which is presumably why the pre-pass exists at
+all: the original Nexon server sent TAB. 4.95 is byte-for-byte unaffected. `PartyBoxText` stays on CR —
+page 2 gets no pre-pass on either client, so TAB would be dropped there and the roster would run together.
+
+Pinned by `Tests/ClientVersionWireTests` (`BuffBoxIsTabSeparatedSoFiveThirtyThreeTicksEveryLine`), which
+re-runs 5.33's own grammar over the joined string.
+
+---
+
 ## 5. `0x34` view profile — same break, plus a paperdoll
 
 Parser `sub_4d19c0`. Minimal record from the zero probe:
@@ -214,13 +278,42 @@ Parser `sub_4d19c0`. Minimal record from the zero probe:
 [6..16] the 11-byte APPEARANCE record   <- the paperdoll
 [17..31] FIVE (u16 icon, u8 colour) cells
 [32]    gear list string
-[33..36] u32BE                   the TARGET'S ENTITY ID -- see below
+[33..36] u32BE                   the TARGET'S ENTITY ID — see below
 [37][38][39] flags               grouped / exchange / nation
 [40..41] u16                     profile-picture size
 [42][43][44] u8 x3
 ```
 
-Same five-cell divergence as `0x39`. Fixed; both profile panels confirmed working.
+Same five-cell divergence as `0x39`. Fixed; both profile panels' **content** (name, class,
+gear list, paperdoll, legends, exchange id) confirmed rendering correctly.
+
+**The "broken/flipping background" was a MISSING TRAILING BYTE — the guardian backdrop (SOLVED
+2026-08-23).** Symptom: the click card's big decorative backdrop rendered as the *wrong* guardian
+(dragon / phoenix / turtle / tiger) or a *corrupted* pane, non-deterministically — the SAME equipment
+looked right one open and wrong the next, with the odds of "wrong" rising with gear worn
+("sword+armor+helm usually fine; add a shield → ~50/50; armor-only or full kit → mostly broken"), while
+the `s` character sheet (`0x39`) was always correct.
+Root cause: the `0x34` parser reads **one more `u8` after the legends** (`0x4d2184`, gated on the client
+build word `[obj+0x82a] >= 0x213` via `sub_403890`) and stores it at window `+0xb12`; the profile paint
+`sub_4d2354` then uses it as the **frame index into `SELFLOOK.EPF`** — the four guardian backdrops. We
+never sent that byte, so the client read whatever sat *past the end of our packet*. Because the read
+position is `cursor-after-legends`, the garbage byte's value shifts with packet length — which is exactly
+the equipment correlation (different gear → different leftover byte → different guardian, or an
+out-of-range index = the "corrupted" pane). The `s` sheet is immune because it takes the guardian from
+the client's OWN cached totem; only the click card needs the TARGET's totem in the packet (the client
+can't know another player's). **Fix:** append `clamp(totem,0..3)` after the legends, V533 only
+(`SendClickProfile`). 4.95's parser stops after its legends, so the extra byte is invisible to it. The
+`re/decode_click34.py` "`0 left over (OK)`" was measuring against *our* send, not the client's read — it
+could not see a field we omit.
+
+> **DEAD ENDS on this one, do not repeat.** Two wrong theories cost real time before the byte was found:
+> (1) a **flood/paint race** — the 5.33 client fires `0x43`(self) ~3-4×/second and we answered each with a
+> fresh `0x34`; throttling the identical resends *did* remove a flicker component but NOT the wrong
+> backdrop, proving it was content, not rate (the throttle was later removed). (2) a **client-internal
+> page-0 paint quirk** — `sub_4d2fc0`/`sub_4d3070`/`sub_4d3120` are the three page repaints, page 0 and
+> page 1 even share paint `0x49c4e0` / base-frame `0x48bf00`; that RE is correct but was a red herring —
+> the backdrop is chosen by the `+0xb12` frame index, which a packet byte *does* reach. "The body decodes
+> clean" is not "the body is complete": always check what the client reads PAST your last field.
 
 **`[33..36]` is NOT a divergence and NOT an unknown — it is the profile target's entity id, and 4.95
 wants it too** (RE'd 2026-08-21). `sub_4d19c0` reads it with the `u32BE` helper `0x4a1250` and parks it
@@ -231,8 +324,9 @@ same shape one field-width earlier in the packet (`0x48b6a0` → `+0xb24` → bu
 on **either** client — both were sending a well-formed `0x4a` naming player id 0. See
 `docs/4.x/Protocol.md` §9.5 / §11l.
 
-Open: `[43]`/`[44]` — 4.95 has blurb-length then legend count and nothing more, so 5.33 has one extra
-`u8` in that tail whose position (before or after the legend count) is unresolved.
+**RESOLVED — the tail `u8` after the legends is the GUARDIAN BACKDROP frame** (see the guardian block
+above): `0x4d2184` reads it (build-gated), stores it at window `+0xb12`, and `0x4d2354` uses it to pick
+the `SELFLOOK.EPF` guardian pane. Sent as `clamp(totem,0..3)`.
 
 ---
 
@@ -533,20 +627,47 @@ candidates from the wide format strings at `0x5541dc` / `0x5541f0` / `0x554204` 
 exists in `Mus000.dat` (`0x41d1d0` → the resource manager at `[0x55bfc0]+4`, an archive lookup, not a
 filesystem one):
 
-| candidate | what it is | how it plays |
-|---|---|---|
-| `%08d.LST` | ten track ids, `\r\n`-separated, count on line 1 | starts at entry **1**, loop flag forced to **1** |
-| `%08d.LSR` | byte-identical format | starts at `rand % count + 1`, loop flag **1** |
-| `%08d.MP3` | one song | loop flag is the packet's 4th arg, which the handler **hardcodes to 0** |
+| candidate | what it is | entered at | loop count |
+|---|---|---|---|
+| `%08d.LST` | ten track ids, `\r\n`-separated, count on line 1 | entry **1** | 1 |
+| `%08d.LSR` | byte-identical format | `rand % count + 1` | 1 |
+| `%08d.MP3` | one song | — | the packet's 4th arg, which the handler **hardcodes to 0** |
 
 So the stock archive's `801-814 / 870-873 / 880-883 / 890-893` are the ordered lists and
-`901-914 / 970-973 / 980-983 / 990-993` their shuffled twins (same ten ids, `.lsr` instead of `.lst`),
+`901-914 / 970-973 / 980-983 / 990-993` their shuffled twins — verified byte-identical, all 26 pairs --
 and the 25 bare ids are single songs.
 
-**The consequence for map music:** a single mp3 **plays once and stops**, on both clients — 4.95's
-mode-1 branch `0x463ae8` passes the same hardcoded 0. Background music must therefore be a playlist id.
-`Content.SelfTest` and `Tests/ContentSmokeTests.EveryFiveXMapPickIsALoopingPlaylist` assert that every
-zone's `Track5x` is one, because the failure is silent: the area just goes quiet after one song.
+The playback engine underneath is **Miles (`mss32.dll`)**, and that "loop flag" is the count passed to
+`AIL_set_stream_loop_count`, where **0 = repeat forever** and **1 = play once**. So a lone mp3 id
+repeats forever on 5.33, and each playlist entry plays once and then hands off to the advance.
+
+### How a playlist advances — and how a *shuffled* one dies
+
+`sub_4a5f80` opens the entry with `AIL_open_stream`, sets the loop count, starts it, and registers
+`sub_4a7d90` as the Miles end-of-stream callback (`0x4a62ad`). On end-of-stream that callback posts
+**`WM_USER+8` (`0x408`)** to the main window; the WndProc arm at `0x4041bd` calls `sub_4a7b40`, which
+picks the next entry and calls `sub_4a5f80` again:
+
+```
+if (!playlistMode) return;                       // +0x10a5
+count = (end - begin) / 4;                       // +0x1098 .. +0x109c
+next  = random /* +0x10a4, set for .LSR */ ? rand() % count : cur /* +0x28 */;
+next += 1;
+play(count >= next ? next : 1, 100, 1);
+```
+
+**`sub_4a5f80` early-outs to a no-op when the index it is handed is the one already playing**
+(`0x4a6078`: `cmp eax, edi / je`). An `.LST` walks `cur + 1` and wraps `10 -> 1`, so it can never
+collide. An `.LSR` re-rolls `rand() % 10 + 1` and hits the current entry **1 time in 10** — and when it
+does nothing is opened, the previous stream has already ended, so **no further callback ever fires and
+the music is dead** until the server sends another `0x19`. Measured live 2026-08-22 by driving the
+advance through `PostMessage` (`re/frida_music_533.py`): 2 stalls in 40 shuffled advances, 0 in 24
+ordered ones.
+
+**The consequence for map music:** it must be an **ordered** (`.LST`) id. A single mp3 never leaves its
+one song, and a shuffled list stalls dead. `Content.SelfTest` and
+`Tests/ContentSmokeTests.EveryFiveXMapPickIsAnOrderedPlaylist` assert that every zone's `Track5x` is an
+ordered playlist, because both failures are silent — the area just goes quiet.
 
 `fallback` is reached only when none of the three resolve. Id 0 matches nothing and `sub_4a5f80` stops
 and returns on a 0 id, so `id = fallback = 0` **is** the mp3 stop on 5.33 — there is no mode-0 to use.
@@ -562,7 +683,8 @@ which is why it stays the default and why `@music new` is the opt-in rather than
 
 Implementation: `Session.MusicBody` / `Session.MusicStopBody` (pure + static, pinned for both clients by
 `Tests/ClientVersionWireTests.cs`); the per-character choice is `Character.NewMusic`, the tables are
-`game-data/MusicTracks.csv` (`Set` column) and `MapBgm.csv` (`Track5x` column). 4.95 is refused the new
+`game-data/MusicTracks.csv` (`Set` + `Kind` columns — `list` vs `shuffle`, the shuffled ids
+carrying a `-rand` name) and `MapBgm.csv` (`Track5x` column). 4.95 is refused the new
 set outright — it has the mp3 engine but ships none of the files, so switching there is silence, not a
 different soundtrack.
 
@@ -611,6 +733,73 @@ Implementation: `Session.BuyGridRowBody` (pure + static), pinned for both client
 `Tests/ClientVersionWireTests.cs`. Reached from the shop (`DlgBuy`) and the bank withdraw grid
 (`BankWithdrawItem`), which is why both showed it and the deposit grid did not.
 
+## 6.10 `0x36` user list — a four-byte row: no rank, no `hidden`, mark moved (SOLVED 2026-08-22)
+
+Reported as "ctrl+W does nothing on 5.x — the only thing that works is the path/subpath icon next to the
+name." That symptom is the diagnosis: the row is right for its first three bytes and shears on the fourth.
+
+The **header does not diverge** — `u16BE headlineTotal · u16BE rowCount · u8 sortMode`, identical on both.
+The **row does**:
+
+```
+4.95 row:  (nation<<4|path&7)  (hidden<<4|icon&0xF)  colour  rank(u32BE)  (mark<<4|nameLen&0xF)  name
+5.33 row:  (nation<<4|path&7)  (mark<<4|icon&7)      colour  nameLen(u8)                         name
+```
+
+Eight bytes plus the name become **four**. Three separate things happened, and each is a single
+instruction in 5.33's row loop (`0x4d041c`, read against 4.95's `0x48a48c` line for line):
+
+| field | 4.95 | 5.33 | evidence |
+|---|---|---|---|
+| `hidden` | byte `+1` high nibble | **gone** | `0x4d0477` writes the struct's hidden slot as a literal `0` and never reads the wire |
+| `rank` | `u32BE` at `+3` | **gone** | `0x4d046c` synthesises it as `100000 - rowIndex` |
+| `mark` | last byte's high nibble | byte `+1` high nibble | both land on struct `+0xC`, which the row draw indexes the four `"S"` sprites with |
+| `nameLen` | low nibble of the last byte | a whole byte at `+3` | `0x4d0488` reads it with no mask |
+| `icon` | `& 0x0F` | **`& 7`** | `0x4d044e` is `and al, 7`, not `and al, 0xF` |
+
+### Why only the badge survived
+
+Feed 5.33 the 4.95 row and bytes `+0`, `+1` and `+2` are all common — so the nation matches, the column is
+right, the subpath badge draws and the name colour is even correct. Then the rank `u32`'s **leading byte,
+which is always `0` for any level under 16 million**, lands where 5.33 reads `nameLen`. Every name comes
+out **empty**, and every later row is parsed out of the previous row's tail (the second row starts on the
+rank's remaining three bytes, so its nation nibble is `0` and it is usually dropped from the columns
+entirely). A window of blank-named rows with correct badges is exactly what that produces.
+
+Same shape of failure as §6.9's buy grid, and worth generalising: **when a row is right at the start and
+junk after it, find the first byte whose width differs — a length field that reads as `0` or as an ASCII
+letter is the tell.**
+
+### Consequence for sorting — wire order now matters
+
+5.33 numbers the rows itself, `100000 - index`, so its "by rank" comparator (`0x4d1430`) is
+**`mark & 0xf` ascending, then whatever order the server sent**. 4.95 sorts off the wire `u32` and does
+not care about transmission order; 5.33 has no other signal. `SendUserList` therefore orders rows by rank
+descending before building the body — free for 4.95, load-bearing for 5.33.
+
+Two smaller consequences: the "hidden rows" subtrahend on the headline count can no longer be driven from
+the server (we always sent `0`, so nothing is lost), and 5.33's row draw (`0x4d11a0`) paints a subpath
+badge only for **icon 1..4 AND path 1..4** — the sprite is `I[(path-1)*4 + (icon-1)]` out of the sixteen
+`"I"` sprites at listbox `+0x1bc`, i.e. exactly 4.95's relative-to-the-column banding, and the peasant
+column never badges.
+
+### Non-divergences worth stating
+
+- **`0x59` sub-1 (the town table) is byte-identical**, including 4.95's `body[0] == 1` gate — 5.33's world
+  handler `0x46336c` tests the same byte, and its parser `0x460020` reads the same
+  `u16BE guard · u8 count · {u8 id, u8 len, name}` at the same `0x48` stride. It remains a **prerequisite**:
+  the window resolves the viewer's own nation through it before it can match a single row.
+- **`0x18` request, five-byte header, nation/column semantics, the 15-char name cap** — all unchanged.
+  (5.33's length byte is full-width, but its row record is a fixed-size list element with the wide name
+  inline at `+0xE`, so the cap stays.)
+- Both the world dispatcher (`0x463a30`) and the ui/item dispatcher (`0x4d61ce`) build the window through
+  the same constructor `0x4d0020`, so §0's dispatcher-order trap does not bite here.
+
+Implementation: `Session.UserListBody` (pure + static), pinned for both clients by
+`Tests/ClientVersionWireTests.cs`.
+
+---
+
 ---
 
 ## 7. Open questions
@@ -625,6 +814,7 @@ Implementation: `Session.BuyGridRowBody` (pure + static), pinned for both client
 | appearance `[8]`, `[10]` | see §2 |
 | ~~`0x2e` world map crashes 5.33~~ | **SOLVED.** Per-entry link list + origin index; reply is 6 body bytes, not 8. See §6.7. |
 | ~~`0x2f` buy grid draws garbled names on 5.33~~ | **SOLVED.** The row has an `iconColor` u8 between icon and price on 5.x. See §6.9. |
+| ~~`0x36` user list is blank on 5.33~~ | **SOLVED.** The row is four bytes + name: no `rank` u32, no `hidden` nibble, mark moved into byte `+1`. See §6.10. |
 | world-map edges: real routes? | We send a complete graph. The client supports arbitrary directed edges and animates the marker along them — nobody has checked what retail actually sent. |
 
 ---

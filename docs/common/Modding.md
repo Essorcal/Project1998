@@ -122,6 +122,14 @@ Add a row, pick/author a verb, `@reload`.
 
 - Monster stats/looks: `mobs.csv`. Spawns: `Spawns.csv` (fixed points) / `AreaSpawns.csv` (per-map/box counts)
   / `AreaSpawnsTrap.csv` (rare trap-ambush bosses).
+- **Hidden ambush tiles**: `AmbushConfig.csv` (per map: how many tiles, the `MobCap` that governs refills, the
+  message, and which burst fires) + `AmbushBursts.csv` (what each burst is made of). Step on one and the burst
+  spawns *around* you — slots 0-3 land east/west/north/south, a 5th and beyond on your own tile — then the
+  sprung tile relocates somewhere else on the map, but only while live mobs are under `MobCap`. Warriors'
+  Watchful Eye reveals them. The five mythic trap-caves are RTK's (`NPCs/trap/mob_spawn.lua`); Buya town (330)
+  carries a rat nest reconstructed from a live 7.x sighting, which is ours. **Add burst tables in
+  `re/extract_ambush_tables.py`, not by hand** — that script rewrites `AmbushBursts.csv` wholesale, so a
+  hand-added row is gone on the next run. `AmbushConfig.csv` *is* hand-authored, and both hot-reload.
 - **Prey creatures**: `MobFlees.csv` (`Identifier,Flees`). A listed mob never attacks and never holds a target;
   it backs away from any player within 2 tiles at **double** its normal move rate, and for 4 s after being
   *swung at* (hit **or** miss, or damaged by anything) it keeps running and notices you from 4 tiles.
@@ -136,7 +144,8 @@ Add a row, pick/author a verb, `@reload`.
 - Shops: `ShopStock.csv` (flat stock) or `ShopCatalogues.csv` (sub-category menus).
 - Drops: `MobDrops.csv`.
 - Maps/warps: `map_index.csv`, `Maps.csv`, `Warps.csv`; location/warp geometry in `Inns.csv`,
-  `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `FallRooms.csv`,
+  `PathHalls.csv`, `GatewayGates.csv`, `WorldMapDests.csv`, `MythicCaves.csv`, `EventCaves.csv`,
+  `EventCaveTiers.csv`, `FallRooms.csv`,
   `ArenaDoors.csv`, `Doors.csv` (lock/key), `DoorObjects.csv` (the 'o'-key open/close graphic swap: `map` rows
   are exact faced-object swaps, `delta` rows are `[lo,hi]` ranges whose open/closed ids differ by a fixed delta).
   `defaultOpen=1` on a `map` row means that faced id is a **closed** door that should start **open** — the swap
@@ -149,6 +158,24 @@ Add a row, pick/author a verb, `@reload`.
   set on every cave and dungeon too. Edit the row and `@reload`. RTK's dump is inconsistent here — Nagnang's
   trainer buildings and the later-era set block casting while Kugnae's and Buya's (the same rooms one era
   earlier) don't — so the 40 Kugnae/Buya path-hall, sanctum and alignment-room rows are corrected in place.
+- **Tiered "event cave" doorways**: `EventCaves.csv` (one row per entrance) + `EventCaveTiers.csv` (the
+  ladder they all share). A doorway into a dungeon that exists as **five parallel copies**, one per depth,
+  where the copy you get is read off your level and subpath rank. Scripted tiles, not warps — the Buya
+  Library Caverns doorway used to be two `Warps.csv` rows straight into tier 1, which is why the four deeper
+  tiers were reachable only by `@warp`. **If you add an entrance here, delete its `Warps.csv` rows**: the warp
+  branch in `HandleWalk` runs first and would take the step before the scripted tile ever saw it.
+  - `EventCaveTiers.csv` (`Tier,AltTier,MinLevel,MaxLevel,MinMark,MaxMark,Label`) is matched **in file
+    order**, first hit wins, so the file's order is the semantics — don't sort it. Bands must be disjoint.
+    `AltTier > 0` makes the band a **split**: both depths are open and the player is asked which tunnel to
+    take. No band matching at all is the **refusal** case (that's level 1-14) — they still get the entry
+    dialog, then the row's `DenyMsg` in the status box and a step back off the threshold.
+  - `EventCaves.csv` carries the geometry and every line of text: `EntranceTiles` a `;`-list of `x:y`,
+    `TierMaps` a `|`-list of map ids shallowest-first, `Pages` a `|`-list of dialog pages, then
+    `Prompt`/`OptionNear`/`OptionFar` for the split menu. A tier deeper than `TierMaps` clamps to the
+    deepest map listed, so growing the ladder can never warp anyone to map 0.
+  - The level bands are the archive chart's (`tutor-caves-azncloudboi-event`) verbatim; the top two bands
+    are **ours**, because that chart gates caves 4/5 on 10-14 million vita — a 2005+ number that is
+    unreachable at `EraDate 20010709`. Sam san (mark 3) is the top cave, Il/Ee san the split below it.
 - **Level-banded PvP arena doors**: `ArenaDoors.csv`
   (`Map,Tiles,DestMap,DestX,DestY,MinLevel,MaxLevel,MaxVita,MaxMana,Unmarked,Label`). These are *scripted
   tiles*, not warps — in RTK they live in `onScriptedTilesArena.lua`, and only each arena's way **back** is in
@@ -180,9 +207,11 @@ Add a row, pick/author a verb, `@reload`.
   **Two soundtracks.** `Set` splits `MusicTracks.csv` into `old` (the 12 stock midis, ids 1-12, both clients
   ship them) and `new` (the 25 mp3s and 52 playlists in the 5.x client's `Mus000.dat`). They are separate id
   spaces — mp3 2 and midi 2 are different songs — so `Kind` says which file the client opens: `midi`, `mp3`,
-  `list` (an ordered ten-track playlist) or `shuffle` (the same ten, starting at a random one). `Track` on a
-  `MapBgm.csv` row is the old pick and `Track5x` the new one; `Track5x` must name a `list`/`shuffle`, because
-  a single mp3 gets a loop flag of 0 from the client and stops after one song. Players choose with
+  `list` (an ordered ten-track playlist) or `shuffle` (the same ten from a random start). `Track` on a
+  `MapBgm.csv` row is the old pick and `Track5x` the new one, and **`Track5x` must name a `list`** — a single
+  mp3 never advances off its one song, and a `shuffle` (the `-rand` names) stalls dead the first time the
+  client's own advance re-rolls onto the entry already playing, roughly 1 track in 10. Both failures are
+  silent, so the selftest and `ContentSmokeTests` assert it. Players choose with
   `@music old` / `@music new`, remembered per character. The new set is **5.x only** — the 4.95 client has the
   mp3 engine but none of the files, so `@music new` is refused there rather than accepted and silent.
 - Server scalars: `ServerTuning.csv` (`key,value`) — `MailMinLevel`, `SpeechRange` (NPC hearing radius),
