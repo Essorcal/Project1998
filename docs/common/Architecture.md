@@ -140,7 +140,7 @@ CI has two lanes, chosen by what changed:
 * **Content-only push** (nothing outside `game-data/`) → mirror the content and `@reload`. **No restart;
   nobody is disconnected.** This is by far the common case, which is the entire reason the lane exists.
 * **Anything else** → publish self-contained `linux-x64` binaries, stage a new release on the host, and
-  schedule a *warned* restart (default 30 minutes of in-game warnings).
+  schedule a *warned* restart (default 5 minutes of in-game warnings).
 
 Releases are **self-contained**: the .NET runtime rides along in the payload, so `releases/<sha>/` is
 exactly what that commit ran. With a framework-dependent build, a host runtime upgrade silently changes

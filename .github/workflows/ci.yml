@@ -17,7 +17,7 @@ on:
       restart_delay_minutes:
         description: "Minutes of warning before the restart (0 = restart as soon as it lands)"
         required: false
-        default: "30"
+        default: "5"
 
 env:
   DOTNET_VERSION: "8.0.x"
@@ -184,7 +184,7 @@ jobs:
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
-          DELAY: ${{ github.event.inputs.restart_delay_minutes || '30' }}
+          DELAY: ${{ github.event.inputs.restart_delay_minutes || '5' }}
         run: |
           ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" \
             "bash /opt/project1998/infra/scripts/host-deploy.sh ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}"
