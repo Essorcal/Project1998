@@ -808,6 +808,38 @@ public class ContentSmokeTests
         Assert.Contains("ctx:mentor()", verb.Value);
     }
 
+    /// <summary>The world shout must not go out on the login box.
+    ///
+    /// <para><c>SendMessage</c> is RTK's <c>0x02</c> pre-world login-box packet; in-world text is <c>0x0A</c>
+    /// (<c>clif_sendmsg</c>, dispatched by type). A 2026-07-26 audit swept that mislabeling out of the whole
+    /// server, but the Sage's world channel was written afterwards and went out on <c>0x02</c> — so on 5.33
+    /// the shout sent, logged, and drew NOTHING, because no in-world widget listens there.</para>
+    ///
+    /// <para>This is asserted against the SOURCE because it cannot be caught any other way: both calls
+    /// compile, both log, and the difference only exists on a real client. That is precisely the failure
+    /// mode that let it ship.</para></summary>
+    [Fact]
+    public void TheWorldShoutRidesTheInWorldTextChannel()
+    {
+        var src = System.IO.File.ReadAllText(RepoFile("Server/Session.Spells.cs"));
+        var fn = System.Text.RegularExpressions.Regex.Match(src,
+            @"internal bool LuaWorldShout.*?
+    \}", System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.True(fn.Success, "could not find LuaWorldShout to check its channel");
+        Assert.Contains("SendMiniText", fn.Value);
+        Assert.DoesNotContain("SendMessage", fn.Value);
+    }
+
+    /// <summary>Walk up from the repo root so the check above reads the real source however tests are hosted.</summary>
+    private static string RepoFile(string relative)
+    {
+        var dir = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory);
+        while (dir is not null && !System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, "Project1998.sln")))
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        return System.IO.Path.Combine(dir!.FullName, relative);
+    }
+
     /// <summary>Blood's two halves, both of which fail silently when wrong.
     ///
     /// <para>His CLICK must be a menu. Without a Lua click handler he falls through to the C# abilities, and

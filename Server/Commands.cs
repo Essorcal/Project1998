@@ -73,6 +73,9 @@ public sealed partial class Session
         // The Sage ladder has no other staff route: its five spells are locked to one NPC, so no rebuild
         // grants them, and buying it honestly is 500,000 gold across 360 real days of upgrade waits.
         T("sage",    (s, a) => s.SetSageRung(a),   "[0-5]",               "Share Wisdom rung: sets the spell AND clears the 90-day upgrade wait (bare @sage reports)"),
+        // 0x0A's `type` decides which pane/colour a line lands in, and a wrong one is INVISIBLE from the
+        // server side — the packet sends, the log says so, the client draws nothing. See TextChannelCmd.
+        T("text",    (s, a) => s.TextChannelCmd(a), "[type] [message]",    "send yourself one 0x0A line on a channel; bare @text sweeps them to compare panes/colours"),
         T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
                                                                           "set vitals and stats directly (overrides the curve)"),

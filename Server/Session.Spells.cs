@@ -943,20 +943,45 @@ public sealed partial class Session
         return n;
     }
 
-    /// <summary>Say something to EVERY player on the server, in the Sage spell's own format (RTK
-    /// common/sage.lua: <c>broadcast(-1, "[" .. player.name .. "]: " .. text)</c>). This is the whole point of
-    /// the Share Wisdom ladder — a paid, cooldown-gated world channel — so it deliberately reaches every map,
-    /// unlike every other chat path we have. Empty text is a no-op (RTK guards the same way).</summary>
+    /// <summary>The Sage ladder's world channel (RTK common/sage.lua
+    /// <c>broadcast(-1, "[" .. player.name .. "]: " .. text)</c>): one line to EVERY player on the server, in
+    /// the format RTK uses verbatim. This is the whole point of the Share Wisdom ladder — a paid,
+    /// cooldown-gated world channel — so it deliberately reaches every map, unlike every other chat path we
+    /// have. Empty text is a no-op (RTK guards the same way).
+    ///
+    /// <para><b>Channel fixed 2026-08-23.</b> This was sending on <see cref="SendMessage"/> — RTK's
+    /// <c>0x02</c> LOGIN-BOX packet, reserved for the pre-world flow. It is the same mislabeling the
+    /// 2026-07-26 <c>SendMessage</c>→<c>SendMiniText</c> audit swept out of the rest of the server (see
+    /// docs §11g); this one arrived after that pass and was missed. Live on 5.33 the shout went out, was
+    /// logged, and rendered NOTHING — the client has no in-world widget listening on the login box.
+    /// In-world text is <c>0x0A</c> (<c>clif_sendmsg(sd, type, buf)</c>), dispatched by
+    /// <see cref="WorldShoutType"/>.</para></summary>
     internal bool LuaWorldShout(string text)
     {
         text = (text ?? "").Trim();
         if (text.Length == 0) return false;
         string line = $"[{_char.Name}]: {text}";
         if (line.Length > 250) line = line[..250];
-        foreach (var p in _world.AllPlayers()) p.SendMessage(line);
-        Log.Info($"   -> world shout by {_char.Name}: {text}");
+        foreach (var p in _world.AllPlayers()) p.SendMiniText(line, WorldShoutType);
+        Log.Info($"   -> world shout by {_char.Name}: {text} (0x0A type {WorldShoutType})");
         return true;
     }
+
+    /// <summary>Which <c>0x0A</c> pane/colour the world shout lands in: <b>4, red in the main chat window</b>.
+    ///
+    /// <para>Sage is red in the real game, and type 4 is the red one — LIVE-SWEPT on the 5.33 client with
+    /// <c>@text</c> (2026-08-23) rather than reasoned, because it could not be reasoned: RTK's own
+    /// <c>broadcast()</c> takes a type it does not document, and the RTK-Server tree here is Lua/SQL/maps
+    /// with no C# side to read it out of. The sweep also found 4 to be entirely absent from our documented
+    /// set (0 wisp · 3 mini-status · 5 system · 11 group · 12 clan), which is why the first attempt at this
+    /// guessed 5 — that is the LIGHT blue our restart warnings already use (<see cref="SystemAnnounce"/>).
+    /// Full observed table: docs/5.x/Wire-Divergences.md §6.11.</para>
+    ///
+    /// <para><b>Unverified on 4.95.</b> The shout goes to every player regardless of their client, so a 4.95
+    /// player may see this land somewhere else. <c>@text</c> works on both — sweep a 4.95 client to settle
+    /// it, and if the two disagree this has to become a per-version choice like the rest of §9 of the
+    /// divergences doc.</para></summary>
+    private const ushort WorldShoutType = 4;
 
     internal void LuaHeal(int amt, SpellDef sp)
     {

@@ -2309,6 +2309,14 @@ client's own widen buffer — `0x8000` characters**, not 255.
 
 `type`: **0** = wisp (blue), **3** = mini/status text (the default, `clif_sendminitext`), **5** = system,
 **11** = group, **12** = clan — and **2 / 3 / 8 additionally reach the bordered word-wrap overlay** (§11c.1).
+
+**⚠ Swept live on 5.33, 2026-08-23 — see `docs/5.x/Wire-Divergences.md` §6.11 for the full table.** The list
+above is reasoned from RTK's 7.x `clif.c` and was confirmed live only for `0`. On 5.33 the observed panes
+are: 0 blue chat · 2 and 3 status box · **4 RED chat (the Sage world channel — undocumented here, and the
+value the ladder needed)** · 5 light blue chat (our `SystemAnnounce`) · 8 a modal OK pop-up · 11 blue ·
+12 GREEN, which does not obviously match the "clan" label. So only **8** reaches the overlay there, not
+2/3/8 — consistent with the handler-chain caveat below. **4.95 has NOT been swept**; use `@text` (bare, to
+compare panes side by side) on a 4.95 client to settle whether these hold on both.
 Which widget wins is decided by the handler chain, since several claim `0x0A` (see the Binary note: a packet
 walks widgets via vtable slot +`0x5c` until one returns TRUE).
 

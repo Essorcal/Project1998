@@ -802,6 +802,49 @@ Implementation: `Session.UserListBody` (pure + static), pinned for both clients 
 
 ---
 
+## 6.11 `0x0A` text `type` — the pane/colour map, read off the live client (SOLVED 2026-08-23)
+
+`0x0A` is one packet — `type(u8) · len(u16BE) · text[len]`, RTK's `clif_sendmsg(sd, type, buf)` — and the
+`type` byte is the server's ONLY handle on where a line appears and what colour it is. `docs/4.x/Protocol.md`
+§11g had five values, reasoned from RTK's 7.x `clif.c` (`0` wisp, `3` mini/status, `5` system, `11` group,
+`12` clan) and confirmed live only for `0`. That left the rest as inference, and **no value for red at all**.
+
+Swept on the live 5.33 client with `@text` (`Session.TextChannelCmd`), which sends one line per type so the
+panes can be compared side by side. Observed:
+
+| type | 5.33 renders | our use |
+|---|---|---|
+| 0 | blue, main chat — same as whisper | `SendBlueMessage` (whisper + its errors) |
+| 1 | *(not separately characterised in the sweep)* | — |
+| 2 | status box | — |
+| 3 | status box | `SendMiniText` default — look-at names, pickups, map-entry rejections |
+| **4** | **RED, main chat** | **the Sage world channel** (`WorldShoutType`) |
+| 5 | light blue, main chat | `SystemAnnounce` — restart warnings, durability warnings |
+| 8 | **modal pop-up with an OK button** | — |
+| 11 | blue, like whisper | (RTK: group) |
+| 12 | green — subpath? uncertain | (RTK: clan) |
+
+**What this corrects.** Type **4** was undocumented and is the one the Sage needed: sage is red in the real
+game, and nothing else in the observed set is red. Type **12** renders GREEN rather than as another blue
+chat pane, which does not obviously match RTK's "clan" label — recorded as observed and left uncertain
+rather than relabelled on a guess. And §11g's note that types **2 / 3 / 8** all reach "the bordered
+word-wrap overlay" is only right for **8** on 5.33: 2 and 3 both land in the status box, and 8 is a true
+modal. That is consistent with §11g's own caveat that several handlers claim `0x0A` and the handler chain
+decides which widget wins — the chain evidently resolves differently here.
+
+**Caveat, and it is a real one.** This is a **5.33** reading. 4.95 was not swept, and the world shout goes
+to every player on the server regardless of which client they are on, so a line that is red on 5.33 may be
+something else on 4.95. `@text` works on both; sweeping 4.95 is the way to settle it. Until then, type 4 is
+chosen because it is right on the client the server is actually being tested against.
+
+**Why this needed a command rather than a reading.** A wrong `type` is invisible from the server side: the
+packet is built, sent and logged exactly the same, and only the client shows the difference. That is how the
+Sage's world shout shipped on `0x02` — the pre-world LOGIN BOX — and rendered nothing at all while the log
+said it had gone out (§11g's own 2026-07-26 `SendMessage`→`SendMiniText` audit had swept that mislabeling
+out of the rest of the server; the Sage's channel was written after that pass and was missed).
+
+---
+
 ## 7. Open questions
 
 | question | status |

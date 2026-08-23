@@ -725,6 +725,46 @@ public sealed partial class Session
               $"Dog spells from the book.)");
     }
 
+    // "@text [type] [message]" — send yourself one 0x0A line on a chosen channel, or sweep the channels
+    // side by side to see which pane and colour each one lands in.
+    //
+    // This exists because 0x0A's `type` is the server's only handle on WHERE a line appears, we know the
+    // meaning of five values out of a byte, and getting it wrong is invisible from this side: the packet
+    // goes out, the log says it went out, and the client draws nothing. That is exactly how the Sage's world
+    // shout shipped broken — it was on the 0x02 login box, which no in-world widget listens to. A sweep
+    // answers "which type is red?" in one cast instead of a rebuild per guess.
+    //
+    // Only 8 is held out of the sweep: on 5.33 it is a true modal with an OK button and would sit on top of
+    // everything after it. (§11g called 2/3/8 all "overlay"; the live sweep found 2 and 3 in the status box,
+    // so 2 is swept.) Send 8 on its own with "@text 8" if you want to see it.
+    private static readonly ushort[] TextSweepTypes = { 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13 };
+
+    private void TextChannelCmd(string text)
+    {
+        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 0)
+        {
+            SendMiniText($"-- {Prefix}text sweep: which pane and colour does each 0x0A type use? --");
+            foreach (var t in TextSweepTypes)
+                SendMiniText($"0x0A type {t,2} -- the quick brown fox jumps over the lazy dog", t);
+            SendMiniText($"-- end. {Prefix}text <type> <message> to send one; 8 is a modal OK box and is not " +
+                         $"swept. Observed on 5.33: 0 blue, 2/3 status box, 4 RED (sage), 5 light blue " +
+                         $"(restarts), 11 blue, 12 green. 4.95 unswept — see docs/5.x §6.11.");
+            return;
+        }
+
+        if (!ushort.TryParse(parts[0], out var type) || type > 255)
+        {
+            SendLog($"Usage: {Prefix}text <0-255> <message>, or bare {Prefix}text to sweep the channels.");
+            return;
+        }
+
+        string msg = parts.Length > 1 ? parts[1] : $"0x0A type {type} -- the quick brown fox";
+        SendMiniText(msg, type);
+        Log.Info($"   -> @text '{_char.Name}' type {type}: {msg}");
+    }
+
     // "@sage [0-5]" — set the Share Wisdom rung outright, skipping the Sage's price and his 90-day wait.
     //
     // It exists because the ladder is otherwise UNREACHABLE from the staff tooling and slow by design: the
