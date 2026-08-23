@@ -668,6 +668,10 @@ public class ContentSmokeTests
             (key: "sages_wisdom",       aetherMs: 300_000),
         };
 
+        // Content.SageLadder is the ONE definition — the Lua copies, the trainer gate, the rebuild's re-grant
+        // and @sage all read it. If this array and that one drift, everything below is testing a fiction.
+        Assert.Equal(Content.SageLadder, ladder.Select(l => l.key).ToArray());
+
         foreach (var (key, aetherMs) in ladder)
         {
             Assert.NotNull(Content.SpellByKey(key));                    // still in Spells.csv
@@ -705,6 +709,29 @@ public class ContentSmokeTests
         Assert.True(table.Success, "npc_dialog.lua no longer defines SAGE_LADDER");
         foreach (var (key, _) in ladder)
             Assert.Contains(key, table.Groups[1].Value);
+
+        // A CHARACTER REBUILD MUST HAND THE RUNG BACK. @lvl/@class/@mark/@align wipe the book and refill it
+        // from RespecSpellSet, and the five rungs are deliberately invisible to SpellsForClass — so without
+        // the registry re-grant, one @lvl confiscated a 500,000-gold ladder that no trainer can resell. That
+        // is not hypothetical: it is what happened the first time anyone ran @lvl 99 after the Sage shipped.
+        foreach (int path in new[] { 1, 2, 3, 4 })
+        {
+            var rebuilt = Content.RespecSpellSet(path, 99, alignment: 0, mark: 0, dogFlag: false, sageRung: 3)
+                                 .Select(s => s.Key).ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+            Assert.Contains("apprentices_wisdom", rebuilt);             // the rung on record, and only it
+            Assert.DoesNotContain("share_wisdom", rebuilt);
+            Assert.DoesNotContain("sages_wisdom", rebuilt);
+        }
+
+        // …but only what was paid for, and only once the level qualifies — the same shape as the Dog tiers.
+        Assert.DoesNotContain(Content.RespecSpellSet(1, 99, 0, 0, false, sageRung: 0).Select(s => s.Key),
+                              k => Content.SageRungOf(k) > 0);
+        Assert.DoesNotContain(Content.RespecSpellSet(1, Content.SageLevel - 1, 0, 0, false, sageRung: 5).Select(s => s.Key),
+                              k => Content.SageRungOf(k) > 0);
+        Assert.Null(Content.SageSpellFor(3, Content.SageLevel - 1));    // too low: nothing to grant
+        Assert.NotNull(Content.SageSpellFor(3, Content.SageLevel));
+        Assert.Null(Content.SageSpellFor(0, 99));                       // holds none
+        Assert.Null(Content.SageSpellFor(99, 99));                      // out of range
 
         // The upgrade wait: 2 yuris. The tutor post's "(Updated)" revision says 45 days and the dated Atlas
         // page says 90; the dated one won, and a silent flip back would only show up 45 days into a save.
@@ -769,9 +796,8 @@ public class ContentSmokeTests
         var rungs = System.Text.RegularExpressions.Regex.Match(lua, @"SAGE_RUNGS\s*=\s*\{(.*?)\}",
             System.Text.RegularExpressions.RegexOptions.Singleline);
         Assert.True(rungs.Success, "spell_verbs.lua no longer defines SAGE_RUNGS");
-        foreach (var (key, rung) in new[] { ("share_wisdom", 1), ("mentors_wisdom", 2),
-                                            ("apprentices_wisdom", 3), ("adepts_wisdom", 4), ("sages_wisdom", 5) })
-            Assert.Matches($@"{key}\s*=\s*{rung}\b", rungs.Groups[1].Value);
+        for (int i = 0; i < Content.SageLadder.Length; i++)
+            Assert.Matches($@"{Content.SageLadder[i]}\s*=\s*{i + 1}\b", rungs.Groups[1].Value);
 
         // The fallback must be Mentor, and the charge must sit outside the branch — a refactor that moved
         // debitMana/setCooldown into the reaching branch would make casting from town free, which the Atlas

@@ -74,7 +74,10 @@ public sealed partial class Session
         // halves matter: a Barbarian can finish the chain and still be refused, which is exactly what the Dog
         // itself says when you ask it for the secret.
         bool dogFlag = HasDogFlag && Content.CanLearnDogSpells(path);
-        var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark, dogFlag);
+        // ...and the Sage rung they paid for, which is path-independent (every class buys the same ladder
+        // from the same NPC), so unlike the Dog spells there is nothing to check but the registry.
+        var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark, dogFlag,
+                                          QuestCounter(Content.SageRungReg));
 
         ClearSpellbook();
         bool capped = want.Count > SpellBookCap;

@@ -1587,6 +1587,10 @@ local SAGE_WAIT  = 90 * 86400   -- two yuris between rungs: "It can be learned e
                                 -- REAL-time wait, and the entire cost of the upgrade path beyond the gold
                                 -- -- so it is also the one number here most worth retuning by taste.
 local SAGE_TIMER = "sage_timer"  -- absolute unix-second deadline (RTK registry "learnSageSpellTimer")
+local SAGE_RUNG  = "sage_rung"   -- which rung has been PAID for. The spell in the book is the visible half;
+                                 -- this is the half that survives @lvl/@class/@mark/@align, which rebuild
+                                 -- the book from scratch and would otherwise confiscate the whole ladder.
+                                 -- Read by Content.SageRungReg -> RespecSpellSet, and set by @sage.
 
 -- RTK playerTimerValues, which is what its own "consult with the Sage" line renders: "07 days 03 hours
 -- 22 minutes 11 seconds". Kept verbatim in shape -- the tutor post tells players to come and ask him how
@@ -1608,7 +1612,9 @@ local function commas(n)
 end
 
 -- The highest rung the player holds (0 = none). Downward, so an old book that somehow holds two rungs
--- reads as the better one rather than re-selling the worse one's upgrade.
+-- reads as the better one rather than re-selling the worse one's upgrade. Deliberately reads the BOOK and
+-- not SAGE_RUNG: what you can cast is what you have, so a spell lost to a Forget Secret really is lost and
+-- the Sage will sell it again. SAGE_RUNG exists only so a REBUILD can restore what a rebuild wiped.
 local function sage_rung(ctx)
   for i = #SAGE_LADDER, 1, -1 do
     if ctx:hasSpell(SAGE_LADDER[i]) then return i end
@@ -1681,6 +1687,7 @@ function npcs.SageNpc(ctx)
   if rung > 0 then ctx:forgetSpell(SAGE_LADDER[rung]) end   -- no-op if the retry above already did it
 
   ctx:spendGold(SAGE_COST)
+  ctx:setReg(SAGE_RUNG, rung + 1)     -- what a character rebuild hands back; see Content.SageRungReg
   ctx:setReg(SAGE_TIMER, ctx:now() + SAGE_WAIT)
   ctx:say("Use your spell well, abuse will result in its loss, and you will end up having to learn the spells again from the start.")
 end

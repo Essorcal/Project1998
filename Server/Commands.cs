@@ -70,6 +70,9 @@ public sealed partial class Session
         T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
         T("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path and rebuild for it"),
         T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),
+        // The Sage ladder has no other staff route: its five spells are locked to one NPC, so no rebuild
+        // grants them, and buying it honestly is 500,000 gold across 360 real days of upgrade waits.
+        T("sage",    (s, a) => s.SetSageRung(a),   "[0-5]",               "Share Wisdom rung: sets the spell AND clears the 90-day upgrade wait (bare @sage reports)"),
         T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
                                                                           "set vitals and stats directly (overrides the curve)"),

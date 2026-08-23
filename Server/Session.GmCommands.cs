@@ -705,6 +705,69 @@ public sealed partial class Session
               $"Dog spells from the book.)");
     }
 
+    // "@sage [0-5]" — set the Share Wisdom rung outright, skipping the Sage's price and his 90-day wait.
+    //
+    // It exists because the ladder is otherwise UNREACHABLE from the staff tooling and slow by design: the
+    // spells are gated to one NPC (Content.IsNpcGrantedOnly), so no @lvl/@class rebuild will ever hand one
+    // over on its own, and buying the ladder honestly is 500,000 gold and 360 real days of waiting. A tester
+    // who wants to see what rung 3 reaches cannot get there any other way.
+    //
+    // Sets BOTH halves, because they answer different questions: the spell in the book is what you can cast
+    // now, and Content.SageRungReg is what a rebuild hands back afterwards. Setting only the book would mean
+    // "@sage 5" followed by "@lvl 99" silently undid itself, which is the exact trap this command was asked
+    // for after. Also clears the wait, so the Sage himself will sell the next rung immediately — the point is
+    // to test the flow, not to sit out a quarter of a year.
+    private void SetSageRung(string text)
+    {
+        int held = Content.SageLadder.Select(Content.SpellByKey)
+                          .Select((sp, i) => sp is not null && KnowsSpellId(sp.Id) ? i + 1 : 0)
+                          .DefaultIfEmpty(0).Max();
+        var a = ParseInts(text);
+
+        if (a.Length == 0)      // bare "@sage" reports, like bare "@dog" toggles: the read is the common case
+        {
+            long left = QuestCounter(Content.SageTimerReg) - NowUnix;
+            string name = Content.SageSpellForRung(held) is { } k && Content.SpellByKey(k) is { } s ? s.Name : "none";
+            SendLog($"Sage rung {held}/{Content.SageLadder.Length} ({name})" +
+                    $"; paid-for rung on record: {QuestCounter(Content.SageRungReg)}" +
+                    (left > 0 ? $"; next upgrade in {left / 86400}d {left % 86400 / 3600}h." : "; no wait outstanding.") +
+                    $"  {Prefix}sage <0-{Content.SageLadder.Length}> to set it.");
+            return;
+        }
+
+        int rung = Math.Clamp(a[0], 0, Content.SageLadder.Length);
+
+        // One rung at a time, as the ladder itself works — every other rung comes out of the book first.
+        foreach (var key in Content.SageLadder)
+            if (Content.SpellByKey(key) is { } sp && KnowsSpellId(sp.Id) && Content.SageRungOf(key) != rung)
+                ForgetOneSpell(sp.Id);
+
+        SetQuestStage(Content.SageRungReg, rung);
+        SetQuestStage(Content.SageTimerReg, 0);
+
+        if (rung == 0)
+        {
+            SendLog($"Sage ladder cleared. The Sage will start you again at {Content.SageLadder[0]} " +
+                    $"(map 1230, from the Wilderness at 126,7).");
+            Log.Info($"   -> @sage '{_char.Name}' -> rung 0 (cleared)");
+            return;
+        }
+
+        var want = Content.SpellByKey(Content.SageSpellForRung(rung)!)!;
+        if (!KnowsSpellId(want.Id) && !LearnSpellFromNpc(want))
+        {
+            SendLog($"Your spellbook is full — free a slot and run {Prefix}sage {rung} again.");
+            return;
+        }
+
+        SendLog($"Sage rung {rung}/{Content.SageLadder.Length}: {want.Name}, and the upgrade wait is cleared." +
+                (_char.Level < Content.SageLevel
+                    ? $"  NOTE: level {_char.Level} is below the Sage's {Content.SageLevel}, so a rebuild " +
+                      $"({Prefix}lvl/{Prefix}class/{Prefix}mark/{Prefix}align) will drop it until you are {Content.SageLevel} again."
+                    : ""));
+        Log.Info($"   -> @sage '{_char.Name}' -> rung {rung} ({want.Key})");
+    }
+
     /// <summary>The Dog Linguist chain's progress key and legend id — one name, as in RTK
     /// (npc_dialog.lua <c>DOG_LEGEND</c>). Stage 4 is the finished chain.</summary>
     private const string DogChainReg = "dog_linguist";

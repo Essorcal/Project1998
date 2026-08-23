@@ -1882,6 +1882,50 @@ public static partial class Content
     private static readonly HashSet<string> UniversalBaseSpells = new(StringComparer.OrdinalIgnoreCase) { "soothe" };
     public static bool IsUniversalBaseSpell(SpellDef sp) => UniversalBaseSpells.Contains(sp.Key);
 
+    // ---- the Share Wisdom ladder ---------------------------------------------------------------------
+    //
+    // The five rungs in order, which is the ONE definition: npc_dialog.lua's SAGE_LADDER (what the Sage
+    // sells), spell_verbs.lua's SAGE_RUNGS (how far each reaches), the NpcGrantedSpells gate below, the
+    // rebuild's re-grant and @sage all read the same order from here. A smoke test pins the Lua copies
+    // against this array, because a rename on one side only is otherwise silent.
+    public static readonly string[] SageLadder =
+        { "share_wisdom", "mentors_wisdom", "apprentices_wisdom", "adepts_wisdom", "sages_wisdom" };
+
+    /// <summary>The level the Sage teaches at — "available to all paths for people over the level 90".
+    /// The ROOM is deliberately more generous (Maps.csv keeps map 1230 at 50) so a player can find him
+    /// early and be told what it takes; this is the gate that actually bites.</summary>
+    public const int SageLevel = 90;
+
+    /// <summary>Registry key: which rung the character has paid for (0 = none), written by the Sage's own
+    /// dialog and by <c>@sage</c>. The spell in the book is the visible half; this is the half that
+    /// SURVIVES a character rebuild, exactly as <see cref="DogFlagReg"/> does for the Dog spells — without
+    /// it, one <c>@lvl</c> would confiscate a 500,000-gold ladder with no way to get it back.</summary>
+    public const string SageRungReg = "sage_rung";
+
+    /// <summary>Registry key: absolute unix-SECOND deadline before the next rung may be bought. Written by
+    /// the Sage (now + 90 days) and cleared by <c>@sage</c> so a tester is not stuck behind it.</summary>
+    public const string SageTimerReg = "sage_timer";
+
+    /// <summary>The spell key for a 1-based rung, or null if the rung is out of range (0 = holds none).</summary>
+    public static string? SageSpellForRung(int rung) =>
+        rung >= 1 && rung <= SageLadder.Length ? SageLadder[rung - 1] : null;
+
+    /// <summary>The rung a spell key is, or 0 if it is not one of them.</summary>
+    public static int SageRungOf(string key) =>
+        System.Array.FindIndex(SageLadder, k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase)) + 1;
+
+    /// <summary>The rung a character rebuild should hand back: what they paid for, but only once they are
+    /// high enough to have bought it. Level-gated for the same reason the Dog spells are — drop a character
+    /// to level 5 and the entitlement stops applying until they are 90 again, at which point it returns.
+    /// Returns null when there is nothing to grant.</summary>
+    public static SpellDef? SageSpellFor(int rung, int maxLevel)
+    {
+        if (maxLevel < SageLevel) return null;
+        return SageSpellForRung(rung) is { } key && SpellByKey(key) is { } sp
+            ? sp with { Level = SageLevel }
+            : null;
+    }
+
     // Spells granted by ONE specific NPC flow and by nothing else — never teachable at a path trainer, never
     // handed out by an @spells rebuild. Propose comes with the engagement ring you buy at the chapel
     // (ChapelAbility.BuyRing), which is its real cost and its real gate; SpellCosts' doc has always said so,
@@ -1894,12 +1938,10 @@ public static partial class Content
     // share_wisdom rows for Warrior/Mage/Poet at level 90, so path leaders were selling rung 1 out from
     // under him. The upper four are already unreachable (SplPthId 99 matches no class), and are listed
     // anyway because SpellLearnCosts.csv is GENERATED — re/merge_spell_costs.py can hand any of them a row
-    // on the next merge, and this gate has to hold when it does.
-    private static readonly HashSet<string> NpcGrantedSpells = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "propose",
-        "share_wisdom", "mentors_wisdom", "apprentices_wisdom", "adepts_wisdom", "sages_wisdom",
-    };
+    // on the next merge, and this gate has to hold when it does. The set is BUILT from SageLadder rather
+    // than restating it, so adding a rung cannot leave the gate one key behind.
+    private static readonly HashSet<string> NpcGrantedSpells =
+        new(SageLadder.Append("propose"), StringComparer.OrdinalIgnoreCase);
     public static bool IsNpcGrantedOnly(SpellDef sp) => NpcGrantedSpells.Contains(sp.Key);
 
     /// <summary>Spells only ONE city's trainer teaches, keyed by <see cref="BaseKey"/> → <see cref="RegionOf"/>
@@ -2213,9 +2255,21 @@ public static partial class Content
     /// (<see cref="DogFlagReg"/>). When it is set, the class's Dog spells are merged in as well — see
     /// <see cref="DogSpellsFor"/>. They cannot arrive through <see cref="SpellsForClass"/>, which is also the
     /// tutor menu and must never show one, so this is the single place a rebuild can pick them up.</para></summary>
-    public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark, bool dogFlag = false)
+    public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark,
+                                               bool dogFlag = false, int sageRung = 0)
     {
         var all = SpellsForClass(pathId, maxLevel, alignment, mark);
+
+        // The Sage rung the character has PAID for (Content.SageRungReg), for the same reason as the Dog
+        // spells below: @lvl/@class/@mark/@align rebuild rather than top up, and the ladder is bought a rung
+        // at a time for 100,000 gold each with a 90-day wait between them. Without this, one @lvl silently
+        // confiscated the whole thing — and unlike a tutor spell there is no way to buy it straight back.
+        //
+        // The rung comes from the registry rather than from the old book because the book is what is being
+        // wiped. SpellsForClass can never supply it (IsNpcGrantedOnly drops all five), so this is the single
+        // place a rebuild can pick one up. Level-gated inside SageSpellFor: drop to level 5 and it stops
+        // applying, return to 90 and it comes back, exactly as the Dog tiers behave.
+        if (SageSpellFor(sageRung, maxLevel) is { } sage) all.Add(sage);
         // The Dog spells, for a character who has finished the chain. Merged in level-stamped and re-sorted
         // into place, which is what makes "@dog 1" followed by "@lvl 70/99" produce the book a linguist of
         // this class really holds. Without this the rebuild silently forgot every Dog spell — including ones
