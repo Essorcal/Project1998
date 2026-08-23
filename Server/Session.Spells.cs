@@ -360,6 +360,7 @@ public sealed partial class Session
         // of primitive as an NPC's. Intercept before the fx dispatch — it has no export row and would
         // otherwise silently no-op via CastMisc.
         if (sp.Key.Equals("propose", StringComparison.OrdinalIgnoreCase)) return Lua(CastWorldArch("propose", sp, targetId, answer), sp);
+        if (sp.Key.Equals("mentor", StringComparison.OrdinalIgnoreCase)) return Lua(CastWorldArch("mentor", sp, targetId, answer), sp);
 
         // set_trap dispatcher (RTK rogue/set_trap.lua, SplQuestion "What trap? >"): re-runs the SAME level
         // gate + mana cost as casting the specific set_X_trap spell directly (see Content.TrapSpellFor),

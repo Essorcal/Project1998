@@ -578,6 +578,69 @@ public sealed partial class Session
                  $"HP{_char.MaxHp} MP{_char.MaxMp} M{_char.Might}/W{_char.Will}/G{_char.Grace} AC{_char.Ac} book{_char.Spells.Count}");
     }
 
+    // ---- "100%, worn or in your inventory" (the armor-quest sacrifice rule) -----------------------
+    //
+    // The Star/Moon/Sun guildmasters take tribute under a rule no other flow in the game uses, stated the
+    // same way on every period page: "They must be 100% and can be worn at the time or in your inventory."
+    // (nexusatlas armor pages, "Things to Remember" #2: "Items need to be 100% Durability. If you have them
+    // equipped, they can and will be removed.") So a worn Titanium glove counts toward the two he asks for
+    // and is stripped off your hands when he takes it, while a scuffed one in the bag does not count at all.
+    //
+    // Both halves are deliberate and neither generalises: ordinary quests use CountItem/TakeItem, which see
+    // the bag only and ignore durability. See Server/ArmorQuest.cs.
+
+    /// <summary>Is this stack at full durability? Items with no durability of their own (stackables,
+    /// consumables, the ~480 indestructible rows) are always ready — there is nothing to wear down, so the
+    /// "100%" clause cannot exclude them.</summary>
+    private static bool AtFullDura(ItemDef def, InvItem it) => def.Durability == 0 || it.Dura >= def.Durability;
+
+    /// <summary>How many of an item the player could hand over under the armor-quest rule: bag AND worn
+    /// slots, counting only copies at full durability.</summary>
+    internal int CountReady(string itemKey)
+    {
+        var def = Content.ItemByKey(itemKey);
+        if (def is null) return 0;
+        return _char.Inventory.Where(i => i.ItemId == def.Id && AtFullDura(def, i)).Sum(i => i.Amount)
+             + _char.Equipment.Where(e => e.ItemId == def.Id && AtFullDura(def, e)).Sum(e => e.Amount);
+    }
+
+    /// <summary>Consume <paramref name="amount"/> under the armor-quest rule. Bag stacks go first (low slots
+    /// first, as <see cref="TakeItem"/> does) and only then worn copies, so the player keeps what they are
+    /// wearing whenever the bag alone can pay. Takes nothing and returns false if <see cref="CountReady"/>
+    /// is short — the guildmaster's "return when you have them all" branch must not half-strip anyone.</summary>
+    internal bool TakeReady(string itemKey, int amount)
+    {
+        var def = Content.ItemByKey(itemKey);
+        if (def is null || amount <= 0 || CountReady(itemKey) < amount) return false;
+
+        int remaining = amount;
+        foreach (var it in _char.Inventory.Where(i => i.ItemId == def.Id && AtFullDura(def, i))
+                                          .OrderBy(i => i.Slot).ToList())
+        {
+            if (remaining <= 0) break;
+            int take = Math.Min(remaining, it.Amount);
+            it.Amount -= take; remaining -= take;
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }
+            else SendAddItem(it);
+        }
+
+        bool strippedWorn = false;
+        foreach (var e in _char.Equipment.Where(x => x.ItemId == def.Id && AtFullDura(def, x)).ToList())
+        {
+            if (remaining <= 0) break;
+            remaining -= e.Amount;                       // equipment never stacks; one slot = one item
+            _char.Equipment.Remove(e);
+            SendUnequip(e.Slot);
+            ApplyAppearance(def, equip: false);          // drop its stat contribution + paperdoll layer
+            strippedWorn = true;
+        }
+
+        if (strippedWorn) RefreshAppearance();           // peers must stop seeing gear that is gone
+        SendStats();
+        SaveChar();
+        return true;
+    }
+
     /// <summary>How many of an item (by content key) the player is carrying, summed across stacks.</summary>
     internal int CountItem(string itemKey)
     {
@@ -670,6 +733,10 @@ public sealed partial class Session
     internal int  CharSex    => _char.Sex;
     internal int  CharFace   => _char.Face;
     internal int  CharNation => _char.Nation;
+    /// <summary>Adopt a totem (TotemWorship). Clamped 0..3 for the same reason @totem clamps: 5.33 reports a
+    /// phantom change every stats packet for an out-of-range crest and wipes the pane.</summary>
+    internal void SetTotem(int totem)
+    { _char.Totem = (byte)Math.Clamp(totem, 0, 3); SendStats(); SaveChar(); }
     internal bool CharMounted => _char.Mounted;
     /// <summary>Karma score (RTK <c>player.karma</c>) — fractional; see <see cref="Karma"/>.</summary>
     internal double CharKarma => _char.Karma;

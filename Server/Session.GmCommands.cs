@@ -544,6 +544,41 @@ public sealed partial class Session
         Log.Info($"   -> @die by '{_char.Name}' on map {_char.Map}");
     }
 
+    // "@carnage <name> [n]" — record carnage victories on an online player (default 1; a negative n takes
+    // them away, and the tally never goes below zero). Carnage was a GM-hosted PvP event, so who won it is
+    // knowledge only the host has: there is no fight for the server to score. Warrior Sun armor's first step
+    // wants two wins (nexusatlas + the tutor guide), and this is what feeds it. Self is allowed by naming
+    // yourself, deliberately — an unnamed form would make the most common misuse the easiest one to type.
+    private void CarnageWinCmd(string text)
+    {
+        // "name = n" and "name n" both work; the '=' form is here because names can contain spaces.
+        string arg = text.Trim(), name = arg;
+        int add = 1;
+        int eq = arg.LastIndexOf('=');
+        if (eq >= 0)
+        {
+            name = arg[..eq].Trim();
+            if (!int.TryParse(arg[(eq + 1)..].Trim(), out add))
+            { SendLog($"usage: {Prefix}carnage <name> [n]"); return; }
+        }
+        else
+        {
+            int sp = arg.LastIndexOf(' ');
+            if (sp > 0 && int.TryParse(arg[(sp + 1)..], out var n)) { name = arg[..sp].Trim(); add = n; }
+        }
+
+        if (name.Length == 0) { SendLog($"usage: {Prefix}carnage <name> [n]   (n<0 removes)"); return; }
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"'{name}' isn't online."); return; }
+
+        int now = Math.Max(0, target.QuestCounter(ArmorQuest.CarnageWinsReg) + add);
+        target.SetQuestStage(ArmorQuest.CarnageWinsReg, now);
+        target.SendMiniText(add >= 0 ? "Your victory in the Carnage is recorded."
+                                     : "Your Carnage record has been amended.");
+        SendLog($"{target._char.Name}: {now} carnage victory(ies).");
+        Log.Info($"   -> @carnage '{target._char.Name}' {add:+#;-#;0} -> {now}");
+    }
+
     // "@approach <username>" — teleport to an online player: their map, on a free tile beside them (their own
     // tile if they're boxed in). EnterMap is the only reliable self-relocate on 4.95 (a bare 0x04 snaps back —
     // see GoCmd), so this jumps the same way the world-map/leap paths do.

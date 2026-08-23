@@ -110,6 +110,11 @@ public sealed partial class Session
         G("bans",   (s, a) => s.BansCmd(a),   "",                          "list everyone currently banned or muted"),
         G("modlog", (s, a) => s.ModLogCmd(a), "[n]",                       "recent moderation actions, newest first"),
 
+        // ---- events ---------------------------------------------------------------------------------
+        // Carnage is a HOSTED event, so its result is something a GM records rather than something the
+        // server derives. Warrior Sun armor's first step reads the tally. See ArmorQuest.CarnageWinsReg.
+        G("carnage", (s, a) => s.CarnageWinCmd(a), "<name> [n] | <name> = <n>", "record carnage victories (n<0 removes)"),
+
         // ---- config read-outs -----------------------------------------------------------------------
         G("npc",   (s, a) => s.NpcToggleCmd(a),   "", "which NPCs are switched off (config + @reload to change)"),
         G("craft", (s, a) => s.CraftToggleCmd(a), "", "crafting era-gate status (config + @reload to change)"),

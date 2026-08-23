@@ -38,6 +38,7 @@ New to the project? Read in this order:
 | [Modding.md](common/Modding.md) | Which file do I edit to change *X*, and does it need a restart |
 | [Era-Gating.md](common/Era-Gating.md) | Should this content exist at our target date (2001-07-09) |
 | [Melee-Damage.md](common/Melee-Damage.md) | The swing-damage formula, live-measured against the real server |
+| [Armor-Quests.md](common/Armor-Quests.md) | The twelve Star/Moon/Sun chains: every step, and where the sources disagree |
 | [Crafting-Values.md](common/Crafting-Values.md) | Archive-validated crafting numbers, for when crafting is ported |
 | [Deferred-Work.md](common/Deferred-Work.md) | Things we researched, understood, and chose not to build yet |
 | [Spell-Sound-Audit.txt](common/Spell-Sound-Audit.txt) | Generated: every spell's sound id, grouped by archetype |

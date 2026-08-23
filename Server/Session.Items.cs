@@ -208,6 +208,10 @@ public sealed partial class Session
         // harvest nearby) falls through and drops normally. See Session.Harvest.cs.
         if (TryHarvest(def)) return;
 
+        // Dropping a White amber in the middle of the Mythic Nexus is the Star chain's prerequisite rite,
+        // not a drop — it is absorbed where it falls. See BlessedByTheStars.
+        if (TryStarBlessing(def, slot)) return;
+
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
         SendAction(_char.Id, 5, 20, 0);                                                     // our drop crouch + sound
@@ -1420,6 +1424,41 @@ public sealed partial class Session
         if (itB is not null) SendAddItem(itB); else SendDelItem((byte)a, 0);   // slot a now holds itB (or is empty)
         if (itA is not null) SendAddItem(itA); else SendDelItem((byte)b, 0);   // slot b now holds itA (or is empty)
         MarkDirty();
+    }
+
+    /// <summary>"Blessed by the Stars": a White amber dropped in the middle circle of the Mythic Nexus is
+    /// absorbed rather than dropped, and marks the player as eligible for the Star armor chain. True when
+    /// the drop was consumed here, so <see cref="HandleDropItem"/> stops — the same contract as
+    /// <see cref="TryHarvest"/>, and the same reason (RTK's <c>player.fakeDrop = 1</c>).
+    ///
+    /// <para>Silent on every non-qualifying case: wrong item, wrong tile, or the mark already held all fall
+    /// through and drop the amber normally. Level is the one exception — someone standing on the right tile
+    /// with the right item has clearly been told what to do, so being turned away for age gets a reason.
+    /// See <see cref="BlessedByTheStars"/> for the sourcing.</para></summary>
+    private bool TryStarBlessing(ItemDef def, int slot)
+    {
+        if (def.Key != BlessedByTheStars.Offering) return false;
+        if (!BlessedByTheStars.AtAltar(_char.Map, _char.X, _char.Y)) return false;
+        if (HasLegend(ArmorQuest.BlessedLegend)) return false;
+
+        if (_char.Level < BlessedByTheStars.MinLevel)
+        {
+            SendMiniText("The stars take no notice of one so young.");
+            return true;                        // consumed the ATTEMPT, not the amber — nothing is taken
+        }
+
+        var it = InvAt(slot);
+        if (it is null || it.ItemId != def.Id) return false;
+        if (!TakeItem(BlessedByTheStars.Offering, 1)) return false;
+
+        SendEffect(_char.Id, BlessedByTheStars.CloudEffect);
+        SendEffect(_char.Id, BlessedByTheStars.SwirlEffect);
+        SendMiniText("Energy from the stars fills your body.");
+        SendMiniText("The white amber is absorbed in a flash of light.");
+        AddLegend($"Was blessed by the stars ({Character.GameDate})", ArmorQuest.BlessedLegend,
+                  BlessedByTheStars.LegendIcon, BlessedByTheStars.LegendColor);
+        Log.Info($"   -> BLESSED BY THE STARS at ({_char.X},{_char.Y}) on map {_char.Map}");
+        return true;
     }
 
 }

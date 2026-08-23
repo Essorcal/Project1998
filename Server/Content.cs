@@ -246,7 +246,7 @@ public sealed record ItemDef(
             26048, 26049, 26050, 26051,                        // war/battle amulet + rune       — Nagnang shield quest
             26052, 26053, 26054, 26055,                        // magic/love amulet + rune
             29011,                                             // star_sword — Bonded AND break-on-death
-            30008, 30009, 30010, 31008, 31009,                 // Star/Moon/Sun armor: the trainers' quest chain,
+            30008, 30009, 30010, 31007, 31008, 31009,          // Star/Moon/Sun armor: the trainers' quest chain,
             32007, 32008, 32009, 33007, 33008, 33009,          // per class and per sex. Bonded, and sellable
             34007, 34008, 34009, 35007, 35008, 35009,          // only at Sya's shop in KaMing's encampment.
             36007, 36008, 36009, 37007, 37008, 37009,
@@ -255,7 +255,10 @@ public sealed record ItemDef(
             41008, 41009, 41010, 41011,                        // totem helm   (male)   — Bonded / Unrepairable.
             41508, 41509, 41510, 41511,                        // totem helmet (female)  The circlets and casques
                                                                // read "None" and are NOT bonded.
-            47002,                                             // white_moon_axe        — RTK only, Atlas silent
+            47002,                                             // white_moon_axe        — corroborated 2026-08-23:
+                                                               // Rogue Moon step 3 IS the bonding ("display to me
+                                                               // your White Moon Axe… he will bond it to you"), on
+                                                               // both tswolf and Atlas. See ArmorQuest.cs.
             48018,                                             // fates_blade           — Bonded / Non-Repairable
             49026,                                             // enchanted_spike       ) the Enchanted and san
             49032, 49033, 49034,                               // blood tiers           ) tiers an NPC upgrades
@@ -1215,6 +1218,7 @@ public static partial class Content
         MobDrops = LoadMobDrops(ResolvePath("P1998_MOB_DROPS", "MobDrops.csv"));
         CraftingToggleOverrides = LoadCraftingToggles(ResolvePath("P1998_CRAFTING_TOGGLES", "CraftingToggles.csv"));
         WarpQuestLocks = LoadWarpQuestLocks(ResolvePath("P1998_WARP_QUEST_LOCKS", "WarpQuestLocks.csv"));
+        ArmorQuestGates = LoadArmorQuestGates(ResolvePath("P1998_ARMOR_QUESTS", "ArmorQuests.csv"));
         var mythicCaves = LoadMythicCaves(ResolvePath("P1998_MYTHIC_CAVES", "MythicCaves.csv"));
         MythicCaveTiles = mythicCaves   // assign the derived tile index BEFORE the public list (same reason as Npcs/_npcById)
             .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
@@ -2927,6 +2931,30 @@ public static partial class Content
     /// <summary>The base path (PthType) a class/path id descends from — RTK <c>classdb_path</c>. Unknown ids
     /// and Peasant both give 0.</summary>
     public static int PathBaseOf(int pathId) => PathBase.GetValueOrDefault(pathId, 0);
+
+    // ---- Star/Moon/Sun armor quest gates (game-data/ArmorQuests.csv) ------------------------------
+    /// <summary>Level + karma tier each armor chain demands, keyed by (base path id, tier name). The tiers
+    /// live in a file because that is the one field the period sources genuinely fight over — see the
+    /// header comment in ArmorQuests.csv. A missing row falls back to <see cref="ArmorQuest"/>'s own
+    /// defaults, so a deleted file degrades to the shipped values rather than an open gate.</summary>
+    public static IReadOnlyDictionary<(int Path, string Tier), (int Level, string Karma)> ArmorQuestGates
+    { get; private set; } = new Dictionary<(int, string), (int, string)>();
+
+    private static Dictionary<(int, string), (int, string)> LoadArmorQuestGates(string? path)
+    {
+        var gates = new Dictionary<(int, string), (int, string)>();
+        foreach (var col in ReadCsv(path))
+        {
+            if (!int.TryParse(col.GetValueOrDefault("Path"), out var p)) continue;
+            var tier = col.GetValueOrDefault("Tier", "").Trim().ToLowerInvariant();
+            if (tier.Length == 0) continue;
+            if (!int.TryParse(col.GetValueOrDefault("Level"), out var lvl)) continue;
+            var karma = col.GetValueOrDefault("Karma", "").Trim();
+            if (karma.Length == 0) continue;
+            gates[(p, tier)] = (lvl, karma);
+        }
+        return gates;
+    }
 
     // See CraftingToggleOverrides above. Sparse by design — a skill missing from the file (or the file
     // missing entirely) just falls through to CraftingToggles.DefaultDisabled.

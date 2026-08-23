@@ -1,0 +1,33 @@
+# Star / Moon / Sun armor quest gates — the level and karma tier each chain demands before its guildmaster
+# will hear the word at all. See Server/ArmorQuest.cs for the steps themselves and
+# docs/common/Armor-Quests.md for the full sourcing. Edited here + @reload; no rebuild.
+#
+# Path   = base path id (1 Warrior, 2 Rogue, 3 Mage, 4 Poet)
+# Tier   = star | moon | sun
+# Level  = minimum character level ("Level Required" on the Atlas pages; every source agrees)
+# Karma  = named tier from Server/Karma.cs (Rabbit 2 / Dog 3 / Monkey 4 / Ox 6 / Bear 8 / Tiger 11)
+#
+# SOURCING OF THE KARMA COLUMN — this is where the period sources disagree, which is why it is a file:
+#   Star : Rabbit for all four. Atlas states it; RTK matches; tswolf names no tier for Star at all.
+#   Moon : tswolf prints "Dog Karma" on all four of its pages, but that line is visibly copy-pasted (its
+#          Wind section is likewise identical on all four). Atlas splits it — Dog for Warrior and Rogue,
+#          Ox for Mage and Poet — and RTK independently agrees with Atlas on every one of the four. Two
+#          sources against one boilerplate line, so the split wins.
+#   Sun  : Warrior Tiger and Mage Tiger are unanimous. Poet Bear is Atlas + RTK against tswolf's Tiger.
+#          ROGUE SUN IS GENUINELY UNRESOLVED: nexusatlas says Bear, the tutor-board walkthrough says
+#          Tiger. Bear is shipped because it is the recoverable direction (Bear 8 < Tiger 11, so a
+#          character built for Bear can still reach Tiger) and because it keeps the ladder symmetric with
+#          Poet. Flip this one row to Tiger if you decide the tutor wins.
+Path,Tier,Level,Karma
+1,star,66,Rabbit
+1,moon,76,Dog
+1,sun,86,Tiger
+2,star,66,Rabbit
+2,moon,76,Dog
+2,sun,86,Bear
+3,star,66,Rabbit
+3,moon,76,Ox
+3,sun,86,Tiger
+4,star,66,Rabbit
+4,moon,76,Ox
+4,sun,86,Bear

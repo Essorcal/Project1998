@@ -928,6 +928,14 @@ function verbs.propose(ctx, row)
   return true
 end
 
+-- Mentor (RTK common/mentor.lua): offer mentorship to a nearby low-level player, or culminate one already
+-- running. Like propose, the whole exchange is a scripted async dialog and the outcome lands later; the
+-- level windows and the "already mentored" guards live on the C# side because both parties must be tested.
+function verbs.mentor(ctx, row)
+  ctx:mentor()
+  return true
+end
+
 -- =========================================================================================================
 -- COMBAT STRAYS — physical facing-tile strikes (not archetype casts). Both hit whatever mob is directly in
 -- front of the caster; the engine ops (swing damage, armor-net, overkill splash, teleport) stay C# primitives.

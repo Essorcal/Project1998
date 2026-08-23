@@ -119,6 +119,13 @@ public sealed class NpcContext
     /// <summary>Give a reward item by key; false if the item is unknown or the pack is full.</summary>
     public bool GiveItem(string itemKey, int amount = 1) => _s.GiveRewardItem(itemKey, amount);
 
+    /// <summary>How many of an item the player could sacrifice under the armor-quest rule — bag AND worn
+    /// slots, full durability only ("must be 100% and can be worn at the time or in your inventory").</summary>
+    public int  CountReady(string itemKey) => _s.CountReady(itemKey);
+    /// <summary>Take <paramref name="amount"/> under that same rule (bag first, then off the body). False and
+    /// nothing taken if the player is short. See <see cref="Session.TakeReady"/>.</summary>
+    public bool TakeReady(string itemKey, int amount) => _s.TakeReady(itemKey, amount);
+
     /// <summary>Lifetime kills for a mob key (RTK <c>player:killCount</c>). Quests compare a snapshot delta.</summary>
     public int  KillCount(string mobKey) => _s.KillCount(mobKey);
     /// <summary>Lifetime kills of ANY mob, for a quest that cares what ELSE you killed (the Old dog's
@@ -199,6 +206,12 @@ public sealed class NpcContext
     /// <summary>The player's nation/kingdom id (RTK player.country; 0 = Neutral/wilderness, 1 = Koguryo/
     /// Kugnae, 2 = Buya, 3 = Nagnang).</summary>
     public int  Nation => _s.CharNation;
+
+    /// <summary>The totem animal this character follows (0 Ju Jak · 1 Baekho · 2 Hyun Moo · 3 Chung Ryong ·
+    /// 4 none) — see <see cref="Content.TotemName"/>. Set by worshipping at a shrine.</summary>
+    public int  Totem => _s.CharTotem;
+    /// <summary>Switch allegiance to a totem, persisting and re-sending the stat pane the crest sits on.</summary>
+    public void SetTotem(int totem) => _s.SetTotem(totem);
     /// <summary>Emigrate to another kingdom (RTK <c>player:updateCountry</c>) — persists, clears any bound
     /// home, repaints the HUD crest. The town criers and Rotah are the only callers.</summary>
     public void SetNation(int nation) => _s.SetNation((byte)Math.Clamp(nation, 0, 255));
@@ -647,8 +660,8 @@ public sealed class ForgetSecretAbility : INpcAbility
 /// (the level-75 title grant). One instance per base path (1 Warrior / 2 Rogue / 3 Mage / 4 Poet). The
 /// repeatable Minor Quest is a separate <see cref="MinorQuestAbility"/> composed alongside this one — it adds
 /// no menu entry of its own; you get one by saying "quest" near the trainer. NOT ported:
-/// the level-66+ star/moon/sun armor chains and the nagnang trials — they depend on subsystems we don't model
-/// (karma, crafting ranks, carnage wins, marriage/partner, mentoring).</summary>
+/// the nagnang trials. The level-66+ star/moon/sun armor chains ARE ported, but not here — they are spoken,
+/// not clicked, so they live in <see cref="ArmorQuestAbility"/> and are composed alongside this one.</summary>
 public sealed class ClassTrainerAbility : INpcAbility
 {
     private readonly int _path;                         // base path id, 1..4

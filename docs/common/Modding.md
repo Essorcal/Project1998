@@ -118,6 +118,14 @@ Add a row, pick/author a verb, `@reload`.
     `__make_ctx`.
   - A Lua-scripted NPC takes precedence over its C# ability; anything without a script uses the C# path.
 
+## Recipe: retune the **armor quests**
+
+`ArmorQuests.csv` holds the level and karma gate for each of the twelve Star/Moon/Sun chains
+(`Path,Tier,Level,Karma`). Edit + `@reload`; no rebuild. The karma column is where the period sources
+disagree — the file's own header says which rows are contested and why, and
+[Armor-Quests.md](Armor-Quests.md) has the full walkthrough. The steps themselves are code
+(`Server/ArmorQuest.cs`), because several of them gate on systems rather than counts.
+
 ## Recipe: a **monster**, **shop**, **drop table**, **map**, **level curve**
 
 - Monster stats/looks: `mobs.csv`. Spawns: `Spawns.csv` (fixed points) / `AreaSpawns.csv` (per-map/box counts)

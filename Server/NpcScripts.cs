@@ -41,6 +41,8 @@ public static class NpcScripts
         ["hermit"] = HermitAbility.Instance,
         ["sute"] = SuteQuestAbility.Instance,
         ["tiger_mail"] = TigerMailAbility.Instance,
+        ["armor_quest"] = ArmorQuestAbility.Instance,
+        ["totem_worship"] = TotemWorshipAbility.Instance,
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via

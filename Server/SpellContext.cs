@@ -413,6 +413,7 @@ public sealed class SpellContext
     public void applyMorph()    => _s.LuaApplyMorph(_sp);
     /// <summary>Kick off the async marriage-proposal dialog (RTK RunProposeAsync). Returns immediately.</summary>
     public void propose()       => _s.LuaPropose(_sp);
+    public void mentor()        => _s.LuaMentor(_sp);
     /// <summary>Does the caster carry a legend mark (e.g. "engaged"/"married")?</summary>
     public bool hasLegend(string mark) => _s.LuaHasLegend(mark);
     /// <summary>Forget this spell from the caster's spellbook (RTK cleanup of a spell you shouldn't still have).</summary>
