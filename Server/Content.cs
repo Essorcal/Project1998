@@ -1334,6 +1334,49 @@ public static partial class Content
     /// map has no region row. Used by the Gateway spell to resolve the caster's kingdom.</summary>
     public static int RegionOf(ushort mapId) => MapMeta.TryGetValue(mapId, out var m) ? m.Region : -1;
 
+    // ---- sage geography (the reach of the Share Wisdom ladder) --------------------------------------
+    //
+    // WHERE A SAGE RUNG ACTUALLY REACHES THE KINGDOM. Every rung but the last works only in certain
+    // places, and outside them the cast does NOT fail — it behaves as the Mentor spell, and the aether
+    // burns either way ("block sage and mentor spell usage in non-saging areas instead of casting
+    // Aethers — Won't be changed. Was written to be like that", Nexus Atlas answering a suggestion).
+    // The policy per rung lives in spell_verbs.lua's `sage_shout`; this answers only "where am I".
+    //
+    // REGION 2 IS THE LIST, and it is a startlingly exact fit rather than a proxy. tswolf names the sage
+    // areas as "Mythic, Wilderness, and Kamings Encampment"; region 2 holds Mythic Nexus (41), Wilderness
+    // (1002), KaMing's Encampment (3800) + KaMing (3806) and the mythic zones, and nothing else. The Atlas
+    // calls the same set "Mythic Nexus, Carnage, Events, and other 4.0 designated areas" — region 2 IS
+    // that designation, which is also why RegionCityName already calls it "the Mythic".
+    private const int SageRegion = 2;
+
+    // Carnage and event maps, which the sources list alongside the Mythic but which sit in their kingdoms'
+    // own regions rather than in region 2. Named explicitly because there are five and no flag groups them.
+    // The ARENAS are deliberately NOT here: sage works in "carnage GAMES", an event state this server does
+    // not model, and a permanently-sagable arena is not what any source describes. "Carnage test" (4002)
+    // and "Test Event1" (8105) are left out for the same reason the rest of the test maps are — they are
+    // not places a player is.
+    private static readonly HashSet<ushort> SageEventMaps = new() { 2007, 3010, 4050, 4524, 4525 };
+
+    /// <summary>Is this map one of the "4.0 designated areas" where a sage rung reaches the whole kingdom —
+    /// the Mythic/Wilderness/KaMing's region, or a carnage/event map? True for every rung; rungs 3-4 also
+    /// reach <see cref="IsOwnKingdom"/>, and rung 5 reaches everywhere regardless of this.</summary>
+    public static bool IsSageArea(ushort mapId) =>
+        RegionOf(mapId) == SageRegion || SageEventMaps.Contains(mapId);
+
+    /// <summary>Is this map inside <paramref name="nation"/>'s own kingdom — what rungs 3 and 4 add on top
+    /// of <see cref="IsSageArea"/> ("Sage also works in one's home town stated on the spell name").
+    ///
+    /// <para>Nation ids are Neutral 0 · Koguryo 1 · Buya 2 · Nagnang 3; map regions are Kugnae 0 · Buya 1 ·
+    /// Mythic 2 · Nagnang 3. The two spaces are NOT the same numbers, which is the whole reason this exists.
+    /// A NEUTRAL caster has no kingdom to add, so rungs 3-4 fall back to rung-2 behaviour for them — exactly
+    /// what the tutor board says ("Works just like level 2 for neutral villagers") and why the archive's
+    /// rung-3/4 names run "Buya, Kugnae, Nagnang, or NEUTRAL Wisdom".</para></summary>
+    public static bool IsOwnKingdom(ushort mapId, int nation)
+    {
+        int region = nation switch { 1 => 0, 2 => 1, 3 => 3, _ => -1 };   // Neutral (and anything odd) -> none
+        return region >= 0 && RegionOf(mapId) == region;
+    }
+
     /// <summary>Whether a map is indoors (RTK <c>MapIndoor</c> — town interiors, caves, dungeons). The weather
     /// gate: <see cref="WeatherModel"/> never draws rain or snow here. Maps with no metadata row default to
     /// outdoor.</summary>
@@ -1845,7 +1888,18 @@ public static partial class Content
     // but the archive merge nonetheless wrote propose rows for Mage and Poet (level 11), and a SpellCosts row
     // is exactly what makes SpellsForClass offer a spell — so path leaders were teaching it. Those rows stay
     // in the CSV as the relearn-cost record they were extracted as; this is the gate.
-    private static readonly HashSet<string> NpcGrantedSpells = new(StringComparer.OrdinalIgnoreCase) { "propose" };
+    // The five Sage rungs join it for the same reason. The Sage in the wilderness is their only teacher
+    // ("The Share wisdom spells can be learned from 'The Sage', an old man who lives in the wilderness at
+    // 0126 0007" — tutor board), and npc_dialog.lua's SageNpc is that flow; but the archive merge wrote
+    // share_wisdom rows for Warrior/Mage/Poet at level 90, so path leaders were selling rung 1 out from
+    // under him. The upper four are already unreachable (SplPthId 99 matches no class), and are listed
+    // anyway because SpellLearnCosts.csv is GENERATED — re/merge_spell_costs.py can hand any of them a row
+    // on the next merge, and this gate has to hold when it does.
+    private static readonly HashSet<string> NpcGrantedSpells = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "propose",
+        "share_wisdom", "mentors_wisdom", "apprentices_wisdom", "adepts_wisdom", "sages_wisdom",
+    };
     public static bool IsNpcGrantedOnly(SpellDef sp) => NpcGrantedSpells.Contains(sp.Key);
 
     /// <summary>Spells only ONE city's trainer teaches, keyed by <see cref="BaseKey"/> → <see cref="RegionOf"/>

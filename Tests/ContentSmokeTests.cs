@@ -614,6 +614,174 @@ public class ContentSmokeTests
                      precision: 3);
     }
 
+    /// <summary>The Sage and his wisdom ladder — five ways this one goes silently wrong.
+    ///
+    /// <para><b>He must stand somewhere reachable.</b> He shipped at (4,6) on map 1230, which is
+    /// <c>pass=3</c> — solid rock, walled off from the room's only doorway. An NPC in a wall draws fine,
+    /// answers nothing, and nothing at load time objects.</para>
+    ///
+    /// <para><b>He must own his own dialog.</b> Without a Lua click handler he falls through to the C#
+    /// abilities, and with no abilities and no quests that is the bare "Greetings, traveller." — which is
+    /// exactly what he did before the ladder was written.</para>
+    ///
+    /// <para><b>Nobody else may sell rung 1.</b> The archive is explicit that the Sage is the only teacher
+    /// ("The Share wisdom spells can be learned from 'The Sage'"), but SpellLearnCosts.csv carries
+    /// share_wisdom rows for Warrior/Mage/Poet at level 90 — and a SpellCosts row is all it takes for
+    /// SpellsForClass to put a spell in a path trainer's menu. <see cref="Content.IsNpcGrantedOnly"/> is the
+    /// gate; that CSV is generated, so the rows can come back and this must hold when they do.</para>
+    ///
+    /// <para><b>The rungs must be real, and must cast.</b> Each of the five needs a Spells.csv row AND a
+    /// SpellParams row on the <c>sage_shout</c> verb — without the row the cast falls through to the
+    /// Utility catch-all, which takes the mana and does nothing.</para>
+    ///
+    /// <para><b>The map must never lock out someone he would teach.</b> Entry to map 1230 is deliberately
+    /// LOWER than the ladder's own gate — the Atlas says "Only Level 90+ may enter this location", but we
+    /// let anyone in from level 50 (RTK's own figure) so a player can find the Sage, hear the requirement
+    /// and come back for it, rather than meeting a wall with no explanation. That gap is a choice; the
+    /// direction is not. If <c>MapReqLvl</c> ever rose ABOVE <c>SAGE_LEVEL</c>, qualifying players could not
+    /// reach the only NPC who sells the spell, and nothing else would notice.</para></summary>
+    [Fact]
+    public void TheSageIsReachableAndOwnsTheWholeWisdomLadder()
+    {
+        EnsureLoaded();
+
+        var sage = Content.Npcs.FirstOrDefault(n => n.Key == "SageNpc");
+        Assert.NotNull(sage);
+        Assert.True(NpcScript.Has("SageNpc"), "npc_dialog.lua registered no npcs.SageNpc click handler");
+
+        // Standing on ground a player can walk to — not inside the room's wall.
+        var room = MapData.For(sage!.Map);
+        Assert.NotNull(room);
+        Assert.False(room!.Solid(sage.X, sage.Y),
+            $"the Sage stands on solid ground at ({sage.X},{sage.Y}) on map {sage.Map} — unreachable");
+
+        // The ladder, in order, with the archive's aether for each rung — 15/10/10/5/5 minutes, agreed by
+        // the dated Atlas sage page, the Atlas 6.5 map page, the tutor board and tswolf. RTK's sage.lua ran
+        // 15/10/5/2.5/1, which made the top rung five times faster than retail; these are the numbers that
+        // a re-merge from RTK would quietly undo, so they are asserted rather than trusted.
+        var ladder = new[]
+        {
+            (key: "share_wisdom",       aetherMs: 900_000),
+            (key: "mentors_wisdom",     aetherMs: 600_000),
+            (key: "apprentices_wisdom", aetherMs: 600_000),
+            (key: "adepts_wisdom",      aetherMs: 300_000),
+            (key: "sages_wisdom",       aetherMs: 300_000),
+        };
+
+        foreach (var (key, aetherMs) in ladder)
+        {
+            Assert.NotNull(Content.SpellByKey(key));                    // still in Spells.csv
+            Assert.True(Content.SpellParams.TryGetValue(key, out var row),
+                $"'{key}' has no SpellParams row — the cast would fall through to the Utility catch-all");
+            Assert.Equal("sage_shout", row!.GetValueOrDefault("verb", ""));
+            Assert.Equal(aetherMs.ToString(), row.GetValueOrDefault("duration", ""));
+            // tswolf prices Share Wisdom at 600 mana and no source varies it per rung — the upgrade buys
+            // aether and nothing else. RTK's ascending 10/50/100/250/300 made rung 1 sixty times too cheap.
+            Assert.Equal("600", row.GetValueOrDefault("mana", ""));
+            Assert.True(Content.IsNpcGrantedOnly(Content.SpellByKey(key)!),
+                $"'{key}' is not gated to the Sage — a path trainer can teach it");
+        }
+
+        // The aether must SHRINK as you climb (never grow) — that ordering is the whole product the Sage
+        // sells, and it is the shape any future retune has to keep.
+        for (int i = 1; i < ladder.Length; i++)
+            Assert.True(ladder[i].aetherMs <= ladder[i - 1].aetherMs, "the ladder must never lengthen an aether");
+
+        // …and no trainer menu shows one, at any path, alignment or rank.
+        foreach (int path in new[] { 1, 2, 3, 4, 8, 13 })
+        foreach (int align in new[] { 0, 1, 2, 3 })
+        {
+            var offered = Content.SpellsForClass(path, 99, align, mark: 3).Select(s => s.Key)
+                                 .ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, _) in ladder)
+                Assert.False(offered.Contains(key), $"a path-{path} trainer offered the Sage spell '{key}'");
+        }
+
+        // The Lua owns the ladder the NPC actually walks; a rename on one side and not the other is silent.
+        var lua = System.IO.File.ReadAllText(
+            System.IO.Path.Combine(Shared.RepoPaths.GameDataDir(), "npc_dialog.lua"));
+        var table = System.Text.RegularExpressions.Regex.Match(lua, @"SAGE_LADDER\s*=\s*\{(.*?)\}",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.True(table.Success, "npc_dialog.lua no longer defines SAGE_LADDER");
+        foreach (var (key, _) in ladder)
+            Assert.Contains(key, table.Groups[1].Value);
+
+        // The upgrade wait: 2 yuris. The tutor post's "(Updated)" revision says 45 days and the dated Atlas
+        // page says 90; the dated one won, and a silent flip back would only show up 45 days into a save.
+        var wait = System.Text.RegularExpressions.Regex.Match(lua, @"SAGE_WAIT\s*=\s*(\d+)\s*\*\s*86400");
+        Assert.True(wait.Success, "npc_dialog.lua no longer defines SAGE_WAIT in days");
+        Assert.Equal(90, int.Parse(wait.Groups[1].Value));
+
+        // Both halves of the level gate. They are allowed to differ — see the note above — but only one way
+        // round: the door may be more generous than the Sage, never stricter.
+        var level = System.Text.RegularExpressions.Regex.Match(lua, @"SAGE_LEVEL\s*=\s*(\d+)");
+        Assert.True(level.Success, "npc_dialog.lua no longer defines SAGE_LEVEL");
+        Assert.Equal(90, int.Parse(level.Groups[1].Value));
+        Assert.True(Content.MapMeta.TryGetValue(sage.Map, out var meta), $"map {sage.Map} has no Maps.csv row");
+        Assert.True(meta!.ReqLvl <= int.Parse(level.Groups[1].Value),
+            $"map {sage.Map} admits at {meta.ReqLvl} but the Sage teaches at {level.Groups[1].Value} — " +
+            "a qualifying player cannot reach the only NPC who sells the spell");
+    }
+
+    /// <summary>Where each sage rung reaches — the half of the ladder that is not the NPC.
+    ///
+    /// <para>Only the top rung sages everywhere. Below it the spell works in the "4.0 designated areas"
+    /// (<see cref="Content.IsSageArea"/>) and, from rung 3, in the caster's own kingdom
+    /// (<see cref="Content.IsOwnKingdom"/>); anywhere else it becomes the Mentor spell and still burns the
+    /// aether. Region 2 carries the whole designated set — tswolf's "Mythic, Wilderness, and Kamings
+    /// Encampment" — so this pins the four maps that prove it, and the three capitals that must NOT qualify.
+    /// If a region were ever renumbered, every rung below 5 would silently start sagaing from the capitals
+    /// (or stop sagaing at all), and nothing else in the server would notice.</para>
+    ///
+    /// <para>The nation-to-region hop is the subtle one: nation ids (Neutral 0 · Koguryo 1 · Buya 2 ·
+    /// Nagnang 3) are NOT map-region ids (Kugnae 0 · Buya 1 · Mythic 2 · Nagnang 3), so an off-by-one here
+    /// hands a Koguryan sage rights over Buya. A neutral caster must never get a home kingdom — that is what
+    /// makes their rungs 3-4 behave as rung 2, per the tutor board.</para></summary>
+    [Fact]
+    public void SageRungsReachTheMythicAndOnlyTheirOwnKingdom()
+    {
+        EnsureLoaded();
+
+        // The designated areas: the Mythic region, and the carnage/event maps named alongside it.
+        Assert.True(Content.IsSageArea(41),   "Mythic Nexus must be a sage area");
+        Assert.True(Content.IsSageArea(1002), "the Wilderness must be a sage area");
+        Assert.True(Content.IsSageArea(3800), "KaMing's Encampment must be a sage area");
+        Assert.True(Content.IsSageArea(3010), "Carnage Hall must be a sage area");
+
+        // The three capitals are NOT. This is the whole point of the ladder: from town, rungs 1-2 are Mentor.
+        Assert.False(Content.IsSageArea(0),    "Kugnae must not be a sage area");
+        Assert.False(Content.IsSageArea(330),  "Buya must not be a sage area");
+        Assert.False(Content.IsSageArea(2500), "Nagnang must not be a sage area");
+
+        // Own kingdom: nation id -> map region, and each capital answers to exactly one nation.
+        Assert.True(Content.IsOwnKingdom(0, 1),    "a Koguryan is at home in Kugnae");
+        Assert.True(Content.IsOwnKingdom(330, 2),  "a Buyan is at home in Buya");
+        Assert.True(Content.IsOwnKingdom(2500, 3), "a Nagnanger is at home in Nagnang");
+        Assert.False(Content.IsOwnKingdom(330, 1), "a Koguryan is NOT at home in Buya");
+        Assert.False(Content.IsOwnKingdom(0, 2),   "a Buyan is NOT at home in Kugnae");
+        foreach (var map in new ushort[] { 0, 330, 2500 })
+            Assert.False(Content.IsOwnKingdom(map, 0), "a neutral villager has no home kingdom to sage from");
+
+        // The verb still exists and still owns the per-rung policy, with all five rungs in its table.
+        Assert.True(SpellScript.HasVerb("sage_shout"), "spell_verbs.lua lost sage_shout");
+        var lua = System.IO.File.ReadAllText(
+            System.IO.Path.Combine(Shared.RepoPaths.GameDataDir(), "spell_verbs.lua"));
+        var rungs = System.Text.RegularExpressions.Regex.Match(lua, @"SAGE_RUNGS\s*=\s*\{(.*?)\}",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.True(rungs.Success, "spell_verbs.lua no longer defines SAGE_RUNGS");
+        foreach (var (key, rung) in new[] { ("share_wisdom", 1), ("mentors_wisdom", 2),
+                                            ("apprentices_wisdom", 3), ("adepts_wisdom", 4), ("sages_wisdom", 5) })
+            Assert.Matches($@"{key}\s*=\s*{rung}\b", rungs.Groups[1].Value);
+
+        // The fallback must be Mentor, and the charge must sit outside the branch — a refactor that moved
+        // debitMana/setCooldown into the reaching branch would make casting from town free, which the Atlas
+        // explicitly refused to do ("Won't be changed. Was written to be like that").
+        var verb = System.Text.RegularExpressions.Regex.Match(lua,
+            @"function verbs\.sage_shout.*?\nend", System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.True(verb.Success, "could not find verbs.sage_shout to check its charge path");
+        Assert.Contains("ctx:mentor()", verb.Value);
+    }
+
     /// <summary>Blood's two halves, both of which fail silently when wrong.
     ///
     /// <para>His CLICK must be a menu. Without a Lua click handler he falls through to the C# abilities, and

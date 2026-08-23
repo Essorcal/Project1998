@@ -541,15 +541,62 @@ end
 -- you wait (row.mana / row.duration), so one verb covers all of them.
 -- Casting with nothing typed is a no-op that costs nothing -- RTK guards the same way, and the client shows
 -- its own prompt, so there is nothing useful to say about it.
+-- The Sage ladder's world channel. Bought a rung at a time from npcs.SageNpc (npc_dialog.lua), which owns
+-- the price, the wait and the replacement rule; this owns what the spell actually DOES.
+--
+-- REACH IS THE WHOLE PRODUCT. Only the top rung sages everywhere. Below it the spell works in the "4.0
+-- designated areas" (Mythic, Wilderness, KaMing's Encampment, carnage and events -- ctx:sageReach() == "sage"),
+-- rungs 3-4 add the caster's own kingdom ("home"), and ANYWHERE ELSE THE CAST DOES NOT FAIL: it becomes the
+-- Mentor spell. That is not an inference. The Dream Weaver that introduced the rule says so outright --
+-- "In the towns, your Sage spells will no longer broadcast your thoughts to the Kingdom. However, you will
+-- now be able to use these spells to allow your wisdom to flow to those new to the Nexus. Indeed, the spells
+-- Champion, Prince Charming, Sage, and Hierophant will operate identically to the spell Mentor when you are
+-- in one of the towns of the Nexus." (Eldridge, "Sage in towns") -- and tswolf repeats it per spell, "Has
+-- same effect as ""Mentor"" when casted in a NON Sage Area".
+--
+-- THE AETHER BURNS EITHER WAY, deliberately: a player asked for exactly that to be changed and was refused --
+-- "block sage and mentor spell usage in non-saging areas instead of casting Aethers (Won't be changed. Was
+-- written to be like that)". So the mana and the cooldown are charged on the Mentor branch too. Do not
+-- "fix" this into a free cast; it is the documented behaviour and it is why rung 5 is worth 500,000 gold.
+--
+-- The client prompts for the wisdom text before the server ever sees the cast (Spells.csv SplQuestion ">"),
+-- so on the Mentor branch the player types their line and THEN gets Mentor's own "Who would you like to
+-- mentor?" prompt. Slightly odd, and faithful: the typed text is simply not used.
+--
+-- See docs/common/Deferred-Work.md and Sources.csv `atlas-2002-12-25-sage`. Still not modelled: rungs 3-4
+-- are really four per-nation spells each, and carnage/event areas halve the aether.
+local SAGE_RUNGS = {
+  share_wisdom       = 1,
+  mentors_wisdom     = 2,
+  apprentices_wisdom = 3,
+  adepts_wisdom      = 4,
+  sages_wisdom       = 5,
+}
+
+-- Does this rung reach the kingdom from where the caster stands? Rung 5 always; rungs 3-4 from a sage area
+-- or their own kingdom; rungs 1-2 from a sage area only. An unknown key reads as rung 1, the strictest.
+local function sage_reaches(ctx)
+  local rung = SAGE_RUNGS[ctx.spellKey] or 1
+  if rung >= 5 then return true end
+  local where = ctx:sageReach()
+  return where == "sage" or (rung >= 3 and where == "home")
+end
+
 function verbs.sage_shout(ctx, row)
-  local mana = row.mana or 10
+  local mana = row.mana or 600
   local cd   = row.duration or 900000
   if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
   if not ctx:enoughMana(mana) then return false end
-  if not ctx:worldShout(ctx.answer) then return false end
+
+  if sage_reaches(ctx) then
+    if not ctx:worldShout(ctx.answer) then return false end   -- empty text: nothing said, nothing charged
+    ctx:narrated()               -- the shout IS the output; "You cast Share Wisdom." on top reads as noise
+  else
+    ctx:mentor()                 -- out of reach: the spell IS Mentor here, and still costs the full aether
+  end
+
   ctx:debitMana(mana)
   ctx:setCooldown(ctx.spellKey, cd)
-  ctx:narrated()                   -- the shout IS the output; "You cast Share Wisdom." on top reads as noise
   return true
 end
 

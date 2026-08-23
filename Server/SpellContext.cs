@@ -212,6 +212,15 @@ public sealed class SpellContext
     /// <summary>Broadcast a line to EVERY player on the server as "[name]: text" (the Sage ladder's world
     /// channel, RTK <c>broadcast(-1, …)</c>). False if the text was empty.</summary>
     public bool worldShout(string text) => _s.LuaWorldShout(text);
+    /// <summary>Where the caster is standing, as the Sage ladder measures it: <c>"sage"</c> in one of the
+    /// "4.0 designated areas" (the Mythic/Wilderness/KaMing's region, or a carnage/event map), <c>"home"</c>
+    /// inside the caster's own kingdom, or <c>""</c> anywhere else. `sage_shout` owns the per-rung policy —
+    /// rungs 1-2 need "sage", rungs 3-4 take either, rung 5 ignores this entirely — and falls back to the
+    /// Mentor spell when the rung does not reach. A neutral caster never gets "home" (Content.IsOwnKingdom),
+    /// which is what makes their rungs 3-4 behave as rung 2, exactly as the tutor board describes.</summary>
+    public string sageReach() =>
+        Content.IsSageArea(_s.CharMap) ? "sage"
+      : Content.IsOwnKingdom(_s.CharMap, _s.CharNation) ? "home" : "";
 
     // ---- primitives for the Buff / TargetBuff / Debuff / Cure archetype verbs -------------------------------
     /// <summary>Does the caster have at least <paramref name="amt"/> mana? Sends "You do not have enough mana."

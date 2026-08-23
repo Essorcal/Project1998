@@ -403,3 +403,110 @@ every rung is the same transaction so the split looked like patchy coverage. It 
 the two-rung split is real. `Rung.Harden` carries it, so it is data rather than a rule
 (`TigerMailQuest.HardenSpell` → `Session.NpcCastWard`, which is a general "an NPC casts a ward on you"
 primitive and stays available to anything else that wants it).
+
+---
+
+## The Sage — what is built, and the three things left off
+
+The ladder is built, and so is its reach.
+
+`npcs.SageNpc` (`game-data/npc_dialog.lua`) teaches Share Wisdom and its four upgrades, one rung at a time,
+100,000 gold each, 90 real days between rungs, level 90, each rung **replacing** the one below it.
+`Content.NpcGrantedSpells` keeps the path trainers from teaching rung 1 behind his back. `verbs.sage_shout`
+(`game-data/spell_verbs.lua`) then decides where each rung actually reaches: rungs 1-2 sage from the "4.0
+designated areas" only, rungs 3-4 also from the caster's own kingdom, rung 5 from anywhere — and outside its
+reach the spell becomes the **Mentor** spell rather than failing, with the mana and the full aether charged
+either way. `Content.IsSageArea` / `Content.IsOwnKingdom` own the geography;
+`Tests/ContentSmokeTests.TheSageIsReachableAndOwnsTheWholeWisdomLadder` and
+`SageRungsReachTheMythicAndOnlyTheirOwnKingdom` pin both halves.
+
+Source: `Sources.csv` **`atlas-2002-12-25-sage`** — the whole system on one dated page — plus tswolf's spell
+list, the tutor-board post "The sage spells", and the Dream Weaver `Eldridge09270051.html` ("Sage in towns")
+that introduced the Mentor fallback. RTK's `NPCs/wilderness/sage.lua` disagreed on every number and lost each
+time; its script is still the shape of the dialog and the source of the rules speech.
+
+| rung | spell (ours) | archive name | aether | where it sages |
+|---|---|---|---|---|
+| 1 | `share_wisdom` | Share Wisdom | 15 min | Mythic Nexus, Wilderness, KaMing's Encampment, Carnage, Events |
+| 2 | `mentors_wisdom` | Mentor's Wisdom | 10 min | as rung 1 |
+| 3 | `apprentices_wisdom` | Buya / Kugnae / Nagnang / **Neutral** Wisdom | 10 min | as rung 1, **plus the caster's own kingdom** |
+| 4 | `adepts_wisdom` | Buya / Kugnae / Nagnang / **Neutral** Sage | 5 min | as rung 3 |
+| 5 | `sages_wisdom` | Sage's Wisdom | 5 min | *"virtually anywhere"* |
+
+### Rungs 3 and 4 are really four spells each, named for your nation
+
+The archive names them *"Buya, Kugnae, Nagnang, or Neutral Wisdom"* and *"... or Neutral Sage"* — four
+variants apiece against our single `apprentices_wisdom` / `adepts_wisdom`, which carry RTK's invented
+Apprentice's/Adept's names. The **behaviour** is already right: `Content.IsOwnKingdom` resolves the caster's
+kingdom at cast time, and a neutral caster gets no home kingdom, so their rungs 3-4 behave as rung 2 exactly
+as the tutor board says (*"Works just like level 2 for neutral villagers"*). What is missing is only that the
+spell in the book does not say which kingdom it is for. Deferred because it is eight new `Spells.csv` rows
+plus a nation-keyed grant in the Sage's dialog, to buy a name — and renaming without splitting would be
+worse than either, since the kingdom names exist *because* those rungs are kingdom-scoped.
+
+### Carnage and event areas should halve the aether
+
+*"Sage Aethers are cut in half to 2/3 off in Carnage Event Arenas and Special Event Areas."* Not built: the
+discount is a property of a carnage **game** being under way, an event state this server does not model at
+all. `Content.IsSageArea` already knows which maps the carnage/event set is (see `SageEventMaps`), so this is
+a multiplier on `row.duration` in `sage_shout` the day there is an event state to hang it on.
+
+Related and deliberate: the **arenas** are not sage areas here. Sage worked in "carnage games", not in an
+empty arena, and a permanently-sagable arena is not what any source describes.
+
+### The rules the Sage reads out are not enforced
+
+"Jailing for ANY crime will result in loss of this spell", and the Atlas is more specific: *"If you are
+punished, you lose sage, and cannot relearn for 90 days. After those 90 days, you have to start from the
+first spell once again."* There is no jail here — maps 47 and 666 exist, the mechanic does not — so the
+speech is era-correct flavour and nothing acts on it. Whoever builds jailing owns this, and it is small:
+forget whichever rung they hold, and write `now + 90 days` into the `sage_timer` registry key the Sage
+already uses. The restart-at-rung-1 half needs nothing extra — the Sage finds your rung by looking in your
+spellbook, so losing the spell *is* the demotion.
+
+### Sage's Wisdom is a Sam san requirement, and there is no trial
+
+*"One of the Sam San Requirements is to have the highest level sage."* We have no trial — marks are set by
+`@mark` — so nothing consumes rung 5 yet.
+
+### Deliberately not reproduced: the Sage's own retail bug
+
+TSWolf, 2003-04-13: *"The Sage NPC takes 100k without upgrading yer sage. (I personally lost 100k."* Ours
+teaches before it charges and takes nothing on a failed teach. Recorded so the next person to find that post
+does not "fix" our version into matching it.
+
+## Greater alliances with the mythic animals
+
+The lesser alliances are built ([Mythic-Alliances.md](Mythic-Alliances.md)). The greater ones are not, and
+they are the natural next piece: the eight-slot kill track they depend on already exists, and so does the
+CSV that names every cave's bosses and its enemy.
+
+What a greater alliance is, from Atlas's *Greater Alliance Information* page and Nussan's walkthrough,
+which agree on all of it:
+
+| | |
+|---|---|
+| **Word** | `greater` (or `greater alliance`), said to a mythic you are ALREADY allied to |
+| **Rank** | **Ee San** — Atlas lists it as the level requirement, Nussan repeats it |
+| **Prerequisite** | **six** completed lesser alliances |
+| **Cap** | **three** greater alliances per character, and only one in progress at a time |
+| **Ask** | **five** of each of the two leaders in **three** caves — thirty bosses, "and NOTHING else" |
+| **Which three caves** | your ally's own enemy, plus the enemies of the next two lesser alliances you hold |
+| **Tribute** | none |
+| **Rewards** | 4–8 karma (Nussan: 4), a legend that **replaces** the lesser mark, and the same standing Rebirth |
+
+Three things to settle when someone builds it:
+
+1. **Six bosses on an eight-slot track leaves two free kinds, not six.** That is the whole difficulty of a
+   greater alliance and it needs no new code — but it does mean the "kill one more of each boss to push the
+   mistake off" trick becomes the intended play rather than a curiosity. Atlas devotes half its Alliance
+   Tips page to exactly that, worked example included.
+2. **Ee San is not gated here yet.** Subpath marks are set with `@mark`; there is no San trial. Gate on
+   `ctx.Mark` and accept that it is settable rather than earned, the same compromise every other mark gate
+   on this server makes.
+3. **Which two extra caves** is order-dependent in RTK — it walks a fixed animal list and takes the first
+   two lesser alliances it finds. Nothing in the archive says the player chooses, so RTK's deterministic
+   walk is probably right, but it is the one piece of the design with a single witness.
+
+The enemy-ally check in `MythicAllianceAbility` already reads `greater_alliance_<animal>` alongside the
+lesser mark, so a champion of the Dog will be turned away by the Dragon the moment something grants it.

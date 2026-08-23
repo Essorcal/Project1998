@@ -230,6 +230,11 @@ public static class NpcScript
             case "coins":      return DynValue.NewNumber(ctx.Coins);
             case "spendGold":  return DynValue.NewBoolean(ctx.SpendGold((uint)Math.Max(0, Int(t, "n"))));
             case "gameDate":   return DynValue.NewString(Character.GameDate);
+            // Wall-clock unix SECONDS — the unit every persisted cooldown in this server is written in
+            // (MinorQuest's KTimer, SuteQuest's recoat timer, the marriage cool-down), and the unit the
+            // registry can hold: reg values are C# ints, so unix ms would overflow and unix seconds fit
+            // until 2038. Scripts store `now() + wait` and compare, never a duration that has to tick.
+            case "now":        return DynValue.NewNumber(ctx.NowUnix);
             // Inclusive [lo,hi] random int. Backed by the C# RNG on purpose: MoonSharp's math.random is
             // unseeded (deterministic per server start) and the sandbox has no os.time to seed it with.
             case "rand":       { int lo = Int(t, "lo"), hi = Int(t, "hi"); if (hi < lo) (lo, hi) = (hi, lo); return DynValue.NewNumber(Random.Shared.Next(lo, hi + 1)); }

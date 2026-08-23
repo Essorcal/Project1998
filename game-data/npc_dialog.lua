@@ -9,7 +9,7 @@
 -- Immediate ops (no wait): giveItem/takeItem/hasItem/countItem/itemName, learnSpell/hasSpell/forgetSpell,
 --   awardExp/awardGold, stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp,
 --   level/maxHp/maxMp/sex/nation/setNation/map/coins/spendGold, classId/basePathId/canLearnDogSpells,
---   npcName, killCount/totalKills/mounted, eraHas, bubble/notify, gameDate,
+--   npcName, killCount/totalKills/mounted, eraHas, bubble/notify, gameDate, now,
 --   karma/karmaLevel/karmaCheck/addKarma/removeKarma/karmaTooLow.
 -- To expose a new primitive: add a stub here AND a case in Server/NpcScript.cs Dispatch. Edit this file and run
 -- !reload to see changes live -- no server restart. Any NPC with a script here takes precedence over its C#
@@ -80,6 +80,10 @@ function __make_ctx()
   function ctx:coins()                  return coroutine.yield({op="coins"}) end
   function ctx:spendGold(n)             return coroutine.yield({op="spendGold", n=n}) end
   function ctx:gameDate()               return coroutine.yield({op="gameDate"}) end
+  -- Wall-clock unix SECONDS. For a cooldown that must survive a relog, store `ctx:now() + seconds` in a
+  -- registry key and compare against `ctx:now()` on the next visit -- an absolute deadline, never a
+  -- countdown (the same rule the C# timed effects follow). See the Sage's SAGE_TIMER.
+  function ctx:now()                    return coroutine.yield({op="now"}) end
   -- Inclusive random integer in [lo, hi], backed by the server RNG (MoonSharp's own math.random is
   -- unseeded and so repeats the same sequence every server start -- see Myung-Suck's grumpy gate).
   function ctx:rand(lo, hi)             return coroutine.yield({op="rand", lo=lo, hi=hi}) end
@@ -1518,4 +1522,165 @@ function npcs.OldDogNpc(ctx)
   ctx:addLegend("Avenged treachery against the dogs (" .. ctx:gameDate() .. ")", OLD_DOG_LEGEND, 5, 128)
   ctx:setStage(OLD_DOG_QUEST, 0)
   ctx:say("Thank you for avenging us.")
+end
+
+-- =====================================================================================================
+-- THE SAGE -- the wisdom ladder (RTK NPCs/wilderness/sage.lua, retuned against the archive).
+--
+-- The old man alone in his room off the Wilderness at 126,7 (map 1230, reached by the warp there). He is
+-- the ONLY teacher of Share Wisdom and its four upgrades -- the game's one world chat channel, cast by
+-- typing what you want the land to hear. The spells themselves already work (`sage_shout` in
+-- spell_verbs.lua, per-tier mana and aether from SpellParams.csv); this is the only way into them, which
+-- is why Content.NpcGrantedSpells now keeps the path trainers from teaching Share Wisdom behind his back.
+--
+-- SOURCE, and where it beats RTK. The dated nexusatlas sage page (2002-12-25, Sources.csv
+-- `atlas-2002-12-25-sage`) carries the whole system on one sheet, corroborated by tswolf's spell list and
+-- by the tutor-board post "The sage spells". RTK's script disagrees with them on every number:
+--
+--            archive                                              RTK sage.lua
+--   level    90, every path                                       50 to speak, 90 for tiers 2-5
+--   price    100,000 a rung, "in total 500k"                      25,000 then 100,000 x4
+--   wait     2 yuris (90 days) between rungs                      2/4/6/8 weeks, then none
+--   ladder   "only 1 sage level on personal spells list per       addSpell only -- all five pile up in
+--            time" -- each rung REPLACES the one below            the book, and its own next-rung search
+--                                                                 then finds the lowest and re-sells it
+--
+-- We follow the archive on all four. The replacement rule is the one that matters most: without it RTK's
+-- forward `for i = 1, #sages` search stops at the rung you already outgrew and sells you the same upgrade
+-- forever. Searching DOWN from the top instead is what that loop was reaching for.
+--
+-- ONE SOURCE CONFLICT, called for the dated one. The tutor post exists in two revisions: the earlier says
+-- "2 yuris ((90 days))" and the later "(Updated)" one says "1 hyul ((45 days))". The Atlas page is dated
+-- 2002-12-25, sits 18 months from our target, and agrees with the EARLIER revision -- and the "(Updated)"
+-- revision also talks about Generals and "Fast Sage", which are later-era furniture. 90 days it is.
+--
+-- WHAT THE RUNGS BUY is not this file's business: `sage_shout` in spell_verbs.lua owns the reach (rungs 1-2
+-- sage from the designated areas only, 3-4 also from your own kingdom, 5 from anywhere, and outside its
+-- reach the spell becomes Mentor). All this NPC sells is the next rung.
+--
+-- NOT MODELLED: the punishment rule the rules speech below promises. There is no jail here -- maps 47 and
+-- 666 exist, the mechanic does not -- so the speech is era-correct flavour and nothing enforces it. When it
+-- is built it lands here: forget the held rung and write now + 90 days into SAGE_TIMER. Also unmodelled:
+-- rungs 3-4 are really FOUR per-nation spells each ("Buya, Kugnae, Nagnang, or Neutral Wisdom" / "... or
+-- Neutral Sage"); our Spells.csv carries RTK's single Apprentice's/Adept's Wisdom, and only the NAME is
+-- missing -- the kingdom behaviour is live. See docs/common/Deferred-Work.md for both.
+
+local SAGE_LADDER = {
+  "share_wisdom",        -- 15 min aethers
+  "mentors_wisdom",      -- 10
+  "apprentices_wisdom",  -- 10  (archive: "Buya, Kugnae, Nagnang, or Neutral Wisdom")
+  "adepts_wisdom",       --  5  (archive: "Buya, Kugnae, Nagnang, or Neutral Sage")
+  "sages_wisdom",        --  5  -- "virtually anywhere"; the ceiling, and a Sam san requirement
+}
+
+local SAGE_LEVEL = 90        -- "It was able to be learned at level 90" / "available to all paths for people
+                             -- over the level 90". The atlas ALSO gates the room itself ("Only Level 90+ may
+                             -- enter this location"), but Maps.csv keeps map 1230 open from 50 (RTK's own
+                             -- figure) BY CHOICE: a player who finds the cave early should meet the Sage and
+                             -- be told what it takes, not a wall. This line is that telling -- do not raise
+                             -- MapReqLvl to match and make it unreachable.
+local SAGE_COST  = 100000    -- flat, every rung: "The cost to learn it is of 100,000 coins and it can be
+                             -- upgraded to next level of Sage ... for the same price ... in total 500k"
+local SAGE_WAIT  = 90 * 86400   -- two yuris between rungs: "It can be learned every 2 Yuris (90 Days)"
+                                -- (Atlas, dated), matching the earlier tutor revision's "every 2 yuris
+                                -- ((90 days)) ... 500k and 10 yuris ((450 days))" for the full ladder. A
+                                -- REAL-time wait, and the entire cost of the upgrade path beyond the gold
+                                -- -- so it is also the one number here most worth retuning by taste.
+local SAGE_TIMER = "sage_timer"  -- absolute unix-second deadline (RTK registry "learnSageSpellTimer")
+
+-- RTK playerTimerValues, which is what its own "consult with the Sage" line renders: "07 days 03 hours
+-- 22 minutes 11 seconds". Kept verbatim in shape -- the tutor post tells players to come and ask him how
+-- long is left, so this string IS the documented answer.
+local function sage_wait_text(secs)
+  return string.format("%02d days %02d hours %02d minutes %02d seconds",
+    math.floor(secs / 86400), math.floor(secs % 86400 / 3600),
+    math.floor(secs % 3600 / 60), math.floor(secs % 60))
+end
+
+-- 100000 -> "100,000". RTK's Tools.formatNumber; the price line is the only place we need it.
+local function commas(n)
+  local s = tostring(n)
+  while true do
+    local out, hits = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2")
+    s = out
+    if hits == 0 then return s end
+  end
+end
+
+-- The highest rung the player holds (0 = none). Downward, so an old book that somehow holds two rungs
+-- reads as the better one rather than re-selling the worse one's upgrade.
+local function sage_rung(ctx)
+  for i = #SAGE_LADDER, 1, -1 do
+    if ctx:hasSpell(SAGE_LADDER[i]) then return i end
+  end
+  return 0
+end
+
+function npcs.SageNpc(ctx)
+  if ctx:level() < SAGE_LEVEL then
+    ctx:say("Come back when you have reached the " .. SAGE_LEVEL .. "th insight.")
+    return
+  end
+
+  local rung = sage_rung(ctx)
+  if rung >= #SAGE_LADDER then
+    ctx:say("I have already taught you the highest level of wisdom.")
+    return
+  end
+
+  -- Checked BEFORE the rules speech, unlike RTK, which reads out all seven pages and only then tells you
+  -- to come back in a month. Same rule, asked in the order a person would ask it.
+  local left = ctx:reg(SAGE_TIMER) - ctx:now()
+  if left > 0 then
+    ctx:say("You have your spell for now, and I will not let you upgrade again for " .. sage_wait_text(left) .. ".")
+    return
+  end
+
+  -- RTK's rules, verbatim but for its own server's name. The player may ask for them again as often as
+  -- they like (RTK recurses into the whole script; we just loop the pair).
+  while true do
+    ctx:say("Read the following rules very carefully, for if you should break one then you will lose this spell for a long time!",
+            "Share wisdom is for you to share your wisdom with the community.",
+            "Use of the spell in any way to offend or harass anyone in the game will result in its loss.",
+            "Repeated spamming of your wisdom to the world can result in the loss of this spell.",
+            "Keep personal grievances out of sage.",
+            "Jailing for ANY crime will result in loss of this spell.",
+            "Breaking any other law in Nexus using this spell will result in loss of the spell.")
+
+    local understood = ctx:menu("Do you understand these rules completely?",
+      {"Yes, I understand and accept the rules.", "No, please repeat them to me."})
+    if understood == 1 then break end
+    if understood ~= 2 then return end          -- closed the box
+  end
+
+  if ctx:menu("This spell will cost " .. commas(SAGE_COST) .. " gold to learn.",
+              {"Yes, I have the money.", "No, I will not pay."}) ~= 1 then
+    return
+  end
+
+  if ctx:coins() < SAGE_COST then
+    ctx:say("The spell I will teach you cost " .. commas(SAGE_COST) .. " gold. Return to me when you have that.")
+    return
+  end
+
+  -- Replace, don't stack -- one rung at a time, the new one instead of the one you hold. Teach BEFORE
+  -- forgetting so no failure can leave you holding neither: only if the book is full (52 slots) is the old
+  -- rung's slot freed and the teach retried, which then fits by definition because it is a swap. If even
+  -- that fails the old rung goes straight back, and nothing has been charged either way.
+  local next_rung = SAGE_LADDER[rung + 1]
+  local taught = ctx:learnSpell(next_rung)
+  if not taught and rung > 0 then
+    ctx:forgetSpell(SAGE_LADDER[rung])
+    taught = ctx:learnSpell(next_rung)
+    if not taught then ctx:learnSpell(SAGE_LADDER[rung]) end
+  end
+  if not taught then
+    ctx:say("Your mind is too full of other secrets to hold this one.")
+    return
+  end
+  if rung > 0 then ctx:forgetSpell(SAGE_LADDER[rung]) end   -- no-op if the retry above already did it
+
+  ctx:spendGold(SAGE_COST)
+  ctx:setReg(SAGE_TIMER, ctx:now() + SAGE_WAIT)
+  ctx:say("Use your spell well, abuse will result in its loss, and you will end up having to learn the spells again from the start.")
 end
