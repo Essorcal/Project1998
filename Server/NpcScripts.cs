@@ -42,6 +42,7 @@ public static class NpcScripts
         ["sute"] = SuteQuestAbility.Instance,
         ["tiger_mail"] = TigerMailAbility.Instance,
         ["armor_quest"] = ArmorQuestAbility.Instance,
+        ["stars_hint"] = StarHintAbility.Instance,
         ["totem_worship"] = TotemWorshipAbility.Instance,
     };
 

@@ -59,11 +59,29 @@ unbonded Star and Moon armor had a resale market.
 Carry a **White amber** into the **Mythic Nexus** (map 41) and **drop it in the middle circle**. It is
 absorbed rather than dropped, and you get the mark. **Level 60 required.**
 
-Two independent witnesses for the method — nexusatlas `quests/blessed.php` ("*Simply obtain a White Amber
-and drop it in the middle circle area of Mythic Nexus*") and the official-board Rogue tutor guide. The level
-gate comes from Atlas alone and is implemented nowhere else, RTK included. Atlas mentions an alternative
-opening (say "Stars" to Ironheart in Kugnae) and immediately says of it *"The 'Stars' part can be skipped if
-you wish"* — it is a signpost to the amber, not a second route, and is not wired.
+Three witnesses for the method — nexusatlas `quests/blessed.php` ("*Simply obtain a White Amber and drop it
+in the middle circle area of Mythic Nexus*"), the official-board Rogue tutor guide, and tswolf's own
+`quests/blessed` page. The **level 60** gate comes from Atlas alone and is implemented nowhere else, RTK
+included.
+
+**How you learn it: say "stars" to a tutor.** Both Ironheart (Kugnae) and Jadespear answer with the line
+tswolf captured:
+
+> Do you seek to understand the stars?  It is simple to do.  Visit the center of the star with twelve
+> points.  Drop a single white amber there.  Then you will understand.
+
+tswolf decodes the riddle for you — "*The twelve pointed star is Mythic Nexus. The Center is the little box
+in the center*" — which is independent corroboration of where the altar rectangle points.
+
+Atlas's "*The 'Stars' part can be skipped if you wish*" means the hint is **optional, not absent**; it is the
+only in-game signposting the entire line has, so it is wired. **Both tutors**, not just Ironheart: the two
+share the `MainTutorialNpc` identifier and the whole tutorial chain, and tswolf's evidence points both ways —
+its prose names Ironheart, but the screenshot it transcribed the line from is filed as `jadespear.gif`. A
+page that says one and photographs the other reads as "either".
+
+Below level 60 the tutor still gives the full instructions and then adds that you are not yet ready. **That
+second line is ours** — only the first is attested — on the grounds that sending a player to spend a rare
+amber that cannot work is worse served by silence than by a sentence.
 
 ---
 

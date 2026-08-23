@@ -363,6 +363,30 @@ public class ArmorQuestTests
         Assert.False(BlessedByTheStars.AtAltar(36, 30, 32));                  // right tile, wrong map
     }
 
+    /// <summary>The tutors' "stars" hint is the only in-game signposting the whole line has — and it is
+    /// SPOKEN, so nothing visibly breaks if the composition row is dropped: "stars" just goes unanswered and
+    /// the chain becomes undiscoverable. Both tutors carry it (tswolf's prose names Ironheart; the screenshot
+    /// it transcribed the line from is jadespear.gif).</summary>
+    [Fact]
+    public void BothTutorsAnswerToStars()
+    {
+        EnsureLoaded();
+
+        foreach (int npcId in new[] { 20, 49 })
+        {
+            var npc = Content.Npcs.FirstOrDefault(n => n.Id == npcId);
+            Assert.True(npc is not null, $"tutor {npcId} is missing");
+            Assert.Equal("MainTutorialNpc", npc!.Key);
+            Assert.Contains(NpcScripts.For(npc), a => a is StarHintAbility);
+        }
+
+        // The hint names the offering and the shape; if either drifts from what the rite actually wants,
+        // the only instructions in the game start lying.
+        Assert.Contains("white amber", StarHintAbility.Hint, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("twelve points", StarHintAbility.Hint, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("white_amber", BlessedByTheStars.Offering);
+    }
+
     /// <summary>Poet Moon counts what the Mentor spell records, and Warrior Sun counts what @carnage does.
     /// Both are cross-file string keys, so a rename on one side is silent.</summary>
     [Fact]

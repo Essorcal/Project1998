@@ -719,9 +719,10 @@ public static class ArmorQuest
 /// only tutor guide with its own independent reporting. The same Atlas page carries the <b>level 60</b>
 /// requirement, which no other source records and which RTK's own item script does not implement.</para>
 ///
-/// <para>Atlas also notes an alternative opening (<i>say "Stars" to Ironheart, the Tutor in Kugnae</i>) and
-/// says of it, in the same breath, <i>"The 'Stars' part can be skipped if you wish"</i> — it is a signpost
-/// to the amber, not a second way to earn the mark. Only the amber is wired.</para>
+/// <para><b>How a player learns any of this</b> is the tutors' "stars" hint — see
+/// <see cref="StarHintAbility"/>. Atlas's "<i>The 'Stars' part can be skipped if you wish</i>" means the
+/// hint is optional, not that it is absent: the dialog is captured on tswolf's page and is the only
+/// in-game signposting the chain has.</para>
 ///
 /// <para>The drop is intercepted, so the amber is consumed rather than left lying in the Nexus — the same
 /// shape as the harvesting hook on the same handler (RTK sets <c>player.fakeDrop = 1</c> to the same end).
@@ -730,8 +731,11 @@ public static class ArmorQuest
 public static class BlessedByTheStars
 {
     public const ushort NexusMap = 41;
-    /// <summary>The middle circle, in the 60x60 Nexus. RTK's rectangle, and the only numeric witness for
-    /// "the middle circle area" — it does sit dead centre, which is the corroboration available.</summary>
+    /// <summary>The middle circle, in the 60x60 Nexus. RTK's rectangle, and the only NUMERIC witness — but
+    /// three descriptions agree on where it points: Atlas's "the middle circle area of Mythic Nexus", the
+    /// tutor's own riddle ("the center of the star with twelve points"), and tswolf's decoding of it ("the
+    /// twelve pointed star is Mythic Nexus. The Center is the little box in the center"). A small box dead
+    /// centre of a 60x60 map is exactly what this rectangle is.</summary>
     public const int X0 = 28, X1 = 32, Y0 = 30, Y1 = 35;
 
     public const int    MinLevel = 60;              // nexusatlas quests/blessed.php, "Level Required : 60"

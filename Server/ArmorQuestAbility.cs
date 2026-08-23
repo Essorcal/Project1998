@@ -315,3 +315,58 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
         return pick == 1;
     }
 }
+
+/// <summary>
+/// Ironheart's (and Jadespear's) "stars" hint — the one piece of in-game signposting that tells a player how
+/// to become <i>Blessed by the Stars</i>, and therefore the entry point to the whole Star/Moon/Sun line.
+///
+/// <para>Transcribed from the dialog screenshot on tswolf.com/quests/blessed (Wayback 2001-03-04), whose
+/// walkthrough reads "<i>Visit Ironheart in Kugnae, and speak with him about the 'Stars'</i>" and then
+/// decodes the riddle for you: "<i>The twelve pointed star is Mythic Nexus. The Center is the little box in
+/// the center.</i>" nexusatlas agrees on the giver — "Say 'Stars' to Ironheart, The Tutor in Kugnae".</para>
+///
+/// <para><b>Both tutors answer, not just Ironheart.</b> The two share the <c>MainTutorialNpc</c> identifier
+/// and the whole tutorial chain, and tswolf's own evidence points both ways: its prose names Ironheart, but
+/// the screenshot file it captured the line from is <c>jadespear.gif</c>. A page that says one and photographs
+/// the other is best read as "either" — the pages name Ironheart because Kugnae is where most players start.
+/// Wiring the shared identifier is also the simpler implementation; narrowing to one id (the call made for
+/// Eldritch and Sute) would here contradict the surviving screenshot.</para>
+///
+/// <para><b>The level line is ours.</b> Only the first page is attested. nexusatlas's blessed.php carries
+/// "Level Required : 60" but no source shows the tutor refusing, and a player sent to drop a rare amber that
+/// will not work is worse served by silence than by a sentence — so the hint is never withheld, and the
+/// caution is appended below the gate rather than replacing the instructions.</para>
+/// </summary>
+public sealed class StarHintAbility : INpcAbility, INpcSayHandler
+{
+    public static readonly StarHintAbility Instance = new();
+
+    /// <summary>No click entry — the tutors already offer the tutorial chain, and this is a spoken aside.</summary>
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
+
+    /// <summary>The line itself, from the screenshot. No typos to preserve in this one.</summary>
+    public const string Hint =
+        "Do you seek to understand the stars?  It is simple to do.  Visit the center of the star with " +
+        "twelve points.  Drop a single white amber there.  Then you will understand.";
+
+    public async Task<bool> OnSay(NpcContext ctx, string speech)
+    {
+        // "stars" is what both sources print. "star" is accepted too because nothing else at a tutor claims
+        // the word and a player who guesses the singular would otherwise hit silence; the guildmasters' own
+        // "star" lives on different NPCs entirely (ArmorQuest.GuildMasters), so the two cannot collide.
+        string word = (speech ?? "").Trim().ToLowerInvariant();
+        if (word is not ("stars" or "star")) return false;
+        if (ctx.KarmaTooLow()) return true;
+
+        if (ctx.Level < BlessedByTheStars.MinLevel)
+        {
+            await ctx.Say(Hint,
+                $"But not yet. The stars take no notice of one so young — return when you have seen " +
+                $"{BlessedByTheStars.MinLevel} seasons.");
+            return true;
+        }
+
+        await ctx.Say(Hint);
+        return true;
+    }
+}
