@@ -15,9 +15,9 @@ namespace Server;
 /// <see cref="FindBrother"/>). Most item-turn-in stages (armor, meat, rose+chestnut, ogre cider, antlers,
 /// mica) are completable via shops or <c>@item</c>; stage 13's student cap is NOT in any shop or drop table,
 /// so <c>@item</c> is currently its only route — the wool → Yon → cloth → Caretaker chain the dialog
-/// describes has no scripts behind it yet. The script's separate warrior-armor branch (Chongun's tiger
-/// essence, needing the quest items) is still out of scope; its path-choice branch is ported — see
-/// <see cref="PathChoice"/>.
+/// describes has no scripts behind it yet. The script's two non-tutorial branches are both ported: the
+/// path-choice branch (<see cref="PathChoice"/>) and the Warrior-only Tiger Essence briefing
+/// (<see cref="TigerEssence"/>, the advertised entry point to <see cref="TigerMailQuest"/>).
 ///
 /// ERA — stages 11 and 13 were added 2001-03-18 and are gated on <see cref="Era.DuMountainQuest"/> /
 /// <see cref="Era.StudentCapQuest"/>; before that date the chain simply runs 10 → 12 and ends. The
@@ -31,6 +31,10 @@ public static class TutorialQuest
     private const string GaveGold   = "tutorial_quest1_gave_gold";
     private const string GaveMeat   = "tutorial_quest2_gave_meat";
     private const string GaveSword  = "tutorial_quest8_gave_sword";
+    // Tiger-essence bookkeeping. The briefing itself needs none — it repeats until the player has been to
+    // Chonsa Den, and TigerMailQuest.MetClawReg (stamped by Claw) is what ends it. This is only for the
+    // upgrade nudge, which must not re-fire every click while the player stands on a rung's level.
+    private const string NudgedAt   = "tiger_essence_nudged_level";  // the level the upgrade nudge last fired at
 
     public static readonly QuestDef Def = new()
     {
@@ -52,6 +56,10 @@ public static class TutorialQuest
             await PathChoice(ctx);
             return;
         }
+
+        // RTK main_tutorial_npc.lua:122 — the Warrior-only Tiger Essence branch, immediately after the path
+        // choice and before the tutorial chain. See TigerEssence for the one thing it does differently.
+        if (await TigerEssence(ctx)) return;
 
         int stage = ctx.Stage(Stage);
 
@@ -168,6 +176,63 @@ public static class TutorialQuest
             await ctx.Say("This is your choice... But remember this, any experience you gain now until you pick your path will go to waste. Pick your path soon...");
 
         // choice 0 (the player closed the menu) says nothing and changes nothing — they're still blocked.
+    }
+
+    /// <summary>The Warrior-only Tiger Essence branch (RTK <c>main_tutorial_npc.lua:122-165</c>): the tutor
+    /// tells a Warrior about his old teacher and sends them to Claw in Chonsa Den, and later nudges them when
+    /// their tiger armor is a rung behind. Returns true if it spoke and the click is spent.
+    ///
+    /// <para><b>This BLOCKS the tutorial chain, on purpose.</b> The briefing repeats on every click — dismiss
+    /// it, click again, hear it again — until the player has actually been to Chonsa Den. That is RTK's
+    /// behaviour and it is the point: the tutor will not move on until you have gone to see the tiger.</para>
+    ///
+    /// <para>What it does NOT do is key that block on quest PROGRESS. RTK's condition is
+    /// <c>quest["tiger_armor"] == 0</c>, which only clears once the first rung is actually claimed — so a
+    /// Warrior who walked to Claw, heard him, and could not yet afford an antler and a war platemail would
+    /// have done everything the briefing asked and still be locked out of their own tutor indefinitely. The
+    /// gate here is <see cref="TigerMailQuest.MetClawReg"/>, which Claw stamps the moment he engages, so the
+    /// block releases on the trip rather than on the purchase.</para>
+    ///
+    /// <para>The level gate is <see cref="TigerMailQuest.MinLevel"/>, NOT the literal 5 the Lua carries. RTK
+    /// briefs at 5 because RTK's quest also starts at 5; ours starts at 6 (see that constant), and briefing a
+    /// level below the gate would send the player across Buya to be told "Return when you have reached level
+    /// 6." The two numbers have to move together, and <c>TigerMailQuestTests.TutorBriefsExactlyWhenClawWill</c>
+    /// pins that. (Nothing is lost by dropping the literal: a Peasant cannot hold a base path at all, so the
+    /// path check already implies level 5.)</para>
+    ///
+    /// <para>This is the FALLBACK delivery, not the primary one: the briefing is normally pushed the moment
+    /// the player qualifies, with no click at all (<see cref="Session.PushTigerEssence"/>). This is what
+    /// catches everyone the push cannot reach — a character who was already past the gate when the feature
+    /// arrived, one rebuilt by <c>@lvl</c>/<c>@class</c>, or a player who dismissed the push and wants it
+    /// again. Both play <see cref="TigerMailQuest.Briefing"/>, so they cannot drift apart.</para></summary>
+    private static async Task<bool> TigerEssence(NpcContext ctx)
+    {
+        if (ctx.BasePathId != TigerMailQuest.WarriorPathId || ctx.Level < TigerMailQuest.MinLevel) return false;
+
+        if (ctx.Reg(TigerMailQuest.MetClawReg) != 1)
+        {
+            // Two portraits, as in the Lua: the tutor's own for his lines, and Claw's creature look for the
+            // voice from the cave.
+            foreach (var (tiger, pages) in TigerMailQuest.Briefing)
+            {
+                if (tiger) await ctx.SayLook(TigerMailQuest.ClawLook, TigerMailQuest.ClawColor, pages);
+                else       await ctx.Say(pages);
+            }
+            return true;
+        }
+
+        // RTK: `quest["tiger_armor"] == player.level` — the registry holds the level of the rung they are on,
+        // so this is "you have just reached the level your next tiger armor needs". Once per rung: without the
+        // NudgedAt guard this would also block, and unlike the briefing there is nothing the player can do to
+        // clear it except out-level their own armour.
+        if (ctx.Stage(TigerMailQuest.QuestKey) == ctx.Level && ctx.Reg(NudgedAt) != ctx.Level)
+        {
+            ctx.SetReg(NudgedAt, ctx.Level);
+            await ctx.Say("Your tiger armor looks outdated. Go visit my friend Claw again to see about an upgrade.");
+            return true;
+        }
+
+        return false;
     }
 
     // stage 0 -> 1 (only reachable once NoviceQuest is finished — see the dispatch at the top of Run).

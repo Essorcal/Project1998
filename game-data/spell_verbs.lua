@@ -170,6 +170,25 @@ local AMP_BY_SPELL = { sleep_mage = 1.5, sweet_musings_mage = 1.5, essence_of_po
 -- column and ctx.chance evaluates per cast. Everything else in RTK lands 100% of the time, which is why blind
 -- could be held on a creature indefinitely and a curse never missed.
 --
+-- STATIC is the counter-example, and RTK has it backwards. static.lua carries no roll at all, yet the real
+-- client table flags it SplCanFail=1 while paralyze_mage is SplCanFail=0 (Spells.csv) -- exactly inverted
+-- from the scripts, so the original game failed statics and RTK dropped that and invented paralyze's roll
+-- instead. Live measurement (2026-08-22), three samples: 19/96 at Will 18, 22/123 at Will 19, 19/111 at
+-- Will 20 -- pooled 60/330 = 18.2% [95% CI 14.4-22.7%]. That kills RTK's 70+will*.2307 for this spell (it
+-- predicts 74%, ~12 sigma out) and it kills the other candidate too: an 18% rate under the SplCanFail
+-- RollDeflect staircase needs prot ~16, but every level<=25 mob sits at Protection 0-1 and Will <= 25, so
+-- deflect gives them 100% (165 of 180), 90% (10) or 81% (1). The fail roll is CASTER-side.
+--
+-- WHAT THE DATA DOES NOT SHOW IS THE WILL SLOPE, and the column below is honest fiction on that axis. The
+-- three samples span two Will points; they are homogeneous (chi2 0.26 on 2 df) and the fitted logistic slope
+-- is -0.089 +/- 0.180 (z -0.49, pointing the WRONG way). That is not evidence against Will-dependence -- a
+-- 1%/point slope moves the rate 2.0pp across Will 18-20 against a 5.4pp standard error, so this experiment
+-- could never have seen it (z 0.37; it would take ~3000 casts per arm). `player.will` is therefore the
+-- WORKING MODEL, chosen because it hits 18.2% dead-on at the measured Wills; flat 18% and 10+will/2 fit
+-- equally well and disagree wildly at endgame (100% vs 18% vs 60% at Will 100). ONE sample at Will 40 --
+-- ~40 casts -- separates them: `will` predicts 40%, flat predicts 18%, a 22pp gap. Until that exists this
+-- cell is a fit to three points, not a law.
+--
 -- These numbers are OURS, not archive values: nothing in the scraped data or the Lua pins a rate for the
 -- others. They are the balance surface for "an offensive status should sometimes just fail" -- edit and
 -- @reload, no rebuild. A per-spell `chance` formula in spell_effects.csv always wins over the table.
@@ -192,7 +211,7 @@ function verbs.arch_debuff(ctx, row)
   -- A DEFLECT STILL COSTS THE MANA: the spell was cast and the power left you, and the target resisting it
   -- is their achievement, not a refund. (RTK returns before its debit; a free deflect would mean a resistant
   -- target costs nothing to keep hammering.)
-  if ctx:deflected() then ctx:debitMana(ctx.mana); ctx:say("The magic has been deflected."); return true end
+  if ctx:deflected() then ctx:debitMana(ctx.mana); ctx:say("Your magic has been deflected."); return true end
 
   local dur = ctx.durationMs > 0 and ctx.durationMs or d.fallback
   -- A FIZZLE COSTS THE MANA for the same reason: re-casting until it lands would otherwise be free, which
@@ -240,20 +259,62 @@ end
 -- Recast to climb Cunning 1->6, each tier stronger and far pricier; each cast supersedes the lesser furies
 -- (ctx:rage overwrites the single rage slot). The tier TABLE is an RTK constant so it lives here in the verb.
 -- CLASSIC (4.95-era) Cunning chart, from the Rogue Tutor Melalye "Baekho's Cunning" board post in the scraped
--- archive (canonical, > RTK per user). Per tier: mana, duration (DECREASES each tier), damage multiplier (rage),
--- deduction (incoming-damage mult), and cumulative special grants (Cun2 = Backstab, Cun3 adds Flank). ded goes
--- 0/15/30/55/85% reduction -> mult 1.00/0.85/0.70/0.45/0.15; at Cun4-5 this EXCEEDS Sanctuary's 50%, so casting
--- Sanctuary DOWNGRADES a high-Cunning rogue (Sanctuary overrides Cunning's slot; see ApplyCunningDeduction). The
--- 6th cunning (~262k mana) is "no better than the 5th" in the archive, so 5 is the real cap.
+-- archive (canonical, > RTK per user). Per tier: mana, damage multiplier (rage), deduction (incoming-damage
+-- mult), and cumulative special grants (Cun2 = Backstab, Cun3 adds Flank). ded goes 0/15/30/55/85% reduction
+-- -> mult 1.00/0.85/0.70/0.45/0.15; at Cun4-5 this EXCEEDS Sanctuary's 50%, so casting Sanctuary DOWNGRADES a
+-- high-Cunning rogue (Sanctuary overrides Cunning's slot; see ApplyCunningDeduction). The 6th cunning (~262k
+-- mana) is "no better than the 5th" in the archive, so 5 is the real cap.
+--
+-- THE 55%/85% AT CUN4-5 CONFLICTS WITH NEXUS ATLAS, WHICH SAYS 45%/60%, and the board post wins. Both sources
+-- are the SAME ERA -- identical mana and identical 4x-8x multipliers, and the 2004-05-05 archive news chart
+-- still lists those multipliers, so nothing about this spell was rebalanced between them (the 6x/7x/9x/10x/12x
+-- + 8/16/24/32/40% numbers in RTK and in the late Atlas mirror are the LATER rebalance, post-2004). Within one
+-- era the tiebreak is method, not date: Melalye's post is a tutor's in-depth retest that opens by saying "many
+-- previous charts were wrong in parts", and it states the reduction TWICE -- once as a chart and once as a
+-- measured damage table (Cun1-5 = 100k/85k/70k/45k/15k taken against a fixed attacker), which is 0/15/30/55/85
+-- read straight off the numbers, with named testers. The Atlas figure is a fan-site table with no method shown,
+-- and is exactly the kind of "previous chart, wrong in parts" the post describes -- right in every column but
+-- this one. Change it only if a DATED pre-2003 source turns up showing 45/60.
+--
+-- ONE 938s RUN, ARMED ONCE — same shape as Chung Ryong's Rage, and for the same reason: RTK's
+-- baekhos_cunning.lua calls setDuration("baekhos_cunning", 938000) in its first-cast branch ONLY, and every
+-- tier-up branch resets the AETHER and nothing else. A climb therefore inherits what REMAINS of the run.
+--
+-- THIS TABLE USED TO CARRY A PER-TIER `dur` (938000/788000/638000/488000/338000) taken from the archive chart,
+-- re-armed fresh on every tier-up. Those five numbers are 938000 - 150000*(n-1), and 150000 is the aether:
+-- the board post recorded the time REMAINING when each tier was reached in one fixed 938s run, climbing as
+-- fast as the cooldown allows. It was a reading of RTK's model, not a contradiction of it. Re-arming them made
+-- the run extendable without limit — climb slower than the aether and each tier opened a fresh window (cast at
+-- t=0, climb at t=900 -> the run ends at 1688s instead of 938s, and so on up).
+--
+-- `msg` is again the CLIENT'S OWN text (Atlas npcsubpath 2003-08-22, and RTK's Lua agrees word for word):
+-- the first cast reads differently and every climb after it repeats the same line. What was here before --
+-- "Baekho sharpens your instincts (x5 damage)" -- was invented, and it printed ON TOP of the central
+-- "You cast Baekho's cunning." because the verb never marked the cast narrated.
+--
+-- THE `four` COLUMN IS THE TIER-4 GRANT, and it was missing until Poet Tutor SkaDemon's "Rage and Cunning"
+-- board post turned up naming what each tier actually GIVES you: "Fury / Backstab / Flank / 4 Way Attack /
+-- Super Sanctuary". Cunning 4 opens the swing onto all four adjacent tiles at once, with no side roll.
+-- Dalsichvedin's 2004-05-05 damage chart agrees from the other direction, listing targets per tier as
+-- 1/2/3/4/4 -- and that 3 at Cunning 3 is only reachable if Flank is ONE side, which is exactly how
+-- Session.SwingTargets rolls it. Tier 5's "Super Sanctuary" is the 85% deduction, not a targeting change,
+-- so `four` simply stays on. (SkaDemon's mana column is rounded poet-facing guidance -- 4100/16000/42000/
+-- 130000, "be ready to spire accordingly" -- so Melalye's measured minima below are kept.)
 local CUNNING = {
-  [1] = { mana = 3000,   dur = 938000, rage = 4, ded = 1.00, back = false, flank = false },  --  0% reduction
-  [2] = { mana = 4200,   dur = 788000, rage = 5, ded = 0.85, back = true,  flank = false },  -- 15%, +Backstab
-  [3] = { mana = 15634,  dur = 638000, rage = 6, ded = 0.70, back = true,  flank = true  },  -- 30%, +Flank
-  [4] = { mana = 46658,  dur = 488000, rage = 7, ded = 0.45, back = true,  flank = true  },  -- 55%
-  [5] = { mana = 117667, dur = 338000, rage = 8, ded = 0.15, back = true,  flank = true  },  -- 85% (max)
+  [1] = { mana = 3000,   rage = 4, ded = 1.00, back = false, flank = false, four = false,  --  0% reduction
+          msg = "You feel your fighting skills improve." },
+  [2] = { mana = 4200,   rage = 5, ded = 0.85, back = true,  flank = false, four = false,  -- 15%, +Backstab
+          msg = "Baekho increases your awareness and skill." },
+  [3] = { mana = 15634,  rage = 6, ded = 0.70, back = true,  flank = true,  four = false,  -- 30%, +Flank
+          msg = "Baekho increases your awareness and skill." },
+  [4] = { mana = 46658,  rage = 7, ded = 0.45, back = true,  flank = true,  four = true,   -- 55%, +4-way
+          msg = "Baekho increases your awareness and skill." },
+  [5] = { mana = 117667, rage = 8, ded = 0.15, back = true,  flank = true,  four = true,   -- 85% (max)
+          msg = "Baekho increases your awareness and skill." },
 }
-local CUNNING_MAX    = 5
-local CUNNING_AETHER = 150000   -- ~2.5 min cooldown between tier-ups (RTK/archive setAether)
+local CUNNING_MAX      = 5
+local CUNNING_AETHER   = 150000   -- ~2.5 min cooldown between tier-ups (RTK/archive setAether)
+local CUNNING_DURATION = 938000   -- RTK `setDuration("baekhos_cunning", 938000)`, first cast only
 
 function verbs.baekhos_cunning(ctx, row)
   if ctx:onCooldown("baekhos_cunning") then
@@ -273,15 +334,23 @@ function verbs.baekhos_cunning(ctx, row)
   local c = CUNNING[nt]
   if not ctx:spendMana(c.mana) then return false end        -- huge, tier-scaled cost
 
+  -- A climb rides out the run already burning; only a fresh cast opens one. Every effect below is armed on
+  -- that one deadline so the whole stance lapses together, exactly as RTK's single named duration does.
+  local left = active and ctx:durationLeft("baekhos_cunning") or 0
+  local dur  = left > 0 and left or CUNNING_DURATION
+  if not active then ctx:setDuration("baekhos_cunning", dur) end
   ctx:setReg("baekhos_cunning", nt)
-  ctx:setDuration("baekhos_cunning", c.dur)                  -- per-tier window (shrinks as the tier climbs)
-  ctx:rage(c.rage, c.dur)                                    -- whole-swing xN (supersedes lesser furies)
-  ctx:deduction(c.ded, c.dur)                                -- take less damage (own slot; Sanc overrides it)
-  ctx:stance("backstab", c.back, c.dur)                      -- free positional crits
-  ctx:stance("flank",    c.flank, c.dur)
+  ctx:rage(c.rage, dur)                                      -- whole-swing xN (supersedes lesser furies)
+  ctx:deduction(c.ded, dur)                                  -- take less damage (own slot; Sanc overrides it)
+  ctx:stance("backstab", c.back,  dur)                       -- extra reachable tile: behind you
+  ctx:stance("flank",    c.flank, dur)                       -- extra reachable tile: ONE side, rolled blind
+  ctx:stance("fourway",  c.four,  dur)                       -- Cun4+: every adjacent tile, no roll
   ctx:setCooldown("baekhos_cunning", CUNNING_AETHER)
-  ctx:fx(35, 705)                                            -- RTK sendAnimation(35) / playSound(705)
-  ctx:say("[Cunning "..nt.."] Baekho sharpens your instincts (x"..c.rage.." damage).")
+  ctx:fx(35, 705)                                            -- RTK sendAnimation(35) / playSound(705). 35 is the
+                                                             -- WIRE value, so it draws Effect.tbl INDEX 34 -- the
+                                                             -- white tiger. Baekho. Verified against the art.
+  ctx:say("[Cunning " .. nt .. "] " .. c.msg)
+  ctx:narrated()                                           -- this line REPLACES the central "You cast X."
   return true
 end
 
@@ -332,12 +401,16 @@ function verbs.stance_rage(ctx, row)
   return true
 end
 
--- Enchant tier: multiplies ONLY the raw weapon-swing term (not the whole swing). Also blocked while one is active.
+-- Enchant tier: multiplies ONLY the raw weapon-swing term (not the whole swing). Also blocked while one is
+-- active. NO DURATION -- it lasts until the weapon is taken off or swapped, or the character logs off (the
+-- tutor spell list says exactly that for all five tiers, and RTK's ingress.lua has an uncast hook rather than
+-- a timer). This used to pass `ctx.durationMs > 0 and ctx.durationMs or 60000`, and since every enchant row
+-- in spell_effects.csv has a BLANK durationMs, that fallback capped Ingress at 60s -- against a fury's 625s.
 function verbs.stance_enchant(ctx, row)
   if ctx.enchantActive then ctx:say("This spell is already active."); return false end
   if not ctx:enoughMana(ctx.mana) then return false end
   ctx:debitMana(ctx.mana)
-  ctx:armEnchant(ctx.amount, ctx.durationMs > 0 and ctx.durationMs or 60000)
+  ctx:armEnchant(ctx.amount)
   ctx:fxSelf()
   return true
 end
@@ -1006,18 +1079,36 @@ end
 -- costing more mana, multiplying the swing harder and hardening your armour (`ac` is an AC DELTA, so it is
 -- NEGATIVE — more AC means more damage taken); letting it lapse charges a vita price
 -- (applied by the engine's regen tick, which is why the TIER is recorded in C# rather than kept here).
--- Recasting at 6 refreshes the timer without climbing further. The 120s recast gate is the spell's ordinary
--- aether; the buff deliberately LIVES longer than that gate, so there is a window to recast and climb before
--- the wear-out fires. This table is the whole balance surface — edit it and !reload, no rebuild.
+--
+-- THE WINDOW IS FIXED AND IT IS SET ONCE. RTK's chung_ryongs_rage.lua arms `setDuration(..., 938000)` in its
+-- first-cast branch ONLY; every tier-up branch resets the AETHER (`setAether`, the 120s recast gate) and
+-- nothing else. So one run is 938s no matter how you climb it: 120s per step means tier 6 lands at t=600s and
+-- you hold it for the remaining ~5.6 minutes, then it wears out and takes its vita. Renewing does NOT extend
+-- the run — the fury always ends in the drain, which is the whole shape of the spell. That is why the climb
+-- passes durMs = 0 below (the engine reads it as "keep the deadline you already have").
+--
+-- The 938000 could not come from spell_effects.csv: the RTK export only ever captured durations that lived in
+-- a TABLE, and this one is a `local duration` inside the script — the same class of drop as the in-script
+-- spell costs. It sat at a made-up 135000 (barely longer than the aether, so the climb was nearly impossible)
+-- until this was checked against RTK directly. The tier numbers below are NOT RTK's — they are Warrior Tutor
+-- SoulHunter's board post (6/9/12/18/27/81, era-matched 2001-02); RTK's 8/14/20/26/36/81 is a later rebalance.
+-- This table is the whole balance surface — edit it and !reload, no rebuild.
+--
+-- The `msg` strings are the CLIENT'S OWN, transcribed from the Nexus Atlas npcsubpath page (snapshot
+-- 2003-08-22, the one whose multipliers are still the era-correct 6/9/12/18/27/81 -- later snapshots carry
+-- the 8/14/... rebalance and are the wrong era for us). Note "grows IN you", which is what the archive and
+-- the player both report; RTK's Lua says "within you" and is the paraphrase. The bracketed "[Rage N]" is
+-- RTK's, kept because the buff box shows only the spell name -- this line is now the only tier readout.
 local CHUNG_RYONG_RAGE = {
-  { mult = 6,  mana =   2000, ac =   0 },
-  { mult = 9,  mana =   7200, ac =   0 },
-  { mult = 12, mana =  16200, ac =  -5 },
-  { mult = 18, mana =  28800, ac = -15 },
-  { mult = 27, mana =  64800, ac = -30 },
-  { mult = 81, mana = 145800, ac = -50 },   -- tier 6 wear-out leaves you at 1 vita/mana
+  { mult = 6,  mana =   2000, ac =   0, msg = "You cast Chung Ryong's rage." },
+  { mult = 9,  mana =   7200, ac =   0, msg = "Chung Ryong's power grows in you." },
+  { mult = 12, mana =  16200, ac =  -5, msg = "Great rage inspires you." },
+  { mult = 18, mana =  28800, ac = -15, msg = "Your body trembles with incredible strength." },
+  { mult = 27, mana =  64800, ac = -30, msg = "You enter a mindless frenzy." },
+  -- tier 6 wear-out leaves you at 1 vita/mana
+  { mult = 81, mana = 145800, ac = -50, msg = "Your body is torn apart with Chung Ryong's power." },
 }
-local CR_RAGE_DURATION_MS = 135000
+local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration = 938000`, first cast only
 
 function verbs.chungryong_rage(ctx, row)
   -- Climb from the live tier; if the fury has already lapsed (or never ran) start fresh at 1.
@@ -1027,9 +1118,12 @@ function verbs.chungryong_rage(ctx, row)
 
   if not ctx:enoughMana(t.mana) then return false end     -- sends its own "not enough mana" line
   ctx:debitMana(t.mana)
-  ctx:setCrRage(tier, t.mult, t.ac, row.duration or CR_RAGE_DURATION_MS)
+  -- durMs 0 on a climb: keep the run's existing deadline (RTK never re-arms it). Only a fresh cast starts one.
+  ctx:setCrRage(tier, t.mult, t.ac, base > 0 and 0 or (row.duration or CR_RAGE_DURATION_MS))
   ctx:setCooldown(ctx.spellKey, ctx.spellAether > 0 and ctx.spellAether or 120000)
   ctx:fxSelf()
+  ctx:say("[Rage " .. tier .. "] " .. t.msg)
+  ctx:narrated()                                          -- this line REPLACES the central "You cast X."
   return true
 end
 

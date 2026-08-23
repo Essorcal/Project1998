@@ -619,10 +619,17 @@ public sealed partial class Session
     }
 
     // "@dog [0|1]" — skip the bark/woof/grrowl chain and hand over (or take back) the Dog Linguist standing.
-    // This does NOT grant spells: the Dog itself still teaches those for kills and goods, so a GM testing the
-    // teach flow starts where a finished linguist starts. Eligibility for the spells is checked separately by
-    // the Dog and is base classes + NPC subpaths only (Content.CanLearnDogSpells) — said here too, because a
-    // PC subpath can hold the legend and still never be taught anything.
+    // The flag ALONE grants no spells: the Dog itself still teaches those for kills and goods, so a GM testing
+    // the teach flow sets the flag, walks to the Dog, and starts where a finished linguist starts.
+    //
+    // What the flag DOES change is the character rebuild. @lvl / @class / @mark / @align rebuild the book from
+    // the entitlement set (Content.RespecSpellSet), and a finished linguist IS entitled to its class's Dog
+    // spells at 70 and 99 — so "@dog 1" then "@lvl 99" hands them over, and "@dog 0" then a rebuild takes them
+    // back. Before this the rebuild had no idea the Dog set existed and silently forgot every one of them,
+    // including spells earned honestly at the Dog.
+    //
+    // Eligibility is base classes + NPC subpaths only (Content.CanLearnDogSpells), checked by the Dog and by
+    // the rebuild alike — said here too, because a PC subpath can hold the legend and still get nothing.
     // "@rez [username]" (tester/GM): bring a target player — or yourself, if no name is given — back to life at
     // full HP/MP. ReviveInPlace drops the ghost form, refills both bars and pushes the HUD — harmless on a
     // living character (just a full heal), so no dead-only guard.
@@ -653,12 +660,14 @@ public sealed partial class Session
         else RemoveLegend(DogChainReg);
 
         SendLog(want
-            ? $"Dog Linguist granted — say \"secret\" to your class's Dog to be taught." +
+            ? $"Dog Linguist granted — say \"secret\" to your class's Dog to be taught, or {Prefix}lvl " +
+              $"{_char.Level} to have the rebuild hand over the Dog spells you qualify for (70 and 99)." +
               (Content.CanLearnDogSpells(p)
                   ? ""
                   : $" NOTE: {Content.PathTitle(p, _char.Mark)} is a PC subpath and will be refused — only the four " +
                     $"base classes and the NPC subpaths (Chung ryong · Baekho · Ju jak · Hyun moo) may learn Dog spells.")
-            : "Dog Linguist cleared; the chain starts over at Mutt.");
+            : $"Dog Linguist cleared; the chain starts over at Mutt. ({Prefix}lvl {_char.Level} to drop the " +
+              $"Dog spells from the book.)");
     }
 
     /// <summary>The Dog Linguist chain's progress key and legend id — one name, as in RTK

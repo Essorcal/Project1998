@@ -150,11 +150,26 @@ public sealed partial class Session
     // then calls the resolver 0x4a6360(id, fallback, vol, 0), which sprintf()s THREE candidate names in the
     // wide format strings at 0x5541dc/f0/0x554204 and takes the first that exists in Mus000.dat:
     //
-    //     %08d.LST -> an ordered ten-track playlist; plays entry 1, loop flag forced to 1
-    //     %08d.LSR -> the same file format; starts at a RANDOM entry (rand % count + 1), loop flag 1
-    //     %08d.MP3 -> one song, and the loop flag here is the packet's 4th arg, which the handler
-    //                 hardcodes to 0 — so a single mp3 plays ONCE and stops. Background music must be a
-    //                 playlist id; single ids are for auditioning with "@music <name>".
+    //     %08d.LST -> an ordered ten-track playlist; enters at entry 1
+    //     %08d.LSR -> the same file format; enters at a RANDOM entry (rand % count + 1)
+    //     %08d.MP3 -> one song
+    //
+    // The playback engine underneath is MILES (mss32.dll), and the "loop flag" is really the count handed
+    // to AIL_set_stream_loop_count, where 0 means REPEAT FOREVER and 1 means play once. The two playlist
+    // arms pass 1 (each entry plays once, then the list advances); the single-song arm passes the packet's
+    // 4th arg, which this handler hardcodes to 0 — so a lone mp3 id repeats forever on 5.33.
+    //
+    // A playlist advances by itself: on end-of-stream Miles calls the callback registered at 0x4a62ad
+    // (0x4a7d90), which posts WM_USER+8 to the main window, whose handler 0x4a7b40 picks the next entry
+    // and calls 0x4a5f80 again. That is why map music is a playlist id — it gives ten songs, not one.
+    //
+    // But it MUST be an ORDERED (.LST) id. The advance computes `rand() % count + 1` for a shuffled list,
+    // and 0x4a5f80 early-outs to a no-op at 0x4a6078 when the index it is handed is the one already
+    // playing. On that 1-in-10 collision nothing is opened; the old stream has already ended, so no further
+    // callback ever fires and the music is dead until the server sends another 0x19. An .LST advances
+    // `cur + 1` (wrapping 10 -> 1) and can never collide. Verified live 2026-08-22 by driving the advance
+    // through PostMessage: 2 stalls in 40 shuffled advances, 0 in 24 ordered ones. See MusicTracks.csv,
+    // where the shuffled ids carry a "-rand" name and are audition-only.
     //
     // `fallback` is only reached when none of the three exist, and id 0 matches nothing, so
     // id = fallback = 0 lands on 0x4a5f80(0, …) -> stop-current-then-return: that is the 5.33 mp3 stop.
@@ -408,9 +423,9 @@ public sealed partial class Session
     //                   5.33: an archive lookup in Mus000.dat, and the id may name a playlist (see the wire
     //                   comment above SendMusicStop). No id cap on either; the only guard is bgm > 0.
     //
-    // A single mp3 does not loop on either client — the loop flag reaching the play function is a hardcoded
-    // 0 (4.95's mode-1 branch @0x463ae8, 5.33's handler pushing 0 as 0x4a6360's 4th arg). Only the 5.33
-    // playlist ids get loop=1, which is why the map assignments in MapBgm.csv use them.
+    // Map assignments (MapBgm.csv) use the ORDERED 5.33 playlist ids, for ten songs per area that cycle
+    // forever. The "-rand" (shuffled) twins hold the same ten songs but stall dead on a 1-in-10 index
+    // collision in the client's own advance, so they are audition-only — see the wire comment above.
     private void PlayMusicCmd(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
@@ -435,7 +450,8 @@ public sealed partial class Session
             SendLog("usage: @music <name|id> [vol 0-255, default 100] [mp3|midi]   (@music 0 or @music stop = stop)");
             SendLog($"tracks ({(set == Content.MusicSet.New ? "new" : "old")}): {names}");
             if (set == Content.MusicSet.New)
-                SendLog("the -seq names are the same ten tracks in order; the plain ones start at a random song");
+                SendLog("the plain list names are ten tracks in order; the -rand twins are the same ten from " +
+                        "a random start, but the client stops them for good on a repeat pick");
             SendLog(IsV533
                 ? $"soundtrack: {(set == Content.MusicSet.New ? "NEW (5.x mp3 playlists)" : "OLD (the 12 stock midis)")}" +
                   "   — switch with '@music old' or '@music new'"
@@ -461,12 +477,16 @@ public sealed partial class Session
             SendLog($"note: track {track.Id} is above the client's midi cap (1-12) and will be silent — try 'mp3'");
         if (type == 1 && !IsV533)
             SendLog($"note: this client has no {track.Id:D3}.MP3 unless you installed one (re/extract_mus.py)");
+        // The client's own shuffled-playlist advance stalls on a repeat pick — fine to audition, never for a map.
+        if (type == 1 && track.Shuffle)
+            SendLog("note: a '-rand' list stops for good the first time it shuffles onto the song already " +
+                    $"playing — use {Content.TrackName(track.Id, set).Replace("-rand", "")} for anything lasting");
 
         SendMusic(track.Id, type, vol);
         SendLog(track.Id == 0 ? "music stopped"
                               : $"playing {Describe(track.Id)} (vol {vol}, " +
                                 $"{(type != 1 ? $"midi -> {track.Id}.mid" : IsV533 ? $"mp3 -> {track.Id:D8}" : $"mp3 -> {track.Id:D3}.MP3")}" +
-                                $"{(track.Playlist ? ", a 10-track playlist" : type == 1 ? ", plays once" : "")})");
+                                $"{(track.Shuffle ? ", a 10-track shuffled playlist" : track.Playlist ? ", a 10-track playlist" : type == 1 && IsV533 ? ", repeats" : "")})");
         Log.Info($"   -> @music bgm={track.Id} type={type} vol={vol} set={set}");
 
         string Describe(ushort id)

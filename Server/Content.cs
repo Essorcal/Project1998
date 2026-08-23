@@ -85,9 +85,10 @@ public sealed record SpawnDef(int MobId, ushort Map, ushort X, ushort Y);
 /// ~RespawnSec (plus jitter) after each kill — see <c>World.NextRespawnTick</c>.</param>
 public sealed record AreaSpawnDef(int MobId, ushort Map, int Count, ushort MinX, ushort MinY, ushort MaxX, ushort MaxY, int RespawnSec = 0, int Timer = 0, int Group = 0);
 
-/// <summary>One ambush-cave map's trigger config (<c>game-data/AmbushConfig.csv</c>), already tier-resolved
-/// to a concrete map id. A hidden <c>ambush</c> trap on this map, when a player steps on it, spawns a burst
-/// of mobs — the <see cref="SentryTable"/> burst when the stepper stands at/above the top half
+/// <summary>One ambush map's trigger config (<c>game-data/AmbushConfig.csv</c>), already tier-resolved
+/// to a concrete map id — the five mythic trap-caves, plus Buya town's rat nest. A hidden <c>ambush</c>
+/// trap on this map, when a player steps on it, spawns a burst of mobs — the <see cref="SentryTable"/>
+/// burst when the stepper stands at/above the top half
 /// (<c>y &lt;= SentryTopY</c>), else the <see cref="BigTable"/> burst on a 1-in-<see cref="BigChance"/> roll,
 /// else <see cref="PrimaryKind"/> — shows <see cref="Message"/>, then a replacement trap is placed while live
 /// mobs stay under <see cref="MobCap"/>. Mirrors RTK mob_spawn.lua / rabbitTrap.lua / tigerTrap.lua; see
@@ -165,7 +166,16 @@ public sealed record ItemDef(
     // BreakOnDeath is ItmBoD (77 items): destroyed outright when you die, wherever it sits. Protected is
     // ItmProtected — RTK consumes a charge to RESTORE the item instead of breaking it; no row in the live
     // registry sets it, so it is carried for fidelity and never fires today.
-    int PathId = 0, int Mark = 0, bool BreakOnDeath = false, bool Protected = false)
+    int PathId = 0, int Mark = 0, bool BreakOnDeath = false, bool Protected = false,
+    // ItmRepairable: 1 = a smith or a repair spell can restore its durability, 0 = it can never be mended.
+    // POSITIVE, unlike the restriction flags beside it (ItmDroppable/ItmExchangeable/ItmDepositable all mean
+    // NOT-x when set) — RTK reads it both ways round and agrees with itself: the smith's single-item gate is
+    // `if choice.repairable == 0 then "Sorry, but this item cannot be repaired!"` (player.lua:1549) and the
+    // repair-everything pass is `if X.repairable == 1 then <quote a cost> else "<name> is not a repairable
+    // item."` (player.lua:1622). 605 of the 1241 equip rows are 0, but 482 of those are ItmIndestructible as
+    // well (nothing to repair on gear that never wears), leaving ~123 that really do decay permanently —
+    // the totem helms, the smith-forged subpath weapons, the headbands and the gauntlets.
+    bool Repairable = true)
 {
     /// <summary>The Item.epf id the 4.95 client must be told to draw — <see cref="Icon"/> with
     /// <see cref="IconColor"/> already folded in (see Content.ResolveIconColors). 4.95 has NO colour channel
@@ -178,27 +188,90 @@ public sealed record ItemDef(
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
 
-    /// <summary>Owner-bound + unrepairable gear (user 2026-08-18): the totem HELM-SLOT pieces (Ju Jak / Chung
-    /// Ryong / Baekho helm·circlet·casque·helmet — 12 fixed ids) and the NPC SUBPATH weapons (the 49xxx weapon
-    /// block — each subpath's base/enchanted + Il/Ee/Sam/Sa-san tiers, gated on a real <see cref="PathId"/> so
-    /// the stray non-subpath 49xxx rows and the 50xxx/60xxx bows &amp; novelty weapons are excluded). Both
-    /// properties cover the SAME set: these bind to whoever first obtains one (only the owner may equip it, and
-    /// the examine tooltip shows the owner — <see cref="InvItem.Owner"/>), and no smith or repair spell can
-    /// restore their durability. NOT the same as <see cref="NoDrop"/>: a bound item still drops/trades freely,
-    /// it just stays bound to its owner wherever it goes (which is why the owner rides on the ground item).
-    /// <para>The Frost sabre takes the BOND HALF ONLY. Blood's own pitch (npc_dialog.lua BloodNpc, from RTK
-    /// NPCs/kaming/blood.lua) promises both properties in one breath and they point opposite ways: "only YOU
-    /// will be able to wield your Frost sabre if it is crafted for you" — bound — but "when it is worn, it can
-    /// be repaired with ease" — expressly repairable. So it is listed as bonded and left out of
-    /// <see cref="Unrepairable"/>, which is why the two are no longer the same set.</para></summary>
-    public bool Bonded       => IsBoundGear || Id == FrostSabreId;
-    public bool Unrepairable => IsBoundGear;
-    private const int FrostSabreId = 1004;                // frost_sabre — forged for one person, repairable
-    private bool IsBoundGear =>
-        (Type == 6 && BoundTotemHelmIds.Contains(Id)) ||
-        (Type == 3 && Id is >= 49000 and < 50000 && PathId != 0);
-    private static readonly HashSet<int> BoundTotemHelmIds = new()
-    { 41008, 41009, 41011, 41258, 41259, 41260, 41266, 41267, 41268, 41508, 41509, 41511 };
+    /// <summary>Owner-bound gear: it binds to whoever first obtains one, only that owner may equip it, and the
+    /// examine tooltip names them (<see cref="InvItem.Owner"/>). NOT the same as <see cref="NoDrop"/> — a bound
+    /// item still drops and trades freely, it just stays bound wherever it goes (which is why the owner rides
+    /// on the ground item) — and NOT the same as <see cref="Unrepairable"/> or <see cref="BreakOnDeath"/>, each
+    /// of which is its own column in the registry. <see cref="BondedItemIds"/> says where the set comes
+    /// from.</summary>
+    public bool Bonded => BondedItemIds.Contains(Id);
+
+    /// <summary>Gear no smith and no repair spell can restore — straight off <c>ItmRepairable</c>, and only
+    /// meaningful for equipment (a consumable has no durability to mend). It cuts across <see cref="Bonded"/>
+    /// in both directions: the Frost sabre and the whole armory shield ladder are bound AND repairable ("when
+    /// it is worn, it can be repaired with ease" — blood.lua), while the headbands and gauntlets are
+    /// unrepairable and bind to nobody. The Atlas prints the same two words side by side on the totem helms —
+    /// "Bonded / Unrepairable" — which is what a genuine overlap looks like.</summary>
+    public bool Unrepairable => IsEquip && !Repairable;
+
+    /// <summary>The items that arrive already bound to whoever obtains them. Sourced from the Nexus Atlas's
+    /// per-item <b>Special Info</b> field, which is exactly this three-flag vocabulary — its own index page
+    /// advertises "bonded, break on death, unrepairable and much more" — mined out of the local mirror
+    /// (<c>scraped_nexus_data/artifacts/nexus_atlas_site/mirror/{weapons,armor,items}*/</c>) and matched to
+    /// the registry by display name. 521 rows matched; the Atlas and the CSV columns agree on break-on-death
+    /// for 502 of them and on repairability for 505, which is what earns the field the casting vote on the
+    /// one flag the CSV does NOT carry. 116 of the 120 ids below are the Atlas saying "Bonded" outright.
+    /// Regenerate with <c>python re/atlas_special_info.py --ids</c>, which also prints the disagreements.
+    ///
+    /// <para>Bonding is not derivable from any column, because in the original it is a property of the GRANT:
+    /// RTK's <c>player:addItem(key, n, dura, ownerId)</c> binds only when the calling script passes
+    /// <c>player.ID</c>, which the NPCs that forge something FOR you do and nothing else does. That is why the
+    /// same registry row can be bound in one bag and loose in another, and why this is a list.</para>
+    ///
+    /// <para><b>The three flags overlap, and they overlap unevenly.</b> The subpath weapon families are the
+    /// clearest case: the base tier (Spike, Blood, Surge, Charm) is <c>Break on Death</c> and nothing more —
+    /// a boss drop and a Carnage prize, and Gan sells Spike over a counter — while the Enchanted and san tiers
+    /// an NPC upgrades for you read <c>Bonded / Break on Death</c>. Fourteen ids here are both. Enchanted charm
+    /// (49044) is the one the Atlas goes out of its way to mark <c>Non-Bonded</c>, so it is left out.</para>
+    ///
+    /// <para><b>Not here, deliberately — the bond is per-INSTANCE, not per-item</b> (user, 2026-08-22): the
+    /// Giasomo stick (118), Frozen spear (119) and Student cap (1005) are plain <c>Break on Death</c> rows.
+    /// Their bonded copies are a different instance of the same id — "Bonded, non-break on death ones can be
+    /// bought for 400,000 coins at the Arctic Smith by saying Laptev" — and RTK produces exactly that by
+    /// stamping an owner at the grant (<c>smith.lua</c>'s Laptev branch, <c>museum_caretaker.lua</c>). Neither
+    /// NPC is wired here yet; when they are, they pass <c>owner:</c> to <see cref="Session.GivePlaced"/> rather
+    /// than joining this list. Faerie light (124) is out too — the Atlas marks it Non-Bonded.</para>
+    ///
+    /// <para>Four ids are kept on RTK evidence alone because no Atlas page covers them: the White moon axe
+    /// (rogue trainer / guild shaman) and the Mage's, Conjurer's and Master's wards, whose ladder-mates all
+    /// read "Bonded".</para></summary>
+    private static readonly HashSet<int> BondedItemIds = BuildBondedItemIds();
+    private static HashSet<int> BuildBondedItemIds()
+    {
+        var s = new HashSet<int>
+        {
+            1004,                                              // frost_sabre — "required to complete Staff of the Element Quest"
+            26028, 26030,                                      // ice_shard, perseverance
+            26034, 26035, 26036, 26037, 26038,                 // the five geomancer element orbs
+            26048, 26049, 26050, 26051,                        // war/battle amulet + rune       — Nagnang shield quest
+            26052, 26053, 26054, 26055,                        // magic/love amulet + rune
+            29011,                                             // star_sword — Bonded AND break-on-death
+            30008, 30009, 30010, 31008, 31009,                 // Star/Moon/Sun armor: the trainers' quest chain,
+            32007, 32008, 32009, 33007, 33008, 33009,          // per class and per sex. Bonded, and sellable
+            34007, 34008, 34009, 35007, 35008, 35009,          // only at Sya's shop in KaMing's encampment.
+            36007, 36008, 36009, 37007, 37008, 37009,
+            40901, 40902, 40903, 40904,                        // Wind armor set (Min, "captured the wind")
+            40905, 40906, 40907, 40908,
+            41008, 41009, 41010, 41011,                        // totem helm   (male)   — Bonded / Unrepairable.
+            41508, 41509, 41510, 41511,                        // totem helmet (female)  The circlets and casques
+                                                               // read "None" and are NOT bonded.
+            47002,                                             // white_moon_axe        — RTK only, Atlas silent
+            48018,                                             // fates_blade           — Bonded / Non-Repairable
+            49026,                                             // enchanted_spike       ) the Enchanted and san
+            49032, 49033, 49034,                               // blood tiers           ) tiers an NPC upgrades
+            49038, 49039, 49040, 49041, 49042,                 // surge tiers           ) for you: every one of
+            49045, 49046, 49047, 49048,                        // charm tiers           ) these is ALSO ItmBoD.
+            51002, 51003, 51004, 51005, 51006, 51007, 51008,   // warrior shield ladder — the armory smiths,
+            51009, 51010, 51011, 51012, 51013, 51014,          // rogue buckler ladder    "your own Stone shield"
+            51015, 51016, 51017, 51018, 51019, 51020,          // mage ward ladder
+            51021, 51022, 51023, 51024, 51025, 51026,          // poet charm ladder
+        };
+        // The smith's own subpath forge, smith.lua classes 6-9 (Chung ryong scale / Nimble blade / Ju jak staff
+        // / Life lance, base + enchanted + Il/Ee/Sam/Sa-san). The Atlas confirms all 24: "Bonded / Unrepairable,
+        // NPC Subpath <tier> Members". Note where the range stops -- 49025 onward is a different animal.
+        for (int id = 49001; id <= 49024; id++) s.Add(id);
+        return s;
+    }
     public bool IsConsumable => Type is 0 or 1 or 2;     // EAT / USE / SMOKE
     public bool Stackable => StackAmount > 1 || MaxAmount > 1;
 
@@ -591,6 +664,50 @@ public static partial class Content
     public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), MythicCaveDef> MythicCaveTiles { get; private set; }
         = new Dictionary<(ushort, ushort, ushort), MythicCaveDef>();
 
+    // ---- Tiered "event cave" entrances (game-data/EventCaves.csv + EventCaveTiers.csv) --------------
+    // A doorway that reads the character and drops them into one of FIVE parallel copies of the same
+    // dungeon. RTK keeps the ladder in one shared place (Player.getEventCaveLevel / eventCaveLevelPrompt in
+    // rtklua/Accepted/player.lua) and calls it from each entrance; so do we. The Buya Library Caverns
+    // doorway is the only entrance wired today. Consumed by Session.TryEventCaveEntrance.
+    //
+    // The LADDER is a list of disjoint bands matched in file order — first row whose level AND mark ranges
+    // both contain the character wins. Alt > 0 marks a SPLIT band, where two depths are open and the player
+    // picks a tunnel. No match at all = refused (below the chart's level floor). See the CSV headers for
+    // where the numbers come from and which half of them is ours rather than the archive's.
+    public readonly record struct EventCaveBand(int Tier, int Alt, int MinLevel, int MaxLevel,
+        int MinMark, int MaxMark, string Label, string Sources)
+    {
+        public bool Contains(int level, int mark) =>
+            level >= MinLevel && level <= MaxLevel && mark >= MinMark && mark <= MaxMark;
+    }
+
+    public static IReadOnlyList<EventCaveBand> EventCaveBands { get; private set; } = new List<EventCaveBand>();
+
+    /// <summary>The band a character of this level/subpath-rank falls in, or null when nothing matches —
+    /// which is the refusal case, not an error.</summary>
+    public static EventCaveBand? EventCaveBandFor(int level, int mark)
+    {
+        foreach (var b in EventCaveBands) if (b.Contains(level, mark)) return b;
+        return null;
+    }
+
+    public sealed record EventCaveDef(string Key, ushort EntranceMap, (ushort X, ushort Y)[] Tiles,
+        ushort[] TierMaps, ushort DestX, ushort DestY, string[] Pages,
+        string Prompt, string OptionNear, string OptionFar, string DenyMsg, string Sources)
+    {
+        /// <summary>Map id for a 1-based tier. A ladder deeper than this cave's map list clamps to the
+        /// deepest map it does have, so adding a band never strands a player on a map that isn't there.</summary>
+        public ushort MapForTier(int tier) =>
+            TierMaps.Length == 0 ? (ushort)0 : TierMaps[Math.Clamp(tier, 1, TierMaps.Length) - 1];
+    }
+
+    public static IReadOnlyList<EventCaveDef> EventCaves { get; private set; } = new List<EventCaveDef>();
+
+    // Derived (map,x,y) -> entrance lookup, so the per-step check is one hash probe (same shape as
+    // MythicCaveTiles / ArenaDoorTiles).
+    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), EventCaveDef> EventCaveTiles { get; private set; }
+        = new Dictionary<(ushort, ushort, ushort), EventCaveDef>();
+
     // ---- PvP arena doors (game-data/ArenaDoors.csv) -------------------------------------------------
     // Tower Arena's five side doors are RTK Lua tile-scripts (onScriptedTilesArena.lua ->
     // arenaPVPCheckAndWarp.lua), NOT rows in the SQL warp table — which is why every one of them was dead
@@ -640,9 +757,17 @@ public static partial class Content
     // The client's background tracks, by id and by NAME (the files are numbered, but the songs have real
     // names — see MusicTracks.csv, which is also what lets "@music mist" work). Type is the 0x19 channel:
     // 2 = midi, 1 = mp3. Playlist is true for the 5.x .LST/.LSR entries, where the id names a list of ten
-    // tracks the client cycles by itself rather than one song — which is also the only way to get music that
-    // LOOPS out of the mp3 channel (a single mp3 is handed a hardcoded loop flag of 0 by both clients).
-    public sealed record MusicTrack(ushort Id, string Name, byte Type, MusicSet Set, bool Playlist);
+    // tracks the client cycles by itself rather than one song.
+    //
+    // Shuffle separates the two kinds of playlist, and map music MUST NOT use a shuffled one. Both cycle
+    // fine, but the 5.33 advance (0x4a7b40, on WM_USER+8) picks the next entry as `rand() % count + 1` for
+    // an .LSR, and the play function (0x4a5f80 @0x4a6078) early-outs to a NO-OP when the index it is handed
+    // equals the one already playing. On that 1-in-10 collision nothing is opened, and because the previous
+    // stream has already ended there is no further end-of-stream callback — the music is dead until the
+    // server sends another 0x19. An .LST advances `cur + 1` (wrapping 10 -> 1), which can never collide.
+    // Measured live 2026-08-22: 2 stalls in 40 shuffled advances, 0 in 24 ordered ones.
+    public sealed record MusicTrack(ushort Id, string Name, byte Type, MusicSet Set, bool Playlist,
+                                    bool Shuffle = false);
     public static IReadOnlyList<MusicTrack> MusicTracks { get; private set; } = new List<MusicTrack>();
 
     // Area -> BGM track (BgmFor). A design assignment, not RTK data: RTK's own Maps table has one track
@@ -715,8 +840,41 @@ public static partial class Content
     /// <summary>One spell a creature can throw at whoever it is fighting (RTK's <c>peck.cast(mob, target)</c>
     /// family — its spell scripts take a caster "block" that may be a mob as easily as a player). See
     /// game-data/MobSpells.csv for the columns and Server/Session.MobSpells.cs for the cast.</summary>
+    /// <param name="PerTick">For a <c>poison</c> row: damage per DoT tick, flat. Set this instead of
+    /// <paramref name="Amount"/> when the creature's venom is described per TICK rather than per second —
+    /// which is the only reading that means anything once <paramref name="TickMinMs"/> makes the gap
+    /// between ticks vary. 0 = fall back to <paramref name="Amount"/>-as-rate.</param>
+    /// <param name="TickMinMs">For a <c>poison</c> row: shortest gap between DoT ticks. 0 = the fixed
+    /// <see cref="World.PoisonTickMs"/> beat every other venom uses.</param>
+    /// <param name="TickMaxMs">Longest gap between DoT ticks. The gap is drawn in whole seconds from
+    /// [TickMinMs, TickMaxMs] each tick.</param>
+    /// <param name="Trigger">WHEN the row is rolled. Blank/<c>timer</c> is the original behaviour: World.Tick
+    /// rolls it against <paramref name="Chance"/> once the creature is off its <paramref name="EveryMs"/>
+    /// cooldown, at <paramref name="Range"/>. <c>onhit</c> instead rolls it on a LANDED melee blow
+    /// (Session.TryMobOnHitSpell), which is the only shape that makes <paramref name="Chance"/> mean
+    /// "one swing in N" — on the timer path the roll repeats every tick until it passes, so Chance only
+    /// shifts WHEN the cast lands, never whether it does. An <c>onhit</c> row ignores both
+    /// <paramref name="EveryMs"/> and <paramref name="Range"/> (a landed swing is already adjacent, and the
+    /// swing cadence is the cooldown).</param>
     public sealed record MobSpellDef(string MobKey, string Name, string Effect, int Chance, int EveryMs,
-        int Range, int Amount, string Stat, string Category, int DurationMs, int Anim, int Sound, string Say);
+        int Range, int Amount, string Stat, string Category, int DurationMs, int Anim, int Sound, string Say,
+        int PerTick = 0, int TickMinMs = 0, int TickMaxMs = 0, string Trigger = "")
+    {
+        /// <summary>Rolled on a landed melee blow rather than on the cast timer. See <see cref="Trigger"/>.</summary>
+        public bool OnHit => Trigger == "onhit";
+
+        /// <summary>The shout for ONE cast. <see cref="Say"/> may hold several alternatives separated by
+        /// <c>|</c> — the same convention MobChatter.csv's <c>Lines</c> uses — in which case one is picked at
+        /// random per cast, so a caster with more than one line for a spell doesn't repeat itself. A plain
+        /// string (every row that predates this) has exactly one alternative and returns unchanged.</summary>
+        public string PickSay()
+        {
+            if (Say.Length == 0) return "";
+            if (!Say.Contains('|')) return Say;
+            var alts = Say.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            return alts.Length == 0 ? "" : alts[Random.Shared.Next(alts.Length)];
+        }
+    }
 
     /// <summary>Creature spell repertoires by mob identifier, in the order the CSV lists them.</summary>
     public static IReadOnlyDictionary<string, MobSpellDef[]> MobSpells { get; private set; } =
@@ -1067,6 +1225,12 @@ public static partial class Content
             .SelectMany(d => d.Tiles.Select(t => (key: (d.Map, t.X, t.Y), door: d)))
             .ToDictionary(e => e.key, e => e.door);
         ArenaDoors = arenaDoors;
+        EventCaveBands = LoadEventCaveBands(ResolvePath("P1998_EVENT_CAVE_TIERS", "EventCaveTiers.csv"));
+        var eventCaves = LoadEventCaves(ResolvePath("P1998_EVENT_CAVES", "EventCaves.csv"));
+        EventCaveTiles = eventCaves   // derived tile index first, public list second (same reason as Npcs/_npcById)
+            .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
+            .ToDictionary(e => e.key, e => e.cave);
+        EventCaves = eventCaves;
         MusicTracks = LoadMusicTracks(ResolvePath("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
         (BgmZones, DefaultBgm, DefaultBgmNew) = LoadBgmZones(ResolvePath("P1998_MAP_BGM", "MapBgm.csv"));
         _bgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
@@ -1111,7 +1275,7 @@ public static partial class Content
         (_mapCells, var mapCellCount) = LoadMapCells(ResolvePath("P1998_MAP_CELLS", "MapCells.csv"));
         MapCellCount = mapCellCount;
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {EventCaves.Count} event-caves ({EventCaveTiles.Count} entrance tiles, {EventCaveBands.Count} tier bands), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check game-data/mobs.csv)"
                      : ""));
@@ -1330,7 +1494,8 @@ public static partial class Content
         // --- Background music: track names + area zoning (MusicTracks.csv / MapBgm.csv) ---
         Line($"--- Music: {MusicTracks.Count(t => t.Set == MusicSet.Old && t.Name.Length > 0)} named midis + " +
              $"{MusicTracks.Count(t => t.Set == MusicSet.New && !t.Playlist)} 5.x mp3s / " +
-             $"{MusicTracks.Count(t => t.Playlist)} playlists, {BgmZones.Count} zones, " +
+             $"{MusicTracks.Count(t => t.Playlist && !t.Shuffle)} ordered + " +
+             $"{MusicTracks.Count(t => t.Shuffle)} shuffled playlists, {BgmZones.Count} zones, " +
              $"{_bgmByMap.Count} maps resolved, " +
              $"default {(DefaultBgm is null ? "(none)" : $"{DefaultBgm.Value.bgm} '{TrackName(DefaultBgm.Value.bgm)}'")}" +
              $" / 5.x {(DefaultBgmNew is null ? "(none)" : $"{DefaultBgmNew.Value.bgm} '{TrackName(DefaultBgmNew.Value.bgm, MusicSet.New)}'")} ---");
@@ -1376,9 +1541,10 @@ public static partial class Content
              $"(and start on the default at login)");
 
         // The 5.x soundtrack rides the SAME zone/spill resolution, so the only thing that can go wrong is a
-        // zone whose Track5x didn't resolve — which shows up as a midi id leaking onto the mp3 channel. Every
-        // 5.x map pick must be a PLAYLIST: a single mp3 is handed loop=0 by the client and stops after one
-        // song, which is exactly the bug this check exists to catch.
+        // zone whose Track5x didn't resolve — which shows up as a midi id leaking onto the mp3 channel.
+        // Every 5.x map pick must be an ORDERED playlist (.LST): a single mp3 never advances off its one
+        // song, and a SHUFFLED list (.LSR) eventually stalls dead on the client's index collision — see the
+        // MusicTrack doc. Both failures are silent (the area just goes quiet), so they are asserted here.
         var bgm5xWant = new (ushort Map, string Track)[]
         {
             (0, "town2"), (2, "town2"),           // Kugnae / Walsuk Tavern (spill)
@@ -1393,12 +1559,17 @@ public static partial class Content
         {
             var got = BgmFor(map, MusicSet.New);
             string name = got is null ? "(none)" : TrackName(got.Value.bgm, MusicSet.New);
-            bool list = got is not null
-                && MusicTracks.Any(t => t.Set == MusicSet.New && t.Id == got.Value.bgm && t.Playlist);
-            bool hit = name.Equals(want, StringComparison.OrdinalIgnoreCase) && got?.type == 1 && list;
+            var track = got is null ? null
+                : MusicTracks.FirstOrDefault(t => t.Set == MusicSet.New && t.Id == got.Value.bgm);
+            bool ordered = track is { Playlist: true, Shuffle: false };
+            bool hit = name.Equals(want, StringComparison.OrdinalIgnoreCase) && got?.type == 1 && ordered;
             bgm5xOk &= hit;
+            string kind = track is null ? "?"
+                        : !track.Playlist ? "SINGLE — never advances"
+                        : track.Shuffle   ? "SHUFFLED — will stall dead"
+                                          : "ordered playlist";
             Line($"    {(hit ? "ok " : "XX ")}map {map,-6} (5.x) -> {name,-8} " +
-                 $"id {(got?.bgm.ToString() ?? "-"),-4} type{got?.type} {(list ? "playlist" : "SINGLE — will not loop")} (want {want})");
+                 $"id {(got?.bgm.ToString() ?? "-"),-4} type{got?.type} {kind} (want {want})");
         }
 
         // --- PvP arena doors: every configured door must lead somewhere renderable, and each destination
@@ -1814,6 +1985,40 @@ public static partial class Content
     /// <c>Character.Quests</c> map like every other quest flag, so no schema change.</summary>
     public const string DogFlagReg = "dog_flag";
 
+    /// <summary>The two Dog spells each BASE class may hold, in teach order, with the level each is pinned
+    /// to. Spells.csv cannot say either thing — all eight rows carry <c>SplPthId</c> 99 and <c>SplLevel</c> 0
+    /// so that no class filter can reach them (see <see cref="SpellsForClass"/>) — so the pairing and the
+    /// levels are declared here, mirroring the <c>DOG_SPELLS</c> table in npc_dialog.lua, which owns the
+    /// other half of each tier (the kills, the goods and the atlas's 20,000-vita / 10,000-mana gate on the
+    /// level-99 one) because that data IS the dialog. Same source as the Lua: the nexusatlas Dog Spells
+    /// listing, capture 2002-12-30. <c>DogSpellTiersAreReal</c> in ContentSmokeTests pins the keys.</summary>
+    private static readonly Dictionary<int, (string Key, int Level)[]> DogSpellTiers = new()
+    {
+        [1] = new[] { ("greater_blessing", 70), ("spirit_fury",   99) },   // Warrior
+        [2] = new[] { ("spot_traps",       70), ("serpents_fury", 99) },   // Rogue
+        [3] = new[] { ("fissure",          70), ("lava_surge",    99) },   // Mage
+        [4] = new[] { ("survive",          70), ("fascinate",     99) },   // Poet
+    };
+
+    /// <summary>The Dog spells a character of this path holds at <paramref name="maxLevel"/>, level-stamped
+    /// from <see cref="DogSpellTiers"/>. Empty unless the path is eligible (<see cref="CanLearnDogSpells"/>);
+    /// an NPC subpath reads its BASE class's pair, exactly as it inherits that class's whole spell list.
+    ///
+    /// <para>THE DOG FLAG IS THE CALLER'S TEST, not this one's — the only caller is
+    /// <see cref="RespecSpellSet"/>, and it passes the flag in. This deliberately does NOT re-check the
+    /// kills/goods each tier costs at the Dog: the character rebuild grants what a character of this class
+    /// and level WOULD hold, the same way it hands over tutor spells without charging the tutor's fee.</para></summary>
+    public static List<SpellDef> DogSpellsFor(int pathId, int maxLevel)
+    {
+        var result = new List<SpellDef>();
+        if (!CanLearnDogSpells(pathId)) return result;
+        if (!DogSpellTiers.TryGetValue(PathBaseOf(pathId), out var tiers)) return result;
+        foreach (var (key, level) in tiers)
+            if (level <= maxLevel && SpellByKey(key) is { } sp)
+                result.Add(sp with { Level = level });
+        return result;
+    }
+
     /// <summary>The level a mark (subpath-rank) spell is pinned to. Marks sit ON TOP of the level cap — an
     /// Il san is, in the user's words, "level 100" — so every rank spell needs level 99 first and then the
     /// rank. The CSV can't say that (SplLevel is 0 on all 121 of them), so <see cref="LoadSpells"/> floors
@@ -1945,10 +2150,35 @@ public static partial class Content
     /// level therefore handed every aligned mage the second-best zap and deleted the best one, while the
     /// unaligned mage — whose levels happen to ascend — got the right answer. The declared order is the
     /// authority on which rung is stronger; the level column only decides whether you have REACHED it (that
-    /// gate already ran, in <see cref="SpellsForClass"/>).</para></summary>
-    public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark)
+    /// gate already ran, in <see cref="SpellsForClass"/>).</para>
+    /// <para><paramref name="dogFlag"/> is the character's finished-the-linguist-chain flag
+    /// (<see cref="DogFlagReg"/>). When it is set, the class's Dog spells are merged in as well — see
+    /// <see cref="DogSpellsFor"/>. They cannot arrive through <see cref="SpellsForClass"/>, which is also the
+    /// tutor menu and must never show one, so this is the single place a rebuild can pick them up.</para></summary>
+    public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark, bool dogFlag = false)
     {
         var all = SpellsForClass(pathId, maxLevel, alignment, mark);
+        // The Dog spells, for a character who has finished the chain. Merged in level-stamped and re-sorted
+        // into place, which is what makes "@dog 1" followed by "@lvl 70/99" produce the book a linguist of
+        // this class really holds. Without this the rebuild silently forgot every Dog spell — including ones
+        // earned honestly at the Dog, since @lvl/@class/@mark/@align rebuild rather than top up.
+        //
+        // The Dog's OWN price (the kills, the goods, and the atlas's 20,000-vita / 10,000-mana gate on the
+        // level-99 tier, all in npc_dialog.lua's DOG_SPELLS) is deliberately NOT re-checked here: the rebuild
+        // grants what a character of this class and level would hold, exactly as it hands over tutor spells
+        // without charging the tutor. Level is the gate, as it is for every other entry in the set.
+        //
+        // KNOWN INTERACTION: the Dog's "cleanse" forgets the spells but keeps the legend and the flag (RTK
+        // resets the teach progress instead), so a rebuild afterwards hands them straight back. That is the
+        // rebuild behaving as designed — it restores the whole entitlement set — and it takes a staff command
+        // to reach, so a player who cleansed still has the quest to walk again.
+        if (dogFlag)
+        {
+            var dogs = DogSpellsFor(pathId, maxLevel);
+            if (dogs.Count > 0)
+                all = all.Concat(dogs).OrderBy(s => s.Level)
+                         .ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
         // Ladders are declared per BASE class, and an NPC subpath inherits its base class's whole list, so
         // it inherits the ladders with it. The two Dog spells are deliberately not on any ladder: Fissure ->
         // Lava Surge is a tier pair, but it is two spells from a separate trainer, and collapsing it would
@@ -2384,7 +2614,8 @@ public static partial class Content
                 Text: Clean(col.GetValueOrDefault("ItmText", "")),
                 BuyText: Clean(col.GetValueOrDefault("ItmBuyText", "")),
                 PathId: I("ItmPthId"), Mark: I("ItmMark"),
-                BreakOnDeath: I("ItmBoD") != 0, Protected: I("ItmProtected") != 0));
+                BreakOnDeath: I("ItmBoD") != 0, Protected: I("ItmProtected") != 0,
+                Repairable: I("ItmRepairable") != 0));
         }
         return ResolveIconColors(items);
     }
@@ -2796,14 +3027,71 @@ public static partial class Content
         return list;
     }
 
+    // See EventCaveBands above. One row per band of the shared tier ladder, matched in file order, so the
+    // FILE's order is the semantics — do not sort it. Blank/absent Mark columns give 0..0, which is what a
+    // pure level band wants (a subpath rank only exists at 99). A malformed/absent file yields an empty
+    // ladder, which makes every event-cave doorway refuse rather than dumping people into tier 1 blind.
+    private static List<EventCaveBand> LoadEventCaveBands(string? path)
+    {
+        var list = new List<EventCaveBand>();
+        foreach (var col in ReadCsv(path))
+        {
+            int I(string k, int dflt = 0) => int.TryParse(col.GetValueOrDefault(k), out var v) ? v : dflt;
+            int tier = I("Tier");
+            if (tier <= 0) continue;
+            list.Add(new EventCaveBand(tier, I("AltTier"), I("MinLevel"), I("MaxLevel"), I("MinMark"), I("MaxMark"),
+                Clean(col.GetValueOrDefault("Label", "")), col.GetValueOrDefault("Sources", "")));
+        }
+        return list;
+    }
+
+    // See EventCaves above. One row per entrance. EntranceTiles is ';'-separated "x:y" (same encoding as
+    // MythicCaves/ArenaDoors); TierMaps and Pages are '|'-separated, shallowest page/tier first. A row with
+    // no tiles or no destination maps is dropped rather than half-registered — a doorway that intercepts the
+    // step and then has nowhere to send anyone is worse than one that stays an ordinary tile.
+    private static List<EventCaveDef> LoadEventCaves(string? path)
+    {
+        var list = new List<EventCaveDef>();
+        foreach (var col in ReadCsv(path))
+        {
+            var key = Clean(col.GetValueOrDefault("Key", ""));
+            if (key.Length == 0) continue;
+            ushort U(string k) => ushort.TryParse(col.GetValueOrDefault(k), out var v) ? v : (ushort)0;
+            string S(string k) => Clean(col.GetValueOrDefault(k, ""));
+
+            var tiles = new List<(ushort X, ushort Y)>();
+            foreach (var pair in (col.GetValueOrDefault("EntranceTiles") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var xy = pair.Split(':');
+                if (xy.Length == 2 && ushort.TryParse(xy[0].Trim(), out var tx) && ushort.TryParse(xy[1].Trim(), out var ty))
+                    tiles.Add((tx, ty));
+            }
+            if (tiles.Count == 0) continue;
+
+            var maps = (col.GetValueOrDefault("TierMaps") ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(m => ushort.TryParse(m.Trim(), out var mv) ? mv : (ushort)0)
+                .Where(m => m != 0).ToArray();
+            if (maps.Length == 0) continue;
+
+            var pages = S("Pages").Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim()).Where(t => t.Length > 0).ToArray();
+
+            list.Add(new EventCaveDef(key, U("EntranceMap"), tiles.ToArray(), maps, U("DestX"), U("DestY"),
+                pages, S("Prompt"), S("OptionNear"), S("OptionFar"), S("DenyMsg"),
+                col.GetValueOrDefault("Sources", "")));
+        }
+        return list;
+    }
+
     // ---- Location / warp geometry loaders (see the Content.* registries near MythicCaves) ----------------
 
     // MusicTracks.csv: Track,Name,Kind[,Set] — the id<->name table for both soundtracks. `Kind` is what the
     // client will be asked to open, and it implies the rest:
     //   midi    -> 0x19 type 2, MusicSet.Old   (N.mid, ids 1-12 only — both clients hard-cap there)
-    //   mp3     -> 0x19 type 1, MusicSet.New   (one song; does NOT loop, see the MusicTrack doc)
-    //   list    -> 0x19 type 1, MusicSet.New   (%08d.LST — ten tracks in order, loops)
-    //   shuffle -> 0x19 type 1, MusicSet.New   (%08d.LSR — the same ten, starting at a random one, loops)
+    //   mp3     -> 0x19 type 1, MusicSet.New   (one song; on 5.33 it repeats forever, see the MusicTrack doc)
+    //   list    -> 0x19 type 1, MusicSet.New   (%08d.LST — ten tracks in order, wraps forever. Map music.)
+    //   shuffle -> 0x19 type 1, MusicSet.New   (%08d.LSR — the same ten from a random start, but STALLS:
+    //                                           audition only, never a map assignment. See MusicTrack.)
     // An explicit `Set` column overrides the Kind's default set; a row with neither reads as an old midi,
     // which is what every row of this file was before the 5.x set existed.
     private static List<MusicTrack> LoadMusicTracks(string? path)
@@ -2815,12 +3103,13 @@ public static partial class Content
             var name = col.GetValueOrDefault("Name", "").Trim();
             var kind = col.GetValueOrDefault("Kind", "").Trim().ToLowerInvariant();
             bool playlist = kind is "list" or "shuffle";
+            bool shuffle = kind is "shuffle";
             byte type = kind is "mp3" or "list" or "shuffle" ? (byte)1 : (byte)2;
             // Legacy `Type` column still wins if a deployed CSV predates `Kind`.
             if (kind.Length == 0 && byte.TryParse(col.GetValueOrDefault("Type"), out var t)) type = t;
             var set = col.GetValueOrDefault("Set", "").Trim()
                 .Equals("new", StringComparison.OrdinalIgnoreCase) || type == 1 ? MusicSet.New : MusicSet.Old;
-            list.Add(new MusicTrack(id, name, type, set, playlist));
+            list.Add(new MusicTrack(id, name, type, set, playlist, shuffle));
         }
         return list;
     }
@@ -2939,7 +3228,9 @@ public static partial class Content
                 Clean(col.GetValueOrDefault("Name", "")), Clean(col.GetValueOrDefault("Effect", "")).ToLowerInvariant(),
                 I("Chance", 1), I("EveryMs"), I("Range", 1), I("Amount"),
                 Clean(col.GetValueOrDefault("Stat", "")), Clean(col.GetValueOrDefault("Category", "")),
-                I("DurationMs"), I("Anim"), I("Sound"), Clean(col.GetValueOrDefault("Say", ""))));
+                I("DurationMs"), I("Anim"), I("Sound"), Clean(col.GetValueOrDefault("Say", "")),
+                I("PerTick"), I("TickMinMs"), I("TickMaxMs"),
+                Clean(col.GetValueOrDefault("Trigger", "")).ToLowerInvariant()));
         }
         return d.ToDictionary(e => e.Key, e => e.Value.ToArray(), StringComparer.OrdinalIgnoreCase);
     }

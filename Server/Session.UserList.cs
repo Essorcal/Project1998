@@ -32,10 +32,42 @@ namespace Server;
 //      rows x count:
 //      +0 u8   (nation << 4) | (path & 7)
 //      +1 u8   (hidden << 4) | (classIcon & 0x0F)
-//      +2 u8   hunter/rank byte (RTK's ChaHunter; render not yet pinned — sweep with @users)
+//      +2 u8   name text colour (palette index — see UserListRowColor)
 //      +3 u32BE rank value          <-- 4.95 ONLY. RTK 7.x has no such field; do not port its row verbatim.
 //      +7 u8   (tier << 4) | (nameLen & 0x0F)
 //      +8 name[nameLen]  ASCII, widened by MultiByteToWideChar
+//
+//  5.33 DIVERGES IN THE ROW — the header is byte-identical, the row is FOUR bytes + name, not eight
+//  (parser 0x4d0020, row loop 0x4d041c; DECODED 2026-08-22 against 4.95's 0x48a48c line for line):
+//
+//      +0 u8   (nation << 4) | (path & 7)          — same byte, same meaning
+//      +1 u8   (mark << 4) | (subpathIcon & 7)     — 4.95 has hidden<<4 | icon&0x0F here
+//      +2 u8   name text colour                    — same byte, same meaning
+//      +3 u8   nameLen                             — a WHOLE byte; no tier nibble sharing it
+//      +4 name[nameLen]
+//
+//  Three fields moved or vanished, and each one is visible in the disassembly:
+//
+//    * the `hidden` nibble is GONE. 5.33 writes the struct's hidden slot as a literal 0 (0x4d0477
+//      `mov byte [ebp-0x27e], 0`) and never reads it off the wire, so the "hidden rows" subtrahend on
+//      the headline count can no longer be driven from the server. We always sent 0, so nothing is lost.
+//    * the `rank` u32 is GONE. 5.33 SYNTHESISES it as `100000 - rowIndex` (0x4d046c) — so on 5.33
+//      **wire order IS rank order**, and sort mode 0 means "mark ascending, then whatever order the
+//      server sent" (comparator 0x4d1430: `(mark & 0xf)` asc, then the synthetic rank desc).
+//      SendUserList therefore sorts by rank descending before building the body.
+//    * the `mark` nibble moved from the LAST byte's high nibble into byte +1's high nibble, taking the
+//      slot `hidden` used to occupy — both land on struct+0xC, which is what row-draw 0x4d11a0 indexes
+//      the four "S" sprites with (valid 1..4).
+//
+//  Also note 5.33 masks the icon nibble with **7**, not 0x0F (0x4d044e `and al, 7`), and its row draw
+//  only paints a badge for icon 1..4 AND path 1..4 — the sprite it picks is `I[(path-1)*4 + (icon-1)]`
+//  out of the sixteen "I" sprites at listbox+0x1bc, i.e. exactly 4.95's relative-to-the-column banding.
+//
+//  How the break read on screen: sending the 4.95 row to 5.33 left the FIRST row's nation, column and
+//  subpath badge correct (bytes +0/+1 are common), then its colour byte landed on +2 (also common), and
+//  the rank u32's first byte — always 0 — became nameLen, so every name came out EMPTY and every later
+//  row was parsed out of the previous row's tail. "Only the path/subpath icon works" is the exact
+//  signature of a row that is right for two bytes and shears on the third.
 //
 //  Two client-side filters decide whether a row appears at all:
 //    * hidden nibble != 0  -> the row is dropped entirely (and counted into the "hidden" subtrahend)
@@ -50,9 +82,61 @@ namespace Server;
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 public sealed partial class Session
 {
-    // Client-imposed field widths. The name length shares a byte with the tier nibble, so 15 chars is a
-    // hard wire limit, not a style choice — a 16-char name would overflow into the tier.
+    // Client-imposed field widths. On 4.95 the name length shares a byte with the tier nibble, so 15
+    // chars is a hard wire limit, not a style choice — a 16-char name would overflow into the tier.
+    // 5.33 gives the length a whole byte, but its row record is a fixed-size list element with the wide
+    // name inline at +0xE, so the cap stays: one number, and the shorter of the two is always safe.
     private const int UserListMaxName = 15;
+
+    /// <summary>One user-list row, client-agnostic. <see cref="UserListBody"/> is what knows that 4.95
+    /// spends eight bytes on this and 5.33 spends four.</summary>
+    /// <param name="Nation">Must equal the VIEWER's nation or the client files the row nowhere.</param>
+    /// <param name="Path">Column: 1..4 -> Warrior/Rogue/Mage/Poet, 0 -> Peasant (column 4).</param>
+    /// <param name="Icon">Subpath badge, drawn relative to the column. 5.33 masks this to 3 bits.</param>
+    /// <param name="Colour">Name text colour, a palette index — see <see cref="UserListRowColor"/>.</param>
+    /// <param name="Rank">4.95 sorts on this u32; 5.33 has no such field and uses wire order instead.</param>
+    /// <param name="Mark">Il-San/Ee-San/Sam-San/Sa-San badge, 1..4 (0 = none).</param>
+    public readonly record struct UserListRow(byte Nation, byte Path, byte Icon, byte Colour,
+                                              uint Rank, byte Mark, string Name);
+
+    /// <summary>
+    /// The 0x36 body for one client. Pure and static so Tests/ClientVersionWireTests can pin both shapes:
+    /// the five-byte header is common, the ROW is not — see the file header for the disassembly this
+    /// came from. <paramref name="headlineTotal"/> is the number the window prints above the columns;
+    /// pass -1 for "same as the row count".
+    /// </summary>
+    public static byte[] UserListBody(ClientVersion ver, byte sortMode,
+                                      IReadOnlyList<UserListRow> rows, int headlineTotal = -1)
+    {
+        bool v533 = ver == ClientVersion.V533;
+        var d = new List<byte>();
+        d.AddRange(Be((ushort)(headlineTotal < 0 ? rows.Count : headlineTotal)));
+        d.AddRange(Be((ushort)rows.Count));
+        d.Add(sortMode);
+        foreach (var r in rows)
+        {
+            var name = Encoding.ASCII.GetBytes(r.Name);
+            if (name.Length > UserListMaxName) name = name[..UserListMaxName];
+
+            d.Add((byte)(((r.Nation & 0x0F) << 4) | (r.Path & 0x07)));
+            if (v533)
+            {
+                // Mark took over the nibble 4.95 spends on `hidden`; the icon is masked to 3 bits there.
+                d.Add((byte)(((r.Mark & 0x0F) << 4) | (r.Icon & 0x07)));
+                d.Add(r.Colour);
+                d.Add((byte)name.Length);        // whole byte — no tier nibble to share it with
+            }
+            else
+            {
+                d.Add((byte)(r.Icon & 0x0F));    // hidden nibble 0 = always visible (see header)
+                d.Add(r.Colour);                 // NAME TEXT COLOUR — 0 paints black on black
+                d.AddRange(Be32(r.Rank));        // 4.95 only; 5.33 synthesises this from wire order
+                d.Add((byte)(((r.Mark & 0x0F) << 4) | name.Length));
+            }
+            d.AddRange(name);
+        }
+        return d.ToArray();
+    }
 
     /// <summary>Client asked for the user list (recv <c>0x18</c>, empty body — RTK clif_parse case 0x18
     /// -> clif_user_list). Answers with the town table first so the window has nation names to label
@@ -99,10 +183,7 @@ public sealed partial class Session
     private void SendUserList(byte sortMode = 1)
     {
         var players = _world.AllPlayers();
-        var d = new List<byte>();
-        d.AddRange(Be((ushort)players.Count));   // headline total
-        d.AddRange(Be((ushort)players.Count));   // row count
-        d.Add(sortMode);
+        var rows = new List<UserListRow>(players.Count);
 
         foreach (var p in players)
         {
@@ -116,17 +197,7 @@ public sealed partial class Session
             byte icon   = (byte)(Content.PathIconOf(pid) & 0x0F);
             byte tier   = (byte)(Math.Clamp((int)c.Mark, 0, 15) & 0x0F);
 
-            var name = Encoding.ASCII.GetBytes(c.Name);
-            if (name.Length > UserListMaxName) name = name[..UserListMaxName];
-
-            byte colour = UserListRowColor(p);
-
-            d.Add((byte)((nation << 4) | path));
-            d.Add((byte)(0 << 4 | icon));        // hidden nibble 0 = always visible (see header)
-            d.Add(colour);                       // NAME TEXT COLOUR — 0 paints black on black (see below)
-            d.AddRange(Be32(UserListRank(c)));
-            d.Add((byte)((tier << 4) | name.Length));
-            d.AddRange(name);
+            rows.Add(new UserListRow(nation, path, icon, UserListRowColor(p), UserListRank(c), tier, c.Name));
 
             // Per-row, because "the packet looks right but the window is empty" is this window's whole
             // failure mode and only the DECODED fields say why. nation must equal the VIEWER's nation or
@@ -136,31 +207,28 @@ public sealed partial class Session
                      $"class='{c.ClassName}'");
         }
 
+        // 5.33 has no rank field: it numbers the rows itself (100000 - index) and the "by rank" sort is
+        // mark ascending, then WIRE ORDER. So the ordering has to happen here or that sort means nothing
+        // there. 4.95 re-sorts off its own rank u32 and does not care what order it arrived in, so this
+        // is free for the client that already worked. OrderByDescending is stable, so equal levels keep
+        // world order.
+        var ordered = rows.OrderByDescending(r => r.Rank).ToList();
+
         Log.Info($"   -> viewer '{_char.Name}' nation={_char.Nation} — rows whose nation nibble differs " +
                  $"from {_char.Nation} are dropped from every column");
-        SendMap(0x36, _gameInc++, d.ToArray(), $"user-list(0x36) {players.Count} users sort={sortMode}");
+        SendMap(0x36, _gameInc++, UserListBody(_ver, sortMode, ordered),
+                $"user-list(0x36) {players.Count} users sort={sortMode} " +
+                $"{(IsV533 ? "5.33 4-byte rows" : "4.95 8-byte rows")}");
     }
 
     /// <summary>Build a 0x36 out of hand-made rows — the probe modes below all funnel through here so the
-    /// prefix can never drift from <see cref="SendUserList"/>.</summary>
+    /// prefix can never drift from <see cref="SendUserList"/>. Rows go out in the order given: on 5.33
+    /// that IS the rank order, and a sweep wants its own order kept anyway.</summary>
     private void SendUserListRows(byte sortMode, IReadOnlyList<(byte nation, byte path, byte icon, byte hunter, uint rank, byte tier, string name)> rows, string label)
     {
-        var d = new List<byte>();
-        d.AddRange(Be((ushort)rows.Count));
-        d.AddRange(Be((ushort)rows.Count));
-        d.Add(sortMode);
-        foreach (var r in rows)
-        {
-            var n = Encoding.ASCII.GetBytes(r.name);
-            if (n.Length > UserListMaxName) n = n[..UserListMaxName];
-            d.Add((byte)(((r.nation & 0x0F) << 4) | (r.path & 0x07)));
-            d.Add((byte)(r.icon & 0x0F));
-            d.Add(r.hunter);
-            d.AddRange(Be32(r.rank));
-            d.Add((byte)(((r.tier & 0x0F) << 4) | n.Length));
-            d.AddRange(n);
-        }
-        SendMap(0x36, _gameInc++, d.ToArray(), $"user-list(0x36) {label} {rows.Count} rows sort={sortMode}");
+        var body = UserListBody(_ver, sortMode,
+            rows.Select(r => new UserListRow(r.nation, r.path, r.icon, r.hunter, r.rank, r.tier, r.name)).ToList());
+        SendMap(0x36, _gameInc++, body, $"user-list(0x36) {label} {rows.Count} rows sort={sortMode}");
     }
 
     // The icon nibble indexes sixteen sprites each column listbox loads at construction (0x48af92: sixteen
@@ -262,7 +330,8 @@ public sealed partial class Session
                 var rows = EveryColumn((p, letter) => Enumerable.Range(0, 16)
                     .Select(i => (nation, p, (byte)1, ProbeInk, (uint)(15 - i), (byte)i, $"{letter}mark{i}")));
                 SendUserListRows(sort, rows, "MARK-sweep");
-                SendLog("mark 0-15 in every column. Known: 0 none, 1 Il-San, 2 Ee-San, 3 Sam-San, 4 Sa-San.");
+                SendLog("mark 0-15 in every column. Known: 0 none, 1 Il-San, 2 Ee-San, 3 Sam-San, 4 Sa-San." +
+                        (IsV533 ? " 5.33 draws a badge only for 1-4 (row draw 0x4d11a0)." : ""));
                 return;
             }
 
@@ -322,7 +391,9 @@ public sealed partial class Session
             .Select(i => (nation, p, (byte)i, ProbeInk, (uint)(15 - i), (byte)0, $"{letter}i{i:D2}")));
         SendUserListRows(sortMode, rows, "ICON-sweep all columns");
         SendLog("icon 0-15 in ALL five columns, names '<W|R|M|P|E>i00'..'i15'. If W i05 and M i05 draw the " +
-                "same sprite the bank is global; if they differ it is relative to the column's path.");
+                "same sprite the bank is global; if they differ it is relative to the column's path." +
+                (IsV533 ? " On 5.33 the icon nibble is masked to 3 bits and only 1-4 draw, so i08-i15 " +
+                          "repeat i00-i07 and the peasant column never badges at all." : ""));
     }
 
     // The u32 the "by rank" comparator sorts DESCENDING. Level is the honest value: it is what RTK's

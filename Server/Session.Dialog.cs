@@ -302,17 +302,13 @@ public sealed partial class Session
         if (id == SubpathChatSentinel) { ToggleSubpathChat(); return; }
         if (id == F1MenuSentinel) { OpenF1Menu(); return; }
 
-        // id 0 (or explicitly our own id, e.g. "@click") -> our own public profile.
+        // id 0 (or explicitly our own id, e.g. "@click") -> our own PUBLIC profile — the 0x34 view-others
+        // card, deliberately the same thing other players see when they click you. This is NOT the `s`
+        // character sheet (0x39); clicking yourself and pressing `s` are different views by design, so both
+        // clients answer a self click with 0x34.
         //
-        // 5.33 note. This fires a LOT there — the client sends 0x43 with a self id repeatedly, unprompted
-        // by any click — and the 0x34 reply opens window index 1 while the character sheet is index 0. The
-        // four panels are mutually exclusive (one switcher, sub_435790), so each reply visibly evicts the
-        // sheet. That is NOT a reason to stop replying: suppressing it was tried and made things worse
-        // (clicking yourself stopped working, and `s` only opened the sheet after `i` had been pressed
-        // first), which means the client is WAITING on this answer and its panel state stalls without one.
-        // The real defect is that our 0x34 body is still the 4.95 shape while 5.33's parser (sub_4d19c0)
-        // reads a much larger record — so panel 1 opens onto a failed parse and looks like a closed sheet.
-        // Fix the body, not the reply. See SendClickProfile and game-data/packets/probe34.txt.
+        // 5.33 note. The client also fires 0x43(self) ~3-4x/second unprompted; SendClickProfile throttles the
+        // identical resends (see there) so that flood does not swamp the pane.
         if (id == 0 || id == _char.Id) { SendClickProfile(this); return; }
 
         // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
@@ -599,6 +595,33 @@ public sealed partial class Session
         SendInputBox(npc, prompt);
         var r = await AwaitReply();
         return r.Kind == 0x04 && r.Step == 0x02 ? r.Input : null;
+    }
+
+    /// <summary>Is a prompt currently waiting on the client's 0x3A? True means the player is sitting in a
+    /// MODAL box, and anything that would open another one has to stand down — <see cref="AwaitReply"/>
+    /// overwrites the pending completion source, which orphans the conversation that was waiting on it.</summary>
+    internal bool DialogBusy => _dlgReply is not null;
+
+    /// <summary>Push a multi-page dialog at the player with NO NPC in front of them — a scripted interjection
+    /// (a milestone briefing) rather than a conversation they started. Same 0x30 frame as
+    /// <see cref="DlgSeq"/>, differing only in what goes in the entity-id and portrait slots:
+    ///
+    /// <list type="bullet">
+    /// <item>The id is the PLAYER's own. The client only uses it to associate the box with an on-screen
+    /// entity, and our 0x3A handler never reads it back (see <see cref="HandleNpcDialog"/>) — but it must be
+    /// an entity the client actually has, and the player is the one entity always in their own view. A real
+    /// NPC's id would not do: the speaker is typically a city away.</item>
+    /// <item>The portrait is passed explicitly rather than derived from a <see cref="Mob"/>, since there is no
+    /// mob here. Callers hand over the look/colour of whoever is notionally speaking.</item>
+    /// </list></summary>
+    internal async Task DlgPush(int look, int color, IReadOnlyList<string> pages)
+    {
+        var p = DialogPortrait.Look(look, color);
+        foreach (var page in pages)
+        {
+            SendScriptMessageP(_char.Id, page, p, prev: false, next: true);
+            await AwaitReply();
+        }
     }
 
     private Task<DialogReply> AwaitReply()
@@ -1629,10 +1652,11 @@ public sealed partial class Session
         d.AddRange(Be(ProfileCellIcon(8)));   // right ring (wire slot 8)
 
         // The PAGE-1 text box: active buff/debuff names + remaining seconds, empty when nothing is active.
-        // CR-separated like the party box above. This field ALSO accepts TAB — the client rewrites TAB->CR
-        // here and only here (the loop at 0x47359b) — but CR is what the text control actually breaks on,
-        // so both boxes use it and read alike. (The other-view 0x34 puts the GEAR list in its own box
-        // instead — self=buffs, other=gear. That one is a DIFFERENT parser, 0x48b6a0, and still uses TAB.)
+        // TAB-separated, NOT CR like the party box above: the client rewrites TAB->CR here and only here
+        // (the loop at 0x47359b), and that one-field pre-pass is why TAB is the wire separator on both
+        // clients — see BuffBoxSep, where sending CR instead costs 5.33 its live countdown. (The other-view
+        // 0x34 puts the GEAR list in its own box instead — self=buffs, other=gear. That one is a DIFFERENT
+        // parser, 0x48b6a0, with its own conversion, and also uses TAB.)
         AddLenStr(d, BuffBoxText());
         d.Add((byte)(_char.Exchange ? 1 : 0));   // trailing flag = exchange/trade status (client field +0x935)
 
@@ -1707,7 +1731,10 @@ public sealed partial class Session
         WriteProfileCell533(d, 0);   // 4th cell — slot unidentified, sends an empty box
         WriteProfileCell533(d, 0);   // 5th cell — ditto
 
-        AddLenStr(d, BuffBoxText());                                      // buff/debuff box
+        // Buff/debuff box — TAB-separated (BuffBoxSep). 5.33 does not just print this one: it rewrites
+        // TAB->LF, splits it per line, and runs each line as a live one-second countdown. CR here collapses
+        // the whole box into a single timer entry, which is what "only the last buff ticks" looked like.
+        AddLenStr(d, BuffBoxText());
         d.Add((byte)(_char.Exchange ? 1 : 0));                            // exchange/trade status
 
         // Legend record is 4.95's, confirmed against the parser loop at 0x49d32d: count u8, then each
@@ -1772,15 +1799,22 @@ public sealed partial class Session
     }
 
     // The self-view buff/effect box (issue #6), PAGE 1: one line per active buff/debuff with the remaining
-    // time in seconds. Grouped by spell so a multi-stat buff shows once. CR-separated, same as the party box
-    // — see PartyBoxText for why CR is the real separator for BOTH boxes and TAB works only here. Reopening
-    // the profile re-reads the current durations.
+    // time in seconds. Grouped by spell so a multi-stat buff shows once, and TAB-separated — see
+    // BuffBoxSep, which is the one thing in this box that is NOT free-form text.
+    //
+    // On 4.95 the box is dead text and reopening the profile is what re-reads the durations. On 5.33 the
+    // client TICKS it: every line becomes an entry in a live countdown list, so the seconds we send here
+    // are a starting value, not a snapshot.
     private string BuffBoxText()
     {
         long now = Environment.TickCount64;
         // Skip lapsed buffs (Session.ExpireBuffs owns removal + the fade line); don't remove them here.
         var lines = _buffs
             .Where(b => b.Expires > now)
+            // Chung Ryong's AC buff is not its own effect — it is one tier of the fury, riding _buffs only
+            // because that is where a stat delta has to live. The fury already prints its own line below on
+            // the same deadline, so letting this one through renders the spell twice from Rage 3 up.
+            .Where(b => b.Key != CrRageAcKey)
             .GroupBy(b => b.Key)
             .Select(g =>
             {
@@ -1802,14 +1836,51 @@ public sealed partial class Session
         if (SancDeductActive)     lines.Add($"{(SancDeductName.Length > 0 ? SancDeductName : "Protection")} {Secs(SancDeductUntil, now)}s");
         if (CunningDeductActive)  lines.Add($"Cunning {(SancDeductActive ? "suppressed " : "")}{Secs(CunningDeductUntil, now)}s");
         if (now < _rageUntil && _rageAmount > 1)  lines.Add($"{(_rageName.Length > 0 ? _rageName : "Fury")} {Secs(_rageUntil, now)}s");
-        if (now < _backstabUntil)                 lines.Add($"Backstab {Secs(_backstabUntil, now)}s");
-        if (now < _flankUntil)                    lines.Add($"Flank {Secs(_flankUntil, now)}s");
+        // Four-way (Cunning 4+) reaches the same tiles as Backstab+Flank and more, so it stands in for both
+        // rather than printing three lines that describe one swing.
+        if (now < _fourWayUntil)                  lines.Add($"Four-way {Secs(_fourWayUntil, now)}s");
+        else
+        {
+            if (now < _backstabUntil)             lines.Add($"Backstab {Secs(_backstabUntil, now)}s");
+            if (now < _flankUntil)                lines.Add($"Flank {Secs(_flankUntil, now)}s");
+        }
         // Stealth (Invisible/Spirit's Form/Life's Cloak/Glass Form) is a scalar timer outside _buffs too, so it
         // never showed a duration before — surface it here (works whether or not you're also morphed).
         if (Stealthed)                            lines.Add($"{_stealthName} {Secs(_stealthUntil, now)}s");
 
-        return string.Join('\r', lines);
+        return BuffBoxJoin(lines);
     }
+
+    /// <summary>The buff box's line separator, and the reason it is TAB and not CR.
+    ///
+    /// <para>Both profile parsers run a pre-pass over THIS FIELD AND NOTHING ELSE that rewrites TAB into
+    /// the break character the rest of that client expects — 4.95 turns it into CR (<c>0x47359b</c>),
+    /// 5.33 into LF (<c>0x49d131</c>). A pre-pass that exists for one field is the original Nexon server
+    /// telling us what it sent: TAB. Sending the post-pass character instead works on 4.95, where the box
+    /// is inert text, and BREAKS 5.33, where it isn't.</para>
+    ///
+    /// <para><b>5.33 parses this box into a live countdown list.</b> After the pre-pass, <c>0x49f6a0</c>
+    /// reads it with a getline (<c>0x453b80</c>) that splits on <b>LF only</b> — CR is not a break there —
+    /// and turns each line into an 8-byte entry: name = everything before the last space or tab
+    /// (<c>find_last_of(L" \t")</c>), seconds = <c>atoi</c> of the tail. A vtable timer (<c>0x49f4e0</c>)
+    /// then decrements every entry once a second, drops the ones that reach zero, and re-renders the whole
+    /// list through <c>Str.res[220]</c> = <c>"%s %3ds"</c> — which is exactly the shape we already build,
+    /// so the box reads the same whether the client or the server formatted the line.</para>
+    ///
+    /// <para>With CR, the getline saw ONE line: the whole box became a single entry whose "name" was
+    /// <c>"Might 300s\rProtection 60s\rFury"</c> and whose timer was the LAST number in the box. That is
+    /// the bug this constant exists to prevent — every buff rendered, but only the bottom one counted
+    /// down, because every other line's seconds were frozen inside that name string.</para>
+    ///
+    /// <para>PartyBoxText stays on CR: page 2 gets no pre-pass on either client, so TAB would be dropped
+    /// outright there (4.95's copy loop <c>0x480b20</c> allows only <c>0x0d</c>/<c>0x0a</c> below
+    /// <c>0x20</c>) and the roster would run together on one line.</para></summary>
+    public const char BuffBoxSep = '\t';
+
+    /// <summary>Join buff-box lines for the wire. Split out from <see cref="BuffBoxText"/> so the wire
+    /// shape 5.33 depends on is testable without a live session — see <c>Tests/ClientVersionWireTests</c>,
+    /// which re-runs 5.33's own grammar over the result.</summary>
+    public static string BuffBoxJoin(IEnumerable<string> lines) => string.Join(BuffBoxSep, lines);
 
     // length-prefixed ASCII string: [len u8][bytes]. Empty string -> a single 0 byte.
     private static void AddLenStr(List<byte> d, string? s)
@@ -1914,7 +1985,17 @@ public sealed partial class Session
 
         // FIELD #10 — PAGE-1 gear/item list (u8 len + text). Item names are TAB-separated (client
         // converts 0x09 -> CR for multiline). Empty until inventory/equipment exists.
-        AddLenStr(d, target.GearListText());
+        //
+        // 5.33 quirk (confirmed in the client): the list-populate `0x4c0170` NO-OPS on a zero-length
+        // string — at `0x4c019b` a count of 0 jumps straight to the return, so it never clears the gear
+        // box. A NON-empty string replaces the whole list (select-all `0x4bf670(0,0x7fff)` then copy).
+        // Net effect: an unequipped character keeps showing whatever gear was last sent ("no matter what
+        // I do, it still shows the old items"), while the paperdoll — a separate field — correctly goes
+        // bare. Send a lone space when the list would be empty so the client runs the replace and the box
+        // clears to blank. 4.95 uses a different control and is left alone.
+        var gearList = target.GearListText();
+        if (gearList.Length == 0 && _ver == ClientVersion.V533) gearList = " ";
+        AddLenStr(d, gearList);
 
         // The TARGET'S ENTITY ID — not a spare scalar. RE'd 2026-08-21 from BOTH clients' 0x34 parsers
         // (4.95 0x48b6a0 reads it with the u32BE helper 0x475ce0 into the window field +0xb24; 5.33
@@ -1962,6 +2043,20 @@ public sealed partial class Session
             d.Add((byte)t.Length);
             d.AddRange(t);
         }
+
+        // FIELD #19 (5.33 only) — the GUARDIAN BACKDROP frame. This was the "broken/flipping background".
+        // The 5.33 parser reads ONE trailing u8 after the legends (0x4d2184, gated on client build >= 0x213)
+        // and stores it at window +0xb12; the profile paint (0x4d2354) uses it as the frame index into
+        // SELFLOOK.EPF — the four guardian panes (0=? .. matching the totem: Chung Ryong / Ju Jak / Hyun Moo
+        // / Baek Ho). We never sent it, so the client read whatever byte sat PAST our packet — garbage that
+        // shifts with packet length, which is exactly why the backdrop was a random guardian (or an
+        // out-of-range "corrupted" frame) and why armor/helm broke it far more often than gloves. The `s`
+        // character sheet (0x39) was unaffected because it takes the guardian from the client's OWN cached
+        // totem; the click card needs the TARGET's totem in the packet, since the client can't know another
+        // player's. Clamp to 0..3 (a stray value would index a nonexistent frame = the corrupted pane).
+        // 4.95's parser stops after its legends, so this trailing byte is invisible to it.
+        if (_ver == ClientVersion.V533)
+            d.Add((byte)Math.Clamp((int)tc.Totem, 0, 3));
 
         SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={tc.Id} nation={tc.Nation} blurb={blurb.Length}B legends={legs.Count}");
     }

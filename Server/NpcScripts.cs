@@ -39,6 +39,8 @@ public static class NpcScripts
         ["revive"] = ReviveAbility.Instance,
         ["ancient_leviathan"] = AncientLeviathanAbility.Instance,
         ["hermit"] = HermitAbility.Instance,
+        ["sute"] = SuteQuestAbility.Instance,
+        ["tiger_mail"] = TigerMailAbility.Instance,
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via

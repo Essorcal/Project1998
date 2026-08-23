@@ -214,6 +214,13 @@ public sealed partial class Session
         // player's level/vitals unlock (or refuses, under-levelled). Non-entrance tiles return immediately.
         if (!offMap && TryMythicCaveEntrance((ushort)nx, (ushort)ny)) return;
 
+        // Tiered "event cave" doorways (game-data/EventCaves.csv) are the same idea one step further along:
+        // the destination is one of five parallel copies of the dungeon, chosen off the character's level and
+        // subpath rank, behind an entry dialog. Intercepted here rather than after the step for the same reason
+        // the zodiac caves are -- the player never stands on the threshold, they are taken through it or turned
+        // around on it. See Session.TryEventCaveEntrance.
+        if (!offMap && TryEventCaveEntrance((ushort)nx, (ushort)ny)) return;
+
         // Class path-hall interior doorways (onScriptedTilesPathHalls.lua) are scripted tiles, not SQL warps —
         // only the "outside" warp is in Warps.csv, which is why the leader/arena doors felt dead.
         if (!offMap && TryPathHallWarp((ushort)nx, (ushort)ny)) return;
@@ -698,11 +705,11 @@ public sealed partial class Session
         {
             // Toggle "exchange/trade" (whether others may exchange with you). Same profile cells; persisted.
             // Minitext into the status/"spell cast" pane (RTK clif_changestatus case 8 -> clif_sendminitext).
-            // Uppercase EXCHANGE + double tab (vs RTK's "Exchange" space-padded) is the user's 2026-08-19
-            // spec of the real 4.95 client's line.
+            // Mixed-case "Exchange", space-padded through SettingLine like every other toggle line (the
+            // 2026-08-19 uppercase + double-tab spec is retired).
             _char.Exchange = !_char.Exchange;
             SaveChar();
-            SendMiniText($"EXCHANGE\t\t:{(_char.Exchange ? "ON" : "OFF")}");
+            SendMiniText(SettingLine("Exchange", _char.Exchange));
             Log.Info($"   -> setting 0x08 Exchange = {(_char.Exchange ? "ON" : "OFF")}");
         }
         else if (setting == 0x0A)

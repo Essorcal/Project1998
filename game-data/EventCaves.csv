@@ -1,0 +1,25 @@
+# Tiered "event cave" entrances — a doorway that reads the character and drops them into one of
+# FIVE parallel copies of the same dungeon (see EventCaveTiers.csv for which depth they get).
+#
+# These are scripted tiles, NOT Warps.csv rows, for the same reason Sute's cave mouth is: the
+# destination is conditional. Stepping on one plays Pages as a dialog sequence, then either warps
+# to the qualifying tier, opens a two-tunnel menu when the band is a split, or — for a character
+# below the ladder's floor — snaps them back with DenyMsg in the status box. The player never
+# actually stands on the tile; the step is intercepted the way MythicCaves.csv entrances are.
+#
+# EntranceTiles  ';'-separated "x:y" on EntranceMap (same encoding MythicCaves.csv uses).
+# TierMaps       '|'-separated, SHALLOWEST FIRST, one map id per tier. Fewer than the ladder's
+#                deepest tier is fine: a tier with no map falls back to the deepest one listed.
+# DestX/DestY    landing tile, the same on every tier (the five copies are the same rooms).
+# Pages          '|'-separated dialog pages, shown before any warp or refusal.
+# Prompt/OptionNear/OptionFar   the split-room menu. OptionNear picks Tier, OptionFar picks AltTier.
+# DenyMsg        status-box line when no band matches (under-levelled). Shown AFTER the pages.
+#
+# Buya Library Caverns: the wind-quest dungeon behind the library's north doorway (map 486). RTK
+# routes the same five tiers from onScriptedTilesQuest.lua ("Buya Library" block) via
+# eventCaveLevelPrompt({6503, 6523, 6543, 6563, 6583}, 9, 1) — the geometry here is RTK's, the
+# wording is the 4.9x client's own (RTK's copy carries later typos: "hanges in the air", and it
+# asks "You see two paths" with "The smoother one."). RTK also gates the doorway on the
+# wind_lake_cavern quest flag; that quest is not built here yet, so entry is open.
+Key,EntranceMap,EntranceTiles,TierMaps,DestX,DestY,Pages,Prompt,OptionNear,OptionFar,DenyMsg,Sources
+buya_library_caverns,486,13:0;14:0,6503|6523|6543|6563|6583,9,1,"You step into the doorway, which leads into the depths of the caverns below.|It is dark and musty, and a foul stench hangs in the air.|You summon your courage and venture in!","The tunnel splits in two directions...which do you pick?",The smoother tunnel.,The rougher tunnel.,You try to get in but quickly find yourself back outside.,rtk-lua|live-obs-brian

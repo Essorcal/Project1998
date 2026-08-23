@@ -114,7 +114,12 @@ public sealed partial class Session
     /// and re-showing it is a single idempotent 0x07, so the plain show/hide pair is enough.</para></summary>
     public void SyncGroundItems(IReadOnlyList<GroundItem> items)
     {
-        foreach (var gi in items)
+        // Our own spot-traps markers ride along: they are drawn through the identical viewport-gated 0x07
+        // path, and the reveal radius (15) is nearly twice the view rect, so they need the same walk-into-view
+        // draw the world's floor items get. They live only on this session — no other client ever sees them.
+        GroundItem[]? markers = null;
+        lock (_viewLock) if (_trapMarkers.Count > 0) markers = _trapMarkers.Values.ToArray();
+        foreach (var gi in markers is null ? items : items.Concat(markers))
         {
             bool shown;
             lock (_viewLock) shown = _shownItems.Contains(gi.Id);
@@ -184,8 +189,35 @@ public sealed partial class Session
     }
 
     /// <summary>Reset the drawn-mob set (before a full 0x15 map rebuild, which drops all foreign entities
-    /// client-side). The next SyncMobs/SyncPeers then re-streams everything currently in view.</summary>
-    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); } }
+    /// client-side). The next SyncMobs/SyncPeers then re-streams everything currently in view.
+    ///
+    /// <para><c>_trapMarkers</c> goes with them: a revealed trap is a marker on THIS map, and the client just
+    /// dropped every foreign entity. RTK's own markers are per-map floor items and die with the room the same
+    /// way — which is the "stays until you leave the map" lifetime seeSpotTraps describes.</para></summary>
+    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _trapMarkers.Clear(); } }
+
+    /// <summary>Rub out the spot-traps marker for one trap, if this client ever revealed it — RTK
+    /// <c>removeTrapItem(npc)</c>, which every trap NPC calls right before deleting itself. Broadcast to the
+    /// whole map by World when a trap goes off, so it is a no-op for everyone who never spotted that one.</summary>
+    public void ClearTrapMarker(uint trapId)
+    {
+        GroundItem? marker;
+        lock (_viewLock)
+        {
+            if (!_trapMarkers.Remove(trapId, out marker)) return;
+            if (!_shownItems.Remove(marker.Id)) return;   // never made it past the viewport gate — nothing drawn to erase
+        }
+        SendDespawn(marker.Id);
+    }
+
+    /// <summary>Register a spot-traps marker on a revealed trap's tile — one per TRAP, so re-casting over the
+    /// same ground re-marks it instead of piling a second sword on the tile. Returns false if that trap was
+    /// already marked. The DRAW is left to <see cref="SyncGroundItems"/> so a trap revealed beyond the view
+    /// rect is drawn when we walk to it rather than thrown away by the 0x07 gate.</summary>
+    public bool AddTrapMarker(uint trapId, GroundItem marker)
+    {
+        lock (_viewLock) return _trapMarkers.TryAdd(trapId, marker);
+    }
 
     /// <summary>Re-assert every co-located peer + mob on OUR client. Call after re-sending 0x15 mapinfo
     /// in place (the realm-center refresh), which makes the client rebuild the map and drop all FOREIGN

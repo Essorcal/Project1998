@@ -19,3 +19,9 @@ Maps,Count,MobCap,Message,Primary,SentryTable,SentryTopY,BigTable,BigChance
 4100-4108,20,50,Tigers ambush you!,burst:tiger_mob3,,,,
 4109,20,50,Tigers ambush you!,burst:tiger_mob3,,,tiger_big3,10
 4110,20,50,Tigers ambush you!,,tiger_sents3,9999,,
+# Buya town (330) rat nest. NOT from RTK — it has no trap tile here at all (mobSpawnHandler.lua flat-spawns
+# rats in the caves). Reconstructed from live 7.x eyewitness, 2026-08-22: "You have disturbed a nest of rats."
+# with rats standing on every side. 5 hidden tiles over ~17,100 walkable cells (95% of them reachable from the
+# gates) is about one spring per 3,400 steps — deliberately a rarity, not a hazard. MobCap 40 = the town's 20
+# horses plus ~20 rats before sprung tiles stop being replaced; killing them lets the tiles come back.
+330,5,40,You have disturbed a nest of rats.,burst:rat_nest,,,,

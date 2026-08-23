@@ -82,9 +82,9 @@ public sealed partial class Session
         _char.Grouped = on;
         MarkDirty();
         // Minitext into the status/"spell cast" pane (RTK clif_changestatus case 2 -> clif_sendminitext),
-        // NOT SendMessage's 0x02 login-style box, which the in-game client doesn't surface. Tab separator
-        // (vs RTK's space padding) is the user's 2026-08-19 spec of the real 4.95 client's line.
-        SendMiniText($"Join a group\t:{(on ? "ON" : "OFF")}");
+        // NOT SendMessage's 0x02 login-style box, which the in-game client doesn't surface. Space-padded
+        // through SettingLine, like every other toggle line (the 2026-08-19 tab-separated spec is retired).
+        SendMiniText(SettingLine("Join a group", on));
     }
 
     /// <summary>Removes <paramref name="member"/> from their party — the "Join a group" toggle going off

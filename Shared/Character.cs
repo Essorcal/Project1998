@@ -270,13 +270,15 @@ public sealed class TimedEffects
     /// key -> absolute unix-ms expiry.</summary>
     public Dictionary<string, long> StatusFlags = new();
 
-    // Rage / fury tier (player.rage): a whole-swing multiplier.
-    public long   RageUntil;   public int    RageAmount = 1;  public string RageName = "";
+    // Rage / fury tier (player.rage): a whole-swing multiplier. CrRageTier is Chung Ryong's Rage's climb
+    // level (0 = not that fury): it must ride along with RageUntil because the tier is what prices the
+    // wear-out drain, and dropping it on relog turned logging out into a way to keep an 81x fury for free.
+    public long   RageUntil;   public int    RageAmount = 1;  public string RageName = "";  public int CrRageTier;
     // Damage-reduction "deduction" — two independent, non-stacking sources (Sanctuary line, Baekho's Cunning).
     public long   SancUntil;   public double SancMult   = 1.0; public string SancName = "";
     public long   CunningUntil; public double CunningMult = 1.0;
-    // Combat stances (Backstab / Flank).
-    public long   BackstabUntil; public long FlankUntil;
+    // Combat stances (Backstab / Flank / Baekho's Cunning 4's four-way swing).
+    public long   BackstabUntil; public long FlankUntil; public long FourWayUntil;
     // Stealth (Invisible / Spirit's Form / Life's Cloak / Glass Form) — timer + which spell armed it.
     public long   StealthUntil; public string StealthName = "";
     // Morph/disguise: the Monster.tbl look peers see instead of the human sprite.

@@ -157,22 +157,39 @@ public sealed class World
     /// MobSpawnRules row asks for a cooldown are recorded, so this stays a handful of entries rather than one
     /// per kill. Deliberately NOT persisted: a restart is already a world reset for spawns.</summary>
     private readonly Dictionary<(ushort Map, string Key), long> _lastDeath = new();
-    private long _tick;                                                  // heartbeat counter (600ms each)
+    private long _tick;                                                  // heartbeat counter (TickMs each)
 
-    private const int TickMs = 600;         // world heartbeat period; also the unit MoveTimer accumulates in
+    /// <summary>World heartbeat period, and the unit every mob timer accumulates in — so it is also the
+    /// FLOOR on how often any creature can act. Override with <c>P1998_TICK_MS</c>.
+    ///
+    /// <para><b>Was 600ms; now 333.</b> Lowering it does not make anything faster: every timer is
+    /// <c>timer += TickMs</c> compared against a per-mob interval in real milliseconds, and the leftover is
+    /// carried (<c>timer -= interval</c>) rather than reset, so a 2000ms creature still moves every 2000ms
+    /// on average either way. What changes is GRANULARITY — the smallest action interval the world can
+    /// express at all. At 600 the fastest possible creature managed 1.7 actions/sec, which could not
+    /// represent Sute, who was observed moving and striking twice a second in a 333/333/rest rhythm (see
+    /// Server/SuteAi.cs). 333 divides that rhythm exactly.</para>
+    ///
+    /// <para>Cost: the tick body runs ~1.8x as often. It only walks maps that have players on them, and the
+    /// slow-tick watchdog (<see cref="SlowTickMs"/>, which scales off this) has never fired in this repo's
+    /// logs, so the headroom was there. If it starts firing, raise this back — nothing but Sute's cadence
+    /// depends on the smaller value.</para></summary>
+    private static readonly int TickMs =
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_TICK_MS"), out var tm) && tm >= 50 ? tm : 333;
 
     /// <summary>Poison/venom damage cadence, RTK's <c>while_cast_1500</c>. Shared by the mob DoT, the Rogue
     /// poison trap and the player-side venom, so the rate NexusAtlas quotes ("1000 damage a second") converts
     /// against one number in one place — see <see cref="Session.ReceivePoison"/>.</summary>
     public const int PoisonTickMs = 1500;
-    // Fallback respawn delay for a spawn POINT whose creature somehow carries no SpawnTime (~18s at
-    // 600ms/tick). Every mob in the table does carry one, so this is a floor, not the cadence: a point's
+    // Fallback respawn delay for a spawn POINT whose creature somehow carries no SpawnTime (~18s, derived
+    // from TickMs so it stays 18s whatever the heartbeat is). Every mob in the table does carry one, so this
+    // is a floor, not the cadence: a point's
     // real delay is its own MobDef.SpawnTime — see SpawnTicksFor.
-    private const int RespawnTicks = 30;
+    private static readonly int RespawnTicks = Math.Max(1, 18_000 / TickMs);
     // How often the batch-refill sweep runs, in ticks. RTK's spawner NPC is an actiontime-driven NPC firing
     // about once a second; its timers are whole seconds and the shortest in the table is 2s, so sampling at
-    // ~1.2s costs nothing and keeps the sweep off the 600ms hot path.
-    private const int BatchSweepTicks = 2;
+    // ~1.2s costs nothing and keeps the sweep off the per-beat hot path.
+    private static readonly int BatchSweepTicks = Math.Max(1, 1_200 / TickMs);
     // Placement attempts per mob when filling a group, as a multiple of the group's cap. RTK gives up the
     // same way (`if fail >= maxMobs[z] * 4 then` treat the mob as done), which is what stops a boxed spawn
     // from spinning forever when the box is mostly wall.
@@ -209,18 +226,26 @@ public sealed class World
     // would evaporate the moment anyone walked in. Doubled while the creature is panicking (see PanicMs), so a
     // swing sends it running from further off than a stroll past does.
     private const int FleeRadius = 2;
-    // A retreating prey creature moves at DOUBLE its usual pace, spooked or not — running is not the same
-    // motion as browsing, and at its idle MoveTime a rabbit (3000ms) simply cannot get away from a walking
-    // player. RTK expresses this as an absolute (mysterious_merchant's on_attacked sets `mob.newMove = 500`);
-    // a multiplier says the same thing against whatever pace the creature actually has.
+    // ---- flee DART sizes (see Dart) -------------------------------------------------------------
+    // Tiles covered in ONE move turn by a fleeing creature. RTK expresses running away as several
+    // `mob:move()` calls in a single script invocation rather than as a shorter timer, so distance per turn
+    // — not milliseconds per tile — is the dial, and it is the same dial for all three fleers.
     //
-    // CEILING: the world steps a mob at most once per Tick, so nothing can exceed one tile per TickMs (600ms)
-    // however small this makes the interval. A rabbit genuinely doubles (3000 -> 1500). The blue rooster's
-    // 500ms MoveTime is already under the heartbeat, so it is ALREADY moving as fast as this server can render
-    // and cannot speed up further — its flee shows as direction, not pace.
-    private const int FleeSpeedup = 2;
+    // PREY (rabbit, blue rooster): two tiles, from the user's own observation of the real game (2026-08-22) —
+    // a rabbit you walk up to or swing at hops two spaces at once. No RTK reference exists for this: RTK
+    // gives a rabbit a wolf's AI, and the Flees flag is ours (Content.LoadMobFlees).
+    //   * A rabbit (MoveTime 3000) covers exactly the same ground per second as the shortened-timer version
+    //     this replaced (2 tiles / 3000ms == 1 tile / 1500ms), so it is no harder to catch — only the motion
+    //     changes, from a hurried walk to the hop it should always have been.
+    //   * A blue rooster (MoveTime 500, already under the 600ms heartbeat) genuinely does get quicker. Its
+    //     flee used to be expressible only as direction, because one tile per tick was the hard ceiling on
+    //     pace; distance per turn has no such ceiling.
+    public const int PreyDartTiles = 2;
+    // THE WOUNDED ROUT (nine-tailed fox, Maletic, Citelam): three, straight off RTK's own
+    // `mob:move() mob:move() mob:move()`. Previously approximated by stepping every heartbeat instead.
+    public const int RoutDartTiles = 3;
     // How long a prey creature stays spooked after a player swings at it or damages it (World.Spook /
-    // TryDamage), refreshed by each further hit. Panic doesn't add speed on top of FleeSpeedup — it widens the
+    // TryDamage), refreshed by each further hit. Panic doesn't lengthen the dart — it widens the
     // notice radius and keeps the creature running after you stop chasing, so a swing sends it properly away
     // instead of it settling down the moment you step back.
     private const int PanicMs = 4000;
@@ -230,7 +255,7 @@ public sealed class World
     // patch (map 330) — the tutorial's stage-3 gather. A stack is MinQty..MaxQty items on one tile.
     // Forage spawn boxes are data-driven (game-data/ForageAreas.csv -> Content.ForageAreas); hot-reloads
     // via @reload. See TopUpForageLocked.
-    private const int ForageTicks = 30;   // top up ~every 18s (30 * 600ms), like RTK's periodic itemspawner
+    private static readonly int ForageTicks = Math.Max(1, 18_000 / TickMs);   // top up ~every 18s, like RTK's periodic itemspawner
 
     // ---- world calendar (opcode 0x20) ---------------------------------------------------------
     // The calendar itself lives in Shared.GameCalendar — a pure function of wall-clock time since a fixed
@@ -269,7 +294,7 @@ public sealed class World
     // player steps indoors, and is driven by the season. This world only (a) broadcasts a change when the
     // weather PERIOD rolls over for an active map and (b) holds optional admin OVERRIDES set via @weather.
     // 0=clear, 1=WRAIN(rain), 2=WSNOW(snow) — the three states the 4.95 client can draw.
-    private const int AdviceTicks = 1500;          // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer)
+    private static readonly int AdviceTicks = Math.Max(1, 900_000 / TickMs);   // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer)
 
     // Admin/debug weather overrides keyed by WeatherModel.ZoneOf(map). When present, a zone shows this state
     // instead of the seasonal model until "@weather auto" clears it (indoors still wins → clear). Guarded by _lock.
@@ -279,6 +304,10 @@ public sealed class World
     // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
     // Tick — TryDamage can't broadcast where it stands, and its callers only know how to draw the damage.
     private readonly List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> _deferredFx = new();
+    // Sprung traps whose spot-traps MARKER still has to be rubbed out on every client that revealed it (RTK
+    // removeTrapItem, called by every trap NPC right before it deletes itself). Filled from inside the tick's
+    // _lock by TriggerTrapLocked, flushed with _deferredFx once the lock is released — the clear is socket I/O.
+    private readonly List<(ushort map, uint trapId)> _deferredTrapClears = new();
 
     // Lua mob hooks raised from inside the lock, run by the next Tick OUTSIDE it. This queue is the whole
     // reason MobScript is safe: a hook is free to speak, heal, vanish or touch a player's quest registry,
@@ -500,7 +529,8 @@ public sealed class World
         // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
         // entry, since that is the only moment a due group on an unwatched map gets looked at.
         RefillGroups(mapId);
-        RefillAmbushLocked(mapId);   // top up this cave's hidden ambush traps (also every entry, same reason)
+        RefillAmbushLocked(mapId);   // top up this map's hidden ambush traps (also every entry, same reason)
+        RefillFrigidLocked(mapId);   // …and Sute's Cave's hidden cold tiles (Server/SuteAi.cs)
 
         if (!_materialized.Add(mapId)) return;              // already done
         if (!_spawns.TryGetValue(mapId, out var list)) return;
@@ -940,9 +970,11 @@ public sealed class World
             // The trap kinds a PLAYER sets off: bladestorm (an AoE decoy), shiver (a cosmetic fall echo — see
             // Session.TryMythicFallRoom), and ambush (a cave mob-spawn tile — see Content.AmbushMapDef). The
             // hazard family (dart/snare/…) stays mob-only.
-            trap = m.Traps.FirstOrDefault(t => (t.Kind == "bladestorm" || t.Kind == "shiver" || t.Kind == "ambush") && t.X == x && t.Y == y);
+            trap = m.Traps.FirstOrDefault(t => (t.Kind == "bladestorm" || t.Kind == "shiver" || t.Kind == "ambush"
+                                                || t.Kind == SuteAi.FrigidTrapKind) && t.X == x && t.Y == y);
             if (trap is null) return;
             m.Traps.Remove(trap);
+            if (trap.Kind == SuteAi.FrigidTrapKind) RefillFrigidLocked(mapId);   // relocate the sprung tile
             if (trap.Kind == "bladestorm")
                 foreach (var (dx, dy) in BladestormFan[facing & 3])
                 {
@@ -952,8 +984,15 @@ public sealed class World
             else if (trap.Kind == "ambush")
                 ambushMsg = FireAmbushLocked(mapId, x, y);   // spawns the burst + relocates a replacement trap
         }
+        // The trap is gone, so its revealed marker goes with it (RTK removeTrapItem before npc:delete) — on
+        // every client that spotted it, not just the stepper's. Runs for all three PC-triggerable kinds; only
+        // ambush is revealable today, so for the other two it's a no-op on every session.
+        Broadcast(mapId, p => p.ClearTrapMarker(trap.Id));
         // Shiver is pure flavor: sense the sprung trap, nothing else (RTK WarpTrapShiverNpc).
         if (trap.Kind == "shiver") { player.FeelShiver(); return; }
+        // Sute's Cave cold tile: a flat hit and its own line. Its replacement was already placed under the
+        // lock above, so the room does not get safer as it is walked.
+        if (trap.Kind == SuteAi.FrigidTrapKind) { player.TakeFrigidBlast(); return; }
         // Ambush: the burst mobs are already on the map (built under the lock above); the caller's post-step
         // SyncMobs renders them for the stepper. Just deliver the "Rabbits ambush you!" style status line.
         if (trap.Kind == "ambush") { if (ambushMsg is not null) player.ShowAmbushText(ambushMsg); return; }
@@ -973,15 +1012,57 @@ public sealed class World
     private string? FireAmbushLocked(ushort mapId, ushort x, ushort y)
     {
         if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return null;
+        bool onStepper = cfg.PrimaryKind == "single";   // RTK block:spawn(id, block.x, block.y) — see AmbushBurstTile
+        int slot = 0;
         foreach (var mobId in SelectAmbushBurst(cfg, y))
         {
             var def = Content.MobById(mobId);
+            int i = slot++;                              // consumed even if the id doesn't resolve — RTK indexes the LIST
             if (def is null) continue;
-            var (sx, sy) = FreeSpawnTile(mapId, x, y);   // the tile, or the nearest open one — spreads the burst out
+            var (sx, sy) = onStepper ? (x, y) : AmbushBurstTile(mapId, x, y, i);
             BuildMob(mapId, def, sx, sy);
         }
         RefillAmbushLocked(mapId);   // relocate the sprung trap (and top up) while under the mob cap
         return cfg.Message;
+    }
+
+    /// <summary>Where the <paramref name="index"/>'th member of a burst lands: RTK spreads them over the four
+    /// tiles AROUND the stepper in a fixed order — east, west, north, south — and only drops one on the
+    /// stepper's OWN tile when that neighbour is unusable (wall, occupied, off-map or a warp). Members past
+    /// the fourth (a 5-strong sentry pack) land on the stepper too, exactly as the Lua's trailing <c>else</c>
+    /// does. See rabbitTrap.lua <c>spawnRabbitMobN</c> / mob_spawn.lua <c>spawnMob</c>: each z-index has its
+    /// own hard-coded neighbour and its own <c>getPass</c>/<c>getObjectsInCell</c>/<c>getWarp</c> guard.
+    ///
+    /// <para>Deliberately NOT <see cref="FreeSpawnTile"/>. That helper treats the trigger tile as free when no
+    /// MOB is on it — it never looks at players — so the first member of every burst spawned directly under
+    /// the stepper's feet before the rest ringed outward: the reported "mobs spawn around me, but one is
+    /// stacked on top of me". The single-creature caves (Kugnae trapdoor spider, Buya scorpion lurker) still
+    /// land on the stepper, because RTK's own <c>block:spawn(102, block.x, block.y, 1)</c> does — one creature
+    /// dropping onto you is that trap, not this bug.</para>
+    ///
+    /// Caller holds <c>_lock</c>.</summary>
+    private (ushort x, ushort y) AmbushBurstTile(ushort mapId, ushort x, ushort y, int index)
+    {
+        var (dx, dy) = index switch
+        {
+            0 => (1, 0),    // east
+            1 => (-1, 0),   // west
+            2 => (0, -1),   // north
+            3 => (0, 1),    // south
+            _ => (0, 0),    // 5th and beyond: on the stepper (RTK's `else block:spawn(mob, block.x, block.y)`)
+        };
+        if (dx == 0 && dy == 0) return (x, y);
+
+        int nx = x + dx, ny = y + dy;
+        var (xs, ys) = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
+        if (nx < 0 || ny < 0 || (xs > 0 && (nx >= xs || ny >= ys))) return (x, y);
+        var terrain = xs > 0 ? MapData.For(mapId, xs, ys) : null;
+        if (terrain is not null && terrain.Solid(nx, ny)) return (x, y);
+        if (Content.TryWarp(mapId, (ushort)nx, (ushort)ny, out _)) return (x, y);
+        var m = Map(mapId);
+        foreach (var mo in m.Mobs) if (mo.Alive && mo.X == nx && mo.Y == ny) return (x, y);
+        foreach (var p in m.Players) if (p.PlayerX == nx && p.PlayerY == ny) return (x, y);
+        return ((ushort)nx, (ushort)ny);
     }
 
     // Pick the mob-id list this trap fires: the sentry burst when the stepper is in the top half
@@ -1030,6 +1111,31 @@ public sealed class World
         }
     }
 
+    // ---- Sute's Cave cold tiles (Server/SuteAi.cs) ----------------------------------------------
+    // The "A blast of frigid cold hits you." hazard: hidden trap tiles scattered through all seven rooms,
+    // topped back up to SuteAi.FrigidTrapsPerMap on every entry and after each one springs. Deliberately the
+    // same machinery as the cave ambush traps above rather than a per-step dice roll, so they can be SPOTTED
+    // (spot_traps reveals any trap kind) and so a sprung one relocates instead of thinning the room out.
+    // Caller holds _lock.
+    private void RefillFrigidLocked(ushort mapId)
+    {
+        if (Array.IndexOf(SuteAi.CaveMaps, mapId) < 0) return;
+        var m = Map(mapId);
+        int traps = 0; foreach (var t in m.Traps) if (t.Kind == SuteAi.FrigidTrapKind) traps++;
+        if (traps >= SuteAi.FrigidTrapsPerMap) return;
+
+        var taken = OccupiedTiles(mapId);
+        foreach (var t in m.Traps) taken.Add((t.X, t.Y));   // don't stack two traps on one tile
+        int budget = SuteAi.FrigidTrapsPerMap * PlacementTriesPerMob;
+        while (traps < SuteAi.FrigidTrapsPerMap && budget-- > 0)
+        {
+            if (!TryPickMapTile(mapId, taken, out var tx, out var ty)) continue;
+            m.Traps.Add(new Trap { Id = _nextTrapId++, X = tx, Y = ty, Kind = SuteAi.FrigidTrapKind, OwnerId = 0 });
+            taken.Add((tx, ty));
+            traps++;
+        }
+    }
+
     // A random passable, object-free, non-warp, unoccupied tile anywhere on a map (the whole-map analogue of
     // TryPickGroupTile). Caller holds _lock.
     private bool TryPickMapTile(ushort mapId, HashSet<(int, int)> taken, out ushort x, out ushort y)
@@ -1063,6 +1169,17 @@ public sealed class World
     private static readonly Dictionary<string, int> TrapDamage = new()
         { ["dart"] = 500, ["repeating"] = 500, ["spear"] = 3500, ["death"] = 11650 };
 
+    /// <summary>Trap kinds only a PLAYER springs — a wandering mob walks over one and leaves it alone. RTK
+    /// gates both inside the trap NPC's own click hook: <c>MobSpawnNpc</c> (our "ambush") and the tiger
+    /// caves' <c>WarpTrapShiverNpc</c> (our "shiver") each bail out unless <c>block.blType == BL_PC</c>. The
+    /// rogue combat family is the opposite — those exist to catch mobs — so it stays triggerable by both.
+    ///
+    /// <para>Without this, cave fauna quietly ATE the hidden ambush tiles as they wandered (the mob-step
+    /// lookup removed the trap, then <see cref="TriggerTrapLocked"/> had no case for it and did nothing), so
+    /// a cave's spawn triggers kept silently vanishing and reappearing elsewhere on the next refill — the
+    /// "the spawn triggers seem to despawn and move around" report.</para></summary>
+    private static bool IsPcOnlyTrap(string kind) => kind is "shiver" or "ambush";
+
     // Caller holds _lock (called mid-movement-loop, mob has just stepped onto the trap's tile). Damage
     // kinds are queued for World.Tick's deferred pass (needs Session-facing broadcasts, which mustn't run
     // under the lock); status kinds (snare/sleep/flash — all simplified to the same "can't act" mechanic as
@@ -1071,6 +1188,9 @@ public sealed class World
     private void TriggerTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
     {
         long now = Environment.TickCount64;
+        // RTK's every-trap epilogue: removeTrapItem(npc) before npc:delete(). A trap that has gone off takes
+        // its revealed marker with it, so a Spot Traps / Watchful Eye sword never outlives the trap it marks.
+        _deferredTrapClears.Add((mapId, trap.Id));
         switch (trap.Kind)
         {
             case "dart" or "repeating" or "spear" or "death":
@@ -1367,9 +1487,106 @@ public sealed class World
         return false;
     }
 
+    // ---- the flee DART: the one way anything in this world runs away --------------------------------
+    /// <summary>How each hop of a <see cref="Dart"/> picks its direction.</summary>
+    private enum DartMode
+    {
+        /// <summary>Open the gap from (tx,ty) — <see cref="StepMobAway"/>, sideways slip and all.</summary>
+        Away,
+        /// <summary>Close on (tx,ty), stopping the moment the mob is in reach — <see cref="StepMobToward"/>.</summary>
+        Toward,
+        /// <summary>Straight ahead in <see cref="Mob.Dir"/>, wherever that points (the blind rout).</summary>
+        Straight,
+    }
+
+    /// <summary>
+    /// Cover up to <paramref name="tiles"/> tiles inside ONE move turn, stopping early at the first hop that
+    /// can't be taken. Returns how many were actually covered — 0 means boxed in, which is what every caller
+    /// reads as "cornered".
+    ///
+    /// <para><b>This is RTK's own idiom for running away, and the only one this server uses.</b> RTK expresses
+    /// a break-off by calling <c>mob:move()</c> several times in a single script invocation —
+    /// <c>AI/bosses/nine_tailed_fox.lua</c> does three in a row — which the client draws as a creature
+    /// covering several tiles at once rather than walking faster. The three fleers here (prey, the wounded
+    /// rout, Sute) all used to approximate it differently: prey ran on a shortened timer, the rout stepped
+    /// every heartbeat, and Sute paced tile by tile. They now share this, so "runs away" looks the same
+    /// everywhere and there is one place to change it.</para>
+    ///
+    /// <para>Every hop goes through the ordinary step helpers, so walls, occupancy, map bounds and trap tiles
+    /// all apply to each one individually — a fleeing creature can absolutely bolt onto a trap. (The old
+    /// hand-rolled rout skipped the trap check by moving the mob itself; going through
+    /// <see cref="StepMobTo"/> fixes that inconsistency.)</para>
+    ///
+    /// <para>Caller holds <c>_lock</c> and has already decided this is the mob's move turn.</para>
+    /// </summary>
+    private int Dart(DartMode mode, int tiles, ushort mapId, MapState m, Mob mob, int tx, int ty,
+                     (ushort Xs, ushort Ys) dims, MapData? terrain,
+                     HashSet<(ushort, ushort)> occupied, HashSet<(int, int)> mobTiles,
+                     List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                     List<(ushort map, uint id, byte dir)> turns,
+                     List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
+    {
+        int hops = 0;
+        while (hops < tiles)
+        {
+            bool stepped;
+            switch (mode)
+            {
+                case DartMode.Toward:
+                    int dx = tx - mob.X, dy = ty - mob.Y;
+                    // In reach: stop here rather than trying to walk through them.
+                    if ((dx == 0 && Math.Abs(dy) == 1) || (dy == 0 && Math.Abs(dx) == 1)) return hops;
+                    stepped = StepMobToward(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                    break;
+                case DartMode.Straight:
+                    stepped = StepMobStraight(mapId, m, mob, dims, terrain, occupied, mobTiles, moves, trapDamage);
+                    break;
+                default:
+                    stepped = StepMobAway(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                    break;
+            }
+            if (!stepped) break;
+            hops++;
+        }
+        return hops;
+    }
+
+    /// <summary>Remaining-HP percent for a mob's over-head bar — 1..100 while alive so a living creature's
+    /// bar never reads empty. Mirrors Session's own private HpPercent(Mob); the two must agree or a healed
+    /// bar would jump to a different scale than a damaged one.</summary>
+    private static byte MobHpPercent(Mob m)
+    {
+        int max = Math.Max(1, m.MaxHp);
+        int cur = Math.Clamp(m.Hp, 0, max);
+        if (cur <= 0) return 0;
+        return (byte)Math.Max(1, (int)((long)cur * 100 / max));
+    }
+
+    /// <summary>One hop straight ahead in the mob's current facing, with the same bounds/occupancy/terrain
+    /// checks every other step takes. The blind half of the wounded rout: RTK picks a random side once and
+    /// then runs, so the creature does not steer around anything — it just stops when it hits something.
+    /// Caller holds <c>_lock</c>.</summary>
+    private bool StepMobStraight(ushort mapId, MapState m, Mob mob,
+                                 (ushort Xs, ushort Ys) dims, MapData? terrain,
+                                 HashSet<(ushort, ushort)> occupied, HashSet<(int, int)> mobTiles,
+                                 List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                                 List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
+    {
+        byte dir = mob.Dir;
+        int nx = mob.X + (dir == 1 ? 1 : dir == 3 ? -1 : 0);
+        int ny = mob.Y + (dir == 2 ? 1 : dir == 0 ? -1 : 0);
+        if (nx < 0 || ny < 0) return false;
+        if (dims.Xs != 0 && (nx >= dims.Xs || ny >= dims.Ys)) return false;
+        if (occupied.Contains(((ushort)nx, (ushort)ny))) return false;
+        if (mobTiles.Contains((nx, ny))) return false;
+        if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) return false;
+        return StepMobTo(mapId, m, mob, nx, ny, dir, mobTiles, moves, trapDamage);
+    }
+
     /// <summary>A player swung at <paramref name="mob"/> — hit OR miss. A prey creature (<see cref="Mob.Flees"/>)
-    /// bolts: it moves on half its usual timer for <see cref="PanicMs"/>, refreshed by each further swing (RTK
-    /// Instances/mysterious_merchant.lua <c>on_attacked</c>: <c>mob.newMove = 500</c>). No effect on anything
+    /// bolts: it stays spooked for <see cref="PanicMs"/>, refreshed by each further swing, which WIDENS the
+    /// distance at which it notices you (<see cref="FleeRadius"/>) rather than changing how far its dart
+    /// carries — see <see cref="Dart"/> and <see cref="PreyDartTiles"/>. No effect on anything
     /// else — an ordinary mob is provoked by <see cref="TryDamage"/>, which needs damage to have landed.</summary>
     public void Spook(Mob mob)
     {
@@ -1396,7 +1613,7 @@ public sealed class World
             trapDamage.Add((mapId, mob, mob.MaxHp, 0));
             _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, IceBeastMeltAnim, 0));
         }
-        var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && t.Kind != "shiver");   // shiver is a PC-only cosmetic echo — mobs walk over it untouched
+        var trap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && !IsPcOnlyTrap(t.Kind));
         if (trap is not null) { m.Traps.Remove(trap); TriggerTrapLocked(mapId, mob, trap, trapDamage); }
         return true;
     }
@@ -2122,6 +2339,9 @@ public sealed class World
             // is what makes a spell as alarming as a sword. A pure MISS never reaches here — Session.ResolveSwing
             // calls Spook directly for that case.
             if (!died && mob.Flees) mob.PanicUntil = Environment.TickCount64 + PanicMs;
+            // Sute, below the red bar, buys the person hitting him one answering swing before he breaks off
+            // again — two if he is cornered and cannot run at all. See SuteAi.OnDamaged.
+            if (!died && mob.Key == SuteAi.MobKey) SuteAi.OnDamaged(mob, Environment.TickCount64);
             if (died && _maps.TryGetValue(mapId, out var m))
             {
                 m.Mobs.Remove(mob);
@@ -2263,7 +2483,7 @@ public sealed class World
     /// the heartbeat — well clear of normal jitter, low enough to catch a stall long before a player would
     /// call it lag. <c>P1998_SLOW_TICK_MS</c> tunes it; 0 disables the watchdog.</summary>
     private static readonly int SlowTickMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_TICK_MS"), out var st) && st >= 0 ? st : 150;
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_TICK_MS"), out var st) && st >= 0 ? st : TickMs / 4;
 
     private long _lockWaitMs;   // how long the last Tick() waited to acquire _lock (watchdog attribution)
 
@@ -2336,6 +2556,11 @@ public sealed class World
         // and sleep re-draw theirs for as long as the hold runs. Broadcasting is socket I/O, so — like every
         // other visual below — the tick only QUEUES them under the lock and sends them after it's released.
         var fxRepeats = new List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)>();
+        // Over-head HP bars to redraw for a mob whose health changed with NO hit behind it — Sute's self-heal
+        // is the only source. Damage draws its own bar through Session.ShowDamageResult; a heal has no such
+        // path, so without this his bar silently stayed where the last blow left it and the heal was
+        // invisible to the player fighting him.
+        var healthShows = new List<(ushort map, Mob mob)>();
         var expiredPets = new List<(ushort map, Mob mob)>();
         var expiredMorphs = new List<Session>();
         var expiredStealth = new List<Session>();
@@ -2442,6 +2667,14 @@ public sealed class World
                 foreach (var mob in m.Mobs)
                 {
                     if (!mob.Alive) continue;
+
+                    // Sute's action rhythm (Server/SuteAi.cs): he acts on two beats out of every three and
+                    // rests on the third, which is what makes both his steps and his swings arrive in pairs.
+                    // Gated here, at the very top of his turn, so it governs everything uniformly — chasing,
+                    // wandering, breaking off and striking — rather than only the parts his AI block reaches.
+                    // Skipping the turn outright (rather than zeroing timers) is what makes the rest a real
+                    // pause: nothing accumulates, so he cannot bank the beat and act twice on the next one.
+                    if (mob.Key == SuteAi.MobKey && SuteAi.RestBeat(mob)) continue;
 
                     // Targeted-buff expiry (Session.CastTargetBuff, e.g. Valor/Harden Armor on a pet): revert each
                     // lapsed buff's stat delta off the mob's raw combat fields. Field-only, so it's safe in-lock.
@@ -2606,10 +2839,6 @@ public sealed class World
                     // Not our prey-flee (MobDef.Flees), which is about a rabbit backing away from anyone: this
                     // is an unwounded boss fighting normally right up to the moment it breaks.
                     //
-                    // RTK re-rolls the direction once per AI tick and then covers three tiles in it. This
-                    // heartbeat can only carry one tile per tick, so the direction is re-rolled on the
-                    // creature's own MoveTime and it steps EVERY tick in between — at their MoveTime of 2000ms
-                    // that is the same three tiles per direction, at the same speed.
                     // (`Hp < MaxHp` first so an untouched creature — nearly all of them, every tick — costs a
                     // comparison rather than a dictionary probe. A threshold of 100 would break this, which is
                     // why the loader's range is capped below it.)
@@ -2622,23 +2851,13 @@ public sealed class World
                         if (mob.MoveTimer >= mob.MoveTime)
                         {
                             mob.MoveTimer -= mob.MoveTime;
+                            // A fresh random side each turn, then RoutDartTiles tiles along it — RTK's
+                            // `mob.side = rand; mob:move() mob:move() mob:move()`, one for one. No leash and
+                            // no steering: it is running, not wandering, and it stops when it hits something.
                             byte side = (byte)Random.Shared.Next(4);
                             if (side != mob.Dir) { mob.Dir = side; turns.Add((mapId, mob.Id, side)); }
-                        }
-                        int fx = mob.X, fy = mob.Y;
-                        switch (mob.Dir) { case 0: fy--; break; case 1: fx++; break; case 2: fy++; break; default: fx--; break; }
-                        bool fok = fx >= 0 && fy >= 0
-                                   && (dims.Item1 == 0 || (fx < dims.Item1 && fy < dims.Item2))
-                                   && !occupied.Contains(((ushort)fx, (ushort)fy))
-                                   && !mobTiles.Contains((fx, fy))
-                                   && (terrain is null || !terrain.BlockedMove(fx, fy, mob.Dir));
-                        if (fok)                                     // no leash: it is running away, not wandering
-                        {
-                            ushort fox = mob.X, foy = mob.Y;
-                            mobTiles.Remove((mob.X, mob.Y));
-                            mob.X = (ushort)fx; mob.Y = (ushort)fy;
-                            mobTiles.Add((fx, fy));
-                            moves.Add((mapId, mob.Id, fox, foy, mob.Dir));
+                            Dart(DartMode.Straight, RoutDartTiles, mapId, m, mob, mob.X, mob.Y,
+                                 dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                         }
                         continue;
                     }
@@ -2777,9 +2996,9 @@ public sealed class World
                     }
 
                     // ---- PREY AI (MobDef.Flees, game-data/MobFlees.csv): a rabbit or a blue rooster does
-                    // not fight and does not stand there. It backs away at double its wander pace from anyone
-                    // who gets within FleeRadius, and a swing (PanicMs) widens that radius and keeps it running
-                    // after you back off. This runs BEFORE everything below because
+                    // not fight and does not stand there. It DARTS PreyDartTiles tiles away (see Dart) from
+                    // anyone who gets within FleeRadius, and a swing (PanicMs) widens that radius and keeps it
+                    // running after you back off. This runs BEFORE everything below because
                     // TryDamage sets TargetId on any landed hit — without this intercept, hitting a rabbit
                     // would drop it straight into the ordinary chase-and-swing branch and it would fight back.
                     // Clearing the target every tick is what "no attacking" actually means here: the attack
@@ -2801,15 +3020,12 @@ public sealed class World
                         }
                         if (scare is not null)
                         {
-                            // Retreat pace: FleeSpeedup times the idle wander rate, whether it was startled by
-                            // a swing or merely by someone walking up. Floored at one heartbeat because the
-                            // tick is the hard ceiling on how often anything can step (see FleeSpeedup).
-                            int pace = Math.Max(TickMs, mob.MoveTime / FleeSpeedup);
+                            // It DARTS — PreyDartTiles tiles in one move turn, not a hurried walk. See Dart.
                             mob.MoveTimer += TickMs;
-                            if (mob.MoveTimer < pace) continue;
-                            mob.MoveTimer -= pace;
-                            StepMobAway(mapId, m, mob, scare.PlayerX, scare.PlayerY,
-                                        dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                            if (mob.MoveTimer < mob.MoveTime) continue;
+                            mob.MoveTimer -= mob.MoveTime;
+                            Dart(DartMode.Away, PreyDartTiles, mapId, m, mob, scare.PlayerX, scare.PlayerY,
+                                 dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                             continue;
                         }
                         // Nobody near enough to spook it: fall through to the ordinary wander below.
@@ -2893,6 +3109,10 @@ public sealed class World
                                 int reach = Math.Max(Math.Abs(tdx), Math.Abs(tdy));
                                 foreach (var sp in repertoire)
                                 {
+                                    // An `onhit` row belongs to the swing, not to this timer — it is rolled
+                                    // in Session.TryMobOnHitSpell when a blow actually lands. Firing it here
+                                    // too would give the creature two independent chances at the same spell.
+                                    if (sp.OnHit) continue;
                                     if (reach > sp.Range || Random.Shared.Next(Math.Max(1, sp.Chance)) != 0) continue;
                                     // A `melee` row is a BONUS SWING with the creature's own weapon rather
                                     // than a spell — RTK's Gim Yi (bosses/gimyi.lua) casts `ambush`, whose
@@ -2905,7 +3125,8 @@ public sealed class World
                                     if (sp.Effect == "melee")
                                     {
                                         hits.Add((mapId, mob, target));
-                                        if (sp.Say.Length > 0) chatter.Add((mapId, mob, (byte)2, sp.Say));
+                                        string mSay = sp.PickSay();
+                                        if (mSay.Length > 0) chatter.Add((mapId, mob, (byte)2, mSay));
                                     }
                                     else mobCasts.Add((mob, target, sp));
                                     mob.SpellReadyAt = Environment.TickCount64 + sp.EveryMs;
@@ -2918,12 +3139,70 @@ public sealed class World
                             // now, by a mob; RTK has no 8-way reach either). A diagonal target falls through to
                             // the chase step below, which moves on a single axis and closes to cardinal in ~1 tick.
                             bool adjacent = (tdx == 0 && Math.Abs(tdy) == 1) || (tdy == 0 && Math.Abs(tdx) == 1);
+
+                            // ---- Sute's bespoke boss AI (Server/SuteAi.cs) --------------------------------
+                            // The one creature that does not simply close and swing: he fights in bursts and
+                            // backs off above half health, and runs below a quarter. SuteAi only DECIDES —
+                            // the stepping and the swing stay here, using the same helpers as everything else,
+                            // so his movement obeys the same collision, leash and trap rules as any other mob.
+                            if (mob.Key == SuteAi.MobKey)
+                            {
+                                long nowMs = Environment.TickCount64;
+                                // The wounded self-heal. Queued as an ordinary repeat-fx so the cast is
+                                // visible; there is no shout because no source records one.
+                                if (SuteAi.TryHeal(mob, nowMs))
+                                {
+                                    fxRepeats.Add((mapId, mob.Id, mob.X, mob.Y, SuteAi.HealAnim, SuteAi.HealSound));
+                                    healthShows.Add((mapId, mob));   // …and let his bar actually climb
+                                }
+
+                                var act = SuteAi.Decide(mob, adjacent, nowMs);
+                                if (act == SuteAi.Act.Hold) { mob.AttackTimer = 0; continue; }
+                                if (act == SuteAi.Act.Retreat || act == SuteAi.Act.Approach)
+                                {
+                                    mob.MoveTimer += TickMs;
+                                    if (mob.MoveTimer < mob.MoveTime) { mob.AttackTimer = 0; continue; }
+                                    mob.MoveTimer -= mob.MoveTime;
+
+                                    // ONE tile per turn — unlike the other two fleers he does not hop
+                                    // several at once (see SuteAi.StepTilesPerTurn). His speed comes from a
+                                    // 333ms MobMoveTime, i.e. a step every acting beat, not a longer stride.
+                                    // Still routed through Dart so the step rules stay shared.
+                                    int hops = Dart(act == SuteAi.Act.Retreat ? DartMode.Away : DartMode.Toward,
+                                                    SuteAi.StepTilesPerTurn, mapId, m, mob, target.PlayerX, target.PlayerY,
+                                                    dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+
+                                    if (act == SuteAi.Act.Retreat)
+                                    {
+                                        // Boxed in? Recomputed EVERY beat he tries to move, never latched —
+                                        // see the note on SuteAi.Phase.Flee. Latching it deadlocked him: a
+                                        // single blocked step made Decide return Normal forever, which meant
+                                        // this branch never ran again to clear the flag, and a boss on 15%
+                                        // health stood and fought to the death instead of running.
+                                        mob.SuteCornered = hops == 0;
+                                        mob.SuteRetreatLeft = Math.Max(0, mob.SuteRetreatLeft - hops);
+                                    }
+                                    if (hops > 0) { mob.AttackTimer = 0; continue; }   // moved: no swing this beat
+
+                                    // Nowhere to go. In the wounded rout that means he turns and fights THIS
+                                    // beat (falling through to the swing below); above half health the
+                                    // cornered flag routes him to Hold on the next one instead.
+                                    if (mob.SutePhase != SuteAi.Phase.Flee) { mob.AttackTimer = 0; continue; }
+                                }
+                            }
+
                             if (adjacent)
                             {
                                 byte face = FaceDelta(tdx, tdy);
                                 if (face != mob.Dir) { mob.Dir = face; turns.Add((mapId, mob.Id, face)); }
                                 mob.AttackTimer += TickMs;
-                                if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; hits.Add((mapId, mob, target)); }
+                                if (mob.AttackTimer >= mob.AttackTime)
+                                {
+                                    mob.AttackTimer = 0;
+                                    hits.Add((mapId, mob, target));
+                                    // Committing to the swing is what spends a burst slot (see SuteAi.OnSwung).
+                                    if (mob.Key == SuteAi.MobKey) SuteAi.OnSwung(mob);
+                                }
                                 continue;   // adjacent: swing instead of stepping
                             }
 
@@ -3056,7 +3335,7 @@ public sealed class World
                     // live trace), and for a single-stepping mob there's no 0x04 commit to correct it. Sending
                     // source makes client_final = source + forward(dir) = the real destination.
                     moves.Add((mapId, mob.Id, ox, oy, stepDir));
-                    var wanderTrap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && t.Kind != "shiver");   // mobs ignore the PC-only shiver echo
+                    var wanderTrap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && !IsPcOnlyTrap(t.Kind));
                     if (wanderTrap is not null) { m.Traps.Remove(wanderTrap); TriggerTrapLocked(mapId, mob, wanderTrap, trapDamage); }
                 }
             }
@@ -3077,6 +3356,14 @@ public sealed class World
 
         // Repeating status effects queued above (venom's per-tick zap, doze/sleep's drowse) — the same 0x29 +
         // 0x19 pair a cast plays, re-sent over the afflicted creature for as long as the status holds.
+        // Bars for health that changed without a hit (the self-heal). Same 0x13 the damage path uses, so the
+        // bar animates up exactly the way it animates down.
+        foreach (var hs in healthShows)
+        {
+            byte pct = MobHpPercent(hs.mob);
+            BroadcastWideArea(hs.map, hs.mob.X, hs.mob.Y, p => p.DamageOver(hs.mob.Id, pct, 0));
+        }
+
         foreach (var fr in fxRepeats)
         {
             BroadcastWideArea(fr.map, fr.x, fr.y, p => p.EffectOver(fr.id, fr.anim));
@@ -3086,11 +3373,15 @@ public sealed class World
         // …and anything raised from inside TryDamage, which has no way to send where it stands.
         List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> deferred;
         List<(string key, string hook, ushort map, Mob mob, Session? actor)> hooks;
+        List<(ushort map, uint trapId)> trapClears;
         lock (_lock)
         {
             deferred = new List<(ushort, uint, ushort, ushort, int, int)>(_deferredFx); _deferredFx.Clear();
             hooks = new List<(string, string, ushort, Mob, Session?)>(_hooks); _hooks.Clear();
+            trapClears = new List<(ushort, uint)>(_deferredTrapClears); _deferredTrapClears.Clear();
         }
+        // Traps that went off this tick: rub out their revealed marker on everyone who had spotted them.
+        foreach (var tc in trapClears) Broadcast(tc.map, p => p.ClearTrapMarker(tc.trapId));
         foreach (var fx in deferred)
         {
             // The tile was captured when the effect was queued, not looked up now — the mob that raised it may

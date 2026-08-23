@@ -166,6 +166,97 @@ public sealed partial class Session
         return true;
     }
 
+    // ---- Tiered "event cave" entrances ----
+    // A doorway into a dungeon that exists as FIVE parallel copies, one per depth, where which copy you get
+    // is read off the character. RTK does this with one shared helper called from each entrance
+    // (Player.getEventCaveLevel + Player.eventCaveLevelPrompt, rtklua/Accepted/player.lua); ours is the same
+    // shape, with the ladder and the entrances both in flat files (game-data/EventCaveTiers.csv,
+    // game-data/EventCaves.csv -> Content.EventCaveBands / Content.EventCaveTiles), hot-reloadable via @reload.
+    //
+    // The Buya Library Caverns doorway (map 486, tiles 13:0 and 14:0) is the entrance this was built for. It
+    // used to be two ordinary Warps.csv rows straight into tier 1, which meant the four deeper tiers were
+    // reachable only by @warp — the caverns shipped as one cave wearing five hats.
+    //
+    // Two things make it a scripted tile rather than a warp: the destination is conditional, and the entry is
+    // a DIALOG. The player walks up, reads three pages about the dark and the stench, and only then is either
+    // let down (straight in, or via the two-tunnel menu when they sit in a split band) or turned around. A
+    // character below the ladder's floor still gets the whole speech first and finds themselves back outside
+    // when it ends — the doorway is not a wall, it is a door that doesn't take you.
+
+    private static readonly Mob EventCaveVirtualNpc = new(0xFFFFFFFA, 0, 0, 0, "EventCave", 1);
+
+    // Handle a step onto an event-cave entrance tile. Returns false if (current map, x, y) isn't one — every
+    // other step pays only a single hash probe. Returns true the moment it takes the step over, BEFORE the
+    // dialog has been answered: the step is cancelled either way, so there is nothing left for the walk
+    // handler to do and nothing to wait for.
+    private bool TryEventCaveEntrance(ushort x, ushort y)
+    {
+        if (!Content.EventCaveTiles.TryGetValue((_char.Map, x, y), out var cave)) return false;
+        // Already sitting in a modal box: AwaitReply would overwrite that conversation's completion source
+        // and orphan it. Hold them at the from-tile and let the next step try again.
+        if (DialogBusy) { SendXy(); return true; }
+
+        // Cancel the client's step prediction up front, so the player is standing still for the whole
+        // conversation and both outcomes start from the same place — the refusal needs it, and the warp
+        // doesn't care (EnterMap redraws everything anyway).
+        SendXy();
+        _ = RunEventCaveEntryAsync(cave);
+        return true;
+    }
+
+    private async Task RunEventCaveEntryAsync(Content.EventCaveDef cave)
+    {
+        ushort startMap = _char.Map;
+
+        // The entry pages: portrait-less boxes on the player's own entity id, exactly as DlgPush describes —
+        // nobody is speaking here, the room is. Awaited one at a time so PREVIOUS/NEXT paginate for real.
+        foreach (var page in cave.Pages)
+        {
+            SendScriptMessageP(_char.Id, page, DialogPortrait.None, prev: false, next: true);
+            await AwaitReply();
+            if (_char.Map != startMap) return;   // a GM warp / death / another dialog moved them mid-read
+        }
+
+        var band = Content.EventCaveBandFor(_char.Level, _char.Mark);
+        if (band is null)
+        {
+            // Below the ladder's floor. RTK bumps the player two tiles clear of the doorway; we already held
+            // them at the from-tile, so all that is left is the line.
+            SendXy();
+            if (cave.DenyMsg.Length > 0) SendMiniText(cave.DenyMsg);
+            Log.Info($"   -> EVENTCAVE '{cave.Key}' REFUSED (level {_char.Level} mark {_char.Mark}) for {_char.Name}");
+            return;
+        }
+
+        var b = band.Value;
+        int tier = b.Tier;
+        if (b.Alt > 0)
+        {
+            // A split band: both depths are open and the player chooses. Closing the menu (0) is a real
+            // answer — they back out of the doorway and stay where they are, which is RTK's behaviour too
+            // (its menuSeq result falls through both branches and no warp happens).
+            int choice = await DlgMenu(EventCaveVirtualNpc, cave.Prompt, new[] { cave.OptionNear, cave.OptionFar });
+            if (choice != 1 && choice != 2)
+            {
+                Log.Info($"   -> EVENTCAVE '{cave.Key}' split declined by {_char.Name} ({b.Label})");
+                return;
+            }
+            if (_char.Map != startMap) return;   // moved on while the menu was open
+            tier = choice == 1 ? b.Tier : b.Alt;
+        }
+
+        ushort destMap = cave.MapForTier(tier);
+        if (!Content.TryMap(destMap, out var dm) || dm is null)
+        {
+            SendMiniText("The way down is blocked.");   // map data missing — say so rather than strand them
+            Log.Info($"   ?? EVENTCAVE '{cave.Key}' tier {tier} -> map {destMap} has no map data");
+            return;
+        }
+        Log.Info($"   -> EVENTCAVE '{cave.Key}' tier {tier} ({b.Label}) -> map {destMap} '{dm.Name}' " +
+                 $"({cave.DestX},{cave.DestY}) [level {_char.Level} mark {_char.Mark}]");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, cave.DestX, cave.DestY, dm.Name);
+    }
+
     // Class path-hall interior warps (onScriptedTilesPathHalls.lua). Each Kugnae/Buya path hall (Warrior/Rogue/
     // Mage/Poet, both cities) has two scripted-tile doorways that are NOT in the SQL warp table: the SOUTH edge
     // (x 1-2, y 23) into that class's guild hall — class-gated to members of that base class (RTK also lets a
@@ -254,6 +345,7 @@ public sealed partial class Session
         TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
         TryLeviathanRelease();               // Blight pen: talisman + a penned captive -> free it
         if (TryLeviathanHermitDoor()) return;// the Hermit's hut door: in if you freed one, shoved back if not (warps)
+        if (TrySuteCaveMouth()) return;      // Buya's north edge: coated -> into Sute's Cave, else shoved back (warps)
         if (TryIceBeastLava()) return;       // Northeast Koguryo lava row: shoes gate + spend-on-return (warps)
         if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
         TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
@@ -337,6 +429,36 @@ public sealed partial class Session
             return true;
         }
         return Warp(LeviathanQuest.HutMap, LeviathanQuest.HutX, LeviathanQuest.HutY);
+    }
+
+    // ---- Sute's cave mouth (onScriptedTilesQuest.lua; see Server/SuteQuest.cs) --------------------
+    // The blue cave on Buya's north edge, and the ONLY door into maps 441-447. It is a scripted tile rather
+    // than a Warps.csv row precisely because it is conditional: Eldritch's powder (an armor dye) is what gets
+    // you past Sute's seal, and the crossing spends it.
+    //
+    //   * coated   -> the dye is stripped, the flag cleared, and you land just inside Sute's Welcome on one
+    //                 of two tiles (RTK math.random(10, 11)),
+    //   * uncoated -> "You are missing something." and a step back south onto the row the cave's exit warps
+    //                 (Warps.csv 1425/1426) use, so bouncing off the seal leaves you where walking out would.
+    //
+    // Only the ENTRANCE is scripted; leaving is those two ordinary warps, which is what makes falling out
+    // cost a fresh 200 gold — tswolf's "be careful not to fall out". Returns true when it moved the player.
+    private bool TrySuteCaveMouth()
+    {
+        if (_char.Map != SuteQuest.BuyaMap || _char.Y != SuteQuest.MouthY) return false;
+        if (!SuteQuest.MouthX.Contains(_char.X)) return false;
+
+        if (QuestCounter(SuteQuest.DyeReg) != 1)
+        {
+            Notify("You are missing something.");
+            return Warp(_char.Map, (ushort)_char.X, SuteQuest.MouthPushToY);
+        }
+
+        SetArmorColor(0);                                   // the powder is spent (also clears the war-paint slot)
+        SetQuestStage(SuteQuest.DyeReg, 0);
+        Notify("The powder disappears as you pass the portal.");
+        return Warp(SuteQuest.WelcomeMap,
+                    (ushort)(QuestRandom(2) == 1 ? SuteQuest.LandX0 : SuteQuest.LandX1), SuteQuest.LandY);
     }
 
     // ---- Newbie area, quest 3: the coordinate lesson (npc_dialog.lua TutorialNpc1) ------------------

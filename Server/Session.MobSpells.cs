@@ -43,6 +43,53 @@ public sealed partial class Session
         if (IsDead) Die();
     }
 
+    /// <summary>Take damage from the ROOM rather than from a creature — Sute's Cave cold tiles
+    /// (<see cref="Session.TakeFrigidBlast"/>) are the only source today. Identical to
+    /// <see cref="ReceiveMobSpell"/> — same doze-break, same sleep amplifier, same deduction reduction, same
+    /// AC-is-for-swings rule — except that there is no caster to attribute it to, so the caller supplies the
+    /// whole line instead of it being built from a name.</summary>
+    internal void ReceiveEnvironmentDamage(int rawDmg, string text)
+    {
+        if (IsDead) return;
+        WakeUp(byDamage: true);
+        if (rawDmg < 1) rawDmg = 1;
+        double amp = TakeDamageAmp();
+        if (amp > 1.0) rawDmg = (int)Math.Round(rawDmg * amp);
+        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
+
+        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
+        SendStats();
+        byte hpPct = PlayerHpPercent();
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
+        SendMiniText(text);
+        Log.Info($"   -> environment hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp} ({text})");
+        if (IsDead) Die();
+    }
+
+    /// <summary>Roll this creature's <c>onhit</c> spells because one of its swings just LANDED on us.
+    ///
+    /// <para>The other trigger — World.Tick's cast timer — cannot express "a one-in-four chance to venom you"
+    /// however the numbers are set, because it re-rolls every 333ms tick until it passes: <c>Chance</c> only
+    /// moves WHEN the cast lands, and <c>EveryMs</c> is what actually paces it. Hanging the roll on the blow
+    /// makes the column mean what it says. It is also the shape the caverns' venom was observed having —
+    /// you get poisoned by being hit, not by standing next to something.</para>
+    ///
+    /// <para>Called from <see cref="ApplyMobHit"/> on the landed blow only (a miss and a killing blow both
+    /// skip it), which is already outside the world lock, so this is free to broadcast exactly as the timer
+    /// path is. One spell per blow, first match in file order — the same rule the timer roll uses.</para></summary>
+    internal void TryMobOnHitSpell(Mob caster)
+    {
+        if (IsDead) return;
+        if (!Content.MobSpells.TryGetValue(caster.Key, out var repertoire)) return;
+        foreach (var sp in repertoire)
+        {
+            if (!sp.OnHit) continue;
+            if (Random.Shared.Next(Math.Max(1, sp.Chance)) != 0) continue;
+            ApplyMobSpell(caster, sp);   // announce + fx + effect, identical to a timed cast
+            return;
+        }
+    }
+
     /// <summary>Land one creature spell on this player. Called from World.Tick's post-lock resolve pass, so
     /// it is free to broadcast and to kill.</summary>
     internal void ApplyMobSpell(Mob caster, Content.MobSpellDef spell)
@@ -51,8 +98,9 @@ public sealed partial class Session
 
         // The creature announces itself first (RTK: mob:talk(0, mob.name .. ": ** summons power **")), so the
         // shout lands before the damage rather than after the corpse hits the floor.
-        if (spell.Say.Length > 0) _world.BroadcastArea(_char.Map, caster.X, caster.Y, SayHalfW, SayHalfH,
-            p => p.SpeakEntity(0, caster.Id, AsciiBytes($"{caster.Name}: {spell.Say}")));
+        string say = spell.PickSay();   // one of the row's "|"-separated alternatives
+        if (say.Length > 0) _world.BroadcastArea(_char.Map, caster.X, caster.Y, SayHalfW, SayHalfH,
+            p => p.SpeakEntity(0, caster.Id, AsciiBytes($"{caster.Name}: {say}")));
         if (spell.Anim > 0 || spell.Sound > 0)
             // Both halves ride OUR tile (the spell lands on us) and are range-gated the way RTK gates them:
             // the graphic over the AREA box, the sound over the tighter SAMEAREA one. See World.SoundHalfW.
@@ -66,9 +114,15 @@ public sealed partial class Session
                 break;
 
             case "poison":
+                // Already venomed: the `venoms` category holds ONE at a time, same rule as the curse branch
+                // below, so a second creature's cast must not re-arm it. Without this, a room of casters
+                // re-applies on every cooldown — which re-prints the "Poison courses through you." line and,
+                // worse, keeps pushing the expiry out so a long venom never actually runs down.
+                if (Poisoned) return;
                 // `by` is the caster id purely for attribution; a mob-sourced venom ticks exactly like a
                 // player's, floor and all (TickPoison never deals the killing blow).
-                ReceivePoison(spell.Amount, spell.DurationMs, caster.Id, spell.Anim, $"mob_{spell.Name}", spell.Name);
+                ReceivePoison(spell.Amount, spell.DurationMs, caster.Id, spell.Anim, $"mob_{spell.Name}", spell.Name,
+                              spell.PerTick, spell.TickMinMs, spell.TickMaxMs);
                 break;
 
             case "curse":

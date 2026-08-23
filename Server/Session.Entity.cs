@@ -1030,7 +1030,13 @@ public sealed partial class Session
         _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, critByte));
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played (RTK binds a landed hit to the VICTIM, so it rings from OUR tile)
         Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
-        if (IsDead) Die();
+        if (IsDead) { Die(); return; }
+
+        // The blow landed and they lived: roll whatever this creature procs on a hit (MobSpells.csv rows
+        // with Trigger=onhit -- the caverns' venom is the one that needs it). Deliberately last, so the
+        // swing's own damage, durability and HUD update are all committed first, and so a killing blow
+        // never trails a proc behind the corpse.
+        TryMobOnHitSpell(mob);
     }
 
     // Take incoming SPELL damage from another player (PvP) or from yourself (self-cast, e.g. sparking yourself

@@ -425,6 +425,92 @@ public class ContentSmokeTests
         Assert.False(HasVolcanic(mark: 0));
     }
 
+    /// <summary>The character rebuild (@lvl / @class / @mark / @align) hands a finished Dog Linguist the Dog
+    /// spells its class and level entitle it to — the flag alone is not enough, and neither is the level.
+    /// <para>This is what "@dog 1" then "@lvl 99" is supposed to produce. It used not to: Dog spells carry
+    /// <c>SplPthId</c> 99 so that no tutor can reach them, which also meant <see cref="Content.SpellsForClass"/>
+    /// never returned one, so <see cref="Content.RespecSpellSet"/> never granted one — and because a rebuild
+    /// REPLACES the book rather than topping it up, every rebuild silently forgot Dog spells that had been
+    /// earned honestly at the Dog as well.</para></summary>
+    [Fact]
+    public void RebuildGrantsDogSpellsOnlyToAFlaggedLinguistAtTheRightLevel()
+    {
+        EnsureLoaded();
+
+        const int warrior = 1, rogue = 2, mage = 3, poet = 4, jujak = 8, monk = 17;
+
+        static System.Collections.Generic.HashSet<string> Book(int path, int level, bool dog) =>
+            Content.RespecSpellSet(path, level, alignment: 0, mark: 0, dogFlag: dog)
+                   .Select(s => s.Key).ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+
+        // The four base classes, each with its own pair — and nobody else's.
+        var pairs = new[] { (warrior, "greater_blessing", "spirit_fury"),
+                            (rogue,   "spot_traps",       "serpents_fury"),
+                            (mage,    "fissure",          "lava_surge"),
+                            (poet,    "survive",          "fascinate") };
+        foreach (var (path, low, high) in pairs)
+        {
+            Assert.Contains(low,  Book(path, 99, dog: true));
+            Assert.Contains(high, Book(path, 99, dog: true));
+
+            // No flag, no Dog spells — the linguist chain is the gate, at every level.
+            Assert.DoesNotContain(low,  Book(path, 99, dog: false));
+            Assert.DoesNotContain(high, Book(path, 99, dog: false));
+
+            // Level still gates each tier independently: 70 gets the first, not the second.
+            Assert.Contains(low,          Book(path, 70, dog: true));
+            Assert.DoesNotContain(high,   Book(path, 70, dog: true));
+            Assert.DoesNotContain(low,    Book(path, 69, dog: true));
+
+            // A class only ever gets its OWN pair, never another class's.
+            foreach (var (other, otherLow, otherHigh) in pairs)
+            {
+                if (other == path) continue;
+                Assert.DoesNotContain(otherLow,  Book(path, 99, dog: true));
+                Assert.DoesNotContain(otherHigh, Book(path, 99, dog: true));
+            }
+        }
+
+        // An NPC subpath reads its BASE class's pair (Ju jak is a Mage); a PC subpath is refused outright,
+        // flag or no flag — Content.CanLearnDogSpells, the same rule the Dog applies in person.
+        Assert.Contains("fissure",       Book(jujak, 99, dog: true));
+        Assert.Contains("lava_surge",    Book(jujak, 99, dog: true));
+        Assert.DoesNotContain("fissure", Book(monk, 99, dog: true));
+
+        // Peasant has no Dog, and no pair to inherit.
+        Assert.Empty(Content.DogSpellsFor(0, 99));
+    }
+
+    /// <summary>Every key in the Dog-spell tier table names a real spell, and the table agrees with
+    /// npc_dialog.lua's <c>DOG_SPELLS</c> — the two halves of one dataset (C# owns the pairing and the levels
+    /// the rebuild grants at, the Lua owns the kills and goods the Dog charges). A typo on either side is
+    /// silent: the rebuild would just skip the spell.</summary>
+    [Fact]
+    public void DogSpellTiersAreReal()
+    {
+        EnsureLoaded();
+
+        var expected = new[] { "greater_blessing", "spirit_fury", "spot_traps", "serpents_fury",
+                               "fissure", "lava_surge", "survive", "fascinate" };
+        var granted = new[] { 1, 2, 3, 4 }.SelectMany(p => Content.DogSpellsFor(p, 99))
+                                          .Select(s => s.Key)
+                                          .ToHashSet(System.StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(expected.Length, granted.Count);
+        foreach (var key in expected)
+        {
+            Assert.NotNull(Content.SpellByKey(key));   // still in Spells.csv under the ===DOG SPELLS=== divider
+            Assert.Contains(key, granted);
+        }
+
+        // Two per class, at 70 and 99 — the atlas levels, and what the level gate above depends on.
+        foreach (int path in new[] { 1, 2, 3, 4 })
+        {
+            var levels = Content.DogSpellsFor(path, 99).Select(s => s.Level).OrderBy(l => l).ToArray();
+            Assert.Equal(new[] { 70, 99 }, levels);
+        }
+    }
+
     /// <summary>Every key in a shop's buys-from list is a real item. A typo'd or 7.x-only key silently
     /// narrows the accept list instead of failing, and the symptom — "the smith won't buy my ore" — looks like
     /// a shop bug rather than a data one. Also pins the butcher, whose over-broad buying is why these lists
@@ -551,6 +637,69 @@ public class ContentSmokeTests
         Assert.NotNull(sabre);
         Assert.True(sabre!.Bonded, "the Frost sabre is forged for one person — it must bind to its owner");
         Assert.False(sabre.Unrepairable, "Blood says the Frost sabre repairs with ease — it must stay repairable");
+    }
+
+    /// <summary>Bonded · break-on-death · unrepairable are THREE independent properties, and every time one of
+    /// them has been derived from another the overlap has come out wrong. They are sourced differently on
+    /// purpose: ItmBoD and ItmRepairable are columns on the item row, while bonding is a property of the GRANT
+    /// and comes from the Nexus Atlas's per-item "Special Info" field. A rule that swept a whole id RANGE into
+    /// the bonded set is what last made every break-on-death subpath weapon look bound to its holder.
+    ///
+    /// <para>The Charm family alone carries all three cases, which is why it is the fixture here: the base
+    /// tier is a boss drop that breaks on death, the san tiers are NPC-forged and do both, and Enchanted charm
+    /// is the one the Atlas marks Non-Bonded.</para></summary>
+    [Fact]
+    public void BondedBreakOnDeathAndUnrepairableAreIndependent()
+    {
+        EnsureLoaded();
+
+        // Break-on-death but NOT bonded: Spike drops off mobs (MobDrops.lua) and Gan sells it over a counter
+        // (kaming/gan.lua) — nothing you can buy in a shop arrives bound to you. Same for the other three
+        // base-tier subpath weapons, all of them "Break on Death" and nothing else on the Atlas.
+        foreach (var key in new[] { "spike", "blood", "surge", "charm" })
+        {
+            var w = Content.ItemByKey(key);
+            Assert.NotNull(w);
+            Assert.True(w!.BreakOnDeath, $"{key} is ItmBoD");
+            Assert.False(w.Bonded, $"{key} is a boss drop / shop stock — it binds to nobody");
+        }
+
+        // Bonded but NOT break-on-death: the smith forges the Nimble blade for one person (smith.lua class 7).
+        var nimble = Content.ItemByKey("nimble_blade");
+        Assert.NotNull(nimble);
+        Assert.True(nimble!.Bonded, "the smith forges the Nimble blade FOR you — it must bind");
+        Assert.False(nimble.BreakOnDeath, "the Nimble blade is not ItmBoD");
+
+        // Both: the san tiers an NPC upgrades for you — the Atlas reads "Bonded / Break on Death".
+        var ilCharm = Content.ItemByKey("il_san_charm");
+        Assert.NotNull(ilCharm);
+        Assert.True(ilCharm!.Bonded && ilCharm.BreakOnDeath, "Il san charm is NPC-forged AND ItmBoD");
+
+        // The per-INSTANCE case must NOT be a def-level bond: the Frozen spear and Giasomo stick rows are
+        // plain break-on-death drops, and only the copies Laptev sells arrive owned (user, 2026-08-22).
+        foreach (var key in new[] { "frozen_spear", "giasomo_stick" })
+        {
+            var w = Content.ItemByKey(key);
+            Assert.NotNull(w);
+            Assert.True(w!.BreakOnDeath, $"{key} is ItmBoD");
+            Assert.False(w.Bonded, $"{key} binds per-instance at Laptev's counter, not by item id");
+        }
+
+        // And neither flag may imply the other anywhere in the registry — the failure mode this guards is one
+        // set becoming a subset of the other, which reads as "correct" on any single item you happen to test.
+        var bonded = Content.Items.Where(i => i.Bonded).ToList();
+        var bod    = Content.Items.Where(i => i.BreakOnDeath).ToList();
+        Assert.NotEmpty(bonded);
+        Assert.NotEmpty(bod);
+        Assert.Contains(bonded, i => !i.BreakOnDeath);
+        Assert.Contains(bod,    i => !i.Bonded);
+        Assert.Contains(bonded, i => i.BreakOnDeath);          // the overlap is real, just not total
+
+        // Unrepairable rides on ItmRepairable alone, so it cuts across both: bound gear that still repairs
+        // (the Frost sabre, the whole armory shield ladder) and unrepairable gear nobody owns (the headbands).
+        Assert.Contains(bonded, i => !i.Unrepairable);
+        Assert.Contains(bonded, i => i.Unrepairable);           // the totem helms: "Bonded / Unrepairable"
+        Assert.Contains(Content.Items, i => i.Unrepairable && !i.Bonded && !i.BreakOnDeath);
     }
 
     /// <summary>The Leviathan chain is wired end to end (see Server/LeviathanQuest.cs). Every link here is
@@ -871,11 +1020,13 @@ public class ContentSmokeTests
         Assert.Equal(121,      Content.FindTrack("underwater", Content.MusicSet.Old)!.Id);
     }
 
-    /// <summary>Every zone's 5.x pick must be a PLAYLIST (a .LST/.LSR id), not a single mp3. Both clients hand
-    /// the play function a hardcoded loop flag of 0 for a single track, so an mp3 assigned as background music
-    /// plays once and then leaves the area silent — and nothing reports that.</summary>
+    /// <summary>Every zone's 5.x pick must be an ORDERED playlist (a .LST id) — not a single mp3, and not a
+    /// SHUFFLED (.LSR) one. A single track never advances off itself, and the client's shuffled advance picks
+    /// rand()%10+1 and no-ops whenever that lands on the entry already playing, which kills the music for
+    /// good (see Content.MusicTrack). Both failures are silent — the area just goes quiet — so they are only
+    /// ever caught here.</summary>
     [Fact]
-    public void EveryFiveXMapPickIsALoopingPlaylist()
+    public void EveryFiveXMapPickIsAnOrderedPlaylist()
     {
         EnsureLoaded();
 
@@ -883,8 +1034,122 @@ public class ContentSmokeTests
         foreach (var z in Content.BgmZones)
         {
             Assert.True(z.Type5x == 1, $"zone '{z.Zone}' resolved its Track5x to a midi ({z.Track5x})");
-            Assert.True(Content.MusicTracks.Any(t => t.Set == Content.MusicSet.New && t.Id == z.Track5x && t.Playlist),
-                $"zone '{z.Zone}' 5.x track {z.Track5x} is not a playlist — it will play once and stop");
+            var track = Content.MusicTracks.FirstOrDefault(
+                t => t.Set == Content.MusicSet.New && t.Id == z.Track5x);
+            Assert.True(track is { Playlist: true },
+                $"zone '{z.Zone}' 5.x track {z.Track5x} is not a playlist — it will never leave its one song");
+            Assert.False(track!.Shuffle,
+                $"zone '{z.Zone}' 5.x track {z.Track5x} is a shuffled list — it will stall dead on a repeat pick");
         }
+    }
+
+    /// <summary>The two playlist families are the SAME ten songs; only the entry point and the advance differ.
+    /// Every ordered list must therefore have a "-rand" twin and vice versa, so a stalling assignment can
+    /// always be swapped for a safe one by name.</summary>
+    [Fact]
+    public void EveryShuffledPlaylistHasAnOrderedTwin()
+    {
+        EnsureLoaded();
+
+        var ordered = Content.MusicTracks.Where(t => t.Playlist && !t.Shuffle).ToList();
+        var shuffled = Content.MusicTracks.Where(t => t.Shuffle).ToList();
+        Assert.NotEmpty(ordered);
+        Assert.Equal(ordered.Count, shuffled.Count);
+        foreach (var s in shuffled)
+        {
+            Assert.EndsWith("-rand", s.Name);
+            Assert.True(ordered.Any(o => o.Name == s.Name[..^"-rand".Length]),
+                $"shuffled list '{s.Name}' ({s.Id}) has no ordered twin to fall back on");
+        }
+    }
+
+    /// <summary>Chung Ryong's Rage must be castable to the TOP of its climb inside one run. It is the only
+    /// spell whose window and whose recast gate are separate numbers that have to agree: the run is armed once
+    /// (RTK sets its duration in the first-cast branch only, and never re-arms on a tier-up), while climbing
+    /// 1 to 6 costs five more casts at one aether apiece. If the window is shorter than five aethers, the top
+    /// tiers are simply unreachable — which is exactly what happened when the RTK export dropped the spell's
+    /// in-script <c>local duration = 938000</c> and the verb fell back to a guessed 135s against a 120s gate,
+    /// leaving a 15-second sliver to catch and no way past Rage 2. Read from the two files that actually feed a
+    /// cast, so a well-meant edit to either one can't quietly re-break the climb.</summary>
+    [Fact]
+    public void ChungRyongRageWindowFitsTheWholeClimb()
+    {
+        EnsureLoaded();
+
+        var sp = Content.SpellByKey("chung_ryongs_rage");
+        Assert.NotNull(sp);
+        var aether = Content.FxFor(sp!)?.Aether ?? 0;
+        Assert.True(aether > 0, "chung_ryongs_rage lost its spell_effects aether — the recast gate is the climb's clock");
+
+        var lua = System.IO.File.ReadAllText(
+            System.IO.Path.Combine(Shared.RepoPaths.GameDataDir(), "spell_verbs.lua"));
+        var m = System.Text.RegularExpressions.Regex.Match(lua, @"CR_RAGE_DURATION_MS\s*=\s*(\d+)");
+        Assert.True(m.Success, "spell_verbs.lua no longer defines CR_RAGE_DURATION_MS");
+        int window = int.Parse(m.Groups[1].Value);
+
+        // Six tiers = five climbing casts after the first, each gated by one aether.
+        Assert.True(window >= 5 * aether,
+            $"Chung Ryong's rage window {window}ms cannot reach Rage 6: the climb needs 5 x {aether}ms of "
+            + $"recasts ({5 * aether}ms) before the fury wears out");
+    }
+
+    /// <summary>Baekho's Cunning is the other tiered fury and has the identical shape: one run armed by the
+    /// first cast (RTK sets its duration in the first-cast branch only), climbed by recasting on the aether.
+    /// Its constants all live in the verb rather than a CSV, so this reads them straight out of the Lua — the
+    /// point is that the three numbers have to AGREE, and nothing else checks that they do.</summary>
+    [Fact]
+    public void BaekhosCunningWindowFitsTheWholeClimb()
+    {
+        EnsureLoaded();
+
+        var lua = System.IO.File.ReadAllText(
+            System.IO.Path.Combine(Shared.RepoPaths.GameDataDir(), "spell_verbs.lua"));
+        static int LuaConst(string src, string name)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(src, name + @"\s*=\s*(\d+)");
+            Assert.True(m.Success, $"spell_verbs.lua no longer defines {name}");
+            return int.Parse(m.Groups[1].Value);
+        }
+
+        int window = LuaConst(lua, "CUNNING_DURATION");
+        int aether = LuaConst(lua, "CUNNING_AETHER");
+        int max    = LuaConst(lua, "CUNNING_MAX");
+
+        Assert.True(window >= (max - 1) * aether,
+            $"Baekho's Cunning window {window}ms cannot reach Cunning {max}: the climb needs {max - 1} x "
+            + $"{aether}ms of recasts ({(max - 1) * aether}ms) before the stance lapses");
+    }
+
+    /// <summary>The Buya town rat nest (AmbushConfig.csv map 330 + AmbushBursts.csv <c>rat_nest</c>). Unlike
+    /// every other ambush row this one has NO RTK source — it is reconstructed from a live 7.x sighting — so
+    /// there is no Lua to diff it against and this is the only thing keeping the hand-authored row honest.
+    /// Both of its silent failure modes are the reason it exists: a burst-table typo loads as an EMPTY burst
+    /// (the tile fires, spawns nothing, and reads exactly like "there is no ambush in Buya"), and a MobCap at
+    /// or under the town's resident population means RefillAmbush never places a tile in the first place.</summary>
+    [Fact]
+    public void BuyaRatNestAmbushIsWired()
+    {
+        EnsureLoaded();
+
+        Assert.True(Content.Ambushes.TryGetValue(330, out var cfg), "no ambush config for Buya (map 330)");
+        Assert.Equal("burst", cfg!.PrimaryKind);
+        Assert.Equal("You have disturbed a nest of rats.", cfg.Message);
+        Assert.Equal(5, cfg.Count);
+
+        // RefillAmbush stops placing while live mobs >= MobCap, and Buya already carries its own residents.
+        int residents = Content.AreaSpawns.Where(a => a.Map == 330).Sum(a => a.Count);
+        Assert.True(cfg.MobCap > residents,
+            $"MobCap {cfg.MobCap} <= the {residents} mobs Buya already spawns — no rat tile would ever be placed");
+
+        // The burst itself: four rats, which World.AmbushBurstTile lands east/west/north/south — the
+        // "surrounded" of the sighting. A fifth would spawn ON the stepper, which is the sentry-pack shape.
+        Assert.True(Content.AmbushBursts.TryGetValue(cfg.PrimaryTable, out var variants),
+            $"AmbushConfig points map 330 at burst table '{cfg.PrimaryTable}', which AmbushBursts.csv does not define");
+        Assert.NotEmpty(variants!);
+        Assert.All(variants!, v =>
+        {
+            Assert.Equal(4, v.Length);
+            Assert.All(v, id => Assert.Equal("rat", Content.MobById(id)?.Key));
+        });
     }
 }

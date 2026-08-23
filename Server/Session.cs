@@ -1288,6 +1288,15 @@ public sealed partial class Session
     // farm-sized box while the player only ever has a screenful of it in view. SyncGroundItems reconciles
     // this set exactly like SyncMobs does for mobs. Guarded by _viewLock alongside the mob sets.
     private readonly HashSet<uint> _shownItems = new();
+    // Spot Traps / Watchful Eye markers: trap id -> the synthetic floor item drawn on that trap's tile for
+    // THIS client only (RTK's item-99 drop plus its addTrapSpotters visibility tag). Kept as real GroundItems,
+    // and reconciled by SyncGroundItems alongside the world's own floor items, for two reasons: the reveal
+    // reaches 15 tiles but ShowGroundItem's 0x07 is viewport-gated to ~8, so without the sync the far half of
+    // what you "sensed" was drawn into the void and — items never moving — never re-sent as you walked to it;
+    // and keying by TRAP id is what lets a sprung trap take its own marker with it (World.ClearTrapMarker /
+    // RTK removeTrapItem) and a re-cast re-mark the same trap instead of stacking a second sword on the tile.
+    // Guarded by _viewLock alongside the sets above.
+    private readonly Dictionary<uint, GroundItem> _trapMarkers = new();
     // And the SAME story for PEER PLAYERS. A peer's 0x33 look draw is viewport-gated by the client with the
     // very same camera rect test as the 0x07 mob spawn, so a peer we're too far from at map-entry — or one who
     // walks toward us from off-screen — has its draw silently dropped and, because nothing re-sends it as we

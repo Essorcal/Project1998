@@ -69,7 +69,12 @@ public sealed partial class Session
                     $"({string.Join(" / ", Content.PlayablePathNames())}).");
             return false;
         }
-        var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark);
+        // Dog spells ride along only for a finished linguist (Content.DogFlagReg, set by the Spotted dog or
+        // by @dog) whose path may hold them at all — base classes and NPC subpaths, never a PC subpath. Both
+        // halves matter: a Barbarian can finish the chain and still be refused, which is exactly what the Dog
+        // itself says when you ask it for the secret.
+        bool dogFlag = HasDogFlag && Content.CanLearnDogSpells(path);
+        var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark, dogFlag);
 
         ClearSpellbook();
         bool capped = want.Count > SpellBookCap;
@@ -87,7 +92,8 @@ public sealed partial class Session
                     $"({Character.AlignmentName(_char.Alignment)}): {_char.Spells.Count} ability(ies) — {spells} spell / {skills} skill." +
                     (capped ? $"  Hit the {SpellBookCap}-slot cap (raise P1998_SPELLBOOK_CAP)." : ""));
         Log.Info($"   -> spellbook resync: {ClassTitle} ({Content.PathName(path)}/{path}) align {_char.Alignment} " +
-                 $"mark {_char.Mark} lvl {_char.Level} -> {_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
+                 $"mark {_char.Mark} lvl {_char.Level} dog {(dogFlag ? "yes" : "no")} -> " +
+                 $"{_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
         return true;
     }
 
@@ -676,7 +682,7 @@ public sealed partial class Session
         var (mob, pc) = ResolveDamageTarget(targetId);
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
         if (pc is not null) return HitPlayerWithSpell(pc, amt, 0, sp);   // PvP / self-cast (verb already spent mana)
-        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("The magic has been deflected."); return true; }
+        if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("Your magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         int net = SpellNet(amt, mob!);
@@ -719,7 +725,7 @@ public sealed partial class Session
         // is their achievement, not a refund. (RTK returns before its debit here, but a free deflect means a
         // resistant target costs nothing to keep hammering, which drains the mechanic of any meaning.)
         _char.Mp -= (uint)mana;
-        if (sp.CanFail && RollDeflect(mob!)) { SendStats(); SendMiniText("The magic has been deflected."); return true; }
+        if (sp.CanFail && RollDeflect(mob!)) { SendStats(); SendMiniText("Your magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         int preMobHp = (int)mob!.Hp;
@@ -1042,12 +1048,19 @@ public sealed partial class Session
     internal void LuaMessage(string msg) => SendMessage(msg);
 
     // ---- extra primitives for COMPOSED spell verbs (e.g. Baekho's Cunning: a stateful multi-tier stance that
-    // combines a rage multiplier + deduction + positional stances). A transient per-session int registry (NOT
-    // persisted — spell/combat state should reset on relog, unlike _char.Quests) lets a verb hold its own
-    // state without any bespoke C# handler.
-    private readonly Dictionary<string, int>  _spellReg  = new();
-    internal int  LuaReg(string key)                 => _spellReg.GetValueOrDefault(key, 0);
-    internal void LuaSetReg(string key, int v)       => _spellReg[key] = v;
+    // combines a rage multiplier + deduction + positional stances) — a verb holds its own int state without
+    // any bespoke C# handler.
+    //
+    // THIS IS RTK's `player.registry` AND IT IS PERSISTED, in the same _char.Quests store the NPC side calls
+    // registry. It used to be a session-only dictionary on the premise that spell/combat state should reset on
+    // relog. That premise is wrong twice over. RTK's registry is character state — chung_ryongs_rage and
+    // baekhos_cunning both write it, and both carry a `recast` hook whose entire job is rebuilding the tier
+    // from it on relog. And it does not even reset consistently here: the run's DURATION and every effect it
+    // armed (rage, deduction, stances) already survive a relog through Session.TimedEffects, so dropping only
+    // the tier left Cunning at full Cunning-5 power reading as tier 0 — the next cast charged 3000 for
+    // "Cunning 1" and DOWNGRADED the rage multiplier from 8 back to 4.
+    internal int  LuaReg(string key)                 => QuestCounter(key);
+    internal void LuaSetReg(string key, int v)       => SetQuestStage(key, v);
 
     // setDuration/hasDuration are RTK's ONE named-timer namespace, and the spell side and the item side both
     // live in it: black_potion sets `chin_baek_ho_ryung` and five warrior strike SCRIPTS read it. This used to
@@ -1056,6 +1069,12 @@ public sealed partial class Session
     // _statusFlags map the item verbs write, so the two halves see each other exactly as RTK's do.
     internal bool LuaHasDuration(string key)         => HasStatusFlag(key);
     internal void LuaSetDuration(string key, int ms) => SetStatusFlag(key, ms);
+    /// <summary>Milliseconds left on a named duration, 0 if it isn't running. What a tiered fury needs to
+    /// re-arm its effects onto the run ALREADY BURNING rather than starting a fresh window — RTK's tiered
+    /// spells set their duration in the first-cast branch only, so a climb has to inherit what remains.</summary>
+    internal int LuaDurationLeft(string key)
+        => _statusFlags.TryGetValue(key, out var exp)
+           ? (int)Math.Max(0, exp - Environment.TickCount64) : 0;
     internal bool LuaOnCooldown(string key)          => OnCooldown(key, out _);
     internal void LuaSetCooldown(string key, int ms) => SetCooldown(key, ms);
     // Directly arm the rage multiplier (bypasses CastRage's "already raging" guard — Cunning sets its own tier).
@@ -1066,6 +1085,7 @@ public sealed partial class Session
         long exp = on ? Environment.TickCount64 + durMs : 0;
         if (name == "backstab") _backstabUntil = exp;
         else if (name == "flank") _flankUntil = exp;
+        else if (name == "fourway") _fourWayUntil = exp;
     }
     internal void LuaFx(int anim, int sound) => BroadcastFx(_char.Id, anim, sound);
 
@@ -1075,7 +1095,7 @@ public sealed partial class Session
     internal bool LuaRageActive    => EffRage > 1;      // RTK blocks casting a fury while one is up (checkIfCast(lesserFuries))
     internal bool LuaEnchantActive => EffEnchant > 1;   // RTK blocks re-casting an enchant while one is up
     internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; _stealthShown = true; SendStats(); RefreshAppearance(); }
-    internal void LuaSetEnchant(double amount, int durMs)  { _enchantAmount = amount; _enchantUntil = Environment.TickCount64 + durMs; SendStats(); }
+    internal void LuaSetEnchant(double amount)  { _enchantAmount = amount; SendStats(); }
 
     // Venom DoT (the `venom` verb): resolve the faced/targeted MOB (venoms are mob-only in RTK — a PC/no target
     // gets "It doesn't work") and hand it to World.PoisonMob (the shared poison engine). False if no mob or the
@@ -1668,6 +1688,26 @@ public sealed partial class Session
     private long _poisonUntil, _poisonNextTick;
     private int  _poisonPerTick, _poisonFxAnim;
     private uint _poisonBy;
+    // Whole-second bounds for a RAGGED tick cadence, when the venom that applied this one asked for it
+    // (game-data/MobSpells.csv TickMinMs/TickMaxMs). 0 = the fixed World.PoisonTickMs beat.
+    private int  _poisonTickMin, _poisonTickMax;
+
+    /// <summary>The line the status box gets on every tick that actually takes health. Venom is not a hit —
+    /// there is no attacker to name and no swing to describe — so this is the only thing that tells a player
+    /// what is happening to them between one tick and the next. Shared by every source of poison: a rogue's
+    /// venom reads the same to its victim as a cavern rat's does.</summary>
+    private const string PoisonTickText = "Poison is spreading through your veins.";
+
+    /// <summary>Milliseconds until this venom's next tick. Fixed at <see cref="World.PoisonTickMs"/> unless
+    /// the applying row set a min/max, in which case the gap is a WHOLE NUMBER OF SECONDS drawn uniformly
+    /// from that band — the Buya Library Caverns venom is observed ticking on 1s, 2s, 3s and 4s gaps, never
+    /// on a fraction of one. Drawn fresh every tick, so the rhythm never settles into a pattern.</summary>
+    private int NextPoisonGap()
+    {
+        if (_poisonTickMin <= 0 || _poisonTickMax < _poisonTickMin) return World.PoisonTickMs;
+        int steps = (_poisonTickMax - _poisonTickMin) / 1000;
+        return _poisonTickMin + 1000 * Random.Shared.Next(steps + 1);
+    }
 
     /// <summary>Is this player currently venomed?</summary>
     internal bool Poisoned => _poisonUntil > Environment.TickCount64;
@@ -1689,14 +1729,17 @@ public sealed partial class Session
     /// in your head.</para>
     /// Also occupies the <c>venoms</c> category, which is what blocks a second venom and lets the eight
     /// <c>cureCat = venoms</c> cures clear it.</summary>
-    internal void ReceivePoison(int dps, int durMs, uint by, int anim, string key, string name, int perTick = 0)
+    internal void ReceivePoison(int dps, int durMs, uint by, int anim, string key, string name, int perTick = 0,
+                                int tickMinMs = 0, int tickMaxMs = 0)
     {
         if (durMs <= 0 || IsDead) return;
         _poisonPerTick = perTick > 0
             ? perTick
             : Math.Max(1, (int)Math.Round(dps * (World.PoisonTickMs / 1000.0)));
+        _poisonTickMin = tickMinMs;
+        _poisonTickMax = tickMaxMs;
         _poisonUntil   = Environment.TickCount64 + durMs;
-        _poisonNextTick = Environment.TickCount64 + World.PoisonTickMs;
+        _poisonNextTick = Environment.TickCount64 + NextPoisonGap();
         _poisonFxAnim  = anim;
         _poisonBy      = by;
         ReceiveCurse("", 0, durMs, key, name, "venoms");   // the exclusivity slot + the profile duration line
@@ -1709,6 +1752,7 @@ public sealed partial class Session
         if (_poisonUntil == 0) return;
         bool was = Poisoned;
         _poisonUntil = 0; _poisonFxAnim = 0;
+        _poisonTickMin = 0; _poisonTickMax = 0;
         _buffs.RemoveAll(b => b.Category == "venoms");
         if (was) { SendMiniText("The poison passes."); SendStats(); }
     }
@@ -1724,7 +1768,7 @@ public sealed partial class Session
         if (!Poisoned) { CurePoison(); return; }
         if (IsDead) { CurePoison(); return; }
         if (Environment.TickCount64 < _poisonNextTick) return;
-        _poisonNextTick = Environment.TickCount64 + World.PoisonTickMs;
+        _poisonNextTick = Environment.TickCount64 + NextPoisonGap();
 
         int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
         if (_poisonFxAnim > 0)
@@ -1736,6 +1780,7 @@ public sealed partial class Session
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();
+        SendMiniText(PoisonTickText);               // only on a tick that TOOK health — see the const
         byte pct = PlayerHpPercent();
         _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, pct, HitCritByte));
         if (_poisonBy != 0 && _poisonBy != _char.Id) MarkPvpFoe(_poisonBy);
@@ -1868,6 +1913,49 @@ public sealed partial class Session
         SendStats();
     }
 
+    /// <summary>An NPC lays one of its own spells on the player — the scripted counterpart of a player cast
+    /// (<see cref="LuaApplyWard"/>), used by quest dialog rather than by the spell system. There is no caster
+    /// session, no mana, no aether and no roll: the script has already decided this happens.
+    ///
+    /// <para>The mechanics come from the spell's own rows, so the NPC's cast and a player's are the same ward
+    /// in the same exclusivity slot: SpellParams.csv gives category/stat/amount/duration and spell_effects.csv
+    /// the animation and sound. That sharing is the point — a Harden Armor from an NPC must block, and be
+    /// blocked by, a Harden Armor from a mage, exactly as two player casts do.</para>
+    ///
+    /// <para>False, changing nothing, if the key names no spell, if it has no SpellParams row or no duration
+    /// (so it is not a ward at all), or if its OWN category slot is already occupied — a re-cast into a full
+    /// slot is a no-op here rather than a silent refresh, matching <c>spell_verbs.lua</c>'s <c>verbs.ward</c>.
+    /// Note the narrower guard: the verb consults that file's <c>BLOCKS</c> table, so a category that also
+    /// bounces off OTHER categories (curses off protections, disheartens off bolsters) would land here where a
+    /// player cast is refused. Every ward an NPC casts today is <c>hardarmors</c>, whose BLOCKS list is itself
+    /// alone, so the two agree; widen this if a scripted cast ever needs one of the others.</para></summary>
+    internal bool NpcCastWard(string spellKey, string casterName)
+    {
+        if (Content.SpellByKey(spellKey) is not SpellDef sp) return false;
+        if (!Content.SpellParams.TryGetValue(spellKey, out var row)) return false;
+
+        row.TryGetValue("duration", out var durText);
+        if (!int.TryParse(durText, out int durMs) || durMs <= 0) return false;
+
+        row.TryGetValue("category", out var category);
+        row.TryGetValue("stat", out var stat);
+        row.TryGetValue("amount", out var amountText);
+        category ??= ""; stat ??= "";
+        if (!int.TryParse(amountText, out int amount)) amount = 0;
+
+        if (category.Length > 0 && HasStatusCategory(category)) return false;
+
+        ReceiveCurse(stat, amount, durMs, sp.Key, sp.Name, category);
+        if (Content.FxFor(sp) is SpellFx fx)
+            BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
+        // Same wording a player's ally-cast produces (TellTarget), with the NPC's name in the caster slot.
+        var flavor = Content.TargetTextFor(sp.Key);
+        SendMiniText(flavor.Length > 0 ? flavor : $"{casterName} casts {sp.Name} on you.");
+        SendStats();
+        Log.Info($"      (npc) {casterName} casts {sp.Name} -> ward [{category}] {stat}{amount:+0;-0} {durMs}ms");
+        return true;
+    }
+
     // Cure: remove every active status of this category from the caster (RTK removes durations by category). No
     // fade line (a cure is a deliberate cleanse, not a lapse). Returns how many were cleared.
     internal int LuaCureCategory(string category)
@@ -1937,17 +2025,26 @@ public sealed partial class Session
     internal int LuaCrRageTier => _crRageTier;
 
     /// <summary>Record a Chung Ryong rage tier and arm its effects: the swing multiplier + duration, and the
-    /// tier's AC as a KEYED buff so each climb silently replaces the previous tier's rather than stacking.</summary>
+    /// tier's AC as a KEYED buff so each climb silently replaces the previous tier's rather than stacking.
+    /// <paramref name="durMs"/> greater than zero starts a FRESH run; zero is a climb inside the run already
+    /// burning and deliberately leaves its deadline alone (RTK arms setDuration in its first-cast branch only —
+    /// every tier-up resets the aether and nothing else), so the fury always ends in its vita drain.</summary>
     internal void LuaSetCrRage(int tier, int mult, int ac, int durMs, string name)
     {
         long now = Environment.TickCount64;
+        if (durMs > 0)
+        {
+            // Settle a lapsed run's price BEFORE arming the new one: RegenTick fires the wear-out, so without
+            // this a recast landing in the same world tick the fury expired would silently void the drain.
+            if (_crRageTier > 0 && now >= _rageUntil) ChungRyongRageWearOff();
+            _rageUntil = now + durMs;
+        }
         _crRageTier = tier;
         _rageAmount = mult;
-        _rageUntil  = now + durMs;
-        _rageName   = $"{name} {tier}";                 // buff box shows the climbing tier
+        _rageName   = name;                             // buff box shows the SPELL, not the tier (see BuffBoxText)
         _buffs.RemoveAll(b => b.Key == CrRageAcKey);
         if (ac != 0)
-            _buffs.Add(new ActiveBuff { Stat = "armor", Amount = ac, Expires = now + durMs, Key = CrRageAcKey, Name = name });
+            _buffs.Add(new ActiveBuff { Stat = "armor", Amount = ac, Expires = _rageUntil, Key = CrRageAcKey, Name = name });
         SendStats();
         MarkDirty();
     }
@@ -1996,10 +2093,16 @@ public sealed partial class Session
         var def = it is null ? null : Content.ItemById(it.ItemId);
         if (it is null || def is null) return "empty";
         if (!def.IsEquip || def.Durability == 0) return "notgear";
-        // Bound gear (totem helms, subpath weapons) degrades permanently — no smith or repair spell restores it.
+        // Undamaged gear reports "perfect" whatever else it is — RTK's smith only reaches its
+        // "Sorry, but this item cannot be repaired!" line after `choice.dura < choice.maxDura` (player.lua:1547),
+        // so a full-durability item is never told it is unrepairable. This ordering also keeps the ~480
+        // ItmIndestructible rows (which sit at full durability forever) on the "perfect" line they had before
+        // Unrepairable became data-driven.
+        if (it.Dura >= def.Durability) return "perfect";
+        // Unrepairable gear (ItmRepairable = 0: the totem helms, the smith-forged subpath weapons, the headbands)
+        // degrades permanently — no smith and no repair spell restores it. Nothing to do with being bonded.
         // "notgear" makes the repair verb say "<name> cannot be repaired." (spell_verbs.lua), the right line.
-        if (def.Unrepairable) return "notgear";
-        return it.Dura >= def.Durability ? "perfect" : "ok";
+        return def.Unrepairable ? "notgear" : "ok";
     }
 
     /// <summary>Display name of whatever sits in pack slot <paramref name="slot"/> ("" if empty).</summary>
@@ -2114,11 +2217,23 @@ public sealed partial class Session
     internal int LuaRevealTraps()
     {
         var traps = RevealableTrapsNear();
-        ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
-        foreach (var t in traps)
-            ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
+        MarkRevealedTraps(traps);
         Log.Info($"      SpotTraps(lua) -> revealed {traps.Length} trap(s) near ({_char.X},{_char.Y})");
         return traps.Length;
+    }
+
+    /// <summary>Draw the caster-only marker (RTK's item 99) on each revealed trap's tile. Registered per TRAP
+    /// id, so a second cast over ground already marked re-uses the existing sword instead of laying another
+    /// one on the same tile, and a trap that later goes off can take its own marker with it
+    /// (World -> <see cref="ClearTrapMarker"/>, RTK <c>removeTrapItem</c>). The reveal reaches 15 tiles but the
+    /// 0x07 draw is viewport-gated to ~8, so the draw is delegated to <see cref="SyncGroundItems"/>: markers
+    /// out of view now are drawn as we walk to them instead of being thrown away.</summary>
+    private void MarkRevealedTraps(Trap[] traps)
+    {
+        ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
+        foreach (var t in traps)
+            AddTrapMarker(t.Id, new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
+        SyncGroundItems(_world.ItemsOn(_char.Map));   // draws every marker now in view (and any we've walked away from, hidden)
     }
 
     // Filch core (see CastGroundLoot): grab the item on the faced tile — coins to purse, else to pack (put back if full).
@@ -2489,9 +2604,19 @@ public sealed partial class Session
     // back is to the blow is x2 for anyone, always (Combat.IsBehindTarget) — a property of the TARGET's
     // facing, independent of these spells. A backstab-spell swing into a mob that is itself facing away
     // earns both. Combat.IsBackstabAngle/IsFlankAngle are retired; do not re-wire them.
-    private long _backstabUntil, _flankUntil;
+    //
+    // FOUR-WAY is the third of these, and Baekho's Cunning 4 is the only thing that grants it: the swing
+    // reaches ALL FOUR adjacent tiles at once, with no side roll. Two independent archive sources pin it --
+    // Poet Tutor SkaDemon's "Rage and Cunning" board post labels the tiers "Fury / Backstab / Flank / 4 Way
+    // Attack / Super Sanctuary", and Dalsichvedin's 2004-05-05 damage chart gives a target count per tier of
+    // 1/2/3/4/4. Those two agree with each other AND with the code above: Cunning 3 reaching 3 tiles is only
+    // possible if Flank is ONE side (RTK's blind `rand`), which is what SwingTargets already does -- so the
+    // count that finally distinguishes 3 from 4 is the evidence that Flank is not both sides. Cunning 5 keeps
+    // it (the chart's second 4); its own "Super Sanctuary" label is the 85% deduction, not a targeting change.
+    private long _backstabUntil, _flankUntil, _fourWayUntil;
     private bool BackstabStance => Environment.TickCount64 < _backstabUntil;
     private bool FlankStance    => Environment.TickCount64 < _flankUntil;
+    private bool FourWayStance  => Environment.TickCount64 < _fourWayUntil;
 
     // Rage-tier timer (RTK player.rage — Wolf's/Tiger's/Dragon's Fury, Baekho's Rage): swingDamage.lua
     // multiplies the ENTIRE player swing by max(player.rage,1), so this is the single biggest melee
@@ -2563,10 +2688,13 @@ public sealed partial class Session
         new(27,   64800, -30, 0.60),   // Rage 5
         new(81,  145800, -50, 1.00),   // Rage 6 — leaves you at 1 vita/mana
     };
-    // The spell's recast interval is enforced by the generic aether gate (spell_effects aether=120000); the
-    // buff LIVES a bit longer than that gate so there's a window to recast-and-climb before it wears out and
-    // drains vita. Both are session-local (like every fury) and reset on relog. _crRageTier==0 means not up.
-    private const int CrRageDurationMs = 135_000;
+    // The recast interval is the generic aether gate (spell_effects aether=120000). The RUN is a fixed 938s
+    // armed by the first cast and never re-armed (RTK sets setDuration in its first-cast branch only), so the
+    // 120s gate buys seven casts inside one run — tier 6 at t=600s, held to t=938s, then the wear-out fires
+    // and takes its vita. Both survive a relog (Session.TimedEffects persists RageUntil AND CrRageTier, so the
+    // drain can't be dodged by logging out). _crRageTier==0 means not up. Mirror of CR_RAGE_DURATION_MS in
+    // spell_verbs.lua, which is what actually feeds a cast.
+    private const int CrRageDurationMs = 938_000;
     private const string CrRageAcKey = "chung_ryongs_rage_ac";
     private int _crRageTier;
 
@@ -2608,12 +2736,41 @@ public sealed partial class Session
     /// (HandlePickup). No-op if not stealthed.</summary>
     public void BreakStealth() { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(); }
 
-    // Enchant-tier timer (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua
-    // multiplies ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingDamage).
-    // Expires back to the RTK baseline of 1 (not 0) once _enchantUntil lapses, same shape as EffRage.
-    private long _enchantUntil;
+    // Enchant tier (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua multiplies
+    // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingDamage). Baseline
+    // is 1 (not 0), same as EffRage.
+    //
+    // NOT A TIMER — IT IS BOUND TO THE WEAPON. The warrior tutor spell list is unanimous across all five
+    // tiers (Enchant / Infuse / Ingress / Viper's Venom / Dragon's Flame): "Duration = until the weapon is
+    // taken off or person log off". RTK's own scripts agree structurally — ingress.lua carries cast/recast/
+    // uncast hooks and no duration at all, which is exactly why spell_effects.csv's durationMs column is
+    // blank on every enchant row (there was never a duration to extract).
+    //
+    // THIS USED TO BE A `_enchantUntil` TICK DEADLINE, and that blank column was the bug: stance_enchant's
+    // `ctx.durationMs > 0 and ctx.durationMs or 60000` fallback silently gave every enchant SIXTY SECONDS,
+    // while the fury cast in the same breath ran its real 625000. Ingress is the single largest term in a
+    // warrior's swing (x3 on s/2 — a level-99 Chaos blade swing drops from ~1984 raw to ~784 without it),
+    // so it read as "my damage randomly falls off a cliff" with nothing on screen to explain it. Do NOT
+    // reintroduce a duration here; if an enchant ever needs one it belongs in the CSV, not in a fallback.
+    //
+    // Dropped by DropWeaponEnchant on any weapon-slot change (Session.Items.DropEnchantIfWeapon: unequipped,
+    // swapped, or broken) and by ClearAllTimedEffects. The "or person log off" half needs no code — this is
+    // session state and Session.TimedEffects deliberately does not persist it (unlike RageUntil).
+    // Deliberately NOT surfaced in the buff box (Session.Dialog): every line there is "Name Ns" and this has
+    // no countdown to show.
     private double _enchantAmount = 1;
-    private double EffEnchant => Environment.TickCount64 < _enchantUntil ? _enchantAmount : 1;
+    private double EffEnchant => _enchantAmount;
+
+    /// <summary>Drop the weapon enchant, with RTK's own uncast line (shared verbatim by every alignment
+    /// variant of enchant.lua / infuse.lua / ingress.lua). No-op when no enchant is running, so the callers
+    /// can fire it on every weapon-slot change without gating first.</summary>
+    internal void DropWeaponEnchant()
+    {
+        if (_enchantAmount <= 1) return;
+        _enchantAmount = 1;
+        SendMiniText("The glimmer subsides into a throb and then vanishes.");
+        SendStats();
+    }
 
     // RTK "morphs" duration group (see Content.MorphSpells/MorphDispatchFor) — purely cosmetic disguise.
     // CORRECTED 2026-07-26: an earlier pass concluded self-view was client-engine blocked, based on 0x33's
@@ -2806,10 +2963,11 @@ public sealed partial class Session
     private void FlushDurations()
     {
         _buffs.Clear();
-        _rageUntil = 0;
+        _rageUntil = 0;            _crRageTier = 0;   // see ClearAllTimedEffects: a STRIPPED fury owes no drain
         _stealthUntil = 0;
         _backstabUntil = 0;
         _flankUntil = 0;
+        _fourWayUntil = 0;
     }
 
     /// <summary>Strip EVERY running timed effect on this session in one shot — stat buffs, curse/ward status
@@ -2824,11 +2982,16 @@ public sealed partial class Session
 
         _buffs.Clear();
         _statusFlags.Clear();
-        _rageUntil = 0;            _rageAmount = 1;   _rageName = "";
+        // _crRageTier goes with _rageUntil, and must: the tier is what RegenTick reads to charge Chung Ryong's
+        // wear-out drain, so leaving it set behind a zeroed deadline fires the drain on the very next tick —
+        // on a player who just DIED it ran ChungRyongRageWearOff's Max(1, ...) floor against Hp 0 and stood
+        // the corpse back up at 1 HP. A fury that is stripped (death, @dispel, Cleanse) never wore out, so it
+        // owes no vita; only lapsing on its own timer charges the price.
+        _rageUntil = 0;            _rageAmount = 1;   _rageName = "";   _crRageTier = 0;
         _sancDeductUntil = 0;      _sancDeduct = 1.0; _sancDeductName = "";
         _cunningDeductUntil = 0;   _cunningDeduct = 1.0;
-        _backstabUntil = 0;        _flankUntil = 0;
-        _enchantUntil = 0;         _enchantAmount = 1;
+        _backstabUntil = 0;        _flankUntil = 0;   _fourWayUntil = 0;
+        _enchantAmount = 1;        // weapon-bound, not timed — but @dispel/death still strip it
     }
 
     /// <summary>"@dispel" — strip EVERY timed effect on the caster, buff and debuff alike, and re-render.
@@ -2903,17 +3066,15 @@ public sealed partial class Session
             .ToArray();
 
     // Watchful Eye (warrior) + Spot Traps (dog/rogue), see Content.IsSpotTrapsSpell and RevealableTrapsNear:
-    // draws item 99 ("wooden sword" — RTK's own marker, its Lua comment calls it a "steel dagger" but the
-    // actual dropped id is 99 either way) on each revealed trap's tile within 15 tiles (RTK seeSpotTraps:
-    // distanceSquare(player, npc, 15)) — via ShowGroundItem directly (not World.DropItem), so only the caster's
-    // own client ever sees it, matching RTK's addTrapSpotters/getTrapSpotters per-player visibility tagging. No
-    // removal call exists yet (RTK's own removeSpotTraps is a separate GM-style command) — same "stays until
-    // you leave/re-enter the map" behaviour the Lua describes ("will remain on screen for as long as you want").
-    // its Lua comment calls it a "steel dagger" but the actual dropped id is 99 either way) on each trap's
-    // tile — via ShowGroundItem directly (not World.DropItem), so only the caster's own client ever sees it,
-    // matching RTK's addTrapSpotters/getTrapSpotters per-player visibility tagging. No removal call exists
-    // yet (RTK's own removeSpotTraps is a separate GM-style command) — same "stays until you leave/re-enter
-    // the map" behaviour the Lua describes ("will remain on screen for as long as you want").
+    // marks each revealed trap within 15 tiles (RTK seeSpotTraps: distanceSquare(player, npc, 15)) with item 99
+    // ("wooden sword" — RTK's own marker; its Lua comment calls it a "steel dagger" but the dropped id is 99
+    // either way). The marker is drawn for the CASTER only, never World.DropItem, matching RTK's
+    // addTrapSpotters/getTrapSpotters per-player visibility tagging — see MarkRevealedTraps.
+    //
+    // Lifetime is RTK's: a mark "will remain on screen for as long as you want", i.e. until you leave the map
+    // (ForgetShownMobs) or the trap it marks GOES OFF, at which point the trap's own removeTrapItem takes the
+    // sword with it (World -> ClearTrapMarker). There is still no player-facing bulk-clear — RTK's own
+    // removeSpotTraps is a separate GM-style command.
     private bool CastSpotTraps(SpellDef sp, SpellFx fx, int mana)
     {
         if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
@@ -2925,9 +3086,7 @@ public sealed partial class Session
         SetCooldown(sp.Key, fx.Aether > 0 ? fx.Aether : 25000);   // RTK setAether(key, 25000) for the warrior family — missing from the export, spot_traps' own row already has a real aether
 
         var traps = RevealableTrapsNear();
-        ushort markerIcon = Content.ItemById(99)?.Icon ?? 0;
-        foreach (var t in traps)
-            ShowGroundItem(new GroundItem { Id = _world.AllocateItemId(), ItemId = 99, X = t.X, Y = t.Y, Graphic = markerIcon });
+        MarkRevealedTraps(traps);
 
         SendMiniText(traps.Length > 0 ? $"You sense {traps.Length} hidden trap{(traps.Length == 1 ? "" : "s")} nearby." : "You sense nothing nearby.");
         _castNarrated = true;   // the sense-result IS the caster line — skip the generic "You cast X."
@@ -3023,6 +3182,17 @@ public sealed partial class Session
     /// Session.TryMythicFallRoom): pure flavor, no effect — RTK's WarpTrapShiverNpc, unified onto every mythic
     /// fall cave. One-shot; the caller has already removed the trap.</summary>
     public void FeelShiver() => SendMiniText("You feel a sudden shiver.");
+
+    /// <summary>Called by World.CheckPlayerTrapTrigger when we step on one of Sute's Cave's hidden cold tiles
+    /// (see <see cref="SuteAi.FrigidTrapKind"/>): a flat hit and its own line, "A blast of frigid cold hits
+    /// you." The caller has already removed the tile and placed a replacement elsewhere in the room.
+    ///
+    /// <para>Unlike the bladestorm self-hit above, this one CAN kill. Bladestorm is your own trap and is
+    /// capped to leave 1 HP for that reason; this is the dungeon's hazard, and a room advertised as having
+    /// "magical traps" that can never actually finish anyone is not a hazard. Routed through
+    /// <see cref="ReceiveEnvironmentDamage"/> so it takes the deduction reduction and reaches
+    /// <see cref="Die"/> exactly like a creature's spell would.</para></summary>
+    public void TakeFrigidBlast() => ReceiveEnvironmentDamage(SuteAi.FrigidDamage, SuteAi.FrigidText);
 
     /// <summary>Called by World.FireAmbushLocked when we step on a cave ambush tile: the burst mobs are already
     /// spawned around us (our post-step SyncMobs renders them); this is just the "Rabbits ambush you!" style
@@ -3280,7 +3450,7 @@ public sealed partial class Session
             if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
             _char.Mp -= (uint)mana;   // spent BEFORE the deflect roll — a resisted spell was still cast
         }
-        if (!isSelf && sp.CanFail && RollDeflectPvp(pc)) { SendStats(); SendMiniText("The magic has been deflected."); return true; }
+        if (!isSelf && sp.CanFail && RollDeflectPvp(pc)) { SendStats(); SendMiniText("Your magic has been deflected."); return true; }
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(pc._char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));

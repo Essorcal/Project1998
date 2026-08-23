@@ -47,11 +47,12 @@ public sealed partial class Session
         foreach (var (key, until) in _statusFlags)
             if (until > now) e.StatusFlags[key] = TickToUnix(until);
 
-        if (now < _rageUntil)          { e.RageUntil = TickToUnix(_rageUntil); e.RageAmount = _rageAmount; e.RageName = _rageName; }
+        if (now < _rageUntil)          { e.RageUntil = TickToUnix(_rageUntil); e.RageAmount = _rageAmount; e.RageName = _rageName; e.CrRageTier = _crRageTier; }
         if (now < _sancDeductUntil)    { e.SancUntil = TickToUnix(_sancDeductUntil); e.SancMult = _sancDeduct; e.SancName = _sancDeductName; }
         if (now < _cunningDeductUntil) { e.CunningUntil = TickToUnix(_cunningDeductUntil); e.CunningMult = _cunningDeduct; }
         if (now < _backstabUntil)      e.BackstabUntil = TickToUnix(_backstabUntil);
         if (now < _flankUntil)         e.FlankUntil    = TickToUnix(_flankUntil);
+        if (now < _fourWayUntil)       e.FourWayUntil  = TickToUnix(_fourWayUntil);
         if (now < _stealthUntil)       { e.StealthUntil = TickToUnix(_stealthUntil); e.StealthName = _stealthName; }
         if (_morphLook != 0 && now < _morphUntil)
         { e.MorphUntil = TickToUnix(_morphUntil); e.MorphLook = _morphLook; e.MorphColor = _morphColor; e.MorphKey = _morphKey; }
@@ -83,11 +84,12 @@ public sealed partial class Session
         foreach (var (key, until) in e.StatusFlags)
             if (until > nowUnix) _statusFlags[key] = UnixToTick(until);
 
-        if (e.RageUntil > nowUnix)     { _rageUntil = UnixToTick(e.RageUntil); _rageAmount = e.RageAmount; _rageName = e.RageName ?? ""; }
+        if (e.RageUntil > nowUnix)     { _rageUntil = UnixToTick(e.RageUntil); _rageAmount = e.RageAmount; _rageName = e.RageName ?? ""; _crRageTier = e.CrRageTier; }
         if (e.SancUntil > nowUnix)     { _sancDeductUntil = UnixToTick(e.SancUntil); _sancDeduct = e.SancMult; _sancDeductName = e.SancName ?? ""; }
         if (e.CunningUntil > nowUnix)  { _cunningDeductUntil = UnixToTick(e.CunningUntil); _cunningDeduct = e.CunningMult; }
         if (e.BackstabUntil > nowUnix) _backstabUntil = UnixToTick(e.BackstabUntil);
         if (e.FlankUntil > nowUnix)    _flankUntil    = UnixToTick(e.FlankUntil);
+        if (e.FourWayUntil > nowUnix)  _fourWayUntil  = UnixToTick(e.FourWayUntil);
         if (e.StealthUntil > nowUnix)
         {
             _stealthUntil = UnixToTick(e.StealthUntil);

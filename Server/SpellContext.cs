@@ -114,6 +114,9 @@ public sealed class SpellContext
     public bool hasDuration(string key)               => _s.LuaHasDuration(key);
     /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds.</summary>
     public void setDuration(string key, double ms)    => _s.LuaSetDuration(key, (int)ms);
+    /// <summary>Milliseconds left on a named duration (0 if not running) — for a tiered spell re-arming its
+    /// effects onto the run it is already inside instead of opening a new window.</summary>
+    public double durationLeft(string key)            => _s.LuaDurationLeft(key);
     /// <summary>The caster's effective armour, clamped to RTK's [-80, 70] — Harden Body's success roll
     /// scales with it (better armour is MORE negative, hence better odds).</summary>
     public double armor                               => _s.ItemArmor;
@@ -142,8 +145,10 @@ public sealed class SpellContext
     public bool enchantActive                         => _s.LuaEnchantActive;
     /// <summary>Arm the Rogue stealth burst (next swing ×9, then strips) for <paramref name="durMs"/> ms.</summary>
     public void armStealth(double durMs)              => _s.LuaSetStealth((int)durMs);
-    /// <summary>Arm an enchant tier (multiplies only the raw weapon-swing term) for <paramref name="durMs"/> ms.</summary>
-    public void armEnchant(double amount, double durMs) => _s.LuaSetEnchant(amount, (int)durMs);
+    /// <summary>Arm an enchant tier (multiplies only the raw weapon-swing term). Runs until the weapon comes
+    /// off or the character logs out — there is no duration. <paramref name="durMs"/> is accepted and IGNORED
+    /// purely so an older hot-reloaded spell_verbs.lua still calling the two-arg form keeps working.</summary>
+    public void armEnchant(double amount, double durMs = 0) => _s.LuaSetEnchant(amount);
 
     /// <summary>Apply a mob-only venom DoT (MaxHp×1% per 1.5s, per-tick clamped to <paramref name="tickCap"/>,
     /// for 1 + random(<paramref name="lowMs"/>, <paramref name="highMs"/>) ms). False if no mob target or it's

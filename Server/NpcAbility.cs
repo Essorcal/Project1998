@@ -172,6 +172,12 @@ public sealed class NpcContext
     /// <summary>Dye (or bleach, with 0) the worn armor — persists + redraws self &amp; peers (RTK player:refresh).</summary>
     public void SetArmorColor(int color) => _s.SetArmorColor((byte)color);
 
+    /// <summary>Have this NPC cast a warding spell on the player, by Spells.csv key — the scripted cast a
+    /// quest performs on the player's behalf (Claw's Harden Armor on a new tiger mail). Mechanics and fx come
+    /// from the spell's own SpellParams/spell_effects rows, so it shares an exclusivity slot with the player
+    /// version. False (nothing changed) if the key is not a ward or that slot is already taken.</summary>
+    public bool CastWard(string spellKey) => _s.NpcCastWard(spellKey, _npc.Name);
+
     // ---- hair dye (AppearanceAbility; RTK salon.lua / general_npc_funcs.hairdye) ---
     /// <summary>The current hair-colour palette index (RTK player.hairColor; 0 = base). 5.33 appearance[3].</summary>
     public int HairColor => _s.CharHairColor;

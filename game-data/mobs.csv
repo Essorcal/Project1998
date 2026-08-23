@@ -143,7 +143,7 @@ MobId,Identifier,Description,MobLook,MobLookColor,Vita,Exp,Level,Might,Grace,Wil
 141,yachi,Yachi,111,2,5400,14000,28,0,28,28,35,115,2000,1,0,0,28,0,Vita=rtk-db-restored(un-div5),18
 142,seki,Seki,111,12,10400,16500,28,0,28,28,65,175,2000,1,0,0,28,0,Vita=rtk-db-restored(un-div5),18
 143,li,Li,115,8,12800,34000,28,0,28,28,75,375,2000,1,0,0,28,0,Vita=rtk-db-restored(un-div5),18
-144,sute,Sute,110,17,17000,40000,28,0,28,28,125,300,2000,1,0,1,28,-10,Vita=rtk-db-restored(un-div5),18
+144,sute,Sute,110,17,17000,40000,28,0,28,28,125,300,333,1,0,1,28,-10,"Vita=rtk-db-restored(un-div5);MobMoveTime=user-observed(2 tiles/sec: 333/333/rest, walking not hopping)",18
 145,dog_sentry,Dog sentry,138,31,14800,90000,39,0,39,39,250,350,1000,1,0,2,39,-20,Vita=rtk-db-restored(un-div5),30
 146,mythic_dog,Mythic dog,138,2,22800,140000,64,0,64,89,200,350,1000,1,1,2,64,-20,Vita=rtk-db-restored(un-div5),360
 147,dog_assassin,Dog assassin,138,20,30500,165000,64,0,64,89,250,400,1000,1,1,2,64,-20,Vita=rtk-db-restored(un-div5),360
@@ -197,8 +197,8 @@ MobId,Identifier,Description,MobLook,MobLookColor,Vita,Exp,Level,Might,Grace,Wil
 195,red_deer,Red deer,89,31,0,3,1,0,0,0,0,0,2000,1,0,0,0,0,,18
 196,red_doe,Red doe,88,31,0,3,1,0,0,0,0,0,2000,1,0,0,0,0,,18
 197,red_rabbit,Red rabbit,125,31,0,3,1,0,0,0,0,0,2000,1,0,0,0,0,,18
-198,buya_library_mob,Blind mouse,90,11,0,0,1,0,0,0,5,5,2000,1,0,0,15,0,,18
-199,buya_library_mob,Blind rat,91,11,0,0,1,0,0,0,8,8,2000,1,0,0,15,0,,18
+198,buya_library_mob,Scroll mouse,90,11,0,500,1,0,0,0,5,5,2000,1,0,0,15,0,live-obs-brian,18
+199,buya_library_mob,Scroll rat,91,11,0,750,1,0,0,0,8,8,2000,1,0,0,15,0,live-obs-brian,18
 200,buya_library_mob,Blind library mouse,90,11,0,0,1,0,0,0,10,10,2000,1,0,0,15,0,,18
 201,buya_library_mob,Blind centipede,32,11,0,0,1,0,0,0,15,15,2000,1,0,0,15,0,,18
 202,buya_library_mob,Blind library rat,91,11,0,0,1,0,0,0,20,20,2000,1,0,0,15,0,,18

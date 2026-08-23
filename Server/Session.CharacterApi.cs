@@ -44,7 +44,7 @@ public sealed partial class Session
         // (wine/liquor/cigarettes) starts with its full charge count -- see ItemDef.IsCharged / HandleUseItem.
         if (dura == 0 && (def.IsEquip || def.IsCharged)) dura = def.Durability;
 
-        // Bonded gear (totem helms, subpath weapons) binds to whoever obtains it: a caller that already knows
+        // Bonded gear (ItemDef.Bonded — what an NPC forges FOR you) binds to whoever obtains it: a caller that knows
         // the owner (a pickup carrying the ground item's owner, a trade) passes it through to PRESERVE the bond;
         // otherwise a fresh bound item stamps THIS character as its owner. Ordinary items stay unowned. Bound
         // gear is never stackable (it's equipment), so only the fresh-slot path below can carry an owner.
@@ -352,6 +352,7 @@ public sealed partial class Session
         SendMiniText($"{amount:N0} experience!");
         _char.Exp += amount;
         int path = CharBasePathId;
+        byte levelBefore = _char.Level;
         while (_char.Level < 99)
         {
             uint need = Content.ExpToNext(path, _char.Level);
@@ -369,6 +370,10 @@ public sealed partial class Session
         }
         uint tnlNext = Content.ExpToNext(path, _char.Level);
         _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
+        // Milestone briefings that arrive on their own, no NPC involved. Deliberately here and NOT inside
+        // LevelUp: the character-rebuild path (@lvl/@class) replays LevelUp dozens of times to reconstruct a
+        // level, and must not fire a dialog per replayed level. Nothing reaches AwardExp but a real grant.
+        if (_char.Level != levelBefore) PushTigerEssence();
         SendStats();
         // NO SendSelfProfile() here. AC/Dam/Hit/Tnl do live in the 0x39 profile rather than the 0x08 HUD
         // packet, but the 4.95 client treats an unsolicited 0x39 as "OPEN the profile window" — pushing one to
@@ -376,6 +381,44 @@ public sealed partial class Session
         // while casting Ion Charge; the log shows 0x39 going out with no 0x2D having come in). 0x39 is now
         // strictly a RESPONSE to the client's own 0x2D request, which re-reads these values anyway.
         SaveChar();
+    }
+
+    /// <summary>Hand a Warrior the Tiger Essence briefing the moment they qualify for it, with no NPC click —
+    /// nexusatlas: "The Tutor <b>will eventually give</b> warriors a quest called Tiger Essence". The tutor's
+    /// own branch (<see cref="TutorialQuest"/>) plays the same script on demand and is the fallback for
+    /// everyone this cannot reach; see that method for why both exist.
+    ///
+    /// <para>Fires once per character: <see cref="TigerMailQuest.MetClawReg"/> is stamped here as well as by
+    /// Claw, so a player who dismisses the push is not shown it again on the next level — the tutor is where
+    /// they get it back. It is silent (and re-armed for the next level) while the player is sitting in another
+    /// MODAL box, because <c>AwaitReply</c> overwrites the pending prompt and would orphan whatever
+    /// conversation they were already in.</para></summary>
+    private void PushTigerEssence()
+    {
+        if (CharBasePathId != TigerMailQuest.WarriorPathId) return;
+        if (_char.Level < TigerMailQuest.MinLevel) return;
+        if (QuestCounter(TigerMailQuest.MetClawReg) == 1) return;
+        if (DialogBusy) return;                       // mid-conversation: leave it, the next level tries again
+
+        SetQuestStage(TigerMailQuest.MetClawReg, 1);
+        _ = PushTigerEssenceAsync();                  // fire-and-forget: suspends on each page, like OpenNpcDialog
+    }
+
+    private async Task PushTigerEssenceAsync()
+    {
+        try
+        {
+            // The speaker is the tutor, who is a city away — so the portrait is read off his NPCs.csv row
+            // rather than an on-screen mob. Both tutors (Ironheart 20 / Jadespear 49) share MainTutorialNpc's
+            // look, so either row answers; the player's own kingdom picks which, matching TutorialQuest's
+            // guild-hall choice.
+            var tutor = Content.NpcById(CharNation == 2 ? 49 : 20);
+            foreach (var (tiger, pages) in TigerMailQuest.Briefing)
+                await DlgPush(tiger ? TigerMailQuest.ClawLook  : tutor?.Look  ?? TigerMailQuest.ClawLook,
+                              tiger ? TigerMailQuest.ClawColor : tutor?.Color ?? TigerMailQuest.ClawColor,
+                              pages);
+        }
+        catch (Exception e) { Log.Info($"!! tiger-essence push error: {e.Message}"); }
     }
 
     /// <summary>Experience lost on death (RTK player.lua <c>deathExpLoss</c>). Below 99 the loss is a flat 20%

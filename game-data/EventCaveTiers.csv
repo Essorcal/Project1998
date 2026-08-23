@@ -1,0 +1,33 @@
+# Event-cave tier ladder — which of a tiered cave's five depths a character qualifies for.
+#
+# ONE ladder, shared by every entrance in EventCaves.csv (RTK keeps it in one place too:
+# Player.getEventCaveLevel in rtklua/Accepted/player.lua, called by the Buya Library Caverns
+# doorway and the Nagnang shield quest alike). Bands are DISJOINT and matched in file order:
+# the first row whose level AND mark ranges both contain the character wins.
+#
+# A row with AltTier > 0 is a SPLIT room — the band where two depths are both open and the
+# player is asked which tunnel to take ("The smoother tunnel." = Tier, "The rougher tunnel."
+# = AltTier). AltTier 0 means no choice: that band has exactly one depth.
+#
+# No row matching at all = REFUSED. That is the level 1-14 case, below the chart's floor.
+#
+# LEVEL BANDS 1-7 are the archive chart verbatim (Warrior Tutor AzNCloudBoi, "Info - Event
+# Cave Levels", boards.nexustk.com/Warriors/AzNCloudBoi 11240213.html) — 15-38 / 39-40 /
+# 41-66 / 67-68 / 69-95 / 96-98 / 99. That post is self-flagged "may be a bit off" and is
+# player-sourced, so it is the weakest documented tier; nothing else states these numbers.
+#
+# THE TOP TWO BANDS ARE OURS, NOT THE CHART'S. The chart gates caves 4/5 on 10-14 MILLION
+# vita, a 2005+ number that is unreachable at our EraDate (20010709) and would leave the
+# two deepest tiers as dead content. Mark (the subpath rank: 1 Il san, 2 Ee san, 3 Sam san
+# — see Content.MaxMark) is the era-correct ladder that sits above 99, so the top cave is
+# Sam san and the Il/Ee san band below it is the split. Owner's call, 2026-08-22.
+Tier,AltTier,MinLevel,MaxLevel,MinMark,MaxMark,Label,Sources
+1,0,15,38,0,0,Cave 1,tutor-caves-azncloudboi-event
+1,2,39,40,0,0,Cave 1/2 split,tutor-caves-azncloudboi-event
+2,0,41,66,0,0,Cave 2,tutor-caves-azncloudboi-event
+2,3,67,68,0,0,Cave 2/3 split,tutor-caves-azncloudboi-event
+3,0,69,95,0,0,Cave 3,tutor-caves-azncloudboi-event
+3,4,96,98,0,0,Cave 3/4 split,tutor-caves-azncloudboi-event
+4,0,99,99,0,0,Cave 4,tutor-caves-azncloudboi-event
+4,5,99,99,1,2,Cave 4/5 split (Il/Ee san),owner-design
+5,0,99,99,3,3,Cave 5 (Sam san),owner-design

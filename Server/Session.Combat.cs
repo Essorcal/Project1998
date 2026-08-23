@@ -540,9 +540,21 @@ public sealed partial class Session
         var list = new List<((int x, int y) tile, double reach)>(3);
 
         AddReachTargets(list, _facing, 1.0);                                   // the faced tile, always
-        if (BackstabStance) AddReachTargets(list, Opposite(_facing), BackstabReach);
-        if (FlankStance)                                                       // ONE side, blind roll (RTK's `rand`)
-            AddReachTargets(list, Random.Shared.Next(2) == 0 ? LeftOf(_facing) : RightOf(_facing), FlankReach);
+        if (FourWayStance)
+        {
+            // Baekho's Cunning 4+: every adjacent tile at once, no roll. This is the ONLY thing in the game
+            // that grants it -- see FourWayStance for the two archive sources -- and it supersedes the two
+            // lesser stances rather than stacking with them (they reach the same tiles, more meanly).
+            AddReachTargets(list, Opposite(_facing), BackstabReach);
+            AddReachTargets(list, LeftOf(_facing),   FlankReach);
+            AddReachTargets(list, RightOf(_facing),  FlankReach);
+        }
+        else
+        {
+            if (BackstabStance) AddReachTargets(list, Opposite(_facing), BackstabReach);
+            if (FlankStance)                                                   // ONE side, blind roll (RTK's `rand`)
+                AddReachTargets(list, Random.Shared.Next(2) == 0 ? LeftOf(_facing) : RightOf(_facing), FlankReach);
+        }
 
         if (list.Count == 0) list.Add((FrontTile(), 1.0));   // nothing reachable — swing at the faced tile, as before
         return list;

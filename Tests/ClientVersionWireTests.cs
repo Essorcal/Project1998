@@ -1,3 +1,4 @@
+using System.Linq;
 using Server;
 using Xunit;
 
@@ -295,12 +296,12 @@ public class ClientVersionWireTests
     public void V533Mp3IsAFlatIdFallbackVolumeRecord()
     {
         // 0x46a420: id at +3, fallback at +5, volume at +7 -- no TLV, and +2 is never read on this arm.
-        var b = Session.MusicBody(Session.ClientVersion.V533, 902, type: 1, volume: 100);
+        var b = Session.MusicBody(Session.ClientVersion.V533, 802, type: 1, volume: 100);
         Assert.Equal(new byte[]
         {
             0x01,             // type 1 = mp3/playlist
             0x00,             // +2 unread here
-            0x03, 0x86,       // 902 -> 00000902.LSR, a shuffled ten-track playlist
+            0x03, 0x22,       // 802 -> 00000802.LST, an ordered ten-track playlist (what map music uses)
             0x00, 0x00,       // fallback 0 = go quiet rather than drive a resource we don't have
             100,              // volume
         }, b);
@@ -392,4 +393,144 @@ public class ClientVersionWireTests
         }
     }
 
+    // ---- 0x36 user list -------------------------------------------------------------------------------
+    // The five-byte header (total, count, sort mode) is identical on both clients; the ROW is not.
+    // 4.95's loop (0x48a48c) reads eight bytes plus the name -- including a u32BE rank the client sorts
+    // on -- and packs nameLen into the low nibble of the last one. 5.33's (0x4d041c) reads FOUR: it
+    // dropped the rank entirely (it numbers rows itself, 100000 - index, at 0x4d046c), gave nameLen a
+    // whole byte, and moved the mark badge into the nibble 4.95 spends on `hidden`.
+    //
+    // Sending the 4.95 row to 5.33 leaves bytes +0/+1/+2 right and turns the rank's leading zero into
+    // nameLen -- which is why the symptom was "only the subpath icon draws, no names".
+
+    private static readonly Session.UserListRow Row =
+        new(Nation: 3, Path: 2, Icon: 1, Colour: 15, Rank: 42, Mark: 4, Name: "Brian");
+
+    [Fact]
+    public void TheHeaderIsTheSameFiveBytesOnBothClients()
+    {
+        var v495 = Session.UserListBody(Session.ClientVersion.V495, 1, new[] { Row }, headlineTotal: 7);
+        var v533 = Session.UserListBody(Session.ClientVersion.V533, 1, new[] { Row }, headlineTotal: 7);
+        var header = new byte[] { 0, 7, 0, 1, 1 };   // total 7, count 1, sort by name
+        Assert.Equal(header, v495[..5]);
+        Assert.Equal(header, v533[..5]);
+    }
+
+    [Fact]
+    public void V495UserRowIsTheSameEightBytesItAlwaysWas()
+    {
+        var b = Session.UserListBody(Session.ClientVersion.V495, 1, new[] { Row });
+        Assert.Equal(new byte[]
+        {
+            0, 1, 0, 1, 1,          // total 1, count 1, sort by name
+            0x32,                   // nation 3 << 4 | path 2
+            0x01,                   // hidden 0 << 4 | icon 1
+            15,                     // name colour (0 would paint black on black)
+            0, 0, 0, 42,            // rank u32BE -- 4.95 only
+            0x45,                   // mark 4 << 4 | nameLen 5
+            (byte)'B', (byte)'r', (byte)'i', (byte)'a', (byte)'n',
+        }, b);
+    }
+
+    [Fact]
+    public void V533UserRowIsFourBytesWithTheMarkMovedAndTheRankGone()
+    {
+        var b = Session.UserListBody(Session.ClientVersion.V533, 1, new[] { Row });
+        Assert.Equal(new byte[]
+        {
+            0, 1, 0, 1, 1,          // ...same header
+            0x32,                   // nation 3 << 4 | path 2      <- unchanged, which is why columns worked
+            0x41,                   // mark 4 << 4 | icon 1        <- 4.95 puts `hidden` in this high nibble
+            15,                     // name colour                 <- unchanged
+            5,                      // nameLen, a whole byte       <- 4.95 shares this byte with the mark
+            (byte)'B', (byte)'r', (byte)'i', (byte)'a', (byte)'n',
+        }, b);
+    }
+
+    [Fact]
+    public void TheFirstThreeRowBytesAreWhatSurvivedTheMismatch()
+    {
+        // The exact reason the report was "only the path/subpath icon works": +0/+1/+2 agree, and then
+        // the 4.95 rank's leading zero lands where 5.33 reads nameLen, so the name comes out empty and
+        // every later row is parsed out of the previous row's tail.
+        var v495 = Session.UserListBody(Session.ClientVersion.V495, 1, new[] { Row });
+        var v533 = Session.UserListBody(Session.ClientVersion.V533, 1, new[] { Row });
+        Assert.Equal(v495[5], v533[5]);
+        Assert.Equal(v495[7], v533[7]);
+        Assert.Equal(0, v495[8]);               // rank's high byte...
+        Assert.Equal(5, v533[8]);               // ...where 5.33 wants the name length
+    }
+
+    [Fact]
+    public void FifteenCharactersIsTheNameCapOnBothClients()
+    {
+        var row = Row with { Name = "AbcdefghijklmnopQRST" };
+        var v495 = Session.UserListBody(Session.ClientVersion.V495, 1, new[] { row });
+        var v533 = Session.UserListBody(Session.ClientVersion.V533, 1, new[] { row });
+        Assert.Equal(0x4F, v495[^16]);          // mark 4 << 4 | 15 -- a 16th char would corrupt the mark
+        Assert.Equal(15, v533[^16]);
+        Assert.Equal("Abcdefghijklmno", System.Text.Encoding.ASCII.GetString(v495[^15..]));
+        Assert.Equal("Abcdefghijklmno", System.Text.Encoding.ASCII.GetString(v533[^15..]));
+    }
+
+    [Fact]
+    public void FiveThirtyThreeMasksTheIconToThreeBits()
+    {
+        // 0x4d044e is `and al, 7`, not `and al, 0xF`. Our real values are PthIcon 1..4 so nothing is
+        // lost, but the @users icon sweep sends 0..15 and needs to know 8..15 alias back onto 0..7.
+        var b = Session.UserListBody(Session.ClientVersion.V533, 1, new[] { Row with { Icon = 9, Mark = 0 } });
+        Assert.Equal(0x01, b[6]);
+    }
+
+    // ---- 0x39 buff box: the separator 5.33's countdown parser depends on -------------------------
+
+    /// <summary>5.33's own grammar for one buff-box line, transcribed from <c>sub_49f6a0</c>: the name is
+    /// everything up to the LAST space-or-tab (<c>find_last_of(L" \t")</c>, then <c>find_last_not_of</c> to
+    /// trim), the timer is <c>atoi</c> of the tail, and a line with no separator at all is DROPPED rather
+    /// than shown with a dead timer.</summary>
+    private static (string Name, int Secs)? ParseLike533(string line)
+    {
+        int sep = line.LastIndexOfAny(new[] { ' ', '\t' });
+        if (sep < 0) return null;
+        var name = line[..(sep + 1)].TrimEnd(' ', '\t');
+        var digits = new string(line[(sep + 1)..].TakeWhile(char.IsDigit).ToArray());
+        return (name, digits.Length == 0 ? 0 : int.Parse(digits));
+    }
+
+    [Fact]
+    public void BuffBoxIsTabSeparatedSoFiveThirtyThreeTicksEveryLine()
+    {
+        var box = Session.BuffBoxJoin(new[] { "Might 300s", "Protection 60s", "Fury 20s" });
+
+        // TAB, not CR: 5.33's reader (0x453b80) breaks on LF only, and only the buff box's TAB->LF
+        // pre-pass (0x49d131) puts an LF there. CR here made the whole box ONE countdown entry, so only
+        // the last line's number ticked -- every other line's seconds were frozen inside the name string.
+        Assert.Equal("Might 300s\tProtection 60s\tFury 20s", box);
+        Assert.DoesNotContain('\r', box);
+
+        // Run the client's grammar over what it would actually receive: TAB rewritten to LF, split, parse.
+        var parsed = box.Replace('\t', '\n').Split('\n').Select(ParseLike533).ToList();
+        Assert.All(parsed, e => Assert.NotNull(e));
+        Assert.Equal(new[] { ("Might", 300), ("Protection", 60), ("Fury", 20) },
+                     parsed.Select(e => e!.Value));
+    }
+
+    [Fact]
+    public void EveryBuffBoxLineKeepsItsCountInTheLastToken()
+    {
+        // Names with spaces in them ("Spirit's Form", "Cunning suppressed") are why the client uses
+        // find_LAST_of: the split has to land on the final space, not the first.
+        var box = Session.BuffBoxJoin(new[] { "Spirit's Form 45s", "Cunning suppressed 12s" });
+        var parsed = box.Replace('\t', '\n').Split('\n').Select(ParseLike533).ToList();
+        Assert.All(parsed, e => Assert.NotNull(e));
+        Assert.Equal(new[] { ("Spirit's Form", 45), ("Cunning suppressed", 12) },
+                     parsed.Select(e => e!.Value));
+    }
+
+    [Fact]
+    public void ASingleBuffNeedsNoSeparatorAndAnEmptyBoxStaysEmpty()
+    {
+        Assert.Equal("Might 300s", Session.BuffBoxJoin(new[] { "Might 300s" }));
+        Assert.Equal("", Session.BuffBoxJoin(System.Array.Empty<string>()));
+    }
 }

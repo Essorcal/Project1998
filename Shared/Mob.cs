@@ -283,15 +283,47 @@ public sealed class Mob
     // data marks these creatures — RTK gives a rabbit a wolf's AI — so the flag is ours; see Content.LoadMobFlees.
     public bool Flees;
 
-    // While Environment.TickCount64 is under this, a fleeing mob moves on HALF its usual MoveTime (RTK
-    // mysterious_merchant on_attacked: `mob.newMove = 500` — a spooked creature drops to a much shorter timer
-    // than its idle wander pace). Set by World.Spook whenever a player swings at it, hit or miss, and refreshed
-    // by each further swing. 0 = calm.
+    // While Environment.TickCount64 is under this, a prey creature is SPOOKED: it notices players from twice
+    // as far off (World.FleeRadius) and so keeps running after you have stopped chasing. It does NOT change
+    // how far its flee-dart carries — distance per turn is fixed (World.PreyDartTiles). Set by World.Spook
+    // whenever a player swings at it, hit or miss, and refreshed by each further swing. 0 = calm.
     public long PanicUntil;
+
+    // ---- Sute's bespoke boss AI (Server/SuteAi.cs) ----------------------------------------------
+    // Only ever touched for the one mob whose Key is "sute", so every other creature carries these as four
+    // untouched words. They live here rather than in a side table because the AI runs inside World.Tick's
+    // hot loop, where a per-mob dictionary probe every tick would cost more than the fields do.
+    /// <summary>Which leg of the hit-and-run cycle Sute is on — see <c>SuteAi.Phase</c>.</summary>
+    public byte SutePhase;
+    /// <summary>TickCount64 at which the current retreat/hold leg ends.</summary>
+    public long SutePhaseUntil;
+    /// <summary>Swings left in the current burst (hit-and-run), or retaliation swings owed while fleeing.</summary>
+    public int  SuteSwingsLeft;
+    /// <summary>Tiles of the current retreat still to walk.</summary>
+    public int  SuteRetreatLeft;
+    /// <summary>Earliest TickCount64 at which the wounded self-heal may fire again.</summary>
+    public long SuteHealReadyAt;
+    /// <summary>Set when a retreat/flee step could not be taken — Sute is cornered, and fights instead of
+    /// running (the "unless trapped" half of his flee behaviour).</summary>
+    public bool SuteCornered;
+
+    /// <summary>TickCount64 until which a fresh blow cannot buy another answering swing (see
+    /// SuteAi.RetaliateLockoutMs). Without it he is pinned in place and never breaks off at all.</summary>
+    public long SuteRetaliateLockedUntil;
+
+    /// <summary>Which beat of Sute's action rhythm this is (see SuteAi.BeatsPerCycle). He acts on the first
+    /// two beats of every three and rests on the third, which is what makes his movement and his swings come
+    /// in pairs rather than as a steady stream.</summary>
+    public byte SuteBeat;
 
     public int  Level;         // copied from MobDef.Level at spawn — exp/display only, NOT melee damage (see MinDam/MaxDam)
     public int  AttackTime = 2000;   // ms between swings once adjacent to its target
     public int  AttackTimer;
+
+    // The swing interval this creature was SPAWNED with. AttackTime is writable so an AI can speed a mob up
+    // for a burst (Server/SuteAi.cs) — this is what it restores afterwards, so the boosted value can never
+    // become the new normal by being read back into itself.
+    public int  BaseAttackTime = 2000;
 
     // Copied from MobDef.MinDam/MaxDam at spawn (RTK MobMinimumDamage/MobMaximumDamage) — the actual per-swing
     // damage range, rolled via World.MobSwingDamage (RTK swingDamage.lua _getMobSwingDamage: three uniform

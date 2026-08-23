@@ -561,6 +561,17 @@ public sealed partial class Session
         return (minS, maxS, minL, maxL);
     }
 
+    /// <summary>Drop the weapon enchant (Ingress &amp; kin) if the item leaving the body is the weapon.
+    /// The enchant is bound to the weapon it was cast on — "until the weapon is taken off or person log
+    /// off" — so EVERY path that takes a weapon off funnels through here: the 0x1F single-slot unequip,
+    /// the equip-over-a-worn-slot SWAP (the client's `w`+letter is a swap, not an unequip-then-equip, so
+    /// hooking only the unequip opcode would miss the common case), typed-"A" bulk unequip, and a
+    /// durability break. Cheap no-op when nothing is enchanted, so callers don't gate it.</summary>
+    private void DropEnchantIfWeapon(ItemDef? def)
+    {
+        if (def is not null && def.EquipSlot == 1) DropWeaponEnchant();
+    }
+
     /// <summary>True when any equipped item sits in the weapon slot. Only feeds the Warrior's +2 Dam
     /// bonus below, which is conditional on being armed at all.</summary>
     private bool HasWeaponEquipped()
@@ -1025,7 +1036,7 @@ public sealed partial class Session
         if (BlockedByMount()) return;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null || !def.IsEquip) return;
-        // Bound gear (totem helms, subpath weapons — ItemDef.Bonded) only equips for the owner it was stamped
+        // Bound gear (what an NPC forges FOR you — ItemDef.Bonded) only equips for the owner it was stamped
         // with when obtained (InvItem.Owner). Anyone else may hold, drop or trade it, just never wear it.
         if (!string.IsNullOrEmpty(it.Owner) && it.Owner != _char.Name)
         { SendMiniText("This does not belong to you."); return; }
@@ -1085,6 +1096,7 @@ public sealed partial class Session
                 return;
             }
             _char.Equipment.Remove(prev);
+            DropEnchantIfWeapon(pdef);        // swapping weapons drops the enchant, same as taking one off
             SendUnequip(wire);
             if (pdef is not null) ApplyAppearance(pdef, equip: false);
         }
@@ -1117,6 +1129,7 @@ public sealed partial class Session
         if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName, owner: worn.Owner)) return;
         _char.Equipment.Remove(worn);
         InvalidateEquipTotals();
+        DropEnchantIfWeapon(def);
         SendUnequip(wire);
         if (def is not null) ApplyAppearance(def, equip: false);
         SendStats();                                  // drop the gear bonuses from the HUD
@@ -1136,6 +1149,7 @@ public sealed partial class Session
             if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName, owner: worn.Owner)) break;   // bag full — stop, leave the rest equipped
             _char.Equipment.Remove(worn);
             InvalidateEquipTotals();
+            DropEnchantIfWeapon(def);
             SendUnequip(worn.Slot);
             if (def is not null) ApplyAppearance(def, equip: false);
             PlayGearSfx(worn.Slot, equipping: false);
@@ -1184,6 +1198,7 @@ public sealed partial class Session
         SendMiniText($"Your {def.Name} was destroyed!", type: 5);   // RTK clif_checkdura: type 5 "System"
         _char.Equipment.Remove(worn);
         InvalidateEquipTotals();
+        DropEnchantIfWeapon(def);
         SendUnequip(worn.Slot);
         ApplyAppearance(def, equip: false);
         SendStats();
