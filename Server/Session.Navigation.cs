@@ -962,7 +962,7 @@ public sealed partial class Session
         SendLog($"Warped to {map.Name} (map {map.Id}, {map.Xs}x{map.Ys}) at ({_char.X},{_char.Y}).");
     }
 
-    // "@go <x> <y>": jump to a tile on the map you are ALREADY on — the short, tester-safe half of @warp.
+    // "@go <x> <y>": jump to a tile on the map you are ALREADY on — the short, no-map-lookup half of @warp.
     // Anything that isn't two in-bounds integers (missing argument, a word, a coordinate off the edge of this
     // map) lands you on (0,0) rather than refusing: the command always moves you somewhere, and the reply
     // says which of the two happened.

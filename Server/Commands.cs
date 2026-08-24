@@ -48,12 +48,12 @@ public sealed partial class Session
         // chat-command fallbacks (and the old @friend/@ignore/@travel list-management fallbacks) were removed
         // rather than kept as a second, non-authentic UI. @music is the one player-tier survivor and is listed
         // down in the media block, with the rest of the 0x19 tooling.
-        G("warp",    (s, a) => s.Warp(a),          "<map name|id> [x y]", "teleport"),
+        T("warp",    (s, a) => s.Warp(a),          "<map name|id> [x y]", "teleport"),
         T("go",      (s, a) => s.GoCmd(a),         "<x> <y>",             "jump to a tile on the map you're already on (bad/out-of-range coords -> 0 0)"),
         T("rez",     (s, a) => s.RezCmd(a),        "[username]",          "revive a player (or yourself) to full HP/MP (a full heal if already alive)"),
         T("approach",(s, a) => s.ApproachCmd(a),   "<username>",          "teleport to an online player"),
         T("die",     (s, a) => s.DieCmd(),         "",                    "kill yourself (ghost form + real death penalties; @rez to get back up)"),
-        G("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
+        T("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
         G("reload",  (s, a) => s.ReloadContent(),  "",                    "hot-reload file-backed content"),

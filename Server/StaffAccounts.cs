@@ -13,11 +13,12 @@ public enum AccessLevel
     /// <summary>Someone testing CONTENT rather than running the world. They may rebuild their own character
     /// (@lvl / @class / @mark / @stats / @align), teach themselves a single ability (@spell), and summon
     /// items and coin to try things with, plus the
-    /// harmless self-affecting toy (@ride), and move around WITHIN the map they're standing on (@go, which
-    /// reaches nowhere they couldn't have walked to). Deliberately NOT: teleporting between maps (@warp), spawning
-    /// monsters (@summon / @spawn / @cre / @kill), the raw-protocol and sprite labs, or @reload — a tester who
-    /// breaks their own character costs nothing, and everything withheld here affects the live world or can
-    /// crash a client.</summary>
+    /// harmless self-affecting toy (@ride), and go anywhere the content they're testing lives (@go within the
+    /// map they're standing on, @warp/@maps to reach another one — a tester who can't reach the map can't test
+    /// what's on it, and arriving somewhere is not something the rest of the world can see). Deliberately NOT:
+    /// spawning monsters (@summon / @spawn / @cre / @kill), the raw-protocol and sprite labs, or @reload — a
+    /// tester who breaks their own character costs nothing, and everything withheld here affects the live world
+    /// or can crash a client.</summary>
     Tester = 1,
     /// <summary>Full operator access: everything.</summary>
     Gm = 2,
@@ -39,7 +40,7 @@ public enum AccessLevel
 ///
 /// EMPTY BY DEFAULT: a fresh deployment has no staff at all, and the tooling is simply unreachable until an
 /// operator opts in. That's the safe default for the internet-facing case — the failure mode of forgetting
-/// to add yourself is "I can't use @warp", not "anyone can mint gold".
+/// to add yourself is "I can't use @summon", not "anyone can mint gold".
 ///
 /// Re-read by <c>@reload</c> along with the rest of the file-backed content, so promoting/demoting doesn't
 /// need a restart. (A demotion only takes effect at the next command, not mid-command.)
