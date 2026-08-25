@@ -323,7 +323,10 @@ public sealed class LoginSession
                 return;
             }
             int left = LoginThrottle.RecordFailure(_ip);
-            Log.Info($"   -> LOGIN REJECTED ({auth}) for user='{_user}' from {_remote} ({left} attempt(s) left)");
+            // An exempt address has no budget — printing one here once sent someone chasing a throttle
+            // that "never decrements" from a loopback test client.
+            Log.Info($"   -> LOGIN REJECTED ({auth}) for user='{_user}' from {_remote} " +
+                (LoginThrottle.IsExempt(_ip) ? "(throttle-exempt address)" : $"({left} attempt(s) left)"));
             SendMessage(LoginAuth.MessageFor(auth));
             return;   // no handoff — the client stays on the login screen showing the message
         }

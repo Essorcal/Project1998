@@ -34,6 +34,15 @@ public static class LoginThrottle
     private sealed class Window { public long Start; public int Fails; }
     private static readonly ConcurrentDictionary<IPAddress, Window> Table = new();
 
+    /// <summary>True when this address is outside the throttle entirely (loopback, unless
+    /// P1998_LOGIN_EXEMPT_LOOPBACK=0). Callers should branch their log line on this: an exempt address
+    /// has no budget to count down, and printing one reads as a throttle that never decrements.</summary>
+    public static bool IsExempt(IPAddress ip) => ExemptLoopback && IPAddress.IsLoopback(ip);
+
+    // A dual-stack listener reports a v4 peer as ::ffff:a.b.c.d while a v4-bound one reports a.b.c.d —
+    // different dictionary keys for the same machine, which would silently hand it two budgets.
+    private static IPAddress Key(IPAddress ip) => ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip;
+
     // Bound the table so a spoofed-source flood can't turn the throttle itself into a memory DoS. Past the
     // cap a new address simply isn't tracked (fails open) — ConnGuard's global/per-IP caps still apply.
     private const int TableCap = 100_000;
@@ -42,8 +51,8 @@ public static class LoginThrottle
     /// WITHOUT verifying the password. Also sweeps the window if it has rolled over.</summary>
     public static bool IsBlocked(IPAddress ip)
     {
-        if (ExemptLoopback && IPAddress.IsLoopback(ip)) return false;
-        if (!Table.TryGetValue(ip, out var w)) return false;
+        if (IsExempt(ip)) return false;
+        if (!Table.TryGetValue(Key(ip), out var w)) return false;
         lock (w)
         {
             if (Environment.TickCount64 - w.Start >= WindowMs) { w.Start = Environment.TickCount64; w.Fails = 0; }
@@ -55,9 +64,10 @@ public static class LoginThrottle
     /// (0 = now blocked), purely for the log line.</summary>
     public static int RecordFailure(IPAddress ip)
     {
-        if (ExemptLoopback && IPAddress.IsLoopback(ip)) return MaxFails;
-        if (Table.Count >= TableCap && !Table.ContainsKey(ip)) return MaxFails;
-        var w = Table.GetOrAdd(ip, _ => new Window { Start = Environment.TickCount64, Fails = 0 });
+        if (IsExempt(ip)) return MaxFails;
+        var key = Key(ip);
+        if (Table.Count >= TableCap && !Table.ContainsKey(key)) return MaxFails;
+        var w = Table.GetOrAdd(key, _ => new Window { Start = Environment.TickCount64, Fails = 0 });
         lock (w)
         {
             if (Environment.TickCount64 - w.Start >= WindowMs) { w.Start = Environment.TickCount64; w.Fails = 0; }
@@ -68,7 +78,7 @@ public static class LoginThrottle
 
     /// <summary>Clear this address's counter after a successful login, so an honest player's earlier typos
     /// don't accumulate toward a lockout across a whole session.</summary>
-    public static void RecordSuccess(IPAddress ip) => Table.TryRemove(ip, out _);
+    public static void RecordSuccess(IPAddress ip) => Table.TryRemove(Key(ip), out _);
 
     /// <summary>The refusal message shown to a blocked client. Says nothing about which half (name or
     /// password) was wrong.</summary>
