@@ -56,6 +56,28 @@ public static class LoginAuth
         catch { return ""; }
     }
 
+    /// <summary>Parse a decrypted 0x26 change-password body: `nameLen name oldLen old newLen new` —
+    /// the 0x03 login shape plus a third length-prefixed string, exactly as RTK's login server reads it
+    /// (rtk/src/login/clif.c case 0x26: name at RFIFO 6, old at 7+nameLen, new at 8+nameLen+oldLen).
+    /// Observed live from the 5.33 client 2026-08-25 (op=0x26, 18B body for a 4+5+6 char triple).
+    /// False on any truncated or empty field — the caller answers with a message, never a disconnect.</summary>
+    public static bool TryReadChangePassword(byte[] dec, out string name, out string oldPass, out string newPass)
+    {
+        name = oldPass = newPass = "";
+        try
+        {
+            if (dec.Length < 1) return false;
+            int nlen = dec[0];
+            if (nlen <= 0 || 1 + nlen >= dec.Length) return false;
+            name = Encoding.ASCII.GetString(dec, 1, nlen);
+            oldPass = ReadPassword(dec, 1 + nlen);
+            if (oldPass.Length == 0) return false;
+            newPass = ReadPassword(dec, 2 + nlen + oldPass.Length);
+            return newPass.Length > 0;
+        }
+        catch { return false; }
+    }
+
     /// <summary>Authenticate a login attempt. Username matching is case-insensitive throughout (both the
     /// `accounts` and `characters` tables key on <see cref="Auth.Key"/> and are COLLATE NOCASE), so
     /// "Snuggle" and "snuggle" are the same login. Never creates anything.</summary>
