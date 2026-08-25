@@ -271,7 +271,10 @@ public sealed class LoginSession
         // riding along, NOT the 0x0F message box: 0x0F renders the text but leaves the creation UI up.
         // Form and text are RTK's create-ack (rtk/src/login/intif.c intif_parse_2002 ->
         // clif_message(fd, 0x00, LGN_NEWCHAR)), CONFIRMED live 2026-08-24: the 4.95 client dismisses
-        // the creation screen back to the main menu on this reply. See Protocol.md §9.
+        // the creation screen back to the main menu on this reply. See Protocol.md §9. The 5.33 client
+        // was confirmed live 2026-08-25 over a socket tap: same frame, same dismiss (both login ports
+        // run this one handler).
+        SendStatus(0x00, "Account created.");
     }
 
     private void HandleLogin(byte[] dec)
