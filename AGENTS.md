@@ -59,6 +59,13 @@ dotnet run --project Server -- --ports 2005,2006
 > build. Stop the server, or build to a scratch output directory with `-p:BaseOutputPath=...`. Do **not**
 > kill the user's running server processes without asking.
 
+> **Never run the servers headless. Always start them as visible consoles** — `run-server.bat` on
+> Windows, or the two `dotnet run` commands each in their own terminal. Do not launch LoginServer or
+> Server as background tasks from an agent session: a headless instance holds the bin/ file locks with
+> nothing on screen to show it exists, outlives the session that started it, and takes the live console
+> log with it — the operator reads those windows. This has already cost a debugging session spent
+> hunting invisible processes across two agent sessions.
+
 > **`dotnet test` writes to the real database** at `state/project1998.db`, using throwaway usernames. It
 > is safe, and it is deliberate — the persistence guarantees being tested are SQLite's. Do not point the
 > tests at a fresh database to make them "cleaner"; that removes what they check.
