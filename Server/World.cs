@@ -2340,6 +2340,25 @@ public sealed class World
         }
     }
 
+    /// <summary>The nearest living mob with this identifier within <paramref name="radius"/> tiles (Chebyshev)
+    /// of a point, or null. One pass under the world lock — the alternative, probing <see cref="MobAt"/> over
+    /// a box, takes the lock once per tile and gets expensive fast for anything wider than a couple of steps.</summary>
+    public Mob? NearestMobByKey(ushort mapId, int x, int y, int radius, string key)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return null;
+            Mob? best = null; int bestDist = int.MaxValue;
+            foreach (var mo in m.Mobs)
+            {
+                if (!mo.Alive || !string.Equals(mo.Key, key, StringComparison.OrdinalIgnoreCase)) continue;
+                int d = Math.Max(Math.Abs(mo.X - x), Math.Abs(mo.Y - y));
+                if (d <= radius && d < bestDist) { bestDist = d; best = mo; }
+            }
+            return best;
+        }
+    }
+
     /// <summary>The live world mob with this entity id on the map, or null (used by targeted spell casts,
     /// where the client sends the target's entity id rather than a tile).</summary>
     public Mob? MobById(ushort mapId, uint id)

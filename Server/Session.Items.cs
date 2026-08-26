@@ -212,6 +212,11 @@ public sealed partial class Session
         // not a drop — it is absorbed where it falls. See BlessedByTheStars.
         if (TryStarBlessing(def, slot)) return;
 
+        // Dropping the leviathan talisman in front of a cage is how the quest instructions say to free a
+        // captive ("walk up to one of the cages and drop your talisman on the ground"). See
+        // Session.TryLeviathanTalismanDrop.
+        if (TryLeviathanTalismanDrop(def)) return;
+
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
         SendAction(_char.Id, 5, 20, 0);                                                     // our drop crouch + sound

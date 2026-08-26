@@ -390,7 +390,9 @@ public sealed partial class Session
     private bool TryQuestHandToMob(Mob mob, ItemDef def)
     {
         // Leviathan quest: handing the talisman to a captured leviathan frees it — the same effect, and the
-        // same one-time legend gate, as stepping onto the tile beside it (Session.TryLeviathanRelease).
+        // same one-time legend gate, as dropping it in front of the cage (Session.TryLeviathanTalismanDrop).
+        // Unreachable in normal play (the shut cage door is what you'd be facing, not the captive), but it
+        // costs nothing and keeps the talisman from being stuffed into a mob if a captive is ever adjacent.
         if (mob.Key == LeviathanQuest.CaptiveMob && def.Key == LeviathanQuest.Talisman)
         {
             if (!HasLegend(LeviathanQuest.LegendFreed) && !HasLegend(LeviathanQuest.LegendEnemy)

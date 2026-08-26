@@ -624,6 +624,16 @@ public sealed partial class Session
         }
     }
 
+    /// <summary>The input-box twin of <see cref="DlgPush"/> — ask a free-text question on behalf of a speaker
+    /// that has no mob in the world (the Fox spirit, which is conjured by a step, never placed). Same
+    /// entity-id and portrait reasoning as DlgPush. Returns the typed string, or null if they cancelled.</summary>
+    internal async Task<string?> DlgInputPush(int look, int color, string prompt)
+    {
+        SendInputBox(_char.Id, DialogPortrait.Look(look, color), prompt);
+        var r = await AwaitReply();
+        return r.Kind == 0x04 && r.Step == 0x02 ? r.Input : null;
+    }
+
     private Task<DialogReply> AwaitReply()
     {
         var tcs = new TaskCompletionSource<DialogReply>();
@@ -1374,14 +1384,16 @@ public sealed partial class Session
     // are 04 04 (RTK WFIFOB(5)=WFIFOB(6)=4). After the prompt come RTK's secondary lines we don't use:
     //   [+1] dialog2 len(=0)   [+1] '*' separator(42)   [+1] dialog3 len(=0)   [+2] trailing (0,0).
     // The client returns the text via 0x3A kind 4 (HandleNpcDialog -> DlgInput).
-    private void SendInputBox(Mob npc, string prompt)
+    private void SendInputBox(Mob npc, string prompt) => SendInputBox(npc.Id, DialogPortrait.Npc(npc), prompt);
+
+    private void SendInputBox(uint entityId, DialogPortrait portrait, string prompt)
     {
         var pr = Encoding.ASCII.GetBytes(prompt);
 
         var d = new List<byte>();
         d.Add(0x04); d.Add(0x04);          // [0..1] kind = input (RTK WFIFOB(5)=WFIFOB(6)=4)
-        d.AddRange(Be32(npc.Id));          // [2..5] npc entity id
-        WriteHead(d, DialogPortrait.Npc(npc));   // [6..14] head kind + portrait descriptor + trailing descriptor
+        d.AddRange(Be32(entityId));        // [2..5] npc entity id
+        WriteHead(d, portrait);            // [6..14] head kind + portrait descriptor + trailing descriptor
         d.AddRange(Be32(1));               // [15..18]
         d.Add(0);                          // [19] prev button
         d.Add(0);                          // [20] next button
@@ -1391,7 +1403,7 @@ public sealed partial class Session
         d.Add(42);                         // '*' separator
         d.Add(0);                          // dialog3 length (unused)
         d.Add(0); d.Add(0);                // trailing pad (RTK advances len by +3 past dialog3)
-        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-input(0x30) id={npc.Id}");
+        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-input(0x30) id={entityId}");
     }
 
     // 0x30 clif_scriptmes (type-0, graphic head): a plain NPC text box. Ported from RTK clif.c; the RTK

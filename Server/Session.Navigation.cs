@@ -378,7 +378,7 @@ public sealed partial class Session
     {
         TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
         TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
-        TryLeviathanRelease();               // Blight pen: talisman + a penned captive -> free it
+        TryFoxSpirit();                      // Worn path/trail: 1 step in 10 a fox pops up with a riddle
         if (TryLeviathanHermitDoor()) return;// the Hermit's hut door: in if you freed one, shoved back if not (warps)
         if (TrySuteCaveMouth()) return;      // Buya's north edge: coated -> into Sute's Cave, else shoved back (warps)
         if (TryIceBeastLava()) return;       // Northeast Koguryo lava row: shoes gate + spend-on-return (warps)
@@ -415,32 +415,120 @@ public sealed partial class Session
         return Warp(_char.Map, 30, 17);       // no shoes -> thrown back onto the south bank
     }
 
-    // ---- Leviathan quest tiles (onScriptedTilesQuest.lua; see Server/LeviathanQuest.cs) -----------
-    // Blight pen: stand on the tile below one of the four penned captives holding the talisman and the spell
-    // breaks. The captive is DESPAWNED rather than killed — no exp, no loot, and its spawn point refills
-    // normally, so the next player finds a captive to free. (RTK removes 9,999,999 health from a mob with a
-    // million HP, which is the same thing said in the engine's only vocabulary.)
+    // ---- Fox spirits (onScriptedTilesQuest.lua "Worn path"/"Worn trail"; see Server/FoxSpirit.cs) -
+    // One step in ten on either map conjures a fox with a riddle. Answer it and you keep a fox charm;
+    // get it wrong and it throws you back out to Nagnang, which costs another pelt at the Border patrol
+    // to undo. Nothing about it is a warp on the spot, so this returns void and the remaining step hooks
+    // still run — the fox is an interjection, not a gate.
     //
-    // Gated on the legend, not the stage: the legend is only handed out when you report back to Dae-Whan, and
-    // it is what stops a player farming the pen. The "you do not have the talisman" line is deliberately
-    // moved to AFTER the captive check — RTK tests the item first, so walking that row without a talisman
-    // (the normal case for anyone who has finished the quest) spams the status box on every step.
-    private void TryLeviathanRelease()
+    // Fire-and-forget: the encounter awaits the player's answer, and a step handler cannot block on that.
+    // Guarded on DialogBusy because opening a box while one is already pending orphans the conversation
+    // waiting on it (AwaitReply overwrites the completion source) — a fox that interrupts a shopkeeper
+    // would hang the shop. Dead players are skipped: a ghost walking home should not be quizzed.
+    private void TryFoxSpirit()
     {
-        if (_char.Map != LeviathanQuest.PenMap || _char.Y != LeviathanQuest.PenPlayerY) return;
-        if (!LeviathanQuest.PenX.Contains(_char.X)) return;
-        if (HasLegend(LeviathanQuest.LegendFreed) || HasLegend(LeviathanQuest.LegendEnemy)) return;
-
-        var captive = _world.MobAt(_char.Map, _char.X, LeviathanQuest.PenCaptiveY);
-        if (captive is null || captive.Key != LeviathanQuest.CaptiveMob) return;
-
-        if (!TakeItem(LeviathanQuest.Talisman, 1)) { Notify("You do not have the talisman."); return; }
-        FreeLeviathanCaptive(captive);
+        if (!FoxSpirit.IsFoxCountry(_char.Map)) return;
+        if (IsDead || DialogBusy) return;
+        if (QuestRandom(FoxSpirit.OddsOneIn) != 1) return;
+        _ = RunFoxSpiritAsync();
     }
 
-    /// <summary>Break the spell on a penned captive and send it home — shared by the tile trigger above and the
-    /// hand gesture (handing the talisman straight to the captive, Session.TryQuestHandToMob). The talisman is
-    /// consumed by the CALLER; this is only the release itself. The captive is on the caller's own map.</summary>
+    private async Task RunFoxSpiritAsync()
+    {
+        try
+        {
+            Notify(FoxSpirit.Finds);
+
+            // Already bested one: he pays the compliment and goes. RTK returns before the riddle, so a
+            // second charm is impossible and a wrong answer can never cost you the one you have.
+            if (CountItem(FoxSpirit.Charm) > 0)
+            {
+                await DlgPush(FoxSpirit.Look, FoxSpirit.Color, new[] { FoxSpirit.AlreadyCharmed });
+                return;
+            }
+
+            var (question, answer) = FoxSpirit.Riddles[QuestRandom(FoxSpirit.Riddles.Length) - 1];
+            var given = await DlgInputPush(FoxSpirit.Look, FoxSpirit.Color, question);
+            if (given is null) return;   // closed the box — the fox neither rewards nor punishes a non-answer
+
+            if (given.Trim().ToLowerInvariant() == answer)
+            {
+                GiveRewardItem(FoxSpirit.Charm, 1);
+                Notify(FoxSpirit.Success);
+                return;
+            }
+            Warp(FoxSpirit.FailMap, FoxSpirit.FailX, FoxSpirit.FailY);
+        }
+        catch (Exception e) { Log.Info($"!! fox spirit error: {e.Message}"); }
+    }
+
+    // ---- Leviathan quest: freeing a captive (see Server/LeviathanQuest.cs) -----------------------
+
+    /// <summary>Dropping the talisman in front of a cage frees the captive inside. This is the ONLY way to do
+    /// it, and it is a DROP, not a step: "Walk up to one of the cages and drop your talisman on the ground.
+    /// The leviathan inside will vanish, along with the talisman."
+    ///
+    /// <para>There used to be a step trigger here, ported from RTK's <c>onScriptedTilesQuest.lua</c>, which
+    /// fired on standing on the cage-door row with the captive directly above. It could never run: the 4.95
+    /// map has shut cell doors (object 600, SObj 0x01) along that row, so it is unreachable from the only
+    /// side you can approach from. RTK gets away with it because RTK's own copy of the map has those doors
+    /// open — it edited the terrain to suit its script. The client's map is the shipped original, and it
+    /// agrees with the player-facing instructions: you stand outside a shut cage and the spell breaks through
+    /// the bars. See <see cref="LeviathanQuest.PenMap"/>.</para>
+    ///
+    /// <para>Range is <see cref="LeviathanQuest.DropRange"/> (Chebyshev), which is exactly the gap the shut
+    /// door forces between you and the captive. Loose enough to allow standing a little off to the side,
+    /// and it cannot misfire on anything else — a captive only ever exists in this pen.</para>
+    ///
+    /// <para><b>On the pen map every refusal SPEAKS, and keeps the talisman.</b> This rite was silent on
+    /// every failing branch and it cost two rounds of "I dropped it and nothing happened" with no way to tell
+    /// which gate was closed. Anywhere else a talisman drop is just a drop and stays quiet; standing in the
+    /// pen is unambiguously an attempt, so it always gets an answer, and returning true means
+    /// <see cref="HandleDropItem"/> stops before the item hits the floor — a refused rite must not dump a
+    /// one-shot quest item on the ground.</para>
+    ///
+    /// <para>Returns true if the drop was consumed (performed OR refused with a reason), so
+    /// <see cref="HandleDropItem"/> stops — the same contract as <see cref="TryHarvest"/> and
+    /// <see cref="TryStarBlessing"/>.</para></summary>
+    private bool TryLeviathanTalismanDrop(ItemDef def)
+    {
+        if (def.Key != LeviathanQuest.Talisman) return false;
+        if (_char.Map != LeviathanQuest.PenMap) return false;   // elsewhere it's an ordinary drop — stay silent
+
+        // Nearest captive ANYWHERE on the pen, not just in range: the distance is what turns a failed
+        // attempt into an explanation instead of silence. PenSearch spans the map from any corner.
+        var captive = _world.NearestMobByKey(_char.Map, _char.X, _char.Y, PenSearch, LeviathanQuest.CaptiveMob);
+        int dist = captive is null ? -1 : Math.Max(Math.Abs(captive.X - _char.X), Math.Abs(captive.Y - _char.Y));
+        Log.Info($"   -> LEVIATHAN talisman dropped by {_char.Name} at ({_char.X},{_char.Y}) map {_char.Map}: " +
+                 $"captive={(captive is null ? "NONE ON MAP" : $"({captive.X},{captive.Y}) dist {dist}")}, " +
+                 $"freedLegend={HasLegend(LeviathanQuest.LegendFreed)}, enemyLegend={HasLegend(LeviathanQuest.LegendEnemy)}, " +
+                 $"stage={QuestStage(LeviathanQuest.Key)}");
+
+        if (HasLegend(LeviathanQuest.LegendEnemy))
+        { Notify("The talisman lies cold in your hand. The Leviathans have not forgiven you."); return true; }
+        if (HasLegend(LeviathanQuest.LegendFreed))
+        { Notify("You have already freed one of their kind."); return true; }
+        if (captive is null)
+        { Notify("There is no captive here to free."); return true; }
+        if (dist > LeviathanQuest.DropRange)
+        { Notify("You must stand closer to one of the cages."); return true; }
+
+        if (!TakeItem(LeviathanQuest.Talisman, 1)) return false;
+        FreeLeviathanCaptive(captive);
+        return true;
+    }
+
+    /// <summary>How far <see cref="TryLeviathanTalismanDrop"/> looks for a captive when deciding WHAT to say.
+    /// Wider than the pen (24x24) so it finds one from any corner; the actual rite still needs
+    /// <see cref="LeviathanQuest.DropRange"/>.</summary>
+    private const int PenSearch = 32;
+
+    /// <summary>Break the spell on a penned captive and send it home — shared by the talisman DROP
+    /// (<see cref="TryLeviathanTalismanDrop"/>) and the hand gesture (Session.TryQuestHandToMob). The
+    /// captive is DESPAWNED rather than killed: no exp, no loot, and its spawn point refills normally, so the
+    /// next player finds a captive to free. (RTK removes 9,999,999 health from a mob with a million HP, which
+    /// is the same thing said in the engine's only vocabulary.) The talisman is consumed by the CALLER; this
+    /// is only the release itself. The captive is on the caller's own map.</summary>
     internal void FreeLeviathanCaptive(Mob captive)
     {
         Notify("You cast Release leviathan.");

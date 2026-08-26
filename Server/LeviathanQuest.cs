@@ -17,8 +17,9 @@ namespace Server;
 /// leviathans on you and looks the other way for a green squirrel pelt, then walks you through to Worn path
 /// (map 2542). There is no warp row from 2500 into that pocket — hand him the pelt or the rest of the chain
 /// is unreachable.</item>
-/// <item>In <b>Blight pen</b> (map 2544) four captured leviathans stand penned at y=2. Step onto the tile
-/// below one carrying the talisman and it breaks the spell — the captive thanks you and is gone.</item>
+/// <item>In <b>Blight pen</b> (map 2544) four captured leviathans stand caged at y=2 behind shut doors. Walk
+/// up to a cage and DROP the talisman — the spell breaks through the bars, the captive thanks you and is
+/// gone. See <see cref="PenMap"/> for why the drop is the mechanic and not a step.</item>
 /// <item>Report back to Dae-Whan for the <b>Freed Leviathan</b> legend, and he points you at "one of your
 /// kind in a small hut northeast of here… just tell him Dae-Whan has sent you".</item>
 /// <item>That legend opens the hut door on <b>Leviathan Hermit</b> (map 2539); without it the door shoves
@@ -61,13 +62,34 @@ public static class LeviathanQuest
     public const int WornPathX = 1, WornPathY = 16;
 
     // ---- tile geometry (onScriptedTilesQuest.lua) ------------------------------------------------
-    /// <summary>Blight pen. The four captives stand on <see cref="PenCaptiveY"/>; you trigger from the tile
-    /// directly below one.</summary>
+    /// <summary>Blight pen, and the three rows that matter — a cage is read bottom-up as
+    /// <see cref="PenStandY"/> (open floor, where you stand) / <see cref="PenDoorY"/> (the SHUT cage door) /
+    /// <see cref="PenCaptiveY"/> (the captive, sealed inside).
+    ///
+    /// <para><b>The doors stay shut, and that is the whole mechanic.</b> The 4.95 map puts object 600 on the
+    /// door row — the game's closed cell door, SObj flag 0x01, which refuses entry heading north — and the
+    /// only approach is northward from below. So the door row is unreachable and you can never get next to a
+    /// captive. That is exactly what the quest instructions describe: "Walk up to one of the cages and drop
+    /// your talisman on the ground. The leviathan <i>inside</i> will vanish, along with the talisman." You
+    /// stand outside a shut cage and the spell breaks through the bars.</para>
+    ///
+    /// <para>RTK does it differently — its <c>onScriptedTilesQuest.lua</c> fires on STEPPING onto the door
+    /// row, and RTK's own copy of this map has object 601 there (600's walkable twin) to make that possible.
+    /// That is RTK editing the terrain to suit its script, not evidence about the live game: the client's map
+    /// is the shipped original. We follow the client map and the player-facing instructions, so the drop is
+    /// the ONLY trigger and there is deliberately no step trigger to go with it.</para></summary>
     public const ushort PenMap = 2544;
     public static readonly int[] PenX = { 4, 9, 14, 19 };
-    public const int PenPlayerY  = 3;
     public const int PenCaptiveY = 2;
+    public const int PenDoorY    = 3;
+    public const int PenStandY   = 4;
     public const string CaptiveMob = "captured_leviathan";
+
+    /// <summary>How near a captive you must be for dropping the talisman to free it (Chebyshev tiles). Two,
+    /// because the shut door sits between you and it: from <see cref="PenStandY"/> to
+    /// <see cref="PenCaptiveY"/> is exactly two. Nothing tighter can work, and nothing looser can misfire —
+    /// a captive only ever exists in this pen. See <c>Session.TryLeviathanTalismanDrop</c>.</summary>
+    public const int DropRange = PenStandY - PenCaptiveY;
 
     /// <summary>The Hermit's hut door, on the map outside it.</summary>
     public const ushort DoorMap = 2539;

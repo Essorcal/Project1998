@@ -990,6 +990,62 @@ public class ContentSmokeTests
         Assert.True(Content.TryMap(LeviathanQuest.HutMap, out _));
     }
 
+    /// <summary>The pen's geometry is the reason the release is a DROP and not a step, so it is worth pinning
+    /// rather than rediscovering. Each cage reads bottom-up as: an open floor tile you stand on, a SHUT cage
+    /// door (object 600, SObj flag 0x01 — refuses entry heading north), and the captive sealed above it. The
+    /// only approach is northward from below, so the door row is unreachable and you can never stand next to
+    /// a captive — exactly what the quest instructions describe ("walk up to one of the cages… the leviathan
+    /// <i>inside</i> will vanish").
+    ///
+    /// <para>This test failing means the map changed under the mechanic. If the door row ever becomes
+    /// walkable the drop still works, but the fiction ("caged") and the reach below are both worth a look.
+    /// Asserted as BEHAVIOUR (blocked / not blocked from the approach direction) rather than object ids.</para></summary>
+    [Fact]
+    public void TheLeviathanCagesAreShutAndTheDropCanStillReachInside()
+    {
+        EnsureLoaded();
+
+        var pen = MapData.For(LeviathanQuest.PenMap);
+        Assert.NotNull(pen);
+
+        foreach (int x in LeviathanQuest.PenX)
+        {
+            // dir 0 = heading north, the only way in from below.
+            Assert.False(pen!.BlockedMove(x, LeviathanQuest.PenStandY, 0),
+                $"the tile you drop from ({x},{LeviathanQuest.PenStandY}) is not reachable from the south");
+            Assert.True(pen.BlockedMove(x, LeviathanQuest.PenDoorY, 0),
+                $"cage door ({x},{LeviathanQuest.PenDoorY}) is open — the captives are no longer caged");
+            Assert.False(pen.Solid(x, LeviathanQuest.PenCaptiveY),
+                $"the captive's own tile ({x},{LeviathanQuest.PenCaptiveY}) is solid, so the spawn is placed somewhere else");
+        }
+
+        // The shut door forces a two-tile gap, so the drop radius must span it — a tighter one silently
+        // reintroduces the original bug, where nothing the player could do reached a captive.
+        Assert.True(LeviathanQuest.DropRange >= LeviathanQuest.PenStandY - LeviathanQuest.PenCaptiveY,
+                    "the talisman drop cannot reach past the cage door");
+    }
+
+    /// <summary>The Fox spirits of the Worn path (Server/FoxSpirit.cs). Every part of this is data that fails
+    /// quietly: a charm key that doesn't resolve gives nothing for a right answer, a map id that isn't
+    /// renderable means the fox never appears, and an answer with stray case or whitespace can never be typed
+    /// correctly because the comparison lower-cases and trims the PLAYER's side only.</summary>
+    [Fact]
+    public void FoxSpiritsAreWiredToTheWornPath()
+    {
+        EnsureLoaded();
+
+        Assert.NotNull(Content.ItemByKey(FoxSpirit.Charm));
+        foreach (var map in FoxSpirit.Maps) Assert.True(Content.TryMap(map, out _), $"fox map {map} is not renderable");
+        Assert.True(Content.TryMap(FoxSpirit.FailMap, out _));
+
+        Assert.Equal(4, FoxSpirit.Riddles.Length);
+        foreach (var (question, answer) in FoxSpirit.Riddles)
+        {
+            Assert.EndsWith("What am I?", question);
+            Assert.Equal(answer.Trim().ToLowerInvariant(), answer);
+        }
+    }
+
     /// <summary>Bon-Hwa (the Forever Tree immortal, Server/BonHwa.cs) resolves to its ability through
     /// NpcAbilities.csv, and the two services it offers rest on data that must line up: the four class weapon
     /// ladders it enchants along, and the bond every tier it forges must carry. Both fail SILENTLY — a
