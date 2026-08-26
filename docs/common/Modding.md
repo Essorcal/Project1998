@@ -269,7 +269,12 @@ These are *mechanism*, not tunable content:
 ## Build & verify (for engine changes)
 
 ```bash
-dotnet build Server/Server.csproj -clp:ErrorsOnly -v:m -p:UseAppHost=false -o "$TEMP/nexus_buildcheck"
+# Use a dotnet that actually has an SDK: try PATH first, fall back to the repo-local bootstrap
+# SDK (.dotnet/, which run-server.bat installs off PATH by design). The probe checks for an SDK,
+# not just a dotnet — a runtime-only install on PATH exists but lists no SDKs and can't build.
+DOTNET=dotnet
+[ -n "$("$DOTNET" --list-sdks 2>/dev/null)" ] || DOTNET=./.dotnet/dotnet.exe
+"$DOTNET" build Server/Server.csproj -clp:ErrorsOnly -v:m -p:UseAppHost=false -o "$TEMP/nexus_buildcheck"
 ```
 
 Run the offline registry self-test (loads every CSV/Lua and checks the registries) with `Server.dll

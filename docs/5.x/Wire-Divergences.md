@@ -50,7 +50,9 @@ own an opcode returns "not handled" and the next one gets it. Live proof of the 
 - **ui/item** — `0x05` entity id, `0x08` **stats/HUD**, `0x0a` system text, `0x0f` **add item/spell**,
   `0x10` **remove item/spell**, `0x17` **add spell**, plus `0x04 0x0b 0x12 0x15 0x18 0x24 0x26 0x36
   0x3e 0x4e 0x51`.
-- **ui-b** — `0x04 0x08 0x0b 0x26` only.
+- **ui-b** — `0x04 0x08 0x0b 0x26` only. (`0x26` here is the login/select screen's **password-change**
+  reply path — not the game-channel self-walk `0x26`; the two share the byte across different channels.
+  See `docs/4.x/Protocol.md` §4.1 item 5.)
 
 > ### The mistake — do not repeat it
 > A probe was written that hooked **only** `0x463320` and reported `handled / DROPPED` per packet. It

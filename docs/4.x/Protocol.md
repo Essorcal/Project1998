@@ -278,6 +278,13 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    bypasses the `0x03` budget entirely. `LoginSession.HandleChangePassword`,
    `LoginAuth.TryReadChangePassword`; pinned by `Tests/ChangePasswordTests.cs`.
 
+   > **`0x26` is channel-scoped — same byte, two unrelated meanings.** On the **login** channel it is this
+   > password change. On the **game** channel it is **self-walk** (client→server walk commit / server→client
+   > walk pace, §10.3). They never collide because each channel has its own dispatcher and its own connection;
+   > just don't let the shared `Opcode.ChangePassword = 0x26` constant fool you into thinking one handler
+   > serves both. (5.33 routes the login-side `0x26` through its `ui-b` login/select dispatcher — see
+   > `docs/5.x/Wire-Divergences.md`.)
+
 ### 4.2 Game channel (port 2005)
 
 1. **The client speaks first** — do **not** send anything on connect. The client sends **`0x10`
@@ -1582,6 +1589,9 @@ the client back). This is the smooth, self-paced walk; realm-center (§10.5) wor
 live: fast-move-ON walks play a full `frameCtr 0→3` animation with zero server packets.
 
 ### 10.3 Fast-move OFF = server-authoritative — answer with `0x26` self-walk ✅
+
+> **Game-channel `0x26` only.** This self-walk `0x26` is unrelated to the **login-channel** `0x26`
+> (password change, §4.1 item 5) — different connection, different dispatcher, same byte.
 
 The client will **not** move until the server assigns the tile. Answer each walk with **one `0x26`
 self-walk packet** — the *same primitive 5.33 uses* — sent from the tile being confirmed:

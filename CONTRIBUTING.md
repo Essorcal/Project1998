@@ -42,7 +42,10 @@ dotnet test Tests/Tests.csproj
 ```
 
 If you took the bootstrap SDK, it is deliberately not on PATH — call it directly:
-`.dotnet\dotnet.exe test Tests/Tests.csproj`.
+`.dotnet\dotnet.exe test Tests/Tests.csproj`. Use that same `.dotnet\` fallback if a bare `dotnet`
+*is* on PATH but reports *No .NET SDKs were found* — that's a runtime-only install (common in
+`C:\Program Files\dotnet`); the SDK lives in `.dotnet\`. `docs/common/Modding.md` shows a one-liner
+that picks the right one automatically.
 
 If you would rather install an SDK yourself, prefer `winget install Microsoft.DotNet.SDK.8` on Windows,
 or the official installer elsewhere — both land beside any other .NET version and need no environment
