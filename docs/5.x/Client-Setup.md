@@ -105,6 +105,37 @@ things it sets up front matter more than they look:
   machine-wide install with no .NET 8 runtime and exit 150 ("You must install or update .NET") before
   logging a single line. The registry knows nothing about `.dotnet\` at all.
 
+> ⚠️ **`DOTNET_ROOT` must stay process-scoped.** `run-server.bat` sets it with a batch `set`, so it lives
+> for that one script run and dies with the window. Never persist it -- not with `setx`, not into
+> `HKCU\Environment`. It is a *global* redirect honoured by every framework-dependent apphost on the
+> machine, not a per-project setting, so pointing it at a tree that holds only .NET 8 tells every other
+> .NET app on the box that 8.x is the only runtime in existence.
+>
+> Observed on a contributor's box (Windows 11 26200 x64): with a user-scope `DOTNET_ROOT` left pointing
+> at a private .NET 8 SDK, an unrelated .NET 10 desktop app died on launch with `You must install or
+> update .NET ... Required: 'Microsoft.NETCore.App', version '10.0.0'` while 10.0.11 sat correctly
+> installed in `C:\Program Files\dotnet`. Reinstalling .NET 10 could not fix it -- the installer writes
+> to a directory the apphost was no longer consulting. Deleting the variable fixed it, and nothing about
+> this server cared either way. The project-scoped `P1998_*` names are the pattern to copy: they collide
+> with nothing.
+>
+> If you would rather install an SDK yourself than take the private `.dotnet\`, prefer
+> `winget install Microsoft.DotNet.SDK.8` or the installer from Microsoft. Both land in
+> `C:\Program Files\dotnet` beside any other version, register with the host, and need no environment
+> variable at all. Running `dotnet-install.ps1` bare is the one to avoid: it installs to
+> `%LOCALAPPDATA%\Microsoft\dotnet`, adds nothing to PATH, and leaves you reaching for exactly the
+> variable above.
+
+When an app insists a runtime is missing that is demonstrably installed, make the host say where it
+looked:
+
+```bat
+set COREHOST_TRACE=1 && TheApp.exe
+```
+
+The probe paths in the first few lines name the `DOTNET_ROOT` it honoured, which identifies a hijack
+immediately.
+
 ## Test loop for 5.33 terrain
 
 1. (once) `client-5.33-redirect\Deploy-Connaddr-2001.bat` as admin.

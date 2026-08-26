@@ -269,7 +269,7 @@ These are *mechanism*, not tunable content:
 ## Build & verify (for engine changes)
 
 ```bash
-"$LOCALAPPDATA/Microsoft/dotnet/dotnet.exe" build Server/Server.csproj -clp:ErrorsOnly -v:m -p:UseAppHost=false -o "$TEMP/nexus_buildcheck"
+dotnet build Server/Server.csproj -clp:ErrorsOnly -v:m -p:UseAppHost=false -o "$TEMP/nexus_buildcheck"
 ```
 
 Run the offline registry self-test (loads every CSV/Lua and checks the registries) with `Server.dll
