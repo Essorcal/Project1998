@@ -1,0 +1,32 @@
+# SObj.tbl directional wall flags OVERRIDDEN for specific object sprites.
+#
+# Flag bits (RTK map.h): UP=1 DOWN=2 RIGHT=4 LEFT=8. The bit names the DIRECTION OF TRAVEL that is
+# refused, so 0x0F = solid from every side and 0x0E = everything except walking NORTH into it, i.e.
+# a doorway you enter from the south. 0x00 = fully walkable.
+#
+# WHY THIS FILE EXISTS. A sprite flagged solid that sits on a WARP tile makes that warp unreachable:
+# the client applies SObj collision to its own walk locally and never sends the step, so the server's
+# "warps beat collision" rule (Session.HandleWalk) never gets a chance to fire. The tile reads as a
+# plain wall and the door is dead.
+#
+# PREFER THE DIRECTIONAL VALUE OVER 0x00. A cave mouth is only ever entered from one side; opening it
+# on all four lets players walk out through the rock face beside it. Where a later Nexon client already
+# fixed a sprite, copy ITS value rather than inventing one — that is a shipped answer, not a guess.
+#
+# Kept as an override rather than editing game-data/SObj.tbl because that file is a verbatim extract of
+# the 4.95 client's table (re/pak_extract.py) — re-extracting it must not silently revert this.
+#
+# Client half (required — the client is what refuses the step):
+#   python re/patch_sobj_flags.py "<install>/NexusTK.dat"          # 4.95, table is in NexusTK.dat
+#   python re/patch_sobj_flags.py "<install5>/Tile.dat"            # 5.33, table is in Tile.dat
+# Both read THIS file, so the two halves can never drift apart.
+#
+# ONLY LIST A SPRITE THAT IS EXCLUSIVELY A DOORWAY. Most wall sprites under a blocked warp are bulk
+# wall art used hundreds to thousands of times (obj 1167 alone: 24,759 cells), and loosening one
+# globally would punch holes in every map that draws it. Count the sprite's total cells against its
+# warp cells first. If it has real non-warp uses, it needs a per-tile fix (Doors.csv ForceOpen), not a
+# row here. Toggleable door leaves (DoorObjects.csv / Doors.csv) must NEVER be listed: their solid flag
+# is what makes a CLOSED door closed.
+#
+# Obj,Flag,Note
+1502,0x0E,Cave-mouth doorway set into a north cave wall. THE 5.33 CLIENT ALREADY SHIPS 0x0E FOR THIS SPRITE (Tile.dat SOBJ.TBL) while 4.95 ships 0x0F - Nexon fixed it in a later client and this copies that fix back. 19 cells world-wide; 18 are warp source tiles (bear-cave chains 65-69 and 385-389, Sandy Niche/Lobster Claw chain 1311-1316). The 19th is map 4951 (79,151) which has no warps, no spawns and no Maps.csv row - unreachable.
