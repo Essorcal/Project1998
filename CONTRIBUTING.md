@@ -44,6 +44,12 @@ dotnet test Tests/Tests.csproj
 If you took the bootstrap SDK, it is deliberately not on PATH — call it directly:
 `.dotnet\dotnet.exe test Tests/Tests.csproj`.
 
+If you would rather install an SDK yourself, prefer `winget install Microsoft.DotNet.SDK.8` on Windows,
+or the official installer elsewhere — both land beside any other .NET version and need no environment
+variable. If you use `dotnet-install.ps1`, **do not persist `DOTNET_ROOT`**: it is a machine-wide redirect
+that will break unrelated .NET apps on your box, not a per-project setting.
+[`docs/5.x/Client-Setup.md`](docs/5.x/Client-Setup.md) has the failure mode and the one-line diagnostic.
+
 To actually *play*, you need a 4.95 client pointed at your machine. See
 [`docs/4.x/README.md`](docs/4.x/README.md) and `Tools/` (the `Inter.dat` redirect patcher).
 
