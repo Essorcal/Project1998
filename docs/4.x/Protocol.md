@@ -332,6 +332,15 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    > watching on a live run** — the flag-guarded window is inferred from its shape, not measured, and this
    > is the one part of the flow with no behavioural trace behind it.
 
+   **What the client does on arrival back at login — observed live 2026-08-24.** The client treats the
+   bounce like any redirect: its first packet on the new login connection is a **`0x10` Arrival
+   announce**, exactly as it would greet a game server after a real handoff. Observed body:
+   `09 "NexonInc." 04 "Test"` + 8 zero bytes — the length-prefixed key string, the length-prefixed
+   name, and an all-zero tail (the bounce's token field is 5 bytes of padding; `HandleExitToSelect`).
+   The login server logs and ignores it — `LoginSession.Handle` has an explicit `Opcode.Arrival` case,
+   kept out of the `??` unknown-opcode path so a routine logout doesn't cry wolf — and the select
+   screen proceeds with the normal `0x02`/`0x03`/`0x04` flow on the same connection.
+
 ### 4.3 Robustness / DDoS hardening (app-layer, 2026-07-27)
 
 App-layer defenses on both front doors (they complement — do not replace — infra-layer defense: upstream

@@ -785,10 +785,13 @@ public sealed partial class Session
     {
         var host = ParseLoginHost();
         int lport = LoginRedirectPort;
-        // No handoff token: this redirect points at the LOGIN server, which never sees a 0x10 and mints its
+        // No handoff token: this redirect points at the LOGIN server, and the next real handoff mints its
         // own nonce when the player logs back in. The 5 bytes are padding that keeps the reply the exact
         // width of the proven-working handoff — the client parses it as a FIXED-SIZE redirect struct and a
-        // different length breaks the parse (see Protocol.md §4.1).
+        // different length breaks the parse (see Protocol.md §4.1). The client DOES still announce on the
+        // login connection with a 0x10 carrying these zero bytes — a redirect is a redirect to it — and
+        // the login server logs and ignores that (observed live 2026-08-24; this comment used to claim
+        // login "never sees a 0x10", which the first logout through this path disproved).
         Send(LoginRedirect.Build(host, lport, _user, new byte[LoginRedirect.TailBytes]));
         Log.Info($"   -> EXIT-TO-SELECT for '{_user}' — redirect to login {host[0]}.{host[1]}.{host[2]}.{host[3]}:{lport}");
     }

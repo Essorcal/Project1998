@@ -124,6 +124,16 @@ public sealed class LoginSession
             case Opcode.NameCheck:        NameAvailable(dec); break;
             case Opcode.CreateAppearance: HandleCreate(dec); break;
             case Opcode.Login:            HandleLogin(dec); break;
+            // A 0x10 Arrival lands here after the game server's exit-to-select bounce: the client treats
+            // that redirect like any handoff, so its first packet on the new connection is the same
+            // announce it would send a game server — name plus the bounce's all-zero tail (there is no
+            // real token; see Session.HandleExitToSelect). Nothing to do with it: the select screen
+            // starts fresh with 0x02/0x03/0x04, and the next real handoff mints its own nonce. Handled
+            // explicitly so a routine logout doesn't print the "??" line, which is reserved for packets
+            // we genuinely don't understand yet. Raw body, not dec: 0x10 is the one unciphered opcode.
+            case Opcode.Arrival:
+                Log.Info($"   -> 0x10 announce (return from game server) — ignored; body {Log.Hex(pkt.Body)}");
+                break;
             // 0x62 signature / 0x00 version are sent by the client on connect; we don't need them.
             default:                      Log.Info($"   ?? no login handler for opcode 0x{pkt.Opcode:x2}"); break;
         }
