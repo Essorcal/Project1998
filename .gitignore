@@ -128,3 +128,7 @@ re/fx/*
 
 # Pre-patch backups of client files taken by re/patches/*.py.
 re/patches/backups/
+
+# Generated map viewer output + any RE zips (mapviewer.zip alone is ~1.7GB)
+re/mapviewer/
+re/**/*.zip
