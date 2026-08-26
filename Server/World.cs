@@ -200,7 +200,16 @@ public sealed class World
     // Farthest (Chebyshev, from its home tile) a provoked mob will chase an attacker before giving up and
     // resuming normal wandering — bigger than WanderRadius so a fight can range beyond the idle-hop leash,
     // but still bounded so a player can outrun pursuit rather than being chased across the whole map.
-    private const int ChaseLeash = 8;
+    //
+    // RTK doesn't home-leash an ACTIVE chase at all: mob_ai_basic.move forces `mob.returning = false` the
+    // moment `mob.target ~= 0`, so its `retDist` governs only idle wandering, and a mob with a target chases
+    // it via FindCoords with no distance cap (target loss is by threat/area, not range). We keep a bound
+    // deliberately, but it MUST exceed the notice box below (NoticeX/Y) — otherwise an aggressive mob that
+    // spots a player at the screen edge would acquire and, on the very same tick, drop the target for being
+    // past the leash, jittering in place instead of pursuing. Sized to a full screen so an off-screen
+    // aggressive mob gives a real chase (user, 2026-08-24: "just off screen should pursue"); leading it this
+    // far from its den still shakes it.
+    private const int ChaseLeash = 16;
     // Mythic boss animations RTK hardcodes rather than carrying per-boss: Last Stand flashes 11
     // (Spells/last_stand.lua `sendAnimation(11)`), a curse shrug flashes 10 and plays no sound
     // (mob_ai_mythic.move). The heal animation/sound pair IS per-boss and lives in MobBosses.csv.
@@ -219,7 +228,20 @@ public sealed class World
     // How far (Chebyshev, from the mob's CURRENT tile) an aggressive mob (MobDef.Aggressive, RTK MobBehavior==1)
     // scans for an unprovoked target each move tick — RTK's mob_find_target runs over a full-screen-ish area;
     // this is scoped to roughly what the player can see on their own screen (17x15 viewport, Session.InView).
+    // Kept for the PET foe scan (a summon fighting what's around it), which is about reach, not screen edges.
     private const int AggroRadius = 8;
+    // The box (half-extents from the mob's tile) in which a mob NOTICES a player — for unprovoked aggro, for
+    // re-picking a reachable target when walled off, and for keeping threat on someone at the screen edge.
+    // The drawn viewport is 19x17 (x±9, y±8 — Session.SayHalfW/H, the same rect the client renders), so a
+    // plain square AggroRadius=8 fell two tiles short horizontally: a mob you could plainly see at the left or
+    // right edge sat inert until you stepped closer, and one just off-screen never pursued. This is the
+    // viewport PLUS one tile on every side, so behaviour reaches at least a tile past what's visible (user,
+    // 2026-08-24: "extend outside the viewport slightly … at least 1 tile"; "just off screen should pursue").
+    private const int NoticeX = Session.SayHalfW + 1;   // 10 — a tile past the horizontal draw edge
+    private const int NoticeY = Session.SayHalfH + 1;   // 9  — a tile past the vertical draw edge
+    /// <summary>Is (px,py) inside a mob at (mx,my)'s notice box — the drawn viewport plus a one-tile margin?</summary>
+    private static bool Notices(int mx, int my, int px, int py) =>
+        Math.Abs(px - mx) <= NoticeX && Math.Abs(py - my) <= NoticeY;
     // The mirror of AggroRadius for PREY (MobDef.Flees — rabbit, blue rooster): how close (Chebyshev) a player
     // gets before the creature starts backing away. Deliberately much shorter than the aggro scan — a rabbit
     // notices you when you're nearly on top of it, not from across the screen, otherwise a town full of them
@@ -358,7 +380,7 @@ public sealed class World
             // RTK's non-cornered scan is `mob:getObjectsInArea(BL_PC)` — what the creature can see, not the
             // whole map. Without the bound a mob would swap onto someone who hurt it once and then walked to
             // the far side of the level, and chase a player it has no way of knowing is there.
-            if (Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) > AggroRadius) continue;
+            if (!Notices(mob.X, mob.Y, p.PlayerX, p.PlayerY)) continue;
             if (cornered && !Adjacent(p)) continue;
             if (mob.HasForgotten(p.PlayerId, now)) continue;   // Amnesia: this one isn't here as far as it knows
             long t = mob.ThreatOf(p.PlayerId);
@@ -1384,26 +1406,31 @@ public sealed class World
     /// the foe it is assisting against, and heeling back to its owner), and pet retaliation all run through
     /// here, so obstacle handling can't differ between them.</para>
     ///
-    /// <para><b>This is deliberately, permanently stupid. Do not make it smarter.</b> No A*, no map search, no
+    /// <para><b>This is deliberately dumb. Do NOT make it a pathfinder.</b> No A*, no map search, no
     /// lookahead, no wall-following, no memory of where it has been. RTK's version tries ONLY the one or two
     /// directions that close on the target — vertical then horizontal, or horizontal then vertical, on a
     /// coin flip (<c>checkmove = math.random(0, 2)</c>, ≥1 picks vertical-first) — and takes the first that
     /// isn't blocked. That coin flip is the entire cleverness of 4.95 mob pathing.</para>
     ///
-    /// <para>What that produces, and what it's SUPPOSED to produce: a mob diagonal from you rounds an
-    /// ordinary corner by itself, because when one axis is blocked the other one is still "toward" you. A mob
-    /// squared up against a wall with you straight behind it has no toward-step left, and shuffles sideways
-    /// instead — one tile out, one tile back, because next tick the step back is the one that closes on you.
-    /// <see cref="Mob.DetourDir"/>/<see cref="Mob.DetourLeft"/> exist only to stretch that shuffle to a
-    /// random 1-3 tiles so it isn't metronomic. It <b>never steps directly away</b>, so a mob in a pit with
-    /// you on the near side will never find the stairs on the far side — it will pace at the bottom forever.
-    /// That is correct 4.95 behaviour, not a bug to fix.</para>
+    /// <para>What that produces: a mob diagonal from you rounds an ordinary corner by itself, because when one
+    /// axis is blocked the other one is still "toward" you. When NO toward-step is open (squared up against a
+    /// wall, cornered, or pitted) it falls into RTK's "nothing worked" branch — one step in a fully RANDOM
+    /// direction, up to 11 random draws until a tile is free (the random side can be sideways OR straight
+    /// away). MEASURED behaviour (re/scratchpad sim, 2026-08-24): clears a 1-wide rock and rounds a wall of any
+    /// width when you're diagonal to the mob, but JITTERS at the face — never reaching you — when you stand
+    /// directly behind a wall ≥3 wide (re/sim_mob_stepping.py), because the toward-step re-aligns it each tick; and it does not escape
+    /// an enclosed pit. It is a random walk with a restoring pull, not a solver.</para>
     ///
-    /// <para>Two deliberate departures from RTK's <c>FindCoords</c>, both in its "nothing worked" branch:
-    /// RTK flails at up to 11 fully random sides (which lets it walk straight away from you), and it re-rolls
-    /// <c>mob.target</c> to a random other player standing nearby. The sideways-only shuffle replaces the
-    /// first; the second is just dropped — target acquisition belongs to the aggro scan, not to being stuck
-    /// behind a rock.</para></summary>
+    /// <para><b>History:</b> this used to replace RTK's random flail with a sideways-ONLY shuffle. On 2026-08-24
+    /// the user reported "not enough pacing/exploration to get to the user if they're blocked"; a simulation of
+    /// the alternatives showed a committed-run rule reaches you behind head-on walls (100%) while literal RTK
+    /// does not (0%), yet the user chose the literal RTK port anyway, for accuracy over reach, with that
+    /// tradeoff in front of them. So the jitter-at-a-head-on-wall and no-pit-escape are the CHOSEN behaviour,
+    /// not bugs — don't quietly upgrade this to the committed-run version without re-asking.</para>
+    ///
+    /// <para>One departure from RTK's branch remains: RTK also re-rolls <c>mob.target</c> to a random nearby
+    /// player when stuck; that half lives in the caller's <c>towardBlocked</c> block (gated on
+    /// <see cref="Mob.Aggressive"/>), not here.</para></summary>
     private bool StepMobToward(ushort mapId, MapState m, Mob mob, int tx, int ty,
                                (ushort Xs, ushort Ys) dims, MapData? terrain,
                                HashSet<(ushort, ushort)> occupied, HashSet<(int, int)> mobTiles,
@@ -1438,21 +1465,13 @@ public sealed class World
             if (dims.Xs != 0 && (nx >= dims.Xs || ny >= dims.Ys)) return false;
             if (occupied.Contains(((ushort)nx, (ushort)ny))) return false;      // never onto a player
             if (mobTiles.Contains((nx, ny))) return false;                      // nor another creature
-            if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) return false;   // pass flag OR SObj wall
+            if (MobBlocked(mapId, terrain, nx, ny, dir)) return false;   // pass flag / SObj wall / warp tile
             if (mob.Dir != dir) { mob.Dir = dir; turns.Add((mapId, mob.Id, dir)); }
             return StepMobTo(mapId, m, mob, nx, ny, dir, mobTiles, moves, trapDamage);
         }
 
-        // A sideways shuffle already under way keeps going for its remaining tiles. Without this the step
-        // that closes on the target always wins the next tick, so every shuffle would be exactly one tile
-        // out and one tile back — right most of the time, but too regular to look alive.
-        if (mob.DetourDir != NoDetour && mob.DetourLeft > 0)
-        {
-            if (Step(mob.DetourDir)) { if (--mob.DetourLeft == 0) mob.DetourDir = NoDetour; return true; }
-            mob.DetourDir = NoDetour; mob.DetourLeft = 0;   // that way is blocked too — abandon the run
-        }
-
-        // RTK FindCoords proper: only the directions that close the gap, on a coin-flipped axis order.
+        // RTK FindCoords proper (mob.lua:307-352): only the directions that close the gap, on a coin-flipped
+        // axis order. First unblocked one wins.
         var toward = new List<byte>(2);
         byte? vert = dy > 0 ? (byte)2 : dy < 0 ? (byte)0 : null;
         byte? horz = dx > 0 ? (byte)1 : dx < 0 ? (byte)3 : null;
@@ -1460,42 +1479,50 @@ public sealed class World
         else                            { if (horz is byte c) toward.Add(c); if (vert is byte d) toward.Add(d); }
 
         foreach (byte dir in toward)
-            if (Step(dir)) { mob.DetourDir = NoDetour; mob.DetourLeft = 0; return true; }
+            if (Step(dir)) return true;
 
         // Nothing that closes the gap is open.
         towardBlocked = true;
 
-        // Shuffle sideways — and ONLY sideways: the two directions perpendicular to the axis we're stuck on,
-        // never the one straight back. If the target is diagonal there is no purely-sideways option at all
-        // (both remaining sides retreat on one axis), so the mob just stands there facing you, which is
-        // exactly what a cornered 4.95 mob does.
-        var sides = new List<byte>(2);
-        if (dx == 0) { sides.Add(1); sides.Add(3); }        // stuck on the vertical -> try east/west
-        else if (dy == 0) { sides.Add(0); sides.Add(2); }   // stuck on the horizontal -> try north/south
-        if (sides.Count == 2 && Random.Shared.Next(2) == 1) sides.Reverse();
+        // RTK's "nothing worked" branch (mob.lua:361-382), ported faithfully: take ONE step in a fully random
+        // direction, retrying up to 11 random draws until a tile is open —
+        //     for i = 0, 10 do if (not found) then mob.side = math.random(0, 3); found = mob:move() end end
+        // Any of the four sides is fair game — sideways OR straight AWAY from the target. One tile per call, at
+        // the mob's move cadence; the loop only searches for an open side, it doesn't stack hops.
+        //
+        // What this ACTUALLY produces (measured, re/sim_mob_stepping.py, 2026-08-24 — don't re-optimise on a hunch):
+        // it clears a 1-wide rock and rounds a wall of any width when the player is DIAGONAL to the mob, but
+        // when the player is directly behind a wall ≥3 tiles wide the mob JITTERS at the face (~0% reach) —
+        // every random sideways step is undone next tick by the toward-step snapping it back into alignment.
+        // For the same reason it does NOT escape an enclosed pit. Both are faithful RTK, and the user chose it
+        // over the more capable committed-run alternative AFTER seeing this exact data (2026-08-24): the goal
+        // was RTK-accuracy, not maximal reach. If a report says "mobs jitter at a wall / can't reach me behind
+        // one", that is this branch being literally RTK — revisit the decision, don't silently make it smarter.
+        // RTK's companion move here — re-rolling the target to a random nearby player — lives in the caller's
+        // `towardBlocked` block, keyed off the flag set just above.
+        for (int i = 0; i < 11; i++)
+            if (Step((byte)Random.Shared.Next(4))) return true;
 
-        foreach (byte dir in sides)
-            if (Step(dir))
-            {
-                // Run length: 1-3 tiles most of the time, occasionally stretching to 6. Long runs are fine —
-                // it's the DIRECTION that has to stay honest. (RTK's flail is 11 tries at any of the four
-                // sides, which lets a stuck mob walk 11 tiles straight away from you; that never happens in
-                // the real game, so the away side simply isn't a candidate here.)
-                int run = Random.Shared.Next(1, 4);
-                if (Random.Shared.Next(4) == 0) run += Random.Shared.Next(1, 4);
-                mob.DetourLeft = (byte)(run - 1);            // this step, plus the rest of the run
-                mob.DetourDir = mob.DetourLeft == 0 ? NoDetour : dir;
-                return true;
-            }
-
-        // Boxed in. Face the target so it at least reads as wanting to reach you.
-        mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+        // Boxed in on all four sides. Face the target so it at least reads as wanting to reach you.
         if (toward.Count > 0 && mob.Dir != toward[0]) { mob.Dir = toward[0]; turns.Add((mapId, mob.Id, toward[0])); }
         return false;
     }
 
-    /// <summary>No sideways shuffle in progress — see <see cref="Mob.DetourDir"/>.</summary>
+    /// <summary>No sideways shuffle in progress — see <see cref="Mob.DetourDir"/>. Vestigial now the blocked
+    /// fallback is RTK's stateless random walk (see <see cref="StepMobToward(ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}}, bool)"/>); the field and its resets are harmless and kept to avoid churn.</summary>
     private const byte NoDetour = 0xFF;
+
+    /// <summary>A tile a MOB may not step onto. The two static collision layers — ground pass flag plus the
+    /// client's <c>SObj.tbl</c> directional object-walls, via <see cref="MapData.BlockedMove"/> — PLUS warp
+    /// source tiles. A mob can't warp, so letting it wander onto a door/stair/portal tile just parks it on the
+    /// threshold, and following you onto one reads as walking through the wall the warp sits in — the reported
+    /// "mobs no-clip … warps". Blocking warp tiles for mobs is a deliberate deviation (user, 2026-08-24): RTK's
+    /// own mob move is pass-only and clips these, and the PLAYER walk still treats a warp as walkable-and-
+    /// transiting (<see cref="Session"/>.HandleWalk) — this gate is mob-only. Caller has already bounds-checked
+    /// (nx,ny) ≥ 0 and in-dims, so the ushort casts are safe.</summary>
+    private static bool MobBlocked(ushort mapId, MapData? terrain, int nx, int ny, byte dir) =>
+        (terrain is not null && terrain.BlockedMove(nx, ny, dir))
+        || Content.TryWarp(mapId, (ushort)nx, (ushort)ny, out _);
 
     /// <summary>Commit a validated one-tile move: update the tile index, queue the broadcast, spring a trap.</summary>
     /// <summary>One step of a RETREAT from <c>(tx,ty)</c> — the mirror image of <see cref="StepMobToward"/>, and
@@ -1530,7 +1557,7 @@ public sealed class World
             if (dims.Xs != 0 && (nx >= dims.Xs || ny >= dims.Ys)) return false;
             if (occupied.Contains(((ushort)nx, (ushort)ny))) return false;
             if (mobTiles.Contains((nx, ny))) return false;
-            if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) return false;
+            if (MobBlocked(mapId, terrain, nx, ny, dir)) return false;
             if (mob.Dir != dir) { mob.Dir = dir; turns.Add((mapId, mob.Id, dir)); }
             if (!StepMobTo(mapId, m, mob, nx, ny, dir, mobTiles, moves, trapDamage)) return false;
             mob.HomeX = mob.X; mob.HomeY = mob.Y;   // see the doc note on re-homing
@@ -1650,7 +1677,7 @@ public sealed class World
         if (dims.Xs != 0 && (nx >= dims.Xs || ny >= dims.Ys)) return false;
         if (occupied.Contains(((ushort)nx, (ushort)ny))) return false;
         if (mobTiles.Contains((nx, ny))) return false;
-        if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) return false;
+        if (MobBlocked(mapId, terrain, nx, ny, dir)) return false;
         return StepMobTo(mapId, m, mob, nx, ny, dir, mobTiles, moves, trapDamage);
     }
 
@@ -2202,6 +2229,7 @@ public sealed class World
             Log.Info($"!! content reload failed: {e}");
             return (false, e.Message);
         }
+        ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
         MapData.Invalidate();
         StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
         // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
@@ -3114,7 +3142,7 @@ public sealed class World
                     if (mob.TargetId == 0 && mob.Aggressive && mob.OwnerId == 0)
                     {
                         var victim = m.Players.FirstOrDefault(p => !p.IsDead
-                            && Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) <= AggroRadius);
+                            && Notices(mob.X, mob.Y, p.PlayerX, p.PlayerY));
                         if (victim is not null) mob.TargetId = victim.PlayerId;
                     }
 
@@ -3312,7 +3340,7 @@ public sealed class World
                             if (towardBlocked && mob.Aggressive)
                             {
                                 var reachable = m.Players.Where(p => !p.IsDead && p.PlayerId != mob.TargetId
-                                        && Math.Max(Math.Abs(p.PlayerX - mob.X), Math.Abs(p.PlayerY - mob.Y)) <= AggroRadius)
+                                        && Notices(mob.X, mob.Y, p.PlayerX, p.PlayerY))
                                     .ToList();
                                 if (reachable.Count > 0)
                                 {
@@ -3407,7 +3435,7 @@ public sealed class World
                               && Math.Abs(ny - mob.HomeY) <= mob.Leash                             // leash to spawn
                               && !occupied.Contains(((ushort)nx, (ushort)ny))                     // not onto a player
                               && !mobTiles.Contains((nx, ny))                                      // not onto another mob
-                              && (terrain is null || !terrain.BlockedMove(nx, ny, stepDir));       // pass flag OR SObj object-wall
+                              && !MobBlocked(mapId, terrain, nx, ny, stepDir);                     // pass flag / SObj wall / warp tile
                     if (!ok) continue;   // blocked/leashed: hold position (already facing stepDir)
 
                     ushort ox = mob.X, oy = mob.Y;                   // SOURCE tile (see the move broadcast below)

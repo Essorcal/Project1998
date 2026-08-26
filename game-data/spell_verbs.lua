@@ -345,10 +345,11 @@ function verbs.baekhos_cunning(ctx, row)
   ctx:stance("backstab", c.back,  dur)                       -- extra reachable tile: behind you
   ctx:stance("flank",    c.flank, dur)                       -- extra reachable tile: ONE side, rolled blind
   ctx:stance("fourway",  c.four,  dur)                       -- Cun4+: every adjacent tile, no roll
-  ctx:setCooldown("baekhos_cunning", CUNNING_AETHER)
-  ctx:fx(35, 705)                                            -- RTK sendAnimation(35) / playSound(705). 35 is the
-                                                             -- WIRE value, so it draws Effect.tbl INDEX 34 -- the
-                                                             -- white tiger. Baekho. Verified against the art.
+  ctx:setCooldown("baekhos_cunning", ctx.spellAether > 0 and ctx.spellAether or CUNNING_AETHER)
+  ctx:fxSelf()                                               -- graphic + sound from the spell_effects row, as in
+                                                             -- chungryong_rage. animation 35 is the WIRE value,
+                                                             -- so it draws Effect.tbl INDEX 34 -- the white
+                                                             -- tiger. Baekho. Verified against the art.
   ctx:say("[Cunning " .. nt .. "] " .. c.msg)
   ctx:narrated()                                           -- this line REPLACES the central "You cast X."
   return true

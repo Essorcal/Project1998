@@ -3853,10 +3853,10 @@ public static partial class Content
     /// <see cref="RageAmount"/>.</summary>
     public static int? RageAmountFor(SpellDef sp) => RageAmount.TryGetValue(sp.Key, out var r) ? r : null;
 
-    /// <summary>Chung Ryong's Rage — the Warrior Chung Ryong subpath's INCREMENTAL fury (one spell key,
-    /// recast every 120s to climb tier 1→6). Handled by its own <see cref="Session.CastChungRyongRage"/>
-    /// path rather than the flat <see cref="RageAmountFor"/> one, so it never appears in SpellMods.csv.</summary>
-    public static bool IsChungRyongRage(SpellDef sp) => sp.Key == "chung_ryongs_rage";
+    // (IsChungRyongRage lived here: a hardcoded key check that routed Chung Ryong's Rage to its Lua verb.
+    // It now binds through a SpellParams.csv row like Baekho's Cunning, the spell it mirrors, so the key
+    // test is gone. It is still absent from SpellMods.csv — an INCREMENTAL fury must not reach the flat
+    // RageAmountFor path, whose "already benefiting from a fury" block would forbid the tier climb.)
 
     // RTK warrior/enchant.lua, infuse.lua, ingress.lua, vipers_venom.lua, dragons_flame.lua + rogue/
     // tigers_fortitude.lua, baekhos_blade.lua: a weapon-enchant STANCE (player.enchant). Unlike rage (which

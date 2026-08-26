@@ -941,10 +941,25 @@ public class ContentSmokeTests
         // name registration in NpcScripts, and the ability itself.
         var hermit = Content.Npcs.FirstOrDefault(n => n.Key == "HermitNpc");
         var daeWhan = Content.Npcs.FirstOrDefault(n => n.Key == "AncientLeviathanNpc");
+        var patrol = Content.Npcs.FirstOrDefault(n => n.Key == "BorderPatrolNpc");
         Assert.NotNull(hermit);
         Assert.NotNull(daeWhan);
+        Assert.NotNull(patrol);
         Assert.Contains(NpcScripts.For(hermit!), a => a is HermitAbility);
         Assert.Contains(NpcScripts.For(daeWhan!), a => a is AncientLeviathanAbility);
+        Assert.Contains(NpcScripts.For(patrol!), a => a is BorderPatrolAbility);
+
+        // The Border patrol is LOAD-BEARING, and silently so: he was placed with no composition row at all,
+        // which cost nothing visible (he greets you generically and refuses the pelt) while making the whole
+        // rest of the chain unreachable. What makes him the entrance is the absence of a warp — nothing in
+        // Warps.csv leads INTO the camp, so his bribe is the only door. Assert both halves: the pelt he wants
+        // resolves, and no warp row has quietly appeared to make him bypassable.
+        Assert.NotNull(Content.ItemByKey(LeviathanQuest.Pelt));
+        Assert.True(Content.TryMap(LeviathanQuest.WornPathMap, out _));
+        var camp = new ushort[] { LeviathanQuest.WornPathMap, 2543, LeviathanQuest.PenMap };
+        Assert.DoesNotContain(Content.Warps, w => !camp.Contains(w.Key.m) && camp.Contains(w.Value.m));
+        // …and the way back out is an ordinary warp, or the bribe becomes a one-way trip.
+        Assert.Contains(Content.Warps, w => w.Key.m == LeviathanQuest.WornPathMap && !camp.Contains(w.Value.m));
 
         // His stock: RTK's three cursed weapons plus the sixteen class fans, one per class per tier.
         var keys = (Shops.For("HermitNpc") ?? System.Array.Empty<Shops.Category>()).SelectMany(c => c.Keys).ToList();

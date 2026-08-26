@@ -618,6 +618,7 @@ natures_own_warrior,warrior,Utility,,,,,,,,,,,67,,,
 bladedance_warrior,warrior,Utility,,,,,,,,,,,60,,,
 wolfs_fury_warrior,warrior,Buff,30,,,,,625000,,,,,11,4,18,
 souls_rage_warrior,warrior,Buff,30,,,,,625000,,,,,103,4,18,
+baekhos_cunning,npcsub,Buff,0,,,,,,,,,,35,705,18,150000
 chung_ryongs_rage,npcsub,Buff,0,,,,,,,,,,36,4,18,120000
 spirit_of_the_forest_warrior,warrior,Buff,30,,,,,625000,,,,,106,4,18,
 augmentation_warrior,warrior,Buff,30,,,,,625000,,,,,98,70,18,

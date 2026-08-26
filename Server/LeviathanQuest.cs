@@ -13,6 +13,10 @@ namespace Server;
 /// <item><b>Dae-Whan</b>, the Ancient Leviathan (Leviathan Fields, map 2538), asks for help: a man keeps
 /// taking his young away to train them for war. Agree and he hands over a <c>leviathan_talisman</c>; refuse
 /// and you are marked his sworn enemy, which costs a million coins to undo.</item>
+/// <item>The <b>Border patrol</b> (Nagnang, map 2500) is the ONLY door into the training camp: he smells the
+/// leviathans on you and looks the other way for a green squirrel pelt, then walks you through to Worn path
+/// (map 2542). There is no warp row from 2500 into that pocket — hand him the pelt or the rest of the chain
+/// is unreachable.</item>
 /// <item>In <b>Blight pen</b> (map 2544) four captured leviathans stand penned at y=2. Step onto the tile
 /// below one carrying the talisman and it breaks the spell — the captive thanks you and is gone.</item>
 /// <item>Report back to Dae-Whan for the <b>Freed Leviathan</b> legend, and he points you at "one of your
@@ -46,9 +50,15 @@ public static class LeviathanQuest
     public const string LegendFreed = "leviathan_freed";
     public const string LegendEnemy = "leviathan_sworn_enemy";
     public const string Talisman    = "leviathan_talisman";
+    public const string Pelt        = "green_squirrel_pelt";   // the Border patrol's bribe
 
     public const int  MinLevel        = 12;          // RTK: "Come back when you've gained more insight."
     public const uint ForgivenessGold = 1_000_000;
+
+    /// <summary>Where the Border patrol drops you: Worn path, one tile east of the way back (Warps.csv 1638,
+    /// 2542 (0,16) -> Nagnang (142,87)). Worn path -> Worn trail -> Blight pen are ordinary warps from here.</summary>
+    public const ushort WornPathMap = 2542;
+    public const int WornPathX = 1, WornPathY = 16;
 
     // ---- tile geometry (onScriptedTilesQuest.lua) ------------------------------------------------
     /// <summary>Blight pen. The four captives stand on <see cref="PenCaptiveY"/>; you trigger from the tile
@@ -180,6 +190,57 @@ public sealed class AncientLeviathanAbility : INpcAbility
         await ctx.Say(
             "You will always be a friend to the free Leviathans.",
             "The old man in the hut northeast of here still mistrusts strangers. Tell him Dae-Whan has sent you.");
+}
+
+/// <summary>
+/// The Border patrol (RTK <c>border_patrol.lua</c>) — the bribable guard on Nagnang's southern edge, and the
+/// only way into the camp where the young leviathans are penned. Maps 2542/2543/2544 have no inbound warp
+/// row at all: 1638/1639 run Worn path -> Nagnang (he stands beside where they land) and everything else in
+/// that pocket is internal. His warp IS the entrance, so until he takes the pelt the quest dead-ends with the
+/// talisman in your bag.
+///
+/// <para>He opens up on the quest STAGE, not a legend — the scent is on you from the moment Dae-Whan hands
+/// over the talisman, and RTK never closes the door again (stage 2 and 3 still pass), so a finished player
+/// can still cross for a pelt. That matters: Worn path and Worn trail are green squirrel ground, and locking
+/// the gate behind the quest would strand anyone who walked back out to hunt.</para>
+/// </summary>
+public sealed class BorderPatrolAbility : INpcAbility, INpcHandItemHandler
+{
+    public static readonly BorderPatrolAbility Instance = new();
+
+    // One entry, so a click dives straight into his line the way the Lua's click handler does.
+    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
+    {
+        yield return ("Speak", Talk);
+    }
+
+    private static async Task Talk(NpcContext ctx)
+    {
+        if (ctx.Stage(LeviathanQuest.Key) == 0)
+        {
+            await ctx.Say("Just doin' my job here. Keep yer nose clean and I won't have to do my job on you.");
+            return;
+        }
+
+        await ctx.Say(
+            "Eh? What's that? Sorry Stranger, we don't let anyone past our borders here.",
+            "Hmmm, you have the scent of the Leviathans on you. Perhaps I could look the other way if you were to hand me one of those lovely pelts the green squirrels drop.");
+    }
+
+    /// <summary>The bribe. Exactly one pelt per crossing (RTK <c>removeItem(..., 1, ...)</c>), so handing the
+    /// whole stack with 'H' costs one and leaves the rest in the bag. Returning false on anything else — the
+    /// wrong item, or a pelt from someone who never spoke to Dae-Whan — lets the generic refusal fire, which
+    /// puts the item back on the ground at their feet rather than eating it.</summary>
+    public async Task<bool> OnHandItem(NpcContext ctx, ItemDef item, int amount)
+    {
+        if (item.Key != LeviathanQuest.Pelt) return false;
+        if (ctx.Stage(LeviathanQuest.Key) == 0) return false;
+        if (!ctx.TakeItem(LeviathanQuest.Pelt, 1)) return false;
+
+        await ctx.Say("Well thank you kindly! Now be on your way and I don't know you. Oh, and look out for those tricky Fox spirits. They enjoy their little games.");
+        ctx.Warp(LeviathanQuest.WornPathMap, LeviathanQuest.WornPathX, LeviathanQuest.WornPathY);
+        return true;
+    }
 }
 
 /// <summary>

@@ -39,6 +39,7 @@ public static class NpcScripts
         ["chapel"] = ChapelAbility.Instance,
         ["revive"] = ReviveAbility.Instance,
         ["ancient_leviathan"] = AncientLeviathanAbility.Instance,
+        ["border_patrol"] = BorderPatrolAbility.Instance,
         ["hermit"] = HermitAbility.Instance,
         ["sute"] = SuteQuestAbility.Instance,
         ["tiger_mail"] = TigerMailAbility.Instance,
@@ -46,6 +47,8 @@ public static class NpcScripts
         ["stars_hint"] = StarHintAbility.Instance,
         ["totem_worship"] = TotemWorshipAbility.Instance,
         ["mythic_alliance"] = MythicAllianceAbility.Instance,
+        ["alignment"] = AlignmentAbility.Instance,
+        ["summit"] = SummitAbility.Instance,
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via

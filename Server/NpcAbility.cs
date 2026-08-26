@@ -303,6 +303,13 @@ public sealed class NpcContext
     public int BasePathId => _s.CharBasePathId;
     /// <summary>Set the player's path (RTK updatePath) — changes the profile class line, persists.</summary>
     public void SetClass(int pathId) => _s.SetCharClass(pathId);
+
+    // ---- sub-alignment (AlignmentAbility / SummitAbility; RTK swapAlignment.lua) ------------------
+    /// <summary>The player's sub-alignment (0 Unaligned · 1 Kwi-Sin · 2 Ming-Ken · 3 Ohaeng).</summary>
+    public int Alignment => _s.LuaAlignment;
+    /// <summary>Devote to (or renounce, with 0) a sub-alignment: sets it, rebuilds the spellbook to the new
+    /// alignment's entitlement, and manages the "&lt;Align&gt; &lt;Class&gt; since" legend (RTK swapAlignment).</summary>
+    public void Devote(int alignment) => _s.SwapAlignment(alignment);
     /// <summary>The player's current noble title ("" if none).</summary>
     public string Title => _s.CharTitle;
     /// <summary>Set the player's noble title (RTK setTitle), persisted.</summary>
@@ -391,8 +398,9 @@ public interface INpcSayHandler
 /// <summary>An ability that accepts an item HANDED to the NPC — the native 'h'/'H' gesture (0x29, RTK
 /// clif_handitem's <c>receiveItem</c>/<c>handItem</c> branch), i.e. a quest turn-in. <see cref="OnHandItem"/>
 /// returns true if it consumed the hand; the handler owns taking the item (via <see cref="NpcContext.TakeItem"/>)
-/// and granting any reward, and the dispatcher then stops. Only NON-droppable (quest) items reach here — see
-/// <c>Session.HandItemToNpcAsync</c>, which gives RTK's refusal line when no ability accepts.</summary>
+/// and granting any reward, and the dispatcher then stops. EVERY item reaches here, quest or not — see
+/// <c>Session.HandItemToNpcAsync</c>, which gives RTK's refusal line (and puts the item back on the ground)
+/// when no ability accepts, so a handler declines by returning false rather than by swallowing the hand.</summary>
 public interface INpcHandItemHandler
 {
     Task<bool> OnHandItem(NpcContext ctx, ItemDef item, int amount);

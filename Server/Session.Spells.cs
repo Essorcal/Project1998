@@ -117,11 +117,42 @@ public sealed partial class Session
             ? n
             : Array.FindIndex(Character.Alignments, s => string.Equals(s, a, StringComparison.OrdinalIgnoreCase));
         if (val < 0) { SendLog($"unknown alignment \"{a}\" — use Unaligned / Kwisin / Mingken / Ohaeng (or 0-3)."); return; }
-        _char.Alignment = (byte)val;
-        if (_enteredWorld) StoreSave();
+        SwapAlignment(val, announce: false);
         SendLog($"Alignment set to {Character.AlignmentName(_char.Alignment)}.");
-        SyncSpellbook();
         Log.Info($"   -> ALIGN set to {_char.Alignment} ({Character.AlignmentName(_char.Alignment)})");
+    }
+
+    // The internal legend name for an alignment devotion — "<align>_<class>_since" (RTK swapAlignment's
+    // legend name), stable across the class it was earned in so a later swap can find and replace it. Index
+    // is Character.Alignment (0 unaligned has no legend); class index is the base path id 1-4.
+    private static readonly string[] AlignLegendPrefix  = { "", "kwisin",  "mingken",  "ohaeng" };
+    private static readonly string[] AlignLegendDisplay = { "", "Kwi-Sin", "Ming-Ken", "Ohaeng" };
+    private static readonly string[] BaseClassName      = { "Peasant", "Warrior", "Rogue", "Mage", "Poet" };
+
+    /// <summary>Devote to (or renounce, with 0) a sub-alignment — the ONE code path shared by @align, the
+    /// three alignment shrines (<see cref="AlignmentAbility"/>) and the Tiger Palace summit
+    /// (<see cref="SummitAbility"/>). Mirrors RTK's <c>Player.swapAlignment</c>: set the field, manage the
+    /// "&lt;Align&gt; &lt;Class&gt; since" legend mark (drop the old one, stamp the new — never for unaligned),
+    /// persist, and rebuild the spellbook to the new alignment's entitlement (our <see cref="SyncSpellbook"/>
+    /// replaces RTK's position-for-position spell array swap; the result is the same book for a 0↔N swap,
+    /// which is all the shrines and the summit ever do).</summary>
+    internal void SwapAlignment(int newAlignment, bool announce = true)
+    {
+        byte na = (byte)Math.Clamp(newAlignment, 0, 3);
+        int bp = CharBasePathId;
+
+        // Drop any existing alignment legend, earned under ANY alignment/class (RTK loops every combo).
+        for (int a = 1; a <= 3; a++)
+            for (int c = 1; c <= 4; c++)
+                RemoveLegend($"{AlignLegendPrefix[a]}_{BaseClassName[c].ToLowerInvariant()}_since");
+
+        _char.Alignment = na;
+        if (na != 0 && bp >= 1 && bp <= 4)
+            AddLegend($"{AlignLegendDisplay[na]} {BaseClassName[bp]} since ({Character.GameDate})",
+                      $"{AlignLegendPrefix[na]}_{BaseClassName[bp].ToLowerInvariant()}_since", (byte)bp, 0x80);
+
+        if (_enteredWorld) StoreSave();
+        SyncSpellbook(announce);
     }
 
     /// <summary>"@spell &lt;name or id&gt;" — teach ONE ability outright, ignoring class, level, mark and
@@ -415,11 +446,11 @@ public sealed partial class Session
         // multiplier — user: "rogue invis also has a damage multiplier"): same class of gap as Backstab/Flank
         // above — neither has a numeric BuffStat/BuffAmt the generic CastBuff loop can express, so both
         // silently no-opped (spent mana, printed a message, did nothing) before this pass.
-        // Chung Ryong's Rage is a fury too, but INCREMENTAL — recast every 120s to climb tier 1→6, each tier
-        // costing more mana, hitting harder, adding AC, and draining vita when it wears out. It bypasses the
-        // flat CastRage path (and its "already benefiting from a fury" block, which would forbid the climb).
-        // Placed before RageAmountFor so the flat path never sees it (it's deliberately absent from SpellMods).
-        if (Content.IsChungRyongRage(sp)) return Lua(CastUtilArch("chungryong_rage", sp, null), sp);
+        // (Chung Ryong's Rage — an INCREMENTAL fury that climbs tier 1→6 on recast — used to be intercepted
+        // here by a hardcoded key check. It is the same shape as Baekho's Cunning, which reaches its verb
+        // through a SpellParams row, so it now does too: both bind at the top of ApplyCast and never reach
+        // this dispatch at all. That also keeps it away from the flat CastRage path below, whose "already
+        // benefiting from a fury" block would forbid the climb — the reason for the old interception.)
         if (Content.RageAmountFor(sp) is int rageAmt) return Lua(CastStanceArch("stance_rage", sp, fx, mana, rageAmt), sp);
         if (Content.IsStealthSpell(sp))
         {
