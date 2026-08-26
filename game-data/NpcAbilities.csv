@@ -14,6 +14,7 @@ BloodNpc,forget_secret
 RogueGuildShamanNpc,appearance
 ArenaMasterNpc,war_paint
 ExpSeller,shadow_stats
+BonHwaNpc,bon_hwa
 ChapelNpc,shop|chapel
 ShamanNpc,revive
 BaekhoNpc,revive|totem_worship

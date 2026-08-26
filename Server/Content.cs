@@ -260,10 +260,14 @@ public sealed record ItemDef(
                                                                // your White Moon Axe… he will bond it to you"), on
                                                                // both tswolf and Atlas. See ArmorQuest.cs.
             48018,                                             // fates_blade           — Bonded / Non-Repairable
-            49026,                                             // enchanted_spike       ) the Enchanted and san
-            49032, 49033, 49034,                               // blood tiers           ) tiers an NPC upgrades
-            49038, 49039, 49040, 49041, 49042,                 // surge tiers           ) for you: every one of
-            49045, 49046, 49047, 49048,                        // charm tiers           ) these is ALSO ItmBoD.
+            49026, 49027, 49028, 49029,                        // spike tiers           ) the Enchanted and san
+            49032, 49033, 49034, 49035,                        // blood tiers           ) tiers BonHwaAbility
+            49038, 49039, 49040, 49041, 49042,                 // surge tiers           ) upgrades for you: every
+            49045, 49046, 49047, 49048,                        // charm tiers           ) one is ALSO ItmBoD.
+            // 49027-49029 (Il/Ee/Sam san spike) and 49035 (Sam san blood) were absent from the Atlas-derived
+            // set above — the Atlas has no page for them — but Bon-Hwa forges them bonded exactly like their
+            // already-listed ladder-mates, so they belong here. Enchanted charm (49044) stays OUT: it is the
+            // one tier the Atlas marks Non-Bonded, and that decision outranks RTK's uniform addItem(player.ID).
             51002, 51003, 51004, 51005, 51006, 51007, 51008,   // warrior shield ladder — the armory smiths,
             51009, 51010, 51011, 51012, 51013, 51014,          // rogue buckler ladder    "your own Stone shield"
             51015, 51016, 51017, 51018, 51019, 51020,          // mage ward ladder

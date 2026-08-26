@@ -1,5 +1,9 @@
 Identifier,Stationary
 captured_leviathan,1
+# The Forever Tree (Man-shik). RTK AI/bosses/man_shik_forever_tree.lua gives it an EMPTY `move` -- it never
+# takes a step, it is a rooted HP wall you chop down. Without this it wanders/chases like any aggressive mob.
+# Its front-only strike (attacks (x,y-1) alone) is in World.Tick, keyed off this same mob.
+man_shik,1
 # Gathering nodes (HarvestNodes.csv): wheat, ore veins and trees are spawned as mobs, and RTK's AI scripts
 # for them define a `move` that only ever runs a timer -- it never calls mob:move(). Without this the whole
 # Kugnae wheat field slowly walks off its rows.

@@ -229,6 +229,10 @@ public sealed partial class Session
         // arena — the SQL table only holds each arena's way BACK, so the whole hub was one-way until now.
         if (!offMap && TryArenaDoor((ushort)nx, (ushort)ny)) return;
 
+        // The Forever Tree crevasse (Wilderness 1002 19,91): a warning box then a warp into map 1228. Scripted
+        // rather than an SQL warp because of the popup — see Session.TryForeverTreeEntrance.
+        if (!offMap && TryForeverTreeEntrance((ushort)nx, (ushort)ny)) return;
+
         if (blocked)
         {
             _char.X = (ushort)fromX; _char.Y = (ushort)fromY;   // hold at the from-tile

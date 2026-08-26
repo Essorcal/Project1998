@@ -81,3 +81,12 @@ Map,X,Y,Tile,Pass,Obj,Sources
 # leaf correction the closed run carries.
 1121,33,18,,,1852,map-data-cross-ref
 1121,34,18,,,1853,map-data-cross-ref
+# Forever Tree (1228) -> Bon-Hwa (1229) doorway. Warps at (14,12)/(15,12) sat under the CLOSED wooden-door
+# sprite 783/784/785 (all 0x0F solid), so the client self-blocked and the warp was unreachable. Swap the
+# 3-tile door to its OPEN form so the doorway reads as open AND both warp tiles are walkable: 790 (=783's
+# rock-arch-left, flag 0x00), 791 (open centre, 0x00), 792 (rock-arch-right, 0x0F -- no warp on that tile).
+# Both warp tiles (14/15) are 0x00, so no ObjectFlagOverrides needed (792 is solid wall art on other maps
+# and must NOT be globally unblocked).
+1228,14,12,,,790,forever-tree-bon-hwa-doorway open-left (walkable warp tile)
+1228,15,12,,,791,forever-tree-bon-hwa-doorway open-centre (walkable warp tile)
+1228,16,12,,,792,forever-tree-bon-hwa-doorway open-right (rock arch, no warp)

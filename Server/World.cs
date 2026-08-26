@@ -3211,6 +3211,14 @@ public sealed class World
                             // the chase step below, which moves on a single axis and closes to cardinal in ~1 tick.
                             bool adjacent = (tdx == 0 && Math.Abs(tdy) == 1) || (tdy == 0 && Math.Abs(tdx) == 1);
 
+                            // The Forever Tree (Man-shik) strikes ONLY its north face — RTK
+                            // man_shik_forever_tree.lua attacks the single cell at (mob.x, mob.y-1), never the
+                            // sides. Paired with its Stationary rooting below, that is what lets a group chop it
+                            // down from the flank unharmed while anyone standing in front is flattened by its
+                            // 1,000,000 damage (nexusatlas: "he hasn't been fighting back from the front, so he
+                            // hasn't been too deadly … what makes him a pain is his astounding vitality").
+                            if (mob.Key == "man_shik") adjacent = tdx == 0 && tdy == -1;
+
                             // ---- Sute's bespoke boss AI (Server/SuteAi.cs) --------------------------------
                             // The one creature that does not simply close and swing: he fights in bursts and
                             // backs off above half health, and runs below a quarter. SuteAi only DECIDES —
@@ -3276,6 +3284,11 @@ public sealed class World
                                 }
                                 continue;   // adjacent: swing instead of stepping
                             }
+
+                            // A ROOTED creature (RTK's empty `move`, modelled as Stationary/!Wander) never
+                            // closes the gap: it strikes only what is already adjacent and otherwise holds.
+                            // The Forever Tree is the one such aggressive creature — it cannot chase you down.
+                            if (!mob.Wander) { mob.AttackTimer = 0; continue; }
 
                             mob.MoveTimer += TickMs;
                             if (mob.MoveTimer < mob.MoveTime) continue;   // not this mob's turn yet

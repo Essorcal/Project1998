@@ -35,6 +35,7 @@ public static class NpcScripts
         ["appearance"] = AppearanceAbility.Instance,
         ["war_paint"] = WarPaintAbility.Instance,
         ["shadow_stats"] = ShadowStatsAbility.Instance,
+        ["bon_hwa"] = BonHwaAbility.Instance,
         ["chapel"] = ChapelAbility.Instance,
         ["revive"] = ReviveAbility.Instance,
         ["ancient_leviathan"] = AncientLeviathanAbility.Instance,

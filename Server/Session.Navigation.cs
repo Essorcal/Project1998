@@ -257,6 +257,41 @@ public sealed partial class Session
         EnterMap(dm.Id, dm.Xs, dm.Ys, cave.DestX, cave.DestY, dm.Name);
     }
 
+    // ---- Forever Tree entrance (RTK onScriptedTiles: the "crevasse" at Wilderness 19,91) ----
+    // The Forever Tree area (map 1228) is entered by walking onto the crevasse tile at Wilderness (map 1002)
+    // 19,91 — a scripted tile, not an SQL warp, because it pops a warning box first (nexusatlas
+    // forevertree.php: "Walk onto (19,91) ... You will receive a popup message. Hit Ok. You will appear inside
+    // the Forever Tree area ... in the little indent on the bottom right side"). NO gate: the box only WARNS
+    // ("only the truly mighty could survive"), the archive has you hit Ok and enter, and its own tips ("Soloing
+    // the Forever tree isn't that easy") assume under-prepared players go in and die to the ravens/tree. The
+    // Bon-Hwa NPC does the real level-99 + Enchanted-rank gating (see Server/BonHwa.cs). The way back OUT is the
+    // ordinary Warps.csv pair at 1228 (21,15)/(22,15)-ish -> 1002 (19,93), so the landing (21,16) sits one tile
+    // south of the exit source, in the same bottom-right pocket, and is not itself a warp tile.
+    private const ushort ForeverTreeMap = 1228;
+
+    private bool TryForeverTreeEntrance(ushort x, ushort y)
+    {
+        if (_char.Map != 1002 || x != 19 || y != 91) return false;
+        if (DialogBusy) { SendXy(); return true; }   // mid-dialog: hold at the from-tile, retry on the next step
+        SendXy();                                     // cancel the client's step prediction — stand still for the box
+        _ = RunForeverTreeEntryAsync();
+        return true;
+    }
+
+    private async Task RunForeverTreeEntryAsync()
+    {
+        ushort startMap = _char.Map;
+        SendScriptMessageP(_char.Id,
+            "You spot a crevasse leading into a sandy area. Deathly screeches echo from within. A sense of " +
+            "doom overcomes you; you realize that only the truly mighty could survive in there.",
+            DialogPortrait.None, prev: false, next: true);
+        await AwaitReply();
+        if (_char.Map != startMap) return;   // a GM warp / death / another dialog moved them mid-read
+        if (!Content.TryMap(ForeverTreeMap, out var dm) || dm is null) { SendXy(); return; }
+        Log.Info($"   -> FOREVER TREE entrance -> map {ForeverTreeMap} '{dm.Name}' (21,16) for {_char.Name}");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, 21, 16, dm.Name);
+    }
+
     // Class path-hall interior warps (onScriptedTilesPathHalls.lua). Each Kugnae/Buya path hall (Warrior/Rogue/
     // Mage/Poet, both cities) has two scripted-tile doorways that are NOT in the SQL warp table: the SOUTH edge
     // (x 1-2, y 23) into that class's guild hall — class-gated to members of that base class (RTK also lets a

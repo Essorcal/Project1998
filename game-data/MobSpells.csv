@@ -17,8 +17,8 @@
 #   TickMinMs  shortest gap between DoT ticks (0 = the fixed World.PoisonTickMs beat).
 #   TickMaxMs  longest gap. The gap is redrawn in WHOLE SECONDS from [min,max] before every tick.
 MobKey,Name,Effect,Chance,EveryMs,Range,Amount,Stat,Category,DurationMs,Anim,Sound,Say,PerTick,TickMinMs,TickMaxMs,Trigger
-raven,Peck,blind,5,6000,1,0,,blinds,5000,39,0,
-man_shik_raven,Peck,blind,5,6000,1,0,,blinds,5000,39,0,
+raven,Peck,blind,5,6000,1,0,,blinds,5000,1,70,
+man_shik_raven,Peck,blind,5,6000,1,0,,blinds,5000,1,70,
 buya_library_mob,Venom,poison,4,0,1,0,,,220000,6,0,,100,1000,4000,onhit
 boar_champion,Scourge,curse,10,15000,5,10,might,disheartens,30000,10,0,** summons power **
 boar_champion,Venom,poison,10,15000,5,200,,,20000,6,0,** summons power **

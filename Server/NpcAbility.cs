@@ -154,6 +154,10 @@ public sealed class NpcContext
     public int  Stat  => _s.CharStat;
     /// <summary>Subpath mark count (0 for now).</summary>
     public int  Mark  => _s.CharMark;
+    /// <summary>The base class as RTK's <c>player.baseClass</c>: 1 Warrior · 2 Rogue · 3 Mage · 4 Poet (0 for
+    /// Peasant/unknown). Subpaths collapse onto their base — a Chung Ryong reads 1, same as a Warrior. Used by
+    /// <see cref="BonHwaAbility"/> to pick the class weapon ladder and the per-class stat caps.</summary>
+    public int  BaseClass => _s.CharBasePathId;
     /// <summary>Random int in [1, maxInclusive].</summary>
     public int  Random(int maxInclusive) => _s.QuestRandom(maxInclusive);
     /// <summary>Wall-clock seconds since the Unix epoch (for cooldown timers).</summary>
@@ -1232,8 +1236,9 @@ public sealed class WarPaintAbility : INpcAbility
 /// flat 130 base (10,000,000 exp each), or a permanent Vitality/Mana pool increase whose cost per purchase
 /// climbs with your current pool (RTK's escalating cost curve, config defaults expSellFactor1=0/factor2=2 —
 /// see config.lua). Below level 99 a lower interim cap applies to Vitality/Mana, same as RTK.
-/// <para>The higher, rebirth-rank-gated caps ("Bon-Hwa", RTK's <c>npcIsBonHwa</c> branch) aren't ported —
-/// that reads <c>player.mark</c>, which we don't model yet (<see cref="NpcContext.Mark"/> is a stub 0).</para></summary>
+/// <para>The higher, mark-gated caps and 100M-per-point cost (RTK's <c>npcIsBonHwa</c> branch of
+/// <c>showShadowStatsMenu</c>) live on the Bon-Hwa NPC instead — see <see cref="BonHwaAbility"/>, which reads
+/// <see cref="NpcContext.Mark"/> and the per-class limit table.</para></summary>
 public sealed class ShadowStatsAbility : INpcAbility
 {
     public static readonly ShadowStatsAbility Instance = new();

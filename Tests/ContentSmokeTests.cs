@@ -975,6 +975,85 @@ public class ContentSmokeTests
         Assert.True(Content.TryMap(LeviathanQuest.HutMap, out _));
     }
 
+    /// <summary>Bon-Hwa (the Forever Tree immortal, Server/BonHwa.cs) resolves to its ability through
+    /// NpcAbilities.csv, and the two services it offers rest on data that must line up: the four class weapon
+    /// ladders it enchants along, and the bond every tier it forges must carry. Both fail SILENTLY — a
+    /// composition row naming an unregistered ability is skipped, and a weapon key that doesn't resolve is a
+    /// grant that quietly gives nothing — so pin them here.</summary>
+    [Fact]
+    public void BonHwaEnchantsAlongFourBondedWeaponLadders()
+    {
+        EnsureLoaded();
+
+        // The NPC reaches its ability through the CSV row + the NpcScripts registration + the class itself.
+        var bonhwa = Content.Npcs.FirstOrDefault(n => n.Key == "BonHwaNpc");
+        Assert.NotNull(bonhwa);
+        Assert.Contains(NpcScripts.For(bonhwa!), a => a is BonHwaAbility);
+
+        // The four ladders, base -> Sam san. Every key must resolve to a real item, or an enchant hands back
+        // nothing. Sa san (index 5) is out of era (MaxMark = 3) and Bon-Hwa never reaches it, so it is not here.
+        var ladders = new[]
+        {
+            new[] { "spike", "enchanted_spike", "il_san_spike", "ee_san_spike", "sam_san_spike" },
+            new[] { "blood", "enchanted_blood", "il_san_blood", "ee_san_blood", "sam_san_blood" },
+            new[] { "surge", "enchanted_surge", "il_san_surge", "ee_san_surge", "sam_san_surge" },
+            new[] { "charm", "enchanted_charm", "il_san_charm", "ee_san_charm", "sam_san_charm" },
+        };
+
+        foreach (var ladder in ladders)
+        {
+            // Base tier (index 0) is a boss drop / shop stock — bonds to nobody. Enchant OUTPUTS (index 1+) are
+            // forged FOR you and must bind, so a rival can't loot your Sam san weapon off your corpse. The lone
+            // exception is Enchanted charm, which the Atlas marks Non-Bonded (see the bonding test above).
+            for (int i = 0; i < ladder.Length; i++)
+            {
+                var w = Content.ItemByKey(ladder[i]);
+                Assert.True(w is not null, $"Bon-Hwa's ladder names unknown item '{ladder[i]}'");
+                bool shouldBond = i >= 1 && ladder[i] != "enchanted_charm";
+                Assert.Equal(shouldBond, w!.Bonded);
+            }
+        }
+    }
+
+    /// <summary>The sub-alignment system is wired end to end (see Server/AlignmentQuest.cs): the three shrine
+    /// shamans and the Tiger Palace summit resolve to their abilities THROUGH NpcAbilities.csv, each shrine
+    /// stands on the map its ability recognises, and the summit is speech-reachable. All of this fails
+    /// SILENTLY — a missing composition row leaves the NPC greeting you generically, a shrine on an
+    /// unrecognised map makes its click a no-op — so nothing else would flag it.</summary>
+    [Fact]
+    public void AlignmentQuestIsWiredEndToEnd()
+    {
+        EnsureLoaded();
+
+        // Every placed AlignmentNpc resolves to AlignmentAbility and stands on one of the three shrine maps
+        // the ability keys on (324 Kwi-sin / 325 Ming-ken / 326 Ohaeng — see AlignmentAbility.Shrines).
+        var shrineMaps = new ushort[] { 324, 325, 326 };
+        var shamans = Content.Npcs.Where(n => n.Key == "AlignmentNpc").ToList();
+        Assert.Equal(shrineMaps.Length, shamans.Count);
+        foreach (var m in shrineMaps)
+        {
+            var here = shamans.SingleOrDefault(n => n.Map == m);
+            Assert.True(here is not null, $"no AlignmentNpc placed on shrine map {m}");
+            Assert.Contains(NpcScripts.For(here!), a => a is AlignmentAbility);
+            Assert.True(Content.TryMap(m, out _), $"shrine map {m} is not renderable");
+        }
+
+        // The summit shaman is the only way to un-align. It is speech-triggered (INpcSayHandler), so assert
+        // both that it resolves to SummitAbility and that the ability actually answers speech.
+        var summit = Content.Npcs.FirstOrDefault(n => n.Key == "SummitNpc");
+        Assert.NotNull(summit);
+        Assert.Contains(NpcScripts.For(summit!), a => a is SummitAbility);
+        Assert.Contains(NpcScripts.For(summit!), a => a is INpcSayHandler);
+        Assert.True(Content.TryMap(summit!.Map, out _), "summit map is not renderable");
+
+        // The whole point of an alignment is a different spellbook: each aligned mage book differs from the
+        // unaligned one (the parallel reskins), which is what SwapAlignment rebuilds into.
+        int mage = Content.PathIdForClass("Mage");
+        var unaligned = Content.RespecSpellSet(mage, 99, alignment: 0, mark: 0).Select(s => s.Id).ToHashSet();
+        foreach (var align in new[] { 1, 2, 3 })
+            Assert.NotEqual(unaligned, Content.RespecSpellSet(mage, 99, align, mark: 0).Select(s => s.Id).ToHashSet());
+    }
+
     /// <summary>The mob-AI data layer resolves. Every one of these fails silently in production: a spell row
     /// naming a mob that doesn't exist never fires, an unknown effect string logs once and does nothing, a
     /// boss room on an unrenderable map leaves the boss where it started, and a chatter row for a missing
