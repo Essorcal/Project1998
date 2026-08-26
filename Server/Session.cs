@@ -744,7 +744,8 @@ public sealed partial class Session
                 return;
             }
             int left = LoginThrottle.RecordFailure(ip);
-            Log.Info($"   -> RE-LOGIN REJECTED ({auth}) for user='{user}' ({left} attempt(s) left)");
+            Log.Info($"   -> RE-LOGIN REJECTED ({auth}) for user='{user}' " +
+                (LoginThrottle.IsExempt(ip) ? "(throttle-exempt address)" : $"({left} attempt(s) left)"));
             SendMessage(LoginAuth.MessageFor(auth));
             return;   // no handoff; the client stays on the login screen
         }

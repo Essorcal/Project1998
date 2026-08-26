@@ -124,6 +124,7 @@ public sealed class LoginSession
             case Opcode.NameCheck:        NameAvailable(dec); break;
             case Opcode.CreateAppearance: HandleCreate(dec); break;
             case Opcode.Login:            HandleLogin(dec); break;
+            case Opcode.ChangePassword:   HandleChangePassword(dec); break;
             // A 0x10 Arrival lands here after the game server's exit-to-select bounce: the client treats
             // that redirect like any handoff, so its first packet on the new connection is the same
             // announce it would send a game server — name plus the bounce's all-zero tail (there is no
@@ -340,7 +341,10 @@ public sealed class LoginSession
                 return;
             }
             int left = LoginThrottle.RecordFailure(_ip);
-            Log.Info($"   -> LOGIN REJECTED ({auth}) for user='{_user}' from {_remote} ({left} attempt(s) left)");
+            // An exempt address has no budget — printing one here once sent someone chasing a throttle
+            // that "never decrements" from a loopback test client.
+            Log.Info($"   -> LOGIN REJECTED ({auth}) for user='{_user}' from {_remote} " +
+                (LoginThrottle.IsExempt(_ip) ? "(throttle-exempt address)" : $"({left} attempt(s) left)"));
             SendMessage(LoginAuth.MessageFor(auth));
             return;   // no handoff — the client stays on the login screen showing the message
         }
@@ -362,6 +366,74 @@ public sealed class LoginSession
         // `nonce` = the 5-byte single-use handoff token (was the static {0,1,18,17,0}); echoed back in 0x10.
         Send(LoginRedirect.Build(GameHost, gport, _user, nonce));
         Log.Info($"   -> game handoff -> {GameHost[0]}.{GameHost[1]}.{GameHost[2]}.{GameHost[3]}:{gport} (token minted {Log.Hex(nonce)})");
+    }
+
+    // Login-screen password change (0x26): `nameLen name oldLen old newLen new`, the 0x03 login shape
+    // plus the new password. RTK's login server owns this opcode (rtk/src/login/clif.c case 0x26 ->
+    // char 0x1004 -> intif.c intif_parse_changepass), and the 5.33 client was observed sending it live
+    // 2026-08-25. The reply codes matter: the client's dialog sits MODAL until the server answers, so
+    // an unanswered 0x26 froze the whole login screen — success must be code 0x00 (dismiss), a bad
+    // name/credential 0x03, a rejected new password 0x05 (RTK's LGN_CHGPASS / LGN_ERRUSER / LGN_ERRPASS
+    // lanes).
+    //
+    // This path VERIFIES the old password, so it is a login attempt in every way the throttle cares
+    // about: it sits behind the same per-IP budget (otherwise 0x26 is a free brute-force oracle that
+    // bypasses the 0x03 throttle entirely), burns budget on a wrong old password, and clears it on
+    // success. A ban stays exempt from the budget for the same reason as login: the password was right.
+    private void HandleChangePassword(byte[] dec)
+    {
+        if (!LoginAuth.TryReadChangePassword(dec, out var name, out var oldPass, out var newPass))
+        {
+            Log.Info($"   -> PASSWORD CHANGE REJECTED (malformed 0x26: {dec.Length}B body) from {_remote}");
+            SendStatus(0x05, "Please enter your name, password, and new password.");
+            return;
+        }
+        _user = name;
+
+        if (LoginThrottle.IsBlocked(_ip))
+        {
+            Log.Info($"   -> PASSWORD CHANGE BLOCKED (failed-attempt budget exhausted) from {_remote} for user='{name}'");
+            SendStatus(0x03, LoginThrottle.BlockedMessage);
+            return;
+        }
+        if (Moderation.IsIpBanned(_ip.ToString(), out var ipReason))
+        {
+            Log.Info($"   -> PASSWORD CHANGE REJECTED (ip banned) for user='{name}' from {_remote}");
+            SendStatus(0x03, string.IsNullOrWhiteSpace(ipReason)
+                ? "This address is banned from the server."
+                : $"This address is banned from the server: {ipReason}");
+            return;
+        }
+
+        // The new password meets the same bar creation enforces — checked before the BCrypt verify so a
+        // malformed request costs nothing, and so the player fixes the cheap problem first.
+        if (PasswordProblem(newPass) is { } pwWhy)
+        {
+            Log.Info($"   -> PASSWORD CHANGE REJECTED ('{name}'): new password ({newPass.Length} chars) — {pwWhy}");
+            SendStatus(0x05, pwWhy);
+            return;
+        }
+
+        var auth = LoginAuth.Authenticate(name, oldPass);
+        if (auth != LoginResult.Ok)
+        {
+            if (auth == LoginResult.Banned)
+            {
+                Log.Info($"   -> PASSWORD CHANGE REJECTED (banned) for user='{name}' from {_remote}");
+                SendStatus(0x03, LoginAuth.BanMessageFor(name));
+                return;
+            }
+            int left = LoginThrottle.RecordFailure(_ip);
+            Log.Info($"   -> PASSWORD CHANGE REJECTED ({auth}) for user='{name}' from {_remote} " +
+                (LoginThrottle.IsExempt(_ip) ? "(throttle-exempt address)" : $"({left} attempt(s) left)"));
+            SendStatus(0x03, LoginAuth.MessageFor(auth));
+            return;
+        }
+        LoginThrottle.RecordSuccess(_ip);
+        Accounts.SetPassword(name, Auth.Hash(newPass));
+        // Password length only, never the password — same rule as the name-check log.
+        Log.Info($"   -> PASSWORD CHANGED for user='{name}' from {_remote} ({oldPass.Length} -> {newPass.Length} chars)");
+        SendStatus(0x00, "Your password has been changed.");
     }
 
     // Login-style single-line message box (server -> client 0x02 wrapping a 0x0F). Used for every

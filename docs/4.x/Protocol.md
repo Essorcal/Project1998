@@ -251,6 +251,33 @@ handled as plaintext by the client. Most importantly for the server, the **game-
      come from the same address. Keep the significant nonce bytes **non-zero** — the client's copy stops at
      the first NUL.
 
+5. **Password change — client → server `0x26`** *(added 2026-08-25, observed live from the 5.33 client)*:
+   body = `nameLen name oldLen old newLen new` — the `0x03` login body plus a third length-prefixed
+   string, and **no trailing NUL** where `0x03` carries one (the live capture was exactly 18 bytes for a
+   4+5+6-char triple). Three sources agree on the shape: the live capture, RTK's login server
+   (`rtk/src/login/clif.c` `case 0x26` → char-server `0x1004` → `intif_parse_changepass`), and the 5.33
+   binary's own server-message name table (`kServerNewPasswordCheck`). The 4.95 client has not been
+   swept for whether its login screen can emit this; the handler is client-agnostic either way.
+
+   **The dialog is MODAL — it freezes the whole login screen until the server answers.** That is how the
+   missing handler presented: press OK, client hangs forever, while its `0x71` keepalive keeps ticking
+   underneath (the connection is fine; only the dialog is waiting). The reply is the standard `0x02`
+   status frame (`code len text 00`) and the **code routes it in the client**, same sub-dispatch as the
+   creation ack:
+
+   | Code | Meaning | RTK lane |
+   |---|---|---|
+   | `0x00` | changed — dismisses the dialog | `LGN_CHGPASS` |
+   | `0x03` | bad name / wrong old password / banned / blocked | `LGN_ERRUSER` / `LGN_WRONGPASS` |
+   | `0x05` | new password fails the strength rules | `LGN_ERRPASS` |
+
+   The new password passes the same gate creation enforces (length + at least one digit), checked
+   **before** the BCrypt verify so a malformed request costs nothing. And because `0x26` verifies the old
+   password, it is **a login attempt to the per-IP throttle**: refused while blocked, burns budget on a
+   wrong old password, clears it on success. Without that the change dialog is a brute-force oracle that
+   bypasses the `0x03` budget entirely. `LoginSession.HandleChangePassword`,
+   `LoginAuth.TryReadChangePassword`; pinned by `Tests/ChangePasswordTests.cs`.
+
 ### 4.2 Game channel (port 2005)
 
 1. **The client speaks first** — do **not** send anything on connect. The client sends **`0x10`
@@ -434,6 +461,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x02` | NameCheck | `nameLen name pwLen pw 00 00 00` | Creation step 1. **Carries name AND password.** |
 | `0x04` | CreateAppearance | 5 bytes (see §9) | Creation step 2. |
 | `0x03` | Login | `nameLen name pwLen pw 00` | Login channel. |
+| `0x26` | Change password | `nameLen name oldLen old newLen new` | Login channel; **no trailing NUL** unlike `0x03`. The dialog is MODAL until the `0x02` status reply — `0x00` changed / `0x03` credentials / `0x05` weak new password. Counts against the per-IP failed-login budget. See §4.1 item 5. |
 | `0x10` | Arrival | `09 "NexonInc." nameLen name <token>` | Game channel, **plaintext**, client speaks first. |
 | `0x0b` | **Exit to select screen** (Alt+X) | `00` (constant) | Game channel. "I left the world." Answer with the `0x03` redirect struct (§4.1) pointed at the **login** port, or the select screen stays bound to the game socket and character creation hangs. RTK `case 0x0B → clif_closeit`. See §4.2. (server→client `0x0b` is a client-side no-op — §13.) |
 | `0x32` | Walk step | `dir(u8) stepCounter(u8) X(u16) Y(u16) pad` | Self-walk request (see §10). |
