@@ -1253,9 +1253,16 @@ number equals its own field offset, and u32 values (e.g. `0x18191A1B` at offset 
 big-endian order in one read. **Lesson: a "no-op in the dispatch table" is not proof an opcode is
 unhandled, and a close-version reference server (6.x here) beats guessing.**
 
-Server reply to `0x04`: we send an "Account created." message (a `0x02` message-box packet). This
-does **not** currently auto-close the creation screen — the exact create-ack that dismisses the UI is
-still unknown (see §16).
+Server reply to `0x04` — **the create-ack (SOLVED 2026-08-24).** Every login-channel server→client
+status is one frame shape, `0x02` wrapping `[code][len][text][00]`, and the **code byte is the
+client's sub-dispatch**: `0x00` = success/advance, `0x0F` = message box (text renders, screen stays).
+On create success send **code `0x00` with the text riding along** — the 4.95 client shows the message
+AND dismisses the creation screen back to the main menu (confirmed live; with the old `0x0F` reply the
+screen stuck and players re-submitted, hitting the duplicate-name refusal). This is exactly RTK's
+`clif_message` (`rtk/src/login/clif.c`, codes `0x00`/`0x03`/`0x05`; create success at
+`rtk/src/login/intif.c` `intif_parse_2002` → `clif_message(fd, 0x00, LGN_NEWCHAR)`) — RTK supplied the
+structure, the live client supplied the proof. The name-availability OK in §9.1 is this same frame
+with code `0x00` and an empty string.
 
 ---
 
@@ -5434,10 +5441,12 @@ magnitude faster for "what does this byte mean" questions.
   straight from the creation packet (§9) rather than compiled-in defaults.
 - **Hair** is not renderable via `0x33` in 4.95 (no slot in the 7-byte form). Likely requires a
   different mechanism (stylist NPC / equipment), if at all.
-- **Creation screen auto-close.** After `0x04`, our "Account created" message shows but doesn't dismiss
-  the creation UI. The correct create-ack is unknown; note the login-channel `0x02` sub-dispatch is
-  *not* in the game-channel handler `0x444de0` (which only guards `opcode==2` for enter-world), so the
-  login-channel `0x02` responses are handled by a different state object worth RE-ing.
+- **Creation screen auto-close — SOLVED (2026-08-24).** The create-ack is the login-channel `0x02`
+  status frame with **code byte `0x00`** (success/advance) instead of `0x0F` (message box): the client
+  dismisses the creation UI and shows the text. Structure from RTK's `clif_message`
+  (`rtk/src/login/intif.c` `intif_parse_2002`), confirmed live against the 4.95 client. Full form in §9.
+  (The login-channel `0x02` state object itself is still un-RE'd — codes other than
+  `0x00`/`0x0F` and RTK's `0x03`/`0x05` remain unmapped — but the create flow no longer needs it.)
 - **Monsters — SOLVED (2026-07-24).** The real monster spawn is **`0x07`**: `look = 0x8000 | monsterId`
   (Monster.tbl index) draws a live, animated, collidable, killable creature from Monster.epf. Full layout
   and the trace that found it are in §7.2/§11a. The combat pipeline (`Mob`, melee/spell, `0x13` HP bar + hit

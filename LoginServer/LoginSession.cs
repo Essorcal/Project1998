@@ -267,7 +267,14 @@ public sealed class LoginSession
         }
         Accounts.SetPassword(name, Auth.Hash(_pendingPass));
         Log.Info($"   -> CREATE persisted '{name}' (sex={c.Sex} face={c.Face} nation={Character.NationName(c.Nation)} totem={c.Totem}) -> {_store.Directory}");
-        SendMessage("Account created.");
+        // Success is sub-type 0x00 — the same "OK" code as the name-availability reply — with the text
+        // riding along, NOT the 0x0F message box: 0x0F renders the text but leaves the creation UI up.
+        // Form and text are RTK's create-ack (rtk/src/login/intif.c intif_parse_2002 ->
+        // clif_message(fd, 0x00, LGN_NEWCHAR)), CONFIRMED live 2026-08-24: the 4.95 client dismisses
+        // the creation screen back to the main menu on this reply. See Protocol.md §9. The 5.33 client
+        // was confirmed live 2026-08-25 over a socket tap: same frame, same dismiss (both login ports
+        // run this one handler).
+        SendStatus(0x00, "Account created.");
     }
 
     private void HandleLogin(byte[] dec)
@@ -347,17 +354,22 @@ public sealed class LoginSession
         Log.Info($"   -> game handoff -> {GameHost[0]}.{GameHost[1]}.{GameHost[2]}.{GameHost[3]}:{gport} (token minted {Log.Hex(nonce)})");
     }
 
-    // Login-style single-line message box (server -> client 0x02 wrapping a 0x0F). Used for "Account
-    // created." — the only status text the login channel emits.
-    private void SendMessage(string text)
+    // Login-style single-line message box (server -> client 0x02 wrapping a 0x0F). Used for every
+    // refusal on this channel; the client renders the text and stays on its current screen.
+    private void SendMessage(string text) => SendStatus(0x0F, text);
+
+    // The login channel's one server->client packet shape: 0x02 wrapping [code][len][text][00].
+    // The code byte is a sub-dispatch in the client (0x00 = OK/advance, 0x0F = message box); RTK's
+    // clif_message (rtk/src/login/clif.c) builds this same frame with codes 0x00/0x03/0x05.
+    private void SendStatus(byte code, string text)
     {
         var t = Encoding.ASCII.GetBytes(text);
-        var body = new List<byte> { 0x0F, (byte)t.Length };
+        var body = new List<byte> { code, (byte)t.Length };
         body.AddRange(t);
         body.Add(0);
         var enc = TkCrypt.Crypt(body.ToArray(), 0x02, TkCrypt.LoginKey);
         Send(TkPacket.Build(0x02, 0x02, enc));
-        Log.Info($"   -> message: {text}");
+        Log.Info($"   -> status 0x{code:x2}: {text}");
     }
 
     private void Send(byte[] data) { lock (_sendLock) _stream.Write(data, 0, data.Length); }
