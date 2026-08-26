@@ -139,9 +139,11 @@ public static class TileTranslation
     {
         /// <summary>No workaround at all.</summary>
         Off = 0,
-        /// <summary>Only visually identical substitutions — a look-alike object with usable flags. Nothing
-        /// on screen changes. THE DEFAULT, because every wider scope pays for walkability with artwork and
-        /// that trade is the operator's to make, not ours.</summary>
+        /// <summary>Only PROVEN visually identical substitutions — a look-alike object with usable flags,
+        /// frames matched id-for-id in SObj.tbl. Nothing on screen changes. THE DEFAULT, because every wider
+        /// scope pays for walkability with artwork and that trade is the operator's to make, not ours.
+        /// Currently EMPTY: the four rows that lived here were false matches (see Obj533Fix.csv's
+        /// retraction), so the default scope is a true identity.</summary>
         Free = 1,
         /// <summary>…plus blanking objects 4.x marks fully walkable (0x00) — pure decoration. Opt-in: it
         /// removes a visible sprite (the Arctic Village stair lip is a 24x7 strip) from 1,915 cells.</summary>
@@ -180,9 +182,11 @@ public static class TileTranslation
     /// 5.33 — is the case that surfaced it.</para>
     ///
     /// <para><b>Why the server cannot fix this cleanly.</b> Graphic and collision are the SAME wire value, so
-    /// the only moves are "send a different object" or "send none". Matching on rendered sprite content finds
-    /// a look-alike with usable flags for only 4 of 128 objects; everything else can only be blanked, losing
-    /// its artwork.</para>
+    /// the only moves are "send a different object" or "send none" — blanking, which loses the artwork.
+    /// (Four "look-alike with usable flags" substitutions shipped at scope <c>free</c> until 2026-08-26,
+    /// when they turned out to be false matches from the same wrong-TOC-field renderer behind the retracted
+    /// ground <c>+1</c> — all four paired id → id+1, and streaming 572 for 571 broke every guild hall's
+    /// curtain run on 5.33. The CSV header carries the retraction; the scope is empty now.)</para>
     ///
     /// <para><b>So we patch the client instead (2026-08-20).</b>
     /// <c>re/patches/patch_533_sobj_flags.py</c> rewrites the 362 differing flag bytes in the client's own

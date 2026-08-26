@@ -157,9 +157,10 @@ request. Found via Arctic Village (3811) 35,32 / 36,32, a staircase under object
 on 4.x and `0x0F` (solid all four sides) on 5.33. Scope: **18,025 cells, 1.05%, in 620 of 1,750 maps.**
 
 **Why the server cannot fix it cleanly.** Object graphic and object collision are the *same* `u16` on the
-wire, so the only levers are "send a different object" or "send none". Matching on rendered sprite content
-(frame ids would have served equally well — see the correction below) finds a visually identical, usably-flagged substitute
-for only **4 of 128** affected objects. The rest can only be blanked, which deletes their artwork.
+wire, so the only levers are "send a different object" or "send none" — and "send none" deletes artwork.
+Rendered-content matching once claimed a visually identical, usably-flagged substitute for **4 of 128**
+affected objects; that claim was retracted 2026-08-26 (see the second correction below), so today every
+affected object can only be blanked.
 
 **What we do** — `game-data/Obj533Fix.csv`, applied in `TileTranslation.Object`, scoped by
 `P1998_OBJ_FIX_533`:
@@ -167,9 +168,9 @@ for only **4 of 128** affected objects. The rest can only be blanked, which dele
 | scope | applies | cells | cost |
 |---|---|---|---|
 | `off` | nothing | — | 18k cells stay unwalkable |
-| `free` **(default)** | the 4 look-alike substitutions | 969 | **none — visually inert** |
+| `free` **(default)** | proven look-alike substitutions — **currently none** (the 4 shipped were false matches, retracted 2026-08-26) | 0 | **none — a true identity** |
 | `decor` | + blank objects 4.x marks `0x00` | +1,915 | a decoration sprite disappears (the Arctic stair lip is a 24×7 strip) |
-| `all` | + blank objects with a real 4.x directional block | +15,141 | **deletes visible structures** (obj 1243 alone is 1,817 cells) |
+| `all` | + blank objects with a real 4.x directional block | +16,110 | **deletes visible structures** (obj 1243 alone is 1,817 cells) |
 
 The default is `free` on purpose: every wider scope buys walkability by deleting artwork, and that trade
 belongs to whoever runs the server. At `free` the Arctic Village stairs remain impassable on 5.33 — fixing
@@ -205,8 +206,19 @@ prepended and new frames appended — TOC entry `i` equals 5.33's entry `i+1` fo
 the pixel region is byte-identical over the 4.x length. Same cancelling `+1` as `TILE`/`TileA`. Combined
 with `SObj` frame lists being identical for every shared id our maps place (the 25 that differ are empty
 tail padding in 4.x, used by 0 cells), **object artwork needs no translation at all** — only the collision
-flags ever differed. Frame-id matching would have worked for finding substitutes; rendered-content matching
-was simply a more conservative method.
+flags ever differed.
+
+**Correction (2026-08-26): the 4 "look-alike" substitutions were false matches — retracted.** All four
+paired id → id+1 (553→554, 571→572, 600→601, 694→695), which is the fingerprint of the wrong-TOC-field
+renderer (it displayed mostly the *next* frame, so object N rendered as N+1's true art — 553's frames are
+`[1202,1199]` and 554's are `[1203,1200]`, exactly the off-by-one; 571 is 2 frames tall where 572 is 3).
+Live symptom: every guild hall's curtain run (`571..579`, three rows per hall — TK2510 "Warrior Sword"
+rows 5/10/17) streamed to 5.33 with its left pillar piece 571 rewritten to curtain-rod piece 572 —
+"curtains scrambled, pillars missing" — while 4.95, the map editor, and `re/render_maps.py` all drew the
+file correctly, and the server's own live state was byte-identical to the file (nothing in `state/` was
+involved). The rows are now `structural` suppressions like the rest of their flag class, scope `free` is
+empty (`Tests/TileTranslationTests.cs` pins it at zero), and any future substitute must be proven by
+matching frame lists id-for-id in `SObj.tbl` — never by a renderer.
 
 ## Open questions
 
