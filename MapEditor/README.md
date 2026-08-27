@@ -151,6 +151,22 @@ Getting an edit into the actual game is deliberate and manual — either:
   `game-data\MapCells.csv` — the server applies those as overrides and streams them to
   clients, no map file replacement needed.
 
+## Direct mode — the deliberate bypass
+
+For team workflows that want edits landing in `game-data` immediately, the **Direct**
+toggle in the top bar bypasses the saved folder — behind a confirmation box, and **off
+on every start**. While it's on (the button turns red):
+
+- **Save** overwrites the shipped map in `game-data\maps` (and deletes the now-baked-in
+  draft). Saving a *new* map publishes it for real: the `map_index.csv` row is appended
+  too.
+- The **Corrections / spawn / warp / NPC exports append their rows straight into the
+  live CSVs** (`MapCells.csv`, `Spawns.csv`, `Warps.csv`, `NPCs.csv`); pending
+  placements clear and reappear as regular markers.
+
+The server still needs `@reload` to pick any of it up, and git is the only undo — that
+trade is the point of the confirmation.
+
 ## The test character
 
 The walk tool drops a test character. Move with the **arrow keys** or the on-screen

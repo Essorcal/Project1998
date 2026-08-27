@@ -89,6 +89,15 @@ void SaveNewMaps()
     File.WriteAllText(newMapsCsv, sb.ToString());
 }
 
+// DIRECT MODE (team opt-in, confirmed in the UI, off on every start): the write endpoints
+// accept ?direct=true, and then — and only then — the editor touches game-data: Save
+// overwrites the shipped map, the exports APPEND rows to the live CSVs. Git is the undo.
+void AppendCsv(string path, string rowsNoHeader)
+{
+    var text = File.Exists(path) ? File.ReadAllText(path) : "";
+    File.WriteAllText(path, text + (text.Length == 0 || text.EndsWith('\n') ? "" : "\n") + rowsNoHeader);
+}
+
 // One-time migration: an earlier build kept drafts in game-data/maps-edited/.
 string oldDrafts = Path.Combine(repo, "game-data", "maps-edited");
 if (Directory.Exists(oldDrafts))
@@ -205,8 +214,9 @@ app.MapPost("/api/maps", (NewMapReq req) =>
     return Results.Ok(new { id = req.Id, name, xs = req.Xs, ys = req.Ys, row = SavedRel(newMapsCsv) });
 });
 
-// Save writes the DRAFT only — game-data/maps/ stays exactly as shipped.
-app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
+// Save writes the DRAFT only — unless ?direct=true, which overwrites the shipped map
+// (and PUBLISHES a new map for real: its map_index.csv row appends, the sidecar clears).
+app.MapPut("/api/map/{id:int}", async (int id, bool direct, HttpRequest req) =>
 {
     if (!TryMap(id, out var dims)) return Results.BadRequest("unknown map id");
     using var ms = new MemoryStream();
@@ -215,6 +225,20 @@ app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
     int expect = dims.Xs * dims.Ys * 4;
     if (data.Length != expect)
         return Results.BadRequest($"size {data.Length} != {dims.Xs}x{dims.Ys}x4 = {expect}");
+    if (direct)
+    {
+        bool wasNew = newMaps.ContainsKey(id);
+        File.WriteAllBytes(ShippedPath(id), data);
+        if (wasNew)
+        {
+            AppendCsv(Path.Combine(gameData, "map_index.csv"), $"{id},{dims.Name},{dims.Xs},{dims.Ys}\n");
+            index[id] = dims;
+            newMaps.Remove(id);
+            SaveNewMaps();
+        }
+        if (File.Exists(DraftPath(id))) File.Delete(DraftPath(id));   // now baked into the shipped file
+        return Results.Ok(new { saved = data.Length, direct = true, path = SavedRel(ShippedPath(id)), publishedNewMap = wasNew });
+    }
     Directory.CreateDirectory(draftsDir);
     File.WriteAllBytes(DraftPath(id), data);
     return Results.Ok(new { saved = data.Length, draft = SavedRel(DraftPath(id)) });
@@ -241,7 +265,7 @@ app.MapGet("/api/map/{id:int}/markers", (int id) =>
 // file's current max. Like Corrections, the rows DOWNLOAD for a deliberate hand-append —
 // the editor never writes the tracked CSVs (Content.LoadSpawns only reads
 // SpnMobId/SpnMapId/SpnX/SpnY; the RTK bookkeeping columns get zeros).
-app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, HttpResponse resp) =>
+app.MapPost("/api/map/{id:int}/spawns.csv", (int id, bool direct, List<PlacedSpawn> placed, HttpResponse resp) =>
 {
     if (!TryMap(id, out var dims)) return Results.BadRequest("unknown map id");
     if (placed is null || placed.Count == 0) return Results.BadRequest("no spawn points in body");
@@ -249,16 +273,24 @@ app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, H
         if (p.X < 0 || p.Y < 0 || p.X >= dims.Xs || p.Y >= dims.Ys)
             return Results.BadRequest($"({p.X},{p.Y}) is outside {dims.Xs}x{dims.Ys}");
     int next = Markers.MaxSpawnId(gameData) + 1;
-    var sb = new System.Text.StringBuilder(
-        "SpnId,SpnMobId,SpnMapId,SpnX,SpnY,SpnLastDeath,SpnStartTime,SpnEndTime,SpnMobIdReplace\n");
+    const string header = "SpnId,SpnMobId,SpnMapId,SpnX,SpnY,SpnLastDeath,SpnStartTime,SpnEndTime,SpnMobIdReplace\n";
+    var sb = new System.Text.StringBuilder();
     foreach (var p in placed)
         sb.Append($"{next++},{p.Mob},{id},{p.X},{p.Y},0,0,0,0\n");
     resp.Headers["X-Row-Count"] = placed.Count.ToString();
-    Directory.CreateDirectory(csvsDir);
-    var outFile = Path.Combine(csvsDir, $"spawns-TK{id}.csv");
-    File.WriteAllText(outFile, sb.ToString());
-    resp.Headers["X-Saved"] = SavedRel(outFile);
-    return Results.Text(sb.ToString(), "text/csv");
+    if (direct)
+    {
+        AppendCsv(Path.Combine(gameData, "Spawns.csv"), sb.ToString());
+        resp.Headers["X-Saved"] = "game-data/Spawns.csv";
+    }
+    else
+    {
+        Directory.CreateDirectory(csvsDir);
+        var outFile = Path.Combine(csvsDir, $"spawns-TK{id}.csv");
+        File.WriteAllText(outFile, header + sb);
+        resp.Headers["X-Saved"] = SavedRel(outFile);
+    }
+    return Results.Text(header + sb, "text/csv");
 });
 
 // Sparse-patch export: POST the editor's live cell buffer, get back MapCells.csv rows
@@ -266,7 +298,7 @@ app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, H
 // cells that differ from the SHIPPED map — saves are drafts that never touch it, so
 // game-data/maps IS the baseline. Small fixes become reviewable CSV rows in git instead
 // of a rewritten binary map.
-app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, HttpResponse resp) =>
+app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, bool direct, HttpRequest req, HttpResponse resp) =>
 {
     if (!index.TryGetValue(id, out var dims))
         return newMaps.ContainsKey(id)
@@ -281,7 +313,8 @@ app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, Ht
     int cells = dims.Xs * dims.Ys;
     if (cur.Length != cells * 4) return Results.BadRequest($"buffer {cur.Length} != {dims.Xs}x{dims.Ys}x4");
     if (old.Length != cells * 4) return Results.BadRequest($"baseline {old.Length} != {dims.Xs}x{dims.Ys}x4");
-    var sb = new System.Text.StringBuilder("Map,X,Y,Tile,Pass,Obj,Sources\n");
+    const string header = "Map,X,Y,Tile,Pass,Obj,Sources\n";
+    var sb = new System.Text.StringBuilder();
     int n = 0;
     for (int i = 0; i < cells; i++)
     {
@@ -299,19 +332,27 @@ app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, Ht
     resp.Headers["X-Cell-Count"] = n.ToString();
     if (n > 0)
     {
-        Directory.CreateDirectory(csvsDir);
-        var outPath = Path.Combine(csvsDir, $"mapcells-TK{id}.csv");
-        File.WriteAllText(outPath, sb.ToString());
-        resp.Headers["X-Saved"] = SavedRel(outPath);
+        if (direct)
+        {
+            AppendCsv(Path.Combine(gameData, "MapCells.csv"), sb.ToString());
+            resp.Headers["X-Saved"] = "game-data/MapCells.csv";
+        }
+        else
+        {
+            Directory.CreateDirectory(csvsDir);
+            var outPath = Path.Combine(csvsDir, $"mapcells-TK{id}.csv");
+            File.WriteAllText(outPath, header + sb);
+            resp.Headers["X-Saved"] = SavedRel(outPath);
+        }
     }
-    return Results.Text(sb.ToString(), "text/csv");
+    return Results.Text(header + sb, "text/csv");
 });
 
 // Exports read what the editor shows: the draft when one exists, else the shipped map.
 // Placed-warp export: JSON [{sm,sx,sy,dm,dx,dy}] → Warps.csv rows, WarpId numbered after
 // the file's current max, written to saved/csvs for a deliberate hand-append. Pairs span
 // maps, so this is one global file rather than per-map.
-app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp) =>
+app.MapPost("/api/warps.csv", (bool direct, List<PlacedWarp> warps, HttpResponse resp) =>
 {
     if (warps is null || warps.Count == 0) return Results.BadRequest("no warp pairs in body");
     foreach (var w in warps)
@@ -324,15 +365,24 @@ app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp) =>
             return Results.BadRequest($"destination ({w.Dx},{w.Dy}) outside TK{w.Dm} {dd.Xs}x{dd.Ys}");
     }
     int next = Markers.MaxWarpId(gameData) + 1;
-    var sb = new System.Text.StringBuilder("WarpId,SourceMapId,SourceX,SourceY,DestinationMapId,DestinationX,DestinationY\n");
+    const string header = "WarpId,SourceMapId,SourceX,SourceY,DestinationMapId,DestinationX,DestinationY\n";
+    var sb = new System.Text.StringBuilder();
     foreach (var w in warps)
         sb.Append($"{next++},{w.Sm},{w.Sx},{w.Sy},{w.Dm},{w.Dx},{w.Dy}\n");
     resp.Headers["X-Row-Count"] = warps.Count.ToString();
-    Directory.CreateDirectory(csvsDir);
-    var outFile = Path.Combine(csvsDir, "warps-pending.csv");
-    File.WriteAllText(outFile, sb.ToString());
-    resp.Headers["X-Saved"] = SavedRel(outFile);
-    return Results.Text(sb.ToString(), "text/csv");
+    if (direct)
+    {
+        AppendCsv(Path.Combine(gameData, "Warps.csv"), sb.ToString());
+        resp.Headers["X-Saved"] = "game-data/Warps.csv";
+    }
+    else
+    {
+        Directory.CreateDirectory(csvsDir);
+        var outFile = Path.Combine(csvsDir, "warps-pending.csv");
+        File.WriteAllText(outFile, header + sb);
+        resp.Headers["X-Saved"] = SavedRel(outFile);
+    }
+    return Results.Text(header + sb, "text/csv");
 });
 
 // Placed-NPC export: each pending placement is a COPY of an existing NPCs.csv row (the
@@ -341,7 +391,7 @@ app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp) =>
 // the editor cannot author. Rows are emitted in the file's own column order, NpcId
 // numbered past the current max, Enabled forced to 1, and written to saved/csvs for a
 // deliberate hand-append.
-app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp) =>
+app.MapPost("/api/npcs.csv", (bool direct, List<PlacedNpc> npcs, HttpResponse resp) =>
 {
     if (npcs is null || npcs.Count == 0) return Results.BadRequest("no NPC placements in body");
     foreach (var p in npcs)
@@ -354,7 +404,7 @@ app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp) =>
     if (header.Length == 0) return Results.BadRequest("NPCs.csv has no header");
     var (byId, maxId) = Markers.NpcRows(gameData);
     int next = maxId + 1;
-    var sb = new System.Text.StringBuilder(string.Join(',', header)).Append('\n');
+    var sb = new System.Text.StringBuilder();
     foreach (var p in npcs)
     {
         if (!byId.TryGetValue(p.Template, out var t))
@@ -372,11 +422,20 @@ app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp) =>
         sb.Append(string.Join(',', header.Select(h => CsvEsc(row.GetValueOrDefault(h, ""))))).Append('\n');
     }
     resp.Headers["X-Row-Count"] = npcs.Count.ToString();
-    Directory.CreateDirectory(csvsDir);
-    var outFile = Path.Combine(csvsDir, "npcs-pending.csv");
-    File.WriteAllText(outFile, sb.ToString());
-    resp.Headers["X-Saved"] = SavedRel(outFile);
-    return Results.Text(sb.ToString(), "text/csv");
+    var headerLine = string.Join(',', header) + "\n";
+    if (direct)
+    {
+        AppendCsv(Path.Combine(gameData, "NPCs.csv"), sb.ToString());
+        resp.Headers["X-Saved"] = "game-data/NPCs.csv";
+    }
+    else
+    {
+        Directory.CreateDirectory(csvsDir);
+        var outFile = Path.Combine(csvsDir, "npcs-pending.csv");
+        File.WriteAllText(outFile, headerLine + sb);
+        resp.Headers["X-Saved"] = SavedRel(outFile);
+    }
+    return Results.Text(headerLine + sb, "text/csv");
 });
 
 app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>

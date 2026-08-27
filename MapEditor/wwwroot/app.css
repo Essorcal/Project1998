@@ -28,6 +28,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .btn.primary { background: var(--accent); border-color: transparent; color: #17181a; font-weight: 600; }
 .btn.primary:disabled { background: var(--panel3); color: var(--dim); }
 .btn.tiny { padding: 3px 9px; }
+.btn.dangerOn { background: var(--danger); border-color: transparent; color: #fff; font-weight: 600; }
 
 .seg { display: flex; align-items: center; background: var(--panel3); border: 1px solid var(--border2); border-radius: 6px; padding: 3px; gap: 3px; }
 .seg.small { padding: 2px; gap: 2px; margin-top: 8px; }

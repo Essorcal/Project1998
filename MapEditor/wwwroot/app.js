@@ -42,6 +42,7 @@ const S = {
   placedNpcs: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedNpcs')) || []; } catch { return []; } })(),
   layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
   playerView: false,             // render the server's BASE (doors + MapCells) instead of the raw file
+  direct: false,                 // DIRECT MODE: writes go into game-data (off on every start, confirm to enable)
   markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
 
@@ -137,18 +138,24 @@ async function loadMap(id) {
   invalidate(); updateStatus(); updateButtons();
 }
 
-// Save writes a DRAFT (game-data/maps-edited/) — the shipped map is never touched.
-// Publishing a map into game-data/maps is a deliberate manual copy outside the editor.
+// Save writes a DRAFT — unless direct mode is on, which overwrites the shipped map
+// (publishing a new map for real). Direct mode is a confirmed team opt-in, off at start.
 async function saveMap() {
   if (S.mapId === null || !S.modified) return;
-  const r = await fetch(`/api/map/${S.mapId}`, { method: 'PUT', body: S.cells.buffer });
-  if (r.ok) {
-    S.modified = false; S.savedMark = S.undoStack.length; S.isDraft = true;
-    const m = S.meta.maps.find(x => x.id === S.mapId);
+  const r = await fetch(`/api/map/${S.mapId}${S.direct ? '?direct=true' : ''}`, { method: 'PUT', body: S.cells.buffer });
+  if (!r.ok) { flashHint('save failed: ' + await r.text()); updateStatus(); updateButtons(); return; }
+  const res = await r.json().catch(() => ({}));
+  S.modified = false; S.savedMark = S.undoStack.length;
+  const m = S.meta.maps.find(x => x.id === S.mapId);
+  if (res.direct) {
+    S.isDraft = false;
+    if (m) { m.draft = false; if (res.publishedNewMap) { m.custom = false; m.file = true; } buildMapList(); }
+    flashHint(`saved DIRECTLY to ${res.path}${res.publishedNewMap ? ' + map_index.csv row' : ''} — @reload for the server to see it`);
+  } else {
+    S.isDraft = true;
     if (m && !m.draft) { m.draft = true; buildMapList(); }
     flashHint('draft saved to dist/NexusTK-Map-Editor/saved/maps — the shipped map is untouched');
   }
-  else flashHint('save failed: ' + await r.text());
   updateStatus(); updateButtons();
 }
 
@@ -694,12 +701,17 @@ function buildMobList() {
 
 async function exportSpawns() {
   if (S.mapId === null || !S.placed.length) return;
-  const r = await fetch(`/api/map/${S.mapId}/spawns.csv`, {
+  const n = S.placed.length;
+  const r = await fetch(`/api/map/${S.mapId}/spawns.csv${S.direct ? '?direct=true' : ''}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(S.placed.map(p => ({ x: p.x, y: p.y, mob: p.mob }))),
   });
   if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
-  flashHint(`${S.placed.length} Spawns.csv row${S.placed.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
+  if (S.direct) {
+    S.placed = [];                 // they're real rows now; the markers reload shows them orange
+    savePlaced(); updateSpawnBox(); loadMarkers(S.mapId); invalidate();
+    flashHint(`${n} row${n === 1 ? '' : 's'} APPENDED to game-data/Spawns.csv — @reload for the server`);
+  } else flashHint(`${n} Spawns.csv row${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
 }
 
 // --------------------------------------------------------------------------- npc placement
@@ -755,12 +767,17 @@ function buildNpcList() {
 
 async function exportNpcs() {
   if (!S.placedNpcs.length) return;
-  const r = await fetch('/api/npcs.csv', {
+  const n = S.placedNpcs.length;
+  const r = await fetch(`/api/npcs.csv${S.direct ? '?direct=true' : ''}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(S.placedNpcs),
   });
   if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
-  flashHint(`${S.placedNpcs.length} NPCs.csv row${S.placedNpcs.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
+  if (S.direct) {
+    S.placedNpcs = [];
+    saveNpcs(); updateNpcBox(); loadMarkers(S.mapId); invalidate();
+    flashHint(`${n} row${n === 1 ? '' : 's'} APPENDED to game-data/NPCs.csv — @reload for the server`);
+  } else flashHint(`${n} NPCs.csv row${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
 }
 
 // --------------------------------------------------------------------------- warp placement
@@ -835,12 +852,17 @@ function updateWarpBox() {
 
 async function exportWarps() {
   if (!S.placedWarps.length) return;
-  const r = await fetch('/api/warps.csv', {
+  const n = S.placedWarps.length;
+  const r = await fetch(`/api/warps.csv${S.direct ? '?direct=true' : ''}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(S.placedWarps.map(w => ({ sm: w.sm, sx: w.sx, sy: w.sy, dm: w.dm, dx: w.dx, dy: w.dy }))),
   });
   if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
-  flashHint(`${S.placedWarps.length} Warps.csv row${S.placedWarps.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
+  if (S.direct) {
+    S.placedWarps = []; S.warpArm = null;
+    saveWarps(); updateWarpBox(); loadMarkers(S.mapId); invalidate();
+    flashHint(`${n} row${n === 1 ? '' : 's'} APPENDED to game-data/Warps.csv — @reload for the server`);
+  } else flashHint(`${n} Warps.csv row${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
 }
 
 // --------------------------------------------------------------------------- minimap
@@ -1623,11 +1645,14 @@ function updateStatus(pin) {
 // a rewritten binary .map.
 async function exportCorrections() {
   if (S.mapId === null) return;
-  const r = await fetch(`/api/map/${S.mapId}/mapcells.csv`, { method: 'POST', body: S.cells.buffer });
+  const r = await fetch(`/api/map/${S.mapId}/mapcells.csv${S.direct ? '?direct=true' : ''}`, { method: 'POST', body: S.cells.buffer });
   if (!r.ok) { flashHint('corrections: ' + await r.text()); return; }
   const n = +r.headers.get('X-Cell-Count');
   if (!n) { flashHint('no differences vs the shipped map'); return; }
-  flashHint(`${n} changed cell${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')}`);
+  if (S.direct) {
+    flashHint(`${n} row${n === 1 ? '' : 's'} APPENDED to game-data/MapCells.csv — @reload for the server to apply them`);
+    loadMarkers(S.mapId);          // the overrides just became real — show their pink squares
+  } else flashHint(`${n} changed cell${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')}`);
 }
 
 function lineCells(a, b, fn) {
@@ -1648,6 +1673,20 @@ function bindUI() {
   $('btnUndo').onclick = undo;
   $('btnSave').onclick = saveMap;
   $('btnDraft').onclick = discardDraft;
+  $('btnDirect').onclick = () => {
+    if (!S.direct) {
+      if (!confirm('Enable DIRECT MODE?\n\n' +
+        '• Save will OVERWRITE the shipped map in game-data\\maps (a new map is published for real, map_index.csv row included)\n' +
+        '• the Corrections / spawn / warp / NPC export buttons will APPEND rows straight into the live game CSVs\n\n' +
+        'The saved-folder safety net is bypassed — git is the only undo, and the server needs @reload to pick changes up.\n\n' +
+        'Direct mode turns itself off every time the editor starts.')) return;
+      S.direct = true;
+    } else S.direct = false;
+    $('btnDirect').classList.toggle('dangerOn', S.direct);
+    $('btnDirect').textContent = S.direct ? 'Direct: ON' : 'Direct: off';
+    flashHint(S.direct ? 'DIRECT MODE — Save and the exports now write straight into game-data'
+      : 'direct mode off — back to drafts and saved-folder exports');
+  };
   $('btnExport').onclick = () => {
     if (S.mapId === null) return;
     if (S.modified) { flashHint('save first — export reads the file on disk'); return; }
