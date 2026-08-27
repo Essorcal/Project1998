@@ -104,6 +104,9 @@ async function boot() {
   bootStage('map loaded, starting…');
   $('loading').hidden = true;
   requestAnimationFrame(frame);
+  // Heartbeat: in --browser mode the server exits itself ~15s after the last open tab
+  // stops pinging, so closing the tab is enough to stop the editor.
+  setInterval(() => fetch('/api/ping', { method: 'POST' }).catch(() => {}), 3000);
 }
 const loadImg = (img, src) => new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = src; });
 

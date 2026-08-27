@@ -11,22 +11,33 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using MapEditor;
 
+// This is a WINDOWED app (WinExe — no console): the default run shows the WebView2 shell.
+//   --browser     use the system browser instead of the window (heartbeat auto-exit armed)
+//   --no-browser  server only, for dev harnesses (no window, no tab, no auto-exit)
+//   --heartbeat   arm the no-clients auto-exit explicitly (useful with --no-browser)
+// Console output tees into a log file, since a WinExe launched by double-click has nowhere
+// else to put it.
+bool browserMode = args.Contains("--browser");
+bool serverOnly = args.Contains("--no-browser");
+bool windowMode = !browserMode && !serverOnly;
+bool heartbeatArmed = browserMode || args.Contains("--heartbeat");
+try
+{
+    Console.SetOut(new TeeWriter(Console.Out,
+        new StreamWriter(Path.Combine(Path.GetTempPath(), "nexustk-map-editor.log"), false) { AutoFlush = true }));
+}
+catch { /* logging is best-effort */ }
+
 string? repo = FindRepoRoot();
 if (repo is null)
-{
-    Console.WriteLine("Could not find the game data (a game-data/maps folder).");
-    Console.WriteLine("Put this program inside the Project1998 folder, next to a game-data folder,");
-    Console.WriteLine("or set the P1998_REPO environment variable to the Project1998 folder.");
-    Pause(); return 1;
-}
+    return Fail("Could not find the game data (a game-data/maps folder).\n" +
+        "Put this program inside the Project1998 folder, next to a game-data folder,\n" +
+        "or set the P1998_REPO environment variable to the Project1998 folder.");
 string? tileDat = FindTileDat();
 if (tileDat is null)
-{
-    Console.WriteLine("Tile.dat (the 5.33 client's tile art) was not found.");
-    Console.WriteLine("Looked next to this program, in %LOCALAPPDATA%/Project1998/game/533,");
-    Console.WriteLine("and at P1998_CLIENT5 if set. Install the 5.33 client or set P1998_CLIENT5.");
-    Pause(); return 1;
-}
+    return Fail("Tile.dat (the 5.33 client's tile art) was not found.\n" +
+        "Looked next to this program, in %LOCALAPPDATA%/Project1998/game/533,\n" +
+        "and at P1998_CLIENT5 if set. Install the 5.33 client or set P1998_CLIENT5.");
 
 Console.WriteLine($"decoding {tileDat} ...");
 var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -76,7 +87,17 @@ var portArg = Array.IndexOf(args, "--port");
 if (portArg >= 0 && portArg + 1 < args.Length && int.TryParse(args[portArg + 1], out var pv)) preferred = pv;
 int port = FreePort(preferred);
 string url = $"http://127.0.0.1:{port}";
-var builder = WebApplication.CreateBuilder(args);
+// Content root must be wherever wwwroot actually is: the CWD during `dotnet run` (which
+// sets it to the project dir), else the exe's folder or its ancestors (the published exe
+// has wwwroot beside it; a dev-built exe finds MapEditor/wwwroot above bin/) — so the
+// exe launched from ANY working directory still serves the UI.
+string contentRoot = AppContext.BaseDirectory;
+if (Directory.Exists(Path.Combine(Directory.GetCurrentDirectory(), "wwwroot")))
+    contentRoot = Directory.GetCurrentDirectory();
+else
+    for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+        if (Directory.Exists(Path.Combine(d.FullName, "wwwroot"))) { contentRoot = d.FullName; break; }
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = contentRoot });
 builder.WebHost.UseUrls(url);
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
 var app = builder.Build();
@@ -104,6 +125,13 @@ app.MapGet("/api/meta", () => Results.Json(new
     mobs = Markers.Mobs(gameData),
     npcTemplates = Markers.NpcTemplates(gameData)
 }));
+
+// Heartbeat: the page POSTs here every few seconds. When armed (--browser/--heartbeat),
+// the server exits itself ~15s after the last client goes away — closing the tab is
+// enough, no console to hunt down. Never armed in window mode (the window closing exits)
+// or plain --no-browser (dev harnesses poke the API with no page open).
+var hb = new HeartbeatState();
+app.MapPost("/api/ping", () => { hb.Seen = true; hb.Last = Environment.TickCount64; return Results.Ok(); });
 
 app.MapGet("/api/tiles/ground.png", () => Results.Bytes(assets.GroundPng, "image/png"));
 app.MapGet("/api/tiles/tilec.png", () => Results.Bytes(assets.TilecPng, "image/png"));
@@ -358,15 +386,51 @@ app.MapPost("/api/debug/shot", async (HttpRequest req) =>
     return Results.Text(path);
 });
 
-Console.WriteLine($"map editor at {url}  (keep this window open; close it to stop the editor)");
-if (!args.Contains("--no-browser"))
-    app.Lifetime.ApplicationStarted.Register(() =>
+Console.WriteLine($"map editor at {url}");
+
+// Heartbeat watchdog: armed modes exit ~15s after the last ping once a client was seen.
+using var hbTimer = new System.Threading.Timer(_ =>
+{
+    if (!heartbeatArmed || !hb.Seen) return;
+    if (Environment.TickCount64 - hb.Last > 15_000)
     {
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
-        catch { /* no default browser handler — the console shows the address */ }
-    });
+        Console.WriteLine("no client for 15s — shutting down");
+        app.Lifetime.StopApplication();
+    }
+}, null, 5_000, 5_000);
+
+if (windowMode)
+{
+    await app.StartAsync();
+    if (AppWindow.Run(url))          // blocks until the window closes
+    {
+        await app.StopAsync();
+        return 0;
+    }
+    // WebView2 runtime missing: fall back to the system browser, heartbeat governs exit.
+    Console.WriteLine("WebView2 runtime not found — falling back to the system browser");
+    heartbeatArmed = true;
+    OpenBrowser(url);
+    await app.WaitForShutdownAsync();
+    return 0;
+}
+if (browserMode) app.Lifetime.ApplicationStarted.Register(() => OpenBrowser(url));
 app.Run();
 return 0;
+
+static void OpenBrowser(string url)
+{
+    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
+    catch { /* no default browser handler — the log shows the address */ }
+}
+
+static int Fail(string msg)
+{
+    Console.WriteLine(msg);
+    try { System.Windows.Forms.MessageBox.Show(msg, "NexusTK Map Editor", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error); }
+    catch { /* headless session — the log has it */ }
+    return 1;
+}
 
 // ---------------------------------------------------------------------------- helpers
 
@@ -416,16 +480,6 @@ static int FreePort(int preferred)
 static string CsvEsc(string v) =>
     v.Contains(',') || v.Contains('"') ? '"' + v.Replace("\"", "\"\"") + '"' : v;
 
-// A double-clicked exe closes its console on exit before anyone can read the error.
-static void Pause()
-{
-    if (!Console.IsInputRedirected)
-    {
-        Console.WriteLine();
-        Console.Write("Press Enter to close...");
-        Console.ReadLine();
-    }
-}
 
 static Dictionary<int, (string Name, int Xs, int Ys)> LoadIndex(string path)
 {
@@ -473,3 +527,15 @@ record PlacedWarp(int Sm, int Sx, int Sy, int Dm, int Dx, int Dy);
 // One pending NPC placement (JSON body of /api/npcs.csv): a template NpcId copied to a new
 // map/cell, identifier/description optionally overridden.
 record PlacedNpc(int Map, int X, int Y, int Template, string? Identifier, string? Description);
+
+// Last time any page pinged /api/ping (the frontend does, every ~3s while open).
+sealed class HeartbeatState { public volatile bool Seen; public long Last; }
+
+// Console output duplicated into the log file — a WinExe has no console to read.
+sealed class TeeWriter(TextWriter a, TextWriter b) : TextWriter
+{
+    public override System.Text.Encoding Encoding => a.Encoding;
+    public override void Write(char value) { a.Write(value); b.Write(value); }
+    public override void Write(string? value) { a.Write(value); b.Write(value); }
+    public override void WriteLine(string? value) { a.WriteLine(value); b.WriteLine(value); }
+}

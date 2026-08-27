@@ -134,7 +134,7 @@ re/mapviewer/
 re/**/*.zip
 
 # ---- Map editor one-click build ----
-# dist/ holds the self-contained NexusTK-Map-Editor.exe (~94 MB). Reproducible with the
+# dist/ holds the self-contained NexusTK-Map-Editor.exe (~180 MB). Reproducible with the
 # dotnet publish command in MapEditor/README.md, so it stays out of history. A copy may
 # also sit in MapEditor/ itself for double-click convenience (it serves the wwwroot
 # beside it) — same rule, never in history.

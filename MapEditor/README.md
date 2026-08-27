@@ -10,15 +10,22 @@ A visual editor for Project1998's world maps. It renders the game's maps with th
 
 ### The easy way (no tools required)
 
-1. Grab the **NexusTK-Map-Editor** folder (contains `NexusTK-Map-Editor.exe` and a
-   `wwwroot` folder — keep them together).
+1. Grab the **NexusTK-Map-Editor** folder (the exe, a `wwwroot` folder, and a few
+   runtime DLLs — keep the folder together).
 2. Put that folder anywhere **inside your Project1998 checkout** (for example
    `Project1998\dist\NexusTK-Map-Editor\`). The editor finds the maps by looking for a
    `game-data\maps` folder in the directories above it.
 3. Double-click `NexusTK-Map-Editor.exe`.
 
-A console window opens, decodes the tileset (about a second), and your browser opens the
-editor automatically. **Keep the console window open** — closing it stops the editor.
+The editor opens as a **single application window** (a WebView2 shell — no console, no
+browser tab). It decodes the tileset for about a second on the way up, and closing the
+window shuts everything down. Window size and position are remembered.
+
+Prefer your own browser? Run with `--browser`: the editor opens as a tab instead, and
+the server **exits itself** about 15 seconds after the last editor tab closes — nothing
+to clean up either way. (`--no-browser` starts the bare server for tooling; add
+`--heartbeat` if you want that to self-clean too.) Startup output goes to
+`%TEMP%\nexustk-map-editor.log`.
 
 The editor also needs the 5.33 client's `Tile.dat` for the artwork. It looks, in order:
 
@@ -255,10 +262,11 @@ character) all work.
 
 ## Troubleshooting
 
-- **The browser didn't open** — the console prints the address (usually
-  `http://127.0.0.1:5959`); open it by hand.
-- **A different port** — if 5959 is taken the editor picks the next free port and says
-  so in the console; the auto-opened browser tab always goes to the right one. To pin a
+- **No window appears** — check `%TEMP%\nexustk-map-editor.log` for what went wrong. If
+  it mentions WebView2, the editor already fell back to your browser; the (rarely
+  missing) WebView2 runtime ships with Windows 11 and with Edge on Windows 10.
+- **A different port** — if 5959 is taken the editor picks the next free port; the log
+  shows the address, and the window/tab always opens on the right one. To pin a
   port (e.g. running one editor per checkout), pass `--port 5970`; `--no-browser` skips
   the auto-opened tab.
 - **"Could not find the game data"** — the exe isn't inside a Project1998 checkout; move
