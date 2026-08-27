@@ -98,6 +98,25 @@ public static class Markers
         return new { warpsOut, warpsIn, world, worldArrivals, spawns, areas, npcs, overrides };
     }
 
+    /// <summary>MobId + display name for the spawn-placement picker.</summary>
+    public static List<object> Mobs(string gameData)
+    {
+        var mobs = new List<object>();
+        foreach (var r in ReadCsv(Path.Combine(gameData, "mobs.csv")))
+            if (Int(r, "MobId", out var id))
+                mobs.Add(new { id, name = Str(r, "Description") is { Length: > 0 } d ? d : Str(r, "Identifier") });
+        return mobs;
+    }
+
+    /// <summary>Highest SpnId currently in Spawns.csv, so exported rows number after it.</summary>
+    public static int MaxSpawnId(string gameData)
+    {
+        int max = 0;
+        foreach (var r in ReadCsv(Path.Combine(gameData, "Spawns.csv")))
+            if (Int(r, "SpnId", out var sid) && sid > max) max = sid;
+        return max;
+    }
+
     static string Str(Dictionary<string, string> r, string key) => r.GetValueOrDefault(key, "");
     static bool Int(Dictionary<string, string> r, string key, out int v) => int.TryParse(r.GetValueOrDefault(key), out v);
 

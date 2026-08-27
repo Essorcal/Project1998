@@ -35,6 +35,7 @@ const S = {
   drag: null, stroke: null, undoStack: [],
   selection: null, clipboard: null,
   walker: { x: -1, y: -1 }, bump: '',
+  selMob: null, placed: [],      // spawn tool: chosen mob + this map's pending points (localStorage)
   layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
   markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
@@ -51,6 +52,7 @@ const TOOLS = [
   ['pass', 'toggle passability', '<circle cx="10" cy="10" r="7"/><path d="M5.5 5.5l9 9"/>'],
   null,
   ['walk', 'test character', '<circle cx="10" cy="4.5" r="2.2"/><path d="M10 7v5"/><path d="M10 12l-3 5"/><path d="M10 12l3 5"/><path d="M6.5 9.5h7"/>'],
+  ['spawn', 'place spawn points — exports Spawns.csv rows, game files never written', '<circle cx="10" cy="12.8" r="3.4"/><circle cx="5.2" cy="8.6" r="1.9"/><circle cx="10" cy="6.6" r="1.9"/><circle cx="14.8" cy="8.6" r="1.9"/>'],
 ];
 
 // --------------------------------------------------------------------------- boot
@@ -115,6 +117,8 @@ async function loadMap(id) {
   S.selection = null; S.walker = { x: -1, y: -1 };
   S.markers = null;
   loadMarkers(id);               // async — the overlay pops in when it arrives
+  S.placed = placedStore()[id] || [];
+  updateSpawnBox();
   mini.world = null; rebuildMini();
   $('lintList').innerHTML = ''; $('lintNote').textContent = '';
   buildMapList();
@@ -481,7 +485,7 @@ function draw() {
     ctx.stroke();
   }
 
-  if (S.markers) drawMarkers(ctx, camX, camY, s);
+  drawMarkers(ctx, camX, camY, s);
 
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
@@ -519,6 +523,63 @@ function draw() {
   }
 
   drawMini();
+}
+
+// --------------------------------------------------------------------------- spawn placement
+// Development-tool rule: placements live in localStorage only, and Export downloads
+// Spawns.csv rows for a deliberate hand-append — game files are never written.
+function placedStore() { try { return JSON.parse(localStorage.getItem('mapeditor.placed')) || {}; } catch { return {}; } }
+function savePlaced() {
+  const all = placedStore();
+  if (S.placed.length) all[S.mapId] = S.placed; else delete all[S.mapId];
+  try { localStorage.setItem('mapeditor.placed', JSON.stringify(all)); } catch {}
+}
+
+function placeSpawnAt(x, y) {
+  const i = S.placed.findIndex(p => p.x === x && p.y === y);
+  if (i >= 0) { S.placed.splice(i, 1); flashHint('spawn point removed'); }
+  else if (!S.selMob) { flashHint('pick a mob in the spawn box first'); return; }
+  else if (blockedWord(gAt(idx(x, y)))) { flashHint('blocked cell — the mob would stand in a wall'); return; }
+  else S.placed.push({ x, y, mob: S.selMob.id, name: S.selMob.name });
+  savePlaced(); updateSpawnBox(); invalidate(); updateStatus();
+}
+
+function updateSpawnBox() {
+  $('sbCount').textContent = S.placed.length ? `${S.placed.length} pending` : '';
+  $('sbSel').textContent = S.selMob ? `${S.selMob.name} (${S.selMob.id})` : 'none';
+  $('sbExport').disabled = !S.placed.length;
+  $('sbClear').disabled = !S.placed.length;
+}
+
+function buildMobList() {
+  const q = ($('sbSearch').value || '').toLowerCase();
+  const list = $('sbList');
+  list.innerHTML = '';
+  let shown = 0;
+  for (const m of S.meta.mobs) {
+    if (q && !(`${m.id} ${m.name}`.toLowerCase().includes(q))) continue;
+    if (++shown > 60) break;
+    const d = document.createElement('div');
+    d.className = 'mobrow' + (S.selMob && S.selMob.id === m.id ? ' on' : '');
+    d.innerHTML = `<span class="name">${m.name || '(unnamed)'}</span><span class="mono dim">${m.id}</span>`;
+    d.onclick = () => { S.selMob = m; buildMobList(); updateSpawnBox(); updateStatus(); };
+    list.appendChild(d);
+  }
+}
+
+async function exportSpawns() {
+  if (S.mapId === null || !S.placed.length) return;
+  const r = await fetch(`/api/map/${S.mapId}/spawns.csv`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(S.placed.map(p => ({ x: p.x, y: p.y, mob: p.mob }))),
+  });
+  if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await r.blob());
+  a.download = `spawns-TK${S.mapId}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  flashHint(`${S.placed.length} Spawns.csv row${S.placed.length === 1 ? '' : 's'} downloaded — append to game-data/Spawns.csv, then @reload`);
 }
 
 // --------------------------------------------------------------------------- minimap
@@ -563,9 +624,9 @@ function drawMini() {
   g.imageSmoothingEnabled = false;
   g.fillStyle = '#0e0f10'; g.fillRect(0, 0, bw, bh);
   g.drawImage(mini.world, 0, 0, bw, bh);
+  const px = Math.max(1, Math.ceil(sx)), py = Math.max(1, Math.ceil(sy));
+  const dot = (x, y, c) => { g.fillStyle = c; g.fillRect(Math.floor(x * sx), Math.floor(y * sy), px, py); };
   if (S.markers) {
-    const px = Math.max(1, Math.ceil(sx)), py = Math.max(1, Math.ceil(sy));
-    const dot = (x, y, c) => { g.fillStyle = c; g.fillRect(Math.floor(x * sx), Math.floor(y * sy), px, py); };
     if (S.layers.override) for (const c of S.markers.overrides) dot(c.x, c.y, '#ec4899');
     if (S.layers.spawn) for (const s of S.markers.spawns) dot(s.x, s.y, '#f97316');
     if (S.layers.npc) for (const p of S.markers.npcs) dot(p.x, p.y, '#4ade80');
@@ -575,6 +636,7 @@ function drawMini() {
       for (const w of S.markers.warpsOut) dot(w.x, w.y, '#38bdf8');
     }
   }
+  for (const p of S.placed) dot(p.x, p.y, '#eab308');
   const v = viewSize();
   g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
   g.lineWidth = 1;
@@ -690,27 +752,31 @@ function drawMarkers(ctx, camX, camY, s) {
     ctx.strokeStyle = fill ? '#17181a' : color; ctx.lineWidth = fill ? 1 : 2;
     ctx.stroke();
   };
-  if (S.layers.override) for (const c of mk.overrides) glyph(c.x, c.y, '#ec4899', 'rect', false);
-  if (S.layers.npc) for (const p of mk.npcs) glyph(p.x, p.y, '#4ade80', 'rect', true);
-  if (S.layers.spawn) {
-    for (const sp of mk.spawns) glyph(sp.x, sp.y, '#f97316', 'circle', true);
-    ctx.strokeStyle = '#f97316'; ctx.setLineDash([6, 4]); ctx.lineWidth = 2;
-    ctx.fillStyle = '#f97316';
-    ctx.font = `${Math.max(10, Math.round(11 * (devicePixelRatio || 1) / s))}px "IBM Plex Mono", monospace`;
-    for (const a of mk.areas) {
-      if (!a.x0 && !a.y0 && !a.x1 && !a.y1) continue;   // map-wide — see the layer row's tooltip
-      const bx = a.x0 * CELL - camX, by = a.y0 * CELL - camY;
-      ctx.strokeRect(bx + 1, by + 1, (a.x1 - a.x0 + 1) * CELL - 2, (a.y1 - a.y0 + 1) * CELL - 2);
-      ctx.fillText(`${a.name || 'mob ' + a.mob} ×${a.count}`, bx + 3, by - 4);
+  if (mk) {
+    if (S.layers.override) for (const c of mk.overrides) glyph(c.x, c.y, '#ec4899', 'rect', false);
+    if (S.layers.npc) for (const p of mk.npcs) glyph(p.x, p.y, '#4ade80', 'rect', true);
+    if (S.layers.spawn) {
+      for (const sp of mk.spawns) glyph(sp.x, sp.y, '#f97316', 'circle', true);
+      ctx.strokeStyle = '#f97316'; ctx.setLineDash([6, 4]); ctx.lineWidth = 2;
+      ctx.fillStyle = '#f97316';
+      ctx.font = `${Math.max(10, Math.round(11 * (devicePixelRatio || 1) / s))}px "IBM Plex Mono", monospace`;
+      for (const a of mk.areas) {
+        if (!a.x0 && !a.y0 && !a.x1 && !a.y1) continue;   // map-wide — see the layer row's tooltip
+        const bx = a.x0 * CELL - camX, by = a.y0 * CELL - camY;
+        ctx.strokeRect(bx + 1, by + 1, (a.x1 - a.x0 + 1) * CELL - 2, (a.y1 - a.y0 + 1) * CELL - 2);
+        ctx.fillText(`${a.name || 'mob ' + a.mob} ×${a.count}`, bx + 3, by - 4);
+      }
+      ctx.setLineDash([]);
     }
-    ctx.setLineDash([]);
+    if (S.layers.warp) {
+      for (const c of mk.world) glyph(c.x, c.y, '#a78bfa', 'diamond', true);
+      for (const a of mk.worldArrivals) glyph(a.x, a.y, '#a78bfa', 'diamond', false);
+      for (const w of mk.warpsIn) glyph(w.x, w.y, '#38bdf8', 'diamond', false);
+      for (const w of mk.warpsOut) glyph(w.x, w.y, '#38bdf8', 'diamond', true);
+    }
   }
-  if (S.layers.warp) {
-    for (const c of mk.world) glyph(c.x, c.y, '#a78bfa', 'diamond', true);
-    for (const a of mk.worldArrivals) glyph(a.x, a.y, '#a78bfa', 'diamond', false);
-    for (const w of mk.warpsIn) glyph(w.x, w.y, '#38bdf8', 'diamond', false);
-    for (const w of mk.warpsOut) glyph(w.x, w.y, '#38bdf8', 'diamond', true);
-  }
+  // Pending spawn placements — always on top; they're the working set, not a toggleable layer.
+  for (const p of S.placed) glyph(p.x, p.y, '#eab308', 'circle', true);
 }
 
 let _walkCvs = null;
@@ -780,6 +846,7 @@ function bindCanvas() {
         else if (blockedWord(gAt(idx(c.x, c.y)))) flashHint('that cell is blocked — pick a passable one');
         else { S.walker = { x: c.x, y: c.y }; S.bump = ''; }
         break;
+      case 'spawn': placeSpawnAt(c.x, c.y); break;
     }
     invalidate();
   });
@@ -1145,6 +1212,7 @@ function setTool(id) {
   document.querySelectorAll('.tool').forEach(b => b.classList.toggle('on', b.id === 'tool-' + id));
   $('tool-stamp').classList.toggle('dimmed', !S.clipboard);
   $('dpad').hidden = id !== 'walk';
+  $('spawnBox').hidden = id !== 'spawn';
   updateStatus(); invalidate();
 }
 
@@ -1220,6 +1288,8 @@ function updateStatus(pin) {
       for (const a of S.markers.areas)
         if ((a.x0 || a.y0 || a.x1 || a.y1) && c.x >= a.x0 && c.x <= a.x1 && c.y >= a.y0 && c.y <= a.y1)
           marks += (marks ? ' · ' : '') + `area: ${a.name || 'mob ' + a.mob} ×${a.count}`;
+    const pl = S.placed.find(p => p.x === c.x && p.y === c.y);
+    if (pl) marks += (marks ? ' · ' : '') + `pending spawn: ${pl.name || 'mob ' + pl.mob}`;
     $('stCell').textContent =
       `cell (${c.x}, ${c.y}) · g 0x${g.toString(16).toUpperCase().padStart(4, '0')} · pass ${g >> 14 & 3} · obj ${o}`
       + (marks ? '  ·  ' + marks : '');
@@ -1231,6 +1301,9 @@ function updateStatus(pin) {
       : `walk (${S.walker.x},${S.walker.y})` + (oAt(idx(S.walker.x, S.walker.y)) ? ' · on object' : '') + (S.bump ? ` · blocked ${S.bump}` : '') + ' · click him or Esc to remove',
     pass: 'click / drag to toggle the 2-bit pass flag (flips the sheet tag)',
     erase: S.tab === 'obj' ? 'erase: removes objects' : S.tab === 'ground' ? 'erase: ground → void' : 'erase: pass → walkable',
+    spawn: S.selMob
+      ? `place ${S.selMob.name} — click to place, click a yellow point to remove · ${S.placed.length} pending`
+      : 'pick a mob in the spawn box, then click cells to place spawn points',
   };
   $('stHint').textContent = flashText || hints[S.tool] || '';
   $('stEdits').textContent = S.modified ? `${S.undoStack.length - S.savedMark} unsaved stroke${S.undoStack.length - S.savedMark === 1 ? '' : 's'}` : 'saved';
@@ -1281,6 +1354,14 @@ function bindUI() {
     location.href = `/api/map/${S.mapId}/export.${S.mode === '4x' ? 'map' : 'cmp'}`;
   };
   $('btnCsv').onclick = exportCorrections;
+  $('sbSearch').addEventListener('input', buildMobList);
+  $('sbExport').onclick = exportSpawns;
+  $('sbClear').onclick = () => {
+    if (!S.placed.length || !confirm(`Remove all ${S.placed.length} pending spawn point${S.placed.length === 1 ? '' : 's'} on this map?`)) return;
+    S.placed = [];
+    savePlaced(); updateSpawnBox(); invalidate(); updateStatus();
+  };
+  buildMobList();
   $('btnImport').onclick = () => $('fileImport').click();
   $('fileImport').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
   $('mapFilter').oninput = buildMapList;

@@ -179,6 +179,19 @@ downloads one CSV row per changed cell, with unchanged columns left blank so the
 inherit from the `.map`. A three-cell fix becomes three reviewable lines in git instead
 of a rewritten binary map. Works with unsaved changes too.
 
+## Placing spawns
+
+The paw tool in the rail places monster spawn points. Pick a mob in the **spawn box**
+(bottom-left; search by name or id), then click cells — yellow dots mark pending points
+(click one to remove it; blocked cells are refused). Placements are per-map, live only
+in your browser, and survive reloads.
+
+**Export rows** downloads `Spawns.csv` rows for the pending points, `SpnId` numbered
+after the file's current maximum. Same rule as everything else here: the editor never
+writes the game files — append the rows to `game-data\Spawns.csv` yourself, `@reload`
+on the server, and reload the map in the editor (the points then show as regular orange
+spawn markers; clear the yellow pending ones with **Clear all**).
+
 ## Import & export
 
 The `.map` / `.cmp` toggle selects the file format the Export button produces:

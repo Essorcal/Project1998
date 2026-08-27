@@ -47,6 +47,17 @@
         </div>
         <div class="dhint">arrow keys work too</div>
       </div>
+      <div id="spawnBox" hidden>
+        <div class="sbTitle">PLACE SPAWNS <span id="sbCount" class="mono accent"></span></div>
+        <input id="sbSearch" placeholder="search mobs…" autocomplete="off">
+        <div id="sbList"></div>
+        <div class="sbSel mono">selected: <span id="sbSel" class="accent">none</span></div>
+        <div class="sbBtns">
+          <button id="sbExport" class="btn tiny" disabled title="download Spawns.csv rows for the pending points — append them to game-data\Spawns.csv yourself, then @reload">Export rows</button>
+          <button id="sbClear" class="btn tiny" disabled>Clear all</button>
+        </div>
+        <div class="sbHint">click the map to place · click a yellow point to remove<br>rows download for hand-append — game files are never written</div>
+      </div>
       <div id="miniWrap" title="minimap — click or drag to move the view">
         <button id="miniHide" title="hide the minimap">✕</button>
         <canvas id="miniCanvas"></canvas>

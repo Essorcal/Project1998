@@ -34,8 +34,9 @@ var assets = TileAssets.Load(tileDat, Path.Combine(repo, "game-data", "Tile533Ma
 Console.WriteLine($"  {assets.GroundCount} ground frames, {assets.TilecCount} object frames, " +
                   $"{assets.Objs.Count} SObj, {assets.Sheet2Runs.Count} sheet-2 runs in {sw.ElapsedMilliseconds} ms");
 
-string mapsDir = Path.Combine(repo, "game-data", "maps");
-var index = LoadIndex(Path.Combine(repo, "game-data", "map_index.csv"));
+string gameData = Path.Combine(repo, "game-data");
+string mapsDir = Path.Combine(gameData, "maps");
+var index = LoadIndex(Path.Combine(gameData, "map_index.csv"));
 
 // This is a development tool: Save NEVER touches the shipped maps the server/client read.
 // Drafts live in game-data/maps-edited/ (gitignored); loading prefers the draft so work
@@ -77,7 +78,8 @@ app.MapGet("/api/meta", () => Results.Json(new
         ys = kv.Value.Ys,
         file = File.Exists(ShippedPath(kv.Key)),
         draft = File.Exists(DraftPath(kv.Key))
-    }).OrderBy(m => m.id)
+    }).OrderBy(m => m.id),
+    mobs = Markers.Mobs(gameData)
 }));
 
 app.MapGet("/api/tiles/ground.png", () => Results.Bytes(assets.GroundPng, "image/png"));
@@ -118,8 +120,28 @@ app.MapDelete("/api/map/{id:int}/draft", (int id) =>
 // Read-only overlay data: warps / world-map cells / spawns / NPCs pointing at this map,
 // so the mapper sees which cells server content depends on before painting over them.
 app.MapGet("/api/map/{id:int}/markers", (int id) =>
-    Results.Json(Markers.For(id, Path.Combine(repo, "game-data"),
+    Results.Json(Markers.For(id, gameData,
         m => index.TryGetValue(m, out var mi) ? mi.Name : "")));
+
+// Placed-spawn export: JSON [{x,y,mob}] → Spawns.csv rows, SpnId numbered after the
+// file's current max. Like Corrections, the rows DOWNLOAD for a deliberate hand-append —
+// the editor never writes the tracked CSVs (Content.LoadSpawns only reads
+// SpnMobId/SpnMapId/SpnX/SpnY; the RTK bookkeeping columns get zeros).
+app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, HttpResponse resp) =>
+{
+    if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
+    if (placed is null || placed.Count == 0) return Results.BadRequest("no spawn points in body");
+    foreach (var p in placed)
+        if (p.X < 0 || p.Y < 0 || p.X >= dims.Xs || p.Y >= dims.Ys)
+            return Results.BadRequest($"({p.X},{p.Y}) is outside {dims.Xs}x{dims.Ys}");
+    int next = Markers.MaxSpawnId(gameData) + 1;
+    var sb = new System.Text.StringBuilder(
+        "SpnId,SpnMobId,SpnMapId,SpnX,SpnY,SpnLastDeath,SpnStartTime,SpnEndTime,SpnMobIdReplace\n");
+    foreach (var p in placed)
+        sb.Append($"{next++},{p.Mob},{id},{p.X},{p.Y},0,0,0,0\n");
+    resp.Headers["X-Row-Count"] = placed.Count.ToString();
+    return Results.Text(sb.ToString(), "text/csv");
+});
 
 // Sparse-patch export: POST the editor's live cell buffer, get back MapCells.csv rows
 // (Server/Content.cs LoadMapCells: blank column = inherit from the .map) for exactly the
@@ -332,3 +354,6 @@ static byte[] MapToCmp(byte[] mapBytes, int w, int h)
     comp.CopyTo(outp, 8);
     return outp;
 }
+
+// One pending spawn point from the placement tool (JSON body of /api/map/{id}/spawns.csv).
+record PlacedSpawn(int X, int Y, int Mob);
