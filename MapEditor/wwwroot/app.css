@@ -73,10 +73,14 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .lrow .mono { margin-left: auto; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lrow input { accent-color: var(--accent); }
 
-#spawnBox, #warpBox { position: absolute; left: 16px; bottom: 16px; width: 236px; display: flex; flex-direction: column; gap: 7px; padding: 10px; background: var(--panel); border: 1px solid var(--border2); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
-#spawnBox[hidden], #warpBox[hidden] { display: none; }
+#spawnBox, #warpBox, #npcBox { position: absolute; left: 16px; bottom: 16px; width: 236px; display: flex; flex-direction: column; gap: 7px; padding: 10px; background: var(--panel); border: 1px solid var(--border2); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+#spawnBox[hidden], #warpBox[hidden], #npcBox[hidden] { display: none; }
 #warpBox { width: 262px; }
+#npcBox { width: 252px; }
 #wbList { max-height: 170px; overflow-y: auto; font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+#nbList { max-height: 140px; overflow-y: auto; }
+.sbInput { padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); font: inherit; font-size: 12px; }
+.sbInput.mono { font-family: "IBM Plex Mono", monospace; font-size: 11px; }
 .sbTitle { font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; color: #7d8288; display: flex; justify-content: space-between; align-items: baseline; }
 #sbSearch { padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); font: inherit; font-size: 12px; }
 #sbList { max-height: 170px; overflow-y: auto; }

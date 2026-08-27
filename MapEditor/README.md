@@ -199,6 +199,21 @@ to `game-data\Spawns.csv` yourself, `@reload` on the server, and reload the map 
 editor (the points then show as regular orange spawn markers; clear the yellow pending
 ones with **Clear all**).
 
+## Placing NPCs
+
+The person tool places NPCs as **copies of an existing NPC** — pick a template in the
+box (search the ~370 NPCs by name or identifier), then click cells. The template
+supplies the look, type, and behavior flags — the parts the editor can't author — while
+the two text fields override the identifier and display name: **keep the template's
+identifier to reuse its dialog/shop scripts** (a second Bank clerk works out of the
+box), or type a new one for an NPC you'll script later. Yellow squares mark pending
+placements; blocked cells are allowed on purpose (the server stands NPCs where the CSV
+says, wall or not).
+
+**Export rows** writes full `NPCs.csv` rows (the file's own column order, `NpcId`
+numbered past the current max, `Enabled` set) to `saved\csvs\npcs-pending.csv` — append
+to `game-data\NPCs.csv` by hand, then `@reload`.
+
 ## Placing warps
 
 The diamond-arrow tool places warp pairs in two clicks: click the **source** cell, then

@@ -117,6 +117,49 @@ public static class Markers
         return max;
     }
 
+    /// <summary>Template picker for NPC placement: every NPCs.csv row's identity + look.</summary>
+    public static List<object> NpcTemplates(string gameData)
+    {
+        var npcs = new List<object>();
+        foreach (var r in ReadCsv(Path.Combine(gameData, "NPCs.csv")))
+            if (Int(r, "NpcId", out var id))
+                npcs.Add(new
+                {
+                    id,
+                    ident = Str(r, "NpcIdentifier"),
+                    name = Str(r, "NpcDescription"),
+                    map = Int(r, "NpcMapId", out var m) ? m : 0,
+                    look = Int(r, "NpcLook", out var lk) ? lk : 0,
+                });
+        return npcs;
+    }
+
+    /// <summary>The header row of a CSV (for emitting new rows in the file's own column order).</summary>
+    public static string[] CsvHeader(string path)
+    {
+        foreach (var line in File.ReadLines(path))
+        {
+            if (line.Length == 0) continue;
+            var cols = SplitCsv(line);
+            if (cols.Length > 0 && !cols[0].StartsWith('#')) return cols;
+        }
+        return Array.Empty<string>();
+    }
+
+    /// <summary>All NPCs.csv rows keyed by NpcId, plus the highest id (for numbering new rows).</summary>
+    public static (Dictionary<int, Dictionary<string, string>> ById, int MaxId) NpcRows(string gameData)
+    {
+        var byId = new Dictionary<int, Dictionary<string, string>>();
+        int max = 0;
+        foreach (var r in ReadCsv(Path.Combine(gameData, "NPCs.csv")))
+            if (Int(r, "NpcId", out var id))
+            {
+                byId[id] = r;
+                if (id > max) max = id;
+            }
+        return (byId, max);
+    }
+
     /// <summary>Highest SpnId currently in Spawns.csv, so exported rows number after it.</summary>
     public static int MaxSpawnId(string gameData)
     {

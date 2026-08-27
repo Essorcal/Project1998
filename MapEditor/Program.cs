@@ -101,7 +101,8 @@ app.MapGet("/api/meta", () => Results.Json(new
         file = File.Exists(ShippedPath(kv.Key)),
         draft = File.Exists(DraftPath(kv.Key))
     }).OrderBy(m => m.id),
-    mobs = Markers.Mobs(gameData)
+    mobs = Markers.Mobs(gameData),
+    npcTemplates = Markers.NpcTemplates(gameData)
 }));
 
 app.MapGet("/api/tiles/ground.png", () => Results.Bytes(assets.GroundPng, "image/png"));
@@ -240,6 +241,50 @@ app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp) =>
     return Results.Text(sb.ToString(), "text/csv");
 });
 
+// Placed-NPC export: each pending placement is a COPY of an existing NPCs.csv row (the
+// template) at a new map/cell, with the identifier/description optionally overridden —
+// look, type, and behavior flags come from the template verbatim, since those are what
+// the editor cannot author. Rows are emitted in the file's own column order, NpcId
+// numbered past the current max, Enabled forced to 1, and written to saved/csvs for a
+// deliberate hand-append.
+app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp) =>
+{
+    if (npcs is null || npcs.Count == 0) return Results.BadRequest("no NPC placements in body");
+    foreach (var p in npcs)
+    {
+        if (!index.TryGetValue(p.Map, out var dd)) return Results.BadRequest($"unknown map TK{p.Map}");
+        if (p.X < 0 || p.Y < 0 || p.X >= dd.Xs || p.Y >= dd.Ys)
+            return Results.BadRequest($"({p.X},{p.Y}) outside TK{p.Map} {dd.Xs}x{dd.Ys}");
+    }
+    var header = Markers.CsvHeader(Path.Combine(gameData, "NPCs.csv"));
+    if (header.Length == 0) return Results.BadRequest("NPCs.csv has no header");
+    var (byId, maxId) = Markers.NpcRows(gameData);
+    int next = maxId + 1;
+    var sb = new System.Text.StringBuilder(string.Join(',', header)).Append('\n');
+    foreach (var p in npcs)
+    {
+        if (!byId.TryGetValue(p.Template, out var t))
+            return Results.BadRequest($"unknown template NpcId {p.Template}");
+        var row = new Dictionary<string, string>(t, StringComparer.OrdinalIgnoreCase)
+        {
+            ["NpcId"] = (next++).ToString(),
+            ["NpcMapId"] = p.Map.ToString(),
+            ["NpcX"] = p.X.ToString(),
+            ["NpcY"] = p.Y.ToString(),
+            ["Enabled"] = "1",
+        };
+        if (!string.IsNullOrWhiteSpace(p.Identifier)) row["NpcIdentifier"] = p.Identifier.Trim();
+        if (!string.IsNullOrWhiteSpace(p.Description)) row["NpcDescription"] = p.Description.Trim();
+        sb.Append(string.Join(',', header.Select(h => CsvEsc(row.GetValueOrDefault(h, ""))))).Append('\n');
+    }
+    resp.Headers["X-Row-Count"] = npcs.Count.ToString();
+    Directory.CreateDirectory(csvsDir);
+    var outFile = Path.Combine(csvsDir, "npcs-pending.csv");
+    File.WriteAllText(outFile, sb.ToString());
+    resp.Headers["X-Saved"] = SavedRel(outFile);
+    return Results.Text(sb.ToString(), "text/csv");
+});
+
 app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>
 {
     if (!index.TryGetValue(id, out var dims)) return Results.NotFound();
@@ -367,6 +412,10 @@ static int FreePort(int preferred)
     return 0;   // let the OS pick
 }
 
+// Minimal CSV escaping for emitted rows (a template value could carry a comma or quote).
+static string CsvEsc(string v) =>
+    v.Contains(',') || v.Contains('"') ? '"' + v.Replace("\"", "\"\"") + '"' : v;
+
 // A double-clicked exe closes its console on exit before anyone can read the error.
 static void Pause()
 {
@@ -420,3 +469,7 @@ record PlacedSpawn(int X, int Y, int Mob);
 
 // One pending warp leg (JSON body of /api/warps.csv): source map/cell → destination map/cell.
 record PlacedWarp(int Sm, int Sx, int Sy, int Dm, int Dx, int Dy);
+
+// One pending NPC placement (JSON body of /api/npcs.csv): a template NpcId copied to a new
+// map/cell, identifier/description optionally overridden.
+record PlacedNpc(int Map, int X, int Y, int Template, string? Identifier, string? Description);

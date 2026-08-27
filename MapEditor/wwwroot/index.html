@@ -58,6 +58,19 @@
         </div>
         <div class="sbHint">click the map to place · click a yellow point to remove<br>rows save to the tool's saved folder — game files are never written</div>
       </div>
+      <div id="npcBox" hidden>
+        <div class="sbTitle">PLACE NPCS <span id="nbCount" class="mono accent"></span></div>
+        <input id="nbSearch" class="sbInput" placeholder="search NPCs…" autocomplete="off">
+        <div id="nbList"></div>
+        <div class="sbSel mono">template: <span id="nbSel" class="accent">none</span></div>
+        <input id="nbIdent" class="sbInput mono" placeholder="identifier (keeps the template's scripts)" autocomplete="off" title="NpcIdentifier for the new rows — keep the template's to reuse its dialog/shop wiring, or type a new one for a not-yet-scripted NPC">
+        <input id="nbDesc" class="sbInput" placeholder="display name" autocomplete="off" title="NpcDescription — the name players see">
+        <div class="sbBtns">
+          <button id="nbExport" class="btn tiny" disabled title="write NPCs.csv rows (full template copies at the placed cells) to dist/NexusTK-Map-Editor/saved/csvs — append to game-data\NPCs.csv yourself, then @reload">Export rows</button>
+          <button id="nbClear" class="btn tiny" disabled>Clear all</button>
+        </div>
+        <div class="sbHint">places a COPY of the template — look/type/flags come from it<br>click the map to place · click a yellow square to remove<br>rows save to the tool's saved folder — game files never written</div>
+      </div>
       <div id="warpBox" hidden>
         <div class="sbTitle">PLACE WARPS <span id="wbCount" class="mono accent"></span></div>
         <div id="wbStep" class="sbSel mono">click the SOURCE cell</div>

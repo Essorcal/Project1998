@@ -38,6 +38,8 @@ const S = {
   selMob: null, placed: [],      // spawn tool: chosen mob + this map's pending points (localStorage)
   warpArm: null,                 // warp tool: the clicked source waiting for its destination
   placedWarps: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedWarps')) || []; } catch { return []; } })(),
+  selNpc: null,                  // npc tool: the template NPC being copied
+  placedNpcs: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedNpcs')) || []; } catch { return []; } })(),
   layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
   markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
@@ -56,6 +58,7 @@ const TOOLS = [
   ['walk', 'test character', '<circle cx="10" cy="4.5" r="2.2"/><path d="M10 7v5"/><path d="M10 12l-3 5"/><path d="M10 12l3 5"/><path d="M6.5 9.5h7"/>'],
   ['spawn', 'place spawn points — exports Spawns.csv rows, game files never written', '<circle cx="10" cy="12.8" r="3.4"/><circle cx="5.2" cy="8.6" r="1.9"/><circle cx="10" cy="6.6" r="1.9"/><circle cx="14.8" cy="8.6" r="1.9"/>'],
   ['warp', 'place warp pairs — exports Warps.csv rows, game files never written', '<path d="M10 3.2l6.8 6.8-6.8 6.8-6.8-6.8z"/><path d="M7.2 10h5"/><path d="M10.4 8.2l1.8 1.8-1.8 1.8"/>'],
+  ['npc', 'place NPCs (copies of an existing NPC) — exports NPCs.csv rows, game files never written', '<circle cx="10" cy="6.2" r="2.6"/><path d="M4.6 16.8c.6-3.6 2.7-5.3 5.4-5.3s4.8 1.7 5.4 5.3"/>'],
 ];
 
 // --------------------------------------------------------------------------- boot
@@ -580,6 +583,67 @@ async function exportSpawns() {
   flashHint(`${S.placed.length} Spawns.csv row${S.placed.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
 }
 
+// --------------------------------------------------------------------------- npc placement
+// Each pending NPC is a COPY of an existing NPCs.csv row (the template) at a new cell —
+// look/type/flags are what the editor can't author, so they come from the template; the
+// identifier/description can be overridden (scripts key off the identifier, so keeping
+// the template's identifier reuses its dialog/shop wiring). Same contract as the other
+// placement tools: localStorage only, Export writes rows to the tool's saved folder.
+function saveNpcs() { try { localStorage.setItem('mapeditor.placedNpcs', JSON.stringify(S.placedNpcs)); } catch {} }
+
+function placeNpcAt(x, y) {
+  const i = S.placedNpcs.findIndex(p => p.map === S.mapId && p.x === x && p.y === y);
+  if (i >= 0) { S.placedNpcs.splice(i, 1); flashHint('pending NPC removed'); }
+  else if (!S.selNpc) { flashHint('pick a template NPC in the box first'); return; }
+  else {
+    // no blocked-cell refusal: the server deliberately stands NPCs where NPCs.csv says, wall or not
+    S.placedNpcs.push({
+      map: S.mapId, x, y, template: S.selNpc.id,
+      identifier: $('nbIdent').value.trim(), description: $('nbDesc').value.trim(),
+    });
+  }
+  saveNpcs(); updateNpcBox(); invalidate(); updateStatus();
+}
+
+function updateNpcBox() {
+  $('nbCount').textContent = S.placedNpcs.length ? `${S.placedNpcs.length} pending` : '';
+  $('nbSel').textContent = S.selNpc ? `${S.selNpc.name || S.selNpc.ident} (${S.selNpc.id}, look ${S.selNpc.look})` : 'none';
+  $('nbExport').disabled = !S.placedNpcs.length;
+  $('nbClear').disabled = !S.placedNpcs.length;
+}
+
+function buildNpcList() {
+  const q = ($('nbSearch').value || '').toLowerCase();
+  const list = $('nbList');
+  list.innerHTML = '';
+  let shown = 0;
+  for (const n of S.meta.npcTemplates) {
+    if (q && !(`${n.id} ${n.ident} ${n.name}`.toLowerCase().includes(q))) continue;
+    if (++shown > 60) break;
+    const d = document.createElement('div');
+    d.className = 'mobrow' + (S.selNpc && S.selNpc.id === n.id ? ' on' : '');
+    d.title = `${n.ident} — lives on TK${n.map}`;
+    d.innerHTML = `<span class="name">${n.name || n.ident || '(unnamed)'}</span><span class="mono dim">${n.id}</span>`;
+    d.onclick = () => {
+      S.selNpc = n;
+      $('nbIdent').value = n.ident;
+      $('nbDesc').value = n.name;
+      buildNpcList(); updateNpcBox(); updateStatus();
+    };
+    list.appendChild(d);
+  }
+}
+
+async function exportNpcs() {
+  if (!S.placedNpcs.length) return;
+  const r = await fetch('/api/npcs.csv', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(S.placedNpcs),
+  });
+  if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
+  flashHint(`${S.placedNpcs.length} NPCs.csv row${S.placedNpcs.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
+}
+
 // --------------------------------------------------------------------------- warp placement
 // Two clicks make a leg: source cell, then destination cell (switch maps freely between
 // them). No auto-reverse: in Warps.csv only 1 of ~4600 rows is an exact mirror — real
@@ -719,6 +783,7 @@ function drawMini() {
     if (w.sm === S.mapId) dot(w.sx, w.sy, '#eab308');
     if (w.dm === S.mapId) dot(w.dx, w.dy, '#eab308');
   }
+  for (const p of S.placedNpcs) if (p.map === S.mapId) dot(p.x, p.y, '#eab308');
   const v = viewSize();
   g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
   g.lineWidth = 1;
@@ -864,6 +929,7 @@ function drawMarkers(ctx, camX, camY, s) {
     if (w.dm === S.mapId) glyph(w.dx, w.dy, '#eab308', 'diamond', false);
   }
   if (S.warpArm && S.warpArm.m === S.mapId) glyph(S.warpArm.x, S.warpArm.y, '#eab308', 'diamond', true);
+  for (const p of S.placedNpcs) if (p.map === S.mapId) glyph(p.x, p.y, '#eab308', 'rect', true);
 }
 
 let _walkCvs = null;
@@ -935,6 +1001,7 @@ function bindCanvas() {
         break;
       case 'spawn': placeSpawnAt(c.x, c.y); break;
       case 'warp': placeWarpAt(c.x, c.y); break;
+      case 'npc': placeNpcAt(c.x, c.y); break;
     }
     invalidate();
   });
@@ -1303,7 +1370,9 @@ function setTool(id) {
   $('dpad').hidden = id !== 'walk';
   $('spawnBox').hidden = id !== 'spawn';
   $('warpBox').hidden = id !== 'warp';
+  $('npcBox').hidden = id !== 'npc';
   if (id === 'warp') updateWarpBox();
+  if (id === 'npc') updateNpcBox();
   updateStatus(); invalidate();
 }
 
@@ -1387,6 +1456,8 @@ function updateStatus(pin) {
       if (w.dm === S.mapId && w.dx === c.x && w.dy === c.y)
         marks += (marks ? ' · ' : '') + `pending arrival ← ${w.sname || 'TK' + w.sm}`;
     }
+    const pn = S.placedNpcs.find(p => p.map === S.mapId && p.x === c.x && p.y === c.y);
+    if (pn) marks += (marks ? ' · ' : '') + `pending npc: ${pn.description || pn.identifier || 'template ' + pn.template}`;
     $('stCell').textContent =
       `cell (${c.x}, ${c.y}) · g 0x${g.toString(16).toUpperCase().padStart(4, '0')} · pass ${g >> 14 & 3} · obj ${o}`
       + (marks ? '  ·  ' + marks : '');
@@ -1404,6 +1475,9 @@ function updateStatus(pin) {
     warp: S.warpArm
       ? `destination for ${S.warpArm.name || 'TK' + S.warpArm.m} (${S.warpArm.x},${S.warpArm.y}) — click a cell on any map, Esc cancels`
       : `click a source cell to start a warp pair · ${S.placedWarps.length} pending`,
+    npc: S.selNpc
+      ? `place a copy of ${S.selNpc.name || S.selNpc.ident} — click to place, click a yellow square to remove · ${S.placedNpcs.length} pending`
+      : 'pick a template NPC in the box, then click cells to place copies',
   };
   $('stHint').textContent = flashText || hints[S.tool] || '';
   $('stEdits').textContent = S.modified ? `${S.undoStack.length - S.savedMark} unsaved stroke${S.undoStack.length - S.savedMark === 1 ? '' : 's'}` : 'saved';
@@ -1456,6 +1530,14 @@ function bindUI() {
     savePlaced(); updateSpawnBox(); invalidate(); updateStatus();
   };
   buildMobList();
+  $('nbSearch').addEventListener('input', buildNpcList);
+  $('nbExport').onclick = exportNpcs;
+  $('nbClear').onclick = () => {
+    if (!S.placedNpcs.length || !confirm(`Remove all ${S.placedNpcs.length} pending NPC${S.placedNpcs.length === 1 ? '' : 's'}?`)) return;
+    S.placedNpcs = [];
+    saveNpcs(); updateNpcBox(); invalidate(); updateStatus();
+  };
+  buildNpcList();
   $('wbExport').onclick = exportWarps;
   $('wbClear').onclick = () => {
     if (!S.placedWarps.length || !confirm(`Remove all ${S.placedWarps.length} pending warp pair${S.placedWarps.length === 1 ? '' : 's'}?`)) return;
