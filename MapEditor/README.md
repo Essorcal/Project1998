@@ -3,6 +3,11 @@
 A visual editor for Project1998's world maps. It renders the game's maps with the real
 5.33 client tile art — verified pixel-identical to the running game — and edits the 4.x
 `.map` files the server actually serves, with import/export for both client formats.
+Beyond tile painting it knows the *content* on the map (warps, spawns, NPCs,
+`MapCells.csv` overrides show as marker layers), can render exactly what players see
+(Player view), places new spawns/warps/NPCs and whole new maps, and turns edits into
+reviewable CSV rows — while **never writing a game file itself**: everything it
+produces lands in its own `saved\` folder for you to publish deliberately.
 
 ![The editor showing Kugnae](docs/img/ui-main.png)
 
@@ -35,8 +40,8 @@ The editor also needs the 5.33 client's `Tile.dat` for the artwork. It looks, in
 | next to the `.exe` | drop a copy of `Tile.dat` beside the program |
 | `%LOCALAPPDATA%\Project1998\game\533\` | the standard Project1998 client install |
 
-If either the maps or `Tile.dat` can't be found, the console says exactly what's missing
-and where it looked.
+If either the maps or `Tile.dat` can't be found, a message box says exactly what's
+missing and where it looked (the log has the same).
 
 ### From source
 
@@ -53,14 +58,20 @@ dotnet publish MapEditor/MapEditor.csproj -c Release -r win-x64 --self-contained
 ## A quick tour
 
 - **Top bar** — the `.map` / `.cmp` format switch (hover for which client each belongs
-  to), zoom controls, Undo, Import, Export, and Save.
+  to), zoom controls, Undo, Import, Export, **Corrections** (export `MapCells.csv`
+  rows), **Discard draft** (when the loaded map has one), and Save.
 - **Left rail** — the tools (hover any icon for what it does): select, marquee, stamp,
-  brush, flood fill, rectangle, eyedropper, eraser, passability toggle, and the test
-  character.
-- **Right panel** — the tile palette, layer toggles, and the map list. **Drag the
+  brush, flood fill, rectangle, eyedropper, eraser, passability toggle, then the test
+  character and the three placement tools — spawns (paw), warp pairs (diamond-arrow),
+  and NPCs (person).
+- **Right panel** — the tile palette, the layer toggles (including **Player view**),
+  the **Checks** lint, and the map list with **+ new** for creating maps. **Drag the
   panel's left edge** to make it wider; the palette grows more columns.
-- **Bottom bar** — current map, the cell under your cursor (its ground word, pass flag
-  and object id), tool hints, unsaved-change count, and zoom.
+- **Canvas overlays** — the clickable minimap floats bottom-right (✕ hides it), and
+  the active placement tool's box sits bottom-left.
+- **Bottom bar** — current map (and its `· draft` state), the cell under your cursor
+  (ground word, pass flag, object id, plus any markers on it), tool hints,
+  unsaved-change count, and zoom.
 
 ## Finding tiles
 
@@ -122,8 +133,10 @@ every blocking cell red.
 This is a development tool, so **nothing the editor generates goes into `game-data`**.
 Everything it produces lives with the tool under `dist\NexusTK-Map-Editor\saved\`:
 
-- `saved\maps\TK<id>.map` — draft saves (**Save / Ctrl+S**)
-- `saved\csvs\` — exported Corrections and Spawns rows
+- `saved\maps\TK<id>.map` — draft saves (**Save / Ctrl+S**), including new maps
+- `saved\csvs\` — exported rows: Corrections (`mapcells-TK<id>.csv`), spawns
+  (`spawns-TK<id>.csv`), warps (`warps-pending.csv`), NPCs (`npcs-pending.csv`)
+- `saved\new-maps.csv` — index rows for maps created in the editor
 
 Save **never overwrites the shipped map** in `game-data\maps`. Loading a map prefers its
 draft, so your work is there next session; the status bar shows `· draft`, and the map
@@ -140,16 +153,18 @@ Getting an edit into the actual game is deliberate and manual — either:
 
 ## The test character
 
-The last tool in the rail drops a walkable test character. Move with the **arrow keys**
-or the on-screen pad; blocked cells refuse the step, and walking behind trees, roofs and
-walls shows the same translucent ghost the real client draws. Remove the character by
-clicking it, pressing `Esc`, or the ✕ on the pad.
+The walk tool drops a test character. Move with the **arrow keys** or the on-screen
+pad; blocked cells refuse the step, and walking behind trees, roofs and walls shows the
+same translucent ghost the real client draws. It always walks the **base** pass flags —
+the ones the server actually enforces — so it strolls through the default-open city
+gates and onto override-fixed cells even when the raw file draws them blocked. Remove
+the character by clicking it, pressing `Esc`, or the ✕ on the pad.
 
 ![Test character ghosting behind the Buya north gate](docs/img/ui-walkmode.png)
 
 ## World markers
 
-Three read-only overlay layers (Layers panel) show the cells that server content points
+Read-only overlay layers (Layers panel) show the cells that server content points
 at, so you don't paint over them blind. They read the live `game-data` CSVs on every map
 load — edit a CSV and reload to see the change.
 
@@ -174,19 +189,29 @@ load — edit a CSV and reload to see the change.
   and check here before "fixing" a cell that may already be fixed: a new Corrections row
   for the same cell would shadow the existing hand-authored one.
 
-![Warp diamonds and spawn dots over Kugnae, minimap in the panel](docs/img/ui-markers.png)
+![Warp diamonds, spawn dots and override squares over Arctic Village](docs/img/ui-markers.png)
+
+![Player view opens Kugnae's south gate — the shipped file draws it closed](docs/img/ui-playerview.png)
 
 Hovering any marked cell names it in the bottom bar — the warp's destination, the mob,
 the NPC. Below 100% zoom the glyphs become solid cell tints so they stay visible in a
 whole-map overview.
 
+**Warps are usable, not just visible**: with the select tool, clicking a warp diamond
+follows it — a source jumps you to its landing on the destination map, an arrival jumps
+you back to its source. And the test character warps for real: step it onto a warp
+source and it lands on the other map, exactly like a player would — including your
+*pending* placed warps, so you can walk into a brand-new map through its unpublished
+door before a single row is appended.
+
 ## Checks
 
 The **run** button in the Checks section scans the loaded map for suspicious cells:
 warp **arrivals** and **spawn points** sitting on blocked ground, and walkable edges
-into void. Click a finding to jump to the cell. Blocked warp *sources* are deliberately
-not flagged — a doorway warp on a blocked cell is the game's normal idiom (the warp
-fires before collision is checked).
+into void. Click a finding to jump to the cell. It judges the **base** (a cell a
+`MapCells.csv` override already unblocks is not a finding), and blocked warp *sources*
+are deliberately not flagged — a doorway warp on a blocked cell is the game's normal
+idiom (the warp fires before collision is checked).
 
 ## Exporting corrections
 
@@ -203,8 +228,9 @@ too.
 
 The paw tool in the rail places monster spawn points. Pick a mob in the **spawn box**
 (bottom-left; search by name or id), then click cells — yellow dots mark pending points
-(click one to remove it; blocked cells are refused). Placements are per-map, live only
-in your browser, and survive reloads.
+(click one to remove it; blocked cells are refused). Placements are per-map, stored
+only in the editor's own local storage, and survive restarts — the same is true of
+pending warp pairs and NPCs.
 
 **Export rows** writes `Spawns.csv` rows for the pending points to
 `saved\csvs\spawns-TK<id>.csv`, `SpnId` numbered after the file's current maximum. Same
@@ -290,8 +316,8 @@ The address bar carries state you can link to:
 http://127.0.0.1:5959/?map=330&at=72,15&zoom=200
 ```
 
-`map` (id), `at` (x,y to center on), `zoom` (percent), and `walk` (x,y to drop the test
-character) all work.
+`map` (id), `at` (x,y to center on), `zoom` (percent), `walk` (x,y to drop the test
+character), and `view=player` (start in Player view) all work.
 
 ## Troubleshooting
 
