@@ -780,10 +780,10 @@ function drawMini() {
   }
   for (const p of S.placed) dot(p.x, p.y, '#eab308');
   for (const w of S.placedWarps) {
-    if (w.sm === S.mapId) dot(w.sx, w.sy, '#eab308');
-    if (w.dm === S.mapId) dot(w.dx, w.dy, '#eab308');
+    if (w.sm === S.mapId) dot(w.sx, w.sy, '#67e8f9');
+    if (w.dm === S.mapId) dot(w.dx, w.dy, '#67e8f9');
   }
-  for (const p of S.placedNpcs) if (p.map === S.mapId) dot(p.x, p.y, '#eab308');
+  for (const p of S.placedNpcs) if (p.map === S.mapId) dot(p.x, p.y, '#00e676');
   const v = viewSize();
   g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
   g.lineWidth = 1;
@@ -923,13 +923,15 @@ function drawMarkers(ctx, camX, camY, s) {
     }
   }
   // Pending placements — always on top; they're the working set, not a toggleable layer.
+  // Each keeps its marker family's hue, brightened: yellow spawns, light-cyan warps,
+  // bright-green NPCs — so the types read apart at a glance.
   for (const p of S.placed) glyph(p.x, p.y, '#eab308', 'circle', true);
   for (const w of S.placedWarps) {
-    if (w.sm === S.mapId) glyph(w.sx, w.sy, '#eab308', 'diamond', true);
-    if (w.dm === S.mapId) glyph(w.dx, w.dy, '#eab308', 'diamond', false);
+    if (w.sm === S.mapId) glyph(w.sx, w.sy, '#67e8f9', 'diamond', true);
+    if (w.dm === S.mapId) glyph(w.dx, w.dy, '#67e8f9', 'diamond', false);
   }
-  if (S.warpArm && S.warpArm.m === S.mapId) glyph(S.warpArm.x, S.warpArm.y, '#eab308', 'diamond', true);
-  for (const p of S.placedNpcs) if (p.map === S.mapId) glyph(p.x, p.y, '#eab308', 'rect', true);
+  if (S.warpArm && S.warpArm.m === S.mapId) glyph(S.warpArm.x, S.warpArm.y, '#67e8f9', 'diamond', true);
+  for (const p of S.placedNpcs) if (p.map === S.mapId) glyph(p.x, p.y, '#00e676', 'rect', true);
 }
 
 let _walkCvs = null;
@@ -1476,7 +1478,7 @@ function updateStatus(pin) {
       ? `destination for ${S.warpArm.name || 'TK' + S.warpArm.m} (${S.warpArm.x},${S.warpArm.y}) — click a cell on any map, Esc cancels`
       : `click a source cell to start a warp pair · ${S.placedWarps.length} pending`,
     npc: S.selNpc
-      ? `place a copy of ${S.selNpc.name || S.selNpc.ident} — click to place, click a yellow square to remove · ${S.placedNpcs.length} pending`
+      ? `place a copy of ${S.selNpc.name || S.selNpc.ident} — click to place, click a green square to remove · ${S.placedNpcs.length} pending`
       : 'pick a template NPC in the box, then click cells to place copies',
   };
   $('stHint').textContent = flashText || hints[S.tool] || '';

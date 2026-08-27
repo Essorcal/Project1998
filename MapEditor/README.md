@@ -206,9 +206,9 @@ box (search the ~370 NPCs by name or identifier), then click cells. The template
 supplies the look, type, and behavior flags — the parts the editor can't author — while
 the two text fields override the identifier and display name: **keep the template's
 identifier to reuse its dialog/shop scripts** (a second Bank clerk works out of the
-box), or type a new one for an NPC you'll script later. Yellow squares mark pending
-placements; blocked cells are allowed on purpose (the server stands NPCs where the CSV
-says, wall or not).
+box), or type a new one for an NPC you'll script later. Bright green squares mark
+pending placements; blocked cells are allowed on purpose (the server stands NPCs where
+the CSV says, wall or not).
 
 **Export rows** writes full `NPCs.csv` rows (the file's own column order, `NpcId`
 numbered past the current max, `Enabled` set) to `saved\csvs\npcs-pending.csv` — append
@@ -218,7 +218,7 @@ to `game-data\NPCs.csv` by hand, then `@reload`.
 
 The diamond-arrow tool places warp pairs in two clicks: click the **source** cell, then
 the **destination** cell — you can switch maps between the two clicks, and `Esc` cancels
-an armed source. Pending legs show as yellow diamonds (filled = source, hollow =
+an armed source. Pending legs show as bright cyan diamonds (filled = source, hollow =
 arrival); click one to remove its pair. The warp box lists every pending pair — clicking
 a row jumps to its landing cell, the natural spot to start the **return leg**. Place the
 return yourself: it is a separate doorway (in the real `Warps.csv` almost no pair is an
