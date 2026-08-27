@@ -430,6 +430,32 @@ function copySelection() {
   flashHint(`copied ${w}×${h} — stamp tool pastes it`);
 }
 
+// Jump to a warp's other end: load the map if needed, center the camera on the cell.
+// Used by select-clicking a warp marker and by the test character stepping on a source.
+async function followWarp(m, x, y, label, placeWalker) {
+  if (S.mapId !== m) {
+    await loadMap(m);
+    if (S.mapId !== m) return;       // load refused (unsaved-changes prompt)
+  }
+  const v = viewSize();
+  S.cam.x = x * CELL - v.w / 2; S.cam.y = y * CELL - v.h / 2;
+  clampCam();
+  if (placeWalker) S.walker = { x, y };
+  invalidate(); updateStatus();
+  flashHint(label);
+}
+
+// The warp OUT on a cell of the current map — real Warps.csv first, then pending placed
+// pairs, so an unpublished door already works for the tools that follow warps.
+function warpOutAt(x, y) {
+  if (S.markers) {
+    const w = S.markers.warpsOut.find(w => w.x === x && w.y === y);
+    if (w) return { m: w.m, x: w.dx, y: w.dy, name: w.name || 'TK' + w.m };
+  }
+  const p = S.placedWarps.find(w => w.sm === S.mapId && w.sx === x && w.sy === y);
+  return p ? { m: p.dm, x: p.dx, y: p.dy, name: (p.dname || 'TK' + p.dm) + ' (pending)' } : null;
+}
+
 function moveWalker(dx, dy) {
   const w = S.walker;
   if (w.x < 0) return;
@@ -437,6 +463,12 @@ function moveWalker(dx, dy) {
   // the walker always tests the BASE — the pass flags the server actually enforces
   if (nx < 0 || ny < 0 || nx >= S.xs || ny >= S.ys || blockedWord(baseCell(idx(nx, ny))[0])) {
     S.bump = dx < 0 ? '←' : dx > 0 ? '→' : dy < 0 ? '↑' : '↓';
+  } else if (warpOutAt(nx, ny)) {
+    // warp precedence beats collision in the real server, and it beats standing here too
+    const d = warpOutAt(nx, ny);
+    S.bump = '';
+    followWarp(d.m, d.x, d.y, `warped to ${d.name} (${d.x},${d.y})`, true);
+    return;
   } else {
     w.x = nx; w.y = ny; S.bump = '';
     const cvs = $('view');
@@ -1082,7 +1114,17 @@ function bindCanvas() {
       case 'marquee': S.selection = null; S.drag = { kind: 'marquee', start: c, cur: c }; break;
       case 'stamp': pasteAt(c.x, c.y); break;
       case 'picker': pick(c.x, c.y); break;
-      case 'select': updateStatus(c); break;
+      case 'select': {
+        updateStatus(c);
+        // clicking a warp marker USES it: source → the landing, arrival → back to its source
+        const d = warpOutAt(c.x, c.y);
+        if (d) { followWarp(d.m, d.x, d.y, `followed warp → ${d.name} (${d.x},${d.y})`); break; }
+        const back = (S.markers && S.markers.warpsIn.find(w => w.x === c.x && w.y === c.y))
+          || (p => p && { m: p.sm, sx: p.sx, sy: p.sy, name: (p.sname || 'TK' + p.sm) + ' (pending)' })(
+            S.placedWarps.find(w => w.dm === S.mapId && w.dx === c.x && w.dy === c.y));
+        if (back) followWarp(back.m, back.sx, back.sy, `followed arrival back to ${back.name || 'TK' + back.m} (${back.sx},${back.sy})`);
+        break;
+      }
       case 'walk':
         if (S.walker.x === c.x && S.walker.y === c.y) { S.walker = { x: -1, y: -1 }; S.bump = ''; }
         else if (blockedWord(baseCell(idx(c.x, c.y))[0])) flashHint('that cell is blocked — pick a passable one');
@@ -1552,6 +1594,7 @@ function updateStatus(pin) {
       + (marks ? '  ·  ' + marks : '');
   } else $('stCell').textContent = '';
   const hints = {
+    select: 'click a cell to inspect · clicking a warp diamond follows it to the other end',
     marquee: 'drag to select — copies on release',
     stamp: S.clipboard ? `stamp ${S.clipboard.w}×${S.clipboard.h} — click to paste` : 'copy a region with the marquee first',
     walk: S.walker.x < 0 ? 'click a passable cell to drop the test character'

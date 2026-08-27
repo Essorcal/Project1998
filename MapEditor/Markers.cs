@@ -30,7 +30,7 @@ public static class Markers
                 || !Int(r, "DestinationMapId", out var dm) || !Int(r, "DestinationX", out var dx) || !Int(r, "DestinationY", out var dy))
                 continue;
             if (sm == id) warpsOut.Add(new { x = sx, y = sy, m = dm, dx, dy, name = mapName(dm) });
-            if (dm == id) warpsIn.Add(new { x = dx, y = dy, m = sm, name = mapName(sm) });
+            if (dm == id) warpsIn.Add(new { x = dx, y = dy, m = sm, sx, sy, name = mapName(sm) });
         }
 
         // A trigger row is a thin band: the fixed axis in [FixedLo,FixedHi], the other axis
