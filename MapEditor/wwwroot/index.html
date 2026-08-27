@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NexusTK Map Editor</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23d9962e'/%3E%3Cpath d='M3 3h10v10H3z M3 6.3h10 M3 9.6h10 M6.3 3v10 M9.6 3v10' stroke='%2317181a' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="var(--accent)" stroke-width="1.5"><rect x="3" y="3" width="14" height="14" rx="1.5"/><path d="M3 8.7h14M3 14.3h14M8.7 3v14M14.3 3v14"/></svg>
+      <span>NexusTK Map Editor</span>
+    </div>
+    <div class="spacer"></div>
+    <div id="modeSwitch" class="seg">
+      <button id="mode4x" class="segbtn" title="4.x client format (headerless, 4 bytes/cell)">.map</button>
+      <button id="mode533" class="segbtn" title="5.33 client format (CMAP + zlib, 6 bytes/cell)">.cmp</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" id="zoomCtl" title="zoom (also Ctrl+wheel, +/- keys)">
+      <button id="zoomOut" class="segbtn">&minus;</button>
+      <input id="zoomLbl" class="segbtn on" value="100%" title="type a zoom % and press Enter (max 500%)">
+      <button id="zoomIn" class="segbtn">+</button>
+    </div>
+    <div class="actions">
+      <button id="btnUndo" class="btn" title="Ctrl+Z">Undo</button>
+      <button id="btnImport" class="btn">Import</button>
+      <button id="btnExport" class="btn">Export .cmp</button>
+      <button id="btnSave" class="btn primary" disabled>Save</button>
+      <input type="file" id="fileImport" accept=".map,.cmp" hidden>
+    </div>
+  </header>
+
+  <div id="mid">
+    <nav id="rail"></nav>
+    <main id="canvasWrap">
+      <canvas id="view"></canvas>
+      <div id="dpad" hidden>
+        <div class="dgrid">
+          <span></span><button data-d="0,-1">▲</button><button id="dpadRemove" title="remove the test character (or click him, or Esc)">✕</button>
+          <button data-d="-1,0">◀</button><button data-d="0,1">▼</button><button data-d="1,0">▶</button>
+        </div>
+        <div class="dhint">arrow keys work too</div>
+      </div>
+      <div id="loading">decoding tileset…</div>
+    </main>
+    <aside id="panel">
+      <div id="panelDrag" title="drag to resize"></div>
+      <section>
+        <div class="ptitle">TILE PALETTE <span id="palSource" class="mono accent"></span></div>
+        <div class="seg small">
+          <button id="tabGround" class="segbtn" title="Ground layer — each cell's floor tile (the g16 word)">Ground</button>
+          <button id="tabObj" class="segbtn" title="Object layer — sprites standing on cells: trees, walls, furniture (SObj id)">Objects</button>
+          <button id="tabPass" class="segbtn" title="Passability — paint cells walkable or blocked (the ground word's top bits)">Pass</button>
+        </div>
+        <div id="palModes" class="seg small">
+          <button id="pmAll" class="segbtn" title="every tile in the tileset">All</button>
+          <button id="pmUsed" class="segbtn" title="tiles placed on the current map">On map</button>
+          <button id="pmFav" class="segbtn" title="favorites — right-click any swatch to star it">&#9733;</button>
+        </div>
+        <div id="palSheets" class="seg small">
+          <button id="sheet1" class="segbtn" title="first ground sheet — cells with these tiles are WALKABLE (word below 0xC000)">Sheet 1 · walkable</button>
+          <button id="sheet2" class="segbtn" title="second ground sheet — these tiles also BLOCK movement; the sheet bit doubles as the pass flag (word 0xC000+)">Sheet 2 · blocking</button>
+        </div>
+        <canvas id="palCanvas" width="248" height="248"></canvas>
+        <div id="palPager">
+          <button id="palPrev" class="btn tiny">‹</button>
+          <span id="palPage" class="mono"></span>
+          <input id="palSearch" class="mono" placeholder="id&hellip;" title="jump to tile id (decimal or 0x hex), Enter">
+          <button id="palNext" class="btn tiny">›</button>
+          <span id="palSel" class="mono accent"></span>
+        </div>
+      </section>
+      <section>
+        <div class="ptitle">LAYERS</div>
+        <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
+        <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
+        <label class="lrow"><input type="checkbox" id="lyPass"> Passability overlay <span class="mono dim">2-bit</span></label>
+        <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
+      </section>
+      <section id="mapsSection">
+        <div class="ptitle">MAPS</div>
+        <input id="mapFilter" type="search" placeholder="filter…">
+        <div id="mapList"></div>
+      </section>
+    </aside>
+  </div>
+
+  <footer id="status">
+    <span id="stMap" class="bright mono"></span>
+    <span id="stCell" class="mono"></span>
+    <span id="stHint" class="mono accent"></span>
+    <span class="spacer"></span>
+    <span id="stEdits" class="mono dim"></span>
+    <span id="stFmt" class="mono accent"></span>
+    <span id="stZoom" class="mono">zoom 100%</span>
+    <span id="stCredit" class="mono dim">created by Essorcal</span>
+  </footer>
+</div>
+<canvas id="palHover" hidden></canvas>
+<script src="app.js"></script>
+</body>
+</html>

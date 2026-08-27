@@ -1,0 +1,85 @@
+:root {
+  --bg: #141517; --panel: #1b1d20; --panel2: #212327; --panel3: #26292d;
+  --border: #2a2d31; --border2: #33373c;
+  --text: #c9ccd1; --bright: #e8eaec; --muted: #8b9096; --dim: #5c6066;
+  --accent: #d9962e;            /* 4.x amber; JS flips to jade for 5.33 */
+  --danger: #be3c2d;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+.mono { font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+.accent { color: var(--accent); }
+.dim { color: var(--dim); }
+.bright { color: var(--bright); }
+.spacer { flex: 1; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+#topbar { height: 48px; flex: 0 0 auto; display: flex; align-items: center; gap: 16px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: .2px; }
+.actions { display: flex; gap: 8px; }
+
+.btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 6px; background: var(--panel3); border: 1px solid var(--border2); color: var(--text); font-size: 12px; font-weight: 500; }
+.btn:hover { background: var(--border2); }
+.btn:disabled { color: var(--dim); cursor: default; }
+.btn.primary { background: var(--accent); border-color: transparent; color: #17181a; font-weight: 600; }
+.btn.primary:disabled { background: var(--panel3); color: var(--dim); }
+.btn.tiny { padding: 3px 9px; }
+
+.seg { display: flex; align-items: center; background: var(--panel3); border: 1px solid var(--border2); border-radius: 6px; padding: 3px; gap: 3px; }
+.seg.small { padding: 2px; gap: 2px; margin-top: 8px; }
+.segbtn { padding: 6px 12px; border-radius: 4px; font-weight: 600; font-size: 12px; font-family: "IBM Plex Mono", monospace; color: var(--muted); }
+.seg.small .segbtn { padding: 5px 0; flex: 1; font-family: inherit; font-size: 11.5px; font-weight: 500; }
+.segbtn.on { background: var(--accent); color: #17181a; }
+.seg.small .segbtn.on { background: var(--border2); color: var(--bright); }
+
+#mid { flex: 1; display: flex; min-height: 0; }
+
+#rail { width: 52px; flex: 0 0 auto; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; }
+.tool { width: 38px; height: 38px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.tool:hover { color: var(--text); }
+.tool.on { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 33%, transparent); }
+.tool.dimmed { opacity: .55; }
+.tsep { width: 26px; height: 1px; background: var(--border); margin: 4px 0; }
+
+#canvasWrap { flex: 1; min-width: 0; position: relative; background: #0e0f10; }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+#loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 12px; background: #0e0f10; }
+#loading[hidden] { display: none; }   /* the ID rule's display:flex would otherwise defeat the hidden attribute */
+
+#dpad { position: absolute; left: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+#dpad[hidden] { display: none; }
+.dgrid { display: grid; grid-template-columns: repeat(3, 36px); grid-auto-rows: 36px; gap: 4px; }
+.dgrid button { border-radius: 6px; background: var(--panel3); border: 1px solid var(--border2); color: var(--text); box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+.dhint { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--muted); }
+
+#panel { width: var(--panelw, 284px); position: relative; flex: 0 0 auto; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#panel section { padding: 12px 14px 0 14px; }
+#panel section:last-child { padding-bottom: 12px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ptitle { font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; color: #7d8288; display: flex; justify-content: space-between; align-items: baseline; }
+
+#palCanvas { display: block; margin-top: 8px; border: 1px solid var(--border); border-radius: 4px; background: #101112; cursor: pointer; }
+#palPager { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+#palSearch { width: 64px; padding: 3px 7px; border-radius: 4px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); }
+#zoomCtl .segbtn { padding: 6px 10px; }
+#zoomCtl #zoomLbl { background: var(--panel2); color: var(--bright); width: 58px; text-align: center; border: none; }
+#stCredit { position: absolute; left: 50%; transform: translateX(-50%); }
+
+.lrow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; background: var(--panel2); margin-top: 2px; cursor: pointer; }
+.lrow .mono { margin-left: auto; }
+.lrow input { accent-color: var(--accent); }
+
+#mapFilter { width: 100%; margin-top: 8px; padding: 6px 9px; border-radius: 5px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); font: inherit; font-size: 12px; }
+#mapList { margin-top: 6px; overflow-y: auto; flex: 1; min-height: 0; }
+.mrow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; font-size: 12px; color: #9ba0a6; cursor: pointer; }
+.mrow:hover { background: var(--panel2); }
+.mrow.on { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--bright); box-shadow: inset 2px 0 0 var(--accent); }
+.mrow .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#status { height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 18px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); position: relative; }
+
+#panelDrag { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 10; }
+#panelDrag:hover { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+#palHover { position: fixed; z-index: 60; pointer-events: none; background: #101112; border: 1px solid var(--border2); border-radius: 6px; image-rendering: pixelated; box-shadow: 0 8px 24px rgba(0,0,0,.55); }
