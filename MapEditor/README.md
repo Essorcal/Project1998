@@ -88,6 +88,10 @@ at 100% and above every step is pixel-crisp.
 Pan with **space + drag**, middle-mouse drag, the mouse wheel (`Shift` for horizontal),
 or the arrow keys.
 
+The **minimap** (right panel) shows the whole map with the current view marked — click
+or drag on it to jump. It also carries the marker layers' dots, so a city's warps and
+spawns are visible at a glance.
+
 ## Editing
 
 | Tool | What it does |
@@ -114,6 +118,45 @@ walls shows the same translucent ghost the real client draws. Remove the charact
 clicking it, pressing `Esc`, or the ✕ on the pad.
 
 ![Test character ghosting behind the Buya north gate](docs/img/ui-walkmode.png)
+
+## World markers
+
+Three read-only overlay layers (Layers panel) show the cells that server content points
+at, so you don't paint over them blind. They read the live `game-data` CSVs on every map
+load — edit a CSV and reload to see the change.
+
+- **Warps** — cyan diamonds from `Warps.csv`: **filled** = a warp *out* lives on this
+  cell, **hollow** = some other map's warp *lands* here. Violet diamonds are the
+  world-map screen's cells (`WorldMapTriggers.csv` trigger bands and
+  `WorldMapDests.csv` arrival points).
+- **Spawns** — orange dots for fixed spawn points (`Spawns.csv`), dashed orange boxes
+  for area-spawn regions (`AreaSpawns.csv`), labeled with the mob and count. Rows that
+  spawn "anywhere walkable" have no box; hover the layer row for the list.
+- **NPCs** — green squares (`NPCs.csv`).
+
+![Warp diamonds and spawn dots over Kugnae, minimap in the panel](docs/img/ui-markers.png)
+
+Hovering any marked cell names it in the bottom bar — the warp's destination, the mob,
+the NPC. Below 100% zoom the glyphs become solid cell tints so they stay visible in a
+whole-map overview.
+
+## Checks
+
+The **run** button in the Checks section scans the loaded map for suspicious cells:
+warp **arrivals** and **spawn points** sitting on blocked ground, and walkable edges
+into void. Click a finding to jump to the cell. Blocked warp *sources* are deliberately
+not flagged — a doorway warp on a blocked cell is the game's normal idiom (the warp
+fires before collision is checked).
+
+## Exporting corrections
+
+The server applies `game-data/MapCells.csv` rows as authored overrides on top of the
+shipped `.map` files — "the shipped map is wrong here". The **Corrections** button turns
+your edits into exactly those rows: it diffs the editor's buffer against the shipped
+baseline (the `.orig` backup once a save has created one, otherwise the file on disk)
+and downloads one CSV row per changed cell, with unchanged columns left blank so they
+inherit from the `.map`. A three-cell fix becomes three reviewable lines in git instead
+of a rewritten binary map. Works with unsaved changes too.
 
 ## Import & export
 
@@ -144,7 +187,9 @@ character) all work.
 - **The browser didn't open** — the console prints the address (usually
   `http://127.0.0.1:5959`); open it by hand.
 - **A different port** — if 5959 is taken the editor picks the next free port and says
-  so in the console; the auto-opened browser tab always goes to the right one.
+  so in the console; the auto-opened browser tab always goes to the right one. To pin a
+  port (e.g. running one editor per checkout), pass `--port 5970`; `--no-browser` skips
+  the auto-opened tab.
 - **"Could not find the game data"** — the exe isn't inside a Project1998 checkout; move
   it there or set `P1998_REPO`.
 - **"Tile.dat … not found"** — install the 5.33 client, or copy its `Tile.dat` next to

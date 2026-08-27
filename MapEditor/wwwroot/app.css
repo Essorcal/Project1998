@@ -56,6 +56,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .dhint { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--muted); }
 
 #panel { width: var(--panelw, 284px); position: relative; flex: 0 0 auto; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#panelScroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
 #panel section { padding: 12px 14px 0 14px; }
 #panel section:last-child { padding-bottom: 12px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ptitle { font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; color: #7d8288; display: flex; justify-content: space-between; align-items: baseline; }
@@ -71,8 +72,15 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .lrow .mono { margin-left: auto; }
 .lrow input { accent-color: var(--accent); }
 
+#miniCanvas { display: block; margin-top: 8px; width: 100%; border: 1px solid var(--border); border-radius: 4px; background: #0e0f10; cursor: crosshair; image-rendering: pixelated; }
+#lintList { margin-top: 6px; max-height: 140px; overflow-y: auto; }
+.lintrow { display: flex; gap: 8px; padding: 4px 8px; border-radius: 4px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #9ba0a6; cursor: pointer; }
+.lintrow:hover { background: var(--panel2); }
+.lintrow .where { color: var(--accent); flex: 0 0 auto; }
+.lintrow.more { color: var(--dim); cursor: default; }
+
 #mapFilter { width: 100%; margin-top: 8px; padding: 6px 9px; border-radius: 5px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); font: inherit; font-size: 12px; }
-#mapList { margin-top: 6px; overflow-y: auto; flex: 1; min-height: 0; }
+#mapList { margin-top: 6px; overflow-y: auto; flex: 1; min-height: 120px; max-height: 44vh; }
 .mrow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; font-size: 12px; color: #9ba0a6; cursor: pointer; }
 .mrow:hover { background: var(--panel2); }
 .mrow.on { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--bright); box-shadow: inset 2px 0 0 var(--accent); }

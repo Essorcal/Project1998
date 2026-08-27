@@ -36,7 +36,12 @@ Console.WriteLine($"  {assets.GroundCount} ground frames, {assets.TilecCount} ob
 string mapsDir = Path.Combine(repo, "game-data", "maps");
 var index = LoadIndex(Path.Combine(repo, "game-data", "map_index.csv"));
 
-int port = FreePort(5959);
+// --port <n> picks the preferred port (a second copy — e.g. one per checkout — stays
+// addressable instead of silently sliding to the next free port).
+int preferred = 5959;
+var portArg = Array.IndexOf(args, "--port");
+if (portArg >= 0 && portArg + 1 < args.Length && int.TryParse(args[portArg + 1], out var pv)) preferred = pv;
+int port = FreePort(preferred);
 string url = $"http://127.0.0.1:{port}";
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls(url);
@@ -90,6 +95,50 @@ app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
     if (File.Exists(path) && !File.Exists(orig)) File.Copy(path, orig);
     File.WriteAllBytes(path, data);
     return Results.Ok(new { saved = data.Length, backup = File.Exists(orig) });
+});
+
+// Read-only overlay data: warps / world-map cells / spawns / NPCs pointing at this map,
+// so the mapper sees which cells server content depends on before painting over them.
+app.MapGet("/api/map/{id:int}/markers", (int id) =>
+    Results.Json(Markers.For(id, Path.Combine(repo, "game-data"),
+        m => index.TryGetValue(m, out var mi) ? mi.Name : "")));
+
+// Sparse-patch export: POST the editor's live cell buffer, get back MapCells.csv rows
+// (Server/Content.cs LoadMapCells: blank column = inherit from the .map) for exactly the
+// cells that differ from the SHIPPED baseline — the .orig backup once a save has created
+// one, else the file on disk. Small fixes become reviewable CSV rows in git instead of a
+// rewritten binary map.
+app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, HttpResponse resp) =>
+{
+    if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
+    string path = Path.Combine(mapsDir, $"TK{id}.map");
+    string baseline = File.Exists(path + ".orig") ? path + ".orig" : path;
+    if (!File.Exists(baseline)) return Results.BadRequest("no baseline file on disk");
+    var old = File.ReadAllBytes(baseline);
+    using var ms = new MemoryStream();
+    await req.Body.CopyToAsync(ms);
+    var cur = ms.ToArray();
+    int cells = dims.Xs * dims.Ys;
+    if (cur.Length != cells * 4) return Results.BadRequest($"buffer {cur.Length} != {dims.Xs}x{dims.Ys}x4");
+    if (old.Length != cells * 4) return Results.BadRequest($"baseline {old.Length} != {dims.Xs}x{dims.Ys}x4");
+    var sb = new System.Text.StringBuilder("Map,X,Y,Tile,Pass,Obj,Sources\n");
+    int n = 0;
+    for (int i = 0; i < cells; i++)
+    {
+        ushort og = BinaryPrimitives.ReadUInt16LittleEndian(old.AsSpan(i * 4));
+        ushort oo = BinaryPrimitives.ReadUInt16LittleEndian(old.AsSpan(i * 4 + 2));
+        ushort cg = BinaryPrimitives.ReadUInt16LittleEndian(cur.AsSpan(i * 4));
+        ushort co = BinaryPrimitives.ReadUInt16LittleEndian(cur.AsSpan(i * 4 + 2));
+        if (og == cg && oo == co) continue;
+        string tile = (og & 0x3FFF) != (cg & 0x3FFF) ? (cg & 0x3FFF).ToString() : "";
+        string pass = (og >> 14) != (cg >> 14) ? (cg >> 14).ToString() : "";
+        string obj = (oo & 0x3FFF) != (co & 0x3FFF) ? (co & 0x3FFF).ToString() : "";
+        sb.Append($"{id},{i % dims.Xs},{i / dims.Xs},{tile},{pass},{obj},map-editor\n");
+        n++;
+    }
+    resp.Headers["X-Cell-Count"] = n.ToString();
+    resp.Headers["X-Baseline"] = baseline.EndsWith(".orig") ? "orig" : "disk";
+    return Results.Text(sb.ToString(), "text/csv");
 });
 
 app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>

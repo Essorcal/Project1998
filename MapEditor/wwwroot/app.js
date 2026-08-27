@@ -34,7 +34,8 @@ const S = {
   drag: null, stroke: null, undoStack: [],
   selection: null, clipboard: null,
   walker: { x: -1, y: -1 }, bump: '',
-  layers: { ground: true, obj: true, pass: false, grid: false },
+  layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, grid: false },
+  markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
 
 const TOOLS = [
@@ -109,6 +110,10 @@ async function loadMap(id) {
   clampCam();                    // centers maps smaller than the viewport
   S.undoStack = []; S.modified = false; S.savedMark = 0;
   S.selection = null; S.walker = { x: -1, y: -1 };
+  S.markers = null;
+  loadMarkers(id);               // async — the overlay pops in when it arrives
+  mini.world = null; rebuildMini();
+  $('lintList').innerHTML = ''; $('lintNote').textContent = '';
   buildMapList();
   drawPalette();                 // the On-map palette follows the newly loaded map
   invalidate(); updateStatus(); updateButtons();
@@ -150,6 +155,44 @@ async function importFile(file) {
   flashHint(`imported ${file.name}`);
 }
 
+// World markers (read-only): cells that Warps.csv / WorldMapTriggers.csv / Spawns.csv /
+// AreaSpawns.csv / NPCs.csv point at, so nobody paints over a warp tile or a spawn point
+// without knowing. byCell backs the hover status line; the raw lists back the draw pass.
+async function loadMarkers(id) {
+  try {
+    const r = await fetch(`/api/map/${id}/markers`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const m = await r.json();
+    if (S.mapId !== id) return;                    // user already switched maps
+    const byCell = new Map();
+    const note = (x, y, text) => {
+      if (x < 0 || y < 0 || x >= S.xs || y >= S.ys) return;
+      const k = idx(x, y);
+      let a = byCell.get(k);
+      if (!a) byCell.set(k, a = []);
+      a.push(text);
+    };
+    const mapLbl = w => (w.name || 'TK' + w.m) + ` (${w.m})`;
+    for (const w of m.warpsOut) note(w.x, w.y, `warp → ${mapLbl(w)} ${w.dx},${w.dy}`);
+    for (const w of m.warpsIn) note(w.x, w.y, `arrival ← ${mapLbl(w)}`);
+    for (const c of m.world) note(c.x, c.y, 'world-map trigger');
+    for (const a of m.worldArrivals) note(a.x, a.y, `world-map arrival · ${a.name}`);
+    for (const s of m.spawns) note(s.x, s.y, `spawn: ${s.name || 'mob ' + s.mob}`);
+    for (const p of m.npcs) note(p.x, p.y, `npc: ${p.name}`);
+    S.markers = { ...m, byCell };
+    const wide = m.areas.filter(a => !a.x0 && !a.y0 && !a.x1 && !a.y1);
+    const boxes = m.areas.length - wide.length;
+    $('warpNote').textContent = m.warpsOut.length + m.warpsIn.length + m.world.length
+      ? `${m.warpsOut.length}→ ${m.warpsIn.length}←` : '';
+    $('spawnNote').textContent = m.spawns.length + m.areas.length
+      ? `${m.spawns.length} pt · ${boxes} box · ${wide.length} wide` : '';
+    $('spawnNote').title = wide.length
+      ? 'map-wide (anywhere walkable): ' + wide.map(a => `${a.name || 'mob ' + a.mob} ×${a.count}`).join(', ') : '';
+    $('npcNote').textContent = m.npcs.length || '';
+    invalidate(); updateStatus();
+  } catch (e) { console.error('markers', e); }
+}
+
 // --------------------------------------------------------------------------- cell model
 const idx = (x, y) => y * S.xs + x;
 const gAt = i => S.cells[i * 2];
@@ -174,14 +217,14 @@ function endStroke() {
     if (S.undoStack.length > 200) { S.undoStack.shift(); S.savedMark--; }
     S.modified = true;
   }
-  S.stroke = null; updateStatus(); updateButtons();
+  S.stroke = null; updateStatus(); updateButtons(); scheduleMini();
 }
 function undo() {
   const st = S.undoStack.pop();
   if (!st) return;
   for (const [i, [g, o]] of st) { S.cells[i * 2] = g; S.cells[i * 2 + 1] = o; }
   S.modified = S.undoStack.length !== S.savedMark;
-  invalidate(); updateStatus(); updateButtons();
+  invalidate(); updateStatus(); updateButtons(); scheduleMini();
 }
 
 function applyAt(x, y) {
@@ -408,6 +451,8 @@ function draw() {
     ctx.stroke();
   }
 
+  if (S.markers) drawMarkers(ctx, camX, camY, s);
+
   const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
   if (S.drag && (S.drag.kind === 'marquee' || S.drag.kind === 'rect')) {
@@ -441,6 +486,185 @@ function draw() {
   if (S.hover.x >= 0 && S.tool !== 'stamp') {
     ctx.strokeStyle = accent; ctx.lineWidth = 2;
     ctx.strokeRect(S.hover.x * CELL - camX + 1, S.hover.y * CELL - camY + 1, CELL - 2, CELL - 2);
+  }
+
+  drawMini();
+}
+
+// --------------------------------------------------------------------------- minimap
+// One offscreen pixel per cell (ground + the object's anchor frame, GPU-downsampled from
+// the atlases), rebuilt on load and ~300ms after the last edit; the on-panel canvas blits
+// it each frame with marker pixels and the viewport rectangle on top.
+const mini = { world: null, timer: null };
+function scheduleMini() { clearTimeout(mini.timer); mini.timer = setTimeout(rebuildMini, 300); }
+function rebuildMini() {
+  if (!S.cells) return;
+  const AC = S.meta.atlasCols;
+  const w = document.createElement('canvas');
+  w.width = S.xs; w.height = S.ys;
+  const g = w.getContext('2d');
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  for (let y = 0; y < S.ys; y++) for (let x = 0; x < S.xs; x++) {
+    const i = idx(x, y);
+    const fr = groundFrame(gAt(i));
+    if (fr > 0) g.drawImage(S.groundImg, fr % AC * CELL, (fr / AC | 0) * CELL, CELL, CELL, x, y, 1, 1);
+    const o = oAt(i);
+    const fids = o && S.meta.objs[o];
+    if (fids && fids.length) g.drawImage(S.tilecImg, fids[0] % AC * CELL, (fids[0] / AC | 0) * CELL, CELL, CELL, x, y, 1, 1);
+  }
+  mini.world = w;
+  invalidate();
+}
+function drawMini() {
+  const cvs = $('miniCanvas');
+  if (!cvs || !mini.world || !S.cells) return;
+  const dpr = devicePixelRatio || 1;
+  const cssW = cvs.clientWidth || 254;
+  const k = Math.min(cssW / S.xs, 160 / S.ys);               // css px per cell, height-capped
+  const ch = Math.max(24, Math.round(S.ys * k));
+  if (cvs.style.height !== ch + 'px') cvs.style.height = ch + 'px';
+  const bw = Math.round(cssW * dpr), bh = Math.round(ch * dpr);
+  if (cvs.width !== bw || cvs.height !== bh) { cvs.width = bw; cvs.height = bh; }
+  const g = cvs.getContext('2d');
+  const sx = Math.round(S.xs * k * dpr) / S.xs, sy = Math.round(S.ys * k * dpr) / S.ys;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.imageSmoothingEnabled = false;
+  g.fillStyle = '#0e0f10'; g.fillRect(0, 0, bw, bh);
+  g.drawImage(mini.world, 0, 0, Math.round(S.xs * sx), Math.round(S.ys * sy));
+  if (S.markers) {
+    const px = Math.max(1, Math.ceil(sx)), py = Math.max(1, Math.ceil(sy));
+    const dot = (x, y, c) => { g.fillStyle = c; g.fillRect(Math.floor(x * sx), Math.floor(y * sy), px, py); };
+    if (S.layers.spawn) for (const s of S.markers.spawns) dot(s.x, s.y, '#f97316');
+    if (S.layers.npc) for (const p of S.markers.npcs) dot(p.x, p.y, '#4ade80');
+    if (S.layers.warp) {
+      for (const c of S.markers.world) dot(c.x, c.y, '#a78bfa');
+      for (const w of S.markers.warpsIn) dot(w.x, w.y, '#38bdf8');
+      for (const w of S.markers.warpsOut) dot(w.x, w.y, '#38bdf8');
+    }
+  }
+  const v = viewSize();
+  g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  g.lineWidth = 1;
+  g.strokeRect(S.cam.x / CELL * sx + .5, S.cam.y / CELL * sy + .5,
+    Math.min(v.w, S.xs * CELL) / CELL * sx - 1, Math.min(v.h, S.ys * CELL) / CELL * sy - 1);
+}
+function bindMini() {
+  const cvs = $('miniCanvas');
+  const jump = e => {
+    const r = cvs.getBoundingClientRect();
+    const v = viewSize();
+    S.cam.x = (e.clientX - r.left) / r.width * S.xs * CELL - v.w / 2;
+    S.cam.y = (e.clientY - r.top) / (parseFloat(cvs.style.height) || r.height) * S.ys * CELL - v.h / 2;
+    clampCam(); invalidate();
+  };
+  let down = false;
+  cvs.addEventListener('pointerdown', e => { down = true; cvs.setPointerCapture(e.pointerId); jump(e); });
+  cvs.addEventListener('pointermove', e => { if (down) jump(e); });
+  cvs.addEventListener('pointerup', () => { down = false; });
+}
+
+// --------------------------------------------------------------------------- checks
+// Data-driven lint over the loaded map: content rows pointing at blocked cells, and
+// walkable steps into void. (Art-level checks like "walkable water" would need a tile
+// classification we don't have — the pass overlay is the tool for eyeballing those.)
+function runChecks() {
+  const list = $('lintList');
+  list.innerHTML = '';
+  if (!S.cells) return;
+  const rows = [];
+  const inB = (x, y) => x >= 0 && y >= 0 && x < S.xs && y < S.ys;
+  const blockedAt = (x, y) => blockedWord(gAt(idx(x, y)));
+  const mk = S.markers;
+  if (mk) {
+    // NOT a finding: a blocked warp SOURCE. Warp precedence beats collision in
+    // Session.Movement.HandleWalk, so a doorway warp on a blocked cell is the standard
+    // working idiom here — flagging it would bury the real findings under every door.
+    for (const w of mk.warpsIn) if (inB(w.x, w.y) && blockedAt(w.x, w.y))
+      rows.push([w.x, w.y, `arrival from ${w.name || 'TK' + w.m} lands on a blocked cell`]);
+    for (const a of mk.worldArrivals) if (inB(a.x, a.y) && blockedAt(a.x, a.y)) rows.push([a.x, a.y, 'world-map arrival lands on a blocked cell']);
+    for (const s of mk.spawns) if (inB(s.x, s.y) && blockedAt(s.x, s.y)) rows.push([s.x, s.y, `spawn ${s.name || 'mob ' + s.mob} is inside a wall`]);
+  }
+  // A void cell (word 0 = walkable) whose 4-neighborhood contains walkable real ground is
+  // a step into blackness; interior void seas behind blocked fences are fine and skipped.
+  let voidEdges = 0;
+  const VOID_CAP = 60;
+  for (let y = 0; y < S.ys; y++) for (let x = 0; x < S.xs; x++) {
+    if (gAt(idx(x, y)) !== 0) continue;
+    let hot = false;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (!inB(nx, ny)) continue;
+      const ng = gAt(idx(nx, ny));
+      if (ng !== 0 && !blockedWord(ng)) { hot = true; break; }
+    }
+    if (hot && ++voidEdges <= VOID_CAP) rows.push([x, y, 'walkable edge into void']);
+  }
+  $('lintNote').textContent = rows.length || voidEdges > VOID_CAP ? `${rows.length + Math.max(0, voidEdges - VOID_CAP)} findings` : 'clean';
+  for (const [x, y, why] of rows) {
+    const d = document.createElement('div');
+    d.className = 'lintrow';
+    const wh = document.createElement('span'); wh.className = 'where'; wh.textContent = `${x},${y}`;
+    const tx = document.createElement('span'); tx.textContent = why;
+    d.append(wh, tx);
+    d.onclick = () => {
+      const v = viewSize();
+      S.cam.x = x * CELL - v.w / 2; S.cam.y = y * CELL - v.h / 2;
+      S.selection = { x0: x, y0: y, x1: x, y1: y };
+      clampCam(); invalidate();
+    };
+    list.appendChild(d);
+  }
+  if (voidEdges > VOID_CAP) {
+    const d = document.createElement('div');
+    d.className = 'lintrow more';
+    d.textContent = `…and ${voidEdges - VOID_CAP} more void edges`;
+    list.appendChild(d);
+  }
+}
+
+// Marker glyphs: warps are diamonds (filled = a warp OUT lives here, hollow = somewhere
+// warps IN here — violet for the world-map screen), spawn points orange dots, NPCs green
+// squares, area-spawn boxes dashed orange rects. Below device scale 1 (whole-map overview)
+// a glyph would be a couple of pixels, so each marked cell gets a solid tint instead.
+function drawMarkers(ctx, camX, camY, s) {
+  const mk = S.markers;
+  const glyph = (x, y, color, shape, fill) => {
+    const px = x * CELL - camX, py = y * CELL - camY;
+    if (px < -CELL || py < -CELL) return;
+    if (s < 1) {
+      ctx.globalAlpha = 0.7; ctx.fillStyle = color;
+      ctx.fillRect(px, py, CELL, CELL);
+      ctx.globalAlpha = 1; return;
+    }
+    const cx = px + CELL / 2, cy = py + CELL / 2, r = 7;
+    ctx.beginPath();
+    if (shape === 'diamond') {
+      ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r, cy); ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r, cy); ctx.closePath();
+    } else if (shape === 'circle') ctx.arc(cx, cy, r - 1.5, 0, Math.PI * 2);
+    else ctx.rect(cx - r + 2, cy - r + 2, 2 * r - 4, 2 * r - 4);
+    if (fill) { ctx.globalAlpha = 0.9; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = fill ? '#17181a' : color; ctx.lineWidth = fill ? 1 : 2;
+    ctx.stroke();
+  };
+  if (S.layers.npc) for (const p of mk.npcs) glyph(p.x, p.y, '#4ade80', 'rect', true);
+  if (S.layers.spawn) {
+    for (const sp of mk.spawns) glyph(sp.x, sp.y, '#f97316', 'circle', true);
+    ctx.strokeStyle = '#f97316'; ctx.setLineDash([6, 4]); ctx.lineWidth = 2;
+    ctx.fillStyle = '#f97316';
+    ctx.font = `${Math.max(10, Math.round(11 * (devicePixelRatio || 1) / s))}px "IBM Plex Mono", monospace`;
+    for (const a of mk.areas) {
+      if (!a.x0 && !a.y0 && !a.x1 && !a.y1) continue;   // map-wide — see the layer row's tooltip
+      const bx = a.x0 * CELL - camX, by = a.y0 * CELL - camY;
+      ctx.strokeRect(bx + 1, by + 1, (a.x1 - a.x0 + 1) * CELL - 2, (a.y1 - a.y0 + 1) * CELL - 2);
+      ctx.fillText(`${a.name || 'mob ' + a.mob} ×${a.count}`, bx + 3, by - 4);
+    }
+    ctx.setLineDash([]);
+  }
+  if (S.layers.warp) {
+    for (const c of mk.world) glyph(c.x, c.y, '#a78bfa', 'diamond', true);
+    for (const a of mk.worldArrivals) glyph(a.x, a.y, '#a78bfa', 'diamond', false);
+    for (const w of mk.warpsIn) glyph(w.x, w.y, '#38bdf8', 'diamond', false);
+    for (const w of mk.warpsOut) glyph(w.x, w.y, '#38bdf8', 'diamond', true);
   }
 }
 
@@ -944,8 +1168,14 @@ function updateStatus(pin) {
   const c = pin || S.hover;
   if (S.cells && c.x >= 0 && c.x < S.xs && c.y >= 0 && c.y < S.ys) {
     const i = idx(c.x, c.y), g = gAt(i), o = oAt(i);
+    let marks = S.markers ? (S.markers.byCell.get(i) || []).join(' · ') : '';
+    if (S.markers)
+      for (const a of S.markers.areas)
+        if ((a.x0 || a.y0 || a.x1 || a.y1) && c.x >= a.x0 && c.x <= a.x1 && c.y >= a.y0 && c.y <= a.y1)
+          marks += (marks ? ' · ' : '') + `area: ${a.name || 'mob ' + a.mob} ×${a.count}`;
     $('stCell').textContent =
-      `cell (${c.x}, ${c.y}) · g 0x${g.toString(16).toUpperCase().padStart(4, '0')} · pass ${g >> 14 & 3} · obj ${o}`;
+      `cell (${c.x}, ${c.y}) · g 0x${g.toString(16).toUpperCase().padStart(4, '0')} · pass ${g >> 14 & 3} · obj ${o}`
+      + (marks ? '  ·  ' + marks : '');
   } else $('stCell').textContent = '';
   const hints = {
     marquee: 'drag to select — copies on release',
@@ -961,6 +1191,25 @@ function updateStatus(pin) {
   $('stFmt').textContent = S.mode === '4x' ? 'TK<id>.map · headerless LE · 4 B/cell' : 'TK######.cmp · CMAP + zlib · 6 B/cell';
 }
 
+// "Export corrections": the live buffer (saved or not) diffed server-side against the
+// shipped baseline (.orig once a save exists, else the file on disk) into sparse
+// MapCells.csv override rows — a small fix stays reviewable in git instead of becoming
+// a rewritten binary .map.
+async function exportCorrections() {
+  if (S.mapId === null) return;
+  const r = await fetch(`/api/map/${S.mapId}/mapcells.csv`, { method: 'POST', body: S.cells.buffer });
+  if (!r.ok) { flashHint('corrections: ' + await r.text()); return; }
+  const n = +r.headers.get('X-Cell-Count');
+  const base = r.headers.get('X-Baseline') === 'orig' ? '.orig backup' : 'file on disk';
+  if (!n) { flashHint(`no differences vs the ${base}`); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await r.blob());
+  a.download = `mapcells-TK${S.mapId}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  flashHint(`${n} changed cell${n === 1 ? '' : 's'} → MapCells.csv rows (vs the ${base})`);
+}
+
 function lineCells(a, b, fn) {
   const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
   const n = Math.max(dx, dy);
@@ -969,7 +1218,8 @@ function lineCells(a, b, fn) {
 }
 
 function bindUI() {
-  bindCanvas(); bindKeys(); bindPalette();
+  bindCanvas(); bindKeys(); bindPalette(); bindMini();
+  $('btnLint').onclick = runChecks;
   $('mode4x').onclick = () => setMode('4x');
   $('mode533').onclick = () => setMode('533');
   $('tabGround').onclick = () => setTab('ground');
@@ -982,6 +1232,7 @@ function bindUI() {
     if (S.modified) { flashHint('save first — export reads the file on disk'); return; }
     location.href = `/api/map/${S.mapId}/export.${S.mode === '4x' ? 'map' : 'cmp'}`;
   };
+  $('btnCsv').onclick = exportCorrections;
   $('btnImport').onclick = () => $('fileImport').click();
   $('fileImport').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
   $('mapFilter').oninput = buildMapList;
@@ -1004,7 +1255,7 @@ function bindUI() {
   zl.addEventListener('focus', () => zl.select());
   zl.addEventListener('keydown', e => { if (e.key === 'Enter') applyTypedZoom(); e.stopPropagation(); });
   zl.addEventListener('blur', () => invalidate());
-  for (const key of ['Ground', 'Obj', 'Pass', 'Grid'])
+  for (const key of ['Ground', 'Obj', 'Pass', 'Warp', 'Spawn', 'Npc', 'Grid'])
     $('ly' + key).onchange = e => { S.layers[key.toLowerCase()] = e.target.checked; invalidate(); };
   document.querySelectorAll('#dpad button[data-d]').forEach(b => {
     const [dx, dy] = b.dataset.d.split(',').map(Number);

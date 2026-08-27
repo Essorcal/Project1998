@@ -29,6 +29,7 @@
       <button id="btnUndo" class="btn" title="Ctrl+Z">Undo</button>
       <button id="btnImport" class="btn">Import</button>
       <button id="btnExport" class="btn">Export .cmp</button>
+      <button id="btnCsv" class="btn" title="Download MapCells.csv override rows for every cell that differs from the shipped map (the .orig backup if a save made one, else the file on disk)">Corrections</button>
       <button id="btnSave" class="btn primary" disabled>Save</button>
       <input type="file" id="fileImport" accept=".map,.cmp" hidden>
     </div>
@@ -49,6 +50,7 @@
     </main>
     <aside id="panel">
       <div id="panelDrag" title="drag to resize"></div>
+      <div id="panelScroll">
       <section>
         <div class="ptitle">TILE PALETTE <span id="palSource" class="mono accent"></span></div>
         <div class="seg small">
@@ -79,13 +81,25 @@
         <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
         <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
         <label class="lrow"><input type="checkbox" id="lyPass"> Passability overlay <span class="mono dim">2-bit</span></label>
+        <label class="lrow" title="Warps.csv + world-map trigger/arrival cells — filled diamond warps out, hollow diamond is a landing tile, violet opens the world map"><input type="checkbox" id="lyWarp" checked> Warps <span id="warpNote" class="mono dim"></span></label>
+        <label class="lrow" title="Spawns.csv points (dots) and AreaSpawns.csv boxes (dashed) — map-wide rows are listed in this row's tooltip after a map loads"><input type="checkbox" id="lySpawn" checked> Spawns <span id="spawnNote" class="mono dim"></span></label>
+        <label class="lrow" title="NPCs.csv placements"><input type="checkbox" id="lyNpc" checked> NPCs <span id="npcNote" class="mono dim"></span></label>
         <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
+      </section>
+      <section>
+        <div class="ptitle">MINIMAP</div>
+        <canvas id="miniCanvas" title="click or drag to move the view"></canvas>
+      </section>
+      <section>
+        <div class="ptitle">CHECKS <span id="lintNote" class="mono dim"></span><button id="btnLint" class="btn tiny" title="scan for suspicious cells: warp arrivals and spawn points on blocked ground, walkable edges into void (blocked warp SOURCES are the normal doorway idiom and aren't flagged)">run</button></div>
+        <div id="lintList"></div>
       </section>
       <section id="mapsSection">
         <div class="ptitle">MAPS</div>
         <input id="mapFilter" type="search" placeholder="filter…">
         <div id="mapList"></div>
       </section>
+      </div>
     </aside>
   </div>
 
