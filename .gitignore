@@ -132,3 +132,8 @@ re/patches/backups/
 # Generated map viewer output + any RE zips (mapviewer.zip alone is ~1.7GB)
 re/mapviewer/
 re/**/*.zip
+
+# ---- Map editor one-click build ----
+# dist/ holds the self-contained NexusTK-Map-Editor.exe (~94 MB). Reproducible with the
+# dotnet publish command in MapEditor/README.md, so it stays out of history.
+dist/
