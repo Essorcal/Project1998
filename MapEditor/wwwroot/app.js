@@ -179,9 +179,10 @@ async function discardDraft() {
 // row) — publishing is the usual deliberate append + copy, documented in the README.
 async function newMap() {
   if (!S.meta) return;
-  let suggest = 9000;                 // high ids keep clear of upstream's ranges
-  while (S.meta.maps.some(m => m.id === suggest)) suggest++;
-  const idStr = prompt('New map id (unused number; high ids avoid colliding with upstream content):', String(suggest));
+  // The server computes the suggestion against BOTH registries: served maps
+  // (map_index.csv) and the full RTK Maps.csv, whose 9,850 reserved ids reach 65440.
+  const idStr = prompt('New map id (the suggestion is free in both map_index.csv and the full RTK Maps.csv):',
+    String(S.meta.suggestedNewId || 59000));
   if (!idStr) return;
   const id = parseInt(idStr, 10);
   if (!Number.isFinite(id)) { flashHint('not a number: ' + idStr); return; }

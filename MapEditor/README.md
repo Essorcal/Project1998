@@ -208,9 +208,11 @@ ones with **Clear all**).
 
 ## Creating a new map
 
-**+ new** (in the Maps panel) creates a brand-new map: pick an unused id (the editor
-suggests one from 9000 up, clear of upstream's ranges), a name, and dimensions (5–255
-per axis; the largest shipped map is 250×220). You get an all-void canvas — paint
+**+ new** (in the Maps panel) creates a brand-new map: pick an unused id, a name, and
+dimensions (5–255 per axis; the largest shipped map is 250×220). The id is validated
+against **both** registries — the served `map_index.csv` *and* the full RTK `Maps.csv`
+(9,850 reserved ids reaching 65440, whose meta rows would silently apply to a custom
+map on the same id) — and the suggested id (59000 up) is free in both. You get an all-void canvas — paint
 ground onto it (void cells are walkable black nothing, so fence the playable area with
 blocking tiles the way the shipped maps do).
 

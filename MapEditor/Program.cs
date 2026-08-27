@@ -69,6 +69,16 @@ string SavedRel(string path) => Path.GetRelativePath(repo, path).Replace('\\', '
 // registry IS map_index.csv; Maps.csv meta is optional extras).
 string newMapsCsv = Path.Combine(savedRoot, "new-maps.csv");
 Dictionary<int, (string Name, int Xs, int Ys)> newMaps = File.Exists(newMapsCsv) ? LoadIndex(newMapsCsv) : new();
+// Ids reserved by the FULL RTK Maps.csv (9,850 rows up to 65440), not just the served
+// subset: a custom map on one of those ids would collide if that content is ever
+// imported — and the Maps.csv meta row would silently apply to it after publish.
+var reservedIds = Markers.ReservedMapIds(gameData);
+int SuggestNewId()
+{
+    int id = 59000;   // first 500+-id block free in BOTH Maps.csv and map_index.csv
+    while (reservedIds.Contains(id) || TryMap(id, out _)) id++;
+    return id;
+}
 bool TryMap(int id, out (string Name, int Xs, int Ys) m) => index.TryGetValue(id, out m) || newMaps.TryGetValue(id, out m);
 void SaveNewMaps()
 {
@@ -149,6 +159,7 @@ app.MapGet("/api/meta", () => Results.Json(new
         draft = true,
         custom = true
     })).OrderBy(m => m.id),
+    suggestedNewId = SuggestNewId(),
     mobs = Markers.Mobs(gameData),
     npcTemplates = Markers.NpcTemplates(gameData)
 }));
@@ -179,6 +190,9 @@ app.MapPost("/api/maps", (NewMapReq req) =>
 {
     if (req.Id < 1 || req.Id > 65535) return Results.BadRequest("map id must be 1..65535");
     if (TryMap(req.Id, out _)) return Results.BadRequest($"map id {req.Id} is already taken");
+    if (reservedIds.Contains(req.Id))
+        return Results.BadRequest($"map id {req.Id} is reserved by the full RTK Maps.csv (not served here, " +
+            $"but its meta row would apply to your map and later content imports would collide) — try {SuggestNewId()}");
     if (req.Xs < 5 || req.Xs > 255 || req.Ys < 5 || req.Ys > 255)
         return Results.BadRequest("dimensions must be 5..255 per axis (the largest shipped map is 250x220)");
     var name = (req.Name ?? "").Trim();

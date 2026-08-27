@@ -108,6 +108,16 @@ public static class Markers
         return mobs;
     }
 
+    /// <summary>Every MapId in the FULL RTK Maps.csv — ids that are taken even when the map
+    /// isn't served here (its meta row would silently apply to a custom map on that id).</summary>
+    public static HashSet<int> ReservedMapIds(string gameData)
+    {
+        var ids = new HashSet<int>();
+        foreach (var r in ReadCsv(Path.Combine(gameData, "Maps.csv")))
+            if (Int(r, "MapId", out var id)) ids.Add(id);
+        return ids;
+    }
+
     /// <summary>Highest WarpId currently in Warps.csv, so exported rows number after it.</summary>
     public static int MaxWarpId(string gameData)
     {
