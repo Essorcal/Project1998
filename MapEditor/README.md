@@ -206,6 +206,30 @@ to `game-data\Spawns.csv` yourself, `@reload` on the server, and reload the map 
 editor (the points then show as regular orange spawn markers; clear the yellow pending
 ones with **Clear all**).
 
+## Creating a new map
+
+**+ new** (in the Maps panel) creates a brand-new map: pick an unused id (the editor
+suggests one from 9000 up, clear of upstream's ranges), a name, and dimensions (5–255
+per axis; the largest shipped map is 250×220). You get an all-void canvas — paint
+ground onto it (void cells are walkable black nothing, so fence the playable area with
+blocking tiles the way the shipped maps do).
+
+A new map exists **only in the tool's saved folder**: its cells as a draft in
+`saved\maps\TK<id>.map`, and its index row in `saved\new-maps.csv` — which is written
+in exactly `map_index.csv`'s format. The map list marks it `new ·`, and **Discard
+draft** deletes the map entirely (there is no shipped file to fall back to).
+
+Publishing a new map is the usual deliberate, manual step:
+
+1. append its row from `saved\new-maps.csv` to `game-data\map_index.csv`
+2. copy `saved\maps\TK<id>.map` into `game-data\maps\`
+3. `@reload` — the server's map registry *is* `map_index.csv`, so that's all it takes
+   (a `Maps.csv` row adds optional extras like region and level gates)
+
+Then wire it into the world with the warp tool — a pair in, a pair back out.
+(Corrections export doesn't apply to new maps: there's no shipped baseline to diff
+against; the whole `.map` is the publish unit.)
+
 ## Placing NPCs
 
 The person tool places NPCs as **copies of an existing NPC** — pick a template in the

@@ -152,14 +152,55 @@ async function saveMap() {
 
 async function discardDraft() {
   if (S.mapId === null || !S.isDraft) return;
-  if (!confirm(`Delete the draft of TK${S.mapId} and reload the shipped map?`)) return;
+  const m = S.meta.maps.find(x => x.id === S.mapId);
+  const ask = m && m.custom
+    ? `TK${S.mapId} is a NEW map that exists only as this draft — delete the map entirely?`
+    : `Delete the draft of TK${S.mapId} and reload the shipped map?`;
+  if (!confirm(ask)) return;
   const r = await fetch(`/api/map/${S.mapId}/draft`, { method: 'DELETE' });
   if (!r.ok && r.status !== 404) { flashHint('discard failed: ' + await r.text()); return; }
-  const m = S.meta.maps.find(x => x.id === S.mapId);
-  if (m) m.draft = false;
+  const res = r.ok ? await r.json().catch(() => ({})) : {};
   S.modified = false;                 // skip the unsaved-changes prompt — discarding is the point
+  if (res.removedMap) {               // a new map is gone entirely; land somewhere real
+    S.meta.maps = S.meta.maps.filter(x => x.id !== S.mapId);
+    S.mapId = null;
+    buildMapList();
+    const first = S.meta.maps.find(x => x.file);
+    if (first) await loadMap(first.id);
+    flashHint('new map deleted');
+    return;
+  }
+  if (m) m.draft = false;
   await loadMap(S.mapId);
   flashHint('draft discarded — shipped map loaded');
+}
+
+// New map: a blank all-void draft + a row in saved/new-maps.csv (an exact map_index.csv
+// row) — publishing is the usual deliberate append + copy, documented in the README.
+async function newMap() {
+  if (!S.meta) return;
+  let suggest = 9000;                 // high ids keep clear of upstream's ranges
+  while (S.meta.maps.some(m => m.id === suggest)) suggest++;
+  const idStr = prompt('New map id (unused number; high ids avoid colliding with upstream content):', String(suggest));
+  if (!idStr) return;
+  const id = parseInt(idStr, 10);
+  if (!Number.isFinite(id)) { flashHint('not a number: ' + idStr); return; }
+  const name = prompt('Map name:', '');
+  if (name === null) return;
+  const dims = prompt('Dimensions W,H (5–255 each):', '100,100');
+  if (!dims) return;
+  const [xs, ys] = dims.split(/[,x×\s]+/).map(Number);
+  const r = await fetch('/api/maps', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, name, xs, ys }),
+  });
+  if (!r.ok) { alert(await r.text()); return; }
+  const m = await r.json();
+  S.meta.maps.push({ id: m.id, name: m.name, xs: m.xs, ys: m.ys, file: true, draft: true, custom: true });
+  S.meta.maps.sort((a, b) => a.id - b.id);
+  S.modified = false;
+  await loadMap(m.id);
+  flashHint(`TK${m.id} "${m.name}" created — an all-void canvas; paint ground, then Save (publishing: see the README)`);
 }
 
 async function importFile(file) {
@@ -1420,7 +1461,7 @@ function buildMapList() {
     if (filter && !(`${m.id} ${m.name}`.toLowerCase().includes(filter))) continue;
     const row = document.createElement('div');
     row.className = 'mrow' + (m.id === S.mapId ? ' on' : '');
-    row.innerHTML = `<span class="name">${m.name || '(unnamed)'}</span>${m.draft ? '<span class="draftdot" title="has a draft save in game-data/maps-edited">●</span>' : ''}<span class="mono dim">TK${m.id} · ${m.xs}×${m.ys}</span>`;
+    row.innerHTML = `<span class="name">${m.name || '(unnamed)'}</span>${m.draft ? `<span class="draftdot" title="${m.custom ? 'new map — exists only in the tool\'s saved folder' : 'has a draft save'}">●</span>` : ''}<span class="mono dim">${m.custom ? 'new · ' : ''}TK${m.id} · ${m.xs}×${m.ys}</span>`;
     row.onclick = () => loadMap(m.id);
     list.appendChild(row);
   }
@@ -1552,6 +1593,7 @@ function bindUI() {
   $('btnImport').onclick = () => $('fileImport').click();
   $('fileImport').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
   $('mapFilter').oninput = buildMapList;
+  $('btnNewMap').onclick = newMap;
   $('stZoom').style.cursor = 'pointer';
   $('stZoom').title = 'click to cycle zoom';
   $('stZoom').onclick = () => stepScale(viewScale() >= maxScale() ? -99 : 1);

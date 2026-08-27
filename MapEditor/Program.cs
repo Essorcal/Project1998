@@ -62,6 +62,23 @@ string DraftPath(int id) => Path.Combine(draftsDir, $"TK{id}.map");
 string LivePath(int id) => File.Exists(DraftPath(id)) ? DraftPath(id) : ShippedPath(id);
 string SavedRel(string path) => Path.GetRelativePath(repo, path).Replace('\\', '/');
 
+// NEW maps (created in the editor) exist only as drafts plus rows in saved/new-maps.csv —
+// which is both this editor's supplemental index and the export artifact: its rows are
+// exactly map_index.csv rows. Publishing a new map = append its row to
+// game-data/map_index.csv, copy the .map from saved/maps, @reload (the server's map
+// registry IS map_index.csv; Maps.csv meta is optional extras).
+string newMapsCsv = Path.Combine(savedRoot, "new-maps.csv");
+Dictionary<int, (string Name, int Xs, int Ys)> newMaps = File.Exists(newMapsCsv) ? LoadIndex(newMapsCsv) : new();
+bool TryMap(int id, out (string Name, int Xs, int Ys) m) => index.TryGetValue(id, out m) || newMaps.TryGetValue(id, out m);
+void SaveNewMaps()
+{
+    Directory.CreateDirectory(savedRoot);
+    var sb = new System.Text.StringBuilder("id,name,xs,ys\n");
+    foreach (var kv in newMaps.OrderBy(k => k.Key))
+        sb.Append($"{kv.Key},{kv.Value.Name},{kv.Value.Xs},{kv.Value.Ys}\n");
+    File.WriteAllText(newMapsCsv, sb.ToString());
+}
+
 // One-time migration: an earlier build kept drafts in game-data/maps-edited/.
 string oldDrafts = Path.Combine(repo, "game-data", "maps-edited");
 if (Directory.Exists(oldDrafts))
@@ -120,8 +137,18 @@ app.MapGet("/api/meta", () => Results.Json(new
         xs = kv.Value.Xs,
         ys = kv.Value.Ys,
         file = File.Exists(ShippedPath(kv.Key)),
-        draft = File.Exists(DraftPath(kv.Key))
-    }).OrderBy(m => m.id),
+        draft = File.Exists(DraftPath(kv.Key)),
+        custom = false
+    }).Concat(newMaps.Select(kv => new
+    {
+        id = kv.Key,
+        name = kv.Value.Item1,
+        xs = kv.Value.Item2,
+        ys = kv.Value.Item3,
+        file = File.Exists(DraftPath(kv.Key)),
+        draft = true,
+        custom = true
+    })).OrderBy(m => m.id),
     mobs = Markers.Mobs(gameData),
     npcTemplates = Markers.NpcTemplates(gameData)
 }));
@@ -146,10 +173,27 @@ app.MapGet("/api/map/{id:int}", (int id, HttpResponse resp) =>
     return Results.Bytes(File.ReadAllBytes(path), "application/octet-stream");
 });
 
+// New map: writes a blank (all-void) draft and a saved/new-maps.csv row. Nothing in
+// game-data changes until the row and file are hand-published.
+app.MapPost("/api/maps", (NewMapReq req) =>
+{
+    if (req.Id < 1 || req.Id > 65535) return Results.BadRequest("map id must be 1..65535");
+    if (TryMap(req.Id, out _)) return Results.BadRequest($"map id {req.Id} is already taken");
+    if (req.Xs < 5 || req.Xs > 255 || req.Ys < 5 || req.Ys > 255)
+        return Results.BadRequest("dimensions must be 5..255 per axis (the largest shipped map is 250x220)");
+    var name = (req.Name ?? "").Trim();
+    if (name.Length == 0) return Results.BadRequest("a name is required");
+    Directory.CreateDirectory(draftsDir);
+    File.WriteAllBytes(DraftPath(req.Id), new byte[req.Xs * req.Ys * 4]);
+    newMaps[req.Id] = (name, req.Xs, req.Ys);
+    SaveNewMaps();
+    return Results.Ok(new { id = req.Id, name, xs = req.Xs, ys = req.Ys, row = SavedRel(newMapsCsv) });
+});
+
 // Save writes the DRAFT only — game-data/maps/ stays exactly as shipped.
 app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
 {
-    if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
+    if (!TryMap(id, out var dims)) return Results.BadRequest("unknown map id");
     using var ms = new MemoryStream();
     await req.Body.CopyToAsync(ms);
     var data = ms.ToArray();
@@ -161,18 +205,22 @@ app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
     return Results.Ok(new { saved = data.Length, draft = SavedRel(DraftPath(id)) });
 });
 
+// Discarding the draft of a NEW map deletes the map itself — it has no shipped file to
+// fall back to, so its index row goes too.
 app.MapDelete("/api/map/{id:int}/draft", (int id) =>
 {
     if (!File.Exists(DraftPath(id))) return Results.NotFound();
     File.Delete(DraftPath(id));
-    return Results.Ok();
+    bool removedMap = newMaps.Remove(id);
+    if (removedMap) SaveNewMaps();
+    return Results.Ok(new { removedMap });
 });
 
 // Read-only overlay data: warps / world-map cells / spawns / NPCs pointing at this map,
 // so the mapper sees which cells server content depends on before painting over them.
 app.MapGet("/api/map/{id:int}/markers", (int id) =>
     Results.Json(Markers.For(id, gameData,
-        m => index.TryGetValue(m, out var mi) ? mi.Name : "")));
+        m => TryMap(m, out var mi) ? mi.Name : "")));
 
 // Placed-spawn export: JSON [{x,y,mob}] → Spawns.csv rows, SpnId numbered after the
 // file's current max. Like Corrections, the rows DOWNLOAD for a deliberate hand-append —
@@ -180,7 +228,7 @@ app.MapGet("/api/map/{id:int}/markers", (int id) =>
 // SpnMobId/SpnMapId/SpnX/SpnY; the RTK bookkeeping columns get zeros).
 app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, HttpResponse resp) =>
 {
-    if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
+    if (!TryMap(id, out var dims)) return Results.BadRequest("unknown map id");
     if (placed is null || placed.Count == 0) return Results.BadRequest("no spawn points in body");
     foreach (var p in placed)
         if (p.X < 0 || p.Y < 0 || p.X >= dims.Xs || p.Y >= dims.Ys)
@@ -205,7 +253,10 @@ app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, H
 // of a rewritten binary map.
 app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, HttpResponse resp) =>
 {
-    if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
+    if (!index.TryGetValue(id, out var dims))
+        return newMaps.ContainsKey(id)
+            ? Results.BadRequest("a new map has no shipped baseline to diff against — publish the whole .map from saved/maps instead")
+            : Results.BadRequest("unknown map id");
     string baseline = ShippedPath(id);
     if (!File.Exists(baseline)) return Results.BadRequest("no shipped map on disk");
     var old = File.ReadAllBytes(baseline);
@@ -250,7 +301,7 @@ app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp) =>
     if (warps is null || warps.Count == 0) return Results.BadRequest("no warp pairs in body");
     foreach (var w in warps)
     {
-        if (!index.TryGetValue(w.Sm, out var sd) || !index.TryGetValue(w.Dm, out var dd))
+        if (!TryMap(w.Sm, out var sd) || !TryMap(w.Dm, out var dd))
             return Results.BadRequest($"unknown map in pair TK{w.Sm}->TK{w.Dm}");
         if (w.Sx < 0 || w.Sy < 0 || w.Sx >= sd.Xs || w.Sy >= sd.Ys)
             return Results.BadRequest($"source ({w.Sx},{w.Sy}) outside TK{w.Sm} {sd.Xs}x{sd.Ys}");
@@ -280,7 +331,7 @@ app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp) =>
     if (npcs is null || npcs.Count == 0) return Results.BadRequest("no NPC placements in body");
     foreach (var p in npcs)
     {
-        if (!index.TryGetValue(p.Map, out var dd)) return Results.BadRequest($"unknown map TK{p.Map}");
+        if (!TryMap(p.Map, out var dd)) return Results.BadRequest($"unknown map TK{p.Map}");
         if (p.X < 0 || p.Y < 0 || p.X >= dd.Xs || p.Y >= dd.Ys)
             return Results.BadRequest($"({p.X},{p.Y}) outside TK{p.Map} {dd.Xs}x{dd.Ys}");
     }
@@ -315,7 +366,7 @@ app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp) =>
 
 app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>
 {
-    if (!index.TryGetValue(id, out var dims)) return Results.NotFound();
+    if (!TryMap(id, out var dims)) return Results.NotFound();
     string path = LivePath(id);
     if (!File.Exists(path)) return Results.NotFound();
     var cmp = MapToCmp(File.ReadAllBytes(path), dims.Xs, dims.Ys);
@@ -527,6 +578,9 @@ record PlacedWarp(int Sm, int Sx, int Sy, int Dm, int Dx, int Dy);
 // One pending NPC placement (JSON body of /api/npcs.csv): a template NpcId copied to a new
 // map/cell, identifier/description optionally overridden.
 record PlacedNpc(int Map, int X, int Y, int Template, string? Identifier, string? Description);
+
+// A new map to create (JSON body of /api/maps).
+record NewMapReq(int Id, string Name, int Xs, int Ys);
 
 // Last time any page pinged /api/ping (the frontend does, every ~3s while open).
 sealed class HeartbeatState { public volatile bool Seen; public long Last; }
