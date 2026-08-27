@@ -213,6 +213,33 @@ app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, Ht
 });
 
 // Exports read what the editor shows: the draft when one exists, else the shipped map.
+// Placed-warp export: JSON [{sm,sx,sy,dm,dx,dy}] → Warps.csv rows, WarpId numbered after
+// the file's current max, written to saved/csvs for a deliberate hand-append. Pairs span
+// maps, so this is one global file rather than per-map.
+app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp) =>
+{
+    if (warps is null || warps.Count == 0) return Results.BadRequest("no warp pairs in body");
+    foreach (var w in warps)
+    {
+        if (!index.TryGetValue(w.Sm, out var sd) || !index.TryGetValue(w.Dm, out var dd))
+            return Results.BadRequest($"unknown map in pair TK{w.Sm}->TK{w.Dm}");
+        if (w.Sx < 0 || w.Sy < 0 || w.Sx >= sd.Xs || w.Sy >= sd.Ys)
+            return Results.BadRequest($"source ({w.Sx},{w.Sy}) outside TK{w.Sm} {sd.Xs}x{sd.Ys}");
+        if (w.Dx < 0 || w.Dy < 0 || w.Dx >= dd.Xs || w.Dy >= dd.Ys)
+            return Results.BadRequest($"destination ({w.Dx},{w.Dy}) outside TK{w.Dm} {dd.Xs}x{dd.Ys}");
+    }
+    int next = Markers.MaxWarpId(gameData) + 1;
+    var sb = new System.Text.StringBuilder("WarpId,SourceMapId,SourceX,SourceY,DestinationMapId,DestinationX,DestinationY\n");
+    foreach (var w in warps)
+        sb.Append($"{next++},{w.Sm},{w.Sx},{w.Sy},{w.Dm},{w.Dx},{w.Dy}\n");
+    resp.Headers["X-Row-Count"] = warps.Count.ToString();
+    Directory.CreateDirectory(csvsDir);
+    var outFile = Path.Combine(csvsDir, "warps-pending.csv");
+    File.WriteAllText(outFile, sb.ToString());
+    resp.Headers["X-Saved"] = SavedRel(outFile);
+    return Results.Text(sb.ToString(), "text/csv");
+});
+
 app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>
 {
     if (!index.TryGetValue(id, out var dims)) return Results.NotFound();
@@ -390,3 +417,6 @@ static byte[] MapToCmp(byte[] mapBytes, int w, int h)
 
 // One pending spawn point from the placement tool (JSON body of /api/map/{id}/spawns.csv).
 record PlacedSpawn(int X, int Y, int Mob);
+
+// One pending warp leg (JSON body of /api/warps.csv): source map/cell → destination map/cell.
+record PlacedWarp(int Sm, int Sx, int Sy, int Dm, int Dx, int Dy);

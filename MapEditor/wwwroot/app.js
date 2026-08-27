@@ -36,6 +36,8 @@ const S = {
   selection: null, clipboard: null,
   walker: { x: -1, y: -1 }, bump: '',
   selMob: null, placed: [],      // spawn tool: chosen mob + this map's pending points (localStorage)
+  warpArm: null,                 // warp tool: the clicked source waiting for its destination
+  placedWarps: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedWarps')) || []; } catch { return []; } })(),
   layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
   markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
@@ -53,6 +55,7 @@ const TOOLS = [
   null,
   ['walk', 'test character', '<circle cx="10" cy="4.5" r="2.2"/><path d="M10 7v5"/><path d="M10 12l-3 5"/><path d="M10 12l3 5"/><path d="M6.5 9.5h7"/>'],
   ['spawn', 'place spawn points — exports Spawns.csv rows, game files never written', '<circle cx="10" cy="12.8" r="3.4"/><circle cx="5.2" cy="8.6" r="1.9"/><circle cx="10" cy="6.6" r="1.9"/><circle cx="14.8" cy="8.6" r="1.9"/>'],
+  ['warp', 'place warp pairs — exports Warps.csv rows, game files never written', '<path d="M10 3.2l6.8 6.8-6.8 6.8-6.8-6.8z"/><path d="M7.2 10h5"/><path d="M10.4 8.2l1.8 1.8-1.8 1.8"/>'],
 ];
 
 // --------------------------------------------------------------------------- boot
@@ -577,6 +580,86 @@ async function exportSpawns() {
   flashHint(`${S.placed.length} Spawns.csv row${S.placed.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
 }
 
+// --------------------------------------------------------------------------- warp placement
+// Two clicks make a leg: source cell, then destination cell (switch maps freely between
+// them). No auto-reverse: in Warps.csv only 1 of ~4600 rows is an exact mirror — real
+// return legs are separate doorway cells the mapper places, so the tool nudges ("one-way")
+// instead of guessing. Pairs are global (they span maps) and live in localStorage;
+// Export writes Warps.csv rows to the tool's saved folder — game files never written.
+function saveWarps() { try { localStorage.setItem('mapeditor.placedWarps', JSON.stringify(S.placedWarps)); } catch {} }
+
+function placeWarpAt(x, y) {
+  if (!S.warpArm) {
+    // click on a pending endpoint on this map removes that pair
+    const i = S.placedWarps.findIndex(w => (w.sm === S.mapId && w.sx === x && w.sy === y)
+      || (w.dm === S.mapId && w.dx === x && w.dy === y));
+    if (i >= 0) {
+      S.placedWarps.splice(i, 1);
+      flashHint('warp pair removed');
+    } else {
+      S.warpArm = { m: S.mapId, x, y, name: S.mapName };
+      flashHint('source set — now click the destination cell (switch maps if needed, Esc cancels)');
+    }
+  } else if (S.warpArm.m === S.mapId && S.warpArm.x === x && S.warpArm.y === y) {
+    S.warpArm = null;               // clicking the armed source again cancels it
+  } else {
+    if (blockedWord(gAt(idx(x, y)))) flashHint('note: this arrival cell is blocked — players would land in a wall');
+    const pair = {
+      sm: S.warpArm.m, sx: S.warpArm.x, sy: S.warpArm.y, sname: S.warpArm.name,
+      dm: S.mapId, dx: x, dy: y, dname: S.mapName,
+    };
+    S.placedWarps.push(pair);
+    S.warpArm = null;
+    if (!S.placedWarps.some(o => o.sm === pair.dm && o.dm === pair.sm))
+      flashHint('pair added — remember the return leg (a one-way door strands players) unless Warps.csv already has one');
+  }
+  saveWarps(); updateWarpBox(); invalidate(); updateStatus();
+}
+
+function updateWarpBox() {
+  $('wbCount').textContent = S.placedWarps.length ? `${S.placedWarps.length} pending` : '';
+  $('wbStep').textContent = S.warpArm
+    ? `source: ${S.warpArm.name || 'TK' + S.warpArm.m} (${S.warpArm.x},${S.warpArm.y}) — click the destination`
+    : 'click the SOURCE cell';
+  $('wbExport').disabled = !S.placedWarps.length;
+  $('wbClear').disabled = !S.placedWarps.length;
+  const list = $('wbList');
+  list.innerHTML = '';
+  for (const [i, w] of S.placedWarps.entries()) {
+    const back = S.placedWarps.some(o => o.sm === w.dm && o.dm === w.sm);
+    const d = document.createElement('div');
+    d.className = 'mobrow';
+    d.title = 'click to jump to the landing cell' + (back ? '' : ' — ⚠ no pending return leg (fine if Warps.csv already has one)');
+    const label = document.createElement('span');
+    label.className = 'name';
+    label.textContent = `${back ? '' : '⚠ '}TK${w.sm} (${w.sx},${w.sy}) → TK${w.dm} (${w.dx},${w.dy})`;
+    const rm = document.createElement('span');
+    rm.className = 'mono dim';
+    rm.textContent = '✕';
+    rm.title = 'remove this pair';
+    rm.onclick = e => { e.stopPropagation(); S.placedWarps.splice(i, 1); saveWarps(); updateWarpBox(); invalidate(); };
+    d.onclick = async () => {   // jump to the landing — the natural spot to start the return leg
+      if (S.mapId !== w.dm) await loadMap(w.dm);
+      if (S.mapId !== w.dm) return;   // load refused (unsaved changes prompt)
+      const v = viewSize();
+      S.cam.x = w.dx * CELL - v.w / 2; S.cam.y = w.dy * CELL - v.h / 2;
+      clampCam(); invalidate();
+    };
+    d.append(label, rm);
+    list.appendChild(d);
+  }
+}
+
+async function exportWarps() {
+  if (!S.placedWarps.length) return;
+  const r = await fetch('/api/warps.csv', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(S.placedWarps.map(w => ({ sm: w.sm, sx: w.sx, sy: w.sy, dm: w.dm, dx: w.dx, dy: w.dy }))),
+  });
+  if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
+  flashHint(`${S.placedWarps.length} Warps.csv row${S.placedWarps.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
+}
+
 // --------------------------------------------------------------------------- minimap
 // One offscreen pixel per cell (ground + the object's anchor frame, GPU-downsampled from
 // the atlases), rebuilt on load and ~300ms after the last edit; the on-panel canvas blits
@@ -632,6 +715,10 @@ function drawMini() {
     }
   }
   for (const p of S.placed) dot(p.x, p.y, '#eab308');
+  for (const w of S.placedWarps) {
+    if (w.sm === S.mapId) dot(w.sx, w.sy, '#eab308');
+    if (w.dm === S.mapId) dot(w.dx, w.dy, '#eab308');
+  }
   const v = viewSize();
   g.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
   g.lineWidth = 1;
@@ -770,8 +857,13 @@ function drawMarkers(ctx, camX, camY, s) {
       for (const w of mk.warpsOut) glyph(w.x, w.y, '#38bdf8', 'diamond', true);
     }
   }
-  // Pending spawn placements — always on top; they're the working set, not a toggleable layer.
+  // Pending placements — always on top; they're the working set, not a toggleable layer.
   for (const p of S.placed) glyph(p.x, p.y, '#eab308', 'circle', true);
+  for (const w of S.placedWarps) {
+    if (w.sm === S.mapId) glyph(w.sx, w.sy, '#eab308', 'diamond', true);
+    if (w.dm === S.mapId) glyph(w.dx, w.dy, '#eab308', 'diamond', false);
+  }
+  if (S.warpArm && S.warpArm.m === S.mapId) glyph(S.warpArm.x, S.warpArm.y, '#eab308', 'diamond', true);
 }
 
 let _walkCvs = null;
@@ -842,6 +934,7 @@ function bindCanvas() {
         else { S.walker = { x: c.x, y: c.y }; S.bump = ''; }
         break;
       case 'spawn': placeSpawnAt(c.x, c.y); break;
+      case 'warp': placeWarpAt(c.x, c.y); break;
     }
     invalidate();
   });
@@ -913,6 +1006,7 @@ function bindKeys() {
     if (e.key === 'Escape') {
       S.selection = null;
       if (S.tool === 'walk' && S.walker.x >= 0) { S.walker = { x: -1, y: -1 }; S.bump = ''; updateStatus(); }
+      if (S.warpArm) { S.warpArm = null; updateWarpBox(); updateStatus(); }
       invalidate(); return;
     }
     if (e.key === '+' || e.key === '=') { stepScale(1); return; }
@@ -1208,6 +1302,8 @@ function setTool(id) {
   $('tool-stamp').classList.toggle('dimmed', !S.clipboard);
   $('dpad').hidden = id !== 'walk';
   $('spawnBox').hidden = id !== 'spawn';
+  $('warpBox').hidden = id !== 'warp';
+  if (id === 'warp') updateWarpBox();
   updateStatus(); invalidate();
 }
 
@@ -1285,6 +1381,12 @@ function updateStatus(pin) {
           marks += (marks ? ' · ' : '') + `area: ${a.name || 'mob ' + a.mob} ×${a.count}`;
     const pl = S.placed.find(p => p.x === c.x && p.y === c.y);
     if (pl) marks += (marks ? ' · ' : '') + `pending spawn: ${pl.name || 'mob ' + pl.mob}`;
+    for (const w of S.placedWarps) {
+      if (w.sm === S.mapId && w.sx === c.x && w.sy === c.y)
+        marks += (marks ? ' · ' : '') + `pending warp → ${w.dname || 'TK' + w.dm} (${w.dx},${w.dy})`;
+      if (w.dm === S.mapId && w.dx === c.x && w.dy === c.y)
+        marks += (marks ? ' · ' : '') + `pending arrival ← ${w.sname || 'TK' + w.sm}`;
+    }
     $('stCell').textContent =
       `cell (${c.x}, ${c.y}) · g 0x${g.toString(16).toUpperCase().padStart(4, '0')} · pass ${g >> 14 & 3} · obj ${o}`
       + (marks ? '  ·  ' + marks : '');
@@ -1299,6 +1401,9 @@ function updateStatus(pin) {
     spawn: S.selMob
       ? `place ${S.selMob.name} — click to place, click a yellow point to remove · ${S.placed.length} pending`
       : 'pick a mob in the spawn box, then click cells to place spawn points',
+    warp: S.warpArm
+      ? `destination for ${S.warpArm.name || 'TK' + S.warpArm.m} (${S.warpArm.x},${S.warpArm.y}) — click a cell on any map, Esc cancels`
+      : `click a source cell to start a warp pair · ${S.placedWarps.length} pending`,
   };
   $('stHint').textContent = flashText || hints[S.tool] || '';
   $('stEdits').textContent = S.modified ? `${S.undoStack.length - S.savedMark} unsaved stroke${S.undoStack.length - S.savedMark === 1 ? '' : 's'}` : 'saved';
@@ -1351,6 +1456,12 @@ function bindUI() {
     savePlaced(); updateSpawnBox(); invalidate(); updateStatus();
   };
   buildMobList();
+  $('wbExport').onclick = exportWarps;
+  $('wbClear').onclick = () => {
+    if (!S.placedWarps.length || !confirm(`Remove all ${S.placedWarps.length} pending warp pair${S.placedWarps.length === 1 ? '' : 's'}?`)) return;
+    S.placedWarps = []; S.warpArm = null;
+    saveWarps(); updateWarpBox(); invalidate(); updateStatus();
+  };
   $('btnImport').onclick = () => $('fileImport').click();
   $('fileImport').onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; };
   $('mapFilter').oninput = buildMapList;

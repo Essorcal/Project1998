@@ -108,6 +108,15 @@ public static class Markers
         return mobs;
     }
 
+    /// <summary>Highest WarpId currently in Warps.csv, so exported rows number after it.</summary>
+    public static int MaxWarpId(string gameData)
+    {
+        int max = 0;
+        foreach (var r in ReadCsv(Path.Combine(gameData, "Warps.csv")))
+            if (Int(r, "WarpId", out var wid) && wid > max) max = wid;
+        return max;
+    }
+
     /// <summary>Highest SpnId currently in Spawns.csv, so exported rows number after it.</summary>
     public static int MaxSpawnId(string gameData)
     {

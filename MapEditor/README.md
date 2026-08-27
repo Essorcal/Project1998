@@ -199,6 +199,21 @@ to `game-data\Spawns.csv` yourself, `@reload` on the server, and reload the map 
 editor (the points then show as regular orange spawn markers; clear the yellow pending
 ones with **Clear all**).
 
+## Placing warps
+
+The diamond-arrow tool places warp pairs in two clicks: click the **source** cell, then
+the **destination** cell — you can switch maps between the two clicks, and `Esc` cancels
+an armed source. Pending legs show as yellow diamonds (filled = source, hollow =
+arrival); click one to remove its pair. The warp box lists every pending pair — clicking
+a row jumps to its landing cell, the natural spot to start the **return leg**. Place the
+return yourself: it is a separate doorway (in the real `Warps.csv` almost no pair is an
+exact mirror), and the box marks pairs with no pending return with ⚠ — a one-way door
+strands players unless `Warps.csv` already covers the way back.
+
+**Export rows** writes `Warps.csv` rows to `saved\csvs\warps-pending.csv`, `WarpId`
+numbered after the file's current maximum — append to `game-data\Warps.csv` by hand,
+then `@reload`.
+
 ## Import & export
 
 The `.map` / `.cmp` toggle selects the file format the Export button produces:

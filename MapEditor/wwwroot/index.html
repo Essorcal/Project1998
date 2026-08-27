@@ -58,6 +58,16 @@
         </div>
         <div class="sbHint">click the map to place · click a yellow point to remove<br>rows save to the tool's saved folder — game files are never written</div>
       </div>
+      <div id="warpBox" hidden>
+        <div class="sbTitle">PLACE WARPS <span id="wbCount" class="mono accent"></span></div>
+        <div id="wbStep" class="sbSel mono">click the SOURCE cell</div>
+        <div id="wbList"></div>
+        <div class="sbBtns">
+          <button id="wbExport" class="btn tiny" disabled title="write Warps.csv rows for the pending pairs to dist/NexusTK-Map-Editor/saved/csvs — append them to game-data\Warps.csv yourself, then @reload">Export rows</button>
+          <button id="wbClear" class="btn tiny" disabled>Clear all</button>
+        </div>
+        <div class="sbHint">source cell → destination cell (switch maps freely between clicks)<br>place the RETURN leg too — ⚠ marks pairs with no pending return<br>click a yellow diamond to remove its pair · Esc cancels a source<br>rows save to the tool's saved folder — game files never written</div>
+      </div>
       <div id="miniWrap" title="minimap — click or drag to move the view">
         <button id="miniHide" title="hide the minimap">✕</button>
         <canvas id="miniCanvas"></canvas>
