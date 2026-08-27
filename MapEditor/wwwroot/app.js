@@ -135,7 +135,7 @@ async function saveMap() {
     S.modified = false; S.savedMark = S.undoStack.length; S.isDraft = true;
     const m = S.meta.maps.find(x => x.id === S.mapId);
     if (m && !m.draft) { m.draft = true; buildMapList(); }
-    flashHint('draft saved — the shipped map is untouched');
+    flashHint('draft saved to dist/NexusTK-Map-Editor/saved/maps — the shipped map is untouched');
   }
   else flashHint('save failed: ' + await r.text());
   updateStatus(); updateButtons();
@@ -574,12 +574,7 @@ async function exportSpawns() {
     body: JSON.stringify(S.placed.map(p => ({ x: p.x, y: p.y, mob: p.mob }))),
   });
   if (!r.ok) { flashHint('export failed: ' + await r.text()); return; }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(await r.blob());
-  a.download = `spawns-TK${S.mapId}.csv`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  flashHint(`${S.placed.length} Spawns.csv row${S.placed.length === 1 ? '' : 's'} downloaded — append to game-data/Spawns.csv, then @reload`);
+  flashHint(`${S.placed.length} Spawns.csv row${S.placed.length === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
 }
 
 // --------------------------------------------------------------------------- minimap
@@ -1320,14 +1315,8 @@ async function exportCorrections() {
   const r = await fetch(`/api/map/${S.mapId}/mapcells.csv`, { method: 'POST', body: S.cells.buffer });
   if (!r.ok) { flashHint('corrections: ' + await r.text()); return; }
   const n = +r.headers.get('X-Cell-Count');
-  const base = r.headers.get('X-Baseline') === 'orig' ? '.orig backup' : 'file on disk';
-  if (!n) { flashHint(`no differences vs the ${base}`); return; }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(await r.blob());
-  a.download = `mapcells-TK${S.mapId}.csv`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  flashHint(`${n} changed cell${n === 1 ? '' : 's'} → MapCells.csv rows (vs the ${base})`);
+  if (!n) { flashHint('no differences vs the shipped map'); return; }
+  flashHint(`${n} changed cell${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')}`);
 }
 
 function lineCells(a, b, fn) {

@@ -38,14 +38,36 @@ string gameData = Path.Combine(repo, "game-data");
 string mapsDir = Path.Combine(gameData, "maps");
 var index = LoadIndex(Path.Combine(gameData, "map_index.csv"));
 
-// This is a development tool: Save NEVER touches the shipped maps the server/client read.
-// Drafts live in game-data/maps-edited/ (gitignored); loading prefers the draft so work
-// continues across sessions, and publishing a map into game-data/maps is a deliberate
-// manual copy outside the editor.
-string draftsDir = Path.Combine(repo, "game-data", "maps-edited");
+// This is a development tool: Save NEVER touches the shipped maps the server/client read,
+// and everything the editor GENERATES lives with the tool under dist/NexusTK-Map-Editor/
+// saved/ — never inside game-data. saved/maps holds the draft .map files (loading prefers
+// the draft so work continues across sessions), saved/csvs the exported Corrections and
+// Spawns rows. Publishing anything into game-data is a deliberate manual copy/append.
+string savedRoot = Path.Combine(repo, "dist", "NexusTK-Map-Editor", "saved");
+string draftsDir = Path.Combine(savedRoot, "maps");
+string csvsDir = Path.Combine(savedRoot, "csvs");
 string ShippedPath(int id) => Path.Combine(mapsDir, $"TK{id}.map");
 string DraftPath(int id) => Path.Combine(draftsDir, $"TK{id}.map");
 string LivePath(int id) => File.Exists(DraftPath(id)) ? DraftPath(id) : ShippedPath(id);
+string SavedRel(string path) => Path.GetRelativePath(repo, path).Replace('\\', '/');
+
+// One-time migration: an earlier build kept drafts in game-data/maps-edited/.
+string oldDrafts = Path.Combine(repo, "game-data", "maps-edited");
+if (Directory.Exists(oldDrafts))
+{
+    var stray = Directory.GetFiles(oldDrafts, "TK*.map");
+    if (stray.Length > 0)
+    {
+        Directory.CreateDirectory(draftsDir);
+        foreach (var f in stray)
+        {
+            var dest = Path.Combine(draftsDir, Path.GetFileName(f));
+            if (!File.Exists(dest)) File.Move(f, dest);
+        }
+        Console.WriteLine($"moved {stray.Length} draft map(s) from game-data/maps-edited to {SavedRel(draftsDir)}");
+    }
+    if (Directory.GetFileSystemEntries(oldDrafts).Length == 0) Directory.Delete(oldDrafts);
+}
 
 // --port <n> picks the preferred port (a second copy — e.g. one per checkout — stays
 // addressable instead of silently sliding to the next free port).
@@ -107,7 +129,7 @@ app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
         return Results.BadRequest($"size {data.Length} != {dims.Xs}x{dims.Ys}x4 = {expect}");
     Directory.CreateDirectory(draftsDir);
     File.WriteAllBytes(DraftPath(id), data);
-    return Results.Ok(new { saved = data.Length, draft = $"game-data/maps-edited/TK{id}.map" });
+    return Results.Ok(new { saved = data.Length, draft = SavedRel(DraftPath(id)) });
 });
 
 app.MapDelete("/api/map/{id:int}/draft", (int id) =>
@@ -140,6 +162,10 @@ app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, H
     foreach (var p in placed)
         sb.Append($"{next++},{p.Mob},{id},{p.X},{p.Y},0,0,0,0\n");
     resp.Headers["X-Row-Count"] = placed.Count.ToString();
+    Directory.CreateDirectory(csvsDir);
+    var outFile = Path.Combine(csvsDir, $"spawns-TK{id}.csv");
+    File.WriteAllText(outFile, sb.ToString());
+    resp.Headers["X-Saved"] = SavedRel(outFile);
     return Results.Text(sb.ToString(), "text/csv");
 });
 
@@ -176,6 +202,13 @@ app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, Ht
         n++;
     }
     resp.Headers["X-Cell-Count"] = n.ToString();
+    if (n > 0)
+    {
+        Directory.CreateDirectory(csvsDir);
+        var outPath = Path.Combine(csvsDir, $"mapcells-TK{id}.csv");
+        File.WriteAllText(outPath, sb.ToString());
+        resp.Headers["X-Saved"] = SavedRel(outPath);
+    }
     return Results.Text(sb.ToString(), "text/csv");
 });
 

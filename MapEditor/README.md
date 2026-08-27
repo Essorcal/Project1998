@@ -112,15 +112,20 @@ every blocking cell red.
 
 ## Saving — drafts, never the live maps
 
-This is a development tool, so **Save (Ctrl+S) writes a draft** to
-`game-data\maps-edited\TK<id>.map` and **never overwrites the shipped map** in
-`game-data\maps`. Loading a map prefers its draft, so your work is there next session;
-the status bar shows `· draft`, and the map list marks drafted maps with a dot. The
-**Discard draft** button deletes the draft and reloads the shipped map.
+This is a development tool, so **nothing the editor generates goes into `game-data`**.
+Everything it produces lives with the tool under `dist\NexusTK-Map-Editor\saved\`:
+
+- `saved\maps\TK<id>.map` — draft saves (**Save / Ctrl+S**)
+- `saved\csvs\` — exported Corrections and Spawns rows
+
+Save **never overwrites the shipped map** in `game-data\maps`. Loading a map prefers its
+draft, so your work is there next session; the status bar shows `· draft`, and the map
+list marks drafted maps with a dot. The **Discard draft** button deletes the draft and
+reloads the shipped map.
 
 Getting an edit into the actual game is deliberate and manual — either:
 
-- copy `game-data\maps-edited\TK<id>.map` over `game-data\maps\TK<id>.map` yourself
+- copy `saved\maps\TK<id>.map` over `game-data\maps\TK<id>.map` yourself
   (then `@reload` on the server), or
 - for small fixes, use **Corrections** (below) and append the rows to
   `game-data\MapCells.csv` — the server applies those as overrides and streams them to
@@ -175,9 +180,10 @@ The server applies `game-data/MapCells.csv` rows as authored overrides on top of
 shipped `.map` files — "the shipped map is wrong here". The **Corrections** button turns
 your edits into exactly those rows: it diffs the editor's buffer against the shipped map
 in `game-data\maps` (saves are drafts, so the shipped file is always the baseline) and
-downloads one CSV row per changed cell, with unchanged columns left blank so they
-inherit from the `.map`. A three-cell fix becomes three reviewable lines in git instead
-of a rewritten binary map. Works with unsaved changes too.
+writes one CSV row per changed cell to `saved\csvs\mapcells-TK<id>.csv`, with unchanged
+columns left blank so they inherit from the `.map`. A three-cell fix becomes three
+reviewable lines in git instead of a rewritten binary map. Works with unsaved changes
+too.
 
 ## Placing spawns
 
@@ -186,11 +192,12 @@ The paw tool in the rail places monster spawn points. Pick a mob in the **spawn 
 (click one to remove it; blocked cells are refused). Placements are per-map, live only
 in your browser, and survive reloads.
 
-**Export rows** downloads `Spawns.csv` rows for the pending points, `SpnId` numbered
-after the file's current maximum. Same rule as everything else here: the editor never
-writes the game files — append the rows to `game-data\Spawns.csv` yourself, `@reload`
-on the server, and reload the map in the editor (the points then show as regular orange
-spawn markers; clear the yellow pending ones with **Clear all**).
+**Export rows** writes `Spawns.csv` rows for the pending points to
+`saved\csvs\spawns-TK<id>.csv`, `SpnId` numbered after the file's current maximum. Same
+rule as everything else here: the editor never writes the game files — append the rows
+to `game-data\Spawns.csv` yourself, `@reload` on the server, and reload the map in the
+editor (the points then show as regular orange spawn markers; clear the yellow pending
+ones with **Clear all**).
 
 ## Import & export
 

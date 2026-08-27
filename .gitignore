@@ -140,8 +140,8 @@ re/**/*.zip
 # beside it) — same rule, never in history.
 dist/
 MapEditor/NexusTK-Map-Editor.exe
-# The editor's draft saves. Save NEVER touches game-data/maps — publishing a map into the
-# live folder is a deliberate manual copy, so drafts are local work-in-progress by design.
+# Everything the editor GENERATES (draft maps, exported CSV rows) lives with the tool in
+# dist/NexusTK-Map-Editor/saved/ — covered by the dist/ rule above, never inside game-data.
+# The two rules below only catch what OLDER editor builds wrote into game-data:
 game-data/maps-edited/
-# Pre-save backups an older editor build wrote next to the shipped maps (no longer created).
 game-data/maps/*.orig

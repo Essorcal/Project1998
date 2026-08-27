@@ -29,9 +29,9 @@
       <button id="btnUndo" class="btn" title="Ctrl+Z">Undo</button>
       <button id="btnImport" class="btn">Import</button>
       <button id="btnExport" class="btn">Export .cmp</button>
-      <button id="btnCsv" class="btn" title="Download MapCells.csv override rows for every cell that differs from the shipped map in game-data/maps">Corrections</button>
-      <button id="btnDraft" class="btn" hidden title="Delete this map's draft save (game-data/maps-edited) and reload the shipped map">Discard draft</button>
-      <button id="btnSave" class="btn primary" disabled title="Save a draft to game-data/maps-edited — never overwrites the shipped map">Save</button>
+      <button id="btnCsv" class="btn" title="Write MapCells.csv override rows for every cell that differs from the shipped map to dist/NexusTK-Map-Editor/saved/csvs">Corrections</button>
+      <button id="btnDraft" class="btn" hidden title="Delete this map's draft save (dist/NexusTK-Map-Editor/saved/maps) and reload the shipped map">Discard draft</button>
+      <button id="btnSave" class="btn primary" disabled title="Save a draft to dist/NexusTK-Map-Editor/saved/maps — never overwrites the shipped map">Save</button>
       <input type="file" id="fileImport" accept=".map,.cmp" hidden>
     </div>
   </header>
@@ -53,10 +53,10 @@
         <div id="sbList"></div>
         <div class="sbSel mono">selected: <span id="sbSel" class="accent">none</span></div>
         <div class="sbBtns">
-          <button id="sbExport" class="btn tiny" disabled title="download Spawns.csv rows for the pending points — append them to game-data\Spawns.csv yourself, then @reload">Export rows</button>
+          <button id="sbExport" class="btn tiny" disabled title="write Spawns.csv rows for the pending points to dist/NexusTK-Map-Editor/saved/csvs — append them to game-data\Spawns.csv yourself, then @reload">Export rows</button>
           <button id="sbClear" class="btn tiny" disabled>Clear all</button>
         </div>
-        <div class="sbHint">click the map to place · click a yellow point to remove<br>rows download for hand-append — game files are never written</div>
+        <div class="sbHint">click the map to place · click a yellow point to remove<br>rows save to the tool's saved folder — game files are never written</div>
       </div>
       <div id="miniWrap" title="minimap — click or drag to move the view">
         <button id="miniHide" title="hide the minimap">✕</button>
