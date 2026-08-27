@@ -113,38 +113,41 @@ def epf_entries(epf):
 def decode_frame(epf, ents, fi, pal):
     """One EPF frame -> (left, top, w, h, rgb(h,w,3), alpha(h,w) bool) or None.
 
-    Pixels are PACKED (opaque pixels only), placed by an RLE stencil that runs left-to-right,
-    top-to-bottom. Each stencil byte is a run of `b & 0x7F`: high bit set = OPAQUE (consume that
-    many packed pixels), clear = TRANSPARENT (consume none). A byte 0x00 is a ROW TERMINATOR: it
-    fills the rest of the current row transparent and moves to the next row's first column. That
-    row snap is essential -- a row whose opaque/transparent runs don't reach the full width before
-    the 0x00 would otherwise shear every row below it (the bug that scrambled the maze-wall / foliage
-    frames). A fully-opaque frame (each row a single opaque run that fills the width) decodes the
-    same whether or not the snap runs, which is why only partial frames were affected.
+    THE REAL LAYOUT (confirmed 2026-08-26 against a native 5.33 client screenshot, and
+    arithmetically: sten - pix == w*h for all 58k frames): the pixel region is a FULL
+    UNCOMPRESSED w*h raster of palette indices, and the stencil is a separate per-ROW
+    RLE mask over it -- per row: bytes until a 0x00 row terminator; byte > 0x80 = DRAW
+    the next (byte - 0x80) raster pixels, byte <= 0x80 = SKIP that many. The mask only
+    gates visibility; it never repositions pixels.
+
+    The previous model here (packed opaque-only pixels placed by a global-stream RLE
+    with a row-snap heuristic) happens to agree on fully-opaque frames -- which is why
+    walls, doors and gates always looked right -- and desyncs the raster on any frame
+    with interior transparency: foliage, wells and fences came out sheared/streaked,
+    and the misplaced index-0 pixels spawned an entire wrong "shadow blend" theory.
     """
     top, left, bot, right, pix, sten = ents[fi]
     w, h = right - left, bot - top
     if w <= 0 or h <= 0:
         return None
-    nxt = ents[fi + 1][4] if fi + 1 < len(ents) else len(epf) - 12
-    pixdata = np.frombuffer(epf, np.uint8, sten - pix, 12 + pix)
-    st = epf[12 + sten:12 + nxt]
-    grid = np.zeros(h * w, np.uint8)
-    alpha = np.zeros(h * w, np.uint8)
-    p = src = 0
-    for by in st:
-        if by == 0:                                   # row terminator: snap to next row start
-            p = ((p + w - 1) // w) * w
-            continue
-        ln = by & 0x7F
-        if by & 0x80:
-            grid[p:p + ln] = pixdata[src:src + ln]
-            alpha[p:p + ln] = 1
-            src += ln
-        p += ln
-        if p >= h * w:
-            break
-    return left, top, w, h, pal[grid].reshape(h, w, 3), alpha.reshape(h, w).astype(bool)
+    grid = np.frombuffer(epf, np.uint8, w * h, 12 + pix).reshape(h, w)
+    alpha = np.zeros((h, w), bool)
+    off = 12 + sten
+    n = len(epf)
+    for y in range(h):
+        x = 0
+        while off < n:
+            b = epf[off]
+            off += 1
+            if b == 0:
+                break
+            if b > 0x80:
+                run = b - 0x80
+                alpha[y, x:min(x + run, w)] = True
+                x += run
+            else:
+                x += b
+    return left, top, w, h, pal[grid], alpha
 
 
 def load_sheet2(path=SHEET2_CSV):
@@ -199,16 +202,25 @@ class TileSet:
 
     @staticmethod
     def _parse_sobj(sd):
+        """Record z's frame list belongs to OBJECT z; the trailing byte is object z+1's FLAG.
+
+        The flag byte PRECEDES its object's frame list (u32 count, u8 flag[0], then per object z:
+        tc, frames, FF FF FF FF 00, flag[z+1]) — see Server/ObjectFlags.cs and the SObj.tbl section
+        of docs/5.x/Reverse-Engineering.md. The old walk here paired each record's frames with its
+        trailing flag, handing every object the NEXT object's column: gates/fences/doors assembled
+        from neighboring sprites. The referee is the doc's door test — RTK open.lua pairs 346/347
+        (shut) with 366/367 (open), and the frames only compose a coherent doorway when record z's
+        frames are attributed to object z."""
         count = struct.unpack_from("<I", sd, 0)[0]
         off = 5                               # u32 count + object 0's lead flag byte
-        objs = [[]]
-        for _ in range(1, count):
+        objs = []
+        for _ in range(count):
             if off >= len(sd):
                 break
             tc = sd[off]
             off += 1
             objs.append(list(struct.unpack_from("<%dH" % tc, sd, off)))
-            off += tc * 2 + 5 + 1             # frames + FF FF FF FF 00 + this object's flag
+            off += tc * 2 + 5 + 1             # frames + FF FF FF FF 00 + the NEXT object's flag
         return objs
 
     def cframe(self, fi):
