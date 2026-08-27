@@ -95,7 +95,27 @@ public static class Markers
             });
         }
 
-        return new { warpsOut, warpsIn, world, worldArrivals, spawns, areas, npcs, overrides };
+        // Doors.csv rows for this map, for the player-view render (mirrors MapData.Load's
+        // authored layers): DefaultClosed runs stamp their ClosedObj ids from X+StartDx
+        // rightward; ForceOpen tiles are authored walkable with no object.
+        var defaultClosed = new List<object>();
+        var forceOpen = new List<object>();
+        foreach (var r in ReadCsv(P("Doors.csv")))
+        {
+            if (!Int(r, "Map", out var m) || m != id) continue;
+            if (!Int(r, "X", out var x) || !Int(r, "Y", out var y)) continue;
+            if (Str(r, "ForceOpen").Trim() == "1") forceOpen.Add(new { x, y });
+            if (Str(r, "DefaultClosed").Trim() == "1")
+            {
+                var objs = Str(r, "ClosedObj").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(s => int.TryParse(s, out var v) ? v : 0).ToArray();
+                if (objs.Length == 0) continue;
+                Int(r, "StartDx", out var dx);
+                defaultClosed.Add(new { x = x + dx, y, objs });
+            }
+        }
+
+        return new { warpsOut, warpsIn, world, worldArrivals, spawns, areas, npcs, overrides, defaultClosed, forceOpen };
     }
 
     /// <summary>MobId + display name for the spawn-placement picker.</summary>
@@ -106,6 +126,24 @@ public static class Markers
             if (Int(r, "MobId", out var id))
                 mobs.Add(new { id, name = Str(r, "Description") is { Length: > 0 } d ? d : Str(r, "Identifier") });
         return mobs;
+    }
+
+    /// <summary>Closed→open object-id map for doors that START open (DoorObjects.csv `map`
+    /// rows with defaultOpen=1) — mirrors Content.LoadDoorObjects: this piece's own open
+    /// counterpart sits at -startDx in the result run, keeping the swap single-cell.</summary>
+    public static Dictionary<int, int> DoorDefaultOpen(string gameData)
+    {
+        var open = new Dictionary<int, int>();
+        foreach (var r in ReadCsv(Path.Combine(gameData, "DoorObjects.csv")))
+        {
+            if (Str(r, "kind").Trim() != "map" || Str(r, "defaultOpen").Trim() != "1") continue;
+            if (!Int(r, "lo", out var lo)) continue;
+            Int(r, "startDx", out var dx);
+            var ids = Str(r, "result").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.TryParse(s, out var v) ? v : 0).ToArray();
+            if (-dx >= 0 && -dx < ids.Length) open[lo] = ids[-dx];
+        }
+        return open;
     }
 
     /// <summary>Every MapId in the FULL RTK Maps.csv — ids that are taken even when the map

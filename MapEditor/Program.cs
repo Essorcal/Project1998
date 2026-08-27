@@ -160,6 +160,7 @@ app.MapGet("/api/meta", () => Results.Json(new
         custom = true
     })).OrderBy(m => m.id),
     suggestedNewId = SuggestNewId(),
+    doorOpen = Markers.DoorDefaultOpen(gameData),
     mobs = Markers.Mobs(gameData),
     npcTemplates = Markers.NpcTemplates(gameData)
 }));

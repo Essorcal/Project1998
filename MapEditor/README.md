@@ -161,6 +161,13 @@ load — edit a CSV and reload to see the change.
   for area-spawn regions (`AreaSpawns.csv`), labeled with the mob and count. Rows that
   spawn "anywhere walkable" have no box; hover the layer row for the list.
 - **NPCs** — green squares (`NPCs.csv`).
+- **Player view** (top of the Layers panel) re-renders the map as the server's *base* —
+  the shipped file **plus** the authored layers `MapData.Load` applies: doors that
+  default open (the city gates), `Doors.csv` default-closed runs and ForceOpen tiles,
+  and `MapCells.csv` overrides. That's what players actually see; the editor otherwise
+  draws the raw file. Editing tools always write the file layer underneath, so toggling
+  it on after a Corrections export previews your fix exactly as it will land. The test
+  character and the Checks lint always judge the base, whichever view is showing.
 - **Overrides** — hollow pink squares for `MapCells.csv` authored overrides. The editor
   draws the shipped file, but the server rewrites these cells on load — so players see
   something different there. Hover for the row's values ("override → tile 859, pass 0"),

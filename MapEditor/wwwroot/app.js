@@ -41,6 +41,7 @@ const S = {
   selNpc: null,                  // npc tool: the template NPC being copied
   placedNpcs: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedNpcs')) || []; } catch { return []; } })(),
   layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
+  playerView: false,             // render the server's BASE (doors + MapCells) instead of the raw file
   markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
 
@@ -96,6 +97,7 @@ async function boot() {
     S.cam.x = cx * CELL - v.w / 2; S.cam.y = cy * CELL - v.h / 2;
     clampCam();
   }
+  if (q.get('view') === 'player') { S.playerView = true; $('lyPlayer').checked = true; }
   if (q.get('walk')) {
     const [wx, wy] = q.get('walk').split(',').map(Number);
     setTool('walk');
@@ -263,7 +265,23 @@ async function loadMarkers(id) {
       if (c.obj !== null) parts.push('obj ' + c.obj);
       note(c.x, c.y, `override → ${parts.join(', ') || '(empty row)'}${c.src ? ` (${c.src})` : ''}`);
     }
-    S.markers = { ...m, byCell };
+    // Static half of the player-view base: DefaultClosed runs → ForceOpen → MapCells rows,
+    // collapsed per cell in server application order (the door default-opens are dynamic —
+    // they key off each cell's live obj id — and live in baseCell instead).
+    const basePatch = new Map();
+    const patchCell = (x, y, t, p, o) => {
+      if (x < 0 || y < 0 || x >= S.xs || y >= S.ys) return;
+      const k = idx(x, y);
+      let e = basePatch.get(k);
+      if (!e) basePatch.set(k, e = {});
+      if (t !== null && t !== undefined) e.t = t;
+      if (p !== null && p !== undefined) e.p = p;
+      if (o !== null && o !== undefined) e.o = o;
+    };
+    for (const d of m.defaultClosed) d.objs.forEach((oid, k) => patchCell(d.x + k, d.y, null, null, oid));
+    for (const f of m.forceOpen) patchCell(f.x, f.y, null, 0, 0);
+    for (const c of m.overrides) patchCell(c.x, c.y, c.tile, c.pass, c.obj);
+    S.markers = { ...m, byCell, basePatch };
     const wide = m.areas.filter(a => !a.x0 && !a.y0 && !a.x1 && !a.y1);
     const boxes = m.areas.length - wide.length;
     $('warpNote').textContent = m.warpsOut.length + m.warpsIn.length + m.world.length
@@ -274,6 +292,7 @@ async function loadMarkers(id) {
       + (wide.length ? '\nmap-wide (anywhere walkable): ' + wide.map(a => `${a.name || 'mob ' + a.mob} ×${a.count}`).join(', ') : '');
     $('npcNote').textContent = m.npcs.length || '';
     $('overrideNote').textContent = m.overrides.length || '';
+    if (S.playerView) rebuildMini();   // the base just became known; the minimap may show it
     invalidate(); updateStatus();
   } catch (e) { console.error('markers', e); }
 }
@@ -283,6 +302,28 @@ const idx = (x, y) => y * S.xs + x;
 const gAt = i => S.cells[i * 2];
 const oAt = i => S.cells[i * 2 + 1];
 const blockedWord = g => g >= S2BASE;
+
+// The server's BASE view of a cell: the buffer value plus the authored layers MapData.Load
+// applies in order — door default-opens (keyed on the cell's own obj id), then the static
+// per-map patch built in loadMarkers (DefaultClosed runs → ForceOpen tiles → MapCells rows).
+// Rendering, the minimap, the walker, and the lint see this; the EDITING tools always
+// operate on the raw buffer underneath.
+function baseCell(i) {
+  let g = S.cells[i * 2], o = S.cells[i * 2 + 1];
+  if (S.markers) {
+    const open = S.meta.doorOpen[o];
+    if (open !== undefined) o = open;
+    const p = S.markers.basePatch.get(i);
+    if (p) {
+      if (p.o !== undefined) o = p.o;
+      if (p.t !== undefined || p.p !== undefined)
+        g = ((p.t !== undefined ? p.t : g & 0x3FFF) & 0x3FFF) | ((p.p !== undefined ? p.p : g >> 14) << 14);
+    }
+  }
+  return [g, o];
+}
+// The cell as currently RENDERED (player view on = base, off = raw file).
+const viewCell = i => S.playerView ? baseCell(i) : [S.cells[i * 2], S.cells[i * 2 + 1]];
 function groundFrame(g) {
   if (!g) return 0;
   if (g >= S2BASE) return S.sheet2.get(g - S2BASE) || 0;
@@ -393,7 +434,8 @@ function moveWalker(dx, dy) {
   const w = S.walker;
   if (w.x < 0) return;
   const nx = w.x + dx, ny = w.y + dy;
-  if (nx < 0 || ny < 0 || nx >= S.xs || ny >= S.ys || blockedWord(gAt(idx(nx, ny)))) {
+  // the walker always tests the BASE — the pass flags the server actually enforces
+  if (nx < 0 || ny < 0 || nx >= S.xs || ny >= S.ys || blockedWord(baseCell(idx(nx, ny))[0])) {
     S.bump = dx < 0 ? '←' : dx > 0 ? '→' : dy < 0 ? '↑' : '↓';
   } else {
     w.x = nx; w.y = ny; S.bump = '';
@@ -489,7 +531,7 @@ function draw() {
 
   if (S.layers.ground)
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      const fr = groundFrame(gAt(idx(x, y)));
+      const fr = groundFrame(viewCell(idx(x, y))[0]);
       if (fr > 0)
         ctx.drawImage(S.groundImg, fr % AC * CELL, Math.floor(fr / AC) * CELL, CELL, CELL,
           x * CELL - camX, y * CELL - camY, CELL, CELL);
@@ -499,7 +541,7 @@ function draw() {
     const yMax = Math.min(S.ys - 1, y1 + 16);        // southern anchors whose columns reach into view
     const drawObjRow = y => {
       for (let x = x0; x <= x1; x++) {
-        const o = oAt(idx(x, y));
+        const o = viewCell(idx(x, y))[1];
         if (!o) continue;
         const fids = S.meta.objs[o];
         if (!fids) continue;
@@ -525,7 +567,7 @@ function draw() {
   if (S.layers.pass) {
     ctx.fillStyle = 'rgba(190,60,45,0.42)';
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++)
-      if (blockedWord(gAt(idx(x, y)))) ctx.fillRect(x * CELL - camX, y * CELL - camY, CELL, CELL);
+      if (blockedWord(viewCell(idx(x, y))[0])) ctx.fillRect(x * CELL - camX, y * CELL - camY, CELL, CELL);
   }
 
   if (S.layers.grid) {
@@ -783,11 +825,10 @@ function rebuildMini() {
   const g = w.getContext('2d');
   g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
   for (let y = 0; y < S.ys; y++) for (let x = 0; x < S.xs; x++) {
-    const i = idx(x, y);
-    const fr = groundFrame(gAt(i));
+    const [cg, co] = viewCell(idx(x, y));
+    const fr = groundFrame(cg);
     if (fr > 0) g.drawImage(S.groundImg, fr % AC * CELL, (fr / AC | 0) * CELL, CELL, CELL, x, y, 1, 1);
-    const o = oAt(i);
-    const fids = o && S.meta.objs[o];
+    const fids = co && S.meta.objs[co];
     if (fids && fids.length) g.drawImage(S.tilecImg, fids[0] % AC * CELL, (fids[0] / AC | 0) * CELL, CELL, CELL, x, y, 1, 1);
   }
   mini.world = w;
@@ -871,7 +912,8 @@ function runChecks() {
   if (!S.cells) return;
   const rows = [];
   const inB = (x, y) => x >= 0 && y >= 0 && x < S.xs && y < S.ys;
-  const blockedAt = (x, y) => blockedWord(gAt(idx(x, y)));
+  // lint judges the BASE: a cell an override unblocks is not a finding
+  const blockedAt = (x, y) => blockedWord(baseCell(idx(x, y))[0]);
   const mk = S.markers;
   if (mk) {
     // NOT a finding: a blocked warp SOURCE. Warp precedence beats collision in
@@ -1043,7 +1085,7 @@ function bindCanvas() {
       case 'select': updateStatus(c); break;
       case 'walk':
         if (S.walker.x === c.x && S.walker.y === c.y) { S.walker = { x: -1, y: -1 }; S.bump = ''; }
-        else if (blockedWord(gAt(idx(c.x, c.y)))) flashHint('that cell is blocked — pick a passable one');
+        else if (blockedWord(baseCell(idx(c.x, c.y))[0])) flashHint('that cell is blocked — pick a passable one');
         else { S.walker = { x: c.x, y: c.y }; S.bump = ''; }
         break;
       case 'spawn': placeSpawnAt(c.x, c.y); break;
@@ -1614,6 +1656,7 @@ function bindUI() {
   zl.addEventListener('focus', () => zl.select());
   zl.addEventListener('keydown', e => { if (e.key === 'Enter') applyTypedZoom(); e.stopPropagation(); });
   zl.addEventListener('blur', () => invalidate());
+  $('lyPlayer').onchange = e => { S.playerView = e.target.checked; invalidate(); rebuildMini(); };
   for (const key of ['Ground', 'Obj', 'Pass', 'Warp', 'Spawn', 'Npc', 'Override', 'Grid'])
     $('ly' + key).onchange = e => { S.layers[key.toLowerCase()] = e.target.checked; invalidate(); };
   document.querySelectorAll('#dpad button[data-d]').forEach(b => {
