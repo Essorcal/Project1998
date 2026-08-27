@@ -185,9 +185,9 @@ async function loadMarkers(id) {
     $('warpNote').textContent = m.warpsOut.length + m.warpsIn.length + m.world.length
       ? `${m.warpsOut.length}→ ${m.warpsIn.length}←` : '';
     $('spawnNote').textContent = m.spawns.length + m.areas.length
-      ? `${m.spawns.length} pt · ${boxes} box · ${wide.length} wide` : '';
-    $('spawnNote').title = wide.length
-      ? 'map-wide (anywhere walkable): ' + wide.map(a => `${a.name || 'mob ' + a.mob} ×${a.count}`).join(', ') : '';
+      ? `${m.spawns.length}·${boxes}·${wide.length}` : '';
+    $('spawnNote').title = `${m.spawns.length} points · ${boxes} boxes · ${wide.length} map-wide`
+      + (wide.length ? '\nmap-wide (anywhere walkable): ' + wide.map(a => `${a.name || 'mob ' + a.mob} ×${a.count}`).join(', ') : '');
     $('npcNote').textContent = m.npcs.length || '';
     invalidate(); updateStatus();
   } catch (e) { console.error('markers', e); }
@@ -519,18 +519,21 @@ function drawMini() {
   const cvs = $('miniCanvas');
   if (!cvs || !mini.world || !S.cells) return;
   const dpr = devicePixelRatio || 1;
-  const cssW = cvs.clientWidth || 254;
-  const k = Math.min(cssW / S.xs, 160 / S.ys);               // css px per cell, height-capped
-  const ch = Math.max(24, Math.round(S.ys * k));
+  // Size the canvas ELEMENT to exactly the drawn map — no letterbox, so a click maps to
+  // a cell by plain proportion of the element's rect.
+  const availW = (cvs.parentElement && cvs.parentElement.clientWidth) || 96;
+  const k = Math.min(availW / S.xs, 160 / S.ys);             // css px per cell, height-capped
+  const cw = Math.max(24, Math.round(S.xs * k)), ch = Math.max(24, Math.round(S.ys * k));
+  if (cvs.style.width !== cw + 'px') cvs.style.width = cw + 'px';
   if (cvs.style.height !== ch + 'px') cvs.style.height = ch + 'px';
-  const bw = Math.round(cssW * dpr), bh = Math.round(ch * dpr);
+  const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr);
   if (cvs.width !== bw || cvs.height !== bh) { cvs.width = bw; cvs.height = bh; }
   const g = cvs.getContext('2d');
-  const sx = Math.round(S.xs * k * dpr) / S.xs, sy = Math.round(S.ys * k * dpr) / S.ys;
+  const sx = bw / S.xs, sy = bh / S.ys;
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.imageSmoothingEnabled = false;
   g.fillStyle = '#0e0f10'; g.fillRect(0, 0, bw, bh);
-  g.drawImage(mini.world, 0, 0, Math.round(S.xs * sx), Math.round(S.ys * sy));
+  g.drawImage(mini.world, 0, 0, bw, bh);
   if (S.markers) {
     const px = Math.max(1, Math.ceil(sx)), py = Math.max(1, Math.ceil(sy));
     const dot = (x, y, c) => { g.fillStyle = c; g.fillRect(Math.floor(x * sx), Math.floor(y * sy), px, py); };
@@ -554,11 +557,11 @@ function bindMini() {
     const r = cvs.getBoundingClientRect();
     const v = viewSize();
     S.cam.x = (e.clientX - r.left) / r.width * S.xs * CELL - v.w / 2;
-    S.cam.y = (e.clientY - r.top) / (parseFloat(cvs.style.height) || r.height) * S.ys * CELL - v.h / 2;
+    S.cam.y = (e.clientY - r.top) / r.height * S.ys * CELL - v.h / 2;
     clampCam(); invalidate();
   };
   let down = false;
-  cvs.addEventListener('pointerdown', e => { down = true; cvs.setPointerCapture(e.pointerId); jump(e); });
+  cvs.addEventListener('pointerdown', e => { down = true; jump(e); try { cvs.setPointerCapture(e.pointerId); } catch {} });
   cvs.addEventListener('pointermove', e => { if (down) jump(e); });
   cvs.addEventListener('pointerup', () => { down = false; });
 }

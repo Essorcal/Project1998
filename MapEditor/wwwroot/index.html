@@ -77,18 +77,22 @@
         </div>
       </section>
       <section>
-        <div class="ptitle">LAYERS</div>
-        <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
-        <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
-        <label class="lrow"><input type="checkbox" id="lyPass"> Passability overlay <span class="mono dim">2-bit</span></label>
-        <label class="lrow" title="Warps.csv + world-map trigger/arrival cells — filled diamond warps out, hollow diamond is a landing tile, violet opens the world map"><input type="checkbox" id="lyWarp" checked> Warps <span id="warpNote" class="mono dim"></span></label>
-        <label class="lrow" title="Spawns.csv points (dots) and AreaSpawns.csv boxes (dashed) — map-wide rows are listed in this row's tooltip after a map loads"><input type="checkbox" id="lySpawn" checked> Spawns <span id="spawnNote" class="mono dim"></span></label>
-        <label class="lrow" title="NPCs.csv placements"><input type="checkbox" id="lyNpc" checked> NPCs <span id="npcNote" class="mono dim"></span></label>
-        <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
-      </section>
-      <section>
-        <div class="ptitle">MINIMAP</div>
-        <canvas id="miniCanvas" title="click or drag to move the view"></canvas>
+        <div class="cols">
+          <div class="colmain">
+            <div class="ptitle">LAYERS</div>
+            <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
+            <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
+            <label class="lrow" title="tint every blocking cell red"><input type="checkbox" id="lyPass"> Passability</label>
+            <label class="lrow" title="Warps.csv + world-map trigger/arrival cells — filled diamond warps out, hollow diamond is a landing tile, violet opens the world map"><input type="checkbox" id="lyWarp" checked> Warps <span id="warpNote" class="mono dim"></span></label>
+            <label class="lrow" title="Spawns.csv points (dots) and AreaSpawns.csv boxes (dashed) — map-wide rows are listed in this row's tooltip after a map loads"><input type="checkbox" id="lySpawn" checked> Spawns <span id="spawnNote" class="mono dim"></span></label>
+            <label class="lrow" title="NPCs.csv placements"><input type="checkbox" id="lyNpc" checked> NPCs <span id="npcNote" class="mono dim"></span></label>
+            <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
+          </div>
+          <div class="colside">
+            <div class="ptitle">MINIMAP</div>
+            <canvas id="miniCanvas" title="click or drag to move the view"></canvas>
+          </div>
+        </div>
       </section>
       <section>
         <div class="ptitle">CHECKS <span id="lintNote" class="mono dim"></span><button id="btnLint" class="btn tiny" title="scan for suspicious cells: warp arrivals and spawn points on blocked ground, walkable edges into void (blocked warp SOURCES are the normal doorway idiom and aren't flagged)">run</button></div>

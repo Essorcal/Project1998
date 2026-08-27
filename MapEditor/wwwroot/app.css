@@ -69,10 +69,13 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 #stCredit { position: absolute; left: 50%; transform: translateX(-50%); }
 
 .lrow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; background: var(--panel2); margin-top: 2px; cursor: pointer; }
-.lrow .mono { margin-left: auto; }
+.lrow .mono { margin-left: auto; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lrow input { accent-color: var(--accent); }
 
-#miniCanvas { display: block; margin-top: 8px; width: 100%; border: 1px solid var(--border); border-radius: 4px; background: #0e0f10; cursor: crosshair; image-rendering: pixelated; }
+.cols { display: flex; gap: 10px; align-items: flex-start; }
+.colmain { flex: 1; min-width: 0; }
+.colside { flex: 0 0 96px; min-width: 0; }
+#miniCanvas { display: block; margin-top: 8px; border: 1px solid var(--border); border-radius: 4px; background: #0e0f10; cursor: crosshair; image-rendering: pixelated; }
 #lintList { margin-top: 6px; max-height: 140px; overflow-y: auto; }
 .lintrow { display: flex; gap: 8px; padding: 4px 8px; border-radius: 4px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #9ba0a6; cursor: pointer; }
 .lintrow:hover { background: var(--panel2); }
