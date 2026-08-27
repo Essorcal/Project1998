@@ -149,6 +149,11 @@ load — edit a CSV and reload to see the change.
   for area-spawn regions (`AreaSpawns.csv`), labeled with the mob and count. Rows that
   spawn "anywhere walkable" have no box; hover the layer row for the list.
 - **NPCs** — green squares (`NPCs.csv`).
+- **Overrides** — hollow pink squares for `MapCells.csv` authored overrides. The editor
+  draws the shipped file, but the server rewrites these cells on load — so players see
+  something different there. Hover for the row's values ("override → tile 859, pass 0"),
+  and check here before "fixing" a cell that may already be fixed: a new Corrections row
+  for the same cell would shadow the existing hand-authored one.
 
 ![Warp diamonds and spawn dots over Kugnae, minimap in the panel](docs/img/ui-markers.png)
 

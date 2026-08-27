@@ -35,7 +35,7 @@ const S = {
   drag: null, stroke: null, undoStack: [],
   selection: null, clipboard: null,
   walker: { x: -1, y: -1 }, bump: '',
-  layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, grid: false },
+  layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
   markers: null,   // /api/map/<id>/markers payload + a byCell index for the hover status line
 };
 
@@ -201,6 +201,13 @@ async function loadMarkers(id) {
     for (const a of m.worldArrivals) note(a.x, a.y, `world-map arrival · ${a.name}`);
     for (const s of m.spawns) note(s.x, s.y, `spawn: ${s.name || 'mob ' + s.mob}`);
     for (const p of m.npcs) note(p.x, p.y, `npc: ${p.name}`);
+    for (const c of m.overrides) {
+      const parts = [];
+      if (c.tile !== null) parts.push('tile ' + c.tile);
+      if (c.pass !== null) parts.push('pass ' + c.pass);
+      if (c.obj !== null) parts.push('obj ' + c.obj);
+      note(c.x, c.y, `override → ${parts.join(', ') || '(empty row)'}${c.src ? ` (${c.src})` : ''}`);
+    }
     S.markers = { ...m, byCell };
     const wide = m.areas.filter(a => !a.x0 && !a.y0 && !a.x1 && !a.y1);
     const boxes = m.areas.length - wide.length;
@@ -211,6 +218,7 @@ async function loadMarkers(id) {
     $('spawnNote').title = `${m.spawns.length} points · ${boxes} boxes · ${wide.length} map-wide`
       + (wide.length ? '\nmap-wide (anywhere walkable): ' + wide.map(a => `${a.name || 'mob ' + a.mob} ×${a.count}`).join(', ') : '');
     $('npcNote').textContent = m.npcs.length || '';
+    $('overrideNote').textContent = m.overrides.length || '';
     invalidate(); updateStatus();
   } catch (e) { console.error('markers', e); }
 }
@@ -558,6 +566,7 @@ function drawMini() {
   if (S.markers) {
     const px = Math.max(1, Math.ceil(sx)), py = Math.max(1, Math.ceil(sy));
     const dot = (x, y, c) => { g.fillStyle = c; g.fillRect(Math.floor(x * sx), Math.floor(y * sy), px, py); };
+    if (S.layers.override) for (const c of S.markers.overrides) dot(c.x, c.y, '#ec4899');
     if (S.layers.spawn) for (const s of S.markers.spawns) dot(s.x, s.y, '#f97316');
     if (S.layers.npc) for (const p of S.markers.npcs) dot(p.x, p.y, '#4ade80');
     if (S.layers.warp) {
@@ -681,6 +690,7 @@ function drawMarkers(ctx, camX, camY, s) {
     ctx.strokeStyle = fill ? '#17181a' : color; ctx.lineWidth = fill ? 1 : 2;
     ctx.stroke();
   };
+  if (S.layers.override) for (const c of mk.overrides) glyph(c.x, c.y, '#ec4899', 'rect', false);
   if (S.layers.npc) for (const p of mk.npcs) glyph(p.x, p.y, '#4ade80', 'rect', true);
   if (S.layers.spawn) {
     for (const sp of mk.spawns) glyph(sp.x, sp.y, '#f97316', 'circle', true);
@@ -1293,7 +1303,7 @@ function bindUI() {
   zl.addEventListener('focus', () => zl.select());
   zl.addEventListener('keydown', e => { if (e.key === 'Enter') applyTypedZoom(); e.stopPropagation(); });
   zl.addEventListener('blur', () => invalidate());
-  for (const key of ['Ground', 'Obj', 'Pass', 'Warp', 'Spawn', 'Npc', 'Grid'])
+  for (const key of ['Ground', 'Obj', 'Pass', 'Warp', 'Spawn', 'Npc', 'Override', 'Grid'])
     $('ly' + key).onchange = e => { S.layers[key.toLowerCase()] = e.target.checked; invalidate(); };
   document.querySelectorAll('#dpad button[data-d]').forEach(b => {
     const [dx, dy] = b.dataset.d.split(',').map(Number);

@@ -77,7 +77,25 @@ public static class Markers
                 npcs.Add(new { x, y, name = Str(r, "NpcDescription") });
         }
 
-        return new { warpsOut, warpsIn, world, worldArrivals, spawns, areas, npcs };
+        // MapCells.csv authored overrides — the server rewrites these cells on load, so what
+        // players see there differs from the shipped file the editor renders. Null = the
+        // column was blank (inherits from the .map).
+        var overrides = new List<object>();
+        foreach (var r in ReadCsv(P("MapCells.csv")))
+        {
+            if (!Int(r, "Map", out var m) || m != id) continue;
+            if (!Int(r, "X", out var x) || !Int(r, "Y", out var y)) continue;
+            overrides.Add(new
+            {
+                x, y,
+                tile = Int(r, "Tile", out var t) ? (int?)t : null,
+                pass = Int(r, "Pass", out var pa) ? (int?)pa : null,
+                obj = Int(r, "Obj", out var o) ? (int?)o : null,
+                src = Str(r, "Sources"),
+            });
+        }
+
+        return new { warpsOut, warpsIn, world, worldArrivals, spawns, areas, npcs, overrides };
     }
 
     static string Str(Dictionary<string, string> r, string key) => r.GetValueOrDefault(key, "");
