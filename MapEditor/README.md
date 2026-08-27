@@ -88,9 +88,10 @@ at 100% and above every step is pixel-crisp.
 Pan with **space + drag**, middle-mouse drag, the mouse wheel (`Shift` for horizontal),
 or the arrow keys.
 
-The **minimap** (right panel) shows the whole map with the current view marked — click
-or drag on it to jump. It also carries the marker layers' dots, so a city's warps and
-spawns are visible at a glance.
+The **minimap** floats in the bottom-right corner of the canvas: the whole map with the
+current view marked — click or drag on it to jump. It carries the marker layers' dots,
+so a city's warps and spawns are visible at a glance. The ✕ on its corner hides it (a
+small map button in the same spot brings it back), and the choice persists.
 
 ## Editing
 
@@ -107,8 +108,23 @@ spawns are visible at a glance.
 | No-entry | toggle a cell's passability (this flips its ground sheet — see above) |
 
 **Ctrl+Z** undoes stroke by stroke. The **Passability overlay** (Layers panel) tints
-every blocking cell red. **Save** (or Ctrl+S) writes the `.map` file — the first save of
-each map keeps a one-time `.orig` backup beside it.
+every blocking cell red.
+
+## Saving — drafts, never the live maps
+
+This is a development tool, so **Save (Ctrl+S) writes a draft** to
+`game-data\maps-edited\TK<id>.map` and **never overwrites the shipped map** in
+`game-data\maps`. Loading a map prefers its draft, so your work is there next session;
+the status bar shows `· draft`, and the map list marks drafted maps with a dot. The
+**Discard draft** button deletes the draft and reloads the shipped map.
+
+Getting an edit into the actual game is deliberate and manual — either:
+
+- copy `game-data\maps-edited\TK<id>.map` over `game-data\maps\TK<id>.map` yourself
+  (then `@reload` on the server), or
+- for small fixes, use **Corrections** (below) and append the rows to
+  `game-data\MapCells.csv` — the server applies those as overrides and streams them to
+  clients, no map file replacement needed.
 
 ## The test character
 
@@ -152,9 +168,9 @@ fires before collision is checked).
 
 The server applies `game-data/MapCells.csv` rows as authored overrides on top of the
 shipped `.map` files — "the shipped map is wrong here". The **Corrections** button turns
-your edits into exactly those rows: it diffs the editor's buffer against the shipped
-baseline (the `.orig` backup once a save has created one, otherwise the file on disk)
-and downloads one CSV row per changed cell, with unchanged columns left blank so they
+your edits into exactly those rows: it diffs the editor's buffer against the shipped map
+in `game-data\maps` (saves are drafts, so the shipped file is always the baseline) and
+downloads one CSV row per changed cell, with unchanged columns left blank so they
 inherit from the `.map`. A three-cell fix becomes three reviewable lines in git instead
 of a rewritten binary map. Works with unsaved changes too.
 

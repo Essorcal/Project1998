@@ -140,6 +140,8 @@ re/**/*.zip
 # beside it) — same rule, never in history.
 dist/
 MapEditor/NexusTK-Map-Editor.exe
-# The editor's one-time pre-save backups of shipped maps ("first save keeps a .orig").
-# Local safety nets, not content — the shipped baseline lives in git history anyway.
+# The editor's draft saves. Save NEVER touches game-data/maps — publishing a map into the
+# live folder is a deliberate manual copy, so drafts are local work-in-progress by design.
+game-data/maps-edited/
+# Pre-save backups an older editor build wrote next to the shipped maps (no longer created).
 game-data/maps/*.orig

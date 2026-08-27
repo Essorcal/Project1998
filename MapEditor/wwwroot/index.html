@@ -29,8 +29,9 @@
       <button id="btnUndo" class="btn" title="Ctrl+Z">Undo</button>
       <button id="btnImport" class="btn">Import</button>
       <button id="btnExport" class="btn">Export .cmp</button>
-      <button id="btnCsv" class="btn" title="Download MapCells.csv override rows for every cell that differs from the shipped map (the .orig backup if a save made one, else the file on disk)">Corrections</button>
-      <button id="btnSave" class="btn primary" disabled>Save</button>
+      <button id="btnCsv" class="btn" title="Download MapCells.csv override rows for every cell that differs from the shipped map in game-data/maps">Corrections</button>
+      <button id="btnDraft" class="btn" hidden title="Delete this map's draft save (game-data/maps-edited) and reload the shipped map">Discard draft</button>
+      <button id="btnSave" class="btn primary" disabled title="Save a draft to game-data/maps-edited — never overwrites the shipped map">Save</button>
       <input type="file" id="fileImport" accept=".map,.cmp" hidden>
     </div>
   </header>
@@ -46,6 +47,13 @@
         </div>
         <div class="dhint">arrow keys work too</div>
       </div>
+      <div id="miniWrap" title="minimap — click or drag to move the view">
+        <button id="miniHide" title="hide the minimap">✕</button>
+        <canvas id="miniCanvas"></canvas>
+      </div>
+      <button id="miniShow" title="show the minimap" hidden>
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 5l4.5-2 5 2L17 3v12l-4.5 2-5-2L3 17z"/><path d="M7.5 3v12M12.5 5v12"/></svg>
+      </button>
       <div id="loading">decoding tileset…</div>
     </main>
     <aside id="panel">
@@ -77,22 +85,14 @@
         </div>
       </section>
       <section>
-        <div class="cols">
-          <div class="colmain">
-            <div class="ptitle">LAYERS</div>
-            <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
-            <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
-            <label class="lrow" title="tint every blocking cell red"><input type="checkbox" id="lyPass"> Passability</label>
-            <label class="lrow" title="Warps.csv + world-map trigger/arrival cells — filled diamond warps out, hollow diamond is a landing tile, violet opens the world map"><input type="checkbox" id="lyWarp" checked> Warps <span id="warpNote" class="mono dim"></span></label>
-            <label class="lrow" title="Spawns.csv points (dots) and AreaSpawns.csv boxes (dashed) — map-wide rows are listed in this row's tooltip after a map loads"><input type="checkbox" id="lySpawn" checked> Spawns <span id="spawnNote" class="mono dim"></span></label>
-            <label class="lrow" title="NPCs.csv placements"><input type="checkbox" id="lyNpc" checked> NPCs <span id="npcNote" class="mono dim"></span></label>
-            <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
-          </div>
-          <div class="colside">
-            <div class="ptitle">MINIMAP</div>
-            <canvas id="miniCanvas" title="click or drag to move the view"></canvas>
-          </div>
-        </div>
+        <div class="ptitle">LAYERS</div>
+        <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
+        <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
+        <label class="lrow" title="tint every blocking cell red"><input type="checkbox" id="lyPass"> Passability overlay</label>
+        <label class="lrow" title="Warps.csv + world-map trigger/arrival cells — filled diamond warps out, hollow diamond is a landing tile, violet opens the world map"><input type="checkbox" id="lyWarp" checked> Warps <span id="warpNote" class="mono dim"></span></label>
+        <label class="lrow" title="Spawns.csv points (dots) and AreaSpawns.csv boxes (dashed) — map-wide rows are listed in this row's tooltip after a map loads"><input type="checkbox" id="lySpawn" checked> Spawns <span id="spawnNote" class="mono dim"></span></label>
+        <label class="lrow" title="NPCs.csv placements"><input type="checkbox" id="lyNpc" checked> NPCs <span id="npcNote" class="mono dim"></span></label>
+        <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
       </section>
       <section>
         <div class="ptitle">CHECKS <span id="lintNote" class="mono dim"></span><button id="btnLint" class="btn tiny" title="scan for suspicious cells: warp arrivals and spawn points on blocked ground, walkable edges into void (blocked warp SOURCES are the normal doorway idiom and aren't flagged)">run</button></div>

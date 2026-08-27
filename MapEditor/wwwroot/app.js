@@ -10,7 +10,7 @@
 const CELL = 24, S2BASE = 0xC000, PAL_ROWS = 10;
 let PAL_COLS = 8, PAL_PAGE = PAL_COLS * PAL_ROWS;
 function setPanelWidth(w) {
-  w = Math.max(240, Math.min(620, w));
+  w = Math.max(340, Math.min(620, w));
   document.documentElement.style.setProperty('--panelw', w + 'px');
   try { localStorage.setItem('mapeditor.panelw', String(w)); } catch {}
   const cols = Math.max(6, Math.min(18, Math.floor((w - 36) / 31)));
@@ -24,7 +24,8 @@ const S = {
   groundImg: new Image(), tilecImg: new Image(),
   mode: '4x',
   mapId: null, mapName: '', xs: 0, ys: 0, cells: null, // Uint16Array, interleaved [g,o] (x64 = LE)
-  modified: false, savedMark: 0,
+  modified: false, savedMark: 0, isDraft: false,       // isDraft: cells came from game-data/maps-edited
+
   tool: 'brush', tab: 'ground', sheet: 1,
   selWord: 1, selObj: 1, selPass: 3,
   palPage: 0, palMode: 'all', palBlock: null, palAnchorIdx: null,
@@ -103,8 +104,10 @@ async function loadMap(id) {
   if (S.modified && !confirm('Discard unsaved changes?')) return;
   const m = S.meta.maps.find(x => x.id === id);
   if (!m) return;
-  const buf = await (await fetch(`/api/map/${id}`, { cache: 'no-store' })).arrayBuffer();
+  const resp = await fetch(`/api/map/${id}`, { cache: 'no-store' });
+  const buf = await resp.arrayBuffer();
   S.mapId = id; S.mapName = m.name; S.xs = m.xs; S.ys = m.ys;
+  S.isDraft = resp.headers.get('X-Draft') === '1';
   S.cells = new Uint16Array(buf);
   S.cam = { x: 0, y: 0 };
   clampCam();                    // centers maps smaller than the viewport
@@ -119,12 +122,31 @@ async function loadMap(id) {
   invalidate(); updateStatus(); updateButtons();
 }
 
+// Save writes a DRAFT (game-data/maps-edited/) — the shipped map is never touched.
+// Publishing a map into game-data/maps is a deliberate manual copy outside the editor.
 async function saveMap() {
   if (S.mapId === null || !S.modified) return;
   const r = await fetch(`/api/map/${S.mapId}`, { method: 'PUT', body: S.cells.buffer });
-  if (r.ok) { S.modified = false; S.savedMark = S.undoStack.length; flashHint('saved'); }
+  if (r.ok) {
+    S.modified = false; S.savedMark = S.undoStack.length; S.isDraft = true;
+    const m = S.meta.maps.find(x => x.id === S.mapId);
+    if (m && !m.draft) { m.draft = true; buildMapList(); }
+    flashHint('draft saved — the shipped map is untouched');
+  }
   else flashHint('save failed: ' + await r.text());
   updateStatus(); updateButtons();
+}
+
+async function discardDraft() {
+  if (S.mapId === null || !S.isDraft) return;
+  if (!confirm(`Delete the draft of TK${S.mapId} and reload the shipped map?`)) return;
+  const r = await fetch(`/api/map/${S.mapId}/draft`, { method: 'DELETE' });
+  if (!r.ok && r.status !== 404) { flashHint('discard failed: ' + await r.text()); return; }
+  const m = S.meta.maps.find(x => x.id === S.mapId);
+  if (m) m.draft = false;
+  S.modified = false;                 // skip the unsaved-changes prompt — discarding is the point
+  await loadMap(S.mapId);
+  flashHint('draft discarded — shipped map loaded');
 }
 
 async function importFile(file) {
@@ -517,12 +539,11 @@ function rebuildMini() {
 }
 function drawMini() {
   const cvs = $('miniCanvas');
-  if (!cvs || !mini.world || !S.cells) return;
+  if (!cvs || !mini.world || !S.cells || $('miniWrap').hidden) return;
   const dpr = devicePixelRatio || 1;
   // Size the canvas ELEMENT to exactly the drawn map — no letterbox, so a click maps to
   // a cell by plain proportion of the element's rect.
-  const availW = (cvs.parentElement && cvs.parentElement.clientWidth) || 96;
-  const k = Math.min(availW / S.xs, 160 / S.ys);             // css px per cell, height-capped
+  const k = Math.min(208 / S.xs, 176 / S.ys);                // css px per cell, corner-box cap
   const cw = Math.max(24, Math.round(S.xs * k)), ch = Math.max(24, Math.round(S.ys * k));
   if (cvs.style.width !== cw + 'px') cvs.style.width = cw + 'px';
   if (cvs.style.height !== ch + 'px') cvs.style.height = ch + 'px';
@@ -564,6 +585,17 @@ function bindMini() {
   cvs.addEventListener('pointerdown', e => { down = true; jump(e); try { cvs.setPointerCapture(e.pointerId); } catch {} });
   cvs.addEventListener('pointermove', e => { if (down) jump(e); });
   cvs.addEventListener('pointerup', () => { down = false; });
+  const setMiniVisible = v => {
+    $('miniWrap').hidden = !v;
+    $('miniShow').hidden = v;
+    try { localStorage.setItem('mapeditor.mini', v ? '1' : '0'); } catch {}
+    if (v) invalidate();
+  };
+  $('miniHide').onclick = () => setMiniVisible(false);
+  $('miniShow').onclick = () => setMiniVisible(true);
+  let vis = true;
+  try { vis = localStorage.getItem('mapeditor.mini') !== '0'; } catch {}
+  setMiniVisible(vis);
 }
 
 // --------------------------------------------------------------------------- checks
@@ -1145,7 +1177,7 @@ function buildMapList() {
     if (filter && !(`${m.id} ${m.name}`.toLowerCase().includes(filter))) continue;
     const row = document.createElement('div');
     row.className = 'mrow' + (m.id === S.mapId ? ' on' : '');
-    row.innerHTML = `<span class="name">${m.name || '(unnamed)'}</span><span class="mono dim">TK${m.id} · ${m.xs}×${m.ys}</span>`;
+    row.innerHTML = `<span class="name">${m.name || '(unnamed)'}</span>${m.draft ? '<span class="draftdot" title="has a draft save in game-data/maps-edited">●</span>' : ''}<span class="mono dim">TK${m.id} · ${m.xs}×${m.ys}</span>`;
     row.onclick = () => loadMap(m.id);
     list.appendChild(row);
   }
@@ -1153,6 +1185,7 @@ function buildMapList() {
 
 function updateButtons() {
   $('btnSave').disabled = !S.modified;
+  $('btnDraft').hidden = !S.isDraft;
   $('btnUndo').disabled = S.undoStack.length === 0;
   $('btnUndo').textContent = S.undoStack.length ? `Undo · ${S.undoStack.length}` : 'Undo';
   $('tool-stamp')?.classList.toggle('dimmed', !S.clipboard);
@@ -1167,7 +1200,8 @@ function flashHint(msg) {
 }
 
 function updateStatus(pin) {
-  $('stMap').textContent = S.mapId !== null ? `TK${S.mapId} · ${S.mapName} · ${S.xs}×${S.ys}` : 'no map';
+  $('stMap').textContent = S.mapId !== null
+    ? `TK${S.mapId} · ${S.mapName} · ${S.xs}×${S.ys}${S.isDraft ? ' · draft' : ''}` : 'no map';
   const c = pin || S.hover;
   if (S.cells && c.x >= 0 && c.x < S.xs && c.y >= 0 && c.y < S.ys) {
     const i = idx(c.x, c.y), g = gAt(i), o = oAt(i);
@@ -1230,6 +1264,7 @@ function bindUI() {
   $('tabPass').onclick = () => setTab('pass');
   $('btnUndo').onclick = undo;
   $('btnSave').onclick = saveMap;
+  $('btnDraft').onclick = discardDraft;
   $('btnExport').onclick = () => {
     if (S.mapId === null) return;
     if (S.modified) { flashHint('save first — export reads the file on disk'); return; }

@@ -22,6 +22,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .actions { display: flex; gap: 8px; }
 
 .btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 6px; background: var(--panel3); border: 1px solid var(--border2); color: var(--text); font-size: 12px; font-weight: 500; }
+.btn[hidden] { display: none; }   /* the display:flex above would otherwise defeat the hidden attribute */
 .btn:hover { background: var(--border2); }
 .btn:disabled { color: var(--dim); cursor: default; }
 .btn.primary { background: var(--accent); border-color: transparent; color: #17181a; font-weight: 600; }
@@ -72,10 +73,15 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .lrow .mono { margin-left: auto; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lrow input { accent-color: var(--accent); }
 
-.cols { display: flex; gap: 10px; align-items: flex-start; }
-.colmain { flex: 1; min-width: 0; }
-.colside { flex: 0 0 96px; min-width: 0; }
-#miniCanvas { display: block; margin-top: 8px; border: 1px solid var(--border); border-radius: 4px; background: #0e0f10; cursor: crosshair; image-rendering: pixelated; }
+#miniWrap { position: absolute; right: 14px; bottom: 14px; padding: 5px; background: var(--panel); border: 1px solid var(--border2); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+#miniWrap[hidden] { display: none; }
+#miniHide { position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; border-radius: 50%; background: var(--panel3); border: 1px solid var(--border2); color: var(--muted); font-size: 10px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+#miniHide:hover { color: var(--bright); background: var(--border2); }
+#miniShow { position: absolute; right: 14px; bottom: 14px; padding: 8px 10px; border-radius: 6px; background: var(--panel3); border: 1px solid var(--border2); color: var(--muted); box-shadow: 0 4px 12px rgba(0,0,0,.4); display: flex; align-items: center; }
+#miniShow:hover { color: var(--text); }
+#miniShow[hidden] { display: none; }
+#miniCanvas { display: block; border: 1px solid var(--border); border-radius: 4px; background: #0e0f10; cursor: crosshair; image-rendering: pixelated; }
+.draftdot { color: var(--accent); font-size: 9px; flex: 0 0 auto; }
 #lintList { margin-top: 6px; max-height: 140px; overflow-y: auto; }
 .lintrow { display: flex; gap: 8px; padding: 4px 8px; border-radius: 4px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #9ba0a6; cursor: pointer; }
 .lintrow:hover { background: var(--panel2); }

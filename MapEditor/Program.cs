@@ -1,5 +1,6 @@
 // Map editor for the Project1998 world data: a local web tool that renders game-data/maps/
-// with the real 5.33 tile art and edits the 4.x .map files the server actually serves.
+// with the real 5.33 tile art. Edits are saved as DRAFTS (game-data/maps-edited/) — the
+// shipped maps the server serves are only ever changed by a deliberate manual copy.
 //
 // One deliberate asymmetry, straight from re/render_maps.py: BOTH "modes" draw with the 5.33
 // tileset. The 4.x/5.33 mode in the UI selects the FILE FORMAT in and out (.map vs .cmp), not
@@ -36,6 +37,15 @@ Console.WriteLine($"  {assets.GroundCount} ground frames, {assets.TilecCount} ob
 string mapsDir = Path.Combine(repo, "game-data", "maps");
 var index = LoadIndex(Path.Combine(repo, "game-data", "map_index.csv"));
 
+// This is a development tool: Save NEVER touches the shipped maps the server/client read.
+// Drafts live in game-data/maps-edited/ (gitignored); loading prefers the draft so work
+// continues across sessions, and publishing a map into game-data/maps is a deliberate
+// manual copy outside the editor.
+string draftsDir = Path.Combine(repo, "game-data", "maps-edited");
+string ShippedPath(int id) => Path.Combine(mapsDir, $"TK{id}.map");
+string DraftPath(int id) => Path.Combine(draftsDir, $"TK{id}.map");
+string LivePath(int id) => File.Exists(DraftPath(id)) ? DraftPath(id) : ShippedPath(id);
+
 // --port <n> picks the preferred port (a second copy — e.g. one per checkout — stays
 // addressable instead of silently sliding to the next free port).
 int preferred = 5959;
@@ -65,22 +75,25 @@ app.MapGet("/api/meta", () => Results.Json(new
         name = kv.Value.Name,
         xs = kv.Value.Xs,
         ys = kv.Value.Ys,
-        file = File.Exists(Path.Combine(mapsDir, $"TK{kv.Key}.map"))
+        file = File.Exists(ShippedPath(kv.Key)),
+        draft = File.Exists(DraftPath(kv.Key))
     }).OrderBy(m => m.id)
 }));
 
 app.MapGet("/api/tiles/ground.png", () => Results.Bytes(assets.GroundPng, "image/png"));
 app.MapGet("/api/tiles/tilec.png", () => Results.Bytes(assets.TilecPng, "image/png"));
 
-app.MapGet("/api/map/{id:int}", (int id) =>
+// Load prefers the draft so a mapping session survives a restart; X-Draft says which
+// file the bytes came from.
+app.MapGet("/api/map/{id:int}", (int id, HttpResponse resp) =>
 {
-    string path = Path.Combine(mapsDir, $"TK{id}.map");
-    return File.Exists(path) ? Results.Bytes(File.ReadAllBytes(path), "application/octet-stream")
-                             : Results.NotFound();
+    string path = LivePath(id);
+    if (!File.Exists(path)) return Results.NotFound();
+    resp.Headers["X-Draft"] = path == DraftPath(id) ? "1" : "0";
+    return Results.Bytes(File.ReadAllBytes(path), "application/octet-stream");
 });
 
-// Save: overwrite TK<id>.map, keeping a one-time .orig of the shipped file. The server never
-// writes these files (its edits are overlays), so the editor is the only writer here.
+// Save writes the DRAFT only — game-data/maps/ stays exactly as shipped.
 app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
 {
     if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
@@ -90,11 +103,16 @@ app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req) =>
     int expect = dims.Xs * dims.Ys * 4;
     if (data.Length != expect)
         return Results.BadRequest($"size {data.Length} != {dims.Xs}x{dims.Ys}x4 = {expect}");
-    string path = Path.Combine(mapsDir, $"TK{id}.map");
-    string orig = path + ".orig";
-    if (File.Exists(path) && !File.Exists(orig)) File.Copy(path, orig);
-    File.WriteAllBytes(path, data);
-    return Results.Ok(new { saved = data.Length, backup = File.Exists(orig) });
+    Directory.CreateDirectory(draftsDir);
+    File.WriteAllBytes(DraftPath(id), data);
+    return Results.Ok(new { saved = data.Length, draft = $"game-data/maps-edited/TK{id}.map" });
+});
+
+app.MapDelete("/api/map/{id:int}/draft", (int id) =>
+{
+    if (!File.Exists(DraftPath(id))) return Results.NotFound();
+    File.Delete(DraftPath(id));
+    return Results.Ok();
 });
 
 // Read-only overlay data: warps / world-map cells / spawns / NPCs pointing at this map,
@@ -105,15 +123,14 @@ app.MapGet("/api/map/{id:int}/markers", (int id) =>
 
 // Sparse-patch export: POST the editor's live cell buffer, get back MapCells.csv rows
 // (Server/Content.cs LoadMapCells: blank column = inherit from the .map) for exactly the
-// cells that differ from the SHIPPED baseline — the .orig backup once a save has created
-// one, else the file on disk. Small fixes become reviewable CSV rows in git instead of a
-// rewritten binary map.
+// cells that differ from the SHIPPED map — saves are drafts that never touch it, so
+// game-data/maps IS the baseline. Small fixes become reviewable CSV rows in git instead
+// of a rewritten binary map.
 app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, HttpResponse resp) =>
 {
     if (!index.TryGetValue(id, out var dims)) return Results.BadRequest("unknown map id");
-    string path = Path.Combine(mapsDir, $"TK{id}.map");
-    string baseline = File.Exists(path + ".orig") ? path + ".orig" : path;
-    if (!File.Exists(baseline)) return Results.BadRequest("no baseline file on disk");
+    string baseline = ShippedPath(id);
+    if (!File.Exists(baseline)) return Results.BadRequest("no shipped map on disk");
     var old = File.ReadAllBytes(baseline);
     using var ms = new MemoryStream();
     await req.Body.CopyToAsync(ms);
@@ -137,14 +154,14 @@ app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, Ht
         n++;
     }
     resp.Headers["X-Cell-Count"] = n.ToString();
-    resp.Headers["X-Baseline"] = baseline.EndsWith(".orig") ? "orig" : "disk";
     return Results.Text(sb.ToString(), "text/csv");
 });
 
+// Exports read what the editor shows: the draft when one exists, else the shipped map.
 app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>
 {
     if (!index.TryGetValue(id, out var dims)) return Results.NotFound();
-    string path = Path.Combine(mapsDir, $"TK{id}.map");
+    string path = LivePath(id);
     if (!File.Exists(path)) return Results.NotFound();
     var cmp = MapToCmp(File.ReadAllBytes(path), dims.Xs, dims.Ys);
     return Results.File(cmp, "application/octet-stream", $"TK{id:D6}.cmp");
@@ -152,7 +169,7 @@ app.MapGet("/api/map/{id:int}/export.cmp", (int id) =>
 
 app.MapGet("/api/map/{id:int}/export.map", (int id) =>
 {
-    string path = Path.Combine(mapsDir, $"TK{id}.map");
+    string path = LivePath(id);
     return File.Exists(path)
         ? Results.File(File.ReadAllBytes(path), "application/octet-stream", $"TK{id}.map")
         : Results.NotFound();
