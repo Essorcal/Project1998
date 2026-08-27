@@ -80,7 +80,7 @@ async function boot() {
   bootStage('building ui…');
   buildRail(); buildMapList(); bindUI();
   bootStage('ui built, configuring…');
-  setMode('4x'); setTool('brush'); setTab('ground');
+  setMode('4x'); setTool('select'); setTab('ground');   // start inspecting, not painting
   bootStage('loading map…');
   const q = new URLSearchParams(location.search);
   const qMap = q.get('map') !== null ? meta.maps.find(m => m.file && m.id === +q.get('map')) : null;
