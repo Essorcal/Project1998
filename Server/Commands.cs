@@ -42,6 +42,11 @@ public sealed partial class Session
 
     private static readonly Command[] CommandTable =
     {
+        // ---- help / discovery -----------------------------------------------------------------------
+        // The compact companion to @help: @help pages the DESCRIBED list (a screenful at a time), this shows
+        // every name you can run at once. Player-tier on purpose — a plain player sees only their own handful.
+        P("commands|cmds", (s, a) => s.ShowCommandIndex(), "", "compact index of every command you can use (names only; @help <word> for details)"),
+
         // ---- world / navigation ---------------------------------------------------------------------
         // A command earns its place here only when the 4.95 client has no native way to reach the feature:
         // whisper (0x19), mail (the 0x3B board window), party (0x2E) and trade (0x4A) all do, so their
@@ -53,6 +58,7 @@ public sealed partial class Session
         T("rez",     (s, a) => s.RezCmd(a),        "[username]",          "revive a player (or yourself) to full HP/MP (a full heal if already alive)"),
         T("approach",(s, a) => s.ApproachCmd(a),   "<username>",          "teleport to an online player"),
         T("die",     (s, a) => s.DieCmd(),         "",                    "kill yourself (ghost form + real death penalties; @rez to get back up)"),
+        T("clip|noclip", (s, a) => s.ClipCmd(a),   "[0|1]",               "no-clip: walk through walls, mobs and players (this session only; warps still work)"),
         T("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
@@ -216,7 +222,20 @@ public sealed partial class Session
     {
         if (!SplitCommand(text, out string name, out string args)) return false;
 
-        if (name.Equals("help", StringComparison.OrdinalIgnoreCase)) { ShowCommandHelp(args); return true; }
+        // @help — special-cased before the table so it works at every tier. Accepts a page (as a suffix,
+        // "@help2", or an argument, "@help 2") or a keyword filter ("@help item"). The full detail list runs
+        // past the chat pane, so a bare @help pages it rather than dumping all ~90 lines (see ShowCommandHelp).
+        if (name.Equals("help", StringComparison.OrdinalIgnoreCase)
+            || (name.Length > 4 && name.StartsWith("help", StringComparison.OrdinalIgnoreCase)
+                                && int.TryParse(name.AsSpan(4), out _)))
+        {
+            int page = 1; string filter = "";
+            if (name.Length > 4) int.TryParse(name.AsSpan(4), out page);   // "@help2"
+            else if (int.TryParse(args, out var p)) page = p;             // "@help 2"
+            else filter = args;                                          // "@help item"
+            ShowCommandHelp(filter, page);
+            return true;
+        }
 
         var access = Access;
         bool known = CommandsByName.TryGetValue(name, out var cmd);
@@ -233,23 +252,67 @@ public sealed partial class Session
         return true;
     }
 
-    /// <summary>"@help [filter]" — every command this session may actually run, so the list a player sees
-    /// contains no staff tooling at all, and a tester's contains no GM tooling.</summary>
-    private void ShowCommandHelp(string filter)
+    /// <summary>How many detailed command lines one <c>@help</c> page shows. The client's chat pane holds
+    /// only a handful of lines before the earliest scroll off unreachably, and a GM reaches ~90 commands, so
+    /// the full list HAS to be paged. Sized to leave room for the header and footer line within the pane.</summary>
+    private const int HelpPageSize = 12;
+
+    /// <summary>"@help [page|filter]" — every command this session may actually run, so the list a player sees
+    /// contains no staff tooling at all, and a tester's contains no GM tooling.
+    ///
+    /// The full detail list (name + args + description, one command per line) is what people want, but it runs
+    /// past the chat pane. So a keyword filter shows just its matches in full, and an unfiltered list is PAGED:
+    /// each page is a screenful of full-detail lines with a footer pointing at the next page ("@help2"). We
+    /// page rather than drop the descriptions — the descriptions are the point of @help.</summary>
+    private void ShowCommandHelp(string filter, int page)
     {
         var access = Access;
-        var rows = CommandTable
-            .Where(c => access >= c.Min)
-            .Where(c => filter.Length == 0 || c.Names.Any(n => n.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                                           || c.Help.Contains(filter, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (rows.Count == 0) { SendLog($"No command matches \"{filter}\"."); return; }
+        var reachable = CommandTable.Where(c => access >= c.Min).ToList();
 
-        SendLog($"Commands ({rows.Count}) — all start with '{Prefix}':");
-        foreach (var c in rows)
+        // Keyword filter: show every match in full. A keyword narrows ~90 commands to a few, so this fits.
+        if (filter.Length > 0)
         {
-            string names = string.Join('/', c.Names.Select(n => Prefix + n));
-            SendLog($"  {names}{(c.Args.Length > 0 ? " " + c.Args : "")} — {c.Help}");
+            var matches = reachable
+                .Where(c => c.Names.Any(n => n.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                         || c.Help.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count == 0) { SendLog($"No command matches \"{filter}\"."); return; }
+            SendLog($"Commands ({matches.Count}) matching \"{filter}\" — all start with '{Prefix}':");
+            foreach (var c in matches) SendLog(HelpLine(c));
+            return;
         }
+
+        // No filter: page the whole reachable list, descriptions intact.
+        int pages = Math.Max(1, (reachable.Count + HelpPageSize - 1) / HelpPageSize);
+        page = Math.Clamp(page, 1, pages);
+        int first = (page - 1) * HelpPageSize;
+        int last = Math.Min(first + HelpPageSize, reachable.Count);
+
+        SendLog($"Commands {first + 1}–{last} of {reachable.Count} (page {page}/{pages}) — all start with '{Prefix}':");
+        foreach (var c in reachable.Skip(first).Take(HelpPageSize)) SendLog(HelpLine(c));
+        if (page < pages)
+            SendLog($"  more: '{Prefix}help{page + 1}' next page  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
+        else
+            SendLog($"  end of list  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
+    }
+
+    /// <summary>One detailed @help row: "@name/@alias &lt;args&gt; — what it does".</summary>
+    private static string HelpLine(Command c)
+    {
+        string names = string.Join('/', c.Names.Select(n => Prefix + n));
+        return $"  {names}{(c.Args.Length > 0 ? " " + c.Args : "")} — {c.Help}";
+    }
+
+    /// <summary>"@commands" / "@cmds" — the compact index: just the NAMES of every command this session can
+    /// run, packed several per line so the whole roster fits the chat pane at once. The quick companion to the
+    /// paged, described <see cref="ShowCommandHelp"/>: reach for this to SEE everything you have, then
+    /// '@help &lt;word&gt;' to read what one does. Access-filtered like @help, so a player sees no staff tooling.</summary>
+    private void ShowCommandIndex()
+    {
+        var access = Access;
+        var names = CommandTable.Where(c => access >= c.Min).Select(c => Prefix + c.Names[0]).ToList();
+        SendLog($"Commands ({names.Count}) — '{Prefix}help <word>' for what one does, '{Prefix}help' to page them with descriptions:");
+        foreach (var chunk in names.Chunk(7))
+            SendLog("  " + string.Join("  ", chunk));
     }
 }
