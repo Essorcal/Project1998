@@ -79,6 +79,10 @@ public sealed partial class Session
         // The Sage ladder has no other staff route: its five spells are locked to one NPC, so no rebuild
         // grants them, and buying it honestly is 500,000 gold across 360 real days of upgrade waits.
         T("sage",    (s, a) => s.SetSageRung(a),   "[0-5]",               "Share Wisdom rung: sets the spell AND clears the 90-day upgrade wait (bare @sage reports)"),
+        // The generic quest-state pair (docs/common/Quest-Registry.md is the key catalogue). Most chains gate
+        // on the LEGEND, not the stage, so re-testing one usually takes both commands.
+        T("quest",   (s, a) => s.QuestCmd(a),      "[key] [stage]",       "read/set the raw quest registry (bare = dump your keys; stage 0 clears; non-numeric sets the string registry)"),
+        T("legend",  (s, a) => s.LegendCmd(a),     "[key] [0 | <icon> <color> <text...>]", "list legend marks with their internal keys; remove one, or (re)create one by key"),
         // 0x0A's `type` decides which pane/colour a line lands in, and a wrong one is INVISIBLE from the
         // server side — the packet sends, the log says so, the client draws nothing. See TextChannelCmd.
         T("text",    (s, a) => s.TextChannelCmd(a), "[type] [message]",    "send yourself one 0x0A line on a channel; bare @text sweeps them to compare panes/colours"),
