@@ -18,26 +18,34 @@ public sealed partial class Session
     // REQUEST, RE'd out of the 4.95 binary 2026-08-07. It is built by the INVENTORY pane's mouse handler
     // (client 0x43bf40, mouse-message kind 4) through packet builder 0x43c290, which writes the body byte
     // for byte:
-    //   body[0]=00  body[1]=cursor X (low byte)  body[2]=00  body[3..4]=01 01
+    //   body[0]=00  body[1]=cursor Y, pane-local  body[2]=00  body[3..4]=01 01
     //   body[5]=SLOT  body[6]=01  body[7..9]=00
-    // The pane is 15 cells wide with a page byte at widget+0x104, so a click resolves to
+    // The pane shows 15 cells with a page byte at widget+0x104, so a click resolves to
     // `cell + 15*page + 1` (0x43bf94) and then through 0x43c5a0 ("the Nth occupied slot") to the id in
     // body[5]. The SAME id is what a LEFT-click sends as 0x1C (use item, builder 0x43c160), so the slot
     // convention here is identical to HandleUseItem's — 1-based.
     // The item is in body[5], NOT body[1]: an earlier note had the two swapped, which is why every logged
-    // decode said "no bag item at that slot" (it was reading the cursor X, 196..225). The two track each
-    // other because both derive from the same click — that near-15:1 ratio was the cell pitch, not an id.
+    // decode said "no bag item at that slot" (it was reading the cursor, 196..225). The two track each
+    // other because both derive from the same click — that ratio was the cell pitch, not an id.
+    // body[1] is the click's Y IN PANE COORDINATES, and it exists to be ECHOED BACK as the 0x59 tooltip's
+    // anchor so the box centers on the mouse (see SendItemTooltip). Proof it's Y, not X (RE'd 2026-08-27):
+    // the pane's cell hit-test (0x43c540) PtInRects the message's coord pair against cell rects built at
+    // 0x43c420 as (left=0x1e, top=13N+0x24, right=0xa0, bottom=13N+0x31) for cell N — 13px row pitch —
+    // and the coordinate the builder copies into body[1] ([msg+8], 0x43bfab) is the one tested against
+    // the 13N range, i.e. the row axis. That also matches the old 196..225 captures (rows ~12-14; a
+    // pane-local X can never exceed 0xa0 and still hit a cell).
     private void HandleItemInfoRequest(byte[] dec)
     {
         int slot = (dec.Length > 5 ? dec[5] : 0) - 1;      // 1-based on the wire, like 0x1C
+        byte cursorY = dec.Length > 1 ? dec[1] : (byte)0;
         // The request can only come from the bag widget, so don't fall back to Equipment: worn gear numbers
         // its slots on a different scale (ItemDef.EquipSlot) and would answer with the wrong item.
         var it = InvAt(slot);
         var def = it is null ? null : Content.ItemById(it.ItemId);
-        Log.Info($"   -> ITEM-INFO (0x66) slot={slot + 1} cursorX={(dec.Length > 1 ? dec[1] : 0)}" +
+        Log.Info($"   -> ITEM-INFO (0x66) slot={slot + 1} cursorY={cursorY}" +
                  (def is null ? "  [empty slot]" : $"  -> '{def.Name}' #{def.Id}"));
         if (it is null || def is null) return;
-        SendItemInfo(def, ItemInfoText(def, it), (byte)(slot + 1));
+        SendItemInfo(def, ItemInfoText(def, it), cursorY);
     }
 
     // ---- THE REPLY: `0x59` sub-kind 0, the inventory pane's own tooltip -------------------------------
@@ -47,23 +55,30 @@ public sealed partial class Session
     //     body[0] = 0            sub-kind. (1 is a different feature entirely — RTK's clif_sendtowns sends
     //                            0x59 with body[0]=64, and the world dispatcher's 0x59 trampoline at
     //                            0x44b9e9 gates on body[0]==1, so the two never collide.)
-    //     body[1] = anchor u8    which inventory row to hang off; we echo the slot the client asked about.
+    //     body[1] = Y anchor u8  the box's VERTICAL CENTER, in pane-local pixels — NOT a row index (an
+    //                            earlier note read it as one, which pinned the box to the top of the
+    //                            screen: slot ids are 1..52, so `top = anchor - height/2` went negative
+    //                            and the clamp parked it at y=0). Echo the request's body[1] — the click's
+    //                            pane-local Y — and the box centers on the mouse, which is what the real
+    //                            server did and what the period screenshots show.
     //     body[2..3] = u16BE len 1..0x3FF. Out of that range and the handler bails silently.
     //     body[4..]  = text
-    // The handler asks the pane for its own rectangle (0x425380), computes a midpoint, and builds a
-    // 0x108-byte overlay object (0x42f450) with the text, the anchor and a `0x2710` (10000) lifetime — so
-    // the box places itself against the item list and times out on its own. No close button, which is
-    // exactly what the period screenshots show.
+    // The handler asks the pane for its own rectangle (0x425380), computes the pane's horizontal midpoint,
+    // and builds a 0x108-byte overlay object (0x42f450) with the text, both coordinates and a `0x2710`
+    // (10000) lifetime. The ctor places the box at (midX - width/2, anchor - height/2) (0x42f570..0x42f598),
+    // clamps it inside the pane and the screen (the OffsetRect calls against 0x470580/0x470590), then
+    // shifts it by the pane origin — so X self-centers on the item list, Y follows the anchor, and it
+    // times out on its own. No close button, which is exactly what the period screenshots show.
     // Line breaks: 0x42f450's own scan (0x42f4ed) counts CR (0x0d), LF (0x0a) AND TAB (0x09) as breaks, so
     // any of the three works and the separator doesn't need calibrating.
-    private void SendItemTooltip(byte anchor, IReadOnlyList<string> lines)
+    private void SendItemTooltip(byte anchorY, IReadOnlyList<string> lines)
     {
         var t = PopupAscii(string.Join(_itemInfoSep, lines));
         if (t.Length > 0x3FF) t = t[..0x3FF];          // hard client range check, not a soft cap
         if (t.Length == 0) return;                     // len 0 is also rejected by the handler
-        var body = new List<byte> { 0, anchor, (byte)(t.Length >> 8), (byte)t.Length };
+        var body = new List<byte> { 0, anchorY, (byte)(t.Length >> 8), (byte)t.Length };
         body.AddRange(t);
-        SendMap(0x59, _gameInc++, body.ToArray(), $"item-tooltip(0x59) anchor={anchor} {t.Length}B");
+        SendMap(0x59, _gameInc++, body.ToArray(), $"item-tooltip(0x59) anchorY={anchorY} {t.Length}B");
     }
 
     // REPLY — the same opcode back, parsed by client handler 0x4511b0. **`0x66` IS A "GO TO THIS URL"
@@ -124,12 +139,12 @@ public sealed partial class Session
     private string _itemInfoUrl = "";
     private string _itemInfoSep = "\n";
 
-    private void SendItemInfo(ItemDef def, IReadOnlyList<string> lines, byte anchor = 1)
+    private void SendItemInfo(ItemDef def, IReadOnlyList<string> lines, byte anchorY = 1)
     {
         switch (_itemInfoMode)
         {
             case ItemInfoMode.Tooltip:
-                SendItemTooltip(anchor, lines);
+                SendItemTooltip(anchorY, lines);
                 return;
 
             case ItemInfoMode.Overlay:

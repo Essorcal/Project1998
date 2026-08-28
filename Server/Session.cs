@@ -638,7 +638,7 @@ public sealed partial class Session
             // handler 0x4511b0 renders as the item-detail popup (stats + wear requirements). Both directions
             // are RE'd from the 4.95 binary — see HandleItemInfoRequest / SendItemInfo for the wire formats
             // and the builder/handler addresses. Leaving it unanswered is what made the client retry ~6×.
-            // body[0] splits the two: 0 = examine (`00 cursorX 00 01 01 SLOT 01 00 00 00`), 1 = "send me
+            // body[0] splits the two: 0 = examine (`00 cursorY 00 01 01 SLOT 01 00 00 00`), 1 = "send me
             // the town/nation table" (the fixed `01 00 01 01 00 01 01 00` the client emits from 0x449ed0
             // when its own table is empty, right before the 0x18 user-list request). See Session.UserList.
             case 0x66:
