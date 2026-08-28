@@ -159,8 +159,11 @@ public sealed partial class Session
         // object-wall for this heading (ObjectFlags) — the layer that stops you walking through a hut's thin
         // side wall (pass=0 under it). Warp tiles still win: the warp check below returns before `blocked` is
         // consulted, so doorways sitting on object tiles keep working.
-        bool blocked = offMap || mobHere || playerHere
-            || (PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3)));
+        // @clip waives every collision source except the map edge — walls, object-walls, mobs and players
+        // alike. The streamed pass layer is doctored in lockstep (see SendMapRect), because the client
+        // predicts against its own copy and would refuse the step before this check ever saw it.
+        bool blocked = offMap || (!_noClip && (mobHere || playerHere
+            || (PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3)))));
 
         // Doors/portals take precedence over collision: if the tile we're stepping toward is a warp
         // source, take it — even if that tile is otherwise "solid" (many doorways sit on object tiles).
@@ -597,7 +600,7 @@ public sealed partial class Session
             // Source the WHOLE ground word: its top two bits are the legacy sheet selector, and
             // TileTranslation needs them.
             ushort word = md.GroundWord(mx, y);
-            MapCell.Write(d, TileTranslation.Ground(word, _ver), md.Pass(mx, y),
+            MapCell.Write(d, TileTranslation.Ground(word, _ver), _noClip ? (ushort)0 : md.Pass(mx, y),
                           TileTranslation.Object(objs[i], _ver), _ver);
         }
         SendMap(0x06, _gameInc++, d.ToArray(),

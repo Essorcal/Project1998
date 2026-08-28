@@ -383,6 +383,30 @@ public sealed partial class Session
         Log.Info($"   -> MOUNT {( _char.Mounted ? "on" : "off")}");
     }
 
+    // "@clip [0|1]" — no-clip, for walking quest routes without fighting the geometry. Session-scoped and
+    // always OFF at login (a persisted flag could strand a tester's ordinary character inside a wall on a
+    // later login with no staff around). Two layers must move together, because collision is enforced twice:
+    // HandleWalk stops refusing the step server-side, and the streamed pass layer goes out as "walkable
+    // everywhere" (SendMapRect) so the CLIENT's own local prediction stops refusing it too — without the
+    // second half the toggle would be a no-op, since the client never sends a walk it believes is blocked.
+    // The re-prime below re-stamps the already-streamed window immediately; every later strip follows suit.
+    // Two holes, both accepted: the 5.33 client also collides locally against its own SOBJ.TBL directional
+    // flags, which no stream can override without blanking the artwork — so a thin object-wall (hut sides)
+    // may still refuse client-side there. And on 4.95 the pass bits ARE the sheet-2 art selector (one word),
+    // so blocked terrain draws as the wrong tile while clip is on; it heals the moment clip turns off.
+    // Warps deliberately still fire — @clip changes collision, not doorways; a tester walking a quest route
+    // still wants portals to carry them. Mob/AI behaviour is untouched: you can share a tile with a mob and
+    // it can still hit you.
+    private bool _noClip;
+    private void ClipCmd(string text)
+    {
+        var a = ParseInts(text);
+        _noClip = a.Length > 0 ? a[0] != 0 : !_noClip;
+        PrimeViewport("clip");   // re-stamp the visible window so the client's pass layer flips NOW, not next strip
+        SendMiniText(SettingLine("No-clip", _noClip));
+        Log.Info($"   -> NOCLIP {(_noClip ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+    }
+
     // The 'r' Ride key (HandleSetting case 0x00): a real RTK-shaped find-a-horse mount, distinct from the
     // @ride/@mount GM toggle above. Mounting requires an actual "horse" mob (MobDef key "horse" — the plain
     // wild horse wandering Buya/Horse Valley, not a combat mob like "wild_horse"/"horse_guardsman" that just
