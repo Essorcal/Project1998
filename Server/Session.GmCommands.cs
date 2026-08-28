@@ -1000,6 +1000,109 @@ public sealed partial class Session
     private const string DogChainReg = "dog_linguist";
     private const int DogChainDone = 4;
 
+    // "@quest [key] [stage]" — the raw quest registry, readable and writable, so any quest can be re-tested
+    // without a purpose-built command per chain. Bare @quest dumps every key the character carries (the int
+    // stage machine AND the string registry), which is how a tester DISCOVERS the key in the first place —
+    // none of this is visible in-game anywhere else. "@quest <key>" reads one; "@quest <key> <n>" sets it
+    // (0 removes the entry outright — same read-back as 0, and the dump stays clean); a non-numeric value
+    // sets the STRING registry instead (e.g. the minor-quest selection). Stage meanings are per-quest — see
+    // docs/common/Quest-Registry.md for the full catalogue of keys, stages and the legends that pair with
+    // them (most chains gate on the LEGEND, not the stage, so a re-test usually needs @legend too).
+    private void QuestCmd(string text)
+    {
+        var p = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (p.Length == 0)
+        {
+            if (_char.Quests.Count == 0 && _char.QuestStrings.Count == 0)
+            { SendLog($"No quest keys set. ({Prefix}quest <key> <stage> to set one; see docs/common/Quest-Registry.md.)"); return; }
+            SendLog($"quest registry ({_char.Quests.Count} key{(_char.Quests.Count == 1 ? "" : "s")}" +
+                    $"{(_char.QuestStrings.Count > 0 ? $" + {_char.QuestStrings.Count} string" : "")}):");
+            foreach (var (k, v) in _char.Quests.OrderBy(e => e.Key, StringComparer.Ordinal)) SendLog($"  {k} = {v}");
+            foreach (var (k, v) in _char.QuestStrings.OrderBy(e => e.Key, StringComparer.Ordinal)) SendLog($"  {k} = \"{v}\"");
+            return;
+        }
+
+        string key = p[0];
+        if (p.Length == 1)
+        {
+            if (_char.Quests.TryGetValue(key, out int cur)) SendLog($"{key} = {cur}");
+            else if (_char.QuestStrings.TryGetValue(key, out var cs)) SendLog($"{key} = \"{cs}\"");
+            else SendLog($"{key} is not set (reads as stage 0).");
+            return;
+        }
+
+        string val = string.Join(' ', p[1..]);
+        if (int.TryParse(val, out int stage))
+        {
+            if (stage == 0)
+            {
+                bool had = _char.Quests.Remove(key) | _char.QuestStrings.Remove(key);
+                SaveChar();
+                SendLog(had ? $"{key} cleared (was set; now reads as stage 0)." : $"{key} was not set — nothing to clear.");
+            }
+            else
+            {
+                SetQuestStage(key, stage);
+                SendLog($"{key} = {stage}.");
+            }
+        }
+        else
+        {
+            _char.QuestStrings[key] = val;
+            SaveChar();
+            SendLog($"{key} = \"{val}\" (string registry).");
+        }
+        Log.Info($"   -> @quest '{_char.Name}': {key} <- {val}");
+    }
+
+    // "@legend [key] [0 | <icon> <color> <text...>]" — the legend list with its INTERNAL keys showing. The
+    // profile window renders only each mark's text; the key (RTK's legend name) is what quests gate on
+    // (HasLegend), so this is the only place a tester can see which key a mark answers to. "@legend <key> 0"
+    // removes a mark; "@legend <key> <icon> <color> <text...>" (re)creates one — replace-by-key, same as
+    // AddLegend everywhere — so a post-quest state can be entered directly with the values from
+    // docs/common/Quest-Registry.md. The seeded "Born in …" mark has no key and so can't be addressed here,
+    // which doubles as its protection. NOTE: a legend and its quest stage are independent — most chains
+    // check the legend, so clearing only the stage usually re-tests nothing.
+    private void LegendCmd(string text)
+    {
+        var p = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (p.Length == 0)
+        {
+            SendLog($"legend marks ({_char.Legends.Count}):");
+            foreach (var l in _char.Legends)
+                SendLog($"  {(string.IsNullOrEmpty(l.Name) ? "(no key)" : l.Name)}: \"{l.Text}\" (icon {l.Icon}, color {l.Color})");
+            return;
+        }
+
+        string key = p[0];
+        var held = _char.Legends.FirstOrDefault(l => l.Name == key);
+        if (p.Length == 1)
+        {
+            SendLog(held is null ? $"{key}: not held."
+                                 : $"{key}: \"{held.Text}\" (icon {held.Icon}, color {held.Color})");
+            return;
+        }
+
+        if (p.Length == 2 && p[1] == "0")
+        {
+            RemoveLegend(key);
+            SendLog(held is null ? $"{key} was not held — nothing to remove." : $"{key} removed (\"{held.Text}\").");
+            Log.Info($"   -> @legend '{_char.Name}': removed {key}");
+            return;
+        }
+
+        if (p.Length >= 4 && byte.TryParse(p[1], out byte icon) && byte.TryParse(p[2], out byte color))
+        {
+            string body = string.Join(' ', p[3..]);
+            AddLegend(body, key, icon, color);
+            SendLog($"{key} {(held is null ? "added" : "replaced")}: \"{body}\" (icon {icon}, color {color}).");
+            Log.Info($"   -> @legend '{_char.Name}': {key} <- icon {icon} color {color} \"{body}\"");
+            return;
+        }
+
+        SendLog($"usage: {Prefix}legend [key] [0 | <icon> <color> <text...>]   (color 128 is the usual white; 0 renders invisible)");
+    }
+
     // "@class <name>" — set the class/path and rebuild the character as one. `Character.ClassName` stores the
     // BASE name and is the single source of truth for the path id (Content.PathIdForClass), which drives spell
     // learning, the ItmPthId gear restriction and the subpath chat channel; what a player SEES is
