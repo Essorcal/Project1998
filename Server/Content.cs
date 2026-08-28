@@ -175,7 +175,12 @@ public sealed record ItemDef(
     // item."` (player.lua:1622). 605 of the 1241 equip rows are 0, but 482 of those are ItmIndestructible as
     // well (nothing to repair on gear that never wears), leaving ~123 that really do decay permanently —
     // the totem helms, the smith-forged subpath weapons, the headbands and the gauntlets.
-    bool Repairable = true)
+    bool Repairable = true,
+    // ItmExchangeable / ItmDepositable — ItmDroppable's two sibling restriction flags, same inverted sense
+    // (set = you CAN'T). NoTrade refuses the exchange window (RTK clif_exchange_additem: "You cannot exchange
+    // that."); NoDeposit refuses bank storage (RTK player.lua depositNoConfirm: "You cannot deposit that
+    // item."). 42 / 23 registry rows set them — mostly one-shot quest tokens like this file's namesake keys.
+    bool NoTrade = false, bool NoDeposit = false)
 {
     /// <summary>The Item.epf id the 4.95 client must be told to draw — <see cref="Icon"/> with
     /// <see cref="IconColor"/> already folded in (see Content.ResolveIconColors). 4.95 has NO colour channel
@@ -2739,7 +2744,8 @@ public static partial class Content
                 BuyText: Clean(col.GetValueOrDefault("ItmBuyText", "")),
                 PathId: I("ItmPthId"), Mark: I("ItmMark"),
                 BreakOnDeath: I("ItmBoD") != 0, Protected: I("ItmProtected") != 0,
-                Repairable: I("ItmRepairable") != 0));
+                Repairable: I("ItmRepairable") != 0,
+                NoTrade: I("ItmExchangeable") != 0, NoDeposit: I("ItmDepositable") != 0));
         }
         return ResolveIconColors(items);
     }

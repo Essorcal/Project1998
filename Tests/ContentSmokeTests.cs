@@ -972,7 +972,20 @@ public class ContentSmokeTests
             Assert.Equal(new[] { 30, 50, 75, 99 }, fans.Where(f => f.PathId == path).Select(f => (int)f.Level).OrderBy(l => l));
 
         // The talisman, and the four captives penned where the release tile looks for them.
-        Assert.NotNull(Content.ItemByKey(LeviathanQuest.Talisman));
+        var talisman = Content.ItemByKey(LeviathanQuest.Talisman);
+        Assert.NotNull(talisman);
+        // The 'u' key must never be able to destroy it: Dae-Whan only makes one, so an inert consume dead-ends
+        // the quest (a tester lost theirs this way, 2026-08-28). Non-consumable + no ItemParams row is the
+        // pair HandleUseItem reads as RTK's scriptless ITM_ETC no-op — used, nothing happens, still in the bag.
+        Assert.False(talisman!.IsConsumable, "the talisman must be ITM_ETC — a consumable type lets 'u' eat it");
+        Assert.False(Content.ItemParams.ContainsKey(LeviathanQuest.Talisman),
+            "an ItemParams row makes HandleUseItem consume the talisman on use — the drop is the only mechanic");
+        // The hardened registry row (see LeviathanQuest.Talisman): no ordinary drop (the pen rite bypasses the
+        // flag), no selling, no trading, but the bank takes it. NoDrop and NoDeposit are OUR edits to RTK's
+        // row; NoTrade is RTK's own.
+        Assert.True(talisman.NoDrop, "droppable outside the pen — a one-shot quest item can be lost/sold again");
+        Assert.True(talisman.NoTrade, "tradeable — RTK's own ItmExchangeable=1 was lost from the row");
+        Assert.False(talisman.NoDeposit, "the bank must accept the talisman — it is the one place to stash it");
         var captive = Content.MobByKey(LeviathanQuest.CaptiveMob);
         Assert.NotNull(captive);
         Assert.True(captive!.Stationary, "a captive that wanders leaves the release tile with nothing to free");

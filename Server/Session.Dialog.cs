@@ -1101,6 +1101,9 @@ public sealed partial class Session
         var stack = _char.Inventory.Where(i => i.ItemId == def.Id).OrderBy(i => i.Slot).ToList();
         if (stack.Count == 0) { NpcBubble(npc, $"You don't have any {def.Name} to store."); return true; }
 
+        // ItmDepositable, the registry's bank ban (RTK player.lua depositNoConfirm, refusal line verbatim).
+        if (def.NoDeposit) { NpcBubble(npc, "You cannot deposit that item."); return true; }
+
         int intended = amount > 0 ? Math.Min(amount, stack.Sum(i => i.Amount)) : stack.Sum(i => i.Amount);
 
         // RTK refuses used/damaged goods for storage: gear below full durability, or a charged consumable with
@@ -1240,6 +1243,9 @@ public sealed partial class Session
         // quantity question — there's no point asking how many of something she won't take.
         if ((def!.IsEquip || def.IsCharged) && inv.Dura != 0 && inv.Dura < def.Durability)
         { NpcBubble(npc, "I don't want your junk. Ask a smith to fix it."); continue; }
+
+        // ItmDepositable, the registry's bank ban (same depositNoConfirm, refusal line verbatim).
+        if (def.NoDeposit) { NpcBubble(npc, "You cannot deposit that item."); continue; }
 
         // A stack asks how much of it to store — dropping the whole pile in was never a choice the player got
         // to make. A single item skips the question (there's only one answer).

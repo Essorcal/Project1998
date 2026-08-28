@@ -201,6 +201,14 @@ public sealed partial class Session
         bool dropAll = dec.Length > 1 && dec[1] != 0;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
+
+        // Dropping the leviathan talisman in front of a cage is how the quest instructions say to free a
+        // captive ("walk up to one of the cages and drop your talisman on the ground"). Checked BEFORE the
+        // NoDrop refusal on purpose: the talisman is registry-flagged NoDrop (user-specified, 2026-08-28 — a
+        // one-shot quest item must not be losable to a stray keypress), and the rite is not a drop at all —
+        // the talisman never touches the ground. In the pen the rite answers; anywhere else the flag does.
+        if (TryLeviathanTalismanDrop(def)) return;
+
         if (def.NoDrop) { SendLog($"You can't drop {def.Name}."); return; }
 
         // Dropping a pick/axe/sickle beside a resource node is how you gather on 4.95 — the drop IS the
@@ -211,11 +219,6 @@ public sealed partial class Session
         // Dropping a White amber in the middle of the Mythic Nexus is the Star chain's prerequisite rite,
         // not a drop — it is absorbed where it falls. See BlessedByTheStars.
         if (TryStarBlessing(def, slot)) return;
-
-        // Dropping the leviathan talisman in front of a cage is how the quest instructions say to free a
-        // captive ("walk up to one of the cages and drop your talisman on the ground"). See
-        // Session.TryLeviathanTalismanDrop.
-        if (TryLeviathanTalismanDrop(def)) return;
 
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
@@ -319,6 +322,16 @@ public sealed partial class Session
         if (def.IsEquip) { if (eat) { SendMiniText("You can't eat that."); return; } EquipFromSlot(slot); return; }
         if (eat && def.Type != 0) { SendMiniText("You can't eat that."); return; }   // ITM_EAT only — same line as gear
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
+
+        // Only the true consumable classes (ITM_EAT/ITM_USE/ITM_SMOKE) may be SPENT by the use key. For every
+        // other type RTK pc_useitem either runs the item's use script and never delitems (ITM_ETC/BAG/MAP —
+        // the script decides), or does nothing at all (mounts, dyes, traps — the default case). Our ItemParams
+        // row IS the script, so a non-consumable without one is RTK's scriptless no-op: nothing happens and the
+        // item STAYS IN THE BAG. Treating these as consumables let 'u' destroy the leviathan talisman (ITM_ETC,
+        // scriptless in RTK too) — inert "You used", captive still caged, quest dead-ended, since Dae-Whan only
+        // ever makes one. A non-consumable WITH a row (the type-18 potions and scrolls) falls through: for
+        // those the shared consume below stands in for the RTK script's own removeItem call.
+        if (!def.IsConsumable && !Content.ItemParams.ContainsKey(def.Key)) return;
 
         _useGesturePlayed = false;
         if (!ApplyItemEffect(def)) return;   // gate refused (e.g. ward already active) -> not consumed, RTK's own early-return

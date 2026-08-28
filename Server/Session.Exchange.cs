@@ -142,6 +142,12 @@ public partial class Session
         var def = Content.ItemById(it.ItemId);
         if (def is null) return;
 
+        // ItmExchangeable, the registry's own trade ban (RTK clif_exchange_additem, refusal line verbatim).
+        // Gated HERE because this is the one funnel both offer routes share — the window's sub-type 1/2 and
+        // the native hand-to-player gesture. NOT gated on NoDrop: RTK's exchange checks only this flag, and
+        // most of its thousand NoDrop rows trade freely.
+        if (def.NoTrade) { SendMiniText("You cannot exchange that."); return; }
+
         var mine = trade.OfferOf(this);
         mine.Items.RemoveAll(x => x.Slot == it.Slot);
         mine.Items.Add(new InvItem(it.Slot, it.ItemId, amount, it.Dura) { CustomName = it.CustomName, Owner = it.Owner });

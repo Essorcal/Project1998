@@ -550,7 +550,7 @@ public sealed partial class Session
     private bool TryLeviathanTalismanDrop(ItemDef def)
     {
         if (def.Key != LeviathanQuest.Talisman) return false;
-        if (_char.Map != LeviathanQuest.PenMap) return false;   // elsewhere it's an ordinary drop — stay silent
+        if (_char.Map != LeviathanQuest.PenMap) return false;   // elsewhere the NoDrop flag refuses the drop — the pen is the ONLY place it leaves the bag
 
         // Nearest captive ANYWHERE on the pen, not just in range: the distance is what turns a failed
         // attempt into an explanation instead of silence. PenSearch spans the map from any corner.
