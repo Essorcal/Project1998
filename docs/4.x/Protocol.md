@@ -485,7 +485,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
 | `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. Two bytes only, **no state** — but it is *not* a plain flip notification: it is **edge-triggered against a client-stored byte** the server seeds via `0x23`. See "Edge-trigger" below — the server MUST re-seed after every synced toggle or the boxes invert. |
 | `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
-| `0x66` | **Examine item** (right-click a bag slot) | `00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00` | **`body[0] == 0`.** The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the raw cursor X, not an item reference. Reply with a `0x66` detail popup (§11c.1). |
+| `0x66` | **Examine item** (right-click a bag slot) | `00 cursorY(u8) 00 01 01 SLOT(u8) 01 00 00 00` | **`body[0] == 0`.** The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the click's pane-local cursor Y — echo it back as the `0x59` tooltip's Y anchor (§11c.1). |
 | `0x66` | **Town-table request** | `01 00 01 01 00 01 01 00` | **`body[0] == 1`** — the same opcode, split on the first byte. Fixed body, sent from `0x449ed0` only when the client's own town table is empty. Reply `0x59` sub-1 — §13c. |
 
 #### `0x1b` — the Options menu
@@ -2527,17 +2527,20 @@ sent the request and **retried it 5–8×** before giving up.
 through packet builder `0x43c290`, which writes the body byte for byte:
 
 ```
-00 cursorX(u8) 00 01 01 SLOT(u8) 01 00 00 00
+00 cursorY(u8) 00 01 01 SLOT(u8) 01 00 00 00
 ```
 
-The pane is **15 cells wide** with a page byte at *widget*+`0x104`, so a click resolves to
+The pane shows **15 cells** with a page byte at *widget*+`0x104`, so a click resolves to
 `cell + 15*page + 1` (`0x43bf94`) and then through `0x43c5a0` ("the array index of the Nth occupied slot")
 to the id in **body[5]**. Because a left-click hands that same id to `0x1C`, the slot convention is
 identical to `HandleUseItem`'s — **1-based**.
 
-> **Gotcha.** body[1] is the raw **cursor X**, not an item reference. An early note had the two swapped,
-> which made every logged decode read 196–225 and report "no bag item at that slot". The two bytes track
-> each other at roughly 15:1 only because both come from the same click — that ratio is the cell pitch.
+> **Gotcha.** body[1] is the click's raw **pane-local cursor Y**, not an item reference. An early note had
+> the two swapped, which made every logged decode read 196–225 and report "no bag item at that slot". The
+> two bytes track each other only because both come from the same click — that ratio is the 13px cell
+> pitch (cell rects at `0x43c420`: `top=13N+0x24, bottom=13N+0x31`, `N`=0..14, so Y spans 36..231 while a
+> pane-local X can never pass the hit-test above `0xa0`). The byte exists to be **echoed back as the `0x59`
+> tooltip's Y anchor** so the box centers on the mouse — see §11c.1.
 
 **Reply (server → client), same opcode — and it is a "GO TO THIS URL" packet.** Client handler `0x4511b0`,
 keyed on `body[0]`. Every kind carries a URL; they differ only in *which browser opens it*:
@@ -2601,17 +2604,29 @@ It is not a separate window class at all — **the inventory pane draws it itsel
 (`0x43c110`) claims three opcodes: `0x0F`, `0x10` and **`0x59`**. Sub-kind 0 lands in `0x43c1b0`:
 
 ```
-body[0] = 0             sub-kind
-body[1] = anchor (u8)   which item row to hang off — echo back the slot that was asked about
-body[2..3] = u16BE len  must be 1..0x3FF; outside that the handler bails silently
+body[0] = 0              sub-kind
+body[1] = Y anchor (u8)  the box's vertical CENTER in pane-local pixels — echo back the request's body[1]
+                         (the click's pane-local Y) and the box centers on the mouse
+body[2..3] = u16BE len   must be 1..0x3FF; outside that the handler bails silently
 body[4..]  = text
 ```
 
-The handler asks the pane for its own rectangle (`0x425380`), computes a midpoint, and builds a `0x108`-byte
-overlay object (`0x42f450`) from the text, the anchor, and a **`0x2710` (10000) lifetime** — so the box
-positions itself against the item list and times out on its own, which is why the screenshots have no close
-button. `0x42f450`'s own scan (`0x42f4ed`) treats **CR (`0x0d`), LF (`0x0a`) and TAB (`0x09`) all as line
-breaks**, so the separator needs no calibrating.
+The handler asks the pane for its own rectangle (`0x425380`), computes the pane's **horizontal** midpoint,
+and builds a `0x108`-byte overlay object (`0x42f450`) from the text, both coordinates, and a **`0x2710`
+(10000) lifetime**. The ctor sizes the box from the wrapped text and places it at `(midX − width/2,
+anchorY − height/2)` (`0x42f570`–`0x42f598`), clamps it inside the pane and the screen, then shifts it by
+the pane origin — X self-centers on the item list, Y follows the anchor, and the box times out on its own,
+which is why the screenshots have no close button. `0x42f450`'s own scan (`0x42f4ed`) treats **CR (`0x0d`),
+LF (`0x0a`) and TAB (`0x09`) all as line breaks**, so the separator needs no calibrating.
+
+> **The anchor is a coordinate, not a row index (fixed 2026-08-27).** An earlier read had `body[1]` as
+> "which item row to hang off" and the server echoed the *slot number* (1..52) — which made
+> `anchorY − height/2` negative for every slot, so the clamp parked the tooltip at the top of the screen on
+> every examine. The request's `body[1]` (formerly misread as "cursor X") is the click's pane-local Y: the
+> pane's cell hit-test (`0x43c540`) tests the pair from the mouse message against cell rects built at
+> `0x43c420` as `(left=0x1e, top=13N+0x24, right=0xa0, bottom=13N+0x31)` for cell `N` — a 13px row pitch —
+> and the coordinate the request builder copies into `body[1]` (`0x43bfab`) is the one tested against the
+> `13N` row range. It exists solely to be echoed back here.
 
 **Sub-kind 1 is a different feature and cannot collide**: RTK's `clif_sendtowns` sends `0x59` with
 `body[0]=64`, and the world dispatcher's `0x59` trampoline (`0x44b9e9`) gates on `body[0]==1`, while the
@@ -4838,7 +4853,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x46` | `0x451020` | **"Power" board** (RTK `clif_sendpowerboard`): `01 count(u16BE)` then `count` × `id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]`. §13a |
 | `0x4a` | `0x4514d0` | `GetModuleFileName` anti-cheat check |
 | `0x4b` | `0x451630` | **remote-send**: `len(u16BE) bytes[len]` — the client sends `bytes` back **verbatim** as its next packet (`bytes[0]` is the opcode). `0x451d10` is a plain `memcpy`, so the payload is plaintext. Buffer is `0x2714`. §13a |
-| `0x59` | `0x43c1b0` (inventory pane) / `0x449f60` (world) | ✓ **item tooltip** when `body[0]==0`: `00 anchor(u8) u16BE len text` — the box that hangs off the item list, 10s lifetime, self-positioning. ✓ **`body[0]==1` = the town/nation table** (§13c) — a prerequisite for the user list, not an optional extra. See §11c.1 |
+| `0x59` | `0x43c1b0` (inventory pane) / `0x449f60` (world) | ✓ **item tooltip** when `body[0]==0`: `00 anchorY(u8) u16BE len text` — the box that hangs off the item list; anchorY = the box's vertical center in pane-local px (echo the request's cursor Y), 10s lifetime, X self-centering. ✓ **`body[0]==1` = the town/nation table** (§13c) — a prerequisite for the user list, not an optional extra. See §11c.1 |
 | `0x66` | `0x4511b0` | ✓ **"open this URL"**: `kind(u8)` then 1 or 2 `u16BE`-length strings, string 1 = the URL. kind 0 = embedded IE (**crashes this build**, missing `XBUTTON.EPF`); kind 1/2 = the parchment OK dialog, and **kind 1 exits the game**. Not the item window. See §11c.1 |
 | `0x67` | `0x4513e0` | **countdown timer** at (0x85, 0x0a): `kind(u8) seconds(u32BE)`. kind 0 updates an existing timer only, 1/2 create-or-update with a different mode, 3 closes it. `seconds >= 0xe10` (3600) picks the wider display format. §13a |
 | `0x68` | `0x4516a0` | **challenge ping**: `token(u32BE)`. Client replies `0x75` = `token(u32BE) [player+0x70](u32BE)`, 9-byte body. §13a |
