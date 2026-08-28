@@ -980,6 +980,12 @@ public class ContentSmokeTests
         Assert.False(talisman!.IsConsumable, "the talisman must be ITM_ETC — a consumable type lets 'u' eat it");
         Assert.False(Content.ItemParams.ContainsKey(LeviathanQuest.Talisman),
             "an ItemParams row makes HandleUseItem consume the talisman on use — the drop is the only mechanic");
+        // The hardened registry row (see LeviathanQuest.Talisman): no ordinary drop (the pen rite bypasses the
+        // flag), no selling, no trading, but the bank takes it. NoDrop and NoDeposit are OUR edits to RTK's
+        // row; NoTrade is RTK's own.
+        Assert.True(talisman.NoDrop, "droppable outside the pen — a one-shot quest item can be lost/sold again");
+        Assert.True(talisman.NoTrade, "tradeable — RTK's own ItmExchangeable=1 was lost from the row");
+        Assert.False(talisman.NoDeposit, "the bank must accept the talisman — it is the one place to stash it");
         var captive = Content.MobByKey(LeviathanQuest.CaptiveMob);
         Assert.NotNull(captive);
         Assert.True(captive!.Stationary, "a captive that wanders leaves the release tile with nothing to free");

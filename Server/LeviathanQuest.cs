@@ -50,6 +50,14 @@ public static class LeviathanQuest
 
     public const string LegendFreed = "leviathan_freed";
     public const string LegendEnemy = "leviathan_sworn_enemy";
+
+    /// <summary>The one-shot quest item, and the registry row we deliberately hardened (user-specified,
+    /// 2026-08-28) so it cannot be lost anywhere but the pen: Items.csv 29007 carries RTK's own
+    /// <c>ItmExchangeable=1</c> (no trading) and our two edits — <c>ItmDroppable</c> 0→1, so the only drop
+    /// that works is the release rite (<c>Session.TryLeviathanTalismanDrop</c> runs before the NoDrop
+    /// refusal; selling, throwing, the messenger and the death-spill all key off the same flag), and
+    /// <c>ItmDepositable</c> 1→0, so the bank WILL hold it (RTK forbade that too; we keep it as the one
+    /// stash-it-somewhere escape hatch). The smoke test pins all three.</summary>
     public const string Talisman    = "leviathan_talisman";
     public const string Pelt        = "green_squirrel_pelt";   // the Border patrol's bribe
 

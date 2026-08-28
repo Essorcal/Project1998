@@ -201,6 +201,14 @@ public sealed partial class Session
         bool dropAll = dec.Length > 1 && dec[1] != 0;
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
+
+        // Dropping the leviathan talisman in front of a cage is how the quest instructions say to free a
+        // captive ("walk up to one of the cages and drop your talisman on the ground"). Checked BEFORE the
+        // NoDrop refusal on purpose: the talisman is registry-flagged NoDrop (user-specified, 2026-08-28 — a
+        // one-shot quest item must not be losable to a stray keypress), and the rite is not a drop at all —
+        // the talisman never touches the ground. In the pen the rite answers; anywhere else the flag does.
+        if (TryLeviathanTalismanDrop(def)) return;
+
         if (def.NoDrop) { SendLog($"You can't drop {def.Name}."); return; }
 
         // Dropping a pick/axe/sickle beside a resource node is how you gather on 4.95 — the drop IS the
@@ -211,11 +219,6 @@ public sealed partial class Session
         // Dropping a White amber in the middle of the Mythic Nexus is the Star chain's prerequisite rite,
         // not a drop — it is absorbed where it falls. See BlessedByTheStars.
         if (TryStarBlessing(def, slot)) return;
-
-        // Dropping the leviathan talisman in front of a cage is how the quest instructions say to free a
-        // captive ("walk up to one of the cages and drop your talisman on the ground"). See
-        // Session.TryLeviathanTalismanDrop.
-        if (TryLeviathanTalismanDrop(def)) return;
 
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
