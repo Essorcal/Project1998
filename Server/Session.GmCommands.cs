@@ -446,14 +446,15 @@ public sealed partial class Session
     // index and pulls the palette from Item.tbl, so a colour variant IS a separate frame (ItemDef.ClientIcon
     // remarks; a first cut of this command sent the 0x07 colour byte and it was silently ignored). So "make
     // it blue" means "find a natively blue frame": run "@icons <start>" to page the frame space in the bag,
-    // then "look <frame>" what you found onto the floor. Defaults, chosen by eye off render_items.py sheets:
-    // warps wear frame 877 (a bright pinwheel — picked over the blue gem at 720 for read-at-a-glance
-    // contrast against most floors), scripted doorways frame 26 (the Iron key), a different SHAPE, which no
-    // colour channel can take away. Frames are per-CLIENT art: the two ids hold on both shipped clients, but
-    // anything found on a 5.33 sheet past 1310 simply does not exist in 4.95's Item.epf.
+    // then "look <frame>" what you found onto the floor — and trust the IN-GAME sweep over a rendered
+    // contact sheet: sheet labels don't reliably line up with wire ids and already mis-picked one default.
+    // Both kinds default to frame 877, a blue pinwheel confirmed in-game; one shape for both was the
+    // operator's call ("doors are basically warps"), and the two-argument form still splits them for anyone
+    // who wants warp and doorway told apart. Frames are per-CLIENT art: 877 exists on both shipped clients,
+    // but anything found on a 5.33 sheet past 1310 simply does not exist in 4.95's Item.epf.
     private bool _showWarps;
     private ushort _warpMarkFrame = 877;
-    private ushort _doorMarkFrame = 26;
+    private ushort _doorMarkFrame = 877;
 
     private void ShowWarpsCmd(string text)
     {
@@ -468,7 +469,13 @@ public sealed partial class Session
             if (a.Length > 1) _doorMarkFrame = (ushort)Math.Clamp(a[1], 0, maxId);
             SendLog($"Marker look: warp frame {_warpMarkFrame}, doorway frame {_doorMarkFrame} " +
                     $"(find frames with {Prefix}icons <start>; ids run 0..{maxId} on this client).");
-            if (_showWarps) StampWarpMarkers();
+            // Say what the re-stamp actually painted: "look <n> did nothing" has already been reported once
+            // when every marker in view was the OTHER kind and the changed frame had nothing to redraw.
+            if (_showWarps)
+            {
+                var (w, d) = StampWarpMarkers();
+                SendLog($"Re-stamped {w} warp + {d} doorway marker(s) on this map.");
+            }
             return;
         }
 
@@ -485,7 +492,7 @@ public sealed partial class Session
     /// event caves, arena side doors, path-hall doors, and the Forever Tree crevasse (whose tile is a
     /// literal in TryForeverTreeEntrance, mirrored here). The world-map travel edges are deliberately NOT
     /// marked: they span whole map borders, and a border of diamonds is noise, not signal.</summary>
-    private void StampWarpMarkers(bool list = false)
+    private (int warps, int doors) StampWarpMarkers(bool list = false)
     {
         ClearWarpMarkers();
         ushort map = _char.Map;
@@ -503,6 +510,7 @@ public sealed partial class Session
             lines.Add($"  ({from.x},{from.y}) -> {dest} ({to.x},{to.y})" +
                       (Content.WarpQuestLocks.ContainsKey((map, to.m)) ? "  [quest-locked]" : ""));
         }
+        int warpCount = marks.Count;   // everything added past here is a scripted doorway
 
         void Door(ushort x, ushort y, string what) { Mark(x, y, _doorMarkFrame); lines.Add($"  ({x},{y}) {what}"); }
 
@@ -519,12 +527,14 @@ public sealed partial class Session
         lock (_viewLock) _warpMarkers.AddRange(marks);
         SyncGroundItems(_world.ItemsOn(map));   // draw the in-view markers now; the rest appear as you walk
 
-        if (!list) return;
-        if (marks.Count == 0) { SendLog("No warps or scripted doorways on this map."); return; }
-        SendLog($"Doorways here ({marks.Count}) — the gem is a warp, the key a scripted doorway:");
+        var counts = (warps: warpCount, doors: marks.Count - warpCount);
+        if (!list) return counts;
+        if (marks.Count == 0) { SendLog("No warps or scripted doorways on this map."); return counts; }
+        SendLog($"Doorways here ({counts.warps} warp(s), {counts.doors} scripted doorway(s)):");
         const int Cap = 18;   // a screenful; past it the markers themselves are the better map
         foreach (var l in lines.Take(Cap)) SendLog(l);
         if (lines.Count > Cap) SendLog($"  ...and {lines.Count - Cap} more - the markers show them all.");
+        return counts;
     }
 
     /// <summary>Take down the @showwarps overlay: despawn every marker this client actually drew (the
