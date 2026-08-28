@@ -198,9 +198,14 @@ public sealed class AncientLeviathanAbility : INpcAbility
 
         ctx.SetStage(LeviathanQuest.Key, LeviathanQuest.StageAsked);
         ctx.GiveItem(LeviathanQuest.Talisman);
+        // RTK's line here is "You must step next to my captured kind. The talisman will then break the
+        // spell…" — instructions for ITS mechanic, the step-on-the-door-row tile trigger. On our map the cage
+        // doors are shut, stepping next to a captive is impossible, and the DROP is the only trigger (see
+        // LeviathanQuest.PenMap), so his words are re-aimed at the drop — the same wording the player-facing
+        // quest instructions use ("walk up to one of the cages and drop your talisman on the ground").
         await ctx.Say(
             "Thank you! Here is a talisman. It will only work once. Since they are so fragile and take so long to make, I will give you only one.",
-            "You must step next to my captured kind. The talisman will then break the spell and fall to dust. And my kind will be transported back here.",
+            "Walk up to the cage that holds my captured kind and drop the talisman upon the ground. It will break the spell and fall to dust. And my kind will be transported back here.",
             "He moves his camp around from time to time but we believe it to be East of his homeland. If you go there and free even one of my kind, I will be grateful.");
     }
 

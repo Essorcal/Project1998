@@ -320,6 +320,16 @@ public sealed partial class Session
         if (eat && def.Type != 0) { SendMiniText("You can't eat that."); return; }   // ITM_EAT only — same line as gear
         if (_char.Hp == 0) { SendMiniText("Spirits can't do that."); return; }
 
+        // Only the true consumable classes (ITM_EAT/ITM_USE/ITM_SMOKE) may be SPENT by the use key. For every
+        // other type RTK pc_useitem either runs the item's use script and never delitems (ITM_ETC/BAG/MAP —
+        // the script decides), or does nothing at all (mounts, dyes, traps — the default case). Our ItemParams
+        // row IS the script, so a non-consumable without one is RTK's scriptless no-op: nothing happens and the
+        // item STAYS IN THE BAG. Treating these as consumables let 'u' destroy the leviathan talisman (ITM_ETC,
+        // scriptless in RTK too) — inert "You used", captive still caged, quest dead-ended, since Dae-Whan only
+        // ever makes one. A non-consumable WITH a row (the type-18 potions and scrolls) falls through: for
+        // those the shared consume below stands in for the RTK script's own removeItem call.
+        if (!def.IsConsumable && !Content.ItemParams.ContainsKey(def.Key)) return;
+
         _useGesturePlayed = false;
         if (!ApplyItemEffect(def)) return;   // gate refused (e.g. ward already active) -> not consumed, RTK's own early-return
 

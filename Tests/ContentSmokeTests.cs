@@ -972,7 +972,14 @@ public class ContentSmokeTests
             Assert.Equal(new[] { 30, 50, 75, 99 }, fans.Where(f => f.PathId == path).Select(f => (int)f.Level).OrderBy(l => l));
 
         // The talisman, and the four captives penned where the release tile looks for them.
-        Assert.NotNull(Content.ItemByKey(LeviathanQuest.Talisman));
+        var talisman = Content.ItemByKey(LeviathanQuest.Talisman);
+        Assert.NotNull(talisman);
+        // The 'u' key must never be able to destroy it: Dae-Whan only makes one, so an inert consume dead-ends
+        // the quest (a tester lost theirs this way, 2026-08-28). Non-consumable + no ItemParams row is the
+        // pair HandleUseItem reads as RTK's scriptless ITM_ETC no-op — used, nothing happens, still in the bag.
+        Assert.False(talisman!.IsConsumable, "the talisman must be ITM_ETC — a consumable type lets 'u' eat it");
+        Assert.False(Content.ItemParams.ContainsKey(LeviathanQuest.Talisman),
+            "an ItemParams row makes HandleUseItem consume the talisman on use — the drop is the only mechanic");
         var captive = Content.MobByKey(LeviathanQuest.CaptiveMob);
         Assert.NotNull(captive);
         Assert.True(captive!.Stationary, "a captive that wanders leaves the release tile with nothing to free");
