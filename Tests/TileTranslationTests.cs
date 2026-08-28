@@ -132,6 +132,26 @@ public class TileTranslationTests
     }
 
     [Fact]
+    public void Obj533Fix_FreeScopeIsEmpty_TheLookAlikesWereFalseMatches()
+    {
+        if (EnvSet("P1998_OBJ_FIX_533")) return;                                // operator override
+        // Scope `free` promised "substitute a visually identical object" and shipped four rows — 553->554,
+        // 571->572, 600->601, 694->695 — every one of them id -> id+1, because the matcher's renderer read
+        // the wrong EPF TOC field and displayed mostly the NEXT frame (the same off-by-one behind the
+        // twice-shipped ground +1). SObj.tbl refutes them: 553 is frames [1202,1199], 554 is [1203,1200];
+        // 571 is 2 frames tall, 572 is 3. The live symptom was every guild hall's curtain run (571..579,
+        // e.g. TK2510 rows 5/10/17) streaming to 5.33 with the left pillar replaced by a curtain-rod piece.
+        // So: at the default scope NOTHING may be rewritten. A future free row needs its frame lists proven
+        // identical in SObj.tbl itself, then this count consciously updated alongside that proof.
+        Assert.Equal(0, TileTranslation.Obj533FixCount);
+        foreach (ushort o in new ushort[] { 553, 571, 600, 694 })
+            Assert.Equal(o, TileTranslation.Object(o, V533));
+        // The full curtain/pillar run guild halls anchor at three rows — inert end to end.
+        for (ushort o = 571; o <= 579; o++)
+            Assert.Equal(o, TileTranslation.Object(o, V533));
+    }
+
+    [Fact]
     public void Obj533Fix_DecorScopeClearsTheStairObjects()
     {
         if (TileTranslation.Obj533FixScope < TileTranslation.Obj533Scope.Decor) return;   // opt-in only

@@ -86,8 +86,9 @@ Ports: `2000`/`2005` = 4.95 login/game, `2001`/`2006` = 5.33 login/game.
   The server never sees these — the client refuses before sending a walk request, so there is no `BLOCKED`
   line in the log. **Fixed by patching the client** (`re/patches/patch_533_sobj_flags.py`, 362 bytes in
   place). The server-side fallback for an unpatched client is `game-data/Obj533Fix.csv`
-  (`P1998_OBJ_FIX_533`, default `free`), which buys walkability by deleting artwork and only reaches full
-  parity at `all`. See `Terrain-Streaming.md`.
+  (`P1998_OBJ_FIX_533`, default `free` — which now applies *nothing*: its four "look-alike" substitutions
+  were false matches, retracted 2026-08-26 after they scrambled every guild hall's curtains on 5.33), and
+  it buys walkability by deleting artwork, only reaching full parity at `all`. See `Terrain-Streaming.md`.
 - **`.cmp` local map files are a red herring** for rendering. The 5.33 client *does* stat/open
   `Maps\TK######.cmp`, and the format was fully reversed (see RE doc), but terrain visibly comes from
   the server stream, not the file. You do **not** need to ship `.cmp` files.
