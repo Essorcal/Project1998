@@ -60,6 +60,7 @@ public sealed partial class Session
         T("die",     (s, a) => s.DieCmd(),         "",                    "kill yourself (ghost form + real death penalties; @rez to get back up)"),
         T("clip",    (s, a) => s.ClipCmd(a),       "[0|1]",               "no-clip: walk through walls, mobs and players (this session only; warps still work)"),
         T("anywarp", (s, a) => s.AnyWarpCmd(a),    "[0|1]",               "use any warp despite level/mark/path/quest requirements (this session only; echoes the denial it waived)"),
+        T("showwarps", (s, a) => s.ShowWarpsCmd(a), "[0|1] | look [warpFrame] [doorFrame]", "mark every warp + scripted doorway on the map (you only; follows across maps; lists destinations)"),
         T("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),

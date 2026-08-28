@@ -117,8 +117,11 @@ public sealed partial class Session
         // Our own spot-traps markers ride along: they are drawn through the identical viewport-gated 0x07
         // path, and the reveal radius (15) is nearly twice the view rect, so they need the same walk-into-view
         // draw the world's floor items get. They live only on this session — no other client ever sees them.
+        // The @showwarps overlay markers ride along for the same reason: they span the whole map.
         GroundItem[]? markers = null;
-        lock (_viewLock) if (_trapMarkers.Count > 0) markers = _trapMarkers.Values.ToArray();
+        lock (_viewLock)
+            if (_trapMarkers.Count > 0 || _warpMarkers.Count > 0)
+                markers = _trapMarkers.Values.Concat(_warpMarkers).ToArray();
         foreach (var gi in markers is null ? items : items.Concat(markers))
         {
             bool shown;
@@ -194,7 +197,10 @@ public sealed partial class Session
     /// <para><c>_trapMarkers</c> goes with them: a revealed trap is a marker on THIS map, and the client just
     /// dropped every foreign entity. RTK's own markers are per-map floor items and die with the room the same
     /// way — which is the "stays until you leave the map" lifetime seeSpotTraps describes.</para></summary>
-    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _trapMarkers.Clear(); } }
+    // _warpMarkers goes with them too — but unlike trap markers, the @showwarps overlay SURVIVES as a toggle:
+    // EnterMap and RedrawWorld re-stamp it for whatever map the client rebuilds, so only the stale marker set
+    // dies here, not the feature.
+    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
 
     /// <summary>Rub out the spot-traps marker for one trap, if this client ever revealed it — RTK
     /// <c>removeTrapItem(npc)</c>, which every trap NPC calls right before deleting itself. Broadcast to the
@@ -229,6 +235,7 @@ public sealed partial class Session
         SyncPeers(peers);
         SyncMobs(mobs);
         SyncGroundItems(_world.ItemsOn(_char.Map));
+        if (_showWarps) StampWarpMarkers();   // the rebuild dropped the @showwarps overlay — put it back
     }
 
     // Move a peer entity one step. (x,y) is the SOURCE tile — the client's 0x0C overshoots one tile past it

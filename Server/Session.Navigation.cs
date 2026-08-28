@@ -1111,6 +1111,7 @@ public sealed partial class Session
         SyncPeers(peers);   // stream the in-view players of the new map (0x33, viewport-gated + tracked)
         SyncMobs(mobs);   // stream the in-view mobs of the new map
         SyncGroundItems(_world.ItemsOn(mapId));   // in-view floor items of the new map (0x07, viewport-gated)
+        if (_showWarps) StampWarpMarkers();       // @showwarps follows across maps: overlay the NEW map's doorways
         SyncMapDoors(mapId);
         if (warnPvp)
         {

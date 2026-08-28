@@ -431,6 +431,125 @@ public sealed partial class Session
         Log.Info($"   -> ANYWARP {(_waiveWarpGate ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
     }
 
+    // "@showwarps [0|1]" — overlay a marker on every warp and gated doorway of the current map, visible to
+    // THIS session only. Rides the spot-traps marker machinery (Session.WorldApi.SyncGroundItems): each
+    // marker is a synthetic GroundItem — ItemId -1 like a coin pile, so it is no registry item, has no name,
+    // and can never be picked up (pickup reads the WORLD's floor list, which never holds these) — drawn and
+    // hidden by the same viewport reconcile as real floor items, so markers beyond the view rect appear as
+    // you walk toward them. Ground items occupy no tile: a marked warp still fires when stepped on.
+    // Follows you across maps (EnterMap re-stamps the overlay) until toggled off; session-scoped and OFF at
+    // login like @clip/@anywarp. Toggling on also prints the map's doorway list with destinations, with
+    // quest-locked warps flagged.
+    //
+    // "@showwarps look [warpFrame] [doorFrame]" — tune the marker sprites live (re-stamps at once). FRAMES,
+    // not colours: 4.95's item graphics path has NO colour channel anywhere — the draw takes only a frame
+    // index and pulls the palette from Item.tbl, so a colour variant IS a separate frame (ItemDef.ClientIcon
+    // remarks; a first cut of this command sent the 0x07 colour byte and it was silently ignored). So "make
+    // it blue" means "find a natively blue frame": run "@icons <start>" to page the frame space in the bag,
+    // then "look <frame>" what you found onto the floor — and trust the IN-GAME sweep over a rendered
+    // contact sheet: sheet labels don't reliably line up with wire ids and already mis-picked one default.
+    // Both kinds default to frame 877, a blue pinwheel confirmed in-game; one shape for both was the
+    // operator's call ("doors are basically warps"), and the two-argument form still splits them for anyone
+    // who wants warp and doorway told apart. Frames are per-CLIENT art: 877 exists on both shipped clients,
+    // but anything found on a 5.33 sheet past 1310 simply does not exist in 4.95's Item.epf.
+    private bool _showWarps;
+    private ushort _warpMarkFrame = 877;
+    private ushort _doorMarkFrame = 877;
+
+    private void ShowWarpsCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length > 0 && parts[0].Equals("look", StringComparison.OrdinalIgnoreCase))
+        {
+            // Per-version bound: 4.95's Item.epf has 1310 frames, 5.33's 2304 (counted from the shipped
+            // Misc.dat) — an id past the client's own count draws blank, so clamp to the session's client.
+            int maxId = _ver == ClientVersion.V533 ? 2303 : 1310;
+            var a = ParseInts(string.Join(' ', parts.Skip(1)));
+            if (a.Length > 0) _warpMarkFrame = (ushort)Math.Clamp(a[0], 0, maxId);
+            if (a.Length > 1) _doorMarkFrame = (ushort)Math.Clamp(a[1], 0, maxId);
+            SendLog($"Marker look: warp frame {_warpMarkFrame}, doorway frame {_doorMarkFrame} " +
+                    $"(find frames with {Prefix}icons <start>; ids run 0..{maxId} on this client).");
+            // Say what the re-stamp actually painted: "look <n> did nothing" has already been reported once
+            // when every marker in view was the OTHER kind and the changed frame had nothing to redraw.
+            if (_showWarps)
+            {
+                var (w, d) = StampWarpMarkers();
+                SendLog($"Re-stamped {w} warp + {d} doorway marker(s) on this map.");
+            }
+            return;
+        }
+
+        var t = ParseInts(text);
+        _showWarps = t.Length > 0 ? t[0] != 0 : !_showWarps;
+        SendMiniText(SettingLine("Show warps", _showWarps));
+        if (_showWarps) StampWarpMarkers(list: true);
+        else ClearWarpMarkers();
+        Log.Info($"   -> SHOWWARPS {(_showWarps ? "on" : "off")} for '{_char.Name}' at map {_char.Map}");
+    }
+
+    /// <summary>Stamp the @showwarps overlay for the CURRENT map (replacing any previous overlay). Doorway
+    /// sources: Warps.csv, plus every scripted walk-onto doorway with a tile index — mythic zodiac caves,
+    /// event caves, arena side doors, path-hall doors, and the Forever Tree crevasse (whose tile is a
+    /// literal in TryForeverTreeEntrance, mirrored here). The world-map travel edges are deliberately NOT
+    /// marked: they span whole map borders, and a border of diamonds is noise, not signal.</summary>
+    private (int warps, int doors) StampWarpMarkers(bool list = false)
+    {
+        ClearWarpMarkers();
+        ushort map = _char.Map;
+        var marks = new List<GroundItem>();
+        var lines = new List<string>();
+
+        void Mark(ushort x, ushort y, ushort frame) =>
+            marks.Add(new GroundItem { Id = _world.AllocateItemId(), ItemId = -1, X = x, Y = y, Graphic = frame });
+
+        foreach (var (from, to) in Content.Warps.Where(w => w.Key.m == map)
+                                                .OrderBy(w => w.Key.y).ThenBy(w => w.Key.x))
+        {
+            Mark(from.x, from.y, _warpMarkFrame);
+            string dest = Content.TryMap(to.m, out var dm) ? dm.Name : $"map {to.m}";
+            lines.Add($"  ({from.x},{from.y}) -> {dest} ({to.x},{to.y})" +
+                      (Content.WarpQuestLocks.ContainsKey((map, to.m)) ? "  [quest-locked]" : ""));
+        }
+        int warpCount = marks.Count;   // everything added past here is a scripted doorway
+
+        void Door(ushort x, ushort y, string what) { Mark(x, y, _doorMarkFrame); lines.Add($"  ({x},{y}) {what}"); }
+
+        foreach (var (k, cave) in Content.MythicCaveTiles) if (k.Map == map) Door(k.X, k.Y, $"mythic {cave.Animal} cave (tiered)");
+        foreach (var (k, cave) in Content.EventCaveTiles)  if (k.Map == map) Door(k.X, k.Y, $"event cave '{cave.Key}' (tiered)");
+        foreach (var (k, door) in Content.ArenaDoorTiles)  if (k.Map == map) Door(k.X, k.Y, $"arena door '{door.Label}'");
+        if (Content.PathHalls.ContainsKey(map))
+        {
+            Door(1, 23, "path hall guild door");   Door(2, 23, "path hall guild door");
+            Door(8, 1, "path hall sanctum door");  Door(9, 1, "path hall sanctum door");
+        }
+        if (map == 1002) Door(19, 91, "Forever Tree crevasse");
+
+        lock (_viewLock) _warpMarkers.AddRange(marks);
+        SyncGroundItems(_world.ItemsOn(map));   // draw the in-view markers now; the rest appear as you walk
+
+        var counts = (warps: warpCount, doors: marks.Count - warpCount);
+        if (!list) return counts;
+        if (marks.Count == 0) { SendLog("No warps or scripted doorways on this map."); return counts; }
+        SendLog($"Doorways here ({counts.warps} warp(s), {counts.doors} scripted doorway(s)):");
+        const int Cap = 18;   // a screenful; past it the markers themselves are the better map
+        foreach (var l in lines.Take(Cap)) SendLog(l);
+        if (lines.Count > Cap) SendLog($"  ...and {lines.Count - Cap} more - the markers show them all.");
+        return counts;
+    }
+
+    /// <summary>Take down the @showwarps overlay: despawn every marker this client actually drew (the
+    /// viewport gate means most were never sent) and forget the set. Same shape as ClearTrapMarker.</summary>
+    private void ClearWarpMarkers()
+    {
+        var gone = new List<uint>();
+        lock (_viewLock)
+        {
+            foreach (var m in _warpMarkers) if (_shownItems.Remove(m.Id)) gone.Add(m.Id);
+            _warpMarkers.Clear();
+        }
+        if (gone.Count > 0) SendDespawn(gone.ToArray());
+    }
+
     // The 'r' Ride key (HandleSetting case 0x00): a real RTK-shaped find-a-horse mount, distinct from the
     // @ride/@mount GM toggle above. Mounting requires an actual "horse" mob (MobDef key "horse" — the plain
     // wild horse wandering Buya/Horse Valley, not a combat mob like "wild_horse"/"horse_guardsman" that just
