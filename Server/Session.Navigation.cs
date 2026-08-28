@@ -147,15 +147,27 @@ public sealed partial class Session
         int tier = MythicCaveTier(cave);
         if (tier < 1)
         {
-            SendXy();   // cancel the client's step prediction / unblock the next step — the entrance holds them out
-            SendMiniText(tier switch   // status box (RTK clif_sendminitext), not the login message box
+            string denyMsg = tier switch   // status box (RTK clif_sendminitext), not the login message box
             {
                 -2 => $"That would be unwise. Mythic {PluralAnimal(cave.Animal)} dwell here.",
                 0  => "You almost understand the secrets of this entrance.",
                 _  => "You are not yet ready to enter here.",
-            });
-            Log.Info($"   -> MYTHIC {cave.Animal} entrance REFUSED (tier {tier}, level {_char.Level})");
-            return true;
+            };
+            // @anywarp: unqualified for EVERY tier, so the waiver carries them into tier 1 (the base cave) —
+            // the deepest-unlocked rule has nothing to pick from, and the shallowest is the predictable choice.
+            if (_waiveWarpGate)
+            {
+                tier = 1;
+                SendMiniText($"[anywarp] mythic gate waived — would have said: {denyMsg}");
+                Log.Info($"   -> MYTHIC {cave.Animal} entrance WAIVED (@anywarp, level {_char.Level}) -> tier 1");
+            }
+            else
+            {
+                SendXy();   // cancel the client's step prediction / unblock the next step — the entrance holds them out
+                SendMiniText(denyMsg);
+                Log.Info($"   -> MYTHIC {cave.Animal} entrance REFUSED (tier {tier}, level {_char.Level})");
+                return true;
+            }
         }
 
         ushort destMap = (ushort)(cave.DestMap + (tier == 3 ? 4000 : tier == 2 ? 3000 : 0));
@@ -218,31 +230,46 @@ public sealed partial class Session
         }
 
         var band = Content.EventCaveBandFor(_char.Level, _char.Mark);
+        int tier;
+        string label;
         if (band is null)
         {
-            // Below the ladder's floor. RTK bumps the player two tiles clear of the doorway; we already held
-            // them at the from-tile, so all that is left is the line.
-            SendXy();
-            if (cave.DenyMsg.Length > 0) SendMiniText(cave.DenyMsg);
-            Log.Info($"   -> EVENTCAVE '{cave.Key}' REFUSED (level {_char.Level} mark {_char.Mark}) for {_char.Name}");
-            return;
-        }
-
-        var b = band.Value;
-        int tier = b.Tier;
-        if (b.Alt > 0)
-        {
-            // A split band: both depths are open and the player chooses. Closing the menu (0) is a real
-            // answer — they back out of the doorway and stay where they are, which is RTK's behaviour too
-            // (its menuSeq result falls through both branches and no warp happens).
-            int choice = await DlgMenu(EventCaveVirtualNpc, cave.Prompt, new[] { cave.OptionNear, cave.OptionFar });
-            if (choice != 1 && choice != 2)
+            // Below the ladder's floor. @anywarp waives that with the usual echo and takes tier 1 — no band
+            // means no depth to read off the character, so the shallowest copy is the predictable choice.
+            if (!_waiveWarpGate)
             {
-                Log.Info($"   -> EVENTCAVE '{cave.Key}' split declined by {_char.Name} ({b.Label})");
+                // RTK bumps the player two tiles clear of the doorway; we already held them at the
+                // from-tile, so all that is left is the line.
+                SendXy();
+                if (cave.DenyMsg.Length > 0) SendMiniText(cave.DenyMsg);
+                Log.Info($"   -> EVENTCAVE '{cave.Key}' REFUSED (level {_char.Level} mark {_char.Mark}) for {_char.Name}");
                 return;
             }
-            if (_char.Map != startMap) return;   // moved on while the menu was open
-            tier = choice == 1 ? b.Tier : b.Alt;
+            SendMiniText($"[anywarp] entry requirement waived — would have said: " +
+                         (cave.DenyMsg.Length > 0 ? cave.DenyMsg : "(silent refusal)"));
+            Log.Info($"   -> EVENTCAVE '{cave.Key}' WAIVED (@anywarp, level {_char.Level} mark {_char.Mark}) -> tier 1");
+            tier = 1;
+            label = "waived";
+        }
+        else
+        {
+            var b = band.Value;
+            tier = b.Tier;
+            label = b.Label;
+            if (b.Alt > 0)
+            {
+                // A split band: both depths are open and the player chooses. Closing the menu (0) is a real
+                // answer — they back out of the doorway and stay where they are, which is RTK's behaviour too
+                // (its menuSeq result falls through both branches and no warp happens).
+                int choice = await DlgMenu(EventCaveVirtualNpc, cave.Prompt, new[] { cave.OptionNear, cave.OptionFar });
+                if (choice != 1 && choice != 2)
+                {
+                    Log.Info($"   -> EVENTCAVE '{cave.Key}' split declined by {_char.Name} ({b.Label})");
+                    return;
+                }
+                if (_char.Map != startMap) return;   // moved on while the menu was open
+                tier = choice == 1 ? b.Tier : b.Alt;
+            }
         }
 
         ushort destMap = cave.MapForTier(tier);
@@ -252,7 +279,7 @@ public sealed partial class Session
             Log.Info($"   ?? EVENTCAVE '{cave.Key}' tier {tier} -> map {destMap} has no map data");
             return;
         }
-        Log.Info($"   -> EVENTCAVE '{cave.Key}' tier {tier} ({b.Label}) -> map {destMap} '{dm.Name}' " +
+        Log.Info($"   -> EVENTCAVE '{cave.Key}' tier {tier} ({label}) -> map {destMap} '{dm.Name}' " +
                  $"({cave.DestX},{cave.DestY}) [level {_char.Level} mark {_char.Mark}]");
         EnterMap(dm.Id, dm.Xs, dm.Ys, cave.DestX, cave.DestY, dm.Name);
     }
@@ -308,10 +335,19 @@ public sealed partial class Session
         {
             if (CharClassId != hall.BaseClass)
             {
-                // RTK onScriptedTilesPathHalls.lua: player:sendMinitext(str) — the status box, not chat.
-                SendMiniText("You are not the right class to enter here.");
-                SendXy();   // refuse: hold at the from-tile (RTK bumps 2 tiles north — same net effect)
-                return true;
+                // @anywarp waives the class gate with the usual echo; otherwise refuse as RTK does.
+                if (_waiveWarpGate)
+                {
+                    SendMiniText("[anywarp] class gate waived — would have said: You are not the right class to enter here.");
+                    Log.Info($"   -> PATHHALL guild door WAIVED (@anywarp, class {CharClassId} vs {hall.BaseClass})");
+                }
+                else
+                {
+                    // RTK onScriptedTilesPathHalls.lua: player:sendMinitext(str) — the status box, not chat.
+                    SendMiniText("You are not the right class to enter here.");
+                    SendXy();   // refuse: hold at the from-tile (RTK bumps 2 tiles north — same net effect)
+                    return true;
+                }
             }
             return WarpHall(hall.GuildMap, (ushort)(x + 6), 3);
         }
@@ -349,11 +385,20 @@ public sealed partial class Session
 
         if (low || high)
         {
-            SendXy();   // cancel the client's step prediction — the door holds them out
-            SendMiniText(low ? "Nightmarish visions of your own death repel you."
-                             : "Your honor forbids you from entering.");
-            Log.Info($"   -> ARENA '{door.Label}' door REFUSED ({(low ? "under" : "over")}-qualified: level {_char.Level}, vita {_char.MaxHp}, mana {_char.MaxMp})");
-            return true;
+            string denyMsg = low ? "Nightmarish visions of your own death repel you."
+                                 : "Your honor forbids you from entering.";
+            if (_waiveWarpGate)
+            {
+                SendMiniText($"[anywarp] arena gate waived — would have said: {denyMsg}");
+                Log.Info($"   -> ARENA '{door.Label}' door WAIVED (@anywarp, {(low ? "under" : "over")}-qualified: level {_char.Level}, vita {_char.MaxHp}, mana {_char.MaxMp})");
+            }
+            else
+            {
+                SendXy();   // cancel the client's step prediction — the door holds them out
+                SendMiniText(denyMsg);
+                Log.Info($"   -> ARENA '{door.Label}' door REFUSED ({(low ? "under" : "over")}-qualified: level {_char.Level}, vita {_char.MaxHp}, mana {_char.MaxMp})");
+                return true;
+            }
         }
 
         if (!Content.TryMap(door.DestMap, out var dm) || dm is null) { SendXy(); return true; }   // dest unrenderable -> don't strand
@@ -399,6 +444,18 @@ public sealed partial class Session
     {
         if (_char.Map != 3040) return false;
         if (!((_char.X == 29 || _char.X == 30) && _char.Y >= 14 && _char.Y <= 16)) return false;
+
+        // @anywarp: the row becomes plain ground — no shove, no forced return-hop, and the shoes are NOT
+        // spent — so a tester can walk the whole map. The branch that would have fired is echoed instead.
+        if (_waiveWarpGate)
+        {
+            if (CountItem("ice_heart") > 0)
+                SendMiniText("[anywarp] lava return-crossing waived — would have spent your shoes and landed you on the south bank.");
+            else if (CountItem("traveling_shoes") == 0)
+                SendMiniText("[anywarp] lava gate waived — would have said: You'll burn your feet if you walk there!");
+            Log.Info($"   -> LAVA row WAIVED (@anywarp) for {_char.Name} at ({_char.X},{_char.Y})");
+            return false;
+        }
 
         if (CountItem("ice_heart") > 0)
         {
@@ -547,9 +604,18 @@ public sealed partial class Session
 
         if (!HasLegend(LeviathanQuest.LegendFreed))
         {
-            Warp(LeviathanQuest.DoorMap, (ushort)_char.X, LeviathanQuest.DoorPushToY);
-            Notify("Go AWAY!");
-            return true;
+            // @anywarp: waive the legend gate with the usual echo and let the door open below.
+            if (_waiveWarpGate)
+            {
+                SendMiniText("[anywarp] quest gate waived — would have said: Go AWAY!");
+                Log.Info($"   -> HERMIT door WAIVED (@anywarp) for {_char.Name}");
+            }
+            else
+            {
+                Warp(LeviathanQuest.DoorMap, (ushort)_char.X, LeviathanQuest.DoorPushToY);
+                Notify("Go AWAY!");
+                return true;
+            }
         }
         return Warp(LeviathanQuest.HutMap, LeviathanQuest.HutX, LeviathanQuest.HutY);
     }
@@ -570,6 +636,18 @@ public sealed partial class Session
     {
         if (_char.Map != SuteQuest.BuyaMap || _char.Y != SuteQuest.MouthY) return false;
         if (!SuteQuest.MouthX.Contains(_char.X)) return false;
+
+        // @anywarp: the seal becomes a plain portal — nothing checked, nothing spent, so a coated tester
+        // keeps the powder — with the usual echo of what the seal would have done.
+        if (_waiveWarpGate)
+        {
+            SendMiniText(QuestCounter(SuteQuest.DyeReg) == 1
+                ? "[anywarp] Sute's seal waived — passed without spending the powder."
+                : "[anywarp] Sute's seal waived — would have said: You are missing something.");
+            Log.Info($"   -> SUTE cave mouth WAIVED (@anywarp) for {_char.Name} (coated={QuestCounter(SuteQuest.DyeReg) == 1})");
+            return Warp(SuteQuest.WelcomeMap,
+                        (ushort)(QuestRandom(2) == 1 ? SuteQuest.LandX0 : SuteQuest.LandX1), SuteQuest.LandY);
+        }
 
         if (QuestCounter(SuteQuest.DyeReg) != 1)
         {

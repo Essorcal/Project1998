@@ -176,9 +176,19 @@ public sealed partial class Session
         if (!offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var lockedDest)
             && WarpLockedByQuest(lockedDest.m, out var lockMsg))
         {
-            warpLocked = true;
-            SendMiniText(lockMsg);
-            Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {lockedDest.m} quest-locked: {lockMsg} — step allowed, no warp");
+            // @anywarp waives the quest lock too — the tester is carried through, but the denial that WOULD
+            // have fired is still echoed, so gate behaviour stays verifiable while passing through it.
+            if (_waiveWarpGate)
+            {
+                SendMiniText($"[anywarp] quest lock waived — would have said: {lockMsg}");
+                Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {lockedDest.m} quest lock WAIVED (@anywarp): {lockMsg}");
+            }
+            else
+            {
+                warpLocked = true;
+                SendMiniText(lockMsg);
+                Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {lockedDest.m} quest-locked: {lockMsg} — step allowed, no warp");
+            }
         }
 
         if (!warpLocked && !offMap && Content.TryWarp(_char.Map, (ushort)nx, (ushort)ny, out var dest)
@@ -186,18 +196,29 @@ public sealed partial class Session
         {
             if (!TryWarpGate(dest.m, out var denyMsg))
             {
-                // Rejected. In 4.95 self-walk is client-local: the client already stepped onto the warp
-                // tile AND is now blocked awaiting a 0x04 ack to release its next step. If we just return,
-                // that gate never clears — the player freezes and "can't move/turn." RTK handles this by
-                // calling clif_pushback(sd) (a re-warp back off the tile) BEFORE the reject text (clif.c:5190).
-                // Our 4.95-correct equivalent is the same snap-back the `blocked` branch uses: hold at the
-                // from-tile and re-assert with 0x04. The denial goes to the STATUS box (RTK clif_sendminitext),
-                // not the chat bubble.
-                _char.X = (ushort)fromX; _char.Y = (ushort)fromY;
-                SendXy();
-                SendMiniText(denyMsg);
-                Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {dest.m} DENIED: {denyMsg} — held at ({fromX},{fromY})");
-                return;
+                // @anywarp: the gate still RUNS (that's the point — its verdict is the thing under test),
+                // but a failing one no longer pushes back. The denial it would have shown is echoed instead,
+                // and the warp proceeds below as if the gate had passed.
+                if (_waiveWarpGate)
+                {
+                    SendMiniText($"[anywarp] entry requirement waived — would have said: {denyMsg}");
+                    Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {dest.m} gate WAIVED (@anywarp): {denyMsg}");
+                }
+                else
+                {
+                    // Rejected. In 4.95 self-walk is client-local: the client already stepped onto the warp
+                    // tile AND is now blocked awaiting a 0x04 ack to release its next step. If we just return,
+                    // that gate never clears — the player freezes and "can't move/turn." RTK handles this by
+                    // calling clif_pushback(sd) (a re-warp back off the tile) BEFORE the reject text (clif.c:5190).
+                    // Our 4.95-correct equivalent is the same snap-back the `blocked` branch uses: hold at the
+                    // from-tile and re-assert with 0x04. The denial goes to the STATUS box (RTK clif_sendminitext),
+                    // not the chat bubble.
+                    _char.X = (ushort)fromX; _char.Y = (ushort)fromY;
+                    SendXy();
+                    SendMiniText(denyMsg);
+                    Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {dest.m} DENIED: {denyMsg} — held at ({fromX},{fromY})");
+                    return;
+                }
             }
             Log.Info($"   -> WARP ({nx},{ny}) on map {_char.Map} -> map {dest.m} '{dm.Name}' ({dest.x},{dest.y})");
             // Quest beats that trigger on stepping THROUGH a warp tile, not on standing anywhere — the
