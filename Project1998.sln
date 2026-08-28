@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LoginServer", "LoginServer\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests", "Tests\Tests.csproj", "{3B9D094F-244C-43BE-AE93-C230BDF9726B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MapEditor", "MapEditor\MapEditor.csproj", "{407DDC53-8D9C-4F1F-A2AD-372A5C02CE3A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -48,5 +50,9 @@ Global
 		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3B9D094F-244C-43BE-AE93-C230BDF9726B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{407DDC53-8D9C-4F1F-A2AD-372A5C02CE3A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{407DDC53-8D9C-4F1F-A2AD-372A5C02CE3A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{407DDC53-8D9C-4F1F-A2AD-372A5C02CE3A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{407DDC53-8D9C-4F1F-A2AD-372A5C02CE3A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

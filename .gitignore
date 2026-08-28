@@ -132,3 +132,16 @@ re/patches/backups/
 # Generated map viewer output + any RE zips (mapviewer.zip alone is ~1.7GB)
 re/mapviewer/
 re/**/*.zip
+
+# ---- Map editor one-click build ----
+# dist/ holds the self-contained NexusTK-Map-Editor.exe (~180 MB). Reproducible with the
+# dotnet publish command in MapEditor/README.md, so it stays out of history. A copy may
+# also sit in MapEditor/ itself for double-click convenience (it serves the wwwroot
+# beside it) — same rule, never in history.
+dist/
+MapEditor/NexusTK-Map-Editor.exe
+# Everything the editor GENERATES (draft maps, exported CSV rows) lives with the tool in
+# dist/NexusTK-Map-Editor/saved/ — covered by the dist/ rule above, never inside game-data.
+# The two rules below only catch what OLDER editor builds wrote into game-data:
+game-data/maps-edited/
+game-data/maps/*.orig

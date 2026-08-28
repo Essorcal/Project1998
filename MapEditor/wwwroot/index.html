@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NexusTK Map Editor</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23d9962e'/%3E%3Cpath d='M3 3h10v10H3z M3 6.3h10 M3 9.6h10 M6.3 3v10 M9.6 3v10' stroke='%2317181a' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="var(--accent)" stroke-width="1.5"><rect x="3" y="3" width="14" height="14" rx="1.5"/><path d="M3 8.7h14M3 14.3h14M8.7 3v14M14.3 3v14"/></svg>
+      <span>NexusTK Map Editor</span>
+    </div>
+    <div class="spacer"></div>
+    <div id="modeSwitch" class="seg">
+      <button id="mode4x" class="segbtn" title="4.x client format (headerless, 4 bytes/cell)">.map</button>
+      <button id="mode533" class="segbtn" title="5.33 client format (CMAP + zlib, 6 bytes/cell)">.cmp</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" id="zoomCtl" title="zoom (also Ctrl+wheel, +/- keys)">
+      <button id="zoomOut" class="segbtn">&minus;</button>
+      <input id="zoomLbl" class="segbtn on" value="100%" title="type a zoom % and press Enter (max 500%)">
+      <button id="zoomIn" class="segbtn">+</button>
+    </div>
+    <div class="actions">
+      <button id="btnDirect" class="btn" title="Direct mode (team opt-in, off on every start): Save overwrites the shipped map in game-data\maps — publishing a new map for real — and the export buttons append rows straight into the live CSVs. Off = everything goes to the tool's saved folder.">Direct: off</button>
+      <button id="btnUndo" class="btn" title="Ctrl+Z">Undo</button>
+      <button id="btnImport" class="btn">Import</button>
+      <button id="btnExport" class="btn">Export .cmp</button>
+      <button id="btnCsv" class="btn" title="Write MapCells.csv override rows for every cell that differs from the shipped map to dist/NexusTK-Map-Editor/saved/csvs">Corrections</button>
+      <button id="btnDraft" class="btn" hidden title="Delete this map's draft save (dist/NexusTK-Map-Editor/saved/maps) and reload the shipped map">Discard draft</button>
+      <button id="btnSave" class="btn primary" disabled title="Save a draft to dist/NexusTK-Map-Editor/saved/maps — never overwrites the shipped map">Save</button>
+      <input type="file" id="fileImport" accept=".map,.cmp" hidden>
+    </div>
+  </header>
+
+  <div id="mid">
+    <nav id="rail"></nav>
+    <main id="canvasWrap">
+      <canvas id="view"></canvas>
+      <div id="dpad" hidden>
+        <div class="dgrid">
+          <span></span><button data-d="0,-1">▲</button><button id="dpadRemove" title="remove the test character (or click him, or Esc)">✕</button>
+          <button data-d="-1,0">◀</button><button data-d="0,1">▼</button><button data-d="1,0">▶</button>
+        </div>
+        <div class="dhint">arrow keys work too</div>
+      </div>
+      <div id="spawnBox" hidden>
+        <div class="sbTitle">PLACE SPAWNS <span id="sbCount" class="mono accent"></span></div>
+        <input id="sbSearch" placeholder="search mobs…" autocomplete="off">
+        <div id="sbList"></div>
+        <div class="sbSel mono">selected: <span id="sbSel" class="accent">none</span></div>
+        <div class="sbBtns">
+          <button id="sbExport" class="btn tiny" disabled title="write Spawns.csv rows for the pending points to dist/NexusTK-Map-Editor/saved/csvs — append them to game-data\Spawns.csv yourself, then @reload">Export rows</button>
+          <button id="sbClear" class="btn tiny" disabled>Clear all</button>
+        </div>
+        <div class="sbHint">click the map to place · click a yellow point to remove<br>rows save to the tool's saved folder — game files are never written</div>
+      </div>
+      <div id="npcBox" hidden>
+        <div class="sbTitle">PLACE NPCS <span id="nbCount" class="mono accent"></span></div>
+        <input id="nbSearch" class="sbInput" placeholder="search NPCs…" autocomplete="off">
+        <div id="nbList"></div>
+        <div class="sbSel mono">template: <span id="nbSel" class="accent">none</span></div>
+        <input id="nbIdent" class="sbInput mono" placeholder="identifier (keeps the template's scripts)" autocomplete="off" title="NpcIdentifier for the new rows — keep the template's to reuse its dialog/shop wiring, or type a new one for a not-yet-scripted NPC">
+        <input id="nbDesc" class="sbInput" placeholder="display name" autocomplete="off" title="NpcDescription — the name players see">
+        <div class="sbBtns">
+          <button id="nbExport" class="btn tiny" disabled title="write NPCs.csv rows (full template copies at the placed cells) to dist/NexusTK-Map-Editor/saved/csvs — append to game-data\NPCs.csv yourself, then @reload">Export rows</button>
+          <button id="nbClear" class="btn tiny" disabled>Clear all</button>
+        </div>
+        <div class="sbHint">places a COPY of the template — look/type/flags come from it<br>click the map to place · click a green square to remove<br>rows save to the tool's saved folder — game files never written</div>
+      </div>
+      <div id="warpBox" hidden>
+        <div class="sbTitle">PLACE WARPS <span id="wbCount" class="mono accent"></span></div>
+        <div id="wbStep" class="sbSel mono">click the SOURCE cell</div>
+        <div id="wbList"></div>
+        <div class="sbBtns">
+          <button id="wbExport" class="btn tiny" disabled title="write Warps.csv rows for the pending pairs to dist/NexusTK-Map-Editor/saved/csvs — append them to game-data\Warps.csv yourself, then @reload">Export rows</button>
+          <button id="wbClear" class="btn tiny" disabled>Clear all</button>
+        </div>
+        <div class="sbHint">source cell → destination cell (switch maps freely between clicks)<br>place the RETURN leg too — ⚠ marks pairs with no pending return<br>click a cyan diamond to remove its pair · Esc cancels a source<br>rows save to the tool's saved folder — game files never written</div>
+      </div>
+      <div id="miniWrap" title="minimap — click or drag to move the view">
+        <button id="miniHide" title="hide the minimap">✕</button>
+        <canvas id="miniCanvas"></canvas>
+      </div>
+      <button id="miniShow" title="show the minimap" hidden>
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 5l4.5-2 5 2L17 3v12l-4.5 2-5-2L3 17z"/><path d="M7.5 3v12M12.5 5v12"/></svg>
+      </button>
+      <div id="loading">decoding tileset…</div>
+    </main>
+    <aside id="panel">
+      <div id="panelDrag" title="drag to resize"></div>
+      <div id="panelScroll">
+      <section>
+        <div class="ptitle">TILE PALETTE <span id="palSource" class="mono accent"></span></div>
+        <div class="seg small">
+          <button id="tabGround" class="segbtn" title="Ground layer — each cell's floor tile (the g16 word)">Ground</button>
+          <button id="tabObj" class="segbtn" title="Object layer — sprites standing on cells: trees, walls, furniture (SObj id)">Objects</button>
+          <button id="tabPass" class="segbtn" title="Passability — paint cells walkable or blocked (the ground word's top bits)">Pass</button>
+        </div>
+        <div id="palModes" class="seg small">
+          <button id="pmAll" class="segbtn" title="every tile in the tileset">All</button>
+          <button id="pmUsed" class="segbtn" title="tiles placed on the current map">On map</button>
+          <button id="pmFav" class="segbtn" title="favorites — right-click any swatch to star it">&#9733;</button>
+        </div>
+        <div id="palSheets" class="seg small">
+          <button id="sheet1" class="segbtn" title="first ground sheet — cells with these tiles are WALKABLE (word below 0xC000)">Sheet 1 · walkable</button>
+          <button id="sheet2" class="segbtn" title="second ground sheet — these tiles also BLOCK movement; the sheet bit doubles as the pass flag (word 0xC000+)">Sheet 2 · blocking</button>
+        </div>
+        <canvas id="palCanvas" width="248" height="248"></canvas>
+        <div id="palPager">
+          <button id="palPrev" class="btn tiny">‹</button>
+          <span id="palPage" class="mono"></span>
+          <input id="palSearch" class="mono" placeholder="id&hellip;" title="jump to tile id (decimal or 0x hex), Enter">
+          <button id="palNext" class="btn tiny">›</button>
+          <span id="palSel" class="mono accent"></span>
+        </div>
+      </section>
+      <section>
+        <div class="ptitle">LAYERS</div>
+        <label class="lrow" title="render the server's BASE — the file plus door default-opens, ForceOpen tiles, and MapCells.csv overrides: what players actually see. Editing tools still write the file layer underneath."><input type="checkbox" id="lyPlayer"> Player view <span class="mono dim">base</span></label>
+        <label class="lrow"><input type="checkbox" id="lyGround" checked> Ground <span class="mono dim">g16</span></label>
+        <label class="lrow"><input type="checkbox" id="lyObj" checked> Objects <span class="mono dim">o16</span></label>
+        <label class="lrow" title="tint every blocking cell red"><input type="checkbox" id="lyPass"> Passability overlay</label>
+        <label class="lrow" title="Warps.csv + world-map trigger/arrival cells — filled diamond warps out, hollow diamond is a landing tile, violet opens the world map"><input type="checkbox" id="lyWarp" checked> Warps <span id="warpNote" class="mono dim"></span></label>
+        <label class="lrow" title="Spawns.csv points (dots) and AreaSpawns.csv boxes (dashed) — map-wide rows are listed in this row's tooltip after a map loads"><input type="checkbox" id="lySpawn" checked> Spawns <span id="spawnNote" class="mono dim"></span></label>
+        <label class="lrow" title="NPCs.csv placements"><input type="checkbox" id="lyNpc" checked> NPCs <span id="npcNote" class="mono dim"></span></label>
+        <label class="lrow" title="MapCells.csv authored overrides — the server rewrites these cells on load, so players see something different here than the shipped file the editor draws; hover a marked cell for the row's values"><input type="checkbox" id="lyOverride" checked> Overrides <span id="overrideNote" class="mono dim"></span></label>
+        <label class="lrow"><input type="checkbox" id="lyGrid"> Grid</label>
+      </section>
+      <section>
+        <div class="ptitle">CHECKS <span id="lintNote" class="mono dim"></span><button id="btnLint" class="btn tiny" title="scan for suspicious cells: warp arrivals and spawn points on blocked ground, walkable edges into void (blocked warp SOURCES are the normal doorway idiom and aren't flagged)">run</button></div>
+        <div id="lintList"></div>
+      </section>
+      <section id="mapsSection">
+        <div class="ptitle">MAPS <button id="btnNewMap" class="btn tiny" title="create a new map — a blank draft plus a map_index.csv row in the tool's saved folder; game files are never written">+ new</button></div>
+        <input id="mapFilter" type="search" placeholder="filter…">
+        <div id="mapList"></div>
+      </section>
+      </div>
+    </aside>
+  </div>
+
+  <footer id="status">
+    <span id="stMap" class="bright mono"></span>
+    <span id="stCell" class="mono"></span>
+    <span id="stHint" class="mono accent"></span>
+    <span class="spacer"></span>
+    <span id="stEdits" class="mono dim"></span>
+    <span id="stFmt" class="mono accent"></span>
+    <span id="stZoom" class="mono">zoom 100%</span>
+    <span id="stCredit" class="mono dim">created by Essorcal</span>
+  </footer>
+</div>
+<canvas id="palHover" hidden></canvas>
+<script src="app.js"></script>
+</body>
+</html>
