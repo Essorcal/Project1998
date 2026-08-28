@@ -1083,8 +1083,14 @@ public sealed partial class Session
                 // legacy sheet, index v-0xC000"), not just a passability flag, so masking them off before
                 // translation silently rewrites 30% of the world into unrelated tiles. TileTranslation
                 // needs the whole word. The object id space is shared, so objects pass through.
+                // @clip streams pass as "walkable everywhere": the client collides locally against its own
+                // copy of this layer, so waiving the server check alone (HandleWalk) would change nothing —
+                // the client would refuse the step before a walk packet ever went out. On 4.95 this value
+                // is re-packed into the ground word's top bits (MapCell.Write), which are ALSO the sheet-2
+                // selector, so blocked terrain (water/cliffs — every blocked cell is sheet-2 there) draws
+                // as the wrong tile while clip is on; toggling off re-primes the window and the art heals.
                 tile = TileTranslation.Ground(map.GroundWord(mx, my), _ver);
-                pass = PassAt(map, mx, my);
+                pass = _noClip ? (ushort)0 : PassAt(map, mx, my);
                 obj  = TileTranslation.Object(map.Obj(mx, my), _ver);
             }
             // One shared writer with the door cell patch — see MapCell for why that matters. On 4.95's real
