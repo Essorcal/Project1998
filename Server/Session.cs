@@ -1307,6 +1307,12 @@ public sealed partial class Session
     // RTK removeTrapItem) and a re-cast re-mark the same trap instead of stacking a second sword on the tile.
     // Guarded by _viewLock alongside the sets above.
     private readonly Dictionary<uint, GroundItem> _trapMarkers = new();
+    // @showwarps overlay: synthetic floor-item markers on every warp/doorway tile of the CURRENT map, for
+    // THIS client only — the same machinery as the trap markers above (merged into SyncGroundItems, so
+    // out-of-view markers draw as you walk to them), but toggled by a command rather than a spell and
+    // re-stamped per map by EnterMap while the toggle is on. A plain list (not keyed) because markers are
+    // only ever stamped and cleared wholesale. Guarded by _viewLock alongside the sets above.
+    private readonly List<GroundItem> _warpMarkers = new();
     // And the SAME story for PEER PLAYERS. A peer's 0x33 look draw is viewport-gated by the client with the
     // very same camera rect test as the 0x07 mob spawn, so a peer we're too far from at map-entry — or one who
     // walks toward us from off-screen — has its draw silently dropped and, because nothing re-sends it as we
