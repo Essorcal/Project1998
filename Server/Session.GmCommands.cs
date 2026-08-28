@@ -407,6 +407,30 @@ public sealed partial class Session
         Log.Info($"   -> NOCLIP {(_noClip ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
     }
 
+    // "@anywarp [0|1]" — use any walk-onto warp or gated doorway regardless of the destination's
+    // requirements. Waives every character-requirement refusal a doorway can make: the Maps.csv entry gate
+    // (level/vitals/mark/path and the max-level barrier — TryWarpGate), the WarpQuestLocks.csv quest
+    // switches, and the scripted doorways with their own entry rules — mythic zodiac caves, event caves,
+    // arena side doors and the path-hall class doors (each waive point lives in that doorway's handler,
+    // Session.Movement/Navigation). The checks still RUN; a failing one is echoed as "[anywarp] … would
+    // have said: <denial>" instead of refusing, so a tester can verify the gate's verdict while being
+    // carried through it. The tiered doorways enter tier 1 when waived — an unqualified character gives the
+    // depth picker nothing to read, so the shallowest copy is the predictable choice. Session-scoped and
+    // OFF at login for the same reason as @clip: a persisted waiver could follow a tester's ordinary
+    // character into normal play. Purely server-side, unlike @clip — the client has no idea entry
+    // requirements exist, so there is no second half. The quest-ITEM tiles (the Hermit's door, Sute's
+    // sealed cave mouth, the lava row) are waived too — while on, each behaves as plain ground or a plain
+    // portal, and NOTHING is spent (the powder and the shoes are kept): the command exists to test the map
+    // behind a gate, not the gate's economy, so the mechanic is only narrated, never run.
+    private bool _waiveWarpGate;
+    private void AnyWarpCmd(string text)
+    {
+        var a = ParseInts(text);
+        _waiveWarpGate = a.Length > 0 ? a[0] != 0 : !_waiveWarpGate;
+        SendMiniText(SettingLine("Any-warp", _waiveWarpGate));
+        Log.Info($"   -> ANYWARP {(_waiveWarpGate ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+    }
+
     // The 'r' Ride key (HandleSetting case 0x00): a real RTK-shaped find-a-horse mount, distinct from the
     // @ride/@mount GM toggle above. Mounting requires an actual "horse" mob (MobDef key "horse" — the plain
     // wild horse wandering Buya/Horse Valley, not a combat mob like "wild_horse"/"horse_guardsman" that just
