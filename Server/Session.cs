@@ -321,6 +321,18 @@ public sealed partial class Session
                 if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
                 for (int i = 0; i < n; i++) buf.Add(tmp[i]);
 
+                // Status probe: on the GAME port the client speaks first, so a connection whose first
+                // bytes are "GET " is an HTTP status poll, never a real client (see StatusResponder).
+                // Answered with a direct stream write — safe here precisely because nothing else has
+                // been sent on a pre-established game connection (the writer task is idle) — then the
+                // loop breaks and the normal finally cleanup closes the socket.
+                if (Volatile.Read(ref _established) == 0 && !IsLoginPort && StatusResponder.LooksLikeHttp(buf))
+                {
+                    await _stream.WriteAsync(StatusResponder.Build(_world));
+                    Log.Info($"   -> status probe from {_remote} answered ({_world.OnlinePlayerCount()} online)");
+                    break;
+                }
+
                 var arr = buf.ToArray();
                 int off = 0;
                 while (arr.Length - off >= 5 && arr[off] == 0xAA)
