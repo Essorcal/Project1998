@@ -1,13 +1,45 @@
-# 5.33-client mob palette overrides. The 0x07 spawn colour byte indexes the CLIENT's Monster.epf
-# palette, and that index space differs between the 4.95 and 5.33 clients: a colour that renders a
-# sprite correctly on 4.95 can select a completely different hue on 5.33. mobs.csv (MobLookColor) and
-# MobLookPalettes.csv are tuned for 4.95; this file remaps, PER LOOK, the colour a V533 client is sent
-# so the same monster looks right there too. Only looks that actually disagree need a row; everything
-# else passes 4.95's colour through unchanged. Found by @crecol <look> (sweep the colour byte live on
-# the 5.33 client) and reading off the index that renders correctly.
+# 5.33-client mob colour remaps, keyed (Look, Colour). The 0x07 spawn colour byte is a RAMP SHIFT
+# interpreted by the client, not a palette index: sprite indices >= 0x30 read
+# palette[(i + 8*colour) & 0xFF] of the mob's own base palette block (MONSTER.DNA paletteIndex), and
+# colour>>5 >= 1 swaps the whole block for SUPER{(colour>>5)-1}.PAL — seven palettes only the 5.33
+# client ships (its NexusTK.dat). The era/4.x clients have no SUPER palettes: their 8-bit blitter add
+# simply wraps, so an era colour byte >= 32 meant ramp (colour - 32) of the mob's own block. mobs.csv
+# MobLookColor is era-tuned, so every (look, colour >= 32) pair renders an unintended SUPER hue on
+# 5.33 unless remapped here to the wrapped ramp the era client showed. Only pairs that disagree need
+# a row; everything else passes through unchanged. See Sources.csv binary-re-533 for the RE
+# (NexusTK.exe 5.33: draw 0x447975, palette manager 0x48ab40, blitter 0x4392a0) and the docs repo's
+# report-mob-look-check.html for the per-mob visual evidence.
 #
-# Look = Monster.tbl look id (same id space as mobs.csv MobLook). Palette = the colour byte to send V533.
-Look,Palette
-# Horses (rideable + wild/skilled/elite/spirited tiers, look 17): 4.95's 35/21/12/10 all read BLUE on
-# 5.33; index 3 is the correct brown. (@crecol 17 -> col3, confirmed live 2026-08-21.)
-17,3
+# Look = Monster.tbl look id (same id space as mobs.csv MobLook). Colour = the mobs.csv MobLookColor
+# the row applies to. Palette = the colour byte to send V533 instead (Colour - 32 for all wrap rows).
+Look,Colour,Palette
+# Plain horse: era 35 = ramp 3 brown; 5.33 turns 35 into SUPER0 ramp 3 (blue). (@crecol 17 -> col3
+# confirmed brown live 2026-08-21.) The old per-Look row here sent 3 for EVERY look-17 horse, which
+# collapsed diamond (11, white), golden (30), lake winny (19, azure) and fire snorter (31, red) to
+# brown — per-(Look,Colour) keying restores them. The other tiers (21/12/10) never needed a remap.
+17,35,3
+# bold_piglet
+20,51,19
+# hare, large_hare
+21,37,5
+# skeleton_mage, skeleton_warrior
+30,49,17
+# ogre_maletic
+99,37,5
+# tiger_guardian
+130,32,0
+# tiger_defender
+130,33,1
+# dog_cutthroat (+dummy)
+138,53,21
+# pig_champion (+dummy)
+139,53,21
+# hill_ogre
+185,44,12
+# armory_mercenary_2a / 3a / 2b / 3b / 2c / 3c
+220,33,1
+220,34,2
+221,33,1
+221,34,2
+224,33,1
+224,34,2

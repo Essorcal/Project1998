@@ -2098,10 +2098,17 @@ strict rect re-sends its `0x07` (an in-place update on a live id). That is stric
 no-ops for players who don't have the mob shown — bounding on-wire traffic to on-screen mobs even on a 400-mob
 map. This is what lets the full spawn roster render without blanket-sending hundreds of entities.
 
-**Colours.** The `0x07` colour byte uses RTK's **`MobLookColor`**. (An experiment sending the client's decoded
-`Monster.tbl` palette instead rendered every mob green — RTK's per-mob colour matches the client for the common
-critters, so we kept it. A proper RTK-colour → client-palette mapping is future work; the decoded table lives in
-`game-data/MobLookPalettes.csv` / `Content.PaletteFor`, currently unused for spawns.)
+**Colours.** The `0x07` colour byte uses RTK's **`MobLookColor`**, and its semantics are now known: the client
+treats the byte as a **ramp shift** over the mob's own base palette block — sprite indices ≥ 0x30 read
+`palette[(i + 8·colour) & 0xFF]`; indices below 0x30 (outline/skin) stay put (RE'd from the 5.33 exe: draw
+`0x447975`, palette manager `0x48ab40`, blitter `0x4392a0`; Sources.csv `binary-re-533`). That resolves the old
+"every mob green" experiment: `Monster.tbl`'s Palette is the mob's base **block** id (the same values as the 5.33
+`MONSTER.DNA` paletteIndex field), a different axis than the ramp byte, so sending it as a colour recoloured
+wrongly — that experiment's table (`MobLookPalettes.csv` / `Content.PaletteFor`) has been deleted. RTK's colours
+are era-correct as-is on 4.x, colour bytes ≥ 32 included: the 4.x client has no SUPER palettes and the 8-bit add
+wraps, so e.g. horse colour 35 ≡ ramp 3 (brown) — consistent with live 4.95 and the 2005 atlas art across all
+356 reference GIFs. The 5.33 client is the odd one out: it swaps in `SUPER{(colour>>5)-1}.PAL` for bytes ≥ 32,
+so `Mob5xPalettes.csv` remaps those per (Look, Colour) — see that file's header.
 
 **`rabbit` (MobId 1) had the wrong Look/Color — fixed live 2026-07-26.** The extracted `mobs.csv` row
 for the base overworld `rabbit` mob (used by 242 fixed spawn points + 22 area spawns — the everyday wild
