@@ -57,6 +57,8 @@ public sealed partial class Session
         T("go",      (s, a) => s.GoCmd(a),         "<x> <y>",             "jump to a tile on the map you're already on (bad/out-of-range coords -> 0 0)"),
         T("rez",     (s, a) => s.RezCmd(a),        "[username]",          "revive a player (or yourself) to full HP/MP (a full heal if already alive)"),
         T("approach",(s, a) => s.ApproachCmd(a),   "<username>",          "teleport to an online player"),
+        G("where",   (s, a) => s.WhereCmd(a),      "[username]",          "where a player is, without going there (bare = everyone online, with locations)"),
+        G("bring",   (s, a) => s.BringCmd(a),      "<username>",          "pull an online player to your side (the inverse of @approach)"),
         T("die",     (s, a) => s.DieCmd(),         "",                    "kill yourself (ghost form + real death penalties; @rez to get back up)"),
         T("clip",    (s, a) => s.ClipCmd(a),       "[0|1]",               "no-clip: walk through walls, mobs and players (this session only; warps still work)"),
         T("anywarp", (s, a) => s.AnyWarpCmd(a),    "[0|1]",               "use any warp despite level/mark/path/quest requirements (this session only; echoes the denial it waived)"),
@@ -66,6 +68,7 @@ public sealed partial class Session
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
         G("reload",  (s, a) => s.ReloadContent(),  "",                    "hot-reload file-backed content"),
         G("restart", (s, a) => s.RestartCmd(a),    "[minutes] [reason] | cancel", "schedule a server restart, warning everyone as it nears"),
+        G("announce",(s, a) => s.AnnounceCmd(a),   "<message>",           "system line to every player online (the restart-countdown channel)"),
         G("rabbit",  (s, a) => s.SpawnRabbit(),    "",                    "one wandering, killable rabbit"),
         G("kill",    (s, a) => s.KillMobs(),       "",                    "despawn every mob on this map"),
 
@@ -75,6 +78,9 @@ public sealed partial class Session
         // there is nothing left for it to do.
         T("lvl",     (s, a) => { var i = ParseInts(a); s.RespecLevel(i.Length > 0 ? i[0] : s._char.Level); },
                                                    "<1-99>",              "rebuild as level n: accurate stats + the matching spellbook"),
+        // @lvl's complement, not its rival: @lvl REBUILDS at a level, @exp earns one — it's the only way to
+        // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains).
+        T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = eligible for the totem-time bonus)"),
         T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
         T("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path and rebuild for it"),
         T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),
@@ -107,6 +113,7 @@ public sealed partial class Session
         // ---- items ----------------------------------------------------------------------------------
         T("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),
         T("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
+        T("take",     (s, a) => s.TakeItemCmd(a),   "<name|id> [amount|all]", "remove an item from the bag (worn gear untouched)"),
         T("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
 
@@ -120,6 +127,11 @@ public sealed partial class Session
         // ---- moderation -----------------------------------------------------------------------------
         // GM-only, all of them. See Session.Moderation.cs: no duration means PERMANENT, and anything applied
         // to an online player takes effect immediately rather than at their next login.
+        //
+        // NOT here yet: GM invisibility (@hide), the observe-unseen half of moderation. Deliberately deferred
+        // while everyone online is staff — there is no one to observe. Wanted once real players arrive.
+        // Feasibility note for then: entity visibility is entirely server-side (keep the hidden GM out of the
+        // entity broadcasts), but that touches every broadcast/PeerAt path, so it's a change, not a table row.
         G("ban",    (s, a) => s.BanCmd(a),    "<name> [minutes] [reason]", "ban an account (no duration = permanent); kicks them if online"),
         G("unban",  (s, a) => s.UnbanCmd(a),  "<name>",                    "lift an account ban"),
         G("mute",   (s, a) => s.MuteCmd(a),   "<name> [minutes] [reason]", "silence speech/whisper/subpath chat; '@' commands still work"),
