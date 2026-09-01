@@ -155,6 +155,44 @@ public sealed partial class Session
         SendLog($"Gave {def.Name}{(amount > 1 ? $" x{amount}" : "")} (#{def.Id}, {(def.IsEquip ? $"equip slot {def.EquipSlot}" : def.IsConsumable ? "use" : "etc")}).");
     }
 
+    // "@take <name|id> [amount|all]" — remove an item from the BAG (worn gear is untouched: unequip first).
+    // The single-item cleanup @clearinv is too blunt for — testing "the NPC takes your item" without nuking
+    // the rest of the pack. Goes through TakeItem, the same removal path quests use, so stacks drain low
+    // slots first and every touched slot is redrawn. Asking for more than you hold takes all of them.
+    private void TakeItemCmd(string text)
+    {
+        string q = text.Trim();
+        if (q.Length == 0) { SendLog($"usage: {Prefix}take <name or id> [amount|all]   (browse with  {Prefix}items <name>)"); return; }
+        int amount = 1;
+        var parts = q.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length > 1)
+        {
+            if (parts[^1].Equals("all", StringComparison.OrdinalIgnoreCase)) { amount = int.MaxValue; q = string.Join(' ', parts[..^1]); }
+            else if (int.TryParse(parts[^1], out var n) && n > 0) { amount = n; q = string.Join(' ', parts[..^1]); }
+        }
+        var def = Content.FindItem(q);
+        if (def is null) { SendLog($"no item matches \"{q}\" — try  {Prefix}items {q}"); return; }
+        int held = CountItem(def.Key);
+        if (held == 0) { SendLog($"You aren't carrying any {def.Name}."); return; }
+        int take = Math.Min(amount, held);
+        TakeItem(def.Key, take);
+        SendLog($"Took {def.Name}{(take > 1 ? $" x{take}" : "")} — {held - take} left.");
+    }
+
+    // "@exp <n> [kill]" — award raw experience through AwardExp, the same funnel every real grant uses, so
+    // the whole leveling path runs for real: the exp curve, multi-level carries, the Peasant wall, LevelUp's
+    // stat/HP/MP gains. @lvl can't test any of that — it REBUILDS at a level. `kill` marks the grant as kill
+    // exp, which is what opts into the 1.05 totem-time bonus (quest-style grants never take it). Bare @exp
+    // reports where you stand.
+    private void ExpCmd(string text)
+    {
+        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        bool kill = parts.Length > 1 && parts[1].Equals("kill", StringComparison.OrdinalIgnoreCase);
+        if (parts.Length == 0 || !uint.TryParse(parts[0], out var n) || n == 0)
+        { SendLog($"exp is {_char.Exp:N0}. usage: {Prefix}exp <n> [kill]   (kill = eligible for the totem-time bonus)"); return; }
+        AwardExp(n, killExp: kill);
+    }
+
     // "@clearinv": empty the bag + gear (test reset).
     private void ClearInventory()
     {
@@ -785,6 +823,68 @@ public sealed partial class Session
         EnterMap(map, xs, ys, x, y, mapName);
         SendLog($"Approached {target._char.Name} on {mapName} at ({_char.X},{_char.Y}).");
         Log.Info($"   -> @approach '{_char.Name}' -> '{target._char.Name}' at map {map} ({x},{y})");
+    }
+
+    // "@where [username]" — the read-only half of @approach: report where a player is without going there.
+    // Bare @where lists everyone online with their location — the ops "who's where" view the client's own
+    // 0x36 user list doesn't give (it shows names, not places).
+    private void WhereCmd(string text)
+    {
+        static string Line(Session p)
+        {
+            string mapName = Content.TryMap(p._char.Map, out var md) ? md.Name : "Nexus";
+            return $"{p._char.Name} — {mapName} (map {p._char.Map}) at ({p._char.X},{p._char.Y})";
+        }
+
+        string name = text.Trim();
+        if (name.Length == 0)
+        {
+            var all = _world.AllPlayers().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            SendLog($"Online ({all.Count}):");
+            foreach (var p in all) SendLog("  " + Line(p));
+            return;
+        }
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"'{name}' isn't online."); return; }
+        SendLog(Line(target));
+    }
+
+    // "@bring <username>" — the inverse of @approach: pull an online player to a free tile beside YOU (your
+    // own tile if you're boxed in), via the same EnterMap jump run on the TARGET's session. Also the rescue
+    // for someone wedged in geometry. The player is told who moved them, so it doesn't read as a bug.
+    private void BringCmd(string text)
+    {
+        string name = text.Trim();
+        if (name.Length == 0) { SendLog($"usage: {Prefix}bring <username>"); return; }
+        var target = _world.FindPlayer(name);
+        if (target is null) { SendLog($"'{name}' isn't online."); return; }
+        if (ReferenceEquals(target, this)) { SendLog("You're already right here."); return; }
+
+        ushort map = _char.Map, xs = _char.MapXs, ys = _char.MapYs;
+        var (x, y) = ApproachTile(this, map, xs, ys);
+        string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
+        target.EnterMap(map, xs, ys, x, y, mapName);
+        target.SendMiniText($"You have been summoned by {_char.Name}.");
+        SendLog($"Brought {target._char.Name} to ({x},{y}).");
+        Log.Info($"   -> @bring '{_char.Name}' <- '{target._char.Name}' to map {map} ({x},{y})");
+    }
+
+    // "@announce <message>" — say something to every player online on the same 0x0A system channel the
+    // restart countdown uses. Deliberately NOT prefixed with the GM's name: this is the server speaking
+    // (event notices, "carnage starts in five minutes"), and staff who want to speak as themselves have
+    // ordinary chat. The per-session try/catch mirrors RestartSchedule.Announce — one dead socket must not
+    // stop the message reaching everyone else.
+    private void AnnounceCmd(string text)
+    {
+        if (text.Length == 0) { SendLog($"usage: {Prefix}announce <message>"); return; }
+        int heard = 0;
+        foreach (var s in _world.AllPlayers())
+        {
+            try { s.SystemAnnounce(text); heard++; }
+            catch { }
+        }
+        SendLog($"Announced to {heard} player(s).");
+        Log.Info($"   -> @announce '{_char.Name}': \"{text}\"");
     }
 
     // First free CARDINAL neighbour of the target (checked N/E/S/W), else the target's own tile (stack).
