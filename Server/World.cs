@@ -292,8 +292,25 @@ public sealed class World
     // reaches them only through legend text (GameCalendar.Stamp) and whatever scripts read it.
     private int _hour, _day = 1, _season = 1, _year = 1;
     private long _gameHour = -1;          // whole in-game hours since the epoch; -1 = not yet synced
+    private int? _hourOverride;           // @clock pin: when set, this hour REPLACES the derived one
     public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
     public string SeasonName => GameCalendar.SeasonName(_season);
+    public (int hour, int day, int year) ClockNow => (_hour, _day, _year);
+    public int? HourOverride => _hourOverride;
+
+    /// <summary>Pin the shared in-game hour (@clock), or release it (null). The day/season/year keep
+    /// deriving from the real epoch — only the HOUR is pinned, because the hour is what gates behavior
+    /// (totem-time windows). Forcing <c>_gameHour = -1</c> makes the next tick's <see cref="SyncClock"/>
+    /// report a change, so every session gets a fresh 0x20 within one tick in both directions.</summary>
+    public void SetHourOverride(int? hour)
+    {
+        lock (_lock)
+        {
+            _hourOverride = hour;
+            _gameHour = -1;
+            if (hour is int h) _hour = h;   // immediate, so a readout or IsTotemTime right after is correct
+        }
+    }
 
     /// <summary>Re-read the calendar; true when the in-game hour changed, i.e. it is time to broadcast
     /// <c>0x20</c>.</summary>
@@ -303,6 +320,7 @@ public sealed class World
         if (gameHour == _gameHour) return false;
         _gameHour = gameHour;
         (_hour, _day, _season, _year) = GameCalendar.At(gameHour);
+        if (_hourOverride is int oh) _hour = oh;   // @clock pin wins over the derived hour
         return true;
     }
 
@@ -2242,6 +2260,21 @@ public sealed class World
                       $"{maps} live map(s) re-materialized; map cache cleared.");
     }
 
+    /// <summary>Make every mob everywhere forget <paramref name="playerId"/> — target and threat table both.
+    /// The @peace toggle calls this on switch-on so a mob already mid-chase lets go; staying ignored from
+    /// then on is the scan-side exclusions in Tick (a peace player is skipped by unprovoked aggro and the
+    /// stuck-mob retarget). Damage still re-acquires: TryDamage points a mob at whoever hit it, peace or not.</summary>
+    public void PacifyPlayer(uint playerId)
+    {
+        lock (_lock)
+            foreach (var (_, pm) in _maps)
+                foreach (var mob in pm.Mobs)
+                {
+                    mob.ClearThreat(playerId);
+                    if (mob.TargetId == playerId) { mob.TargetId = 0; mob.AttackTimer = 0; }
+                }
+    }
+
     /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
     /// Used by channels that reach beyond one map, like subpath chat (RTK clif_sendsubpathmessage loops
     /// every session, not just one map's block list).</summary>
@@ -3158,9 +3191,11 @@ public sealed class World
                     // owner it can serve, so this only skips the "owner isn't here" leftovers).
                     // (No blind check here any more — a blinded mob never reaches this line; its own branch
                     // above handles it and continues.)
+                    // (@peace players are invisible to this scan — RTK's own FindCoords fallback skips GMs
+                    // the same way. Hitting a mob still re-acquires via TryDamage, peace or not.)
                     if (mob.TargetId == 0 && mob.Aggressive && mob.OwnerId == 0)
                     {
-                        var victim = m.Players.FirstOrDefault(p => !p.IsDead
+                        var victim = m.Players.FirstOrDefault(p => !p.IsDead && !p.PeaceMode
                             && Notices(mob.X, mob.Y, p.PlayerX, p.PlayerY));
                         if (victim is not null) mob.TargetId = victim.PlayerId;
                     }
@@ -3358,7 +3393,7 @@ public sealed class World
                             // wall or no wall.
                             if (towardBlocked && mob.Aggressive)
                             {
-                                var reachable = m.Players.Where(p => !p.IsDead && p.PlayerId != mob.TargetId
+                                var reachable = m.Players.Where(p => !p.IsDead && !p.PeaceMode && p.PlayerId != mob.TargetId
                                         && Notices(mob.X, mob.Y, p.PlayerX, p.PlayerY))
                                     .ToList();
                                 if (reachable.Count > 0)

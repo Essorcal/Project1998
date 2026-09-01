@@ -61,6 +61,7 @@ public sealed partial class Session
         G("bring",   (s, a) => s.BringCmd(a),      "<username>",          "pull an online player to your side (the inverse of @approach)"),
         T("die",     (s, a) => s.DieCmd(),         "",                    "kill yourself (ghost form + real death penalties; @rez to get back up)"),
         T("clip",    (s, a) => s.ClipCmd(a),       "[0|1]",               "no-clip: walk through walls, mobs and players (this session only; warps still work)"),
+        T("peace",   (s, a) => s.PeaceCmd(a),      "[0|1]",               "unprovoked mobs don't notice you (this session only; anything you attack still fights back)"),
         T("anywarp", (s, a) => s.AnyWarpCmd(a),    "[0|1]",               "use any warp despite level/mark/path/quest requirements (this session only; echoes the denial it waived)"),
         T("showwarps", (s, a) => s.ShowWarpsCmd(a), "[0|1] | look [warpFrame] [doorFrame]", "mark every warp + scripted doorway on the map (you only; follows across maps; lists destinations)"),
         T("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
@@ -114,6 +115,7 @@ public sealed partial class Session
         T("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),
         T("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
         T("take",     (s, a) => s.TakeItemCmd(a),   "<name|id> [amount|all]", "remove an item from the bag (worn gear untouched)"),
+        T("dura",     (s, a) => s.DuraCmd(a),       "<name|id> <n>",      "set an item's durability, bag first then worn (repair/breakage testing)"),
         T("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
 
@@ -147,7 +149,9 @@ public sealed partial class Session
         G("carnage", (s, a) => s.CarnageWinCmd(a), "<name> [n] | <name> = <n>", "record carnage victories (n<0 removes)"),
 
         // ---- config read-outs -----------------------------------------------------------------------
-        G("npc",   (s, a) => s.NpcToggleCmd(a),   "", "which NPCs are switched off (config + @reload to change)"),
+        // @npc is tester-tier since gaining its finder half: the warp-to-NPC is @warp-grade tooling, and the
+        // bare readout it kept is harmless config info.
+        T("npc",   (s, a) => s.NpcCmd(a),         "[name|id]", "bare: which NPCs are switched off; with a name: find that NPC and jump beside it"),
         G("craft", (s, a) => s.CraftToggleCmd(a), "", "crafting era-gate status (config + @reload to change)"),
         G("era",   (s, a) => s.EraCmd(a),         "", "target date + which dated content it includes"),
 
@@ -177,6 +181,7 @@ public sealed partial class Session
         G("efx",      (s, a) => s.EffectProbe(a),   "<id>",      "play a raw Effect.tbl animation over self"),
         G("mtx",      (s, a) => s.MiniTextProbe(a), "<type>",    "audition a raw SendMiniText channel"),
         G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow | raw <n>", "force this map's weather"),
+        G("clock",    (s, a) => s.ClockCmd(a),      "[0-23 | real]", "read or pin the shared in-game hour (totem-time windows follow it; real = release)"),
         G("setting",  (s, a) => s.SettingCmd(a),    "[name] [on|off]", "read/set any 0x1b Options toggle"),
         G("doze",     (s, a) => s.DozeSelfCmd(a),   "[secs|off]", "put YOURSELF to sleep (Doze can't be self-targeted on the wire)"),
 

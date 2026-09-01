@@ -54,6 +54,38 @@ public sealed partial class Session
         SendLog($"Coins: {_char.Coins:N0} (changed by {amount:+#;-#;0}).");
     }
 
+    // "@npc [name|id]" — bare: the switched-off readout below. With a name: find the NPC and jump beside
+    // it. Quest testing is NPC-centric, and reaching one used to mean already knowing its map for @warp —
+    // this removes the lookup step. An exact name wins outright; an ambiguous fragment lists the matches
+    // rather than guessing. A disabled/era-gated NPC still resolves (you land at its empty spot, told so).
+    private void NpcCmd(string text)
+    {
+        string q = text.Trim();
+        if (q.Length == 0) { NpcToggleCmd(q); return; }
+
+        var matches = (int.TryParse(q, out var id)
+            ? Content.Npcs.Where(n => n.Id == id)
+            : Content.Npcs.Where(n => n.Name.Contains(q, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (matches.Count == 0) { SendLog($"no NPC matches \"{q}\"."); return; }
+
+        var npc = matches.FirstOrDefault(n => n.Name.Equals(q, StringComparison.OrdinalIgnoreCase))
+                  ?? (matches.Count == 1 ? matches[0] : null);
+        if (npc is null)
+        {
+            SendLog($"NPCs matching \"{q}\" ({matches.Count}):");
+            foreach (var n in matches.Take(10))
+                SendLog($"  #{n.Id} {n.Name} — map {n.Map} ({n.X},{n.Y}){(n.Enabled ? "" : " [disabled]")}");
+            return;
+        }
+
+        if (!Content.TryMap(npc.Map, out var md))
+        { SendLog($"{npc.Name} (#{npc.Id}) is on map {npc.Map}, which isn't in the map registry."); return; }
+        var (x, y) = ApproachTile(npc.Map, md.Xs, md.Ys, npc.X, npc.Y);
+        EnterMap(npc.Map, md.Xs, md.Ys, x, y, md.Name);
+        SendLog($"{npc.Name} (#{npc.Id}) — {md.Name} (map {npc.Map}) at ({npc.X},{npc.Y})." +
+                (npc.Enabled ? "" : "  [disabled — the spot is empty]"));
+    }
+
     // "@npc" / "@npc list" — show which NPCs are switched off. Read-only: toggling an NPC means setting the
     // Enabled column in game-data/NPCs.csv and running @reload (World.ReconcileNpcToggles spawns/despawns
     // to match), not a live GM mutation command. The tavern-hand "small guy" NPCs (Ox/Taur) are off by default.
@@ -119,6 +151,30 @@ public sealed partial class Session
             $"{f}={(Era.Has(f) ? "ON" : "off")} ({Window(Era.Window(f))})");
         SendLog($"Era date {now.Value:yyyy-MM-dd} — {string.Join(", ", lines)}  " +
                 "(edit EraDate in game-data/ServerTuning.csv + @reload to change)");
+    }
+
+    // "@clock [0-23 | real]" — read or pin the shared in-game hour. The calendar otherwise derives strictly
+    // from the real-world epoch (World.SyncClock), so the totem-time window — the thing @exp kill exists to
+    // exercise — was only testable when the real clock happened to land in it. Pinning is WORLD-scoped (the
+    // hour is one shared value; every session's 0x20 clock follows within a tick) and hour-only: day, season
+    // and year keep deriving, because nothing behavioral hangs off them. `real` releases the pin.
+    private void ClockCmd(string text)
+    {
+        string a = text.Trim();
+        if (a.Length > 0)
+        {
+            if (a.Equals("real", StringComparison.OrdinalIgnoreCase)) _world.SetHourOverride(null);
+            else if (int.TryParse(a, out var h) && h is >= 0 and <= 23) _world.SetHourOverride(h);
+            else { SendLog($"usage: {Prefix}clock <0-23> | real"); return; }
+            Log.Info($"   -> @clock '{_char.Name}': {(a.Equals("real", StringComparison.OrdinalIgnoreCase) ? "released" : $"hour pinned to {a}")}");
+        }
+
+        var (hour, day, year) = _world.ClockNow;
+        var totems = string.Join(", ", Enumerable.Range(0, 4)
+            .Where(t => Content.IsTotemTime(hour, t)).Select(Content.TotemName));
+        SendLog($"In-game time: hour {hour} — day {day} of {_world.SeasonName}, Yuri {year}. " +
+                $"Totem time: {(totems.Length > 0 ? totems : "none")}." +
+                (_world.HourOverride is not null ? $"  [hour pinned — {Prefix}clock real to release]" : ""));
     }
 
     // "@killtrack [clear]" — the eight-slot kill track, most-recent-first, which is what the mythic
@@ -191,6 +247,29 @@ public sealed partial class Session
         if (parts.Length == 0 || !uint.TryParse(parts[0], out var n) || n == 0)
         { SendLog($"exp is {_char.Exp:N0}. usage: {Prefix}exp <n> [kill]   (kill = eligible for the totem-time bonus)"); return; }
         AwardExp(n, killExp: kill);
+    }
+
+    // "@dura <name|id> <n>" — set an item's current durability, bag first then worn, clamped to the item's
+    // max. The only other way to wear something down is to actually grind it down, which makes repair NPCs
+    // and breakage untestable in any reasonable time. Redraws the touched slot so the client shows the new
+    // value immediately.
+    private void DuraCmd(string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[^1], out var n) || n < 0)
+        { SendLog($"usage: {Prefix}dura <name or id> <n>"); return; }
+        string q = string.Join(' ', parts[..^1]);
+        var def = Content.FindItem(q);
+        if (def is null) { SendLog($"no item matches \"{q}\" — try  {Prefix}items {q}"); return; }
+        ushort v = (ushort)Math.Min(n, (int)def.Durability);
+
+        var bag = _char.Inventory.FirstOrDefault(i => i.ItemId == def.Id);
+        var worn = bag is null ? _char.Equipment.FirstOrDefault(e => e.ItemId == def.Id) : null;
+        if (bag is null && worn is null) { SendLog($"You aren't carrying or wearing {def.Name}."); return; }
+        if (bag is not null) { bag.Dura = v; SendAddItem(bag); }
+        else { worn!.Dura = v; SendEquip(worn); }
+        MarkDirty();
+        SendLog($"{def.Name}: durability {v}/{def.Durability}{(bag is null ? " (worn)" : "")}.");
     }
 
     // "@clearinv": empty the bag + gear (test reset).
@@ -443,6 +522,23 @@ public sealed partial class Session
         PrimeViewport("clip");   // re-stamp the visible window so the client's pass layer flips NOW, not next strip
         SendMiniText(SettingLine("No-clip", _noClip));
         Log.Info($"   -> NOCLIP {(_noClip ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+    }
+
+    // "@peace [0|1]" — unprovoked mobs don't notice you: the survey companion to @clip, for walking a
+    // hostile map (@showwarps, quest routes) without collecting a train. Session-scoped and always OFF at
+    // login, same reasoning as @clip. Switch-on also makes every mob already chasing you let go
+    // (World.PacifyPlayer clears target + threat); staying ignored is the aggro-scan exclusions in
+    // World.Tick. Deliberately NOT invulnerability: anything you attack re-acquires you through TryDamage
+    // and fights back — combat stays testable with the toggle on.
+    private bool _peace;
+    internal bool PeaceMode => _peace;
+    private void PeaceCmd(string text)
+    {
+        var a = ParseInts(text);
+        _peace = a.Length > 0 ? a[0] != 0 : !_peace;
+        if (_peace) _world.PacifyPlayer(PlayerId);
+        SendMiniText(SettingLine("Peace", _peace));
+        Log.Info($"   -> PEACE {(_peace ? "on" : "off")} for '{_char.Name}'");
     }
 
     // "@anywarp [0|1]" — use any walk-onto warp or gated doorway regardless of the destination's
@@ -891,8 +987,10 @@ public sealed partial class Session
     // Free = in bounds, not blocked (the same ground+object-wall test the player's walk uses), and holding
     // neither a mob nor another player. The map may not be the one WE'RE on, so all lookups take it explicitly.
     private (ushort x, ushort y) ApproachTile(Session target, ushort map, ushort xs, ushort ys)
+        => ApproachTile(map, xs, ys, target._char.X, target._char.Y);
+
+    private (ushort x, ushort y) ApproachTile(ushort map, ushort xs, ushort ys, int tx, int ty)
     {
-        int tx = target._char.X, ty = target._char.Y;
         var md = MapData.For(map, xs, ys);
         for (int dir = 0; dir < 4; dir++)
         {
