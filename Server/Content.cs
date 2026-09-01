@@ -594,30 +594,27 @@ public static partial class Content
     public static IReadOnlyDictionary<string, string[]> ShopBuysFrom { get; private set; } =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
 
-    // 4.95 client Monster.tbl "Palette" per look id (0..326), decoded from the client PAK (see
-    // re/monster-matcher). This is the palette the CLIENT draws a given monster with — a DIFFERENT index
-    // space than RTK's MobLookColor. The 0x07 spawn color byte must carry THIS value (not RTK's) or the
-    // sprite recolors wrongly (e.g. a copper rabbit instead of the plain one). Most looks are palette 0.
-    public static IReadOnlyDictionary<ushort, byte> LookPalettes { get; private set; } =
-        new Dictionary<ushort, byte>();
-
-    // Per-look 0x07 colour-byte override for the 5.33 client ONLY. The Monster.epf palette index space
-    // differs between clients, so a colour tuned for 4.95 (mobs.csv MobLookColor) can pick a wrong hue on
-    // 5.33 — e.g. every horse (look 17) draws BLUE there at 4.95's colour. Populated from
-    // Mob5xPalettes.csv; only looks that disagree have a row. See Palette5x and Session.SendCreatureList.
-    public static IReadOnlyDictionary<ushort, byte> Mob5xPalettes { get; private set; } =
-        new Dictionary<ushort, byte>();
+    // 0x07 colour-byte remap for the 5.33 client ONLY, keyed (Look, Colour). The colour byte is a RAMP
+    // SHIFT the client applies to the mob's own base palette block (sprite indices >= 0x30 read
+    // palette[(i + 8*colour) & 0xFF]), and on 5.33 colour>>5 >= 1 swaps the block for SUPER{n}.PAL —
+    // palettes the era/4.x clients don't have (their 8-bit add just wraps, so era colour >= 32 meant
+    // ramp colour-32). mobs.csv MobLookColor is era-tuned, so (look, colour >= 32) pairs render wrong
+    // SUPER hues on 5.33 unless remapped here. Populated from Mob5xPalettes.csv (header has the full
+    // derivation; Sources.csv binary-re-533 the RE). See Palette5x and Session.SendCreatureList.
+    public static IReadOnlyDictionary<(ushort Look, byte Colour), byte> Mob5xPalettes { get; private set; } =
+        new Dictionary<(ushort, byte), byte>();
 
     /// <summary>The colour byte to send a V533 client for <paramref name="look"/>, given the colour the
-    /// 4.95 path would use. Returns the 5.33 override when one exists, else the unchanged fallback.</summary>
-    public static byte Palette5x(ushort look, byte fallback) =>
-        Mob5xPalettes.TryGetValue(look, out var p) ? p : fallback;
+    /// 4.95 path would use. Returns the 5.33 remap when one exists for this (look, colour) pair, else
+    /// the unchanged colour.</summary>
+    public static byte Palette5x(ushort look, byte colour) =>
+        Mob5xPalettes.TryGetValue((look, colour), out var p) ? p : colour;
 
     // Armor-dye ramp remap, keyed (bodyLook, canonicalDye) -> the ramp to actually send in appearance[4].
-    // The PLAYER equivalent of LookPalettes above, and it exists for the same reason: appearance[4] is a ramp
-    // shift resolved against the body sprite's OWN Body.tbl palette, so one canonical number is a different
-    // hue on different armor. Only pairs that disagree with palette 0 are stored; everything else passes
-    // through. Populated from ArmorDyeRamps.csv, which carries the full derivation. See Session.ArmorDye().
+    // The PLAYER equivalent of Mob5xPalettes above, and it exists for the same reason: appearance[4] is a
+    // ramp shift resolved against the body sprite's OWN Body.tbl palette, so one canonical number is a
+    // different hue on different armor. Only pairs that disagree with palette 0 are stored; everything
+    // else passes through. Populated from ArmorDyeRamps.csv, which carries the full derivation. See Session.ArmorDye().
     public static IReadOnlyDictionary<(ushort Look, byte Dye), byte> ArmorDyeRamps { get; private set; } =
         new Dictionary<(ushort, byte), byte>();
 
@@ -1227,8 +1224,7 @@ public static partial class Content
         SpellFx = LoadSpellFx(ResolvePath("P1998_SPELL_FX", "spell_effects.csv"));
         SpellTexts = LoadSpellTexts(ResolvePath("P1998_SPELL_TEXT", "SpellText.csv"));
         SpellCosts = LoadSpellCosts(ResolvePath("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
-        LookPalettes = LoadLookPalettes(ResolvePath("P1998_MOB_PALETTES", "MobLookPalettes.csv"));
-        Mob5xPalettes = LoadLookPalettes(ResolvePath("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // same Look,Palette shape, V533-only override
+        Mob5xPalettes = LoadMob5xPalettes(ResolvePath("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // (Look,Colour)->Palette, V533-only remap
         ArmorDyeRamps = LoadArmorDyeRamps(ResolvePath("P1998_ARMOR_DYE_RAMPS", "ArmorDyeRamps.csv"));
         MapMeta = LoadMapMeta(ResolvePath("P1998_MAPS_FULL", "Maps.csv"));   // region + warpOut for Gateway
         MobDrops = LoadMobDrops(ResolvePath("P1998_MOB_DROPS", "MobDrops.csv"));
@@ -1296,7 +1292,7 @@ public static partial class Content
         (_mapCells, var mapCellCount) = LoadMapCells(ResolvePath("P1998_MAP_CELLS", "MapCells.csv"));
         MapCellCount = mapCellCount;
         Log.Info($"content: {Maps.Count} maps ({MapMeta.Count} w/ region), {Mobs.Count} mobs, {Items.Count} items, " +
-                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {LookPalettes.Count} mob-palettes, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {MythicAlliances.Count} mythic-alliances, {EventCaves.Count} event-caves ({EventCaveTiles.Count} entrance tiles, {EventCaveBands.Count} tier bands), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
+                 $"{Warps.Count} warps, {Spawns.Count} spawns, {AreaSpawns.Count} area-spawns, {Npcs.Count} npcs, {Spells.Count} spells ({SpellFx.Count} fx, {SpellCosts.Count} w/ real learn cost), {Mob5xPalettes.Count} 5x-colour remaps, {ArmorDyeRamps.Count} armor-dye ramps, {MinorQuests.Count} minor-quests, {ShopStock.Count} shop-stocks ({ShopBuysFrom.Count} buy-from lists), {LevelExp.Count} level-exp-paths, {MobDrops.Count} mob-drop-tables, {CraftingToggleOverrides.Count} crafting-toggle overrides, {MythicCaves.Count} mythic-caves ({MythicCaveTiles.Count} entrance tiles), {MythicAlliances.Count} mythic-alliances, {EventCaves.Count} event-caves ({EventCaveTiles.Count} entrance tiles, {EventCaveBands.Count} tier bands), {ArenaDoors.Count} arena-doors, {WorldDests.Count} world-map dests, {PathHalls.Count} path-halls, {GatewayRegions.Count} gateway-regions, {ForageAreas.Count} forage-areas, {FallRooms.Count} fall-rooms, {Ambushes.Count} ambush-maps ({AmbushBursts.Count} burst-tables), {BoardLocations.Count} board-signs, {PetSpells.Count} pets, {WeaponProcs.Count} weapon-procs loaded" +
                  (Maps.Count == 0 || Mobs.Count == 0
                      ? "  (some empty — run re/build_map_index.py and check game-data/mobs.csv)"
                      : ""));
@@ -2837,18 +2833,15 @@ public static partial class Content
 
     // Spawn points: SpnMobId,SpnMapId,SpnX,SpnY (+ RTK bookkeeping columns we ignore). Rows whose mob or
     // map is unknown are still returned; the world filters them against the loaded mob/map registries.
-    /// <summary>The 4.95 client palette to draw a monster look with (0x07 color byte). Falls back to 0
-    /// (the plain/base palette) for looks not in the table — the correct default for most monsters.</summary>
-    public static byte PaletteFor(ushort look) => LookPalettes.TryGetValue(look, out var p) ? p : (byte)0;
-
-    // Look,Palette from the decoded client Monster.tbl (re/monster-matcher). Look id -> client palette byte.
-    private static Dictionary<ushort, byte> LoadLookPalettes(string? path)
+    // Look,Colour,Palette from Mob5xPalettes.csv. (look, era colour byte) -> colour byte to send V533.
+    private static Dictionary<(ushort, byte), byte> LoadMob5xPalettes(string? path)
     {
-        var pals = new Dictionary<ushort, byte>();
+        var pals = new Dictionary<(ushort, byte), byte>();
         foreach (var col in ReadCsv(path))
             if (ushort.TryParse(col.GetValueOrDefault("Look"), out var look)
+                && byte.TryParse(col.GetValueOrDefault("Colour"), out var colour)
                 && byte.TryParse(col.GetValueOrDefault("Palette"), out var pal))
-                pals[look] = pal;
+                pals[(look, colour)] = pal;
         return pals;
     }
 

@@ -48,6 +48,23 @@ public class ContentSmokeTests
         Assert.True(Content.Npcs.Count   > 0, "NPCs.csv loaded no NPCs");
     }
 
+    /// <summary>The V533 colour remap loaded with its (Look, Colour) keying intact. A renamed column or a
+    /// per-Look regression would not throw — <c>LoadMob5xPalettes</c> would quietly load 0 rows and every
+    /// remapped mob (plain horse first) silently reverts to a SUPER-palette hue on 5.33 (blue horses).
+    /// The horse row is the one live-confirmed value (@crecol 17 -> col3, 2026-08-21; Sources.csv
+    /// binary-re-533), so pin it exactly.</summary>
+    [Fact]
+    public void Mob5xColourRemapIsPairKeyed()
+    {
+        EnsureLoaded();
+
+        Assert.True(Content.Mob5xPalettes.Count >= 16,
+            $"Mob5xPalettes.csv loaded {Content.Mob5xPalettes.Count} rows — header/columns changed?");
+        Assert.Equal(3, Content.Palette5x(17, 35));                       // plain horse: era 35 -> brown ramp 3
+        Assert.Equal(11, Content.Palette5x(17, 11));                      // diamond horse passes through untouched
+        Assert.Equal(0, Content.Palette5x(130, 32));                      // tiger_guardian: SUPER0 -> base ramp
+    }
+
     /// <summary>A brand-new character's spawn tile can actually reach the rest of the world.
     ///
     /// <para>This is not a hypothetical. Welcome (4711) shipped with its only exits at <c>(9,16)</c> and

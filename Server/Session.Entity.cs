@@ -830,9 +830,10 @@ public sealed partial class Session
             d.AddRange(Be(e.y));                    // +2  Y
             d.AddRange(Be32(e.id));                 // +4  entity id
             d.AddRange(Be(e.look));                 // +8  look (0x8000|monsterId => Monster.epf)
-            // +10 palette/color. On 5.33 the Monster.epf palette index space differs, so a colour tuned
-            // for 4.95 can pick the wrong hue (every horse — look 17 — draws BLUE at 4.95's colour there).
-            // Remap per look for V533 only; 4.95 sends the colour unchanged. See Content.Mob5xPalettes.
+            // +10 palette/color — a RAMP SHIFT the client applies over the mob's own palette block, not a
+            // palette index. Era-tuned colours >= 32 select SUPER{n}.PAL on 5.33 (the era client just
+            // wrapped — horse colour 35 = brown ramp 3 there, SUPER0 blue on 5.33), so remap those pairs
+            // for V533 only; 4.95 sends the colour unchanged. See Content.Mob5xPalettes and its CSV header.
             byte color = !rawColor && _ver == ClientVersion.V533 ? Content.Palette5x((ushort)(e.look & 0x7fff), e.color) : e.color;
             d.Add(color);
             d.Add(e.dir);                           // +11 dir/state
