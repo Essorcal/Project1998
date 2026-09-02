@@ -46,6 +46,26 @@ public class ExchangeAcceptHandlerTests
     private static byte[] Finish(byte extra, string text) =>
         new byte[] { 5, extra, (byte)text.Length }.Concat(Encoding.ASCII.GetBytes(text)).ToArray();
 
+    /// <summary>The class title the fixture's characters carry. <c>Character.ClassName</c> defaults to
+    /// "Peasant", which <c>PathIdForClass</c> resolves to path 0, whose mark-0 title in Paths.csv is
+    /// "Peasant" again — so the label the window shows goes through the real lookup rather than echoing the
+    /// field. Pinned as a literal: the window's title bar is what a player reads, so a change here has to
+    /// fail this test rather than quietly follow the content edit that caused it.</summary>
+    private const string ClassTitle = "Peasant";
+
+    /// <summary>Sub-type 0 as it goes out: <c>00 | targetId(u32BE) | labelLen | label | level(u16BE)</c>.
+    /// Neither client reads the level; it is sent because RTK does.</summary>
+    private static byte[] Open(uint targetId, string name, ushort level = 1)
+    {
+        string label = $"{name}({ClassTitle})";
+        return new byte[] { 0 }
+            .Concat(Be32(targetId))
+            .Append((byte)label.Length)
+            .Concat(Encoding.ASCII.GetBytes(label))
+            .Concat(new[] { (byte)(level >> 8), (byte)level })
+            .ToArray();
+    }
+
     [Fact]
     public void ConfirmingAnExchangeLatchesBothWindowsThenClosesThem()
     {
@@ -58,15 +78,8 @@ public class ExchangeAcceptHandlerTests
         // --- sub-type 0: Alpha opens a window on Beta. Both sides get one, each naming the OTHER. ---
         alpha.Receive(ExchangeRequest(0, beta.PlayerId));
 
-        var opened = Assert.Single(alphaOut.BodiesOf(ExchangeOut));
-        Assert.Equal(new byte[] { 0 }.Concat(Be32(beta.PlayerId)).ToArray(), opened[..5]);
-        // body[5] is the label length; the label is "<name>(<class title>)" and the class title comes out of
-        // Paths.csv, so only the name half is pinned here.
-        Assert.StartsWith("AcceptBeta(", Encoding.ASCII.GetString(opened, 6, opened[5]));
-
-        var openedOnBeta = Assert.Single(betaOut.BodiesOf(ExchangeOut));
-        Assert.Equal(new byte[] { 0 }.Concat(Be32(alpha.PlayerId)).ToArray(), openedOnBeta[..5]);
-        Assert.StartsWith("AcceptAlpha(", Encoding.ASCII.GetString(openedOnBeta, 6, openedOnBeta[5]));
+        Assert.Equal(Open(beta.PlayerId, "AcceptBeta"), Assert.Single(alphaOut.BodiesOf(ExchangeOut)));
+        Assert.Equal(Open(alpha.PlayerId, "AcceptAlpha"), Assert.Single(betaOut.BodiesOf(ExchangeOut)));
 
         // --- sub-type 5, first confirm: extra=1 to BOTH sides, and the window stays open. ---
         alphaOut.Clear();
