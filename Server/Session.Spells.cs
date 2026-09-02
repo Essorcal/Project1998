@@ -2438,7 +2438,7 @@ public sealed partial class Session
 
         var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: placeDir, color: def.Color,
                                   exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
-        _world.CharmMob(mob, _char.Id, 300_000, summoned: true);   // conjured, so World.Tick despawns it at PetExpiresAt
+        _world.OwnSummonedMob(mob, _char.Id, 300_000);   // conjured, so World.Tick despawns it at PetExpiresAt
         Log.Info($"      {sp.Name}(lua) -> summoned pet '{mob.Name}' ({mob.Id}) for player {_char.Id} at ({sx},{sy})");
         return true;
     }

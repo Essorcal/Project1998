@@ -2072,7 +2072,7 @@ public sealed class World
     }
 
     /// <summary>Give a mob to a player for a fixed duration, if nobody owns it already.</summary>
-    public bool CharmMob(Mob mob, uint ownerId, int durMs, bool summoned = false)
+    public bool CharmMob(Mob mob, uint ownerId, int durMs)
     {
         lock (_lock)
         {
@@ -2080,8 +2080,20 @@ public sealed class World
             mob.OwnerId = ownerId;
             mob.PetExpiresAt = Environment.TickCount64 + durMs;
             mob.TargetId = 0;
-            if (summoned) mob.Summoned = true;
             return true;
+        }
+    }
+
+    /// <summary>Give a newly created summon to its owner; unlike Endear, this cannot be refused.</summary>
+    public void OwnSummonedMob(Mob mob, uint ownerId, int durMs)
+    {
+        lock (_lock)
+        {
+            Debug.Assert(mob.OwnerId == 0, "a newly created summon must not already have an owner");
+            mob.OwnerId = ownerId;
+            mob.PetExpiresAt = Environment.TickCount64 + durMs;
+            mob.Summoned = true;
+            mob.TargetId = 0;
         }
     }
 
