@@ -18,10 +18,20 @@ USAGE
     python re/warp_walk_sheet.py --all --covered re/warp_visited.txt   # + tick what you've walked
     python re/warp_walk_sheet.py --all --covered "C:\...\NexusTK\Maps" # .cmp cache = visited set
 """
-import argparse, os, glob, re as _re
+import argparse, os, glob, re as _re, sys
 import propose_warps as pw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The sheet is UTF-8 (arrows in the door tables, en dashes in the headings) and the FILE is written
+# as UTF-8 explicitly. The preview echoed to stdout is not: on a stock Windows console that is cp1252,
+# and printing the first arrow raised UnicodeEncodeError -- after the sheet had already been written,
+# so the tool did its job and then died with a traceback and a non-zero exit. Ask for UTF-8 out, and
+# fall back to replacing what the console cannot draw rather than failing.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):       # not a reconfigurable stream (redirected/wrapped)
+    pass
 
 
 def visited_from(path):
