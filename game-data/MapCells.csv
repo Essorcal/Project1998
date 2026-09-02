@@ -95,3 +95,5 @@ Map,X,Y,Tile,Pass,Obj,Sources
 4613,22,47,,,54,secret-garden south door closed (owner-design)
 4613,23,47,,,55,secret-garden south door closed (owner-design)
 4613,25,47,,,57,secret-garden south door closed (owner-design)
+30,4,3,215,3,,"Baek Shop vertical counter: object 687 covers only part of the cell and the ground beneath shows 1239 (visible blue panel art) instead of the hidden filler its five template siblings use — 28/29 have 215, 363/364/365 have 216, all with pass=3. Pass matters as much as Tile here: the top 2 bits pick the sheet, so 215 needs pass=3 to resolve through sheet 2 (-> frame 449, plain floor); at pass=0 the same index is sheet-1 art. Matches 28/29, the same Kugnae cluster"
+30,4,4,215,3,,Baek Shop vertical counter — same cell pair as above
