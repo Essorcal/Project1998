@@ -285,6 +285,34 @@ public class DamageIntakeTests
         Assert.Contains("Mythic Tiger attacks you with Stormstrike spell.", MiniTexts(outbound));
     }
 
+    /// <summary>The same spell against a WARDED player: nothing lands (#79). RTK's own
+    /// Spells/NPCs/stormstrike.lua:9 goes through <c>removeHealthExtend</c>, which returns before the damage
+    /// calc while a Harden Body ward is up, so this is the sourced behaviour and not a nicety.
+    ///
+    /// <para><b>This is the assertion the enum Theory above cannot make.</b> That Theory proves each
+    /// <see cref="DamageKind"/> honours the ward as its row says; it is silent on whether a CALLER reached
+    /// for the right kind. Stormstrike routed itself to <see cref="DamageKind.Environment"/> — which is
+    /// correctly, deliberately exempt — and the Theory was perfectly happy the whole time. Only a test that
+    /// drives the caller can see it, which is why this one exists.</para>
+    ///
+    /// <para>The banish is deliberately not asserted: <c>ReturnToInn</c> picks a random tile in a random inn
+    /// of the player's home group, which is not a stable thing to pin. It runs either way by design — RTK
+    /// treats the zap and the walk home as two beats, and warding the first does not cancel the second.</para></summary>
+    [Fact]
+    public void AWardedPlayerTakesNothingFromAMythicsStormstrike()
+    {
+        var (victim, outbound, character) = _fx.PlayerWith("DmgStormWarded", c =>
+        {
+            c.MaxHp = FullHp; c.Hp = FullHp; c.Ac = -50; c.Level = 50; c.Will = 20;
+        });
+        victim.ItemSetStatus("harden_body", 60_000);
+
+        victim.NpcCastStormstrike("Mythic Tiger");
+
+        Assert.Equal(FullHp, character.Hp);
+        Assert.DoesNotContain("Mythic Tiger attacks you with Stormstrike spell.", MiniTexts(outbound));
+    }
+
     /// <summary>A lethal spell hit reports the FULL figure, uncapped by the HP that was left (the vita
     /// strikes' overflow is computed from the excess), drops the player to 0, and runs the death beat.</summary>
     [Fact]
