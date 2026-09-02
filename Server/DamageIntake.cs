@@ -68,13 +68,22 @@ public sealed class DamageIntake
     ///
     /// <para><b>Room hazards: NOT blocked.</b> RTK's trap scripts split, and they split on exactly the axis
     /// that matters. The five you STEP ON — NPCs/trap/rogue_traps/{dart,death,spear,repeating_dart}_trap.lua
-    /// and Ranger/pit_trap.lua — all call the plain <c>block:removeHealth(damage)</c> with no ward check at
-    /// all. The two that reach out and pick a target (bladestorm_trap.lua, Spy/toxic_spray.lua) use
-    /// <c>removeHealthExtend</c> and are blocked. Sute's cold tiles are a stepped-on hazard, so
-    /// <see cref="DamageKind.Environment"/> keeps this flag set — now a sourced match rather than a gap.
-    /// The caveat is on the record too: Sute's cave is later content with no RTK script of its own (see
-    /// docs/common/Deferred-Work.md, "Sute's combat kit is built from ONE eyewitness report"), so the
-    /// stepped-on trap family is the nearest thing RTK has to say about it, not a direct reading.</para>
+    /// and Ranger/pit_trap.lua — all call the plain <c>block:removeHealth(damage)</c>. The two that reach out
+    /// and pick a target (bladestorm_trap.lua, Spy/toxic_spray.lua) use <c>removeHealthExtend</c> and are
+    /// blocked. Sute's cold tiles are a stepped-on hazard, so <see cref="DamageKind.Environment"/> keeps this
+    /// flag set.</para>
+    ///
+    /// <para>That plain <c>removeHealth</c> really is unguarded, in the ENGINE and not merely in the Lua
+    /// that calls it: it binds to <c>pcl_removehealth</c> (rtk/src/map/sl.c:7848-7885), which sets the
+    /// damage/crit fields and hands off to <c>clif_send_pc_healthscript</c> (clif.c:1229) — and neither
+    /// function contains a ward test of any kind. So the stepped-on traps bypass Harden Body by direct
+    /// evidence, not by inference from which Lua helper they happened to pick.</para>
+    ///
+    /// <para>The caveat that does remain is a different one, and it stands: Sute's cave is later content with
+    /// no RTK script of its own (see docs/common/Deferred-Work.md, "Sute's combat kit is built from ONE
+    /// eyewitness report"), so the stepped-on trap family is the nearest ANALOGUE RTK offers for a cold tile,
+    /// not a reading of the cold tile itself. The mechanism is now sourced to the engine; the decision that a
+    /// cold tile belongs in that family is still ours.</para>
     ///
     /// <para><i>Checked and rejected as a counter-example:</i> Instances/instance_boss.lua's rockdamage
     /// (:288) and gustdamage (:574) do go through <c>removeHealthExtend</c>, but they are not room damage —
@@ -113,10 +122,11 @@ public sealed class DamageIntake
     /// <see cref="DamageKind.MobSpell"/> with a caller-supplied line — one sibling method in
     /// Session.MobSpells.cs, one line at a call site this branch must not touch. Note that the enum theory in
     /// Tests/DamageIntakeTests.cs cannot catch this class of bug: it proves each KIND behaves, not that each
-    /// caller picked the right one. (Unfiled, recorded here only) <c>Session.TickPoison</c>
-    /// (Session.Spells.cs:1825) is a sixth damage path that never went through any of the five and so was
-    /// outside #28's scope; RTK's equivalent ticks (burn/venom <c>while_cast</c>) are ward-gated like
-    /// everything else.</para>
+    /// caller picked the right one. (<b>#82</b>) <c>Session.TickPoison</c> (Session.Spells.cs:1825) is a
+    /// sixth damage path that never went through any of the five and so was outside #28's scope — it
+    /// hand-rolls this very epilogue (HP, WakeUp, SendStats, mini-text, the over-head bar, the foe mark),
+    /// which makes #28's "five copies" really six. RTK's equivalent ticks (burn/venom <c>while_cast</c>) are
+    /// ward-gated like everything else.</para>
     /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 

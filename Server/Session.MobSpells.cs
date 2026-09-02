@@ -37,7 +37,7 @@ public sealed partial class Session
     {
         TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
         {
-            IgnoresHardenBody = false,   // RTK Spells/NPCs/*.lua -> removeHealthExtend, every one of them
+            IgnoresHardenBody = false,   // RTK ion/call_lightning/thunder_touch/freeze/stormstrike/burn/venom -> removeHealthExtend
             CritByte = HitCritByte,
             MiniText = $"{caster.Name} attacks you with {spellName} spell.",   // RTK peck.lua's own wording
             LogLine  = dmg => $"   -> mob {caster.Id} '{caster.Name}' cast {spellName} on {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
