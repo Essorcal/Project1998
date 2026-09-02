@@ -51,6 +51,28 @@ It finds a .NET 8 SDK or offers to fetch a private one into `.dotnet\` beside th
 no PATH change, delete the folder to undo -- then builds the solution and opens the login and game
 servers in their own windows.
 
+**Dev launcher** (Windows, optional) -- when one machine has several clones and several people or
+agents sharing the same two ports, `Scripts\Serve.ps1` performs the same launch with the checkout and
+commit stamped on it:
+
+```powershell
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Testers botone -Gms botone   # build, then start the pair
+Scripts\Serve.ps1 -Status                                                    # what is on 2000/2005, and whose
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Stop                        # close exactly that pair
+```
+
+It refuses to start while either port is held and names the holder (PID, command line, and that pair's
+checkout and commit if it was started the same way); it never stops anything by itself. The two consoles
+are titled `LOGIN 2000/2001 - <clone> @ <commit>` and `GAME 2005/2006 - <clone> @ <commit>` (a `+`
+after the commit means uncommitted changes), so the window says which build it is. `-Testers` and
+`-Gms` reach only the launched processes, as `P1998_TESTERS` / `P1998_GMS`, unioned with the clone's
+`state/*_accounts.txt` as usual. What it started is recorded in the clone's `run/session.json`
+(`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`);
+`-Status` reads it back, and `-Stop` sends Ctrl+C to those two processes, waits for the ports to free,
+and deletes it. `-PortBase` is accepted for a second pair later (#84), but until then only the default
+2000 gives a working login-to-game handoff. `run-server.bat` stays the plain path; the script does not
+replace it.
+
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:
 
