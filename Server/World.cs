@@ -450,6 +450,10 @@ public sealed class World
 
     private int _started;   // 0 until Start() has run; makes a second call a no-op instead of a second tick thread
 
+    /// <summary>Whether <see cref="Start"/> has run — i.e. whether this world has threads attached to the
+    /// process. Public so a test can assert the guarantee the constructor makes, rather than trusting it.</summary>
+    public bool IsStarted => Volatile.Read(ref _started) != 0;
+
     /// <summary>Start the background machinery: the tick and autosave threads, the watchdog probes, the
     /// restart ladder and the status writer. Idempotent — a second call is a no-op rather than a duplicate
     /// set of threads.</summary>
