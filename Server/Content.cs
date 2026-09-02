@@ -503,6 +503,8 @@ public static class Formula
 /// </summary>
 public static partial class Content
 {
+    private static readonly SemaphoreSlim ReloadGate = new(1, 1);
+
     // id -> map. Only maps whose dims were validated against the client's own TK&lt;id&gt;.map (see
     // re/build_map_index.py) are present, so a warp target here is always renderable.
     public static IReadOnlyDictionary<ushort, MapInfo> Maps { get; private set; } =
@@ -1313,16 +1315,42 @@ public static partial class Content
     /// </summary>
     public static string Reload()
     {
-        Load();
-        var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
-                      $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
-                      $"{CraftingToggleOverrides.Count} crafting-toggle overrides, " +
-                      $"era {(Era.Today?.ToString("yyyy-MM-dd") ?? "off")} ({Shared.EraCalendar.FeatureCount} dated features)";
-        // A rejected .lua is the single most important thing @reload can tell you: your edit did NOT take, the
-        // old script is still running, and the reason is in the server log. Lead with it.
-        return RejectedScripts.Count == 0 ? summary
-             : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
+        ReloadGate.Wait();
+        try
+        {
+            var before = CaptureReloadTables();
+            try { Load(); }
+            catch (Exception e)
+            {
+                var replaced = CaptureReloadTables()
+                    .Where(kv => before.TryGetValue(kv.Key, out var old) && !ReferenceEquals(old, kv.Value))
+                    .Select(kv => kv.Key)
+                    .ToArray();
+                string progress = replaced.Length == 0
+                    ? "No public content tables were replaced."
+                    : $"Tables replaced before failure: {string.Join(", ", replaced)}.";
+                throw new InvalidOperationException($"{e.Message} {progress}", e);
+            }
+
+            var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
+                          $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
+                          $"{CraftingToggleOverrides.Count} crafting-toggle overrides, " +
+                          $"era {(Era.Today?.ToString("yyyy-MM-dd") ?? "off")} ({Shared.EraCalendar.FeatureCount} dated features)";
+            // A rejected .lua is the single most important thing @reload can tell you: your edit did NOT take, the
+            // old script is still running, and the reason is in the server log. Lead with it.
+            return RejectedScripts.Count == 0 ? summary
+                 : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
+        }
+        finally { ReloadGate.Release(); }
     }
+
+    /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which ones
+    /// already swapped. Value settings and private derived indexes are deliberately not described as tables.</summary>
+    private static Dictionary<string, object?> CaptureReloadTables() =>
+        typeof(Content).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(p => !p.PropertyType.IsValueType && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)
+            .OrderBy(p => p.MetadataToken)
+            .ToDictionary(p => p.Name, p => p.GetValue(null));
 
     /// <summary>Lua files whose most recent (re)load was rejected for a compile/shape error — their previously
     /// loaded version is still live. Empty when everything took. See <see cref="Reload"/>.</summary>
@@ -2674,20 +2702,52 @@ public static partial class Content
             var key = Clean(col.GetValueOrDefault("MobKey", ""));
             if (string.IsNullOrEmpty(key)) continue;
 
-            var loot = Clean(col.GetValueOrDefault("Loot", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => e.Split(':'))
-                .Where(p => p.Length == 3)
-                .Select(p => new LootRoll(p[0] == "GOLD" ? null : p[0], int.Parse(p[1]),
-                    double.Parse(p[2], System.Globalization.CultureInfo.InvariantCulture)))
-                .ToArray();
-            var rare = Clean(col.GetValueOrDefault("RareLoot", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => e.Split(':'))
-                .Where(p => p.Length == 2)
-                .Select(p => new RareRoll(p[0] == "GOLD" ? null : p[0],
-                    double.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture)))
-                .ToArray();
+            string lootCell = Clean(col.GetValueOrDefault("Loot", ""));
+            string rareCell = Clean(col.GetValueOrDefault("RareLoot", ""));
+            var loot = new List<LootRoll>();
+            var rare = new List<RareRoll>();
+            string? badEntry = null;
 
-            if (loot.Length > 0 || rare.Length > 0) table[key] = new MobDropDef(loot, rare);
+            foreach (string entry in lootCell.Split('|', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var p = entry.Split(':');
+                if (p.Length != 3) continue;
+                if (!int.TryParse(p[1], out int amount)
+                    || !double.TryParse(p[2], System.Globalization.NumberStyles.Float |
+                        System.Globalization.NumberStyles.AllowThousands,
+                        System.Globalization.CultureInfo.InvariantCulture, out double rate))
+                {
+                    badEntry = $"Loot entry '{entry}'";
+                    break;
+                }
+                loot.Add(new LootRoll(p[0] == "GOLD" ? null : p[0], amount, rate));
+            }
+
+            if (badEntry is null)
+            {
+                foreach (string entry in rareCell.Split('|', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var p = entry.Split(':');
+                    if (p.Length != 2) continue;
+                    if (!double.TryParse(p[1], System.Globalization.NumberStyles.Float |
+                            System.Globalization.NumberStyles.AllowThousands,
+                            System.Globalization.CultureInfo.InvariantCulture, out double rate))
+                    {
+                        badEntry = $"RareLoot entry '{entry}'";
+                        break;
+                    }
+                    rare.Add(new RareRoll(p[0] == "GOLD" ? null : p[0], rate));
+                }
+            }
+
+            if (badEntry is not null)
+            {
+                Log.Warn($"MobDrops.csv row MobKey='{key}' skipped: invalid {badEntry}; " +
+                         $"row Loot='{lootCell}', RareLoot='{rareCell}'");
+                continue;
+            }
+
+            if (loot.Count > 0 || rare.Count > 0) table[key] = new MobDropDef(loot.ToArray(), rare.ToArray());
         }
         return table;
     }

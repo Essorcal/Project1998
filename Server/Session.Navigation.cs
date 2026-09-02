@@ -1233,9 +1233,10 @@ public sealed partial class Session
     // Lua, clears the map-terrain cache, and fully rebuilds the world population (World.RebuildPopulation) so
     // ADDED/REMOVED/REPOSITIONED spawns and NPCs take effect — editing AreaSpawns.csv or an NPC's tile no
     // longer needs a restart. The terrain cache for maps that currently have players is pre-warmed OUTSIDE the
-    // world lock first, so the .map re-reads don't stall the world under the lock. A load error keeps the OLD
-    // content. (Everything file-backed is reloadable now — no compile-time content tables remain that a
-    // restart would be needed for.)
+    // world lock first, so the .map re-reads don't stall the world under the lock. Until the atomic snapshot
+    // in #33 lands, a load error may leave a prefix of the content tables replaced; the failure report names
+    // them. (Everything file-backed is reloadable now — no compile-time content tables remain that a restart
+    // would be needed for.)
     //
     // The work itself lives in World.ReloadFromDisk, because a content deploy has no GM logged in to type
     // this — the CI content lane drops a run/reload_now sentinel and the world picks it up (see
@@ -1243,7 +1244,7 @@ public sealed partial class Session
     private void ReloadContent()
     {
         var (ok, report) = _world.ReloadFromDisk();
-        SendLog(ok ? $"Reloaded: {report}" : $"@reload FAILED: {report}  (previous content kept)");
+        SendLog(ok ? $"Reloaded: {report}" : $"@reload FAILED: {report}");
         Log.Info($"   -> @reload by '{_char.Name}': {report}");
     }
 
