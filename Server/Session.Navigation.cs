@@ -1234,9 +1234,9 @@ public sealed partial class Session
     // ADDED/REMOVED/REPOSITIONED spawns and NPCs take effect — editing AreaSpawns.csv or an NPC's tile no
     // longer needs a restart. The terrain cache for maps that currently have players is pre-warmed OUTSIDE the
     // world lock first, so the .map re-reads don't stall the world under the lock. Until the atomic snapshot
-    // in #33 lands, a load error may leave a prefix of the content tables replaced; the failure report names
-    // them. (Everything file-backed is reloadable now — no compile-time content tables remain that a restart
-    // would be needed for.)
+    // in #33 lands, a load error may leave a prefix of the content replaced; the failure report names the
+    // public tables it tracks. (Everything file-backed is reloadable now — no compile-time content tables
+    // remain that a restart would be needed for.)
     //
     // The work itself lives in World.ReloadFromDisk, because a content deploy has no GM logged in to type
     // this — the CI content lane drops a run/reload_now sentinel and the world picks it up (see

@@ -1327,8 +1327,8 @@ public static partial class Content
                     .Select(kv => kv.Key)
                     .ToArray();
                 string progress = replaced.Length == 0
-                    ? "No public content tables were replaced."
-                    : $"Tables replaced before failure: {string.Join(", ", replaced)}.";
+                    ? "No public content tables were replaced (private tables, the era calendar and Lua scripts are not tracked until #33)."
+                    : $"Public content tables replaced before failure: {string.Join(", ", replaced)}.";
                 throw new InvalidOperationException($"{e.Message} {progress}", e);
             }
 
@@ -1344,8 +1344,9 @@ public static partial class Content
         finally { ReloadGate.Release(); }
     }
 
-    /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which ones
-    /// already swapped. Value settings and private derived indexes are deliberately not described as tables.</summary>
+    /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which tracked
+    /// tables already swapped. Deliberately not exhaustive: private tables, the era calendar and Lua script
+    /// hosts stay outside this bounded operator hint until #33 makes the whole load atomic.</summary>
     private static Dictionary<string, object?> CaptureReloadTables() =>
         typeof(Content).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
             .Where(p => !p.PropertyType.IsValueType && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)

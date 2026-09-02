@@ -118,7 +118,7 @@ public class ContentReloadTests
                 Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", path);
                 var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
 
-                Assert.Contains("Tables replaced before failure:", error.Message);
+                Assert.Contains("Public content tables replaced before failure:", error.Message);
                 Assert.Contains("Maps", error.Message);
                 Assert.Contains("MobDrops", error.Message);
                 Assert.DoesNotContain("previous content kept", error.Message, StringComparison.OrdinalIgnoreCase);

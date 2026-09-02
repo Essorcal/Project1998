@@ -2235,8 +2235,9 @@ public sealed class World
     /// a content-only deploy drops a <c>run/reload_now</c> sentinel and <see cref="RestartSchedule.Loop"/>
     /// calls this. That is the whole point of the content lane — a CSV or Lua fix ships without kicking anyone.
     ///
-    /// <para>Returns (ok, report). Until the atomic snapshot in #33 lands, a load error may leave the tables
-    /// named in the report replaced; it comes back <c>ok: false</c> rather than taking down a running world.</para>
+    /// <para>Returns (ok, report). Until the atomic snapshot in #33 lands, a load error may leave content
+    /// replaced; the report names the public tables it can track and comes back <c>ok: false</c> rather than
+    /// taking down a running world.</para>
     /// </summary>
     public (bool ok, string report) ReloadFromDisk()
     {
@@ -2244,7 +2245,7 @@ public sealed class World
         try { summary = Content.Reload(); }
         catch (Exception e)
         {
-            Log.Error("content reload failed — see the exception message for tables replaced before the failure", e);
+            Log.Error("content reload failed — see the exception message for public tables replaced before the failure", e);
             return (false, e.Message);
         }
         ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
