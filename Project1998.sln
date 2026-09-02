@@ -19,6 +19,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MapEditor", "MapEditor\MapE
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LoginProbe", "LoginProbe\LoginProbe.csproj", "{5E1C0B7A-9F3D-4C2E-8A61-2D7B4F9E0C11}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IconStudio", "IconStudio\IconStudio.csproj", "{E6224E30-D002-4117-884F-688D8F00A6E1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -60,5 +62,9 @@ Global
 		{5E1C0B7A-9F3D-4C2E-8A61-2D7B4F9E0C11}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5E1C0B7A-9F3D-4C2E-8A61-2D7B4F9E0C11}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5E1C0B7A-9F3D-4C2E-8A61-2D7B4F9E0C11}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6224E30-D002-4117-884F-688D8F00A6E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6224E30-D002-4117-884F-688D8F00A6E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6224E30-D002-4117-884F-688D8F00A6E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6224E30-D002-4117-884F-688D8F00A6E1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

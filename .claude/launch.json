@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mapeditor",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "MapEditor", "--", "--no-browser", "--port", "5970"],
+      "port": 5970
+    },
+    {
+      "name": "iconstudio",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "IconStudio", "--", "--no-browser", "--port", "5971"],
+      "port": 5971
+    }
+  ]
+}
