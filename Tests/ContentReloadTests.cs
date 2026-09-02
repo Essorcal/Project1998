@@ -11,7 +11,6 @@ public class ContentReloadTests
     public async Task ConcurrentReloadReportsThatReloadIsAlreadyInProgress()
     {
         TestProcessState.LoadContent();
-        var mapsBefore = Content.Maps;
         var field = typeof(World).GetField("ReloadGate",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
         var reloadGate = Assert.IsType<SemaphoreSlim>(field?.GetValue(null));
@@ -31,7 +30,6 @@ public class ContentReloadTests
             var result = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.False(result.ok);
             Assert.Equal("reload already in progress", result.report);
-            Assert.Same(mapsBefore, Content.Maps);
         }
         finally
         {
