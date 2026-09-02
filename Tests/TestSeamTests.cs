@@ -21,9 +21,16 @@ public class TestSeamTests
 
     public TestSeamTests(SessionFixture fx) => _fx = fx;
 
-    /// <summary>Constructing a World attaches NOTHING to the process: no tick thread, no autosave sweep, no
-    /// watchdog, no restart scheduler, no status writer. The fixture builds one and never starts it, so if
-    /// this ever comes back true, something with a heartbeat has moved back into the constructor.</summary>
+    /// <summary>Constructing a World attaches nothing OF ITS OWN to the process: no tick thread, no autosave
+    /// sweep, no watchdog, no restart scheduler, no status writer. The fixture builds one and never starts it,
+    /// so if this ever comes back true, something with a heartbeat has moved back into the constructor.
+    ///
+    /// <para>The constructor does still LOG — the spawn, NPC and clock lines — and <c>Log</c> owns a
+    /// process-wide writer thread that its static initializer starts. That thread is NOT world machinery and
+    /// moving <c>Log</c> inside <c>World.Start</c> would not make this assertion truer: nothing can construct
+    /// a World without <c>Content.Load</c> running first, and that logs several hundred lines, so the writer
+    /// is always already up. Measured on this branch, <c>new World()</c> costs zero threads — the constructor
+    /// is clean, and the shared logger is infrastructure the whole process depends on.</para></summary>
     [Fact]
     public void ConstructingAWorldStartsNothing() => Assert.False(_fx.World.IsStarted);
 
