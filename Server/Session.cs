@@ -388,6 +388,8 @@ public sealed partial class Session
                 Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
             }
             CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
+            // EXPECTED: WriterLoop has its own catch and has already logged whatever it hit, with a stack
+            // where it warranted one. Logging the same exception again here would double every writer fault.
             try { await writer; } catch { /* writer logs its own errors */ }
             Log.Info($"-- CLOSE {_remote}");
         }
@@ -445,6 +447,8 @@ public sealed partial class Session
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
         _outbound.Writer.TryComplete();
+        // EXPECTED: teardown races itself (reader, writer and a full-queue Send all call this) and the loser
+        // finds the socket already closed. The teardown line below is the record that it happened.
         try { _client.Close(); } catch { /* already closing */ }
         Log.Info($"   -> connection teardown ({reason})");
     }

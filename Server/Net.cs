@@ -105,6 +105,8 @@ public sealed class TkListener
             // instead of back-to-back. Audible symptom: casts that should land in unison (three per action-budget
             // window while a key is held) play their sounds slightly flammed. Latency matters here, throughput
             // does not; there is no case where batching this game's packets is worth the delay.
+            // EXPECTED: the peer reset between accept and here. Nothing is lost by not reporting it — the
+            // read loop is about to fail on the same socket and log that with its address.
             try { client.NoDelay = true; } catch { /* socket already dead — the read loop will notice */ }
 
             var peer = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
@@ -122,13 +124,13 @@ public sealed class TkListener
                 if (!ProxyProtocol.IsTrustedPeer(peer))
                 {
                     Log.Info($"!! REJECT {peer} on :{port} (not in P1998_PROXY_ALLOW); {_guard.Total} live");
-                    try { client.Close(); } catch { /* already gone */ }
+                    try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                     continue;
                 }
                 if (!_guard.TryReserveGlobal(out var greason))
                 {
                     Log.Info($"!! REJECT {peer} on :{port} ({greason}); {_guard.Total} live");
-                    try { client.Close(); } catch { /* already gone */ }
+                    try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                     continue;
                 }
                 _ = RunProxiedAsync(client, port, peer);
@@ -139,7 +141,7 @@ public sealed class TkListener
             if (!_guard.TryAdmit(peer, out var reason))
             {
                 Log.Info($"!! REJECT {peer} on :{port} ({reason}); {_guard.Total} live");
-                try { client.Close(); } catch { /* already gone */ }
+                try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                 continue;
             }
             _ = RunAndReleaseAsync(client, port, peer, null);   // fire-and-forget; releases the slot on exit
@@ -161,7 +163,7 @@ public sealed class TkListener
         {
             Log.Warn($"PROXY header from {peer} on :{port} rejected — connection dropped", e);
             _guard.ReleaseGlobal();
-            try { client.Close(); } catch { /* already gone */ }
+            try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
             return;
         }
 
@@ -169,7 +171,7 @@ public sealed class TkListener
         {
             Log.Info($"!! REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
             _guard.ReleaseGlobal();
-            try { client.Close(); } catch { /* already gone */ }
+            try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
             return;
         }
         await RunAndReleaseAsync(client, port, ip, ip);

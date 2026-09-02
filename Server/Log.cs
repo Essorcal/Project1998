@@ -70,6 +70,9 @@ public static class Log
         // and the state dir, so nothing else brings it into existence on a fresh host — and OpenFile
         // swallows its exception, meaning a missing directory would degrade silently to console-only
         // logging. That is precisely the failure this file exists to prevent.
+        // EXEMPT (the logger cannot log through itself): if this fails, OpenFile fails on the same path a
+        // moment later and prints the reason to the console, so the failure IS reported — once, by the code
+        // that owns the file handle.
         try { Directory.CreateDirectory(Path.GetDirectoryName(path)!); } catch { /* OpenFile reports */ }
         // Hand the path to the writer thread as a control line rather than opening here: the file handle is
         // owned by that thread alone, so there is no lock anywhere on the caller's side.
@@ -131,6 +134,9 @@ public static class Log
             Queue.CompleteAdding();
             Writer.Join(TimeSpan.FromSeconds(2));
         }
+        // EXEMPT (the logger cannot log through itself, and this is the log shutting down): the only thing
+        // that lands here is a second Shutdown racing the first on an already-completed queue, which is the
+        // documented double-call from the two exit hooks. There is no failure to hide.
         catch { /* already shutting down */ }
     }
 
@@ -162,7 +168,10 @@ public static class Log
         }
         catch (Exception e)
         {
-            // The writer thread dying silently would take the log with it and leave no trace of why.
+            // The writer thread dying silently would take the log with it and leave no trace of why. Full
+            // exception, straight to the console, because the queue this would normally go through is the
+            // thing that just stopped being drained. EXEMPT (nested): if the console write ALSO fails there
+            // is no sink left in the process to report it to.
             try { Console.WriteLine($"!! log writer stopped: {e}"); } catch { }
         }
         finally { TryFlush(); }
@@ -184,6 +193,10 @@ public static class Log
 
     private static void Emit(string text)
     {
+        // EXEMPT (the logger cannot log through itself): both halves of the sink are the thing that failed.
+        // Reporting a console failure would need the console; reporting a file failure would need the file.
+        // The design is deliberately half-alive — one sink dying must not take the other with it, and
+        // neither may kill the writer thread, which would take the whole log down for a full disk.
         try { Console.Out.Write(text); } catch { /* console gone (detached/redirected to a closed pipe) */ }
         if (_file is null) return;
         try
@@ -192,11 +205,13 @@ public static class Log
             _written += text.Length;
             if (_written >= MaxBytes) Rotate();
         }
+        // EXEMPT: see the head of this method — the file sink is what failed.
         catch { /* disk full / handle lost — keep the console half alive rather than kill the writer */ }
     }
 
     private static void TryFlush()
     {
+        // EXEMPT: same sink-is-the-failure case as Emit, whose comment explains it.
         try { _file?.Flush(); } catch { /* see Emit */ }
     }
 
@@ -216,6 +231,8 @@ public static class Log
         catch (Exception e)
         {
             _file = null;
+            // EXEMPT (nested): the file half is what failed, so this reports it to the console; if that
+            // fails too, nothing is left to report to.
             try { Console.WriteLine($"!! log file unavailable ({_path}): {e}"); } catch { }
         }
     }
@@ -234,6 +251,8 @@ public static class Log
             if (File.Exists(prev)) File.Delete(prev);
             File.Move(_path, prev);
         }
+        // EXEMPT (nested), as above: rotation is file work, reported to the console because the file is what
+        // broke. OpenFile below then re-opens (or reports) whatever state that left.
         catch (Exception e) { try { Console.WriteLine($"!! log rotate failed: {e}"); } catch { } }
         OpenFile(note: "rotated");
     }
