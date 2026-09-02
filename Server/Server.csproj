@@ -9,6 +9,15 @@
     <PackageReference Include="MoonSharp" Version="2.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The #27 seam lets a test BUILD a Session; this lets one ARRANGE the state a handler reads. Nearly
+         everything a damage test has to set up first — a Harden Body ward (ItemSetStatus), the sleep-family
+         amplifier (ArmDamageAmp), the sanctuary deduction (ApplySanctuaryDeduction) — is internal, and two
+         of the five damage intakes are internal themselves. Widening any of them to public to suit a test
+         would be the wrong trade: they are not API, and public is a promise to every other caller. -->
+    <InternalsVisibleTo Include="Tests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
 

@@ -24,46 +24,46 @@ public sealed partial class Session
 {
     /// <summary>Take spell damage from a CREATURE. The mob twin of <see cref="ReceiveSpellDamage"/>: same
     /// deduction reduction and the same "magic ignores physical AC" rule (the AC pass belongs to swings, not
-    /// spells), attributed to the mob so the message names it.</summary>
+    /// spells), attributed to the mob so the message names it.
+    ///
+    /// <para><b>Harden Body stops this, as of #28.</b> It did not before — this method predates
+    /// <c>Session.DamageImmune</c> and never had the check retrofitted — and RTK settles it: every creature
+    /// spell it has that takes HP off a player (ion, call lightning, thunder touch, freeze, stormstrike,
+    /// burn, venom, and the mythic boss's own Rockslide and gust) lands through
+    /// <c>Player.removeHealthExtend</c>, which returns outright while a ward is up. The full reading is on
+    /// <see cref="DamageIntake.IgnoresHardenBody"/>, along with the one creature spell that still slips past
+    /// because it borrows the room-damage intake instead of this one (#79).</para></summary>
     internal void ReceiveMobSpell(int rawDmg, Mob caster, string spellName)
     {
-        if (IsDead) return;
-        WakeUp(byDamage: true);            // a spell to the face ends a doze, exactly like a swing
-        if (rawDmg < 1) rawDmg = 1;
-        double amp = TakeDamageAmp();      // sleep-family amplifier, same as every other damage source
-        if (amp > 1.0) rawDmg = (int)Math.Round(rawDmg * amp);
-        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
-
-        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
-        SendStats();
-        byte hpPct = PlayerHpPercent();
-        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
-        SendMiniText($"{caster.Name} attacks you with {spellName} spell.");   // RTK peck.lua's own wording
-        Log.Info($"   -> mob {caster.Id} '{caster.Name}' cast {spellName} on {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
-        if (IsDead) Die();
+        TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
+        {
+            IgnoresHardenBody = false,   // RTK ion/call_lightning/thunder_touch/freeze/stormstrike/burn/venom -> removeHealthExtend
+            CritByte = HitCritByte,
+            MiniText = $"{caster.Name} attacks you with {spellName} spell.",   // RTK peck.lua's own wording
+            LogLine  = dmg => $"   -> mob {caster.Id} '{caster.Name}' cast {spellName} on {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
+        });
     }
 
     /// <summary>Take damage from the ROOM rather than from a creature — Sute's Cave cold tiles
     /// (<see cref="Session.TakeFrigidBlast"/>) are the only source today. Identical to
     /// <see cref="ReceiveMobSpell"/> — same doze-break, same sleep amplifier, same deduction reduction, same
     /// AC-is-for-swings rule — except that there is no caster to attribute it to, so the caller supplies the
-    /// whole line instead of it being built from a name.</summary>
+    /// whole line instead of it being built from a name.
+    ///
+    /// <para><b>This is the one intake Harden Body does NOT stop</b>, and it is a sourced position rather
+    /// than the gap it used to be: RTK's stepped-on traps take health off with the plain
+    /// <c>removeHealth</c>, which has no ward check, while the traps that reach out and pick a target use
+    /// the ward-checked <c>removeHealthExtend</c>. A cold tile is stepped on. See
+    /// <see cref="DamageIntake.IgnoresHardenBody"/> for the reading and for what is thin about it.</para></summary>
     internal void ReceiveEnvironmentDamage(int rawDmg, string text)
     {
-        if (IsDead) return;
-        WakeUp(byDamage: true);
-        if (rawDmg < 1) rawDmg = 1;
-        double amp = TakeDamageAmp();
-        if (amp > 1.0) rawDmg = (int)Math.Round(rawDmg * amp);
-        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
-
-        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
-        SendStats();
-        byte hpPct = PlayerHpPercent();
-        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
-        SendMiniText(text);
-        Log.Info($"   -> environment hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp} ({text})");
-        if (IsDead) Die();
+        TakeDamage(new DamageIntake(DamageKind.Environment, rawDmg)
+        {
+            IgnoresHardenBody = true,   // RTK NPCs/trap/rogue_traps/{dart,death,spear,pit}_trap.lua -> plain removeHealth
+            CritByte = HitCritByte,
+            MiniText = text,
+            LogLine  = dmg => $"   -> environment hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp} ({text})",
+        });
     }
 
     /// <summary>Roll this creature's <c>onhit</c> spells because one of its swings just LANDED on us.
