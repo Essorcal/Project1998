@@ -35,6 +35,11 @@ public sealed class SpellContext
         this.amount = amount; this.mana = mana; _fx = fx;
     }
 
+    /// <summary>The engine's own refusal notice, for the case the verb could not speak for itself: it raised.
+    /// Internal, not part of the Lua surface — a verb that wants to decline says so with <c>ctx:say</c> and
+    /// returns false. See <see cref="SpellScript.Run"/>'s Errored path, the only caller.</summary>
+    internal void Refuse(string msg) => _s.LuaSay(msg);
+
     /// <summary>Engine-evaluated effect amount for the archetype path (the spell's real formula result).</summary>
     public double amount { get; }
     /// <summary>Engine-resolved mana cost for the archetype path.</summary>

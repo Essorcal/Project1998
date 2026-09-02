@@ -49,16 +49,30 @@ public static class SpellScript
     /// A failed cast that says so is strictly better, and the error is already logged by
     /// <see cref="LuaVerbHost.Invoke"/>.</para>
     ///
-    /// <para>The host reports a four-way <see cref="VerbResult"/>; this folds <see cref="VerbResult.Errored"/>
-    /// into false alongside <see cref="VerbResult.Declined"/> because, for a spell, both mean "ran, do not
-    /// re-run through C#" and the six dispatch sites in Session.Spells.cs already act on exactly that
-    /// tri-state. The item wrapper does NOT fold them — an errored item verb must refuse without consuming,
-    /// which is a fourth outcome — see <see cref="ItemScript.Apply"/>.</para></summary>
-    public static bool? Run(string verb, SpellContext ctx, IReadOnlyDictionary<string, string>? row = null) =>
-        _host.Invoke(verb, ctx, row ?? NoRow) switch
+    /// <para>The host reports a four-way <see cref="VerbResult"/>. The tri-state return stays — the dispatch
+    /// sites in Session.Spells.cs act on exactly it, and for a spell both Declined and Errored mean "ran, do
+    /// not re-run through C#" — but the two are NOT interchangeable on the way out, and treating them as
+    /// though they were is what this fixes. A DECLINED verb has already told the player why (that is its
+    /// contract). An ERRORED verb has told them nothing: it raised, possibly before reaching any of its own
+    /// notices. Folding both to false therefore left a broken spell completely silent — no effect, no
+    /// message, nothing in the client at all — which reads to a player as the keypress being dropped. So the
+    /// refusal is sent HERE, on the Errored path only, before the fold.</para>
+    ///
+    /// <para>Mana: the engine charges none on this path, and there is nothing to refund. A verb spends mana
+    /// by calling <c>ctx:spendMana</c> itself, so a verb that raised BEFORE that call has cost nothing, and
+    /// one that raised after has already spent it — the same half-applied state an errored item verb leaves
+    /// (see <see cref="ItemScript.Apply"/>), and not something this layer can unwind.</para></summary>
+    public static bool? Run(string verb, SpellContext ctx, IReadOnlyDictionary<string, string>? row = null)
+    {
+        switch (_host.Invoke(verb, ctx, row ?? NoRow))
         {
-            VerbResult.Missing => null,     // not a Lua spell -> C# dispatch
-            VerbResult.Ok      => true,
-            _                  => false,    // Declined, or Errored (already logged): failed cast, no fallthrough
-        };
+            case VerbResult.Missing: return null;    // not a Lua spell -> C# dispatch
+            case VerbResult.Ok:      return true;
+            case VerbResult.Declined: return false;  // the verb ran and said its own piece
+            default:
+                // Errored: already logged with the Lua location and the stack by LuaVerbHost.Invoke.
+                ctx.Refuse($"{ctx.spellName} isn't working right now.");
+                return false;                        // failed cast — no fallthrough, no central "You cast X."
+        }
+    }
 }
