@@ -5,16 +5,20 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Tests for the persistence guarantees the trade/parcel paths now depend on. These run against the REAL
-/// database (state/project1998.db) using throwaway character names, because the thing under test is SQLite
-/// transaction behaviour — a mock would only prove the mock is transactional.
+/// Tests for the persistence guarantees the trade/parcel paths now depend on. These run against a real
+/// SQLite database in a throwaway state directory, because the thing under test is SQLite transaction
+/// behaviour — a mock would only prove the mock is transactional.
 /// </summary>
+[Collection("db")]
 public class PersistenceTests : IDisposable
 {
     // Distinct per test class run, and prefixed so a leaked row is obviously test debris.
     private readonly string _a = $"zz_test_a_{Guid.NewGuid():N}"[..24];
     private readonly string _b = $"zz_test_b_{Guid.NewGuid():N}"[..24];
     private readonly CharacterStore _store = new(RepoPaths.CharsDir());
+    private readonly DbFixture _fixture;
+
+    public PersistenceTests(DbFixture fixture) => _fixture = fixture;
 
     private static Character Make(string name, uint coins, params (int id, int amount)[] items)
     {
@@ -39,6 +43,13 @@ public class PersistenceTests : IDisposable
             }
         }
         catch { /* best effort cleanup */ }
+    }
+
+    [Fact]
+    public void DatabaseUsesTheThrowawayStateDirectory()
+    {
+        Assert.Equal(Path.Combine(_fixture.StateDirectory, "project1998.db"), Db.Path);
+        Assert.True(File.Exists(Db.Path));
     }
 
     /// <summary>The trade guarantee: both sides land together. This is the happy path — the failure path is
