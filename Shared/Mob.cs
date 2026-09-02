@@ -1,5 +1,3 @@
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Server")]
-
 namespace Shared;
 
 /// <summary>
