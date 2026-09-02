@@ -160,40 +160,60 @@ public class DamageIntakeTests
         Assert.Equal(FullHp - 50, spellChar.Hp);
     }
 
-    // ---- Harden Body, as it actually behaves today --------------------------------------------------------
+    // ---- Harden Body: one gate, five answers, all of them sourced -------------------------------------------
 
-    /// <summary>Three of the five intakes return before the damage calc while a Harden Body ward is up.</summary>
-    [Fact]
-    public void HardenBodyBlocksMobMeleeAndBothPlayerIntakes()
+    /// <summary>Every <see cref="DamageKind"/>, driven through its real production entry point, against a
+    /// live Harden Body ward. Four are blocked; room damage is the one exception and carries a citation
+    /// (RTK's stepped-on traps take health off with the plain <c>removeHealth</c>, which has no ward check —
+    /// see <c>DamageIntake.IgnoresHardenBody</c>).
+    ///
+    /// <para>The theory data is <c>Enum.GetValues</c> and the switch has no default case that passes, so a
+    /// sixth damage source cannot be added without landing here and stating its answer. That is the whole
+    /// point: the two sites that skipped the check skipped it by saying nothing.</para></summary>
+    [Theory]
+    [MemberData(nameof(EveryDamageKind))]
+    public void EveryDamageKindHonoursHardenBodyExceptTheSourcedRoomCase(DamageKind kind)
     {
-        var (victim, _, character) = Victim("DmgWardBlocks");
-        var (peer, _, _) = Victim("DmgWardBlocksPeer");
+        var (victim, _, character) = Victim($"DmgWard{kind}");
         victim.ItemSetStatus("harden_body", 60_000);
 
-        victim.ApplyMobHit(Attacker(), Raw);
-        Assert.Equal(FullHp, character.Hp);
+        switch (kind)
+        {
+            case DamageKind.MobMelee:
+                victim.ApplyMobHit(Attacker(), Raw);
+                break;
+            case DamageKind.PlayerSpell:
+                // The 0 return is part of the contract: a blocked hit yields no overkill to splash.
+                Assert.Equal(0, victim.ReceiveSpellDamage(Raw, Victim($"DmgWard{kind}Peer").session, "Spark"));
+                break;
+            case DamageKind.PlayerMelee:
+                victim.ReceiveMeleeDamage(Raw, Victim($"DmgWard{kind}Peer").session, crit: false);
+                break;
+            case DamageKind.MobSpell:
+                victim.ReceiveMobSpell(Raw, Attacker(), "Ice ray");
+                break;
+            case DamageKind.Environment:
+                victim.TakeFrigidBlast();
+                break;
+            default:
+                throw new NotSupportedException(
+                    $"DamageKind.{kind} is new and has no Harden Body case here. Say what the ward does to " +
+                    "it and cite RTK for the answer — see DamageIntake.IgnoresHardenBody.");
+        }
 
-        Assert.Equal(0, victim.ReceiveSpellDamage(Raw, peer, "Spark"));
-        Assert.Equal(FullHp, character.Hp);
-
-        victim.ReceiveMeleeDamage(Raw, peer, crit: false);
-        Assert.Equal(FullHp, character.Hp);
+        if (kind == DamageKind.Environment)
+            Assert.True(character.Hp < FullHp,
+                        "Room damage is the one sourced exception. If it is now blocked, the flag moved " +
+                        "without the citation on DamageIntake.IgnoresHardenBody moving with it.");
+        else
+            Assert.Equal(FullHp, character.Hp);
     }
 
-    /// <summary>...and two do NOT. This is the #28 finding, pinned as the CURRENT behaviour so the conversion
-    /// to a single pipeline can be shown to have changed nothing. Whether RTK agrees is a separate question
-    /// (needs-source-check); see the provenance note in <c>Server/DamageIntake.cs</c>.</summary>
-    [Fact]
-    public void HardenBodyDoesNotBlockMobSpellsOrEnvironmentDamage()
+    public static TheoryData<DamageKind> EveryDamageKind()
     {
-        var (victim, _, character) = Victim("DmgWardGap");
-        victim.ItemSetStatus("harden_body", 60_000);
-
-        victim.ReceiveMobSpell(Raw, Attacker(), "Ice ray");
-        Assert.Equal(FullHp - Raw, character.Hp);
-
-        victim.TakeFrigidBlast();
-        Assert.Equal(FullHp - Raw - (uint)SuteAi.FrigidDamage, character.Hp);
+        var kinds = new TheoryData<DamageKind>();
+        foreach (var kind in Enum.GetValues<DamageKind>()) kinds.Add(kind);
+        return kinds;
     }
 
     /// <summary>An intake on a player who is already down does nothing at all, on every path — that gate is

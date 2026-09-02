@@ -40,9 +40,54 @@ public sealed class DamageIntake
     /// has already had the victim's armor and rear-x2 applied attacker-side, a mob swing has not.</summary>
     public int Raw { get; }
 
-    /// <summary>Whether this source walks past the Harden Body ward. Required — never defaulted — because
-    /// two of the five sources answer differently from the other three and the difference must be stated,
-    /// not inherited. See the provenance note at the top of <see cref="Session.TakeDamage"/>.</summary>
+    /// <summary>
+    /// Whether this source walks past the Harden Body ward. Required — never defaulted — because the five
+    /// sources do NOT all answer the same way, and the difference has to be a stated position rather than an
+    /// omission. It was an omission: <c>ReceiveMobSpell</c> was written three days before
+    /// <c>Session.DamageImmune</c> existed and never had the check retrofitted, and
+    /// <c>ReceiveEnvironmentDamage</c> was copied from it a week later (#28).
+    ///
+    /// <para><b>RTK, read out of the reference server (rtklua/Accepted).</b> A player's HP comes off through
+    /// one of three functions and only one of them carries the ward check:
+    /// <c>Player.removeHealthExtend</c> (player.lua:164) opens by RETURNING OUTRIGHT on any of
+    /// harden_body_poet / deaths_guard_poet / lifes_protection_poet / body_of_alignment_poet — no
+    /// net-damage calc, no HP change, the blow does not land. <c>Player.removeHealthWithoutDamageNumbers</c>
+    /// (player.lua:111) and the engine's plain <c>removeHealth</c> both subtract unconditionally. So "does
+    /// the ward stop this?" is answered, per source, by which of the three that source calls.</para>
+    ///
+    /// <para><b>Creature spells: BLOCKED.</b> All three of RTK's mob damage spells end in
+    /// <c>target:removeHealthExtend(...)</c> — Spells/NPCs/ion.lua:9, call_lightning.lua:11 and
+    /// thunder_touch.lua:9, which is the whole lightning line mob_ai_mythic.lua fires at you. A ward stops a
+    /// boss's Thunder touch in RTK, so <see cref="DamageKind.MobSpell"/> honours it here. That is the one
+    /// behaviour #28 changed, and it is the finding rather than a side effect of it.</para>
+    ///
+    /// <para><b>Room hazards: NOT blocked.</b> RTK's trap scripts split, and they split on exactly the axis
+    /// that matters. The five you STEP ON — NPCs/trap/rogue_traps/{dart,death,spear,repeating_dart}_trap.lua
+    /// and Ranger/pit_trap.lua — all call the plain <c>block:removeHealth(damage)</c> with no ward check at
+    /// all. The two that reach out and pick a target (bladestorm_trap.lua, Spy/toxic_spray.lua) use
+    /// <c>removeHealthExtend</c> and are blocked. Sute's cold tiles are a stepped-on hazard, so
+    /// <see cref="DamageKind.Environment"/> keeps this flag set — now a sourced match rather than a gap.
+    /// The caveat is on the record too: Sute's cave is later content with no RTK script of its own (see
+    /// docs/common/Deferred-Work.md, "Sute's combat kit is built from ONE eyewitness report"), so the
+    /// stepped-on trap family is the nearest thing RTK has to say about it, not a direct reading.</para>
+    ///
+    /// <para><b>What the ward suppresses here that RTK still prints.</b> ion.lua sends its
+    /// "&lt;mob&gt; attacks you with &lt;spell&gt; spell." line BEFORE removeHealthExtend, so an RTK player
+    /// under a ward sees the line and takes nothing. Ours carries the line on the intake, so a blocked mob
+    /// spell prints nothing (the caster's shout, animation and sound still go out from ApplyMobSpell, which
+    /// runs first). Left as-is deliberately: our player-spell intake already swallows its own "X hits you
+    /// with Y." the same way, and matching RTK on the mob side alone would make the two disagree inside our
+    /// own codebase. Recorded rather than silently accepted.</para>
+    ///
+    /// <para><b>Two divergences this reading turned up and did NOT fix</b>, per the #21 ground rule that a
+    /// divergence found while refactoring gets its own issue instead of a silent edit. (1) RTK's mob spells
+    /// pass <c>ac = 1</c> to <c>Player.calculateNetDamage</c> (player.lua:228), so a creature's spell IS
+    /// netted against the player's armor with the same -80 floor — ours skips AC on that path, on the
+    /// "magic ignores physical AC" rule (see <c>SuteAi.IceRayObservedDamage</c>, whose 405-at-AC--22 reading
+    /// was taken as the RAW figure precisely because of that assumption, and says in as many words that it
+    /// wants re-deriving if spell damage is ever put through AC). (2) calculateNetDamage's order is
+    /// amplifier, deduction, THEN armor; every intake here applies armor before the deduction.</para>
+    /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 
     /// <summary>The creature to record as <c>owner.attacker</c> (RTK's "last thing that actually landed a
@@ -104,8 +149,8 @@ public sealed class DamageIntake
     /// <para><b>ArmorBeforeAmp</b> — the creature swing nets armor and THEN applies the sleep-family
     /// amplifier, which is RTK swingDamage.lua's own order; a player's spell amplifies first and nets after.
     /// It is not a rounding curiosity: at AC -50 with a 1.5x amplifier, a raw 101 lands as 75 one way and 76
-    /// the other. Preserved per kind rather than unified, because unifying it would be a behaviour change and
-    /// #28 is explicitly not that.</para>
+    /// the other. Preserved per kind rather than unified: unifying it would be an UNSOURCED behaviour change,
+    /// and the only behaviour #28 changes is the sourced one (see <see cref="IgnoresHardenBody"/>).</para>
     /// <para><b>DeductsDurability</b> — RTK clif_deductarmor rolls every worn slot on a HIT; magic and the
     /// room do not touch gear.</para>
     /// </summary>
@@ -132,7 +177,8 @@ public sealed partial class Session
     /// <para>It replaces five hand-copied versions of that sequence. Three checked
     /// <see cref="DamageImmune"/> and two did not, which is the finding this pipeline exists to make
     /// impossible to repeat: a new intake term is now one edit, and a new intake SOURCE has to state its
-    /// answer to <see cref="DamageIntake.IgnoresHardenBody"/> out loud.</para>
+    /// answer to <see cref="DamageIntake.IgnoresHardenBody"/> out loud — with a citation, since that
+    /// property's own note is where the RTK reading lives.</para>
     /// </summary>
     /// <returns>The damage actually applied, AFTER every term but NOT capped by the victim's remaining HP —
     /// so a killing blow reports how far past zero it went (what the vita strikes' overflow is computed
@@ -141,14 +187,16 @@ public sealed partial class Session
     {
         if (IsDead) return 0;   // already down — don't re-trigger Die() while the revive delay is pending
         // ---- Harden Body: total damage immunity -----------------------------------------------------------
-        // RTK Player.removeHealthExtend (player.lua:163) opens by RETURNING OUTRIGHT if any of four wards is
+        // RTK Player.removeHealthExtend (player.lua:164) opens by RETURNING OUTRIGHT if any of four wards is
         // up: harden_body_poet / deaths_guard_poet / lifes_protection_poet / body_of_alignment_poet — the
         // poet spell and its three alignment reskins. No net-damage calc, no HP change: the blow simply does
         // not land. The Scroll of Immortality grants the same ward (item_verbs.lua `hardenbody`, 16s, behind
-        // RTK's armor-scaled success roll), which is what makes the scroll worth its name.
+        // RTK's armor-scaled success roll), which is what makes the scroll worth its name — and is our one
+        // deliberate widening, since RTK's own scroll sets `harden_body` while removeHealthExtend looks only
+        // at the four `*_poet` keys, so the RTK scroll grants a ward that stops nothing.
         //
-        // Two of the five sources set IgnoresHardenBody and walk past this. That is preserved behaviour, not
-        // an endorsement — see the note on DamageKind.MobSpell / DamageKind.Environment at their call sites.
+        // Four of the five sources reach this gate; the fifth (room damage) walks past it, sourced. Which
+        // ones and why is the note on DamageIntake.IgnoresHardenBody.
         if (!intake.IgnoresHardenBody && DamageImmune) return 0;
 
         WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep

@@ -26,14 +26,16 @@ public sealed partial class Session
     /// deduction reduction and the same "magic ignores physical AC" rule (the AC pass belongs to swings, not
     /// spells), attributed to the mob so the message names it.
     ///
-    /// <para><b>This intake walks past Harden Body</b>, unlike the three in Session.Entity.cs. That is
-    /// preserved behaviour, and whether RTK agrees is not knowable from the code — the flag below is spelled
-    /// out at the call site precisely so the divergence is a stated position and not an omission (#28).</para></summary>
+    /// <para><b>Harden Body stops this, as of #28.</b> It did not before — this method predates
+    /// <c>Session.DamageImmune</c> and never had the check retrofitted — and RTK settles it: every one of
+    /// RTK's creature damage spells (ion, call lightning, thunder touch) lands through
+    /// <c>Player.removeHealthExtend</c>, which returns outright while a ward is up. The full reading is on
+    /// <see cref="DamageIntake.IgnoresHardenBody"/>.</para></summary>
     internal void ReceiveMobSpell(int rawDmg, Mob caster, string spellName)
     {
         TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
         {
-            IgnoresHardenBody = true,   // PRESERVED, NOT ENDORSED: unconfirmed against RTK (#28)
+            IgnoresHardenBody = false,   // RTK Spells/NPCs/{ion,call_lightning,thunder_touch}.lua -> removeHealthExtend
             CritByte = HitCritByte,
             MiniText = $"{caster.Name} attacks you with {spellName} spell.",   // RTK peck.lua's own wording
             LogLine  = dmg => $"   -> mob {caster.Id} '{caster.Name}' cast {spellName} on {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
@@ -43,13 +45,19 @@ public sealed partial class Session
     /// <summary>Take damage from the ROOM rather than from a creature — Sute's Cave cold tiles
     /// (<see cref="Session.TakeFrigidBlast"/>) are the only source today. Identical to
     /// <see cref="ReceiveMobSpell"/> — same doze-break, same sleep amplifier, same deduction reduction, same
-    /// AC-is-for-swings rule, and the same Harden Body gap — except that there is no caster to attribute it
-    /// to, so the caller supplies the whole line instead of it being built from a name.</summary>
+    /// AC-is-for-swings rule — except that there is no caster to attribute it to, so the caller supplies the
+    /// whole line instead of it being built from a name.
+    ///
+    /// <para><b>This is the one intake Harden Body does NOT stop</b>, and it is a sourced position rather
+    /// than the gap it used to be: RTK's stepped-on traps take health off with the plain
+    /// <c>removeHealth</c>, which has no ward check, while the traps that reach out and pick a target use
+    /// the ward-checked <c>removeHealthExtend</c>. A cold tile is stepped on. See
+    /// <see cref="DamageIntake.IgnoresHardenBody"/> for the reading and for what is thin about it.</para></summary>
     internal void ReceiveEnvironmentDamage(int rawDmg, string text)
     {
         TakeDamage(new DamageIntake(DamageKind.Environment, rawDmg)
         {
-            IgnoresHardenBody = true,   // PRESERVED, NOT ENDORSED: unconfirmed against RTK (#28)
+            IgnoresHardenBody = true,   // RTK NPCs/trap/rogue_traps/{dart,death,spear,pit}_trap.lua -> plain removeHealth
             CritByte = HitCritByte,
             MiniText = text,
             LogLine  = dmg => $"   -> environment hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp} ({text})",

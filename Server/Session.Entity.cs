@@ -963,7 +963,9 @@ public sealed partial class Session
     // the plain flag the Scroll of Immortality sets. The RTK sourcing lives with the gate that reads this, in
     // Server/DamageIntake.cs; there is exactly one such gate now. It used to be copy-pasted into whichever
     // intake remembered it, and the comment here used to justify that with "there is no shared helper" — which
-    // held for two sites and then quietly stopped holding for five. Two of them never got the check (#28).
+    // held for two sites and then quietly stopped holding for five. Two of them never got the check; one of
+    // those turned out to be a real bug and one turned out to be right, and neither could be told apart from
+    // the other until the check had a single home (#28).
     private static readonly string[] HardenBodyWards =
         { "harden_body", "harden_body_poet", "deaths_guard_poet", "lifes_protection_poet", "body_of_alignment_poet" };
     internal bool DamageImmune
