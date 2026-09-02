@@ -138,7 +138,13 @@ builder.WebHost.UseUrls(url);
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
 var app = builder.Build();
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// no-cache (revalidate, don't refetch): without it Chromium's heuristic caching serves a
+// STALE frontend from the WebView2/browser disk cache after wwwroot updates — the editor
+// window kept showing old UI until a hard reload. Localhost 304s make freshness free.
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-cache",
+});
 
 app.MapGet("/api/meta", () => Results.Json(new
 {
