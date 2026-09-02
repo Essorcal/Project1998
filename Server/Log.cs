@@ -88,6 +88,32 @@ public static class Log
         Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] {msg}");
     }
 
+    // ---- severity ---------------------------------------------------------------------------------------
+    // Three levels, told apart by a prefix rather than a column so the file stays greppable the way it always
+    // has been: `!!` was already the hand-written marker for "something is wrong" in ~60 Info lines, so Warn
+    // formalizes exactly that, and Error adds a third bang. `grep '!!!'` is every exception the server caught.
+    //
+    // The Exception overloads are the whole reason the levels exist. Until they did, every catch in the
+    // process wrote `e.Message` — one line, no type, no stack — and a NullReferenceException in a 955-line
+    // tick read as "!! world tick error: Object reference not set to an instance of an object." with nothing
+    // to say which of a hundred call sites. Exception.ToString() carries the type, the message, the stack and
+    // any inner exception; continuation lines are indented so a multi-line entry reads as one event and a
+    // timestamp-anchored grep still finds its first line.
+
+    /// <summary>Something is wrong but the server handled it — a refused reload, a slow client, a malformed
+    /// packet. Recoverable, worth a look, not a bug in this process.</summary>
+    public static void Warn(string msg) => Info("!! " + msg);
+
+    public static void Warn(string msg, Exception e) => Info("!! " + msg + Detail(e));
+
+    /// <summary>A caught exception that should not have happened — a handler threw, a flush failed, a thread
+    /// loop's body raised. Always carries the full exception; there is deliberately no string-only overload
+    /// that would let a call site drop the stack again.</summary>
+    public static void Error(string msg, Exception e) => Info("!!! " + msg + Detail(e));
+
+    private static string Detail(Exception e) =>
+        "\n      " + e.ToString().Replace("\n", "\n      ");
+
     private static void Enqueue(string line)
     {
         // TryAdd with no wait: a full queue means the writer is stuck (see the class doc) and the ONE thing
