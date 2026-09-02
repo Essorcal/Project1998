@@ -52,7 +52,7 @@ public static class StatusResponder
                 if (sha.Length > 0) ver = $"\"{sha[..Math.Min(7, sha.Length)]}\"";
             }
         }
-        catch { /* status must never fail on a version stamp */ }
+        catch (Exception e) { Log.Warn("status: game-data/.version unreadable — reporting version null", e); }   // status must never fail on a version stamp
 
         string json = $"{{\"up\":true,\"players\":{players},\"era\":{era},\"restartInMin\":{restart},\"version\":{ver}}}";
         var body = Encoding.ASCII.GetBytes(json);

@@ -119,7 +119,7 @@ public sealed class RestartSchedule
                 if (Now - lastPoll >= FilePollMs) { lastPoll = Now; PollTriggerFile(); PollReloadFile(); }
                 TickWarnings();
             }
-            catch (Exception e) { Log.Info($"!! restart-schedule tick error: {e.Message}"); }
+            catch (Exception e) { Log.Error("restart-schedule tick threw — the clock keeps running", e); }
         }
     }
 
@@ -245,8 +245,10 @@ public sealed class RestartSchedule
     {
         foreach (var s in _world.AllPlayers())
         {
+            // One player's failure must not stop the announcement reaching everyone else. (Send itself never
+            // throws — see Session.Send — so anything caught here is a bug worth the stack.)
             try { s.SystemAnnounce(text); }
-            catch { /* one dead socket must not stop the announcement reaching everyone else */ }
+            catch (Exception e) { Log.Error($"restart announcement to {s.Remote} threw — the others still hear it", e); }
         }
     }
 

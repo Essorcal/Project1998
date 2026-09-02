@@ -71,7 +71,7 @@ public static class MobScript
             }
             catch (Exception e)
             {
-                Log.Info($"!! mob_ai.lua load failed: {e.Message} — reload REJECTED, keeping the previous hooks");
+                Log.Warn($"mob_ai.lua load failed: {LuaVerbHost.Describe(e)} — reload REJECTED, keeping the previous hooks", e);
                 return _mobs is not null;
             }
         }
@@ -98,7 +98,7 @@ public static class MobScript
                 _script!.Call(fn, UserData.Create(ctx));
             }
         }
-        catch (Exception e) { Log.Info($"!! mob_ai.lua {mobKey}.{hook}: {e.Message}"); }
+        catch (Exception e) { Log.Error($"mob_ai.lua {mobKey}.{hook} raised: {LuaVerbHost.Describe(e)}", e); }
     }
 }
 

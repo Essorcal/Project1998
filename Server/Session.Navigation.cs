@@ -516,7 +516,7 @@ public sealed partial class Session
             }
             Warp(FoxSpirit.FailMap, FoxSpirit.FailX, FoxSpirit.FailY);
         }
-        catch (Exception e) { Log.Info($"!! fox spirit error: {e.Message}"); }
+        catch (Exception e) { Log.Error($"fox spirit encounter threw for '{_char.Name}' — abandoned, no reward and no penalty", e); }
     }
 
     // ---- Leviathan quest: freeing a captive (see Server/LeviathanQuest.cs) -----------------------

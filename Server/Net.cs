@@ -89,7 +89,7 @@ public sealed class TkListener
             // down; the per-session try/finally in Session.RunAsync isolates everything after accept.
             TcpClient client;
             try { client = await listener.AcceptTcpClientAsync(); }
-            catch (Exception e) { Log.Info($"!! accept on :{port} failed: {e.Message}"); continue; }
+            catch (Exception e) { Log.Warn($"accept on :{port} failed — still listening", e); continue; }
 
             // DISABLE NAGLE. Every packet this server sends is small (a cast is ~5 tiny packets: 0x29 effect,
             // 0x19 sound, 0x1A action, 0x08 stats, 0x0A text), and .NET leaves TCP_NODELAY off by default.
@@ -152,7 +152,7 @@ public sealed class TkListener
         }
         catch (Exception e)
         {
-            Log.Info($"!! PROXY header from {peer} on :{port} failed: {e.Message}");
+            Log.Warn($"PROXY header from {peer} on :{port} rejected — connection dropped", e);
             _guard.ReleaseGlobal();
             try { client.Close(); } catch { /* already gone */ }
             return;
@@ -174,7 +174,8 @@ public sealed class TkListener
     private async Task RunAndReleaseAsync(TcpClient client, int port, IPAddress ip, IPAddress? realIp)
     {
         try { await new Session(client, port, _store, _world, realIp).RunAsync(); }
-        catch (Exception e) { Log.Info($"!! session {ip} on :{port} faulted: {e.Message}"); }
+        // RunAsync catches its own read-loop failures; only its finally-block teardown can reach here.
+        catch (Exception e) { Log.Error($"session {ip} on :{port} faulted during teardown", e); }
         finally { _guard.Release(ip); }
     }
 }

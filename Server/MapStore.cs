@@ -34,7 +34,7 @@ public static class MapStore
                 list.Add(((ushort)r.GetInt32(0), (ushort)r.GetInt32(1),
                           (ushort)r.GetInt32(2), (ushort)r.GetInt32(3), (ushort)r.GetInt32(4)));
         }
-        catch (Exception ex) { Log.Info($"   !! map_cells read failed for map {map}: {ex.Message}"); }
+        catch (Exception ex) { Log.Error($"map_cells read failed for map {map} — its edits are not applied this load", ex); }
         return list;
     }
 
@@ -65,7 +65,7 @@ public static class MapStore
             cmd.Parameters.AddWithValue("$y", y);
             cmd.ExecuteNonQuery();
         }
-        catch (Exception ex) { Log.Info($"   !! map_cells write failed for ({x},{y}) on map {md.Id}: {ex.Message}"); }
+        catch (Exception ex) { Log.Error($"map_cells write failed for ({x},{y}) on map {md.Id} — the edit is live but not persisted", ex); }
     }
 
     /// <summary>Persist a whole run of cells at once (a door swing is 1-4 tiles wide).</summary>
@@ -88,7 +88,7 @@ public static class MapStore
             while (r.Read())
                 list.Add(((ushort)r.GetInt32(0), (ushort)r.GetInt32(1), (ushort)r.GetInt32(2)));
         }
-        catch (Exception ex) { Log.Info($"   !! map_unlocks read failed: {ex.Message}"); }
+        catch (Exception ex) { Log.Error("map_unlocks read failed — no unlocks applied this load", ex); }
         return list;
     }
 
@@ -111,7 +111,7 @@ public static class MapStore
             if (unlocked) cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             cmd.ExecuteNonQuery();
         }
-        catch (Exception ex) { Log.Info($"   !! map_unlocks write failed for ({x},{y}) on map {map}: {ex.Message}"); }
+        catch (Exception ex) { Log.Error($"map_unlocks write failed for ({x},{y}) on map {map} — the unlock is live but not persisted", ex); }
     }
 
     /// <summary>Wipe all persisted runtime state for a map — the reset an event needs when it ends (every
@@ -126,6 +126,6 @@ public static class MapStore
             cmd.Parameters.AddWithValue("$m", (int)map);
             return cmd.ExecuteNonQuery();
         }
-        catch (Exception ex) { Log.Info($"   !! map state clear failed for map {map}: {ex.Message}"); return 0; }
+        catch (Exception ex) { Log.Error($"map state clear failed for map {map}", ex); return 0; }
     }
 }

@@ -428,7 +428,13 @@ public sealed partial class Session
                 suppressed = 0;
             }
         }
-        catch (Exception e) { Log.Info($"!! {_remote} writer stopped: {e.Message}"); }
+        // Same split as RunAsync's: a socket-family exception is the client going away (expected, no stack);
+        // anything else is ours and keeps the stack.
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            Log.Warn($"{_remote} writer stopped: {e.GetType().Name}: {e.Message}");
+        }
+        catch (Exception e) { Log.Error($"{_remote} writer threw — dropping the connection", e); }
         finally { CloseConnection("writer exit"); }   // e.g. client closed the socket -> unblock the reader
     }
 
@@ -890,7 +896,12 @@ public sealed partial class Session
             // of it must match.
             if (tokenStart < body.Length) token = body[tokenStart..];
         }
-        catch { /* keep default */ }
+        catch (Exception e)
+        {
+            // A body too short for its own length prefixes: a broken client or a probe. Treated as an empty
+            // username and token, which the handoff check below refuses like any other bad credential.
+            Log.Warn($"{_remote} arrival body could not be parsed ({body.Length}B: {Convert.ToHexString(body).ToLowerInvariant()})", e);
+        }
 
         // Validate the single-use handoff token the login server minted for this username (see
         // Shared/HandoffTokens). This is what stops a client from connecting straight to the game port and

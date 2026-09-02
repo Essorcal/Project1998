@@ -65,7 +65,7 @@ public static class Parcel
             using var r = cmd.ExecuteReader();
             while (r.Read()) list.Add(Read(r));
         }
-        catch { /* best effort: an empty queue beats a crash */ }
+        catch (Exception e) { Log.Error($"parcels read failed for '{recipient}' — showing the queue empty", e); }
         return list;
     }
 
@@ -79,7 +79,7 @@ public static class Parcel
             cmd.Parameters.AddWithValue("$r", recipient);
             return Convert.ToInt32(cmd.ExecuteScalar());
         }
-        catch { return 0; }
+        catch (Exception e) { Log.Error($"parcels count failed for '{recipient}' — reporting 0", e); return 0; }
     }
 
     public static bool HasAny(string recipient) => CountFor(recipient) > 0;

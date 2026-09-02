@@ -62,7 +62,7 @@ public static class StatusFile
         while (true)
         {
             try { Write(true, world.OnlinePlayerCount()); }
-            catch (Exception ex) { Log.Info($"status: write failed: {ex.Message}"); }
+            catch (Exception ex) { Log.Warn("status file write failed — retrying next interval", ex); }
             try { await Task.Delay(IntervalMs); } catch { return; }
         }
     }

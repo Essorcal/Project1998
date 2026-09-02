@@ -391,7 +391,7 @@ public static class Formula
     {
         if (string.IsNullOrWhiteSpace(expr)) return 0;
         try { return new Parser(expr, vars).ParseAll(); }
-        catch { return 0; }
+        catch (Exception e) { Log.Warn($"formula '{expr}' failed to evaluate — treated as 0", e); return 0; }
     }
 
     private sealed class Parser
@@ -4903,7 +4903,7 @@ public static partial class Content
         if (path is null || !File.Exists(path)) yield break;
         string[] lines;
         try { lines = File.ReadAllLines(path); }
-        catch { yield break; }
+        catch (Exception e) { Log.Warn($"CSV {path} is unreadable — treated as empty", e); yield break; }
         if (lines.Length < 2) yield break;
 
         // '#' opens a comment line, anywhere including above the header — these tables are hand-maintained and

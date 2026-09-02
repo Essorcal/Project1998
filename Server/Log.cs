@@ -216,7 +216,7 @@ public static class Log
         catch (Exception e)
         {
             _file = null;
-            try { Console.WriteLine($"!! log file unavailable ({_path}): {e.Message}"); } catch { }
+            try { Console.WriteLine($"!! log file unavailable ({_path}): {e}"); } catch { }
         }
     }
 
@@ -234,7 +234,7 @@ public static class Log
             if (File.Exists(prev)) File.Delete(prev);
             File.Move(_path, prev);
         }
-        catch (Exception e) { try { Console.WriteLine($"!! log rotate failed: {e.Message}"); } catch { } }
+        catch (Exception e) { try { Console.WriteLine($"!! log rotate failed: {e}"); } catch { } }
         OpenFile(note: "rotated");
     }
 

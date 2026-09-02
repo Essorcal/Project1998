@@ -151,7 +151,8 @@ public sealed class LuaVerbHost
     /// <summary>MoonSharp's <c>DecoratedMessage</c> carries the chunk name and position —
     /// <c>item_verbs.lua:(212,8-31): attempt to index a nil value</c> — which is what the person fixing the
     /// script needs and what <c>e.Message</c> alone drops. Falls back to the plain message for anything that is
-    /// not an interpreter exception (a facade method throwing from C#, say).</summary>
-    private static string Describe(Exception e) =>
+    /// not an interpreter exception (a facade method throwing from C#, say). Internal so the other two Lua
+    /// hosts (MobScript, NpcScript) and the NPC dialog catches describe their errors the same way.</summary>
+    internal static string Describe(Exception e) =>
         e is InterpreterException { DecoratedMessage.Length: > 0 } ie ? ie.DecoratedMessage : e.Message;
 }

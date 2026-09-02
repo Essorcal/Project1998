@@ -77,7 +77,7 @@ public static class Boards
             using var r = cmd.ExecuteReader();
             while (r.Read()) list.Add(Read(r));
         }
-        catch { /* best effort: an empty board is better than a crash */ }
+        catch (Exception e) { Log.Error($"board_posts read failed for board {boardId} — showing it empty", e); }
         return list;
     }
 
@@ -93,7 +93,7 @@ public static class Boards
             using var r = cmd.ExecuteReader();
             return r.Read() ? Read(r) : null;
         }
-        catch { return null; }
+        catch (Exception e) { Log.Error($"board_posts read failed for board {boardId} post {postId}", e); return null; }
     }
 
     public static BoardPost Post(int boardId, string author, string topic, string body, byte month, byte day)
@@ -146,7 +146,7 @@ public static class Boards
             cmd.Parameters.AddWithValue("$a", requester);
             return cmd.ExecuteNonQuery() > 0;
         }
-        catch { return false; }
+        catch (Exception e) { Log.Error($"board_posts delete failed for board {boardId} post {postId} by '{requester}'", e); return false; }
     }
 
     // One-time import of a legacy state/boards.json (if present) into the DB. Idempotent: skips when the
@@ -172,7 +172,7 @@ public static class Boards
                     File.ReadAllText(path),
                     new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
             }
-            catch { return; }
+            catch (Exception e) { Log.Error($"boards.json at {path} is unreadable — legacy posts NOT migrated", e); return; }
             if (posts is null || posts.Count == 0) return;
 
             using var tx = cn.BeginTransaction();
@@ -194,6 +194,6 @@ public static class Boards
             tx.Commit();
             Log.Info($"[db] migrated {posts.Count} board post(s) from {path} into {Db.Path} (JSON kept as backup)");
         }
-        catch { /* best effort */ }
+        catch (Exception e) { Log.Error("board migration from boards.json failed — the transaction rolled back, the DB is unchanged", e); }
     }
 }

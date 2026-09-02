@@ -65,7 +65,7 @@ public static class NpcScript
             }
             catch (Exception e)
             {
-                Log.Info($"!! npc_dialog.lua load failed: {e.Message} — reload REJECTED, keeping the previous dialogs");
+                Log.Warn($"npc_dialog.lua load failed: {LuaVerbHost.Describe(e)} — reload REJECTED, keeping the previous dialogs", e);
                 return _npcs is not null;
             }
         }

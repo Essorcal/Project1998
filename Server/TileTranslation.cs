@@ -237,7 +237,7 @@ public static class TileTranslation
         }
         catch (Exception e)
         {
-            Log.Info($"   !! Obj533Fix.csv unreadable ({e.Message}) — 5.33 will over-block ~18k cells");
+            Log.Error("Obj533Fix.csv unreadable — 5.33 will over-block ~18k cells", e);
         }
         return map;
     }
@@ -286,7 +286,7 @@ public static class TileTranslation
         }
         catch (Exception e)
         {
-            Log.Info($"   !! Tile533Map.csv unreadable ({e.Message}) — 5.33 sheet-2 cells will be blank");
+            Log.Error("Tile533Map.csv unreadable — 5.33 sheet-2 cells will be blank", e);
         }
         return map;
     }

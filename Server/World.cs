@@ -1346,7 +1346,7 @@ public sealed class World
         if (died)
         {
             uint mobId = mob.Id;
-            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch { } });
+            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch (Exception e) { Log.Error($"delayed despawn of mob {mobId} threw", e); } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
             PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
         }
@@ -1376,7 +1376,7 @@ public sealed class World
         if (died)
         {
             uint victimId = victim.Id;
-            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(victimId)); } catch { } });
+            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(victimId)); } catch (Exception e) { Log.Error($"delayed despawn of mob {victimId} threw", e); } });
             // The owner gets the kill: RTK credits a mob's damage to map_id2sd(mob->owner) the same way
             // (clif.c's `tmob->owner < MOB_START_NUM` lookup), so a pet kill counts as yours.
             // …but NOT for a conjured victim. Now that a poet's pets will turn on a sibling he has attacked,
@@ -2244,7 +2244,7 @@ public sealed class World
         try { summary = Content.Reload(); }
         catch (Exception e)
         {
-            Log.Info($"!! content reload failed: {e}");
+            Log.Error("content reload failed — the OLD content stays live", e);
             return (false, e.Message);
         }
         ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides

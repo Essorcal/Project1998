@@ -977,7 +977,7 @@ public sealed partial class Session
         foreach (var s in _world.AllPlayers())
         {
             try { s.SystemAnnounce(text); heard++; }
-            catch { }
+            catch (Exception e) { Log.Error($"@announce to {s.Remote} threw — the others still hear it", e); }
         }
         SendLog($"Announced to {heard} player(s).");
         Log.Info($"   -> @announce '{_char.Name}': \"{text}\"");
