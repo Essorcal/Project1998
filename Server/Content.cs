@@ -503,8 +503,6 @@ public static class Formula
 /// </summary>
 public static partial class Content
 {
-    private static readonly SemaphoreSlim ReloadGate = new(1, 1);
-
     // id -> map. Only maps whose dims were validated against the client's own TK&lt;id&gt;.map (see
     // re/build_map_index.py) are present, so a warp target here is always renderable.
     public static IReadOnlyDictionary<ushort, MapInfo> Maps { get; private set; } =
@@ -1168,6 +1166,10 @@ public static partial class Content
         return null;
     }
 
+    /// <summary>Replace every file-backed content registry from disk in its required dependency order.</summary>
+    /// <remarks>Any runtime caller must hold the world reload gate by going through
+    /// <see cref="World.ReloadFromDisk"/>. Startup calls this before the World and its scheduler exist; tests
+    /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized.</remarks>
     public static void Load()
     {
         Maps = LoadMaps(ResolvePath("P1998_MAP_INDEX", "map_index.csv"));
@@ -1312,36 +1314,33 @@ public static partial class Content
     /// MapBgm.csv, so there's no compile-time content table left that a restart would be needed for). The
     /// world population is rebuilt separately by the @reload caller (World.RebuildPopulation), which re-reads
     /// spawns/NPCs so added/removed/repositioned rows take effect.
+    /// Runtime callers must hold the gate owned by <see cref="World.ReloadFromDisk"/> around this method and
+    /// every cache/population refresh that follows it.
     /// </summary>
     public static string Reload()
     {
-        ReloadGate.Wait();
-        try
+        var before = CaptureReloadTables();
+        try { Load(); }
+        catch (Exception e)
         {
-            var before = CaptureReloadTables();
-            try { Load(); }
-            catch (Exception e)
-            {
-                var replaced = CaptureReloadTables()
-                    .Where(kv => before.TryGetValue(kv.Key, out var old) && !ReferenceEquals(old, kv.Value))
-                    .Select(kv => kv.Key)
-                    .ToArray();
-                string progress = replaced.Length == 0
-                    ? "No public content tables were replaced (private tables, the era calendar and Lua scripts are not tracked until #33)."
-                    : $"Public content tables replaced before failure: {string.Join(", ", replaced)}.";
-                throw new InvalidOperationException($"{e.Message} {progress}", e);
-            }
-
-            var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
-                          $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
-                          $"{CraftingToggleOverrides.Count} crafting-toggle overrides, " +
-                          $"era {(Era.Today?.ToString("yyyy-MM-dd") ?? "off")} ({Shared.EraCalendar.FeatureCount} dated features)";
-            // A rejected .lua is the single most important thing @reload can tell you: your edit did NOT take, the
-            // old script is still running, and the reason is in the server log. Lead with it.
-            return RejectedScripts.Count == 0 ? summary
-                 : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
+            var replaced = CaptureReloadTables()
+                .Where(kv => before.TryGetValue(kv.Key, out var old) && !ReferenceEquals(old, kv.Value))
+                .Select(kv => kv.Key)
+                .ToArray();
+            string progress = replaced.Length == 0
+                ? "No public content tables were replaced (private tables, the era calendar and Lua scripts are not tracked until #33)."
+                : $"Public content tables replaced before failure: {string.Join(", ", replaced)}.";
+            throw new InvalidOperationException($"{e.Message} {progress}", e);
         }
-        finally { ReloadGate.Release(); }
+
+        var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
+                      $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
+                      $"{CraftingToggleOverrides.Count} crafting-toggle overrides, " +
+                      $"era {(Era.Today?.ToString("yyyy-MM-dd") ?? "off")} ({Shared.EraCalendar.FeatureCount} dated features)";
+        // A rejected .lua is the single most important thing @reload can tell you: your edit did NOT take, the
+        // old script is still running, and the reason is in the server log. Lead with it.
+        return RejectedScripts.Count == 0 ? summary
+             : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
     }
 
     /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which tracked

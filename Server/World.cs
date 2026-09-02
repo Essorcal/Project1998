@@ -2229,6 +2229,12 @@ public sealed class World
     private Session? PlayerByIdLocked(uint id) =>
         _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
 
+    // One gate covers the entire disk-to-live sequence below, not just Content.Load: cache invalidation,
+    // staff reload, terrain pre-warm and population rebuild must observe the same content generation. A GM
+    // invokes this on the session read loop, so contention is bounded rather than stalling packet handling.
+    private static readonly SemaphoreSlim ReloadGate = new(1, 1);
+    private static readonly TimeSpan ReloadWaitTimeout = TimeSpan.FromMilliseconds(250);
+
     /// <summary>
     /// Hot-reload every file-backed registry and rebuild the world population from it — the work behind the
     /// <c>@reload</c> GM command, lifted out of <see cref="Session"/> because the OTHER caller has no session:
@@ -2241,24 +2247,29 @@ public sealed class World
     /// </summary>
     public (bool ok, string report) ReloadFromDisk()
     {
-        string summary;
-        try { summary = Content.Reload(); }
-        catch (Exception e)
+        if (!ReloadGate.Wait(ReloadWaitTimeout)) return (false, "reload already in progress");
+        try
         {
-            Log.Error("content reload failed — see the exception message for public tables replaced before the failure", e);
-            return (false, e.Message);
+            string summary;
+            try { summary = Content.Reload(); }
+            catch (Exception e)
+            {
+                Log.Error("content reload failed — see the exception message for public tables replaced before the failure", e);
+                return (false, e.Message);
+            }
+            ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
+            MapData.Invalidate();
+            StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
+            // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
+            // (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
+            // while holding the world lock (the old reload-stall).
+            foreach (var mapId in PopulatedMapIds())
+                if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
+            var (mobs, npcs, maps) = RebuildPopulation();
+            return (true, $"{summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, " +
+                          $"{maps} live map(s) re-materialized; map cache cleared.");
         }
-        ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
-        MapData.Invalidate();
-        StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
-        // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
-        // (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
-        // while holding the world lock (the old reload-stall).
-        foreach (var mapId in PopulatedMapIds())
-            if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
-        var (mobs, npcs, maps) = RebuildPopulation();
-        return (true, $"{summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, " +
-                      $"{maps} live map(s) re-materialized; map cache cleared.");
+        finally { ReloadGate.Release(); }
     }
 
     /// <summary>Make every mob everywhere forget <paramref name="playerId"/> — target and threat table both.

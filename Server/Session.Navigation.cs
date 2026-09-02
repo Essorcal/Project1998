@@ -1244,7 +1244,11 @@ public sealed partial class Session
     private void ReloadContent()
     {
         var (ok, report) = _world.ReloadFromDisk();
-        SendLog(ok ? $"Reloaded: {report}" : $"@reload FAILED: {report}");
+        // Contention is not a content failure, and this is the GM's read-loop thread: say why no work started
+        // without making them wait behind the reload already doing the same disk-to-live sequence.
+        SendLog(!ok && report == "reload already in progress" ? report
+              : ok ? $"Reloaded: {report}"
+              : $"@reload FAILED: {report}");
         Log.Info($"   -> @reload by '{_char.Name}': {report}");
     }
 

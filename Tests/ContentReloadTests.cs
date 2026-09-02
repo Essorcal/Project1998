@@ -8,46 +8,45 @@ namespace Tests;
 public class ContentReloadTests
 {
     [Fact]
-    public void ConcurrentReloadWaitsForTheCurrentReload()
+    public async Task ConcurrentReloadReportsThatReloadIsAlreadyInProgress()
     {
-        lock (TestProcessState.Gate)
+        TestProcessState.LoadContent();
+        var mapsBefore = Content.Maps;
+        var field = typeof(World).GetField("ReloadGate",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var reloadGate = Assert.IsType<SemaphoreSlim>(field?.GetValue(null));
+        // The constructor starts the live world's background machinery on this branch. The contended path
+        // returns before touching instance state, so an uninitialized instance isolates the gate response.
+        var world = (World)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(World));
+        using var started = new ManualResetEventSlim();
+        Task<(bool ok, string report)>? waiting = null;
+        bool gateHeld = false;
+        try
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-reload-gate-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(dir);
-            string path = Path.Combine(dir, "map_index.csv");
-            File.WriteAllText(path, "id,name,xs,ys\n65000,Reload gate fixture,1,1\n");
+            reloadGate.Wait();
+            gateHeld = true;
+            waiting = Task.Run(() => { started.Set(); return world.ReloadFromDisk(); });
+            Assert.True(started.Wait(TimeSpan.FromSeconds(5)), "the concurrent reload task did not start");
 
-            string? previous = Environment.GetEnvironmentVariable("P1998_MAP_INDEX");
-            try
+            var result = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(result.ok);
+            Assert.Equal("reload already in progress", result.report);
+            Assert.Same(mapsBefore, Content.Maps);
+        }
+        finally
+        {
+            // If an assertion failed against an unbounded Wait, release it first; either way the task must be
+            // finished before LoadContent restores process-wide registries for every later test.
+            if (waiting is not null && !waiting.IsCompleted)
             {
-                Environment.SetEnvironmentVariable("P1998_MAP_INDEX", path);
-                var mapsBefore = Content.Maps;
-                var field = typeof(Content).GetField("ReloadGate",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                var reloadGate = Assert.IsType<SemaphoreSlim>(field?.GetValue(null));
-                using var started = new ManualResetEventSlim();
-                reloadGate.Wait();
-                Task? waiting = null;
-                try
-                {
-                    waiting = Task.Run(() => { started.Set(); Content.Reload(); });
-                    Assert.True(started.Wait(TimeSpan.FromSeconds(5)), "the concurrent reload task did not start");
-                    Assert.False(SpinWait.SpinUntil(() => !ReferenceEquals(mapsBefore, Content.Maps),
-                            TimeSpan.FromSeconds(1)),
-                        "a second Content.Reload replaced Maps while the first caller held the reload gate");
-                }
-                finally { reloadGate.Release(); }
-
-                Assert.True(SpinWait.SpinUntil(() => waiting.IsCompleted, TimeSpan.FromSeconds(10)),
-                    "the waiting reload did not resume after release");
-                Assert.Null(waiting.Exception);
-                Assert.Equal("Reload gate fixture", Assert.Single(Content.Maps).Value.Name);
+                reloadGate.Release();
+                gateHeld = false;
             }
+            try { if (waiting is not null) await waiting.WaitAsync(TimeSpan.FromSeconds(15)); }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MAP_INDEX", previous);
+                if (gateHeld) reloadGate.Release();
                 TestProcessState.LoadContent();
-                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
         }
     }
