@@ -261,6 +261,30 @@ public class DamageIntakeTests
         Assert.Equal(def.Durability, zappedChar.Equipment[0].Dura);
     }
 
+    // ---- caller-level: a named NPC's spell (#79) ----------------------------------------------------------
+
+    /// <summary>A mythic's Stormstrike, driven through its real entry point, against an UNWARDED player.
+    /// This pins the damage figure so the #79 fix — which moves the intake this spell lands on — can be shown
+    /// not to have moved the number.
+    ///
+    /// <para>Level 50, Will 20: <c>125 + 50x4 + ceil((21/2) x 3.5)</c> = 125 + 200 + 37 = 362. AC -50 is set
+    /// deliberately and must NOT halve it: neither the room intake this used to take nor the creature-spell
+    /// intake it takes now applies physical AC, so a change in that figure means the terms moved, not just
+    /// the ward.</para></summary>
+    [Fact]
+    public void AMythicsStormstrikeLandsItsFullFigureOnAnUnwardedPlayer()
+    {
+        var (victim, outbound, character) = _fx.PlayerWith("DmgStormUnwarded", c =>
+        {
+            c.MaxHp = FullHp; c.Hp = FullHp; c.Ac = -50; c.Level = 50; c.Will = 20;
+        });
+
+        victim.NpcCastStormstrike("Mythic Tiger");
+
+        Assert.Equal(FullHp - 362, character.Hp);
+        Assert.Contains("Mythic Tiger attacks you with Stormstrike spell.", MiniTexts(outbound));
+    }
+
     /// <summary>A lethal spell hit reports the FULL figure, uncapped by the HP that was left (the vita
     /// strikes' overflow is computed from the excess), drops the player to 0, and runs the death beat.</summary>
     [Fact]
