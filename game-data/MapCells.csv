@@ -95,5 +95,3 @@ Map,X,Y,Tile,Pass,Obj,Sources
 4613,22,47,,,54,secret-garden south door closed (owner-design)
 4613,23,47,,,55,secret-garden south door closed (owner-design)
 4613,25,47,,,57,secret-garden south door closed (owner-design)
-4504,29,18,782,0,0,courtyard east tree-line gap opened for Yuri's Flower Garden connection — Pass=0 makes the client resolve the ground word through sheet 1 (MapCell.cs re-encodes tile|pass<<14) so Tile must be respecified: 782 is the corridor's own floor (owner-design)
-4504,29,19,782,0,0,courtyard east tree-line gap opened for Yuri's Flower Garden connection (owner-design)
