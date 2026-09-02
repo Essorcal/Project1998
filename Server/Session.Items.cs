@@ -382,16 +382,30 @@ public sealed partial class Session
     // logic; see Server/ItemScript.cs). The verb acts through ItemContext, whose primitives delegate to the
     // Item* methods below — the SAME plumbing the old C# switch used. Gate verbs (ward/hardenbody) check FIRST
     // and skip the eat animation on refusal, matching every reviewed script's guard-before-effect order.
-    // Returns false — WITHOUT consuming the item — only when a gate verb refused. Items with no ItemParams row
-    // fall back to the item DB's own Vita/Mana columns (almost none carry them). Both files hot-reload via @reload.
+    // Returns false — WITHOUT consuming the item — when a gate verb refused, or when the verb raised. Items with
+    // no ItemParams row fall back to the item DB's own Vita/Mana columns (almost none carry them). Both files
+    // hot-reload via @reload.
     private bool ApplyItemEffect(ItemDef def)
     {
         if (Content.ItemParams.TryGetValue(def.Key, out var row))
         {
             var verb = row.GetValueOrDefault("verb", "");
-            var handled = ItemScript.Apply(verb, new ItemContext(this), row);
-            if (handled is not null) return handled.Value;   // Lua ran it; false = a gate refused (don't consume)
-            // verb missing / Lua error -> fall through to the DB Vita/Mana fallback below (never leaves a use inert-crashed)
+            switch (ItemScript.Apply(verb, new ItemContext(this), row))
+            {
+                case VerbResult.Ok:       return true;    // Lua ran it: consume
+                case VerbResult.Declined: return false;   // a gate refused and has said so: don't consume
+                case VerbResult.Errored:
+                    // The verb raised part-way. Whatever it applied before that stands (a heal already sent is
+                    // not clawed back), but the item is NOT spent and the player hears a refusal rather than
+                    // nothing. Until #25 this case was indistinguishable from Missing below, so a runtime
+                    // error in a hot-reloaded item_verbs.lua fell through to the DB Vita/Mana path, returned
+                    // true, and HandleUseItem consumed the item: a typo destroyed consumables with no sign to
+                    // the player. Substituting the C# path for a verb that exists but is broken is the one
+                    // thing this must not do — the error is already in the log with its Lua location.
+                    SendMiniText("That isn't working right now.");
+                    return false;
+                case VerbResult.Missing:  break;          // no such verb -> the DB Vita/Mana fallback below
+            }
         }
 
         // No effect row (or the Lua path was unavailable): the rare item that actually carries Vita/Mana in the

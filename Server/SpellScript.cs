@@ -47,12 +47,18 @@ public static class SpellScript
     /// implementation is the worst of the three options: the player sees the spell misbehave, the log says
     /// nothing about a fallback, and a verb that errored *after* spending mana gets its effect applied twice.
     /// A failed cast that says so is strictly better, and the error is already logged by
-    /// <see cref="LuaVerbHost.Invoke"/>.</para></summary>
-    public static bool? Run(string verb, SpellContext ctx, IReadOnlyDictionary<string, string>? row = null)
-    {
-        if (!_host.HasVerb(verb)) return null;                  // not a Lua spell -> C# dispatch
-        var ret = _host.Invoke(verb, ctx, row ?? NoRow);
-        if (ret is null) return false;                          // ran but errored (already logged) -> failed cast, no fallthrough
-        return ret.Type != DataType.Boolean || ret.Boolean;     // non-boolean return = ran = success
-    }
+    /// <see cref="LuaVerbHost.Invoke"/>.</para>
+    ///
+    /// <para>The host reports a four-way <see cref="VerbResult"/>; this folds <see cref="VerbResult.Errored"/>
+    /// into false alongside <see cref="VerbResult.Declined"/> because, for a spell, both mean "ran, do not
+    /// re-run through C#" and the six dispatch sites in Session.Spells.cs already act on exactly that
+    /// tri-state. The item wrapper does NOT fold them — an errored item verb must refuse without consuming,
+    /// which is a fourth outcome — see <see cref="ItemScript.Apply"/>.</para></summary>
+    public static bool? Run(string verb, SpellContext ctx, IReadOnlyDictionary<string, string>? row = null) =>
+        _host.Invoke(verb, ctx, row ?? NoRow) switch
+        {
+            VerbResult.Missing => null,     // not a Lua spell -> C# dispatch
+            VerbResult.Ok      => true,
+            _                  => false,    // Declined, or Errored (already logged): failed cast, no fallthrough
+        };
 }
