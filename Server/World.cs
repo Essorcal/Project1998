@@ -2339,11 +2339,23 @@ public sealed class World
     /// throw from FlushNow — a collection mutated under the serializer by that player's own thread (#29),
     /// a bad disk — unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the unlucky
     /// one in that snapshot silently missed the interval. Idle dirty players are exactly who the sweep
-    /// exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.</summary>
-    private static void FlushIsolated(Session s, string sweep)
+    /// exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
+    ///
+    /// <para>Returns whether the flush succeeded, because the two callers face different consequences and
+    /// must say different things. The periodic sweep genuinely does retry on its next interval. The
+    /// shutdown flush has no next interval: a throw there is the player's last state LOST, and reporting it
+    /// as "retried" — or, worse, counting it as saved — is the one thing an operator reading the final
+    /// lines of a log must not be told. <paramref name="lastChance"/> picks the wording.</para></summary>
+    private static bool FlushIsolated(Session s, string sweep, bool lastChance = false)
     {
-        try { s.FlushNow(); }
-        catch (Exception e) { Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — that player's save is retried next sweep, the others continue", e); }
+        try { s.FlushNow(); return true; }
+        catch (Exception e)
+        {
+            Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — " +
+                      (lastChance ? "save LOST — process is exiting, there is no retry"
+                                  : "that player's save is retried next sweep, the others continue"), e);
+            return false;
+        }
     }
 
     // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
@@ -2361,14 +2373,24 @@ public sealed class World
     }
 
     /// <summary>Graceful-shutdown flush: force-save every connected player right now, ignoring the dirty
-    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Returns the
-    /// number of players swept (for the shutdown-hook log line). Cannot help against a hard crash/kill —
-    /// that's what the periodic AutoSaveLoop sweep + each session's own on-thread flush bound instead.</summary>
-    public int SaveAllPlayers()
+    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Cannot help
+    /// against a hard crash/kill — that's what the periodic AutoSaveLoop sweep + each session's own
+    /// on-thread flush bound instead.
+    ///
+    /// <para>Returns (saved, failed) rather than the population count. It used to return
+    /// <c>players.Count</c> whatever happened, so the shutdown hook's "flushed N player(s)" was the number
+    /// of players CONNECTED, not the number persisted — a run that lost three characters' last hour logged
+    /// exactly what a clean one did. The caller reports both numbers (see TkListener.Shutdown).</para></summary>
+    public (int saved, int failed) SaveAllPlayers()
     {
         var players = AllPlayers();
-        foreach (var s in players) FlushIsolated(s, "shutdown save");   // same hole as AutoSaveTick, worse timing: there is no next sweep
-        return players.Count;
+        int saved = 0, failed = 0;
+        foreach (var s in players)
+        {
+            if (FlushIsolated(s, "shutdown save", lastChance: true)) saved++;
+            else failed++;
+        }
+        return (saved, failed);
     }
 
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest

@@ -67,8 +67,15 @@ public sealed class TkListener
     {
         if (Interlocked.Exchange(ref _shutdownOnce, 1) != 0) return;
         Log.Info($"=== shutdown signal ({reason}) — flushing connected players ===");
-        int n = _world.SaveAllPlayers();
-        Log.Info($"   -> flushed {n} player(s)");
+        // Both numbers, always. A failure here is a player's last state gone for good (there is no next
+        // sweep past this point), so "saved N" alone — which is what this line used to print, and it
+        // printed the CONNECTED count at that — would report a lossy shutdown as a clean one.
+        var (saved, failed) = _world.SaveAllPlayers();
+        // Warn, not Error, deliberately: this is a COUNT, not an exception, and Log.Error takes a real
+        // exception on purpose (see Log). The losses themselves are already logged at Error, one line per
+        // character, each with the stack that caused it — this line only makes the tally impossible to miss.
+        if (failed == 0) Log.Info($"   -> saved {saved} player(s)");
+        else Log.Warn($"   -> saved {saved} player(s), LOST {failed} — their last state is GONE; see the flush errors above");
         // Logging is asynchronous now (see Log), so the lines above are still queued at this point and the
         // Environment.Exit(0) that follows Ctrl+C would discard them. Drain the queue last, once nothing
         // else has anything left to say.
