@@ -295,7 +295,8 @@ def load_mapcells():
 
     Mirrors the server's authored-cell overlay (MapData.Load applies these AFTER the shipped .map)
     so the atlas render matches the live map -- swapped door graphics, patched tiles, etc. Comment
-    ('# ...') rows are skipped; blank Tile/Obj leave that component alone (Pass has no visual effect)."""
+    ('# ...') rows are skipped; a blank component is left alone. Pass IS visual: it lives in the ground
+    word's top 2 bits, which double as the client's sheet selector, so changing it re-points the tile."""
     path = os.path.join(REPO, "game-data", "MapCells.csv")
     out = {}
     if not os.path.exists(path):
@@ -316,14 +317,21 @@ def render_map(ts, mid, dims, mapcells=None):
     ov = (mapcells or {}).get(mid)
     if ov:
         cells = cells.copy()                                 # frombuffer is read-only
-        for x, y, tile, _pass, obj in ov:
+        for x, y, tile, pass_, obj in ov:
             if not (0 <= x < xs and 0 <= y < ys):
                 continue
             i = y * xs + x
             if obj is not None:
                 cells[i, 1] = obj
-            if tile is not None:                             # keep the top-2 sheet tag, replace tile index
-                cells[i, 0] = (int(cells[i, 0]) & 0xC000) | (tile & 0x3FFF)
+            if tile is not None or pass_ is not None:
+                # Re-encode the way the server hands the word to a client (Server/MapCell.cs:
+                # (tile & 0x3FFF) | (pass << 14)). The top 2 bits are OVERLOADED -- passability to
+                # the server, sheet selector to the client (see ground_frame's SHEET2_BASE) -- so a
+                # Pass override silently moves the cell between sheets and IS visual.
+                word = int(cells[i, 0])
+                t = (tile if tile is not None else word) & 0x3FFF
+                p = (pass_ if pass_ is not None else (word >> 14)) & 0x3
+                cells[i, 0] = t | (p << 14)
     return render(ts, cells, xs, ys), name, xs, ys
 
 
