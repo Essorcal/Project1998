@@ -55,7 +55,7 @@ public sealed partial class Session
         // A group FORMING announces both of its founders, not just the invitee: the inviter is joining a
         // group they weren't in a moment ago either, and the announcement always reaches everyone it names.
         bool forming = _party is null;
-        if (forming) _party = new Party(this, target);
+        if (_party is null) _party = new Party(this, target);
         else _party.Add(target);
         target._party = _party;
 

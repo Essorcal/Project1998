@@ -62,11 +62,15 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # Project1998.Server.slnf is the full solution minus MapEditor: a net8.0-windows WinForms/WebView2
+      # desktop tool that cannot run on this runner and has no business costing it a Windows-targeting restore.
+      # Everything that ships, plus Tests and the probes, is in the filter. Directory.Build.props makes
+      # warnings errors, so a green build here is a warning-free build.
       - name: Restore
-        run: dotnet restore Project1998.sln
+        run: dotnet restore Project1998.Server.slnf
 
       - name: Build
-        run: dotnet build Project1998.sln -c Release --no-restore
+        run: dotnet build Project1998.Server.slnf -c Release --no-restore
 
       # The real gate. `dotnet build` cannot see a bad CSV row, a renamed Lua verb, or a missing .map file —
       # see Tests/ContentSmokeTests.cs for why each of those is a silent failure rather than a loud one.
@@ -87,7 +91,7 @@ jobs:
       #
       # Not trimmed and not AOT: MoonSharp resolves script bindings by reflection, which is precisely what the
       # trimmer cannot see. The ~70 MB per app is irrelevant against 200 GB of free block storage.
-      - name: Publish (linux-arm64, self-contained)
+      - name: Publish (linux-x64, self-contained)
         if: github.event_name != 'pull_request'
         run: |
           dotnet publish Server/Server.csproj           -c Release -r linux-x64 --self-contained true -o out/game

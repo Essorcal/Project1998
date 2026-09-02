@@ -11,9 +11,6 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
 
     <!-- Server GC + concurrent (background) gen2. The default for a console app is WORKSTATION GC, which
          collects on the allocating thread: a gen2 there stops the world tick mid-heartbeat. Server GC gives

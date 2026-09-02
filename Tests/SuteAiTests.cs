@@ -416,8 +416,8 @@ public class SuteAiTests
         // of mistake nothing else catches: the heal still worked, it just drew an attack over him.
         var soothe = Content.SpellFx.Values.FirstOrDefault(f => f.Key == "soothe");
         Assert.NotNull(soothe);
-        Assert.Equal(soothe!.Animation, SuteAi.HealAnim);
-        Assert.Equal(soothe.Sound, SuteAi.HealSound);
+        Assert.Equal(SuteAi.HealAnim, soothe!.Animation);
+        Assert.Equal(SuteAi.HealSound, soothe.Sound);
         Assert.Equal(257, SuteAi.FrigidDamage);
     }
 }
