@@ -202,6 +202,6 @@ public sealed partial class Session
         Log.Info($"   -> disconnecting '{_char.Name}': {why}");
         // EXPECTED: the player may have dropped before the kick reached them; the outcome we want (they are
         // not connected) is the same either way, and the line above already records the intent.
-        try { _client.Close(); } catch { /* already gone */ }
+        CloseConnection($"kicked: {why}");
     }
 }

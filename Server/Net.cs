@@ -11,7 +11,7 @@ public sealed class TkListener
 {
     private readonly int[] _ports;
     private readonly CharacterStore _store;
-    private readonly World _world = new();   // the one shared world every session broadcasts through
+    private readonly World _world = new();   // the one shared world every session broadcasts through; RunAsync starts it
     private readonly ConnGuard _guard = ConnGuard.FromEnv("GAME");   // per-IP/global/rate admission control
 
     public TkListener(int[] ports)
@@ -28,6 +28,12 @@ public sealed class TkListener
 
     public async Task RunAsync()
     {
+        // The World is constructed as a field initializer (in-memory state only); its tick thread, autosave
+        // sweep, watchdog, restart ladder and status writer start HERE, at the point the process commits to
+        // being a running server. Constructing a World has no side effects of its own, which is what lets a
+        // test hold one without threads — see World.Start.
+        _world.Start();
+
         // Graceful-shutdown flush hook (robust persistence, complements the per-session autosave in
         // World.AutoSaveLoop/Session.FlushIfDue): on a clean stop, save every connected player's pending
         // mutation before the process actually exits. This is the flush half of a graceful restart — it
