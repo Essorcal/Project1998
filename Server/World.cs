@@ -2332,7 +2332,18 @@ public sealed class World
     /// iteration to fire on) — an ACTIVE player is already covered by their own on-thread flush.</summary>
     private void AutoSaveTick()
     {
-        foreach (var s in AllPlayers()) s.FlushNow();
+        foreach (var s in AllPlayers()) FlushIsolated(s, "autosave");
+    }
+
+    /// <summary>One player's flush, fenced so it can't take the rest of a sweep with it. Before this, one
+    /// throw from FlushNow — a collection mutated under the serializer by that player's own thread (#29),
+    /// a bad disk — unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the unlucky
+    /// one in that snapshot silently missed the interval. Idle dirty players are exactly who the sweep
+    /// exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.</summary>
+    private static void FlushIsolated(Session s, string sweep)
+    {
+        try { s.FlushNow(); }
+        catch (Exception e) { Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — that player's save is retried next sweep, the others continue", e); }
     }
 
     // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
@@ -2356,7 +2367,7 @@ public sealed class World
     public int SaveAllPlayers()
     {
         var players = AllPlayers();
-        foreach (var s in players) s.FlushNow();
+        foreach (var s in players) FlushIsolated(s, "shutdown save");   // same hole as AutoSaveTick, worse timing: there is no next sweep
         return players.Count;
     }
 
