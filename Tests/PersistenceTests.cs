@@ -52,6 +52,16 @@ public class PersistenceTests : IDisposable
         Assert.True(File.Exists(Db.Path));
     }
 
+    [Fact]
+    public void ProductionDatabaseIsUnchanged()
+    {
+        Assert.Equal(TestProcessState.ProductionDatabaseExisted,
+                     File.Exists(TestProcessState.ProductionDatabasePath));
+        if (TestProcessState.ProductionDatabaseExisted)
+            Assert.Equal(TestProcessState.ProductionDatabaseLastWriteTimeUtc,
+                         File.GetLastWriteTimeUtc(TestProcessState.ProductionDatabasePath));
+    }
+
     /// <summary>The trade guarantee: both sides land together. This is the happy path — the failure path is
     /// the next test, and it's the one that actually matters.</summary>
     [Fact]
