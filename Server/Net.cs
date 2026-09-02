@@ -67,8 +67,15 @@ public sealed class TkListener
     {
         if (Interlocked.Exchange(ref _shutdownOnce, 1) != 0) return;
         Log.Info($"=== shutdown signal ({reason}) — flushing connected players ===");
-        int n = _world.SaveAllPlayers();
-        Log.Info($"   -> flushed {n} player(s)");
+        // Both numbers, always. A failure here is a player's last state gone for good (there is no next
+        // sweep past this point), so "saved N" alone — which is what this line used to print, and it
+        // printed the CONNECTED count at that — would report a lossy shutdown as a clean one.
+        var (saved, failed) = _world.SaveAllPlayers();
+        // Warn, not Error, deliberately: this is a COUNT, not an exception, and Log.Error takes a real
+        // exception on purpose (see Log). The losses themselves are already logged at Error, one line per
+        // character, each with the stack that caused it — this line only makes the tally impossible to miss.
+        if (failed == 0) Log.Info($"   -> saved {saved} player(s)");
+        else Log.Warn($"   -> saved {saved} player(s), LOST {failed} — their last state is GONE; see the flush errors above");
         // Logging is asynchronous now (see Log), so the lines above are still queued at this point and the
         // Environment.Exit(0) that follows Ctrl+C would discard them. Drain the queue last, once nothing
         // else has anything left to say.
@@ -89,7 +96,7 @@ public sealed class TkListener
             // down; the per-session try/finally in Session.RunAsync isolates everything after accept.
             TcpClient client;
             try { client = await listener.AcceptTcpClientAsync(); }
-            catch (Exception e) { Log.Info($"!! accept on :{port} failed: {e.Message}"); continue; }
+            catch (Exception e) { Log.Warn($"accept on :{port} failed — still listening", e); continue; }
 
             // DISABLE NAGLE. Every packet this server sends is small (a cast is ~5 tiny packets: 0x29 effect,
             // 0x19 sound, 0x1A action, 0x08 stats, 0x0A text), and .NET leaves TCP_NODELAY off by default.
@@ -98,6 +105,8 @@ public sealed class TkListener
             // instead of back-to-back. Audible symptom: casts that should land in unison (three per action-budget
             // window while a key is held) play their sounds slightly flammed. Latency matters here, throughput
             // does not; there is no case where batching this game's packets is worth the delay.
+            // EXPECTED: the peer reset between accept and here. Nothing is lost by not reporting it — the
+            // read loop is about to fail on the same socket and log that with its address.
             try { client.NoDelay = true; } catch { /* socket already dead — the read loop will notice */ }
 
             var peer = (client.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
@@ -115,13 +124,13 @@ public sealed class TkListener
                 if (!ProxyProtocol.IsTrustedPeer(peer))
                 {
                     Log.Info($"!! REJECT {peer} on :{port} (not in P1998_PROXY_ALLOW); {_guard.Total} live");
-                    try { client.Close(); } catch { /* already gone */ }
+                    try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                     continue;
                 }
                 if (!_guard.TryReserveGlobal(out var greason))
                 {
                     Log.Info($"!! REJECT {peer} on :{port} ({greason}); {_guard.Total} live");
-                    try { client.Close(); } catch { /* already gone */ }
+                    try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                     continue;
                 }
                 _ = RunProxiedAsync(client, port, peer);
@@ -132,7 +141,7 @@ public sealed class TkListener
             if (!_guard.TryAdmit(peer, out var reason))
             {
                 Log.Info($"!! REJECT {peer} on :{port} ({reason}); {_guard.Total} live");
-                try { client.Close(); } catch { /* already gone */ }
+                try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                 continue;
             }
             _ = RunAndReleaseAsync(client, port, peer, null);   // fire-and-forget; releases the slot on exit
@@ -152,9 +161,9 @@ public sealed class TkListener
         }
         catch (Exception e)
         {
-            Log.Info($"!! PROXY header from {peer} on :{port} failed: {e.Message}");
+            Log.Warn($"PROXY header from {peer} on :{port} rejected — connection dropped", e);
             _guard.ReleaseGlobal();
-            try { client.Close(); } catch { /* already gone */ }
+            try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
             return;
         }
 
@@ -162,7 +171,7 @@ public sealed class TkListener
         {
             Log.Info($"!! REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
             _guard.ReleaseGlobal();
-            try { client.Close(); } catch { /* already gone */ }
+            try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
             return;
         }
         await RunAndReleaseAsync(client, port, ip, ip);
@@ -174,7 +183,8 @@ public sealed class TkListener
     private async Task RunAndReleaseAsync(TcpClient client, int port, IPAddress ip, IPAddress? realIp)
     {
         try { await new Session(client, port, _store, _world, realIp).RunAsync(); }
-        catch (Exception e) { Log.Info($"!! session {ip} on :{port} faulted: {e.Message}"); }
+        // RunAsync catches its own read-loop failures; only its finally-block teardown can reach here.
+        catch (Exception e) { Log.Error($"session {ip} on :{port} faulted during teardown", e); }
         finally { _guard.Release(ip); }
     }
 }

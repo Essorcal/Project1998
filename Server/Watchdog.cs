@@ -59,7 +59,7 @@ public static class Watchdog
         {
             Thread.Sleep(ProbeIntervalMs);
             try { ScanSessions(); }
-            catch (Exception e) { Log.Info($"!! watchdog session scan error: {e.Message}"); }
+            catch (Exception e) { Log.Error("watchdog session scan threw", e); }
             if (PoolLagMs <= 0) continue;
             try
             {
@@ -76,7 +76,7 @@ public static class Watchdog
                 // the watchdog thread forever.
                 if (!started.Wait(10_000))
                 {
-                    Log.Info($"!! POOL STALLED: probe did not start within 10000ms — " +
+                    Log.Warn($"POOL STALLED: probe did not start within 10000ms — " +
                              $"{ThreadPool.ThreadCount} pool thread(s), {ThreadPool.PendingWorkItemCount} pending");
                     continue;
                 }
@@ -85,12 +85,12 @@ public static class Watchdog
                 if (worstMs < PoolLagMs) continue;
 
                 ThreadPool.GetMinThreads(out int minW, out _);
-                Log.Info($"!! POOL LAG: work item waited {worstMs}ms to start — " +
+                Log.Warn($"POOL LAG: work item waited {worstMs}ms to start — " +
                          $"{ThreadPool.ThreadCount} pool thread(s) (min {minW}), " +
                          $"{ThreadPool.PendingWorkItemCount} pending, {ThreadPool.CompletedWorkItemCount} completed");
                 worstMs = 0;
             }
-            catch (Exception e) { Log.Info($"!! watchdog probe error: {e.Message}"); }
+            catch (Exception e) { Log.Error("watchdog pool probe threw", e); }
         }
     }
 
@@ -115,7 +115,7 @@ public static class Watchdog
             bool stuck = inAge >= SilentMs && outAge <= 2000;
 
             if (stuck && Reported.Add(s))
-                Log.Info($"!! CLIENT SILENT {s.Remote}: no inbound for {inAge}ms while still sending — {s.DiagState()}");
+                Log.Warn($"CLIENT SILENT {s.Remote}: no inbound for {inAge}ms while still sending — {s.DiagState()}");
             else if (!stuck && Reported.Remove(s))
                 Log.Info($"   -> client {s.Remote} talking again after {inAge}ms of silence — {s.DiagState()}");
         }
@@ -138,6 +138,6 @@ public static class Watchdog
         if (ThreadPool.SetMinThreads(want, Math.Max(minIo, want)))
             Log.Info($"thread pool: min worker threads {minW} -> {want} (cores {Environment.ProcessorCount})");
         else
-            Log.Info($"!! thread pool: SetMinThreads({want}) refused — leaving min at {minW}");
+            Log.Warn($"thread pool: SetMinThreads({want}) refused — leaving min at {minW}");
     }
 }

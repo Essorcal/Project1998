@@ -71,7 +71,7 @@ public static class Mail
             using var r = cmd.ExecuteReader();
             while (r.Read()) list.Add(Read(r));
         }
-        catch { /* best effort: an empty inbox is better than a crash */ }
+        catch (Exception e) { Log.Error($"mail_posts read failed for '{recipient}' — showing the inbox empty", e); }
         return list;
     }
 
@@ -89,7 +89,7 @@ public static class Mail
             using var r = cmd.ExecuteReader();
             return r.Read() ? Read(r) : null;
         }
-        catch { return null; }
+        catch (Exception e) { Log.Error($"mail_posts read failed for '{recipient}' position {position}", e); return null; }
     }
 
     /// <summary>Send a letter (optionally with one attached item stack — the "parcel" half). Assigns the
@@ -142,7 +142,7 @@ public static class Mail
             cmd.Parameters.AddWithValue("$p", position);
             cmd.ExecuteNonQuery();
         }
-        catch { /* best effort */ }
+        catch (Exception e) { Log.Error($"mail_posts mark-read failed for '{recipient}' position {position}", e); }
     }
 
     /// <summary>One-shot claim of an attached parcel: returns the item to give and flips claimed so a
@@ -178,6 +178,6 @@ public static class Mail
             cmd.Parameters.AddWithValue("$p", position);
             return cmd.ExecuteNonQuery() > 0;
         }
-        catch { return false; }
+        catch (Exception e) { Log.Error($"mail_posts delete failed for '{recipient}' position {position}", e); return false; }
     }
 }

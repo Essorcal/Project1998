@@ -4,6 +4,33 @@ using MoonSharp.Interpreter;
 namespace Server;
 
 /// <summary>
+/// What happened when a verb was asked to run. Shared by both wrappers (<see cref="ItemScript"/>,
+/// <see cref="SpellScript"/>) so that four distinct outcomes cannot collapse into two on the way to a caller.
+///
+/// <para>That collapse is the bug this replaces. <see cref="LuaVerbHost.Invoke"/> returned <c>DynValue?</c>, and
+/// <c>null</c> meant BOTH "no such verb" and "the verb raised". ItemScript passed the null up as "not handled",
+/// <c>Session.ApplyItemEffect</c> read "not handled" as "use the item DB's Vita/Mana instead" and returned true,
+/// and <c>HandleUseItem</c> consumed the item. One typo in a hot-reloaded <c>item_verbs.lua</c> therefore
+/// destroyed consumables with no player-visible sign and a single Info line in the log (upstream #25).</para>
+/// </summary>
+public enum VerbResult
+{
+    /// <summary>The verb ran to completion and returned anything but an explicit <c>false</c> — a verb needn't
+    /// bother with <c>return true</c>.</summary>
+    Ok,
+    /// <summary>The verb ran and returned <c>false</c>: a gate refused (ward already up, no mana, no target). The
+    /// verb has already said whatever it wants to say to the player. The caller must not apply its own effect
+    /// and must not fall through to another implementation.</summary>
+    Declined,
+    /// <summary>No script is loaded, or it defines no function by that name. The caller decides whether it has a
+    /// C# path to fall back to; for spells that is the ordinary case (~600 spells have no row).</summary>
+    Missing,
+    /// <summary>The verb raised. It may have applied part of its effect before it did. Already logged with the Lua
+    /// location and the stack; the caller must refuse the action, tell the player, and consume nothing.</summary>
+    Errored,
+}
+
+/// <summary>
 /// A reusable embedded-MoonSharp (pure-C# Lua) "verb" host: it owns ONE <c>.lua</c> file that defines a global
 /// <c>verbs</c> table (<c>verbName -&gt; function(ctx, row)</c>) and runs those verbs against a C# facade object
 /// (<c>ctx</c>) plus a data row (the "row" half of the verb/row model). Both spells (<see cref="SpellScript"/>)
@@ -11,9 +38,10 @@ namespace Server;
 /// facade types — one engine, no duplicated MoonSharp plumbing.
 ///
 /// Safety: the script runs under MoonSharp's hard sandbox (no io/os/file access), and every verb call is wrapped
-/// so a Lua error is logged and reported as "did not run" (<see cref="Invoke"/> returns null) rather than
-/// crashing the caller — the caller then falls back to its C# path. A MoonSharp <see cref="Script"/> is not
-/// thread-safe, so calls are serialized under a lock (fine — casts/item-uses are low-frequency vs movement/IO).
+/// so a Lua error is logged — with the script location and the stack — and reported as
+/// <see cref="VerbResult.Errored"/>, distinct from <see cref="VerbResult.Missing"/>, rather than crashing the
+/// caller. A MoonSharp <see cref="Script"/> is not thread-safe, so calls are serialized under a lock (fine —
+/// casts/item-uses are low-frequency vs movement/IO).
 ///
 /// The facade type(s) a host will pass as <c>ctx</c> must be registered with MoonSharp
 /// (<c>UserData.RegisterType&lt;T&gt;()</c>) before the first <see cref="Invoke"/>; the static wrapper classes do
@@ -51,7 +79,7 @@ public sealed class LuaVerbHost
         {
             if (path is null || !File.Exists(path))
             {
-                Log.Info($"!! {_name}: no verb file at '{path ?? "(null)"}' — keeping {(_verbs is null ? "the Lua path disabled" : "the previously-loaded verbs")}");
+                Log.Warn($"{_name}: no verb file at '{path ?? "(null)"}' — keeping {(_verbs is null ? "the Lua path disabled" : "the previously-loaded verbs")}");
                 return _verbs is not null;
             }
             try
@@ -61,7 +89,7 @@ public sealed class LuaVerbHost
                 var v = s.Globals.Get("verbs");
                 if (v.Type != DataType.Table)
                 {
-                    Log.Info($"!! {_name} defines no global `verbs` table — reload REJECTED, keeping the previous verbs");
+                    Log.Warn($"{_name} defines no global `verbs` table — reload REJECTED, keeping the previous verbs");
                     return _verbs is not null;
                 }
                 _script = s; _verbs = v.Table;
@@ -70,7 +98,9 @@ public sealed class LuaVerbHost
             }
             catch (Exception e)
             {
-                Log.Info($"!! {_name} load failed: {e.Message} — reload REJECTED, keeping the previous verbs");
+                // Warn, not Error: a content author's syntax error, handled (the old verbs keep running). The
+                // exception still rides along — a SyntaxErrorException's DecoratedMessage is the file:line.
+                Log.Warn($"{_name} load failed: {Describe(e)} — reload REJECTED, keeping the previous verbs", e);
                 return _verbs is not null;
             }
         }
@@ -85,16 +115,16 @@ public sealed class LuaVerbHost
         }
     }
 
-    /// <summary>Run <c>verb(ctx, row)</c> and return the verb's Lua return value, or <c>null</c> if there was no
-    /// such verb or it raised a Lua error (in which case the caller should use its C# fallback). Empty CSV cells
-    /// become nil, so a verb's <c>row.x or default</c> works; numeric-looking cells are passed as Lua numbers.</summary>
-    public DynValue? Invoke(string verb, object ctx, IReadOnlyDictionary<string, string> row)
+    /// <summary>Run <c>verb(ctx, row)</c>. See <see cref="VerbResult"/> for the four outcomes; an explicit Lua
+    /// <c>return false</c> is the only thing that yields <see cref="VerbResult.Declined"/>. Empty CSV cells become
+    /// nil, so a verb's <c>row.x or default</c> works; numeric-looking cells are passed as Lua numbers.</summary>
+    public VerbResult Invoke(string verb, object ctx, IReadOnlyDictionary<string, string> row)
     {
         lock (_lock)
         {
-            if (_script is null || _verbs is null) return null;
+            if (_script is null || _verbs is null) return VerbResult.Missing;
             var fn = _verbs.Get(verb);
-            if (fn.Type != DataType.Function) return null;
+            if (fn.Type != DataType.Function) return VerbResult.Missing;
 
             if (!_rowCache.TryGetValue(row, out var rowTable))
             {
@@ -107,15 +137,22 @@ public sealed class LuaVerbHost
                 _rowCache.Add(row, rowTable);
             }
 
-            try
-            {
-                return _script.Call(fn, UserData.Create(ctx), DynValue.NewTable(rowTable));
-            }
+            DynValue ret;
+            try { ret = _script.Call(fn, UserData.Create(ctx), DynValue.NewTable(rowTable)); }
             catch (Exception e)
             {
-                Log.Info($"!! {_name} verb '{verb}' error: {e.Message}");
-                return null;
+                Log.Error($"{_name} verb '{verb}' raised: {Describe(e)}", e);
+                return VerbResult.Errored;
             }
+            return ret.Type == DataType.Boolean && !ret.Boolean ? VerbResult.Declined : VerbResult.Ok;
         }
     }
+
+    /// <summary>MoonSharp's <c>DecoratedMessage</c> carries the chunk name and position —
+    /// <c>item_verbs.lua:(212,8-31): attempt to index a nil value</c> — which is what the person fixing the
+    /// script needs and what <c>e.Message</c> alone drops. Falls back to the plain message for anything that is
+    /// not an interpreter exception (a facade method throwing from C#, say). Internal so the other two Lua
+    /// hosts (MobScript, NpcScript) and the NPC dialog catches describe their errors the same way.</summary>
+    internal static string Describe(Exception e) =>
+        e is InterpreterException { DecoratedMessage.Length: > 0 } ie ? ie.DecoratedMessage : e.Message;
 }

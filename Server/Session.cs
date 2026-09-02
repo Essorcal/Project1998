@@ -353,7 +353,16 @@ public sealed partial class Session
                 FlushIfDue();   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
             }
         }
-        catch (Exception e) { Log.Info($"!! {_remote} error: {e.Message}"); }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            // The socket went away under the read: a reset from the client, a half-open link timing out,
+            // or our own CloseConnection (handshake timeout, slow-client drop) racing the pending ReadAsync.
+            // This happens on every live server several times an hour and the stack is the same handful of
+            // runtime frames each time, so it gets type + message only. Anything ELSE reaching this catch is
+            // unexpected — handlers are guarded per packet in Handle — and the clause below keeps the stack.
+            Log.Warn($"{_remote} read loop ended: {e.GetType().Name}: {e.Message}");
+        }
+        catch (Exception e) { Log.Error($"{_remote} read loop threw — dropping the connection", e); }
         finally
         {
             // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's
@@ -379,6 +388,8 @@ public sealed partial class Session
                 Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
             }
             CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
+            // EXPECTED: WriterLoop has its own catch and has already logged whatever it hit, with a stack
+            // where it warranted one. Logging the same exception again here would double every writer fault.
             try { await writer; } catch { /* writer logs its own errors */ }
             Log.Info($"-- CLOSE {_remote}");
         }
@@ -419,7 +430,13 @@ public sealed partial class Session
                 suppressed = 0;
             }
         }
-        catch (Exception e) { Log.Info($"!! {_remote} writer stopped: {e.Message}"); }
+        // Same split as RunAsync's: a socket-family exception is the client going away (expected, no stack);
+        // anything else is ours and keeps the stack.
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            Log.Warn($"{_remote} writer stopped: {e.GetType().Name}: {e.Message}");
+        }
+        catch (Exception e) { Log.Error($"{_remote} writer threw — dropping the connection", e); }
         finally { CloseConnection("writer exit"); }   // e.g. client closed the socket -> unblock the reader
     }
 
@@ -430,6 +447,8 @@ public sealed partial class Session
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
         _outbound.Writer.TryComplete();
+        // EXPECTED: teardown races itself (reader, writer and a full-queue Send all call this) and the loser
+        // finds the socket already closed. The teardown line below is the record that it happened.
         try { _client.Close(); } catch { /* already closing */ }
         Log.Info($"   -> connection teardown ({reason})");
     }
@@ -538,6 +557,9 @@ public sealed partial class Session
 
     private void Handle(TkPacket pkt)
     {
+        // Framing (TkPacket.TryParse, in the read loop) and the cipher are the two failures that legitimately
+        // END a session: after either, nothing later on the stream can be trusted. So the decrypt stays
+        // OUTSIDE the guard below — a throw here still unwinds to RunAsync's catch and drops the connection.
         var dec = TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey);
         if (Log.WireEnabled)
         {
@@ -545,6 +567,23 @@ public sealed partial class Session
             Log.Info($"        dec : {Log.Hex(dec)}");
         }
 
+        // Past this point everything is a handler, and a handler that throws is a bug in THIS process, not
+        // evidence that the stream is bad. Until #25 the only catch was RunAsync's, so one IndexOutOfRange
+        // on a short body — or one NullReference in a 2,000-line partial — logged a single stackless line
+        // and kicked the player, whose world state (party, trade, position) was then torn down as a normal
+        // disconnect. The packet's own bytes are in the line because they are the repro: an unhandled edge
+        // in a handler is nearly always a body shape the parser did not expect.
+        try { Dispatch(pkt, dec); }
+        catch (Exception e)
+        {
+            Log.Error($"{_remote} handler for opcode 0x{pkt.Opcode:x2} threw — the packet is dropped, the session continues; " +
+                      $"body {dec.Length}B: {Convert.ToHexString(dec).ToLowerInvariant()}; {DiagState()}", e);
+        }
+    }
+
+    // The opcode switch, split from Handle so the guard above wraps exactly the handlers and nothing else.
+    private void Dispatch(TkPacket pkt, byte[] dec)
+    {
         StartEntryMusicIfArmed(pkt.Opcode);   // login music waits for proof the client's world object is live
 
         switch (pkt.Opcode)
@@ -861,7 +900,12 @@ public sealed partial class Session
             // of it must match.
             if (tokenStart < body.Length) token = body[tokenStart..];
         }
-        catch { /* keep default */ }
+        catch (Exception e)
+        {
+            // A body too short for its own length prefixes: a broken client or a probe. Treated as an empty
+            // username and token, which the handoff check below refuses like any other bad credential.
+            Log.Warn($"{_remote} arrival body could not be parsed ({body.Length}B: {Convert.ToHexString(body).ToLowerInvariant()})", e);
+        }
 
         // Validate the single-use handoff token the login server minted for this username (see
         // Shared/HandoffTokens). This is what stops a client from connecting straight to the game port and

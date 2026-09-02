@@ -330,7 +330,7 @@ public sealed partial class Session
             foreach (var h in NpcScripts.For(ndef).OfType<INpcHandItemHandler>())
                 if (await h.OnHandItem(ctx, def, amount)) return;   // consumed it (handler owns the delitem/reward)
         }
-        catch (Exception e) { Log.Info($"!! NPC hand-item error: {e.Message}"); }
+        catch (Exception e) { Log.Error($"NPC hand-item handler for '{ndef.Key}' threw: {LuaVerbHost.Describe(e)} — the item is handed back", e); }
 
         // Nobody wanted it: the NPC says so out loud and hands it right back onto the ground at your feet.
         NpcBubble(npc, $"What are you trying to do? Keep your junky {def.Name} with you!");
@@ -489,7 +489,7 @@ public sealed partial class Session
         }
         catch (Exception e)
         {
-            Log.Info($"   -> NMAIL parse error: {e}");
+            Log.Error($"NMAIL send from '{_char.Name}' threw — the player was told the letter didn't go through", e);
             SendBoardAck(6, false, "That letter didn't go through.");
         }
     }
@@ -809,7 +809,7 @@ public sealed partial class Session
                     if (await h.OnSay(ctx, speech)) return;
             }
         }
-        catch (Exception e) { Log.Info($"!! NPC say error: {e.Message}"); }
+        catch (Exception e) { Log.Error($"NPC speech handler threw for '{_char.Name}': {LuaVerbHost.Describe(e)}", e); }
     }
 
     private uint _probeId = 1000;

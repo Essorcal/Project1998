@@ -1209,7 +1209,7 @@ public sealed partial class Session
         _ = Task.Run(async () =>
         {
             try { await Task.Delay(ms); _world.Broadcast(map, p => p.DespawnEntity(id)); }
-            catch (Exception ex) { Log.Info($"   -x delayed despawn {id} failed: {ex.Message}"); }
+            catch (Exception ex) { Log.Error($"delayed despawn of entity {id} on map {map} threw", ex); }
         });
     }
 

@@ -418,7 +418,7 @@ public sealed partial class Session
                               tiger ? TigerMailQuest.ClawColor : tutor?.Color ?? TigerMailQuest.ClawColor,
                               pages);
         }
-        catch (Exception e) { Log.Info($"!! tiger-essence push error: {e.Message}"); }
+        catch (Exception e) { Log.Error($"tiger-essence briefing push threw for '{_char.Name}'", e); }
     }
 
     /// <summary>Experience lost on death (RTK player.lua <c>deathExpLoss</c>). Below 99 the loss is a flat 20%
