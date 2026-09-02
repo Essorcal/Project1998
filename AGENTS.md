@@ -64,8 +64,8 @@ dotnet run --project Server -- --ports 2005,2006
 > comment saying why — never a project-wide `NoWarn`. CI builds `Project1998.Server.slnf`, which is the
 > solution minus the Windows-only MapEditor.
 
-> **`dotnet test` uses real SQLite in a throwaway database.** A collection fixture points `P1998_STATE`
-> at a per-run temp directory before any database test starts, so the suite never opens
+> **`dotnet test` uses real SQLite in a throwaway database.** A test-module initializer points `P1998_STATE`
+> at a per-run temp directory before any test can run, so the suite never opens
 > `state/project1998.db` or blocks a co-located server's saves. This is still deliberate integration
 > coverage: the persistence guarantees being tested are SQLite's, not a mock's.
 

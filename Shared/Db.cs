@@ -20,18 +20,6 @@ public static class Db
     /// <summary>Absolute path of the database file (&lt;root&gt;/state/project1998.db).</summary>
     public static string Path => _path ??= RepoPaths.DbPath();
 
-    /// <summary>Forget the process-wide path and schema initialization state so a test fixture can point
-    /// the next connection at an isolated database. Call only when no database connection is in use.</summary>
-    public static void ResetForTests()
-    {
-        lock (InitGate)
-        {
-            SqliteConnection.ClearAllPools();
-            _initialized = false;
-            _path = null;
-        }
-    }
-
     /// <summary>Open a ready-to-use connection (schema guaranteed to exist, busy_timeout set).</summary>
     /// <summary>
     /// Refuse to start on a deployment that still has the pre-rename <c>nexus.db</c> beside an absent
