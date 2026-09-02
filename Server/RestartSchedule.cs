@@ -278,7 +278,7 @@ public sealed class RestartSchedule
 
         Log.Info("=== content reload requested (run/reload_now) ===");
         var (ok, report) = _world.ReloadFromDisk();
-        Log.Info(ok ? $"   -> reloaded: {report}" : $"!! reload FAILED: {report} (previous content kept)");
+        Log.Info(ok ? $"   -> reloaded: {report}" : $"!! reload FAILED: {report}");
 
         if (ok && note.Length > 0) Announce(note);
     }
