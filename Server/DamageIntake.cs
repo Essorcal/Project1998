@@ -80,13 +80,15 @@ public sealed class DamageIntake
     /// own codebase. Recorded rather than silently accepted.</para>
     ///
     /// <para><b>Two divergences this reading turned up and did NOT fix</b>, per the #21 ground rule that a
-    /// divergence found while refactoring gets its own issue instead of a silent edit. (1) RTK's mob spells
-    /// pass <c>ac = 1</c> to <c>Player.calculateNetDamage</c> (player.lua:228), so a creature's spell IS
-    /// netted against the player's armor with the same -80 floor — ours skips AC on that path, on the
-    /// "magic ignores physical AC" rule (see <c>SuteAi.IceRayObservedDamage</c>, whose 405-at-AC--22 reading
-    /// was taken as the RAW figure precisely because of that assumption, and says in as many words that it
-    /// wants re-deriving if spell damage is ever put through AC). (2) calculateNetDamage's order is
-    /// amplifier, deduction, THEN armor; every intake here applies armor before the deduction.</para>
+    /// divergence found while refactoring gets its own issue instead of a silent edit — they are
+    /// <b>#77</b> and <b>#78</b>. (#77) RTK nets the player's armor on every damage path there is: mob and
+    /// PvP spells pass <c>ac = 1</c> to <c>Player.calculateNetDamage</c> (player.lua:228-244), and even the
+    /// stepped-on traps run <c>calculateDamage</c> (scripts.lua:1183-1204) first. Ours skips AC on
+    /// <see cref="DamageKind.MobSpell"/> and <see cref="DamageKind.Environment"/>, on the "magic ignores
+    /// physical AC" rule — and <c>SuteAi.IceRayObservedDamage</c>'s 405-at-AC--22 reading was taken as the
+    /// RAW figure precisely because of that assumption, so turning AC on means re-deriving Sute's whole kit.
+    /// (#78) RTK's three damage helpers all run amplifier, deduction, THEN armor; every intake here applies
+    /// armor before the deduction, and the mob swing also amplifies on the wrong side of it.</para>
     /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 
@@ -147,10 +149,13 @@ public sealed class DamageIntake
     /// <c>SwingTarget.Of(this)</c> on the attacker side. Creature spells and room damage skip AC entirely —
     /// "the AC pass belongs to swings, not spells".</para>
     /// <para><b>ArmorBeforeAmp</b> — the creature swing nets armor and THEN applies the sleep-family
-    /// amplifier, which is RTK swingDamage.lua's own order; a player's spell amplifies first and nets after.
-    /// It is not a rounding curiosity: at AC -50 with a 1.5x amplifier, a raw 101 lands as 75 one way and 76
-    /// the other. Preserved per kind rather than unified: unifying it would be an UNSOURCED behaviour change,
-    /// and the only behaviour #28 changes is the sourced one (see <see cref="IgnoresHardenBody"/>).</para>
+    /// amplifier; a player's spell amplifies first and nets after. It is not a rounding curiosity: at AC -50
+    /// with a 1.5x amplifier, a raw 101 lands as 75 one way and 76 the other. Preserved per kind rather than
+    /// unified: unifying it would be an UNSOURCED behaviour change, and the only behaviour #28 changes is the
+    /// sourced one (see <see cref="IgnoresHardenBody"/>). <b>Neither order is RTK's</b> — swingDamage.lua
+    /// amplifies at :92 and nets armor at :105-108, i.e. amplifier first on the swing too, and all three of
+    /// RTK's damage helpers put the deduction BEFORE armor where every kind here puts it after. Filed as
+    /// #78 rather than fixed here, per the #21 ground rule.</para>
     /// <para><b>DeductsDurability</b> — RTK clif_deductarmor rolls every worn slot on a HIT; magic and the
     /// room do not touch gear.</para>
     /// </summary>
