@@ -1755,11 +1755,14 @@ public sealed class World
         lock (_lock) mob.PanicUntil = Environment.TickCount64 + PanicMs;
     }
 
+    /// <summary>Commit a validated mob step and trigger any trap on its destination. Caller holds
+    /// <c>_lock</c>.</summary>
     private bool StepMobTo(ushort mapId, MapState m, Mob mob, int nx, int ny, byte dir,
                            HashSet<(int, int)> mobTiles,
                            List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                            List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         ushort ox = mob.X, oy = mob.Y;
         mobTiles.Remove((mob.X, mob.Y));
         mob.X = (ushort)nx; mob.Y = (ushort)ny;
@@ -2330,8 +2333,11 @@ public sealed class World
 
     /// <summary>Same lookup for callers that already hold <c>_lock</c>. The monitor is re-entrant so taking it
     /// twice would work, but saying which methods expect it is how this file stays readable.</summary>
-    private Session? PlayerByIdLocked(uint id) =>
-        _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+    private Session? PlayerByIdLocked(uint id)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+    }
 
     // One gate covers the entire disk-to-live sequence below, not just Content.Load: cache invalidation,
     // staff reload, terrain pre-warm and population rebuild must observe the same content generation. A GM
