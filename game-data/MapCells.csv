@@ -90,3 +90,8 @@ Map,X,Y,Tile,Pass,Obj,Sources
 1228,14,12,,,790,forever-tree-bon-hwa-doorway open-left (walkable warp tile)
 1228,15,12,,,791,forever-tree-bon-hwa-doorway open-centre (walkable warp tile)
 1228,16,12,,,792,forever-tree-bon-hwa-doorway open-right (rock arch, no warp)
+4613,19,47,,,51,secret-garden south door closed — garden re-routed via courtyard east + gazebo (owner-design)
+4613,21,47,,,53,secret-garden south door closed (owner-design)
+4613,22,47,,,54,secret-garden south door closed (owner-design)
+4613,23,47,,,55,secret-garden south door closed (owner-design)
+4613,25,47,,,57,secret-garden south door closed (owner-design)
