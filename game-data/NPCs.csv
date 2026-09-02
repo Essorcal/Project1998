@@ -117,7 +117,7 @@ NpcId,NpcIdentifier,NpcDescription,NpcType,NpcMapId,NpcX,NpcY,NpcTimer,NpcLook,N
 116,WarpTrapTigerStretchNpc,warp_trap_tiger_stretch,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 117,WarpTrapRestlessCageNpc,warp_trap_restless_cage,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 118,TigerTrapNpc,tiger_trap,2,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
-119,BaekNpc,Baek,0,30,4,5,0,10,0,0,2,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,
+119,BaekNpc,Baek,0,30,3,4,0,10,0,0,2,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,
 120,MythicAllianceNpc,Mythic Rabbit,0,3020,8,4,0,131,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 121,MythicAllianceNpc,Mythic Monkey,0,3021,8,3,0,136,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 122,MythicAllianceNpc,Mythic Dog,0,3022,9,3,0,138,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
