@@ -11,9 +11,10 @@ namespace Tests;
 /// Both leave the wire conversation looking perfectly healthy — the client shows "password changed"
 /// and the player finds out at their next login.
 ///
-/// DB tests run against the REAL database with throwaway usernames, same as HandoffTokenTests, because
-/// the persistence guarantee under test is the SQL upsert's.
+/// DB tests run against a real SQLite database in a throwaway state directory, same as HandoffTokenTests,
+/// because the persistence guarantee under test is the SQL upsert's.
 /// </summary>
+[Collection("db")]
 public class ChangePasswordTests : IDisposable
 {
     private readonly List<string> _made = new();

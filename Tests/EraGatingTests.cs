@@ -11,9 +11,8 @@ namespace Tests;
 /// <c>EraFeatures.csv</c> (only the target date is overridden), so editing a date in that file without
 /// meaning to breaks the build rather than the world.
 ///
-/// Assembly-wide parallelism is off (see AssemblyInfo.cs), so driving the static calendar here is safe —
-/// but every test still restores it in a finally, because <see cref="ContentSmokeTests"/> calls
-/// <c>Content.Load</c>, which re-reads the calendar from the same environment variable.
+/// Driving the static calendar is serialized with content loads that consume the same process environment
+/// variable, and every test restores it in a finally.
 /// </summary>
 public class EraGatingTests
 {
@@ -21,23 +20,26 @@ public class EraGatingTests
     // alone on purpose: the shipped dates are the thing under test.
     private static void WithEraDate(int yyyymmdd, Action body)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "nexus-era-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        var tuning = Path.Combine(dir, "ServerTuning.csv");
-        File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");
+        lock (TestProcessState.Gate)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "nexus-era-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var tuning = Path.Combine(dir, "ServerTuning.csv");
+            File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");
 
-        var prev = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
-        try
-        {
-            Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
-            EraCalendar.Reload();
-            body();
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", prev);
-            EraCalendar.Reload();           // put the real calendar back for whatever runs next
-            try { Directory.Delete(dir, true); } catch { /* temp dir; not worth failing a test over */ }
+            var prev = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
+                EraCalendar.Reload();
+                body();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", prev);
+                EraCalendar.Reload();       // put the real calendar back for whatever runs next
+                try { Directory.Delete(dir, true); } catch { /* temp dir; not worth failing a test over */ }
+            }
         }
     }
 

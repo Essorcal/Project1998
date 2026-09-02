@@ -4,15 +4,16 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The login→game handoff token, mint through consume. These run against the REAL database (state/project1998.db)
-/// with throwaway usernames, because the guarantees under test are single-use and expiry — both enforced by
-/// the SQL, so a mock would only prove the mock works.
+/// The login→game handoff token, mint through consume. These run against a real SQLite database in a
+/// throwaway state directory, because the guarantees under test are single-use and expiry — both enforced
+/// by the SQL, so a mock would only prove the mock works.
 ///
 /// The regression that motivated this file: a freshly created 8-character account could log in but was then
 /// bounced at world entry with "invalid/expired handoff token". The client shares ONE fixed 13-byte field
 /// between the username and the nonce, so a name longer than 7 characters truncates the nonce — and the
 /// game server was comparing a fixed 4 bytes it would never receive.
 /// </summary>
+[Collection("db")]
 public class HandoffTokenTests : IDisposable
 {
     private const string Ip = "203.0.113.7";           // TEST-NET-3; never a real client
