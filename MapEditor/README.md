@@ -311,6 +311,30 @@ strands players unless `Warps.csv` already covers the way back.
 numbered after the file's current maximum — append to `game-data\Warps.csv` by hand,
 then `@reload`.
 
+## Moving a warp that already exists
+
+Click an existing **cyan** diamond to pick that row up, then click where it should go.
+Which end moves follows the marker you grabbed: a *filled* diamond (a warp **out** of
+this map) moves the **trigger**, a *hollow* one (an **arrival**) moves the **landing**.
+`Esc` cancels a pickup.
+
+A pending move draws in **amber** — hollow on the cell `Warps.csv` still points at,
+filled on the cell it will point at — and lists in the warp box with its own ✕ to
+revert; clicking the amber diamond reverts it too. Pending moves survive a reload, and
+a click always resolves against your pending work before it reaches for a row that was
+already in the file.
+
+**Apply moves** is deliberately a different button from **Export rows**, because it is a
+different operation: the rows already exist, so nothing can be hand-appended. The server
+rewrites `Warps.csv` whole, passing every other line through byte-for-byte, and refuses
+the whole batch unless every edit is valid (row present, both maps known, coordinates in
+bounds, no `WarpId` twice). In direct mode it writes into `game-data` through a temp file
+that is then swapped in; otherwise the rewritten file lands in `saved\csvs\Warps.csv` for
+you to diff over yourself.
+
+The source and destination **maps** are fixed — moving a leg to a different map is a
+different door, so place that one and remove the old.
+
 ## Import & export
 
 The `.map` / `.cmp` toggle selects the file format the Export button produces:
