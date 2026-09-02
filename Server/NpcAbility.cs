@@ -74,19 +74,21 @@ public sealed class NpcContext
     /// <summary>Run the collect-your-parcels flow (RTK receiveParcelFrom).</summary>
     public Task ReceiveParcel() => _s.ParcelReceiveFlow(_npc);
 
+    // The three spoken shortcuts below are synchronous on Session (no dialog round trip — they act and
+    // bubble); the Task<bool> shape is kept here because the script-facing API awaits every NPC verb alike.
     /// <summary>Spoken "buy [my] [all|N] &lt;item&gt;" shortcut: sell `amount` (or the whole stack, if &lt;= 0)
     /// of a fuzzy-matched item by name. False if nothing in the bag matched the name, so the speech falls
     /// through instead of being silently swallowed.</summary>
     public Task<bool> SellByName(string name, int amount) =>
-        _s.SellItemToNpcByName(_npc, name, amount, Shops.BuysFrom(Def.Key));
+        Task.FromResult(_s.SellItemToNpcByName(_npc, name, amount, Shops.BuysFrom(Def.Key)));
 
     /// <summary>Spoken "take my &lt;item|coin&gt; [count]" shortcut: deposit `amount` (or the whole stack, if
     /// &lt;= 0) of a fuzzy-matched item — or coin, if the word is "coin"/"coins" — into the vault.</summary>
-    public Task<bool> Deposit(string item, int amount) => _s.DepositItemToBank(_npc, item, amount);
+    public Task<bool> Deposit(string item, int amount) => Task.FromResult(_s.DepositItemToBank(_npc, item, amount));
 
     /// <summary>Spoken "give my &lt;item|coin&gt; [count]" shortcut: withdraw `amount` (or the whole stack, if
     /// &lt;= 0) of a fuzzy-matched item — or coin, if the word is "coin"/"coins" — from the vault.</summary>
-    public Task<bool> Withdraw(string item, int amount) => _s.WithdrawItemFromBank(_npc, item, amount);
+    public Task<bool> Withdraw(string item, int amount) => Task.FromResult(_s.WithdrawItemFromBank(_npc, item, amount));
 
     /// <summary>Spoken "i buy [all] &lt;item&gt; [number N]" shortcut: buy `amount` of an item this NPC stocks
     /// (or as many as gold/pack allow, if &lt;= 0). False if this NPC doesn't sell it, so the speech falls

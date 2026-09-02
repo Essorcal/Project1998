@@ -177,8 +177,9 @@ that is now possible in one commit, and is the whole reason `game-data` stopped 
 ## Pull requests
 
 1. **Branch off `master`.** Small and focused beats large and comprehensive.
-2. **`dotnet build` and `dotnet test` both pass.** CI runs both plus a content smoke test that catches
-   what the compiler cannot — a bad CSV row, a renamed Lua verb, a missing `.map`.
+2. **`dotnet build` and `dotnet test` both pass.** Warnings are errors (`Directory.Build.props`), so a
+   passing build is a warning-free build. CI runs both plus a content smoke test that catches what the
+   compiler cannot — a bad CSV row, a renamed Lua verb, a missing `.map`.
 3. **Say how you verified it.** "Built and tested" is not verification for a game server. Did you log in
    and look? Which client? What did you expect and what did you see?
 4. **Say what you did *not* verify.** A stated gap is useful; an implied guarantee is not.

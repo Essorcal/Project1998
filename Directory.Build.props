@@ -1,0 +1,14 @@
+<Project>
+  <!-- Solution-wide defaults. Every csproj under this tree imports this file first, so a project only
+       states what differs from it (MapEditor's net8.0-windows, Server's GC mode). -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Warnings are errors. On a 51k-line build a new warning is invisible in the scroll-back; the only
+         way it gets read is if it stops the build. A warning that is genuinely wrong for one site gets a
+         targeted #pragma warning disable with a comment, never a project-wide NoWarn. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

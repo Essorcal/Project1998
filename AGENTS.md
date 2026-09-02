@@ -59,6 +59,11 @@ dotnet run --project Server -- --ports 2005,2006
 > build. Stop the server, or build to a scratch output directory with `-p:BaseOutputPath=...`. Do **not**
 > kill the user's running server processes without asking.
 
+> **Warnings are build errors.** `Directory.Build.props` sets `TreatWarningsAsErrors` for every project.
+> Fix the warning. If one site is a genuine false positive, a targeted `#pragma warning disable` with a
+> comment saying why — never a project-wide `NoWarn`. CI builds `Project1998.Server.slnf`, which is the
+> solution minus the Windows-only MapEditor.
+
 > **`dotnet test` writes to the real database** at `state/project1998.db`, using throwaway usernames. It
 > is safe, and it is deliberate — the persistence guarantees being tested are SQLite's. Do not point the
 > tests at a fresh database to make them "cleaner"; that removes what they check.
