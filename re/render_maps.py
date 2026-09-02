@@ -290,9 +290,49 @@ def map_cells(mid):
     return np.frombuffer(d, "<u2").reshape(-1, 2)
 
 
-def render_map(ts, mid, dims):
+def load_mapcells():
+    """map id -> [(x, y, tile|None, pass|None, obj|None)] from game-data/MapCells.csv.
+
+    Mirrors the server's authored-cell overlay (MapData.Load applies these AFTER the shipped .map)
+    so the atlas render matches the live map -- swapped door graphics, patched tiles, etc. Comment
+    ('# ...') rows are skipped; a blank component is left alone. Pass IS visual: it lives in the ground
+    word's top 2 bits, which double as the client's sheet selector, so changing it re-points the tile."""
+    path = os.path.join(REPO, "game-data", "MapCells.csv")
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            m = (r.get("Map") or "").strip()
+            if not m.isdigit():
+                continue
+            v = lambda k: (int(r[k]) if (r.get(k) or "").strip() else None)   # noqa: E731
+            out.setdefault(int(m), []).append((int(r["X"]), int(r["Y"]), v("Tile"), v("Pass"), v("Obj")))
+    return out
+
+
+def render_map(ts, mid, dims, mapcells=None):
     name, xs, ys = dims[mid]
-    return render(ts, map_cells(mid), xs, ys), name, xs, ys
+    cells = map_cells(mid)
+    ov = (mapcells or {}).get(mid)
+    if ov:
+        cells = cells.copy()                                 # frombuffer is read-only
+        for x, y, tile, pass_, obj in ov:
+            if not (0 <= x < xs and 0 <= y < ys):
+                continue
+            i = y * xs + x
+            if obj is not None:
+                cells[i, 1] = obj
+            if tile is not None or pass_ is not None:
+                # Re-encode the way the server hands the word to a client (Server/MapCell.cs:
+                # (tile & 0x3FFF) | (pass << 14)). The top 2 bits are OVERLOADED -- passability to
+                # the server, sheet selector to the client (see ground_frame's SHEET2_BASE) -- so a
+                # Pass override silently moves the cell between sheets and IS visual.
+                word = int(cells[i, 0])
+                t = (tile if tile is not None else word) & 0x3FFF
+                p = (pass_ if pass_ is not None else (word >> 14)) & 0x3
+                cells[i, 0] = t | (p << 14)
+    return render(ts, cells, xs, ys), name, xs, ys
 
 
 # ----------------------------------------------------------------------------- cli
@@ -303,15 +343,20 @@ def main():
     a.add_argument("id", type=int)
     a.add_argument("out", nargs="?", default="map.png")
     a.add_argument("--data", default=DEFAULT_DATA)
+    a.add_argument("--mapcells", action="store_true", help="apply game-data/MapCells.csv overrides (match the live map)")
     b = sub.add_parser("all")
     b.add_argument("outdir")
     b.add_argument("--data", default=DEFAULT_DATA)
+    b.add_argument("--mapcells", action="store_true", help="apply game-data/MapCells.csv overrides (match the live map)")
     b.add_argument("--thumb", type=int, default=0, help="longest-side px for thumbnails (0 = skip)")
     b.add_argument("--maxfull", type=int, default=0, help="cap full image's longest side (0 = native)")
     b.add_argument("--only", default="", help="comma-separated ids (default: every indexed map)")
     args = ap.parse_args()
 
     dims = load_index()
+    mapcells = load_mapcells() if args.mapcells else None
+    if mapcells:
+        print(f"applying MapCells overrides for {len(mapcells)} map(s)", flush=True)
     print("loading 5.33 tileset ...", flush=True)
     t0 = time.time()
     ts = TileSet(args.data)
@@ -319,7 +364,7 @@ def main():
           f"{len(ts.sheet2)} sheet-2 remaps in {time.time() - t0:.1f}s", flush=True)
 
     if args.cmd == "one":
-        img, name, xs, ys = render_map(ts, args.id, dims)
+        img, name, xs, ys = render_map(ts, args.id, dims, mapcells)
         img.save(args.out)
         print(f"TK{args.id} {name!r} {xs}x{ys} -> {args.out} ({img.width}x{img.height})")
         return
@@ -336,7 +381,7 @@ def main():
         if not os.path.exists(os.path.join(MAPS_DIR, f"TK{mid}.map")):
             continue
         try:
-            img, name, xs, ys = render_map(ts, mid, dims)
+            img, name, xs, ys = render_map(ts, mid, dims, mapcells)
         except Exception as e:                       # noqa: BLE001 - keep the batch going
             print(f"  !! TK{mid}: {e}")
             continue
