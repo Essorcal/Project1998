@@ -1614,7 +1614,8 @@ function updateStatus(pin) {
     $('stCell').textContent =
       `cell (${c.x}, ${c.y}) · g 0x${g.toString(16).toUpperCase().padStart(4, '0')} · pass ${g >> 14 & 3} · obj ${o}`
       + (marks ? '  ·  ' + marks : '');
-  } else $('stCell').textContent = '';
+    $('stCredit').hidden = true;    // it's centered absolutely, so long cell+marker text runs under it
+  } else { $('stCell').textContent = ''; $('stCredit').hidden = false; }
   const hints = {
     select: 'click a cell to inspect · clicking a warp diamond follows it to the other end',
     marquee: 'drag to select — copies on release',
