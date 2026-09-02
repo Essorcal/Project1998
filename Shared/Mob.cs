@@ -8,6 +8,8 @@ namespace Shared;
 /// the 7-byte composite (type-0). The server owns the authoritative HP; the client only draws the
 /// sprite and plays the actions/numbers we send it. Mobs are transient (not persisted) — they live
 /// in <c>Session._mobs</c> for the duration of a session and are removed on death (0x0E despawn).
+/// <c>internal set</c> keeps other assemblies out; World and Session share an assembly, so the
+/// World/Session boundary is convention, checked by <c>Tests/MobAiLockTests.cs</c>.
 /// </summary>
 public sealed class Mob
 {
