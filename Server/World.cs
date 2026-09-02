@@ -1111,7 +1111,7 @@ public sealed class World
         // Session owns the armor/HP math for a player trigger and caps its OWN loss to leave 1 HP; the cone
         // targets it catches take the same (uncapped) value via the existing trap-damage pipeline.
         int dmg = player.ApplyBladestormSelfDamage();
-        foreach (var t in coneTargets) Try(() => ApplyTrapDamage(mapId, t, dmg, player.PlayerId));
+        foreach (var t in coneTargets) Try(() => ApplyTrapDamage(mapId, t, dmg, player.PlayerId), "ApplyTrapDamage (bladestorm cone)");
     }
 
     // ---- Ambush traps (Content.Ambushes / AmbushBursts; RTK mob_spawn.lua + rabbitTrap.lua + tigerTrap.lua) ----
@@ -1766,7 +1766,7 @@ public sealed class World
             peers = m.Players.Where(p => p != s).ToArray();
             mobs = m.Mobs.ToArray();
         }
-        foreach (var p in peers) Try(() => p.SyncPeer(s));   // tell the room about the newcomer (view-gated + tracked)
+        foreach (var p in peers) Try(() => p.SyncPeer(s), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
         return (peers, mobs);
     }
 
@@ -1793,7 +1793,7 @@ public sealed class World
             m.Players.Remove(s);
             peers = m.Players.ToArray();
         }
-        foreach (var p in peers) Try(() => p.DespawnEntity(id));
+        foreach (var p in peers) Try(() => p.DespawnEntity(id), "DespawnEntity (LeaveMap)");
     }
 
     // ---- broadcasts ---------------------------------------------------------------------------
@@ -1808,7 +1808,7 @@ public sealed class World
             if (!_maps.TryGetValue(mapId, out var m)) return;
             peers = m.Players.Where(p => p != except).ToArray();
         }
-        foreach (var p in peers) Try(() => send(p));
+        foreach (var p in peers) Try(() => send(p), "Broadcast");
     }
 
     /// <summary>Like <see cref="Broadcast"/>, but only to players inside a box of ±<paramref name="halfW"/> ×
@@ -1832,7 +1832,7 @@ public sealed class World
                 && p.PlayerX >= x0 && p.PlayerX <= x1
                 && p.PlayerY >= y0 && p.PlayerY <= y1).ToArray();
         }
-        foreach (var p in peers) Try(() => send(p));
+        foreach (var p in peers) Try(() => send(p), "BroadcastArea");
     }
 
     /// <summary>The SAMEAREA box for a map id — <see cref="ShiftBox"/> against that map's dims. A map the
@@ -2343,8 +2343,9 @@ public sealed class World
         while (true)
         {
             Thread.Sleep(Session.AutoSaveMs);
+            // AutoSaveTick isolates each player's flush; this only sees a throw from AllPlayers itself.
             try { AutoSaveTick(); }
-            catch (Exception e) { Log.Info($"!! autosave sweep error: {e.Message}"); }
+            catch (Exception e) { Log.Error("autosave sweep threw — retrying on the next interval", e); }
         }
     }
 
@@ -2661,7 +2662,7 @@ public sealed class World
             var gc0 = GC.GetTotalPauseDuration();
             _lockWaitMs = 0;
             try { Tick(); }
-            catch (Exception e) { Log.Info($"!! world tick error: {e.Message}"); }
+            catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
 
             if (SlowTickMs <= 0) continue;
             long work = clock.ElapsedMilliseconds - t0;
@@ -3559,18 +3560,18 @@ public sealed class World
 
         // Lua AI hooks, run here and only here — outside the lock (see _hooks).
         foreach (var h in hooks)
-            Try(() => MobScript.Fire(h.key, h.hook, new MobContext(this, h.map, h.mob, h.actor)));
+            Try(() => MobScript.Fire(h.key, h.hook, new MobContext(this, h.map, h.mob, h.actor)), $"mob hook {h.key}.{h.hook}");
 
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
-        foreach (var s in AllPlayers()) { Try(s.TickSleep); Try(s.TickPoison); }
+        foreach (var s in AllPlayers()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
 
         // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
         // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
         // same cadence as the weather roll. SendAdvice is a no-op for anyone with the option off.
         if (_tick % AdviceTicks == 0)
-            foreach (var s in AllPlayers()) Try(s.SendAdvice);
+            foreach (var s in AllPlayers()) Try(s.SendAdvice, "SendAdvice");
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (forage is not null)
@@ -3588,12 +3589,12 @@ public sealed class World
             BroadcastSameArea(h.map, h.mob.X, h.mob.Y, p => p.ActionOver(h.mob.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));
             BroadcastSameArea(h.map, h.mob.X, h.mob.Y, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
-            Try(() => h.target.ApplyMobHit(h.mob, dmg));
+            Try(() => h.target.ApplyMobHit(h.mob, dmg), $"ApplyMobHit {h.mob.Name} -> {h.target.Remote}");
         }
 
         // Creature spells + idle flavour queued above — both broadcast, and a spell can kill, so neither can
         // run under the lock.
-        foreach (var c in mobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell));
+        foreach (var c in mobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell), $"ApplyMobSpell {c.mob.Name} -> {c.target.Remote}");
         foreach (var ch in chatter)
         {
             var bytes = System.Text.Encoding.ASCII.GetBytes(
@@ -3605,38 +3606,38 @@ public sealed class World
 
         // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.
         foreach (var ph in mobHits)
-            Try(() => ApplyMobOnMobHit(ph.map, ph.attacker, ph.victim, MobSwingDamage(ph.attacker.MinDam, ph.attacker.MaxDam)));
+            Try(() => ApplyMobOnMobHit(ph.map, ph.attacker, ph.victim, MobSwingDamage(ph.attacker.MinDam, ph.attacker.MaxDam)), "ApplyMobOnMobHit");
 
         // Trap hits + poison ticks queued above (same reasoning as the mob-swing pass: Session-facing
         // broadcasts/exp can't run under the lock).
         foreach (var td in trapDamage)
-            Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId));
+            Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
 
         // Expired pets queued above — plain despawn, no kill/loot.
         foreach (var ep in expiredPets)
-            Try(() => DespawnMob(ep.map, ep.mob));
+            Try(() => DespawnMob(ep.map, ep.mob), "DespawnMob (expired pet)");
 
         // Expired morphs queued above — revert the peer-visible disguise back to our real human look.
         foreach (var mp in expiredMorphs)
-            Try(() => mp.RevertMorph());
+            Try(() => mp.RevertMorph(), "RevertMorph");
 
         // Expired stealth queued above — restore the normal look once the invisible-spell timer lapses w/o a hit.
         foreach (var sp in expiredStealth)
-            Try(() => sp.RevertStealth());
+            Try(() => sp.RevertStealth(), "RevertStealth");
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
         // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a
         // real change — see Session.RegenTick. Snapshot the player list under the lock, tick outside it.
         Session[] players2;
         lock (_lock) players2 = _maps.Values.SelectMany(m => m.Players).ToArray();
-        foreach (var p in players2) Try(() => p.RegenTick(TickMs));
+        foreach (var p in players2) Try(() => p.RegenTick(TickMs), "RegenTick");
 
         // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
         // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
         if (timeChanged)
         {
             var (h, y) = Time;
-            foreach (var p in players2) Try(() => p.SendTime(h, y));
+            foreach (var p in players2) Try(() => p.SendTime(h, y), "SendTime");
             // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }
         if (weatherChanges is not null)
@@ -3664,12 +3665,24 @@ public sealed class World
                 .ToArray();
         }
         foreach (var (players, mobs, items) in snapshot)
-            foreach (var p in players) Try(() => { p.SyncPeers(players); p.SyncMobs(mobs); p.SyncGroundItems(items); });
+            foreach (var p in players) Try(() => { p.SyncPeers(players); p.SyncMobs(mobs); p.SyncGroundItems(items); }, "ReconcileViews");
     }
 
-    private static void Try(Action a)
+    /// <summary>Run one per-player / per-mob step in isolation: a throw in one player's RegenTick, one
+    /// mob's AI hook or one peer's broadcast delivery must not abort the rest of the sweep — and on the tick
+    /// thread it must not reach <see cref="TickLoop"/>'s outer catch, where it would cost EVERY later step
+    /// of this beat.
+    ///
+    /// <para>This used to be <c>catch { }</c> on the theory that the only thing that could throw here was a
+    /// send to a dead socket. That has not been true since the outbound channel: <c>Session.Send</c> is a
+    /// non-blocking <c>TryWrite</c> that closes the session on a full queue and never throws. So anything
+    /// caught here is a real bug in the wrapped code — and nineteen sites, including <c>ApplyMobHit</c>,
+    /// <c>ApplyMobSpell</c> and every Lua AI hook, were swallowing those with no trace at all.
+    /// <paramref name="what"/> names the site so the log says which of the nineteen it was.</para></summary>
+    private static void Try(Action a, string what)
     {
-        try { a(); } catch { /* dead/closing socket — its own read-loop will clean it up */ }
+        try { a(); }
+        catch (Exception e) { Log.Error($"isolated step '{what}' threw — skipped, the sweep continues", e); }
     }
 
     /// <summary>A mob's raw melee swing (RTK <c>swingDamage.lua</c> <c>_getMobSwingDamage</c>): three
