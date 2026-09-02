@@ -970,11 +970,18 @@ async function applyWarpEdits() {
     body: JSON.stringify(S.warpEdits.map(e => ({ id: e.id, sx: e.sx, sy: e.sy, dx: e.dx, dy: e.dy }))),
   });
   if (!r.ok) { flashHint('move failed: ' + await r.text()); return; }
-  S.warpEdits = []; S.warpMove = null;
-  saveWarps(); updateWarpBox(); loadMarkers(S.mapId); invalidate();
-  flashHint(S.direct
-    ? `${n} row${n === 1 ? '' : 's'} REWRITTEN in game-data/Warps.csv — @reload for the server`
-    : `Warps.csv with ${n} move${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — diff it over game-data\\Warps.csv, then @reload`);
+  if (S.direct) {
+    // game-data really changed: drop the pending moves and re-read the markers, which now
+    // come back on their new cells.
+    S.warpEdits = []; S.warpMove = null;
+    saveWarps(); updateWarpBox(); loadMarkers(S.mapId); invalidate();
+    flashHint(`${n} row${n === 1 ? '' : 's'} REWRITTEN in game-data/Warps.csv — @reload for the server`);
+  } else {
+    // Only a copy in saved/ changed, so the moves are still PENDING against the live data —
+    // keep them (Export rows does the same). Clearing here would wipe the work and snap the
+    // diamonds back, which reads as "Apply did nothing".
+    flashHint(`${n} move${n === 1 ? '' : 's'} written to ${r.headers.get('X-Saved')} — game-data NOT changed, so they stay pending; diff that file over game-data\\Warps.csv (or turn Direct on), then @reload`);
+  }
 }
 
 // --------------------------------------------------------------------------- minimap
