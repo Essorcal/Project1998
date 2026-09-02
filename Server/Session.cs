@@ -897,7 +897,7 @@ public sealed partial class Session
             {
                 Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' from {_remoteIp} " +
                          $"(token {Log.Hex(token)}, {HandoffTokens.SurvivingBytes(_user)} byte(s) expected) — closing connection");
-                _out.Close();
+                CloseConnection("arrival rejected (bad handoff token)");
                 return;
             }
             Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (P1998_ENFORCE_HANDOFF=0)");
@@ -911,7 +911,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: account '{_user}' is banned — closing connection");
             SendMessage(LoginAuth.BanMessageFor(_user));
-            _out.Close();
+            CloseConnection("arrival rejected (account banned)");
             return;
         }
 
@@ -937,7 +937,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
             _world.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
-            _out.Close();
+            CloseConnection("arrival rejected (no character record)");
             return;
         }
         _char = loaded;
