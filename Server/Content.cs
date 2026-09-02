@@ -2711,11 +2711,18 @@ public static partial class Content
             foreach (string entry in lootCell.Split('|', StringSplitOptions.RemoveEmptyEntries))
             {
                 var p = entry.Split(':');
-                if (p.Length != 3) continue;
+                if (p.Length != 3)
+                {
+                    badEntry = $"Loot entry '{entry}'";
+                    break;
+                }
                 if (!int.TryParse(p[1], out int amount)
+                    || amount <= 0
                     || !double.TryParse(p[2], System.Globalization.NumberStyles.Float |
                         System.Globalization.NumberStyles.AllowThousands,
-                        System.Globalization.CultureInfo.InvariantCulture, out double rate))
+                        System.Globalization.CultureInfo.InvariantCulture, out double rate)
+                    || !double.IsFinite(rate)
+                    || rate < 0)
                 {
                     badEntry = $"Loot entry '{entry}'";
                     break;
@@ -2728,10 +2735,16 @@ public static partial class Content
                 foreach (string entry in rareCell.Split('|', StringSplitOptions.RemoveEmptyEntries))
                 {
                     var p = entry.Split(':');
-                    if (p.Length != 2) continue;
+                    if (p.Length != 2)
+                    {
+                        badEntry = $"RareLoot entry '{entry}'";
+                        break;
+                    }
                     if (!double.TryParse(p[1], System.Globalization.NumberStyles.Float |
                             System.Globalization.NumberStyles.AllowThousands,
-                            System.Globalization.CultureInfo.InvariantCulture, out double rate))
+                            System.Globalization.CultureInfo.InvariantCulture, out double rate)
+                        || !double.IsFinite(rate)
+                        || rate < 0)
                     {
                         badEntry = $"RareLoot entry '{entry}'";
                         break;

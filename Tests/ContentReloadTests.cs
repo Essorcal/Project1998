@@ -53,7 +53,7 @@ public class ContentReloadTests
     }
 
     [Fact]
-    public void MalformedMobDropRowIsSkippedWithoutAbortingTheLoad()
+    public void MalformedMobDropRowsAreSkippedWithoutAbortingTheLoad()
     {
         lock (TestProcessState.Gate)
         {
@@ -63,7 +63,15 @@ public class ContentReloadTests
             File.WriteAllText(path,
                 "MobKey,Loot,RareLoot\n" +
                 "valid_drop_row,GOLD:2:50,\n" +
-                "bad_drop_row,GOLD:not-an-integer:25,\n" +
+                "bad_number,GOLD:not-an-integer:25,\n" +
+                "bad_two_parts,apple:5,\n" +
+                "bad_one_part,apple,\n" +
+                "bad_four_parts,apple:1:2:3,\n" +
+                "bad_negative_amount,apple:-5:50,\n" +
+                "bad_negative_rate,apple:1:-50,\n" +
+                "bad_infinite_rate,apple:1:Infinity,\n" +
+                "bad_nan_rate,apple:1:NaN,\n" +
+                "bad_rare_rate,,amber:Infinity\n" +
                 "after_bad_row,,amber:12.5\n");
 
             string? previous = Environment.GetEnvironmentVariable("P1998_MOB_DROPS");
@@ -74,7 +82,13 @@ public class ContentReloadTests
 
                 var valid = Assert.IsType<MobDropDef>(Content.MobDrops["valid_drop_row"]);
                 Assert.Equal(2, Assert.Single(valid.Loot).MaxAmount);
-                Assert.False(Content.MobDrops.ContainsKey("bad_drop_row"));
+                foreach (string badKey in new[]
+                {
+                    "bad_number", "bad_two_parts", "bad_one_part", "bad_four_parts",
+                    "bad_negative_amount", "bad_negative_rate", "bad_infinite_rate", "bad_nan_rate",
+                    "bad_rare_rate",
+                })
+                    Assert.False(Content.MobDrops.ContainsKey(badKey), $"{badKey} should have been skipped");
                 Assert.Equal(12.5, Assert.Single(Content.MobDrops["after_bad_row"].Rare).RatePercent);
             }
             finally
