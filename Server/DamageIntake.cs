@@ -55,9 +55,14 @@ public sealed class DamageIntake
     /// (player.lua:111) and the engine's plain <c>removeHealth</c> both subtract unconditionally. So "does
     /// the ward stop this?" is answered, per source, by which of the three that source calls.</para>
     ///
-    /// <para><b>Creature spells: BLOCKED.</b> All three of RTK's mob damage spells end in
-    /// <c>target:removeHealthExtend(...)</c> — Spells/NPCs/ion.lua:9, call_lightning.lua:11 and
-    /// thunder_touch.lua:9, which is the whole lightning line mob_ai_mythic.lua fires at you. A ward stops a
+    /// <para><b>Creature spells: BLOCKED, unanimously.</b> Every creature spell in RTK that takes HP off a
+    /// player ends in <c>target:removeHealthExtend(...)</c>, so the ward stops all of them. The instantaneous
+    /// ones pass every term on (<c>amount, 1, 1, 1, 1, 0</c>): Spells/NPCs/ion.lua:9, call_lightning.lua:11,
+    /// thunder_touch.lua:9 — the lightning line mob_ai_mythic.lua fires — plus freeze.lua:29 and
+    /// stormstrike.lua:9. The over-time ones pass every term OFF (<c>damage, 0, 0, 0, 0, 0</c>) and floor the
+    /// victim at 1 HP instead of killing, because they run per tick out of <c>while_cast</c>: burn.lua:51 and
+    /// :59, venom.lua:61 and :74. The mythic boss's own abilities are the same call again —
+    /// Instances/instance_boss.lua:288 (Rockslide) and :574 (the Baekdu Guardian's gust). A ward stops a
     /// boss's Thunder touch in RTK, so <see cref="DamageKind.MobSpell"/> honours it here. That is the one
     /// behaviour #28 changed, and it is the finding rather than a side effect of it.</para>
     ///
@@ -71,6 +76,13 @@ public sealed class DamageIntake
     /// docs/common/Deferred-Work.md, "Sute's combat kit is built from ONE eyewitness report"), so the
     /// stepped-on trap family is the nearest thing RTK has to say about it, not a direct reading.</para>
     ///
+    /// <para><i>Checked and rejected as a counter-example:</i> Instances/instance_boss.lua's rockdamage
+    /// (:288) and gustdamage (:574) do go through <c>removeHealthExtend</c>, but they are not room damage —
+    /// <c>instance_boss</c> is a mob AI table, the blows are attributed to <c>mob.ID</c> and announced as
+    /// "&lt;mob&gt; casts Rockslide on you." and "[Baekdu Guardian]: Haha, pitiful fool!". They are creature
+    /// abilities, and they belong to the MobSpell row above, which they support. Nothing in RTK damages a
+    /// player from the ROOM except the traps.</para>
+    ///
     /// <para><b>What the ward suppresses here that RTK still prints.</b> ion.lua sends its
     /// "&lt;mob&gt; attacks you with &lt;spell&gt; spell." line BEFORE removeHealthExtend, so an RTK player
     /// under a ward sees the line and takes nothing. Ours carries the line on the intake, so a blocked mob
@@ -81,14 +93,26 @@ public sealed class DamageIntake
     ///
     /// <para><b>Two divergences this reading turned up and did NOT fix</b>, per the #21 ground rule that a
     /// divergence found while refactoring gets its own issue instead of a silent edit — they are
-    /// <b>#77</b> and <b>#78</b>. (#77) RTK nets the player's armor on every damage path there is: mob and
-    /// PvP spells pass <c>ac = 1</c> to <c>Player.calculateNetDamage</c> (player.lua:228-244), and even the
-    /// stepped-on traps run <c>calculateDamage</c> (scripts.lua:1183-1204) first. Ours skips AC on
+    /// <b>#77</b> and <b>#78</b>. (#77) RTK nets the player's armor on every damage path a player meets in
+    /// one piece: the instantaneous creature spells and every PvP spell pass <c>ac = 1</c> to
+    /// <c>Player.calculateNetDamage</c> (player.lua:228-244), and even the stepped-on traps run
+    /// <c>calculateDamage</c> (scripts.lua:1183-1204) first. Ours skips AC on
     /// <see cref="DamageKind.MobSpell"/> and <see cref="DamageKind.Environment"/>, on the "magic ignores
     /// physical AC" rule — and <c>SuteAi.IceRayObservedDamage</c>'s 405-at-AC--22 reading was taken as the
     /// RAW figure precisely because of that assumption, so turning AC on means re-deriving Sute's whole kit.
     /// (#78) RTK's three damage helpers all run amplifier, deduction, THEN armor; every intake here applies
     /// armor before the deduction, and the mob swing also amplifies on the wrong side of it.</para>
+    ///
+    /// <para><b>Two damage paths this pipeline does not reach</b>, both in files owned by #26 while it is in
+    /// flight, so they are named here rather than converted. (a) <c>Session.NpcCastStormstrike</c>
+    /// (Session.Spells.cs) borrows <see cref="DamageKind.Environment"/> for a NAMED caster's spell, purely
+    /// because that intake is the one that lets the caller supply the whole chat line — so a mythic's
+    /// Stormstrike still walks through a ward, where RTK's own stormstrike.lua:9 is
+    /// <c>removeHealthExtend</c> and is stopped by one. It wants <see cref="DamageKind.MobSpell"/> with a
+    /// caller-supplied line, which is a one-field change here and a one-line change at a call site this
+    /// branch must not touch. (b) <c>Session.TickPoison</c> (Session.Spells.cs) is a sixth damage path that
+    /// never went through any of the five and so was outside #28's scope; RTK's equivalent ticks
+    /// (burn/venom <c>while_cast</c>) are ward-gated like everything else.</para>
     /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 

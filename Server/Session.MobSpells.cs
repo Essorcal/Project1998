@@ -27,15 +27,17 @@ public sealed partial class Session
     /// spells), attributed to the mob so the message names it.
     ///
     /// <para><b>Harden Body stops this, as of #28.</b> It did not before — this method predates
-    /// <c>Session.DamageImmune</c> and never had the check retrofitted — and RTK settles it: every one of
-    /// RTK's creature damage spells (ion, call lightning, thunder touch) lands through
-    /// <c>Player.removeHealthExtend</c>, which returns outright while a ward is up. The full reading is on
+    /// <c>Session.DamageImmune</c> and never had the check retrofitted — and RTK settles it: every creature
+    /// spell it has that takes HP off a player (ion, call lightning, thunder touch, freeze, stormstrike,
+    /// burn, venom, and the mythic boss's own Rockslide and gust) lands through
+    /// <c>Player.removeHealthExtend</c>, which returns outright while a ward is up. The full reading, and
+    /// the one creature spell that still slips past because it borrows the room-damage intake, are on
     /// <see cref="DamageIntake.IgnoresHardenBody"/>.</para></summary>
     internal void ReceiveMobSpell(int rawDmg, Mob caster, string spellName)
     {
         TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
         {
-            IgnoresHardenBody = false,   // RTK Spells/NPCs/{ion,call_lightning,thunder_touch}.lua -> removeHealthExtend
+            IgnoresHardenBody = false,   // RTK Spells/NPCs/*.lua -> removeHealthExtend, every one of them
             CritByte = HitCritByte,
             MiniText = $"{caster.Name} attacks you with {spellName} spell.",   // RTK peck.lua's own wording
             LogLine  = dmg => $"   -> mob {caster.Id} '{caster.Name}' cast {spellName} on {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
