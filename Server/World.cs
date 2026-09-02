@@ -435,6 +435,10 @@ public sealed class World
     /// the World because a restart warning is a server-wide broadcast and AllPlayers lives here.</summary>
     public RestartSchedule Restarts { get; }
 
+    /// <summary>Builds the world's in-memory state and NOTHING that runs on its own: no tick thread, no
+    /// autosave sweep, no watchdog, no restart scheduler, no status writer. Everything with a heartbeat is
+    /// in <see cref="Start"/>, which the process entry point calls (Net.cs) and a test does not — that split
+    /// is what lets a test hold a real World without the server's background machinery attached to it.</summary>
     public World()
     {
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
@@ -442,6 +446,16 @@ public sealed class World
         SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
         Log.Info($"=== clock: Yuri {_year}, {SeasonName}, day {_day}, hour {_hour}:00");
         Restarts = new RestartSchedule(this);
+    }
+
+    private int _started;   // 0 until Start() has run; makes a second call a no-op instead of a second tick thread
+
+    /// <summary>Start the background machinery: the tick and autosave threads, the watchdog probes, the
+    /// restart ladder and the status writer. Idempotent — a second call is a no-op rather than a duplicate
+    /// set of threads.</summary>
+    public void Start()
+    {
+        if (Interlocked.Exchange(ref _started, 1) != 0) return;
 
         // DEDICATED THREADS, not Task.Run. Both of these used to be thread-pool work items, which put the
         // world heartbeat behind every other pool item in the process: session read-loop continuations, the
