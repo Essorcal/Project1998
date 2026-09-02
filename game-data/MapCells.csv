@@ -95,3 +95,5 @@ Map,X,Y,Tile,Pass,Obj,Sources
 4613,22,47,,,54,secret-garden south door closed (owner-design)
 4613,23,47,,,55,secret-garden south door closed (owner-design)
 4613,25,47,,,57,secret-garden south door closed (owner-design)
+4504,29,18,,0,0,courtyard east tree-line gap opened for Yuri's Flower Garden connection — object 1551 has no open-graphic counterpart so the tile is force-open'd (owner-design)
+4504,29,19,,0,0,courtyard east tree-line gap opened for Yuri's Flower Garden connection (owner-design)
