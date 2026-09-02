@@ -1,0 +1,103 @@
+:root {
+  --bg: #141517; --panel: #1b1d20; --panel2: #212327; --panel3: #26292d;
+  --border: #2a2d31; --border2: #33373c;
+  --text: #c9ccd1; --bright: #e8eaec; --muted: #8b9096; --dim: #5c6066;
+  --accent: #3fa87a;            /* jade: this tool works across clients, so no per-era colour */
+  --amber: #d9962e; --danger: #be3c2d;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+.mono { font-family: "IBM Plex Mono", monospace; font-size: 11px; }
+.accent { color: var(--accent); }
+.dim { color: var(--dim); }
+.bright { color: var(--bright); }
+.spacer { flex: 1; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+canvas { image-rendering: pixelated; }
+
+#app { display: flex; flex-direction: column; height: 100%; }
+#topbar { height: 48px; flex: 0 0 auto; display: flex; align-items: center; gap: 16px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+.byline { color: var(--dim); font-size: 11.5px; font-weight: 400; }
+.chips { display: flex; gap: 6px; }
+.chip { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; padding: 3px 8px; border-radius: 10px; background: var(--panel3); border: 1px solid var(--border2); color: var(--muted); }
+.chip.on { color: var(--bright); border-color: var(--accent); }
+.actions { display: flex; gap: 8px; align-items: center; }
+
+.btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 6px; background: var(--panel3); border: 1px solid var(--border2); color: var(--text); font-size: 12px; font-weight: 500; }
+.btn[hidden] { display: none; }
+.btn:hover { background: var(--border2); }
+.btn:disabled { color: var(--dim); cursor: default; background: var(--panel3); }
+.btn.primary { background: var(--accent); border-color: transparent; color: #17181a; font-weight: 600; }
+.btn.primary:disabled { background: var(--panel3); color: var(--dim); }
+.btn.tiny { padding: 3px 9px; }
+.btn.warn { background: var(--amber); border-color: transparent; color: #17181a; font-weight: 600; }
+
+.seg { display: flex; align-items: center; background: var(--panel3); border: 1px solid var(--border2); border-radius: 6px; padding: 3px; gap: 3px; }
+.seg.small { padding: 2px; gap: 2px; margin-top: 8px; }
+.segbtn { padding: 6px 12px; border-radius: 4px; font-weight: 600; font-size: 12px; font-family: "IBM Plex Mono", monospace; color: var(--muted); }
+.seg.small .segbtn { padding: 5px 0; flex: 1; font-family: inherit; font-size: 11.5px; font-weight: 500; }
+.segbtn.on { background: var(--accent); color: #17181a; }
+.seg.small .segbtn.on { background: var(--border2); color: var(--bright); }
+#zoomCtl .segbtn { padding: 6px 10px; }
+#zoomLbl { background: var(--panel2); color: var(--bright); width: 50px; text-align: center; }
+
+#mid { flex: 1; display: flex; min-height: 0; }
+
+/* ---- left: icon list ---- */
+#list { width: 330px; flex: 0 0 auto; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.lhead { padding: 12px 14px 8px; }
+#filter { width: 100%; padding: 6px 9px; border-radius: 5px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); font: inherit; font-size: 12px; }
+#listNote { margin-top: 6px; }
+#gridScroll { flex: 1; min-height: 0; overflow-y: auto; position: relative; }
+#gridInner { position: relative; }
+#grid { position: absolute; left: 0; top: 0; cursor: pointer; }
+
+/* ---- centre: editor ---- */
+#editor { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #0e0f10; }
+#edTop { height: 40px; flex: 0 0 auto; display: flex; align-items: baseline; gap: 12px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+#edTitle { font-weight: 600; white-space: nowrap; }
+#edNames { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#edBody { flex: 1; display: flex; min-height: 0; }
+#rail { width: 52px; flex: 0 0 auto; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; }
+.tool { width: 38px; height: 38px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.tool:hover { color: var(--text); }
+.tool.on { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 33%, transparent); }
+.tsep { width: 26px; height: 1px; background: var(--border); margin: 4px 0; }
+#canvasWrap { flex: 1; min-width: 0; position: relative; overflow: auto; display: flex; align-items: center; justify-content: center; }
+#view { display: block; cursor: crosshair; }
+#empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 40px; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 12px; pointer-events: none; }
+#empty[hidden] { display: none; }
+#edBottom { height: 68px; flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--border); }
+.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.chk input { accent-color: var(--accent); }
+#preview { display: flex; align-items: flex-end; gap: 6px; padding: 4px; background: #2a2220; border: 1px solid #4a3b33; border-radius: 6px; }
+#preview canvas { background: #3a2e2a; border: 1px solid #55443c; }
+
+/* ---- right: sources / candidates / palette / draft ---- */
+#panel { width: 340px; flex: 0 0 auto; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+#panelScroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+#panel section { padding: 12px 14px 0 14px; }
+#panel section:last-child { padding-bottom: 14px; }
+.ptitle { font-size: 10.5px; font-weight: 600; letter-spacing: 1.2px; color: #7d8288; display: flex; justify-content: space-between; align-items: baseline; }
+.cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.card { width: 96px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border-radius: 6px; background: var(--panel2); border: 1px solid var(--border); cursor: pointer; }
+.card:hover { border-color: var(--border2); background: var(--panel3); }
+.card.on { border-color: var(--accent); }
+.card canvas { background: #101112; border: 1px solid var(--border); border-radius: 3px; }
+.card .cl { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--muted); }
+.card .cs { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--dim); }
+.card.none { opacity: .45; cursor: default; }
+.sizeRow { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.num { width: 48px; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); }
+select.mono { padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); }
+#palCanvas { display: block; margin-top: 8px; border: 1px solid var(--border); border-radius: 4px; background: #101112; cursor: pointer; width: 100%; height: auto; }
+#palSel { margin-top: 6px; }
+.sbInput { width: 100%; margin-top: 8px; padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border2); background: var(--panel3); color: var(--text); font: inherit; font-size: 12px; }
+.sbBtns { display: flex; gap: 8px; margin-top: 8px; }
+.sbHint { font-size: 10.5px; color: var(--dim); line-height: 1.5; margin-top: 8px; }
+
+#status { height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 18px; padding: 0 14px; background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); }
+#stMsg.ok { color: var(--accent); }
+#stMsg.err { color: var(--danger); }
