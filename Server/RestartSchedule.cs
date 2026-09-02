@@ -41,6 +41,30 @@ public sealed class RestartSchedule
     private readonly World _world;
     private readonly object _lock = new();
 
+    /// <summary>Control-file problems that are currently being reported, so each is logged ONCE when it
+    /// starts and once when it clears rather than every poll. Everything in <see cref="Loop"/> re-runs every
+    /// <see cref="FilePollMs"/> forever, so an unlatched line for a stuck file would be thousands of
+    /// identical entries a day — which buries the first one, the only one that carries any information.
+    /// Keyed by a short site name, not by exception, so a failure that changes its message mid-outage
+    /// (sharing violation -> access denied) is still one event.</summary>
+    private readonly HashSet<string> _reportedFileProblems = new();
+
+    /// <summary>Log a control-file failure the first time it happens and stay quiet while it persists.</summary>
+    private void FileProblem(string what, string consequence, Exception e)
+    {
+        lock (_reportedFileProblems)
+            if (!_reportedFileProblems.Add(what)) return;
+        Log.Error($"{what} — {consequence}. This is logged once; the next line about it will be recovery", e);
+    }
+
+    /// <summary>Clear a latched problem, announcing the recovery if one was outstanding.</summary>
+    private void FileProblemCleared(string what)
+    {
+        lock (_reportedFileProblems)
+            if (!_reportedFileProblems.Remove(what)) return;
+        Log.Info($"   -> {what}: recovered, working normally again");
+    }
+
     private long _deadlineMs;        // absolute unix ms; 0 = nothing scheduled
     private string _reason = "";
     private int _nextWarn;           // index into WarnMinutes of the next unfired mark
@@ -119,7 +143,7 @@ public sealed class RestartSchedule
                 if (Now - lastPoll >= FilePollMs) { lastPoll = Now; PollTriggerFile(); PollReloadFile(); }
                 TickWarnings();
             }
-            catch (Exception e) { Log.Info($"!! restart-schedule tick error: {e.Message}"); }
+            catch (Exception e) { Log.Error("restart-schedule tick threw — the clock keeps running", e); }
         }
     }
 
@@ -165,6 +189,8 @@ public sealed class RestartSchedule
         Announce("The server is restarting now. You will be able to log back in shortly.");
         TryDeleteTrigger();                 // belt and braces; PollTriggerFile already consumed it
 
+        // EXPECTED: the only thing that cancels this delay is the process going down, which is what the next
+        // line does deliberately. Nothing to report — there is no failure here to hide.
         try { await Task.Delay(FinalGraceMs); } catch { /* shutting down anyway */ }
 
         // Exit(0) runs the ProcessExit hook in TkListener.Shutdown — the graceful save-everyone flush.
@@ -183,7 +209,15 @@ public sealed class RestartSchedule
 
         string raw;
         try { raw = File.ReadAllText(path).Trim(); }
-        catch (IOException) { return; }        // mid-write by the deploy script; try again next poll
+        catch (IOException e)
+        {
+            // Normally the deploy script mid-write, and the next poll gets it. But if it NEVER becomes
+            // readable, a booked restart silently never happens — so say so once rather than retry forever
+            // in silence.
+            FileProblem("restart_at unreadable", "a scheduled restart will not fire until this clears", e);
+            return;
+        }
+        FileProblemCleared("restart_at unreadable");
 
         TryDeleteTrigger();
         if (raw.Length == 0) return;
@@ -219,15 +253,32 @@ public sealed class RestartSchedule
 
         string note;
         try { note = File.ReadAllText(path).Trim(); }
-        catch (IOException) { return; }        // mid-write by the deploy script; try again next poll
+        catch (IOException e)
+        {
+            FileProblem("reload_now unreadable", "content will NOT reload until this clears", e);
+            return;
+        }
+        FileProblemCleared("reload_now unreadable");
 
+        // Consume-before-act, and a delete failure ABANDONS the reload — otherwise the sentinel survives and
+        // every poll reloads the whole content set again, forever. That makes this the most consequential
+        // swallowed catch in the file: the deploy lane's entire promise is "a CSV fix ships without kicking
+        // anyone", and if the sentinel cannot be deleted, content never reloads and, before this, nothing
+        // anywhere said so. The operator sees a deploy that reported success and a world still running the
+        // old data.
         try { File.Delete(path); }
-        catch (IOException) { return; }        // couldn't consume it — do NOT reload, or we'd loop every poll
-        catch (UnauthorizedAccessException) { return; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            FileProblem("reload_now cannot be deleted",
+                        "the content reload is ABANDONED (deleting first is what stops it looping every poll), " +
+                        "so the server keeps serving the OLD content — delete run/reload_now by hand", e);
+            return;
+        }
+        FileProblemCleared("reload_now cannot be deleted");
 
         Log.Info("=== content reload requested (run/reload_now) ===");
         var (ok, report) = _world.ReloadFromDisk();
-        Log.Info(ok ? $"   -> reloaded: {report}" : $"!! reload FAILED: {report} (previous content kept)");
+        Log.Info(ok ? $"   -> reloaded: {report}" : $"!! reload FAILED: {report}");
 
         if (ok && note.Length > 0) Announce(note);
     }
@@ -235,8 +286,17 @@ public sealed class RestartSchedule
     private void TryDeleteTrigger()
     {
         try { if (File.Exists(TriggerFile)) File.Delete(TriggerFile); }
-        catch (IOException) { /* it'll be re-read and re-deleted next poll */ }
-        catch (UnauthorizedAccessException) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // A trigger that cannot be consumed is re-read on the NEXT poll and re-books the same restart,
+            // which is a restart loop, not a no-op — the deadline is in the past by then, so PollTriggerFile
+            // rejects it as stale, but only after this has fired at least once. Worth one line.
+            FileProblem("restart_at cannot be deleted",
+                        "the trigger will be re-read next poll; a stale deadline is refused, but delete " +
+                        "run/restart_at by hand to be sure", e);
+            return;
+        }
+        FileProblemCleared("restart_at cannot be deleted");
     }
 
     // ---- wording ----------------------------------------------------------------------------------
@@ -245,8 +305,10 @@ public sealed class RestartSchedule
     {
         foreach (var s in _world.AllPlayers())
         {
+            // One player's failure must not stop the announcement reaching everyone else. (Send itself never
+            // throws — see Session.Send — so anything caught here is a bug worth the stack.)
             try { s.SystemAnnounce(text); }
-            catch { /* one dead socket must not stop the announcement reaching everyone else */ }
+            catch (Exception e) { Log.Error($"restart announcement to {s.Remote} threw — the others still hear it", e); }
         }
     }
 

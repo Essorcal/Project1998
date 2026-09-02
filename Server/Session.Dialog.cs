@@ -442,7 +442,7 @@ public sealed partial class Session
             int choice = await ctx.Menu($"{def.Name}: How can I help you today?", entries.Select(e => e.label).ToList());
             if (choice >= 1 && choice <= entries.Count) await entries[choice - 1].run(ctx);
         }
-        catch (Exception e) { Log.Info($"!! NPC dialog error ('{npc.Name}'): {e.Message}"); }
+        catch (Exception e) { Log.Error($"NPC dialog '{npc.Name}' threw for '{_char.Name}': {LuaVerbHost.Describe(e)} — conversation abandoned", e); }
     }
 
     // ===== F1: "Central Functions" menu ===========================================================

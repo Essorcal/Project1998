@@ -24,7 +24,7 @@ public class ArmorQuestTests
         lock (_gate)
         {
             if (_loaded) return;
-            Content.Load();
+            TestProcessState.LoadContent();
             _loaded = true;
         }
     }

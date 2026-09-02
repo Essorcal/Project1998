@@ -391,7 +391,7 @@ public static class Formula
     {
         if (string.IsNullOrWhiteSpace(expr)) return 0;
         try { return new Parser(expr, vars).ParseAll(); }
-        catch { return 0; }
+        catch (Exception e) { Log.Warn($"formula '{expr}' failed to evaluate — treated as 0", e); return 0; }
     }
 
     private sealed class Parser
@@ -1166,6 +1166,10 @@ public static partial class Content
         return null;
     }
 
+    /// <summary>Replace every file-backed content registry from disk in its required dependency order.</summary>
+    /// <remarks>Any runtime caller must hold the world reload gate by going through
+    /// <see cref="World.ReloadFromDisk"/>. Startup calls this before the World and its scheduler exist; tests
+    /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized.</remarks>
     public static void Load()
     {
         Maps = LoadMaps(ResolvePath("P1998_MAP_INDEX", "map_index.csv"));
@@ -1310,10 +1314,25 @@ public static partial class Content
     /// MapBgm.csv, so there's no compile-time content table left that a restart would be needed for). The
     /// world population is rebuilt separately by the @reload caller (World.RebuildPopulation), which re-reads
     /// spawns/NPCs so added/removed/repositioned rows take effect.
+    /// Runtime callers must hold the gate owned by <see cref="World.ReloadFromDisk"/> around this method and
+    /// every cache/population refresh that follows it.
     /// </summary>
     public static string Reload()
     {
-        Load();
+        var before = CaptureReloadTables();
+        try { Load(); }
+        catch (Exception e)
+        {
+            var replaced = CaptureReloadTables()
+                .Where(kv => before.TryGetValue(kv.Key, out var old) && !ReferenceEquals(old, kv.Value))
+                .Select(kv => kv.Key)
+                .ToArray();
+            string progress = replaced.Length == 0
+                ? "No public content tables were replaced (private tables, the era calendar and Lua scripts are not tracked until #33)."
+                : $"Public content tables replaced before failure: {string.Join(", ", replaced)}.";
+            throw new InvalidOperationException($"{e.Message} {progress}", e);
+        }
+
         var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
                       $"{Spawns.Count + AreaSpawns.Count} spawns, {Npcs.Count} npcs, {Spells.Count} spells, {ShopStock.Count} shops, " +
                       $"{CraftingToggleOverrides.Count} crafting-toggle overrides, " +
@@ -1323,6 +1342,15 @@ public static partial class Content
         return RejectedScripts.Count == 0 ? summary
              : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
     }
+
+    /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which tracked
+    /// tables already swapped. Deliberately not exhaustive: private tables, the era calendar and Lua script
+    /// hosts stay outside this bounded operator hint until #33 makes the whole load atomic.</summary>
+    private static Dictionary<string, object?> CaptureReloadTables() =>
+        typeof(Content).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(p => !p.PropertyType.IsValueType && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)
+            .OrderBy(p => p.MetadataToken)
+            .ToDictionary(p => p.Name, p => p.GetValue(null));
 
     /// <summary>Lua files whose most recent (re)load was rejected for a compile/shape error — their previously
     /// loaded version is still live. Empty when everything took. See <see cref="Reload"/>.</summary>
@@ -2674,20 +2702,65 @@ public static partial class Content
             var key = Clean(col.GetValueOrDefault("MobKey", ""));
             if (string.IsNullOrEmpty(key)) continue;
 
-            var loot = Clean(col.GetValueOrDefault("Loot", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => e.Split(':'))
-                .Where(p => p.Length == 3)
-                .Select(p => new LootRoll(p[0] == "GOLD" ? null : p[0], int.Parse(p[1]),
-                    double.Parse(p[2], System.Globalization.CultureInfo.InvariantCulture)))
-                .ToArray();
-            var rare = Clean(col.GetValueOrDefault("RareLoot", "")).Split('|', StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => e.Split(':'))
-                .Where(p => p.Length == 2)
-                .Select(p => new RareRoll(p[0] == "GOLD" ? null : p[0],
-                    double.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture)))
-                .ToArray();
+            string lootCell = Clean(col.GetValueOrDefault("Loot", ""));
+            string rareCell = Clean(col.GetValueOrDefault("RareLoot", ""));
+            var loot = new List<LootRoll>();
+            var rare = new List<RareRoll>();
+            string? badEntry = null;
 
-            if (loot.Length > 0 || rare.Length > 0) table[key] = new MobDropDef(loot, rare);
+            foreach (string entry in lootCell.Split('|', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var p = entry.Split(':');
+                if (p.Length != 3)
+                {
+                    badEntry = $"Loot entry '{entry}'";
+                    break;
+                }
+                if (!int.TryParse(p[1], out int amount)
+                    || amount <= 0
+                    || !double.TryParse(p[2], System.Globalization.NumberStyles.Float |
+                        System.Globalization.NumberStyles.AllowThousands,
+                        System.Globalization.CultureInfo.InvariantCulture, out double rate)
+                    || !double.IsFinite(rate)
+                    || rate < 0)
+                {
+                    badEntry = $"Loot entry '{entry}'";
+                    break;
+                }
+                loot.Add(new LootRoll(p[0] == "GOLD" ? null : p[0], amount, rate));
+            }
+
+            if (badEntry is null)
+            {
+                foreach (string entry in rareCell.Split('|', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var p = entry.Split(':');
+                    if (p.Length != 2)
+                    {
+                        badEntry = $"RareLoot entry '{entry}'";
+                        break;
+                    }
+                    if (!double.TryParse(p[1], System.Globalization.NumberStyles.Float |
+                            System.Globalization.NumberStyles.AllowThousands,
+                            System.Globalization.CultureInfo.InvariantCulture, out double rate)
+                        || !double.IsFinite(rate)
+                        || rate < 0)
+                    {
+                        badEntry = $"RareLoot entry '{entry}'";
+                        break;
+                    }
+                    rare.Add(new RareRoll(p[0] == "GOLD" ? null : p[0], rate));
+                }
+            }
+
+            if (badEntry is not null)
+            {
+                Log.Warn($"MobDrops.csv row MobKey='{key}' skipped: invalid {badEntry}; " +
+                         $"row Loot='{lootCell}', RareLoot='{rareCell}'");
+                continue;
+            }
+
+            if (loot.Count > 0 || rare.Count > 0) table[key] = new MobDropDef(loot.ToArray(), rare.ToArray());
         }
         return table;
     }
@@ -4903,7 +4976,7 @@ public static partial class Content
         if (path is null || !File.Exists(path)) yield break;
         string[] lines;
         try { lines = File.ReadAllLines(path); }
-        catch { yield break; }
+        catch (Exception e) { Log.Warn($"CSV {path} is unreadable — treated as empty", e); yield break; }
         if (lines.Length < 2) yield break;
 
         // '#' opens a comment line, anywhere including above the header — these tables are hand-maintained and

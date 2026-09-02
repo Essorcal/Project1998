@@ -5,4 +5,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
   </ItemGroup>
 
+  <!-- Only the game server may mutate Shared's internal world-Mob state. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Server" />
+  </ItemGroup>
+
 </Project>

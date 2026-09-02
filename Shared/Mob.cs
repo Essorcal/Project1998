@@ -6,6 +6,8 @@ namespace Shared;
 /// the 7-byte composite (type-0). The server owns the authoritative HP; the client only draws the
 /// sprite and plays the actions/numbers we send it. Mobs are transient (not persisted) — they live
 /// in <c>Session._mobs</c> for the duration of a session and are removed on death (0x0E despawn).
+/// <c>internal set</c> keeps other assemblies out; World and Session share an assembly, so the
+/// World/Session boundary is convention, checked by <c>Tests/MobAiLockTests.cs</c>.
 /// </summary>
 public sealed class Mob
 {
@@ -56,7 +58,7 @@ public sealed class Mob
 
     // Set by a paralyze/sleep debuff (Session.CastDebuff): the Environment.TickCount64 until which the mob is
     // frozen and won't wander. 0 = not debuffed. World.Tick skips movement while frozen.
-    public long FrozenUntil;
+    public long FrozenUntil { get; internal set; }
 
     // Set by a Rogue poison trap (RTK NPCs/trap/rogue_traps/poison_dart_trap.lua): a damage-over-time tick
     // that fires every 1500ms until PoisonUntil, dealing PoisonTickDam each time — capped so it can never
@@ -78,15 +80,15 @@ public sealed class Mob
     // wandered off while an Endear'd creature re-aggro'd the poet who charmed it a tick later.
     // RTK's cotw_controller_poet (aggro redirect + mass dismiss) is still deliberately NOT ported: it is
     // later-server, and in 4.95 these creatures leave play ONLY by being killed or by this timer.
-    public uint OwnerId;
-    public long PetExpiresAt;
+    public uint OwnerId { get; internal set; }
+    public long PetExpiresAt { get; internal set; }
 
     // True only for a mob the owner CONJURED (a CotW summon / a Giasomo bird). A mob that was merely
     // mind-controlled — Endear and its poet variants, which set OwnerId on a creature that was already
     // standing there — leaves this false, and that distinction is what World.Tick keys the expiry on:
     // RTK's cotw pet vanishes when its spawnTime passes, but endear's `uncast` only does
     // `mob.owner = 0; mob.target = 0` — the creature stays in the world and turns on you again.
-    public bool Summoned;
+    public bool Summoned { get; internal set; }
 
     // True for a creature the WORLD placed — a static spawn point, a trap-ambush point, or a batch spawn
     // group — and false for every ad-hoc one (a summon, a dismounted horse, a GM's colour-test dummy).
@@ -150,8 +152,8 @@ public sealed class Mob
     /// <c>sd->sleep != 1.0f</c> guards throughout its C — a float whose default 1.0 doubles as the "not held"
     /// flag, which is exactly why reading it as a boolean makes the whole mechanic disappear.
     /// 1.0 (or 0, unset) = no amplification.</summary>
-    public double DamageAmp;
-    public long   DamageAmpUntil;
+    public double DamageAmp { get; internal set; }
+    public long   DamageAmpUntil { get; internal set; }
 
     /// <summary>Consume the amplifier if one is armed: returns the multiplier and clears it, so it applies to
     /// exactly ONE hit — "the NEXT attack", not every attack for the duration.</summary>
@@ -197,7 +199,7 @@ public sealed class Mob
     // until it dies, logs off, or strays past ChaseLeash. Aggressive mobs ALSO get TargetId set unprovoked —
     // World.Tick scans for a nearby player each move tick (RTK mob.c mob_find_target, gated on the engine-level
     // MobBehavior==1 "type", which is separate from and runs before the mob_ai_normal.lua script ever executes).
-    public uint TargetId;
+    public uint TargetId { get; internal set; }
 
     // ---- threat (RTK AI/threat.lua) --------------------------------------------------------------
     // How much grief each player has caused this creature, accumulated from damage dealt (RTK's
@@ -228,8 +230,8 @@ public sealed class Mob
     // Amnesia (RTK Spells/rogue/amnesia.lua): the mob has FORGOTTEN one specific player — their threat is
     // gone and it will not target them again until this lapses, though it still fights everyone else
     // normally. Hitting it again breaks the spell (RTK on_takedamage_while_cast). 0 = not amnesiac.
-    public uint AmnesiaBy;
-    public long AmnesiaUntil;   // Environment.TickCount64 ms
+    public uint AmnesiaBy { get; internal set; }
+    public long AmnesiaUntil { get; internal set; }   // Environment.TickCount64 ms
 
     /// <summary>Is this player currently forgotten by this creature?</summary>
     public bool HasForgotten(uint playerId, long nowMs) =>

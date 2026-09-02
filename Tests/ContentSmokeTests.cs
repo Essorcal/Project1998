@@ -27,7 +27,7 @@ public class ContentSmokeTests
         lock (_gate)
         {
             if (_loaded) return;
-            Content.Load();     // throws => the whole content pipeline is broken; that IS the test result
+            TestProcessState.LoadContent(); // throws => the whole content pipeline is broken; that IS the test result
             _loaded = true;
         }
     }
@@ -74,17 +74,20 @@ public class ContentSmokeTests
     [Fact]
     public void NewbieAreaFirstDoorwayIsReachable()
     {
-        EnsureLoaded();
+        lock (TestProcessState.Gate)
+        {
+            EnsureLoaded();
 
-        var start = Shared.CharacterFactory.StartFor(1);
-        if (start.map != 4711) return;    // pre-area era configured; the tutor-home spawn has no doorway to check
+            var start = Shared.CharacterFactory.StartFor(1);
+            if (start.map != 4711) return; // pre-area era configured; the tutor-home spawn has no doorway to check
 
-        Assert.True(start.x < start.xs && start.y < start.ys,
-            $"spawn ({start.x},{start.y}) is outside Welcome's {start.xs}x{start.ys} bounds");
+            Assert.True(start.x < start.xs && start.y < start.ys,
+                $"spawn ({start.x},{start.y}) is outside Welcome's {start.xs}x{start.ys} bounds");
 
-        for (ushort wx = 8; wx <= 11; wx++)
-            Assert.True(Content.TryWarp(4711, wx, 15, out var d) && d.m == 4712,
-                $"Welcome (4711) tile ({wx},15) must warp into Open Field (4712) — without it a new character is sealed in");
+            for (ushort wx = 8; wx <= 11; wx++)
+                Assert.True(Content.TryWarp(4711, wx, 15, out var d) && d.m == 4712,
+                    $"Welcome (4711) tile ({wx},15) must warp into Open Field (4712) — without it a new character is sealed in");
+        }
     }
 
     /// <summary>The three Lua files compile. <see cref="Content.RejectedScripts"/> is how LuaVerbHost reports a
@@ -334,22 +337,25 @@ public class ContentSmokeTests
     [Fact]
     public void EraGatedNpcsFollowTheCalendar()
     {
-        EnsureLoaded();
+        lock (TestProcessState.Gate)
+        {
+            EnsureLoaded();
 
-        var gated = Content.Npcs.Where(n => n.EraFeature.Length > 0).ToList();
-        Assert.NotEmpty(gated);   // the column parses at all — a header typo would empty this silently
+            var gated = Content.Npcs.Where(n => n.EraFeature.Length > 0).ToList();
+            Assert.NotEmpty(gated); // the column parses at all — a header typo would empty this silently
 
-        foreach (var n in gated)
-            Assert.True(n.Enabled == Era.Has(n.EraFeature),
-                $"#{n.Id} {n.Name} is Enabled={n.Enabled} but era '{n.EraFeature}' is " +
-                (Era.Has(n.EraFeature) ? "present" : "absent"));
+            foreach (var n in gated)
+                Assert.True(n.Enabled == Era.Has(n.EraFeature),
+                    $"#{n.Id} {n.Name} is Enabled={n.Enabled} but era '{n.EraFeature}' is " +
+                    (Era.Has(n.EraFeature) ? "present" : "absent"));
 
-        // Yarlof by name: he is the reason the column exists, and a row that lost its key would still pass the
-        // loop above (no key, no gate). Haguru stands on the same map and is 4.0-era — he must NOT be gated.
-        var yarlof = Content.NpcById(34);
-        Assert.NotNull(yarlof);
-        Assert.Equal(Era.DruidBouquetQuest, yarlof!.EraFeature);
-        Assert.Equal("", Content.NpcById(33)?.EraFeature);
+            // Yarlof by name: he is the reason the column exists, and a row that lost its key would still pass the
+            // loop above (no key, no gate). Haguru stands on the same map and is 4.0-era — he must NOT be gated.
+            var yarlof = Content.NpcById(34);
+            Assert.NotNull(yarlof);
+            Assert.Equal(Era.DruidBouquetQuest, yarlof!.EraFeature);
+            Assert.Equal("", Content.NpcById(33)?.EraFeature);
+        }
     }
 
     /// <summary>Propose is the chapel's, and only the chapel's — you get it with the engagement ring you buy

@@ -958,19 +958,14 @@ public sealed partial class Session
         return (byte)Math.Clamp((int)(cur * 100 / maxHp), 1, 100);
     }
 
-    // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
-    // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
-    // mob takes, just aimed at our own entity id) — dying (Hp hits 0) triggers Die() below.
     // ---- Harden Body: total damage immunity ---------------------------------------------------------------
-    // RTK Player.removeHealthExtend (player.lua:163) opens by RETURNING OUTRIGHT if any of four wards is up:
-    //     harden_body_poet / deaths_guard_poet / lifes_protection_poet / body_of_alignment_poet
-    // — the poet spell and its three alignment reskins. No net-damage calc, no HP change: the blow simply does
-    // not land. The Scroll of Immortality grants the same ward (item_verbs.lua `hardenbody`, 16s, behind RTK's
-    // armor-scaled success roll), which is what makes the scroll worth its name.
-    //
-    // Deliberately checked at BOTH intake sites rather than inside one shared helper, because there is no
-    // shared helper: melee comes through ApplyMobHit and spell/PvP through ReceiveSpellDamage. Missing either
-    // would make "immunity" mean "immune to half of the game".
+    // The four wards that make a blow simply not land — the poet spell and its three alignment reskins, plus
+    // the plain flag the Scroll of Immortality sets. The RTK sourcing lives with the gate that reads this, in
+    // Server/DamageIntake.cs; there is exactly one such gate now. It used to be copy-pasted into whichever
+    // intake remembered it, and the comment here used to justify that with "there is no shared helper" — which
+    // held for two sites and then quietly stopped holding for five. Two of them never got the check; one of
+    // those turned out to be a real bug and one turned out to be right, and neither could be told apart from
+    // the other until the check had a single home (#28).
     private static readonly string[] HardenBodyWards =
         { "harden_body", "harden_body_poet", "deaths_guard_poet", "lifes_protection_poet", "body_of_alignment_poet" };
     internal bool DamageImmune
@@ -978,73 +973,62 @@ public sealed partial class Session
         get { foreach (var w in HardenBodyWards) if (HasStatusFlag(w)) return true; return false; }
     }
 
+    // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
+    // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
+    // mob takes, just aimed at our own entity id) — dying (Hp hits 0) triggers Die() below.
+    //
+    // The sequence itself is Session.TakeDamage; what is left here is the three things only a creature swing
+    // knows: whose blow it was, whether it came from behind, and the crit roll.
     public void ApplyMobHit(Mob mob, int rawDmg)
     {
-        if (IsDead) return;   // already down — don't re-trigger Die() while the revive delay is pending
-        if (DamageImmune) return;   // Harden Body — RTK returns before the damage calc even runs
-        WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
-        // RTK's `owner.attacker`: the last creature to actually land a blow on you. A Call of the Wild pet
-        // reads this to decide what to defend you from — see World.Tick's pet block. Set on the LANDED hit,
-        // not on aggro, which is the whole difference between a pet that holds a corner and one that charges
-        // the moment anything looks at you.
-        LastMobAttackerId = mob.Id;
-        LastMobAttackerAt = Environment.TickCount64;
-
-        // RTK hitCritChance.lua: mobs DO roll a crit chance, but real swingDamage.lua's _getMobSwingDamage
-        // never multiplies mob damage by it — only a PLAYER's own swing gets the x3 (see
-        // Combat.RollCritChance's doc). We still roll it here purely for the wire-visual crit byte below.
-        int critChance = Combat.RollCritChance(attackerIsMob: true,
-            atkGrace: 0 /* unused on the mob-attacker branch */, atkLevel: mob.Level, atkHit: mob.Hit,
-            tgtGrace: _char.Grace + Totals().grace, tgtLevel: _char.Level);
-
-        // RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is signed and
-        // LOWER is better, and gear/buff armor is an AC delta in the same units, so it simply ADDS (a -4 garb
-        // takes 4 off your AC; see Session.Items.EquipTotals). A well-armored (very negative effective AC)
-        // player takes as little as 20% of the raw swing, while a naked/positive-AC player takes MORE than
-        // raw — armor can't fully negate a hit (-80 floor = min 20%).
-        int effectiveAc = _char.Ac + Totals().armor;
-        int dmg = Combat.ApplyArmor(rawDmg, effectiveAc, floor: -80);
-
-        // Sleep-family amplifier: being dozed/slept makes the NEXT hit on you land harder (Doze 1.3x,
-        // Sleep 1.5x). Consumed here, so it applies to one hit only. WakeUp below then breaks the hold —
-        // together that is the whole point of the spell: set up one amplified opener.
-        double ampMul = TakeDamageAmp();
-        if (ampMul > 1.0) dmg = (int)Math.Round(dmg * ampMul);
-
         // Positional "attacked from behind while both face the same way" 2x (RTK swingDamage.lua's
-        // side==target.side rule; applied AFTER armor, matching the Lua's own order). NOT ported: the
-        // item-flag-gated backstab/flank abilities a handful of legendary weapons grant (see Combat.cs).
+        // side==target.side rule; the pipeline applies it AFTER armor, matching the Lua's own order). NOT
+        // ported: the item-flag-gated backstab/flank abilities a handful of legendary weapons grant (see
+        // Combat.cs).
         bool behind = Combat.IsBehindTarget(mob.Dir, _facing, mob.X, mob.Y, _char.X, _char.Y);
-        if (behind) dmg *= 2;
+        int critChance = 0;   // written by the deferred roll below, read by the log line
 
-        // RTK player.deduction: a flat damage-reduction multiplier from the sanctuary line / Baekho's Cunning
-        // (1.0 normally, down to 0.5/0.6 while active). Applied last, after armor + position.
-        if (EffDeduction < 1.0) dmg = (int)Math.Round(dmg * EffDeduction);
-
-        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
-        // RTK clif_deductarmor: taking a hit rolls durability loss on every worn slot (not just armor —
-        // the reference implementation checks the weapon slot here too).
-        foreach (var worn in _char.Equipment.ToArray()) DeductDura(worn);
-        SendStats();
-        byte critByte = critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
-        byte hpPct = PlayerHpPercent();   // same for every peer — compute once, not inside the per-peer lambda
-        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, critByte));
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(MobHitSfx, _char.Id));   // 001.wav: layered on the 009 swing sfx World.Tick already played (RTK binds a landed hit to the VICTIM, so it rings from OUR tile)
-        Log.Info($"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}");
-        if (IsDead) { Die(); return; }
-
-        // The blow landed and they lived: roll whatever this creature procs on a hit (MobSpells.csv rows
-        // with Trigger=onhit -- the caverns' venom is the one that needs it). Deliberately last, so the
-        // swing's own damage, durability and HUD update are all committed first, and so a killing blow
-        // never trails a proc behind the corpse.
-        TryMobOnHitSpell(mob);
+        TakeDamage(new DamageIntake(DamageKind.MobMelee, rawDmg)
+        {
+            IgnoresHardenBody = false,
+            StampMobAttacker  = mob,
+            DoubleForRear     = behind,
+            // RTK hitCritChance.lua: mobs DO roll a crit chance, but real swingDamage.lua's
+            // _getMobSwingDamage never multiplies mob damage by it — only a PLAYER's own swing gets the x3
+            // (see Combat.RollCritChance's doc). We still roll it purely for the wire-visual crit byte.
+            // Deferred so an immune target costs no draw from Random.Shared — see DamageIntake.RollCritByte.
+            RollCritByte = () =>
+            {
+                critChance = Combat.RollCritChance(attackerIsMob: true,
+                    atkGrace: 0 /* unused on the mob-attacker branch */, atkLevel: mob.Level, atkHit: mob.Hit,
+                    tgtGrace: _char.Grace + Totals().grace, tgtLevel: _char.Level);
+                return critChance == 2 ? (byte)0xFF : HitCritByte;   // RTK: 33 normal / 255 critical
+            },
+            HitSound = MobHitSfx,
+            LogLine  = dmg => $"   -> mob {mob.Id} '{mob.Name}' hit {_char.Name} for {dmg}{(behind ? " (from behind x2)" : "")}{(critChance == 2 ? " (crit flavor)" : "")} -> {_char.Hp}/{_char.MaxHp}",
+            // The blow landed and they lived: roll whatever this creature procs on a hit (MobSpells.csv rows
+            // with Trigger=onhit -- the caverns' venom is the one that needs it). Deliberately last, so the
+            // swing's own damage, durability and HUD update are all committed first, and so a killing blow
+            // never trails a proc behind the corpse.
+            AfterSurvivedHit = () => TryMobOnHitSpell(mob),
+        });
     }
 
     // Take incoming SPELL damage from another player (PvP) or from yourself (self-cast, e.g. sparking yourself
-    // in an arena). Physical AC does NOT apply to magic (the caster's deflect roll already gates a spell); the
-    // deduction damage-reduction (sanctuary line / Baekho's Cunning) DOES, applied the same as a melee hit. The
-    // over-head HP bar goes to the whole map; a hit BY someone else prints "<name> hits you with <spell>."; dying
-    // drops you to ghost form via Die(), exactly like a mob kill. attacker==this on a self-cast (no "hits you").
+    // in an arena). The deduction damage-reduction (sanctuary line / Baekho's Cunning) applies the same as a
+    // melee hit, and physical AC is netted HERE — centralised so every PvP spell path gets it exactly once and
+    // none of them can forget: the archetype damage spells, the 4-way and 5-way zaps, the sacrifice strikes
+    // and the overflow splash all arrive through this method. Callers must pass the RAW figure — LuaSacApply
+    // and ApplyOverflow used to net it themselves and no longer do, or it would land twice.
+    //
+    // ("Physical AC applies to magic" used to be the other way round, on the reasoning that the caster's
+    // deflect roll already gates a spell — refuted by the Spark probe, whose ten self-cast readings tracked
+    // the caster's OWN AC as it was varied by swapping gear, solving to floor(base * (1 + ac/100)) with zero
+    // residual. Same term, same -80 human floor as a creature swing.)
+    //
+    // The over-head HP bar goes to the whole map; a hit BY someone else prints "<name> hits you with <spell>."
+    // and marks both sides as PvP foes; dying drops you to ghost form via Die(), exactly like a mob kill.
+    // attacker==this on a self-cast (no "hits you", no foe mark).
     /// <returns>The damage this hit actually applied, AFTER the sleep amplifier and Deduction but NOT capped
     /// by the victim's remaining HP — so a killing blow reports the full figure and the caller can see how far
     /// past zero it went. 0 when nothing landed (already dead, or immune). Overkill is
@@ -1052,69 +1036,34 @@ public sealed partial class Session
     /// every other caller ignores it.</returns>
     public int ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
     {
-        if (IsDead) return 0;   // already down — don't re-trigger Die() while the revive gate is pending
-        if (DamageImmune) return 0;   // Harden Body — see ApplyMobHit; magic is no exception in RTK either
-        WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
-        if (rawDmg < 1) rawDmg = 1;
-        double spellAmp = TakeDamageAmp();          // sleep-family amplifier — see ApplyMobHit
-        if (spellAmp > 1.0) rawDmg = (int)Math.Round(rawDmg * spellAmp);
-        // PHYSICAL AC APPLIES TO MAGIC. This used to be skipped on the reasoning that "the caster's deflect
-        // roll already gates a spell" — refuted by the Spark probe, whose ten self-cast readings tracked the
-        // caster's OWN AC as it was varied by swapping gear, solving to floor(base * (1 + ac/100)) with zero
-        // residual. Same term, same -80 human floor as ApplyMobHit and ReceiveMeleeDamage.
-        //
-        // CENTRALISED HERE, so every PvP spell path gets it exactly once and none of them can forget: the
-        // archetype damage spells, the 4-way and 5-way zaps, the sacrifice strikes and the overflow splash all
-        // arrive through this method. Callers must pass the RAW figure — LuaSacApply and ApplyOverflow used to
-        // net it themselves and no longer do, or it would land twice.
-        rawDmg = Combat.ApplyArmor(rawDmg, _char.Ac + Totals().armor, floor: -80);
-        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
-        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
-        SendStats();
-        byte hpPct = PlayerHpPercent();
-        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, HitCritByte));
-        if (!ReferenceEquals(attacker, this))
+        bool fromAnother = !ReferenceEquals(attacker, this);
+        return TakeDamage(new DamageIntake(DamageKind.PlayerSpell, rawDmg)
         {
-            SendMiniText($"{attacker._char.Name} hits you with {spellName}.");
-            // Both sides remember the exchange — that's what a PvP-map pet reads to pick a person to go for.
-            MarkPvpFoe(attacker._char.Id);
-            attacker.MarkPvpFoe(_char.Id);
-        }
-        Log.Info($"   -> {(ReferenceEquals(attacker, this) ? "self" : attacker._char.Name)} '{spellName}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
-        if (IsDead) Die();
-        return dmg;
+            IgnoresHardenBody = false,
+            CritByte = HitCritByte,
+            MiniText = fromAnother ? $"{attacker._char.Name} hits you with {spellName}." : null,
+            PvpFoe   = fromAnother ? attacker : null,
+            LogLine  = dmg => $"   -> {(fromAnother ? attacker._char.Name : "self")} '{spellName}' hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
+        });
     }
 
     // Take incoming MELEE damage from another player (PvP). The melee twin of ReceiveSpellDamage — but the
     // attacker-side PlayerSwingDamage has ALREADY applied our physical AC and the positional rear-x2 (it read
-    // our real defense via SwingTarget.Of(this)), so `rawDmg` is post-armor. Here we only add what the intake
-    // side owns: Harden Body immunity, the sleep-family amplifier, and the deduction reduction (sanctuary /
-    // Baekho's Cunning) — exactly the terms ApplyMobHit applies after armor. Then HP, per-hit durability (RTK
-    // clif_deductarmor rolls every worn slot on a hit, unlike magic), the over-head HP bar to the whole map,
-    // the mutual PvP-foe mark (so arena pets know who to go for), and death -> ghost. No "X hits you" chat line:
-    // melee shows only the HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll.
+    // our real defense via SwingTarget.Of(this)), so `rawDmg` is post-armor and the intake must not net it
+    // again. What is left is what the intake side owns: Harden Body immunity, the sleep-family amplifier, the
+    // deduction reduction (sanctuary / Baekho's Cunning), HP, per-hit durability (RTK clif_deductarmor rolls
+    // every worn slot on a hit, unlike magic), the over-head HP bar to the whole map, the mutual PvP-foe mark
+    // (so arena pets know who to go for), and death -> ghost. No "X hits you" chat line: melee shows only the
+    // HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll.
     public void ReceiveMeleeDamage(int rawDmg, Session attacker, bool crit)
     {
-        if (IsDead) return;            // already down — don't re-trigger Die() while the revive gate is pending
-        if (DamageImmune) return;      // Harden Body — RTK returns before the calc, melee included
-        WakeUp(byDamage: true);        // being hit ends a Doze (RTK on_takedamage_while_cast)
-        if (rawDmg < 1) rawDmg = 1;
-        double amp = TakeDamageAmp();  // sleep-family amplifier — one hit only, same as ApplyMobHit
-        if (amp > 1.0) rawDmg = (int)Math.Round(rawDmg * amp);
-        int dmg = EffDeduction < 1.0 ? (int)Math.Round(rawDmg * EffDeduction) : rawDmg;
-        _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
-        foreach (var worn in _char.Equipment.ToArray()) DeductDura(worn);   // RTK clif_deductarmor: every worn slot
-        SendStats();
-        byte critByte = crit ? (byte)0xFF : HitCritByte;
-        byte hpPct = PlayerHpPercent();
-        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, hpPct, critByte));   // over-head bar + hit anim, whole map
-        if (!ReferenceEquals(attacker, this))
+        TakeDamage(new DamageIntake(DamageKind.PlayerMelee, rawDmg)
         {
-            MarkPvpFoe(attacker._char.Id);
-            attacker.MarkPvpFoe(_char.Id);
-        }
-        Log.Info($"   -> {attacker._char.Name} MELEE hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}");
-        if (IsDead) Die();
+            IgnoresHardenBody = false,
+            CritByte = crit ? (byte)0xFF : HitCritByte,
+            PvpFoe   = ReferenceEquals(attacker, this) ? null : attacker,
+            LogLine  = dmg => $"   -> {attacker._char.Name} MELEE hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
+        });
     }
 
     // Defeated by a mob: redraw as a ghost (appearance[1]=1 via MountForm(), see IsDead/Snapshot/ShowPlayer)
@@ -1209,7 +1158,7 @@ public sealed partial class Session
         _ = Task.Run(async () =>
         {
             try { await Task.Delay(ms); _world.Broadcast(map, p => p.DespawnEntity(id)); }
-            catch (Exception ex) { Log.Info($"   -x delayed despawn {id} failed: {ex.Message}"); }
+            catch (Exception ex) { Log.Error($"delayed despawn of entity {id} on map {map} threw", ex); }
         });
     }
 

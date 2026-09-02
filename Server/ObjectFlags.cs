@@ -109,7 +109,7 @@ public static class ObjectFlags
             }
             catch (Exception e)
             {
-                Log.Info($"   !! SObj.tbl parse failed ({e.Message}) — object-wall collision disabled");
+                Log.Error("SObj.tbl parse failed — object-wall collision DISABLED for this run", e);
                 return _flags = Array.Empty<byte>();
             }
         }
@@ -145,7 +145,7 @@ public static class ObjectFlags
                 rows.Add((id, flag));
             }
         }
-        catch (Exception e) { Log.Info($"   !! ObjectFlagOverrides.csv read failed ({e.Message}) — no flag overrides"); }
+        catch (Exception e) { Log.Warn("ObjectFlagOverrides.csv read failed — no flag overrides", e); }
         return rows;
     }
 

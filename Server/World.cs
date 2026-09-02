@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Shared;
 
 namespace Server;
@@ -374,8 +375,9 @@ public sealed class World
     /// CAN peel a mob off whoever pulled it, by out-damaging them).
     /// <para>Callers hold <c>_lock</c>. Players who have left the map simply aren't considered; their threat
     /// stays banked in case they come back, exactly as RTK's per-mob table does.</para></summary>
-    private static void RetargetByThreat(MapState m, Mob mob)
+    private void RetargetByThreat(MapState m, Mob mob)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         bool Adjacent(Session p) =>
             (p.PlayerX == mob.X && Math.Abs(p.PlayerY - mob.Y) == 1) ||
             (p.PlayerY == mob.Y && Math.Abs(p.PlayerX - mob.X) == 1);
@@ -435,6 +437,10 @@ public sealed class World
     /// the World because a restart warning is a server-wide broadcast and AllPlayers lives here.</summary>
     public RestartSchedule Restarts { get; }
 
+    /// <summary>Builds the world's in-memory state and NOTHING that runs on its own: no tick thread, no
+    /// autosave sweep, no watchdog, no restart scheduler, no status writer. Everything with a heartbeat is
+    /// in <see cref="Start"/>, which the process entry point calls (Net.cs) and a test does not — that split
+    /// is what lets a test hold a real World without the server's background machinery attached to it.</summary>
     public World()
     {
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
@@ -442,6 +448,20 @@ public sealed class World
         SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
         Log.Info($"=== clock: Yuri {_year}, {SeasonName}, day {_day}, hour {_hour}:00");
         Restarts = new RestartSchedule(this);
+    }
+
+    private int _started;   // 0 until Start() has run; makes a second call a no-op instead of a second tick thread
+
+    /// <summary>Whether <see cref="Start"/> has run — i.e. whether this world has threads attached to the
+    /// process. Public so a test can assert the guarantee the constructor makes, rather than trusting it.</summary>
+    public bool IsStarted => Volatile.Read(ref _started) != 0;
+
+    /// <summary>Start the background machinery: the tick and autosave threads, the watchdog probes, the
+    /// restart ladder and the status writer. Idempotent — a second call is a no-op rather than a duplicate
+    /// set of threads.</summary>
+    public void Start()
+    {
+        if (Interlocked.Exchange(ref _started, 1) != 0) return;
 
         // DEDICATED THREADS, not Task.Run. Both of these used to be thread-pool work items, which put the
         // world heartbeat behind every other pool item in the process: session read-loop continuations, the
@@ -482,6 +502,7 @@ public sealed class World
     /// rebuilding. Shared by startup <see cref="PopulateSpawns"/> and the live <see cref="RebuildPopulation"/>.</summary>
     private (int points, int skipped, int groups, int capped) BuildSpawnRosterLocked()
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         int points = 0, skipped = 0, capped = 0;
         foreach (var sd in Content.Spawns)
         {
@@ -555,6 +576,7 @@ public sealed class World
     /// <summary>Append a spawn point to its map's roster. Caller holds <c>_lock</c>.</summary>
     private void AddSpawn(ushort mapId, Spawn sp)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!_spawns.TryGetValue(mapId, out var list)) { list = new(); _spawns[mapId] = list; }
         list.Add(sp);
     }
@@ -564,6 +586,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private void EnsureMaterialized(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         // Batch groups get a chance to fill BEFORE the entering player's room list is read, so a room whose
         // timer came due while nobody was in it is already full when they walk in rather than popping into
         // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
@@ -600,6 +623,7 @@ public sealed class World
     /// a visit is worth more than the re-randomisation, and a cleared room is supposed to stay dead.</summary>
     private void RefillGroups(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!_groups.TryGetValue(mapId, out var groups)) return;
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         HashSet<(int, int)>? taken = null;               // built once, only if something is actually due
@@ -618,6 +642,7 @@ public sealed class World
     /// under the world lock. Caller holds <c>_lock</c>.</summary>
     private HashSet<(int, int)> OccupiedTiles(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var map = Map(mapId);
         var taken = new HashSet<(int, int)>(map.Mobs.Count + map.Players.Count);
         foreach (var m in map.Mobs) if (m.Alive) taken.Add((m.X, m.Y));
@@ -647,6 +672,7 @@ public sealed class World
     /// the ordinary refill of a room that has space never reaches it.</para></summary>
     private void FillMember(SpawnGroup g, MobDef def, int cap, HashSet<(int, int)> taken)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var map = Map(g.Map);
         int alive = 0;
         foreach (var m in map.Mobs)
@@ -704,6 +730,7 @@ public sealed class World
     /// Shared by startup placement and the live <see cref="EnableNpc"/> toggle. Caller holds <c>_lock</c>.</summary>
     private void PlaceNpc(NpcDef n)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         // Don't stack on a mob spawn sharing the tile, but DO stand where NPCs.csv says, wall or not.
         var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y, avoidSolid: false);
         _npcPlaced[n.Id] = n;   // the def this instance was built from — see ReconcileNpcToggles
@@ -780,6 +807,7 @@ public sealed class World
     /// <summary>Create the live mob for a spawn point and register it. Caller holds <c>_lock</c>.</summary>
     private void Materialize(ushort mapId, Spawn sp)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var d = sp.Def;
         Content.MobSpawnRules.TryGetValue(d.Key, out var rule);
 
@@ -843,6 +871,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private Mob BuildMob(ushort mapId, MobDef d, ushort x, ushort y, ushort? homeX = null, ushort? homeY = null)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var mob = new Mob(_nextMobId++, d.Look, x, y, d.Name, d.Hp)
         {
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
@@ -887,6 +916,7 @@ public sealed class World
     /// on a warp is one a player can't avoid walking into. Caller holds <c>_lock</c>.</summary>
     private bool TryPickGroupTile(SpawnGroup g, HashSet<(int, int)> taken, out ushort x, out ushort y)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         x = y = 0;
         var (minX, minY, maxX, maxY) = PlacementBox(g.Map, g.MinX, g.MinY, g.MaxX, g.MaxY);
         if (maxX < minX || maxY < minY) return false;
@@ -957,6 +987,7 @@ public sealed class World
     /// silently moved every such NPC a few tiles off its authored spot. Caller holds <c>_lock</c>.</summary>
     private (ushort x, ushort y) FreeSpawnTile(ushort mapId, ushort x, ushort y, bool avoidSolid = true)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var m = Map(mapId);
         var dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
         var terrain = dims.Item1 > 0 ? MapData.For(mapId, dims.Item1, dims.Item2) : null;
@@ -988,6 +1019,7 @@ public sealed class World
     // drops (with their map) so the caller can broadcast them once the lock is released.
     private List<(ushort map, GroundItem gi)>? TopUpForageLocked()
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         List<(ushort, GroundItem)>? drops = null;
         foreach (var area in Content.ForageAreas)
         {
@@ -1111,7 +1143,7 @@ public sealed class World
         // Session owns the armor/HP math for a player trigger and caps its OWN loss to leave 1 HP; the cone
         // targets it catches take the same (uncapped) value via the existing trap-damage pipeline.
         int dmg = player.ApplyBladestormSelfDamage();
-        foreach (var t in coneTargets) Try(() => ApplyTrapDamage(mapId, t, dmg, player.PlayerId));
+        foreach (var t in coneTargets) Try(() => ApplyTrapDamage(mapId, t, dmg, player.PlayerId), "ApplyTrapDamage (bladestorm cone)");
     }
 
     // ---- Ambush traps (Content.Ambushes / AmbushBursts; RTK mob_spawn.lua + rabbitTrap.lua + tigerTrap.lua) ----
@@ -1122,6 +1154,7 @@ public sealed class World
     // spawn-point system (AreaSpawnsTrap), which already reproduces their 1/10 + cooldown surprise.
     private string? FireAmbushLocked(ushort mapId, ushort x, ushort y)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return null;
         bool onStepper = cfg.PrimaryKind == "single";   // RTK block:spawn(id, block.x, block.y) — see AmbushBurstTile
         int slot = 0;
@@ -1154,6 +1187,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private (ushort x, ushort y) AmbushBurstTile(ushort mapId, ushort x, ushort y, int index)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var (dx, dy) = index switch
         {
             0 => (1, 0),    // east
@@ -1203,6 +1237,7 @@ public sealed class World
     // full of mobs). Caller holds _lock. Called on every map entry (EnsureMaterialized) and after a trap fires.
     private void RefillAmbushLocked(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return;
         var m = Map(mapId);
         int traps = 0; foreach (var t in m.Traps) if (t.Kind == "ambush") traps++;
@@ -1230,6 +1265,7 @@ public sealed class World
     // Caller holds _lock.
     private void RefillFrigidLocked(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (Array.IndexOf(SuteAi.CaveMaps, mapId) < 0) return;
         var m = Map(mapId);
         int traps = 0; foreach (var t in m.Traps) if (t.Kind == SuteAi.FrigidTrapKind) traps++;
@@ -1251,6 +1287,7 @@ public sealed class World
     // TryPickGroupTile). Caller holds _lock.
     private bool TryPickMapTile(ushort mapId, HashSet<(int, int)> taken, out ushort x, out ushort y)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         x = y = 0;
         var (xs, ys) = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
         if (xs == 0 || ys == 0) return false;
@@ -1298,6 +1335,7 @@ public sealed class World
     // ticked every 1500ms by the poison check above) mutate the mob directly since that's lock-only state.
     private void TriggerTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         long now = Environment.TickCount64;
         // RTK's every-trap epilogue: removeTrapItem(npc) before npc:delete(). A trap that has gone off takes
         // its revealed marker with it, so a Spot Traps / Watchful Eye sword never outlives the trap it marks.
@@ -1346,7 +1384,7 @@ public sealed class World
         if (died)
         {
             uint mobId = mob.Id;
-            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch { } });
+            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch (Exception e) { Log.Error($"delayed despawn of mob {mobId} threw", e); } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
             PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
         }
@@ -1376,7 +1414,7 @@ public sealed class World
         if (died)
         {
             uint victimId = victim.Id;
-            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(victimId)); } catch { } });
+            _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(victimId)); } catch (Exception e) { Log.Error($"delayed despawn of mob {victimId} threw", e); } });
             // The owner gets the kill: RTK credits a mob's damage to map_id2sd(mob->owner) the same way
             // (clif.c's `tmob->owner < MOB_START_NUM` lookup), so a pet kill counts as yours.
             // …but NOT for a conjured victim. Now that a poet's pets will turn on a sibling he has attacked,
@@ -1455,7 +1493,10 @@ public sealed class World
                                List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                                List<(ushort map, uint id, byte dir)> turns,
                                List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
-        => StepMobToward(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage, out _);
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        return StepMobToward(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage, out _);
+    }
 
     /// <param name="towardBlocked">True when NOTHING that closes the gap was open this step — the mob is
     /// walled off from its target rather than merely taking a longer route. RTK's <c>canmove == false</c>.
@@ -1469,6 +1510,7 @@ public sealed class World
                                List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage,
                                out bool towardBlocked)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         towardBlocked = false;
         int dx = tx - mob.X, dy = ty - mob.Y;
         if (dx == 0 && dy == 0) { mob.DetourDir = NoDetour; mob.DetourLeft = 0; return false; }
@@ -1565,6 +1607,7 @@ public sealed class World
                              List<(ushort map, uint id, byte dir)> turns,
                              List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         int dx = tx - mob.X, dy = ty - mob.Y;
 
         bool Step(byte dir)
@@ -1642,6 +1685,7 @@ public sealed class World
                      List<(ushort map, uint id, byte dir)> turns,
                      List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         int hops = 0;
         while (hops < tiles)
         {
@@ -1688,6 +1732,7 @@ public sealed class World
                                  List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                                  List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         byte dir = mob.Dir;
         int nx = mob.X + (dir == 1 ? 1 : dir == 3 ? -1 : 0);
         int ny = mob.Y + (dir == 2 ? 1 : dir == 0 ? -1 : 0);
@@ -1710,11 +1755,14 @@ public sealed class World
         lock (_lock) mob.PanicUntil = Environment.TickCount64 + PanicMs;
     }
 
+    /// <summary>Commit a validated mob step and trigger any trap on its destination. Caller holds
+    /// <c>_lock</c>.</summary>
     private bool StepMobTo(ushort mapId, MapState m, Mob mob, int nx, int ny, byte dir,
                            HashSet<(int, int)> mobTiles,
                            List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                            List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         ushort ox = mob.X, oy = mob.Y;
         mobTiles.Remove((mob.X, mob.Y));
         mob.X = (ushort)nx; mob.Y = (ushort)ny;
@@ -1766,7 +1814,7 @@ public sealed class World
             peers = m.Players.Where(p => p != s).ToArray();
             mobs = m.Mobs.ToArray();
         }
-        foreach (var p in peers) Try(() => p.SyncPeer(s));   // tell the room about the newcomer (view-gated + tracked)
+        foreach (var p in peers) Try(() => p.SyncPeer(s), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
         return (peers, mobs);
     }
 
@@ -1793,7 +1841,7 @@ public sealed class World
             m.Players.Remove(s);
             peers = m.Players.ToArray();
         }
-        foreach (var p in peers) Try(() => p.DespawnEntity(id));
+        foreach (var p in peers) Try(() => p.DespawnEntity(id), "DespawnEntity (LeaveMap)");
     }
 
     // ---- broadcasts ---------------------------------------------------------------------------
@@ -1808,7 +1856,7 @@ public sealed class World
             if (!_maps.TryGetValue(mapId, out var m)) return;
             peers = m.Players.Where(p => p != except).ToArray();
         }
-        foreach (var p in peers) Try(() => send(p));
+        foreach (var p in peers) Try(() => send(p), "Broadcast");
     }
 
     /// <summary>Like <see cref="Broadcast"/>, but only to players inside a box of ±<paramref name="halfW"/> ×
@@ -1832,7 +1880,7 @@ public sealed class World
                 && p.PlayerX >= x0 && p.PlayerX <= x1
                 && p.PlayerY >= y0 && p.PlayerY <= y1).ToArray();
         }
-        foreach (var p in peers) Try(() => send(p));
+        foreach (var p in peers) Try(() => send(p), "BroadcastArea");
     }
 
     /// <summary>The SAMEAREA box for a map id — <see cref="ShiftBox"/> against that map's dims. A map the
@@ -2021,6 +2069,77 @@ public sealed class World
         lock (_lock) Map(mapId).Mobs.Add(mob);
         var one = new[] { mob };
         Broadcast(mapId, p => p.SyncMobs(one));
+    }
+
+    /// <summary>Give a mob to a player for a fixed duration, if nobody owns it already.</summary>
+    public bool CharmMob(Mob mob, uint ownerId, int durMs)
+    {
+        lock (_lock)
+        {
+            if (mob.OwnerId != 0) return false;
+            mob.OwnerId = ownerId;
+            mob.PetExpiresAt = Environment.TickCount64 + durMs;
+            mob.TargetId = 0;
+            return true;
+        }
+    }
+
+    /// <summary>Give a newly created summon to its owner; unlike Endear, this cannot be refused.</summary>
+    public void OwnSummonedMob(Mob mob, uint ownerId, int durMs)
+    {
+        lock (_lock)
+        {
+            Debug.Assert(mob.OwnerId == 0, "a newly created summon must not already have an owner");
+            mob.OwnerId = ownerId;
+            mob.PetExpiresAt = Environment.TickCount64 + durMs;
+            mob.Summoned = true;
+            mob.TargetId = 0;
+        }
+    }
+
+    /// <summary>Make a mob forget one player's threat for a fixed duration.</summary>
+    public void ForgetPlayer(Mob mob, uint playerId, int durMs)
+    {
+        lock (_lock)
+        {
+            mob.AmnesiaBy = playerId;
+            mob.AmnesiaUntil = Environment.TickCount64 + durMs;
+            mob.ClearThreat(playerId);
+            if (mob.TargetId == playerId) mob.TargetId = 0;
+        }
+    }
+
+    /// <summary>Arm the one-hit damage multiplier left by a sleep-family hold.</summary>
+    public void ArmDamageAmp(Mob mob, double mult, int durMs)
+    {
+        lock (_lock)
+        {
+            mob.DamageAmp = mult;
+            mob.DamageAmpUntil = Environment.TickCount64 + durMs;
+        }
+    }
+
+    /// <summary>Heal a living mob, capped at its maximum HP.</summary>
+    public bool HealMob(Mob mob, int amount)
+    {
+        lock (_lock)
+        {
+            if (amount <= 0 || !mob.Alive) return false;
+            mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amount);
+            return true;
+        }
+    }
+
+    /// <summary>Hold a mob for a fixed duration unless it is already held.</summary>
+    public bool HoldMob(Mob mob, int durMs)
+    {
+        lock (_lock)
+        {
+            long now = Environment.TickCount64;
+            if (mob.FrozenUntil > now) return false;
+            mob.FrozenUntil = now + durMs;
+            return true;
+        }
     }
 
     /// <summary>Apply a player's targeted timed stat buff (Session.CastTargetBuff — e.g. Valor/Harden Armor on a
@@ -2226,8 +2345,17 @@ public sealed class World
 
     /// <summary>Same lookup for callers that already hold <c>_lock</c>. The monitor is re-entrant so taking it
     /// twice would work, but saying which methods expect it is how this file stays readable.</summary>
-    private Session? PlayerByIdLocked(uint id) =>
-        _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+    private Session? PlayerByIdLocked(uint id)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+    }
+
+    // One gate covers the entire disk-to-live sequence below, not just Content.Load: cache invalidation,
+    // staff reload, terrain pre-warm and population rebuild must observe the same content generation. A GM
+    // invokes this on the session read loop, so contention is bounded rather than stalling packet handling.
+    private static readonly SemaphoreSlim ReloadGate = new(1, 1);
+    private static readonly TimeSpan ReloadWaitTimeout = TimeSpan.FromMilliseconds(250);
 
     /// <summary>
     /// Hot-reload every file-backed registry and rebuild the world population from it — the work behind the
@@ -2235,29 +2363,35 @@ public sealed class World
     /// a content-only deploy drops a <c>run/reload_now</c> sentinel and <see cref="RestartSchedule.Loop"/>
     /// calls this. That is the whole point of the content lane — a CSV or Lua fix ships without kicking anyone.
     ///
-    /// <para>Returns (ok, report). A load error keeps the OLD content and comes back <c>ok: false</c> with the
-    /// message, rather than throwing — a bad CSV must not take down a running world.</para>
+    /// <para>Returns (ok, report). Until the atomic snapshot in #33 lands, a load error may leave content
+    /// replaced; the report names the public tables it can track and comes back <c>ok: false</c> rather than
+    /// taking down a running world.</para>
     /// </summary>
     public (bool ok, string report) ReloadFromDisk()
     {
-        string summary;
-        try { summary = Content.Reload(); }
-        catch (Exception e)
+        if (!ReloadGate.Wait(ReloadWaitTimeout)) return (false, "reload already in progress");
+        try
         {
-            Log.Info($"!! content reload failed: {e}");
-            return (false, e.Message);
+            string summary;
+            try { summary = Content.Reload(); }
+            catch (Exception e)
+            {
+                Log.Error("content reload failed — see the exception message for public tables replaced before the failure", e);
+                return (false, e.Message);
+            }
+            ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
+            MapData.Invalidate();
+            StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
+            // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
+            // (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
+            // while holding the world lock (the old reload-stall).
+            foreach (var mapId in PopulatedMapIds())
+                if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
+            var (mobs, npcs, maps) = RebuildPopulation();
+            return (true, $"{summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, " +
+                          $"{maps} live map(s) re-materialized; map cache cleared.");
         }
-        ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
-        MapData.Invalidate();
-        StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
-        // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
-        // (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
-        // while holding the world lock (the old reload-stall).
-        foreach (var mapId in PopulatedMapIds())
-            if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
-        var (mobs, npcs, maps) = RebuildPopulation();
-        return (true, $"{summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, " +
-                      $"{maps} live map(s) re-materialized; map cache cleared.");
+        finally { ReloadGate.Release(); }
     }
 
     /// <summary>Make every mob everywhere forget <paramref name="playerId"/> — target and threat table both.
@@ -2332,7 +2466,30 @@ public sealed class World
     /// iteration to fire on) — an ACTIVE player is already covered by their own on-thread flush.</summary>
     private void AutoSaveTick()
     {
-        foreach (var s in AllPlayers()) s.FlushNow();
+        foreach (var s in AllPlayers()) FlushIsolated(s, "autosave");
+    }
+
+    /// <summary>One player's flush, fenced so it can't take the rest of a sweep with it. Before this, one
+    /// throw from FlushNow — a collection mutated under the serializer by that player's own thread (#29),
+    /// a bad disk — unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the unlucky
+    /// one in that snapshot silently missed the interval. Idle dirty players are exactly who the sweep
+    /// exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
+    ///
+    /// <para>Returns whether the flush succeeded, because the two callers face different consequences and
+    /// must say different things. The periodic sweep genuinely does retry on its next interval. The
+    /// shutdown flush has no next interval: a throw there is the player's last state LOST, and reporting it
+    /// as "retried" — or, worse, counting it as saved — is the one thing an operator reading the final
+    /// lines of a log must not be told. <paramref name="lastChance"/> picks the wording.</para></summary>
+    private static bool FlushIsolated(Session s, string sweep, bool lastChance = false)
+    {
+        try { s.FlushNow(); return true; }
+        catch (Exception e)
+        {
+            Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — " +
+                      (lastChance ? "save LOST — process is exiting, there is no retry"
+                                  : "that player's save is retried next sweep, the others continue"), e);
+            return false;
+        }
     }
 
     // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
@@ -2343,20 +2500,31 @@ public sealed class World
         while (true)
         {
             Thread.Sleep(Session.AutoSaveMs);
+            // AutoSaveTick isolates each player's flush; this only sees a throw from AllPlayers itself.
             try { AutoSaveTick(); }
-            catch (Exception e) { Log.Info($"!! autosave sweep error: {e.Message}"); }
+            catch (Exception e) { Log.Error("autosave sweep threw — retrying on the next interval", e); }
         }
     }
 
     /// <summary>Graceful-shutdown flush: force-save every connected player right now, ignoring the dirty
-    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Returns the
-    /// number of players swept (for the shutdown-hook log line). Cannot help against a hard crash/kill —
-    /// that's what the periodic AutoSaveLoop sweep + each session's own on-thread flush bound instead.</summary>
-    public int SaveAllPlayers()
+    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Cannot help
+    /// against a hard crash/kill — that's what the periodic AutoSaveLoop sweep + each session's own
+    /// on-thread flush bound instead.
+    ///
+    /// <para>Returns (saved, failed) rather than the population count. It used to return
+    /// <c>players.Count</c> whatever happened, so the shutdown hook's "flushed N player(s)" was the number
+    /// of players CONNECTED, not the number persisted — a run that lost three characters' last hour logged
+    /// exactly what a clean one did. The caller reports both numbers (see TkListener.Shutdown).</para></summary>
+    public (int saved, int failed) SaveAllPlayers()
     {
         var players = AllPlayers();
-        foreach (var s in players) s.FlushNow();
-        return players.Count;
+        int saved = 0, failed = 0;
+        foreach (var s in players)
+        {
+            if (FlushIsolated(s, "shutdown save", lastChance: true)) saved++;
+            else failed++;
+        }
+        return (saved, failed);
     }
 
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
@@ -2543,6 +2711,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private List<GroundItem> RollDropsLocked(MapState m, Mob mob, MobDef def)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var drops = new List<GroundItem>();
         foreach (var roll in Content.RollDrops(def, Random.Shared))
         {
@@ -2661,7 +2830,7 @@ public sealed class World
             var gc0 = GC.GetTotalPauseDuration();
             _lockWaitMs = 0;
             try { Tick(); }
-            catch (Exception e) { Log.Info($"!! world tick error: {e.Message}"); }
+            catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
 
             if (SlowTickMs <= 0) continue;
             long work = clock.ElapsedMilliseconds - t0;
@@ -3559,18 +3728,18 @@ public sealed class World
 
         // Lua AI hooks, run here and only here — outside the lock (see _hooks).
         foreach (var h in hooks)
-            Try(() => MobScript.Fire(h.key, h.hook, new MobContext(this, h.map, h.mob, h.actor)));
+            Try(() => MobScript.Fire(h.key, h.hook, new MobContext(this, h.map, h.mob, h.actor)), $"mob hook {h.key}.{h.hook}");
 
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
-        foreach (var s in AllPlayers()) { Try(s.TickSleep); Try(s.TickPoison); }
+        foreach (var s in AllPlayers()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
 
         // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
         // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
         // same cadence as the weather roll. SendAdvice is a no-op for anyone with the option off.
         if (_tick % AdviceTicks == 0)
-            foreach (var s in AllPlayers()) Try(s.SendAdvice);
+            foreach (var s in AllPlayers()) Try(s.SendAdvice, "SendAdvice");
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (forage is not null)
@@ -3588,12 +3757,12 @@ public sealed class World
             BroadcastSameArea(h.map, h.mob.X, h.mob.Y, p => p.ActionOver(h.mob.Id, Session.MobSwingActionType, Session.MobSwingActionTime, 0));
             BroadcastSameArea(h.map, h.mob.X, h.mob.Y, p => p.SoundAt(Session.MobSwingSfx, h.mob.Id));
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
-            Try(() => h.target.ApplyMobHit(h.mob, dmg));
+            Try(() => h.target.ApplyMobHit(h.mob, dmg), $"ApplyMobHit {h.mob.Name} -> {h.target.Remote}");
         }
 
         // Creature spells + idle flavour queued above — both broadcast, and a spell can kill, so neither can
         // run under the lock.
-        foreach (var c in mobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell));
+        foreach (var c in mobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell), $"ApplyMobSpell {c.mob.Name} -> {c.target.Remote}");
         foreach (var ch in chatter)
         {
             var bytes = System.Text.Encoding.ASCII.GetBytes(
@@ -3605,38 +3774,38 @@ public sealed class World
 
         // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.
         foreach (var ph in mobHits)
-            Try(() => ApplyMobOnMobHit(ph.map, ph.attacker, ph.victim, MobSwingDamage(ph.attacker.MinDam, ph.attacker.MaxDam)));
+            Try(() => ApplyMobOnMobHit(ph.map, ph.attacker, ph.victim, MobSwingDamage(ph.attacker.MinDam, ph.attacker.MaxDam)), "ApplyMobOnMobHit");
 
         // Trap hits + poison ticks queued above (same reasoning as the mob-swing pass: Session-facing
         // broadcasts/exp can't run under the lock).
         foreach (var td in trapDamage)
-            Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId));
+            Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
 
         // Expired pets queued above — plain despawn, no kill/loot.
         foreach (var ep in expiredPets)
-            Try(() => DespawnMob(ep.map, ep.mob));
+            Try(() => DespawnMob(ep.map, ep.mob), "DespawnMob (expired pet)");
 
         // Expired morphs queued above — revert the peer-visible disguise back to our real human look.
         foreach (var mp in expiredMorphs)
-            Try(() => mp.RevertMorph());
+            Try(() => mp.RevertMorph(), "RevertMorph");
 
         // Expired stealth queued above — restore the normal look once the invisible-spell timer lapses w/o a hit.
         foreach (var sp in expiredStealth)
-            Try(() => sp.RevertStealth());
+            Try(() => sp.RevertStealth(), "RevertStealth");
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
         // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a
         // real change — see Session.RegenTick. Snapshot the player list under the lock, tick outside it.
         Session[] players2;
         lock (_lock) players2 = _maps.Values.SelectMany(m => m.Players).ToArray();
-        foreach (var p in players2) Try(() => p.RegenTick(TickMs));
+        foreach (var p in players2) Try(() => p.RegenTick(TickMs), "RegenTick");
 
         // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
         // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
         if (timeChanged)
         {
             var (h, y) = Time;
-            foreach (var p in players2) Try(() => p.SendTime(h, y));
+            foreach (var p in players2) Try(() => p.SendTime(h, y), "SendTime");
             // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }
         if (weatherChanges is not null)
@@ -3664,12 +3833,24 @@ public sealed class World
                 .ToArray();
         }
         foreach (var (players, mobs, items) in snapshot)
-            foreach (var p in players) Try(() => { p.SyncPeers(players); p.SyncMobs(mobs); p.SyncGroundItems(items); });
+            foreach (var p in players) Try(() => { p.SyncPeers(players); p.SyncMobs(mobs); p.SyncGroundItems(items); }, "ReconcileViews");
     }
 
-    private static void Try(Action a)
+    /// <summary>Run one per-player / per-mob step in isolation: a throw in one player's RegenTick, one
+    /// mob's AI hook or one peer's broadcast delivery must not abort the rest of the sweep — and on the tick
+    /// thread it must not reach <see cref="TickLoop"/>'s outer catch, where it would cost EVERY later step
+    /// of this beat.
+    ///
+    /// <para>This used to be <c>catch { }</c> on the theory that the only thing that could throw here was a
+    /// send to a dead socket. That has not been true since the outbound channel: <c>Session.Send</c> is a
+    /// non-blocking <c>TryWrite</c> that closes the session on a full queue and never throws. So anything
+    /// caught here is a real bug in the wrapped code — and nineteen sites, including <c>ApplyMobHit</c>,
+    /// <c>ApplyMobSpell</c> and every Lua AI hook, were swallowing those with no trace at all.
+    /// <paramref name="what"/> names the site so the log says which of the nineteen it was.</para></summary>
+    private static void Try(Action a, string what)
     {
-        try { a(); } catch { /* dead/closing socket — its own read-loop will clean it up */ }
+        try { a(); }
+        catch (Exception e) { Log.Error($"isolated step '{what}' threw — skipped, the sweep continues", e); }
     }
 
     /// <summary>A mob's raw melee swing (RTK <c>swingDamage.lua</c> <c>_getMobSwingDamage</c>): three

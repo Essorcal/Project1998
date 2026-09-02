@@ -270,7 +270,7 @@ public sealed partial class Session
             _mobs.Remove(mob);
             uint deadId = mob.Id;
             if (DeathDespawnMs <= 0) SendDespawn(deadId);   // 0x0E: remove the corpse from our client
-            else _ = Task.Run(async () => { try { await Task.Delay(DeathDespawnMs); SendDespawn(deadId); } catch { } });   // after the death beat
+            else _ = Task.Run(async () => { try { await Task.Delay(DeathDespawnMs); SendDespawn(deadId); } catch (Exception e) { Log.Error($"delayed corpse despawn of {deadId} threw", e); } });   // after the death beat
             AwardExp((uint)mob.MaxHp, killExp: true);  // reward: exp equal to the mob's max HP (levels too)
             SendMessage($"You defeated {mob.Name}. (+{mob.MaxHp} exp)");
             Log.Info($"   -> dummy {mob.Id} '{mob.Name}' defeated");
@@ -337,7 +337,7 @@ public sealed partial class Session
 
             Log.Info($"   -> weapon proc: {def.Key} ({proc.ChancePct}%) casts {sp.Key} on {target}");
             try { ApplyCast(sp, target); }
-            catch (Exception ex) { Log.Info($"   -x weapon proc {def.Key} -> {sp.Key} failed: {ex.Message}"); }
+            catch (Exception ex) { Log.Error($"weapon proc {def.Key} -> {sp.Key} threw — the swing already landed, the proc is skipped", ex); }
         }
     }
 
@@ -349,8 +349,7 @@ public sealed partial class Session
     {
         var mob = _world.MobAt(_char.Map, fx2, fy2);
         if (mob is null || mob.IsNpc) return;
-        if (mob.FrozenUntil > Environment.TickCount64) return;   // RTK checkIfCast(paras)
-        mob.FrozenUntil = Environment.TickCount64 + 2000;
+        if (!_world.HoldMob(mob, 2000)) return;   // RTK checkIfCast(paras)
         SendMiniText("You cast paralyze.");
         Log.Info($"   -> weapon proc: viper stick paralyzes mob {mob.Id} '{mob.Name}' for 2000ms");
     }

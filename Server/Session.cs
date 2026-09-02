@@ -12,8 +12,21 @@ namespace Server;
 /// </summary>
 public sealed partial class Session
 {
-    private readonly TcpClient _client;
-    private readonly NetworkStream _stream;
+    /// <summary>Where this session's frames go. Everything above it — the 42 opcode handlers, world entry,
+    /// trade, combat — only ever calls Send, so what sits underneath can be a socket or a recorder.</summary>
+    private readonly IOutbound _out;
+
+    /// <summary>The TCP transport, when this session came off a socket; null for a socket-free one. ONLY the
+    /// read loop needs it (it owns the inbound half, which <see cref="IOutbound"/> deliberately does not
+    /// cover); every outbound path goes through <see cref="_out"/>.</summary>
+    private readonly TcpOutbound? _tcp;
+
+    /// <summary>The socket's OWN peer address, which is the proxy's when one is in front — deliberately not
+    /// <see cref="_remoteIp"/>, which is the player's. The re-login throttle and IP ban read this because
+    /// that is what they read when it was <c>_client.Client.RemoteEndPoint</c>. <c>IPAddress.None</c> for a
+    /// socket-free session, matching the fallback that address expression already had.</summary>
+    private readonly System.Net.IPAddress _peerIp;
+
     private readonly int _port;
     private readonly string _remote;
     private readonly string _remoteIp;   // address only (no port) — handoff tokens are bound to it
@@ -27,33 +40,8 @@ public sealed partial class Session
     private Party? _party;
     private Trade? _trade;
 
-    // Outbound decoupling (DDoS / tick-stall defense). Every Send() ENQUEUES onto this bounded channel;
-    // a single dedicated writer task (WriterLoop) drains it and does the actual blocking socket write.
-    // This is the fix for the worst availability bug: peer broadcasts and mob AI run on the shared
-    // World.TickLoop thread and used to call a SYNCHRONOUS _stream.Write here — so one client whose TCP
-    // receive buffer was full (slow, or deliberately not reading) would block that write and freeze mob
-    // movement/combat for EVERYONE on the map. Now the tick thread only does an O(1) TryWrite and moves on;
-    // if a client's queue backs up past OutboundCapacity it is the SLOW CLIENT that gets dropped, not the
-    // world. The single-reader channel also guarantees packets never interleave mid-frame on the wire, which
-    // is what the old _sendLock protected.
-    private const int OutboundCapacity = 2048;   // ~a burst of world-entry packets is well under this; a
-                                                 // truly stuck socket hits it and we drop the connection.
-
-    /// <summary>A queued frame plus the moment it was handed to the queue. The log line for a packet is
-    /// written when it is ENQUEUED, so without this timestamp a multi-second delay between "the server
-    /// decided to send this" and "the bytes actually left the machine" is completely invisible — the log
-    /// looks perfect while the player is frozen. See WriterLoop's slow-send watchdog.</summary>
-    private readonly record struct Outbound(byte[] Buf, long QueuedAtMs);
-
-    private readonly Channel<Outbound> _outbound = Channel.CreateBounded<Outbound>(
-        new BoundedChannelOptions(OutboundCapacity) { SingleReader = true, SingleWriter = false,
-                                                      FullMode = BoundedChannelFullMode.Wait });
-
-    /// <summary>Warn when a frame waits this long (ms) to reach the socket, or when the socket write itself
-    /// blocks that long. <c>P1998_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player
-    /// would notice, so the log names the stall before anyone complains about it.</summary>
-    private static readonly int SlowSendMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
+    // Outbound decoupling (DDoS / tick-stall defense) lives in TcpOutbound, below: Send() hands the frame
+    // to _out and never blocks, and the socket write happens on that transport's own writer task.
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
 
     // Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10 world
@@ -100,7 +88,7 @@ public sealed partial class Session
         long now = Environment.TickCount64;
         return $"last-in 0x{LastInboundOp:x2} {now - LastInboundMs}ms ago, " +
                $"last-out 0x{LastOutboundOp:x2} {now - LastOutboundMs}ms ago, " +
-               $"outq {_outbound.Reader.Count}, pos ({_char.X},{_char.Y}) map {_char.Map}, " +
+               $"outq {_out.QueueDepth}, pos ({_char.X},{_char.Y}) map {_char.Map}, " +
                $"action-budget {_actionCount}/{ActionBudget} (window {_actionWindow}), " +
                // A non-null _dlgReply means we are awaiting a 0x3A and the client is sitting in a MODAL
                // dialog — which is itself a state where it will not send walks. Prime suspect for a
@@ -255,35 +243,57 @@ public sealed partial class Session
         return all;
     }
 
-    /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
-    /// has already consumed its PROXY header (see Shared/ProxyProtocol.cs). Null on a direct connection,
-    /// where the socket's peer IS the client. Everything downstream — the handoff token binding at
-    /// HandoffTokens.Mint/Consume, the ban and moderation surface, and every log line — has to see the
-    /// player rather than the proxy, or it is reasoning about one address shared by the whole server.</param>
+    /// <summary>The production constructor. It is now an ADAPTER: it wraps the socket in a
+    /// <see cref="TcpOutbound"/> — the queue, the writer task and the address bookkeeping all moved there,
+    /// unchanged — and hands that to the real constructor below.</summary>
+    /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener has
+    /// already consumed its PROXY header (see Shared/ProxyProtocol.cs). Null on a direct connection, where the
+    /// socket's peer IS the client. See <see cref="TcpOutbound"/> for why every address downstream has to be
+    /// the player's rather than the proxy's.</param>
     public Session(TcpClient client, int port, CharacterStore store, World world,
                    System.Net.IPAddress? realIp = null)
+        : this(new TcpOutbound(client, realIp), port, store, world)
     {
-        _client = client;
-        _stream = client.GetStream();
+    }
+
+    /// <summary>The transport-free constructor. Takes whatever the session should write to instead of a
+    /// socket, which is what lets a test build one, drive a handler and read back the exact bytes that would
+    /// have gone on the wire. <see cref="RunAsync"/> is the only member that needs a real socket and refuses
+    /// to run without one; every handler works the same either way.</summary>
+    /// <param name="character">The character the arrival path (<c>HandleArrival</c>) would have loaded out of
+    /// the store. Supplying one also marks the session as having entered the world, because that is the state
+    /// a handler test needs: the character API is live and saves flush. Null leaves both untouched.</param>
+    public Session(IOutbound outbound, int port, CharacterStore store, World world,
+                   Character? character = null)
+    {
+        _out = outbound;
+        // The read loop owns the INBOUND half, which IOutbound deliberately does not describe — so it needs
+        // the socket itself. A session built on any other transport simply has no read loop.
+        _tcp = outbound as TcpOutbound;
         _port = port;
         _store = store;
         _world = world;
         _ver = (port == 2001 || port == 2006) ? ClientVersion.V533 : ClientVersion.V495;
-        var peer = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
         // Keep the proxy's own address in the log line: when the allow-list or the HAProxy backend is
         // misconfigured, "which proxy claimed this" is the only thing that distinguishes a real player
         // from a forged header, and it is not recoverable after the fact.
-        _remote = realIp is not null ? $"{realIp} (via {peer?.Address})" : peer?.ToString() ?? "?";
-        _remoteIp = (realIp ?? peer?.Address ?? System.Net.IPAddress.None).ToString();
+        _remote = outbound.Remote;
+        _remoteIp = _tcp?.RemoteIp ?? System.Net.IPAddress.None.ToString();
+        _peerIp = _tcp?.PeerAddress ?? System.Net.IPAddress.None;
+        if (character is not null) { _char = character; _enteredWorld = true; }
     }
 
     public async Task RunAsync()
     {
+        // The inbound half is TCP-only: a session built on some other IOutbound has no stream to read.
+        var tcp = _tcp ?? throw new InvalidOperationException(
+            "RunAsync needs a TCP transport; this session was built on a socket-free IOutbound.");
+
         Log.Info($"++ CONNECT from {_remote} on port {_port} [{_ver}]");
         // Start the dedicated outbound writer BEFORE any Send() so the very first packet (the welcome) is
         // enqueued and flushed in order. All socket writes happen on this one task; the read loop below never
         // writes to the stream directly.
-        var writer = Task.Run(WriterLoop);
+        var writer = Task.Run(() => tcp.RunWriterAsync(CloseConnection));
         try
         {
             if (IsLoginPort)   // login channel: send the 0x7E welcome
@@ -315,7 +325,7 @@ public sealed partial class Session
             var tmp = new byte[4096];
             while (true)
             {
-                int n = await _stream.ReadAsync(tmp);
+                int n = await tcp.Stream.ReadAsync(tmp);
                 if (n == 0) break;
                 Volatile.Write(ref _lastInboundMs, Environment.TickCount64);   // silence watchdog
                 if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
@@ -328,7 +338,7 @@ public sealed partial class Session
                 // loop breaks and the normal finally cleanup closes the socket.
                 if (Volatile.Read(ref _established) == 0 && !IsLoginPort && StatusResponder.LooksLikeHttp(buf))
                 {
-                    await _stream.WriteAsync(StatusResponder.Build(_world));
+                    await tcp.Stream.WriteAsync(StatusResponder.Build(_world));
                     Log.Info($"   -> status probe from {_remote} answered ({_world.OnlinePlayerCount()} online)");
                     break;
                 }
@@ -353,7 +363,16 @@ public sealed partial class Session
                 FlushIfDue();   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
             }
         }
-        catch (Exception e) { Log.Info($"!! {_remote} error: {e.Message}"); }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            // The socket went away under the read: a reset from the client, a half-open link timing out,
+            // or our own CloseConnection (handshake timeout, slow-client drop) racing the pending ReadAsync.
+            // This happens on every live server several times an hour and the stack is the same handful of
+            // runtime frames each time, so it gets type + message only. Anything ELSE reaching this catch is
+            // unexpected — handlers are guarded per packet in Handle — and the clause below keeps the stack.
+            Log.Warn($"{_remote} read loop ended: {e.GetType().Name}: {e.Message}");
+        }
+        catch (Exception e) { Log.Error($"{_remote} read loop threw — dropping the connection", e); }
         finally
         {
             // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's
@@ -379,58 +398,21 @@ public sealed partial class Session
                 Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
             }
             CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
+            // EXPECTED: the writer task has its own catch and has already logged whatever it hit, with a stack
+            // where it warranted one. Logging the same exception again here would double every writer fault.
             try { await writer; } catch { /* writer logs its own errors */ }
             Log.Info($"-- CLOSE {_remote}");
         }
     }
 
-    // Drains the outbound queue and performs the ONLY socket writes for this session. Runs on its own task
-    // so a slow/blocked WriteAsync can never stall the World tick thread or this session's read loop.
-    private async Task WriterLoop()
-    {
-        long lastWarnMs = 0;
-        int suppressed = 0;
-        try
-        {
-            await foreach (var item in _outbound.Reader.ReadAllAsync())
-            {
-                long queuedMs = Environment.TickCount64 - item.QueuedAtMs;   // enqueue -> we picked it up
-                long w0 = Environment.TickCount64;
-                await _stream.WriteAsync(item.Buf);
-                long writeMs = Environment.TickCount64 - w0;                 // time inside the socket write
-
-                if (SlowSendMs <= 0) continue;
-                if (queuedMs < SlowSendMs && writeMs < SlowSendMs) continue;
-
-                // Rate-limited to one line/second per session: a genuinely bad link would otherwise fill the
-                // log with thousands of these and bury the first (most useful) one.
-                long now = Environment.TickCount64;
-                if (now - lastWarnMs < 1000) { suppressed++; continue; }
-                lastWarnMs = now;
-
-                // Read this line as: WRITE high -> the kernel send buffer is full, i.e. the client is not
-                // ACKing fast enough (packet loss + TCP retransmit backoff, or plain bandwidth). That stall
-                // is on the network, not in the server, and no amount of server tuning shortens it.
-                // QUEUED high with WRITE low -> we were slow to pick the frame up: this task is a thread-pool
-                // work item, so that means pool starvation (cross-check the pool-latency line from Watchdog).
-                Log.Info($"!! SLOW SEND {_remote}: queued {queuedMs}ms, write {writeMs}ms, " +
-                         $"{_outbound.Reader.Count} frame(s) still queued" +
-                         (suppressed > 0 ? $" (+{suppressed} more suppressed since the last line)" : ""));
-                suppressed = 0;
-            }
-        }
-        catch (Exception e) { Log.Info($"!! {_remote} writer stopped: {e.Message}"); }
-        finally { CloseConnection("writer exit"); }   // e.g. client closed the socket -> unblock the reader
-    }
-
-    // Idempotent teardown: completes the outbound channel (so WriterLoop finishes after draining) and closes
-    // the socket (which unblocks the read loop's ReadAsync). Safe to call from the reader, the writer, or a
-    // Send() that found the queue full — whichever gets here first wins; the rest are no-ops.
+    // Idempotent teardown: closes the transport, which for TCP completes the outbound channel (so the writer
+    // finishes after draining) and closes the socket (which unblocks the read loop's ReadAsync). Safe to call
+    // from the reader, the writer, or a Send() that found the queue full — whichever gets here first wins;
+    // the rest are no-ops.
     private void CloseConnection(string reason)
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
-        _outbound.Writer.TryComplete();
-        try { _client.Close(); } catch { /* already closing */ }
+        _out.Close();
         Log.Info($"   -> connection teardown ({reason})");
     }
 
@@ -536,8 +518,26 @@ public sealed partial class Session
         }
     }
 
+    /// <summary>The inbound half of the test seam: deliver one already-framed packet exactly as the read loop
+    /// would. Production traffic does NOT come through here — <see cref="RunAsync"/> frames straight off the
+    /// socket and calls the same dispatcher — but a socket-free session has no read loop, so this is how a
+    /// test drives a handler with real wire bytes and then reads the answer back off its
+    /// <see cref="IOutbound"/>. The read loop's connection bookkeeping (the handshake latch, the throttled
+    /// autosave) is deliberately NOT reproduced: those belong to a live socket, not to a packet.</summary>
+    public void Receive(byte[] frame)
+    {
+        if (!TkPacket.TryParse(frame, out var pkt, out _))
+            throw new ArgumentException($"not a framed packet: {Log.Hex(frame)}", nameof(frame));
+        Volatile.Write(ref _lastInboundMs, Environment.TickCount64);
+        LastInboundOp = pkt.Opcode;
+        Handle(pkt);
+    }
+
     private void Handle(TkPacket pkt)
     {
+        // Framing (TkPacket.TryParse, in the read loop) and the cipher are the two failures that legitimately
+        // END a session: after either, nothing later on the stream can be trusted. So the decrypt stays
+        // OUTSIDE the guard below — a throw here still unwinds to RunAsync's catch and drops the connection.
         var dec = TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey);
         if (Log.WireEnabled)
         {
@@ -545,6 +545,23 @@ public sealed partial class Session
             Log.Info($"        dec : {Log.Hex(dec)}");
         }
 
+        // Past this point everything is a handler, and a handler that throws is a bug in THIS process, not
+        // evidence that the stream is bad. Until #25 the only catch was RunAsync's, so one IndexOutOfRange
+        // on a short body — or one NullReference in a 2,000-line partial — logged a single stackless line
+        // and kicked the player, whose world state (party, trade, position) was then torn down as a normal
+        // disconnect. The packet's own bytes are in the line because they are the repro: an unhandled edge
+        // in a handler is nearly always a body shape the parser did not expect.
+        try { Dispatch(pkt, dec); }
+        catch (Exception e)
+        {
+            Log.Error($"{_remote} handler for opcode 0x{pkt.Opcode:x2} threw — the packet is dropped, the session continues; " +
+                      $"body {dec.Length}B: {Convert.ToHexString(dec).ToLowerInvariant()}; {DiagState()}", e);
+        }
+    }
+
+    // The opcode switch, split from Handle so the guard above wraps exactly the handlers and nothing else.
+    private void Dispatch(TkPacket pkt, byte[] dec)
+    {
         StartEntryMusicIfArmed(pkt.Opcode);   // login music waits for proof the client's world object is live
 
         switch (pkt.Opcode)
@@ -727,7 +744,7 @@ public sealed partial class Session
         var pass = LoginAuth.ReadPassword(dec, 1 + ulen);
         // Same per-IP failed-attempt budget the login channel enforces — the re-login path accepts the very
         // same credentials, so leaving it ungated would just move the brute-force target to port 2005.
-        var ip = (_client.Client.RemoteEndPoint as System.Net.IPEndPoint)?.Address ?? System.Net.IPAddress.None;
+        var ip = _peerIp;
         if (LoginThrottle.IsBlocked(ip))
         {
             Log.Info($"   -> RE-LOGIN BLOCKED (failed-attempt budget exhausted) for user='{user}'");
@@ -861,7 +878,12 @@ public sealed partial class Session
             // of it must match.
             if (tokenStart < body.Length) token = body[tokenStart..];
         }
-        catch { /* keep default */ }
+        catch (Exception e)
+        {
+            // A body too short for its own length prefixes: a broken client or a probe. Treated as an empty
+            // username and token, which the handoff check below refuses like any other bad credential.
+            Log.Warn($"{_remote} arrival body could not be parsed ({body.Length}B: {Convert.ToHexString(body).ToLowerInvariant()})", e);
+        }
 
         // Validate the single-use handoff token the login server minted for this username (see
         // Shared/HandoffTokens). This is what stops a client from connecting straight to the game port and
@@ -875,7 +897,7 @@ public sealed partial class Session
             {
                 Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' from {_remoteIp} " +
                          $"(token {Log.Hex(token)}, {HandoffTokens.SurvivingBytes(_user)} byte(s) expected) — closing connection");
-                _client.Close();
+                CloseConnection("arrival rejected (bad handoff token)");
                 return;
             }
             Log.Info($"   -> ARRIVAL WARN: invalid handoff token for user='{_user}' — allowed (P1998_ENFORCE_HANDOFF=0)");
@@ -889,7 +911,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: account '{_user}' is banned — closing connection");
             SendMessage(LoginAuth.BanMessageFor(_user));
-            _client.Close();
+            CloseConnection("arrival rejected (account banned)");
             return;
         }
 
@@ -915,7 +937,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
             _world.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
-            _client.Close();
+            CloseConnection("arrival rejected (no character record)");
             return;
         }
         _char = loaded;
@@ -1362,4 +1384,164 @@ public sealed partial class Session
     internal const int ShoutHalfW = 16;
     internal const int ShoutHalfH = 16;
 
+}
+
+/// <summary>
+/// Where a <see cref="Session"/>'s outbound frames go.
+///
+/// <para>This is the seam the whole test story rests on. Everything above it — the 42 opcode handlers, world
+/// entry, trade, combat, the tick's broadcasts — only ever calls <see cref="Send"/>, so whether the bytes end
+/// up on a socket or in a list is invisible to all of it. The production implementation is
+/// <see cref="TcpOutbound"/>; a test supplies a recorder and asserts on the exact frames a handler produced.</para>
+///
+/// <para>Deliberately outbound-ONLY. The inbound half is a read loop that owns framing, the handshake
+/// watchdog and the autosave cadence (<see cref="Session.RunAsync"/>), and pretending a recorder could stand
+/// in for that would be a lie; a socket-free session simply has no read loop, and a test feeds it packets
+/// directly (<see cref="Session.Receive"/>).</para>
+/// </summary>
+public interface IOutbound
+{
+    /// <summary>Peer label for log lines — <c>"1.2.3.4:5555"</c>, or <c>"1.2.3.4 (via 10.0.0.1)"</c> behind a
+    /// trusted proxy.</summary>
+    string Remote { get; }
+
+    /// <summary>How many frames this sink will hold before <see cref="Send"/> starts refusing them. Only used
+    /// in the log line that names a dropped slow client.</summary>
+    int Capacity { get; }
+
+    /// <summary>Frames handed over but not yet delivered. Diagnostics only (<c>Session.DiagState</c>).</summary>
+    int QueueDepth { get; }
+
+    /// <summary>Hand over one framed packet. MUST NOT block: peer broadcasts and mob AI call this on the
+    /// shared <c>World.TickLoop</c> thread. False means the sink is backed up past <see cref="Capacity"/>,
+    /// which the caller answers by dropping the peer — see <c>Session.Send</c>.</summary>
+    bool Send(byte[] frame);
+
+    /// <summary>Stop accepting frames and drop the transport. Idempotent.</summary>
+    void Close();
+}
+
+/// <summary>
+/// The production <see cref="IOutbound"/>: one TCP socket, the bounded queue every <c>Send()</c> enqueues
+/// onto, and the single writer task that drains it.
+///
+/// <para>Outbound decoupling (DDoS / tick-stall defense). This is the fix for the worst availability bug:
+/// peer broadcasts and mob AI run on the shared <c>World.TickLoop</c> thread and used to call a SYNCHRONOUS
+/// stream write — so one client whose TCP receive buffer was full (slow, or deliberately not reading) would
+/// block that write and freeze mob movement/combat for EVERYONE on the map. Now the tick thread only does an
+/// O(1) TryWrite and moves on; if a client's queue backs up past <see cref="Capacity"/> it is the SLOW CLIENT
+/// that gets dropped, not the world. The single-reader channel also guarantees packets never interleave
+/// mid-frame on the wire, which is what the old <c>_sendLock</c> protected.</para>
+/// </summary>
+public sealed class TcpOutbound : IOutbound
+{
+    private const int OutboundCapacity = 2048;   // ~a burst of world-entry packets is well under this; a
+                                                 // truly stuck socket hits it and we drop the connection.
+
+    /// <summary>A queued frame plus the moment it was handed to the queue. The log line for a packet is
+    /// written when it is ENQUEUED, so without this timestamp a multi-second delay between "the server
+    /// decided to send this" and "the bytes actually left the machine" is completely invisible — the log
+    /// looks perfect while the player is frozen. See <see cref="RunWriterAsync"/>'s slow-send watchdog.</summary>
+    private readonly record struct Frame(byte[] Buf, long QueuedAtMs);
+
+    private readonly Channel<Frame> _queue = Channel.CreateBounded<Frame>(
+        new BoundedChannelOptions(OutboundCapacity) { SingleReader = true, SingleWriter = false,
+                                                      FullMode = BoundedChannelFullMode.Wait });
+
+    /// <summary>Warn when a frame waits this long (ms) to reach the socket, or when the socket write itself
+    /// blocks that long. <c>P1998_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player
+    /// would notice, so the log names the stall before anyone complains about it.</summary>
+    private static readonly int SlowSendMs =
+        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
+
+    private readonly TcpClient _client;
+
+    /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
+    /// has already consumed its PROXY header (see Shared/ProxyProtocol.cs). Null on a direct connection,
+    /// where the socket's peer IS the client. Everything downstream — the handoff token binding at
+    /// HandoffTokens.Mint/Consume, the ban and moderation surface, and every log line — has to see the
+    /// player rather than the proxy, or it is reasoning about one address shared by the whole server.</param>
+    public TcpOutbound(TcpClient client, System.Net.IPAddress? realIp = null)
+    {
+        _client = client;
+        Stream = client.GetStream();
+        var peer = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+        PeerAddress = peer?.Address ?? System.Net.IPAddress.None;
+        // Keep the proxy's own address in the log line: when the allow-list or the HAProxy backend is
+        // misconfigured, "which proxy claimed this" is the only thing that distinguishes a real player
+        // from a forged header, and it is not recoverable after the fact.
+        Remote = realIp is not null ? $"{realIp} (via {peer?.Address})" : peer?.ToString() ?? "?";
+        RemoteIp = (realIp ?? peer?.Address ?? System.Net.IPAddress.None).ToString();
+    }
+
+    public string Remote { get; }
+
+    /// <summary>The PLAYER's address, no port — handoff tokens are bound to it.</summary>
+    public string RemoteIp { get; }
+
+    /// <summary>The SOCKET's own peer address, i.e. the proxy's when one sits in front.</summary>
+    public System.Net.IPAddress PeerAddress { get; }
+
+    /// <summary>The inbound half. <see cref="IOutbound"/> does not cover reading, so the session's read loop
+    /// reaches for this directly — it is the one place that knows this session came off a socket.</summary>
+    public NetworkStream Stream { get; }
+
+    public int Capacity => OutboundCapacity;
+    public int QueueDepth => _queue.Reader.Count;
+
+    public bool Send(byte[] frame) => _queue.Writer.TryWrite(new Frame(frame, Environment.TickCount64));
+
+    public void Close()
+    {
+        _queue.Writer.TryComplete();
+        // EXPECTED: teardown races itself (reader, writer and a full-queue Send all reach here) and the loser
+        // finds the socket already closed.
+        try { _client.Close(); } catch { /* already closing */ }
+    }
+
+    /// <summary>Drains the queue and performs the ONLY socket writes for this connection. Runs on its own
+    /// task so a slow/blocked WriteAsync can never stall the World tick thread or the session's read loop.
+    /// <paramref name="onExit"/> is the session's teardown, run once the drain ends for any reason.</summary>
+    public async Task RunWriterAsync(Action<string> onExit)
+    {
+        long lastWarnMs = 0;
+        int suppressed = 0;
+        try
+        {
+            await foreach (var item in _queue.Reader.ReadAllAsync())
+            {
+                long queuedMs = Environment.TickCount64 - item.QueuedAtMs;   // enqueue -> we picked it up
+                long w0 = Environment.TickCount64;
+                await Stream.WriteAsync(item.Buf);
+                long writeMs = Environment.TickCount64 - w0;                 // time inside the socket write
+
+                if (SlowSendMs <= 0) continue;
+                if (queuedMs < SlowSendMs && writeMs < SlowSendMs) continue;
+
+                // Rate-limited to one line/second per session: a genuinely bad link would otherwise fill the
+                // log with thousands of these and bury the first (most useful) one.
+                long now = Environment.TickCount64;
+                if (now - lastWarnMs < 1000) { suppressed++; continue; }
+                lastWarnMs = now;
+
+                // Read this line as: WRITE high -> the kernel send buffer is full, i.e. the client is not
+                // ACKing fast enough (packet loss + TCP retransmit backoff, or plain bandwidth). That stall
+                // is on the network, not in the server, and no amount of server tuning shortens it.
+                // QUEUED high with WRITE low -> we were slow to pick the frame up: this task is a thread-pool
+                // work item, so that means pool starvation (cross-check the pool-latency line from Watchdog).
+                Log.Info($"!! SLOW SEND {Remote}: queued {queuedMs}ms, write {writeMs}ms, " +
+                         $"{_queue.Reader.Count} frame(s) still queued" +
+                         (suppressed > 0 ? $" (+{suppressed} more suppressed since the last line)" : ""));
+                suppressed = 0;
+            }
+        }
+        // Same split as the read loop's: a socket-family exception is the client going away (expected, no
+        // stack); anything else is ours and keeps the stack.
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            Log.Warn($"{Remote} writer stopped: {e.GetType().Name}: {e.Message}");
+        }
+        catch (Exception e) { Log.Error($"{Remote} writer threw — dropping the connection", e); }
+        finally { onExit("writer exit"); }   // e.g. client closed the socket -> unblock the reader
+    }
 }

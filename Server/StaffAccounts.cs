@@ -117,7 +117,7 @@ public static class StaffAccounts
         }
         catch (Exception e)
         {
-            Log.Info($"!! staff roster read failed ({path}): {e.Message} — keeping the previous roster");
+            Log.Warn($"staff roster read failed ({path}) — keeping the previous roster", e);
             return null;
         }
         return keys;
