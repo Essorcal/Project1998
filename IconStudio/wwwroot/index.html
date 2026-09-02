@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NexusTK Icon Studio</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%233fa87a'/%3E%3Crect x='3.5' y='3.5' width='4' height='4' fill='%2317181a'/%3E%3Crect x='8.5' y='3.5' width='4' height='4' fill='%2317181a'/%3E%3Crect x='3.5' y='8.5' width='4' height='4' fill='%2317181a'/%3E%3Crect x='8.5' y='8.5' width='4' height='4' fill='%23e8eaec'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="var(--accent)"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1" fill="var(--bright)"/></svg>
+      <span>NexusTK Icon Studio</span>
+      <span class="byline">by Essorcal</span>
+    </div>
+    <div id="srcChips" class="chips"></div>
+    <div class="spacer"></div>
+    <div class="actions">
+      <div class="seg" id="exportClient" title="which client's item archive the export is built on">
+        <button class="segbtn on" data-client="495">4.95</button>
+        <button class="segbtn" data-client="533">5.33</button>
+      </div>
+      <button id="btnExport" class="btn primary" title="Build Item.epf/.pal/.tbl + a repacked archive from the client's shipped art plus ONLY the approved drafts, into dist/NexusTK-Icon-Studio/saved/export/. Nothing is installed; copy it over the client yourself.">Export approved</button>
+    </div>
+  </header>
+
+  <div id="mid">
+    <aside id="list">
+      <div class="lhead">
+        <input id="filter" type="search" placeholder="id or item name…" autocomplete="off">
+        <div class="seg small" id="scope">
+          <button class="segbtn on" data-scope="all" title="every icon id any loaded client knows">All</button>
+          <button class="segbtn" data-scope="missing" title="icons that items use but the 4.95 client has no frame for">No 4.95 art</button>
+          <button class="segbtn" data-scope="draft" title="icons with a saved draft">Drafts</button>
+          <button class="segbtn" data-scope="approved" title="drafts marked approved — what Export writes">Approved</button>
+        </div>
+        <div id="listNote" class="mono dim"></div>
+      </div>
+      <div id="gridScroll"><div id="gridInner"><canvas id="grid"></canvas></div></div>
+    </aside>
+
+    <main id="editor">
+      <div id="edTop">
+        <div id="edTitle" class="bright">pick an icon</div>
+        <div id="edNames" class="mono dim"></div>
+      </div>
+      <div id="edBody">
+        <nav id="rail"></nav>
+        <div id="canvasWrap">
+          <canvas id="view"></canvas>
+          <div id="empty">select an icon on the left, then load a source or candidate from the right panel</div>
+        </div>
+      </div>
+      <div id="edBottom">
+        <div class="seg" id="zoomCtl" title="zoom (Ctrl+wheel, +/- keys)">
+          <button id="zoomOut" class="segbtn">&minus;</button>
+          <span id="zoomLbl" class="segbtn on">12x</span>
+          <button id="zoomIn" class="segbtn">+</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="showGrid" checked> grid</label>
+        <span id="stCell" class="mono"></span>
+        <span class="spacer"></span>
+        <div id="preview" title="how the frame reads at 1x, 2x and 3x on a bag-like background">
+          <canvas id="pv1"></canvas><canvas id="pv2"></canvas><canvas id="pv3"></canvas>
+        </div>
+      </div>
+    </main>
+
+    <aside id="panel">
+      <div id="panelScroll">
+        <section>
+          <div class="ptitle">SOURCES <span class="mono dim">click to load into the editor</span></div>
+          <div id="sources" class="cards"></div>
+        </section>
+        <section>
+          <div class="ptitle">CANDIDATES <span class="mono dim">from the retail 2x art</span></div>
+          <div id="cands" class="cards"></div>
+          <div class="sizeRow">
+            <span class="mono dim">custom size</span>
+            <input id="candW" class="mono num" type="number" min="1" max="128" placeholder="w">
+            <span class="mono dim">×</span>
+            <input id="candH" class="mono num" type="number" min="1" max="128" placeholder="h">
+            <select id="candMethod" class="mono">
+              <option value="snap">snap</option>
+              <option value="box">box</option>
+              <option value="nearest">nearest</option>
+            </select>
+            <button id="candGo" class="btn tiny">make</button>
+          </div>
+        </section>
+        <section>
+          <div class="ptitle">PALETTE <span id="palInfo" class="mono accent"></span></div>
+          <canvas id="palCanvas" width="256" height="256"></canvas>
+          <div id="palSel" class="mono dim">no colour</div>
+        </section>
+        <section>
+          <div class="ptitle">DRAFT <span id="draftState" class="mono dim">none</span></div>
+          <input id="draftNote" class="sbInput" placeholder="note (optional)" autocomplete="off">
+          <div class="sbBtns">
+            <button id="btnSave" class="btn primary" disabled title="save this frame as the icon's draft (dist/NexusTK-Icon-Studio/saved/icons/<id>.json + .png)">Save draft</button>
+            <button id="btnApprove" class="btn" disabled title="mark the saved draft approved — only approved drafts go into an export">Approve</button>
+          </div>
+          <div class="sbBtns">
+            <button id="btnImport" class="btn tiny" title="load a PNG (e.g. the draft's .png edited in Aseprite) — it is quantized into the current palette">Import PNG</button>
+            <button id="btnRevert" class="btn tiny" disabled title="reload the saved draft, dropping unsaved edits">Revert</button>
+            <button id="btnDiscard" class="btn tiny" disabled title="delete the saved draft">Discard draft</button>
+            <input type="file" id="fileImport" accept=".png" hidden>
+          </div>
+          <div class="sbHint">drafts live in the tool's saved folder — game files and client installs are never written · Export writes a patched archive to saved/export for a hand install</div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <footer id="status">
+    <span id="stIcon" class="bright mono"></span>
+    <span id="stHint" class="mono accent"></span>
+    <span class="spacer"></span>
+    <span id="stDrafts" class="mono dim"></span>
+    <span id="stMsg" class="mono"></span>
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -145,3 +145,6 @@ MapEditor/NexusTK-Map-Editor.exe
 # The two rules below only catch what OLDER editor builds wrote into game-data:
 game-data/maps-edited/
 game-data/maps/*.orig
+
+# ---- Generated art (re/icon_downscale.py build/sheet output: patched Item.epf/.dat copies, contact sheets) ----
+re/out/
