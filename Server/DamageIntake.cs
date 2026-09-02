@@ -104,15 +104,19 @@ public sealed class DamageIntake
     /// armor before the deduction, and the mob swing also amplifies on the wrong side of it.</para>
     ///
     /// <para><b>Two damage paths this pipeline does not reach</b>, both in files owned by #26 while it is in
-    /// flight, so they are named here rather than converted. (a) <c>Session.NpcCastStormstrike</c>
-    /// (Session.Spells.cs) borrows <see cref="DamageKind.Environment"/> for a NAMED caster's spell, purely
-    /// because that intake is the one that lets the caller supply the whole chat line — so a mythic's
+    /// flight, so they are named here rather than converted. (<b>#79</b>) <c>Session.NpcCastStormstrike</c>
+    /// (Session.Spells.cs:2049) borrows <see cref="DamageKind.Environment"/> for a NAMED caster's spell,
+    /// purely because that intake is the one that lets the caller supply the whole chat line — so a mythic's
     /// Stormstrike still walks through a ward, where RTK's own stormstrike.lua:9 is
-    /// <c>removeHealthExtend</c> and is stopped by one. It wants <see cref="DamageKind.MobSpell"/> with a
-    /// caller-supplied line, which is a one-field change here and a one-line change at a call site this
-    /// branch must not touch. (b) <c>Session.TickPoison</c> (Session.Spells.cs) is a sixth damage path that
-    /// never went through any of the five and so was outside #28's scope; RTK's equivalent ticks
-    /// (burn/venom <c>while_cast</c>) are ward-gated like everything else.</para>
+    /// <c>removeHealthExtend</c> and is stopped by one. It is the last creature spell that ignores Harden
+    /// Body, and the fix is small: the two kinds' term rows below are identical, so it wants
+    /// <see cref="DamageKind.MobSpell"/> with a caller-supplied line — one sibling method in
+    /// Session.MobSpells.cs, one line at a call site this branch must not touch. Note that the enum theory in
+    /// Tests/DamageIntakeTests.cs cannot catch this class of bug: it proves each KIND behaves, not that each
+    /// caller picked the right one. (Unfiled, recorded here only) <c>Session.TickPoison</c>
+    /// (Session.Spells.cs:1825) is a sixth damage path that never went through any of the five and so was
+    /// outside #28's scope; RTK's equivalent ticks (burn/venom <c>while_cast</c>) are ward-gated like
+    /// everything else.</para>
     /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 

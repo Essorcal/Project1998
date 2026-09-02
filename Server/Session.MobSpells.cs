@@ -30,9 +30,9 @@ public sealed partial class Session
     /// <c>Session.DamageImmune</c> and never had the check retrofitted — and RTK settles it: every creature
     /// spell it has that takes HP off a player (ion, call lightning, thunder touch, freeze, stormstrike,
     /// burn, venom, and the mythic boss's own Rockslide and gust) lands through
-    /// <c>Player.removeHealthExtend</c>, which returns outright while a ward is up. The full reading, and
-    /// the one creature spell that still slips past because it borrows the room-damage intake, are on
-    /// <see cref="DamageIntake.IgnoresHardenBody"/>.</para></summary>
+    /// <c>Player.removeHealthExtend</c>, which returns outright while a ward is up. The full reading is on
+    /// <see cref="DamageIntake.IgnoresHardenBody"/>, along with the one creature spell that still slips past
+    /// because it borrows the room-damage intake instead of this one (#79).</para></summary>
     internal void ReceiveMobSpell(int rawDmg, Mob caster, string spellName)
     {
         TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
