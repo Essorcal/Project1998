@@ -21,7 +21,7 @@ public class EventCaveTests
 
     private static void EnsureLoaded()
     {
-        lock (_gate) { if (_loaded) return; Content.Load(); _loaded = true; }
+        lock (_gate) { if (_loaded) return; TestProcessState.LoadContent(); _loaded = true; }
     }
 
     private const string BuyaLibraryCaverns = "buya_library_caverns";
