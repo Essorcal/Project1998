@@ -2,13 +2,12 @@
 
   <PropertyGroup>
     <!-- net8.0-windows + WinExe: the editor is a windowed app (WebView2 shell, no console).
-         EnableWindowsTargeting keeps the Linux CI runner able to BUILD it (it never runs there). -->
+         EnableWindowsTargeting lets a Linux box BUILD it (it never runs there). Server CI does not:
+         it builds Project1998.Server.slnf, which leaves this project out. -->
     <TargetFramework>net8.0-windows</TargetFramework>
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 

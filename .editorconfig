@@ -1,0 +1,27 @@
+# Matches the code as it is: 4-space C#, LF endings, one trailing newline. Style ANALYSIS is not
+# enabled here — that is a separate change (upstream issue #22, step 2) because it surfaces far more
+# than the build currently reports.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{cs,csproj,props,targets,sln,slnf}]
+indent_size = 4
+
+[*.{yml,yaml,json,md}]
+indent_size = 2
+
+# Windows batch must stay CRLF: cmd.exe misparses LF-only labels and multi-line REM blocks.
+[*.bat]
+end_of_line = crlf
+
+# Game data is generated and hand-edited by tools with their own conventions; leave it alone.
+[game-data/**]
+trim_trailing_whitespace = false
+insert_final_newline = false

@@ -40,7 +40,7 @@ if not defined DOTNET call :try_dotnet "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.e
 if not defined DOTNET call :try_dotnet "%ProgramFiles%\dotnet\dotnet.exe"
 if not defined DOTNET call :get_dotnet
 if not defined DOTNET (
-    echo *** No .NET SDK found -- a runtime-only dotnet does not count, and cannot build. ***
+    echo *** No .NET 8 SDK found -- a runtime-only dotnet does not count, and cannot build. ***
     echo *** Install the .NET 8 SDK from https://dotnet.microsoft.com/download/dotnet/8.0 ***
     echo *** or set P1998_DOTNET to the full path of a dotnet.exe that has one.           ***
     pause
@@ -88,13 +88,15 @@ REM Done -- everything below is subroutines, so stop before falling into them.
 exit /b 0
 
 REM :try_dotnet <path to dotnet.exe>
-REM Accepts the candidate as DOTNET only if it exists AND reports at least one installed SDK. First
-REM winner wins -- once DOTNET is set every later call is a no-op, so the call order above is simply
-REM the preference order.
+REM Accepts the candidate as DOTNET only if it exists AND reports an installed .NET 8 SDK. Not "any
+REM SDK": global.json pins the 8.0 band, so a dotnet with only a 9.x or 6.x SDK would be accepted here
+REM and then fail the build with a version error -- refuse it up front instead, so the message the
+REM user sees is the one at the top ("install the .NET 8 SDK"). First winner wins -- once DOTNET is
+REM set every later call is a no-op, so the call order above is simply the preference order.
 :try_dotnet
 if defined DOTNET goto :eof
 if not exist "%~1" goto :eof
-"%~1" --list-sdks 2>nul | findstr /r "^[0-9]" >nul
+"%~1" --list-sdks 2>nul | findstr /r "^8\." >nul
 if errorlevel 1 goto :eof
 set "DOTNET=%~1"
 goto :eof

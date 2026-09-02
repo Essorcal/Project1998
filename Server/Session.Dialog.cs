@@ -957,7 +957,7 @@ public sealed partial class Session
     // item, by name, from the bag. Tries the plural form as typed, then singularized (item names in the
     // registry are singular, e.g. "acorn", while the spoken word is often plural, "acorns"). Returns false
     // (not a dialog line) when nothing matches, so unrelated speech still falls through to normal chat.
-    internal async Task<bool> SellItemToNpcByName(Mob npc, string name, int amount, IReadOnlySet<string>? buysFrom = null)
+    internal bool SellItemToNpcByName(Mob npc, string name, int amount, IReadOnlySet<string>? buysFrom = null)
     {
         var def = Content.FindItem(name) ?? Content.FindItem(Singularize(name));
         if (def is null || def.SellPrice <= 0 || def.NoDrop) return false;
@@ -1081,7 +1081,7 @@ public sealed partial class Session
 
     // Spoken "take my <item|coin> [count]" (BankAbility.OnSay) — deposits `amount` (whole stack if <= 0) of a
     // fuzzy-matched item, or coin if the word is "coin"/"coins", straight into the vault, no menu round trip.
-    internal async Task<bool> DepositItemToBank(Mob npc, string name, int amount)
+    internal bool DepositItemToBank(Mob npc, string name, int amount)
     {
         if (IsCoinWord(name))
         {
@@ -1146,7 +1146,7 @@ public sealed partial class Session
     }
 
     // Spoken "give my <item|coin> [count]" — the withdraw mirror of the above.
-    internal async Task<bool> WithdrawItemFromBank(Mob npc, string name, int amount)
+    internal bool WithdrawItemFromBank(Mob npc, string name, int amount)
     {
         if (IsCoinWord(name))
         {
