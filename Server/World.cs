@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Shared;
 
 namespace Server;
@@ -374,8 +375,9 @@ public sealed class World
     /// CAN peel a mob off whoever pulled it, by out-damaging them).
     /// <para>Callers hold <c>_lock</c>. Players who have left the map simply aren't considered; their threat
     /// stays banked in case they come back, exactly as RTK's per-mob table does.</para></summary>
-    private static void RetargetByThreat(MapState m, Mob mob)
+    private void RetargetByThreat(MapState m, Mob mob)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         bool Adjacent(Session p) =>
             (p.PlayerX == mob.X && Math.Abs(p.PlayerY - mob.Y) == 1) ||
             (p.PlayerY == mob.Y && Math.Abs(p.PlayerX - mob.X) == 1);
@@ -500,6 +502,7 @@ public sealed class World
     /// rebuilding. Shared by startup <see cref="PopulateSpawns"/> and the live <see cref="RebuildPopulation"/>.</summary>
     private (int points, int skipped, int groups, int capped) BuildSpawnRosterLocked()
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         int points = 0, skipped = 0, capped = 0;
         foreach (var sd in Content.Spawns)
         {
@@ -573,6 +576,7 @@ public sealed class World
     /// <summary>Append a spawn point to its map's roster. Caller holds <c>_lock</c>.</summary>
     private void AddSpawn(ushort mapId, Spawn sp)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!_spawns.TryGetValue(mapId, out var list)) { list = new(); _spawns[mapId] = list; }
         list.Add(sp);
     }
@@ -582,6 +586,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private void EnsureMaterialized(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         // Batch groups get a chance to fill BEFORE the entering player's room list is read, so a room whose
         // timer came due while nobody was in it is already full when they walk in rather than popping into
         // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
@@ -618,6 +623,7 @@ public sealed class World
     /// a visit is worth more than the re-randomisation, and a cleared room is supposed to stay dead.</summary>
     private void RefillGroups(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!_groups.TryGetValue(mapId, out var groups)) return;
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         HashSet<(int, int)>? taken = null;               // built once, only if something is actually due
@@ -636,6 +642,7 @@ public sealed class World
     /// under the world lock. Caller holds <c>_lock</c>.</summary>
     private HashSet<(int, int)> OccupiedTiles(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var map = Map(mapId);
         var taken = new HashSet<(int, int)>(map.Mobs.Count + map.Players.Count);
         foreach (var m in map.Mobs) if (m.Alive) taken.Add((m.X, m.Y));
@@ -665,6 +672,7 @@ public sealed class World
     /// the ordinary refill of a room that has space never reaches it.</para></summary>
     private void FillMember(SpawnGroup g, MobDef def, int cap, HashSet<(int, int)> taken)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var map = Map(g.Map);
         int alive = 0;
         foreach (var m in map.Mobs)
@@ -722,6 +730,7 @@ public sealed class World
     /// Shared by startup placement and the live <see cref="EnableNpc"/> toggle. Caller holds <c>_lock</c>.</summary>
     private void PlaceNpc(NpcDef n)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         // Don't stack on a mob spawn sharing the tile, but DO stand where NPCs.csv says, wall or not.
         var (nx, ny) = FreeSpawnTile(n.Map, n.X, n.Y, avoidSolid: false);
         _npcPlaced[n.Id] = n;   // the def this instance was built from — see ReconcileNpcToggles
@@ -798,6 +807,7 @@ public sealed class World
     /// <summary>Create the live mob for a spawn point and register it. Caller holds <c>_lock</c>.</summary>
     private void Materialize(ushort mapId, Spawn sp)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var d = sp.Def;
         Content.MobSpawnRules.TryGetValue(d.Key, out var rule);
 
@@ -861,6 +871,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private Mob BuildMob(ushort mapId, MobDef d, ushort x, ushort y, ushort? homeX = null, ushort? homeY = null)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var mob = new Mob(_nextMobId++, d.Look, x, y, d.Name, d.Hp)
         {
             // Color byte = RTK's MobLookColor. (The client Monster.tbl palette turned out wrong here — it
@@ -905,6 +916,7 @@ public sealed class World
     /// on a warp is one a player can't avoid walking into. Caller holds <c>_lock</c>.</summary>
     private bool TryPickGroupTile(SpawnGroup g, HashSet<(int, int)> taken, out ushort x, out ushort y)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         x = y = 0;
         var (minX, minY, maxX, maxY) = PlacementBox(g.Map, g.MinX, g.MinY, g.MaxX, g.MaxY);
         if (maxX < minX || maxY < minY) return false;
@@ -975,6 +987,7 @@ public sealed class World
     /// silently moved every such NPC a few tiles off its authored spot. Caller holds <c>_lock</c>.</summary>
     private (ushort x, ushort y) FreeSpawnTile(ushort mapId, ushort x, ushort y, bool avoidSolid = true)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var m = Map(mapId);
         var dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
         var terrain = dims.Item1 > 0 ? MapData.For(mapId, dims.Item1, dims.Item2) : null;
@@ -1006,6 +1019,7 @@ public sealed class World
     // drops (with their map) so the caller can broadcast them once the lock is released.
     private List<(ushort map, GroundItem gi)>? TopUpForageLocked()
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         List<(ushort, GroundItem)>? drops = null;
         foreach (var area in Content.ForageAreas)
         {
@@ -1140,6 +1154,7 @@ public sealed class World
     // spawn-point system (AreaSpawnsTrap), which already reproduces their 1/10 + cooldown surprise.
     private string? FireAmbushLocked(ushort mapId, ushort x, ushort y)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return null;
         bool onStepper = cfg.PrimaryKind == "single";   // RTK block:spawn(id, block.x, block.y) — see AmbushBurstTile
         int slot = 0;
@@ -1172,6 +1187,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private (ushort x, ushort y) AmbushBurstTile(ushort mapId, ushort x, ushort y, int index)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var (dx, dy) = index switch
         {
             0 => (1, 0),    // east
@@ -1221,6 +1237,7 @@ public sealed class World
     // full of mobs). Caller holds _lock. Called on every map entry (EnsureMaterialized) and after a trap fires.
     private void RefillAmbushLocked(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return;
         var m = Map(mapId);
         int traps = 0; foreach (var t in m.Traps) if (t.Kind == "ambush") traps++;
@@ -1248,6 +1265,7 @@ public sealed class World
     // Caller holds _lock.
     private void RefillFrigidLocked(ushort mapId)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         if (Array.IndexOf(SuteAi.CaveMaps, mapId) < 0) return;
         var m = Map(mapId);
         int traps = 0; foreach (var t in m.Traps) if (t.Kind == SuteAi.FrigidTrapKind) traps++;
@@ -1269,6 +1287,7 @@ public sealed class World
     // TryPickGroupTile). Caller holds _lock.
     private bool TryPickMapTile(ushort mapId, HashSet<(int, int)> taken, out ushort x, out ushort y)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         x = y = 0;
         var (xs, ys) = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
         if (xs == 0 || ys == 0) return false;
@@ -1316,6 +1335,7 @@ public sealed class World
     // ticked every 1500ms by the poison check above) mutate the mob directly since that's lock-only state.
     private void TriggerTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         long now = Environment.TickCount64;
         // RTK's every-trap epilogue: removeTrapItem(npc) before npc:delete(). A trap that has gone off takes
         // its revealed marker with it, so a Spot Traps / Watchful Eye sword never outlives the trap it marks.
@@ -1473,7 +1493,10 @@ public sealed class World
                                List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                                List<(ushort map, uint id, byte dir)> turns,
                                List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
-        => StepMobToward(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage, out _);
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        return StepMobToward(mapId, m, mob, tx, ty, dims, terrain, occupied, mobTiles, moves, turns, trapDamage, out _);
+    }
 
     /// <param name="towardBlocked">True when NOTHING that closes the gap was open this step — the mob is
     /// walled off from its target rather than merely taking a longer route. RTK's <c>canmove == false</c>.
@@ -1487,6 +1510,7 @@ public sealed class World
                                List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage,
                                out bool towardBlocked)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         towardBlocked = false;
         int dx = tx - mob.X, dy = ty - mob.Y;
         if (dx == 0 && dy == 0) { mob.DetourDir = NoDetour; mob.DetourLeft = 0; return false; }
@@ -1583,6 +1607,7 @@ public sealed class World
                              List<(ushort map, uint id, byte dir)> turns,
                              List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         int dx = tx - mob.X, dy = ty - mob.Y;
 
         bool Step(byte dir)
@@ -1660,6 +1685,7 @@ public sealed class World
                      List<(ushort map, uint id, byte dir)> turns,
                      List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         int hops = 0;
         while (hops < tiles)
         {
@@ -1706,6 +1732,7 @@ public sealed class World
                                  List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                                  List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         byte dir = mob.Dir;
         int nx = mob.X + (dir == 1 ? 1 : dir == 3 ? -1 : 0);
         int ny = mob.Y + (dir == 2 ? 1 : dir == 0 ? -1 : 0);
@@ -2039,6 +2066,65 @@ public sealed class World
         lock (_lock) Map(mapId).Mobs.Add(mob);
         var one = new[] { mob };
         Broadcast(mapId, p => p.SyncMobs(one));
+    }
+
+    /// <summary>Give a mob to a player for a fixed duration, if nobody owns it already.</summary>
+    public bool CharmMob(Mob mob, uint ownerId, int durMs, bool summoned = false)
+    {
+        lock (_lock)
+        {
+            if (mob.OwnerId != 0) return false;
+            mob.OwnerId = ownerId;
+            mob.PetExpiresAt = Environment.TickCount64 + durMs;
+            mob.TargetId = 0;
+            if (summoned) mob.Summoned = true;
+            return true;
+        }
+    }
+
+    /// <summary>Make a mob forget one player's threat for a fixed duration.</summary>
+    public void ForgetPlayer(Mob mob, uint playerId, int durMs)
+    {
+        lock (_lock)
+        {
+            mob.AmnesiaBy = playerId;
+            mob.AmnesiaUntil = Environment.TickCount64 + durMs;
+            mob.ClearThreat(playerId);
+            if (mob.TargetId == playerId) mob.TargetId = 0;
+        }
+    }
+
+    /// <summary>Arm the one-hit damage multiplier left by a sleep-family hold.</summary>
+    public void ArmDamageAmp(Mob mob, double mult, int durMs)
+    {
+        lock (_lock)
+        {
+            mob.DamageAmp = mult;
+            mob.DamageAmpUntil = Environment.TickCount64 + durMs;
+        }
+    }
+
+    /// <summary>Heal a living mob, capped at its maximum HP.</summary>
+    public bool HealMob(Mob mob, int amount)
+    {
+        lock (_lock)
+        {
+            if (amount <= 0 || !mob.Alive) return false;
+            mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amount);
+            return true;
+        }
+    }
+
+    /// <summary>Hold a mob for a fixed duration unless it is already held.</summary>
+    public bool HoldMob(Mob mob, int durMs)
+    {
+        lock (_lock)
+        {
+            long now = Environment.TickCount64;
+            if (mob.FrozenUntil > now) return false;
+            mob.FrozenUntil = now + durMs;
+            return true;
+        }
     }
 
     /// <summary>Apply a player's targeted timed stat buff (Session.CastTargetBuff — e.g. Valor/Harden Armor on a
@@ -2607,6 +2693,7 @@ public sealed class World
     /// Caller holds <c>_lock</c>.</summary>
     private List<GroundItem> RollDropsLocked(MapState m, Mob mob, MobDef def)
     {
+        Debug.Assert(Monitor.IsEntered(_lock));
         var drops = new List<GroundItem>();
         foreach (var roll in Content.RollDrops(def, Random.Shared))
         {

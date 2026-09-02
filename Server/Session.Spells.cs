@@ -1052,13 +1052,13 @@ public sealed partial class Session
             return;
         }
 
-        if (amt > 0 && mob!.Alive)
+        var targetMob = mob!;
+        if (_world.HealMob(targetMob, amt))
         {
-            mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amt);
-            _world.BroadcastWideArea(_char.Map, mob.X, mob.Y, p => p.DamageOver(mob.Id, HpPercent(mob), 0));   // refresh its over-head bar
+            _world.BroadcastWideArea(_char.Map, targetMob.X, targetMob.Y, p => p.DamageOver(targetMob.Id, HpPercent(targetMob), 0));   // refresh its over-head bar
         }
-        BroadcastFx(mob!.Id, anim, snd);
-        Log.Info($"      (lua) {sp.Name} -> healed mob {mob.Id} '{mob.Name}' for {amt} -> {mob.Hp}/{mob.MaxHp}");
+        BroadcastFx(targetMob.Id, anim, snd);
+        Log.Info($"      (lua) {sp.Name} -> healed mob {targetMob.Id} '{targetMob.Name}' for {amt} -> {targetMob.Hp}/{targetMob.MaxHp}");
     }
 
     /// <summary>Raise this player's HP (capped at their effective max), refresh their HUD, and redraw the
@@ -1229,11 +1229,8 @@ public sealed partial class Session
         if (mob is null || pc is not null) { LogNoTarget(sp); return false; }
         if (mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
         if (mob.IsBoss) { SendMiniText("Your will is too weak."); return false; }
-        if (mob.OwnerId != 0) { SendMiniText("A spell of this type is already cast."); return false; }
-
-        mob.OwnerId = _char.Id;
-        mob.PetExpiresAt = Environment.TickCount64 + durMs;
-        mob.TargetId = 0;                                       // it stops fighting you the moment it turns
+        if (!_world.CharmMob(mob, _char.Id, durMs))
+        { SendMiniText("A spell of this type is already cast."); return false; }
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
         Log.Info($"      (lua) {sp.Name} -> charmed mob {mob.Id} '{mob.Name}' for {durMs}ms (owner {_char.Id})");
@@ -1259,10 +1256,7 @@ public sealed partial class Session
         { SendMiniText($"{mob.Name} shakes off the spell."); return true; }
 
         int dur = mob.IsBoss ? bossDurMs : durMs;
-        mob.AmnesiaBy = _char.Id;
-        mob.AmnesiaUntil = Environment.TickCount64 + dur;
-        mob.ClearThreat(_char.Id);
-        if (mob.TargetId == _char.Id) mob.TargetId = 0;   // it loses interest immediately, not next tick
+        _world.ForgetPlayer(mob, _char.Id, dur);
 
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(mob.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
@@ -1891,7 +1885,7 @@ public sealed partial class Session
     {
         ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
         if (pc is not null) pc.ArmDamageAmp(mult, durMs);
-        else if (mob is not null) { mob.DamageAmp = mult; mob.DamageAmpUntil = Environment.TickCount64 + durMs; }
+        else if (mob is not null) _world.ArmDamageAmp(mob, mult, durMs);
     }
 
     /// <summary>Wake up — on damage (RTK's rule), or when the timer lapses. Clears the slot so a Cure isn't
@@ -2444,9 +2438,7 @@ public sealed partial class Session
 
         var mob = SummonWorldMob(def.Look, sx, sy, def.Name, def.Hp, dir: placeDir, color: def.Color,
                                   exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
-        mob.OwnerId = _char.Id;
-        mob.Summoned = true;   // conjured, so World.Tick DESPAWNS it at PetExpiresAt (an endeared mob reverts instead)
-        mob.PetExpiresAt = Environment.TickCount64 + 300_000;
+        _world.CharmMob(mob, _char.Id, 300_000, summoned: true);   // conjured, so World.Tick despawns it at PetExpiresAt
         Log.Info($"      {sp.Name}(lua) -> summoned pet '{mob.Name}' ({mob.Id}) for player {_char.Id} at ({sx},{sy})");
         return true;
     }

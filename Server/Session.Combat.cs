@@ -349,8 +349,7 @@ public sealed partial class Session
     {
         var mob = _world.MobAt(_char.Map, fx2, fy2);
         if (mob is null || mob.IsNpc) return;
-        if (mob.FrozenUntil > Environment.TickCount64) return;   // RTK checkIfCast(paras)
-        mob.FrozenUntil = Environment.TickCount64 + 2000;
+        if (!_world.HoldMob(mob, 2000)) return;   // RTK checkIfCast(paras)
         SendMiniText("You cast paralyze.");
         Log.Info($"   -> weapon proc: viper stick paralyzes mob {mob.Id} '{mob.Name}' for 2000ms");
     }
