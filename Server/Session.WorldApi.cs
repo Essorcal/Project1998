@@ -263,21 +263,22 @@ public sealed partial class Session
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
     public void DespawnEntity(uint id) { lock (_viewLock) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); } SendDespawn(id); }  // 0x0E
 
-    // Non-blocking enqueue. Peer broadcasts and mob AI call this ON the shared World.TickLoop thread, so it
-    // must never block: it just hands the frame to the outbound channel (WriterLoop does the socket write).
-    // If the queue is full the client can't keep up with the world — drop IT, not the tick thread. The
-    // single-reader channel preserves frame order, so bytes never interleave mid-packet (what _sendLock did).
+    // The one funnel every outbound packet in the server goes through, and the top half of the test seam:
+    // it hands the frame to _out and does nothing transport-specific itself. TcpOutbound is a non-blocking
+    // enqueue onto the bounded outbound channel — peer broadcasts and mob AI call this ON the shared
+    // World.TickLoop thread, so it must never block, and the socket write happens on that transport's own
+    // writer task. If the queue is full the client can't keep up with the world — drop IT, not the tick
+    // thread. The single-reader channel preserves frame order, so bytes never interleave mid-packet (what
+    // _sendLock did).
     // (The `_gameInc++` at call sites is a benign nonce and not guarded; a rare duplicate is harmless since
     // each packet carries its own inc in the header.)
     private void Send(byte[] data)
     {
         if (Volatile.Read(ref _closed) != 0) return;
-        long nowMs = Environment.TickCount64;
-        Volatile.Write(ref _lastOutboundMs, nowMs);            // silence watchdog
-        if (data.Length > 3) LastOutboundOp = data[3];         // aa | len_hi | len_lo | op
-        // Stamped on enqueue so WriterLoop can report how long the frame sat here before it hit the socket.
-        if (_outbound.Writer.TryWrite(new Outbound(data, nowMs))) return;
-        Log.Info($"!! {_remote} outbound queue full ({OutboundCapacity}) — dropping slow client");
+        Volatile.Write(ref _lastOutboundMs, Environment.TickCount64);   // silence watchdog
+        if (data.Length > 3) LastOutboundOp = data[3];                  // aa | len_hi | len_lo | op
+        if (_out.Send(data)) return;
+        Log.Info($"!! {_remote} outbound queue full ({_out.Capacity}) — dropping slow client");
         CloseConnection("slow client (outbound queue full)");
     }
 }
