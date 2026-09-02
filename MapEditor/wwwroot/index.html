@@ -79,9 +79,10 @@
         <div id="wbList"></div>
         <div class="sbBtns">
           <button id="wbExport" class="btn tiny" disabled title="write Warps.csv rows for the pending pairs to dist/NexusTK-Map-Editor/saved/csvs — append them to game-data\Warps.csv yourself, then @reload">Export rows</button>
+          <button id="wbApply" class="btn tiny" disabled title="moves rewrite rows that already exist, so they cannot be hand-appended: this writes the whole Warps.csv — into game-data in DIRECT mode, else to the tool's saved folder to diff over yourself">Apply moves</button>
           <button id="wbClear" class="btn tiny" disabled>Clear all</button>
         </div>
-        <div class="sbHint">source cell → destination cell (switch maps freely between clicks)<br>place the RETURN leg too — ⚠ marks pairs with no pending return<br>click a cyan diamond to remove its pair · Esc cancels a source<br>rows save to the tool's saved folder — game files never written</div>
+        <div class="sbHint">source cell → destination cell (switch maps freely between clicks)<br>place the RETURN leg too — ⚠ marks pairs with no pending return<br>click an existing cyan diamond to MOVE it (amber = pending move)<br>click a pending diamond to remove it · Esc cancels<br>new rows save to the tool's saved folder — game files never written</div>
       </div>
       <div id="miniWrap" title="minimap — click or drag to move the view">
         <button id="miniHide" title="hide the minimap">✕</button>

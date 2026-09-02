@@ -29,8 +29,12 @@ public static class Markers
             if (!Int(r, "SourceMapId", out var sm) || !Int(r, "SourceX", out var sx) || !Int(r, "SourceY", out var sy)
                 || !Int(r, "DestinationMapId", out var dm) || !Int(r, "DestinationX", out var dx) || !Int(r, "DestinationY", out var dy))
                 continue;
-            if (sm == id) warpsOut.Add(new { x = sx, y = sy, m = dm, dx, dy, name = mapName(dm) });
-            if (dm == id) warpsIn.Add(new { x = dx, y = dy, m = sm, sx, sy, name = mapName(sm) });
+            // WarpId rides along so the editor can address this exact row when moving an
+            // endpoint (PUT /api/warps.csv) — without it a marker is just a pair of coords
+            // and the client cannot say WHICH row it means.
+            Int(r, "WarpId", out var wid);
+            if (sm == id) warpsOut.Add(new { id = wid, x = sx, y = sy, m = dm, dx, dy, name = mapName(dm) });
+            if (dm == id) warpsIn.Add(new { id = wid, x = dx, y = dy, m = sm, sx, sy, name = mapName(sm) });
         }
 
         // A trigger row is a thin band: the fixed axis in [FixedLo,FixedHi], the other axis

@@ -222,7 +222,7 @@ app.MapPost("/api/maps", (NewMapReq req) =>
 
 // Save writes the DRAFT only — unless ?direct=true, which overwrites the shipped map
 // (and PUBLISHES a new map for real: its map_index.csv row appends, the sidecar clears).
-app.MapPut("/api/map/{id:int}", async (int id, bool direct, HttpRequest req) =>
+app.MapPut("/api/map/{id:int}", async (int id, HttpRequest req, bool direct = false) =>
 {
     if (!TryMap(id, out var dims)) return Results.BadRequest("unknown map id");
     using var ms = new MemoryStream();
@@ -271,7 +271,7 @@ app.MapGet("/api/map/{id:int}/markers", (int id) =>
 // file's current max. Like Corrections, the rows DOWNLOAD for a deliberate hand-append —
 // the editor never writes the tracked CSVs (Content.LoadSpawns only reads
 // SpnMobId/SpnMapId/SpnX/SpnY; the RTK bookkeeping columns get zeros).
-app.MapPost("/api/map/{id:int}/spawns.csv", (int id, bool direct, List<PlacedSpawn> placed, HttpResponse resp) =>
+app.MapPost("/api/map/{id:int}/spawns.csv", (int id, List<PlacedSpawn> placed, HttpResponse resp, bool direct = false) =>
 {
     if (!TryMap(id, out var dims)) return Results.BadRequest("unknown map id");
     if (placed is null || placed.Count == 0) return Results.BadRequest("no spawn points in body");
@@ -304,7 +304,7 @@ app.MapPost("/api/map/{id:int}/spawns.csv", (int id, bool direct, List<PlacedSpa
 // cells that differ from the SHIPPED map — saves are drafts that never touch it, so
 // game-data/maps IS the baseline. Small fixes become reviewable CSV rows in git instead
 // of a rewritten binary map.
-app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, bool direct, HttpRequest req, HttpResponse resp) =>
+app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, HttpRequest req, HttpResponse resp, bool direct = false) =>
 {
     if (!index.TryGetValue(id, out var dims))
         return newMaps.ContainsKey(id)
@@ -358,7 +358,7 @@ app.MapPost("/api/map/{id:int}/mapcells.csv", async (int id, bool direct, HttpRe
 // Placed-warp export: JSON [{sm,sx,sy,dm,dx,dy}] → Warps.csv rows, WarpId numbered after
 // the file's current max, written to saved/csvs for a deliberate hand-append. Pairs span
 // maps, so this is one global file rather than per-map.
-app.MapPost("/api/warps.csv", (bool direct, List<PlacedWarp> warps, HttpResponse resp) =>
+app.MapPost("/api/warps.csv", (List<PlacedWarp> warps, HttpResponse resp, bool direct = false) =>
 {
     if (warps is null || warps.Count == 0) return Results.BadRequest("no warp pairs in body");
     foreach (var w in warps)
@@ -391,13 +391,80 @@ app.MapPost("/api/warps.csv", (bool direct, List<PlacedWarp> warps, HttpResponse
     return Results.Text(header + sb, "text/csv");
 });
 
+// Warp EDIT: JSON [{id,sx,sy,dx,dy}] moves an endpoint of a row that already exists.
+// Unlike every other write here this cannot be an append — the row is already in the file —
+// so it rewrites Warps.csv whole, touching only the addressed WarpIds and passing every
+// other line through byte-for-byte (comments, spacing and column text included). Without
+// ?direct=true the rewritten file goes to saved/csvs/Warps.csv to be diffed and copied over
+// by hand, keeping the default "game files never written" promise.
+app.MapPut("/api/warps.csv", (List<WarpEdit> edits, HttpResponse resp, bool direct = false) =>
+{
+    if (edits is null || edits.Count == 0) return Results.BadRequest("no warp edits in body");
+    var byId = new Dictionary<int, WarpEdit>();
+    foreach (var e in edits)
+    {
+        if (byId.ContainsKey(e.Id)) return Results.BadRequest($"WarpId {e.Id} edited twice in one request");
+        byId[e.Id] = e;
+    }
+
+    var path = Path.Combine(gameData, "Warps.csv");
+    if (!File.Exists(path)) return Results.BadRequest("game-data/Warps.csv not found");
+    var text = File.ReadAllText(path);
+    var lines = text.Split('\n');                 // keeps any '\r' on the line, so CRLF survives
+
+    var applied = new List<string>();
+    var seen = new HashSet<int>();
+    for (int i = 0; i < lines.Length; i++)
+    {
+        var line = lines[i];
+        var bare = line.TrimEnd('\r');
+        if (bare.Length == 0 || bare.StartsWith('#')) continue;
+        var cols = bare.Split(',');
+        if (cols.Length < 7 || !int.TryParse(cols[0], out var wid) || !byId.TryGetValue(wid, out var e)) continue;
+        if (!int.TryParse(cols[1], out var sm) || !int.TryParse(cols[4], out var dm)) continue;
+        if (!TryMap(sm, out var sd) || !TryMap(dm, out var dd))
+            return Results.BadRequest($"WarpId {wid} references an unknown map");
+        if (e.Sx < 0 || e.Sy < 0 || e.Sx >= sd.Xs || e.Sy >= sd.Ys)
+            return Results.BadRequest($"WarpId {wid}: source ({e.Sx},{e.Sy}) outside TK{sm} {sd.Xs}x{sd.Ys}");
+        if (e.Dx < 0 || e.Dy < 0 || e.Dx >= dd.Xs || e.Dy >= dd.Ys)
+            return Results.BadRequest($"WarpId {wid}: destination ({e.Dx},{e.Dy}) outside TK{dm} {dd.Xs}x{dd.Ys}");
+
+        applied.Add($"{wid}: TK{sm} ({cols[2]},{cols[3]})->({e.Sx},{e.Sy})  TK{dm} ({cols[5]},{cols[6]})->({e.Dx},{e.Dy})");
+        lines[i] = $"{wid},{sm},{e.Sx},{e.Sy},{dm},{e.Dx},{e.Dy}" + (line.EndsWith('\r') ? "\r" : "");
+        seen.Add(wid);
+    }
+
+    var missing = byId.Keys.Where(k => !seen.Contains(k)).ToList();
+    if (missing.Count > 0) return Results.BadRequest($"WarpId(s) not in Warps.csv: {string.Join(", ", missing)}");
+
+    var rewritten = string.Join('\n', lines);
+    string savedAs;
+    if (direct)
+    {
+        var tmp = path + ".tmp";                  // write-then-swap: never leave a half-written Warps.csv
+        File.WriteAllText(tmp, rewritten);
+        File.Move(tmp, path, overwrite: true);
+        savedAs = "game-data/Warps.csv";
+    }
+    else
+    {
+        Directory.CreateDirectory(csvsDir);
+        var outFile = Path.Combine(csvsDir, "Warps.csv");
+        File.WriteAllText(outFile, rewritten);
+        savedAs = SavedRel(outFile);
+    }
+    resp.Headers["X-Row-Count"] = seen.Count.ToString();
+    resp.Headers["X-Saved"] = savedAs;
+    return Results.Ok(new { edited = seen.Count, direct, path = savedAs, applied });
+});
+
 // Placed-NPC export: each pending placement is a COPY of an existing NPCs.csv row (the
 // template) at a new map/cell, with the identifier/description optionally overridden —
 // look, type, and behavior flags come from the template verbatim, since those are what
 // the editor cannot author. Rows are emitted in the file's own column order, NpcId
 // numbered past the current max, Enabled forced to 1, and written to saved/csvs for a
 // deliberate hand-append.
-app.MapPost("/api/npcs.csv", (bool direct, List<PlacedNpc> npcs, HttpResponse resp) =>
+app.MapPost("/api/npcs.csv", (List<PlacedNpc> npcs, HttpResponse resp, bool direct = false) =>
 {
     if (npcs is null || npcs.Count == 0) return Results.BadRequest("no NPC placements in body");
     foreach (var p in npcs)
@@ -654,6 +721,11 @@ record PlacedSpawn(int X, int Y, int Mob);
 
 // One pending warp leg (JSON body of /api/warps.csv): source map/cell → destination map/cell.
 record PlacedWarp(int Sm, int Sx, int Sy, int Dm, int Dx, int Dy);
+
+// An in-place move of an existing Warps.csv row: the WarpId names it, the four coords are
+// the new endpoints (the source and destination MAPS are not editable — moving a leg to a
+// different map is a different door, so delete and place one).
+record WarpEdit(int Id, int Sx, int Sy, int Dx, int Dy);
 
 // One pending NPC placement (JSON body of /api/npcs.csv): a template NpcId copied to a new
 // map/cell, identifier/description optionally overridden.
