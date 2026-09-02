@@ -38,6 +38,8 @@ const S = {
   selMob: null, placed: [],      // spawn tool: chosen mob + this map's pending points (localStorage)
   warpArm: null,                 // warp tool: the clicked source waiting for its destination
   placedWarps: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedWarps')) || []; } catch { return []; } })(),
+  warpMove: null,                // warp tool: an EXISTING row picked up, waiting for its new cell
+  warpEdits: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.warpEdits')) || []; } catch { return []; } })(),
   selNpc: null,                  // npc tool: the template NPC being copied
   placedNpcs: (() => { try { return JSON.parse(localStorage.getItem('mapeditor.placedNpcs')) || []; } catch { return []; } })(),
   layers: { ground: true, obj: true, pass: false, warp: true, spawn: true, npc: true, override: true, grid: false },
@@ -786,16 +788,73 @@ async function exportNpcs() {
 // return legs are separate doorway cells the mapper places, so the tool nudges ("one-way")
 // instead of guessing. Pairs are global (they span maps) and live in localStorage;
 // Export writes Warps.csv rows to the tool's saved folder — game files never written.
-function saveWarps() { try { localStorage.setItem('mapeditor.placedWarps', JSON.stringify(S.placedWarps)); } catch {} }
+function saveWarps() {
+  try {
+    localStorage.setItem('mapeditor.placedWarps', JSON.stringify(S.placedWarps));
+    localStorage.setItem('mapeditor.warpEdits', JSON.stringify(S.warpEdits));
+  } catch {}
+}
+
+// A pending move's CURRENT cell for this map — where the marker is drawn and clicked, which
+// is the moved-to cell, not where Warps.csv still has it.
+function editAt(x, y) {
+  return S.warpEdits.findIndex(e => (e.end === 'src' ? e.sm === S.mapId && e.sx === x && e.sy === y
+                                                     : e.dm === S.mapId && e.dx === x && e.dy === y));
+}
+
+// An existing Warps.csv row with an endpoint on this cell, skipping any already picked up —
+// warpsOut means the SOURCE lives here (moving it moves the trigger), warpsIn means the
+// ARRIVAL does (moving it moves where players land).
+function existingWarpAt(x, y) {
+  const mk = S.markers;
+  if (!mk) return null;
+  const busy = id => S.warpEdits.some(e => e.id === id);
+  const out = (mk.warpsOut || []).find(w => w.id && w.x === x && w.y === y && !busy(w.id));
+  if (out) return { id: out.id, end: 'src', sm: S.mapId, sx: out.x, sy: out.y, dm: out.m, dx: out.dx, dy: out.dy, other: out.name };
+  const inn = (mk.warpsIn || []).find(w => w.id && w.x === x && w.y === y && !busy(w.id));
+  if (inn) return { id: inn.id, end: 'dst', sm: inn.m, sx: inn.sx, sy: inn.sy, dm: S.mapId, dx: inn.x, dy: inn.y, other: inn.name };
+  return null;
+}
 
 function placeWarpAt(x, y) {
+  // --- moving an EXISTING row: second click drops the picked-up endpoint here -------------
+  if (S.warpMove) {
+    const m = S.warpMove;
+    const onMap = m.end === 'src' ? m.sm : m.dm;
+    if (onMap !== S.mapId) { flashHint(`that leg lives on TK${onMap} — switch back to move it (Esc cancels)`); return; }
+    const sameCell = m.end === 'src' ? (m.sx === x && m.sy === y) : (m.dx === x && m.dy === y);
+    if (sameCell) { S.warpMove = null; flashHint('move cancelled'); saveWarps(); updateWarpBox(); invalidate(); return; }
+    if (m.end === 'src' && blockedWord(gAt(idx(x, y))))
+      flashHint('note: this trigger cell is blocked — fine, warp precedence beats collision');
+    if (m.end === 'dst' && blockedWord(gAt(idx(x, y))))
+      flashHint('note: this arrival cell is blocked — players would land in a wall');
+    const e = { ...m, osx: m.sx, osy: m.sy, odx: m.dx, ody: m.dy };
+    if (m.end === 'src') { e.sx = x; e.sy = y; } else { e.dx = x; e.dy = y; }
+    S.warpEdits.push(e);
+    S.warpMove = null;
+    saveWarps(); updateWarpBox(); invalidate(); updateStatus();
+    return;
+  }
   if (!S.warpArm) {
     // click on a pending endpoint on this map removes that pair
     const i = S.placedWarps.findIndex(w => (w.sm === S.mapId && w.sx === x && w.sy === y)
       || (w.dm === S.mapId && w.dx === x && w.dy === y));
-    if (i >= 0) {
+    // Pending work first (a reverted move, then a placed pair), so a click always undoes
+    // what YOU put here before it reaches for a row that was already in the file.
+    const ei = editAt(x, y);
+    const ex = ei >= 0 || i >= 0 ? null : existingWarpAt(x, y);
+    if (ei >= 0) {
+      const e = S.warpEdits[ei];
+      S.warpEdits.splice(ei, 1);
+      flashHint(`move of warp ${e.id} reverted`);
+    } else if (i >= 0) {
       S.placedWarps.splice(i, 1);
       flashHint('warp pair removed');
+    } else if (ex) {
+      S.warpMove = ex;
+      flashHint(ex.end === 'src'
+        ? `warp ${ex.id} → ${ex.other} picked up — click the new TRIGGER cell (Esc cancels)`
+        : `arrival of warp ${ex.id} from ${ex.other} picked up — click the new LANDING cell (Esc cancels)`);
     } else {
       S.warpArm = { m: S.mapId, x, y, name: S.mapName };
       flashHint('source set — now click the destination cell (switch maps if needed, Esc cancels)');
@@ -818,13 +877,44 @@ function placeWarpAt(x, y) {
 
 function updateWarpBox() {
   $('wbCount').textContent = S.placedWarps.length ? `${S.placedWarps.length} pending` : '';
-  $('wbStep').textContent = S.warpArm
-    ? `source: ${S.warpArm.name || 'TK' + S.warpArm.m} (${S.warpArm.x},${S.warpArm.y}) — click the destination`
-    : 'click the SOURCE cell';
+  $('wbStep').textContent = S.warpMove
+    ? `moving warp ${S.warpMove.id} — click the new ${S.warpMove.end === 'src' ? 'TRIGGER' : 'LANDING'} cell`
+    : S.warpArm
+      ? `source: ${S.warpArm.name || 'TK' + S.warpArm.m} (${S.warpArm.x},${S.warpArm.y}) — click the destination`
+      : 'click the SOURCE cell — or an existing cyan diamond to move it';
   $('wbExport').disabled = !S.placedWarps.length;
-  $('wbClear').disabled = !S.placedWarps.length;
+  $('wbClear').disabled = !S.placedWarps.length && !S.warpEdits.length;
+  $('wbApply').disabled = !S.warpEdits.length;
+  $('wbApply').textContent = S.warpEdits.length ? `Apply ${S.warpEdits.length} move${S.warpEdits.length === 1 ? '' : 's'}` : 'Apply moves';
   const list = $('wbList');
   list.innerHTML = '';
+  // Pending MOVES first — they rewrite rows that already exist, so they read differently
+  // from placements and are applied by a different button.
+  for (const [i, e] of S.warpEdits.entries()) {
+    const d = document.createElement('div');
+    d.className = 'mobrow';
+    d.title = 'click to jump to the moved cell';
+    const label = document.createElement('span');
+    label.className = 'name';
+    label.textContent = e.end === 'src'
+      ? `#${e.id} trigger (${e.osx},${e.osy}) → (${e.sx},${e.sy})`
+      : `#${e.id} landing (${e.odx},${e.ody}) → (${e.dx},${e.dy})`;
+    const rm = document.createElement('span');
+    rm.className = 'mono dim';
+    rm.textContent = '✕';
+    rm.title = 'revert this move';
+    rm.onclick = ev => { ev.stopPropagation(); S.warpEdits.splice(i, 1); saveWarps(); updateWarpBox(); invalidate(); };
+    d.onclick = async () => {
+      const m = e.end === 'src' ? e.sm : e.dm, cx = e.end === 'src' ? e.sx : e.dx, cy = e.end === 'src' ? e.sy : e.dy;
+      if (S.mapId !== m) await loadMap(m);
+      if (S.mapId !== m) return;
+      const v = viewSize();
+      S.cam.x = cx * CELL - v.w / 2; S.cam.y = cy * CELL - v.h / 2;
+      clampCam(); invalidate();
+    };
+    d.append(label, rm);
+    list.appendChild(d);
+  }
   for (const [i, w] of S.placedWarps.entries()) {
     const back = S.placedWarps.some(o => o.sm === w.dm && o.dm === w.sm);
     const d = document.createElement('div');
@@ -863,6 +953,28 @@ async function exportWarps() {
     saveWarps(); updateWarpBox(); loadMarkers(S.mapId); invalidate();
     flashHint(`${n} row${n === 1 ? '' : 's'} APPENDED to game-data/Warps.csv — @reload for the server`);
   } else flashHint(`${n} Warps.csv row${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — append by hand, then @reload`);
+}
+
+// Applying MOVES is not an append — the rows already exist, so the server rewrites Warps.csv
+// whole (see PUT /api/warps.csv). Outside direct mode the rewritten file lands in the saved
+// folder to be diffed and copied over, so the default still never touches game-data.
+async function applyWarpEdits() {
+  if (!S.warpEdits.length) return;
+  const n = S.warpEdits.length;
+  if (S.direct && !confirm(`Rewrite ${n} row${n === 1 ? '' : 's'} in game-data/Warps.csv?\n\n`
+    + S.warpEdits.map(e => e.end === 'src'
+      ? `#${e.id} trigger (${e.osx},${e.osy}) → (${e.sx},${e.sy})`
+      : `#${e.id} landing (${e.odx},${e.ody}) → (${e.dx},${e.dy})`).join('\n'))) return;
+  const r = await fetch(`/api/warps.csv${S.direct ? '?direct=true' : ''}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(S.warpEdits.map(e => ({ id: e.id, sx: e.sx, sy: e.sy, dx: e.dx, dy: e.dy }))),
+  });
+  if (!r.ok) { flashHint('move failed: ' + await r.text()); return; }
+  S.warpEdits = []; S.warpMove = null;
+  saveWarps(); updateWarpBox(); loadMarkers(S.mapId); invalidate();
+  flashHint(S.direct
+    ? `${n} row${n === 1 ? '' : 's'} REWRITTEN in game-data/Warps.csv — @reload for the server`
+    : `Warps.csv with ${n} move${n === 1 ? '' : 's'} → ${r.headers.get('X-Saved')} — diff it over game-data\\Warps.csv, then @reload`);
 }
 
 // --------------------------------------------------------------------------- minimap
@@ -1072,6 +1184,16 @@ function drawMarkers(ctx, camX, camY, s) {
     if (w.dm === S.mapId) glyph(w.dx, w.dy, '#67e8f9', 'diamond', false);
   }
   if (S.warpArm && S.warpArm.m === S.mapId) glyph(S.warpArm.x, S.warpArm.y, '#67e8f9', 'diamond', true);
+  // Pending MOVES in amber, so a rewritten row never reads as a newly placed one: hollow
+  // ghost on the cell Warps.csv still points at, filled on the cell it will point at.
+  for (const e of S.warpEdits) {
+    if (e.end === 'src' && e.sm === S.mapId) { glyph(e.osx, e.osy, '#f59e0b', 'diamond', false); glyph(e.sx, e.sy, '#f59e0b', 'diamond', true); }
+    if (e.end === 'dst' && e.dm === S.mapId) { glyph(e.odx, e.ody, '#f59e0b', 'diamond', false); glyph(e.dx, e.dy, '#f59e0b', 'diamond', true); }
+  }
+  if (S.warpMove) {
+    const m = S.warpMove, on = m.end === 'src' ? m.sm : m.dm;
+    if (on === S.mapId) glyph(m.end === 'src' ? m.sx : m.dx, m.end === 'src' ? m.sy : m.dy, '#f59e0b', 'diamond', true);
+  }
   for (const p of S.placedNpcs) if (p.map === S.mapId) glyph(p.x, p.y, '#00e676', 'rect', true);
 }
 
@@ -1227,6 +1349,7 @@ function bindKeys() {
       S.selection = null;
       if (S.tool === 'walk' && S.walker.x >= 0) { S.walker = { x: -1, y: -1 }; S.bump = ''; updateStatus(); }
       if (S.warpArm) { S.warpArm = null; updateWarpBox(); updateStatus(); }
+      if (S.warpMove) { S.warpMove = null; updateWarpBox(); updateStatus(); }
       invalidate(); return;
     }
     if (e.key === '+' || e.key === '=') { stepScale(1); return; }
@@ -1710,9 +1833,14 @@ function bindUI() {
   };
   buildNpcList();
   $('wbExport').onclick = exportWarps;
+  $('wbApply').onclick = applyWarpEdits;
   $('wbClear').onclick = () => {
-    if (!S.placedWarps.length || !confirm(`Remove all ${S.placedWarps.length} pending warp pair${S.placedWarps.length === 1 ? '' : 's'}?`)) return;
-    S.placedWarps = []; S.warpArm = null;
+    const n = S.placedWarps.length + S.warpEdits.length;
+    if (!n) return;
+    const what = [S.placedWarps.length ? `${S.placedWarps.length} pending pair${S.placedWarps.length === 1 ? '' : 's'}` : '',
+                  S.warpEdits.length ? `${S.warpEdits.length} pending move${S.warpEdits.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+    if (!confirm(`Discard ${what}?`)) return;
+    S.placedWarps = []; S.warpEdits = []; S.warpArm = null; S.warpMove = null;
     saveWarps(); updateWarpBox(); invalidate(); updateStatus();
   };
   $('btnImport').onclick = () => $('fileImport').click();
