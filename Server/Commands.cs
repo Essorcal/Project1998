@@ -192,7 +192,7 @@ public sealed partial class Session
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
         G("reload",  (s, a) => s.ReloadContent(),  "",                    "hot-reload file-backed content"),
-        G("restart", (s, a) => s.RestartCmd(a),    "[minutes] [reason] | cancel", "schedule a server restart, warning everyone as it nears"),
+        G("restart", (s, a) => s.RestartCmd(a),    "[minutes 0-1440] [reason] | cancel|off", "schedule a server restart, warning everyone as it nears (minutes may be fractional; bare @restart reports)"),
         G("announce",(s, a) => s.AnnounceCmd(a),   "<message>",           "system line to every player online (the restart-countdown channel)"),
         G("rabbit",  (s, a) => s.SpawnRabbit(),    "",                    "one wandering, killable rabbit"),
         G("kill",    (s, a) => s.KillMobs(),       "",                    "despawn every mob on this map"),
@@ -202,7 +202,7 @@ public sealed partial class Session
         // right for the resulting class/level/mark/alignment. That's why there is no longer a "@spells" —
         // there is nothing left for it to do.
         T("lvl",     (s, a) => s.RespecLevel(a.Int(0, s._char.Level)),
-                                                   "<1-99>",              "rebuild as level n: accurate stats + the matching spellbook (bare @lvl rebuilds at the level you are)"),
+                                                   "[1-99]",              "rebuild as level n: accurate stats + the matching spellbook (bare @lvl rebuilds at the level you are)"),
         // @lvl's complement, not its rival: @lvl REBUILDS at a level, @exp earns one — it's the only way to
         // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains).
         T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = eligible for the totem-time bonus)"),
@@ -305,7 +305,7 @@ public sealed partial class Session
         G("mobact",   (s, a) => s.MobActionProbe(a), "<type> [time]", "set + preview the mob attack-pose action (0x1A) on the faced mob"),
         G("efx",      (s, a) => s.EffectProbe(a),   "<id> [id2 ...]", "play raw Effect.tbl animations over yourself, ids 0-127, up to 8 at once"),
         G("mtx",      (s, a) => s.MiniTextProbe(a), "<type> [text...]", "audition a raw SendMiniText channel (0 wisp, 3 mini/status, 5 system, 11 group, 12 clan)"),
-        G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow | auto | raw <0-255>", "pin this map's zone weather (auto releases it back to the season)"),
+        G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow|0-2 | auto | raw <0-255>", "pin this map's zone weather, by name or by index (auto releases it back to the season)"),
         G("clock",    (s, a) => s.ClockCmd(a),      "[0-23 | real]", "read or pin the shared in-game hour (totem-time windows follow it; real = release)"),
         G("setting",  (s, a) => s.SettingCmd(a),    "[name] [on|off]", "read/set any 0x1b Options toggle (omit on|off to toggle; bare @setting lists them all)"),
         G("doze",     (s, a) => s.DozeSelfCmd(a),   "[secs|off]", "put YOURSELF to sleep (Doze can't be self-targeted on the wire)"),
