@@ -12,7 +12,6 @@ for (int i = 0; i < args.Length; i++)
     if (args[i] == "--ports" && i + 1 < args.Length)
         ports = Array.ConvertAll(args[i + 1].Split(','), int.Parse);
 }
-Shared.ChannelPorts.ConfigureGamePair(ports);
 
 // Confirmed by reversing NexusTK.exe: 4.95 has ONE cipher on both channels — the simple
 // NexonInc XOR (no name-derived/table cipher, no index/trailer bytes). The old --mapkey/--index
@@ -32,6 +31,18 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
+
+try
+{
+    Shared.ChannelPorts.ConfigureGamePair(ports);
+}
+catch (ArgumentException e)
+{
+    Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
+    Log.Shutdown();
+    Environment.ExitCode = 1;
+    return;
+}
 
 Log.Info($"=== Project1998 (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");

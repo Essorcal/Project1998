@@ -19,7 +19,6 @@ for (int i = 0; i < args.Length; i++)
     if (args[i] == "--ports" && i + 1 < args.Length)
         ports = Array.ConvertAll(args[i + 1].Split(','), int.Parse);
 }
-ChannelPorts.ConfigureLoginPair(ports);
 
 // Persist this process's log too (the game server has done so since the nmail "crash" whose console
 // output was lost). Rotated by size — see LoginServer/Log.cs. Note WireEnabled is OFF here by default:
@@ -29,6 +28,17 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
+
+try
+{
+    ChannelPorts.ConfigureLoginPair(ports);
+}
+catch (ArgumentException e)
+{
+    Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
+    Environment.ExitCode = 1;
+    return;
+}
 
 var store = new CharacterStore(RepoPaths.CharsDir());
 Log.Info($"=== Project1998 LOGIN starting; ports={string.Join(",", ports)}; " +
