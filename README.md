@@ -83,6 +83,22 @@ all live in it. The four ports are recorded in `session.json`, and `-Status` and
 there, so the base is only given at start. `run-server.bat` stays the plain path; the script does not
 replace it.
 
+**Test-Branch.ps1** (Windows) -- turns "this branch didn't change X behaviour" into a table instead of a
+claim: it starts a pair from a checkout with `Serve.ps1` (default port base 3000, so it never collides
+with a developer's own pair on 2000), waits for the game server's status probe to answer, runs every
+script in [`project1998-testclient`](https://github.com/Essorcal/project1998-testclient)`\scripts\`
+against it with `--json`, stops the pair, and prints one line per script -- exit code, expects passed,
+expects failed, wall clock -- exiting 0 only if every script exited 0.
+
+```powershell
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet
+```
+
+`-Scripts` points it at other scripts (a glob or a list) instead of the full suite, `-KeepRunning` skips
+the stop for a developer who wants to poke at the pair afterwards, and `-Json <path>` writes the same
+results as JSON for a reviewer to attach to a PR. It refuses the same way `Serve.ps1` does when the ports
+are already held (exit 2, and says who); a readiness timeout or any script exiting nonzero is exit 1.
+
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:
 
