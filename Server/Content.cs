@@ -2,13 +2,6 @@ using Shared;
 
 namespace Server;
 
-/// <summary>One "slay-one-of" quest target from RTK MinorQuest.lua (extracted to MinorQuests.csv). A quest is
-/// picked at random among those whose Level/Stat/Mark ranges the player falls in; the objective is met by
-/// killing any one of <see cref="Mobs"/>. <see cref="Tier"/> is "Minor"/"Major"/"Epic".</summary>
-public sealed record MinorQuestDef(
-    string Tier, string Key, string DisplayName, IReadOnlyList<string> Mobs,
-    int MinLevel, int MaxLevel, long MinStat, long MaxStat, int MinMark, int MaxMark);
-
 /// <summary>
 /// In-memory game-content registries loaded ONCE at startup from EXTERNAL, gitignored data
 /// (RTK-derived — see docs §17.1). The loader lives in the repo; the data does not, keeping this a
@@ -26,22 +19,11 @@ public static partial class Content
         return d;
     }
 
-    // "Slay one X" quest targets (RTK MinorQuest.lua -> MinorQuests.csv), grouped by tier for the trainer
-    // minor-quest ability. See Server/MinorQuest.cs.
-    public static IReadOnlyList<MinorQuestDef> MinorQuests { get; private set; } = new List<MinorQuestDef>();
-
     // Era-gating overrides for crafting skills (see Server/CraftingToggles.cs + docs/common/Crafting-Values.md).
     // File is optional and sparse: only skills listed here override CraftingToggles.DefaultDisabled;
     // anything absent keeps the code-level default. Columns: Skill,Enabled(0/1).
     public static IReadOnlyDictionary<string, bool> CraftingToggleOverrides { get; private set; } =
         new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-
-    // ---- Mythic alliances (game-data/MythicAlliances.csv) -------------------------------------------
-    // One row per zodiac animal, describing its OWN cave: its enemy, its two sets of bosses, and the
-    // tribute an ally of its enemy must steal from it. Consumed by Server/MythicAlliance.cs, which reads a
-    // quest off the ENEMY's row. An empty file simply means no mythic answers to anything, the same
-    // fail-soft posture as every other table here.
-    public static IReadOnlyList<MythicAllianceDef> MythicAlliances { get; private set; } = new List<MythicAllianceDef>();
 
     // ---- Location / warp geometry (Tier-1 extraction; game-data/*.csv) ------------------------------
     // RTK/RE geometry that used to be hard-coded in the game logic, moved to flat files so it hot-reloads via
@@ -460,15 +442,6 @@ public static partial class Content
     /// this for every table, so a registry that collapses fails CI instead of shipping.</para></summary>
     public static ContentLoadReport LoadReport { get; private set; } = ContentLoadReport.Empty;
 
-    // Quest-locked warps (game-data/WarpQuestLocks.csv): a warp switched OFF until a quest reaches a
-    // stage. Only the warp is affected — the tile stays walkable and the player is never blocked or pushed
-    // back; see Session.WarpLockedByQuest. Keyed on the map PAIR so the lock is one-way: walking back the
-    // way you came is never affected.
-    public sealed record WarpQuestLock(ushort FromMap, ushort ToMap, string QuestKey, int MinStage, string Message);
-
-    public static IReadOnlyDictionary<(ushort From, ushort To), WarpQuestLock> WarpQuestLocks { get; private set; } =
-        new Dictionary<(ushort, ushort), WarpQuestLock>();
-
     /// <summary>Offline check of the registries + fuzzy lookups (run via <c>--selftest</c>).</summary>
     public static void SelfTest()
     {
@@ -821,14 +794,6 @@ public static partial class Content
         foreach (var c in name) if (i < q.Length && c == q[i]) i++;
         return i == q.Length;
     }
-
-    // ---- Star/Moon/Sun armor quest gates (game-data/ArmorQuests.csv) ------------------------------
-    /// <summary>Level + karma tier each armor chain demands, keyed by (base path id, tier name). The tiers
-    /// live in a file because that is the one field the period sources genuinely fight over — see the
-    /// header comment in ArmorQuests.csv. A missing row falls back to <see cref="ArmorQuest"/>'s own
-    /// defaults, so a deleted file degrades to the shipped values rather than an open gate.</summary>
-    public static IReadOnlyDictionary<(int Path, string Tier), (int Level, string Karma)> ArmorQuestGates
-    { get; private set; } = new Dictionary<(int, string), (int, string)>();
 
     // Per-path cumulative-exp-to-level table (RTK rtk/db/level_db.txt, classdb_level): LevelExp[path][level] =
     // total exp needed to LEAVE `level` (i.e. reach level+1). Long-format CSV (game-data/LevelExp.csv,
