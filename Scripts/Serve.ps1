@@ -62,11 +62,14 @@ while "dotnet run" still holds its handle. The cmd window that hosted the batch 
 is gone -- after the server exits it is only a prompt sitting at "Terminate batch job (Y/N)?" -- and it is
 closed even when the server was already gone before -Stop ran.
 
-PORTS. Login binds PortBase and PortBase+1 (4.95 / 5.33), game binds PortBase+5 and PortBase+6, which is
-run-server.bat's 2000/2001 + 2005/2006 at the default. Until Shared/ChannelPorts derives the handoff from
-the login port (#84), a login on 3000 still redirects clients to 2005, so a pair on any other base is
-cross-wired into whatever holds 2005. Every value other than 2000 is therefore REJECTED before anything is
-built or launched. The parameter stays so that #84's follow-up only has to lift the guard.
+PORTS. Login binds PortBase and PortBase+1 (4.95 / 5.33), game binds PortBase+5 and PortBase+6: the rule
+run-server.bat applies to its optional port-base argument and Shared/ChannelPorts applies to the handoff
+since #84, so a login on the base always hands its client to base+5 and any base gives a working pair.
+The base must be 1024..65000, which keeps base+6 inside the port range. Two pairs from two checkouts run
+at once on two bases, each with its own state/, run/ and logs/. One pair per checkout, though: the
+session file lives in the checkout, and so do the bin/ the pair runs from and the database it writes; a
+second pair from the same tree would share all three. The four ports a pair bound are recorded in its
+session file, and -Status and -Stop read them from there rather than from -PortBase (#93).
 
 .PARAMETER Checkout
 The clone to run, inspect or stop. Defaults to the repository this script lives in.
@@ -78,7 +81,9 @@ Account names to grant the tester tier for this run (P1998_TESTERS in the launch
 Account names to grant the GM tier for this run (P1998_GMS in the launched processes only).
 
 .PARAMETER PortBase
-First login port. Only 2000 is accepted until #84 lands; see PORTS above.
+First login port, 1024..65000; the pair binds base, base+1, base+5 and base+6. Default 2000. Used by a
+start, and by -Status to choose which ports to scan when there is no session file; otherwise the recorded
+ports win.
 
 .PARAMETER Status
 Report what is running: the session file if its processes are alive, otherwise "nothing running" plus
@@ -106,7 +111,6 @@ param(
     [string]$Checkout,
     [string[]]$Testers = @(),
     [string[]]$Gms = @(),
-    [ValidateRange(1024, 65000)]
     [int]$PortBase = 2000,
     [switch]$Status,
     [switch]$Stop
@@ -819,8 +823,8 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 if ($Status -and $Stop) { Write-Host "Use one of -Status or -Stop."; exit 1 }
-if ($PortBase -ne 2000) {
-    Write-Host "-PortBase other than 2000 needs #84; not supported yet (the login handoff still sends every client to 2005). Nothing was built or started."
+if ($PortBase -lt 1024 -or ($PortBase + 6) -gt 65535) {
+    Write-Host "-PortBase must be 1024..65000: the pair binds $PortBase, $($PortBase + 1), $($PortBase + 5) and $($PortBase + 6), and all four must be valid ports. Nothing was built or started."
     exit 1
 }
 if (($Status -or $Stop) -and (@($Testers).Count -gt 0 -or @($Gms).Count -gt 0)) {
