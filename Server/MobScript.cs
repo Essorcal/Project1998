@@ -10,8 +10,10 @@ namespace Server;
 ///
 /// <para><b>Event hooks only, and that is deliberate.</b> RTK gives a mob six hooks; four of them
 /// (<c>on_attacked</c>, <c>on_healed</c>, <c>after_death</c>, <c>on_spawn</c>) fire on events, which happen
-/// rarely and can safely take a lock. The other two (<c>move</c>, <c>attack</c>) fire for every mob on every
-/// heartbeat — and a survey of all 265 RTK mob tables found that what they actually contain is idle chatter,
+/// rarely and can safely take a lock — and of those four this host implements three, because
+/// <c>on_healed</c> is NOT wired here: see the note above the hook constants for which heal would have had
+/// to fire it. The other two (<c>move</c>, <c>attack</c>) fire for every mob on every heartbeat — and a
+/// survey of all 265 RTK mob tables found that what they actually contain is idle chatter,
 /// a chance to cast, and paralysis immunity, every one of which is now DATA
 /// (MobChatter.csv / MobSpells.csv / MobBosses.csv). So the per-tick path stays pure C# and this host never
 /// runs inside <c>World._lock</c>, which is what makes it safe: a Lua hook that re-entered the world under
@@ -32,9 +34,11 @@ public static class MobScript
     // mob_ai.lua but nothing ever queued it (World.QueueHook is called with OnSpawn, OnAttacked and
     // AfterDeath and nothing else), so a script defining it loaded and then silently never fired — the worst
     // shape a hook can have, because it looks supported. Removed rather than wired up, and #103 records why:
-    // wiring it means choosing WHICH heal fires it, and this tree has five distinct ones (World.HealMob from
-    // a player's cast, the three boss self-heals in the tick, SuteAi's wounded self-heal, and — on the
-    // #100 branch — a Lua heal reaching back in). Nothing in the RTK material this repo has says which of
+    // wiring it means choosing WHICH heal fires it, and this tree has six distinct ones — World.HealMob from
+    // a player's cast, World.HealMobFromScript from a Lua heal reaching back in (#100), the boss last-stand
+    // save-heal in TryDamage, the two boss self-heals in the tick, and SuteAi's wounded self-heal. (A seventh
+    // write of a mob's HP to full, the harvest node's lapse reset in TryClaimHarvestNode, is a claim being
+    // settled rather than anything a healer did.) Nothing in the RTK material this repo has says which of
     // those RTK's on_healed corresponds to, and picking one would be inventing a game fact (AGENTS.md rule 2)
     // in a PR whose whole point is that behaviour does not change. It comes back the day a source says what
     // it fires on, and that is a two-line change plus a QueueHook call.
