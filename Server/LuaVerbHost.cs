@@ -51,6 +51,8 @@ public enum VerbResult
 /// </summary>
 public sealed class LuaVerbHost
 {
+    internal sealed record PreparedReload(Script Script, Table Verbs);
+
     private readonly string _name;      // the verb file's name, for log messages
     private Script? _script;
     private Table? _verbs;
@@ -78,10 +80,22 @@ public sealed class LuaVerbHost
     {
         using (Session.EnterScriptGate())
         {
+            var (ok, prepared) = PrepareReload(path);
+            if (prepared is not null) CommitReload(prepared);
+            return ok;
+        }
+    }
+
+    /// <summary>Compile a candidate without changing the live host. A null candidate means the rejected or
+    /// missing file keeps the current host, matching <see cref="Load"/>'s established fallback.</summary>
+    internal (bool Ok, PreparedReload? Prepared) PrepareReload(string? path)
+    {
+        using (Session.EnterScriptGate())
+        {
             if (path is null || !File.Exists(path))
             {
                 Log.Warn($"{_name}: no verb file at '{path ?? "(null)"}' — keeping {(_verbs is null ? "the Lua path disabled" : "the previously-loaded verbs")}");
-                return _verbs is not null;
+                return (_verbs is not null, null);
             }
             try
             {
@@ -91,20 +105,27 @@ public sealed class LuaVerbHost
                 if (v.Type != DataType.Table)
                 {
                     Log.Warn($"{_name} defines no global `verbs` table — reload REJECTED, keeping the previous verbs");
-                    return _verbs is not null;
+                    return (_verbs is not null, null);
                 }
-                _script = s; _verbs = v.Table;
-                _rowCache.Clear();   // cached Tables belong to the OLD Script — only safe to drop once it's replaced
-                return true;
+                return (true, new PreparedReload(s, v.Table));
             }
             catch (Exception e)
             {
                 // Warn, not Error: a content author's syntax error, handled (the old verbs keep running). The
                 // exception still rides along — a SyntaxErrorException's DecoratedMessage is the file:line.
                 Log.Warn($"{_name} load failed: {Describe(e)} — reload REJECTED, keeping the previous verbs", e);
-                return _verbs is not null;
+                return (_verbs is not null, null);
             }
         }
+    }
+
+    /// <summary>Install a compiled candidate. The caller holds the shared Lua gate across all four host
+    /// commits, so no invocation can observe only part of the content publication.</summary>
+    internal void CommitReload(PreparedReload prepared)
+    {
+        _script = prepared.Script;
+        _verbs = prepared.Verbs;
+        _rowCache.Clear();   // cached Tables belong to the OLD Script — only safe to drop once it is replaced
     }
 
     /// <summary>Is <paramref name="verb"/> a function in the loaded verb table?</summary>

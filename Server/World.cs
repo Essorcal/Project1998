@@ -2682,7 +2682,7 @@ public sealed class World
             try { summary = Content.Reload(); }
             catch (Exception e)
             {
-                Log.Error("content reload failed — see the exception message for public tables replaced before the failure", e);
+                Log.Error("content reload failed — the previous content publication remains live", e);
                 return (false, e.Message);
             }
             ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides

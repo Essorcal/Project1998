@@ -38,7 +38,7 @@ public static partial class Content
 
     // Era-gated content (game-data/EraFeatures.csv + the EraDate scalar) is NOT loaded here: it lives in
     // Shared.EraCalendar, because the LOGIN server needs the same calendar to place new characters. Load()
-    // below calls EraCalendar.Reload() so @reload still picks up edits. See Server/Era.cs.
+    // stages EraCalendar with the snapshot so @reload still picks up edits atomically. See Server/Era.cs.
 
 
     // ---- Mythic Nexus zodiac cave entrances (game-data/MythicCaves.csv) ------------------------------

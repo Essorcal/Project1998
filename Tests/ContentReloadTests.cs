@@ -97,6 +97,64 @@ public class ContentReloadTests
     }
 
     [Fact]
+    public void RealMidLoadFailureKeepsEraDoorsLuaAndSnapshot()
+    {
+        lock (TestProcessState.Gate)
+        {
+            TestProcessState.LoadContent();
+            object beforeSnapshot = Content.SnapshotIdentityForTests;
+            int beforeEra = Shared.EraCalendar.RawDate;
+            var beforeDoor = Doors.For(64000, 1, 1);
+            bool beforeHook = MobScript.Has("content_reload_probe", MobScript.OnSpawn);
+
+            string dir = Path.Combine(Path.GetTempPath(), "project1998-reload-failure-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string caves = Path.Combine(dir, "MythicCaves.csv");
+            File.WriteAllText(caves,
+                "Animal,EntranceMap,EntranceTiles,DestMap,DestX,DestY,T1Level,T1Vita,T1Mana,T2Level,T2Vita,T2Mana,T3Level,T3Vita,T3Mana,Sources\n" +
+                "Broken,41,1:1;1:1,201,1,1,1,0,0,1,0,0,1,0,0,test\n");
+            string tuning = Path.Combine(dir, "ServerTuning.csv");
+            File.WriteAllText(tuning, "key,value\nEraDate,19990102\n");
+            string doors = Path.Combine(dir, "Doors.csv");
+            File.WriteAllText(doors,
+                "Map,X,Y,Locked,Key,ConsumeKey,ForceOpen,StartDx,ClosedObj,OpenObj,DefaultClosed,Sources\n" +
+                "64000,1,1,1,probe_key,1,1,0,,,0,review-probe\n");
+            string mobAi = Path.Combine(dir, "mob_ai.lua");
+            File.WriteAllText(mobAi,
+                "mobs = { content_reload_probe = { on_spawn = function(ctx) end } }\n");
+
+            string? previousCaves = Environment.GetEnvironmentVariable("P1998_MYTHIC_CAVES");
+            string? previousTuning = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
+            string? previousDoors = Environment.GetEnvironmentVariable("P1998_DOORS");
+            string? previousMobAi = Environment.GetEnvironmentVariable("P1998_MOB_AI");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", caves);
+                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
+                Environment.SetEnvironmentVariable("P1998_DOORS", doors);
+                Environment.SetEnvironmentVariable("P1998_MOB_AI", mobAi);
+
+                var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
+
+                Assert.Contains("Reload failed (previous content kept).", error.Message);
+                Assert.Same(beforeSnapshot, Content.SnapshotIdentityForTests);
+                Assert.Equal(beforeEra, Shared.EraCalendar.RawDate);
+                Assert.Same(beforeDoor, Doors.For(64000, 1, 1));
+                Assert.Equal(beforeHook, MobScript.Has("content_reload_probe", MobScript.OnSpawn));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", previousCaves);
+                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", previousTuning);
+                Environment.SetEnvironmentVariable("P1998_DOORS", previousDoors);
+                Environment.SetEnvironmentVariable("P1998_MOB_AI", previousMobAi);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
+            }
+        }
+    }
+
+    [Fact]
     public void ReaderNeverSeesItemsWithoutMatchingIndexDuringReload()
     {
         const int reloadCount = 10;
@@ -172,9 +230,31 @@ public class ContentReloadTests
             object beforeSnapshot = Content.SnapshotIdentityForTests;
             var before = SnapshotBackedFacades();
             Assert.Equal(64, before.Count);
+            int beforeEra = Shared.EraCalendar.RawDate;
+            var beforeDoor = Doors.For(64000, 1, 1);
+            bool beforeHook = MobScript.Has("content_reload_probe", MobScript.OnSpawn);
+
+            string dir = Path.Combine(Path.GetTempPath(), "project1998-before-publish-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string tuning = Path.Combine(dir, "ServerTuning.csv");
+            File.WriteAllText(tuning, "key,value\nEraDate,19990103\n");
+            string doors = Path.Combine(dir, "Doors.csv");
+            File.WriteAllText(doors,
+                "Map,X,Y,Locked,Key,ConsumeKey,ForceOpen,StartDx,ClosedObj,OpenObj,DefaultClosed,Sources\n" +
+                "64000,1,1,1,probe_key,1,1,0,,,0,review-probe\n");
+            string mobAi = Path.Combine(dir, "mob_ai.lua");
+            File.WriteAllText(mobAi,
+                "mobs = { content_reload_probe = { on_spawn = function(ctx) end } }\n");
+
+            string? previousTuning = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
+            string? previousDoors = Environment.GetEnvironmentVariable("P1998_DOORS");
+            string? previousMobAi = Environment.GetEnvironmentVariable("P1998_MOB_AI");
 
             try
             {
+                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
+                Environment.SetEnvironmentVariable("P1998_DOORS", doors);
+                Environment.SetEnvironmentVariable("P1998_MOB_AI", mobAi);
                 Content.LoadStepForTests = step =>
                 {
                     if (step == "BeforePublish") throw new InvalidOperationException("injected loader failure");
@@ -185,6 +265,9 @@ public class ContentReloadTests
                 Assert.Contains("Reload failed (previous content kept).", error.Message);
                 Assert.Same(beforeSnapshot, Content.SnapshotIdentityForTests);
                 Assert.Equal(88, Content.SnapshotMemberCountForTests);
+                Assert.Equal(beforeEra, Shared.EraCalendar.RawDate);
+                Assert.Same(beforeDoor, Doors.For(64000, 1, 1));
+                Assert.Equal(beforeHook, MobScript.Has("content_reload_probe", MobScript.OnSpawn));
 
                 var after = SnapshotBackedFacades();
                 Assert.Equal(before.Keys, after.Keys);
@@ -198,7 +281,11 @@ public class ContentReloadTests
             finally
             {
                 Content.LoadStepForTests = null;
+                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", previousTuning);
+                Environment.SetEnvironmentVariable("P1998_DOORS", previousDoors);
+                Environment.SetEnvironmentVariable("P1998_MOB_AI", previousMobAi);
                 TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
         }
     }

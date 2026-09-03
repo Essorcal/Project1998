@@ -188,13 +188,13 @@ public sealed record ItemDef(
     /// EQ index = Type-3; this maps that index to the byte the client expects. 0 = not equippable.</summary>
     public byte EquipSlot => Type switch
     {
-        3 => 1,   // WEAP     4  => 2,   // ARMOR   5 => 3, // SHIELD  6 => 4, // HELM
-        4 => 2,
-        5 => 3,
-        6 => 4,
-        7 => 7,   // LEFT ring
-        8 => 8,   // RIGHT ring
-        9 => 20,  // SUBLEFT
+        3  => 1,   // WEAP     4  => 2,   // ARMOR   5 => 3, // SHIELD  6 => 4, // HELM
+        4  => 2,
+        5  => 3,
+        6  => 4,
+        7  => 7,   // LEFT ring
+        8  => 8,   // RIGHT ring
+        9  => 20,  // SUBLEFT
         10 => 21,  // SUBRIGHT
         11 => 22,  // FACEACC
         12 => 23,  // CROWN
@@ -202,7 +202,7 @@ public sealed record ItemDef(
         14 => 6,   // NECKLACE
         15 => 13,  // BOOTS
         16 => 16,  // COAT
-        _ => 0,
+        _  => 0,
     };
 }
 
@@ -215,7 +215,7 @@ public static partial class Content
     }
 
     // O(1) lookup indexes over the Items/Mobs/Spells lists + the class-name→path map, all rebuilt in Load() so
-    // each swaps together with its source list (same atomicity story as _npcById). These replace the old
+    // each is built after its source list in the unpublished builder. These replace the old
     // per-call LINQ FirstOrDefault scans over 2.5k items / 700 mobs / 900 spells, which ran on hot paths
     // (RegenTick, combat). FIRST occurrence wins on a duplicate id/key — matches the old FirstOrDefault. Key
     // lookups are case-insensitive.

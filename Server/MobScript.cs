@@ -25,6 +25,8 @@ namespace Server;
 /// </summary>
 public static class MobScript
 {
+    internal sealed record PreparedReload(Script Script, Table Mobs, HashSet<string> Defined);
+
     private static Script? _script;
     private static Table? _mobs;
     // mobKey|hook pairs that actually exist, so the hot path is a hash lookup and never a Lua call.
@@ -52,10 +54,21 @@ public static class MobScript
     {
         using (Session.EnterScriptGate())
         {
+            var (ok, prepared) = PrepareReload(path);
+            if (prepared is not null) CommitReload(prepared);
+            return ok;
+        }
+    }
+
+    /// <summary>Compile candidate hooks without replacing the live Lua state.</summary>
+    internal static (bool Ok, PreparedReload? Prepared) PrepareReload(string? path)
+    {
+        using (Session.EnterScriptGate())
+        {
             if (path is null || !File.Exists(path))
             {
                 Log.Info($"!! mob_ai.lua: no file at '{path ?? "(null)"}' — {(_mobs is null ? "Lua mob hooks disabled" : "keeping the previously-loaded hooks")}");
-                return _mobs is not null;
+                return (_mobs is not null, null);
             }
             try
             {
@@ -65,7 +78,7 @@ public static class MobScript
                 if (m.Type != DataType.Table)
                 {
                     Log.Info("!! mob_ai.lua missing global `mobs` table — reload REJECTED, keeping the previous hooks");
-                    return _mobs is not null;
+                    return (_mobs is not null, null);
                 }
 
                 var defined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -77,17 +90,24 @@ public static class MobScript
                         if (pair.Value.Table.Get(hook).Type == DataType.Function) defined.Add($"{key}|{hook}");
                 }
 
-                _script = s; _mobs = m.Table; _defined = defined;
                 UserData.RegisterType<MobContext>();
                 Log.Info($"   mob_ai.lua: {defined.Count} hooks across {m.Table.Pairs.Count()} creatures");
-                return true;
+                return (true, new PreparedReload(s, m.Table, defined));
             }
             catch (Exception e)
             {
                 Log.Warn($"mob_ai.lua load failed: {LuaVerbHost.Describe(e)} — reload REJECTED, keeping the previous hooks", e);
-                return _mobs is not null;
+                return (_mobs is not null, null);
             }
         }
+    }
+
+    /// <summary>Install candidate hooks while the caller holds the shared Lua gate.</summary>
+    internal static void CommitReload(PreparedReload prepared)
+    {
+        _script = prepared.Script;
+        _mobs = prepared.Mobs;
+        _defined = prepared.Defined;
     }
 
     /// <summary>Does this creature define this hook? The tick calls this before building a context, so the

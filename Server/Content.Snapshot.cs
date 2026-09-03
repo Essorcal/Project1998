@@ -8,27 +8,43 @@ public static partial class Content
     // published snapshot until the single Volatile.Write at the end of Load. The thread-local view also
     // preserves the loaders' existing dependency reads (for example LoadWarps reads Maps) without exposing
     // a half-built registry to another thread; #35 will make those dependencies explicit parameters.
-    private static ContentSnapshot _snapshot = new ContentSnapshotBuilder().Build();
+    // Partial-file field initializer order is unspecified, so a facade reached by another partial's static
+    // initializer must have a usable fallback even before this field receives its first published snapshot.
+    private static ContentSnapshot? _snapshot;
 
     [ThreadStatic]
     private static ContentSnapshotBuilder? _snapshotBuilder;
 
-    private static ContentSnapshot Snapshot => Volatile.Read(ref _snapshot);
+    private static ContentSnapshot Snapshot => Volatile.Read(ref _snapshot) ?? ContentSnapshot.Empty;
 
     private static ContentSnapshotBuilder Builder => _snapshotBuilder
-        ?? throw new InvalidOperationException("Content registries can only be assigned while Content.Load is building a snapshot.");
+        ?? throw new InvalidOperationException("Programming error: content registries can only be assigned while Content.Load is building a snapshot.");
 
     private static ContentSnapshotBuilder BeginSnapshotBuild()
     {
         if (_snapshotBuilder is not null)
-            throw new InvalidOperationException("Content.Load cannot be nested on the same thread.");
+            throw new InvalidOperationException("Programming error: Content.Load cannot be nested on the same thread.");
         return _snapshotBuilder = new ContentSnapshotBuilder();
     }
 
     private static void PublishSnapshot(ContentSnapshotBuilder builder)
     {
         LoadStepForTests?.Invoke("BeforePublish");
-        Volatile.Write(ref _snapshot, builder.Build());
+        var snapshot = builder.Build();
+
+        // Keep every MoonSharp invocation outside the publication window. Once the registry snapshot is live,
+        // install the matching verb hosts, then the remaining external content state. These commit seams only
+        // replace prepared references: every operation that can reject content happened before BeforePublish.
+        using (Session.EnterScriptGate())
+        {
+            Volatile.Write(ref _snapshot, snapshot);
+            if (builder.SpellScript is { } spellScript) SpellScript.CommitReload(spellScript);
+            if (builder.ItemScript is { } itemScript) ItemScript.CommitReload(itemScript);
+            if (builder.NpcScript is { } npcScript) NpcScript.CommitReload(npcScript);
+            if (builder.MobScript is { } mobScript) MobScript.CommitReload(mobScript);
+            Doors.CommitConfig(builder.Doors);
+            if (builder.EraCalendar is { } eraCalendar) Shared.EraCalendar.CommitReload(eraCalendar);
+        }
     }
 
     private static void EndSnapshotBuild(ContentSnapshotBuilder builder)
@@ -38,10 +54,20 @@ public static partial class Content
 
     internal static Action<string>? LoadStepForTests { get; set; }
     internal static object SnapshotIdentityForTests => Snapshot;
-    internal static int SnapshotMemberCountForTests => ContentSnapshot.MemberCount;
+    internal static int SnapshotMemberCountForTests => typeof(ContentSnapshot)
+        .GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Length;
 
     private sealed class ContentSnapshotBuilder
     {
+        // Prepared content owned by other facades. These are deliberately not ContentSnapshot members: their
+        // serving APIs predate Content, but their commits belong to the same publication boundary.
+        internal Shared.EraCalendar.PreparedReload? EraCalendar { get; set; }
+        internal Dictionary<(ushort map, ushort x, ushort y), Doors.DoorConfig> Doors { get; set; } = new();
+        internal LuaVerbHost.PreparedReload? SpellScript { get; set; }
+        internal LuaVerbHost.PreparedReload? ItemScript { get; set; }
+        internal NpcScript.PreparedReload? NpcScript { get; set; }
+        internal MobScript.PreparedReload? MobScript { get; set; }
+
         internal IReadOnlyList<ItemDef> Items { get; set; } = new List<ItemDef>();
         internal IReadOnlyDictionary<int, ItemDef> ItemById { get; set; } = new Dictionary<int, ItemDef>();
         internal IReadOnlyDictionary<string, ItemDef> ItemByKey { get; set; } =
@@ -189,7 +215,7 @@ public static partial class Content
 
     private sealed class ContentSnapshot
     {
-        internal const int MemberCount = 88;
+        internal static ContentSnapshot Empty { get; } = new(new ContentSnapshotBuilder());
 
         internal ContentSnapshot(ContentSnapshotBuilder builder)
         {
