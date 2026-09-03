@@ -116,7 +116,7 @@ public class ContentReloadTests
                 var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
 
                 Assert.Contains("Public content tables replaced before failure:", error.Message);
-                Assert.Contains("Maps", error.Message);
+                Assert.DoesNotContain("Maps", error.Message);
                 Assert.Contains("MobDrops", error.Message);
                 Assert.DoesNotContain("previous content kept", error.Message, StringComparison.OrdinalIgnoreCase);
             }

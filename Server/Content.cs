@@ -178,7 +178,7 @@ public static partial class Content
             (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T("P1998_DOOR_OBJECTS", "DoorObjects.csv"));
             Tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
             Doors.SetConfig(LoadDoors(T("P1998_DOORS", "Doors.csv")));
-            (_mapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
+            (MapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
             MapCellCount = mapCellCount;
             // The startup summary. This replaces a hand-written line that named 36 registries and could say
             // nothing at all about the other 32 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
