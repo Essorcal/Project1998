@@ -1,4 +1,4 @@
-using Shared;
+﻿using Shared;
 
 namespace Server;
 
@@ -240,8 +240,13 @@ public sealed partial class Session
     }
 
     /// <summary>Try to run <paramref name="text"/> as a chat command. Returns false if it isn't one (no
-    /// prefix), in which case the caller treats it as ordinary speech.</summary>
-    private bool TryRunCommand(string text)
+    /// prefix), in which case the caller treats it as ordinary speech.
+    ///
+    /// <para>Internal rather than private so a test can drive a whole command the way a player does — through
+    /// the prefix split, the tier gate and the table — instead of reaching past all three to poke a handler
+    /// directly. Everything this file is responsible for lives between the message and the handler call, so a
+    /// test that skips it tests nothing that is here.</para></summary>
+    internal bool TryRunCommand(string text)
     {
         if (!SplitCommand(text, out string name, out string args)) return false;
 
