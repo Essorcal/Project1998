@@ -31,8 +31,8 @@ public static partial class Content
             // Every content file goes through this: it records the table in `entries` so the load report can
             // say what happened to all 68 of them, in load order. `ToLoad` is a method group, evaluated at the
             // end, so the counts it captures are the ones the loader finished with. `entries` is a LOCAL, so a
-            // second Load() building its own report cannot interleave with this one, and LoadReport swaps by
-            // reference at the end exactly like every other registry here.
+            // second Load() building its own report cannot interleave with this one, and LoadReport joins the
+            // immutable snapshot published at the end exactly like every other registry here.
             Csv.Warn = Log.Warn;   // Shared cannot see Server.Log; hand it over before the first file is opened
             var entries = new List<Func<TableLoad>>();
             CsvTable T(string envVar, string file)
@@ -201,11 +201,10 @@ public static partial class Content
 
     /// <summary>
     /// Hot-reload every file-backed registry WITHOUT a restart (the <c>@reload</c> GM command), so content
-    /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence — which
-    /// re-reads every CSV and rebuilds the derived <c>_npcById</c> — reassigning the public registries. Each
-    /// registry is a lock-free reference, and a reference assignment is atomic, so a reader always sees a whole
-    /// old-or-new dictionary, never a torn one (a reader that straddles the swap across two registries is
-    /// harmless — they're independent). Returns a one-line count summary.
+    /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence in an
+    /// unpublished builder, then replaces the immutable snapshot with one write. Readers therefore see all
+    /// registries and their derived indexes from the old load or all of them from the new load. Returns a
+    /// one-line count summary.
     ///
     /// SCOPE: file-backed content only (every registry above is CSV/Lua-backed now — map BGM moved to
     /// MapBgm.csv, so there's no compile-time content table left that a restart would be needed for). The
@@ -216,18 +215,10 @@ public static partial class Content
     /// </summary>
     public static string Reload()
     {
-        var before = CaptureReloadTables();
         try { Load(); }
         catch (Exception e)
         {
-            var replaced = CaptureReloadTables()
-                .Where(kv => before.TryGetValue(kv.Key, out var old) && !ReferenceEquals(old, kv.Value))
-                .Select(kv => kv.Key)
-                .ToArray();
-            string progress = replaced.Length == 0
-                ? "No public content tables were replaced (private tables, the era calendar and Lua scripts are not tracked until #33)."
-                : $"Public content tables replaced before failure: {string.Join(", ", replaced)}.";
-            throw new InvalidOperationException($"{e.Message} {progress}", e);
+            throw new InvalidOperationException($"{e.Message} Reload failed (previous content kept).", e);
         }
 
         var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
@@ -247,18 +238,13 @@ public static partial class Content
              : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
     }
 
-    /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which tracked
-    /// tables already swapped. Deliberately not exhaustive: private tables, the era calendar and Lua script
-    /// hosts stay outside this bounded operator hint until #33 makes the whole load atomic.</summary>
-    private static Dictionary<string, object?> CaptureReloadTables() =>
-        typeof(Content).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-            .Where(p => !p.PropertyType.IsValueType && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)
-            .OrderBy(p => p.MetadataToken)
-            .ToDictionary(p => p.Name, p => p.GetValue(null));
-
     /// <summary>Lua files whose most recent (re)load was rejected for a compile/shape error — their previously
     /// loaded version is still live. Empty when everything took. See <see cref="Reload"/>.</summary>
-    public static IReadOnlyList<string> RejectedScripts { get; private set; } = Array.Empty<string>();
+    public static IReadOnlyList<string> RejectedScripts
+    {
+        get => _snapshotBuilder?.RejectedScripts ?? Snapshot.RejectedScripts;
+        private set => Builder.RejectedScripts = value;
+    }
 
     /// <summary>What every one of the 68 content files did on the last <see cref="Load"/>: its status, and
     /// how many rows it read, kept and skipped. Swapped by reference at the end of Load like every other
@@ -269,7 +255,11 @@ public static partial class Content
     /// WarpQuestLocks and about twenty-five others could load zero rows and say nothing — and the reader
     /// underneath swallowed a missing file and a parse failure alike. ContentSmokeTests asserts a floor over
     /// this for every table, so a registry that collapses fails CI instead of shipping.</para></summary>
-    public static ContentLoadReport LoadReport { get; private set; } = ContentLoadReport.Empty;
+    public static ContentLoadReport LoadReport
+    {
+        get => _snapshotBuilder?.LoadReport ?? Snapshot.LoadReport;
+        private set => Builder.LoadReport = value;
+    }
 
     /// <summary>Offline check of the registries + fuzzy lookups (run via <c>--selftest</c>).</summary>
     public static void SelfTest()

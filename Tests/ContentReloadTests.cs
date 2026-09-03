@@ -3,8 +3,7 @@ using Xunit;
 
 namespace Tests;
 
-/// <summary>Regression guards for failures that must not abort a live content reload after earlier tables
-/// have already swapped.</summary>
+/// <summary>Regression guards for serializing reload writers and publishing every content table atomically.</summary>
 public class ContentReloadTests
 {
     [Fact]
@@ -98,32 +97,115 @@ public class ContentReloadTests
     }
 
     [Fact]
-    public void FailedReloadNamesTablesReplacedBeforeTheFailure()
+    public void ReaderNeverSeesItemsWithoutMatchingIndexDuringReload()
     {
+        const int reloadCount = 10;
+        const int readsPerReload = 10_000;
+
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-mythic-caves-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(dir);
-            string path = Path.Combine(dir, "MythicCaves.csv");
-            File.WriteAllText(path,
-                "Animal,EntranceMap,EntranceTiles,DestMap,DestX,DestY,T1Level,T1Vita,T1Mana,T2Level,T2Vita,T2Mana,T3Level,T3Vita,T3Mana,Sources\n" +
-                "Broken,41,1:1;1:1,201,1,1,1,0,0,1,0,0,1,0,0,test\n");
+            TestProcessState.LoadContent();
+            var firstItems = Content.Items;
+            using var itemsLoaded = new SemaphoreSlim(0);
+            using var resumeLoad = new SemaphoreSlim(0);
+            Thread? reloadThread = null;
+            Exception? reloadFailure = null;
+            int mismatches = 0;
 
-            string? previous = Environment.GetEnvironmentVariable("P1998_MYTHIC_CAVES");
             try
             {
-                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", path);
-                var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
+                Content.LoadStepForTests = step =>
+                {
+                    if (step != "ItemsLoaded") return;
+                    itemsLoaded.Release();
+                    if (!resumeLoad.Wait(TimeSpan.FromSeconds(15)))
+                        throw new TimeoutException("reader did not release the paused content load");
+                };
 
-                Assert.Contains("No public content tables were replaced", error.Message);
-                Assert.DoesNotContain("previous content kept", error.Message, StringComparison.OrdinalIgnoreCase);
+                reloadThread = new Thread(() =>
+                {
+                    try
+                    {
+                        for (int i = 0; i < reloadCount; i++) Content.Reload();
+                    }
+                    catch (Exception e)
+                    {
+                        reloadFailure = e;
+                    }
+                });
+                reloadThread.Start();
+
+                for (int reload = 0; reload < reloadCount; reload++)
+                {
+                    Assert.True(itemsLoaded.Wait(TimeSpan.FromSeconds(15)), $"reload {reload + 1} did not reach ItemsLoaded");
+                    for (int read = 0; read < readsPerReload; read++)
+                    {
+                        var items = Content.Items;
+                        var known = items[0];
+                        if (!ReferenceEquals(known, Content.ItemById(known.Id))) mismatches++;
+                    }
+                    resumeLoad.Release();
+                }
+
+                Assert.True(reloadThread.Join(TimeSpan.FromSeconds(30)), "reload thread did not finish");
+                Assert.Null(reloadFailure);
+                Assert.Equal(0, mismatches);
+                Assert.NotSame(firstItems, Content.Items); // proves the final snapshot write was not removed
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", previous);
+                Content.LoadStepForTests = null;
+                for (int i = 0; i < reloadCount; i++) resumeLoad.Release();
+                if (reloadThread is { IsAlive: true })
+                    Assert.True(reloadThread.Join(TimeSpan.FromSeconds(15)), "reload thread did not stop during cleanup");
                 TestProcessState.LoadContent();
-                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
         }
     }
+
+    [Fact]
+    public void FailedReloadKeepsEveryPublishedFacade()
+    {
+        lock (TestProcessState.Gate)
+        {
+            TestProcessState.LoadContent();
+            object beforeSnapshot = Content.SnapshotIdentityForTests;
+            var before = SnapshotBackedFacades();
+            Assert.Equal(64, before.Count);
+
+            try
+            {
+                Content.LoadStepForTests = step =>
+                {
+                    if (step == "BeforePublish") throw new InvalidOperationException("injected loader failure");
+                };
+
+                var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
+
+                Assert.Contains("Reload failed (previous content kept).", error.Message);
+                Assert.Same(beforeSnapshot, Content.SnapshotIdentityForTests);
+                Assert.Equal(88, Content.SnapshotMemberCountForTests);
+
+                var after = SnapshotBackedFacades();
+                Assert.Equal(before.Keys, after.Keys);
+                foreach (string name in before.Keys)
+                {
+                    var property = typeof(Content).GetProperty(name)!;
+                    if (property.PropertyType.IsValueType) Assert.Equal(before[name], after[name]);
+                    else Assert.Same(before[name], after[name]);
+                }
+            }
+            finally
+            {
+                Content.LoadStepForTests = null;
+                TestProcessState.LoadContent();
+            }
+        }
+    }
+
+    private static SortedDictionary<string, object?> SnapshotBackedFacades() =>
+        new(typeof(Content)
+            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(p => p.GetIndexParameters().Length == 0 && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)
+            .ToDictionary(p => p.Name, p => p.GetValue(null)));
 }

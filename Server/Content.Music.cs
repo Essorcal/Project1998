@@ -65,14 +65,14 @@ public static partial class Content
     /// "Default" row of MapBgm.csv. Null leaves such a session silent until it reaches a zoned map.</summary>
     public static (ushort bgm, byte type)? DefaultBgm
     {
-        get => _snapshotBuilder?.DefaultBgm ?? Snapshot.DefaultBgm;
+        get => _snapshotBuilder is { } builder ? builder.DefaultBgm : Snapshot.DefaultBgm;
         private set => Builder.DefaultBgm = value;
     }
 
     /// <summary>The <see cref="MusicSet.New"/> half of the "Default" row (its <c>Track5x</c>).</summary>
     public static (ushort bgm, byte type)? DefaultBgmNew
     {
-        get => _snapshotBuilder?.DefaultBgmNew ?? Snapshot.DefaultBgmNew;
+        get => _snapshotBuilder is { } builder ? builder.DefaultBgmNew : Snapshot.DefaultBgmNew;
         private set => Builder.DefaultBgmNew = value;
     }
 
