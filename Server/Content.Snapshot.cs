@@ -159,12 +159,19 @@ public static partial class Content
         internal IReadOnlyDictionary<string, int> SpellLevelOverrides { get; set; } =
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
+        internal IReadOnlyList<MinorQuestDef> MinorQuests { get; set; } = new List<MinorQuestDef>();
+        internal IReadOnlyList<MythicAllianceDef> MythicAlliances { get; set; } = new List<MythicAllianceDef>();
+        internal IReadOnlyDictionary<(ushort From, ushort To), WarpQuestLock> WarpQuestLocks { get; set; } =
+            new Dictionary<(ushort, ushort), WarpQuestLock>();
+        internal IReadOnlyDictionary<(int Path, string Tier), (int Level, string Karma)> ArmorQuestGates { get; set; } =
+            new Dictionary<(int, string), (int, string)>();
+
         internal ContentSnapshot Build() => new(this);
     }
 
     private sealed class ContentSnapshot
     {
-        internal const int MemberCount = 73;
+        internal const int MemberCount = 77;
 
         internal ContentSnapshot(ContentSnapshotBuilder builder)
         {
@@ -241,6 +248,10 @@ public static partial class Content
             MorphDispatchSpells = builder.MorphDispatchSpells;
             PetSpells = builder.PetSpells;
             SpellLevelOverrides = builder.SpellLevelOverrides;
+            MinorQuests = builder.MinorQuests;
+            MythicAlliances = builder.MythicAlliances;
+            WarpQuestLocks = builder.WarpQuestLocks;
+            ArmorQuestGates = builder.ArmorQuestGates;
         }
 
         internal IReadOnlyList<ItemDef> Items { get; }
@@ -316,5 +327,9 @@ public static partial class Content
         internal IReadOnlyDictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells { get; }
         internal IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells { get; }
         internal IReadOnlyDictionary<string, int> SpellLevelOverrides { get; }
+        internal IReadOnlyList<MinorQuestDef> MinorQuests { get; }
+        internal IReadOnlyList<MythicAllianceDef> MythicAlliances { get; }
+        internal IReadOnlyDictionary<(ushort From, ushort To), WarpQuestLock> WarpQuestLocks { get; }
+        internal IReadOnlyDictionary<(int Path, string Tier), (int Level, string Karma)> ArmorQuestGates { get; }
     }
 }
