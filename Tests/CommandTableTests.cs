@@ -719,13 +719,17 @@ public sealed class CommandTableTests
         "pane3|Moved to (3,4) on IronHeart's",
         "pane3|Home (map 36).",
     })]
+    // Reclassified: the move you ASKED for did not happen, so the refusal is loud on the bubble, and the
+    // pane line under it confirms where the recovery actually put you.
     [InlineData("@go", new[]
     {
+        "bubble|usage: @go <x> <y>",
         "pane3|------------------------------",
-        "pane3|usage: @go <x> <y> - 0..11 /",
-        "pane3|0..11 on IronHeart's Home (map",
-        "pane3|36); sent you to (0,0).",
+        "pane3|0..11 / 0..11 on IronHeart's",
+        "pane3|Home (map 36); sent you to",
+        "pane3|(0,0).",
     })]
+    [InlineData("@restart cancel", new[] { "bubble|Nothing to cancel." })]
     // The one refusal in the file that stayed a refusal.
     [InlineData("@summon", new[] { "bubble|usage: @summon <mob name|id>" })]
     public void NavigationCommandSaysAndChannel(string command, string[] expected)

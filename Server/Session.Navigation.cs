@@ -1172,12 +1172,12 @@ public sealed partial class Session
         string where = named ? $"{name} (map {_char.Map})" : $"map {_char.Map}";
         EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)gx, (ushort)gy, name);
 
-        // Both halves are CONFIRMATIONS, so both take the pane: the command moved you either way, and the
-        // second line is reporting where it put you when it could not use what you typed. Only the shape
-        // comes from the table.
-        Reply(ok
-            ? $"Moved to ({_char.X},{_char.Y}) on {where}."
-            : $"{a.Usage()} — 0..{_char.MapXs - 1} / 0..{_char.MapYs - 1} on {where}; sent you to (0,0).");
+        // The move you ASKED for either happened or it did not, and "sent you to (0,0)" is recovery rather
+        // than the thing you wanted — so a bad coordinate is a refusal, loud, and the pane line under it
+        // confirms where the recovery actually put you. Both halves, because both are true.
+        if (ok) { Reply($"Moved to ({_char.X},{_char.Y}) on {where}."); return; }
+        Refuse(a.Usage());
+        Reply($"0..{_char.MapXs - 1} / 0..{_char.MapYs - 1} on {where}; sent you to (0,0).");
     }
 
     // "@maps [filter]": list maps, fuzzy-ranked by name (blank = alphabetical). Capped so we don't flood.
@@ -1243,10 +1243,11 @@ public sealed partial class Session
         var (ok, report) = _world.ReloadFromDisk();
         // Contention is not a content failure, and this is the GM's read-loop thread: say why no work started
         // without making them wait behind the reload already doing the same disk-to-live sequence.
-        // A failed reload is a refusal (nothing was replaced); "already in progress" and a good reload are
-        // both readouts of what happened.
-        if (!ok && report != "reload already in progress") Refuse($"{Prefix}reload FAILED: {report}");
-        else Reply(ok ? $"Reloaded: {report}" : report);
+        // Contention is a REFUSAL, not a readout: this invocation started nothing, and telling the GM
+        // quietly that someone else's reload is running reads exactly like their own having worked.
+        if (ok) Reply($"Reloaded: {report}");
+        else if (report == "reload already in progress") Refuse(report);
+        else Refuse($"{Prefix}reload FAILED: {report}");
         Log.Info($"   -> @reload by '{_char.Name}': {report}");
     }
 
@@ -1271,7 +1272,10 @@ public sealed partial class Session
 
         if (a.Is(0, "cancel") || a.Is(0, "off"))
         {
-            Reply(sched.Cancel() ? "Restart cancelled." : "Nothing to cancel.");
+            // Nothing to cancel is a refusal for the same reason: you asked for something that did not
+            // happen, and a quiet pane line is indistinguishable from having called off a real restart.
+            if (sched.Cancel()) Reply("Restart cancelled.");
+            else Refuse("Nothing to cancel.");
             return;
         }
 
