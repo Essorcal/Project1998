@@ -20,8 +20,10 @@ This script performs the same launch as the bat, and answers those questions:
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
     P1998_GMS, which the game server unions with state/*_accounts.txt). The calling shell is untouched.
   * It writes run/session.json in the checkout: { pid_login, pid_game, checkout, commit, branch, ports,
-    testers, gms, started }. -Status reads it back; -Stop closes exactly those two processes, waits for
-    the ports to free, and removes it. A session file only counts for the checkout it was written in:
+    testers, gms, started }, plus exe_login/exe_game, created_login/created_game and
+    host_login/host_game: the executable path, creation time and console PID of each slot. -Status reads
+    it back; -Stop closes exactly those two processes, waits for the ports to free, and removes it. A
+    session file only counts for the checkout it was written in:
     its own "checkout" field must name the -Checkout being stopped, and every path -Stop uses is derived
     from -Checkout, never from the file. A file copied into another clone cannot stop this one's pair.
 
@@ -38,7 +40,11 @@ environment without ever setting them in the caller's shell.
 WHICH PIDS ARE RECORDED. The processes that actually hold the ports (LoginServer.exe / Server.exe, the
 apphosts that "dotnet run" starts), because those are what -Status must compare the port owners against
 and what -Stop must be sure it is closing. Each is verified to be a descendant of the console this script
-opened before it is written down.
+opened before it is written down, together with its executable path and creation time. A PID alone is
+not an identity: Windows reuses them, and a later server started from the same clone by other means would
+otherwise pass for the recorded one. Before -Status calls a slot alive or -Stop signals it, the process
+behind the PID must be the slot's role executable (LoginServer.exe for LOGIN, Server.exe for GAME) at the
+recorded path, created within 1 s of the recorded time, and currently listening on the slot's ports.
 
 HOW -Stop CLOSES THEM. Ctrl+C first, not TerminateProcess: the game server's Ctrl+C / ProcessExit handler
 (Server/Net.cs) flushes connected players before exiting, and a hard kill would skip it. The signal is
@@ -224,15 +230,54 @@ function Remove-SessionFiles([string]$Root) {
     }
 }
 
-# PID-reuse guard for -Status and -Stop: a PID from the session file only counts as ours if it is still a
-# Project1998 server binary running out of the session's checkout.
-function Test-SessionServer($Proc, [string]$Root) {
-    if ($null -eq $Proc) { return $false }
-    if ($Proc.Name -ine 'Server.exe' -and $Proc.Name -ine 'LoginServer.exe') { return $false }
-    $exe = $Proc.ExecutablePath
-    if ([string]::IsNullOrWhiteSpace($exe)) { $exe = $Proc.CommandLine }
-    if ([string]::IsNullOrWhiteSpace($exe)) { return $false }
-    return $exe.StartsWith($Root + '\', [System.StringComparison]::OrdinalIgnoreCase)
+# The two slots a session file describes, and what each must match. Paths come from $Root, never from
+# the file.
+function Get-SessionSlots($Session, [string]$Root) {
+    return @(
+        [pscustomobject]@{
+            Label = 'LOGIN'; RoleExe = 'LoginServer.exe'; ProcessId = [int]$Session.pid_login
+            Exe = [string]$Session.exe_login; Created = [string]$Session.created_login; HostPid = [int]$Session.host_login
+            Ports = @(@($Session.ports.login) | ForEach-Object { [int]$_ }); Batch = (Join-Path $Root $LoginBatRel)
+        },
+        [pscustomobject]@{
+            Label = 'GAME'; RoleExe = 'Server.exe'; ProcessId = [int]$Session.pid_game
+            Exe = [string]$Session.exe_game; Created = [string]$Session.created_game; HostPid = [int]$Session.host_game
+            Ports = @(@($Session.ports.game) | ForEach-Object { [int]$_ }); Batch = (Join-Path $Root $GameBatRel)
+        }
+    )
+}
+
+# Is the process behind a slot's PID the one this session started? '' when it is; otherwise the reason it
+# is not. Codex's review of #86 showed that "a Server.exe or LoginServer.exe from this checkout" accepted
+# any later server from the clone, a Server.exe in the LOGIN slot included. Now the slot's role executable
+# at the recorded path, a creation time within 1 s of the recorded one (PIDs are reused; creation time is
+# what makes one unique), and current ownership of the slot's ports are all required.
+function Get-SlotMismatch($Proc, [string]$Root, $Slot) {
+    if ($null -eq $Proc) { return 'gone' }
+    $exe = [string]$Proc.ExecutablePath
+    if ([string]::IsNullOrWhiteSpace($exe)) { return 'executable path unreadable' }
+    if ($Proc.Name -ine $Slot.RoleExe) { return "is $($Proc.Name), not $($Slot.RoleExe)" }
+    if (-not $exe.StartsWith($Root + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return "runs from $exe, outside this checkout" }
+    if ([string]::IsNullOrWhiteSpace($Slot.Exe)) { return 'the session file records no executable path (written by an older Serve.ps1)' }
+    if ($exe -ine $Slot.Exe) { return "runs $exe, session recorded $($Slot.Exe)" }
+    if ([string]::IsNullOrWhiteSpace($Slot.Created)) { return 'the session file records no creation time (written by an older Serve.ps1)' }
+    try {
+        $rec = [DateTime]::Parse($Slot.Created, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    } catch { return "the recorded creation time $($Slot.Created) is unreadable" }
+    $delta = [Math]::Abs(($Proc.CreationDate - $rec).TotalSeconds)
+    if ($delta -gt 1) { return "was created $($Proc.CreationDate.ToString('o')), session recorded $($Slot.Created)" }
+    $holds = @(Get-Listeners $Slot.Ports | Where-Object { [int]$_.ProcessId -eq [int]$Proc.ProcessId })
+    if ($holds.Count -eq 0) { return "does not hold port(s) $($Slot.Ports -join '/')" }
+    return ''
+}
+
+# The console this script opened for a slot, by its recorded PID, accepted only if it is still a cmd.exe
+# running this checkout's batch file for that slot.
+function Get-SessionHost([int]$HostPid, [string]$BatchPath) {
+    $h = Get-Proc $HostPid
+    if ($null -eq $h -or $h.Name -ine 'cmd.exe' -or [string]::IsNullOrEmpty($h.CommandLine)) { return $null }
+    if ($h.CommandLine.IndexOf($BatchPath, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $null }
+    return $h
 }
 
 # Walk the parent chain from a process. Stops at a parent that was created AFTER its child, which is the
@@ -445,21 +490,19 @@ function Show-Status([string]$Root, $Plan) {
         $s = $null
     }
     if ($null -ne $s) {
-        $lp = Get-Proc ([int]$s.pid_login)
-        $gp = Get-Proc ([int]$s.pid_game)
-        $loginOk = Test-SessionServer $lp $Root
-        $gameOk  = Test-SessionServer $gp $Root
-        if ($loginOk) { $ours += [int]$s.pid_login }
-        if ($gameOk)  { $ours += [int]$s.pid_game }
-        if ($loginOk -and $gameOk) {
+        $states = @{}
+        foreach ($slot in (Get-SessionSlots $s $Root)) {
+            $why = Get-SlotMismatch (Get-Proc $slot.ProcessId) $Root $slot
+            if ($why -eq '') { $states[$slot.Label] = 'alive'; $ours += $slot.ProcessId }
+            else { $states[$slot.Label] = "not the process this session started ($why)" }
+        }
+        if ($ours.Count -eq 2) {
             Write-Host "Running ($file):"
         } else {
             Write-Host "Stale session file ($file) - Serve.ps1 -Stop clears it:"
         }
-        $lState = 'gone'; if ($loginOk) { $lState = 'alive' } elseif ($null -ne $lp) { $lState = "PID reused by $($lp.Name), not ours" }
-        $gState = 'gone'; if ($gameOk)  { $gState = 'alive' } elseif ($null -ne $gp) { $gState = "PID reused by $($gp.Name), not ours" }
-        Write-Host "  LOGIN $(@($s.ports.login) -join '/')  PID $($s.pid_login)  $lState"
-        Write-Host "  GAME  $(@($s.ports.game) -join '/')  PID $($s.pid_game)  $gState"
+        Write-Host "  LOGIN $(@($s.ports.login) -join '/')  PID $($s.pid_login)  $($states['LOGIN'])"
+        Write-Host "  GAME  $(@($s.ports.game) -join '/')  PID $($s.pid_game)  $($states['GAME'])"
         Write-Host "  checkout: $($s.checkout)  ($($s.branch) @ $(Get-ShortCommit $s.commit))"
         Write-Host "  started:  $($s.started)"
         Write-Host "  testers:  [$(@($s.testers) -join ', ')]  gms: [$(@($s.gms) -join ', ')]"
@@ -500,10 +543,7 @@ function Invoke-Stop([string]$Root, $Plan) {
 
     # Everything below is derived from $Root, the checkout the caller named. The file's own fields are
     # PIDs and a claim of ownership (checked above); they are never used as paths.
-    $targets = @(
-        [pscustomobject]@{ Label = 'LOGIN'; ProcessId = [int]$s.pid_login; Batch = (Join-Path $Root $LoginBatRel) },
-        [pscustomobject]@{ Label = 'GAME';  ProcessId = [int]$s.pid_game;  Batch = (Join-Path $Root $GameBatRel) }
-    )
+    $targets = @(Get-SessionSlots $s $Root)
     $failed = $false
     $ourPids = @()   # the session's PIDs that really are its servers; a reused PID is not waited for
     foreach ($t in $targets) {
@@ -512,12 +552,14 @@ function Invoke-Stop([string]$Root, $Plan) {
             Write-Host "$($t.Label) PID $($t.ProcessId): already gone."
             continue
         }
-        if (-not (Test-SessionServer $p $Root)) {
-            Write-Host "$($t.Label) PID $($t.ProcessId) is now $($p.Name) ($($p.CommandLine)) - not this session's server; leaving it alone."
+        $why = Get-SlotMismatch $p $Root $t
+        if ($why -ne '') {
+            Write-Host "$($t.Label) PID $($t.ProcessId) is not the process this session started ($why); leaving it alone."
             continue
         }
         $ourPids += $t.ProcessId
-        $console = Find-ConsoleHost -ProcessId $t.ProcessId -BatchPath $t.Batch
+        $console = Get-SessionHost -HostPid $t.HostPid -BatchPath $t.Batch
+        if ($null -eq $console) { $console = Find-ConsoleHost -ProcessId $t.ProcessId -BatchPath $t.Batch }
         $err = Send-CtrlC $t.ProcessId
         if ($err -ne 0) { Write-Host "$($t.Label) PID $($t.ProcessId): Ctrl+C could not be delivered (Win32 error $err); terminating instead." }
         Wait-Process -Id $t.ProcessId -Timeout 20 -ErrorAction SilentlyContinue
@@ -579,9 +621,8 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         return 1
     }
     if ($null -ne $s) {
-        $lp = Get-Proc ([int]$s.pid_login)
-        $gp = Get-Proc ([int]$s.pid_game)
-        if ((Test-SessionServer $lp $Root) -or (Test-SessionServer $gp $Root)) {
+        $alive = @(Get-SessionSlots $s $Root | Where-Object { (Get-SlotMismatch (Get-Proc $_.ProcessId) $Root $_) -eq '' })
+        if ($alive.Count -gt 0) {
             Write-Host "A pair from this checkout is already running (Serve.ps1 -Stop first):"
             Show-Status $Root $Plan
             return 2
@@ -670,7 +711,13 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         return 1
     }
 
-    # 8. Record it.
+    # 8. Record it, with enough identity to recognise these exact processes later.
+    $loginProc = Get-Proc $login.ProcessId
+    $gameProc  = Get-Proc $game.ProcessId
+    if ($null -eq $loginProc -or $null -eq $gameProc) {
+        Write-Host "A server process vanished between binding its port and being recorded. No session file written; read the consoles."
+        return 1
+    }
     $doc = [ordered]@{
         pid_login = [int]$login.ProcessId
         pid_game  = [int]$game.ProcessId
@@ -681,6 +728,12 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         testers   = @($effTesters)
         gms       = @($effGms)
         started   = (Get-Date).ToString('o')
+        exe_login     = [string]$loginProc.ExecutablePath
+        exe_game      = [string]$gameProc.ExecutablePath
+        created_login = $loginProc.CreationDate.ToString('o')
+        created_game  = $gameProc.CreationDate.ToString('o')
+        host_login    = [int]$loginConsole.Id
+        host_game     = [int]$gameConsole.Id
     }
     $file = Write-Session $Root $doc
     Write-Host "Started from $Root ($($git.Branch) @ $stamp):"

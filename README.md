@@ -67,9 +67,12 @@ are titled `LOGIN 2000/2001 - <clone> @ <commit>` and `GAME 2005/2006 - <clone> 
 after the commit means uncommitted changes), so the window says which build it is. `-Testers` and
 `-Gms` reach only the launched processes, as `P1998_TESTERS` / `P1998_GMS`, unioned with the clone's
 `state/*_accounts.txt` as usual. What it started is recorded in the clone's `run/session.json`
-(`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`);
-`-Status` reads it back, and `-Stop` sends Ctrl+C to those two processes, waits for the ports to free,
-and deletes it. `-PortBase` exists for the second pair of #84 but is rejected until that lands: today a
+(`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`, plus each
+slot's executable path, creation time and console PID); `-Status` reads it back. `-Stop` acts only on a
+session file written in the checkout it is given, and only on a PID that is still the recorded
+executable, created at the recorded time and holding its ports: it sends those two processes Ctrl+C,
+closes the two console windows it opened, waits for the ports to free, and deletes the file. Anything
+else on the ports is reported and left alone. `-PortBase` exists for the second pair of #84 but is rejected until that lands: today a
 login on any other base still hands clients off to 2005. `run-server.bat` stays the plain path; the
 script does not replace it.
 
