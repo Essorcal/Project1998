@@ -27,6 +27,26 @@ public class SessionActorTests
     /// not a timer.</summary>
     private const int Forever = 10 * 60 * 1000;
 
+    /// <summary>Rounds of "one autosave against a burst of mutation" in
+    /// <see cref="ConcurrentAutosaveAndMutationSerializesAConsistentSnapshot"/>. Each round is one barrier
+    /// release, so this is also the number of times the capture and the writers are set at each other. A
+    /// save is the expensive half (a 400-entry capture, a JSON encode and a SQLite write), which is what
+    /// keeps the number modest.</summary>
+    private const int SaveRounds = 120;
+
+    /// <summary>Drop out of the barrier after a fault so the OTHER thread's next SignalAndWait completes
+    /// instead of parking until the join timeout — the fault is what the test wants to report, not a
+    /// two-minute hang. Swallows its own failure: a barrier that has already been disposed of by the other
+    /// side is not the interesting exception.</summary>
+    private static void Unblock(Barrier b)
+    {
+        try { b.RemoveParticipant(); } catch { /* the other side is already gone */ }
+    }
+
+    /// <summary>Writes the mutator lands per round — enough that it is still writing while the save it was
+    /// released alongside is mid-capture, rather than finishing first and parking on the barrier.</summary>
+    private const int MutationsPerRound = 24;
+
     // =====================================================================================================
     // The acceptance test the ticket asks for by name.
     // =====================================================================================================
@@ -127,8 +147,24 @@ public class SessionActorTests
     /// character.
     ///
     /// <para>Primed with a large effect list on purpose: the failure is a window, and a 400-entry
-    /// enumeration is a wide one. Both threads run to a wall clock rather than a count, so neither can
-    /// finish while the other is still warming up.</para>
+    /// enumeration is a wide one.</para>
+    ///
+    /// <para><b>Barrier-released rounds, not a wall clock.</b> This used to run both threads for 1500ms and
+    /// then assert <c>saves &gt; 10 &amp;&amp; mutations &gt; 100</c> — an assertion about how fast the
+    /// machine is, not about the code. The #96 reviewer duly hit it on a loaded box ("1 save(s), 51083
+    /// mutation(s)") and it passed again on a quiet one. Both threads now run a FIXED number of rounds and
+    /// meet at a <see cref="Barrier"/> at the top of each, so the counts are the same on every machine and
+    /// contention only changes how long the test takes. The overlap is what the barrier is for: each round
+    /// releases the saver and the mutator at the same instant, so the save's 400-entry capture and the
+    /// mutator's writes go for the monitor together <see cref="SaveRounds"/> times, rather than the test
+    /// hoping the scheduler produced an overlap and then measuring whether it seems to have.</para>
+    ///
+    /// <para><b>Still falsified, and by the race rather than by the assert.</b> Removing the
+    /// <c>EnterState</c> from <c>CaptureAndWrite</c> AND the <c>AssertStateHeld</c> guard from
+    /// <c>CaptureTimedEffects</c> — i.e. genuinely pre-#29, with the Debug tripwire taken out of the way so
+    /// it cannot be what fails — throws <c>InvalidOperationException: Collection was modified</c> out of the
+    /// capture on every run of three. Determinism cost nothing here: the barrier version reproduces it as
+    /// reliably as the wall-clock one did, in a fifth of the time.</para>
     /// </summary>
     [Fact]
     public void ConcurrentAutosaveAndMutationSerializesAConsistentSnapshot()
@@ -141,50 +177,54 @@ public class SessionActorTests
         });
         for (int i = 0; i < 400; i++) session.ReceiveCurse("armor", 1, Forever, $"actor_prime_{i}", "prime", "");
 
-        long until = Environment.TickCount64 + 1_500;
-        var start = new ManualResetEventSlim();
+        var round = new Barrier(2);
         Exception? saverFault = null, mutatorFault = null;
         int saves = 0, mutations = 0;
 
         var saver = new Thread(() =>
         {
-            start.Wait();
             try
             {
-                while (Environment.TickCount64 < until)
+                for (int r = 0; r < SaveRounds; r++)
                 {
+                    round.SignalAndWait();
                     session.WithState(session.MarkDirty);
                     session.FlushNow();
                     saves++;
                 }
             }
-            catch (Exception e) { saverFault = e; }
+            catch (Exception e) { saverFault = e; Unblock(round); }
         });
 
         var mutator = new Thread(() =>
         {
-            start.Wait();
             try
             {
-                for (int i = 0; Environment.TickCount64 < until; i++)
+                for (int r = 0; r < SaveRounds; r++)
                 {
-                    session.ReceiveCurse("armor", i % 7, Forever, $"actor_churn_{i % 64}", "churn", "");
-                    session.ItemSetStatus($"actor_ward_{i % 32}", Forever);
-                    mutations++;
+                    round.SignalAndWait();
+                    for (int k = 0; k < MutationsPerRound; k++)
+                    {
+                        int i = r * MutationsPerRound + k;
+                        session.ReceiveCurse("armor", i % 7, Forever, $"actor_churn_{i % 64}", "churn", "");
+                        session.ItemSetStatus($"actor_ward_{i % 32}", Forever);
+                        mutations++;
+                    }
                 }
             }
-            catch (Exception e) { mutatorFault = e; }
+            catch (Exception e) { mutatorFault = e; Unblock(round); }
         });
 
         saver.Start();
         mutator.Start();
-        start.Set();
-        Assert.True(saver.Join(TimeSpan.FromSeconds(60)), "the autosaver never finished");
-        Assert.True(mutator.Join(TimeSpan.FromSeconds(60)), "the mutator never finished");
+        Assert.True(saver.Join(TimeSpan.FromSeconds(120)), "the autosaver never finished");
+        Assert.True(mutator.Join(TimeSpan.FromSeconds(120)), "the mutator never finished");
 
         Assert.Null(saverFault);
         Assert.Null(mutatorFault);
-        Assert.True(saves > 10 && mutations > 100, $"the race never got going: {saves} save(s), {mutations} mutation(s)");
+        // Counts, not rates: every round ran on both threads, on any machine.
+        Assert.Equal(SaveRounds, saves);
+        Assert.Equal(SaveRounds * MutationsPerRound, mutations);
 
         // What was written last has to be a whole character, primed effects and all.
         var reloaded = _fx.Store.Load("ActorSaveRace");
