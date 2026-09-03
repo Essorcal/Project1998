@@ -85,12 +85,49 @@ public static partial class Content
             new Dictionary<ushort, List<CellOverride>>();
         internal int MapCellCount { get; set; }
 
+        internal IReadOnlyList<MobDef> Mobs { get; set; } = new List<MobDef>();
+        internal IReadOnlyList<SpawnDef> Spawns { get; set; } = new List<SpawnDef>();
+        internal IReadOnlyList<AreaSpawnDef> AreaSpawns { get; set; } = new List<AreaSpawnDef>();
+        internal IReadOnlyList<NpcDef> Npcs { get; set; } = new List<NpcDef>();
+        internal IReadOnlyDictionary<int, NpcDef> NpcById { get; set; } = new Dictionary<int, NpcDef>();
+        internal IReadOnlyDictionary<int, MobDef> MobById { get; set; } = new Dictionary<int, MobDef>();
+        internal IReadOnlyDictionary<string, MobDef> MobByKey { get; set; } =
+            new Dictionary<string, MobDef>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, string[]> ShopStock { get; set; } =
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, string[]> ShopBuysFrom { get; set; } =
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<(ushort Look, byte Colour), byte> Mob5xPalettes { get; set; } =
+            new Dictionary<(ushort, byte), byte>();
+        internal IReadOnlyDictionary<string, MobDropDef> MobDrops { get; set; } =
+            new Dictionary<string, MobDropDef>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, HarvestNodeDef> HarvestNodes { get; set; } =
+            new Dictionary<string, HarvestNodeDef>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, MobSpellDef[]> MobSpells { get; set; } =
+            new Dictionary<string, MobSpellDef[]>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, MobChatterDef> MobChatter { get; set; } =
+            new Dictionary<string, MobChatterDef>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, MobSpawnRuleDef> MobSpawnRules { get; set; } =
+            new Dictionary<string, MobSpawnRuleDef>(StringComparer.OrdinalIgnoreCase);
+        internal bool MobHpJitter { get; set; }
+        internal IReadOnlyDictionary<string, MobBossDef> MobBosses { get; set; } =
+            new Dictionary<string, MobBossDef>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, IReadOnlyList<int[]>> AmbushBursts { get; set; } =
+            new Dictionary<string, IReadOnlyList<int[]>>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes { get; set; } = new Dictionary<ushort, AmbushMapDef>();
+        internal IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues { get; set; } =
+            new Dictionary<string, IReadOnlyList<(string, string[])>>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, string[]> NpcCompositions { get; set; } =
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<string, bool> MobFleeOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<string, bool> MobStationaryOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
         internal ContentSnapshot Build() => new(this);
     }
 
     private sealed class ContentSnapshot
     {
-        internal const int MemberCount = 29;
+        internal const int MemberCount = 52;
 
         internal ContentSnapshot(ContentSnapshotBuilder builder)
         {
@@ -123,6 +160,29 @@ public static partial class Content
             DoorDefaultOpen = builder.DoorDefaultOpen;
             MapCells = builder.MapCells;
             MapCellCount = builder.MapCellCount;
+            Mobs = builder.Mobs;
+            Spawns = builder.Spawns;
+            AreaSpawns = builder.AreaSpawns;
+            Npcs = builder.Npcs;
+            NpcById = builder.NpcById;
+            MobById = builder.MobById;
+            MobByKey = builder.MobByKey;
+            ShopStock = builder.ShopStock;
+            ShopBuysFrom = builder.ShopBuysFrom;
+            Mob5xPalettes = builder.Mob5xPalettes;
+            MobDrops = builder.MobDrops;
+            HarvestNodes = builder.HarvestNodes;
+            MobSpells = builder.MobSpells;
+            MobChatter = builder.MobChatter;
+            MobSpawnRules = builder.MobSpawnRules;
+            MobHpJitter = builder.MobHpJitter;
+            MobBosses = builder.MobBosses;
+            AmbushBursts = builder.AmbushBursts;
+            Ambushes = builder.Ambushes;
+            ShopCatalogues = builder.ShopCatalogues;
+            NpcCompositions = builder.NpcCompositions;
+            MobFleeOverrides = builder.MobFleeOverrides;
+            MobStationaryOverrides = builder.MobStationaryOverrides;
         }
 
         internal IReadOnlyList<ItemDef> Items { get; }
@@ -154,5 +214,28 @@ public static partial class Content
         internal IReadOnlyDictionary<int, ushort> DoorDefaultOpen { get; }
         internal IReadOnlyDictionary<ushort, List<CellOverride>> MapCells { get; }
         internal int MapCellCount { get; }
+        internal IReadOnlyList<MobDef> Mobs { get; }
+        internal IReadOnlyList<SpawnDef> Spawns { get; }
+        internal IReadOnlyList<AreaSpawnDef> AreaSpawns { get; }
+        internal IReadOnlyList<NpcDef> Npcs { get; }
+        internal IReadOnlyDictionary<int, NpcDef> NpcById { get; }
+        internal IReadOnlyDictionary<int, MobDef> MobById { get; }
+        internal IReadOnlyDictionary<string, MobDef> MobByKey { get; }
+        internal IReadOnlyDictionary<string, string[]> ShopStock { get; }
+        internal IReadOnlyDictionary<string, string[]> ShopBuysFrom { get; }
+        internal IReadOnlyDictionary<(ushort Look, byte Colour), byte> Mob5xPalettes { get; }
+        internal IReadOnlyDictionary<string, MobDropDef> MobDrops { get; }
+        internal IReadOnlyDictionary<string, HarvestNodeDef> HarvestNodes { get; }
+        internal IReadOnlyDictionary<string, MobSpellDef[]> MobSpells { get; }
+        internal IReadOnlyDictionary<string, MobChatterDef> MobChatter { get; }
+        internal IReadOnlyDictionary<string, MobSpawnRuleDef> MobSpawnRules { get; }
+        internal bool MobHpJitter { get; }
+        internal IReadOnlyDictionary<string, MobBossDef> MobBosses { get; }
+        internal IReadOnlyDictionary<string, IReadOnlyList<int[]>> AmbushBursts { get; }
+        internal IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes { get; }
+        internal IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues { get; }
+        internal IReadOnlyDictionary<string, string[]> NpcCompositions { get; }
+        internal Dictionary<string, bool> MobFleeOverrides { get; }
+        internal Dictionary<string, bool> MobStationaryOverrides { get; }
     }
 }

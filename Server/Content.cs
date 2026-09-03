@@ -81,7 +81,7 @@ public static partial class Content
                                            // was, this read the PREVIOUS calendar on @reload, so moving EraDate and reloading placed NPCs by the
                                            // old date — with nothing to say so, since a wrong era never throws.
             var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"));   // needs Maps + the era calendar
-            _npcById = npcs.ToDictionary(n => n.Id);   // assign the index BEFORE the public list, so a reader that
+            NpcByIdIndex = npcs.ToDictionary(n => n.Id);   // assign the index BEFORE the public list, so a reader that
             Npcs = npcs;                               // sees the new Npcs always sees the matching new _npcById
             MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));
             ShopStock = LoadShopStock(T("P1998_SHOPSTOCK", "ShopStock.csv"));
@@ -94,8 +94,8 @@ public static partial class Content
             // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
             ItemByIdIndex = IndexFirst(Items, i => i.Id);
             ItemByKeyIndex = IndexFirst(Items, i => i.Key, StringComparer.OrdinalIgnoreCase);
-            _mobById = IndexFirst(Mobs, m => m.Id);
-            _mobByKey = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
+            MobByIdIndex = IndexFirst(Mobs, m => m.Id);
+            MobByKeyIndex = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
             _spellById = IndexFirst(Spells, s => s.Id);
             _spellByKey = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
             _ladderOf = BuildSpellLadders(Spells);
