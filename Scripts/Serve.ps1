@@ -48,12 +48,19 @@ otherwise pass for the recorded one. Before -Status calls a slot alive or -Stop 
 behind the PID must be the slot's role executable (LoginServer.exe for LOGIN, Server.exe for GAME) at the
 recorded path, created within 1 s of the recorded time, and currently listening on the slot's ports.
 
-HOW -Stop CLOSES THEM. Ctrl+C first, not TerminateProcess: the game server's Ctrl+C / ProcessExit handler
-(Server/Net.cs) flushes connected players before exiting, and a hard kill would skip it. The signal is
-delivered by a short-lived helper powershell that attaches to the server's console (the caller's own
-console must not be detached for this; that would break an interactive shell). If a process is still
-alive after 20 s it is terminated. The cmd window that hosted the batch is then closed too -- after the
-server exits it is only a prompt sitting at "Terminate batch job (Y/N)?".
+HOW -Stop CLOSES THEM. A console signal first, not TerminateProcess: the game server's Ctrl+C /
+ProcessExit handler (Server/Net.cs) flushes connected players before exiting, and a hard kill would skip
+it. A short-lived helper powershell attaches to the server's console (the caller's own console must not be
+detached for this; that would break an interactive shell), sends Ctrl+C, and if the process is still there
+5 s later sends Ctrl+Break as well: Ctrl+C reached the servers with anything from 4 s to well over 20 s of
+latency on the machine this was written on, and Ctrl+Break is not subject to the inheritable
+"ignore Ctrl+C" state a launching shell can leave behind. The game server handles both the same way. A
+GAME process that has answered neither after 30 s is asked to leave through its own deploy trigger,
+runestart_at (RestartSchedule.cs: same Environment.Exit, same flush), and only after that is a process
+terminated. Liveness is judged by HasExited, not by the process list: a terminated apphost stays listed
+while "dotnet run" still holds its handle. The cmd window that hosted the batch is closed once its server
+is gone -- after the server exits it is only a prompt sitting at "Terminate batch job (Y/N)?" -- and it is
+closed even when the server was already gone before -Stop ran.
 
 PORTS. Login binds PortBase and PortBase+1 (4.95 / 5.33), game binds PortBase+5 and PortBase+6, which is
 run-server.bat's 2000/2001 + 2005/2006 at the default. Until Shared/ChannelPorts derives the handoff from
@@ -138,9 +145,23 @@ function Get-Proc([int]$ProcessId) {
     return $p
 }
 
+# HasExited, not mere presence in the process list: after TerminateProcess an apphost started by "dotnet
+# run" stays listed until the muxer releases its handle, and -Stop once reported such a corpse as "still
+# running" and kept the session file for it.
 function Test-Alive([int]$ProcessId) {
     if ($ProcessId -le 0) { return $false }
-    return ($null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue))
+    $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $p) { return $false }
+    try { return (-not $p.HasExited) } catch { return $true }
+}
+
+function Wait-Exit([int]$ProcessId, [int]$TimeoutSec) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-Alive $ProcessId)) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return (-not (Test-Alive $ProcessId))
 }
 
 # Every (port, owning PID) pair currently LISTENING on any of the given ports.
@@ -442,38 +463,80 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
     return [pscustomobject]@{ Outcome = 'timeout'; ProcessId = 0 }
 }
 
-# Deliver Ctrl+C to the console a process is attached to. Runs in a helper powershell because the
-# sender has to detach from its own console to attach to the target's, and detaching THIS process would
-# take an interactive caller's shell down with it. Returns the Win32 error, 0 on success.
-function Send-CtrlC([int]$ProcessId) {
+# Deliver Ctrl+C, then Ctrl+Break if the process is still there after WaitMs, to the console a process is
+# attached to. Runs in a helper powershell because the sender has to detach from its own console to attach
+# to the target's, and detaching THIS process would take an interactive caller's shell down with it. The
+# helper installs a real handler that swallows both events for itself (ignoring Ctrl+C alone would not
+# survive its own Ctrl+Break). Returns 0 when the process exited after Ctrl+C, 1 when Ctrl+Break was sent
+# as well, 1000+/2000+/3000+ plus the Win32 error when attaching or generating failed. Invoked through
+# cmd so that nothing on the helper's streams reaches this session: a redirected powershell stderr is
+# expected to carry CLIXML, and anything else on it is an error in the caller.
+function Send-ConsoleBreak([int]$ProcessId, [int]$WaitMs) {
     $code = @'
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public static class P1998CtrlC {
+using System.Threading;
+public static class P1998Sig {
+  public delegate bool Handler(uint t);
+  static Handler keep = delegate(uint t) { return true; };
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool FreeConsole();
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool AttachConsole(uint pid);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetConsoleCtrlHandler(IntPtr h, bool add);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetConsoleCtrlHandler(Handler h, bool add);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GenerateConsoleCtrlEvent(uint ev, uint grp);
-  public static int Send(uint pid) {
+  static bool Gone(int pid) {
+    try { return System.Diagnostics.Process.GetProcessById(pid).HasExited; } catch { return true; }
+  }
+  public static int Send(int pid, int waitMs) {
     FreeConsole();
-    if (!AttachConsole(pid)) return Marshal.GetLastWin32Error();
-    SetConsoleCtrlHandler(IntPtr.Zero, true);
-    int err = GenerateConsoleCtrlEvent(0, 0) ? 0 : Marshal.GetLastWin32Error();
-    System.Threading.Thread.Sleep(300);
+    if (!AttachConsole((uint)pid)) return 1000 + Marshal.GetLastWin32Error();
+    SetConsoleCtrlHandler(keep, true);
+    if (!GenerateConsoleCtrlEvent(0, 0)) return 2000 + Marshal.GetLastWin32Error();
+    DateTime until = DateTime.UtcNow.AddMilliseconds(waitMs);
+    while (DateTime.UtcNow < until) {
+      if (Gone(pid)) { FreeConsole(); return 0; }
+      Thread.Sleep(250);
+    }
+    if (!GenerateConsoleCtrlEvent(1, 0)) return 3000 + Marshal.GetLastWin32Error();
+    Thread.Sleep(300);
     FreeConsole();
-    return err;
+    return 1;
   }
 }
 "@
-exit [P1998CtrlC]::Send(TARGETPID)
+exit [P1998Sig]::Send(TARGETPID, WAITMS)
 '@
-    $code = $code.Replace('TARGETPID', [string]$ProcessId)
+    $code = $code.Replace('TARGETPID', [string]$ProcessId).Replace('WAITMS', [string]$WaitMs)
     $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
     $ps = Join-Path $PSHOME 'powershell.exe'
     $ErrorActionPreference = 'Continue'
-    & $ps -NoProfile -NonInteractive -EncodedCommand $enc 2>$null | Out-Null
+    & $env:ComSpec /c "$ps -NoProfile -NonInteractive -EncodedCommand $enc >nul 2>nul"
     return $LASTEXITCODE
+}
+
+# Bring one of this session's server processes down as gently as it allows. Returns how it ended, or ''
+# if it is still running after everything.
+function Stop-SessionProcess($Slot, [string]$Root) {
+    $id = [int]$Slot.ProcessId
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $rc = Send-ConsoleBreak -ProcessId $id -WaitMs 5000
+    if ($rc -ge 1000) { Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered (helper code $rc)." }
+    if (Wait-Exit $id 30) {
+        if ($rc -eq 0) { return "stopped on Ctrl+C after $([int]$sw.Elapsed.TotalSeconds) s" }
+        return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s"
+    }
+    if ($Slot.Label -eq 'GAME') {
+        $trigger = Join-Path $Root 'runestart_at'
+        Write-Host "GAME PID $id has ignored Ctrl+C and Ctrl+Break for 30 s; asking it to exit through runestart_at."
+        [System.IO.File]::WriteAllText($trigger, "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())|Serve.ps1 -Stop")
+        if (Wait-Exit $id 20) { return "exited through runestart_at after $([int]$sw.Elapsed.TotalSeconds) s" }
+        # Not consumed, so nobody is reading it; do not leave a restart booked for the next process.
+        if (Test-Path -LiteralPath $trigger) { Remove-Item -LiteralPath $trigger -Force -ErrorAction SilentlyContinue }
+    }
+    Write-Host "$($Slot.Label) PID $id did not exit on any signal; terminating it."
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    if (Wait-Exit $id 30) { return "terminated after $([int]$sw.Elapsed.TotalSeconds) s (no graceful flush)" }
+    return ''
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -549,33 +612,28 @@ function Invoke-Stop([string]$Root, $Plan) {
     $failed = $false
     $ourPids = @()   # the session's PIDs that really are its servers; a reused PID is not waited for
     foreach ($t in $targets) {
-        $p = Get-Proc $t.ProcessId
-        if ($null -eq $p) {
-            Write-Host "$($t.Label) PID $($t.ProcessId): already gone."
-            continue
-        }
-        $why = Get-SlotMismatch $p $Root $t
-        if ($why -ne '') {
-            Write-Host "$($t.Label) PID $($t.ProcessId) is not the process this session started ($why); leaving it alone."
-            continue
-        }
-        $ourPids += $t.ProcessId
         $console = Get-SessionHost -HostPid $t.HostPid -BatchPath $t.Batch
-        if ($null -eq $console) { $console = Find-ConsoleHost -ProcessId $t.ProcessId -BatchPath $t.Batch }
-        $err = Send-CtrlC $t.ProcessId
-        if ($err -ne 0) { Write-Host "$($t.Label) PID $($t.ProcessId): Ctrl+C could not be delivered (Win32 error $err); terminating instead." }
-        Wait-Process -Id $t.ProcessId -Timeout 20 -ErrorAction SilentlyContinue
-        if (Test-Alive $t.ProcessId) {
-            Write-Host "$($t.Label) PID $($t.ProcessId) did not exit on Ctrl+C within 20 s; terminating."
-            Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue
-            Wait-Process -Id $t.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+        $p = Get-Proc $t.ProcessId
+        if ($null -eq $p -or -not (Test-Alive $t.ProcessId)) {
+            Write-Host "$($t.Label) PID $($t.ProcessId): already gone."
+        } else {
+            $why = Get-SlotMismatch $p $Root $t
+            if ($why -ne '') {
+                Write-Host "$($t.Label) PID $($t.ProcessId) is not the process this session started ($why); leaving it alone."
+                continue
+            }
+            $ourPids += $t.ProcessId
+            if ($null -eq $console) { $console = Find-ConsoleHost -ProcessId $t.ProcessId -BatchPath $t.Batch }
+            $how = Stop-SessionProcess -Slot $t -Root $Root
+            if ($how -eq '') {
+                Write-Host "$($t.Label) PID $($t.ProcessId) is still running."
+                $failed = $true
+                continue
+            }
+            Write-Host "$($t.Label) PID $($t.ProcessId): $how."
         }
-        if (Test-Alive $t.ProcessId) {
-            Write-Host "$($t.Label) PID $($t.ProcessId) is still running."
-            $failed = $true
-            continue
-        }
-        Write-Host "$($t.Label) PID $($t.ProcessId): stopped."
+        # The window this script opened for the slot. Once its server is gone it is only a prompt; close it
+        # whether the server went just now or before this -Stop.
         if ($null -ne $console -and (Test-Alive ([int]$console.ProcessId))) {
             Stop-Process -Id ([int]$console.ProcessId) -Force -ErrorAction SilentlyContinue
         }
