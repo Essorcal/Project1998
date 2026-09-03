@@ -3286,17 +3286,36 @@ public sealed partial class World
             // then usually just turns instead of stepping — mirroring RTK mob_ai_normal (checkmove: pick a
             // random side, only step when it matches the current facing, else 4-in-11 step straight ahead).
             // This paces a rabbit (3000ms) to a hop every few seconds, not every 600ms heartbeat.
+            //
+            // Two exception boundaries, one per mob and one per map, so a creature that throws costs ITSELF the
+            // beat and nothing else. Before them the only catch was TickLoop's, which abandoned the whole tick:
+            // every list queued above and below was dropped unsent while the mobs already stepped stayed
+            // stepped. A skipped mob is left exactly where the throw found it — its tile-set entry, its timers
+            // and any queue entry it added before throwing all stand, which is the same state a completed step
+            // leaves and is why nothing here rolls back. Plain try/catch rather than Try(): this is the hot
+            // loop, and a closure per mob per beat is an allocation the sweep does not need.
             foreach (var (mapId, m) in _maps)
             {
                 if (m.Mobs.Count == 0 || m.Players.Count == 0) continue;   // no observers -> don't bother
-                // The map's collision index and this tick's queues, packaged for MobAiTick.Step (World.MobAiTick.cs).
-                var ctx = new MobTickContext(this, mapId, m, moves, turns, hits, mobCasts, chatter, mobHits,
-                                             trapDamage, fxRepeats, healthShows, expiredPets);
-
-                foreach (var mob in m.Mobs)
+                try
                 {
-                    if (!mob.Alive) continue;
-                    MobAiTick.Step(ctx, mob);
+                    // The map's collision index and this tick's queues, packaged for MobAiTick.Step (World.MobAiTick.cs).
+                    var ctx = new MobTickContext(this, mapId, m, moves, turns, hits, mobCasts, chatter, mobHits,
+                                                 trapDamage, fxRepeats, healthShows, expiredPets);
+
+                    foreach (var mob in m.Mobs)
+                    {
+                        if (!mob.Alive) continue;
+                        try { MobAiTick.Step(ctx, mob); }
+                        catch (Exception e)
+                        {
+                            Log.Error($"mob AI step threw — {mob.Key}#{mob.Id} on map {mapId} is skipped this beat, the rest of the sweep continues", e);
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    Log.Error($"mob AI sweep threw — map {mapId} is skipped this beat, the other maps continue", e);
                 }
             }
         }
