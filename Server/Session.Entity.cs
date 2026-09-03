@@ -467,7 +467,8 @@ public sealed partial class Session
     /// visibility exactly like Rogue stealth, so it MUST take ShowPlayer's full despawn+redraw path
     /// (RefreshAppearance treats it as `special`, since the 0x1d in-place look patch can't express "invisible to
     /// some viewers"). It gates: ShowPlayer (hide from LIVING viewers — see the `!IsDead` there), HandleWalk
-    /// (ghost mover clips other ghosts via PvpGhostAt, no-clips the living), and — because whether WE can see
+    /// (ghost mover clips other ghosts, no-clips the living — it is what HandleWalk passes as
+    /// World.TryMovePlayer's `ghostMover`, which picks that branch of the occupancy check), and — because whether WE can see
     /// ghosts flips when OUR OWN state changes — ResyncPeers on death/revive. The ghost still sees itself and
     /// the living. Reviving (Hp>0) drops the predicate and the next RefreshAppearance/EnterMap redraws for all.</summary>
     public bool PvpGhostHidden => IsDead && Content.IsPvpMap(_char.Map);

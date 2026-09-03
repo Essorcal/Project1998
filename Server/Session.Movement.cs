@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
@@ -75,6 +76,25 @@ public sealed partial class Session
         return true;
     }
 
+    /// <summary>Write this player's tile on the world's behalf. Deliberately not a public setter and
+    /// deliberately unchecked: the only callers are <see cref="World.TryMovePlayer"/>, which has just decided
+    /// under <c>World._lock</c> that the tile is free, and <see cref="World.SetPlayerPosition"/>, the
+    /// snap-back. Both hold that lock while calling — the same lock every reader of <see cref="PlayerX"/> /
+    /// <see cref="PlayerY"/> takes — and the walk handler that asked for the move holds this session's own
+    /// monitor (#29), so the pair is written in the one order the two locks may be held. The asserts pin
+    /// exactly that pair; a position write that reaches here holding neither is the #30 race coming back.</summary>
+    internal void SetPositionUnderWorldLock(ushort x, ushort y)
+    {
+        Debug.Assert(_world.HoldsWorldLock,
+            "player position written outside World._lock — the occupancy check and the write are one critical " +
+            "section (#30). Go through World.TryMovePlayer, or World.SetPlayerPosition for a snap-back.");
+        Debug.Assert(StateHeld,
+            "player position written outside this session's state monitor (#29) — wrap the entry point that " +
+            "reaches it in Session.WithState, the way the packet dispatcher does.");
+        _char.X = x;
+        _char.Y = y;
+    }
+
     private void HandleWalk(byte[] dec)
     {
         // SLEEP GATE (the Doze family — see Session.ReceiveSleep). A held player does not move, and this is
@@ -140,30 +160,25 @@ public sealed partial class Session
         bool offMap = nx < 0 || ny < 0 || nx >= _char.MapXs || ny >= _char.MapYs;
         var map = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
         ushort obj = (!offMap && map != null) ? map.Obj(nx, ny) : (ushort)0;
-        // A living mob occupies its tile too (the client also self-blocks on creatures — enforce it
-        // server-side so a desync can't let a player stand on one). Warp tiles still win (checked below).
-        bool mobHere = !offMap && _world.MobAt(_char.Map, nx, ny) is not null;
-        // A living OTHER PLAYER occupies its tile the same way: without this two players can share a tile and
-        // "no-clip" straight through each other when they walk together (both predict the step client-side, and
-        // nothing server-side refused it). A dead player is a ghost and does NOT block — you can step onto a
-        // corpse to reach it. Warp tiles still win (checked below). A held player still occupies its tile.
-        // A PvP ghost (see PvpGhostHidden) no-clips through the LIVING — it's invisible to them in the arena, so
-        // being stopped by an unseen living body (or stopping one) would be baffling — but it still CLIPS other
-        // GHOSTS: the dead share the arena and block each other, matching that ghosts can see each other. So a
-        // dead mover here is blocked only by another ghost; everyone else is blocked by a living player (the dead
-        // never block the living either way, since PlayerAt ignores the dead).
-        bool playerHere = !offMap && (PvpGhostHidden
-            ? _world.PvpGhostAt(_char.Map, nx, ny, this)
-            : _world.PlayerAt(_char.Map, nx, ny, this));
-        // Collision = ground pass flag (Blocked, honors the passtest diag) OR the client's SObj.tbl directional
-        // object-wall for this heading (ObjectFlags) — the layer that stops you walking through a hut's thin
-        // side wall (pass=0 under it). Warp tiles still win: the warp check below returns before `blocked` is
-        // consulted, so doorways sitting on object tiles keep working.
+        // Collision has two halves, and since #30 they are decided in two different places.
+        //
+        // TERRAIN is decided HERE, outside any lock, because it is immutable content that no other thread can
+        // change under us: the ground pass flag (Blocked, honors the passtest diag) OR the client's SObj.tbl
+        // directional object-wall for this heading (ObjectFlags) — the layer that stops you walking through a
+        // hut's thin side wall (pass=0 under it).
+        //
+        // OCCUPANCY (a mob or another player standing on the tile) is shared mutable state, so it is decided by
+        // World.TryMovePlayer in the SAME acquisition of the world lock that writes our position — see the step
+        // at the bottom of this handler. It used to be decided right here, three lock acquisitions and ~100
+        // lines of warp handling before the commit that acted on it.
+        //
+        // Warp tiles still win over both: the warp check below returns before either verdict is consulted, so
+        // doorways sitting on object tiles keep working.
         // @clip waives every collision source except the map edge — walls, object-walls, mobs and players
         // alike. The streamed pass layer is doctored in lockstep (see SendMapRect), because the client
         // predicts against its own copy and would refuse the step before this check ever saw it.
-        bool blocked = offMap || (!_noClip && (mobHere || playerHere
-            || (PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3)))));
+        bool terrainBlocked = !offMap && !_noClip
+            && PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3));
 
         // Doors/portals take precedence over collision: if the tile we're stepping toward is a warp
         // source, take it — even if that tile is otherwise "solid" (many doorways sit on object tiles).
@@ -213,7 +228,7 @@ public sealed partial class Session
                     // Our 4.95-correct equivalent is the same snap-back the `blocked` branch uses: hold at the
                     // from-tile and re-assert with 0x04. The denial goes to the STATUS box (RTK clif_sendminitext),
                     // not the chat bubble.
-                    _char.X = (ushort)fromX; _char.Y = (ushort)fromY;
+                    _world.SetPlayerPosition(this, fromX, fromY);
                     SendXy();
                     SendMiniText(denyMsg);
                     Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {dest.m} DENIED: {denyMsg} — held at ({fromX},{fromY})");
@@ -257,17 +272,44 @@ public sealed partial class Session
         // rather than an SQL warp because of the popup — see Session.TryForeverTreeEntrance.
         if (!offMap && TryForeverTreeEntrance((ushort)nx, (ushort)ny)) return;
 
-        if (blocked)
+        // THE STEP (#30). The occupancy check and the position write are one critical section, so two sessions
+        // racing for one tile can no longer both pass and both commit. Everything above ran first and is
+        // unchanged: the warp and scripted-tile branches have already returned if they fired, so their
+        // precedence over collision is exactly what it was, and terrainBlocked is folded in here rather than
+        // re-tested — a terrain-blocked step is refused by the same branch, with the same packets, as before.
+        //
+        // The occupancy rules this asks World to apply, unchanged from when they lived above:
+        // a living mob occupies its tile (the client also self-blocks on creatures — enforce it server-side so
+        // a desync can't let a player stand on one). A living OTHER PLAYER occupies its tile the same way:
+        // without this two players can share a tile and "no-clip" straight through each other when they walk
+        // together (both predict the step client-side, and nothing server-side refused it). A dead player is a
+        // ghost and does NOT block — you can step onto a corpse to reach it. A held player still occupies its
+        // tile. A PvP ghost (see PvpGhostHidden) no-clips through the LIVING — it's invisible to them in the
+        // arena, so being stopped by an unseen living body (or stopping one) would be baffling — but it still
+        // CLIPS other GHOSTS: the dead share the arena and block each other, matching that ghosts can see each
+        // other. So a dead mover is blocked only by another ghost; everyone else by a living player (the dead
+        // never block the living either way).
+        //
+        // Off the grid never reaches the lock: there is no tile to be occupied and nothing to commit, which is
+        // also why the reasons stay None there and the log prints " off-map" alone, exactly as it always has.
+        var why = BlockReason.None;
+        bool moved = !offMap && _world.TryMovePlayer(this, _char.Map, nx, ny,
+                                                     ghostMover: PvpGhostHidden,
+                                                     enforceOccupancy: !_noClip,
+                                                     otherwiseBlocked: terrainBlocked,
+                                                     out why);
+        if (!moved)
         {
-            _char.X = (ushort)fromX; _char.Y = (ushort)fromY;   // hold at the from-tile
-            SendXy();                                           // 0x04 snap-back cancels the prediction
+            _world.SetPlayerPosition(this, fromX, fromY);        // hold at the from-tile
+            SendXy();                                            // 0x04 snap-back cancels the prediction
             TryOpenBoardSign();   // bumping north into a board sprite opens it (RTK onSign), same as a turn
-            Log.Info($"   -> walk dir={dir} BLOCKED at ({nx},{ny}) obj={obj}{(offMap ? " off-map" : "")}{(mobHere ? " mob" : "")}{(playerHere ? " player" : "")} — held at ({_char.X},{_char.Y})");
+            Log.Info($"   -> walk dir={dir} BLOCKED at ({nx},{ny}) obj={obj}{(offMap ? " off-map" : "")}" +
+                     $"{((why & BlockReason.Mob) != 0 ? " mob" : "")}" +
+                     $"{((why & (BlockReason.Player | BlockReason.Ghost)) != 0 ? " player" : "")}" +
+                     $" — held at ({_char.X},{_char.Y})");
             return;
         }
 
-        _char.X = (ushort)nx;
-        _char.Y = (ushort)ny;
         MarkDirty();   // position, unlike most mutations, is only ever picked up by the autosave/disconnect flush
 
         // Bladestorm is the one trap kind a PLAYER can trigger (see Content.IsBladestormTrap) — the hazard

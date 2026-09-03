@@ -152,7 +152,7 @@ public sealed partial class Session
     /// off-screen, is invisible forever until a room change or Ctrl+R re-draws them in view — the reported
     /// "can't see users I walk up to". Called on world entry, after each of our walk steps, and every world
     /// tick — the same three sites as SyncMobs. Self is skipped.</summary>
-    public void SyncPeers(IReadOnlyList<Session> peers)
+    public void SyncPeers(IReadOnlyList<PeerTile> peers)
     {
         foreach (var other in peers) SyncPeer(other);
     }
@@ -171,7 +171,7 @@ public sealed partial class Session
     /// <summary>Reconcile a SINGLE peer into our view (view-gated + tracked). Used when the world tells one
     /// client about one newcomer (World.EnterMap) so the newcomer is drawn only if in view AND recorded in
     /// _shownPeers — so a later step out of view despawns cleanly, like every other tracked entity.</summary>
-    public void SyncPeer(Session other) => ReconcilePeer(other);
+    public void SyncPeer(PeerTile other) => ReconcilePeer(other);
 
     /// <summary>What reconciling one peer decided to do about them, once the bookkeeping is settled.</summary>
     private enum PeerDraw { Nothing, Show, Despawn }
@@ -189,12 +189,18 @@ public sealed partial class Session
     // draw-vs-despawn for stealth/morph; we only gate on geometry here. The set updates happen at the same
     // points they always did — _shownPeers gains the id on a show, which ShowPlayer cannot fail — so the only
     // thing that moved is WHERE the packet is built.
-    private void ReconcilePeer(Session other)
+    private void ReconcilePeer(PeerTile peer)
     {
+        var other = peer.Session;
         if (ReferenceEquals(other, this)) return;
         uint id = other.PlayerId;
-        bool core = InView(other.PlayerX, other.PlayerY, ShowPad);   // strict 17x15 — where a 0x33 is accepted
-        bool drawn = InView(other.PlayerX, other.PlayerY, HidePad);  // the wider 19x17 the client actually renders
+        // The tile comes from the caller's snapshot, taken under World._lock with the peer list itself
+        // (see World.PeerTile). Reading other.PlayerX/PlayerY here instead — which is what this did — is two
+        // unsynchronised ushort reads of a character every writer of which holds that lock, so the pair could
+        // be torn, and the two InView calls below could each catch a DIFFERENT pair. The drawn position is
+        // unaffected either way: ShowPlayer takes it from other.Snapshot(), under the peer's own monitor.
+        bool core = InView(peer.X, peer.Y, ShowPad);    // strict 17x15 — where a 0x33 is accepted
+        bool drawn = InView(peer.X, peer.Y, HidePad);   // the wider 19x17 the client actually renders
 
         PeerDraw draw;
         using (EnterView())

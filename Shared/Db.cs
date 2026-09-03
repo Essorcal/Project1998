@@ -13,6 +13,17 @@ namespace Shared;
 /// </summary>
 public static class Db
 {
+    private sealed record Migration(string Table, string Column, string Sql);
+
+    private static readonly Migration[] Migrations =
+    {
+        new("handoff_tokens", "ip", "ALTER TABLE handoff_tokens ADD COLUMN ip TEXT NOT NULL DEFAULT '';"),
+        new("parcels", "item_owner", "ALTER TABLE parcels ADD COLUMN item_owner TEXT NOT NULL DEFAULT '';"),
+        new("characters", "unreadable_since", "ALTER TABLE characters ADD COLUMN unreadable_since INTEGER;"),
+    };
+
+    internal static int CurrentSchemaVersion => Migrations.Length;
+
     private static readonly object InitGate = new();
     private static bool _initialized;
     private static string? _path;
@@ -80,11 +91,21 @@ public static class Db
             if (_initialized) return;
             System.IO.Directory.CreateDirectory(RepoPaths.StateDir());
             GuardAgainstPreRenameDatabase();
-            using var cn = new SqliteConnection($"Data Source={Path}");
-            cn.Open();
-            using var cmd = cn.CreateCommand();
-            cmd.CommandText = @"
+            InitializeDatabase(Path);
+            _initialized = true;
+        }
+    }
+
+    /// <summary>Build or migrate one database file. Internal so tests can exercise a fresh, isolated file.</summary>
+    internal static void InitializeDatabase(string path)
+    {
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+        using var cn = new SqliteConnection($"Data Source={path}");
+        cn.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = @"
 PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
 PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -95,9 +116,10 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 CREATE TABLE IF NOT EXISTS characters (
-  username    TEXT PRIMARY KEY COLLATE NOCASE,
-  json        TEXT NOT NULL,
-  updated_utc INTEGER
+  username         TEXT PRIMARY KEY COLLATE NOCASE,
+  json             TEXT NOT NULL,
+  updated_utc      INTEGER,
+  unreadable_since INTEGER
 );
 
 -- Moderation state, keyed by the same normalized username as accounts/characters. SEPARATE from `accounts`
@@ -239,20 +261,61 @@ CREATE TABLE IF NOT EXISTS map_unlocks (
   PRIMARY KEY (map, x, y)
 );
 ";
-            cmd.ExecuteNonQuery();
+        cmd.ExecuteNonQuery();
 
-            // Migrations for databases created before a column existed. CREATE TABLE IF NOT EXISTS above is
-            // a no-op on an existing table, so a new column has to be added explicitly; ALTER TABLE throws
-            // "duplicate column name" once it is already there, which is the success case on every later run.
-            foreach (var alter in new[] {
-                "ALTER TABLE handoff_tokens ADD COLUMN ip TEXT NOT NULL DEFAULT '';",
-                "ALTER TABLE parcels ADD COLUMN item_owner TEXT NOT NULL DEFAULT '';",
-            })
+        ApplyMigrations(cn);
+    }
+
+    private static void ApplyMigrations(SqliteConnection cn)
+    {
+        while (true)
+        {
+            // Take the write reservation before reading the version. Login and game initialize the shared
+            // file independently; this makes choosing + applying one step atomic across both processes.
+            using var tx = cn.BeginTransaction(deferred: false);
+            using var readVersion = cn.CreateCommand();
+            readVersion.Transaction = tx;
+            readVersion.CommandText = "PRAGMA user_version;";
+            int version = Convert.ToInt32(readVersion.ExecuteScalar());
+            if (version > Migrations.Length)
+                throw new InvalidOperationException(
+                    $"Database schema {version} is newer than this server supports ({Migrations.Length}).");
+            if (version == Migrations.Length)
             {
-                try { using var mig = cn.CreateCommand(); mig.CommandText = alter; mig.ExecuteNonQuery(); }
-                catch (SqliteException) { /* column already present */ }
+                tx.Commit();
+                return;
             }
-            _initialized = true;
+
+            var migration = Migrations[version];
+            if (!ColumnExists(cn, tx, migration.Table, migration.Column))
+            {
+                using var alter = cn.CreateCommand();
+                alter.Transaction = tx;
+                alter.CommandText = migration.Sql;
+                alter.ExecuteNonQuery();
+            }
+
+            using var stamp = cn.CreateCommand();
+            stamp.Transaction = tx;
+            stamp.CommandText = $"PRAGMA user_version = {version + 1};";
+            stamp.ExecuteNonQuery();
+            tx.Commit();
         }
+    }
+
+    private static bool ColumnExists(
+        SqliteConnection cn,
+        SqliteTransaction tx,
+        string table,
+        string column)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = $"PRAGMA table_info({table});";
+        using var rows = cmd.ExecuteReader();
+        while (rows.Read())
+            if (string.Equals(rows.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
     }
 }

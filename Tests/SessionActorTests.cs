@@ -187,9 +187,10 @@ public class SessionActorTests
         Assert.True(saves > 10 && mutations > 100, $"the race never got going: {saves} save(s), {mutations} mutation(s)");
 
         // What was written last has to be a whole character, primed effects and all.
-        var reloaded = _fx.Store.Load("ActorSaveRace");
-        Assert.NotNull(reloaded);
-        Assert.Single(reloaded!.Equipment);
+        var load = _fx.Store.Load("ActorSaveRace");
+        Assert.Equal(CharacterLoadStatus.Ok, load.Status);
+        var reloaded = Assert.IsType<Character>(load.Character);
+        Assert.Single(reloaded.Equipment);
         Assert.Equal(character.Effects.Buffs.Count, reloaded.Effects.Buffs.Count);
         Assert.True(reloaded.Effects.Buffs.Count >= 400);
     }
@@ -298,11 +299,14 @@ public class SessionActorTests
             catch (Exception e) { despawnerFault = e; }
         });
 
-        // The tick reconciling B's viewport, which draws A and so snapshots A.
+        // The tick reconciling B's viewport, which draws A and so snapshots A. The PeerTile is what the tick
+        // hands the reconcile since the #97 fix round — the peer plus the tile the world lock last saw it on.
+        // Built once because A stands still for the whole test; the tick rebuilds it every beat.
+        var aTile = new PeerTile(a, a.PlayerX, a.PlayerY);
         var reconciler = new Thread(() =>
         {
             start.Wait();
-            try { for (int i = 0; i < Rounds; i++) b.SyncPeer(a); }
+            try { for (int i = 0; i < Rounds; i++) b.SyncPeer(aTile); }
             catch (Exception e) { reconcilerFault = e; }
         });
 

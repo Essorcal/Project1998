@@ -27,6 +27,7 @@ if (Array.Exists(args, a => a == "--selftest")) { Content.SelfTest(); return; }
 // copy text with nothing selected) triggers a CLEAN exit ("=== shutdown signal (Ctrl+C)"), which can
 // masquerade as a crash — the log file now shows which one happened.
 Log.AttachFile(Path.Combine(Shared.RepoPaths.LogsDir(), "server.log"));
+Shared.CharacterStore.Warn = message => Log.Warn("[db] " + message);
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
 TaskScheduler.UnobservedTaskException += (_, e) =>

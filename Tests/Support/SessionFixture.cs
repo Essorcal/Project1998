@@ -55,6 +55,7 @@ public sealed class SessionFixture
     {
         var character = new Character
         {
+            SchemaVersion = Character.CurrentSchemaVersion,
             Id = World.AllocatePlayerId(),
             Name = name,
             Map = map,
