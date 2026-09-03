@@ -2440,7 +2440,7 @@ public sealed class World
     /// written to.</para>
     ///
     /// <para><b>This is a lock-scope change and nothing else.</b> <see cref="ArrivalPolicy.Clamp"/> is the
-    /// default and is what all 22 non-GM-adjacency callers pass, and it does exactly what the old inline
+    /// default and is what all 21 non-GM-adjacency callers pass, and it does exactly what the old inline
     /// clamp did, occupancy included: it does not test it. Two players through one door still land on one
     /// tile. Whether they SHOULD is #99's open source question, and answering it is not this method's job —
     /// see <see cref="ArrivalPolicy"/>.</para>
@@ -2460,7 +2460,14 @@ public sealed class World
                             ArrivalPolicy policy, FromTile from,
                             out ushort placedX, out ushort placedY)
     {
-        MapData.Prewarm(mapId);   // BEFORE the lock — see EnterMap's note on why a cold load must not be inside it
+        // BEFORE the lock, and MapData.For rather than Prewarm: Prewarm returns early for a map with no
+        // Maps.csv row, which would leave AdjacentFreeElseStack's own MapData.For to do the cold load —
+        // a disk read, a full cell decode and a SQLite query — INSIDE the critical section every player on
+        // every map is waiting behind. Reachable through @approach/@bring on an unregistered map, and the
+        // path every policy test takes. The result is discarded; the point is the cache entry. Only the
+        // searching policy needs it — Clamp never looks at terrain, so it does no terrain work at all, which
+        // is also what the old inline clamp in Session.EnterMap did.
+        if (policy == ArrivalPolicy.AdjacentFreeElseStack) _ = MapData.For(mapId, xs, ys);
         lock (_lock)
         {
             var (tx, ty) = policy switch

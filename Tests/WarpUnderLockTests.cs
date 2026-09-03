@@ -1,4 +1,5 @@
 using Server;
+using Shared;
 using Tests.Support;
 using Xunit;
 
@@ -35,7 +36,8 @@ public class WarpUnderLockTests
     /// so nothing is ever terrain-blocked and occupancy is the only thing the search can be reacting to.
     /// One per test, since the fixture World is shared and a session is never unregistered from a map.</summary>
     private const ushort AdjacentMap = 60010, BoxedMap = 60011, FromMap = 60012, ElsewhereMap = 60013,
-                         ConcurrentMap = 60014;
+                         ConcurrentMap = 60014, LiveMobMap = 60015, DeadMobMap = 60016,
+                         ColdMap = 60017, ColdClampMap = 60018;
 
     private static byte[] WalkPacket(byte dir, int fromX, int fromY) =>
         SessionFixture.Frame(0x06, new byte[]
@@ -53,15 +55,21 @@ public class WarpUnderLockTests
     /// <summary>
     /// A real warp still lands where the warp says, and the write happened under both locks.
     ///
-    /// <para>The lock-scope claim is not asserted by inspection here — it is enforced by the two
-    /// <c>Debug.Assert</c>s inside <c>Session.SetPositionUnderWorldLock</c>, which is now the only way an
-    /// arrival's position can be written. Either would throw out of this walk if <c>World._lock</c> or the
-    /// mover's own state monitor were missing, so a green run in a Debug build IS the proof. (The pair is
-    /// compiled out in Release, which is the standing #29-family gap the reviewers filed separately.)</para>
+    /// <para><b>Two halves, and the #102 review showed why one of them is not enough.</b> The
+    /// <c>Debug.Assert</c>s inside <c>Session.SetPositionUnderWorldLock</c> prove that a write which REACHES
+    /// the seam held both locks. They say nothing about a write that bypasses it — the reviewer reverted
+    /// <c>Session.EnterMap</c> to its old inline clamp and this test stayed green, because the landing tile
+    /// is the same either way. So the seam's use is now observed directly:
+    /// <c>Session.PositionWritesUnderWorldLock</c> counts writes through it, and the walk below has to move
+    /// it. Bypass the seam and the count does not move, whatever tile the player ends up on.</para>
+    ///
+    /// <para>(The assert half is compiled out in Release, which is the standing #29-family gap the reviewers
+    /// filed separately. The counter is not, so this half of the proof holds in both configurations.)</para>
     /// </summary>
     [Fact]
     public void WarpingThroughADoorWritesThePositionUnderTheWorldLock()
     {
+        long writesBefore = Session.PositionWritesUnderWorldLock;
         Assert.True(Content.TryWarp(DoorMap, DoorX, DoorY, out var dest), "Country Farm's door into Mignok's Home");
         Assert.True(Content.TryMap(DoorMap, out var src));
 
@@ -72,6 +80,10 @@ public class WarpUnderLockTests
 
         Assert.Equal(dest.x, mover.PlayerX);
         Assert.Equal(dest.y, mover.PlayerY);
+        // ...and it got there THROUGH the seam, not merely to the right tile.
+        Assert.True(Session.PositionWritesUnderWorldLock > writesBefore,
+            "the arrival landed on the right tile without going through SetPositionUnderWorldLock — " +
+            "the lock-scope claim is what this asserts, not the destination");
     }
 
     /// <summary>
@@ -85,6 +97,7 @@ public class WarpUnderLockTests
     [Fact]
     public void TheDefaultPolicyStillDoesNotTestOccupancy()
     {
+        long writesBefore = Session.PositionWritesUnderWorldLock;
         Assert.True(Content.TryWarp(DoorMap, DoorX, DoorY, out var dest));
         Assert.True(Content.TryMap(DoorMap, out var src));
         Assert.True(Content.TryMap(dest.m, out var dm));
@@ -101,6 +114,7 @@ public class WarpUnderLockTests
         Assert.Equal(dest.y, mover.PlayerY);
         Assert.Equal(sitter.PlayerX, mover.PlayerX);   // stacked, as it always has
         Assert.Equal(sitter.PlayerY, mover.PlayerY);
+        Assert.True(Session.PositionWritesUnderWorldLock > writesBefore, "the arrival bypassed the seam");
     }
 
     /// <summary>
@@ -111,6 +125,13 @@ public class WarpUnderLockTests
     /// <para><b>The policy is named on purpose.</b> If #99's source check later says an occupied arrival tile
     /// should refuse or step aside, this test is where that shows up: it has to be rewritten to name the new
     /// policy, rather than silently continuing to pass. Part 1 does not decide it.</para>
+    ///
+    /// <para><b>What this is NOT.</b> It is not a race test, and the #102 reviewer was right to say so: under
+    /// <see cref="ArrivalPolicy.Clamp"/> there is no contested resource, so the only way it can fail is an
+    /// exception out of the concurrent path. It asserts the outcome Clamp guarantees — both arrivals on the
+    /// requested tile, every round — and it exists to pin the policy by name and to run the arrival path from
+    /// two threads at once. The place where a real contest is won or lost under this lock is
+    /// <c>MovementRaceTests.TwoSessionsRacingForOneTileExactlyOneWins</c>.</para>
     ///
     /// <para>Driven at <see cref="World.PlacePlayer"/> rather than through two concurrent
     /// <c>Session.EnterMap</c> calls, and that is a deliberate limit: a full EnterMap broadcasts into other
@@ -188,6 +209,82 @@ public class WarpUnderLockTests
         Assert.Equal(5, mover.PlayerY);
     }
 
+    /// <summary>A LIVING mob north of the anchor takes that tile, so the search moves on to east — the mob
+    /// half of the predicate, which the player cases could not distinguish. Deleting
+    /// <c>AdjacentFreeLocked</c>'s mob line leaves every other test in this file green (the #102 reviewer's
+    /// M8); it turns this one red.</summary>
+    [Fact]
+    public void AdjacentPolicySkipsATileHeldByALivingMob()
+    {
+        var world = _fx.World;
+        world.AddMob(LiveMobMap, new Mob(world.AllocateMobId(), 1, 5, 4, "north guard", hp: 10));
+        var (mover, _) = _fx.Player("LiveMobMover", LiveMobMap, 11, 11);
+
+        mover.WithState(() => world.PlacePlayer(
+            mover, LiveMobMap, 12, 12, 5, 5,
+            ArrivalPolicy.AdjacentFreeElseStack, new FromTile(LiveMobMap, 11, 11), out _, out _));
+
+        Assert.Equal(6, mover.PlayerX);
+        Assert.Equal(5, mover.PlayerY);
+    }
+
+    /// <summary>...and a DEAD one does not: the predicate is <c>mo.Alive</c>, so a corpse north of the anchor
+    /// leaves that tile free and the search takes it. The mirror of the case above, and what stops "skip
+    /// tiles with a mob on them" from quietly becoming "skip tiles that ever had one".</summary>
+    [Fact]
+    public void AdjacentPolicyTakesATileHeldByADeadMob()
+    {
+        var world = _fx.World;
+        var corpse = new Mob(world.AllocateMobId(), 1, 5, 4, "north corpse", hp: 10);
+        corpse.Hp = 0;
+        world.AddMob(DeadMobMap, corpse);
+        var (mover, _) = _fx.Player("DeadMobMover", DeadMobMap, 11, 11);
+
+        mover.WithState(() => world.PlacePlayer(
+            mover, DeadMobMap, 12, 12, 5, 5,
+            ArrivalPolicy.AdjacentFreeElseStack, new FromTile(DeadMobMap, 11, 11), out _, out _));
+
+        Assert.Equal(5, mover.PlayerX);
+        Assert.Equal(4, mover.PlayerY);
+    }
+
+    /// <summary>A WALL north of the anchor does the same as a body — the terrain half of the predicate, which
+    /// the content-free maps the other cases use cannot exercise at all, since <c>MapData.For</c> is null
+    /// there and nothing is ever blocked. Deleting <c>AdjacentFreeLocked</c>'s <c>BlockedMove</c> line (the
+    /// reviewer's M9) turns this one red and nothing else.
+    ///
+    /// <para>The anchor is FOUND rather than hardcoded: the first tile on a real map whose north neighbour is
+    /// blocked and whose east neighbour is not, with both free of bodies. A Warps.csv or terrain edit moves
+    /// the test with it instead of breaking it.</para></summary>
+    [Fact]
+    public void AdjacentPolicySkipsATileBehindAWall()
+    {
+        var world = _fx.World;
+        Assert.True(Content.TryMap(DoorMap, out var md));
+        var terrain = MapData.For(DoorMap, md.Xs, md.Ys);
+        Assert.NotNull(terrain);
+
+        (int x, int y) anchor = (-1, -1);
+        for (int y = 1; y < md.Ys - 1 && anchor.x < 0; y++)
+            for (int x = 1; x < md.Xs - 1; x++)
+                if (terrain!.BlockedMove(x, y - 1, 0) && !terrain.BlockedMove(x + 1, y, 1)
+                    && world.PeerAt(DoorMap, x, y - 1) is null && world.PeerAt(DoorMap, x + 1, y) is null
+                    && world.MobAt(DoorMap, x, y - 1) is null && world.MobAt(DoorMap, x + 1, y) is null)
+                { anchor = (x, y); break; }
+        Assert.True(anchor.x >= 0, $"no tile on map {DoorMap} has a blocked north and a free east");
+
+        var (mover, _, _) = _fx.PlayerWith("WallMover", c => { c.MapXs = md.Xs; c.MapYs = md.Ys; },
+                                           DoorMap, 1, 1);
+        world.LeaveMap(mover, DoorMap);   // as Session.EnterMap does before placing
+
+        mover.WithState(() => world.PlacePlayer(
+            mover, DoorMap, md.Xs, md.Ys, anchor.x, anchor.y,
+            ArrivalPolicy.AdjacentFreeElseStack, new FromTile(DoorMap, 1, 1), out _, out _));
+
+        Assert.Equal(anchor.x + 1, mover.PlayerX);   // east: north is a wall
+        Assert.Equal(anchor.y, mover.PlayerY);
+    }
+
     /// <summary>...and stacks on the anchor's own tile when every neighbour is taken, which is what the old
     /// code's "else the target's own tile" fallback did. A GM must never be refused a rescue.</summary>
     [Fact]
@@ -206,6 +303,48 @@ public class WarpUnderLockTests
 
         Assert.Equal(5, mover.PlayerX);
         Assert.Equal(5, mover.PlayerY);
+    }
+
+    /// <summary>
+    /// <b>The terrain load happens before the lock, not inside it.</b> The #102 reviewer found that
+    /// <c>MapData.Prewarm</c> returns early for a map with no <c>Maps.csv</c> row, so the search's own
+    /// <c>MapData.For</c> did the cold load — a disk read, a full cell decode and a SQLite query — inside
+    /// <c>World._lock</c>, with every player on every map queued behind it. Reachable through
+    /// <c>@approach</c>/<c>@bring</c> on an unregistered map, which is also the path every policy test here
+    /// takes.
+    ///
+    /// <para>Asserted from the outside: the cache is cold before the call and warm after, and the load is
+    /// attributable to <c>PlacePlayer</c> because nothing else in the test touches that map id.</para>
+    /// </summary>
+    [Fact]
+    public void TheSearchWarmsTheMapCacheBeforeTakingTheLock()
+    {
+        Assert.False(Content.Maps.ContainsKey(ColdMap), "the point of the test is an UNregistered map");
+        Assert.False(MapData.IsLoadedForTest(ColdMap), "cold to start with");
+
+        var (mover, _) = _fx.Player("ColdSearchMover", ColdMap, 9, 9);
+        mover.WithState(() => _fx.World.PlacePlayer(
+            mover, ColdMap, 12, 12, 5, 5,
+            ArrivalPolicy.AdjacentFreeElseStack, new FromTile(ColdMap, 9, 9), out _, out _));
+
+        Assert.True(MapData.IsLoadedForTest(ColdMap),
+            "PlacePlayer did not warm the cache — the search's MapData.For is then a cold load under _lock");
+    }
+
+    /// <summary>...and <see cref="ArrivalPolicy.Clamp"/> loads no terrain at all, because it never reads any.
+    /// The old inline clamp in <c>Session.EnterMap</c> did not either, so this is the arrival path staying as
+    /// cheap as it was for the twenty-one callers that use the default.</summary>
+    [Fact]
+    public void TheDefaultPolicyLoadsNoTerrain()
+    {
+        Assert.False(Content.Maps.ContainsKey(ColdClampMap));
+        var (mover, _) = _fx.Player("ColdClampMover", ColdClampMap, 9, 9);
+
+        mover.WithState(() => _fx.World.PlacePlayer(
+            mover, ColdClampMap, 12, 12, 5, 5,
+            ArrivalPolicy.Clamp, new FromTile(ColdClampMap, 9, 9), out _, out _));
+
+        Assert.False(MapData.IsLoadedForTest(ColdClampMap));
     }
 
     /// <summary>

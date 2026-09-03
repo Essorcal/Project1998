@@ -232,6 +232,16 @@ public sealed class MapData
         }
     }
 
+    /// <summary>Is <paramref name="id"/> already in the cache? Test-only, and it exists for one assertion:
+    /// that <see cref="World.PlacePlayer"/> warms the cache BEFORE taking the world lock, so the search it
+    /// runs under that lock is a dictionary hit rather than a disk read, a cell decode and a SQLite query.
+    /// The #102 reviewer found the opposite by probing this dictionary through reflection; an accessor is
+    /// what lets the repo assert it itself.</summary>
+    internal static bool IsLoadedForTest(ushort id)
+    {
+        lock (Cache) return Cache.ContainsKey(id);
+    }
+
     /// <summary>Make sure map <paramref name="id"/> is loaded, from a caller that holds NO lock. Call this
     /// before entering a critical section that will read the map: it moves the disk + SQLite cost off the
     /// locked path, so the section itself only ever hits the cache. No-op for an unknown map id or one that
