@@ -508,4 +508,30 @@ public sealed class CommandTableTests
             Assert.True(line.Length <= Session.PaneWidth || !line.Trim().Contains(' '),
                         $"'{command}' printed a {line.Length}-char line that could have been broken: \"{line}\"");
     }
+
+    // ---- @warp, pinned before it moves -----------------------------------------------------------------
+    //
+    // @warp's handler lives in Session.Navigation.cs and so was outside the first pass; it is in scope now.
+    // Pinned here FIRST, against the behaviour it has today — everything on the 0x0D bubble, an unwrapped
+    // "Warped to ..." confirmation and a hand-written usage line — so the commit that converts it shows the
+    // move rather than asserting it.
+
+    [Theory]
+    // The confirmation. A map id, then a map id with explicit coordinates.
+    [InlineData("@warp 36", new[] { "bubble|Warped to IronHeart's Home (map 36, 12x12) at (6,6)." })]
+    [InlineData("@warp 36 4 9", new[] { "bubble|Warped to IronHeart's Home (map 36, 12x12) at (4,9)." })]
+    // The two refusals: no argument, and a name that matches nothing.
+    [InlineData("@warp", new[] { "bubble|usage: @warp <map name or id> [x y]" })]
+    [InlineData("@warp zzznosuchmap", new[] { "bubble|no map matches \"zzznosuchmap\" - try  @maps zzznosuchmap" })]
+    // @go is the same file and the same pass. Note its "usage:" line is a CONFIRMATION in disguise: the
+    // command always moves you, and says so even when it had to fall back to (0,0).
+    [InlineData("@go 3 4", new[] { "bubble|Moved to (3,4) on IronHeart's Home (map 36)." })]
+    [InlineData("@go", new[] { "bubble|usage: @go <x> <y>  -  0..11 / 0..11 on IronHeart's Home (map 36); sent you to (0,0)." })]
+    public void NavigationCommandSaysAndChannel(string command, string[] expected)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        Assert.True(session.TryRunCommand(command), $"'{command}' was not recognized as a command at all");
+        Assert.Equal(expected, Transcript(outbound));
+    }
 }
