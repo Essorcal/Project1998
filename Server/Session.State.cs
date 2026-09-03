@@ -215,6 +215,11 @@ public sealed partial class Session
         Debug.Assert(!HoldsAnyViewLock,
             "lock order violated: a session viewport lock is held while entering the Lua gate. Nothing under " +
             "_viewLock may run a script — decide under the viewport lock and act outside it.");
+        // The OTHER half of the #90 rule — that World._lock must not be held on the way IN here — is asserted
+        // at the Lua host entry points rather than in this method, because this method is static and has no
+        // World to ask (EnterState can, being an instance). See MobScript.Fire. LuaVerbHost and NpcScript hold
+        // no World at all, so their entries are documented by that rule rather than checked by it; the path
+        // that can realistically be reached from inside the lock is the tick's hook drain, which is Fire's.
 
         if (Monitor.IsEntered(ScriptGateLock)) return default;   // re-entrant: one host reaching another
         if (Monitor.TryEnter(ScriptGateLock)) return new ScriptGateGuard(true);

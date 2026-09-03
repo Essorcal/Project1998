@@ -2204,6 +2204,64 @@ public sealed class World
         }
     }
 
+    /// <summary>Give a world mob an item to carry (RTK's hand-off: the creature drops it back when killed —
+    /// see <see cref="TryDamage"/>). Under <c>_lock</c> because <c>Mob.Handed</c> is a plain <c>List</c> that
+    /// the death path ENUMERATES under this lock while the player's read loop was adding to it: not a stale
+    /// read but an "InvalidOperationException: Collection was modified" thrown inside the world lock, or a
+    /// list lost outright when two hands race the <c>??=</c>. Same shape as <see cref="HealMobFromScript"/>:
+    /// the caller decides what to hand over, the world owns the write.</summary>
+    internal void HandItemToMob(Mob mob, InvItem item)
+    {
+        lock (_lock) (mob.Handed ??= new()).Add(item);
+    }
+
+    /// <summary>Settle a harvest node's claim and take it if it is free: the lapse check, the lazy heal that
+    /// follows it, the owner test and the re-stamp, all in ONE acquisition. Returns false if somebody else
+    /// holds it, and the caller says so.
+    ///
+    /// <para><b>Why one method and not the three the issue sketched.</b> Reset-then-check-then-claim as
+    /// separate lock-owning calls would put each write under the lock and leave the DECISION spanning three
+    /// of them — two players swinging at the same node in the same instant could both see it unclaimed and
+    /// both stamp their own id, which is the exact check-then-act shape #26 exists to remove. The semantics
+    /// are unchanged: a claim lapses on time, a lapsed node heals to full, a live claim belonging to someone
+    /// else refuses, and your own claim is refreshed.</para>
+    ///
+    /// <para>The node's HP damage is not here: it already goes through <see cref="TryDamage"/>, which takes
+    /// this lock itself.</para>
+    ///
+    /// <para><b>The clock is read here, inside the acquisition, and not by the caller before it.</b> The
+    /// first cut took <c>now</c> as a parameter, so the lapse decision and the new expiry both used a reading
+    /// from before the wait for the lock: a claim stamped fractionally short, and a claim that lapsed DURING
+    /// the wait not seen. The magnitude is one lock hold against a two-minute claim, so nothing a player
+    /// could feel — but the code this replaced took no lock at all, so the window was new, and "the semantics
+    /// are exactly what they were" is only literally true with the read on this side of it.</para>
+    ///
+    /// <para><paramref name="clock"/> is a test seam and nothing else. Production passes nothing and the
+    /// ternary reads <see cref="Environment.TickCount64"/> directly, so no caller-supplied delegate runs
+    /// inside <c>_lock</c> on any real path; a test's clock has to stay pure, because reaching back into the
+    /// world from inside this acquisition is the deadlock the #90 rule is about.</para></summary>
+    internal bool TryClaimHarvestNode(Mob node, uint claimant, long claimMs, Func<long>? clock = null)
+    {
+        lock (_lock)
+        {
+            long now = clock is null ? Environment.TickCount64 : clock();
+
+            // A node nobody is touching has nothing to observe it, so a lapsed claim is settled lazily on the
+            // next swing rather than on a tick — indistinguishable from RTK's timer, and no per-tick work.
+            if (node.HarvestClaimUntil != 0 && now > node.HarvestClaimUntil)
+            {
+                node.Hp = node.MaxHp;
+                node.HarvestClaimBy = 0;
+                node.HarvestClaimUntil = 0;
+            }
+            if (node.HarvestClaimBy != 0 && node.HarvestClaimBy != claimant) return false;
+
+            node.HarvestClaimBy = claimant;
+            node.HarvestClaimUntil = now + claimMs;
+            return true;
+        }
+    }
+
     /// <summary>The Lua hook's heal (<c>MobContext.heal</c>), under <c>_lock</c> — the write it used to do
     /// straight to <c>mob.Hp</c> from inside a script, with no lock held at all.
     ///

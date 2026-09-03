@@ -41,21 +41,17 @@ public sealed partial class Session
         var (node, def, toolIndex) = FindHarvestNode(tool);
         if (node is null || def is null) return false;
 
-        // Claim: the node belongs to whoever started it, for two minutes. Lapsed claims are settled HERE
-        // rather than on a world tick — a node nobody is touching has nothing to observe it, so healing it
-        // lazily on the next swing is indistinguishable from RTK's timer and costs no per-tick work.
-        long now = Environment.TickCount64;
-        if (node.HarvestClaimUntil != 0 && now > node.HarvestClaimUntil)
-        {
-            node.Hp = node.MaxHp;
-            node.HarvestClaimBy = 0;
-            node.HarvestClaimUntil = 0;
-        }
-        if (node.HarvestClaimBy != 0 && node.HarvestClaimBy != _char.Id)
+        // Claim: the node belongs to whoever started it, for two minutes. Lapsed claims are settled lazily
+        // rather than on a world tick — a node nobody is touching has nothing to observe it, so healing it on
+        // the next swing is indistinguishable from RTK's timer and costs no per-tick work.
+        //
+        // The whole decision is one acquisition of the world lock now (#103): a harvest node is a world mob,
+        // and its claim fields and HP were being written from this read loop with no lock at all, while the
+        // world read the same mob. Splitting it into a reset call and a claim call would have moved each
+        // WRITE under the lock and left the decision spanning both, so two players swinging at one node in
+        // the same instant could still both see it free. The semantics are exactly what they were.
+        if (!_world.TryClaimHarvestNode(node, _char.Id, HarvestClaimMs))
         { Notify($"Someone else is working this {node.Name.ToLowerInvariant()}."); return true; }
-
-        node.HarvestClaimBy = _char.Id;
-        node.HarvestClaimUntil = now + HarvestClaimMs;
 
         // The swing. Deliberately NOT your weapon damage: a legendary miner with bare hands out-mines a
         // warrior with a maxcaliber, because the pick is the tool and the skill is the arm.
