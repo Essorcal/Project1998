@@ -117,7 +117,7 @@ public class ContentReloadTests
 
                 Assert.Contains("Public content tables replaced before failure:", error.Message);
                 Assert.DoesNotContain("Maps", error.Message);
-                Assert.Contains("Paths", error.Message);
+                Assert.Contains("MinorQuests", error.Message);
                 Assert.DoesNotContain("previous content kept", error.Message, StringComparison.OrdinalIgnoreCase);
             }
             finally

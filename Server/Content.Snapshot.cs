@@ -122,12 +122,49 @@ public static partial class Content
         internal Dictionary<string, bool> MobFleeOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, bool> MobStationaryOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+        internal IReadOnlyList<SpellDef> Spells { get; set; } = new List<SpellDef>();
+        internal IReadOnlyDictionary<int, string> Paths { get; set; } = new Dictionary<int, string>();
+        internal IReadOnlyDictionary<string, SpellFx> SpellFx { get; set; } =
+            new Dictionary<string, SpellFx>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, (string Target, string Fade)> SpellTexts { get; set; } =
+            new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<int, SpellDef> SpellById { get; set; } = new Dictionary<int, SpellDef>();
+        internal IReadOnlyDictionary<string, SpellDef> SpellByKey { get; set; } =
+            new Dictionary<string, SpellDef>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, int> PathIdByName { get; set; } =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> SpellParams { get; set; } =
+            new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, Dictionary<int, LearnCost>> SpellCosts { get; set; } =
+            new Dictionary<string, Dictionary<int, LearnCost>>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<int, Dictionary<string, (string Ladder, int Rung)>> LadderOf { get; set; } =
+            new Dictionary<int, Dictionary<string, (string, int)>>();
+        internal Dictionary<int, string[]> PathRanks { get; set; } = new();
+        internal IReadOnlyDictionary<string, (int PathId, int Mark)> PathRankByName { get; set; } =
+            new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<int, int> PathIcon { get; set; } = new();
+        internal Dictionary<int, int> PathBase { get; set; } = new();
+        internal IReadOnlyDictionary<string, int> RageAmount { get; set; } =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells { get; set; } =
+            new Dictionary<string, (double, int)>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, (TrapKind Kind, int Level, int Mana)> TrapSpells { get; set; } =
+            new Dictionary<string, (TrapKind, int, int)>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> MorphSpells { get; set; } =
+            new Dictionary<string, (ushort, ushort, int, int)>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells { get; set; } =
+            new Dictionary<string, (Dictionary<string, ushort>, int, int)>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells { get; set; } =
+            new Dictionary<string, (string, int, int, int)>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, int> SpellLevelOverrides { get; set; } =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
         internal ContentSnapshot Build() => new(this);
     }
 
     private sealed class ContentSnapshot
     {
-        internal const int MemberCount = 52;
+        internal const int MemberCount = 73;
 
         internal ContentSnapshot(ContentSnapshotBuilder builder)
         {
@@ -183,6 +220,27 @@ public static partial class Content
             NpcCompositions = builder.NpcCompositions;
             MobFleeOverrides = builder.MobFleeOverrides;
             MobStationaryOverrides = builder.MobStationaryOverrides;
+            Spells = builder.Spells;
+            Paths = builder.Paths;
+            SpellFx = builder.SpellFx;
+            SpellTexts = builder.SpellTexts;
+            SpellById = builder.SpellById;
+            SpellByKey = builder.SpellByKey;
+            PathIdByName = builder.PathIdByName;
+            SpellParams = builder.SpellParams;
+            SpellCosts = builder.SpellCosts;
+            LadderOf = builder.LadderOf;
+            PathRanks = builder.PathRanks;
+            PathRankByName = builder.PathRankByName;
+            PathIcon = builder.PathIcon;
+            PathBase = builder.PathBase;
+            RageAmount = builder.RageAmount;
+            EnchantSpells = builder.EnchantSpells;
+            TrapSpells = builder.TrapSpells;
+            MorphSpells = builder.MorphSpells;
+            MorphDispatchSpells = builder.MorphDispatchSpells;
+            PetSpells = builder.PetSpells;
+            SpellLevelOverrides = builder.SpellLevelOverrides;
         }
 
         internal IReadOnlyList<ItemDef> Items { get; }
@@ -237,5 +295,26 @@ public static partial class Content
         internal IReadOnlyDictionary<string, string[]> NpcCompositions { get; }
         internal Dictionary<string, bool> MobFleeOverrides { get; }
         internal Dictionary<string, bool> MobStationaryOverrides { get; }
+        internal IReadOnlyList<SpellDef> Spells { get; }
+        internal IReadOnlyDictionary<int, string> Paths { get; }
+        internal IReadOnlyDictionary<string, SpellFx> SpellFx { get; }
+        internal IReadOnlyDictionary<string, (string Target, string Fade)> SpellTexts { get; }
+        internal IReadOnlyDictionary<int, SpellDef> SpellById { get; }
+        internal IReadOnlyDictionary<string, SpellDef> SpellByKey { get; }
+        internal IReadOnlyDictionary<string, int> PathIdByName { get; }
+        internal IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> SpellParams { get; }
+        internal IReadOnlyDictionary<string, Dictionary<int, LearnCost>> SpellCosts { get; }
+        internal IReadOnlyDictionary<int, Dictionary<string, (string Ladder, int Rung)>> LadderOf { get; }
+        internal Dictionary<int, string[]> PathRanks { get; }
+        internal IReadOnlyDictionary<string, (int PathId, int Mark)> PathRankByName { get; }
+        internal Dictionary<int, int> PathIcon { get; }
+        internal Dictionary<int, int> PathBase { get; }
+        internal IReadOnlyDictionary<string, int> RageAmount { get; }
+        internal IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells { get; }
+        internal IReadOnlyDictionary<string, (TrapKind Kind, int Level, int Mana)> TrapSpells { get; }
+        internal IReadOnlyDictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> MorphSpells { get; }
+        internal IReadOnlyDictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells { get; }
+        internal IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells { get; }
+        internal IReadOnlyDictionary<string, int> SpellLevelOverrides { get; }
     }
 }

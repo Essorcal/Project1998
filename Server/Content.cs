@@ -96,9 +96,9 @@ public static partial class Content
             ItemByKeyIndex = IndexFirst(Items, i => i.Key, StringComparer.OrdinalIgnoreCase);
             MobByIdIndex = IndexFirst(Mobs, m => m.Id);
             MobByKeyIndex = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
-            _spellById = IndexFirst(Spells, s => s.Id);
-            _spellByKey = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
-            _ladderOf = BuildSpellLadders(Spells);
+            SpellByIdIndex = IndexFirst(Spells, s => s.Id);
+            SpellByKeyIndex = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
+            LadderOf = BuildSpellLadders(Spells);
             // name -> id, first wins. BASE names go in first so a string that is one path's class name and
             // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
             var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -108,8 +108,8 @@ public static partial class Content
             foreach (var (id, ladder) in PathRanks)
                 for (int m = 1; m < ladder.Length; m++)
                     if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
-            _pathIdByName = pathIdByName;
-            _pathRankByName = pathRankByName;
+            PathIdByNameIndex = pathIdByName;
+            PathRankByNameIndex = pathRankByName;
             SpellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
             SpellTexts = LoadSpellTexts(T("P1998_SPELL_TEXT", "SpellText.csv"));
             SpellCosts = LoadSpellCosts(T("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
