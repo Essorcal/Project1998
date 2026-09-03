@@ -18,6 +18,10 @@ public static class ChannelPorts
             port == Login495 || port == Login533 || port == Game495 || port == Game533;
     }
 
+    // Ports outside the configured pair fall back here. That keeps ChannelPortsTests free to configure
+    // 3000/3001 process-wide while other test collections concurrently construct Sessions on 2005/2006.
+    // A port unknown to both pairs consequently answers game and 4.95, matching the pre-configuration
+    // behavior: an unknown channel must not gain login framing or opt into the 5.33 protocol path.
     private static readonly Pair DefaultPair = new(2000, 2001, 2005, 2006);
     private static Pair? _configuredPair;
 
