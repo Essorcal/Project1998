@@ -32,7 +32,8 @@ public class MovementRaceTests
 
     /// <summary>Map ids with no content behind them, one per test. See the class doc for why they are not
     /// shared.</summary>
-    private const ushort RaceMap = 60000, LivingMap = 60001, GhostMap = 60002, DeadMap = 60003, ReasonMap = 60004;
+    private const ushort RaceMap = 60000, LivingMap = 60001, GhostMap = 60002, DeadMap = 60003, ReasonMap = 60004,
+                         TornMap = 60005;
 
     /// <summary>Enough rounds that a lost race shows. The window this closes is a few instructions wide, so
     /// one round proves nothing; four hundred barrier-released rounds is where the unlocked version fails.
@@ -129,6 +130,99 @@ public class MovementRaceTests
     // =====================================================================================================
     // HandleWalk behaviour, driven through the packet the client actually sends.
     // =====================================================================================================
+
+    /// <summary>
+    /// <b>The viewport reconcile never sees a torn (X, Y).</b> The #97 review's one real finding: the tick
+    /// snapshotted the player LIST under <c>_lock</c> and then let <c>ReconcilePeer</c> read
+    /// <c>other.PlayerX</c> and <c>other.PlayerY</c> back off each session out here, with no lock held. Those
+    /// are two separate <c>ushort</c> reads of a character whose every writer holds <c>_lock</c>, so the
+    /// viewport gate could test one tile's X against the previous tile's Y — and its two <c>InView</c> calls
+    /// could each catch a different pair.
+    ///
+    /// <para>The mover shuttles between two tiles that differ in BOTH axes, so any mixture of them is a tile
+    /// it was never on and a tear is unambiguous. Two watchers run against it. The first asks the world for
+    /// its view the way the tick does, and every <see cref="PeerTile"/> that comes back must be one of the
+    /// two real tiles — that is the assertion. The second is the OLD read, <c>PlayerX</c> then
+    /// <c>PlayerY</c> with no lock, and it is counted but never asserted on: whether an unlocked read tears
+    /// on a given run is exactly the machine-dependent question this suite has been getting rid of.</para>
+    ///
+    /// <para><b>The control is what makes this more than a tautology,</b> and it took a correction to get
+    /// right. The first version ran the unlocked read inside the same loop as the snapshot — which calls
+    /// <c>World.View</c>, and so takes <c>_lock</c> every iteration, serialising the reader against the
+    /// writer. It reported zero tears and proved nothing. Given its own thread and no lock, the same read
+    /// tears reliably. Three runs of this test as it stands: 2 915, 3 635 and 7 207 torn pairs out of ~7.5M
+    /// unlocked reads, against 0 out of ~117 000 snapshot observations in the same runs. The finding,
+    /// reproduced; the fix, holding.</para>
+    /// </summary>
+    [Fact]
+    public void ViewportReconcileNeverSeesATornPeerTile()
+    {
+        var world = _fx.World;
+        var (mover, _) = _fx.Player("TornMover", TornMap, 5, 5);
+        var (observer, _) = _fx.Player("TornObserver", TornMap, 12, 12);   // out of the way; View excludes self
+
+        const int Steps = 40_000;
+        var done = new ManualResetEventSlim();
+        Exception? walkerFault = null, watcherFault = null;
+        int snapshotTears = 0, observations = 0;
+        int unlockedTears = 0, unlockedReads = 0;
+
+        static bool RealTile(int x, int y) => (x == 5 && y == 5) || (x == 6 && y == 6);
+
+        var walker = new Thread(() =>
+        {
+            try
+            {
+                for (int i = 0; i < Steps; i++)
+                {
+                    var (nx, ny) = (i & 1) == 0 ? (6, 6) : (5, 5);
+                    mover.WithState(() => world.TryMovePlayer(
+                        mover, TornMap, nx, ny,
+                        ghostMover: false, enforceOccupancy: true, otherwiseBlocked: false, out _));
+                }
+            }
+            catch (Exception e) { walkerFault = e; }
+            finally { done.Set(); }
+        }) { IsBackground = true, Name = "torn-walker" };
+
+        // What the tick hands the reconcile since the fix: coordinates taken with the player list, in one
+        // acquisition of the world lock.
+        var watcher = new Thread(() =>
+        {
+            try
+            {
+                while (!done.IsSet)
+                    foreach (var peer in world.View(observer, TornMap).peers)
+                    {
+                        if (!ReferenceEquals(peer.Session, mover)) continue;
+                        observations++;
+                        if (!RealTile(peer.X, peer.Y)) snapshotTears++;
+                    }
+            }
+            catch (Exception e) { watcherFault = e; }
+        }) { IsBackground = true, Name = "torn-watcher" };
+
+        // What it used to do. Its own thread and no lock, or it does not reproduce anything — see the doc.
+        var control = new Thread(() =>
+        {
+            while (!done.IsSet)
+            {
+                int x = mover.PlayerX, y = mover.PlayerY;
+                unlockedReads++;
+                if (!RealTile(x, y)) unlockedTears++;
+            }
+        }) { IsBackground = true, Name = "torn-control" };
+
+        walker.Start(); watcher.Start(); control.Start();
+        Assert.True(walker.Join(TimeSpan.FromSeconds(60)), "the walker never finished");
+        Assert.True(watcher.Join(TimeSpan.FromSeconds(60)), "the watcher never finished");
+        Assert.True(control.Join(TimeSpan.FromSeconds(60)), "the control reader never finished");
+
+        Assert.Null(walkerFault);
+        Assert.Null(watcherFault);
+        Assert.True(observations > 0, "the watcher never saw the mover — the probe proved nothing");
+        Assert.Equal(0, snapshotTears);
+    }
 
     /// <summary>A step onto a living player is refused: the mover does not move, and it is re-anchored with
     /// the 0x04 snap-back that cancels the client's own prediction of the step.</summary>

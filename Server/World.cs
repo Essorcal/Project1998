@@ -59,6 +59,14 @@ public sealed class Trap
     public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
 
+/// <summary>A peer and the tile it was standing on when <c>_lock</c> was last held — what the viewport
+/// reconcile gates on. It exists because the reconcile CANNOT read <c>Session.PlayerX</c>/<c>PlayerY</c>
+/// itself: those are two separate <c>ushort</c> reads of another session's character, and every writer of
+/// them holds <c>_lock</c>, so a reader outside it can see one tile's X against the previous tile's Y. The
+/// player list was already snapshotted under the lock and used outside it; this carries the coordinates in
+/// the same snapshot, so the gate now sees the map exactly as the lock saw it rather than a mixture.</summary>
+public readonly record struct PeerTile(Session Session, ushort X, ushort Y);
+
 /// <summary>Why <see cref="World.TryMovePlayer"/> refused a step. Flags, not a single value, because the
 /// walk log prints " mob" and " player" INDEPENDENTLY and always has: a mob and a player can share a tile
 /// (a warp lands players on object tiles, and nothing keeps a summon off an occupied one), so collapsing
@@ -1825,7 +1833,7 @@ public sealed class World
 
     /// <summary>Register <paramref name="s"/> on <paramref name="mapId"/>, broadcast it to everyone
     /// already there, and return the peers + mobs the caller should draw for the newcomer.</summary>
-    public (Session[] peers, Mob[] mobs) EnterMap(Session s, ushort mapId)
+    public (PeerTile[] peers, Mob[] mobs) EnterMap(Session s, ushort mapId)
     {
         // BEFORE the lock: first entry to a map runs EnsureMaterialized, whose spawn placement reads the
         // terrain (FreeSpawnTile -> MapData.For) — a disk read, a full cell decode and a SQLite query. Held
@@ -1833,7 +1841,7 @@ public sealed class World
         // the cache out here makes the locked section a pure in-memory hit. See MapData.Prewarm.
         MapData.Prewarm(mapId);
 
-        Session[] peers; Mob[] mobs;
+        PeerTile[] peers; Mob[] mobs; PeerTile newcomer;
         lock (_lock)
         {
             EnsureMaterialized(mapId);                 // instantiate this map's spawns on first entry
@@ -1844,22 +1852,26 @@ public sealed class World
             // skips a real change as a no-op — otherwise a player who entered mid-period could stay stuck on
             // stale weather when the period rolls to a value that happens to match the default-0 cache.
             m.Weather = WeatherForLocked(mapId);
-            peers = m.Players.Where(p => p != s).ToArray();
+            peers = m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray();
             mobs = m.Mobs.ToArray();
+            // The newcomer's own tile is snapshotted here too: the loop below draws THEM on every peer's
+            // client, so it is their coordinates the peers' viewport gates read.
+            newcomer = new PeerTile(s, s.PlayerX, s.PlayerY);
         }
-        foreach (var p in peers) Try(() => p.SyncPeer(s), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
+        foreach (var p in peers) Try(() => p.Session.SyncPeer(newcomer), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
         return (peers, mobs);
     }
 
     /// <summary>Read-only: the peers + mobs on <paramref name="mapId"/> (excluding <paramref name="s"/>),
     /// WITHOUT registering or broadcasting. Used to re-assert the view after a client-side map rebuild
     /// (e.g. an in-place 0x15 refresh) drops all foreign entities.</summary>
-    public (Session[] peers, Mob[] mobs) View(Session s, ushort mapId)
+    public (PeerTile[] peers, Mob[] mobs) View(Session s, ushort mapId)
     {
         lock (_lock)
         {
-            if (!_maps.TryGetValue(mapId, out var m)) return (Array.Empty<Session>(), Array.Empty<Mob>());
-            return (m.Players.Where(p => p != s).ToArray(), m.Mobs.ToArray());
+            if (!_maps.TryGetValue(mapId, out var m)) return (Array.Empty<PeerTile>(), Array.Empty<Mob>());
+            return (m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray(),
+                    m.Mobs.ToArray());
         }
     }
 
@@ -2300,8 +2312,10 @@ public sealed class World
     /// object walls, warps and scripted tiles. That is immutable content — no other thread can change it under
     /// the caller — so it does not belong in a critical section. The caller folds its own verdict in through
     /// <paramref name="otherwiseBlocked"/> so the commit is still suppressed, and passes
-    /// <paramref name="enforceOccupancy"/> false for a no-clipper (<c>@clip</c>), which still gets its reasons
-    /// computed — the log prints them — but is not held by them.</para>
+    /// <paramref name="enforceOccupancy"/> false for a no-clipper (<c>@clip</c>), whose reasons are still
+    /// COMPUTED but do not hold it. They are computed rather than skipped so the caller's log line is
+    /// byte-identical to the pre-#30 one in the case that prints them — a REFUSED step. A no-clipper's step
+    /// is not refused, so it logs no suffix, exactly as before.</para>
     ///
     /// <para><b>Both predicates run even once one has fired.</b> The walk log prints " mob" and " player"
     /// independently, and the code it replaces computed both eagerly; short-circuiting would change it.</para>
@@ -3914,16 +3928,21 @@ public sealed class World
         // with items but no mobs still needs reconciling. And `|| m.Players.Count > 1`: a peer walking toward
         // us is viewport-gated the same way (0x33), so a mob-less, item-less map with two players still needs
         // the tick to draw each into the other's view as they close the distance.
-        (Session[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
+        // The coordinates come out WITH the player list, in the same acquisition. They used to be read back
+        // off each Session inside ReconcilePeer, out here with no lock held — two ushort reads of a character
+        // whose owner writes both under _lock, so the gate could test one tile's X against the previous
+        // tile's Y (and its two InView calls could each see a different pair). See PeerTile.
+        (PeerTile[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
         lock (_lock)
         {
             snapshot = _maps.Values
                 .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0 || m.Players.Count > 1))
-                .Select(m => (m.Players.ToArray(), m.Mobs.ToArray(), m.Items.ToArray()))
+                .Select(m => (m.Players.Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray(),
+                              m.Mobs.ToArray(), m.Items.ToArray()))
                 .ToArray();
         }
         foreach (var (players, mobs, items) in snapshot)
-            foreach (var p in players) Try(() => { p.SyncPeers(players); p.SyncMobs(mobs); p.SyncGroundItems(items); }, "ReconcileViews");
+            foreach (var p in players) Try(() => { p.Session.SyncPeers(players); p.Session.SyncMobs(mobs); p.Session.SyncGroundItems(items); }, "ReconcileViews");
     }
 
     /// <summary>Run one per-player / per-mob step in isolation: a throw in one player's RegenTick, one
