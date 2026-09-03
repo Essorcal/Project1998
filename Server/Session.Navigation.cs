@@ -21,28 +21,15 @@ public sealed partial class Session
     //   "@spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
     //   "@kill"                 despawn every mob.
 
-    /// <summary>Every integer in a command's ARGUMENT TAIL, in order; non-numeric tokens are skipped.
-    /// Starts at token 0: handlers are handed the arguments alone (see Server/Commands.cs), never the
-    /// whole message. It used to start at 1 to step over the command name, which after the move to the
-    /// command table silently ate the FIRST argument of every numeric command — "@stats 50000 50000 130"
-    /// parsed as (50000, 130).</summary>
-    private static int[] ParseInts(string args)
-    {
-        var parts = args.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        var vals = new List<int>();
-        for (int i = 0; i < parts.Length; i++) if (int.TryParse(parts[i], out var v)) vals.Add(v);
-        return vals.ToArray();
-    }
 
     // "@cre <lookId> [hp] [color]": spawn ONE real monster (Monster.epf, via 0x07) on the tile in front
     // of you, so you can see it AND immediately melee it (combat is unchanged — it hits any Mob on the
     // tile). [color] is the 0x07 color byte we're trying to identify as a recolor/palette selector.
-    private void CreatureOne(string text)
+    private void CreatureOne(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int look = a.Length > 0 ? a[0] : 0;
-        int hp = a.Length > 1 ? a[1] : 6;
-        int color = a.Length > 2 ? a[2] : 0;
+        int look = a.Int(0, 0);
+        int hp = a.Int(1, 6);
+        int color = a.Int(2, 0);
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
@@ -72,7 +59,7 @@ public sealed partial class Session
         var def = Content.FindMob("rabbit");
         if (def is not null) SummonWorldMob(def.Look, x, y, def.Name, hp: def.Hp, dir: dir, color: def.Color, exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
         else SummonWorldMob(RabbitLook, x, y, "Rabbit", hp: 6, dir: dir, color: 0, exp: 5, moveTime: 3000);   // registry missing -> old fallback
-        SendLog("A rabbit appears. Face it and press space to attack.");
+        Reply("A rabbit appears. Face it and press space to attack.");
     }
 
     // Register a mob in the SHARED world (drawn via 0x07 = Monster.epf) and broadcast the spawn to every
@@ -1144,37 +1131,36 @@ public sealed partial class Session
 
     // "@warp <map name or id> [x y]": jump to another map by fuzzy name or numeric id, optional coords.
     // Trailing "x y" integers are the destination tile; the rest is the map query. Defaults to map centre.
-    private void Warp(string text)
+    private void Warp(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { SendLog($"usage: {Prefix}warp <map name or id> [x y]"); return; }
+        if (a.None) { Refuse(a.Usage()); return; }
 
         // Trailing "x y" only counts as coordinates when something is left over to name the map with —
         // "@warp 12 5" is map 12 at whatever's left, not a nameless map at (12,5).
-        int? cx = null, cy = null, end = parts.Length;
-        if (parts.Length >= 3 && int.TryParse(parts[^1], out var py) && int.TryParse(parts[^2], out var px))
-        { cx = px; cy = py; end = parts.Length - 2; }
+        int? cx = null, cy = null; int end = a.Count;
+        if (a.Count >= 3 && a.Int(a.Count - 1, out var py) && a.Int(a.Count - 2, out var px))
+        { cx = px; cy = py; end = a.Count - 2; }
 
-        string query = string.Join(' ', parts[0..end.Value]);
+        string query = a.Rest(0, end);
         var map = Content.FindMap(query);
-        if (map is null) { SendLog($"no map matches \"{query}\" — try  @maps {query}"); return; }
+        if (map is null) { Refuse($"no map matches \"{query}\" — try  {Prefix}maps {query}"); return; }
 
         ushort x = (ushort)(cx ?? map.Xs / 2);
         ushort y = (ushort)(cy ?? map.Ys / 2);
         EnterMap(map.Id, map.Xs, map.Ys, x, y, map.Name);
-        SendLog($"Warped to {map.Name} (map {map.Id}, {map.Xs}x{map.Ys}) at ({_char.X},{_char.Y}).");
+        Reply($"Warped to {map.Name} (map {map.Id}, {map.Xs}x{map.Ys}) at ({_char.X},{_char.Y}).");
     }
 
     // "@go <x> <y>": jump to a tile on the map you are ALREADY on — the short, no-map-lookup half of @warp.
     // Anything that isn't two in-bounds integers (missing argument, a word, a coordinate off the edge of this
     // map) lands you on (0,0) rather than refusing: the command always moves you somewhere, and the reply
     // says which of the two happened.
-    private void GoCmd(string text)
+    private void GoCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        int gx = 0, gy = 0;
-        bool ok = parts.Length >= 2 && int.TryParse(parts[0], out gx) && int.TryParse(parts[1], out gy)
-                  && gx >= 0 && gx < _char.MapXs && gy >= 0 && gy < _char.MapYs;
+        // -1 stands in for "absent or not a number", which the bounds check below rejects anyway — the
+        // out-parameter form cannot be used here because && short-circuits before the second one is assigned.
+        int gx = a.Int(0, -1), gy = a.Int(1, -1);
+        bool ok = gx >= 0 && gx < _char.MapXs && gy >= 0 && gy < _char.MapYs;
         if (!ok) { gx = 0; gy = 0; }
 
         // Same map, so the live dims are already right; the registry only supplies the 0x15 name string.
@@ -1186,46 +1172,56 @@ public sealed partial class Session
         string where = named ? $"{name} (map {_char.Map})" : $"map {_char.Map}";
         EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)gx, (ushort)gy, name);
 
-        SendLog(ok
-            ? $"Moved to ({_char.X},{_char.Y}) on {where}."
-            : $"usage: {Prefix}go <x> <y>  —  0..{_char.MapXs - 1} / 0..{_char.MapYs - 1} on {where}; sent you to (0,0).");
+        // The move you ASKED for either happened or it did not, and "sent you to (0,0)" is recovery rather
+        // than the thing you wanted — so a bad coordinate is a refusal, loud, and the pane line under it
+        // confirms where the recovery actually put you. Both halves, because both are true.
+        if (ok) { Reply($"Moved to ({_char.X},{_char.Y}) on {where}."); return; }
+        Refuse(a.Usage());
+        Reply($"0..{_char.MapXs - 1} / 0..{_char.MapYs - 1} on {where}; sent you to (0,0).");
     }
 
     // "@maps [filter]": list maps, fuzzy-ranked by name (blank = alphabetical). Capped so we don't flood.
-    private void ListMaps(string text)
+    private void ListMaps(CommandArgs a)
     {
-        string q = text.Trim();
+        string q = a.Raw;
         var found = Content.SearchMaps(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no maps loaded (run re/build_map_index.py)" : $"no maps match \"{q}\""); return; }
-        SendLog($"maps{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Maps.Count}):");
-        foreach (var m in found) SendLog($"  {m.Id}: {m.Name} ({m.Xs}x{m.Ys})");
+        if (found.Count == 0) { Reply(q.Length == 0 ? "no maps loaded (run re/build_map_index.py)" : $"no maps match \"{q}\""); return; }
+        ReplyList($"maps{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count}/{Content.Maps.Count})",
+                  found.Select(m => $"{m.Id}: {m.Name} ({m.Xs}x{m.Ys})"));
     }
 
     // "@mobs [filter]": list summonable mobs, fuzzy-ranked by name.
-    private void ListMobs(string text)
+    private void ListMobs(CommandArgs a)
     {
-        string q = text.Trim();
+        string q = a.Raw;
         var found = Content.SearchMobs(q, 15);
-        if (found.Count == 0) { SendLog(q.Length == 0 ? "no mobs loaded (check game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
-        SendLog($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Mobs.Count}):");
-        foreach (var m in found) SendLog($"  {m.Name} — look {m.Look} c{m.Color}, {m.Hp}hp, {m.Exp}xp   (@summon {m.Name})");
+        if (found.Count == 0) { Reply(q.Length == 0 ? "no mobs loaded (check game-data/mobs.csv)" : $"no mobs match \"{q}\""); return; }
+        // Two short lines per mob rather than one long one, and no trailing "(@summon <name>)" repeating the
+        // name it follows — same reshaping as @items, for the same 30-character pane.
+        ReplyList($"mobs{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count}/{Content.Mobs.Count})",
+                  found.SelectMany(m => new[]
+                  {
+                      m.Name,
+                      $" look {m.Look} c{m.Color} {m.Hp}hp {m.Exp}xp",
+                  }));
+        Reply($"{Prefix}summon <name> to spawn");
     }
 
     // "@summon <mob name or id>": spawn a real, named creature from the registry on the tile in front of
     // you — correct look + palette colour + HP + exp, all data-driven. Same 0x07 spawn + melee-kill loop
     // as @rabbit, but any of the 700+ mobs by name. (No wander AI yet — that generalizes next.)
-    private void Summon(string text)
+    private void Summon(CommandArgs a)
     {
-        string q = text.Trim();
-        if (q.Length == 0) { SendLog("usage: @summon <mob name or id>   (browse with  @mobs <name>)"); return; }
+        string q = a.Raw;
+        if (q.Length == 0) { Refuse(a.Usage()); return; }
         var mob = Content.FindMob(q);
-        if (mob is null) { SendLog($"no mob matches \"{q}\" — try  @mobs {q}"); return; }
+        if (mob is null) { Refuse($"no mob matches \"{q}\" — try  {Prefix}mobs {q}"); return; }
 
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         SummonWorldMob(mob.Look, x, y, mob.Name, mob.Hp, dir: (byte)((_facing + 2) & 3), color: mob.Color, exp: mob.Exp, moveTime: mob.MoveTime, key: mob.Key, def: mob);
-        SendLog($"Summoned {mob.Name} into the world (look {mob.Look} c{mob.Color}, {mob.Hp}hp, dmg {mob.MinDam}-{mob.MaxDam}).");
+        Reply($"Summoned {mob.Name} — look {mob.Look} c{mob.Color}, {mob.Hp}hp, dmg {mob.MinDam}-{mob.MaxDam}.");
     }
 
     // @reload — hot-reload all file-backed game content (mob stats, items, warps, shop stock, spells, spawns,
@@ -1247,9 +1243,11 @@ public sealed partial class Session
         var (ok, report) = _world.ReloadFromDisk();
         // Contention is not a content failure, and this is the GM's read-loop thread: say why no work started
         // without making them wait behind the reload already doing the same disk-to-live sequence.
-        SendLog(!ok && report == "reload already in progress" ? report
-              : ok ? $"Reloaded: {report}"
-              : $"@reload FAILED: {report}");
+        // Contention is a REFUSAL, not a readout: this invocation started nothing, and telling the GM
+        // quietly that someone else's reload is running reads exactly like their own having worked.
+        if (ok) Reply($"Reloaded: {report}");
+        else if (report == "reload already in progress") Refuse(report);
+        else Refuse($"{Prefix}reload FAILED: {report}");
         Log.Info($"   -> @reload by '{_char.Name}': {report}");
     }
 
@@ -1259,35 +1257,36 @@ public sealed partial class Session
     // Note this is deliberately NOT an immediate kill — there is no "@restart now" shorthand, because the
     // whole point of the ladder is that players get told. A GM who genuinely wants it down this second can
     // say "@restart 0", which still announces, still flushes every player, and still takes the grace period.
-    private void RestartCmd(string args)
+    private void RestartCmd(CommandArgs a)
     {
         var sched = _world.Restarts;
-        args = args.Trim();
 
-        if (args.Length == 0)
+        if (a.None)
         {
             long left = sched.RemainingMs;
-            SendLog(left < 0
-                ? $"No restart scheduled.  ({Prefix}restart <minutes> [reason])"
-                : $"Restart in {left / 60000}m{left / 1000 % 60:00}s.  ({Prefix}restart cancel to call it off)");
+            Reply(left < 0
+                ? $"No restart scheduled. {a.Usage()}"
+                : $"Restart in {left / 60000}m{left / 1000 % 60:00}s. {Prefix}restart cancel to call it off.");
             return;
         }
 
-        if (args.Equals("cancel", StringComparison.OrdinalIgnoreCase)
-            || args.Equals("off", StringComparison.OrdinalIgnoreCase))
+        if (a.Is(0, "cancel") || a.Is(0, "off"))
         {
-            SendLog(sched.Cancel() ? "Restart cancelled." : "Nothing to cancel.");
+            // Nothing to cancel is a refusal for the same reason: you asked for something that did not
+            // happen, and a quiet pane line is indistinguishable from having called off a real restart.
+            if (sched.Cancel()) Reply("Restart cancelled.");
+            else Refuse("Nothing to cancel.");
             return;
         }
 
         // "<minutes> [reason]" — the tail after the number is free text, so "@restart 30 deploying 1.2" works.
-        var parts = args.Split(' ', 2);
-        if (!double.TryParse(parts[0], out double minutes) || minutes < 0 || minutes > 24 * 60)
+        // double, not Int: the ladder takes fractional minutes.
+        if (!double.TryParse(a.Word(0), out double minutes) || minutes < 0 || minutes > 24 * 60)
         {
-            SendLog($"Usage: {Prefix}restart <minutes 0-1440> [reason] | {Prefix}restart cancel");
+            Refuse(a.Usage());
             return;
         }
-        string reason = parts.Length > 1 ? parts[1].Trim() : "";
+        string reason = a.Rest(1);
 
         sched.Schedule(minutes, reason);
         Log.Info($"   -> {Prefix}restart by '{_char.Name}': {minutes} min ({(reason.Length == 0 ? "no reason" : reason)})");
