@@ -45,7 +45,7 @@ Shared/           ← referenced by everything. No dependencies of its own beyon
 
 | Project | What it is |
 |---|---|
-| **`Shared/`** | Everything both processes must agree on: the accounts and characters tables, the SQLite handle, opcodes, the handoff token, path resolution, connection admission, PROXY-protocol parsing, the world calendar. If login and game could ever disagree about it, it belongs here. |
+| **`Shared/`** | Everything both processes must agree on: the accounts and characters tables, the SQLite handle, opcodes, the handoff token, path resolution, the CSV reader every content table is loaded through (`Csv.cs`), connection admission, PROXY-protocol parsing, the world calendar. If login and game could ever disagree about it, it belongs here. |
 | **`Protocol.Tk495/`** | The wire adapter — `TkCrypt` (the NexonInc cipher, both schemes) and `TkPacket` (framing). Deliberately isolated: it is the one piece that is specific to *these* 2001-era clients, and a future non-NexusTK client would replace this project and keep the rest. |
 | **`Server/`** | The game. ~62 files, of which 20 are `Session.*.cs` partials. |
 | **`LoginServer/`** | The front door. Also hosts offline account administration (`--set-password`, `--list`) as one-shot arguments, so an operator can fix an account without opening the ports. |
