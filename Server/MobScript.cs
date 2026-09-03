@@ -125,8 +125,12 @@ public sealed class MobContext
     public double y => _mob.Y;
     public bool alive => _mob.Alive;
 
-    /// <summary>Is a status of this family on the creature (RTK <c>mob:checkIfCast(curses)</c>)?</summary>
-    public bool hasStatus(string category) => _mob.HasStatus(category, Environment.TickCount64);
+    /// <summary>Is a status of this family on the creature (RTK <c>mob:checkIfCast(curses)</c>)? Goes through
+    /// the world for the same reason <see cref="heal"/> does, and it is the read that made "the rest of these
+    /// are simple field reads" wrong: <c>Mob.HasStatus</c> walks a <c>Dictionary</c> the world writes under
+    /// <c>_lock</c>, so reading it from a lock-free hook can fault inside the lookup rather than merely
+    /// return a stale answer.</summary>
+    public bool hasStatus(string category) => _world.MobHasStatusFromScript(_mob, category);
 
     /// <summary>Speak over the creature's head. Channel 0 attributes the line to it, 2 does not — RTK's own
     /// <c>mob:talk(0|2, …)</c> split. Heard only by players near the creature: RTK's bll_talk broadcasts via

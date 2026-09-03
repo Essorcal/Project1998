@@ -177,7 +177,7 @@ public class SessionActorTests
         });
         for (int i = 0; i < 400; i++) session.ReceiveCurse("armor", 1, Forever, $"actor_prime_{i}", "prime", "");
 
-        var round = new Barrier(2);
+        using var round = new Barrier(2);
         Exception? saverFault = null, mutatorFault = null;
         int saves = 0, mutations = 0;
 
