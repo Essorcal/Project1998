@@ -15,8 +15,8 @@ This script performs the same launch as the bat, and answers those questions:
   * It refuses to start while the login or game ports are held, and says who holds them (PID, command
     line, and the session file's checkout/commit/start time when the holder was started by this script).
     It never stops anything by itself.
-  * Each console is titled "LOGIN 2000/2001 - <clone> @ <short commit>" / "GAME 2005/2006 - ...", so the
-    window says what it is. The commit is git rev-parse HEAD at the moment the tree was built; a "+" after
+  * Each console is titled "LOGIN <base>/<base+1> - <clone> @ <short commit>" / "GAME <base+5>/<base+6> -
+    ...", so the window says what it is. The commit is git rev-parse HEAD at the moment the tree was built; a "+" after
     it means tracked files were modified (untracked files are not counted). git is required: with no
     commit to stamp, the script refuses to start rather than launch a pair labelled "@ unknown".
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
@@ -62,11 +62,14 @@ while "dotnet run" still holds its handle. The cmd window that hosted the batch 
 is gone -- after the server exits it is only a prompt sitting at "Terminate batch job (Y/N)?" -- and it is
 closed even when the server was already gone before -Stop ran.
 
-PORTS. Login binds PortBase and PortBase+1 (4.95 / 5.33), game binds PortBase+5 and PortBase+6, which is
-run-server.bat's 2000/2001 + 2005/2006 at the default. Until Shared/ChannelPorts derives the handoff from
-the login port (#84), a login on 3000 still redirects clients to 2005, so a pair on any other base is
-cross-wired into whatever holds 2005. Every value other than 2000 is therefore REJECTED before anything is
-built or launched. The parameter stays so that #84's follow-up only has to lift the guard.
+PORTS. Login binds PortBase and PortBase+1 (4.95 / 5.33), game binds PortBase+5 and PortBase+6: the rule
+run-server.bat applies to its optional port-base argument and Shared/ChannelPorts applies to the handoff
+since #84, so a login on the base always hands its client to base+5 and any base gives a working pair.
+The base must be 1024..65000, which keeps base+6 inside the port range. Two pairs from two checkouts run
+at once on two bases, each with its own state/, run/ and logs/. One pair per checkout, though: the
+session file lives in the checkout, and so do the bin/ the pair runs from and the database it writes; a
+second pair from the same tree would share all three. The four ports a pair bound are recorded in its
+session file, and -Status and -Stop read them from there rather than from -PortBase (#93).
 
 .PARAMETER Checkout
 The clone to run, inspect or stop. Defaults to the repository this script lives in.
@@ -78,7 +81,9 @@ Account names to grant the tester tier for this run (P1998_TESTERS in the launch
 Account names to grant the GM tier for this run (P1998_GMS in the launched processes only).
 
 .PARAMETER PortBase
-First login port. Only 2000 is accepted until #84 lands; see PORTS above.
+First login port, 1024..65000; the pair binds base, base+1, base+5 and base+6. Default 2000. Used by a
+start, and by -Status to choose which ports to scan when there is no session file; otherwise the recorded
+ports win.
 
 .PARAMETER Status
 Report what is running: the session file if its processes are alive, otherwise "nothing running" plus
@@ -106,7 +111,6 @@ param(
     [string]$Checkout,
     [string[]]$Testers = @(),
     [string[]]$Gms = @(),
-    [ValidateRange(1024, 65000)]
     [int]$PortBase = 2000,
     [switch]$Status,
     [switch]$Stop
@@ -260,14 +264,25 @@ function Get-SessionSlots($Session, [string]$Root) {
         [pscustomobject]@{
             Label = 'LOGIN'; RoleExe = 'LoginServer.exe'; ProcessId = [int]$Session.pid_login
             Exe = [string]$Session.exe_login; Created = [string]$Session.created_login; HostPid = [int]$Session.host_login
-            Ports = @(@($Session.ports.login) | ForEach-Object { [int]$_ }); Batch = (Join-Path $Root $LoginBatRel)
+            Ports = @([int]$Session.ports.login495, [int]$Session.ports.login533); Batch = (Join-Path $Root $LoginBatRel)
         },
         [pscustomobject]@{
             Label = 'GAME'; RoleExe = 'Server.exe'; ProcessId = [int]$Session.pid_game
             Exe = [string]$Session.exe_game; Created = [string]$Session.created_game; HostPid = [int]$Session.host_game
-            Ports = @(@($Session.ports.game) | ForEach-Object { [int]$_ }); Batch = (Join-Path $Root $GameBatRel)
+            Ports = @([int]$Session.ports.game495, [int]$Session.ports.game533); Batch = (Join-Path $Root $GameBatRel)
         }
     )
+}
+
+# The four ports a session actually bound, as a plan, or $null for a file written before they were recorded
+# by name. -Status and -Stop work from this, not from -PortBase: a pair on any base is stopped by the same
+# command, with no base repeated.
+function Get-SessionPlan($Session) {
+    $p = $Session.ports
+    if ($null -eq $p) { return $null }
+    $vals = @([int]$p.login495, [int]$p.login533, [int]$p.game495, [int]$p.game533)
+    if ($vals -contains 0) { return $null }
+    return [pscustomobject]@{ Login = @($vals[0], $vals[1]); Game = @($vals[2], $vals[3]) }
 }
 
 # Is the process behind a slot's PID the one this session started? '' when it is; otherwise the reason it
@@ -289,6 +304,7 @@ function Get-SlotMismatch($Proc, [string]$Root, $Slot) {
     } catch { return "the recorded creation time $($Slot.Created) is unreadable" }
     $delta = [Math]::Abs(($Proc.CreationDate - $rec).TotalSeconds)
     if ($delta -gt 1) { return "was created $($Proc.CreationDate.ToString('o')), session recorded $($Slot.Created)" }
+    if ($Slot.Ports -contains 0) { return 'the session file records no port pair (written by an older Serve.ps1)' }
     $holds = @(Get-Listeners $Slot.Ports | Where-Object { [int]$_.ProcessId -eq [int]$Proc.ProcessId })
     if ($holds.Count -eq 0) { return "does not hold port(s) $($Slot.Ports -join '/')" }
     return ''
@@ -468,7 +484,7 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
 # to the target's, and detaching THIS process would take an interactive caller's shell down with it. The
 # helper installs a real handler that swallows both events for itself (ignoring Ctrl+C alone would not
 # survive its own Ctrl+Break). Returns 0 when the process exited after Ctrl+C, 1 when Ctrl+Break was sent
-# as well, 1000+/2000+/3000+ plus the Win32 error when attaching or generating failed. Invoked through
+# as well, 10000+/20000+/30000+ plus the Win32 error when attaching or generating failed. Invoked through
 # cmd so that nothing on the helper's streams reaches this session: a redirected powershell stderr is
 # expected to carry CLIXML, and anything else on it is an error in the caller.
 function Send-ConsoleBreak([int]$ProcessId, [int]$WaitMs) {
@@ -489,15 +505,15 @@ public static class P1998Sig {
   }
   public static int Send(int pid, int waitMs) {
     FreeConsole();
-    if (!AttachConsole((uint)pid)) return 1000 + Marshal.GetLastWin32Error();
+    if (!AttachConsole((uint)pid)) return 10000 + Marshal.GetLastWin32Error();
     SetConsoleCtrlHandler(keep, true);
-    if (!GenerateConsoleCtrlEvent(0, 0)) return 2000 + Marshal.GetLastWin32Error();
+    if (!GenerateConsoleCtrlEvent(0, 0)) return 20000 + Marshal.GetLastWin32Error();
     DateTime until = DateTime.UtcNow.AddMilliseconds(waitMs);
     while (DateTime.UtcNow < until) {
       if (Gone(pid)) { FreeConsole(); return 0; }
       Thread.Sleep(250);
     }
-    if (!GenerateConsoleCtrlEvent(1, 0)) return 3000 + Marshal.GetLastWin32Error();
+    if (!GenerateConsoleCtrlEvent(1, 0)) return 30000 + Marshal.GetLastWin32Error();
     Thread.Sleep(300);
     FreeConsole();
     return 1;
@@ -520,7 +536,7 @@ function Stop-SessionProcess($Slot, [string]$Root) {
     $id = [int]$Slot.ProcessId
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $rc = Send-ConsoleBreak -ProcessId $id -WaitMs 5000
-    if ($rc -ge 1000) { Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered (helper code $rc)." }
+    if ($rc -ge 10000) { Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered (helper code $rc)." }
     if (Wait-Exit $id 30) {
         if ($rc -eq 0) { return "stopped on Ctrl+C after $([int]$sw.Elapsed.TotalSeconds) s" }
         return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s"
@@ -545,8 +561,6 @@ function Stop-SessionProcess($Slot, [string]$Root) {
 
 function Show-Status([string]$Root, $Plan) {
     $file = Join-Path $Root $SessionRel
-    $allPorts = @($Plan.Login + $Plan.Game)
-    $listeners = @(Get-Listeners $allPorts)
     $ours = @()
 
     $s = Read-Session $Root
@@ -554,6 +568,11 @@ function Show-Status([string]$Root, $Plan) {
         Write-Host "Session file ($file) belongs to $($s.checkout), not this checkout; ignoring it."
         $s = $null
     }
+    # The ports to look at are the ones the session bound; -PortBase only decides what to scan when there
+    # is no session file.
+    if ($null -ne $s) { $sp = Get-SessionPlan $s; if ($null -ne $sp) { $Plan = $sp } }
+    $allPorts = @($Plan.Login + $Plan.Game)
+    $listeners = @(Get-Listeners $allPorts)
     if ($null -ne $s) {
         $states = @{}
         foreach ($slot in (Get-SessionSlots $s $Root)) {
@@ -566,8 +585,8 @@ function Show-Status([string]$Root, $Plan) {
         } else {
             Write-Host "Stale session file ($file) - Serve.ps1 -Stop clears it:"
         }
-        Write-Host "  LOGIN $(@($s.ports.login) -join '/')  PID $($s.pid_login)  $($states['LOGIN'])"
-        Write-Host "  GAME  $(@($s.ports.game) -join '/')  PID $($s.pid_game)  $($states['GAME'])"
+        Write-Host "  LOGIN $($Plan.Login -join '/')  PID $($s.pid_login)  $($states['LOGIN'])"
+        Write-Host "  GAME  $($Plan.Game -join '/')  PID $($s.pid_game)  $($states['GAME'])"
         Write-Host "  checkout: $($s.checkout)  ($($s.branch) @ $(Get-ShortCommit $s.commit))"
         Write-Host "  started:  $($s.started)"
         Write-Host "  testers:  [$(@($s.testers) -join ', ')]  gms: [$(@($s.gms) -join ', ')]"
@@ -639,8 +658,10 @@ function Invoke-Stop([string]$Root, $Plan) {
         }
     }
 
-    # Wait for the ports to free. Only OUR pids count: a listener belonging to someone else is reported,
-    # not waited for.
+    # Wait for the ports to free: the ones the session recorded, whatever -PortBase was given now. Only OUR
+    # pids count: a listener belonging to someone else is reported, not waited for.
+    $sp = Get-SessionPlan $s
+    if ($null -ne $sp) { $Plan = $sp }
     $allPorts = @($Plan.Login + $Plan.Game)
     $deadline = (Get-Date).AddSeconds(15)
     $held = @()
@@ -791,7 +812,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         checkout  = $Root
         commit    = $git.Commit
         branch    = $git.Branch
-        ports     = [ordered]@{ login = @($Plan.Login); game = @($Plan.Game) }
+        ports     = [ordered]@{ login495 = [int]$Plan.Login[0]; login533 = [int]$Plan.Login[1]; game495 = [int]$Plan.Game[0]; game533 = [int]$Plan.Game[1] }
         testers   = @($effTesters)
         gms       = @($effGms)
         started   = (Get-Date).ToString('o')
@@ -819,8 +840,8 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 if ($Status -and $Stop) { Write-Host "Use one of -Status or -Stop."; exit 1 }
-if ($PortBase -ne 2000) {
-    Write-Host "-PortBase other than 2000 needs #84; not supported yet (the login handoff still sends every client to 2005). Nothing was built or started."
+if ($PortBase -lt 1024 -or $PortBase -gt 65000) {
+    Write-Host "-PortBase must be 1024..65000 (the pair binds $PortBase, $($PortBase + 1), $($PortBase + 5) and $($PortBase + 6)). Nothing was built or started."
     exit 1
 }
 if (($Status -or $Stop) -and (@($Testers).Count -gt 0 -or @($Gms).Count -gt 0)) {

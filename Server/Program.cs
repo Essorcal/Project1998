@@ -50,6 +50,7 @@ Log.Info($"=== Project1998 (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers @warp/@maps/@mobs/@summon)
 StaffAccounts.Load();   // who may run the '@' tooling, and at which tier (state/{gm,tester}_accounts.txt); empty = nobody
+Session.WarmCommandTable();   // build the '@' name index here, so a duplicate name kills startup and not a player's session
 Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) — must outlive a restart
 
 // An empty content registry is a MISCONFIGURED DEPLOY, not a valid world: nothing throws, the server

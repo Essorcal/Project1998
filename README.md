@@ -59,6 +59,7 @@ commit stamped on it:
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Testers botone -Gms botone   # build, then start the pair
 Scripts\Serve.ps1 -Status                                                    # what is on 2000/2005, and whose
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Stop                        # close exactly that pair
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998-b -PortBase 3000             # a second pair, from a second clone
 ```
 
 It needs `git` on PATH: the commit and branch are what it stamps on the consoles and records, and it
@@ -75,9 +76,12 @@ slot's executable path, creation time and console PID); `-Status` reads it back.
 session file written in the checkout it is given, and only on a PID that is still the recorded
 executable, created at the recorded time and holding its ports: it sends those two processes Ctrl+C,
 closes the two console windows it opened, waits for the ports to free, and deletes the file. Anything
-else on the ports is reported and left alone. `-PortBase` exists for the second pair of #84 but is rejected until that lands: today a
-login on any other base still hands clients off to 2005. `run-server.bat` stays the plain path; the
-script does not replace it.
+else on the ports is reported and left alone. `-PortBase 3000` binds login 3000/3001 and game 3005/3006
+(the same base-rule `run-server.bat 3000` uses), so two pairs from two clones run at once, each with its
+own `state/`, `run/` and `logs/`; one pair per clone, since the session file, the `bin/` and the database
+all live in it. The four ports are recorded in `session.json`, and `-Status` and `-Stop` read them from
+there, so the base is only given at start. `run-server.bat` stays the plain path; the script does not
+replace it.
 
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:
