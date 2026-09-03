@@ -215,6 +215,16 @@ public sealed partial class Session
         Debug.Assert(!HoldsAnyViewLock,
             "lock order violated: a session viewport lock is held while entering the Lua gate. Nothing under " +
             "_viewLock may run a script — decide under the viewport lock and act outside it.");
+        // The other half of the #90 rule, and the half everything that calls into the world from inside a
+        // hook now leans on (World.HealMobFromScript and friends): the gate may call INTO the world, but a
+        // thread already holding World._lock may not enter the gate. EnterState has asserted its direction
+        // since #29; this one was missing. Static, so it cannot ask a _world the way EnterState does — see
+        // World.WorldLockHeldByCurrentThread for why the check is shaped the way it is.
+        Debug.Assert(!World.WorldLockHeldByCurrentThread(),
+            "lock order violated: World._lock is held while entering the Lua gate (#90). A script may reach " +
+            "back into the world, so entering one with the world lock already held is a self-deadlock waiting " +
+            "for a hook that calls in — queue the work and run it after the lock is released, the way " +
+            "World.Tick drains its Lua hooks.");
 
         if (Monitor.IsEntered(ScriptGateLock)) return default;   // re-entrant: one host reaching another
         if (Monitor.TryEnter(ScriptGateLock)) return new ScriptGateGuard(true);

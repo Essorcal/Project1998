@@ -400,8 +400,11 @@ public sealed partial class Session
         if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 9); }  // 9 = client "You gave %s."
         else SendAddItem(it);
         MarkDirty();
-        // The creature is carrying it now; killing the creature drops it back (World.TryDamage).
-        (mob.Handed ??= new()).Add(new InvItem(0, def.Id, give, dura) { CustomName = cname, Owner = owner });
+        // The creature is carrying it now; killing the creature drops it back (World.TryDamage). Through the
+        // world rather than straight onto mob.Handed: that list is a plain List<InvItem> the death path
+        // enumerates under World._lock, and this runs on our read loop, so an add landing while the creature
+        // dies threw inside the lock. The item, the amount and the ownership carried over are unchanged.
+        _world.HandItemToMob(mob, new InvItem(0, def.Id, give, dura) { CustomName = cname, Owner = owner });
     }
 
     /// <summary>Quest reactions to handing a specific item to a specific creature (RTK's BL_MOB collection

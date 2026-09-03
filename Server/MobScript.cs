@@ -27,8 +27,17 @@ public static class MobScript
     // mobKey|hook pairs that actually exist, so the hot path is a hash lookup and never a Lua call.
     private static HashSet<string> _defined = new(StringComparer.OrdinalIgnoreCase);
 
+    // THREE of RTK's four event hooks, not four. `on_healed` was resolved at load and advertised in
+    // mob_ai.lua but nothing ever queued it (World.QueueHook is called with OnSpawn, OnAttacked and
+    // AfterDeath and nothing else), so a script defining it loaded and then silently never fired — the worst
+    // shape a hook can have, because it looks supported. Removed rather than wired up, and #103 records why:
+    // wiring it means choosing WHICH heal fires it, and this tree has five distinct ones (World.HealMob from
+    // a player's cast, the three boss self-heals in the tick, SuteAi's wounded self-heal, and — on the
+    // #100 branch — a Lua heal reaching back in). Nothing in the RTK material this repo has says which of
+    // those RTK's on_healed corresponds to, and picking one would be inventing a game fact (AGENTS.md rule 2)
+    // in a PR whose whole point is that behaviour does not change. It comes back the day a source says what
+    // it fires on, and that is a two-line change plus a QueueHook call.
     public const string OnAttacked = "on_attacked";
-    public const string OnHealed   = "on_healed";
     public const string AfterDeath = "after_death";
     public const string OnSpawn    = "on_spawn";
 
@@ -59,7 +68,7 @@ public static class MobScript
                 {
                     if (pair.Value.Type != DataType.Table) continue;
                     string key = pair.Key.CastToString() ?? "";
-                    foreach (var hook in new[] { OnAttacked, OnHealed, AfterDeath, OnSpawn })
+                    foreach (var hook in new[] { OnAttacked, AfterDeath, OnSpawn })
                         if (pair.Value.Table.Get(hook).Type == DataType.Function) defined.Add($"{key}|{hook}");
                 }
 

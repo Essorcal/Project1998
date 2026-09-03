@@ -484,6 +484,7 @@ public sealed class World
     /// is what lets a test hold a real World without the server's background machinery attached to it.</summary>
     public World()
     {
+        lock (Constructed) Constructed.Add(this);   // for the Lua gate's Debug assert only — see WorldLockHeldByCurrentThread
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
         SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
@@ -2173,6 +2174,70 @@ public sealed class World
             mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amount);
             return true;
         }
+    }
+
+    /// <summary>Give a world mob an item to carry (RTK's hand-off: the creature drops it back when killed —
+    /// see <see cref="TryDamage"/>). Under <c>_lock</c> because <c>Mob.Handed</c> is a plain <c>List</c> that
+    /// the death path ENUMERATES under this lock while the player's read loop was adding to it: not a stale
+    /// read but an "InvalidOperationException: Collection was modified" thrown inside the world lock, or a
+    /// list lost outright when two hands race the <c>??=</c>. Same shape as <see cref="HealMobFromScript"/>:
+    /// the caller decides what to hand over, the world owns the write.</summary>
+    internal void HandItemToMob(Mob mob, InvItem item)
+    {
+        lock (_lock) (mob.Handed ??= new()).Add(item);
+    }
+
+    /// <summary>Settle a harvest node's claim and take it if it is free: the lapse check, the lazy heal that
+    /// follows it, the owner test and the re-stamp, all in ONE acquisition. Returns false if somebody else
+    /// holds it, and the caller says so.
+    ///
+    /// <para><b>Why one method and not the three the issue sketched.</b> Reset-then-check-then-claim as
+    /// separate lock-owning calls would put each write under the lock and leave the DECISION spanning three
+    /// of them — two players swinging at the same node in the same instant could both see it unclaimed and
+    /// both stamp their own id, which is the exact check-then-act shape #26 exists to remove. The semantics
+    /// are unchanged: a claim lapses on time, a lapsed node heals to full, a live claim belonging to someone
+    /// else refuses, and your own claim is refreshed.</para>
+    ///
+    /// <para>The node's HP damage is not here: it already goes through <see cref="TryDamage"/>, which takes
+    /// this lock itself.</para></summary>
+    internal bool TryClaimHarvestNode(Mob node, uint claimant, long now, long claimMs)
+    {
+        lock (_lock)
+        {
+            // A node nobody is touching has nothing to observe it, so a lapsed claim is settled lazily on the
+            // next swing rather than on a tick — indistinguishable from RTK's timer, and no per-tick work.
+            if (node.HarvestClaimUntil != 0 && now > node.HarvestClaimUntil)
+            {
+                node.Hp = node.MaxHp;
+                node.HarvestClaimBy = 0;
+                node.HarvestClaimUntil = 0;
+            }
+            if (node.HarvestClaimBy != 0 && node.HarvestClaimBy != claimant) return false;
+
+            node.HarvestClaimBy = claimant;
+            node.HarvestClaimUntil = now + claimMs;
+            return true;
+        }
+    }
+
+    // ---- the Lua gate's half of the #90 rule ---------------------------------------------------------
+    // Session.EnterScriptGate has to be able to ask "is this thread inside a world lock?" and it is a STATIC
+    // method with no World in hand — its callers are LuaVerbHost and NpcScript, neither of which holds one.
+    // So every World registers itself here and the assert asks them all. Read from nowhere but that assert,
+    // which is [Conditional("DEBUG")], so this costs a Release build nothing at all.
+    //
+    // The alternative was a [ThreadStatic] depth counter like Session._viewDepth, which would mean routing
+    // every `lock (_lock)` in this file through a guard — a forty-site mechanical edit inside the code this
+    // sprint has been stabilising, to enable one LOW-severity Debug assert. Not a trade worth making here.
+    private static readonly List<World> Constructed = new();
+
+    /// <summary>Is the calling thread inside ANY world's <c>_lock</c>? For the Lua gate's assert only.</summary>
+    internal static bool WorldLockHeldByCurrentThread()
+    {
+        lock (Constructed)
+            foreach (var w in Constructed)
+                if (w.HoldsWorldLock) return true;
+        return false;
     }
 
     /// <summary>Hold a mob for a fixed duration unless it is already held.</summary>
