@@ -59,6 +59,23 @@ public sealed class Trap
     public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
 
+/// <summary>Why <see cref="World.TryMovePlayer"/> refused a step. Flags, not a single value, because the
+/// walk log prints " mob" and " player" INDEPENDENTLY and always has: a mob and a player can share a tile
+/// (a warp lands players on object tiles, and nothing keeps a summon off an occupied one), so collapsing
+/// the two would quietly change a log line the ticket counts as behaviour.</summary>
+[Flags]
+public enum BlockReason
+{
+    None = 0,
+    /// <summary>A living mob stands there — NPCs included, exactly as <see cref="World.MobAt"/> counts them.</summary>
+    Mob = 1,
+    /// <summary>A living OTHER player stands there. The mover is living too; the dead never block the living.</summary>
+    Player = 2,
+    /// <summary>Another GHOST stands there, and the mover is a PvP ghost. Logged as " player", like the living
+    /// case — the log has never distinguished them.</summary>
+    Ghost = 4,
+}
+
 /// <summary>
 /// The single shared game world: every connected player and every live mob, grouped by map. One
 /// instance is created in <see cref="TkListener"/> and handed to every <see cref="Session"/>, so all
@@ -2268,28 +2285,77 @@ public sealed class World
         }
     }
 
-    /// <summary>Is a LIVING player (other than <paramref name="except"/>) standing on this tile? Used by the
-    /// walk handler to make players block each other — two players can no longer share or no-clip through a
-    /// tile. A dead player is a ghost and does NOT block (you can walk over a corpse to reach it).</summary>
-    public bool PlayerAt(ushort mapId, int x, int y, Session? except = null)
+    /// <summary>
+    /// A player's step: decide whether (<paramref name="nx"/>,<paramref name="ny"/>) is occupied and, if the
+    /// step stands, write the mover's position — both inside ONE acquisition of <c>_lock</c> (#30).
+    ///
+    /// <para><b>Why it has to be one.</b> <c>HandleWalk</c> used to ask <see cref="MobAt"/>, then a
+    /// <c>PlayerAt</c>/<c>PvpGhostAt</c> pair — three acquisitions, each taken and released — and then commit
+    /// <c>_char.X/Y</c> under none of them. Two sessions stepping onto the same empty tile in the same instant
+    /// both passed the check and both committed, and the tick's <c>occupied</c> snapshot was stale for any walk
+    /// that committed mid-beat. A check whose answer is acted on after the lock is dropped is not a check. The
+    /// two former helpers are gone with the race: their predicates live here, where the write can share them.</para>
+    ///
+    /// <para><b>What stays outside.</b> Everything that is not occupancy: the map edge, the ground pass flag,
+    /// object walls, warps and scripted tiles. That is immutable content — no other thread can change it under
+    /// the caller — so it does not belong in a critical section. The caller folds its own verdict in through
+    /// <paramref name="otherwiseBlocked"/> so the commit is still suppressed, and passes
+    /// <paramref name="enforceOccupancy"/> false for a no-clipper (<c>@clip</c>), which still gets its reasons
+    /// computed — the log prints them — but is not held by them.</para>
+    ///
+    /// <para><b>Both predicates run even once one has fired.</b> The walk log prints " mob" and " player"
+    /// independently, and the code it replaces computed both eagerly; short-circuiting would change it.</para>
+    ///
+    /// <para><b>Lock order (#29).</b> The caller is <c>HandleWalk</c>, already inside the mover's own state
+    /// monitor, and this takes <c>_lock</c> second — session-state THEN world, the one legal order. Nothing
+    /// here enters another session or Lua: the peer reads are the same plain <c>PlayerX</c>/<c>PlayerY</c>
+    /// field reads the tick does under this lock, and the only write is to the mover, whose monitor the
+    /// calling thread already holds.</para>
+    /// </summary>
+    /// <param name="ghostMover">The mover is a PvP ghost (Session.PvpGhostHidden), so it is blocked by other
+    /// GHOSTS and no-clips through the living, instead of the other way round.</param>
+    /// <returns>True if the position was written; false if the step was refused, and the caller snaps back.</returns>
+    public bool TryMovePlayer(Session mover, ushort mapId, int nx, int ny,
+                              bool ghostMover, bool enforceOccupancy, bool otherwiseBlocked,
+                              out BlockReason why)
     {
         lock (_lock)
         {
-            if (!_maps.TryGetValue(mapId, out var m)) return false;
-            return m.Players.Any(p => !ReferenceEquals(p, except) && !p.IsDead && p.PlayerX == x && p.PlayerY == y);
+            why = BlockReason.None;
+            if (_maps.TryGetValue(mapId, out var m))
+            {
+                // A living mob occupies its tile, NPCs included — the same predicate MobAt uses.
+                if (m.Mobs.Any(mo => mo.Alive && mo.X == nx && mo.Y == ny))
+                    why |= BlockReason.Mob;
+                // A PvP ghost is blocked ONLY by another ghost; everyone else only by a living player. The
+                // dead never block the living either way, which is why the living branch tests !IsDead.
+                if (ghostMover)
+                {
+                    if (m.Players.Any(p => !ReferenceEquals(p, mover) && p.IsDead && p.PlayerX == nx && p.PlayerY == ny))
+                        why |= BlockReason.Ghost;
+                }
+                else if (m.Players.Any(p => !ReferenceEquals(p, mover) && !p.IsDead && p.PlayerX == nx && p.PlayerY == ny))
+                {
+                    why |= BlockReason.Player;
+                }
+            }
+            // An unknown map blocks nothing and commits, which is what the three helpers did between them.
+            if (otherwiseBlocked || (enforceOccupancy && why != BlockReason.None)) return false;
+
+            mover.SetPositionUnderWorldLock((ushort)nx, (ushort)ny);
+            return true;
         }
     }
 
-    /// <summary>Is another GHOST (dead player, other than <paramref name="except"/>) standing on this tile?
-    /// A PvP ghost no-clips through the LIVING but still CLIPS other ghosts — the dead share the arena and
-    /// block each other. Called only when the mover is a PvP ghost (see Session.HandleWalk / PvpGhostHidden).</summary>
-    public bool PvpGhostAt(ushort mapId, int x, int y, Session? except = null)
+    /// <summary>Write a player's position with no occupancy test — the walk handler's snap-back.
+    /// <see cref="TryMovePlayer"/> is the move that ACQUIRES a tile and therefore has to check; this is the
+    /// one that gives a tile up, or re-asserts the one the client says the mover is already on, so there is
+    /// nothing to check. It still goes through <c>_lock</c>: X and Y are two writes, and every reader of them
+    /// (this class's tile scans, the tick's <c>occupied</c> snapshot) reads both under this lock, so a
+    /// snap-back outside it is a torn (new X, old Y) waiting to be read.</summary>
+    public void SetPlayerPosition(Session mover, int x, int y)
     {
-        lock (_lock)
-        {
-            if (!_maps.TryGetValue(mapId, out var m)) return false;
-            return m.Players.Any(p => !ReferenceEquals(p, except) && p.IsDead && p.PlayerX == x && p.PlayerY == y);
-        }
+        lock (_lock) mover.SetPositionUnderWorldLock((ushort)x, (ushort)y);
     }
 
     /// <summary>The nearest living, non-NPC mob within <paramref name="radius"/> tiles (Chebyshev) of a
