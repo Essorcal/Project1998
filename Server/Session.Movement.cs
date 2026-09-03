@@ -78,13 +78,24 @@ public sealed partial class Session
 
     /// <summary>Write this player's tile on the world's behalf. Deliberately not a public setter and
     /// deliberately unchecked: the only callers are <see cref="World.TryMovePlayer"/>, which has just decided
-    /// under <c>World._lock</c> that the tile is free, and <see cref="World.SetPlayerPosition"/>, the
-    /// snap-back. Both hold that lock while calling — the same lock every reader of <see cref="PlayerX"/> /
+    /// under <c>World._lock</c> that the tile is free, <see cref="World.SetPlayerPosition"/>, the snap-back,
+    /// and <see cref="World.PlacePlayer"/>, every arrival that is not a step. All hold that lock while calling — the same lock every reader of <see cref="PlayerX"/> /
     /// <see cref="PlayerY"/> takes — and the walk handler that asked for the move holds this session's own
     /// monitor (#29), so the pair is written in the one order the two locks may be held. The asserts pin
     /// exactly that pair; a position write that reaches here holding neither is the #30 race coming back.</summary>
+    /// <summary>How many positions have been written through this seam. Exists because a
+    /// <c>Debug.Assert</c> INSIDE the seam can only speak for writes that reach it — it says nothing about a
+    /// write that bypasses it, which is exactly what the #102 reviewer demonstrated: reverting
+    /// <c>Session.EnterMap</c> to its old inline clamp left the warp tests green, because they were asserting
+    /// on a landing tile that the old code also produced. A test that reads this counter can tell the two
+    /// apart. One interlocked increment per position write, next to a packet build; the cost is not
+    /// measurable and the alternative was a claim nothing could falsify.</summary>
+    internal static long PositionWritesUnderWorldLock => Interlocked.Read(ref _positionWrites);
+    private static long _positionWrites;
+
     internal void SetPositionUnderWorldLock(ushort x, ushort y)
     {
+        Interlocked.Increment(ref _positionWrites);
         Debug.Assert(_world.HoldsWorldLock,
             "player position written outside World._lock — the occupancy check and the write are one critical " +
             "section (#30). Go through World.TryMovePlayer, or World.SetPlayerPosition for a snap-back.");
