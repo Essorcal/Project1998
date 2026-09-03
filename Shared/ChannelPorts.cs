@@ -61,6 +61,8 @@ public static class ChannelPorts
             new Pair(LoginFor(gamePorts[0]), LoginFor(gamePorts[1]), gamePorts[0], gamePorts[1]));
     }
 
+    internal static void ResetForTests() => Volatile.Write(ref _configuredPair, null);
+
     private static Pair CurrentPairFor(int port)
     {
         Pair? configured = Volatile.Read(ref _configuredPair);

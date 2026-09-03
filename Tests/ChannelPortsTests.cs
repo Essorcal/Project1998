@@ -46,7 +46,7 @@ public class ChannelPortsTests
         }
         finally
         {
-            ChannelPorts.ConfigureLoginPair(new[] { 2000, 2001 });
+            ChannelPorts.ResetForTests();
         }
     }
 }
