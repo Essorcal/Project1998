@@ -83,6 +83,37 @@ all live in it. The four ports are recorded in `session.json`, and `-Status` and
 there, so the base is only given at start. `run-server.bat` stays the plain path; the script does not
 replace it.
 
+**Test-Branch.ps1** (Windows) -- turns "this branch didn't change X behaviour" into a table instead of a
+claim: it starts a pair from a checkout with `Serve.ps1` (default port base 3000, so it never collides
+with a developer's own pair on 2000), waits for the game server's status probe to answer, builds and runs
+every script in [`project1998-testclient`](https://github.com/Essorcal/project1998-testclient)`\scripts\`
+against it with `--json`, stops the pair, and prints one line per script -- exit code, expects passed,
+expects failed, wall clock, first failing expect -- exiting 0 only if every script exited 0 with zero
+failed expects.
+
+```powershell
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet
+```
+
+Full parameter list: `-Checkout` (required), `-PortBase` (default 3000), `-Scripts` (a glob or a list,
+default every `*.txt` directly under the test client's `scripts\`), `-TestClient` (default
+`C:\Repo\project1998-testclient`), `-Bots` (default `botone,bottwo` -- every name gets both tester and GM
+tier; `-Bots[0]` is the primary account TestClient.Cli logs in as, any others are for scripts that declare
+a second bot themselves), `-Passes` (one password per `-Bots` name, same order, default
+`bot1pass,bot2pass`), `-KeepRunning` (skip the stop -- for a developer who wants to poke at the pair
+afterwards, or after an interrupt), `-Json <path>` (write the same results as JSON for a reviewer to
+attach to a PR), `-ReadyTimeoutSec` (default 60) and `-ScriptTimeoutSec` (default 120, a wall-clock backstop
+independent of the client's own `--timeout-ms`).
+
+It refuses the same way `Serve.ps1` does when the ports are already held or this checkout already has a
+pair running (exit 2, and says who or what). Exit 2 also covers this script's own usage errors (a bad
+`-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, a missing `TestClient.Cli` project, no
+`dotnet` on PATH). A build failure in the checkout under test is `Serve.ps1`'s own exit 1, passed straight
+through with no test-client build and no scripts run; a test-client build failure is this script's own
+exit 1 the same way, with no scripts run either. A readiness timeout, an interrupted run (Ctrl+C or
+Ctrl+Break both stop the pair before exiting), or any script exiting nonzero or reporting a failed expect
+is also exit 1.
+
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:
 
