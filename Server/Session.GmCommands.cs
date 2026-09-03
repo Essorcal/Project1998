@@ -81,8 +81,9 @@ public sealed partial class Session
 
         if (!Content.TryMap(npc.Map, out var md))
         { Refuse($"{npc.Name} (#{npc.Id}) is on map {npc.Map}, which isn't in the map registry."); return; }
-        var (x, y) = ApproachTile(npc.Map, md.Xs, md.Ys, npc.X, npc.Y);
-        EnterMap(npc.Map, md.Xs, md.Ys, x, y, md.Name);
+        // Beside the NPC, not on top of it — the same search @approach uses, now run under the world lock
+        // with the write it feeds (#99 part 1). The NPC's own tile is the fallback when it is boxed in.
+        EnterMap(npc.Map, md.Xs, md.Ys, npc.X, npc.Y, md.Name, ArrivalPolicy.AdjacentFreeElseStack);
         Reply($"{npc.Name} (#{npc.Id}) — {md.Name} (map {npc.Map}) at ({npc.X},{npc.Y})." +
                 (npc.Enabled ? "" : "  [disabled — the spot is empty]"));
     }
@@ -888,9 +889,14 @@ public sealed partial class Session
         // A peer's character is directly reachable — private is type-scoped, and the reader is a Session too
         // (same as LuaHealTarget reading pc._char). No accessor needed.
         ushort map = target._char.Map, xs = target._char.MapXs, ys = target._char.MapYs;
-        var (x, y) = ApproachTile(target, map, xs, ys);
         string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
-        EnterMap(map, xs, ys, x, y, mapName);
+        // The free-tile search used to happen here, in ApproachTile, through a World.PeerAt and a World.MobAt
+        // that each took and released the world lock — and the tile it picked was then written by EnterMap
+        // under no lock at all. It is now ArrivalPolicy.AdjacentFreeElseStack, which runs the same search and
+        // the write in one acquisition (#99 part 1). Same predicates, same N/E/S/W order, same stack-on-them
+        // fallback when they are boxed in.
+        var (x, y) = EnterMap(map, xs, ys, target._char.X, target._char.Y, mapName,
+                              ArrivalPolicy.AdjacentFreeElseStack);
         Reply($"Approached {target._char.Name} on {mapName} at ({_char.X},{_char.Y}).");
         Log.Info($"   -> @approach '{_char.Name}' -> '{target._char.Name}' at map {map} ({x},{y})");
     }
@@ -930,9 +936,11 @@ public sealed partial class Session
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
         ushort map = _char.Map, xs = _char.MapXs, ys = _char.MapYs;
-        var (x, y) = ApproachTile(this, map, xs, ys);
         string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
-        target.EnterMap(map, xs, ys, x, y, mapName);
+        // Same move as @approach, with the roles swapped: the anchor is US, the mover is THEM. See the note
+        // there on why the search is a policy now.
+        var (x, y) = target.EnterMap(map, xs, ys, _char.X, _char.Y, mapName,
+                                     ArrivalPolicy.AdjacentFreeElseStack);
         target.SendMiniText($"You have been summoned by {_char.Name}.");   // to the TARGET, not a Reply
         Reply($"Brought {target._char.Name} to ({x},{y}).");
         Log.Info($"   -> @bring '{_char.Name}' <- '{target._char.Name}' to map {map} ({x},{y})");
@@ -956,26 +964,10 @@ public sealed partial class Session
         Log.Info($"   -> @announce '{_char.Name}': \"{a.Raw}\"");
     }
 
-    // First free CARDINAL neighbour of the target (checked N/E/S/W), else the target's own tile (stack).
-    // Free = in bounds, not blocked (the same ground+object-wall test the player's walk uses), and holding
-    // neither a mob nor another player. The map may not be the one WE'RE on, so all lookups take it explicitly.
-    private (ushort x, ushort y) ApproachTile(Session target, ushort map, ushort xs, ushort ys)
-        => ApproachTile(map, xs, ys, target._char.X, target._char.Y);
-
-    private (ushort x, ushort y) ApproachTile(ushort map, ushort xs, ushort ys, int tx, int ty)
-    {
-        var md = MapData.For(map, xs, ys);
-        for (int dir = 0; dir < 4; dir++)
-        {
-            var (nx, ny) = Step(tx, ty, dir);
-            if (nx < 0 || ny < 0 || nx >= xs || ny >= ys) continue;
-            if (md is not null && md.BlockedMove(nx, ny, dir)) continue;
-            if (_world.PeerAt(map, nx, ny) is not null) continue;
-            if (_world.MobAt(map, nx, ny) is not null) continue;
-            return ((ushort)nx, (ushort)ny);
-        }
-        return ((ushort)tx, (ushort)ty);
-    }
+    // ApproachTile lived here: the first free CARDINAL neighbour of the target (N/E/S/W), else the target's
+    // own tile. It is World.AdjacentFreeLocked now, reached through ArrivalPolicy.AdjacentFreeElseStack, so
+    // that the search and the position write it feeds share one acquisition of the world lock (#99 part 1).
+    // The predicates did not change; where they run did.
 
     // "@mark <0-3>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san · 2 Ee san · 3 Sam san) and
     // rebuild the character at it. A rank is levels PAST 99, not an alternative to them, so this FORCES level
