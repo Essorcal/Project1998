@@ -54,8 +54,15 @@ public class MobAiLockTests
         @"\.Handed\s*(?:\?\?=|=(?!=))|\.Handed\s*\)?\s*\.(?:Add|Remove|Clear)\s*\(",
         RegexOptions.Compiled);
 
+    /// <summary>The receivers this codebase actually uses for a world <c>Mob</c> a Session does not own:
+    /// anything ending in "mob" (<c>mob</c>, <c>_mob</c>, <c>wmob</c>, <c>dummyMob</c>, <c>h.mob</c>), and
+    /// <c>node</c>, which is what <c>Session.Harvest</c> calls a harvest node. Listed EXPLICITLY rather than
+    /// widened by heuristic: widening this pattern by shape is what dropped the bare <c>mob.Hp</c> in #100,
+    /// and a new receiver name is a one-word edit here with a test run to prove it. The pattern is a
+    /// tripwire with a documented reach, not a proof — what actually keeps these writes correct is that they
+    /// go through World methods, so there is nothing left for it to catch.</summary>
     private static readonly Regex MobHpAssignment = new(
-        @"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)",
+        @"(?<![A-Za-z0-9_])(?:(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*|node)\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)",
         RegexOptions.Compiled);
 
     /// <summary>The files that handle a world mob without owning it. <c>Session*.cs</c> is every handler;

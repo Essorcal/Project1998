@@ -23,7 +23,7 @@ public class MobStateLockTests
 
     public MobStateLockTests(SessionFixture fx) => _fx = fx;
 
-    private const ushort HandMap = 60020, ClaimMap = 60021, RaceMap = 60022;
+    private const ushort HandMap = 60020, ClaimMap = 60021, RaceMap = 60022, GateMap = 60023;
 
     /// <summary>A world mob standing on <paramref name="map"/>, registered so the world can find it.</summary>
     private Mob NodeOn(ushort map, string name, int hp = 100)
@@ -180,22 +180,32 @@ public class MobStateLockTests
 #if DEBUG
     /// <summary>
     /// The Lua gate's half of the #90 rule. A script may reach back into the world — <c>MobContext.vanish</c>
-    /// and <c>say</c> always have — so the gate calling INTO the world is legal; entering the gate while
-    /// already holding <c>World._lock</c> is the direction that deadlocks, and until #103 nothing said so.
+    /// and <c>say</c> always have — so the gate calling INTO the world is legal; entering Lua while already
+    /// holding <c>World._lock</c> is the direction that deadlocks, and until #103 nothing said so.
+    ///
+    /// <para>Asserted at <see cref="MobScript.Fire"/> rather than inside <c>Session.EnterScriptGate</c>,
+    /// because the gate is static and has no World to ask, and Fire is the entry that can realistically be
+    /// reached from inside the lock — the tick queues these hooks precisely so it can drain them after
+    /// releasing it. <c>LuaVerbHost</c> and <c>NpcScript</c> hold no World at all, so their gate entries are
+    /// covered by the documented rule rather than by this assert; see the report on #103.</para>
     ///
     /// <para>Both directions, because only the pair means anything: the legal one has to stay silent.
-    /// Debug-only by construction, like the #29 lock-order test — the assert is
-    /// <c>[Conditional("DEBUG")]</c>, which is what makes it free in a release server.</para>
+    /// Debug-only by construction, like the #29 lock-order test.</para>
     /// </summary>
     [Fact]
-    public void EnteringTheLuaGateUnderTheWorldLockAsserts()
+    public void FiringALuaHookUnderTheWorldLockAsserts()
     {
+        var mob = NodeOn(GateMap, "HookedCreature");
+        var ctx = new MobContext(_fx.World, GateMap, mob, null);
+
+        // The key need not have a script: Fire asserts before it looks the hook up, which is the point —
+        // the rule is about the thread's lock state, not about whether there is Lua to run.
         var wrongWay = Record.Exception(
-            () => _fx.World.UnderWorldLockForTest(() => { using (Session.EnterScriptGate()) { } }));
+            () => _fx.World.UnderWorldLockForTest(() => MobScript.Fire("nobody", MobScript.OnAttacked, ctx)));
         Assert.NotNull(wrongWay);
         Assert.Contains("lock order violated", wrongWay!.Message);
 
-        var rightWay = Record.Exception(() => { using (Session.EnterScriptGate()) { } });
+        var rightWay = Record.Exception(() => MobScript.Fire("nobody", MobScript.OnAttacked, ctx));
         Assert.Null(rightWay);
     }
 #endif

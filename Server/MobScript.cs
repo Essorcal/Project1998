@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using MoonSharp.Interpreter;
 using Shared;
 
@@ -94,6 +95,14 @@ public static class MobScript
     /// swallowed — one broken hook can't take down a tick.</summary>
     public static void Fire(string mobKey, string hook, MobContext ctx)
     {
+        // The #90 rule's second half, asserted here rather than in Session.EnterScriptGate: the gate is
+        // static and has no World to ask, and this is the entry that can actually be reached from inside the
+        // lock — World.Tick queues these hooks precisely so it can drain them after releasing it. A hook is
+        // free to call INTO the world (vanish, say, heal all do); a thread already holding the world lock
+        // entering Lua is the direction that deadlocks.
+        Debug.Assert(!ctx.World.HoldsWorldLock,
+            "lock order violated: World._lock is held while firing a Lua mob hook (#90). Queue the hook and " +
+            "run it after the lock is released, the way World.Tick does.");
         if (!Has(mobKey, hook)) return;
         try
         {
@@ -125,6 +134,11 @@ public sealed class MobContext
 
     internal MobContext(World world, ushort map, Mob mob, Session? actor)
     { _world = world; _map = map; _mob = mob; _actor = actor; }
+
+    /// <summary>The world this hook is running against — for <see cref="MobScript.Fire"/>'s lock-order
+    /// assert, which needs a World and is the only reason this is exposed. Not visible to Lua: the
+    /// MoonSharp binding only surfaces the lower-case members below.</summary>
+    internal World World => _world;
 
     public string key => _mob.Key;
     public string name => _mob.Name;

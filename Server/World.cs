@@ -484,7 +484,6 @@ public sealed class World
     /// is what lets a test hold a real World without the server's background machinery attached to it.</summary>
     public World()
     {
-        lock (Constructed) Constructed.Add(this);   // for the Lua gate's Debug assert only — see WorldLockHeldByCurrentThread
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
         SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
@@ -2218,26 +2217,6 @@ public sealed class World
             node.HarvestClaimUntil = now + claimMs;
             return true;
         }
-    }
-
-    // ---- the Lua gate's half of the #90 rule ---------------------------------------------------------
-    // Session.EnterScriptGate has to be able to ask "is this thread inside a world lock?" and it is a STATIC
-    // method with no World in hand — its callers are LuaVerbHost and NpcScript, neither of which holds one.
-    // So every World registers itself here and the assert asks them all. Read from nowhere but that assert,
-    // which is [Conditional("DEBUG")], so this costs a Release build nothing at all.
-    //
-    // The alternative was a [ThreadStatic] depth counter like Session._viewDepth, which would mean routing
-    // every `lock (_lock)` in this file through a guard — a forty-site mechanical edit inside the code this
-    // sprint has been stabilising, to enable one LOW-severity Debug assert. Not a trade worth making here.
-    private static readonly List<World> Constructed = new();
-
-    /// <summary>Is the calling thread inside ANY world's <c>_lock</c>? For the Lua gate's assert only.</summary>
-    internal static bool WorldLockHeldByCurrentThread()
-    {
-        lock (Constructed)
-            foreach (var w in Constructed)
-                if (w.HoldsWorldLock) return true;
-        return false;
     }
 
     /// <summary>The Lua hook's heal (<c>MobContext.heal</c>), under <c>_lock</c> — the write it used to do
