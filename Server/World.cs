@@ -59,6 +59,35 @@ public sealed class Trap
     public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
 
+/// <summary>Where a player was standing when an arrival began — the tile it still holds while the move is
+/// in flight. Only <see cref="ArrivalPolicy.AdjacentFreeElseStack"/> consults it; see
+/// <see cref="World.PlacePlayer"/>'s <c>from</c> parameter for why it has to.</summary>
+public readonly record struct FromTile(ushort Map, ushort X, ushort Y);
+
+/// <summary>How <see cref="World.PlacePlayer"/> turns a requested arrival tile into the one the player
+/// actually lands on.
+///
+/// <para><b>Every arrival in the tree uses one of these two today, and both reproduce exactly what that
+/// caller already did</b> — this is a lock-scope change, not a behaviour one. The question of what the
+/// original game did when a warp's destination was occupied is open (#99, "Needs source check"), so no
+/// policy that would answer it exists yet: there is deliberately no Refuse and no "step aside on a warp".
+/// When the source check lands, its answer arrives here as a third member and a change of default.</para>
+/// </summary>
+public enum ArrivalPolicy
+{
+    /// <summary>Take the requested tile, clamped to the map, occupied or not. What every warp, scripted-tile
+    /// entrance, world-map hop, Gateway and GM teleport has always done — a bounds clamp was the whole of the
+    /// validation. Two players through one door land on the same tile, as they always have.</summary>
+    Clamp,
+
+    /// <summary>The first free cardinal neighbour of the requested tile (N/E/S/W in that order), else the
+    /// requested tile itself. Free = in bounds, not blocked by ground or an object wall, and holding neither
+    /// a mob nor a player. <c>@approach</c> and <c>@bring</c> only, which is where this search used to live
+    /// as <c>Session.ApproachTile</c> — reading through <c>World.PeerAt</c> and <c>World.MobAt</c>, each its
+    /// own acquisition, with the write happening later under none of them.</summary>
+    AdjacentFreeElseStack,
+}
+
 /// <summary>A peer and the tile it was standing on when <c>_lock</c> was last held — what the viewport
 /// reconcile gates on. It exists because the reconcile CANNOT read <c>Session.PlayerX</c>/<c>PlayerY</c>
 /// itself: those are two separate <c>ushort</c> reads of another session's character, and every writer of
@@ -2396,6 +2425,88 @@ public sealed class World
             mover.SetPositionUnderWorldLock((ushort)nx, (ushort)ny);
             return true;
         }
+    }
+
+    /// <summary>
+    /// An ARRIVAL: resolve the tile a player is being put on and write it, both inside one acquisition of
+    /// <c>_lock</c> (#99 part 1). <see cref="TryMovePlayer"/> is the same idea for a step; this is every
+    /// other way a player's position changes — warps, scripted-tile entrances, world-map travel, the
+    /// Gateway, GM teleports.
+    ///
+    /// <para><b>What this replaces.</b> <c>Session.EnterMap</c> clamped the requested tile to the map's
+    /// bounds and assigned <c>_char.X/Y</c> with no lock held, and <c>@approach</c>/<c>@bring</c> chose their
+    /// tile beforehand through <c>World.PeerAt</c> then <c>World.MobAt</c> — two more acquisitions, both
+    /// released before the write. The tile a search picked could therefore be taken by the time it was
+    /// written to.</para>
+    ///
+    /// <para><b>This is a lock-scope change and nothing else.</b> <see cref="ArrivalPolicy.Clamp"/> is the
+    /// default and is what all 21 non-GM-adjacency callers pass, and it does exactly what the old inline
+    /// clamp did, occupancy included: it does not test it. Two players through one door still land on one
+    /// tile. Whether they SHOULD is #99's open source question, and answering it is not this method's job —
+    /// see <see cref="ArrivalPolicy"/>.</para>
+    ///
+    /// <para><b>Lock order (#29)</b> is the same as <see cref="TryMovePlayer"/>'s: the caller is
+    /// <c>Session.EnterMap</c>, already inside the mover's own state monitor, and this takes <c>_lock</c>
+    /// second. The prewarm is outside the lock for the reason <see cref="EnterMap"/> documents — a cold
+    /// <c>MapData.For</c> is a disk read, a full cell decode and a SQLite query, and none of that belongs in
+    /// a critical section every player on every map is waiting behind.</para>
+    /// </summary>
+    /// <param name="from">Where the mover is coming from. <c>Session.EnterMap</c> has already called
+    /// <see cref="LeaveMap"/> by the time it reaches here, so the mover is in no map's player list — and a
+    /// search that cannot see them would offer them the tile they are standing on, which is not what
+    /// <c>@approach</c>/<c>@bring</c> did before. Consulted only by
+    /// <see cref="ArrivalPolicy.AdjacentFreeElseStack"/>, and only when its map matches the destination.</param>
+    public void PlacePlayer(Session mover, ushort mapId, ushort xs, ushort ys, int x, int y,
+                            ArrivalPolicy policy, FromTile from,
+                            out ushort placedX, out ushort placedY)
+    {
+        // BEFORE the lock, and MapData.For rather than Prewarm: Prewarm returns early for a map with no
+        // Maps.csv row, which would leave AdjacentFreeElseStack's own MapData.For to do the cold load —
+        // a disk read, a full cell decode and a SQLite query — INSIDE the critical section every player on
+        // every map is waiting behind. Reachable through @approach/@bring on an unregistered map, and the
+        // path every policy test takes. The result is discarded; the point is the cache entry. Only the
+        // searching policy needs it — Clamp never looks at terrain, so it does no terrain work at all, which
+        // is also what the old inline clamp in Session.EnterMap did.
+        if (policy == ArrivalPolicy.AdjacentFreeElseStack) _ = MapData.For(mapId, xs, ys);
+        lock (_lock)
+        {
+            var (tx, ty) = policy switch
+            {
+                ArrivalPolicy.AdjacentFreeElseStack => AdjacentFreeLocked(mapId, xs, ys, x, y, from),
+                _ => (x, y),
+            };
+            // The clamp itself is unchanged, and still last: the old code clamped whatever tile it was handed,
+            // and a search's fallback tile has to go through it for the same reason.
+            placedX = (ushort)Math.Clamp(tx, 0, Math.Max(0, xs - 1));
+            placedY = (ushort)Math.Clamp(ty, 0, Math.Max(0, ys - 1));
+            mover.SetPositionUnderWorldLock(placedX, placedY);
+        }
+    }
+
+    /// <summary>The first free cardinal neighbour of (<paramref name="tx"/>,<paramref name="ty"/>), else that
+    /// tile itself — <c>Session.ApproachTile</c>'s search, moved here so it shares the acquisition that writes
+    /// its answer. The predicates are that method's, unchanged: in bounds, not ground- or object-wall-blocked
+    /// for the direction stepped, and holding neither a player (any player, living or dead — the old
+    /// <c>PeerAt</c> filtered neither) nor a living mob.</summary>
+    private (int x, int y) AdjacentFreeLocked(ushort mapId, ushort xs, ushort ys, int tx, int ty, FromTile from)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        var terrain = MapData.For(mapId, xs, ys);
+        _maps.TryGetValue(mapId, out var m);
+
+        for (int dir = 0; dir < 4; dir++)
+        {
+            int nx = tx + (dir == 1 ? 1 : dir == 3 ? -1 : 0);   // 0=N 1=E 2=S 3=W, as everywhere else
+            int ny = ty + (dir == 2 ? 1 : dir == 0 ? -1 : 0);
+            if (nx < 0 || ny < 0 || nx >= xs || ny >= ys) continue;
+            if (terrain is not null && terrain.BlockedMove(nx, ny, dir)) continue;
+            // The mover still holds the tile it is leaving; see the `from` parameter on PlacePlayer.
+            if (from.Map == mapId && from.X == nx && from.Y == ny) continue;
+            if (m is not null && m.Players.Any(p => p.PlayerX == nx && p.PlayerY == ny)) continue;
+            if (m is not null && m.Mobs.Any(mo => mo.Alive && mo.X == nx && mo.Y == ny)) continue;
+            return (nx, ny);
+        }
+        return (tx, ty);
     }
 
     /// <summary>Write a player's position with no occupancy test — the walk handler's snap-back.

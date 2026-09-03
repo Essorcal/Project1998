@@ -1060,9 +1060,19 @@ public sealed partial class Session
     // Maps\TK<id>.map from the 0x15 mapId, so a warp is just: update tracked position, then re-send the
     // entry trio — 0x15 (map) + 0x04 (coords + camera) + 0x33 (our sprite). The world object (0x02) and
     // our entity id (0x05) are already established this session, so those are NOT resent.
-    private void EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName)
+    /// <param name="arrival">How the requested tile becomes the tile landed on. The default is what every
+    /// arrival in this file has always done — clamp to the map and take it, occupied or not. Only
+    /// <c>@approach</c>/<c>@bring</c> pass anything else; see <see cref="ArrivalPolicy"/>.</param>
+    /// <returns>The tile actually landed on. Callers that report it (<c>@bring</c>) read it from here rather
+    /// than from what they asked for, since a policy may have moved it.</returns>
+    private (ushort x, ushort y) EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName,
+                                          ArrivalPolicy arrival = ArrivalPolicy.Clamp)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        // Captured before anything below overwrites it: the tile we still hold while this move is in flight.
+        // LeaveMap takes us off the map's player list a few lines down, so a policy that searches for a free
+        // tile could otherwise offer us the one we are standing on. See World.PlacePlayer's `from`.
+        var from = new FromTile(_char.Map, _char.X, _char.Y);
         // Warn on crossing INTO a PvP realm (RTK MapPvP flag — Content.IsPvpMap) from a non-PvP one, e.g.
         // stepping through an arena door into Sire Pit/Yusa Pit. Skipped when already in a PvP map (tier
         // warps within the same arena chain shouldn't re-nag every hop).
@@ -1083,8 +1093,12 @@ public sealed partial class Session
         _char.Map = mapId;
         _char.MapXs = xs;
         _char.MapYs = ys;
-        _char.X = (ushort)Math.Clamp((int)x, 0, xs - 1);
-        _char.Y = (ushort)Math.Clamp((int)y, 0, ys - 1);
+        // The position write goes through the world (#99 part 1): the arrival tile is resolved and written in
+        // ONE acquisition of World._lock, the lock every reader of PlayerX/PlayerY takes. It used to be a bare
+        // clamp and two assignments here, under no lock at all — and for @approach/@bring the tile had been
+        // chosen even earlier, through two more acquisitions that were long released by the time it was used.
+        // The default policy is the clamp itself, so what lands where is unchanged.
+        _world.PlacePlayer(this, mapId, xs, ys, x, y, arrival, from, out ushort placedX, out ushort placedY);
         MarkDirty();   // map + position, same reasoning as HandleWalk
 
         SendMapInfo(mapId, xs, ys, mapName, 232, _gameInc++);   // 0x15 (light arg ignored; uses LightValue)
@@ -1108,6 +1122,7 @@ public sealed partial class Session
                 "can be destroyed by bombs!", DialogPortrait.None, prev: false, next: false);
         }
         Log.Info($"   -> ENTER map {mapId} '{mapName}' {xs}x{ys} @({_char.X},{_char.Y}) — {peers.Length} player(s), {mobs.Length} mob(s) here");
+        return (placedX, placedY);
     }
 
     // Bring the arriving client's object layer in line with the server's. The 4.95 client draws its own local
