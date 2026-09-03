@@ -6,14 +6,20 @@ public static partial class Content
     // Era-gating overrides for crafting skills (see Server/CraftingToggles.cs + docs/common/Crafting-Values.md).
     // File is optional and sparse: only skills listed here override CraftingToggles.DefaultDisabled;
     // anything absent keeps the code-level default. Columns: Skill,Enabled(0/1).
-    public static IReadOnlyDictionary<string, bool> CraftingToggleOverrides { get; private set; } =
-        new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, bool> CraftingToggleOverrides
+    {
+        get => _snapshotBuilder?.CraftingToggleOverrides ?? Snapshot.CraftingToggleOverrides;
+        private set => Builder.CraftingToggleOverrides = value;
+    }
 
     // Per-class level-up HP/MP gain ranges (game-data/PathGrowth.csv), keyed by path id (0 Peasant / 1
     // Warrior / 2 Rogue / 3 Mage / 4 Poet). Each is the pair of args to Random.Shared.Next(min, max) — max is
     // EXCLUSIVE, matching the original C# switch. The which-stat-is-primary logic stays in Session.LevelUp.
-    public static IReadOnlyDictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> PathGrowth { get; private set; } =
-        new Dictionary<int, (int, int, int, int)>();
+    public static IReadOnlyDictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> PathGrowth
+    {
+        get => _snapshotBuilder?.PathGrowth ?? Snapshot.PathGrowth;
+        private set => Builder.PathGrowth = value;
+    }
     /// <summary>Level-up gain ranges for a path, falling back to Peasant (0) then a hardcoded default.</summary>
     public static (int HpMin, int HpMax, int MpMin, int MpMax) PathGrowthFor(int path) =>
         PathGrowth.TryGetValue(path, out var g) ? g : PathGrowth.TryGetValue(0, out var p) ? p : (45, 56, 32, 37);
@@ -21,8 +27,11 @@ public static partial class Content
     // Named engine scalars a deployment may retune without a rebuild (game-data/ServerTuning.csv, key,value).
     // These sit on the tier-1/tier-3 line — real mechanics, but harmless to expose as hand-editable config. Typed
     // accessors fall back to the historical hardcoded default if the key is absent, so a missing file is safe.
-    public static IReadOnlyDictionary<string, double> Tuning { get; private set; } =
-        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, double> Tuning
+    {
+        get => _snapshotBuilder?.Tuning ?? Snapshot.Tuning;
+        private set => Builder.Tuning = value;
+    }
     private static double Tune(string key, double dflt) => Tuning.TryGetValue(key, out var v) ? v : dflt;
     public static int MailMinLevel => (int)Tune("MailMinLevel", 10);   // min level to view/send nmail
     public static int SpeechRange  => (int)Tune("SpeechRange", 8);     // tiles (Chebyshev) an NPC "hears" from
@@ -131,7 +140,11 @@ public static partial class Content
     // total exp needed to LEAVE `level` (i.e. reach level+1). Long-format CSV (game-data/LevelExp.csv,
     // generated from the RTK file — see awk one-liner in git history) with one row per (Path, Level). Path ids
     // match PathIdForClass (0 Peasant/1 Warrior/2 Rogue/3 Mage/4 Poet); level 99 is the cap and has no entry.
-    private static Dictionary<int, Dictionary<int, uint>> LevelExp = new();
+    private static Dictionary<int, Dictionary<int, uint>> LevelExp
+    {
+        get => _snapshotBuilder?.LevelExp ?? Snapshot.LevelExp;
+        set => Builder.LevelExp = value;
+    }
 
     /// <summary>Total exp required to advance past <paramref name="level"/> on <paramref name="pathId"/>
     /// (0 at the level-99 cap or on a lookup miss — treated as "no further threshold").</summary>

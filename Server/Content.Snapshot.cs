@@ -172,12 +172,20 @@ public static partial class Content
         internal (ushort bgm, byte type)? DefaultBgm { get; set; }
         internal (ushort bgm, byte type)? DefaultBgmNew { get; set; }
 
+        internal IReadOnlyDictionary<string, bool> CraftingToggleOverrides { get; set; } =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> PathGrowth { get; set; } =
+            new Dictionary<int, (int, int, int, int)>();
+        internal IReadOnlyDictionary<string, double> Tuning { get; set; } =
+            new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<int, Dictionary<int, uint>> LevelExp { get; set; } = new();
+
         internal ContentSnapshot Build() => new(this);
     }
 
     private sealed class ContentSnapshot
     {
-        internal const int MemberCount = 82;
+        internal const int MemberCount = 86;
 
         internal ContentSnapshot(ContentSnapshotBuilder builder)
         {
@@ -263,6 +271,10 @@ public static partial class Content
             BgmByMap = builder.BgmByMap;
             DefaultBgm = builder.DefaultBgm;
             DefaultBgmNew = builder.DefaultBgmNew;
+            CraftingToggleOverrides = builder.CraftingToggleOverrides;
+            PathGrowth = builder.PathGrowth;
+            Tuning = builder.Tuning;
+            LevelExp = builder.LevelExp;
         }
 
         internal IReadOnlyList<ItemDef> Items { get; }
@@ -347,5 +359,9 @@ public static partial class Content
         internal Dictionary<ushort, BgmPick> BgmByMap { get; }
         internal (ushort bgm, byte type)? DefaultBgm { get; }
         internal (ushort bgm, byte type)? DefaultBgmNew { get; }
+        internal IReadOnlyDictionary<string, bool> CraftingToggleOverrides { get; }
+        internal IReadOnlyDictionary<int, (int HpMin, int HpMax, int MpMin, int MpMax)> PathGrowth { get; }
+        internal IReadOnlyDictionary<string, double> Tuning { get; }
+        internal Dictionary<int, Dictionary<int, uint>> LevelExp { get; }
     }
 }
