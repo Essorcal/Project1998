@@ -130,11 +130,11 @@ Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet -Scripts C:\scratch\one
 .NOTES
 Windows PowerShell 5.1 compatible. Exit codes: 0 every script exited 0 with zero failed expects; 1 a
 script exited nonzero or reported a failed expect, the ready-probe timed out, the run was interrupted
-(Ctrl+C/Ctrl+Break), or Serve.ps1 -Start reported success (exit 0) but did not actually write a fresh
-run\session.json; 2 Serve.ps1 refused to start (ports held, or this checkout already has a pair running,
-or a build failure in -Checkout -- its own exit 2 or 1, passed through as-is) and this script's own usage
-errors (a bad -Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, TestClient.Cli project missing,
-dotnet not found, a test-client build failure).
+(Ctrl+C/Ctrl+Break), a test-client build failure, or Serve.ps1 -Start reported success (exit 0) but did
+not actually write a fresh run\session.json -- this also covers Serve.ps1's own exit 1 (a build failure in
+-Checkout, passed through as-is); 2 Serve.ps1 refused to start (ports held, or this checkout already has a
+pair running -- its own exit 2, passed through as-is) and this script's own usage errors (a bad
+-Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, TestClient.Cli project missing, dotnet not found).
 #>
 [CmdletBinding()]
 param(
@@ -153,43 +153,6 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------------------------------
-# Ctrl+C / Ctrl+Break: a low-level console control handler, the same mechanism (SetConsoleCtrlHandler)
-# Scripts\Serve.ps1's Send-ConsoleBreak uses to deliver these signals TO the servers -- here it watches
-# THIS script's own console instead. Windows runs the handler on its own thread the moment either key is
-# pressed, independent of what the main thread is blocked in, so it is safe to install once and then just
-# poll the flag from wherever this script is waiting. Returning $true claims the event as handled, which
-# is what stops Ctrl+Break's default action (silent process termination, bypassing try/finally) as well
-# as Ctrl+C's.
-$ctrlSrc = @'
-using System;
-using System.Runtime.InteropServices;
-public static class TestBranchCtrl {
-    public delegate bool Handler(uint ctrlType);
-    private static Handler _handler;
-    public static volatile bool Interrupted = false;
-    public static volatile string LastSignal = "";
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(Handler h, bool add);
-    public static bool Install() {
-        _handler = new Handler(OnCtrl);
-        return SetConsoleCtrlHandler(_handler, true);
-    }
-    private static bool OnCtrl(uint ctrlType) {
-        // 0 = CTRL_C_EVENT, 1 = CTRL_BREAK_EVENT (Server/Net.cs and Scripts\Serve.ps1's
-        // Send-ConsoleBreak use the same two values against the servers).
-        Interrupted = true;
-        LastSignal = ctrlType == 0 ? "Ctrl+C" : ctrlType == 1 ? "Ctrl+Break" : ("signal " + ctrlType);
-        return true;
-    }
-}
-'@
-try {
-    Add-Type -TypeDefinition $ctrlSrc -Language CSharp
-    [TestBranchCtrl]::Install() | Out-Null
-} catch {
-    Write-Host "Could not install a Ctrl+C/Ctrl+Break handler ($($_.Exception.Message)); an interrupt may not stop the pair cleanly."
-}
-
-# ---------------------------------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------------------------------
 
@@ -202,7 +165,10 @@ try {
 function Format-Args([string[]]$Parts) {
     return (($Parts | ForEach-Object {
         $s = [string]$_
-        if ($s -match '[\s"]') {
+        # An empty string must still become an explicit "" -- left unquoted it contributes nothing to the
+        # joined line at all (just extra whitespace between neighbours), silently dropping the argument and
+        # shifting every positional argument after it.
+        if ($s -eq '' -or $s -match '[\s"]') {
             $escaped = [regex]::Replace($s, '(\\*)"', '$1$1\"')
             $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
             '"' + $escaped + '"'
@@ -440,11 +406,71 @@ Write-Host "Scripts ($($scriptFiles.Count)):"
 foreach ($f in $scriptFiles) { Write-Host "  $f" }
 
 # ---------------------------------------------------------------------------------------------------
+# Ctrl+C / Ctrl+Break: a low-level console control handler, the same mechanism (SetConsoleCtrlHandler)
+# Scripts\Serve.ps1's Send-ConsoleBreak uses to deliver these signals TO the servers -- here it watches
+# THIS script's own console instead. Windows runs the handler on its own thread the moment either key is
+# pressed, independent of what the main thread is blocked in, so it is safe to install once and then just
+# poll the flag from wherever this script is waiting. Returning $true claims the event as handled, which
+# is what stops Ctrl+Break's default action (silent process termination, bypassing try/finally) as well
+# as Ctrl+C's.
+#
+# Installed only now, after every usage check above has had its chance to exit -- and uninstalled in the
+# outer finally below no matter how this script ends. A handler left installed is process-global and
+# outlives this script in the console that ran it: a caller's interactive shell that ran Test-Branch to a
+# plain usage exit would otherwise keep swallowing Ctrl+C and Ctrl+Break for everything typed there
+# afterwards, since SetConsoleCtrlHandler's registration has nothing to do with this script's own scope.
+#
+# SetConsoleCtrlHandler(IntPtr.Zero, false) first: a process placed in a NEW process group (which is what
+# it takes to target this script's console programmatically, e.g. to test it, rather than typing into an
+# already-open one) inherits an "ignore Ctrl+C" default (documented CreateProcess behaviour) that a plain
+# handler registration does not clear on its own -- this line is what makes a synthetic Ctrl+C reach
+# OnCtrl at all in that scenario. It is a no-op (returns true, changes nothing) in an ordinary interactive
+# console, which never had that default set.
+$ctrlSrc = @'
+using System;
+using System.Runtime.InteropServices;
+public static class TestBranchCtrl {
+    public delegate bool Handler(uint ctrlType);
+    private static Handler _handler;
+    public static volatile bool Interrupted = false;
+    public static volatile string LastSignal = "";
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(Handler h, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(IntPtr h, bool add);
+    public static bool Install() {
+        SetConsoleCtrlHandler(IntPtr.Zero, false);   // clear an inherited ignore, see the PowerShell comment above
+        _handler = new Handler(OnCtrl);
+        return SetConsoleCtrlHandler(_handler, true);
+    }
+    public static bool Uninstall() {
+        if (_handler == null) return true;
+        bool ok = SetConsoleCtrlHandler(_handler, false);
+        _handler = null;
+        return ok;
+    }
+    private static bool OnCtrl(uint ctrlType) {
+        // 0 = CTRL_C_EVENT, 1 = CTRL_BREAK_EVENT (Server/Net.cs and Scripts\Serve.ps1's
+        // Send-ConsoleBreak use the same two values against the servers).
+        Interrupted = true;
+        LastSignal = ctrlType == 0 ? "Ctrl+C" : ctrlType == 1 ? "Ctrl+Break" : ("signal " + ctrlType);
+        return true;
+    }
+}
+'@
+$ctrlInstalled = $false
+try {
+    Add-Type -TypeDefinition $ctrlSrc -Language CSharp -ErrorAction Stop
+    $ctrlInstalled = [TestBranchCtrl]::Install()
+} catch {
+    Write-Host "Could not install a Ctrl+C/Ctrl+Break handler ($($_.Exception.Message)); an interrupt may not stop the pair cleanly."
+}
+
+# ---------------------------------------------------------------------------------------------------
 # Start, wait for readiness, build the test client, run scripts, always stop (unless -KeepRunning)
 # ---------------------------------------------------------------------------------------------------
 
 $started = $false
 $exitCode = 0
+try {
 try {
     # F1: a session file that predates this call must not be mistaken for proof that THIS call started
     # anything -- record what was there (or that nothing was) before asking Serve.ps1 to start.
@@ -616,6 +642,19 @@ try {
             }
         }
     }
+    # N4: the per-checkout test-client copy ($BuildRoot, see the build step above) is scratch, not state --
+    # left behind it just grows stale on every run. -KeepRunning also keeps it, on the theory that a
+    # developer poking at the pair afterwards may want to poke at the same build too.
+    if (-not $KeepRunning -and (Test-Path -LiteralPath $BuildRoot)) {
+        Remove-Item -LiteralPath $BuildRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+} finally {
+    # Uninstalled no matter how the above ends (including every `exit` above -- a `finally` still runs
+    # when the block it guards exits via `exit`, same as it would for a thrown exception). Left installed,
+    # this is process-global and would keep swallowing Ctrl+C/Ctrl+Break in whatever console ran this
+    # script for everything typed there afterwards -- the reviewer proved exactly that with two shells.
+    if ($ctrlInstalled) { [TestBranchCtrl]::Uninstall() | Out-Null }
 }
 
 exit $exitCode
