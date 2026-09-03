@@ -21,7 +21,9 @@ This script performs the same launch as the bat, and answers those questions:
     P1998_GMS, which the game server unions with state/*_accounts.txt). The calling shell is untouched.
   * It writes run/session.json in the checkout: { pid_login, pid_game, checkout, commit, branch, ports,
     testers, gms, started }. -Status reads it back; -Stop closes exactly those two processes, waits for
-    the ports to free, and removes it.
+    the ports to free, and removes it. A session file only counts for the checkout it was written in:
+    its own "checkout" field must name the -Checkout being stopped, and every path -Stop uses is derived
+    from -Checkout, never from the file. A file copied into another clone cannot stop this one's pair.
 
 It is not a resident process: it launches the consoles and exits, and the consoles stay visible, which
 is the rule this repo runs by. Nothing here runs a server hidden or in the background.
@@ -176,6 +178,20 @@ function Get-ProcessCheckout($Proc) {
         $dir = Split-Path -Parent $dir
     }
     return $null
+}
+
+# The same directory whatever way it was spelled (relative, trailing slash, case). Does not require it to
+# exist, so a session file naming a deleted clone still compares.
+function Get-CanonicalPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    try { return [System.IO.Path]::GetFullPath($Path).TrimEnd('') } catch { return $Path.TrimEnd('') }
+}
+
+# Does this session file belong to the checkout being operated on? The file's own "checkout" field is
+# the claim; -Checkout is the authority. Nothing in a session file may redirect a stop to another clone.
+function Test-SessionOwner($Session, [string]$Root) {
+    $owner = Get-CanonicalPath ([string]$Session.checkout)
+    return ($owner -ieq (Get-CanonicalPath $Root))
 }
 
 function Read-Session([string]$Root) {
@@ -423,11 +439,15 @@ function Show-Status([string]$Root, $Plan) {
     $ours = @()
 
     $s = Read-Session $Root
+    if ($null -ne $s -and -not (Test-SessionOwner $s $Root)) {
+        Write-Host "Session file ($file) belongs to $($s.checkout), not this checkout; ignoring it."
+        $s = $null
+    }
     if ($null -ne $s) {
         $lp = Get-Proc ([int]$s.pid_login)
         $gp = Get-Proc ([int]$s.pid_game)
-        $loginOk = Test-SessionServer $lp $s.checkout
-        $gameOk  = Test-SessionServer $gp $s.checkout
+        $loginOk = Test-SessionServer $lp $Root
+        $gameOk  = Test-SessionServer $gp $Root
         if ($loginOk) { $ours += [int]$s.pid_login }
         if ($gameOk)  { $ours += [int]$s.pid_game }
         if ($loginOk -and $gameOk) {
@@ -472,10 +492,16 @@ function Invoke-Stop([string]$Root, $Plan) {
         }
         return 1
     }
+    if (-not (Test-SessionOwner $s $Root)) {
+        Write-Host "Session file belongs to $($s.checkout), not this one ($Root); leaving it alone."
+        return 1
+    }
 
+    # Everything below is derived from $Root, the checkout the caller named. The file's own fields are
+    # PIDs and a claim of ownership (checked above); they are never used as paths.
     $targets = @(
-        [pscustomobject]@{ Label = 'LOGIN'; ProcessId = [int]$s.pid_login; Batch = (Join-Path $s.checkout $LoginBatRel) },
-        [pscustomobject]@{ Label = 'GAME';  ProcessId = [int]$s.pid_game;  Batch = (Join-Path $s.checkout $GameBatRel) }
+        [pscustomobject]@{ Label = 'LOGIN'; ProcessId = [int]$s.pid_login; Batch = (Join-Path $Root $LoginBatRel) },
+        [pscustomobject]@{ Label = 'GAME';  ProcessId = [int]$s.pid_game;  Batch = (Join-Path $Root $GameBatRel) }
     )
     $failed = $false
     $ourPids = @()   # the session's PIDs that really are its servers; a reused PID is not waited for
@@ -485,7 +511,7 @@ function Invoke-Stop([string]$Root, $Plan) {
             Write-Host "$($t.Label) PID $($t.ProcessId): already gone."
             continue
         }
-        if (-not (Test-SessionServer $p $s.checkout)) {
+        if (-not (Test-SessionServer $p $Root)) {
             Write-Host "$($t.Label) PID $($t.ProcessId) is now $($p.Name) ($($p.CommandLine)) - not this session's server; leaving it alone."
             continue
         }
@@ -547,10 +573,14 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
 
     # 1. Already running from this checkout?
     $s = Read-Session $Root
+    if ($null -ne $s -and -not (Test-SessionOwner $s $Root)) {
+        Write-Host "Session file $(Join-Path $Root $SessionRel) belongs to $($s.checkout), not this one; not starting and not touching it."
+        return 1
+    }
     if ($null -ne $s) {
         $lp = Get-Proc ([int]$s.pid_login)
         $gp = Get-Proc ([int]$s.pid_game)
-        if ((Test-SessionServer $lp $s.checkout) -or (Test-SessionServer $gp $s.checkout)) {
+        if ((Test-SessionServer $lp $Root) -or (Test-SessionServer $gp $Root)) {
             Write-Host "A pair from this checkout is already running (Serve.ps1 -Stop first):"
             Show-Status $Root $Plan
             return 2
