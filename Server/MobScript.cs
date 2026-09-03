@@ -139,8 +139,14 @@ public sealed class MobContext
             p => p.SpeakEntity((byte)channel, _mob.Id, bytes));
     }
 
-    /// <summary>Heal the creature, capped at its maximum.</summary>
-    public void heal(double amount) => _mob.Hp = Math.Min(_mob.MaxHp, _mob.Hp + (int)amount);
+    /// <summary>Heal the creature, capped at its maximum. Goes through the world rather than writing
+    /// <c>_mob.Hp</c> here: mob HP is state <c>World._lock</c> owns, and a hook runs OUTSIDE that lock (see
+    /// the class doc above), so the write used to land with no lock held while the tick could be reading the
+    /// same field. Same direction <see cref="vanish"/> and <see cref="say"/> already take — the gate calling
+    /// into the world is legal, it is holding the world lock on the way INTO the gate that is not (#90).
+    /// <see cref="World.HealMobFromScript"/> keeps this method's exact arithmetic, ungated as it has always
+    /// been; what changed is only when the write happens.</summary>
+    public void heal(double amount) => _world.HealMobFromScript(_mob, (int)amount);
 
     /// <summary>Remove the creature with no kill credit, loot or exp (RTK <c>mob:vanish()</c>). Its spawn
     /// point refills normally.</summary>

@@ -2146,6 +2146,26 @@ public sealed class World
         }
     }
 
+    /// <summary>The Lua hook's heal (<c>MobContext.heal</c>), under <c>_lock</c> — the write it used to do
+    /// straight to <c>mob.Hp</c> from inside a script, with no lock held at all.
+    ///
+    /// <para><b>Why this is not just <see cref="HealMob"/>.</b> That method refuses a non-positive amount
+    /// and refuses a dead mob; this one does neither, because a script can already do both today and
+    /// adopting those guards would change what a Lua heal DOES rather than only when its write lands.
+    /// <c>heal(-5)</c> currently takes HP off a creature, and a <c>heal</c> from <c>after_death</c>
+    /// currently revives one (<see cref="Mob.Alive"/> is <c>Hp &gt; 0</c>). Neither looks intended, and
+    /// neither is this PR's to decide — see the follow-up note on <c>MobContext.heal</c>.</para>
+    ///
+    /// <para>Called from inside the Lua gate, which is the legal direction: the rule (#90) is that
+    /// <c>_lock</c> must not be held when ENTERING the gate, not that the gate may not call into the world.
+    /// <c>MobContext.vanish</c> (<see cref="DespawnMob"/>) and <c>MobContext.say</c>
+    /// (<see cref="BroadcastArea"/>) have taken this lock from inside a script since the host was
+    /// written.</para></summary>
+    internal void HealMobFromScript(Mob mob, int amount)
+    {
+        lock (_lock) mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amount);
+    }
+
     /// <summary>Hold a mob for a fixed duration unless it is already held.</summary>
     public bool HoldMob(Mob mob, int durMs)
     {

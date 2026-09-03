@@ -3,7 +3,17 @@ using Xunit;
 
 namespace Tests;
 
-/// <summary>The world lock owns shared-mob AI mutations; Session code must enter through World.</summary>
+/// <summary>
+/// The world lock owns shared-mob AI mutations; code outside <c>World</c> must enter through it.
+///
+/// <para>The scanned set is the files that hold a <c>Mob</c> they do not own: the session partials, which
+/// reach world mobs through the handlers, and <c>MobScript.cs</c>, whose <c>MobContext</c> hands a live mob
+/// to a Lua hook that runs OUTSIDE <c>World._lock</c> by design. <c>MobScript.cs</c> was added to the set
+/// after this guard missed <c>MobContext.heal</c> writing <c>_mob.Hp</c> from a hook: the file was not
+/// scanned, and the HP pattern only matched the identifier <c>mob</c>, not <c>_mob</c>. Both holes are
+/// closed here, and the HP pattern now matches any identifier ending in "mob" — which is what the buff
+/// pattern below has always done.</para>
+/// </summary>
 public class MobAiLockTests
 {
     private static readonly Regex AiFieldAssignment = new(
@@ -18,16 +28,25 @@ public class MobAiLockTests
         RegexOptions.Compiled);
 
     private static readonly Regex MobHpAssignment = new(
-        @"\bmob\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)", RegexOptions.Compiled);
+        @"\b[A-Za-z_][A-Za-z0-9_]*[Mm]ob[A-Za-z0-9_]*\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)",
+        RegexOptions.Compiled);
+
+    /// <summary>The files that handle a world mob without owning it. <c>Session*.cs</c> is every handler;
+    /// <c>MobScript.cs</c> is the Lua host, the one place a mob is deliberately handed to code running
+    /// outside the lock.</summary>
+    private static IEnumerable<string> ScannedFiles(string serverDir) =>
+        Directory.EnumerateFiles(serverDir, "Session*.cs")
+                 .Concat(Directory.EnumerateFiles(serverDir, "MobScript.cs"))
+                 .Order();
 
     [Fact]
-    public void SessionFilesDoNotMutateWorldMobAiState()
+    public void SessionAndScriptFilesDoNotMutateWorldMobAiState()
     {
         DirectoryInfo root = RepoRoot();
         string serverDir = Path.Combine(root.FullName, "Server");
         var violations = new List<string>();
 
-        foreach (string file in Directory.EnumerateFiles(serverDir, "Session*.cs").Order())
+        foreach (string file in ScannedFiles(serverDir))
         {
             string name = Path.GetFileName(file);
             string[] lines = File.ReadAllLines(file);
@@ -43,7 +62,8 @@ public class MobAiLockTests
         }
 
         Assert.True(violations.Count == 0,
-            "Session code mutates Mob state owned by World._lock; add a lock-owning World method instead:\n" +
+            "Code outside World mutates Mob state owned by World._lock; add a lock-owning World method and " +
+            "call that instead — World.HealMobFromScript is what MobContext.heal does:\n" +
             string.Join('\n', violations));
     }
 
