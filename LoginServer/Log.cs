@@ -54,6 +54,9 @@ public static class Log
         }
     }
 
+    /// <summary>A recoverable failure worth preserving in the process log.</summary>
+    public static void Warn(string msg) => Info("!! " + msg);
+
     private static void OpenLocked(string note)
     {
         try
