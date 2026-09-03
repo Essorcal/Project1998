@@ -12,6 +12,7 @@ for (int i = 0; i < args.Length; i++)
     if (args[i] == "--ports" && i + 1 < args.Length)
         ports = Array.ConvertAll(args[i + 1].Split(','), int.Parse);
 }
+Shared.ChannelPorts.ConfigureGamePair(ports);
 
 // Confirmed by reversing NexusTK.exe: 4.95 has ONE cipher on both channels — the simple
 // NexonInc XOR (no name-derived/table cipher, no index/trailer bytes). The old --mapkey/--index

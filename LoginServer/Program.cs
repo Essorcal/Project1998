@@ -19,6 +19,7 @@ for (int i = 0; i < args.Length; i++)
     if (args[i] == "--ports" && i + 1 < args.Length)
         ports = Array.ConvertAll(args[i + 1].Split(','), int.Parse);
 }
+ChannelPorts.ConfigureLoginPair(ports);
 
 // Persist this process's log too (the game server has done so since the nmail "crash" whose console
 // output was lost). Rotated by size — see LoginServer/Log.cs. Note WireEnabled is OFF here by default:
