@@ -142,7 +142,7 @@ public class MobAiLockTests
     }
 
     /// <summary>Sute's wounded self-heal writes a real world mob's HP — and is already inside the lock,
-    /// because <c>SuteAi.TryHeal</c> has exactly one caller (<c>World.cs</c>, in the AI sweep) and that
+    /// because <c>SuteAi.TryHeal</c> has exactly one caller (<c>World.MobAiTick.cs</c>, in the AI sweep) and that
     /// caller sits inside the tick's own <c>lock (_lock)</c>. Verified by reading both, not assumed.
     ///
     /// <para>Exempting one exact line rather than the file is the point: <c>SuteAi.cs</c> is scanned so that

@@ -3290,10 +3290,14 @@ public sealed partial class World
             // Two exception boundaries, one per mob and one per map, so a creature that throws costs ITSELF the
             // beat and nothing else. Before them the only catch was TickLoop's, which abandoned the whole tick:
             // every list queued above and below was dropped unsent while the mobs already stepped stayed
-            // stepped. A skipped mob is left exactly where the throw found it — its tile-set entry, its timers
-            // and any queue entry it added before throwing all stand, which is the same state a completed step
-            // leaves and is why nothing here rolls back. Plain try/catch rather than Try(): this is the hot
-            // loop, and a closure per mob per beat is an allocation the sweep does not need.
+            // stepped. A skipped mob is left exactly where the throw found it: nothing here unwinds. Its
+            // tile-set entry, its timers and any queue entry it added before throwing all stand, and a throw
+            // part-way through a step can leave work half done in ways a completed step never does — a
+            // creature standing on a trap it stepped onto but never sprang (the move is queued before the
+            // trigger runs), a queued swing whose cooldown was never advanced. That is the same torn state the
+            // old shape left, when the whole beat was lost on top of it; it is not new, and it is not repaired.
+            // Plain try/catch rather than Try(): this is the hot loop, and a closure per mob per beat is an
+            // allocation the sweep does not need.
             foreach (var (mapId, m) in _maps)
             {
                 if (m.Mobs.Count == 0 || m.Players.Count == 0) continue;   // no observers -> don't bother
