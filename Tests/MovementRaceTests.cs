@@ -20,7 +20,8 @@ namespace Tests;
 /// asserts "this tile is empty" cannot share a map with anything else. An id with no <c>Maps.csv</c> row is
 /// also terrain-free (<c>MapData.For</c> returns null, so nothing is ever pass-blocked), warp-free and
 /// spawn-free, which leaves occupancy as the only thing that can refuse a step — exactly what is under
-/// test.</para>
+/// test. The one exception is <see cref="WarpTileBeatsOccupancy"/>, which is about a warp and therefore has
+/// to stand on a map that has one.</para>
 /// </summary>
 [Collection("world")]
 public class MovementRaceTests
@@ -183,6 +184,50 @@ public class MovementRaceTests
 
         Assert.Equal(5, mover.PlayerX);
         Assert.Equal(4, mover.PlayerY);
+    }
+
+    /// <summary>
+    /// <b>Warps still beat occupancy.</b> The one precedence this refactor could plausibly have broken: the
+    /// occupancy check moved DOWN, from above the warp block to below it, so a warp tile with someone standing
+    /// on it is the case that would show it if the order had slipped. Stepping onto an occupied warp tile must
+    /// still carry the mover through — a doorway is not blocked by the person who just walked through it.
+    ///
+    /// <para>Unlike the tests above this one needs REAL content, so it uses a real doorway: Country Farm
+    /// (4715) tile (17,5), the door into Mignok's Home (4716). Only the source map and tile are hardcoded; the
+    /// destination is read back from <c>Content.Warps</c>, so a Warps.csv edit moves the assertion with it
+    /// rather than failing. The step is proven to be onto an occupied tile first, through the same seam
+    /// HandleWalk uses — so a pass here is precedence, not an empty tile.</para>
+    /// </summary>
+    [Fact]
+    public void WarpTileBeatsOccupancy()
+    {
+        const ushort srcMap = 4715;
+        const ushort doorX = 17, doorY = 5;   // the warp source; the mover stands one tile south of it
+        Assert.True(Content.TryWarp(srcMap, doorX, doorY, out var dest), "Country Farm's door into Mignok's Home");
+        Assert.True(Content.TryMap(srcMap, out var src));
+
+        var world = _fx.World;
+        _fx.PlayerWith("DoorBlocker", c => { c.MapXs = src.Xs; c.MapYs = src.Ys; }, srcMap, doorX, doorY);
+        var (mover, _, _) = _fx.PlayerWith("DoorWalker", c => { c.MapXs = src.Xs; c.MapYs = src.Ys; },
+                                           srcMap, doorX, doorY + 1);
+
+        // The door tile really is occupied: bare occupancy refuses it, with the player reason.
+        BlockReason why = BlockReason.None;
+        bool wouldMove = mover.WithState(() =>
+        {
+            bool ok = world.TryMovePlayer(mover, srcMap, doorX, doorY,
+                                          ghostMover: false, enforceOccupancy: true, otherwiseBlocked: false, out var w);
+            why = w;
+            return ok;
+        });
+        Assert.False(wouldMove);
+        Assert.Equal(BlockReason.Player, why);
+
+        // ...and the walk goes through it anyway, because the warp branch returns before occupancy is asked.
+        mover.Receive(WalkPacket(dir: 0, fromX: doorX, fromY: doorY + 1));
+
+        Assert.Equal(dest.x, mover.PlayerX);
+        Assert.Equal(dest.y, mover.PlayerY);
     }
 
     /// <summary>A PvP ghost is blocked only by another GHOST, and no-clips through the living — the arena
