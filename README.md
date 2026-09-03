@@ -69,9 +69,9 @@ after the commit means uncommitted changes), so the window says which build it i
 `state/*_accounts.txt` as usual. What it started is recorded in the clone's `run/session.json`
 (`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`);
 `-Status` reads it back, and `-Stop` sends Ctrl+C to those two processes, waits for the ports to free,
-and deletes it. `-PortBase` is accepted for a second pair later (#84), but until then only the default
-2000 gives a working login-to-game handoff. `run-server.bat` stays the plain path; the script does not
-replace it.
+and deletes it. `-PortBase` exists for the second pair of #84 but is rejected until that lands: today a
+login on any other base still hands clients off to 2005. `run-server.bat` stays the plain path; the
+script does not replace it.
 
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:

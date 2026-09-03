@@ -48,9 +48,10 @@ alive after 20 s it is terminated. The cmd window that hosted the batch is then 
 server exits it is only a prompt sitting at "Terminate batch job (Y/N)?".
 
 PORTS. Login binds PortBase and PortBase+1 (4.95 / 5.33), game binds PortBase+5 and PortBase+6, which is
-run-server.bat's 2000/2001 + 2005/2006 at the default. -PortBase is accepted now so the script does not
-change shape later, but until Shared/ChannelPorts derives the handoff from the login port (#84) only the
-default base gives a working handoff: a login on 3000 still redirects clients to 2005.
+run-server.bat's 2000/2001 + 2005/2006 at the default. Until Shared/ChannelPorts derives the handoff from
+the login port (#84), a login on 3000 still redirects clients to 2005, so a pair on any other base is
+cross-wired into whatever holds 2005. Every value other than 2000 is therefore REJECTED before anything is
+built or launched. The parameter stays so that #84's follow-up only has to lift the guard.
 
 .PARAMETER Checkout
 The clone to run, inspect or stop. Defaults to the repository this script lives in.
@@ -62,7 +63,7 @@ Account names to grant the tester tier for this run (P1998_TESTERS in the launch
 Account names to grant the GM tier for this run (P1998_GMS in the launched processes only).
 
 .PARAMETER PortBase
-First login port. Default 2000. See PORTS above.
+First login port. Only 2000 is accepted until #84 lands; see PORTS above.
 
 .PARAMETER Status
 Report what is running: the session file if its processes are alive, otherwise "nothing running" plus
@@ -698,6 +699,10 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 if ($Status -and $Stop) { Write-Host "Use one of -Status or -Stop."; exit 1 }
+if ($PortBase -ne 2000) {
+    Write-Host "-PortBase other than 2000 needs #84; not supported yet (the login handoff still sends every client to 2005). Nothing was built or started."
+    exit 1
+}
 if (($Status -or $Stop) -and (@($Testers).Count -gt 0 -or @($Gms).Count -gt 0)) {
     Write-Host "-Testers / -Gms only apply when starting."; exit 1
 }
