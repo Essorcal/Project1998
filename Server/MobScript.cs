@@ -125,8 +125,12 @@ public sealed class MobContext
     public double y => _mob.Y;
     public bool alive => _mob.Alive;
 
-    /// <summary>Is a status of this family on the creature (RTK <c>mob:checkIfCast(curses)</c>)?</summary>
-    public bool hasStatus(string category) => _mob.HasStatus(category, Environment.TickCount64);
+    /// <summary>Is a status of this family on the creature (RTK <c>mob:checkIfCast(curses)</c>)? Goes through
+    /// the world for the same reason <see cref="heal"/> does, and it is the read that made "the rest of these
+    /// are simple field reads" wrong: <c>Mob.HasStatus</c> walks a <c>Dictionary</c> the world writes under
+    /// <c>_lock</c>, so reading it from a lock-free hook can fault inside the lookup rather than merely
+    /// return a stale answer.</summary>
+    public bool hasStatus(string category) => _world.MobHasStatusFromScript(_mob, category);
 
     /// <summary>Speak over the creature's head. Channel 0 attributes the line to it, 2 does not — RTK's own
     /// <c>mob:talk(0|2, …)</c> split. Heard only by players near the creature: RTK's bll_talk broadcasts via
@@ -139,8 +143,14 @@ public sealed class MobContext
             p => p.SpeakEntity((byte)channel, _mob.Id, bytes));
     }
 
-    /// <summary>Heal the creature, capped at its maximum.</summary>
-    public void heal(double amount) => _mob.Hp = Math.Min(_mob.MaxHp, _mob.Hp + (int)amount);
+    /// <summary>Heal the creature, capped at its maximum. Goes through the world rather than writing
+    /// <c>_mob.Hp</c> here: mob HP is state <c>World._lock</c> owns, and a hook runs OUTSIDE that lock (see
+    /// the class doc above), so the write used to land with no lock held while the tick could be reading the
+    /// same field. Same direction <see cref="vanish"/> and <see cref="say"/> already take — the gate calling
+    /// into the world is legal, it is holding the world lock on the way INTO the gate that is not (#90).
+    /// <see cref="World.HealMobFromScript"/> keeps this method's exact arithmetic, ungated as it has always
+    /// been; what changed is only when the write happens.</summary>
+    public void heal(double amount) => _world.HealMobFromScript(_mob, (int)amount);
 
     /// <summary>Remove the creature with no kill credit, loot or exp (RTK <c>mob:vanish()</c>). Its spawn
     /// point refills normally.</summary>

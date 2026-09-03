@@ -265,7 +265,7 @@ public sealed class LoginSession
             return;
         }
 
-        var c = new Character();
+        var c = new Character { SchemaVersion = Character.CurrentSchemaVersion };
         c.Name = name;             // stored with the player's chosen CASING; logins match case-insensitively
         c.CreationBlob = dec;      // keep the raw body for future re-decoding if the mapping changes
         CharacterFactory.ApplyAppearance(c);        // decode gender/face/nation/totem/hair

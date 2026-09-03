@@ -24,6 +24,7 @@ for (int i = 0; i < args.Length; i++)
 // output was lost). Rotated by size — see LoginServer/Log.cs. Note WireEnabled is OFF here by default:
 // login packets carry plaintext passwords.
 Log.AttachFile(Path.Combine(RepoPaths.LogsDir(), "login.log"));
+CharacterStore.Warn = message => Log.Warn("[db] " + message);
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
 TaskScheduler.UnobservedTaskException += (_, e) =>
