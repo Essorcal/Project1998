@@ -2240,6 +2240,43 @@ public sealed class World
         return false;
     }
 
+    /// <summary>The Lua hook's heal (<c>MobContext.heal</c>), under <c>_lock</c> — the write it used to do
+    /// straight to <c>mob.Hp</c> from inside a script, with no lock held at all.
+    ///
+    /// <para><b>Why this is not just <see cref="HealMob"/>.</b> That method refuses a non-positive amount
+    /// and refuses a dead mob; this one does neither, because a script can already do both today and
+    /// adopting those guards would change what a Lua heal DOES rather than only when its write lands.
+    /// <c>heal(-5)</c> currently takes HP off a creature, and a <c>heal</c> from <c>after_death</c>
+    /// currently revives one (<see cref="Mob.Alive"/> is <c>Hp &gt; 0</c>). Neither looks intended, and
+    /// neither is this PR's to decide — see the follow-up note on <c>MobContext.heal</c>.</para>
+    ///
+    /// <para>Called from inside the Lua gate, which is the legal direction: the rule (#90) is that
+    /// <c>_lock</c> must not be held when ENTERING the gate, not that the gate may not call into the world.
+    /// <c>MobContext.vanish</c> (<see cref="DespawnMob"/>) and <c>MobContext.say</c>
+    /// (<see cref="BroadcastArea"/>) have taken this lock from inside a script since the host was
+    /// written.</para></summary>
+    internal void HealMobFromScript(Mob mob, int amount)
+    {
+        lock (_lock) mob.Hp = Math.Min(mob.MaxHp, mob.Hp + amount);
+    }
+
+    /// <summary>The Lua hook's status test (<c>MobContext.hasStatus</c>), under <c>_lock</c> — the read it
+    /// used to do straight off the mob from inside a script, with no lock held.
+    ///
+    /// <para>The same shape and the same reason as <see cref="HealMobFromScript"/>, and the same direction of
+    /// call (#90: <c>_lock</c> must not be held ENTERING the Lua gate; the gate calling into the world is
+    /// fine). This one is a READ, which is why the #100 review had to point it out — the PR that fixed the
+    /// heal said the remaining <c>MobContext</c> reads were simple field reads and out of scope, and that was
+    /// true of every member except this one. <c>Mob.HasStatus</c> walks <c>Mob.Statuses</c>, a plain
+    /// <c>Dictionary</c> that <c>World.SetStatus</c>/<c>ClearStatus</c> write under the lock, and an
+    /// unsynchronised dictionary read against a concurrent write is not a stale answer — it can loop or throw
+    /// inside the lookup. It is also the one <c>MobContext</c> member a shipped script actually calls
+    /// (<c>game-data/mob_ai.lua</c>), so it is live, not theoretical.</para></summary>
+    internal bool MobHasStatusFromScript(Mob mob, string category)
+    {
+        lock (_lock) return mob.HasStatus(category, Environment.TickCount64);
+    }
+
     /// <summary>Hold a mob for a fixed duration unless it is already held.</summary>
     public bool HoldMob(Mob mob, int durMs)
     {

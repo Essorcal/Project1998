@@ -15,6 +15,23 @@ namespace Tests;
 /// <see cref="AiFieldAssignment"/> being keyed on the FIELD rather than on what the variable is called.
 /// <c>HarvestClaimBy</c> and <c>HarvestClaimUntil</c> are unique to harvest nodes, so keying on them costs no
 /// false positives and catches the site whatever the local is named.</para>
+/// The world lock owns shared-mob AI mutations; code outside <c>World</c> must enter through it.
+///
+/// <para>The scanned set is the files that hold a <c>Mob</c> they do not own: the session partials, which
+/// reach world mobs through the handlers, <c>MobScript.cs</c>, whose <c>MobContext</c> hands a live mob to a
+/// Lua hook that runs OUTSIDE <c>World._lock</c> by design, and <c>SuteAi.cs</c>, which is handed one by the
+/// tick. <c>MobScript.cs</c> was added after this guard missed <c>MobContext.heal</c> writing
+/// <c>_mob.Hp</c> from a hook: the file was not scanned, and the HP pattern matched the identifier
+/// <c>mob</c> but not <c>_mob</c>.</para>
+///
+/// <para><b>Widening that pattern to "any identifier ending in mob" then broke it the other way, and the
+/// #100 reviewer caught it.</b> <c>\b[A-Za-z_][A-Za-z0-9_]*[Mm]ob</c> requires at least one character
+/// BEFORE the "mob", so it gained <c>_mob.Hp</c> and lost the bare <c>mob.Hp</c> that the original pattern
+/// caught — the exemption below stopped being load-bearing, which is what should have given it away. The
+/// prefix is optional now and the identifier boundary is a lookbehind rather than <c>\b</c> (which, sitting
+/// before a letter, only ever asserted the boundary of the prefix). <c>mob.Hp</c>, <c>_mob.Hp</c>,
+/// <c>dummyMob.Hp</c> and <c>h.mob.Hp</c> all match; the buff pattern, which carried the same hole from the
+/// start, gets the same treatment.</para>
 /// </summary>
 public class MobAiLockTests
 {
@@ -27,7 +44,7 @@ public class MobAiLockTests
         @"\.(?:ClearThreat|AddThreat)\s*\(", RegexOptions.Compiled);
 
     private static readonly Regex MobBuffMutation = new(
-        @"\b[A-Za-z_][A-Za-z0-9_]*[Mm]ob[A-Za-z0-9_]*\.Buffs\.(?:Add|Remove|Clear)\s*\(",
+        @"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*\.Buffs\.(?:Add|Remove|Clear)\s*\(",
         RegexOptions.Compiled);
 
     /// <summary>Whatever a creature is carrying is world state too, and it is mutated three ways: the
@@ -38,16 +55,28 @@ public class MobAiLockTests
         RegexOptions.Compiled);
 
     private static readonly Regex MobHpAssignment = new(
-        @"\bmob\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)", RegexOptions.Compiled);
+        @"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)",
+        RegexOptions.Compiled);
+
+    /// <summary>The files that handle a world mob without owning it. <c>Session*.cs</c> is every handler;
+    /// <c>MobScript.cs</c> is the Lua host, the one place a mob is deliberately handed to code running
+    /// outside the lock; <c>SuteAi.cs</c> is handed one by the tick. SuteAi's own <c>mob.Hp</c> write is
+    /// already under <c>_lock</c> — its only caller is inside the tick's acquisition — but it is scanned so
+    /// that stays true by construction rather than by the caller happening not to move.</summary>
+    private static IEnumerable<string> ScannedFiles(string serverDir) =>
+        Directory.EnumerateFiles(serverDir, "Session*.cs")
+                 .Concat(Directory.EnumerateFiles(serverDir, "MobScript.cs"))
+                 .Concat(Directory.EnumerateFiles(serverDir, "SuteAi.cs"))
+                 .Order();
 
     [Fact]
-    public void SessionFilesDoNotMutateWorldMobAiState()
+    public void SessionAndScriptFilesDoNotMutateWorldMobAiState()
     {
         DirectoryInfo root = RepoRoot();
         string serverDir = Path.Combine(root.FullName, "Server");
         var violations = new List<string>();
 
-        foreach (string file in Directory.EnumerateFiles(serverDir, "Session*.cs").Order())
+        foreach (string file in ScannedFiles(serverDir))
         {
             string name = Path.GetFileName(file);
             string[] lines = File.ReadAllLines(file);
@@ -55,6 +84,7 @@ public class MobAiLockTests
             {
                 string line = lines[i];
                 if (IsSessionLocalDebugDummyDamage(name, line)) continue;
+                if (IsSuteHealUnderTheTickLock(name, line)) continue;
 
                 if (AiFieldAssignment.IsMatch(line) || ThreatMutation.IsMatch(line) ||
                     MobBuffMutation.IsMatch(line) || MobHpAssignment.IsMatch(line) ||
@@ -64,7 +94,8 @@ public class MobAiLockTests
         }
 
         Assert.True(violations.Count == 0,
-            "Session code mutates Mob state owned by World._lock; add a lock-owning World method instead:\n" +
+            "Code outside World mutates Mob state owned by World._lock; add a lock-owning World method and " +
+            "call that instead — World.HealMobFromScript is what MobContext.heal does:\n" +
             string.Join('\n', violations));
     }
 
@@ -72,6 +103,18 @@ public class MobAiLockTests
     {
         // This `mob` came from Session._mobs: it is a session-local debug dummy, never a world mob.
         return file == "Session.Combat.cs" && line.Trim() == "mob.Hp -= dummyDmg;";
+    }
+
+    /// <summary>Sute's wounded self-heal writes a real world mob's HP — and is already inside the lock,
+    /// because <c>SuteAi.TryHeal</c> has exactly one caller (<c>World.cs</c>, in the AI sweep) and that
+    /// caller sits inside the tick's own <c>lock (_lock)</c>. Verified by reading both, not assumed.
+    ///
+    /// <para>Exempting one exact line rather than the file is the point: <c>SuteAi.cs</c> is scanned so that
+    /// the next write added to it has to justify itself the same way, instead of the file staying invisible
+    /// to the guard because one line in it happens to be fine.</para></summary>
+    private static bool IsSuteHealUnderTheTickLock(string file, string line)
+    {
+        return file == "SuteAi.cs" && line.Trim() == "mob.Hp = Math.Min(mob.MaxHp, mob.Hp + HealAmount);";
     }
 
     private static DirectoryInfo RepoRoot()
