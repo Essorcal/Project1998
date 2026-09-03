@@ -36,12 +36,14 @@ public sealed partial class Session
     /// <summary>
     /// A command's ARGUMENT TAIL, plus the table row it belongs to.
     ///
-    /// <para>WHY. Every handler used to parse its own tail, and there were three or four house styles doing
-    /// it: <c>ParseInts</c> (22 sites), a raw <c>.Split</c> (43), a bare <c>TryParse</c> (26). They do not
-    /// agree — ParseInts SKIPS non-numeric words, so "@stats 1 2 x" reached the three-argument form as two
-    /// integers, while a positional reader sees three words and refuses. Worse, each site also wrote its own
-    /// "usage:" line (22 of them), restating the row's <c>Args</c> column from memory, so the table said one
-    /// thing and the refusal said another as soon as either drifted.</para>
+    /// <para>WHY. Every handler used to parse its own tail, in three house styles that do not agree: across
+    /// Session.GmCommands.cs and Session.Media.cs there were 22 <c>ParseInts</c> calls, 26 raw
+    /// <c>.Split</c>s and 39 bare <c>TryParse</c>s. ParseInts SKIPS non-numeric words, so "@stats 1 2 x"
+    /// reached the three-argument form as two integers, while a positional reader sees three words and
+    /// refuses. Worse, 33 of those handlers also wrote their own "usage:" line, restating the row's
+    /// <c>Args</c> column from memory — so the table said one thing and the refusal another the moment
+    /// either drifted, which @hit's row ("[dmg]", against a handler wanting a percent and a crit byte) had
+    /// already been doing.</para>
     ///
     /// <para>This is positional and literal: <see cref="Word"/> 0 is the first word of the tail, and a word
     /// that isn't a number simply isn't one. <see cref="Usage"/> renders from the row, so a command's
@@ -297,9 +299,9 @@ public sealed partial class Session
                                                     "play a music track, or pick the soundtrack (vol 0-255, default 100; no argument lists them)"),
         G("snd",      (s, a) => s.SoundProbe(a),    "<id> [id2 ...]", "play raw client sound ids, up to 8 at once (NexusTK.snd holds 001..197.wav)"),
         // One handler, three slots (Session.Media.SetSfx): these differed only in the field they wrote.
-        G("swingsnd", (s, a) => s.SetSfx(a, ref s._swingSfx, "swing"), "<id>", "set + audition the melee swing sfx (0 mutes it)"),
+        G("swingsnd", (s, a) => s.SetSfx(a, ref s._swingSfx, "swing"),      "<id>", "set + audition the melee swing sfx (0 mutes it)"),
         G("fistsnd",  (s, a) => s.SetSfx(a, ref s._fistSfx,  "fist swing"), "<id>", "set + audition the unarmed swing sfx (0 mutes it)"),
-        G("hitsnd",   (s, a) => s.SetSfx(a, ref s._hitSfx,   "hit"),   "<id>", "set + audition the on-connect impact sfx (0 mutes it)"),
+        G("hitsnd",   (s, a) => s.SetSfx(a, ref s._hitSfx,   "hit"),        "<id>", "set + audition the on-connect impact sfx (0 mutes it)"),
         G("mobact",   (s, a) => s.MobActionProbe(a), "<type> [time]", "set + preview the mob attack-pose action (0x1A) on the faced mob"),
         G("efx",      (s, a) => s.EffectProbe(a),   "<id> [id2 ...]", "play raw Effect.tbl animations over yourself, ids 0-127, up to 8 at once"),
         G("mtx",      (s, a) => s.MiniTextProbe(a), "<type> [text...]", "audition a raw SendMiniText channel (0 wisp, 3 mini/status, 5 system, 11 group, 12 clan)"),
