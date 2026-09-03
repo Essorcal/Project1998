@@ -2030,17 +2030,25 @@ public sealed partial class Session
     /// alliance with the enemy of an animal you already alli'ed with, it will zap you and send you to
     /// tavern" — and RTK's script is the same two beats (<c>stormstrike.cast</c> then <c>returnToInn</c>).
     ///
-    /// <para>The damage is the ONLY Stormstrike figure in our data — spell_effects.csv's
+    /// <para>The damage is the only Stormstrike figure in our DATA — spell_effects.csv's
     /// <c>stormstrike_mage</c>, <c>125 + level*4 + ceil(((will+1)/2)*3.5)</c> — read against the VICTIM,
     /// because the mythic has no caster stat block to read it against. That keeps the blow proportionate at
     /// both ends of the level range instead of picking a constant out of the air, and it lands where the
     /// sources leave it: a hard slap and a long walk back, not an execution. It can still finish someone who
-    /// was already nearly dead, which is what "Die scum!" is doing in the line above it.</para></summary>
+    /// was already nearly dead, which is what "Die scum!" is doing in the line above it. (It is NOT the only
+    /// figure in existence, which this comment used to claim: RTK's own Spells/NPCs/stormstrike.lua:9 deals
+    /// <c>ceil(target.health * 0.50)</c> — proportional to CURRENT HP, needing no caster block either.
+    /// Adopting that is a separate call and is not made here; see #79.)</para>
+    ///
+    /// <para>Lands through <see cref="ReceiveNpcSpell"/> and NOT <see cref="ReceiveEnvironmentDamage"/>: the
+    /// mythic is a named caster, so a Harden Body ward stops the blow, as RTK's removeHealthExtend does. The
+    /// banish is not part of the spell and runs either way — RTK calls stormstrike.cast and returnToInn as
+    /// two beats, and warding the zap does not buy you the right to stay in the chamber.</para></summary>
     internal void NpcCastStormstrike(string casterName)
     {
         PlayNpcSpellFx("stormstrike");
         int dmg = 125 + CharLevel * 4 + (int)Math.Ceiling(((CharWill + 1) / 2.0) * 3.5);
-        ReceiveEnvironmentDamage(dmg, $"{casterName} attacks you with Stormstrike spell.");
+        ReceiveNpcSpell(dmg, casterName, $"{casterName} attacks you with Stormstrike spell.");
         ReturnToInn();
         SendStats();
     }

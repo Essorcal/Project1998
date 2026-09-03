@@ -44,11 +44,37 @@ public sealed partial class Session
         });
     }
 
+    /// <summary>Take spell damage from a named NPC that is not a <see cref="Mob"/> — a mythic in its chamber,
+    /// which is a dialog actor with a name and no creature behind it. The twin of
+    /// <see cref="ReceiveMobSpell"/> in every term, differing only in where the chat line comes from: there
+    /// is no <c>Mob</c> to build one out of, so the caller hands the whole line over.
+    ///
+    /// <para>That line is the entire reason this method exists (#79). Before it, the one caller reached for
+    /// <see cref="ReceiveEnvironmentDamage"/> — the only intake that took a caller-supplied line — and
+    /// inherited the room-damage exemption from Harden Body along with it. A mythic's Stormstrike is not
+    /// room damage: RTK's Spells/NPCs/stormstrike.lua:9 is <c>target:removeHealthExtend(...)</c>, and
+    /// <c>Player.removeHealthExtend</c> (player.lua:164-169) returns outright while a ward is up. So it is
+    /// warded here, exactly as every other creature spell is.</para></summary>
+    internal void ReceiveNpcSpell(int rawDmg, string casterName, string text)
+    {
+        TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
+        {
+            IgnoresHardenBody = false,   // RTK stormstrike.lua:9 -> removeHealthExtend -> player.lua:164-169
+            CritByte = HitCritByte,
+            MiniText = text,
+            LogLine  = dmg => $"   -> npc '{casterName}' spell hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",
+        });
+    }
+
     /// <summary>Take damage from the ROOM rather than from a creature — Sute's Cave cold tiles
-    /// (<see cref="Session.TakeFrigidBlast"/>) are the only source today. Identical to
-    /// <see cref="ReceiveMobSpell"/> — same doze-break, same sleep amplifier, same deduction reduction, same
-    /// AC-is-for-swings rule — except that there is no caster to attribute it to, so the caller supplies the
-    /// whole line instead of it being built from a name.
+    /// (<see cref="Session.TakeFrigidBlast"/>) are the only source, and since #79 the only CALLER. Identical
+    /// to <see cref="ReceiveMobSpell"/> — same doze-break, same sleep amplifier, same deduction reduction,
+    /// same AC-is-for-swings rule — except that there is no caster to attribute it to, so the caller supplies
+    /// the whole line instead of it being built from a name.
+    ///
+    /// <para>A named caster wanting that same caller-supplied line belongs in <see cref="ReceiveNpcSpell"/>,
+    /// not here. Reaching for this one because it takes a string is how a mythic's Stormstrike came to walk
+    /// through a Harden Body ward for a year: the convenience was the line, the cost was the exemption.</para>
     ///
     /// <para><b>This is the one intake Harden Body does NOT stop</b>, and it is a sourced position rather
     /// than the gap it used to be: RTK's stepped-on traps take health off with the plain
