@@ -166,12 +166,18 @@ public static partial class Content
         internal IReadOnlyDictionary<(int Path, string Tier), (int Level, string Karma)> ArmorQuestGates { get; set; } =
             new Dictionary<(int, string), (int, string)>();
 
+        internal IReadOnlyList<MusicTrack> MusicTracks { get; set; } = new List<MusicTrack>();
+        internal IReadOnlyList<BgmZone> BgmZones { get; set; } = new List<BgmZone>();
+        internal Dictionary<ushort, BgmPick> BgmByMap { get; set; } = new();
+        internal (ushort bgm, byte type)? DefaultBgm { get; set; }
+        internal (ushort bgm, byte type)? DefaultBgmNew { get; set; }
+
         internal ContentSnapshot Build() => new(this);
     }
 
     private sealed class ContentSnapshot
     {
-        internal const int MemberCount = 77;
+        internal const int MemberCount = 82;
 
         internal ContentSnapshot(ContentSnapshotBuilder builder)
         {
@@ -252,6 +258,11 @@ public static partial class Content
             MythicAlliances = builder.MythicAlliances;
             WarpQuestLocks = builder.WarpQuestLocks;
             ArmorQuestGates = builder.ArmorQuestGates;
+            MusicTracks = builder.MusicTracks;
+            BgmZones = builder.BgmZones;
+            BgmByMap = builder.BgmByMap;
+            DefaultBgm = builder.DefaultBgm;
+            DefaultBgmNew = builder.DefaultBgmNew;
         }
 
         internal IReadOnlyList<ItemDef> Items { get; }
@@ -331,5 +342,10 @@ public static partial class Content
         internal IReadOnlyList<MythicAllianceDef> MythicAlliances { get; }
         internal IReadOnlyDictionary<(ushort From, ushort To), WarpQuestLock> WarpQuestLocks { get; }
         internal IReadOnlyDictionary<(int Path, string Tier), (int Level, string Karma)> ArmorQuestGates { get; }
+        internal IReadOnlyList<MusicTrack> MusicTracks { get; }
+        internal IReadOnlyList<BgmZone> BgmZones { get; }
+        internal Dictionary<ushort, BgmPick> BgmByMap { get; }
+        internal (ushort bgm, byte type)? DefaultBgm { get; }
+        internal (ushort bgm, byte type)? DefaultBgmNew { get; }
     }
 }

@@ -139,7 +139,7 @@ public static partial class Content
             EventCaves = eventCaves;
             MusicTracks = LoadMusicTracks(T("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
             (BgmZones, DefaultBgm, DefaultBgmNew) = LoadBgmZones(T("P1998_MAP_BGM", "MapBgm.csv"));
-            _bgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
+            BgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
             Inns = LoadInns(T("P1998_INNS", "Inns.csv"));
             ForageAreas = LoadForageAreas(T("P1998_FORAGE", "ForageAreas.csv"));
             HarvestNodes = LoadHarvestNodes(T("P1998_HARVEST", "HarvestNodes.csv"));
@@ -369,7 +369,7 @@ public static partial class Content
              $"{MusicTracks.Count(t => t.Set == MusicSet.New && !t.Playlist)} 5.x mp3s / " +
              $"{MusicTracks.Count(t => t.Playlist && !t.Shuffle)} ordered + " +
              $"{MusicTracks.Count(t => t.Shuffle)} shuffled playlists, {BgmZones.Count} zones, " +
-             $"{_bgmByMap.Count} maps resolved, " +
+                 $"{BgmByMap.Count} maps resolved, " +
              $"default {(DefaultBgm is null ? "(none)" : $"{DefaultBgm.Value.bgm} '{TrackName(DefaultBgm.Value.bgm)}'")}" +
              $" / 5.x {(DefaultBgmNew is null ? "(none)" : $"{DefaultBgmNew.Value.bgm} '{TrackName(DefaultBgmNew.Value.bgm, MusicSet.New)}'")} ---");
         foreach (var q in new[] { "mist", "tiger", "mon", "6", "10", "nope" })

@@ -30,7 +30,11 @@ public static partial class Content
     // Measured live 2026-08-22: 2 stalls in 40 shuffled advances, 0 in 24 ordered ones.
     public sealed record MusicTrack(ushort Id, string Name, byte Type, MusicSet Set, bool Playlist,
                                     bool Shuffle = false);
-    public static IReadOnlyList<MusicTrack> MusicTracks { get; private set; } = new List<MusicTrack>();
+    public static IReadOnlyList<MusicTrack> MusicTracks
+    {
+        get => _snapshotBuilder?.MusicTracks ?? Snapshot.MusicTracks;
+        private set => Builder.MusicTracks = value;
+    }
 
     // Area -> BGM track (BgmFor). A design assignment, not RTK data: RTK's own Maps table has one track
     // (902) on 9799 of 9850 maps, and the 4.95 client files carry no map->track table at all. Zones match by
@@ -40,21 +44,37 @@ public static partial class Content
     // Track5x falls back to its midi, which on 5.33 still plays.
     public sealed record BgmZone(string Zone, ushort Track, byte Type, ushort Track5x, byte Type5x,
         IReadOnlyList<(ushort Lo, ushort Hi)> Maps, IReadOnlyList<string> Names);
-    public static IReadOnlyList<BgmZone> BgmZones { get; private set; } = new List<BgmZone>();
+    public static IReadOnlyList<BgmZone> BgmZones
+    {
+        get => _snapshotBuilder?.BgmZones ?? Snapshot.BgmZones;
+        private set => Builder.BgmZones = value;
+    }
 
     // Resolved map -> track, built once at load (BuildBgmMap): the zones' own maps at Hops 0, then every
     // other map inherits its NEAREST zone through the warp graph. That spill is what makes a building or a
     // cave play its area's theme without being listed, and — unlike leaving it to "whatever is already
     // playing" — it also works when you LOG IN inside one, where there is no previous song to inherit.
     public sealed record BgmPick(ushort Track, byte Type, ushort Track5x, byte Type5x, string Zone, int Hops);
-    private static Dictionary<ushort, BgmPick> _bgmByMap = new();
+    private static Dictionary<ushort, BgmPick> BgmByMap
+    {
+        get => _snapshotBuilder?.BgmByMap ?? Snapshot.BgmByMap;
+        set => Builder.BgmByMap = value;
+    }
 
     /// <summary>The track to start on a zone-less map when nothing is playing yet (a fresh session): the
     /// "Default" row of MapBgm.csv. Null leaves such a session silent until it reaches a zoned map.</summary>
-    public static (ushort bgm, byte type)? DefaultBgm { get; private set; }
+    public static (ushort bgm, byte type)? DefaultBgm
+    {
+        get => _snapshotBuilder?.DefaultBgm ?? Snapshot.DefaultBgm;
+        private set => Builder.DefaultBgm = value;
+    }
 
     /// <summary>The <see cref="MusicSet.New"/> half of the "Default" row (its <c>Track5x</c>).</summary>
-    public static (ushort bgm, byte type)? DefaultBgmNew { get; private set; }
+    public static (ushort bgm, byte type)? DefaultBgmNew
+    {
+        get => _snapshotBuilder?.DefaultBgmNew ?? Snapshot.DefaultBgmNew;
+        private set => Builder.DefaultBgmNew = value;
+    }
 
     /// <summary>The fresh-session fallback for one soundtrack, falling back to the midi when the Default row
     /// names no 5.x track.</summary>
@@ -75,14 +95,14 @@ public static partial class Content
     /// that no zone claims AND that has no warp path to one — in which case the caller keeps whatever is
     /// already playing (see Session.PlayMapMusic).</summary>
     public static (ushort bgm, byte type)? BgmFor(ushort mapId, MusicSet set = MusicSet.Old) =>
-        _bgmByMap.TryGetValue(mapId, out var p)
+        BgmByMap.TryGetValue(mapId, out var p)
             ? (set == MusicSet.New ? (p.Track5x, p.Type5x) : (p.Track, p.Type))
             : null;
 
     /// <summary>The zone a map's music comes from, for "@music" feedback ("" if none). Maps that inherited
     /// it through the warp graph rather than being listed are shown with their hop distance.</summary>
     public static string BgmZoneOf(ushort mapId) =>
-        _bgmByMap.TryGetValue(mapId, out var p) ? (p.Hops == 0 ? p.Zone : $"{p.Zone} +{p.Hops}") : "";
+        BgmByMap.TryGetValue(mapId, out var p) ? (p.Hops == 0 ? p.Zone : $"{p.Zone} +{p.Hops}") : "";
 
     // Resolve every map to a track, once per Load(). Three passes, each only filling maps still unclaimed:
     //   1. explicit ids/ranges  -> so a single map can be carved out of an area another zone claims by name
