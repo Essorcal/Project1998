@@ -1095,6 +1095,7 @@ public sealed partial class Session
         if (!ushort.TryParse(a.Word(0), out var type) || type > 255) { Refuse(a.Usage()); return; }
 
         string msg = a.Count > 1 ? a.Rest(1) : $"0x0A type {type} -- the quick brown fox";
+        PayPaneRule();             // same reason as @mtx: this is the invocation's first pane line
         SendMiniText(msg, type);   // raw, by number — see the sweep above
         Log.Info($"   -> @text '{_char.Name}' type {type}: {msg}");
     }

@@ -478,8 +478,24 @@ public sealed partial class Session
     /// every command that answers on the BUBBLE (every refusal), spending a pane line to separate output
     /// that never arrived. Set when a message is recognized as a command, spent by the first pane line it
     /// actually produces, so: one rule per invocation however many Reply calls it makes, and no rule at all
-    /// for a command that only refuses.</para></summary>
+    /// for a command that only refuses.</para>
+    ///
+    /// <para>A command that answers with a RAW pane line — @text and @mtx send a 0x0A on a type given to
+    /// them by number, which is the whole point of those two — must pay the rule itself, with
+    /// <see cref="PayPaneRule"/>, BEFORE that line. Otherwise the raw line goes out unheaded and the rule
+    /// lands in the middle of the invocation, above whatever Reply follows it. The rule always sits at the
+    /// top of a command's output; there is no case where it appears anywhere else.</para></summary>
     private bool _paneRuleDue;
+
+    /// <summary>Pay the invocation's separator now, before a pane line this class is not going to see —
+    /// a raw <c>SendMiniText</c> on a type chosen by the caller. Does nothing once the rule is paid, so it
+    /// is safe to call ahead of every raw line in a command that sends several.</summary>
+    private void PayPaneRule()
+    {
+        if (!_paneRuleDue) return;
+        _paneRuleDue = false;
+        SendMiniText(PaneRule);
+    }
 
     /// <summary>Break one logical line into pane-width lines at SPACES ONLY.
     ///

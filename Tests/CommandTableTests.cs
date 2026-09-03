@@ -261,7 +261,11 @@ public sealed class CommandTableTests
     // @text exists to audition a raw 0x0A type, so its reply must stay on the type it was asked for and is
     // sent unwrapped, by number; @ride repeats the native mount line, which the real 'r' key puts in the
     // status pane. Neither goes through Reply, and neither may be "tidied" into it.
-    [InlineData("@text 5 hello", new[] { "pane5|hello" })]
+    [InlineData("@text 5 hello", new[]
+    {
+        "pane3|------------------------------",
+        "pane5|hello",
+    })]
     [InlineData("@ride", new[]
     {
         "pane3|------------------------------",
@@ -568,6 +572,25 @@ public sealed class CommandTableTests
             "pane3|might set to 50",
             $"pane3|{Session.PaneRule}",
             "pane3|karma set to 30 (Angel).",
+        }, Transcript(outbound));
+    }
+
+    /// <summary>A raw-probe command pays the separator BEFORE its raw line, so the rule still sits at the
+    /// top of the invocation. @mtx used to send the probe line first — which does not spend the rule,
+    /// because it bypasses Reply — and then the confirmation did, putting the dashes in the MIDDLE of one
+    /// command's output.</summary>
+    [Fact]
+    public void ARawProbePaysTheRuleBeforeItsRawLine()
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        Run(session, "@mtx 3 hello");
+
+        Assert.Equal(new[]
+        {
+            $"pane3|{Session.PaneRule}",
+            "pane3|hello",                              // the probe line, on the type asked for
+            "pane3|sent minitext type=3: \"hello\"",     // the confirmation
         }, Transcript(outbound));
     }
 

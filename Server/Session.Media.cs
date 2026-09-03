@@ -540,6 +540,7 @@ public sealed partial class Session
     {
         if (!a.Int(0, out var type)) { Refuse(a.Usage()); return; }
         string msg = a.Count > 1 ? a.Rest(1) : $"test type {type}";
+        PayPaneRule();                     // the probe line is this command's first pane line — head it
         SendMiniText(msg, (ushort)type);   // raw, by number: the type under test is the whole point of @mtx
         Reply($"sent minitext type={type}: \"{msg}\"");
         Log.Info($"   -> @mtx type={type} \"{msg}\"");
