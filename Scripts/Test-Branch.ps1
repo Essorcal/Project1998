@@ -20,10 +20,10 @@ to report success after a build failure; fixed alongside this script, see Serve.
 additionally requires that -Checkout's run\session.json exists and was written by THIS call before
 treating the pair as started. -Testers/-Gms both go to every name in -Bots (default botone,bottwo)
 because the test client's scripts use tester-tier GM commands (@warp, @npc, ...) AND gm-tier ones (@item,
-@take, @hp, @clearinv, @self, ...) to grant themselves the state they run against, and four of the suite
-scripts (trade-roundtrip.txt, two-bots-one-tile.txt, two-bots-see-each-other.txt, melee-kill.txt) declare
-a second bot with its own `bot <alias> <user> <pass>` line and need that second account to hold both
-tiers too -- see "Findings" in this PR's report for which script needs which. Only -Bots[0]/-Passes[0]
+@take, @hp, @clearinv, @self, ...) to grant themselves the state they run against, and three of the suite
+scripts (trade-roundtrip.txt, two-bots-one-tile.txt, two-bots-see-each-other.txt) declare a second bot
+with its own `bot <alias> <user> <pass>` line and need that second account to hold both tiers too -- see
+"Findings" in this PR's report for which script needs which. Only -Bots[0]/-Passes[0]
 (the PRIMARY) is passed to TestClient.Cli's --user/--pass; a script's own `bot` line makes the second
 connection itself, using whichever of -Bots that line names.
 
