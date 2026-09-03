@@ -28,7 +28,12 @@ public class PersistenceTests : IDisposable
 
     private static Character Make(string name, uint coins, params (int id, int amount)[] items)
     {
-        var c = new Character { Name = name, Coins = coins };
+        var c = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion,
+            Name = name,
+            Coins = coins,
+        };
         byte slot = 0;
         foreach (var (id, amount) in items) c.Inventory.Add(new InvItem(slot++, id, amount));
         return c;

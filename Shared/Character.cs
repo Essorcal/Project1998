@@ -9,7 +9,10 @@ public sealed class Character
     /// <summary>The JSON blob schema this build writes. Older blobs are upgraded before deserialization.</summary>
     public const int CurrentSchemaVersion = 1;
 
-    public int SchemaVersion = CurrentSchemaVersion;
+    // Zero means a pre-versioning blob. New characters must be stamped explicitly at their creation
+    // boundary; otherwise the field initializer would make a schema-0 blob look upgraded even when the
+    // raw-JSON upgrader had never run.
+    public int SchemaVersion = 0;
     public uint   Id     = 1;
     public string Name   = "snuggle";
 
