@@ -751,7 +751,14 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = '0'
         Write-Host "Building $Root\Project1998.sln with $dotnet ..."
         $ErrorActionPreference = 'Continue'
-        & $dotnet build (Join-Path $Root 'Project1998.sln') -v:m -nologo
+        # | Out-Host, not left bare: this line sits inside Invoke-Start, and PowerShell functions
+        # implicitly return every uncaptured pipeline object, not just what follows `return` -- so the
+        # build's own output (one object per line) was joining the function's real return value into an
+        # array. `exit (Invoke-Start ...)` at the bottom of this file then exited with that array instead
+        # of the scalar 0/1/2, which PowerShell coerces to 0 -- so a build failure (and every later
+        # failure return in this function) reported success. Out-Host prints the same lines to the same
+        # console without putting them on the pipeline.
+        & $dotnet build (Join-Path $Root 'Project1998.sln') -v:m -nologo | Out-Host
         $buildCode = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
     } finally {
