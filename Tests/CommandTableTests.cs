@@ -106,10 +106,14 @@ public sealed class CommandTableTests
     // reaches the client as "granted -", and a '·' with no ASCII counterpart at all becomes '?'. A test that
     // expected the source string would pass for the wrong reason.
     //
-    // Every "pane3" below that used to read "bubble" or "modal" is the channel rule in Commands.cs being
-    // applied; the text either side of the '|' is untouched. The one place the TEXT changed is @dog, and it
-    // changed by not being cut: at 302 characters it overran the 0x0D speech path's 250-char clamp and used
-    // to arrive as "...the NPC subpa". The status pane holds 0x8000.
+    // Status-pane lines are pinned POST-WRAP, one entry per 0x0A actually sent, because that is what the
+    // client draws: the pane is ~30 characters wide and wraps anything longer at a CHARACTER boundary, so a
+    // line that leaves here too long arrives split mid-word. Bubble lines are not wrapped — that is a
+    // different widget with its own 250-character clamp — which is why the @stats and @sweep refusals below
+    // are still single long entries.
+    //
+    // @dog is eleven pane lines. That is a 302-character message and the pane is what it is; the point of
+    // pinning it is that every break falls between words.
 
     [Theory]
     // --- refusals: the command's action did not happen. Loud, on the speech bubble. ----------------------
@@ -137,31 +141,67 @@ public sealed class CommandTableTests
     [InlineData("@fistsnd 5", new[] { "pane3|fist swing sfx = 5" })]
     // These three were on the 0x02 login box: @lvl and friends genuinely popped a modal over the game.
     [InlineData("@nation 3", new[] { "pane3|nation set to 3 (Nagnang)." })]
-    [InlineData("@hp 500", new[] { "pane3|max HP set to 500, HP refilled." })]
     [InlineData("@might 50", new[] { "pane3|might set to 50" })]
-    // Already on the status pane before the rule, and still there: the toggles print the same line the
-    // native 0x1b Options toggles do.
+    // A confirmation is wrapped like anything else once it outgrows the pane.
+    [InlineData("@hp 500", new[]
+    {
+        "pane3|max HP set to 500, HP",
+        "pane3|refilled.",
+    })]
+    // Already on the status pane before the rule, and untouched by the wrapper because they already fit:
+    // these repeat RTK's verbatim column-17 toggle line, padding and all.
     [InlineData("@clip", new[] { "pane3|No-clip          :ON" })]
     [InlineData("@peace", new[] { "pane3|Peace            :ON" })]
 
     // --- readouts: a report you asked for, one line or many. The status pane. ---------------------------
-    [InlineData("@quest", new[] { "pane3|No quest keys set. (@quest <key> <stage> to set one; see docs/common/Quest-Registry.md.)" })]
-    [InlineData("@dog", new[] { "pane3|Dog Linguist granted - say \"secret\" to your class's Dog to be taught, or @lvl 1 to have the rebuild hand over the Dog spells you qualify for (70 and 99). NOTE: Peasant is a PC subpath and will be refused - only the four base classes and the NPC subpaths (Chung ryong ? Baekho ? Ju jak ? Hyun moo) may learn Dog spells." })]
+    [InlineData("@quest", new[]
+    {
+        "pane3|No quest keys set. (@quest",
+        "pane3|<key> <stage> to set one; see",
+        "pane3|docs/common/Quest-Registry.md.)",
+    })]
+    [InlineData("@dog", new[]
+    {
+        "pane3|Dog Linguist granted - say",
+        "pane3|\"secret\" to your class's Dog",
+        "pane3|to be taught, or @lvl 1 to",
+        "pane3|have the rebuild hand over the",
+        "pane3|Dog spells you qualify for (70",
+        "pane3|and 99). NOTE: Peasant is a PC",
+        "pane3|subpath and will be refused -",
+        "pane3|only the four base classes and",
+        "pane3|the NPC subpaths (Chung ryong",
+        "pane3|? Baekho ? Ju jak ? Hyun moo)",
+        "pane3|may learn Dog spells.",
+    })]
+    // A list block: header, the entries two logical lines each, closing rule.
     [InlineData("@pkt", new[]
     {
-        "pane3|usage: @pkt <hexop> [tokens] | add | send | show | clear | file <name>",
-        "pane3|  @pkt add <tokens>   append to the pending packet (the chat box is short)",
-        "pane3|  @pkt send <hexop>   send what's pending, then clear it",
-        "pane3|  @pkt show | clear   inspect or drop the pending bytes",
-        "pane3|  @pkt file <name>    send game-data/packets/<name>.txt (';' starts a comment)",
+        "pane3|usage: @pkt <hexop> [tokens] |",
+        "pane3|add | send | show | clear |",
+        "pane3|file <name>",
+        "pane3|= @pkt sub-forms =",
+        "pane3|@pkt add <tokens>",
+        "pane3| append to the pending packet",
+        "pane3|@pkt send <hexop>",
+        "pane3| send it, then clear",
+        "pane3|@pkt show | clear",
+        "pane3| inspect or drop pending",
+        "pane3|@pkt file <name>",
+        "pane3| send packets/<name>.txt",
+        "pane3|-",
     })]
 
     // --- the two whose channel IS the behaviour ---------------------------------------------------------
-    // @text exists to audition a raw 0x0A type, so its reply must stay on the type it was asked for; @ride
-    // repeats the native mount line, which the real 'r' key puts in the status pane. Neither goes through
-    // Reply, and neither may be "tidied" into it.
+    // @text exists to audition a raw 0x0A type, so its reply must stay on the type it was asked for and is
+    // sent unwrapped, by number; @ride repeats the native mount line, which the real 'r' key puts in the
+    // status pane. Neither goes through Reply, and neither may be "tidied" into it.
     [InlineData("@text 5 hello", new[] { "pane5|hello" })]
-    [InlineData("@ride", new[] { "pane3|The powerful steed takes you where you want to go." })]
+    [InlineData("@ride", new[]
+    {
+        "pane3|The powerful steed takes you",
+        "pane3|where you want to go.",
+    })]
     public void CommandSaysAndChannel(string command, string[] expected)
     {
         var (session, outbound) = GmRoster.Session(_fx);
@@ -169,6 +209,7 @@ public sealed class CommandTableTests
         Assert.True(session.TryRunCommand(command), $"'{command}' was not recognized as a command at all");
         Assert.Equal(expected, Transcript(outbound));
     }
+
     // ---- the split: message -> command name + ARGUMENT TAIL --------------------------------------------
     //
     // Every handler's contract starts here, and it has been got wrong before: when the ~70 StartsWith lines
@@ -370,5 +411,101 @@ public sealed class CommandTableTests
         // ...and it is the same string @help would print for that row, minus the "usage: " prefix.
         var row = Session.CommandRows().First(r => r.Names.Contains(command.Split(' ')[0][1..]));
         Assert.Contains(row.Args, expected);
+    }
+    // ---- fitting the pane ------------------------------------------------------------------------------
+    //
+    // Measured on a real 4.95 client: the status pane is about 30 characters of a PROPORTIONAL font, and it
+    // wraps an over-long line at a CHARACTER boundary. @commands came out as "@commands @warp @go @rez @"
+    // then "approach" — names split down the middle, none of them typeable. So every line has to leave the
+    // server already short enough, or already broken somewhere that reads.
+
+    /// <summary>A line that already fits is sent byte-for-byte as written — including deliberate padding.
+    /// Re-flowing a line that did not need it would collapse RTK's verbatim column-17 toggle text for no
+    /// gain.</summary>
+    [Theory]
+    [InlineData("No-clip          :ON")]
+    [InlineData("tiger = 3.")]
+    [InlineData("")]
+    [InlineData("a line of exactly thirty chars")]   // exactly PaneWidth: the boundary case
+    public void AFittingLineIsUntouched(string line)
+        => Assert.Equal(new[] { line }, Session.WrapForPane(line));
+
+    /// <summary>A token wider than the whole pane goes out ALONE and unbroken. There is nowhere to break it,
+    /// and letting the next token ride along behind it would mean the client split BOTH.</summary>
+    [Fact]
+    public void ATokenWiderThanThePaneGoesOutAlone()
+    {
+        string token = new('x', 70);
+
+        Assert.Equal(new[] { token }, Session.WrapForPane(token));
+        Assert.Equal(new[] { "before", token, "after" }, Session.WrapForPane($"before {token} after"));
+    }
+
+    /// <summary>The property that matters: wrapping re-orders nothing, drops nothing, and never cuts a
+    /// token in half — and no line comes out over the width unless it is one token that could not be
+    /// broken.</summary>
+    [Theory]
+    // Three command names that do not fit on one line together. This is the @commands case.
+    [InlineData("@commands @showwarps @totemsweep")]
+    // Ordinary prose, the @help description case.
+    [InlineData("pull an online player to your side (the inverse of @approach)")]
+    // A line that is mostly one huge token.
+    [InlineData("see docs/common/Quest-Registry.md for the full catalogue")]
+    public void WrappingBreaksOnlyAtSpaces(string line)
+    {
+        var wrapped = Session.WrapForPane(line).ToList();
+
+        Assert.True(wrapped.Count > 1, "this case is meant to need more than one pane line");
+        Assert.Equal(line.Split(' ', StringSplitOptions.RemoveEmptyEntries),
+                     wrapped.SelectMany(w => w.Split(' ', StringSplitOptions.RemoveEmptyEntries)));
+        foreach (var w in wrapped)
+            Assert.True(w.Length <= Session.PaneWidth || !w.Trim().Contains(' '),
+                        $"a {w.Length}-char line that could have been broken: \"{w}\"");
+    }
+
+    /// <summary>A listing is framed, so one command's output stops running into the next in a pane that also
+    /// carries pickups, experience and look-at names. Pinned on a listing whose contents are fixed: a brand
+    /// new character carries exactly one legend, the seeded "Born in" mark, which has no key.</summary>
+    [Fact]
+    public void AListingIsFramedByAHeaderAndARule()
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        session.TryRunCommand("@legend");
+
+        Assert.Equal(new[]
+        {
+            "pane3|= legends (1) =",
+            "pane3|(no key) - icon 0 col 128",
+            "pane3| \"Born in Yuri 1, Summer\"",
+            "pane3|-",
+        }, Transcript(outbound));
+    }
+
+    /// <summary>The four listings Caleb read off the real client, end to end: nothing they produce is wider
+    /// than the pane unless it is a single unbreakable token. This is the acceptance check for the whole
+    /// formatting pass — it walks the actual output rather than the wrapper in isolation, so a caller that
+    /// bypasses Reply, or a table row whose Args column grew, fails here.</summary>
+    [Theory]
+    [InlineData("@commands")]
+    [InlineData("@help")]
+    [InlineData("@help warp")]
+    [InlineData("@items apple")]
+    [InlineData("@npc")]
+    [InlineData("@setting")]
+    public void NothingAListingPrintsOverrunsThePane(string command)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        session.TryRunCommand(command);
+
+        var pane = Transcript(outbound)
+            .Where(l => l.StartsWith("pane", StringComparison.Ordinal))
+            .Select(l => l[(l.IndexOf('|') + 1)..])
+            .ToList();
+        Assert.NotEmpty(pane);
+        foreach (var line in pane)
+            Assert.True(line.Length <= Session.PaneWidth || !line.Trim().Contains(' '),
+                        $"'{command}' printed a {line.Length}-char line that could have been broken: \"{line}\"");
     }
 }

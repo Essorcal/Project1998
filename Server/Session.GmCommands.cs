@@ -28,9 +28,13 @@ public sealed partial class Session
         string q = a.Raw;
         var found = Content.SearchItems(q, 15);
         if (found.Count == 0) { Reply(q.Length == 0 ? "no items loaded (check game-data/Items.csv)" : $"no items match \"{q}\""); return; }
-        Reply($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Items.Count}):");
-        foreach (var i in found)
-            Reply($"  #{i.Id} {i.Name} — {(i.IsEquip ? $"equip(dam {i.Dam}/ac {i.Armor})" : i.IsConsumable ? "use" : "etc")}   (@item {i.Name})");
+        // One line per item, short enough to survive the pane: the id first so the eye has a fixed column to
+        // land on even though the font is proportional and nothing can actually be aligned. The old line
+        // carried a trailing "(@item <name>)" hint that repeated the name it followed and pushed every entry
+        // to three or four wrapped lines; the hint is now one line for the whole list.
+        ReplyList($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count}/{Content.Items.Count})",
+                  found.Select(i => $"#{i.Id} {i.Name} — {(i.IsEquip ? $"equip {i.Dam}/{i.Armor}" : i.IsConsumable ? "use" : "etc")}"));
+        Reply($"{Prefix}item <name> to summon");
     }
 
     // "@coins <n>" (alias "@gold <n>") — add n coins to the purse (updates the HUD + persists). A negative n
@@ -69,9 +73,9 @@ public sealed partial class Session
                   ?? (matches.Count == 1 ? matches[0] : null);
         if (npc is null)
         {
-            Reply($"NPCs matching \"{q}\" ({matches.Count}):");
-            foreach (var n in matches.Take(10))
-                Reply($"  #{n.Id} {n.Name} — map {n.Map} ({n.X},{n.Y}){(n.Enabled ? "" : " [disabled]")}");
+            ReplyList($"NPCs ~ \"{q}\" ({matches.Count})",
+                      matches.Take(10).Select(n =>
+                          $"#{n.Id} {n.Name} — map {n.Map} ({n.X},{n.Y}){(n.Enabled ? "" : " [off]")}"));
             return;
         }
 
@@ -639,10 +643,9 @@ public sealed partial class Session
         var counts = (warps: warpCount, doors: marks.Count - warpCount);
         if (!list) return counts;
         if (marks.Count == 0) { Reply("No warps or scripted doorways on this map."); return counts; }
-        Reply($"Doorways here ({counts.warps} warp(s), {counts.doors} scripted doorway(s)):");
         const int Cap = 18;   // a screenful; past it the markers themselves are the better map
-        Reply(lines.Take(Cap));
-        if (lines.Count > Cap) Reply($"  ...and {lines.Count - Cap} more - the markers show them all.");
+        ReplyList($"doorways ({counts.warps} warp, {counts.doors} scripted)", lines.Take(Cap));
+        if (lines.Count > Cap) Reply($"...and {lines.Count - Cap} more; the markers show them all.");
         return counts;
     }
 
@@ -907,8 +910,7 @@ public sealed partial class Session
         if (name.Length == 0)
         {
             var all = _world.AllPlayers().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
-            Reply($"Online ({all.Count}):");
-            Reply(all.Select(p => "  " + Line(p)));
+            ReplyList($"online ({all.Count})", all.Select(Line));
             return;
         }
         var target = _world.FindPlayer(name);
@@ -1178,10 +1180,11 @@ public sealed partial class Session
         {
             if (_char.Quests.Count == 0 && _char.QuestStrings.Count == 0)
             { Reply($"No quest keys set. ({Prefix}quest <key> <stage> to set one; see docs/common/Quest-Registry.md.)"); return; }
-            Reply($"quest registry ({_char.Quests.Count} key{(_char.Quests.Count == 1 ? "" : "s")}" +
-                    $"{(_char.QuestStrings.Count > 0 ? $" + {_char.QuestStrings.Count} string" : "")}):");
-            foreach (var (k, v) in _char.Quests.OrderBy(e => e.Key, StringComparer.Ordinal)) Reply($"  {k} = {v}");
-            foreach (var (k, v) in _char.QuestStrings.OrderBy(e => e.Key, StringComparer.Ordinal)) Reply($"  {k} = \"{v}\"");
+            ReplyList($"quests ({_char.Quests.Count}" +
+                      $"{(_char.QuestStrings.Count > 0 ? $"+{_char.QuestStrings.Count} str" : "")})",
+                      _char.Quests.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"{e.Key} = {e.Value}")
+                        .Concat(_char.QuestStrings.OrderBy(e => e.Key, StringComparer.Ordinal)
+                                                  .Select(e => $"{e.Key} = \"{e.Value}\"")));
             return;
         }
 
@@ -1230,9 +1233,11 @@ public sealed partial class Session
     {
         if (a.None)
         {
-            Reply($"legend marks ({_char.Legends.Count}):");
-            foreach (var l in _char.Legends)
-                Reply($"  {(string.IsNullOrEmpty(l.Name) ? "(no key)" : l.Name)}: \"{l.Text}\" (icon {l.Icon}, color {l.Color})");
+            ReplyList($"legends ({_char.Legends.Count})", _char.Legends.SelectMany(l => new[]
+            {
+                $"{(string.IsNullOrEmpty(l.Name) ? "(no key)" : l.Name)} — icon {l.Icon} col {l.Color}",
+                $" \"{l.Text}\"",
+            }));
             return;
         }
 
@@ -1580,12 +1585,16 @@ public sealed partial class Session
     {
         if (a.None)
         {
-            // The shape comes from the table; what each sub-form DOES does not fit in an Args column.
+            // The shape comes from the table; what each sub-form DOES does not fit in an Args column. Two
+            // lines each — the sub-form, then what it does — for the same reason @help splits its rows.
             Reply(a.Usage());
-            Reply($"  {Prefix}pkt add <tokens>   append to the pending packet (the chat box is short)");
-            Reply($"  {Prefix}pkt send <hexop>   send what's pending, then clear it");
-            Reply($"  {Prefix}pkt show | clear   inspect or drop the pending bytes");
-            Reply($"  {Prefix}pkt file <name>    send game-data/packets/<name>.txt (';' starts a comment)");
+            ReplyList($"{Prefix}pkt sub-forms", new[]
+            {
+                $"{Prefix}pkt add <tokens>",       " append to the pending packet",
+                $"{Prefix}pkt send <hexop>",       " send it, then clear",
+                $"{Prefix}pkt show | clear",       " inspect or drop pending",
+                $"{Prefix}pkt file <name>",        " send packets/<name>.txt",
+            });
             return;
         }
 

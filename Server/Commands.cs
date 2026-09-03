@@ -440,14 +440,99 @@ public sealed partial class Session
     // ANOTHER player (@bring, @carnage), a broadcast (@announce -> SystemAnnounce), and the two probes whose
     // channel is the thing under test (@text and @mtx audition a raw 0x0A type by number).
 
-    /// <summary>One line of command output — a readout or a confirmation. See the rule above.</summary>
-    private void Reply(string line) => SendMiniText(line);
+    /// <summary>Roughly how many characters of the status pane's font fit on one line, measured off a real
+    /// 4.95 client (2026-09-02, screenshots of @commands and @help).
+    ///
+    /// <para>APPROXIMATE, and it cannot be otherwise: the pane's font is PROPORTIONAL, so a line of 30 narrow
+    /// characters and a line of 30 wide ones are different widths on screen and no character count is exactly
+    /// right. This is the count at which a line of ordinary mixed text stopped fitting, so it is a budget
+    /// rather than a measurement — the wrapper below aims under it, and a line that overruns slightly still
+    /// renders, it just wraps again in the client.</para>
+    ///
+    /// <para>The pane wraps by itself at CHARACTER boundaries when a line is too long, which is the whole
+    /// reason this exists: "@commands @warp @go @rez @" then "approach" on the next line, command names split
+    /// down the middle. Every line has to leave here already short enough, or already broken somewhere it
+    /// reads.</para></summary>
+    /// <para>Internal so a test can pin the wrapper directly, for the same reason
+    /// <see cref="SplitCommand"/> is: the interesting cases (a token wider than the whole pane, a line that
+    /// only just fits) are awkward to reach through a real command and are exactly the ones that break.
+    /// </para>
+    internal const int PaneWidth = 30;
 
-    /// <summary>A multi-line readout, one status-pane line each. The pane scrolls, so the whole listing
-    /// survives; the login box this used to be routed to would have shown only the last line.</summary>
+    /// <summary>Break one logical line into pane-width lines at SPACES ONLY.
+    ///
+    /// <para>A token is never split: if one is longer than the whole pane (a long map name, a hex dump, a
+    /// packet's bytes) it goes out alone on its own line and the client wraps it however it likes — half of a
+    /// mangled token is no worse than half of a mangled token, but half of a mangled COMMAND NAME is a name
+    /// you cannot type back, which is what made the old output unusable.</para>
+    ///
+    /// <para>A line that already fits comes back untouched, exactly as written. That matters: some lines are
+    /// deliberately spaced (RTK's verbatim column-17 toggle lines, "No-clip          :ON") and re-flowing
+    /// them would collapse the padding for no gain. Continuation lines keep the original leading indent, so
+    /// an indented list entry stays visually inside its list.</para></summary>
+    internal static IEnumerable<string> WrapForPane(string line)
+    {
+        if (line.Length <= PaneWidth) { yield return line; yield break; }
+
+        string indent = line[..(line.Length - line.TrimStart(' ').Length)];
+        var words = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) { yield return line; yield break; }
+
+        var built = new System.Text.StringBuilder(indent);
+        bool any = false;
+        foreach (var word in words)
+        {
+            if (any && built.Length + 1 + word.Length > PaneWidth)
+            {
+                yield return built.ToString();
+                built.Clear().Append(indent);
+                any = false;
+            }
+            if (any) built.Append(' ');
+            built.Append(word);
+            any = true;
+
+            // A single token that does not fit even on a line of its own: send it alone and start over,
+            // rather than letting the next token ride along behind it.
+            if (built.Length > PaneWidth)
+            {
+                yield return built.ToString();
+                built.Clear().Append(indent);
+                any = false;
+            }
+        }
+        if (any) yield return built.ToString();
+    }
+
+    /// <summary>One line of command output — a readout or a confirmation. See the rule above. Wrapped to the
+    /// pane, so a caller never has to think about the width; a line that already fits is sent as written.
+    /// </summary>
+    private void Reply(string line)
+    {
+        foreach (var pane in WrapForPane(line)) SendMiniText(pane);
+    }
+
+    /// <summary>A multi-line readout, one status-pane line per wrapped line. The pane scrolls, so the whole
+    /// listing survives; the login box this used to be routed to would have shown only the last line.
+    /// </summary>
     private void Reply(IEnumerable<string> lines)
     {
-        foreach (var line in lines) SendMiniText(line);
+        foreach (var line in lines)
+            foreach (var pane in WrapForPane(line)) SendMiniText(pane);
+    }
+
+    /// <summary>A readout that is a LIST, wrapped in a header and a closing rule.
+    ///
+    /// <para>The pane is a single scrolling column shared by everything — pickups, experience, look-at names
+    /// — so one command's listing used to run straight into the next with nothing between them, and a GM
+    /// scrolling back could not tell where "@items sword" ended and "@npc guard" began. The header names the
+    /// list and its size; the rule closes it. Both are short by design: they are punctuation, not content,
+    /// and they are competing for the same 30 characters as the list itself.</para></summary>
+    private void ReplyList(string title, IEnumerable<string> lines)
+    {
+        Reply($"= {title} =");
+        Reply(lines);
+        Reply("-");
     }
 
     /// <summary>The command did not do what was asked. Loud on purpose — see the rule above.</summary>
@@ -494,10 +579,14 @@ public sealed partial class Session
         return true;
     }
 
-    /// <summary>How many detailed command lines one <c>@help</c> page shows. The client's chat pane holds
-    /// only a handful of lines before the earliest scroll off unreachably, and a GM reaches ~90 commands, so
-    /// the full list HAS to be paged. Sized to leave room for the header and footer line within the pane.</summary>
-    private const int HelpPageSize = 12;
+    /// <summary>How many COMMANDS one <c>@help</c> page describes. Not how many pane lines it produces: each
+    /// command is now its calling shape on one line plus a description wrapped to <see cref="PaneWidth"/>
+    /// below it, so a page of six is more like twenty lines in the pane.
+    ///
+    /// <para>Was 12, sized for the chat pane when @help still spoke. The status pane is far narrower, so 12
+    /// became a wall of ~50 lines. Six is a guess at a screenful and wants the same real-client look the
+    /// width got — the pane's HEIGHT has not been measured.</para></summary>
+    private const int HelpPageSize = 6;
 
     /// <summary>"@help [page|filter]" — every command this session may actually run, so the list a player sees
     /// contains no staff tooling at all, and a tester's contains no GM tooling.
@@ -519,8 +608,7 @@ public sealed partial class Session
                          || c.Help.Contains(filter, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (matches.Count == 0) { Reply($"No command matches \"{filter}\"."); return; }
-            Reply($"Commands ({matches.Count}) matching \"{filter}\" — all start with '{Prefix}':");
-            Reply(matches.Select(HelpLine));
+            ReplyList($"{matches.Count} matching \"{filter}\"", matches.SelectMany(HelpLines));
             return;
         }
 
@@ -530,16 +618,22 @@ public sealed partial class Session
         int first = (page - 1) * HelpPageSize;
         int last = Math.Min(first + HelpPageSize, reachable.Count);
 
-        Reply($"Commands {first + 1}–{last} of {reachable.Count} (page {page}/{pages}) — all start with '{Prefix}':");
-        Reply(reachable.Skip(first).Take(HelpPageSize).Select(HelpLine));
-        if (page < pages)
-            Reply($"  more: '{Prefix}help{page + 1}' next page  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
-        else
-            Reply($"  end of list  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
+        ReplyList($"{Prefix}help {first + 1}-{last} of {reachable.Count} (p{page}/{pages})",
+                  reachable.Skip(first).Take(HelpPageSize).SelectMany(HelpLines));
+        // One short line each rather than one long one: the old single footer wrapped to four pane lines.
+        if (page < pages) Reply($"next: {Prefix}help{page + 1}");
+        Reply($"search: {Prefix}help <word>");
     }
 
-    /// <summary>One detailed @help row: "@name/@alias &lt;args&gt; — what it does".</summary>
-    private static string HelpLine(Command c) => $"  {HelpShape(c)} — {c.Help}";
+    /// <summary>One command's @help entry, as the TWO logical lines the pane can hold: the calling shape,
+    /// then the description indented under it. They used to be one line — "@bring &lt;username&gt; — pull an
+    /// online player to your side (the inverse of @approach)" — which the pane broke into four, starting
+    /// mid-word, so the shape you actually wanted to read was buried in prose.</summary>
+    private static IEnumerable<string> HelpLines(Command c)
+    {
+        yield return HelpShape(c);
+        yield return " " + c.Help;
+    }
 
     /// <summary>Just the calling shape: "@name/@alias &lt;args&gt;". Shared by @help and by
     /// <see cref="CommandArgs.Usage"/>, so the two cannot describe the same command differently.</summary>
@@ -550,14 +644,20 @@ public sealed partial class Session
     }
 
     /// <summary>"@commands" / "@cmds" — the compact index: just the NAMES of every command this session can
-    /// run, packed several per line so the whole roster fits the chat pane at once. The quick companion to the
-    /// paged, described <see cref="ShowCommandHelp"/>: reach for this to SEE everything you have, then
-    /// '@help &lt;word&gt;' to read what one does. Access-filtered like @help, so a player sees no staff tooling.</summary>
+    /// run. The quick companion to the paged, described <see cref="ShowCommandHelp"/>: reach for this to SEE
+    /// everything you have, then '@help &lt;word&gt;' to read what one does. Access-filtered like @help, so a
+    /// player sees no staff tooling.
+    ///
+    /// <para>THREE names a line at most, and <see cref="WrapForPane"/> cuts that to two when the names are
+    /// long. It used to pack seven, which was fine in the chat pane and unreadable in the status pane: the
+    /// client wrapped the overflow at a character boundary, so the roster came out as "@commands @warp @go
+    /// @rez @" / "approach" — command names split down the middle, none of them typeable.</para></summary>
     private void ShowCommandIndex()
     {
         var access = Access;
         var names = CommandTable.Where(c => access >= c.Min).Select(c => Prefix + c.Names[0]).ToList();
-        Reply($"Commands ({names.Count}) — '{Prefix}help <word>' for what one does, '{Prefix}help' to page them with descriptions:");
-        Reply(names.Chunk(7).Select(chunk => "  " + string.Join("  ", chunk)));
+        ReplyList($"{Prefix}commands ({names.Count})",
+                  names.Chunk(3).Select(chunk => string.Join(' ', chunk)));
+        Reply($"{Prefix}help <word> for one");
     }
 }

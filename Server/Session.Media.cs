@@ -442,7 +442,7 @@ public sealed partial class Session
                 .Where(t => t.Set == set && t.Name.Length > 0).OrderBy(t => t.Name)
                 .Select(t => $"{t.Name}({t.Id})"));
             Reply(a.Usage());
-            Reply($"tracks ({(set == Content.MusicSet.New ? "new" : "old")}): {names}");
+            ReplyList($"tracks ({(set == Content.MusicSet.New ? "new" : "old")})", new[] { names });
             if (set == Content.MusicSet.New)
                 Reply("the plain list names are ten tracks in order; the -rand twins are the same ten from " +
                         "a random start, but the client stops them for good on a repeat pick");
@@ -607,9 +607,11 @@ public sealed partial class Session
     {
         if (a.None)
         {
-            Reply(a.Usage());
-            foreach (var (sub, label) in SettingLabels)
-                Reply($"  {label.ToLowerInvariant().Replace(" ", "-"),-18} {(_char.HasSetting(sub) ? "ON" : "OFF")}");
+            // "name - ON", not a space-padded column: the pane's font is proportional, so padding to a
+            // fixed character count lands ragged on screen and only costs width.
+            ReplyList($"{Prefix}setting", SettingLabels.Select(kv =>
+                $"{kv.Value.ToLowerInvariant().Replace(" ", "-")} - {(_char.HasSetting(kv.Key) ? "ON" : "OFF")}"));
+            Reply($"{Prefix}setting <name> [on|off]");
             return;
         }
 
