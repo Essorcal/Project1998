@@ -105,6 +105,7 @@ public static class Db
         using var cmd = cn.CreateCommand();
         cmd.CommandText = @"
 PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
 PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS accounts (

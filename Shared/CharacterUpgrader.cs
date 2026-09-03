@@ -8,6 +8,8 @@ namespace Shared;
 /// <see cref="Character"/>. Field renames belong here: move the old member to the new name in the
 /// appropriate step, then advance the version. Typed deserialization deliberately rejects any member a
 /// step failed to consume, so deleting or renaming a persisted field cannot silently reset player state.
+/// Upgrades are forward-only: a blob stamped newer than this build is refused, so rolling back after a
+/// schema bump also requires rolling the character data back to a compatible version.
 /// </summary>
 public static class CharacterUpgrader
 {

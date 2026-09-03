@@ -413,8 +413,10 @@ public class PersistenceTests : IDisposable
     [Fact]
     public void DatabaseMigrations_AreVersionedAndIdempotent()
     {
-        string path = Path.Combine(_fixture.StateDirectory, $"migration-{Guid.NewGuid():N}.db");
-        using (var legacy = new SqliteConnection($"Data Source={path}"))
+        string missingColumnsPath = Path.Combine(
+            _fixture.StateDirectory,
+            $"migration-missing-{Guid.NewGuid():N}.db");
+        using (var legacy = new SqliteConnection($"Data Source={missingColumnsPath}"))
         {
             legacy.Open();
             using var schema = legacy.CreateCommand();
@@ -440,16 +442,27 @@ CREATE TABLE parcels (
             schema.ExecuteNonQuery();
         }
 
-        Db.InitializeDatabase(path);
-        Db.InitializeDatabase(path);
+        Db.InitializeDatabase(missingColumnsPath);
+        Db.InitializeDatabase(missingColumnsPath);
+        AssertMigrationState(missingColumnsPath);
 
-        using var cn = new SqliteConnection($"Data Source={path}");
-        cn.Open();
-        using var version = cn.CreateCommand();
-        version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(Db.CurrentSchemaVersion, Convert.ToInt32(version.ExecuteScalar()));
-        Assert.Equal(1, ColumnCount(cn, "handoff_tokens", "ip"));
-        Assert.Equal(1, ColumnCount(cn, "parcels", "item_owner"));
+        // Every deployed database already has the columns declared by CREATE TABLE, but predates the
+        // user_version stamp. This is the real migration shape and exercises every ColumnExists skip.
+        string deployedShapePath = Path.Combine(
+            _fixture.StateDirectory,
+            $"migration-deployed-{Guid.NewGuid():N}.db");
+        Db.InitializeDatabase(deployedShapePath);
+        using (var deployed = new SqliteConnection($"Data Source={deployedShapePath}"))
+        {
+            deployed.Open();
+            using var resetVersion = deployed.CreateCommand();
+            resetVersion.CommandText = "PRAGMA user_version = 0;";
+            resetVersion.ExecuteNonQuery();
+        }
+
+        Db.InitializeDatabase(deployedShapePath);
+        Db.InitializeDatabase(deployedShapePath);
+        AssertMigrationState(deployedShapePath);
     }
 
     private static string FixturePath() =>
@@ -510,6 +523,18 @@ CREATE TABLE parcels (
         cmd.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=$column;";
         cmd.Parameters.AddWithValue("$column", column);
         return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    private static void AssertMigrationState(string path)
+    {
+        using var cn = new SqliteConnection($"Data Source={path}");
+        cn.Open();
+        using var version = cn.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Assert.Equal(Db.CurrentSchemaVersion, Convert.ToInt32(version.ExecuteScalar()));
+        Assert.Equal(1, ColumnCount(cn, "handoff_tokens", "ip"));
+        Assert.Equal(1, ColumnCount(cn, "parcels", "item_owner"));
+        Assert.Equal(1, ColumnCount(cn, "characters", "unreadable_since"));
     }
 
     private static int ParcelCount(string recipient)
