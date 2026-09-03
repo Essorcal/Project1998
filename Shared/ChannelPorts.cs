@@ -67,5 +67,7 @@ public static class ChannelPorts
     {
         if (ports.Count != 2)
             throw new ArgumentException("Exactly two ports are required: first 4.95, then 5.33.", nameof(ports));
+        if (ports[1] != ports[0] + 1)
+            throw new ArgumentException("Ports must be consecutive and ordered: first 4.95, then 5.33.", nameof(ports));
     }
 }
