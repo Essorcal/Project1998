@@ -1,4 +1,4 @@
-using System.Net.Sockets;
+﻿using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 using Protocol.Tk495;
@@ -121,10 +121,10 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
-        { SendLog($"usage: @fistsnd <id>   (current: {_fistSfx}; 0 = silent)"); return; }
+        { Refuse($"usage: @fistsnd <id>   (current: {_fistSfx}; 0 = silent)"); return; }
         _fistSfx = id;
         if (id > 0) SendSound(id, _char.Id);
-        SendLog($"fist swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Reply($"fist swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
         Log.Info($"   -> @fistsnd {id}");
     }
 
@@ -133,10 +133,10 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
-        { SendLog($"usage: @hitsnd <id>   (current: {_hitSfx}; 0 = silent)"); return; }
+        { Refuse($"usage: @hitsnd <id>   (current: {_hitSfx}; 0 = silent)"); return; }
         _hitSfx = id;
         if (id > 0) SendSound(id, _char.Id);
-        SendLog($"hit sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Reply($"hit sfx = {id}{(id == 0 ? " (muted)" : "")}");
         Log.Info($"   -> @hitsnd {id}");
     }
 
@@ -447,43 +447,43 @@ public sealed partial class Session
             var names = string.Join(", ", Content.MusicTracks
                 .Where(t => t.Set == set && t.Name.Length > 0).OrderBy(t => t.Name)
                 .Select(t => $"{t.Name}({t.Id})"));
-            SendLog("usage: @music <name|id> [vol 0-255, default 100] [mp3|midi]   (@music 0 or @music stop = stop)");
-            SendLog($"tracks ({(set == Content.MusicSet.New ? "new" : "old")}): {names}");
+            Reply("usage: @music <name|id> [vol 0-255, default 100] [mp3|midi]   (@music 0 or @music stop = stop)");
+            Reply($"tracks ({(set == Content.MusicSet.New ? "new" : "old")}): {names}");
             if (set == Content.MusicSet.New)
-                SendLog("the plain list names are ten tracks in order; the -rand twins are the same ten from " +
+                Reply("the plain list names are ten tracks in order; the -rand twins are the same ten from " +
                         "a random start, but the client stops them for good on a repeat pick");
-            SendLog(IsV533
+            Reply(IsV533
                 ? $"soundtrack: {(set == Content.MusicSet.New ? "NEW (5.x mp3 playlists)" : "OLD (the 12 stock midis)")}" +
                   "   — switch with '@music old' or '@music new'"
                 : "soundtrack: OLD (the 12 stock midis) — the 5.x set needs a 5.x client, which ships the files");
             var zone = Content.BgmZoneOf(_char.Map);
-            SendLog($"now playing: {(_bgm == NoBgm ? "nothing" : Describe(_bgm))}" +
+            Reply($"now playing: {(_bgm == NoBgm ? "nothing" : Describe(_bgm))}" +
                     (zone.Length > 0 ? $"   (this map's zone: {zone})" : "   (this map has no zone)"));
             return;
         }
-        if (parts[0].Equals("stop", StringComparison.OrdinalIgnoreCase)) { SendMusic(0); SendLog("music stopped"); return; }
+        if (parts[0].Equals("stop", StringComparison.OrdinalIgnoreCase)) { SendMusic(0); Reply("music stopped"); return; }
         if (parts[0].Equals("old", StringComparison.OrdinalIgnoreCase) ||
             parts[0].Equals("new", StringComparison.OrdinalIgnoreCase))
         { SetMusicSet(parts[0].Equals("new", StringComparison.OrdinalIgnoreCase)); return; }
 
         var track = Content.FindTrack(parts[0], set);
-        if (track is null) { SendLog($"'{parts[0]}' is not a track name or number (@music with no argument lists them)"); return; }
+        if (track is null) { Refuse($"'{parts[0]}' is not a track name or number (@music with no argument lists them)"); return; }
 
         byte type = forceType ?? track.Type;
         byte vol = parts.Count > 1 && byte.TryParse(parts[1], out var v) ? v : (byte)100;
 
         // The client silently ignores a midi id it can't hold, which reads as "the server is broken" — say so.
         if (type == 2 && track.Id > 12)
-            SendLog($"note: track {track.Id} is above the client's midi cap (1-12) and will be silent — try 'mp3'");
+            Reply($"note: track {track.Id} is above the client's midi cap (1-12) and will be silent — try 'mp3'");
         if (type == 1 && !IsV533)
-            SendLog($"note: this client has no {track.Id:D3}.MP3 unless you installed one (re/extract_mus.py)");
+            Reply($"note: this client has no {track.Id:D3}.MP3 unless you installed one (re/extract_mus.py)");
         // The client's own shuffled-playlist advance stalls on a repeat pick — fine to audition, never for a map.
         if (type == 1 && track.Shuffle)
-            SendLog("note: a '-rand' list stops for good the first time it shuffles onto the song already " +
+            Reply("note: a '-rand' list stops for good the first time it shuffles onto the song already " +
                     $"playing — use {Content.TrackName(track.Id, set).Replace("-rand", "")} for anything lasting");
 
         SendMusic(track.Id, type, vol);
-        SendLog(track.Id == 0 ? "music stopped"
+        Reply(track.Id == 0 ? "music stopped"
                               : $"playing {Describe(track.Id)} (vol {vol}, " +
                                 $"{(type != 1 ? $"midi -> {track.Id}.mid" : IsV533 ? $"mp3 -> {track.Id:D8}" : $"mp3 -> {track.Id:D3}.MP3")}" +
                                 $"{(track.Shuffle ? ", a 10-track shuffled playlist" : track.Playlist ? ", a 10-track playlist" : type == 1 && IsV533 ? ", repeats" : "")})");
@@ -503,19 +503,19 @@ public sealed partial class Session
     {
         if (wantNew && !IsV533)
         {
-            SendLog("the new soundtrack lives in the 5.x client's Mus000.dat — this client doesn't have it.");
-            SendLog("staying on the old music (the 12 stock songs).");
+            Refuse("the new soundtrack lives in the 5.x client's Mus000.dat — this client doesn't have it.");
+            Refuse("staying on the old music (the 12 stock songs).");
             return;
         }
         if (_char.NewMusic == wantNew)
         {
-            SendLog($"already on the {(wantNew ? "new" : "old")} music.");
+            Reply($"already on the {(wantNew ? "new" : "old")} music.");
             return;
         }
         _char.NewMusic = wantNew;
         _bgm = NoBgm;                        // forget what was playing so the new set's track is actually sent
         PlayMapMusic(_char.Map);
-        SendLog(wantNew ? "new music: the 5.x soundtrack (mp3 playlists)."
+        Reply(wantNew ? "new music: the 5.x soundtrack (mp3 playlists)."
                         : "old music: the original twelve songs.");
         Log.Info($"   -> @music set={(wantNew ? "new" : "old")} for {_char.Name}");
     }
@@ -527,17 +527,17 @@ public sealed partial class Session
     private void SoundProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { SendLog("usage: @snd <id> [id2 …]   (plays client sound ids; NexusTK.snd has 001..197.wav)"); return; }
+        if (parts.Length < 1) { Refuse("usage: @snd <id> [id2 …]   (plays client sound ids; NexusTK.snd has 001..197.wav)"); return; }
         int played = 0;
         for (int i = 0; i < parts.Length && played < 8; i++)
         {
             if (!int.TryParse(parts[i], out var id) || id <= 0) continue;
             SendSound(id, _char.Id);
-            SendLog($"playing sound {id}");
+            Reply($"playing sound {id}");
             Log.Info($"   -> @snd {id}");
             played++;
         }
-        if (played == 0) SendLog("no valid sound ids (want positive integers)");
+        if (played == 0) Refuse("no valid sound ids (want positive integers)");
     }
 
     // "@mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
@@ -547,10 +547,10 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 1 || !int.TryParse(parts[0], out var type))
-        { SendLog("usage: @mtx <type> [text...]   (0=wisp 3=mini/status 5=system 11=group 12=clan)"); return; }
+        { Refuse("usage: @mtx <type> [text...]   (0=wisp 3=mini/status 5=system 11=group 12=clan)"); return; }
         string msg = parts.Length > 1 ? string.Join(' ', parts[1..]) : $"test type {type}";
-        SendMiniText(msg, (ushort)type);
-        SendLog($"sent minitext type={type}: \"{msg}\"");
+        SendMiniText(msg, (ushort)type);   // raw, by number: the type under test is the whole point of @mtx
+        Reply($"sent minitext type={type}: \"{msg}\"");
         Log.Info($"   -> @mtx type={type} \"{msg}\"");
     }
 
@@ -573,7 +573,7 @@ public sealed partial class Session
         {
             SendMap(0x1F, _gameInc++, new byte[] { (byte)raw }, $"weather(0x1F) RAW {raw}");
             string band = raw < 0x0b ? "0 (clear)" : raw <= 0x63 ? "1" : raw == 0x64 ? "NONE - falls through, client bug" : "2";
-            SendLog($"raw 0x1F byte {raw} -> band {band}   (not stored on the map; @weather <name> to persist)");
+            Reply($"raw 0x1F byte {raw} -> band {band}   (not stored on the map; @weather <name> to persist)");
             return;
         }
 
@@ -581,7 +581,7 @@ public sealed partial class Session
         {
             _world.ClearWeatherOverride(_char.Map);
             byte now = _world.GetWeather(_char.Map);
-            SendLog($"map {_char.Map} weather override cleared; season-driven weather is now {WeatherNames[Math.Min(now, (byte)2)]}");
+            Reply($"map {_char.Map} weather override cleared; season-driven weather is now {WeatherNames[Math.Min(now, (byte)2)]}");
             Log.Info($"   -> @weather auto (map {_char.Map})");
             return;
         }
@@ -595,15 +595,15 @@ public sealed partial class Session
         if (w < 0)
         {
             byte cur = _world.GetWeather(_char.Map);
-            SendLog($"usage: @weather clear|rain|snow   |   @weather auto   |   @weather raw <0-255>");
-            SendLog($"map {_char.Map} is {WeatherNames[Math.Min(cur, (byte)2)]}" +
+            Refuse($"usage: @weather clear|rain|snow   |   @weather auto   |   @weather raw <0-255>");
+            Refuse($"map {_char.Map} is {WeatherNames[Math.Min(cur, (byte)2)]}" +
                     (Content.IsIndoor(_char.Map) ? " (indoor - always clear)" : "") +
                     $"; your 'Weather change' toggle is {(_char.HasSetting(0x06) ? "ON" : "OFF - nothing will draw")}");
             return;
         }
 
         _world.SetWeather(_char.Map, (byte)w);
-        SendLog($"zone weather pinned to {WeatherNames[w]} (map {_char.Map} region; @weather auto to release)" +
+        Reply($"zone weather pinned to {WeatherNames[w]} (map {_char.Map} region; @weather auto to release)" +
                 (Content.IsIndoor(_char.Map) ? "   (this map is indoor - it stays clear regardless)" : "") +
                 (_char.HasSetting(0x06) ? "" : "   (your 'Weather change' toggle is OFF - @setting weather on)"));
         Log.Info($"   -> @weather {WeatherNames[w]} (map {_char.Map})");
@@ -620,9 +620,9 @@ public sealed partial class Session
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0)
         {
-            SendLog("usage: @setting <name> [on|off]   (omit on/off to toggle)");
+            Reply("usage: @setting <name> [on|off]   (omit on/off to toggle)");
             foreach (var (sub, label) in SettingLabels)
-                SendLog($"  {label.ToLowerInvariant().Replace(" ", "-"),-18} {(_char.HasSetting(sub) ? "ON" : "OFF")}");
+                Reply($"  {label.ToLowerInvariant().Replace(" ", "-"),-18} {(_char.HasSetting(sub) ? "ON" : "OFF")}");
             return;
         }
 
@@ -630,14 +630,14 @@ public sealed partial class Session
         var hit = SettingLabels.FirstOrDefault(kv =>
             kv.Value.Equals(want, StringComparison.OrdinalIgnoreCase) ||
             kv.Value.Contains(want, StringComparison.OrdinalIgnoreCase));
-        if (hit.Value is null) { SendLog($"no setting matches '{parts[0]}' — run @setting for the list"); return; }
+        if (hit.Value is null) { Refuse($"no setting matches '{parts[0]}' — run @setting for the list"); return; }
 
         bool on = parts.Length > 1
             ? parts[1].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[1] == "1"
             : !_char.HasSetting(hit.Key);
         if (on != _char.HasSetting(hit.Key)) _char.ToggleSetting(hit.Key);
         SaveChar();
-        SendMiniText(SettingLine(hit.Value, on));   // same status-pane line the native 0x1b toggles show
+        Reply(SettingLine(hit.Value, on));   // same status-pane line the native 0x1b toggles show
 
         if (hit.Key == 0x06) SendWeather();
         // Show Helmet / Show Necklace are stored and announced, but 4.95 has nothing to apply them to: the
@@ -645,7 +645,7 @@ public sealed partial class Session
         // never drawn on the body regardless. RTK's own cases 14/15 are tagged "Added 4/6/17" — 2017, a later
         // client. Kept because the bit is real and costs nothing if helm rendering ever lands.
         if (hit.Key is 0x0E or 0x0F)
-            SendLog("note: 4.95's appearance has no helm/necklace slot, so this toggle draws nothing on this client");
+            Reply("note: 4.95's appearance has no helm/necklace slot, so this toggle draws nothing on this client");
         Log.Info($"   -> @setting {hit.Value} = {(on ? "ON" : "OFF")}");
     }
 
@@ -656,10 +656,10 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
-        { SendLog($"usage: @swingsnd <id>   (current: {_swingSfx}; 0 = silent)"); return; }
+        { Refuse($"usage: @swingsnd <id>   (current: {_swingSfx}; 0 = silent)"); return; }
         _swingSfx = id;
         if (id > 0) SendSound(id, _char.Id);
-        SendLog($"swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Reply($"swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
         Log.Info($"   -> @swingsnd {id}");
     }
 
@@ -672,7 +672,7 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 1 || !byte.TryParse(parts[0], out var type))
-        { SendLog($"usage: @mobact <type> [time]   (current: type={MobSwingActionType} time={MobSwingActionTime})"); return; }
+        { Refuse($"usage: @mobact <type> [time]   (current: type={MobSwingActionType} time={MobSwingActionTime})"); return; }
         ushort time = MobSwingActionTime;
         if (parts.Length >= 2 && ushort.TryParse(parts[1], out var t)) time = t;
         MobSwingActionType = type;
@@ -683,9 +683,9 @@ public sealed partial class Session
         if (wmob is not null)
         {
             _world.BroadcastSameArea(_char.Map, wmob.X, wmob.Y, p => p.ActionOver(wmob.Id, type, time, 0));   // play it NOW on the faced mob
-            SendLog($"mob action type={type} time={time} -> played on '{wmob.Name}' ({wmob.Id})");
+            Reply($"mob action type={type} time={time} -> played on '{wmob.Name}' ({wmob.Id})");
         }
-        else SendLog($"mob action type={type} time={time} set (face a mob to preview it instantly)");
+        else Reply($"mob action type={type} time={time} set (face a mob to preview it instantly)");
         Log.Info($"   -> @mobact type={type} time={time} faced={(wmob?.Name ?? "none")}");
     }
 
@@ -696,17 +696,17 @@ public sealed partial class Session
     private void EffectProbe(string text)
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { SendLog("usage: @efx <id> [id2 …]   (play Effect.tbl anim ids 0..127 over you)"); return; }
+        if (parts.Length < 1) { Refuse("usage: @efx <id> [id2 …]   (play Effect.tbl anim ids 0..127 over you)"); return; }
         int played = 0;
         for (int i = 0; i < parts.Length && played < 8; i++)
         {
             if (!int.TryParse(parts[i], out var id) || id < 0 || id > 127) continue;
             SendEffect(_char.Id, id);
-            SendLog($"effect {id}");
+            Reply($"effect {id}");
             Log.Info($"   -> @efx {id}");
             played++;
         }
-        if (played == 0) SendLog("no valid effect ids (0..127)");
+        if (played == 0) Refuse("no valid effect ids (0..127)");
     }
 
     // "@hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
@@ -717,7 +717,7 @@ public sealed partial class Session
     {
         var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 1 || !int.TryParse(parts[0], out var pct))
-        { SendLog("usage: @hit <pct 0..100> [crit 0..255]   (over-head HP bar + hit anim on the faced mob)"); return; }
+        { Refuse("usage: @hit <pct 0..100> [crit 0..255]   (over-head HP bar + hit anim on the faced mob)"); return; }
         byte crit = parts.Length > 1 && byte.TryParse(parts[1], out var c) ? c : HitCritByte;
         pct = Math.Clamp(pct, 0, 100);
 
@@ -726,7 +726,7 @@ public sealed partial class Session
         uint target = wmob?.Id ?? MobAt(fx, fy)?.Id ?? _char.Id;
         if (wmob is not null) _world.BroadcastWideArea(_char.Map, wmob.X, wmob.Y, p => p.DamageOver(target, (byte)pct, crit));
         else                  SendDamage(target, (byte)pct, crit);
-        SendLog($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
+        Reply($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
         Log.Info($"   -> @hit id={target} pct={pct} crit={crit}");
     }
 

@@ -239,6 +239,58 @@ public sealed partial class Session
         return true;
     }
 
+    // ---- where a command answers -------------------------------------------------------------------
+    //
+    // Three unrelated client widgets can carry a line, and which one a command used to reach for was
+    // whatever its author happened to type: 121 SendLog, 16 SendMiniText and 11 SendMessage calls in
+    // Session.GmCommands.cs alone, so @lvl popped a modal, @item made the character speak, and @clip
+    // printed in the status pane. They are not interchangeable:
+    //
+    //   0x02  SendMessage   the LOGIN message box. It does not stack: a second line REPLACES the first, so
+    //                       multi-line output silently becomes one line. It is the pre-world channel (see
+    //                       Session.Dialog.cs) and no command answers on it.
+    //   0x0D  SendLog       self-speech. A bubble over your own character plus a chat-pane line — loud, and
+    //                       clamped at 250 characters (@dog's reply was being cut mid-word).
+    //   0x0A  SendMiniText  the status / mini-text pane under the inventory: where the game already puts
+    //                       "experience gained", look-at names and pickup lines, and where RTK's own scripts
+    //                       put cast confirmations, cooldowns and refusals alike (clif_sendminitext — see
+    //                       docs/4.x/Protocol.md §11f). Scrolls, and holds 0x8000 characters.
+    //
+    // THE RULE, by what the LINE is rather than by which handler produced it:
+    //
+    //   readout       a report you asked for: a listing, a dump, a value read back,
+    //                 or the help a bare command prints.                                Reply  -> status pane
+    //   confirmation  a line stating what the command changed.                          Reply  -> status pane
+    //   refusal       the command's action did NOT happen: bad arguments, no such       Refuse -> speech bubble
+    //                 target, a state or a shape that forbids it.
+    //
+    // Readouts and confirmations take the status pane because it is where the rest of this server already
+    // answers, and because it is the only one of the three that survives a twenty-line listing intact.
+    // Refusals take the bubble precisely BECAUSE it is loud and in the way: a refusal that scrolls quietly
+    // past in the status pane is indistinguishable from a command that ran and did nothing, which is the
+    // confusion this tooling exists to prevent.
+    //
+    // A search that matched nothing is a readout, not a refusal — the listing ran, the answer was empty.
+    // The test is whether the command's ACTION happened: "no items match" from @items is a result, the same
+    // words from @item are a refusal, because @item granted nothing.
+    //
+    // What does NOT come through here, and calls the Send* methods directly instead: a line addressed to
+    // ANOTHER player (@bring, @carnage), a broadcast (@announce -> SystemAnnounce), and the two probes whose
+    // channel is the thing under test (@text and @mtx audition a raw 0x0A type by number).
+
+    /// <summary>One line of command output — a readout or a confirmation. See the rule above.</summary>
+    private void Reply(string line) => SendMiniText(line);
+
+    /// <summary>A multi-line readout, one status-pane line each. The pane scrolls, so the whole listing
+    /// survives; the login box this used to be routed to would have shown only the last line.</summary>
+    private void Reply(IEnumerable<string> lines)
+    {
+        foreach (var line in lines) SendMiniText(line);
+    }
+
+    /// <summary>The command did not do what was asked. Loud on purpose — see the rule above.</summary>
+    private void Refuse(string line) => SendLog(line);
+
     /// <summary>Try to run <paramref name="text"/> as a chat command. Returns false if it isn't one (no
     /// prefix), in which case the caller treats it as ordinary speech.
     ///
@@ -272,7 +324,7 @@ public sealed partial class Session
             // Someone below the tier must not be able to tell a gated command from a typo, so both answers
             // are identical for them. Staff get the more useful message.
             if (known) Log.Info($"   -> denied {cmd!.Min} command from {access} '{_char.Name}': \"{text}\"");
-            SendLog(access > AccessLevel.Player ? $"Unknown command '{Prefix}{name}'. Try {Prefix}help." : "Unknown command.");
+            Refuse(access > AccessLevel.Player ? $"Unknown command '{Prefix}{name}'. Try {Prefix}help." : "Unknown command.");
             return true;
         }
 
@@ -304,9 +356,9 @@ public sealed partial class Session
                 .Where(c => c.Names.Any(n => n.Contains(filter, StringComparison.OrdinalIgnoreCase))
                          || c.Help.Contains(filter, StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            if (matches.Count == 0) { SendLog($"No command matches \"{filter}\"."); return; }
-            SendLog($"Commands ({matches.Count}) matching \"{filter}\" — all start with '{Prefix}':");
-            foreach (var c in matches) SendLog(HelpLine(c));
+            if (matches.Count == 0) { Reply($"No command matches \"{filter}\"."); return; }
+            Reply($"Commands ({matches.Count}) matching \"{filter}\" — all start with '{Prefix}':");
+            Reply(matches.Select(HelpLine));
             return;
         }
 
@@ -316,12 +368,12 @@ public sealed partial class Session
         int first = (page - 1) * HelpPageSize;
         int last = Math.Min(first + HelpPageSize, reachable.Count);
 
-        SendLog($"Commands {first + 1}–{last} of {reachable.Count} (page {page}/{pages}) — all start with '{Prefix}':");
-        foreach (var c in reachable.Skip(first).Take(HelpPageSize)) SendLog(HelpLine(c));
+        Reply($"Commands {first + 1}–{last} of {reachable.Count} (page {page}/{pages}) — all start with '{Prefix}':");
+        Reply(reachable.Skip(first).Take(HelpPageSize).Select(HelpLine));
         if (page < pages)
-            SendLog($"  more: '{Prefix}help{page + 1}' next page  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
+            Reply($"  more: '{Prefix}help{page + 1}' next page  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
         else
-            SendLog($"  end of list  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
+            Reply($"  end of list  |  '{Prefix}commands' the whole index  |  '{Prefix}help <word>' to search");
     }
 
     /// <summary>One detailed @help row: "@name/@alias &lt;args&gt; — what it does".</summary>
@@ -339,8 +391,7 @@ public sealed partial class Session
     {
         var access = Access;
         var names = CommandTable.Where(c => access >= c.Min).Select(c => Prefix + c.Names[0]).ToList();
-        SendLog($"Commands ({names.Count}) — '{Prefix}help <word>' for what one does, '{Prefix}help' to page them with descriptions:");
-        foreach (var chunk in names.Chunk(7))
-            SendLog("  " + string.Join("  ", chunk));
+        Reply($"Commands ({names.Count}) — '{Prefix}help <word>' for what one does, '{Prefix}help' to page them with descriptions:");
+        Reply(names.Chunk(7).Select(chunk => "  " + string.Join("  ", chunk)));
     }
 }
