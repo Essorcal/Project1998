@@ -5,9 +5,10 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
   </ItemGroup>
 
-  <!-- Only the game server may mutate Shared's internal world-Mob state. -->
+  <!-- The game server mutates Shared's internal world-Mob state; Tests also resets process-wide test hooks. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Server" />
+    <InternalsVisibleTo Include="Tests" />
   </ItemGroup>
 
 </Project>

@@ -9,6 +9,9 @@ REM
 REM Split deployment: set P1998_GAME_HOST to the game box's public IP before launching login, so the
 REM handoff redirects clients to the right machine (defaults to 127.0.0.1 = same box).
 REM
+REM Optional first argument: the login port base. For example, `run-server.bat 3000` binds login to
+REM 3000/3001 and game to 3005/3006. With no argument the original 2000/2001 + 2005/2006 pair is used.
+REM
 REM Close a window (or Ctrl+C in it) to stop that process.
 REM
 REM Finding dotnet: what we need is an SDK, and merely FINDING a dotnet.exe does not give us one.
@@ -29,6 +32,11 @@ set "DOTNET_NOLOGO=1"
 set "DOTNET_GENERATE_ASPNET_CERTIFICATE=0"
 set "P1998_ROOT=%~dp0"
 set "P1998_DOTNET_DIR=%P1998_ROOT%.dotnet"
+set "PORT_BASE=%~1"
+if not defined PORT_BASE set "PORT_BASE=2000"
+set /a "LOGIN_533=PORT_BASE+1"
+set /a "GAME_495=PORT_BASE+5"
+set /a "GAME_533=PORT_BASE+6"
 set "DOTNET="
 if defined P1998_DOTNET (
     call :try_dotnet "%P1998_DOTNET%"
@@ -81,8 +89,8 @@ REM The command after `cmd /k` is wrapped in ONE extra outer pair of quotes: wit
 REM AND the quoted project path there are 4 quotes, and cmd /k otherwise strips the first+last quote and
 REM mangles both paths ("...volume label syntax is incorrect"). The outer pair absorbs that stripping.
 REM --no-build: we already built the solution above, so each window just runs the fresh binaries.
-start "NexusTK LOGIN (2000/2001)" cmd /k ""%DOTNET%" run --no-build --project "%~dp0LoginServer" -- --ports 2000,2001"
-start "NexusTK GAME (2005/2006)"  cmd /k ""%DOTNET%" run --no-build --project "%~dp0Server" -- --ports 2005,2006"
+start "NexusTK LOGIN (%PORT_BASE%/%LOGIN_533%)" cmd /k ""%DOTNET%" run --no-build --project "%~dp0LoginServer" -- --ports %PORT_BASE%,%LOGIN_533%"
+start "NexusTK GAME (%GAME_495%/%GAME_533%)"  cmd /k ""%DOTNET%" run --no-build --project "%~dp0Server" -- --ports %GAME_495%,%GAME_533%"
 
 REM Done -- everything below is subroutines, so stop before falling into them.
 exit /b 0

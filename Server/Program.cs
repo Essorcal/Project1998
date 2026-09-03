@@ -32,6 +32,20 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
 
+try
+{
+    Shared.ChannelPorts.ConfigureGamePair(ports);
+}
+catch (ArgumentException e)
+{
+    Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
+    Log.Shutdown();
+    Environment.ExitCode = 1;
+    return;
+}
+
+Log.Info($"=== channel pairing: game {ports[0]}/{ports[1]} -> " +
+         $"login {Shared.ChannelPorts.LoginFor(ports[0])}/{Shared.ChannelPorts.LoginFor(ports[1])} ===");
 Log.Info($"=== Project1998 (C#) starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc (login+game), framing=AA|len|op|inc|body (no trailer) ===");
 Content.Load();   // maps + mobs registries (external gitignored data; powers @warp/@maps/@mobs/@summon)
