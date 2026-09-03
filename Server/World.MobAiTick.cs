@@ -18,12 +18,17 @@ public sealed partial class World
     /// after <c>_lock</c> is released (see <c>docs/common/Locking.md</c>, "decide under the lock, act outside
     /// it"). The queues are the tick's own lists, shared by every map's context that beat, so their order
     /// across maps is the order the maps were walked in — exactly as before the split.
+    ///
+    /// <para>What it deliberately does NOT carry is the live <see cref="MapState"/>. <c>Step</c> resolves the
+    /// map through <see cref="World.Map"/>, which is private to <c>World</c>; a context handed to a test
+    /// (<see cref="MobTickContextForTest"/>) therefore reaches its own queues and its own tile-set copies and
+    /// nothing the tick shares — the #108 review's point that <c>InternalsVisibleTo("Tests")</c> makes an
+    /// <c>internal</c> field no seal at all.</para>
     /// </summary>
     internal sealed class MobTickContext
     {
         public readonly World World;
         public readonly ushort MapId;
-        public readonly MapState Map;
         /// <summary>The map's size from the registry, or (0,0) for a map with no registry row — the step
         /// helpers read a zero width as "unbounded", which is what a content-free test map wants.</summary>
         public readonly (ushort Xs, ushort Ys) Dims;
@@ -45,7 +50,8 @@ public sealed partial class World
         public readonly List<(ushort map, Mob mob)> HealthShows;
         public readonly List<(ushort map, Mob mob)> ExpiredPets;
 
-        /// <summary>Caller holds <c>_lock</c>: the two tile sets are read off live player and mob lists.</summary>
+        /// <summary>Caller holds <c>_lock</c>: the two tile sets are read off live player and mob lists.
+        /// <paramref name="map"/> is read here and not kept — see the class doc.</summary>
         public MobTickContext(World world, ushort mapId, MapState map,
                               List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
                               List<(ushort map, uint id, byte dir)> turns,
@@ -59,7 +65,7 @@ public sealed partial class World
                               List<(ushort map, Mob mob)> expiredPets)
         {
             Debug.Assert(world.HoldsWorldLock, "MobTickContext reads the live player and mob lists; build it under World._lock");
-            World = world; MapId = mapId; Map = map;
+            World = world; MapId = mapId;
             Moves = moves; Turns = turns; Hits = hits; MobCasts = mobCasts; Chatter = chatter; MobHits = mobHits;
             TrapDamage = trapDamage; FxRepeats = fxRepeats; HealthShows = healthShows; ExpiredPets = expiredPets;
 
@@ -79,10 +85,14 @@ public sealed partial class World
     /// session (<c>docs/common/Locking.md</c> row 2) or the Lua gate (row 1) — everything session-facing is
     /// queued for the tick to apply after <c>_lock</c> is released.
     ///
-    /// <para>Runs under <c>World._lock</c>, and only there; the assert at the top is the contract. The
-    /// exception boundary is the CALLER's: <see cref="World.Tick"/> wraps each call so one creature that
-    /// throws is logged and skipped while the rest of the sweep — and every packet already queued — goes
-    /// on. A test that wants to see a throw drives this directly and expects it to propagate.</para>
+    /// <para>Runs under <c>World._lock</c>, and only there; the assert at the top is the contract in Debug
+    /// builds (it is compiled out of Release, like every lock assert in this tree — <c>Tests/MobAiTickTests.cs</c>
+    /// pins it firing). It complements the <c>Tests/MobAiLockTests.cs</c> scan rather than replacing it: that
+    /// scan covers the files that hold a mob they do not own, and this file is <c>World</c>, the owner of the
+    /// lock, which is why <c>World.cs</c> is not scanned either. The exception boundary is the CALLER's:
+    /// <see cref="World.Tick"/> wraps each call so one creature that throws is logged and skipped while the
+    /// rest of the sweep — and every packet already queued — goes on. A test that wants to see a throw
+    /// drives this directly and expects it to propagate.</para>
     /// </summary>
     internal static class MobAiTick
     {
@@ -91,7 +101,9 @@ public sealed partial class World
             Debug.Assert(ctx.World.HoldsWorldLock, "MobAiTick.Step runs under World._lock and nowhere else");
 
             // The context, unpacked under the names the body has always used — so the move below is a move.
-            var w = ctx.World; var m = ctx.Map; ushort mapId = ctx.MapId;
+            // The map comes from World, not the context (see MobTickContext): one dictionary probe per mob per
+            // beat, measured at noise level against the sweep.
+            var w = ctx.World; ushort mapId = ctx.MapId; var m = w.Map(mapId);
             var dims = ctx.Dims; var terrain = ctx.Terrain; var occupied = ctx.Occupied; var mobTiles = ctx.MobTiles;
             var moves = ctx.Moves; var turns = ctx.Turns; var hits = ctx.Hits; var mobCasts = ctx.MobCasts;
             var chatter = ctx.Chatter; var mobHits = ctx.MobHits; var trapDamage = ctx.TrapDamage;
