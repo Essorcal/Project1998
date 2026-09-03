@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using MoonSharp.Interpreter;
 using Shared;
 
@@ -9,8 +10,10 @@ namespace Server;
 ///
 /// <para><b>Event hooks only, and that is deliberate.</b> RTK gives a mob six hooks; four of them
 /// (<c>on_attacked</c>, <c>on_healed</c>, <c>after_death</c>, <c>on_spawn</c>) fire on events, which happen
-/// rarely and can safely take a lock. The other two (<c>move</c>, <c>attack</c>) fire for every mob on every
-/// heartbeat — and a survey of all 265 RTK mob tables found that what they actually contain is idle chatter,
+/// rarely and can safely take a lock — and of those four this host implements three, because
+/// <c>on_healed</c> is NOT wired here: see the note above the hook constants for which heal would have had
+/// to fire it. The other two (<c>move</c>, <c>attack</c>) fire for every mob on every heartbeat — and a
+/// survey of all 265 RTK mob tables found that what they actually contain is idle chatter,
 /// a chance to cast, and paralysis immunity, every one of which is now DATA
 /// (MobChatter.csv / MobSpells.csv / MobBosses.csv). So the per-tick path stays pure C# and this host never
 /// runs inside <c>World._lock</c>, which is what makes it safe: a Lua hook that re-entered the world under
@@ -27,8 +30,19 @@ public static class MobScript
     // mobKey|hook pairs that actually exist, so the hot path is a hash lookup and never a Lua call.
     private static HashSet<string> _defined = new(StringComparer.OrdinalIgnoreCase);
 
+    // THREE of RTK's four event hooks, not four. `on_healed` was resolved at load and advertised in
+    // mob_ai.lua but nothing ever queued it (World.QueueHook is called with OnSpawn, OnAttacked and
+    // AfterDeath and nothing else), so a script defining it loaded and then silently never fired — the worst
+    // shape a hook can have, because it looks supported. Removed rather than wired up, and #103 records why:
+    // wiring it means choosing WHICH heal fires it, and this tree has six distinct ones — World.HealMob from
+    // a player's cast, World.HealMobFromScript from a Lua heal reaching back in (#100), the boss last-stand
+    // save-heal in TryDamage, the two boss self-heals in the tick, and SuteAi's wounded self-heal. (A seventh
+    // write of a mob's HP to full, the harvest node's lapse reset in TryClaimHarvestNode, is a claim being
+    // settled rather than anything a healer did.) Nothing in the RTK material this repo has says which of
+    // those RTK's on_healed corresponds to, and picking one would be inventing a game fact (AGENTS.md rule 2)
+    // in a PR whose whole point is that behaviour does not change. It comes back the day a source says what
+    // it fires on, and that is a two-line change plus a QueueHook call.
     public const string OnAttacked = "on_attacked";
-    public const string OnHealed   = "on_healed";
     public const string AfterDeath = "after_death";
     public const string OnSpawn    = "on_spawn";
 
@@ -59,7 +73,7 @@ public static class MobScript
                 {
                     if (pair.Value.Type != DataType.Table) continue;
                     string key = pair.Key.CastToString() ?? "";
-                    foreach (var hook in new[] { OnAttacked, OnHealed, AfterDeath, OnSpawn })
+                    foreach (var hook in new[] { OnAttacked, AfterDeath, OnSpawn })
                         if (pair.Value.Table.Get(hook).Type == DataType.Function) defined.Add($"{key}|{hook}");
                 }
 
@@ -85,6 +99,14 @@ public static class MobScript
     /// swallowed — one broken hook can't take down a tick.</summary>
     public static void Fire(string mobKey, string hook, MobContext ctx)
     {
+        // The #90 rule's second half, asserted here rather than in Session.EnterScriptGate: the gate is
+        // static and has no World to ask, and this is the entry that can actually be reached from inside the
+        // lock — World.Tick queues these hooks precisely so it can drain them after releasing it. A hook is
+        // free to call INTO the world (vanish, say, heal all do); a thread already holding the world lock
+        // entering Lua is the direction that deadlocks.
+        Debug.Assert(!ctx.World.HoldsWorldLock,
+            "lock order violated: World._lock is held while firing a Lua mob hook (#90). Queue the hook and " +
+            "run it after the lock is released, the way World.Tick does.");
         if (!Has(mobKey, hook)) return;
         try
         {
@@ -116,6 +138,11 @@ public sealed class MobContext
 
     internal MobContext(World world, ushort map, Mob mob, Session? actor)
     { _world = world; _map = map; _mob = mob; _actor = actor; }
+
+    /// <summary>The world this hook is running against — for <see cref="MobScript.Fire"/>'s lock-order
+    /// assert, which needs a World and is the only reason this is exposed. Not visible to Lua: the
+    /// MoonSharp binding only surfaces the lower-case members below.</summary>
+    internal World World => _world;
 
     public string key => _mob.Key;
     public string name => _mob.Name;

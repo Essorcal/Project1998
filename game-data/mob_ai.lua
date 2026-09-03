@@ -4,7 +4,8 @@
 -- idle chatter, spellcasting, boss survival -- is C# and data (MobChatter.csv, MobSpells.csv, MobBosses.csv,
 -- MobSpawnRules.csv). A mob only belongs here when RTK's script does something none of those can express.
 --
--- Four hooks, all EVENTS: on_attacked, on_healed, after_death, on_spawn. There is deliberately no `move` or
+-- Three hooks, all EVENTS: on_attacked, after_death, on_spawn. (RTK also has on_healed; it is not wired here
+-- -- see the note in Server/MobScript.cs and issue #103.) There is deliberately no `move` or
 -- `attack` hook: those fire for every mob on every 600ms heartbeat, and the survey of RTK's 265 mob tables
 -- found nothing in them that isn't data. Keeping Lua off the tick is what lets these hooks run outside the
 -- world lock, where they are free to speak, heal, vanish and touch a player's quest registry.
