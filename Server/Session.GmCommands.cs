@@ -1596,6 +1596,19 @@ public sealed partial class Session
                 $"{Prefix}pkt show | clear",       " inspect or drop pending",
                 $"{Prefix}pkt file <name>",        " send packets/<name>.txt",
             });
+            // The token grammar, which this handler really does parse (ParsePacketTokens) and which no Args
+            // column can hold. Without it @pkt is unusable from its own help: you can see that it takes
+            // "[tokens]" and have no idea what one looks like.
+            ReplyList("tokens", new[]
+            {
+                "xx  one hex byte",
+                "#n  u16 big-endian, decimal",
+                "%n  u32 big-endian, decimal",
+                ":text  ASCII, no length",
+                "$text  ASCII, u16BE length",
+                "_ inside : or $ = a space",
+                "; starts a comment",
+            });
             return;
         }
 

@@ -255,6 +255,14 @@ public sealed class CommandTableTests
         "pane3| inspect or drop pending",
         "pane3|@pkt file <name>",
         "pane3| send packets/<name>.txt",
+        "pane3|= tokens =",
+        "pane3|xx  one hex byte",
+        "pane3|#n  u16 big-endian, decimal",
+        "pane3|%n  u32 big-endian, decimal",
+        "pane3|:text  ASCII, no length",
+        "pane3|$text  ASCII, u16BE length",
+        "pane3|_ inside : or $ = a space",
+        "pane3|; starts a comment",
     })]
 
     // --- the two whose channel IS the behaviour ---------------------------------------------------------
