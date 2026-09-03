@@ -50,8 +50,7 @@ public sealed partial class Session
         // world read the same mob. Splitting it into a reset call and a claim call would have moved each
         // WRITE under the lock and left the decision spanning both, so two players swinging at one node in
         // the same instant could still both see it free. The semantics are exactly what they were.
-        long now = Environment.TickCount64;
-        if (!_world.TryClaimHarvestNode(node, _char.Id, now, HarvestClaimMs))
+        if (!_world.TryClaimHarvestNode(node, _char.Id, HarvestClaimMs))
         { Notify($"Someone else is working this {node.Name.ToLowerInvariant()}."); return true; }
 
         // The swing. Deliberately NOT your weapon damage: a legendary miner with bare hands out-mines a

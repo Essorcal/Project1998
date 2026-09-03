@@ -2227,11 +2227,25 @@ public sealed class World
     /// else refuses, and your own claim is refreshed.</para>
     ///
     /// <para>The node's HP damage is not here: it already goes through <see cref="TryDamage"/>, which takes
-    /// this lock itself.</para></summary>
-    internal bool TryClaimHarvestNode(Mob node, uint claimant, long now, long claimMs)
+    /// this lock itself.</para>
+    ///
+    /// <para><b>The clock is read here, inside the acquisition, and not by the caller before it.</b> The
+    /// first cut took <c>now</c> as a parameter, so the lapse decision and the new expiry both used a reading
+    /// from before the wait for the lock: a claim stamped fractionally short, and a claim that lapsed DURING
+    /// the wait not seen. The magnitude is one lock hold against a two-minute claim, so nothing a player
+    /// could feel — but the code this replaced took no lock at all, so the window was new, and "the semantics
+    /// are exactly what they were" is only literally true with the read on this side of it.</para>
+    ///
+    /// <para><paramref name="clock"/> is a test seam and nothing else. Production passes nothing and the
+    /// ternary reads <see cref="Environment.TickCount64"/> directly, so no caller-supplied delegate runs
+    /// inside <c>_lock</c> on any real path; a test's clock has to stay pure, because reaching back into the
+    /// world from inside this acquisition is the deadlock the #90 rule is about.</para></summary>
+    internal bool TryClaimHarvestNode(Mob node, uint claimant, long claimMs, Func<long>? clock = null)
     {
         lock (_lock)
         {
+            long now = clock is null ? Environment.TickCount64 : clock();
+
             // A node nobody is touching has nothing to observe it, so a lapsed claim is settled lazily on the
             // next swing rather than on a tick — indistinguishable from RTK's timer, and no per-tick work.
             if (node.HarvestClaimUntil != 0 && now > node.HarvestClaimUntil)

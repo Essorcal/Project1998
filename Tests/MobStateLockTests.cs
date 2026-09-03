@@ -54,7 +54,9 @@ public class MobStateLockTests
         Assert.Equal(3, mob.Handed[0].Amount);
         Assert.Equal("a bent sword", mob.Handed[0].CustomName);
         Assert.Equal("someone", mob.Handed[0].Owner);   // bonded items ride along still bound
-        Assert.Equal(43, mob.Handed[1].ItemId);
+        Assert.Equal((ushort)100, mob.Handed[0].Dura);  // and so does wear: the death path drops the item back at
+        Assert.Equal(43, mob.Handed[1].ItemId);         // the durability it went in with (World.TryDamage, Dura = h.Dura)
+        Assert.Equal((ushort)50, mob.Handed[1].Dura);
     }
 
     /// <summary>Many hands at once lose nothing. Without the lock this is the <c>??=</c> race: two threads
@@ -94,7 +96,11 @@ public class MobStateLockTests
 
     /// <summary>The four claim rules, unchanged from when they ran unlocked in Session.Harvest: a free node
     /// is taken, its owner may keep swinging, everyone else is refused, and a lapsed claim heals the node to
-    /// full and frees it for the next person.</summary>
+    /// full and frees it for the next person.
+    ///
+    /// <para>The times come in through the <c>clock</c> seam because the world reads the clock INSIDE its own
+    /// acquisition now — the caller no longer has a <c>now</c> to hand it. Each closure is a constant, so the
+    /// four rules are pinned at exact instants exactly as they were when the parameter existed.</para></summary>
     [Fact]
     public void ClaimSemanticsAreWhatTheyWere()
     {
@@ -102,24 +108,42 @@ public class MobStateLockTests
         var node = NodeOn(ClaimMap, "Iron Vein", hp: 100);
         long now = 1_000_000;
 
-        Assert.True(world.TryClaimHarvestNode(node, claimant: 7, now, claimMs: 120_000));
+        Assert.True(world.TryClaimHarvestNode(node, claimant: 7, claimMs: 120_000, clock: () => now));
         Assert.Equal(7u, node.HarvestClaimBy);
         Assert.Equal(now + 120_000, node.HarvestClaimUntil);
 
         // The owner keeps it, and the expiry is pushed out again on every swing.
-        Assert.True(world.TryClaimHarvestNode(node, claimant: 7, now + 1_000, claimMs: 120_000));
+        Assert.True(world.TryClaimHarvestNode(node, claimant: 7, claimMs: 120_000, clock: () => now + 1_000));
         Assert.Equal(now + 1_000 + 120_000, node.HarvestClaimUntil);
 
         // Anyone else is refused, and nothing about the node changes.
         node.Hp = 40;
-        Assert.False(world.TryClaimHarvestNode(node, claimant: 9, now + 2_000, claimMs: 120_000));
+        Assert.False(world.TryClaimHarvestNode(node, claimant: 9, claimMs: 120_000, clock: () => now + 2_000));
         Assert.Equal(7u, node.HarvestClaimBy);
         Assert.Equal(40, node.Hp);
 
-        // Past the expiry the node heals to full and the next comer takes it.
-        Assert.True(world.TryClaimHarvestNode(node, claimant: 9, node.HarvestClaimUntil + 1, claimMs: 120_000));
+        // Past the expiry the node heals to full and the next comer takes it. Read out here rather than in
+        // the closure, so the instant is fixed before the lock rather than by when the clock happens to run.
+        long pastExpiry = node.HarvestClaimUntil + 1;
+        Assert.True(world.TryClaimHarvestNode(node, claimant: 9, claimMs: 120_000, clock: () => pastExpiry));
         Assert.Equal(9u, node.HarvestClaimBy);
         Assert.Equal(node.MaxHp, node.Hp);
+    }
+
+    /// <summary>The claim a real caller gets is stamped from a clock read inside the lock: no <c>clock</c>
+    /// argument, and the expiry lands inside the window bounded by two <see cref="Environment.TickCount64"/>
+    /// readings taken around the call. This is the production path — every other claim test drives the seam.
+    /// </summary>
+    [Fact]
+    public void TheRealClockIsReadInsideTheLock()
+    {
+        var node = NodeOn(ClaimMap, "Tin Seam", hp: 100);
+
+        long before = Environment.TickCount64;
+        Assert.True(_fx.World.TryClaimHarvestNode(node, claimant: 3, claimMs: 120_000));
+        long after = Environment.TickCount64;
+
+        Assert.InRange(node.HarvestClaimUntil, before + 120_000, after + 120_000);
     }
 
     /// <summary>
@@ -161,7 +185,7 @@ public class MobStateLockTests
         {
             for (int i = 0; i < Rounds; i++)
             {
-                got[slot] = world.TryClaimHarvestNode(node, id, 5_000_000, 120_000);
+                got[slot] = world.TryClaimHarvestNode(node, id, 120_000, clock: () => 5_000_000);
                 barrier.SignalAndWait();
             }
         }
