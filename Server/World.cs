@@ -131,7 +131,7 @@ public enum BlockReason
 /// <c>_lock</c> — the tick obeys that by queueing every session-facing call and applying it after the
 /// lock is released, and <see cref="HoldsWorldLock"/> is what lets the session side assert it.
 /// </summary>
-public sealed class World
+public sealed partial class World
 {
     private readonly object _lock = new();
 
@@ -146,7 +146,9 @@ public sealed class World
     /// of <c>_lock</c> should be able to see everything that acquires it.</summary>
     internal void UnderWorldLockForTest(Action body) { lock (_lock) body(); }
 
-    private sealed class MapState
+    // internal, not private: MobTickContext (World.MobAiTick.cs) carries one, and a field on an internal type
+    // cannot be of a private one. Still a World-only type by convention; nothing outside World constructs it.
+    internal sealed class MapState
     {
         public readonly List<Session> Players = new();
         public readonly List<Mob> Mobs = new();
@@ -3287,16 +3289,15 @@ public sealed class World
             foreach (var (mapId, m) in _maps)
             {
                 if (m.Mobs.Count == 0 || m.Players.Count == 0) continue;   // no observers -> don't bother
-                var dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
-                var terrain = dims.Item1 > 0 ? MapData.For(mapId, dims.Item1, dims.Item2) : null;
-                var occupied = m.Players.Select(p => (p.PlayerX, p.PlayerY)).ToHashSet();
-                // Every living mob's tile — so a mob won't step onto another (kept current as they move below).
-                var mobTiles = new HashSet<(int, int)>();
-                foreach (var mo in m.Mobs) if (mo.Alive) mobTiles.Add((mo.X, mo.Y));
+                // The map's collision index and this tick's queues, packaged for MobAiTick.Step (World.MobAiTick.cs).
+                var ctx = new MobTickContext(this, mapId, m, moves, turns, hits, mobCasts, chatter, mobHits,
+                                             trapDamage, fxRepeats, healthShows, expiredPets);
+                var dims = ctx.Dims; var terrain = ctx.Terrain; var occupied = ctx.Occupied; var mobTiles = ctx.MobTiles;
 
                 foreach (var mob in m.Mobs)
                 {
                     if (!mob.Alive) continue;
+                    MobAiTick.Step(ctx, mob);
 
                     // Sute's action rhythm (Server/SuteAi.cs): he acts on two beats out of every three and
                     // rests on the third, which is what makes both his steps and his swings arrive in pairs.
