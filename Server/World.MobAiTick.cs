@@ -783,4 +783,18 @@ public sealed partial class World
             if (wanderTrap is not null) { m.Traps.Remove(wanderTrap); w.TriggerTrapLocked(mapId, mob, wanderTrap, trapDamage); }
         }
     }
+
+    // ---- test seams (Tests/MobAiTickTests.cs) ---------------------------------------------------------
+    // Kept beside the code they open rather than in the test project, for the same reason as
+    // UnderWorldLockForTest: a reader of Tick should be able to see everything that runs it.
+
+    /// <summary>One heartbeat on the calling thread. Production runs <see cref="Tick"/> only from
+    /// <see cref="TickLoop"/>; the isolation test wants the beat without the thread, and wants a throw that
+    /// escapes the tick to reach it — which is exactly what the per-mob guard has to prevent.</summary>
+    internal void TickOnceForTest() => Tick();
+
+    /// <summary>A per-map context with its own fresh queues, for driving <see cref="MobAiTick.Step"/> on one
+    /// creature and reading back what it queued. Caller holds <c>_lock</c> (<see cref="UnderWorldLockForTest"/>).</summary>
+    internal MobTickContext MobTickContextForTest(ushort mapId) =>
+        new(this, mapId, Map(mapId), new(), new(), new(), new(), new(), new(), new(), new(), new(), new());
 }
