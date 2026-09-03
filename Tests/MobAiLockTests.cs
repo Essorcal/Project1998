@@ -15,7 +15,6 @@ namespace Tests;
 /// <see cref="AiFieldAssignment"/> being keyed on the FIELD rather than on what the variable is called.
 /// <c>HarvestClaimBy</c> and <c>HarvestClaimUntil</c> are unique to harvest nodes, so keying on them costs no
 /// false positives and catches the site whatever the local is named.</para>
-/// The world lock owns shared-mob AI mutations; code outside <c>World</c> must enter through it.
 ///
 /// <para>The scanned set is the files that hold a <c>Mob</c> they do not own: the session partials, which
 /// reach world mobs through the handlers, <c>MobScript.cs</c>, whose <c>MobContext</c> hands a live mob to a
@@ -43,16 +42,46 @@ public class MobAiLockTests
     private static readonly Regex ThreatMutation = new(
         @"\.(?:ClearThreat|AddThreat)\s*\(", RegexOptions.Compiled);
 
-    private static readonly Regex MobBuffMutation = new(
-        @"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*\.Buffs\.(?:Add|Remove|Clear)\s*\(",
-        RegexOptions.Compiled);
+    /// <summary>The identifier boundary and the receiver shape the HP and buff patterns share: anything
+    /// ending in "mob", with the prefix optional so that both <c>mob</c> and <c>_mob</c> match. Written once
+    /// because the two patterns drifted apart once already — <see cref="MobBuffMutation"/> carried the
+    /// <c>\b</c> hole after the HP pattern was fixed for it in #100.</summary>
+    private const string IdentBoundary = @"(?<![A-Za-z0-9_])";
+    private const string MobIdent = @"(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*";
 
-    /// <summary>Whatever a creature is carrying is world state too, and it is mutated three ways: the
-    /// <c>??=</c> that creates the list, a plain assignment, and the collection calls on it. Keyed on the
-    /// field, not on the variable's name, for the reason in the class doc.</summary>
+    /// <summary>Every mutating call <c>List&lt;T&gt;</c> offers, longest spelling first so the alternation
+    /// does not stop at the prefix of a longer verb. <c>Add</c>/<c>Remove</c>/<c>Clear</c> was the original
+    /// three, and the #105 reviewer walked <c>AddRange</c>, <c>Insert</c>, <c>RemoveAt</c> and
+    /// <c>RemoveAll</c> straight past it: the verb set was a guess at which calls a caller would reach for,
+    /// not a property of the type.</summary>
+    private const string MutatingVerbs = @"(?:AddRange|Add|Insert|RemoveAll|RemoveAt|Remove|Clear)";
+
+    /// <summary>The four shapes a <c>List&lt;T&gt;?</c> field on a mob is mutated through, given the field
+    /// access that precedes them: created or replaced outright; a mutating call reached through <c>.</c>,
+    /// <c>?.</c>, <c>!.</c> or the closing <c>)</c> of the <c>(x.F ??= new()).Add(...)</c> idiom; an element
+    /// replaced through the indexer; or the list aliased into a local and mutated further along the SAME
+    /// line. Both fields are nullable (<c>Mob.Handed</c>, <c>Mob.Buffs</c>), which is why the accessors
+    /// matter: <c>!.</c> is the natural way to call them, and this repo's own tests write it.
+    ///
+    /// <para><b>The reach this does not have, stated rather than implied:</b> an alias that escapes to
+    /// another line (<c>var list = mob.Handed!;</c> and the <c>list.Add</c> below it) is invisible, as is a
+    /// mutation reached through a method that returns the list. The pattern is a line-scoped tripwire with a
+    /// written-down reach, not a proof — what keeps these writes correct is that they go through World
+    /// methods.</para></summary>
+    private static string ListMutation(string field) =>
+        $@"{field}\s*(?:\?\?=|=(?!=))" +
+        $@"|{field}\s*\)?\s*[!?]?\s*\.{MutatingVerbs}\s*\(" +
+        $@"|{field}\s*!?\s*\[[^\]]*\]\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)" +
+        $@"|{field}\s*!?\s*;[^;]*\.{MutatingVerbs}\s*\(";
+
+    private static readonly Regex MobBuffMutation = new(
+        ListMutation(IdentBoundary + MobIdent + @"\.Buffs"), RegexOptions.Compiled);
+
+    /// <summary>Whatever a creature is carrying is world state too. Keyed on the field, not on the
+    /// variable's name, for the reason in the class doc — which is also why it has no mob-shaped receiver to
+    /// widen the way the buff pattern does.</summary>
     private static readonly Regex HandedMutation = new(
-        @"\.Handed\s*(?:\?\?=|=(?!=))|\.Handed\s*\)?\s*\.(?:Add|Remove|Clear)\s*\(",
-        RegexOptions.Compiled);
+        ListMutation(@"\.Handed"), RegexOptions.Compiled);
 
     /// <summary>The receivers this codebase actually uses for a world <c>Mob</c> a Session does not own:
     /// anything ending in "mob" (<c>mob</c>, <c>_mob</c>, <c>wmob</c>, <c>dummyMob</c>, <c>h.mob</c>), and
@@ -62,7 +91,7 @@ public class MobAiLockTests
     /// tripwire with a documented reach, not a proof — what actually keeps these writes correct is that they
     /// go through World methods, so there is nothing left for it to catch.</summary>
     private static readonly Regex MobHpAssignment = new(
-        @"(?<![A-Za-z0-9_])(?:(?:[A-Za-z_][A-Za-z0-9_]*)?[Mm]ob[A-Za-z0-9_]*|node)\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)",
+        IdentBoundary + @"(?:" + MobIdent + @"|node)\.Hp\s*(?:[+\-*/%&|^]?=(?!=)|\+\+|--)",
         RegexOptions.Compiled);
 
     /// <summary>The files that handle a world mob without owning it. <c>Session*.cs</c> is every handler;
