@@ -116,28 +116,22 @@ public sealed partial class Session
         if (id > 0) SendSound(id, _char.Id);
     }
 
-    // "@fistsnd <id>" — set the unarmed swing sfx (see _fistSfx). "@fistsnd 0" mutes it again.
-    private void SetFistSound(string text)
+    // "@fistsnd <id>" / "@hitsnd <id>" / "@swingsnd <id>" — set one of the three melee sfx slots and audition
+    // it in the same breath, so hunting an id with @snd and baking it in is one loop rather than two. "0"
+    // mutes the slot. Session-local (resets on relog) until the final ids are baked in as defaults.
+    //
+    // ONE method for three commands: they were three byte-identical copies differing only in the field, the
+    // noun in the reply and the command name in the usage line — and the first two are parameters while the
+    // third now comes from the table. <paramref name="slot"/> is by reference because the command both reads
+    // the current value (for the refusal) and writes the new one.
+    private void SetSfx(CommandArgs a, ref int slot, string what)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
-        { Refuse($"usage: @fistsnd <id>   (current: {_fistSfx}; 0 = silent)"); return; }
-        _fistSfx = id;
-        if (id > 0) SendSound(id, _char.Id);
-        Reply($"fist swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> @fistsnd {id}");
-    }
-
-    // "@hitsnd <id>" — set the on-connect impact sfx (see _hitSfx). "@hitsnd 0" mutes it again.
-    private void SetHitSound(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
-        { Refuse($"usage: @hitsnd <id>   (current: {_hitSfx}; 0 = silent)"); return; }
-        _hitSfx = id;
-        if (id > 0) SendSound(id, _char.Id);
-        Reply($"hit sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> @hitsnd {id}");
+        if (!a.Int(0, out var id) || id < 0)
+        { Refuse($"{a.Usage()}   (current: {slot}; 0 = silent)"); return; }
+        slot = id;
+        if (id > 0) SendSound(id, _char.Id);          // audition it now
+        Reply($"{what} sfx = {id}{(id == 0 ? " (muted)" : "")}");
+        Log.Info($"   -> {what} sfx = {id}");
     }
 
     // ---- 0x19 background music ------------------------------------------------------------------------
@@ -426,9 +420,9 @@ public sealed partial class Session
     // Map assignments (MapBgm.csv) use the ORDERED 5.33 playlist ids, for ten songs per area that cycle
     // forever. The "-rand" (shuffled) twins hold the same ten songs but stall dead on a 1-in-10 index
     // collision in the client's own advance, so they are audition-only — see the wire comment above.
-    private void PlayMusicCmd(string text)
+    private void PlayMusicCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
+        var parts = a.Words(0).ToList();
 
         // Pull the optional channel override out first, so it can trail any of the positional args.
         byte? forceType = null;
@@ -447,7 +441,7 @@ public sealed partial class Session
             var names = string.Join(", ", Content.MusicTracks
                 .Where(t => t.Set == set && t.Name.Length > 0).OrderBy(t => t.Name)
                 .Select(t => $"{t.Name}({t.Id})"));
-            Reply("usage: @music <name|id> [vol 0-255, default 100] [mp3|midi]   (@music 0 or @music stop = stop)");
+            Reply(a.Usage());
             Reply($"tracks ({(set == Content.MusicSet.New ? "new" : "old")}): {names}");
             if (set == Content.MusicSet.New)
                 Reply("the plain list names are ten tracks in order; the -rand twins are the same ten from " +
@@ -524,14 +518,13 @@ public sealed partial class Session
     // ids may not line up with the client's 001.wav..197.wav numbering, and the user hears "shifted" variants.
     // `@snd 4` plays one; `@snd 4 5 6` plays several; `@snd 1 197 -` (a trailing '-') is rejected — keep it to a
     // few at a time so they don't overlap into noise. Identify each by ear to map RTK sound -> client sound.
-    private void SoundProbe(string text)
+    private void SoundProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { Refuse("usage: @snd <id> [id2 …]   (plays client sound ids; NexusTK.snd has 001..197.wav)"); return; }
+        if (a.None) { Refuse(a.Usage()); return; }
         int played = 0;
-        for (int i = 0; i < parts.Length && played < 8; i++)
+        for (int i = 0; i < a.Count && played < 8; i++)
         {
-            if (!int.TryParse(parts[i], out var id) || id <= 0) continue;
+            if (!a.Int(i, out var id) || id <= 0) continue;
             SendSound(id, _char.Id);
             Reply($"playing sound {id}");
             Log.Info($"   -> @snd {id}");
@@ -543,12 +536,10 @@ public sealed partial class Session
     // "@mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
     // renders each one (0=wisp/blue, 3=mini/status — the default everything else uses, 5=system — what
     // durability warnings use, 11=group, 12=clan). No text -> a canned "test type N" line.
-    private void MiniTextProbe(string text)
+    private void MiniTextProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out var type))
-        { Refuse("usage: @mtx <type> [text...]   (0=wisp 3=mini/status 5=system 11=group 12=clan)"); return; }
-        string msg = parts.Length > 1 ? string.Join(' ', parts[1..]) : $"test type {type}";
+        if (!a.Int(0, out var type)) { Refuse(a.Usage()); return; }
+        string msg = a.Count > 1 ? a.Rest(1) : $"test type {type}";
         SendMiniText(msg, (ushort)type);   // raw, by number: the type under test is the whole point of @mtx
         Reply($"sent minitext type={type}: \"{msg}\"");
         Log.Info($"   -> @mtx type={type} \"{msg}\"");
@@ -564,12 +555,9 @@ public sealed partial class Session
     // slot (client bug, see SendWeather).
     private static readonly string[] WeatherNames = { "clear", "rain", "snow" };
 
-    private void WeatherProbe(string text)
+    private void WeatherProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-
-        if (parts.Length >= 2 && parts[0].Equals("raw", StringComparison.OrdinalIgnoreCase)
-            && int.TryParse(parts[1], out var raw) && raw is >= 0 and <= 255)
+        if (a.Is(0, "raw") && a.Int(1, out var raw) && raw is >= 0 and <= 255)
         {
             SendMap(0x1F, _gameInc++, new byte[] { (byte)raw }, $"weather(0x1F) RAW {raw}");
             string band = raw < 0x0b ? "0 (clear)" : raw <= 0x63 ? "1" : raw == 0x64 ? "NONE - falls through, client bug" : "2";
@@ -577,7 +565,7 @@ public sealed partial class Session
             return;
         }
 
-        if (parts.Length >= 1 && parts[0].Equals("auto", StringComparison.OrdinalIgnoreCase))
+        if (a.Is(0, "auto"))
         {
             _world.ClearWeatherOverride(_char.Map);
             byte now = _world.GetWeather(_char.Map);
@@ -587,15 +575,15 @@ public sealed partial class Session
         }
 
         int w = -1;
-        if (parts.Length >= 1)
+        if (!a.None)
         {
-            w = Array.FindIndex(WeatherNames, n => n.Equals(parts[0], StringComparison.OrdinalIgnoreCase));
-            if (w < 0 && int.TryParse(parts[0], out var n) && n is >= 0 and <= 2) w = n;
+            w = Array.FindIndex(WeatherNames, n => a.Is(0, n));
+            if (w < 0 && a.Int(0, out var n) && n is >= 0 and <= 2) w = n;
         }
         if (w < 0)
         {
             byte cur = _world.GetWeather(_char.Map);
-            Refuse($"usage: @weather clear|rain|snow   |   @weather auto   |   @weather raw <0-255>");
+            Refuse(a.Usage());
             Refuse($"map {_char.Map} is {WeatherNames[Math.Min(cur, (byte)2)]}" +
                     (Content.IsIndoor(_char.Map) ? " (indoor - always clear)" : "") +
                     $"; your 'Weather change' toggle is {(_char.HasSetting(0x06) ? "ON" : "OFF - nothing will draw")}");
@@ -615,25 +603,24 @@ public sealed partial class Session
     // (0x464e0b/0x464e51/0x464e97/0x464edd). Everything else in the flag word either has its own key
     // (whisper F5, group Shift+G, exchange, realm F4) or has NO client affordance at all on this build, so
     // the server is the only way to reach it. See the Show Helmet note in Session.Movement.SettingLabels.
-    private void SettingCmd(string text)
+    private void SettingCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0)
+        if (a.None)
         {
-            Reply("usage: @setting <name> [on|off]   (omit on/off to toggle)");
+            Reply(a.Usage());
             foreach (var (sub, label) in SettingLabels)
                 Reply($"  {label.ToLowerInvariant().Replace(" ", "-"),-18} {(_char.HasSetting(sub) ? "ON" : "OFF")}");
             return;
         }
 
-        string want = parts[0].Replace("-", " ");
+        string want = a.Word(0).Replace("-", " ");
         var hit = SettingLabels.FirstOrDefault(kv =>
             kv.Value.Equals(want, StringComparison.OrdinalIgnoreCase) ||
             kv.Value.Contains(want, StringComparison.OrdinalIgnoreCase));
-        if (hit.Value is null) { Refuse($"no setting matches '{parts[0]}' — run @setting for the list"); return; }
+        if (hit.Value is null) { Refuse($"no setting matches '{a.Word(0)}' — run {Prefix}setting for the list"); return; }
 
-        bool on = parts.Length > 1
-            ? parts[1].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[1] == "1"
+        bool on = a.Count > 1
+            ? a.Is(1, "on") || a.Word(1) == "1"
             : !_char.HasSetting(hit.Key);
         if (on != _char.HasSetting(hit.Key)) _char.ToggleSetting(hit.Key);
         SaveChar();
@@ -649,32 +636,16 @@ public sealed partial class Session
         Log.Info($"   -> @setting {hit.Value} = {(on ? "ON" : "OFF")}");
     }
 
-    // "@swingsnd <id>" — set the melee swing sfx (and play it once so you can audition it in place). Use with
-    // "@snd" to hunt the right woosh id in NexusTK.snd, then "@swingsnd <that id>" bakes it onto every armed
-    // swing. "@swingsnd 0" mutes it again. Session-local (resets on relog) until we bake the final id as default.
-    private void SetSwingSound(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out var id) || id < 0)
-        { Refuse($"usage: @swingsnd <id>   (current: {_swingSfx}; 0 = silent)"); return; }
-        _swingSfx = id;
-        if (id > 0) SendSound(id, _char.Id);
-        Reply($"swing sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> @swingsnd {id}");
-    }
-
     // "@mobact <type> [time]" — calibrate the mob attack-pose action (0x1A). Sets the global MobSwingActionType/
     // Time used by every real mob swing (World.cs), AND immediately plays that action on the mob you're facing so
     // you can eyeball it without waiting for a swing. Sweep <type> 0..8 to find which one drives a creature's
     // Attack frames (Monster.tbl has a per-id Attack field, so the frames exist — the question is the type index
     // for the CREATURE entity vtable, which differs from the player's 1=attack). No mob faced = just sets + says.
-    private void MobActionProbe(string text)
+    private void MobActionProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !byte.TryParse(parts[0], out var type))
-        { Refuse($"usage: @mobact <type> [time]   (current: type={MobSwingActionType} time={MobSwingActionTime})"); return; }
-        ushort time = MobSwingActionTime;
-        if (parts.Length >= 2 && ushort.TryParse(parts[1], out var t)) time = t;
+        if (!byte.TryParse(a.Word(0), out var type))
+        { Refuse($"{a.Usage()}   (current: type={MobSwingActionType} time={MobSwingActionTime})"); return; }
+        ushort time = ushort.TryParse(a.Word(1), out var t) ? t : MobSwingActionTime;
         MobSwingActionType = type;
         MobSwingActionTime = time;
 
@@ -693,14 +664,13 @@ public sealed partial class Session
     // sendAnimation ids. Low ids (unaligned heal 5, spark 28) are confirmed identity, but RTK's 6.x/7.x client may
     // have inserted effects that shift mid/high ids — e.g. the aligned heals (Ohaeng 63 / Ming-Ken 64 / Kwi-Sin 65)
     // may not line up. `@efx 5 63 64 65` plays the four heal variants so we can see which id is really which.
-    private void EffectProbe(string text)
+    private void EffectProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { Refuse("usage: @efx <id> [id2 …]   (play Effect.tbl anim ids 0..127 over you)"); return; }
+        if (a.None) { Refuse(a.Usage()); return; }
         int played = 0;
-        for (int i = 0; i < parts.Length && played < 8; i++)
+        for (int i = 0; i < a.Count && played < 8; i++)
         {
-            if (!int.TryParse(parts[i], out var id) || id < 0 || id > 127) continue;
+            if (!a.Int(i, out var id) || id < 0 || id > 127) continue;
             SendEffect(_char.Id, id);
             Reply($"effect {id}");
             Log.Info($"   -> @efx {id}");
@@ -713,12 +683,10 @@ public sealed partial class Session
     // draws the over-head HP bar at <pct>% and plays the hit overlay animation 0x8f-<crit>. Use it to calibrate
     // P1998_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
     // HitCritByte. e.g. "@hit 50" (half bar) then "@hit 50 0" / "@hit 50 40" to compare hit animations.
-    private void HitProbe(string text)
+    private void HitProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out var pct))
-        { Refuse("usage: @hit <pct 0..100> [crit 0..255]   (over-head HP bar + hit anim on the faced mob)"); return; }
-        byte crit = parts.Length > 1 && byte.TryParse(parts[1], out var c) ? c : HitCritByte;
+        if (!a.Int(0, out var pct)) { Refuse(a.Usage()); return; }
+        byte crit = byte.TryParse(a.Word(1), out var c) ? c : HitCritByte;
         pct = Math.Clamp(pct, 0, 100);
 
         var (fx, fy) = FrontTile();

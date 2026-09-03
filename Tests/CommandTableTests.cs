@@ -113,19 +113,19 @@ public sealed class CommandTableTests
 
     [Theory]
     // --- refusals: the command's action did not happen. Loud, on the speech bubble. ----------------------
-    [InlineData("@coins x", new[] { "bubble|usage: @coins <n>   (n may be negative to remove; default +10000)" })]
+    [InlineData("@coins x", new[] { "bubble|usage: @coins/@gold [n]" })]
     [InlineData("@nope", new[] { "bubble|Unknown command '@nope'. Try @help." })]
     [InlineData("@approach", new[] { "bubble|usage: @approach <username>" })]
-    [InlineData("@dura", new[] { "bubble|usage: @dura <name or id> <n>" })]
-    [InlineData("@item", new[] { "bubble|usage: @item <name or id> [amount]   (browse with  @items <name>)" })]
+    [InlineData("@dura", new[] { "bubble|usage: @dura <name|id> <n>" })]
+    [InlineData("@item", new[] { "bubble|usage: @item <name|id> [amount]" })]
     [InlineData("@fistsnd", new[] { "bubble|usage: @fistsnd <id>   (current: 9; 0 = silent)" })]
-    [InlineData("@exp", new[] { "bubble|exp is 0. usage: @exp <n> [kill]   (kill = eligible for the totem-time bonus)" })]
+    [InlineData("@exp", new[] { "bubble|exp is 0. usage: @exp <n> [kill]" })]
     // Was the 0x02 login box, which is the pre-world channel and shows one line only.
     [InlineData("@sweep", new[] { "bubble|@sweep is disabled (crashes the client on resource-loading opcodes). Use @s <hexop>." })]
     // A two-line refusal stays whole on one widget rather than splitting across two.
     [InlineData("@stats", new[]
     {
-        "bubble|usage: @stats <vita> <mana> [<all> | <might> <grace> <will>]   e.g. @stats 50000 50000 130",
+        "bubble|usage: @stats <vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
         "bubble|  now: vita 50, mana 34, might 3, grace 3, will 3",
     })]
 
@@ -149,7 +149,7 @@ public sealed class CommandTableTests
     [InlineData("@dog", new[] { "pane3|Dog Linguist granted - say \"secret\" to your class's Dog to be taught, or @lvl 1 to have the rebuild hand over the Dog spells you qualify for (70 and 99). NOTE: Peasant is a PC subpath and will be refused - only the four base classes and the NPC subpaths (Chung ryong ? Baekho ? Ju jak ? Hyun moo) may learn Dog spells." })]
     [InlineData("@pkt", new[]
     {
-        "pane3|usage: @pkt <hexop> [xx | #u16 | %u32 | :text | $text]",
+        "pane3|usage: @pkt <hexop> [tokens] | add | send | show | clear | file <name>",
         "pane3|  @pkt add <tokens>   append to the pending packet (the chat box is short)",
         "pane3|  @pkt send <hexop>   send what's pending, then clear it",
         "pane3|  @pkt show | clear   inspect or drop the pending bytes",
@@ -320,4 +320,55 @@ public sealed class CommandTableTests
     [InlineData("<a>  <b>")]            // a run of spaces reaches the rendered usage line
     [InlineData(" <a>")]
     public void MalformedArgSpecsAreCaught(string spec) => Assert.NotNull(ArgSpecError(spec));
+    // ---- the shared argument shapes --------------------------------------------------------------------
+    //
+    // "an item name, then a count" is the one shape three commands take, and each used to re-implement it.
+    // It is not trivial: an item name is WORDS, so the count has to be told apart from the last word of the
+    // name, and only a positive count counts. Driven through real commands against names that match no item,
+    // so the reply echoes back exactly which half the splitter called the name.
+
+    [Theory]
+    // The trailing 4 is the count, so the name is the words before it.
+    [InlineData("@item Nothing Here 4", "no item matches \"Nothing Here\" - try  @items Nothing Here")]
+    // No trailing number: the whole tail is the name.
+    [InlineData("@item Nothing Here", "no item matches \"Nothing Here\" - try  @items Nothing Here")]
+    // A NEGATIVE trailing number is not a count. "@item Nothing -1" asks for an item called "Nothing -1"
+    // rather than granting a negative pile of "Nothing".
+    [InlineData("@item Nothing -1", "no item matches \"Nothing -1\" - try  @items Nothing -1")]
+    // @take reads "all" in the count's position, and it comes off the name the same way a number does.
+    [InlineData("@take Nothing Here all", "no item matches \"Nothing Here\" - try  @items Nothing Here")]
+    // @dura shares the shape but REQUIRES the count...
+    [InlineData("@dura Nothing Here 5", "no item matches \"Nothing Here\" - try  @items Nothing Here")]
+    // ...so a name with no count, and a name with a negative one, are both refused with the table's shape.
+    [InlineData("@dura Nothing", "usage: @dura <name|id> <n>")]
+    [InlineData("@dura Nothing Here -3", "usage: @dura <name|id> <n>")]
+    public void NameThenTrailingCountIsSplitTheSameWayEverywhere(string command, string expected)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        session.TryRunCommand(command);
+        Assert.Equal(new[] { "bubble|" + expected }, Transcript(outbound));
+    }
+
+    /// <summary>Every refusal's usage line is the table's own Args column, rendered — not a copy of it typed
+    /// out beside the handler. Editing a row now moves @help and the refusal together, which is the whole
+    /// point of there being one source; before this there were 22 hand-written copies to keep in step, and
+    /// several had already drifted (@hit's row said "[dmg]" while the handler wanted a percent and a crit
+    /// byte).</summary>
+    [Theory]
+    [InlineData("@hit", "usage: @hit <pct 0-100> [crit 0-255]")]
+    [InlineData("@mtx", "usage: @mtx <type> [text...]")]
+    [InlineData("@efx", "usage: @efx <id> [id2 ...]")]
+    [InlineData("@coins x", "usage: @coins/@gold [n]")]        // aliases and all, exactly as @help lists them
+    public void RefusalsRenderTheTableRow(string command, string expected)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        session.TryRunCommand(command);
+        Assert.Equal(new[] { "bubble|" + expected }, Transcript(outbound));
+
+        // ...and it is the same string @help would print for that row, minus the "usage: " prefix.
+        var row = Session.CommandRows().First(r => r.Names.Contains(command.Split(' ')[0][1..]));
+        Assert.Contains(row.Args, expected);
+    }
 }

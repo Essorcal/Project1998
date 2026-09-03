@@ -23,9 +23,9 @@ public sealed partial class Session
     // ---- item GM commands ----
 
     // "@items [filter]": browse the item registry, fuzzy-ranked by name.
-    private void ListItems(string text)
+    private void ListItems(CommandArgs a)
     {
-        string q = text.Trim();
+        string q = a.Raw;
         var found = Content.SearchItems(q, 15);
         if (found.Count == 0) { Reply(q.Length == 0 ? "no items loaded (check game-data/Items.csv)" : $"no items match \"{q}\""); return; }
         Reply($"items{(q.Length > 0 ? $" ~ \"{q}\"" : "")} ({found.Count} of {Content.Items.Count}):");
@@ -33,16 +33,13 @@ public sealed partial class Session
             Reply($"  #{i.Id} {i.Name} — {(i.IsEquip ? $"equip(dam {i.Dam}/ac {i.Armor})" : i.IsConsumable ? "use" : "etc")}   (@item {i.Name})");
     }
 
-    // "@item <name or id> [amount]": summon an item into the bag (equip items keep a single copy per slot).
     // "@coins <n>" (alias "@gold <n>") — add n coins to the purse (updates the HUD + persists). A negative n
     // removes that many, floored at 0; "@coins" alone defaults to +10000. Coins aren't in the item registry
     // (they're a negative item id on the wire), so @item can't grant them — this is the direct GM path.
-    private void GiveCoinsCmd(string text)
+    private void GiveCoinsCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        int amount = 10000;
-        if (parts.Length > 0 && !int.TryParse(parts[0], out amount))
-        { Refuse("usage: @coins <n>   (n may be negative to remove; default +10000)"); return; }
+        int amount = 10000;                       // bare @coins is the common case; see the row's help
+        if (!a.None && !a.Int(0, out amount)) { Refuse(a.Usage()); return; }
 
         if (amount >= 0) AwardGold((uint)amount);
         else
@@ -58,10 +55,10 @@ public sealed partial class Session
     // it. Quest testing is NPC-centric, and reaching one used to mean already knowing its map for @warp —
     // this removes the lookup step. An exact name wins outright; an ambiguous fragment lists the matches
     // rather than guessing. A disabled/era-gated NPC still resolves (you land at its empty spot, told so).
-    private void NpcCmd(string text)
+    private void NpcCmd(CommandArgs a)
     {
-        string q = text.Trim();
-        if (q.Length == 0) { NpcToggleCmd(q); return; }
+        string q = a.Raw;
+        if (q.Length == 0) { NpcToggleCmd(a); return; }
 
         var matches = (int.TryParse(q, out var id)
             ? Content.Npcs.Where(n => n.Id == id)
@@ -93,7 +90,7 @@ public sealed partial class Session
     // The two ways to be off are reported separately because the fix differs: an era-gated NPC (NPCs.csv
     // EraFeature — Yarlof, who arrives with the 2005 Druid bouquet quest) is absent because he does not exist
     // yet, and no amount of editing the Enabled column will bring him back.
-    private void NpcToggleCmd(string text)
+    private void NpcToggleCmd(CommandArgs a)
     {
         static string Describe(NpcDef n) => $"#{n.Id} {n.Name} (map {n.Map})";
 
@@ -115,7 +112,7 @@ public sealed partial class Session
     // itself is config, not live GM state — edit game-data/CraftingToggles.csv and run @reload to
     // change it (see Server/CraftingToggles.cs + docs/common/Crafting-Values.md for why Jewelry and Food
     // Preparation/Chef default off).
-    private void CraftToggleCmd(string text)
+    private void CraftToggleCmd(CommandArgs a)
     {
         var lines = CraftingToggles.AllSkills
             .Select(s => $"{s}={(CraftingToggles.IsEnabled(s) ? "ON" : "off")}");
@@ -127,7 +124,7 @@ public sealed partial class Session
     // for the same reason as @craft: the target date is deployment config (ServerTuning.csv EraDate), not
     // live GM state, so it moves by editing the file and running @reload. A feature with no row in
     // EraFeatures.csv is always present and deliberately isn't listed — see Server/Era.cs.
-    private void EraCmd(string text)
+    private void EraCmd(CommandArgs a)
     {
         var now = Era.Today;
         if (now is null)
@@ -158,15 +155,14 @@ public sealed partial class Session
     // exercise — was only testable when the real clock happened to land in it. Pinning is WORLD-scoped (the
     // hour is one shared value; every session's 0x20 clock follows within a tick) and hour-only: day, season
     // and year keep deriving, because nothing behavioral hangs off them. `real` releases the pin.
-    private void ClockCmd(string text)
+    private void ClockCmd(CommandArgs a)
     {
-        string a = text.Trim();
-        if (a.Length > 0)
+        if (!a.None)
         {
-            if (a.Equals("real", StringComparison.OrdinalIgnoreCase)) _world.SetHourOverride(null);
-            else if (int.TryParse(a, out var h) && h is >= 0 and <= 23) _world.SetHourOverride(h);
-            else { Refuse($"usage: {Prefix}clock <0-23> | real"); return; }
-            Log.Info($"   -> @clock '{_char.Name}': {(a.Equals("real", StringComparison.OrdinalIgnoreCase) ? "released" : $"hour pinned to {a}")}");
+            if (a.Is(0, "real")) _world.SetHourOverride(null);
+            else if (a.Int(0, out var h) && h is >= 0 and <= 23) _world.SetHourOverride(h);
+            else { Refuse(a.Usage()); return; }
+            Log.Info($"   -> @clock '{_char.Name}': {(a.Is(0, "real") ? "released" : $"hour pinned to {a.Word(0)}")}");
         }
 
         var (hour, day, year) = _world.ClockNow;
@@ -181,9 +177,9 @@ public sealed partial class Session
     // alliances count (NOT the lifetime tally). Without this there is no way to see WHY a hand-in was
     // refused: a boss that has been pushed off the end looks exactly like a boss that was never killed.
     // `clear` wipes it, which is what accepting an alliance does. See Server/MythicAlliance.cs.
-    private void KillTrackCmd(string text)
+    private void KillTrackCmd(CommandArgs a)
     {
-        if (text.Trim().Equals("clear", StringComparison.OrdinalIgnoreCase))
+        if (a.Is(0, "clear"))
         {
             ClearKillTrack();
             Reply("Kill track cleared (this is what accepting a mythic alliance does).");
@@ -197,15 +193,15 @@ public sealed partial class Session
         Reply($"Kill track ({rows.Count}/{KillTrack.Slots} kinds, newest first): " + string.Join(", ", lines));
     }
 
-    private void GiveItemCmd(string text)
+    private void GiveItemCmd(CommandArgs a)
     {
-        string q = text.Trim();
-        if (q.Length == 0) { Refuse("usage: @item <name or id> [amount]   (browse with  @items <name>)"); return; }
+        if (a.None) { Refuse(a.Usage()); return; }
+        // A trailing number is the AMOUNT, not part of the name — but only a positive one, so "@item Rice -1"
+        // still looks for an item called "Rice -1" rather than granting a negative pile.
         int amount = 1;
-        var parts = q.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length > 1 && int.TryParse(parts[^1], out var n) && n > 0) { amount = n; q = string.Join(' ', parts[..^1]); }
+        if (a.NameThenTrailingInt(out string q, out int n) && n > 0) amount = n; else q = a.Raw;
         var def = Content.FindItem(q);
-        if (def is null) { Refuse($"no item matches \"{q}\" — try  @items {q}"); return; }
+        if (def is null) { Refuse($"no item matches \"{q}\" — try  {Prefix}items {q}"); return; }
         if (def.Stackable) GiveItem(def, amount);
         else for (int i = 0; i < amount; i++) if (!GiveItem(def)) break;
         Reply($"Gave {def.Name}{(amount > 1 ? $" x{amount}" : "")} (#{def.Id}, {(def.IsEquip ? $"equip slot {def.EquipSlot}" : def.IsConsumable ? "use" : "etc")}).");
@@ -215,17 +211,14 @@ public sealed partial class Session
     // The single-item cleanup @clearinv is too blunt for — testing "the NPC takes your item" without nuking
     // the rest of the pack. Goes through TakeItem, the same removal path quests use, so stacks drain low
     // slots first and every touched slot is redrawn. Asking for more than you hold takes all of them.
-    private void TakeItemCmd(string text)
+    private void TakeItemCmd(CommandArgs a)
     {
-        string q = text.Trim();
-        if (q.Length == 0) { Refuse($"usage: {Prefix}take <name or id> [amount|all]   (browse with  {Prefix}items <name>)"); return; }
+        if (a.None) { Refuse(a.Usage()); return; }
+        // Same trailing-count shape as @item, plus the "all" keyword in the same position.
         int amount = 1;
-        var parts = q.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length > 1)
-        {
-            if (parts[^1].Equals("all", StringComparison.OrdinalIgnoreCase)) { amount = int.MaxValue; q = string.Join(' ', parts[..^1]); }
-            else if (int.TryParse(parts[^1], out var n) && n > 0) { amount = n; q = string.Join(' ', parts[..^1]); }
-        }
+        string q = a.Raw;
+        if (a.Count > 1 && a.Is(a.Count - 1, "all")) { amount = int.MaxValue; q = a.Rest(0, a.Count - 1); }
+        else if (a.NameThenTrailingInt(out var name, out var n) && n > 0) { amount = n; q = name; }
         var def = Content.FindItem(q);
         if (def is null) { Refuse($"no item matches \"{q}\" — try  {Prefix}items {q}"); return; }
         int held = CountItem(def.Key);
@@ -240,25 +233,22 @@ public sealed partial class Session
     // stat/HP/MP gains. @lvl can't test any of that — it REBUILDS at a level. `kill` marks the grant as kill
     // exp, which is what opts into the 1.05 totem-time bonus (quest-style grants never take it). Bare @exp
     // reports where you stand.
-    private void ExpCmd(string text)
+    private void ExpCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        bool kill = parts.Length > 1 && parts[1].Equals("kill", StringComparison.OrdinalIgnoreCase);
-        if (parts.Length == 0 || !uint.TryParse(parts[0], out var n) || n == 0)
-        { Refuse($"exp is {_char.Exp:N0}. usage: {Prefix}exp <n> [kill]   (kill = eligible for the totem-time bonus)"); return; }
-        AwardExp(n, killExp: kill);
+        // uint, not int: the grant feeds AwardExp, and a negative one has no meaning there.
+        if (!uint.TryParse(a.Word(0), out var n) || n == 0)
+        { Refuse($"exp is {_char.Exp:N0}. {a.Usage()}"); return; }
+        AwardExp(n, killExp: a.Is(1, "kill"));
     }
 
     // "@dura <name|id> <n>" — set an item's current durability, bag first then worn, clamped to the item's
     // max. The only other way to wear something down is to actually grind it down, which makes repair NPCs
     // and breakage untestable in any reasonable time. Redraws the touched slot so the client shows the new
     // value immediately.
-    private void DuraCmd(string text)
+    private void DuraCmd(CommandArgs a)
     {
-        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[^1], out var n) || n < 0)
-        { Refuse($"usage: {Prefix}dura <name or id> <n>"); return; }
-        string q = string.Join(' ', parts[..^1]);
+        // The same name-then-trailing-int shape as @item and @take, but the count is REQUIRED here.
+        if (!a.NameThenTrailingInt(out var q, out var n) || n < 0) { Refuse(a.Usage()); return; }
         var def = Content.FindItem(q);
         if (def is null) { Refuse($"no item matches \"{q}\" — try  {Prefix}items {q}"); return; }
         ushort v = (ushort)Math.Min(n, (int)def.Durability);
@@ -291,10 +281,9 @@ public sealed partial class Session
     // "f<icon>", so a screenshot shows which client Item.epf frames render (frame index == client item id;
     // this is a DIFFERENT space from the RTK ItmIcon). Sweep with @icons 0, @icons 27, 54, 81, … and match
     // the rendered icons to re/render_items.py's contact sheet to build the RTK-item -> client-frame map.
-    private void IconSweep(string text)
+    private void IconSweep(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int start = a.Length > 0 ? a[0] : 0;
+        int start = a.Int(0, 0);
         _char.Inventory.Clear();
         for (int i = 0; i < _char.MaxInv; i++)
             SendRawIcon((byte)i, (ushort)(start + i), $"f{start + i}");
@@ -330,10 +319,9 @@ public sealed partial class Session
     // Each step paints a THROWAWAY item into the last bag slot with a raw 0x0F and then deletes it, so the
     // real inventory is never touched and the sweep is safe to run anywhere. The label goes out first, so the
     // transcript reads "reason N:" immediately followed by whatever the client says (or nothing).
-    private void DelReasonSweep(string text)
+    private void DelReasonSweep(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int lo = a.Length > 0 ? a[0] : 0, hi = a.Length > 1 ? a[1] : 15;
+        int lo = a.Int(0, 0), hi = a.Int(1, 15);
         lo = Math.Clamp(lo, 0, 255); hi = Math.Clamp(hi, lo, 255);
         byte slot = (byte)(_char.MaxInv - 1);          // last slot: least likely to collide with real gear
         Reply($"0x10 reason sweep {lo}..{hi} — a reason with NO line after it is the silent one.");
@@ -352,13 +340,12 @@ public sealed partial class Session
     // wraps to more rows north) at increasing 0x07 color-byte values (default 0..23 — the client's color
     // byte visibly wraps mod 24, see docs) so every candidate recolor is visible in one screenshot without
     // silently truncating past 12 entries like the old single-row version did.
-    private void CreatureColorRow(string text)
+    private void CreatureColorRow(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int look = a.Length > 0 ? a[0] : 0;
-        int lo = a.Length > 1 ? a[1] : 0;
-        int hi = a.Length > 2 ? a[2] : 23;
-        int step = a.Length > 3 ? Math.Max(1, a[3]) : 1;
+        int look = a.Int(0, 0);
+        int lo = a.Int(1, 0);
+        int hi = a.Int(2, 23);
+        int step = Math.Max(1, a.Int(3, 1));
         const int cols = 12;
         var es = new List<(uint, ushort, ushort, ushort, byte, byte)>();
         int n = 0;
@@ -377,12 +364,11 @@ public sealed partial class Session
 
     // "@crow <lo> <hi> [step]": sweep monster look ids lo..hi across a W->E row (one 0x07 packet with
     // up to 12 entries) so one screenshot maps the Monster.epf look-id space. Find squirrel/rabbit here.
-    private void CreatureRow(string text)
+    private void CreatureRow(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int lo = a.Length > 0 ? a[0] : 0;
-        int hi = a.Length > 1 ? a[1] : lo + 11;
-        int step = a.Length > 2 ? Math.Max(1, a[2]) : 1;
+        int lo = a.Int(0, 0);
+        int hi = a.Int(1, lo + 11);
+        int step = Math.Max(1, a.Int(2, 1));
         ushort y = (ushort)Math.Clamp(_char.Y - 2, 0, _char.MapYs - 1);
         var es = new List<(uint, ushort, ushort, ushort, byte, byte)>();
         int col = 0;
@@ -409,12 +395,11 @@ public sealed partial class Session
     //
     // Stationary on purpose (wander: false): these are calibration dummies for melee / sfx / sprite work, and
     // one that wanders off mid-measurement is worthless. Use @summon for a mob with its registry AI.
-    private void MobOne(string text)
+    private void MobOne(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int look = a.Length > 0 ? a[0] : 0;
-        int hp = a.Length > 1 ? a[1] : 6;
-        int color = a.Length > 2 ? a[2] : 0;
+        int look = a.Int(0, 0);
+        int hp = a.Int(1, 6);
+        int color = a.Int(2, 0);
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
@@ -430,12 +415,11 @@ public sealed partial class Session
     // client path (its own graphic field, no viewport gate) whose id-space is still unmapped, and it is the
     // only way to poke at it. Session-local by nature: the shared world draws mobs over 0x07, so anything
     // spawned here CANNOT be a world entity. See SendCreature for the divide-by-zero crash it dodges.
-    private void MobRaw(string text)
+    private void MobRaw(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int hi = a.Length > 0 ? a[0] : 0;
-        int lo = a.Length > 1 ? a[1] : 1;
-        int hp = a.Length > 2 ? a[2] : 6;
+        int hi = a.Int(0, 0);
+        int lo = a.Int(1, 1);
+        int hp = a.Int(2, 6);
         ushort sprite = (ushort)((hi << 8) | (lo & 0xFF));
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
@@ -444,12 +428,11 @@ public sealed partial class Session
         Reply($"raw sprite 0x{sprite:X4} over 0x16 — visible to you only (use @mob for a shared one)");
     }
 
-    private void MobRow(string text)
+    private void MobRow(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int lo = a.Length > 0 ? a[0] : 1;
-        int hi = a.Length > 1 ? a[1] : lo + 11;
-        int step = a.Length > 2 ? Math.Max(1, a[2]) : 1;
+        int lo = a.Int(0, 1);
+        int hi = a.Int(1, lo + 11);
+        int step = Math.Max(1, a.Int(2, 1));
         ushort y = (ushort)Math.Clamp(_char.Y - 2, 0, _char.MapYs - 1);
         int col = 0;
         for (int v = lo; v <= hi && col < 12; v += step, col++)
@@ -472,11 +455,10 @@ public sealed partial class Session
 
     // A small pack of REAL, killable monsters around the player (via 0x07 = Monster.epf). "@spawn
     // [lookId] [hp]" — lookId is the Monster.tbl monster index (0..326); defaults to 0.
-    private void SpawnCritters(string text)
+    private void SpawnCritters(CommandArgs a)
     {
-        var a = ParseInts(text);
-        int look = a.Length > 0 ? a[0] : 0;
-        int hp = a.Length > 1 ? a[1] : 6;
+        int look = a.Int(0, 0);
+        int hp = a.Int(1, 6);
         (int dx, int dy)[] spots = { (0, -2), (2, 0), (-2, 0), (0, 2) };
         foreach (var (dx, dy) in spots)
         {
@@ -490,10 +472,9 @@ public sealed partial class Session
     // "@ride" / "@mount [0|1]" — toggle (or set) the mounted-on-horse state. Flips appearance[1] to the
     // form byte 3, which makes the client draw the horse+rider composite (SPR 344/345) instead of the human
     // sprite. Re-draws self and every co-located peer in place (same path ApplyAppearance uses for gear).
-    private void ToggleMount(string text)
+    private void ToggleMount(CommandArgs a)
     {
-        var a = ParseInts(text);
-        _char.Mounted = a.Length > 0 ? a[0] != 0 : !_char.Mounted;
+        _char.Mounted = a.Toggle(0, _char.Mounted);
         RefreshAppearance();                                              // redraw self on the horse + everyone watching
         Reply(_char.Mounted ? "The powerful steed takes you where you want to go."   // same lines as the
                                    : "You precariously step again onto the ground.");       // real 'r' ride key
@@ -515,10 +496,9 @@ public sealed partial class Session
     // still wants portals to carry them. Mob/AI behaviour is untouched: you can share a tile with a mob and
     // it can still hit you.
     private bool _noClip;
-    private void ClipCmd(string text)
+    private void ClipCmd(CommandArgs a)
     {
-        var a = ParseInts(text);
-        _noClip = a.Length > 0 ? a[0] != 0 : !_noClip;
+        _noClip = a.Toggle(0, _noClip);
         PrimeViewport("clip");   // re-stamp the visible window so the client's pass layer flips NOW, not next strip
         Reply(SettingLine("No-clip", _noClip));
         Log.Info($"   -> NOCLIP {(_noClip ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
@@ -532,10 +512,9 @@ public sealed partial class Session
     // and fights back — combat stays testable with the toggle on.
     private bool _peace;
     internal bool PeaceMode => _peace;
-    private void PeaceCmd(string text)
+    private void PeaceCmd(CommandArgs a)
     {
-        var a = ParseInts(text);
-        _peace = a.Length > 0 ? a[0] != 0 : !_peace;
+        _peace = a.Toggle(0, _peace);
         if (_peace) _world.PacifyPlayer(PlayerId);
         Reply(SettingLine("Peace", _peace));
         Log.Info($"   -> PEACE {(_peace ? "on" : "off")} for '{_char.Name}'");
@@ -557,10 +536,9 @@ public sealed partial class Session
     // portal, and NOTHING is spent (the powder and the shoes are kept): the command exists to test the map
     // behind a gate, not the gate's economy, so the mechanic is only narrated, never run.
     private bool _waiveWarpGate;
-    private void AnyWarpCmd(string text)
+    private void AnyWarpCmd(CommandArgs a)
     {
-        var a = ParseInts(text);
-        _waiveWarpGate = a.Length > 0 ? a[0] != 0 : !_waiveWarpGate;
+        _waiveWarpGate = a.Toggle(0, _waiveWarpGate);
         Reply(SettingLine("Any-warp", _waiveWarpGate));
         Log.Info($"   -> ANYWARP {(_waiveWarpGate ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
     }
@@ -590,17 +568,15 @@ public sealed partial class Session
     private ushort _warpMarkFrame = 877;
     private ushort _doorMarkFrame = 877;
 
-    private void ShowWarpsCmd(string text)
+    private void ShowWarpsCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length > 0 && parts[0].Equals("look", StringComparison.OrdinalIgnoreCase))
+        if (a.Is(0, "look"))
         {
             // Per-version bound: 4.95's Item.epf has 1310 frames, 5.33's 2304 (counted from the shipped
             // Misc.dat) — an id past the client's own count draws blank, so clamp to the session's client.
             int maxId = _ver == ClientVersion.V533 ? 2303 : 1310;
-            var a = ParseInts(string.Join(' ', parts.Skip(1)));
-            if (a.Length > 0) _warpMarkFrame = (ushort)Math.Clamp(a[0], 0, maxId);
-            if (a.Length > 1) _doorMarkFrame = (ushort)Math.Clamp(a[1], 0, maxId);
+            if (a.Int(1, out var warpFrame)) _warpMarkFrame = (ushort)Math.Clamp(warpFrame, 0, maxId);
+            if (a.Int(2, out var doorFrame)) _doorMarkFrame = (ushort)Math.Clamp(doorFrame, 0, maxId);
             Reply($"Marker look: warp frame {_warpMarkFrame}, doorway frame {_doorMarkFrame} " +
                     $"(find frames with {Prefix}icons <start>; ids run 0..{maxId} on this client).");
             // Say what the re-stamp actually painted: "look <n> did nothing" has already been reported once
@@ -613,8 +589,7 @@ public sealed partial class Session
             return;
         }
 
-        var t = ParseInts(text);
-        _showWarps = t.Length > 0 ? t[0] != 0 : !_showWarps;
+        _showWarps = a.Toggle(0, _showWarps);
         Reply(SettingLine("Show warps", _showWarps));
         if (_showWarps) StampWarpMarkers(list: true);
         else ClearWarpMarkers();
@@ -758,13 +733,12 @@ public sealed partial class Session
     // on the fabricated bring-up character. The base stats are bytes, so they clamp to 0-255. A later @lvl/
     // @class/@mark/@align recomputes the stats from the class curve and discards whatever was set here — set
     // the class/level first, then poke individual stats. (@stats sets all three plus the pools in one shot.)
-    private void SetBaseStat(string which, string text)
+    private void SetBaseStat(string which, CommandArgs a)
     {
-        var a = ParseInts(text);
-        byte b = (byte)Math.Clamp(a.Length > 0 ? a[0] : 0, 0, 255);
+        byte b = (byte)Math.Clamp(a.Int(0, 0), 0, 255);
         switch (which)
         {
-            case "level": _char.Level = (byte)Math.Clamp(a.Length > 0 ? a[0] : 1, 1, 99); break;
+            case "level": _char.Level = (byte)Math.Clamp(a.Int(0, 1), 1, 99); break;
             case "might": _char.Might = b; break;
             case "will":  _char.Will  = b; break;
             case "grace": _char.Grace = b; break;
@@ -780,12 +754,11 @@ public sealed partial class Session
     // The individual-stat counterpart to @stats' first two arguments; the reply shows the effective max after
     // gear/buffs. Like @might/@will/@grace, a later @lvl/@class/@mark recomputes vitals from the curve and
     // discards this — set the class/level first, then the pools.
-    private void SetMaxPool(bool hp, string text)
+    private void SetMaxPool(bool hp, CommandArgs a)
     {
-        var a = ParseInts(text);
-        if (a.Length == 0) { Refuse($"usage: {Prefix}{(hp ? "hp" : "mp")} <n>"); return; }
-        if (hp) { _char.MaxHp = (uint)Math.Max(1, a[0]); _char.Hp = EffMaxHp; }
-        else    { _char.MaxMp = (uint)Math.Max(0, a[0]); _char.Mp = EffMaxMp; }
+        if (!a.Int(0, out var n)) { Refuse(a.Usage()); return; }
+        if (hp) { _char.MaxHp = (uint)Math.Max(1, n); _char.Hp = EffMaxHp; }
+        else    { _char.MaxMp = (uint)Math.Max(0, n); _char.Mp = EffMaxMp; }
         if (_enteredWorld) StoreSave();
         SendStats();
         Reply(hp ? $"max HP set to {_char.MaxHp:N0}{(EffMaxHp != _char.MaxHp ? $" ({EffMaxHp:N0} with gear)" : "")}, HP refilled."
@@ -796,23 +769,23 @@ public sealed partial class Session
     // "@nation <id>" / "@totem <id>" — set the character's kingdom / totem crest and PERSIST it (survives
     // relog), then push the HUD. Distinct from the GM @nat / @totemsweep RE probes, which only flash a crest
     // at the HUD for a single packet without touching the saved character.
-    private void SetNationCmd(string text)
+    private void SetNationCmd(CommandArgs a)
     {
-        var a = ParseInts(text);
-        if (a.Length == 0)
-        { Refuse($"usage: {Prefix}nation <id>   (now: {_char.Nation} — {Character.NationName(_char.Nation)})"); return; }
-        _char.Nation = (byte)Math.Clamp(a[0], 0, 255);
+        // The current value is live state, not a usage string: the shape comes from the table, the number
+        // from the character.
+        if (!a.Int(0, out var id))
+        { Refuse($"{a.Usage()}   (now: {_char.Nation} — {Character.NationName(_char.Nation)})"); return; }
+        _char.Nation = (byte)Math.Clamp(id, 0, 255);
         if (_enteredWorld) StoreSave();
         SendStats();
         Reply($"nation set to {_char.Nation} ({Character.NationName(_char.Nation)}).");
         Log.Info($"   -> NATION set to {_char.Nation}");
     }
 
-    private void SetTotemCmd(string text)
+    private void SetTotemCmd(CommandArgs a)
     {
-        var a = ParseInts(text);
-        if (a.Length == 0) { Refuse($"usage: {Prefix}totem <0..3>   (now: {_char.Totem})   0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong"); return; }
-        _char.Totem = (byte)Math.Clamp(a[0], 0, 3);   // 0..3 only — 5.33 clamps out-of-range and then reports a phantom change every stats packet (pane wipe); see TotemWire
+        if (!a.Int(0, out var id)) { Refuse($"{a.Usage()}   (now: {_char.Totem})"); return; }
+        _char.Totem = (byte)Math.Clamp(id, 0, 3);   // 0..3 only — 5.33 clamps out-of-range and then reports a phantom change every stats packet (pane wipe); see TotemWire
         if (_enteredWorld) StoreSave();
         SendStats();
         Reply($"totem set to {_char.Totem}.");
@@ -824,13 +797,13 @@ public sealed partial class Session
     // gate reads (see Karma.ValueForName). Persisted like the other character setters. Note karma is NOT on
     // the 4.95 profile (Karma.cs remarks), so this reply is the only feedback — and a later @lvl/@class/@mark
     // rebuild leaves karma alone, unlike the stat curve, so it doesn't get discarded.
-    private void SetKarmaCmd(string text)
+    private void SetKarmaCmd(CommandArgs a)
     {
-        string arg = text.Trim();
+        string arg = a.Raw;
         if (arg.Length == 0)
         {
             Reply($"karma is {_char.Karma:0.###} ({Karma.LevelName(_char.Karma)}).");
-            Reply($"usage: {Prefix}karma <value | tier>   tiers: {string.Join(" · ", Karma.TierNames)}");
+            Reply($"{a.Usage()}   tiers: {string.Join(" · ", Karma.TierNames)}");
             return;
         }
 
@@ -871,25 +844,20 @@ public sealed partial class Session
     // knowledge only the host has: there is no fight for the server to score. Warrior Sun armor's first step
     // wants two wins (nexusatlas + the tutor guide), and this is what feeds it. Self is allowed by naming
     // yourself, deliberately — an unnamed form would make the most common misuse the easiest one to type.
-    private void CarnageWinCmd(string text)
+    private void CarnageWinCmd(CommandArgs a)
     {
         // "name = n" and "name n" both work; the '=' form is here because names can contain spaces.
-        string arg = text.Trim(), name = arg;
+        string arg = a.Raw, name = arg;
         int add = 1;
         int eq = arg.LastIndexOf('=');
         if (eq >= 0)
         {
             name = arg[..eq].Trim();
-            if (!int.TryParse(arg[(eq + 1)..].Trim(), out add))
-            { Refuse($"usage: {Prefix}carnage <name> [n]"); return; }
+            if (!int.TryParse(arg[(eq + 1)..].Trim(), out add)) { Refuse(a.Usage()); return; }
         }
-        else
-        {
-            int sp = arg.LastIndexOf(' ');
-            if (sp > 0 && int.TryParse(arg[(sp + 1)..], out var n)) { name = arg[..sp].Trim(); add = n; }
-        }
+        else if (a.NameThenTrailingInt(out var named, out var n)) { name = named; add = n; }
 
-        if (name.Length == 0) { Refuse($"usage: {Prefix}carnage <name> [n]   (n<0 removes)"); return; }
+        if (name.Length == 0) { Refuse(a.Usage()); return; }
         var target = _world.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
 
@@ -906,10 +874,10 @@ public sealed partial class Session
     // "@approach <username>" — teleport to an online player: their map, on a free tile beside them (their own
     // tile if they're boxed in). EnterMap is the only reliable self-relocate on 4.95 (a bare 0x04 snaps back —
     // see GoCmd), so this jumps the same way the world-map/leap paths do.
-    private void ApproachCmd(string text)
+    private void ApproachCmd(CommandArgs a)
     {
-        string name = text.Trim();
-        if (name.Length == 0) { Refuse($"usage: {Prefix}approach <username>"); return; }
+        string name = a.Raw;
+        if (name.Length == 0) { Refuse(a.Usage()); return; }
         var target = _world.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
@@ -927,7 +895,7 @@ public sealed partial class Session
     // "@where [username]" — the read-only half of @approach: report where a player is without going there.
     // Bare @where lists everyone online with their location — the ops "who's where" view the client's own
     // 0x36 user list doesn't give (it shows names, not places).
-    private void WhereCmd(string text)
+    private void WhereCmd(CommandArgs a)
     {
         static string Line(Session p)
         {
@@ -935,7 +903,7 @@ public sealed partial class Session
             return $"{p._char.Name} — {mapName} (map {p._char.Map}) at ({p._char.X},{p._char.Y})";
         }
 
-        string name = text.Trim();
+        string name = a.Raw;
         if (name.Length == 0)
         {
             var all = _world.AllPlayers().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -951,10 +919,10 @@ public sealed partial class Session
     // "@bring <username>" — the inverse of @approach: pull an online player to a free tile beside YOU (your
     // own tile if you're boxed in), via the same EnterMap jump run on the TARGET's session. Also the rescue
     // for someone wedged in geometry. The player is told who moved them, so it doesn't read as a bug.
-    private void BringCmd(string text)
+    private void BringCmd(CommandArgs a)
     {
-        string name = text.Trim();
-        if (name.Length == 0) { Refuse($"usage: {Prefix}bring <username>"); return; }
+        string name = a.Raw;
+        if (name.Length == 0) { Refuse(a.Usage()); return; }
         var target = _world.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
@@ -973,17 +941,17 @@ public sealed partial class Session
     // (event notices, "carnage starts in five minutes"), and staff who want to speak as themselves have
     // ordinary chat. The per-session try/catch mirrors RestartSchedule.Announce — one dead socket must not
     // stop the message reaching everyone else.
-    private void AnnounceCmd(string text)
+    private void AnnounceCmd(CommandArgs a)
     {
-        if (text.Length == 0) { Refuse($"usage: {Prefix}announce <message>"); return; }
+        if (a.None) { Refuse(a.Usage()); return; }
         int heard = 0;
         foreach (var s in _world.AllPlayers())
         {
-            try { s.SystemAnnounce(text); heard++; }
+            try { s.SystemAnnounce(a.Raw); heard++; }
             catch (Exception e) { Log.Error($"@announce to {s.Remote} threw — the others still hear it", e); }
         }
         Reply($"Announced to {heard} player(s).");
-        Log.Info($"   -> @announce '{_char.Name}': \"{text}\"");
+        Log.Info($"   -> @announce '{_char.Name}': \"{a.Raw}\"");
     }
 
     // First free CARDINAL neighbour of the target (checked N/E/S/W), else the target's own tile (stack).
@@ -1018,27 +986,28 @@ public sealed partial class Session
     // No NPC advances the rank yet, so this is also still the only way to satisfy the other gates that read
     // it: mark-restricted gear (ItmMark), map entry (MapReqMark), unmarked-only doors, and minor-quest
     // eligibility.
-    private void SetMark(string text)
+    private void SetMark(CommandArgs a)
     {
         // Name the ranks of the character's OWN path, not the generic Il san ladder — a Ju jak's ranks are
         // Force / Inferno / Pandemonium, and telling them otherwise is just wrong.
         int p = Math.Max(0, CharClassId);
         string ladder = string.Join(" · ", Enumerable.Range(1, Content.MaxMark).Select(m => $"{m} {Content.PathTitle(p, m)}"));
 
-        var a = ParseInts(text);
-        if (a.Length == 0)
+        // A missing OR non-numeric argument is the readout, so "@mark" and "@mark soon" both report rather
+        // than rebuilding the character at rank 0.
+        if (!a.Int(0, out var want))
         {
-            Reply($"mark is {_char.Mark} ({ClassTitle}). usage: {Prefix}mark <0-{Content.MaxMark}> — {ladder}, each on top of level 99.");
+            Reply($"mark is {_char.Mark} ({ClassTitle}). {a.Usage()} — {ladder}, each on top of level 99.");
             return;
         }
         // Refuse rather than clamp: silently turning "@mark 5" into Sam san would read as a working Oh san.
-        if (a[0] > Content.MaxMark)
+        if (want > Content.MaxMark)
         {
             Refuse($"{Content.PathTitle(p, Content.MaxMark)} (mark {Content.MaxMark}) is as far as the ranks go — " +
                     $"there are no mark-{Content.MaxMark + 1} spells in the game data yet. Ranks: {ladder}.");
             return;
         }
-        RespecTo(99, Math.Max(0, a[0]));
+        RespecTo(99, Math.Max(0, want));
     }
 
     // "@dog [0|1]" — skip the bark/woof/grrowl chain and hand over (or take back) the Dog Linguist standing.
@@ -1056,9 +1025,9 @@ public sealed partial class Session
     // "@rez [username]" (tester/GM): bring a target player — or yourself, if no name is given — back to life at
     // full HP/MP. ReviveInPlace drops the ghost form, refills both bars and pushes the HUD — harmless on a
     // living character (just a full heal), so no dead-only guard.
-    private void RezCmd(string text)
+    private void RezCmd(CommandArgs a)
     {
-        string name = text.Trim();
+        string name = a.Raw;
         if (name.Length == 0)
         {
             ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
@@ -1071,11 +1040,10 @@ public sealed partial class Session
         Log.Info($"   -> @rez '{_char.Name}' -> '{target._char.Name}'");
     }
 
-    private void SetDogFlag(string text)
+    private void SetDogFlag(CommandArgs a)
     {
         int p = Math.Max(0, CharClassId);
-        var a = ParseInts(text);
-        bool want = a.Length == 0 ? !HasDogFlag : a[0] != 0;      // bare "@dog" toggles
+        bool want = a.Toggle(0, HasDogFlag);      // bare "@dog" toggles
 
         SetQuestStage(Content.DogFlagReg, want ? 1 : 0);
         SetQuestStage(DogChainReg, want ? DogChainDone : 0);
@@ -1107,11 +1075,9 @@ public sealed partial class Session
     // so 2 is swept.) Send 8 on its own with "@text 8" if you want to see it.
     private static readonly ushort[] TextSweepTypes = { 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13 };
 
-    private void TextChannelCmd(string text)
+    private void TextChannelCmd(CommandArgs a)
     {
-        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-
-        if (parts.Length == 0)
+        if (a.None)
         {
             Reply($"-- {Prefix}text sweep: which pane and colour does each 0x0A type use? --");
             // Raw, by number: the swept type IS what the command is asking about, so these must not be
@@ -1124,13 +1090,9 @@ public sealed partial class Session
             return;
         }
 
-        if (!ushort.TryParse(parts[0], out var type) || type > 255)
-        {
-            Refuse($"Usage: {Prefix}text <0-255> <message>, or bare {Prefix}text to sweep the channels.");
-            return;
-        }
+        if (!ushort.TryParse(a.Word(0), out var type) || type > 255) { Refuse(a.Usage()); return; }
 
-        string msg = parts.Length > 1 ? parts[1] : $"0x0A type {type} -- the quick brown fox";
+        string msg = a.Count > 1 ? a.Rest(1) : $"0x0A type {type} -- the quick brown fox";
         SendMiniText(msg, type);   // raw, by number — see the sweep above
         Log.Info($"   -> @text '{_char.Name}' type {type}: {msg}");
     }
@@ -1147,25 +1109,24 @@ public sealed partial class Session
     // "@sage 5" followed by "@lvl 99" silently undid itself, which is the exact trap this command was asked
     // for after. Also clears the wait, so the Sage himself will sell the next rung immediately — the point is
     // to test the flow, not to sit out a quarter of a year.
-    private void SetSageRung(string text)
+    private void SetSageRung(CommandArgs a)
     {
         int held = Content.SageLadder.Select(Content.SpellByKey)
                           .Select((sp, i) => sp is not null && KnowsSpellId(sp.Id) ? i + 1 : 0)
                           .DefaultIfEmpty(0).Max();
-        var a = ParseInts(text);
-
-        if (a.Length == 0)      // bare "@sage" reports, like bare "@dog" toggles: the read is the common case
+        // A missing OR non-numeric rung reports, like bare "@dog" toggles: the read is the common case.
+        if (!a.Int(0, out var asked))
         {
             long left = QuestCounter(Content.SageTimerReg) - NowUnix;
             string name = Content.SageSpellForRung(held) is { } k && Content.SpellByKey(k) is { } s ? s.Name : "none";
             Reply($"Sage rung {held}/{Content.SageLadder.Length} ({name})" +
                     $"; paid-for rung on record: {QuestCounter(Content.SageRungReg)}" +
                     (left > 0 ? $"; next upgrade in {left / 86400}d {left % 86400 / 3600}h." : "; no wait outstanding.") +
-                    $"  {Prefix}sage <0-{Content.SageLadder.Length}> to set it.");
+                    $"  {a.Usage()} to set it.");
             return;
         }
 
-        int rung = Math.Clamp(a[0], 0, Content.SageLadder.Length);
+        int rung = Math.Clamp(asked, 0, Content.SageLadder.Length);
 
         // One rung at a time, as the ladder itself works — every other rung comes out of the book first.
         foreach (var key in Content.SageLadder)
@@ -1211,10 +1172,9 @@ public sealed partial class Session
     // sets the STRING registry instead (e.g. the minor-quest selection). Stage meanings are per-quest — see
     // docs/common/Quest-Registry.md for the full catalogue of keys, stages and the legends that pair with
     // them (most chains gate on the LEGEND, not the stage, so a re-test usually needs @legend too).
-    private void QuestCmd(string text)
+    private void QuestCmd(CommandArgs a)
     {
-        var p = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (p.Length == 0)
+        if (a.None)
         {
             if (_char.Quests.Count == 0 && _char.QuestStrings.Count == 0)
             { Reply($"No quest keys set. ({Prefix}quest <key> <stage> to set one; see docs/common/Quest-Registry.md.)"); return; }
@@ -1225,8 +1185,8 @@ public sealed partial class Session
             return;
         }
 
-        string key = p[0];
-        if (p.Length == 1)
+        string key = a.Word(0);
+        if (a.Count == 1)
         {
             if (_char.Quests.TryGetValue(key, out int cur)) Reply($"{key} = {cur}");
             else if (_char.QuestStrings.TryGetValue(key, out var cs)) Reply($"{key} = \"{cs}\"");
@@ -1234,7 +1194,7 @@ public sealed partial class Session
             return;
         }
 
-        string val = string.Join(' ', p[1..]);
+        string val = a.Rest(1);
         if (int.TryParse(val, out int stage))
         {
             if (stage == 0)
@@ -1266,10 +1226,9 @@ public sealed partial class Session
     // docs/common/Quest-Registry.md. The seeded "Born in …" mark has no key and so can't be addressed here,
     // which doubles as its protection. NOTE: a legend and its quest stage are independent — most chains
     // check the legend, so clearing only the stage usually re-tests nothing.
-    private void LegendCmd(string text)
+    private void LegendCmd(CommandArgs a)
     {
-        var p = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (p.Length == 0)
+        if (a.None)
         {
             Reply($"legend marks ({_char.Legends.Count}):");
             foreach (var l in _char.Legends)
@@ -1277,16 +1236,16 @@ public sealed partial class Session
             return;
         }
 
-        string key = p[0];
+        string key = a.Word(0);
         var held = _char.Legends.FirstOrDefault(l => l.Name == key);
-        if (p.Length == 1)
+        if (a.Count == 1)
         {
             Reply(held is null ? $"{key}: not held."
                                  : $"{key}: \"{held.Text}\" (icon {held.Icon}, color {held.Color})");
             return;
         }
 
-        if (p.Length == 2 && p[1] == "0")
+        if (a.Count == 2 && a.Word(1) == "0")
         {
             RemoveLegend(key);
             Reply(held is null ? $"{key} was not held — nothing to remove." : $"{key} removed (\"{held.Text}\").");
@@ -1294,16 +1253,16 @@ public sealed partial class Session
             return;
         }
 
-        if (p.Length >= 4 && byte.TryParse(p[1], out byte icon) && byte.TryParse(p[2], out byte color))
+        if (a.Count >= 4 && byte.TryParse(a.Word(1), out byte icon) && byte.TryParse(a.Word(2), out byte color))
         {
-            string body = string.Join(' ', p[3..]);
+            string body = a.Rest(3);
             AddLegend(body, key, icon, color);
             Reply($"{key} {(held is null ? "added" : "replaced")}: \"{body}\" (icon {icon}, color {color}).");
             Log.Info($"   -> @legend '{_char.Name}': {key} <- icon {icon} color {color} \"{body}\"");
             return;
         }
 
-        Refuse($"usage: {Prefix}legend [key] [0 | <icon> <color> <text...>]   (color 128 is the usual white; 0 renders invisible)");
+        Refuse(a.Usage());
     }
 
     // "@class <name>" — set the class/path and rebuild the character as one. `Character.ClassName` stores the
@@ -1325,12 +1284,12 @@ public sealed partial class Session
     // follow the new path's growth curve (a Warrior turned Mage loses the warrior HP roll and gains the mage
     // MP one) and the book becomes the new class's. Without that, "@class Mage" left a Warrior's HP, a
     // Warrior's skills, and a class line that no longer described either.
-    private void SetClass(string text)
+    private void SetClass(CommandArgs a)
     {
-        string name = text.Trim();
+        string name = a.Raw;
         if (name.Length == 0)
         {
-            Reply($"class is '{ClassTitle}' (usage: {Prefix}class <name>)");
+            Reply($"class is '{ClassTitle}' ({a.Usage()})");
             Reply($"  {string.Join(" · ", Content.PlayablePathNames())}  — or any rank title up to Sam san " +
                     $"(Il san (W), Fury, Inferno, …)");
             return;
@@ -1369,12 +1328,10 @@ public sealed partial class Session
     // found, we decode the exact field layout by varying one sentinel at a time (look-lab style).
     // Sentinels chosen to be visually unmistakable and distinct from each other:
     //   level=99  might=11 will=22 grace=33  maxHP=1000 maxMP=500  hp=987 mp=456  exp=54321 coins=777
-    private void StatProbe(string text)
+    private void StatProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        byte op = 0x08, flags = 0xFF;
-        if (parts.Length > 0) byte.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out op);
-        if (parts.Length > 1) byte.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out flags);
+        byte op = a.Hex(0, out var wantOp) ? wantOp : (byte)0x08;
+        byte flags = a.Hex(1, out var wantFlags) ? wantFlags : (byte)0xFF;
         SendStatProbe(op, flags, level: 99);
         Log.Info($"   -> STAT PROBE op=0x{op:x2} flags=0x{flags:x2}");
     }
@@ -1383,7 +1340,7 @@ public sealed partial class Session
     // loaders like 0x2e, no risky memcpy/spawn), ~700ms apart with a bubble label. Paired with the
     // probe's whole-memory sentinel scan, one run reveals which opcode (if any) STORES the stats — no
     // matter where the client keeps them. Watch the HUD too and note any opcode that changes a number.
-    private void StatBatch(string text)
+    private void StatBatch(CommandArgs a)
     {
         byte[] safe = { 0x11, 0x12, 0x1d, 0x1f, 0x1b, 0x21, 0x29, 0x2f, 0x30, 0x31,
                         0x35, 0x36, 0x42, 0x46, 0x59, 0x34, 0x39 };
@@ -1425,7 +1382,7 @@ public sealed partial class Session
     // byte[i] = i, so every HUD number reveals its own field offset: a byte field shows its offset; a
     // u32 field shows 0xNN.. from which the offset AND endianness fall out. Flags kept at 0x78 (the
     // captured 6.x "full" value that lit every field). One read maps the entire 4.95 layout.
-    private void StatGradient(string text)
+    private void StatGradient(CommandArgs a)
     {
         var d = new byte[60];
         d[0] = 0x78;                                   // flags (full-stats)
@@ -1447,16 +1404,10 @@ public sealed partial class Session
     //   @mailflag 51 10     -> body[51]=0x10 (n-mail only), 01 = parcel only, 00 = clear
     // Move (which re-sends clean stats) or `@mailflag 51 00` to clear. Purely a client-render probe; sets
     // one otherwise-unused byte, so it can't corrupt a real stat field.
-    private void MailFlagProbe(string text)
+    private void MailFlagProbe(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1 || !int.TryParse(parts[0], out int off) || off < 0 || off > 79)
-        {
-            Refuse("@mailflag <off 0..79> [valHex]  — sweep the 0x08 mail/parcel notify byte (default 0x11=both). Try 40..57.");
-            return;
-        }
-        byte val = 0x11;
-        if (parts.Length > 1) byte.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber, null, out val);
+        if (!a.Int(0, out int off) || off < 0 || off > 79) { Refuse(a.Usage()); return; }
+        byte val = a.Hex(1, out var wantVal) ? wantVal : (byte)0x11;
 
         // Rebuild the exact full-stats body SendStats sends (so every real HUD field stays correct), just
         // longer, then stamp the candidate notify byte.
@@ -1478,11 +1429,9 @@ public sealed partial class Session
         Log.Info($"   -> MAILFLAG probe: 0x08 body[{off}]=0x{val:x2}");
     }
 
-    private void StatReplay6x(string text)
+    private void StatReplay6x(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        byte op = 0x08;
-        if (parts.Length > 0) byte.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out op);
+        byte op = a.Hex(0, out var wantOp) ? wantOp : (byte)0x08;
         SendMap(op, _gameInc++, Stats6xFull, $"replay6x-stats(0x{op:x2})");
         Log.Info($"   -> REPLAY 6.x stats on op=0x{op:x2} (expect HUD: level 1, HP 51, MP 33, might/will/grace 3)");
     }
@@ -1493,7 +1442,7 @@ public sealed partial class Session
     // deterministically instead (self player object is [world+0x40c]); only fire "@s <op>" once a specific
     // opcode is confirmed safe by reading its
     // handler.
-    private void StatSweep(string text)
+    private void StatSweep(CommandArgs a)
     {
         Refuse("@sweep is disabled (crashes the client on resource-loading opcodes). Use @s <hexop>.");
         Log.Info("   -> @sweep refused (unsafe blind probe)");
@@ -1539,13 +1488,12 @@ public sealed partial class Session
     // 1=Buya, 2=Mythic Nexus, 3=Arctic Land, 4=KaMing's). The tweak is an ephemeral in-session override
     // (WorldDotOverride); once happy, bake the number into game-data/WorldMapDests.csv (DotX/DotY) +
     // @reload. "@wmpos" with no args lists the effective positions. See §11m.
-    private void WorldMapPosCmd(string args)
+    private void WorldMapPosCmd(CommandArgs a)
     {
         var dests = Content.WorldDests;
         (int X, int Y) DotOf(int i) => WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dests[i].DotX, dests[i].DotY);
-        var p = args.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length >= 3 && int.TryParse(p[0], out var wi) && int.TryParse(p[1], out var wx)
-            && int.TryParse(p[2], out var wy) && wi >= 0 && wi < dests.Count)
+        if (a.Int(0, out var wi) && a.Int(1, out var wx) && a.Int(2, out var wy)
+            && wi >= 0 && wi < dests.Count)
         {
             WorldDotOverride[wi] = (Math.Clamp(wx, 0, 639), Math.Clamp(wy, 0, 479));
             var dot = DotOf(wi);
@@ -1563,8 +1511,7 @@ public sealed partial class Session
     // "@wmtest [name]" — native world-map screen (§11m) with an explicit background name (defaults to
     // field10 = "Map of the Kingdom", the overview world-map art). The framing bug that used to crash this
     // is fixed; this stays as a way to try alternate backgrounds (field1, title, other fieldNN).
-    private void WorldMapTestCmd(string args)
-        => SendWorldMap(args.Trim().Length == 0 ? "field10" : args.Trim());
+    private void WorldMapTestCmd(CommandArgs a) => SendWorldMap(a.None ? "field10" : a.Raw);
 
     /// <summary>"@stats &lt;vita&gt; &lt;mana&gt; &lt;all&gt;" or "@stats &lt;vita&gt; &lt;mana&gt;
     /// &lt;might&gt; &lt;grace&gt; &lt;will&gt;" — set the vitals and the three base stats outright, for
@@ -1579,27 +1526,28 @@ public sealed partial class Session
     /// Might/grace/will are bytes on the character, so they clamp to 0-255; the pools are u32 and clamp to
     /// at least 1 vita (a max HP of 0 would make the character permanently dead). HP/MP are refilled to the
     /// new maxima, gear bonuses included.</summary>
-    private void SetStatsCmd(string args)
+    private void SetStatsCmd(CommandArgs a)
     {
-        var a = ParseInts(args);
-        if (a.Length is not (2 or 3 or 5))
+        // Positional, so every word has to BE a number: "@stats 1 2 x" is a three-argument call with a bad
+        // third argument, not a two-argument one. ParseInts used to drop the "x" and quietly run the short
+        // form.
+        if (a.Count is not (2 or 3 or 5) || !a.Int(0, out var vita) || !a.Int(1, out var mana))
         {
-            Refuse($"usage: {Prefix}stats <vita> <mana> [<all> | <might> <grace> <will>]   " +
-                    $"e.g. {Prefix}stats 50000 50000 130");
+            Refuse(a.Usage());
             Refuse($"  now: vita {_char.MaxHp:N0}, mana {_char.MaxMp:N0}, might {_char.Might}, " +
                     $"grace {_char.Grace}, will {_char.Will}");
             return;
         }
 
-        _char.MaxHp = (uint)Math.Max(1, a[0]);
-        _char.MaxMp = (uint)Math.Max(0, a[1]);
-        if (a.Length == 3)
-            _char.Might = _char.Grace = _char.Will = (byte)Math.Clamp(a[2], 0, 255);
-        else if (a.Length == 5)
+        _char.MaxHp = (uint)Math.Max(1, vita);
+        _char.MaxMp = (uint)Math.Max(0, mana);
+        if (a.Count == 3)
+            _char.Might = _char.Grace = _char.Will = (byte)Math.Clamp(a.Int(2, 0), 0, 255);
+        else if (a.Count == 5)
         {
-            _char.Might = (byte)Math.Clamp(a[2], 0, 255);
-            _char.Grace = (byte)Math.Clamp(a[3], 0, 255);
-            _char.Will  = (byte)Math.Clamp(a[4], 0, 255);
+            _char.Might = (byte)Math.Clamp(a.Int(2, 0), 0, 255);
+            _char.Grace = (byte)Math.Clamp(a.Int(3, 0), 0, 255);
+            _char.Will  = (byte)Math.Clamp(a.Int(4, 0), 0, 255);
         }
 
         _char.Hp = EffMaxHp;                  // top up to the new maxima, gear/buffs included
@@ -1628,12 +1576,12 @@ public sealed partial class Session
     // In ':'/'$' an underscore means a space, so a string stays ONE token and fields can still follow it —
     // several of these packets put a length or a level AFTER the text. No opcode is filtered: some of them
     // do crash the client, and finding out which is the point.
-    private void RawPacketCmd(string text)
+    private void RawPacketCmd(CommandArgs a)
     {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0)
+        if (a.None)
         {
-            Reply($"usage: {Prefix}pkt <hexop> [xx | #u16 | %u32 | :text | $text]");
+            // The shape comes from the table; what each sub-form DOES does not fit in an Args column.
+            Reply(a.Usage());
             Reply($"  {Prefix}pkt add <tokens>   append to the pending packet (the chat box is short)");
             Reply($"  {Prefix}pkt send <hexop>   send what's pending, then clear it");
             Reply($"  {Prefix}pkt show | clear   inspect or drop the pending bytes");
@@ -1643,10 +1591,10 @@ public sealed partial class Session
 
         // Long packets can't be typed in one line, so tokens accumulate into _pktPending across several
         // commands and go out on "send". "file" is the same parser over a file, for anything worth keeping.
-        switch (parts[0].ToLowerInvariant())
+        switch (a.Word(0).ToLowerInvariant())
         {
             case "add":
-                if (!ParsePacketTokens(parts[1..], _pktPending)) return;
+                if (!ParsePacketTokens(a.Words(1), _pktPending)) return;
                 Reply($"pending {_pktPending.Count}B: {Convert.ToHexString(_pktPending.ToArray()).ToLowerInvariant()}");
                 return;
             case "clear":
@@ -1658,25 +1606,23 @@ public sealed partial class Session
                     : $"pending {_pktPending.Count}B: {Convert.ToHexString(_pktPending.ToArray()).ToLowerInvariant()}");
                 return;
             case "send":
-                if (parts.Length < 2 || !byte.TryParse(parts[1], System.Globalization.NumberStyles.HexNumber,
-                                                       null, out byte pendOp))
-                { Refuse($"usage: {Prefix}pkt send <hexop>"); return; }
+                if (!a.Hex(1, out byte pendOp)) { Refuse(a.Usage()); return; }
                 SendRawPacket(pendOp, _pktPending.ToArray());
                 _pktPending.Clear();
                 return;
             case "file":
-                if (parts.Length < 2) { Refuse($"usage: {Prefix}pkt file <name>"); return; }
-                SendPacketFile(parts[1]);
+                if (a.Count < 2) { Refuse(a.Usage()); return; }
+                SendPacketFile(a.Word(1));
                 return;
         }
 
-        if (!byte.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out byte op))
+        if (!a.Hex(0, out byte op))
         {
-            Refuse($"'{parts[0]}' is not a hex opcode.");
+            Refuse($"'{a.Word(0)}' is not a hex opcode.");
             return;
         }
         var oneShot = new List<byte>();
-        if (ParsePacketTokens(parts[1..], oneShot)) SendRawPacket(op, oneShot.ToArray());
+        if (ParsePacketTokens(a.Words(1), oneShot)) SendRawPacket(op, oneShot.ToArray());
     }
 
     /// <summary>Bytes accumulated by "@pkt add", flushed by "@pkt send". Per-session so two GMs building

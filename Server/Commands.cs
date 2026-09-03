@@ -31,13 +31,135 @@ public sealed partial class Session
     /// tooling stays invisible rather than merely locked.</param>
     /// <param name="Run">Receives the argument tail (see the class doc).</param>
     /// <param name="Args">Argument shape for @help, e.g. "&lt;name|id&gt; [amount]"; "" for none.</param>
-    private sealed record Command(string[] Names, AccessLevel Min, Action<Session, string> Run, string Args, string Help);
+    private sealed record Command(string[] Names, AccessLevel Min, Action<Session, CommandArgs> Run, string Args, string Help);
 
-    private static Command P(string names, Action<Session, string> run, string args, string help)
+    /// <summary>
+    /// A command's ARGUMENT TAIL, plus the table row it belongs to.
+    ///
+    /// <para>WHY. Every handler used to parse its own tail, and there were three or four house styles doing
+    /// it: <c>ParseInts</c> (22 sites), a raw <c>.Split</c> (43), a bare <c>TryParse</c> (26). They do not
+    /// agree — ParseInts SKIPS non-numeric words, so "@stats 1 2 x" reached the three-argument form as two
+    /// integers, while a positional reader sees three words and refuses. Worse, each site also wrote its own
+    /// "usage:" line (22 of them), restating the row's <c>Args</c> column from memory, so the table said one
+    /// thing and the refusal said another as soon as either drifted.</para>
+    ///
+    /// <para>This is positional and literal: <see cref="Word"/> 0 is the first word of the tail, and a word
+    /// that isn't a number simply isn't one. <see cref="Usage"/> renders from the row, so a command's
+    /// argument shape is written down exactly once — in the table — and @help and every refusal read the
+    /// same copy.</para>
+    ///
+    /// <para>It converts implicitly to the raw tail so the table's rows did not all have to change at once:
+    /// a handler that has not been converted yet still takes a <c>string</c> and still gets the same string
+    /// it always got. That conversion is the migration seam, not an invitation — a new handler should take
+    /// the CommandArgs.</para>
+    /// </summary>
+    private readonly struct CommandArgs
+    {
+        private readonly Command _row;
+        private readonly string[] _words;
+
+        internal CommandArgs(Command row, string raw)
+        {
+            _row = row;
+            Raw = raw;
+            _words = raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        /// <summary>The tail exactly as typed, trimmed at the ends (see <see cref="SplitCommand"/>). Interior
+        /// spacing is preserved here and nowhere else — <see cref="Rest"/> normalizes it.</summary>
+        public string Raw { get; }
+
+        /// <summary>How many words were given.</summary>
+        public int Count => _words.Length;
+
+        /// <summary>No arguments at all — the "bare @command" case, which is a readout for most commands.
+        /// </summary>
+        public bool None => _words.Length == 0;
+
+        /// <summary>Word <paramref name="i"/>, or "" past the end. Never null, so a caller can compare
+        /// without a length check first.</summary>
+        public string Word(int i) => i >= 0 && i < _words.Length ? _words[i] : "";
+
+        /// <summary>Word <paramref name="i"/> is <paramref name="literal"/>, case-insensitively — the
+        /// keyword sub-forms ("@clock real", "@take … all", "@showwarps look").</summary>
+        public bool Is(int i, string literal) => Word(i).Equals(literal, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Word <paramref name="i"/> as an integer. False if it isn't there or isn't one.</summary>
+        public bool Int(int i, out int value) => int.TryParse(Word(i), out value);
+
+        /// <summary>Word <paramref name="i"/> as an integer, or <paramref name="fallback"/> — the shape most
+        /// of the sprite and packet probes want, where every argument has a sensible default.</summary>
+        public int Int(int i, int fallback) => Int(i, out var v) ? v : fallback;
+
+        /// <summary>Word <paramref name="i"/> as a HEX byte, the form every opcode argument takes ("@s 08",
+        /// "@pkt send 1a"). Decimal is deliberately not accepted: an opcode is written in hex everywhere
+        /// else in this codebase and in every capture, so reading "10" as sixteen is the useful answer.
+        /// </summary>
+        public bool Hex(int i, out byte value)
+            => byte.TryParse(Word(i), System.Globalization.NumberStyles.HexNumber, null, out value);
+
+        /// <summary>A "[0|1]" argument: 0 or 1 sets the flag, anything else (including nothing) FLIPS
+        /// <paramref name="current"/>. Every session toggle takes this shape — @clip, @peace, @anywarp,
+        /// @showwarps, @ride, @dog — and each used to spell it out itself.</summary>
+        public bool Toggle(int i, bool current) => Int(i, out var v) ? v != 0 : !current;
+
+        /// <summary>Word <paramref name="i"/> and everything after it, rejoined with single spaces — free
+        /// text that runs to the end of the line (a reason, a legend body, a quest value).</summary>
+        public string Rest(int i) => Rest(i, _words.Length);
+
+        /// <summary>Words <paramref name="from"/> up to but not including <paramref name="to"/>, rejoined
+        /// with single spaces. The bounded form is for a tail that ends in a keyword rather than at the end
+        /// of the line ("@take Rice Cake all").</summary>
+        public string Rest(int from, int to)
+        {
+            from = Math.Max(from, 0);
+            to = Math.Min(to, _words.Length);
+            return from < to ? string.Join(' ', _words[from..to]) : "";
+        }
+
+        /// <summary>Words <paramref name="from"/> onward as an array, for the one place that hands a whole
+        /// token run to a different parser — @pkt's packet-token reader, which also reads token runs out of
+        /// a file and so cannot take a CommandArgs.</summary>
+        public string[] Words(int from)
+            => from >= 0 && from < _words.Length ? _words[from..] : Array.Empty<string>();
+
+        /// <summary>The "&lt;name with spaces&gt; &lt;n&gt;" shape that @item, @take and @dura all take, and
+        /// each used to re-implement: an item name is words, so the COUNT has to be recognised as a trailing
+        /// integer rather than as part of the name.
+        ///
+        /// <para>True when there was a trailing integer to take, leaving <paramref name="name"/> as the
+        /// words before it. False leaves <paramref name="name"/> as the whole tail verbatim — "@item Fine
+        /// Sword" is an item called "Fine Sword", not an error.</para></summary>
+        public bool NameThenTrailingInt(out string name, out int n)
+        {
+            if (_words.Length >= 2 && int.TryParse(_words[^1], out n))
+            {
+                name = string.Join(' ', _words[..^1]);
+                return true;
+            }
+            name = Raw;
+            n = 0;
+            return false;
+        }
+
+        /// <summary>"usage: @name/@alias &lt;args&gt;" — the command's argument shape, rendered from its
+        /// table row. The ONLY place a usage line comes from: there is no longer a hand-written one anywhere,
+        /// so the shape @help prints and the shape a refusal prints cannot disagree.
+        ///
+        /// <para>Deliberately just the shape. What an argument MEANS lives in the row's help text, which
+        /// "@help &lt;name&gt;" prints in full — repeating it in every refusal is what made these lines long
+        /// enough to be worth rewriting from memory in the first place.</para></summary>
+        public string Usage() => "usage: " + HelpShape(_row);
+
+        /// <summary>The tail as a plain string, for the handlers that have not been converted yet.</summary>
+        public static implicit operator string(CommandArgs a) => a.Raw;
+    }
+
+    private static Command P(string names, Action<Session, CommandArgs> run, string args, string help)
         => new(names.Split('|'), AccessLevel.Player, run, args, help);
-    private static Command T(string names, Action<Session, string> run, string args, string help)
+    private static Command T(string names, Action<Session, CommandArgs> run, string args, string help)
         => new(names.Split('|'), AccessLevel.Tester, run, args, help);
-    private static Command G(string names, Action<Session, string> run, string args, string help)
+    private static Command G(string names, Action<Session, CommandArgs> run, string args, string help)
         => new(names.Split('|'), AccessLevel.Gm, run, args, help);
 
     private static readonly Command[] CommandTable =
@@ -77,8 +199,8 @@ public sealed partial class Session
         // These REBUILD the character (see Session.RespecTo): stats and the spellbook always come out exactly
         // right for the resulting class/level/mark/alignment. That's why there is no longer a "@spells" —
         // there is nothing left for it to do.
-        T("lvl",     (s, a) => { var i = ParseInts(a); s.RespecLevel(i.Length > 0 ? i[0] : s._char.Level); },
-                                                   "<1-99>",              "rebuild as level n: accurate stats + the matching spellbook"),
+        T("lvl",     (s, a) => s.RespecLevel(a.Int(0, s._char.Level)),
+                                                   "<1-99>",              "rebuild as level n: accurate stats + the matching spellbook (bare @lvl rebuilds at the level you are)"),
         // @lvl's complement, not its rival: @lvl REBUILDS at a level, @exp earns one — it's the only way to
         // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains).
         T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = eligible for the totem-time bonus)"),
@@ -91,30 +213,30 @@ public sealed partial class Session
         // The generic quest-state pair (docs/common/Quest-Registry.md is the key catalogue). Most chains gate
         // on the LEGEND, not the stage, so re-testing one usually takes both commands.
         T("quest",   (s, a) => s.QuestCmd(a),      "[key] [stage]",       "read/set the raw quest registry (bare = dump your keys; stage 0 clears; non-numeric sets the string registry)"),
-        T("legend",  (s, a) => s.LegendCmd(a),     "[key] [0 | <icon> <color> <text...>]", "list legend marks with their internal keys; remove one, or (re)create one by key"),
+        T("legend",  (s, a) => s.LegendCmd(a),     "[key] [0 | <icon> <color> <text...>]", "list legend marks with their internal keys; remove one, or (re)create one by key (colour 128 is the usual white; 0 renders invisible)"),
         // 0x0A's `type` decides which pane/colour a line lands in, and a wrong one is INVISIBLE from the
         // server side — the packet sends, the log says so, the client draws nothing. See TextChannelCmd.
-        T("text",    (s, a) => s.TextChannelCmd(a), "[type] [message]",    "send yourself one 0x0A line on a channel; bare @text sweeps them to compare panes/colours"),
+        T("text",    (s, a) => s.TextChannelCmd(a), "[0-255] [message]",   "send yourself one 0x0A line on a channel; bare @text sweeps them to compare panes/colours"),
         T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
-                                                                          "set vitals and stats directly (overrides the curve)"),
+                                                                          "set vitals and stats directly, overriding the curve — e.g. @stats 50000 50000 130"),
         T("might",   (s, a) => s.SetBaseStat("might", a), "<n>",          "set base might"),
         T("will",    (s, a) => s.SetBaseStat("will", a),  "<n>",          "set base will"),
         T("grace",   (s, a) => s.SetBaseStat("grace", a), "<n>",          "set base grace"),
         T("hp",      (s, a) => s.SetMaxPool(hp: true, a), "<n>",          "set max HP (vita) and refill"),
         T("mp",      (s, a) => s.SetMaxPool(hp: false, a),"<n>",          "set max MP (mana) and refill"),
         T("nation",  (s, a) => s.SetNationCmd(a),   "<id>",               "set your nation crest (persists)"),
-        T("totem",   (s, a) => s.SetTotemCmd(a),    "<id>",               "set your totem crest (persists)"),
+        T("totem",   (s, a) => s.SetTotemCmd(a),    "<0-3>",              "set your totem crest — 0 JuJak, 1 Baekho, 2 HyunMoo, 3 ChungRyong (persists)"),
         T("karma",   (s, a) => s.SetKarmaCmd(a),    "<value|tier>",       "set karma outright: a number, or a tier (cat, dog, angel, …)"),
         T("dispel",  (s, a) => s.DispelCmd(),       "",                   "strip every buff and debuff on you"),
         T("killtrack", (s, a) => s.KillTrackCmd(a), "[clear]",         "the 8-slot kill track the mythic alliances count (clear = what accepting one does)"),
-        T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse"),
+        T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse (bare = +10,000; a negative n removes, floored at 0)"),
         T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
 
         // ---- items ----------------------------------------------------------------------------------
         T("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),
-        T("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag"),
-        T("take",     (s, a) => s.TakeItemCmd(a),   "<name|id> [amount|all]", "remove an item from the bag (worn gear untouched)"),
+        T("item",     (s, a) => s.GiveItemCmd(a),   "<name|id> [amount]", "summon an item into the bag (browse the registry with @items)"),
+        T("take",     (s, a) => s.TakeItemCmd(a),   "<name|id> [amount|all]", "remove an item from the bag (worn gear untouched; browse with @items)"),
         T("dura",     (s, a) => s.DuraCmd(a),       "<name|id> <n>",      "set an item's durability, bag first then worn (repair/breakage testing)"),
         T("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
@@ -172,28 +294,29 @@ public sealed partial class Session
         // 0x19 it sends goes to the caller's own session, so the loudest a player can be is loud at himself,
         // and the client's own Options menu has no way to pick a track. The rest of the block stays GM-only.
         P("music",    (s, a) => s.PlayMusicCmd(a),  "[name|id] [vol] [mp3|midi] | old|new | stop",
-                                                    "play a music track, or pick the soundtrack (no argument lists them)"),
-        G("snd",      (s, a) => s.SoundProbe(a),    "<id>",      "play a raw client sound id"),
-        G("swingsnd", (s, a) => s.SetSwingSound(a), "<id>",      "set + audition the melee swing sfx"),
-        G("fistsnd",  (s, a) => s.SetFistSound(a),  "<id>",      "set + audition the unarmed swing sfx"),
-        G("hitsnd",   (s, a) => s.SetHitSound(a),   "<id>",      "set + audition the on-connect impact sfx"),
+                                                    "play a music track, or pick the soundtrack (vol 0-255, default 100; no argument lists them)"),
+        G("snd",      (s, a) => s.SoundProbe(a),    "<id> [id2 ...]", "play raw client sound ids, up to 8 at once (NexusTK.snd holds 001..197.wav)"),
+        // One handler, three slots (Session.Media.SetSfx): these differed only in the field they wrote.
+        G("swingsnd", (s, a) => s.SetSfx(a, ref s._swingSfx, "swing"), "<id>", "set + audition the melee swing sfx (0 mutes it)"),
+        G("fistsnd",  (s, a) => s.SetSfx(a, ref s._fistSfx,  "fist swing"), "<id>", "set + audition the unarmed swing sfx (0 mutes it)"),
+        G("hitsnd",   (s, a) => s.SetSfx(a, ref s._hitSfx,   "hit"),   "<id>", "set + audition the on-connect impact sfx (0 mutes it)"),
         G("mobact",   (s, a) => s.MobActionProbe(a), "<type> [time]", "set + preview the mob attack-pose action (0x1A) on the faced mob"),
-        G("efx",      (s, a) => s.EffectProbe(a),   "<id>",      "play a raw Effect.tbl animation over self"),
-        G("mtx",      (s, a) => s.MiniTextProbe(a), "<type>",    "audition a raw SendMiniText channel"),
-        G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow | raw <n>", "force this map's weather"),
+        G("efx",      (s, a) => s.EffectProbe(a),   "<id> [id2 ...]", "play raw Effect.tbl animations over yourself, ids 0-127, up to 8 at once"),
+        G("mtx",      (s, a) => s.MiniTextProbe(a), "<type> [text...]", "audition a raw SendMiniText channel (0 wisp, 3 mini/status, 5 system, 11 group, 12 clan)"),
+        G("weather",  (s, a) => s.WeatherProbe(a),  "clear|rain|snow | auto | raw <0-255>", "pin this map's zone weather (auto releases it back to the season)"),
         G("clock",    (s, a) => s.ClockCmd(a),      "[0-23 | real]", "read or pin the shared in-game hour (totem-time windows follow it; real = release)"),
-        G("setting",  (s, a) => s.SettingCmd(a),    "[name] [on|off]", "read/set any 0x1b Options toggle"),
+        G("setting",  (s, a) => s.SettingCmd(a),    "[name] [on|off]", "read/set any 0x1b Options toggle (omit on|off to toggle; bare @setting lists them all)"),
         G("doze",     (s, a) => s.DozeSelfCmd(a),   "[secs|off]", "put YOURSELF to sleep (Doze can't be self-targeted on the wire)"),
 
         // ---- protocol probes ------------------------------------------------------------------------
-        G("hit",      (s, a) => s.HitProbe(a),          "[dmg]",   "0x13 over-head HP bar on the faced mob"),
+        G("hit",      (s, a) => s.HitProbe(a),          "<pct 0-100> [crit 0-255]", "0x13 over-head HP bar + hit animation on the faced mob"),
         G("hpprobe",  (s, a) => s.StatHpTest(a),        "<cur> <max>", "diag: pin the maxHP/maxMP offsets (@hp is the setter)"),
         G("s",        (s, a) => s.StatProbe(a),         "<hexop> [hexflags]", "fire a sentinel status packet"),
         G("stg",      (s, a) => s.StatGradient(a),      "",        "self-describing gradient stats packet"),
         G("r6",       (s, a) => s.StatReplay6x(a),      "[hexop]", "replay a captured 6.x stats packet"),
         G("batch",    (s, a) => s.StatBatch(a),         "",        "sentinel probe over a curated opcode set"),
         G("sweep",    (s, a) => s.StatSweep(a),         "",        "disabled (crashes the client)"),
-        G("mailflag", (s, a) => s.MailFlagProbe(a),     "<off> [valHex]", "sweep the 0x08 mail/parcel notify byte"),
+        G("mailflag", (s, a) => s.MailFlagProbe(a),     "<off 0-79> [valHex]", "sweep the 0x08 mail/parcel notify byte (val defaults to 0x11 = mail+parcel; try offsets 40-57)"),
         G("nat",      (s, a) => s.StatNation(a),        "<id>",    "sweep nation id -> HUD name"),
         G("users",    (s, a) => s.UserListCmd(a),       "[sort|sweep]", "0x36 user list (sweep = label every cell)"),
         G("askpic",   (s, a) => s.SendResendProfilePic(), "",      "0x49 - make the client re-upload users/<name>.epf"),
@@ -365,7 +488,7 @@ public sealed partial class Session
             return true;
         }
 
-        cmd.Run(this, args);
+        cmd.Run(this, new CommandArgs(cmd, args));
         return true;
     }
 
@@ -414,10 +537,14 @@ public sealed partial class Session
     }
 
     /// <summary>One detailed @help row: "@name/@alias &lt;args&gt; — what it does".</summary>
-    private static string HelpLine(Command c)
+    private static string HelpLine(Command c) => $"  {HelpShape(c)} — {c.Help}";
+
+    /// <summary>Just the calling shape: "@name/@alias &lt;args&gt;". Shared by @help and by
+    /// <see cref="CommandArgs.Usage"/>, so the two cannot describe the same command differently.</summary>
+    private static string HelpShape(Command c)
     {
         string names = string.Join('/', c.Names.Select(n => Prefix + n));
-        return $"  {names}{(c.Args.Length > 0 ? " " + c.Args : "")} — {c.Help}";
+        return $"{names}{(c.Args.Length > 0 ? " " + c.Args : "")}";
     }
 
     /// <summary>"@commands" / "@cmds" — the compact index: just the NAMES of every command this session can
