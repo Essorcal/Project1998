@@ -158,6 +158,7 @@ public sealed partial class Session
     /// session invokes this on the recipient's when it mails/parcels them.</summary>
     internal void RefreshMailFlags()
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         byte f = ComputeMailFlags();
         _mailFlagsSeeded = true;
         if (f == _mailFlags) return;
@@ -194,6 +195,7 @@ public sealed partial class Session
 
     public void RegenTick(int ms)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Mail-flag backstop: runs BEFORE the dead/topped-off early-returns so a resting or ghosted player
         // still notices mail that arrived via a path we forgot to poke. Event-driven refresh is the norm; this
         // is one cheap DB re-check every 30s, vs the old two-queries-per-stats-packet.
@@ -249,7 +251,7 @@ public sealed partial class Session
             if (_buffs[i].Expires > now) continue;
             var fade = Content.FadeTextFor(_buffs[i].Key);
             if (fade.Length > 0) SendMiniText(fade);
-            _buffs.RemoveAt(i);
+            BuffRemoveAt(i);
             any = true;
         }
         if (any) SendStats();   // effective caps/attributes dropped back -> refresh the HUD
@@ -981,6 +983,7 @@ public sealed partial class Session
     // knows: whose blow it was, whether it came from behind, and the crit roll.
     public void ApplyMobHit(Mob mob, int rawDmg)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Positional "attacked from behind while both face the same way" 2x (RTK swingDamage.lua's
         // side==target.side rule; the pipeline applies it AFTER armor, matching the Lua's own order). NOT
         // ported: the item-flag-gated backstab/flank abilities a handful of legendary weapons grant (see
@@ -1036,6 +1039,7 @@ public sealed partial class Session
     /// every other caller ignores it.</returns>
     public int ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         bool fromAnother = !ReferenceEquals(attacker, this);
         return TakeDamage(new DamageIntake(DamageKind.PlayerSpell, rawDmg)
         {
@@ -1057,6 +1061,7 @@ public sealed partial class Session
     // HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll.
     public void ReceiveMeleeDamage(int rawDmg, Session attacker, bool crit)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         TakeDamage(new DamageIntake(DamageKind.PlayerMelee, rawDmg)
         {
             IgnoresHardenBody = false,
@@ -1119,6 +1124,7 @@ public sealed partial class Session
     // revive at the chosen Shaman; also reachable as a fresh-character/GM fallback via HomeCityFor.
     private void ReviveAt(ushort map, ushort x, ushort y, string arrivalMsg)
     {
+        using var _ = EnterState();   // #29: a resurrection spell reaches here on the CASTER's thread
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
         if (Content.Maps.TryGetValue(map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, x, y, mi.Name);
@@ -1135,6 +1141,7 @@ public sealed partial class Session
     /// form here (ReviveAt gets that implicitly from EnterMap).</summary>
     internal void ReviveInPlace(string message)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
         RefreshAppearance();   // redraw self + everyone watching as living again (MountForm drops form 1)

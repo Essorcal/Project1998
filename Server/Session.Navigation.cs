@@ -1062,6 +1062,7 @@ public sealed partial class Session
     // our entity id (0x05) are already established this session, so those are NOT resent.
     private void EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Warn on crossing INTO a PvP realm (RTK MapPvP flag — Content.IsPvpMap) from a non-PvP one, e.g.
         // stepping through an arena door into Sire Pit/Yusa Pit. Skipped when already in a PvP map (tier
         // warps within the same arena chain shouldn't re-nag every hop).

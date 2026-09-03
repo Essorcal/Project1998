@@ -1,5 +1,6 @@
 using System.Linq;
 using Server;
+using Shared;
 using Xunit;
 
 namespace Tests;
@@ -1563,5 +1564,257 @@ public class ContentSmokeTests
             Assert.Equal(4, v.Length);
             Assert.All(v, id => Assert.Equal("rat", Content.MobById(id)?.Key));
         });
+    }
+
+    // ---- the load report (issue #31) ----------------------------------------------------------------
+    //
+    // The lowest row count a healthy load KEEPS, per content file. This is the census the hand-written
+    // startup line could not be: it named 36 registries, so MobSpells, Doors, SpellParams, NpcAbilities,
+    // MapCells, WarpQuestLocks and about twenty-five others could load zero rows and say nothing at all.
+    //
+    // The floors are 80% of what each file keeps today, rounded down to two significant figures; a file
+    // of ten rows or fewer gets a floor of 1, because those are hand-curated and sparse and the only
+    // collapse worth catching there is "it vanished". They are FLOORS, so adding content never trips
+    // one — what trips one is a registry that quietly shrinks, which is exactly the failure this repo
+    // keeps having. A Lua script's floor is 1: "it compiled and took".
+    private static readonly IReadOnlyDictionary<string, int> TableFloors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["map_index.csv"]          = 1600,  // 2025 kept today
+        ["MobFlees.csv"]           = 1,     // 2 kept today
+        ["MobStationary.csv"]      = 11,    // 14 kept today
+        ["mobs.csv"]               = 570,   // 716 kept today
+        ["Items.csv"]              = 2000,  // 2544 kept today
+        ["Warps.csv"]              = 3300,  // 4208 kept today
+        ["Spawns.csv"]             = 930,   // 1174 kept today
+        ["AreaSpawns.csv"]         = 2000,  // 2588 kept today
+        ["AreaSpawnsTrap.csv"]     = 16,    // 20 kept today
+        ["AreaSpawnsCrafting.csv"] = 1,     // 8 kept today
+        ["NPCs.csv"]               = 230,   // 288 kept today
+        ["MinorQuests.csv"]        = 80,    // 101 kept today
+        ["ShopStock.csv"]          = 30,    // 38 kept today
+        ["ShopBuysFrom.csv"]       = 36,    // 46 kept today
+        ["Paths.csv"]              = 18,    // 23 kept today
+        ["LevelExp.csv"]           = 390,   // 491 kept today
+        ["SpellLevels.csv"]        = 110,   // 143 kept today
+        ["Spells.csv"]             = 680,   // 862 kept today
+        ["spell_effects.csv"]      = 510,   // 641 kept today
+        ["SpellText.csv"]          = 1,     // 4 kept today
+        ["SpellLearnCosts.csv"]    = 470,   // 591 kept today
+        ["Mob5xPalettes.csv"]      = 12,    // 16 kept today
+        ["ArmorDyeRamps.csv"]      = 8,     // 11 kept today
+        ["Maps.csv"]               = 7800,  // 9850 kept today
+        ["MobDrops.csv"]           = 300,   // 377 kept today
+        ["CraftingToggles.csv"]    = 11,    // 14 kept today
+        ["WarpQuestLocks.csv"]     = 1,     // 4 kept today
+        ["ArmorQuests.csv"]        = 9,     // 12 kept today
+        ["MythicCaves.csv"]        = 9,     // 12 kept today
+        ["MythicAlliances.csv"]    = 9,     // 12 kept today
+        ["ArenaDoors.csv"]         = 1,     // 5 kept today
+        ["EventCaveTiers.csv"]     = 1,     // 9 kept today
+        ["EventCaves.csv"]         = 1,     // 1 kept today
+        ["MusicTracks.csv"]        = 71,    // 89 kept today
+        ["MapBgm.csv"]             = 1,     // 7 kept today
+        ["Inns.csv"]               = 11,    // 14 kept today
+        ["ForageAreas.csv"]        = 1,     // 2 kept today
+        ["HarvestNodes.csv"]       = 1,     // 6 kept today
+        ["MobSpells.csv"]          = 230,   // 294 kept today
+        ["MobChatter.csv"]         = 16,    // 21 kept today
+        ["MobSpawnRules.csv"]      = 53,    // 67 kept today
+        ["MobBosses.csv"]          = 57,    // 72 kept today
+        ["PathHalls.csv"]          = 1,     // 8 kept today
+        ["GatewayGates.csv"]       = 12,    // 16 kept today
+        ["WorldMapDests.csv"]      = 1,     // 7 kept today
+        ["WorldMapTriggers.csv"]   = 1,     // 7 kept today
+        ["FallRooms.csv"]          = 9,     // 12 kept today
+        ["AmbushBursts.csv"]       = 29,    // 37 kept today
+        ["AmbushConfig.csv"]       = 16,    // 21 kept today
+        ["BoardLocations.csv"]     = 1,     // 1 kept today
+        ["ShopCatalogues.csv"]     = 8,     // 11 kept today
+        ["SpellParams.csv"]        = 76,    // 96 kept today
+        ["spell_verbs.lua"]        = 1,     // 1 kept today
+        ["ItemParams.csv"]         = 48,    // 60 kept today
+        ["item_verbs.lua"]         = 1,     // 1 kept today
+        ["npc_dialog.lua"]         = 1,     // 1 kept today
+        ["mob_ai.lua"]             = 1,     // 1 kept today
+        ["Pets.csv"]               = 23,    // 29 kept today
+        ["WeaponProcs.csv"]        = 20,    // 25 kept today
+        ["Traps.csv"]              = 1,     // 8 kept today
+        ["Morphs.csv"]             = 23,    // 29 kept today
+        ["SpellMods.csv"]          = 20,    // 25 kept today
+        ["NpcAbilities.csv"]       = 23,    // 29 kept today
+        ["PathGrowth.csv"]         = 1,     // 5 kept today
+        ["DoorObjects.csv"]        = 40,    // 50 kept today
+        ["ServerTuning.csv"]       = 12,    // 16 kept today
+        ["Doors.csv"]              = 1,     // 8 kept today
+        ["MapCells.csv"]           = 23,    // 29 kept today
+    };
+
+    /// <summary>Every content file loaded, and kept enough rows to still be the table it is meant to be.
+    ///
+    /// <para>This is the guard that stops the report drifting back to covering 36 of 68: the report's file
+    /// names and <see cref="TableFloors"/>' keys must be the SAME SET in both directions, so adding a table
+    /// to <see cref="Content.Load"/> without giving it a floor fails here rather than joining the silent
+    /// majority. Then, per table: the file was found and read, every column a loader requires was in the
+    /// header, and it kept at least its floor.</para>
+    ///
+    /// <para>Takes <c>TestProcessState.Gate</c> around the load AND the read so the report belongs to the
+    /// load it just did — the two facts below deliberately load broken content under the same gate. It calls
+    /// LoadContent inside the gate rather than EnsureLoaded so it never takes <c>_gate -> Gate</c>, which
+    /// would be the reverse of the order every other fact in this class uses.</para></summary>
+    [Fact]
+    public void EveryContentTableLoadsAboveItsFloor()
+    {
+        lock (TestProcessState.Gate)
+        {
+            TestProcessState.LoadContent();
+            var report = Content.LoadReport;
+
+            // 68 literally: 64 CSVs + the 4 Lua scripts. Pinned as a number as well as by the set
+            // equality below, because deleting a table AND its floor together would keep the set check
+            // green at 67 — and "all 68 tables" is the contract.
+            Assert.Equal(68, report.Count);
+            Assert.Equal(68, TableFloors.Count);
+            var reported = report.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            Assert.Empty(reported.Except(TableFloors.Keys, StringComparer.OrdinalIgnoreCase));   // a table with no floor
+            Assert.Empty(TableFloors.Keys.Except(reported, StringComparer.OrdinalIgnoreCase));   // a floor with no table
+
+            foreach (var t in report)
+            {
+                Assert.True(t.Status == CsvStatus.Ok, $"{t.Name}: {t.Status} ({t.Path})");
+                Assert.True(t.MissingColumns.Count == 0,
+                    $"{t.Name}: header is missing {string.Join(", ", t.MissingColumns)} — renamed column?");
+                Assert.True(t.Kept >= TableFloors[t.Name],
+                    $"{t.Name} kept {t.Kept} of {t.Read} row(s), floor is {TableFloors[t.Name]}");
+            }
+            Assert.Empty(report.Problems);
+        }
+    }
+
+    /// <summary>A CSV that is not there names itself at startup instead of loading zero rows in silence —
+    /// the failure the old reader answered with a bare <c>yield break</c>. MobChatter is the guinea pig
+    /// because nothing else in the suite reads it.</summary>
+    [Fact]
+    public void AMissingCsvIsReportedByName()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_CHATTER");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER",
+                    Path.Combine(Path.GetTempPath(), $"p1998-not-here-{Guid.NewGuid():N}.csv"));
+                TestProcessState.LoadContent();
+
+                var entry = Content.LoadReport["MobChatter.csv"];
+                Assert.NotNull(entry);
+                Assert.Equal(CsvStatus.Missing, entry!.Status);
+                Assert.Equal(0, entry.Kept);
+                Assert.Contains(Content.LoadReport.Problems,
+                    p => p.Contains("MobChatter.csv") && p.Contains("FILE NOT FOUND"));
+                Assert.Empty(Content.MobChatter);   // and the registry really did go empty, as it always did
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER", previous);
+                TestProcessState.LoadContent();
+            }
+        }
+    }
+
+    /// <summary>A renamed header names the TABLE AND THE COLUMN. This is the 269-site failure the ticket is
+    /// about: every column read used to be <c>GetValueOrDefault("MobKey", "")</c>, so renaming the header
+    /// zeroed the whole column — here, dropped every row of the file — with nothing in the log.</summary>
+    [Fact]
+    public void ARenamedHeaderIsReportedByTableAndColumn()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "p1998-renamed-header-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "MobChatter.csv");
+            File.WriteAllText(path, "MobIdentifier,Lines,Chance,Channel\n" +   // MobKey renamed
+                                    "rat,Squeak!,4,0\n");
+
+            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_CHATTER");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER", path);
+                TestProcessState.LoadContent();
+
+                var entry = Content.LoadReport["MobChatter.csv"];
+                Assert.NotNull(entry);
+                Assert.Equal(CsvStatus.Ok, entry!.Status);       // the FILE was fine; the schema was not
+                Assert.Contains("MobKey", entry.MissingColumns);
+                Assert.Equal(1, entry.Read);
+                Assert.Equal(0, entry.Kept);                     // ...and every row of it was dropped
+                Assert.Contains(Content.LoadReport.Problems,
+                    p => p.Contains("MobChatter.csv") && p.Contains("'MobKey'"));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER", previous);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
+            }
+        }
+    }
+
+    /// <summary>The three AreaSpawns files share one loader and do NOT share a header, and requiredness is
+    /// therefore per FILE — this pins that, because the tempting alternative silently re-opens the exact
+    /// hole this ticket closed.
+    ///
+    /// <para><c>Timer</c> is not decoration: <c>World.Tick</c> branches on <c>ad.Timer &gt; 0</c> to choose
+    /// between the batch-group and per-point spawn models. If the loader read it with an "optional column"
+    /// accessor, renaming that header would make all 2,588 rows read 0, move every batch hunting map onto
+    /// the per-point model, and produce no warning, no problem line and no failing test. So: a grouped file
+    /// must require <c>Timer</c>/<c>Group</c>, the trap file must require <c>RespawnSec</c>, and — the half
+    /// that stops this being solved by requiring all three everywhere — neither may report the other's
+    /// columns against a healthy file.</para></summary>
+    [Fact]
+    public void AreaSpawnColumnsAreRequiredPerFile()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "p1998-areaspawns-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string grouped = Path.Combine(dir, "AreaSpawns.csv");
+            string trap = Path.Combine(dir, "AreaSpawnsTrap.csv");
+            //                    Timer renamed  vvvvv
+            File.WriteAllText(grouped, "Map,MobId,Count,MinX,MinY,MaxX,MaxY,Tick,Group\n" +
+                                       "330,1,2,10,10,20,20,600,0\n");
+            //                                                RespawnSec renamed  vvvvvvvvv
+            File.WriteAllText(trap, "Map,MobId,Count,MinX,MinY,MaxX,MaxY,RespawnSeconds\n" +
+                                    "330,1,2,10,10,20,20,900\n");
+
+            string? prevGrouped = Environment.GetEnvironmentVariable("P1998_AREASPAWNS");
+            string? prevTrap = Environment.GetEnvironmentVariable("P1998_AREASPAWNS_TRAP");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_AREASPAWNS", grouped);
+                Environment.SetEnvironmentVariable("P1998_AREASPAWNS_TRAP", trap);
+                TestProcessState.LoadContent();
+
+                var g = Content.LoadReport["AreaSpawns.csv"]!;
+                Assert.Contains("Timer", g.MissingColumns);
+                Assert.DoesNotContain("RespawnSec", g.MissingColumns);   // a grouped file never reads it
+                Assert.Equal(1, g.Kept);                                 // the ROW still loads; only Timer went 0
+
+                var t = Content.LoadReport["AreaSpawnsTrap.csv"]!;
+                Assert.Contains("RespawnSec", t.MissingColumns);
+                Assert.DoesNotContain("Timer", t.MissingColumns);        // ...and the trap file never reads that
+                Assert.Equal(1, t.Kept);
+
+                // The shipped files, meanwhile, must stay silent about all three — which is the whole reason
+                // this is a per-file parameter and not a per-read opt-out.
+                Assert.Empty(Content.LoadReport["AreaSpawnsCrafting.csv"]!.MissingColumns);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_AREASPAWNS", prevGrouped);
+                Environment.SetEnvironmentVariable("P1998_AREASPAWNS_TRAP", prevTrap);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
+            }
+        }
     }
 }

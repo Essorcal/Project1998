@@ -19,13 +19,14 @@ namespace Server;
 /// abilities — a broken script can never take NPCs offline.
 ///
 /// Concurrency: a MoonSharp <see cref="Script"/> isn't thread-safe and a conversation spans many awaits, so we
-/// can't hold a lock across one. Instead each individual <c>Resume</c>/<c>Call</c> is locked (they're fast and
-/// synchronous); the awaits happen outside the lock. Two players' conversations therefore interleave their
-/// coroutine steps safely — never resumed simultaneously — which is how a single Lua VM is meant to be driven.
+/// can't hold a lock across one. Instead each individual <c>Resume</c>/<c>Call</c> takes the shared Lua gate
+/// (<c>Session.EnterScriptGate</c>, the same one the verb hosts use — see #29 for why it is one gate and why it
+/// ranks outside the session monitors); they're fast and synchronous, and the awaits happen outside it. Two
+/// players' conversations therefore interleave their coroutine steps safely — never resumed simultaneously —
+/// which is how a single Lua VM is meant to be driven.
 /// </summary>
 public static class NpcScript
 {
-    private static readonly object _lock = new();
     private static Script? _script;
     private static Table? _npcs;       // npcs[key]      = function(ctx)         -- click dialog
     private static Table? _npcsSay;    // npcs_say[key]  = function(ctx, speech)  -- spoken trigger, returns consumed?
@@ -38,7 +39,7 @@ public static class NpcScript
     /// next good reload. Returns true if the Lua NPC path is live afterwards.</para></summary>
     public static bool Load(string? path)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             if (path is null || !File.Exists(path))
             {
@@ -74,7 +75,7 @@ public static class NpcScript
     /// <summary>Is there a Lua CLICK dialog script for this NPC identifier?</summary>
     public static bool Has(string npcKey)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             return _npcs is not null && npcKey.Length > 0 && _npcs.Get(npcKey).Type == DataType.Function;
         }
@@ -83,7 +84,7 @@ public static class NpcScript
     /// <summary>Is there a Lua SPEECH-trigger script (npcs_say) for this NPC identifier?</summary>
     public static bool HasSay(string npcKey)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             return _npcsSay is not null && npcKey.Length > 0 && _npcsSay.Get(npcKey).Type == DataType.Function;
         }
@@ -96,7 +97,7 @@ public static class NpcScript
     public static Task RunAsync(NpcContext ctx, string npcKey)
     {
         DynValue coro, ctxTable;
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             if (_script is null || _npcs is null || _npcs.Get(npcKey).Type != DataType.Function) return Task.CompletedTask;
             ctxTable = _script.Call(_script.Globals.Get("__make_ctx"));
@@ -111,7 +112,7 @@ public static class NpcScript
     public static async Task<bool> RunSayAsync(NpcContext ctx, string npcKey, string speech)
     {
         DynValue coro, ctxTable;
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             if (_script is null || _npcsSay is null || _npcsSay.Get(npcKey).Type != DataType.Function) return false;
             ctxTable = _script.Call(_script.Globals.Get("__make_ctx"));
@@ -126,11 +127,11 @@ public static class NpcScript
     private static async Task<DynValue> Drive(NpcContext ctx, DynValue coro, DynValue[] firstArgs)
     {
         DynValue yielded;
-        lock (_lock) { yielded = coro.Coroutine.Resume(firstArgs); }
+        using (Session.EnterScriptGate()) { yielded = coro.Coroutine.Resume(firstArgs); }
         while (coro.Coroutine.State == CoroutineState.Suspended)
         {
             var reply = await Dispatch(ctx, yielded);
-            lock (_lock) { yielded = coro.Coroutine.Resume(reply); }
+            using (Session.EnterScriptGate()) { yielded = coro.Coroutine.Resume(reply); }
         }
         return yielded;
     }

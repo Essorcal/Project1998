@@ -139,8 +139,16 @@ public static class EraCalendar
         return feats;
     }
 
-    // Minimal CSV reader, matching Server.Content.ReadCsv's shape: '#' opens a comment line anywhere
-    // including above the header, and quoted fields may contain commas.
+    // Minimal CSV reader: '#' opens a comment line anywhere including above the header, and quoted fields
+    // may contain commas.
+    //
+    // TODO(#35): fold this onto Shared/Csv.cs. This is the LAST reader that still has both of the silent
+    // failure modes #31 removed from the content loader — a missing file and a parse failure each end in a
+    // bare `yield break` with nothing in the log. It is not a low-stakes file either: EraFeatures.csv gates
+    // whether an NPC exists yet (NPCs.csv EraFeature -> Era.Has), so losing it quietly removes people from
+    // the world. It also reads ServerTuning.csv a SECOND time, and neither file appears in
+    // Content.LoadReport, which is why that report covers 68 of game-data's 71 CSVs. See #35's comment
+    // thread for the full table of what each remaining reader swallows.
     private static IEnumerable<Dictionary<string, string>> ReadCsv(string? path)
     {
         if (path is null || !File.Exists(path)) yield break;

@@ -78,20 +78,38 @@ public sealed class CharacterStore
         catch { return null; }   // corrupt/legacy row -> treat as absent, caller falls back to a fresh char
     }
 
-    /// <summary>Whole-graph upsert. Returns true on success, false if the write failed (a bad disk, or a
-    /// concurrent in-memory mutation racing the JSON serialize — see Session.FlushNow). A caller that cares
+    /// <summary>
+    /// The character graph as the bytes that would be stored — a SNAPSHOT, taken separately from the write
+    /// that ships it.
+    ///
+    /// <para>Splitting these two is what lets a caller hold its own lock across the part that has to be
+    /// consistent and drop it across the part that touches a disk. <c>Session.FlushNow</c> serializes here
+    /// under the session's state monitor, so no handler or tick can land a half-applied change in the middle
+    /// of the graph, and then writes the resulting string with the monitor released — a synchronous SQLite
+    /// write under it would put the world tick behind the autosave thread's disk I/O (#29).</para>
+    /// </summary>
+    public static string Serialize(Character c) => JsonSerializer.Serialize(c, Json);
+
+    /// <summary>Whole-graph upsert. Returns true on success, false if the write failed. A caller that cares
     /// about durability (the dirty-flag autosave path) uses the return value to keep retrying instead of
-    /// silently dropping the mutation; everyone else can ignore it exactly as before.</summary>
-    public bool Save(Character c)
+    /// silently dropping the mutation; everyone else can ignore it exactly as before.
+    ///
+    /// <para>Serializing and writing in one call is only safe when the caller can guarantee nothing mutates
+    /// <paramref name="c"/> for the duration. A caller that cannot takes the snapshot itself
+    /// (<see cref="Serialize"/>) and writes it with <see cref="SaveJson"/>.</para></summary>
+    public bool Save(Character c) => SaveJson(Key(c.Name), Serialize(c));
+
+    /// <summary>Write an already-serialized character snapshot (see <see cref="Serialize"/>) against the
+    /// normalized <paramref name="user"/> key.</summary>
+    public bool SaveJson(string user, string json)
     {
         try
         {
-            var json = JsonSerializer.Serialize(c, Json);
             using var cn = Db.Open();
             using var cmd = cn.CreateCommand();
             cmd.CommandText = @"INSERT INTO characters(username, json, updated_utc) VALUES($u, $j, $t)
                                 ON CONFLICT(username) DO UPDATE SET json=$j, updated_utc=$t;";
-            cmd.Parameters.AddWithValue("$u", Key(c.Name));
+            cmd.Parameters.AddWithValue("$u", user);
             cmd.Parameters.AddWithValue("$j", json);
             cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             cmd.ExecuteNonQuery();
@@ -101,7 +119,7 @@ public sealed class CharacterStore
         {
             // Best effort; persistence must never crash a session — but a swallowed write failure is
             // otherwise invisible, so surface it.
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! Save('{c.Name}') failed: {e.Message}");
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! Save('{user}') failed: {e.Message}");
             return false;
         }
     }
@@ -121,13 +139,19 @@ public sealed class CharacterStore
     public bool SaveMany(IReadOnlyList<Character> chars)
     {
         if (chars.Count == 0) return true;
+        var rows = new List<(string User, string Json)>(chars.Count);
+        foreach (var c in chars) rows.Add((Key(c.Name), Serialize(c)));
+        return SaveManyJson(rows);
+    }
+
+    /// <summary>The already-snapshotted form of <see cref="SaveMany"/>, for the same reason
+    /// <see cref="SaveJson"/> exists: <c>Session.FlushPair</c> takes both characters' snapshots under both
+    /// sessions' state monitors and commits them here with the monitors released.</summary>
+    public bool SaveManyJson(IReadOnlyList<(string User, string Json)> rows)
+    {
+        if (rows.Count == 0) return true;
         try
         {
-            // Serialize first — outside the transaction, and eagerly, so a mid-serialize collection mutation
-            // throws here (whole call returns false, caller retries) rather than half-way through a commit.
-            var rows = new List<(string User, string Json)>(chars.Count);
-            foreach (var c in chars) rows.Add((Key(c.Name), JsonSerializer.Serialize(c, Json)));
-
             using var cn = Db.Open();
             using var tx = cn.BeginTransaction();
             long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -147,7 +171,7 @@ public sealed class CharacterStore
         }
         catch (Exception e)
         {
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! SaveMany({chars.Count}) failed: {e.Message}");
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! SaveMany({rows.Count}) failed: {e.Message}");
             return false;
         }
     }

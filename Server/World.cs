@@ -71,10 +71,26 @@ public sealed class Trap
 /// Threading: all collections are guarded by <c>_lock</c>. Socket writes NEVER happen while holding
 /// the lock — broadcasts snapshot the recipient list under the lock, then send outside it, and each
 /// send is exception-guarded so a peer whose socket just closed can't break a broadcast.
+///
+/// <c>_lock</c> is the INNER lock of the two the server has: the order is a session's state monitor
+/// first, then this one (#29, Server/Session.State.cs). Nothing may enter a session while holding
+/// <c>_lock</c> — the tick obeys that by queueing every session-facing call and applying it after the
+/// lock is released, and <see cref="HoldsWorldLock"/> is what lets the session side assert it.
 /// </summary>
 public sealed class World
 {
     private readonly object _lock = new();
+
+    /// <summary>Whether the calling thread is inside <c>_lock</c>. Exists for the lock-order assert on the
+    /// session side (Session.EnterState): the pair of locks has one legal order and this is the only way the
+    /// outer one can tell it is being taken second.</summary>
+    internal bool HoldsWorldLock => Monitor.IsEntered(_lock);
+
+    /// <summary>Run <paramref name="body"/> holding <c>_lock</c> — for the test that pins the lock-order
+    /// assert. Production code never needs this: every path that wants the world lock is already inside
+    /// this class. Kept next to the lock it takes rather than hidden in the test project, because a reader
+    /// of <c>_lock</c> should be able to see everything that acquires it.</summary>
+    internal void UnderWorldLockForTest(Action body) { lock (_lock) body(); }
 
     private sealed class MapState
     {
@@ -2328,9 +2344,13 @@ public sealed class World
     /// they're offline. Used by whisper/tell (RTK clif_parsewisp's target lookup).</summary>
     public Session? FindPlayer(string name)
     {
+        // CharName, not Snapshot().Name: this runs under _lock, and Snapshot takes the session's state
+        // monitor, which is the wrong way round (#29 — session state THEN _lock). Building a whole
+        // PlayerSnapshot — face, armour, weapon, shield, dye, all off the equipment list — per player per
+        // lookup, to read one string, was never the intent either.
         lock (_lock)
             return _maps.Values.SelectMany(m => m.Players)
-                                .FirstOrDefault(p => string.Equals(p.Snapshot().Name, name, StringComparison.OrdinalIgnoreCase));
+                                .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>The connected player with this entity id (any map), or null. Used by click-profile's "view
@@ -2470,10 +2490,14 @@ public sealed class World
     }
 
     /// <summary>One player's flush, fenced so it can't take the rest of a sweep with it. Before this, one
-    /// throw from FlushNow — a collection mutated under the serializer by that player's own thread (#29),
-    /// a bad disk — unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the unlucky
-    /// one in that snapshot silently missed the interval. Idle dirty players are exactly who the sweep
-    /// exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
+    /// throw from FlushNow unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the
+    /// unlucky one in that snapshot silently missed the interval. Idle dirty players are exactly who the
+    /// sweep exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
+    ///
+    /// <para>The throw it was written for was a collection mutated under the serializer by that player's own
+    /// thread; #29 closed that off — FlushNow now serializes a snapshot taken under the session's state
+    /// monitor — so what is left to catch here is a bad disk. The fence stays: "one player's failure must not
+    /// cost every later player their interval" is worth keeping whatever the cause.</para>
     ///
     /// <para>Returns whether the flush succeeded, because the two callers face different consequences and
     /// must say different things. The periodic sweep genuinely does retry on its next interval. The

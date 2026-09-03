@@ -19,10 +19,17 @@ public sealed partial class Session
     public ushort PlayerX  => _char.X;
     public ushort PlayerY  => _char.Y;
 
-    /// <summary>Immutable view of our player entity so a peer can draw us without racing our state.</summary>
-    public PlayerSnapshot Snapshot() =>
-        new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, FaceLook(), ArmorWireLook(_char.Armor), WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
-            ArmorDye(), _morphLook, _morphColor, Stealthed, _char.HairColor);
+    /// <summary>Immutable view of our player entity so a peer can draw us without racing our state — and,
+    /// since #29, actually taken without racing it: <c>WeaponLook</c>/<c>ShieldLook</c>/<c>ArmorWireLook</c>
+    /// all walk <c>_char.Equipment</c>, and the world tick builds this for every peer of every player on
+    /// every beat while its owner may be equipping. The allocation-free guard is deliberate — this is the
+    /// hottest cross-session call there is.</summary>
+    public PlayerSnapshot Snapshot()
+    {
+        using var _ = EnterState();
+        return new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, FaceLook(), ArmorWireLook(_char.Armor), WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
+                   ArmorDye(), _morphLook, _morphColor, Stealthed, _char.HairColor);
+    }
 
     /// <summary>Draw player <paramref name="other"/> on our client. Normally the 0x33 player-look form; while
     /// morphed (see CastMorph/Content.MorphSpells), reroutes to the SAME 0x07 Monster.epf creature-spawn a
@@ -76,7 +83,7 @@ public sealed partial class Session
     /// edge doesn't flicker). Called on world entry, after each of our walk steps, and every world tick.</summary>
     public void SyncMobs(IReadOnlyList<Mob> mobs)
     {
-        lock (_viewLock)
+        using (EnterView())
         {
             foreach (var m in mobs)
             {
@@ -119,20 +126,20 @@ public sealed partial class Session
         // draw the world's floor items get. They live only on this session — no other client ever sees them.
         // The @showwarps overlay markers ride along for the same reason: they span the whole map.
         GroundItem[]? markers = null;
-        lock (_viewLock)
+        using (EnterView())
             if (_trapMarkers.Count > 0 || _warpMarkers.Count > 0)
                 markers = _trapMarkers.Values.Concat(_warpMarkers).ToArray();
         foreach (var gi in markers is null ? items : items.Concat(markers))
         {
             bool shown;
-            lock (_viewLock) shown = _shownItems.Contains(gi.Id);
+            using (EnterView()) shown = _shownItems.Contains(gi.Id);
             if (!shown)
             {
                 if (InView(gi.X, gi.Y, ShowPad)) ShowGroundItem(gi);
             }
             else if (!InView(gi.X, gi.Y, HidePad))
             {
-                lock (_viewLock) _shownItems.Remove(gi.Id);
+                using (EnterView()) _shownItems.Remove(gi.Id);
                 SendDespawn(gi.Id);
             }
         }
@@ -147,9 +154,7 @@ public sealed partial class Session
     /// tick — the same three sites as SyncMobs. Self is skipped.</summary>
     public void SyncPeers(IReadOnlyList<Session> peers)
     {
-        lock (_viewLock)
-            foreach (var other in peers)
-                ReconcilePeer(other);
+        foreach (var other in peers) SyncPeer(other);
     }
 
     /// <summary>Re-evaluate from scratch which peers WE can see — needed when OUR OWN state flips a per-viewer
@@ -159,36 +164,62 @@ public sealed partial class Session
     /// Map changes get this for free via EnterMap; this covers an in-place death/revive that stays on the map.</summary>
     public void ResyncPeers()
     {
-        lock (_viewLock) { _shownPeers.Clear(); _edgePeers.Clear(); }
+        using (EnterView()) { _shownPeers.Clear(); _edgePeers.Clear(); }
         SyncPeers(_world.View(this, _char.Map).peers);
     }
 
     /// <summary>Reconcile a SINGLE peer into our view (view-gated + tracked). Used when the world tells one
     /// client about one newcomer (World.EnterMap) so the newcomer is drawn only if in view AND recorded in
     /// _shownPeers — so a later step out of view despawns cleanly, like every other tracked entity.</summary>
-    public void SyncPeer(Session other) { lock (_viewLock) ReconcilePeer(other); }
+    public void SyncPeer(Session other) => ReconcilePeer(other);
 
-    // Caller holds _viewLock. Mirrors SyncMobs' per-entity logic exactly (show inside the strict rect, despawn
-    // past the drawn rect with _edgePeers hysteresis, re-assert on re-entry from the overdraw band). ShowPlayer
-    // itself decides draw-vs-despawn for stealth/morph; we only gate on geometry here.
+    /// <summary>What reconciling one peer decided to do about them, once the bookkeeping is settled.</summary>
+    private enum PeerDraw { Nothing, Show, Despawn }
+
+    // DECIDE UNDER _viewLock, SEND OUTSIDE IT — the shape SyncGroundItems above already uses, and since #29 a
+    // requirement rather than a style: ShowPlayer reads the SUBJECT through other.Snapshot(), which takes that
+    // session's state monitor. Doing that with our own _viewLock held is one half of a genuine cycle, because
+    // the other half exists too — a morph revert, a stealth revert or a death broadcasts DespawnEntity to every
+    // peer from under the caster's OWN monitor, and DespawnEntity takes the recipient's _viewLock. Viewer B's
+    // _viewLock waiting on subject A's monitor, against A's monitor waiting on B's _viewLock, is two threads
+    // that never come back. Both are constant traffic: the tick reconciles viewports every beat.
+    //
+    // Mirrors SyncMobs' per-entity logic exactly (show inside the strict rect, despawn past the drawn rect with
+    // _edgePeers hysteresis, re-assert on re-entry from the overdraw band). ShowPlayer itself decides
+    // draw-vs-despawn for stealth/morph; we only gate on geometry here. The set updates happen at the same
+    // points they always did — _shownPeers gains the id on a show, which ShowPlayer cannot fail — so the only
+    // thing that moved is WHERE the packet is built.
     private void ReconcilePeer(Session other)
     {
         if (ReferenceEquals(other, this)) return;
         uint id = other.PlayerId;
         bool core = InView(other.PlayerX, other.PlayerY, ShowPad);   // strict 17x15 — where a 0x33 is accepted
-        if (!_shownPeers.Contains(id))
+        bool drawn = InView(other.PlayerX, other.PlayerY, HidePad);  // the wider 19x17 the client actually renders
+
+        PeerDraw draw;
+        using (EnterView())
         {
-            if (core) { ShowPlayer(other); _shownPeers.Add(id); }
+            if (!_shownPeers.Contains(id))
+            {
+                if (!core) return;
+                _shownPeers.Add(id);
+                draw = PeerDraw.Show;
+            }
+            else if (!drawn)                                          // left the drawn rect — really gone
+            {
+                _shownPeers.Remove(id); _edgePeers.Remove(id);
+                draw = PeerDraw.Despawn;
+            }
+            else if (core)
+            {
+                draw = _edgePeers.Remove(id) ? PeerDraw.Show          // back inside after loitering — re-assert
+                                             : PeerDraw.Nothing;
+            }
+            else { _edgePeers.Add(id); return; }                      // in the band: keep drawn, flag suspect
         }
-        else if (!InView(other.PlayerX, other.PlayerY, HidePad))      // left the drawn 19x17 rect — really gone
-        {
-            SendDespawn(id); _shownPeers.Remove(id); _edgePeers.Remove(id);
-        }
-        else if (core)
-        {
-            if (_edgePeers.Remove(id)) ShowPlayer(other);            // back inside after loitering — re-assert
-        }
-        else _edgePeers.Add(id);                                      // in the band: keep drawn, flag suspect
+
+        if (draw == PeerDraw.Show) ShowPlayer(other);
+        else if (draw == PeerDraw.Despawn) SendDespawn(id);
     }
 
     /// <summary>Reset the drawn-mob set (before a full 0x15 map rebuild, which drops all foreign entities
@@ -200,7 +231,7 @@ public sealed partial class Session
     // _warpMarkers goes with them too — but unlike trap markers, the @showwarps overlay SURVIVES as a toggle:
     // EnterMap and RedrawWorld re-stamp it for whatever map the client rebuilds, so only the stale marker set
     // dies here, not the feature.
-    private void ForgetShownMobs() { lock (_viewLock) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
+    private void ForgetShownMobs() { using (EnterView()) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
 
     /// <summary>Rub out the spot-traps marker for one trap, if this client ever revealed it — RTK
     /// <c>removeTrapItem(npc)</c>, which every trap NPC calls right before deleting itself. Broadcast to the
@@ -208,7 +239,7 @@ public sealed partial class Session
     public void ClearTrapMarker(uint trapId)
     {
         GroundItem? marker;
-        lock (_viewLock)
+        using (EnterView())
         {
             if (!_trapMarkers.Remove(trapId, out marker)) return;
             if (!_shownItems.Remove(marker.Id)) return;   // never made it past the viewport gate — nothing drawn to erase
@@ -222,7 +253,7 @@ public sealed partial class Session
     /// rect is drawn when we walk to it rather than thrown away by the 0x07 gate.</summary>
     public bool AddTrapMarker(uint trapId, GroundItem marker)
     {
-        lock (_viewLock) return _trapMarkers.TryAdd(trapId, marker);
+        using (EnterView()) return _trapMarkers.TryAdd(trapId, marker);
     }
 
     /// <summary>Re-assert every co-located peer + mob on OUR client. Call after re-sending 0x15 mapinfo
@@ -248,20 +279,20 @@ public sealed partial class Session
     // so this just spares the wire on a big map); SyncMobs draws it once it enters view.
     public void MoveMob(uint id, ushort x, ushort y, byte dir)
     {
-        lock (_viewLock) { if (!_shownMobs.Contains(id)) return; }
+        using (EnterView()) { if (!_shownMobs.Contains(id)) return; }
         SendMove(id, x, y, dir);
     }
     // Turn a world MOB in place (0x11 side) — same shown-only guard as MoveMob.
     public void SideMob(uint id, byte side)
     {
-        lock (_viewLock) { if (!_shownMobs.Contains(id)) return; }
+        using (EnterView()) { if (!_shownMobs.Contains(id)) return; }
         SendSide(id, side);
     }
     public void SideEntity(uint id, byte side) => SendSide(id, side);                              // 0x11
     public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, type, time, param);  // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
-    public void DespawnEntity(uint id) { lock (_viewLock) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); } SendDespawn(id); }  // 0x0E
+    public void DespawnEntity(uint id) { using (EnterView()) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); } SendDespawn(id); }  // 0x0E
 
     // The one funnel every outbound packet in the server goes through, and the top half of the test seam:
     // it hands the frame to _out and does nothing transport-specific itself. TcpOutbound is a non-blocking
