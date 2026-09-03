@@ -67,6 +67,32 @@ public sealed class CommandTableTests
         }
     }
 
+    /// <summary>Run a command the way the read loop runs one: as a framed 0x0E chat packet handed to
+    /// <see cref="Session.Receive"/>.
+    ///
+    /// <para>This used to call the dispatcher directly, which was a shortcut with teeth. #29 made a PACKET
+    /// the atomic unit of work against a session and put the state monitor around the whole of
+    /// <c>Session.Handle</c>; reaching past it to the dispatcher meant every command here ran outside the
+    /// monitor, and its Debug.Fail duly caught @dispel and @coins touching <c>_buffs</c> and <c>_char</c>
+    /// unguarded. The fix is where the test ENTERS, not what it expects — every transcript below is
+    /// unchanged.</para>
+    ///
+    /// <para>Entering here also means the pins now cover the real path a player's message takes: the 0x0E
+    /// body parse, the prefix split, the tier gate and the table lookup, not just the handler.</para>
+    ///
+    /// <para>Body layout is <c>chatType(u8) · len(u8) · text</c> (Session.Chat.HandleChat). Type 0 is
+    /// ordinary speech — the same thing the client sends when someone types into the chat box.</para>
+    /// </summary>
+    private static void Run(Session session, string command)
+    {
+        var text = Encoding.ASCII.GetBytes(command);
+        var body = new byte[2 + text.Length];
+        body[0] = 0;
+        body[1] = (byte)text.Length;
+        text.CopyTo(body, 2);
+        session.Receive(SessionFixture.Frame(0x0E, body));
+    }
+
     /// <summary>Every text frame a command produced, in order, as "widget|text".
     ///
     /// <para>Decoded from the recorded bytes rather than from any server-side intent, because the widget is
@@ -246,7 +272,8 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        Assert.True(session.TryRunCommand(command), $"'{command}' was not recognized as a command at all");
+        Run(session, command);
+
         Assert.Equal(expected, Transcript(outbound));
     }
 
@@ -427,7 +454,7 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        session.TryRunCommand(command);
+        Run(session, command);
         Assert.Equal(new[] { "bubble|" + expected }, Transcript(outbound));
     }
 
@@ -445,7 +472,7 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        session.TryRunCommand(command);
+        Run(session, command);
         Assert.Equal(new[] { "bubble|" + expected }, Transcript(outbound));
 
         // ...and it is the same string @help would print for that row, minus the "usage: " prefix.
@@ -514,7 +541,7 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        session.TryRunCommand("@legend");
+        Run(session, "@legend");
 
         Assert.Equal(new[]
         {
@@ -532,8 +559,8 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        session.TryRunCommand("@might 50");
-        session.TryRunCommand("@karma angel");
+        Run(session, "@might 50");
+        Run(session, "@karma angel");
 
         Assert.Equal(new[]
         {
@@ -555,7 +582,7 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        session.TryRunCommand(command);
+        Run(session, command);
 
         var transcript = Transcript(outbound);
         Assert.NotEmpty(transcript);
@@ -580,7 +607,7 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        session.TryRunCommand(command);
+        Run(session, command);
 
         var pane = Transcript(outbound)
             .Where(l => l.StartsWith("pane", StringComparison.Ordinal))
@@ -637,7 +664,8 @@ public sealed class CommandTableTests
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
-        Assert.True(session.TryRunCommand(command), $"'{command}' was not recognized as a command at all");
+        Run(session, command);
+
         Assert.Equal(expected, Transcript(outbound));
     }
 }
