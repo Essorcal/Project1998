@@ -571,6 +571,43 @@ public sealed class CommandTableTests
         }, Transcript(outbound));
     }
 
+    /// <summary>"@setting &lt;name&gt; on|off|1|0", and nothing else. A word it does not recognise refuses and
+    /// changes NOTHING — it used to read anything that was not on/1 as OFF, so a typo silently turned the
+    /// setting off and then reported the change as though it had been asked for.</summary>
+    [Theory]
+    [InlineData("@setting hear-sounds on", "Hear sounds      :ON")]
+    [InlineData("@setting hear-sounds 1", "Hear sounds      :ON")]
+    [InlineData("@setting hear-sounds off", "Hear sounds      :OFF")]
+    [InlineData("@setting hear-sounds 0", "Hear sounds      :OFF")]
+    public void SettingTakesOnOffOneZero(string command, string expected)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        Run(session, command);
+
+        Assert.Equal(new[] { $"pane3|{Session.PaneRule}", "pane3|" + expected }, Transcript(outbound));
+    }
+
+    [Theory]
+    [InlineData("@setting hear-sounds onn")]
+    [InlineData("@setting hear-sounds yes")]
+    [InlineData("@setting hear-sounds 2")]
+    public void SettingRefusesAnythingElseAndChangesNothing(string command)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        Run(session, "@setting hear-sounds on");
+        outbound.Clear();
+        Run(session, command);
+
+        // A bubble refusal and no pane line at all — nothing was changed, so nothing is reported changed.
+        Assert.Equal(new[] { "bubble|usage: @setting [name] [on|off]" }, Transcript(outbound));
+
+        outbound.Clear();
+        Run(session, "@setting hear-sounds");        // bare toggles; ON -> OFF proves it was still ON
+        Assert.Contains("pane3|Hear sounds      :OFF", Transcript(outbound));
+    }
+
     /// <summary>A command that only REFUSES spends no pane line at all. The rule is owed by the first pane
     /// line, and a refusal answers on the bubble — heading it with a separator would cost a line of the pane
     /// to punctuate output that never arrived there.</summary>

@@ -621,9 +621,19 @@ public sealed partial class Session
             kv.Value.Contains(want, StringComparison.OrdinalIgnoreCase));
         if (hit.Value is null) { Refuse($"no setting matches '{a.Word(0)}' — run {Prefix}setting for the list"); return; }
 
-        bool on = a.Count > 1
-            ? a.Is(1, "on") || a.Word(1) == "1"
-            : !_char.HasSetting(hit.Key);
+        // on|off|1|0, and NOTHING else. This used to read "anything that isn't on/1" as OFF, so a typo
+        // ("@setting sounds onn") silently turned the setting off and then reported the change as though it
+        // had been asked for — the one shape of bug a readout cannot help you see. A word it does not
+        // recognise is now a refusal that changes nothing, which is also what the row's Args column claims.
+        bool on;
+        if (a.Count > 1)
+        {
+            if (a.Is(1, "on") || a.Word(1) == "1") on = true;
+            else if (a.Is(1, "off") || a.Word(1) == "0") on = false;
+            else { Refuse(a.Usage()); return; }
+        }
+        else on = !_char.HasSetting(hit.Key);
+
         if (on != _char.HasSetting(hit.Key)) _char.ToggleSetting(hit.Key);
         SaveChar();
         Reply(SettingLine(hit.Value, on));   // same status-pane line the native 0x1b toggles show
