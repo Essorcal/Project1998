@@ -264,14 +264,25 @@ function Get-SessionSlots($Session, [string]$Root) {
         [pscustomobject]@{
             Label = 'LOGIN'; RoleExe = 'LoginServer.exe'; ProcessId = [int]$Session.pid_login
             Exe = [string]$Session.exe_login; Created = [string]$Session.created_login; HostPid = [int]$Session.host_login
-            Ports = @(@($Session.ports.login) | ForEach-Object { [int]$_ }); Batch = (Join-Path $Root $LoginBatRel)
+            Ports = @([int]$Session.ports.login495, [int]$Session.ports.login533); Batch = (Join-Path $Root $LoginBatRel)
         },
         [pscustomobject]@{
             Label = 'GAME'; RoleExe = 'Server.exe'; ProcessId = [int]$Session.pid_game
             Exe = [string]$Session.exe_game; Created = [string]$Session.created_game; HostPid = [int]$Session.host_game
-            Ports = @(@($Session.ports.game) | ForEach-Object { [int]$_ }); Batch = (Join-Path $Root $GameBatRel)
+            Ports = @([int]$Session.ports.game495, [int]$Session.ports.game533); Batch = (Join-Path $Root $GameBatRel)
         }
     )
+}
+
+# The four ports a session actually bound, as a plan, or $null for a file written before they were recorded
+# by name. -Status and -Stop work from this, not from -PortBase: the pair on 3000 is stopped by the same
+# command as the pair on 2000.
+function Get-SessionPlan($Session) {
+    $p = $Session.ports
+    if ($null -eq $p) { return $null }
+    $vals = @([int]$p.login495, [int]$p.login533, [int]$p.game495, [int]$p.game533)
+    if ($vals -contains 0) { return $null }
+    return [pscustomobject]@{ Login = @($vals[0], $vals[1]); Game = @($vals[2], $vals[3]) }
 }
 
 # Is the process behind a slot's PID the one this session started? '' when it is; otherwise the reason it
@@ -293,6 +304,7 @@ function Get-SlotMismatch($Proc, [string]$Root, $Slot) {
     } catch { return "the recorded creation time $($Slot.Created) is unreadable" }
     $delta = [Math]::Abs(($Proc.CreationDate - $rec).TotalSeconds)
     if ($delta -gt 1) { return "was created $($Proc.CreationDate.ToString('o')), session recorded $($Slot.Created)" }
+    if ($Slot.Ports -contains 0) { return 'the session file records no port pair (written by an older Serve.ps1)' }
     $holds = @(Get-Listeners $Slot.Ports | Where-Object { [int]$_.ProcessId -eq [int]$Proc.ProcessId })
     if ($holds.Count -eq 0) { return "does not hold port(s) $($Slot.Ports -join '/')" }
     return ''
@@ -549,8 +561,6 @@ function Stop-SessionProcess($Slot, [string]$Root) {
 
 function Show-Status([string]$Root, $Plan) {
     $file = Join-Path $Root $SessionRel
-    $allPorts = @($Plan.Login + $Plan.Game)
-    $listeners = @(Get-Listeners $allPorts)
     $ours = @()
 
     $s = Read-Session $Root
@@ -558,6 +568,11 @@ function Show-Status([string]$Root, $Plan) {
         Write-Host "Session file ($file) belongs to $($s.checkout), not this checkout; ignoring it."
         $s = $null
     }
+    # The ports to look at are the ones the session bound; -PortBase only decides what to scan when there
+    # is no session file.
+    if ($null -ne $s) { $sp = Get-SessionPlan $s; if ($null -ne $sp) { $Plan = $sp } }
+    $allPorts = @($Plan.Login + $Plan.Game)
+    $listeners = @(Get-Listeners $allPorts)
     if ($null -ne $s) {
         $states = @{}
         foreach ($slot in (Get-SessionSlots $s $Root)) {
@@ -570,8 +585,8 @@ function Show-Status([string]$Root, $Plan) {
         } else {
             Write-Host "Stale session file ($file) - Serve.ps1 -Stop clears it:"
         }
-        Write-Host "  LOGIN $(@($s.ports.login) -join '/')  PID $($s.pid_login)  $($states['LOGIN'])"
-        Write-Host "  GAME  $(@($s.ports.game) -join '/')  PID $($s.pid_game)  $($states['GAME'])"
+        Write-Host "  LOGIN $($Plan.Login -join '/')  PID $($s.pid_login)  $($states['LOGIN'])"
+        Write-Host "  GAME  $($Plan.Game -join '/')  PID $($s.pid_game)  $($states['GAME'])"
         Write-Host "  checkout: $($s.checkout)  ($($s.branch) @ $(Get-ShortCommit $s.commit))"
         Write-Host "  started:  $($s.started)"
         Write-Host "  testers:  [$(@($s.testers) -join ', ')]  gms: [$(@($s.gms) -join ', ')]"
@@ -643,8 +658,10 @@ function Invoke-Stop([string]$Root, $Plan) {
         }
     }
 
-    # Wait for the ports to free. Only OUR pids count: a listener belonging to someone else is reported,
-    # not waited for.
+    # Wait for the ports to free: the ones the session recorded, whatever -PortBase was given now. Only OUR
+    # pids count: a listener belonging to someone else is reported, not waited for.
+    $sp = Get-SessionPlan $s
+    if ($null -ne $sp) { $Plan = $sp }
     $allPorts = @($Plan.Login + $Plan.Game)
     $deadline = (Get-Date).AddSeconds(15)
     $held = @()
@@ -795,7 +812,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         checkout  = $Root
         commit    = $git.Commit
         branch    = $git.Branch
-        ports     = [ordered]@{ login = @($Plan.Login); game = @($Plan.Game) }
+        ports     = [ordered]@{ login495 = [int]$Plan.Login[0]; login533 = [int]$Plan.Login[1]; game495 = [int]$Plan.Game[0]; game533 = [int]$Plan.Game[1] }
         testers   = @($effTesters)
         gms       = @($effGms)
         started   = (Get-Date).ToString('o')
