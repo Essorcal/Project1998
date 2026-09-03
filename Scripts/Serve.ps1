@@ -56,7 +56,7 @@ detached for this; that would break an interactive shell), sends Ctrl+C, and if 
 latency on the machine this was written on, and Ctrl+Break is not subject to the inheritable
 "ignore Ctrl+C" state a launching shell can leave behind. The game server handles both the same way. A
 GAME process that has answered neither after 30 s is asked to leave through its own deploy trigger,
-runestart_at (RestartSchedule.cs: same Environment.Exit, same flush), and only after that is a process
+run\restart_at (RestartSchedule.cs: same Environment.Exit, same flush), and only after that is a process
 terminated. Liveness is judged by HasExited, not by the process list: a terminated apphost stays listed
 while "dotnet run" still holds its handle. The cmd window that hosted the batch is closed once its server
 is gone -- after the server exits it is only a prompt sitting at "Terminate batch job (Y/N)?" -- and it is
@@ -526,10 +526,10 @@ function Stop-SessionProcess($Slot, [string]$Root) {
         return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s"
     }
     if ($Slot.Label -eq 'GAME') {
-        $trigger = Join-Path $Root 'runestart_at'
-        Write-Host "GAME PID $id has ignored Ctrl+C and Ctrl+Break for 30 s; asking it to exit through runestart_at."
+        $trigger = Join-Path $Root 'run\restart_at'
+        Write-Host "GAME PID $id has ignored Ctrl+C and Ctrl+Break for 30 s; asking it to exit through run\restart_at."
         [System.IO.File]::WriteAllText($trigger, "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())|Serve.ps1 -Stop")
-        if (Wait-Exit $id 20) { return "exited through runestart_at after $([int]$sw.Elapsed.TotalSeconds) s" }
+        if (Wait-Exit $id 20) { return "exited through run\restart_at after $([int]$sw.Elapsed.TotalSeconds) s" }
         # Not consumed, so nobody is reading it; do not leave a restart booked for the next process.
         if (Test-Path -LiteralPath $trigger) { Remove-Item -LiteralPath $trigger -Force -ErrorAction SilentlyContinue }
     }
