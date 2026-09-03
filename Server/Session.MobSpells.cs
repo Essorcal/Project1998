@@ -35,6 +35,7 @@ public sealed partial class Session
     /// because it borrows the room-damage intake instead of this one (#79).</para></summary>
     internal void ReceiveMobSpell(int rawDmg, Mob caster, string spellName)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         TakeDamage(new DamageIntake(DamageKind.MobSpell, rawDmg)
         {
             IgnoresHardenBody = false,   // RTK ion/call_lightning/thunder_touch/freeze/stormstrike/burn/venom -> removeHealthExtend
@@ -83,6 +84,7 @@ public sealed partial class Session
     /// <see cref="DamageIntake.IgnoresHardenBody"/> for the reading and for what is thin about it.</para></summary>
     internal void ReceiveEnvironmentDamage(int rawDmg, string text)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         TakeDamage(new DamageIntake(DamageKind.Environment, rawDmg)
         {
             IgnoresHardenBody = true,   // RTK NPCs/trap/rogue_traps/{dart,death,spear,pit}_trap.lua -> plain removeHealth
@@ -120,6 +122,7 @@ public sealed partial class Session
     /// it is free to broadcast and to kill.</summary>
     internal void ApplyMobSpell(Mob caster, Content.MobSpellDef spell)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (IsDead) return;
 
         // The creature announces itself first (RTK: mob:talk(0, mob.name .. ": ** summons power **")), so the

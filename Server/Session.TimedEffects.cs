@@ -26,11 +26,13 @@ public sealed partial class Session
     private static long TickToUnix(long tick) => NowUnixMs + (tick - Environment.TickCount64);
     private static long UnixToTick(long unix) => Environment.TickCount64 + (unix - NowUnixMs);
 
-    /// <summary>Snapshot the live timers into <c>_char.Effects</c>. Called by StoreSave immediately before
-    /// every character write (autosave, high-value save, shutdown flush, duplicate-login kick), so the
-    /// snapshot is never staler than the row it ships in. Expired entries are dropped rather than written.</summary>
+    /// <summary>Snapshot the live timers into <c>_char.Effects</c>. Called by <c>CaptureAndWrite</c>
+    /// immediately before every character write (autosave, high-value save, shutdown flush, duplicate-login
+    /// kick) and under the session's state monitor, so the snapshot is never staler than the row it ships in
+    /// and cannot be taken while a buff is being added. Expired entries are dropped rather than written.</summary>
     private void CaptureTimedEffects()
     {
+        AssertStateHeld("_char.Effects");
         long now = Environment.TickCount64;
         var e = new TimedEffects();
 
@@ -69,20 +71,20 @@ public sealed partial class Session
         if (e is null) { _char.Effects = new TimedEffects(); return; }
         long nowUnix = NowUnixMs;
 
-        _buffs.Clear();
+        BuffClear();
         foreach (var b in e.Buffs)
         {
             if (b.Until <= nowUnix) continue;   // lapsed while logged off
-            _buffs.Add(new ActiveBuff
+            BuffAdd(new ActiveBuff
             {
                 Stat = b.Stat, Amount = b.Amount, Expires = UnixToTick(b.Until),
                 Key = b.Key, Name = b.Name, Category = b.Category,
             });
         }
 
-        _statusFlags.Clear();
+        ClearStatusFlags();
         foreach (var (key, until) in e.StatusFlags)
-            if (until > nowUnix) _statusFlags[key] = UnixToTick(until);
+            if (until > nowUnix) SetStatusFlagUntil(key, UnixToTick(until));
 
         if (e.RageUntil > nowUnix)     { _rageUntil = UnixToTick(e.RageUntil); _rageAmount = e.RageAmount; _rageName = e.RageName ?? ""; _crRageTier = e.CrRageTier; }
         if (e.SancUntil > nowUnix)     { _sancDeductUntil = UnixToTick(e.SancUntil); _sancDeduct = e.SancMult; _sancDeductName = e.SancName ?? ""; }
@@ -112,24 +114,30 @@ public sealed partial class Session
                      $"{(_stealthUntil > 0 ? ", stealth" : "")}{(_morphLook != 0 ? $", morph({_morphLook})" : "")}");
     }
 
-    /// <summary>The ONE place a character row is written. Refreshes the timed-effect snapshot first, so no
-    /// save path can persist a character whose buffs are a save older than the rest of it. Every former
-    /// direct <c>_store.Save(_char)</c> call goes through here.</summary>
-    private bool StoreSave()
-    {
-        CaptureTimedEffects();
-        return _store.Save(_char);
-    }
+    /// <summary>An unconditional character write — the spellbook and legend edits that persist whether or
+    /// not the dirty flag happens to be set. Shares <see cref="CaptureAndWrite"/> with the throttled autosave
+    /// so there is one definition of a consistent row (snapshot under the state monitor, write outside it)
+    /// and one sequence deciding which snapshot wins. It used to serialize inline under no lock at all.
+    ///
+    /// <para>It still leaves the dirty flag and the AutoSaveMs throttle exactly where it found them, which is
+    /// what it always did. Clearing them would arguably be more correct — the whole character has just been
+    /// written — but it is a behaviour change, and #29 is not the ticket for it.</para></summary>
+    private bool StoreSave() => CaptureAndWrite(dirtyGated: false);
 
     /// <summary>
     /// Save TWO sessions atomically — both character rows land in one transaction, or neither does. Used by
     /// the trade finalizer, where two independent saves can tear an exchange in half and leave the world
     /// with a duplicated or destroyed stack (see <see cref="CharacterStore.SaveMany"/>).
     ///
-    /// <para><b>Lock order is by UserKey, not by argument order.</b> Both sessions' save gates have to be
-    /// held across the capture-and-write, and two threads taking them in opposite orders is a textbook ABBA
-    /// deadlock. Ordering on a value both threads compute identically makes that impossible regardless of
-    /// which side finalizes.</para>
+    /// <para><b>Ordering is <see cref="StateRank"/>'s, not the argument order's.</b> Both sessions' state
+    /// has to be frozen across the capture, and two threads taking the two monitors in opposite orders is a
+    /// textbook ABBA deadlock. <see cref="WithStatePair"/> takes them in the one global order every other
+    /// nested acquisition uses (#29), so this composes with the rest of the locking instead of being a
+    /// second, private ordering. It used to order on UserKey and take the two save gates; the save gates no
+    /// longer guard state.</para>
+    ///
+    /// <para>Both snapshots are taken under both monitors and the transaction is committed with them
+    /// released — the same split as <see cref="FlushNow"/>, and for the same two reasons.</para>
     ///
     /// <para>Failure restores BOTH dirty flags, so the next ordinary flush retries — the same contract
     /// <see cref="FlushNow"/> has, extended across the pair.</para>
@@ -139,26 +147,47 @@ public sealed partial class Session
         if (ReferenceEquals(a, b)) { a.FlushNow(); return true; }
         if (!a._enteredWorld || !b._enteredWorld) { a.FlushNow(); b.FlushNow(); return true; }
 
-        // Deterministic order. UserKey is unique per online account (the duplicate-login guard enforces it),
-        // but tie-break on identity anyway rather than rely on that invariant holding forever.
-        int cmp = string.CompareOrdinal(a.UserKey, b.UserKey);
-        if (cmp == 0) cmp = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(a)
-                          .CompareTo(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(b));
-        var (first, second) = cmp <= 0 ? (a, b) : (b, a);
-
-        lock (first._saveGate)
-        lock (second._saveGate)
+        (string User, string Json)[] rows = null!;
+        long seqA = 0, seqB = 0;
+        WithStatePair(a, b, () =>
         {
             a._dirty = false; b._dirty = false;
             a.CaptureTimedEffects(); b.CaptureTimedEffects();
-
-            if (a._store.SaveMany(new[] { a._char, b._char }))
+            seqA = ++a._saveSeq; seqB = ++b._saveSeq;
+            rows = new[]
             {
-                a._lastSaveAtMs = b._lastSaveAtMs = Environment.TickCount64;
-                return true;
+                (CharacterStore.Key(a._char.Name), CharacterStore.Serialize(a._char)),
+                (CharacterStore.Key(b._char.Name), CharacterStore.Serialize(b._char)),
+            };
+        });
+
+        // BOTH write gates, in StateRank order — the same order the monitors use, so two trades finalizing
+        // from opposite sides cannot ABBA here either. Skipping this is not an option: the pair write and a
+        // concurrent single-session write (an autosave sweep, a StoreSave) target the same rows, and without
+        // a shared gate and the same sequence the older one can land last and roll the trade back. That is the
+        // exact hazard the gate exists for; the pair path is not an exception to it.
+        var (firstGate, secondGate) = a.StateRank <= b.StateRank ? (a, b) : (b, a);
+        bool ok;
+        lock (firstGate._writeGate)
+        lock (secondGate._writeGate)
+        {
+            // Superseded: a NEWER snapshot of one of these characters already landed, and it necessarily
+            // already contains this trade (it was captured after the transfer). Writing ours would roll that
+            // character back, so we don't — we take the same exit a failed write takes, and both sides are
+            // left dirty for the next ordinary flush.
+            if (seqA < a._writtenSeq || seqB < b._writtenSeq) ok = false;
+            else
+            {
+                ok = a._store.SaveManyJson(rows);
+                if (ok)
+                {
+                    a._writtenSeq = seqA; b._writtenSeq = seqB;
+                    a._lastSaveAtMs = b._lastSaveAtMs = Environment.TickCount64;
+                }
             }
-            a._dirty = true; b._dirty = true;   // retried by the next FlushIfDue / autosave sweep
-            return false;
         }
+        if (ok) return true;
+        a._dirty = true; b._dirty = true;   // retried by the next FlushIfDue / autosave sweep
+        return false;
     }
 }

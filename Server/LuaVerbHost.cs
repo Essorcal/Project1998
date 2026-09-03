@@ -40,8 +40,10 @@ public enum VerbResult
 /// Safety: the script runs under MoonSharp's hard sandbox (no io/os/file access), and every verb call is wrapped
 /// so a Lua error is logged — with the script location and the stack — and reported as
 /// <see cref="VerbResult.Errored"/>, distinct from <see cref="VerbResult.Missing"/>, rather than crashing the
-/// caller. A MoonSharp <see cref="Script"/> is not thread-safe, so calls are serialized under a lock (fine —
-/// casts/item-uses are low-frequency vs movement/IO).
+/// caller. A MoonSharp <see cref="Script"/> is not thread-safe, so every call is serialized under the shared
+/// Lua gate (<c>Session.EnterScriptGate</c>) — one gate for all three script hosts, ranked outside the session
+/// monitors so a verb that reaches a peer cannot deadlock against that peer's own read loop (#29). Fine either
+/// way: casts/item-uses are low-frequency vs movement/IO.
 ///
 /// The facade type(s) a host will pass as <c>ctx</c> must be registered with MoonSharp
 /// (<c>UserData.RegisterType&lt;T&gt;()</c>) before the first <see cref="Invoke"/>; the static wrapper classes do
@@ -49,7 +51,6 @@ public enum VerbResult
 /// </summary>
 public sealed class LuaVerbHost
 {
-    private readonly object _lock = new();
     private readonly string _name;      // the verb file's name, for log messages
     private Script? _script;
     private Table? _verbs;
@@ -75,7 +76,7 @@ public sealed class LuaVerbHost
     /// actually replaced; a failed reload must keep it, since the old Tables still belong to the old Script.</para></summary>
     public bool Load(string? path)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             if (path is null || !File.Exists(path))
             {
@@ -109,7 +110,7 @@ public sealed class LuaVerbHost
     /// <summary>Is <paramref name="verb"/> a function in the loaded verb table?</summary>
     public bool HasVerb(string verb)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             return _verbs is not null && verb.Length > 0 && _verbs.Get(verb).Type == DataType.Function;
         }
@@ -120,7 +121,7 @@ public sealed class LuaVerbHost
     /// nil, so a verb's <c>row.x or default</c> works; numeric-looking cells are passed as Lua numbers.</summary>
     public VerbResult Invoke(string verb, object ctx, IReadOnlyDictionary<string, string> row)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             if (_script is null || _verbs is null) return VerbResult.Missing;
             var fn = _verbs.Get(verb);

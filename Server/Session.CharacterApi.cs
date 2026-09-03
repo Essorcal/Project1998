@@ -130,7 +130,14 @@ public sealed partial class Session
     /// edit, GM command). Routes through the same MarkDirty+FlushNow path as the throttled autosave so it
     /// gets the same failure-retry and cross-thread-safety guarantees, just without waiting for the next
     /// AutoSaveMs tick.</summary>
-    private void SaveChar() { if (_enteredWorld) { _dirty = true; FlushNow(); } }
+    private void SaveChar()
+    {
+        // The _char chokepoint (#29). Every mutation worth persisting ends in SaveChar or MarkDirty, so
+        // asserting here is what turns "every mutation of _char happens under the monitor" from a claim into
+        // something a Debug run fails on.
+        AssertStateHeld("_char");
+        if (_enteredWorld) { _dirty = true; FlushNow(); }
+    }
 
     /// <summary>
     /// A restorable snapshot of the bag and purse, for a transfer that commits against the database and has
@@ -159,39 +166,101 @@ public sealed partial class Session
     /// used to be entirely unpersisted (pickup/drop/equip/durability/shop/bank/movement, see the
     /// persistence audit) call this instead. Picked up by this session's own FlushIfDue (active player) or
     /// World's periodic AutoSaveLoop sweep (idle player), whichever comes first — at most AutoSaveMs later.</summary>
-    internal void MarkDirty() { if (_enteredWorld) _dirty = true; }
+    internal void MarkDirty()
+    {
+        AssertStateHeld("_char");   // the _char chokepoint — see SaveChar
+        if (_enteredWorld) _dirty = true;
+    }
 
     /// <summary>Called once per read-loop iteration, after the packets received in this chunk are handled.
-    /// Runs on the session's OWN thread — the same thread every MarkDirty() mutation runs on — so this is
-    /// race-free by construction and is the primary autosave path for an ACTIVE player. It only needs
-    /// World.AutoSaveLoop as a backstop for an IDLE dirty player (mutated, then stopped sending packets).</summary>
+    /// Runs on the session's OWN thread, and now under the session's state monitor like every other entry
+    /// into this session's state (#29), so it is the primary autosave path for an ACTIVE player. It only
+    /// needs World.AutoSaveLoop as a backstop for an IDLE dirty player (mutated, then stopped sending
+    /// packets).</summary>
     private void FlushIfDue()
     {
-        if (!_dirty || !_enteredWorld) return;
+        if (!_dirty || !_enteredWorld) return;   // cheap unsynchronised reject, before paying for the monitor
+        using var _ = EnterState();
+        if (!_dirty) return;                     // someone flushed us between the two
         if (Environment.TickCount64 - _lastSaveAtMs < AutoSaveMs) return;
         FlushNow();
     }
 
-    /// <summary>Force-save now if dirty, ignoring the AutoSaveMs throttle. Used by SaveChar's immediate
-    /// high-value saves, World's periodic sweep (idle players), the graceful-shutdown flush
-    /// (World.SaveAllPlayers), and KickForReplacement. Safe to call from a thread other than this
-    /// session's own read loop: _saveGate serializes concurrent callers for this one session.
+    /// <summary>
+    /// Force-save now if dirty, ignoring the AutoSaveMs throttle. Used by SaveChar's immediate high-value
+    /// saves, World's periodic sweep (idle players), the graceful-shutdown flush (World.SaveAllPlayers), a
+    /// GM kick and KickForReplacement — four different threads, which is the whole reason this is shaped the
+    /// way it is.
     ///
-    /// _dirty is cleared BEFORE the write (not after), so a mutation that lands on the session's own
-    /// thread WHILE a save from another thread is in flight re-dirties us and is guaranteed to be picked
-    /// up by the next flush — it can never be silently treated as "saved" without actually being captured.
-    /// If the write itself fails (a bad disk, or a collection mutated mid-serialize racing this exact
-    /// scenario — CharacterStore.Save returns false), _dirty is restored so the next flush retries.</summary>
+    /// <para><b>Snapshot under the monitor, write outside it (#29).</b> The capture — dirty check,
+    /// CaptureTimedEffects, JSON serialize — happens inside <c>WithState</c>, so the bytes leaving here are a
+    /// CONSISTENT view of the character: no handler, tick or peer can land a half-applied change in the
+    /// middle of the graph, because they all take the same monitor. The SQLite write then happens with the
+    /// monitor released. That split is deliberate and load-bearing in both directions: holding the monitor
+    /// across a synchronous disk write would put this player's RegenTick — and through it the whole world
+    /// heartbeat — behind the autosave thread's I/O, and NOT holding it across the serialize is exactly the
+    /// race this ticket exists to close. (A save reached from inside a handler still writes with that
+    /// HANDLER's monitor held: the acquisition here is re-entrant, and a packet is one critical section by
+    /// design. The split is what matters for the sweep and the shutdown flush, which hold nothing.)</para>
+    ///
+    /// <para><b>Why the write gate survives.</b> #29 predicted <c>_saveGate</c> becomes redundant. It does,
+    /// for state consistency — that is the monitor's job now, and this lock no longer covers a single field
+    /// of session state. What it still owns is WRITE ORDER: with the write outside the monitor, a thread
+    /// holding an older snapshot could otherwise land it after a newer one and quietly roll the character
+    /// back. Hence the sequence number, and hence the gate around the compare-and-write.</para>
+    ///
+    /// <para>_dirty is cleared BEFORE the capture (not after), so a mutation that lands WHILE a save is in
+    /// flight re-dirties us and is guaranteed to be picked up by the next flush — it can never be silently
+    /// treated as "saved" without actually being captured. If the write fails (a bad disk), _dirty is
+    /// restored so the next flush retries.</para>
+    /// </summary>
     internal void FlushNow()
     {
-        if (!_enteredWorld) return;
-        lock (_saveGate)
+        if (_enteredWorld) CaptureAndWrite(dirtyGated: true);
+    }
+
+    /// <summary>The capture-then-write itself, shared by <see cref="FlushNow"/> (dirty-gated) and
+    /// <c>StoreSave</c> (unconditional — the spellbook/legend edits that write whether or not the dirty flag
+    /// happens to be set). One implementation, so there is exactly one place that decides what "a consistent
+    /// character row" means and exactly one sequence deciding which row wins.</summary>
+    /// <param name="dirtyGated">The throttled/dirty-flag path (<see cref="FlushNow"/>): skip when nothing is
+    /// pending, clear the flag, and reset the AutoSaveMs throttle on success. False is <c>StoreSave</c>'s
+    /// unconditional write, which historically touched NEITHER — it wrote and left the flag and the throttle
+    /// exactly as it found them, and #29 is not the ticket to change that.</param>
+    /// <returns>False only when the database write itself failed.</returns>
+    private bool CaptureAndWrite(bool dirtyGated)
+    {
+        string json;
+        string user;
+        long seq;
+        using (EnterState())
         {
-            if (!_dirty) return;
-            _dirty = false;
-            if (StoreSave()) _lastSaveAtMs = Environment.TickCount64;
-            else _dirty = true;
+            if (dirtyGated)
+            {
+                if (!_dirty) return true;        // nothing pending
+                _dirty = false;
+            }
+            CaptureTimedEffects();               // the live buff/curse/stance timers, as of this instant
+            json = CharacterStore.Serialize(_char);
+            // The key is captured in here too: @ckm (SendClickMarker) parks a marker string in _char.Name for
+            // the length of one packet, and a name read outside the monitor could be that marker.
+            user = CharacterStore.Key(_char.Name);
+            seq  = ++_saveSeq;
         }
+
+        bool ok;
+        lock (_writeGate)
+        {
+            if (seq < _writtenSeq) return true;  // a newer snapshot already landed; ours is stale, drop it
+            ok = _store.SaveJson(user, json);
+            if (ok)
+            {
+                _writtenSeq = seq;
+                if (dirtyGated) _lastSaveAtMs = Environment.TickCount64;
+            }
+        }
+        if (!ok && dirtyGated) _dirty = true;    // retried by the next FlushIfDue / autosave sweep
+        return ok;
     }
 
     /// <summary>Normalized account identity (matches CharacterStore's DB key), used as the key into
@@ -207,6 +276,7 @@ public sealed partial class Session
     /// idempotent either way.</summary>
     internal void KickForReplacement()
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         Volatile.Write(ref _replaced, 1);
         FlushNow();
         SendMiniText("You have logged in from another location.");
@@ -224,7 +294,12 @@ public sealed partial class Session
     /// Dog. Learning the spells ALSO needs an eligible path (Content.CanLearnDogSpells — base classes and NPC
     /// subpaths, never a PC subpath), which the Dog checks separately.</summary>
     internal bool HasDogFlag => QuestStage(Content.DogFlagReg) > 0;
-    internal void SetQuestStage(string questKey, int stage) { _char.Quests[questKey] = stage; SaveChar(); }
+    internal void SetQuestStage(string questKey, int stage)
+    {
+        using var _ = EnterState();   // #29: a GM command sets a quest stage on ANOTHER player's session
+        _char.Quests[questKey] = stage;
+        SaveChar();
+    }
     internal int  QuestCounter(string counterKey) => _char.Quests.GetValueOrDefault(counterKey);
 
     // ===== group experience (RTK Scripts/exp.lua onGetExp) =======================================
@@ -629,7 +704,7 @@ public sealed partial class Session
         {
             if (remaining <= 0) break;
             remaining -= e.Amount;                       // equipment never stacks; one slot = one item
-            _char.Equipment.Remove(e);
+            EquipRemove(e);
             SendUnequip(e.Slot);
             ApplyAppearance(def, equip: false);          // drop its stat contribution + paperdoll layer
             strippedWorn = true;
@@ -735,6 +810,7 @@ public sealed partial class Session
     internal void RemoveLegend(string name) { if (_char.Legends.RemoveAll(l => l.Name == name) > 0) SaveChar(); }
     internal void AddLegend(string text, string name, byte icon, byte color)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (!string.IsNullOrEmpty(name)) _char.Legends.RemoveAll(l => l.Name == name);   // replace-by-name
         _char.Legends.Add(new Legend(icon, color, text, name));
         SaveChar();
@@ -763,6 +839,10 @@ public sealed partial class Session
     internal int  CharY      => _char.Y;
     internal uint CharCoins  => _char.Coins;
     internal ushort CharMap  => _char.Map;
+    /// <summary>The character's display name. A bare field read, deliberately NOT snapshotted: World's
+    /// name lookup runs it under <c>World._lock</c>, where taking a session monitor would invert the lock
+    /// order (#29). Nothing renames a live character.</summary>
+    internal string CharName => _char.Name;
     internal uint CharHp     => _char.Hp;
     internal uint CharMaxHp  => _char.MaxHp;
     internal uint CharMaxMp  => _char.MaxMp;
@@ -811,6 +891,7 @@ public sealed partial class Session
     internal void SetSpouse(string name) { _char.Spouse = name; SaveChar(); }
     internal void SetEngaged(string fianceName, bool isProposee, long timerUnix)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         _char.Fiance = fianceName; _char.IsProposee = isProposee; _char.MarriageTimer = timerUnix;
         SaveChar();
     }
@@ -916,7 +997,7 @@ public sealed partial class Session
         if (_char.Equipment.Count > FreeSlotCount) return false;
         foreach (var e in _char.Equipment.ToList())
         {
-            _char.Equipment.Remove(e);
+            EquipRemove(e);
             SendUnequip(e.Slot);
             var def = Content.ItemById(e.ItemId);
             if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, e.Dura, e.CustomName, owner: e.Owner); }

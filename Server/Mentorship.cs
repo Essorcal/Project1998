@@ -92,10 +92,16 @@ public sealed partial class Session
             AddLegend($"Mentored {total} new player{(total == 1 ? "" : "s")}", Mentorship.MentorLegend,
                       Mentorship.LegendIcon, Mentorship.LegendColor);
 
-            target.SetQuestStr(Mentorship.MentorStr, "");
-            target.RemoveLegend(Mentorship.BeingMentoredLegend);
-            target.AddLegend($"Mentored by {_char.Name} ({Character.GameDate})", Mentorship.MentoredByLegend,
-                             Mentorship.LegendIcon, Mentorship.LegendColor);
+            // Three mutations on the PROTÉGÉ's character, run from the MENTOR's thread — one critical
+            // section on their side so their own read loop or the autosave sweep cannot catch them
+            // half-unbound (#29).
+            target.WithState(() =>
+            {
+                target.SetQuestStr(Mentorship.MentorStr, "");
+                target.RemoveLegend(Mentorship.BeingMentoredLegend);
+                target.AddLegend($"Mentored by {_char.Name} ({Character.GameDate})", Mentorship.MentoredByLegend,
+                                 Mentorship.LegendIcon, Mentorship.LegendColor);
+            });
 
             SendMiniText($"This culminates your mentorship of {them}. Hopefully they have learned much from your teachings.");
             target.SendMiniText($"This culminates your mentorship under {_char.Name}. Hopefully you have learned much from their teachings.");
