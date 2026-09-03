@@ -19,6 +19,8 @@ What it does, in order:
 -SetMode alone flips the guard mode (worker | review | off) without touching branches. The
 coordinator uses -SetMode review at the cross-review milestone and -SetMode worker afterwards.
 -DryRun runs every check and prints what step 3 would do, without changing anything.
+-Switch <branch> moves the clone to a branch it already has (a fix round on an earlier PR) with the
+same clean-and-pushed checks and without -B, so no commits can be lost.
 
 Close any agent session that has the clone open before running with -Branch. A live cwd holds the
 directory; the only reliable closed-session test is that a rename of the directory succeeds.
@@ -33,6 +35,7 @@ param(
     [string]$Branch,
     [string]$Base = 'upstream/master',
     [ValidateSet('worker', 'review', 'off')][string]$SetMode,
+    [string]$Switch,
     [switch]$DryRun
 )
 
@@ -70,7 +73,27 @@ try {
         Write-Host "mode:     $SetMode"
         if (-not $Branch) { exit 0 }
     }
-    if (-not $Branch) { throw 'give -Branch pr/<slug> (or -SetMode alone)' }
+    if ($Switch) {
+        # Move a worker back to a branch it already has (a fix round on an earlier PR). Never -B: that would
+        # reset the branch to the base and lose its commits. Refuses unless the branch exists locally and the
+        # clone is clean with its current branch on the fork.
+        & git -C $Clone rev-parse --verify --quiet "refs/heads/$Switch" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "-Switch: branch '$Switch' does not exist in $Clone" }
+        $dirty = Invoke-Git @('status', '--porcelain')
+        if ($dirty.Trim()) { throw "clone is dirty; commit or hand-clean first:`n$dirty" }
+        $cur = (Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')).Trim()
+        Invoke-Git @('fetch', 'origin') | Out-Null
+        & git -C $Clone rev-parse --verify --quiet "origin/$cur" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "current branch '$cur' is not on the fork; push it first" }
+        $ahead = [int](Invoke-Git @('rev-list', '--count', "origin/$cur..HEAD")).Trim()
+        if ($ahead -ne 0) { throw "current branch '$cur' has $ahead unpushed commit(s); push first" }
+        Invoke-Git @('checkout', $Switch) | Out-Null
+        Set-Content -Path (Join-Path $gitDir 'guard-mode') -Value 'worker' -Encoding ascii
+        Write-Host "switched: $cur -> $Switch @ $((Invoke-Git @('rev-parse', '--short', 'HEAD')).Trim())"
+        Write-Host "mode:     worker"
+        exit 0
+    }
+    if (-not $Branch) { throw 'give -Branch pr/<slug>, -Switch <existing branch>, or -SetMode alone' }
     if ($Branch -notmatch '^pr/[a-z0-9][a-z0-9-]*$') { throw "branch '$Branch' does not match pr/<kebab-slug>" }
 
     # 1. nothing to lose
