@@ -16,7 +16,9 @@ This script performs the same launch as the bat, and answers those questions:
     line, and the session file's checkout/commit/start time when the holder was started by this script).
     It never stops anything by itself.
   * Each console is titled "LOGIN 2000/2001 - <clone> @ <short commit>" / "GAME 2005/2006 - ...", so the
-    window says what it is. A "+" after the commit means the working tree had uncommitted changes.
+    window says what it is. The commit is git rev-parse HEAD at the moment the tree was built; a "+" after
+    it means tracked files were modified (untracked files are not counted). git is required: with no
+    commit to stamp, the script refuses to start rather than launch a pair labelled "@ unknown".
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
     P1998_GMS, which the game server unions with state/*_accounts.txt). The calling shell is untouched.
   * It writes run/session.json in the checkout: { pid_login, pid_game, checkout, commit, branch, ports,
@@ -614,6 +616,14 @@ function Invoke-Stop([string]$Root, $Plan) {
 function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$GmNames) {
     $allPorts = @($Plan.Login + $Plan.Game)
 
+    # 0. Identify the build first. Without git there is no commit to stamp on the consoles or record in
+    #    the session file, and a pair labelled "@ unknown" defeats the point of this script.
+    $git = Get-GitInfo $Root
+    if ($git.Commit -eq 'unknown' -or $git.Branch -eq 'unknown') {
+        Write-Host "git is required to identify this checkout (commit/branch could not be resolved). Nothing was built or started."
+        return 1
+    }
+
     # 1. Already running from this checkout?
     $s = Read-Session $Root
     if ($null -ne $s -and -not (Test-SessionOwner $s $Root)) {
@@ -640,8 +650,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         return 2
     }
 
-    # 3. Identify the build.
-    $git = Get-GitInfo $Root
+    # 3. The stamp.
     $clone = Split-Path -Leaf $Root
     $stamp = $git.Short
     if ($git.Dirty) { $stamp += '+' }

@@ -61,10 +61,13 @@ Scripts\Serve.ps1 -Status                                                    # w
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Stop                        # close exactly that pair
 ```
 
-It refuses to start while either port is held and names the holder (PID, command line, and that pair's
-checkout and commit if it was started the same way); it never stops anything by itself. The two consoles
-are titled `LOGIN 2000/2001 - <clone> @ <commit>` and `GAME 2005/2006 - <clone> @ <commit>` (a `+`
-after the commit means uncommitted changes), so the window says which build it is. `-Testers` and
+It needs `git` on PATH: the commit and branch are what it stamps on the consoles and records, and it
+refuses to start when they cannot be resolved. It refuses to start while either port is held and names
+the holder (PID, command line, and that pair's checkout and commit if it was started the same way); it
+never stops anything by itself. The two consoles are titled `LOGIN 2000/2001 - <clone> @ <commit>` and
+`GAME 2005/2006 - <clone> @ <commit>`, where the commit is `git rev-parse HEAD` at the moment the script
+built the tree and a `+` means tracked files were modified (untracked files are not counted), so the
+window says which build it is. `-Testers` and
 `-Gms` reach only the launched processes, as `P1998_TESTERS` / `P1998_GMS`, unioned with the clone's
 `state/*_accounts.txt` as usual. What it started is recorded in the clone's `run/session.json`
 (`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`, plus each
