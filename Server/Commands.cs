@@ -459,6 +459,28 @@ public sealed partial class Session
     /// </para>
     internal const int PaneWidth = 30;
 
+    /// <summary>How many dashes the separator rule is made of. Its own number rather than
+    /// <see cref="PaneWidth"/> reused, because a dash is one of the NARROWEST glyphs in a proportional font:
+    /// 30 dashes draw considerably shorter than 30 characters of ordinary text, so the count that reads as a
+    /// full-width rule is not the count that fits a line of prose. Starts equal to PaneWidth and is meant to
+    /// be tuned by eye against the client.</summary>
+    internal const int PaneRuleDashes = PaneWidth;
+
+    /// <summary>The separator itself. Sent raw, never wrapped: it is one token, and if it is tuned wider than
+    /// the pane the client drawing it as one over-long line is exactly what a rule should look like.</summary>
+    internal static readonly string PaneRule = new('-', PaneRuleDashes);
+
+    /// <summary>True when this command invocation has not put a line in the status pane yet, so the next one
+    /// owes a separator first.
+    ///
+    /// <para>Lazy on purpose. The pane is one scrolling column shared with pickups, experience and look-at
+    /// names, so consecutive commands ran together — but a rule printed eagerly at dispatch would also head
+    /// every command that answers on the BUBBLE (every refusal), spending a pane line to separate output
+    /// that never arrived. Set when a message is recognized as a command, spent by the first pane line it
+    /// actually produces, so: one rule per invocation however many Reply calls it makes, and no rule at all
+    /// for a command that only refuses.</para></summary>
+    private bool _paneRuleDue;
+
     /// <summary>Break one logical line into pane-width lines at SPACES ONLY.
     ///
     /// <para>A token is never split: if one is longer than the whole pane (a long map name, a hex dump, a
@@ -504,35 +526,53 @@ public sealed partial class Session
         if (any) yield return built.ToString();
     }
 
+    /// <summary>Put one already-wrapped line in the status pane, paying the invocation's separator first if
+    /// it is still owed. Every pane line a command produces goes through here, which is what makes the rule
+    /// land above the FIRST one and nowhere else.</summary>
+    private void SendPaneLine(string line)
+    {
+        if (_paneRuleDue)
+        {
+            _paneRuleDue = false;
+            SendMiniText(PaneRule);
+        }
+        SendMiniText(line);
+    }
+
     /// <summary>One line of command output — a readout or a confirmation. See the rule above. Wrapped to the
     /// pane, so a caller never has to think about the width; a line that already fits is sent as written.
     /// </summary>
     private void Reply(string line)
     {
-        foreach (var pane in WrapForPane(line)) SendMiniText(pane);
+        foreach (var pane in WrapForPane(line)) SendPaneLine(pane);
     }
 
     /// <summary>A multi-line readout, one status-pane line per wrapped line. The pane scrolls, so the whole
     /// listing survives; the login box this used to be routed to would have shown only the last line.
-    /// </summary>
+    ///
+    /// <para>An EMPTY sequence prints nothing at all, separator included — the rule is owed by the first line
+    /// that actually appears, not by the call that might have produced one.</para></summary>
     private void Reply(IEnumerable<string> lines)
     {
         foreach (var line in lines)
-            foreach (var pane in WrapForPane(line)) SendMiniText(pane);
+            foreach (var pane in WrapForPane(line)) SendPaneLine(pane);
     }
 
-    /// <summary>A readout that is a LIST, wrapped in a header and a closing rule.
+    /// <summary>A readout that is a LIST, under a header naming it and its size.
     ///
-    /// <para>The pane is a single scrolling column shared by everything — pickups, experience, look-at names
-    /// — so one command's listing used to run straight into the next with nothing between them, and a GM
-    /// scrolling back could not tell where "@items sword" ended and "@npc guard" began. The header names the
-    /// list and its size; the rule closes it. Both are short by design: they are punctuation, not content,
-    /// and they are competing for the same 30 characters as the list itself.</para></summary>
+    /// <para>The header IS this listing's separator, so it cancels the dashed rule rather than following it:
+    /// a list that announced itself twice would spend two of the pane's few lines saying the same thing. It
+    /// only cancels a rule that is still owed — a command that already said something before its list (@pkt
+    /// prints its usage line first) keeps the rule it has already paid for, at the top where it belongs, and
+    /// the header still opens the list underneath.</para>
+    ///
+    /// <para>There is no closing rule: the next command's separator does that job now, and the pane has too
+    /// few lines to spend one on punctuation that something else already provides.</para></summary>
     private void ReplyList(string title, IEnumerable<string> lines)
     {
+        _paneRuleDue = false;
         Reply($"= {title} =");
         Reply(lines);
-        Reply("-");
     }
 
     /// <summary>The command did not do what was asked. Loud on purpose — see the rule above.</summary>
@@ -548,6 +588,10 @@ public sealed partial class Session
     internal bool TryRunCommand(string text)
     {
         if (!SplitCommand(text, out string name, out string args)) return false;
+
+        // From here on this IS a command, so its first pane line owes a separator — including @help below
+        // and the unknown-command answer, which simply never spends it because they answer on the bubble.
+        _paneRuleDue = true;
 
         // @help — special-cased before the table so it works at every tier. Accepts a page (as a suffix,
         // "@help2", or an argument, "@help 2") or a keyword filter ("@help item"). The full detail list runs

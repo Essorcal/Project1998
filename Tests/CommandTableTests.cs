@@ -134,34 +134,73 @@ public sealed class CommandTableTests
     })]
 
     // --- confirmations: one line saying what changed. The status pane. ----------------------------------
-    [InlineData("@coins 500", new[] { "pane3|Coins: 500 (changed by +500)." })]
-    [InlineData("@quest tiger 3", new[] { "pane3|tiger = 3." })]
-    [InlineData("@karma angel", new[] { "pane3|karma set to 30 (Angel)." })]
-    [InlineData("@dispel", new[] { "pane3|All buffs and debuffs removed." })]
-    [InlineData("@fistsnd 5", new[] { "pane3|fist swing sfx = 5" })]
+    [InlineData("@coins 500", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|Coins: 500 (changed by +500).",
+    })]
+    [InlineData("@quest tiger 3", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|tiger = 3.",
+    })]
+    [InlineData("@karma angel", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|karma set to 30 (Angel).",
+    })]
+    [InlineData("@dispel", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|All buffs and debuffs removed.",
+    })]
+    [InlineData("@fistsnd 5", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|fist swing sfx = 5",
+    })]
     // These three were on the 0x02 login box: @lvl and friends genuinely popped a modal over the game.
-    [InlineData("@nation 3", new[] { "pane3|nation set to 3 (Nagnang)." })]
-    [InlineData("@might 50", new[] { "pane3|might set to 50" })]
+    [InlineData("@nation 3", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|nation set to 3 (Nagnang).",
+    })]
+    [InlineData("@might 50", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|might set to 50",
+    })]
     // A confirmation is wrapped like anything else once it outgrows the pane.
     [InlineData("@hp 500", new[]
     {
+        "pane3|------------------------------",
         "pane3|max HP set to 500, HP",
         "pane3|refilled.",
     })]
     // Already on the status pane before the rule, and untouched by the wrapper because they already fit:
     // these repeat RTK's verbatim column-17 toggle line, padding and all.
-    [InlineData("@clip", new[] { "pane3|No-clip          :ON" })]
-    [InlineData("@peace", new[] { "pane3|Peace            :ON" })]
+    [InlineData("@clip", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|No-clip          :ON",
+    })]
+    [InlineData("@peace", new[]
+    {
+        "pane3|------------------------------",
+        "pane3|Peace            :ON",
+    })]
 
     // --- readouts: a report you asked for, one line or many. The status pane. ---------------------------
     [InlineData("@quest", new[]
     {
+        "pane3|------------------------------",
         "pane3|No quest keys set. (@quest",
         "pane3|<key> <stage> to set one; see",
         "pane3|docs/common/Quest-Registry.md.)",
     })]
     [InlineData("@dog", new[]
     {
+        "pane3|------------------------------",
         "pane3|Dog Linguist granted - say",
         "pane3|\"secret\" to your class's Dog",
         "pane3|to be taught, or @lvl 1 to",
@@ -177,6 +216,7 @@ public sealed class CommandTableTests
     // A list block: header, the entries two logical lines each, closing rule.
     [InlineData("@pkt", new[]
     {
+        "pane3|------------------------------",
         "pane3|usage: @pkt <hexop> [tokens] |",
         "pane3|add | send | show | clear |",
         "pane3|file <name>",
@@ -189,7 +229,6 @@ public sealed class CommandTableTests
         "pane3| inspect or drop pending",
         "pane3|@pkt file <name>",
         "pane3| send packets/<name>.txt",
-        "pane3|-",
     })]
 
     // --- the two whose channel IS the behaviour ---------------------------------------------------------
@@ -199,6 +238,7 @@ public sealed class CommandTableTests
     [InlineData("@text 5 hello", new[] { "pane5|hello" })]
     [InlineData("@ride", new[]
     {
+        "pane3|------------------------------",
         "pane3|The powerful steed takes you",
         "pane3|where you want to go.",
     })]
@@ -463,11 +503,14 @@ public sealed class CommandTableTests
                         $"a {w.Length}-char line that could have been broken: \"{w}\"");
     }
 
-    /// <summary>A listing is framed, so one command's output stops running into the next in a pane that also
-    /// carries pickups, experience and look-at names. Pinned on a listing whose contents are fixed: a brand
-    /// new character carries exactly one legend, the seeded "Born in" mark, which has no key.</summary>
+    /// <summary>A listing announces itself ONCE. Its "= title =" header is the separator, so it cancels the
+    /// dashed rule instead of following it, and there is no closing rule either — the next command's own
+    /// separator does that job, and the pane has too few lines to spend two of them on punctuation.
+    ///
+    /// <para>Pinned on a listing whose contents are fixed: a brand new character carries exactly one legend,
+    /// the seeded "Born in" mark, which has no key.</para></summary>
     [Fact]
-    public void AListingIsFramedByAHeaderAndARule()
+    public void AListingIsItsOwnSeparator()
     {
         var (session, outbound) = GmRoster.Session(_fx);
 
@@ -478,8 +521,46 @@ public sealed class CommandTableTests
             "pane3|= legends (1) =",
             "pane3|(no key) - icon 0 col 128",
             "pane3| \"Born in Yuri 1, Summer\"",
-            "pane3|-",
         }, Transcript(outbound));
+    }
+
+    /// <summary>One rule per INVOCATION, not per Reply call and not per line: @stats prints two lines and
+    /// gets one rule, and two commands in a row get one each, which is the whole point — the pane is a
+    /// single scrolling column and consecutive commands used to run together.</summary>
+    [Fact]
+    public void EachCommandGetsOneRuleAndTheNextGetsItsOwn()
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        session.TryRunCommand("@might 50");
+        session.TryRunCommand("@karma angel");
+
+        Assert.Equal(new[]
+        {
+            $"pane3|{Session.PaneRule}",
+            "pane3|might set to 50",
+            $"pane3|{Session.PaneRule}",
+            "pane3|karma set to 30 (Angel).",
+        }, Transcript(outbound));
+    }
+
+    /// <summary>A command that only REFUSES spends no pane line at all. The rule is owed by the first pane
+    /// line, and a refusal answers on the bubble — heading it with a separator would cost a line of the pane
+    /// to punctuate output that never arrived there.</summary>
+    [Theory]
+    [InlineData("@nope")]          // not a command at all
+    [InlineData("@approach")]      // a real command, refused for want of an argument
+    [InlineData("@dura Nothing")]  // refused for the shape of its arguments
+    public void ARefusalPrintsNoRule(string command)
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        session.TryRunCommand(command);
+
+        var transcript = Transcript(outbound);
+        Assert.NotEmpty(transcript);
+        Assert.All(transcript, line => Assert.StartsWith("bubble|", line));
+        Assert.DoesNotContain(Session.PaneRule, string.Join("\n", transcript));
     }
 
     /// <summary>The four listings Caleb read off the real client, end to end: nothing they produce is wider
@@ -521,11 +602,13 @@ public sealed class CommandTableTests
     // The confirmation, now on the pane and wrapped to it. A map id, then a map id with coordinates.
     [InlineData("@warp 36", new[]
     {
+        "pane3|------------------------------",
         "pane3|Warped to IronHeart's Home",
         "pane3|(map 36, 12x12) at (6,6).",
     })]
     [InlineData("@warp 36 4 9", new[]
     {
+        "pane3|------------------------------",
         "pane3|Warped to IronHeart's Home",
         "pane3|(map 36, 12x12) at (4,9).",
     })]
@@ -537,11 +620,13 @@ public sealed class CommandTableTests
     // says when it could not use the coordinates you typed. Only the shape now comes from the table.
     [InlineData("@go 3 4", new[]
     {
+        "pane3|------------------------------",
         "pane3|Moved to (3,4) on IronHeart's",
         "pane3|Home (map 36).",
     })]
     [InlineData("@go", new[]
     {
+        "pane3|------------------------------",
         "pane3|usage: @go <x> <y> - 0..11 /",
         "pane3|0..11 on IronHeart's Home (map",
         "pane3|36); sent you to (0,0).",
