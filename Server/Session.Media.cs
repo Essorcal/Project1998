@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 using Protocol.Tk495;

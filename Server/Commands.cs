@@ -1,4 +1,4 @@
-﻿using Shared;
+using Shared;
 
 namespace Server;
 
@@ -217,13 +217,50 @@ public sealed partial class Session
 
     private static Dictionary<string, Command> BuildCommandIndex()
     {
+        if (FirstDuplicateName(CommandTable.SelectMany(c => c.Names)) is { } dup)
+            throw new InvalidOperationException($"duplicate chat command '{Prefix}{dup}' in Server/Commands.cs");
+
         var map = new Dictionary<string, Command>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in CommandTable)
             foreach (var n in c.Names)
-                if (!map.TryAdd(n, c))
-                    throw new InvalidOperationException($"duplicate chat command '{n}'");
+                map[n] = c;
         return map;
     }
+
+    /// <summary>The first name in <paramref name="names"/> that repeats one already seen, or null. Matching
+    /// is case-insensitive because the LOOKUP is: "@Warp" and "@warp" are one command, so declaring both is
+    /// the same collision as declaring "warp" twice.
+    ///
+    /// <para>Split out of <see cref="BuildCommandIndex"/> so the check is reachable with a deliberately
+    /// broken list. The real table must never contain a duplicate — that is the whole point — so there is
+    /// otherwise no way to run this code and find out whether it works.</para></summary>
+    internal static string? FirstDuplicateName(IEnumerable<string> names)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var n in names)
+            if (!seen.Add(n)) return n;
+        return null;
+    }
+
+    /// <summary>Build the name index NOW, at startup, instead of at the first '@' someone types.
+    ///
+    /// <para>A duplicate name is a programming error, and until this existed it surfaced as an exception
+    /// inside whichever session first ran a command — on a background connection thread, hours after the
+    /// deploy, taking that one player's session down while the server carried on looking healthy. Called
+    /// from Program so the process refuses to start instead.</para>
+    ///
+    /// <para>The row and name counts go in the log for the same reason the map counts do: a table that
+    /// silently lost half its rows to a bad merge is otherwise invisible until someone misses a command.
+    /// </para></summary>
+    internal static void WarmCommandTable() =>
+        Log.Info($"=== chat commands: {CommandTable.Length} command(s), {CommandsByName.Count} name(s) " +
+                 $"including aliases; prefix '{Prefix}'");
+
+    /// <summary>The table's rows as plain data — names, the <c>Args</c> shape, the help line. For tests: the
+    /// table is the single source of truth for what a command is CALLED and what it TAKES, and nothing else
+    /// can assert that a row is well formed without being able to read it.</summary>
+    internal static IEnumerable<(string[] Names, string Args, string Help)> CommandRows()
+        => CommandTable.Select(c => (c.Names, c.Args, c.Help));
 
     /// <summary>Split a chat message into command name and ARGUMENT TAIL. False when it isn't a command
     /// (no prefix, or prefix alone), in which case the message is ordinary speech. Pure and static so the

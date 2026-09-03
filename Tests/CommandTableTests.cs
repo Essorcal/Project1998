@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Protocol.Tk495;
 using Server;
 using Shared;
@@ -169,4 +169,155 @@ public sealed class CommandTableTests
         Assert.True(session.TryRunCommand(command), $"'{command}' was not recognized as a command at all");
         Assert.Equal(expected, Transcript(outbound));
     }
+    // ---- the split: message -> command name + ARGUMENT TAIL --------------------------------------------
+    //
+    // Every handler's contract starts here, and it has been got wrong before: when the ~70 StartsWith lines
+    // became a table, ParseInts kept skipping token 0 to step over a command name that was no longer in the
+    // string, which silently ate the first argument of every numeric command ("@stats 50000 50000 130"
+    // parsed as (50000, 130)). Nothing in the type system says whether a handler is handed the whole message
+    // or just the tail, so it is pinned instead.
+
+    [Theory]
+    [InlineData("@warp", "warp", "")]
+    [InlineData("@warp Kugnae", "warp", "Kugnae")]
+    // The tail is handed over WHOLE: an item name with spaces and a trailing amount are one string, and
+    // splitting them is the handler's job (that is what NameThenTrailingInt is for).
+    [InlineData("@item Fine Sword 3", "item", "Fine Sword 3")]
+    // Trimmed at the ENDS only. Interior runs of spaces survive, so a handler that splits on whitespace must
+    // ask for empty entries to be removed.
+    [InlineData("@item   Fine  Sword  3  ", "item", "Fine  Sword  3")]
+    // Quotes are not syntax here. They reach the handler as ordinary characters, which is why @legend takes
+    // its free text as "everything from token 3 on" rather than as a quoted string.
+    [InlineData("@legend dog 3 128 \"Dog linguist\"", "legend", "dog 3 128 \"Dog linguist\"")]
+    // The name's case is preserved; it is the LOOKUP that is case-insensitive.
+    [InlineData("@WARP kugnae", "WARP", "kugnae")]
+    // Only a SPACE separates the name from the tail. A tab does not, so this is one long unknown name rather
+    // than a warp — a known limit of the split, pinned so a change to it is deliberate.
+    [InlineData("@warp\tKugnae", "warp\tKugnae", "")]
+    // "@ warp" is a command with an EMPTY name, not the warp command. It reaches the table, misses, and gets
+    // the same "unknown command" answer as a typo.
+    [InlineData("@ warp", "", "warp")]
+    public void SplitsNameFromArgumentTail(string text, string name, string args)
+    {
+        Assert.True(Session.SplitCommand(text, out var gotName, out var gotArgs));
+        Assert.Equal(name, gotName);
+        Assert.Equal(args, gotArgs);
+    }
+
+    [Theory]
+    [InlineData("")]                 // nothing at all
+    [InlineData("@")]                // the prefix alone is not a command
+    [InlineData("hello there")]      // ordinary speech
+    [InlineData(" @warp")]           // the prefix has to be the FIRST character
+    [InlineData("a@warp")]
+    public void NonCommandsAreOrdinarySpeech(string text)
+    {
+        Assert.False(Session.SplitCommand(text, out var name, out var args));
+        Assert.Equal("", name);
+        Assert.Equal("", args);
+    }
+
+    // ---- the table itself ------------------------------------------------------------------------------
+
+    /// <summary>The real table, built eagerly. This is what Program calls at startup, and it is the only
+    /// thing standing between a duplicate name and an exception thrown on a connection thread the first time
+    /// a player types '@'.</summary>
+    [Fact]
+    public void RealTableBuildsAndHasNoDuplicateName()
+    {
+        Session.WarmCommandTable();
+
+        var names = Session.CommandRows().SelectMany(r => r.Names).ToList();
+        Assert.Null(Session.FirstDuplicateName(names));
+        Assert.NotEmpty(names);
+    }
+
+    /// <summary>The duplicate check itself, which the real table can never exercise — it must not contain a
+    /// duplicate, so the only way to find out whether the check works is to hand it one.</summary>
+    [Theory]
+    [InlineData(null, "warp", "go", "maps")]
+    [InlineData("warp", "warp", "go", "warp")]
+    [InlineData("go", "warp", "go", "go")]
+    // Case-insensitively, because the LOOKUP is: declaring both "@Warp" and "@warp" is the same collision as
+    // declaring "warp" twice, and the loser would simply never run.
+    [InlineData("WARP", "warp", "go", "WARP")]
+    // An ALIAS collides with a canonical name exactly as a canonical name would.
+    [InlineData("gold", "coins", "gold", "gold")]
+    public void FirstDuplicateNameFindsTheCollision(string? expected, params string[] names)
+        => Assert.Equal(expected, Session.FirstDuplicateName(names));
+
+    /// <summary>Every row's Args column is the ONE place a command's argument shape is written down: @help
+    /// renders it, and (since the usage strings went away) so does every refusal. A typo in it — a missing
+    /// bracket, an empty placeholder — is invisible until a GM reads a mangled usage line, so check the whole
+    /// column here instead.</summary>
+    [Fact]
+    public void EveryRowIsWellFormed()
+    {
+        foreach (var (names, args, help) in Session.CommandRows())
+        {
+            string row = "@" + names[0];
+            Assert.NotEmpty(names);
+            foreach (var n in names)
+            {
+                Assert.False(string.IsNullOrWhiteSpace(n), $"{row}: an empty name");
+                Assert.DoesNotContain(" ", n);
+                Assert.Equal(n.ToLowerInvariant(), n);   // the table declares names lower-case; lookup folds case
+                Assert.DoesNotContain(Session.Prefix.ToString(), n);   // the prefix is added when rendering
+            }
+            Assert.False(string.IsNullOrWhiteSpace(help), $"{row}: no help text");
+            Assert.Null(ArgSpecError(args));
+        }
+    }
+
+    /// <summary>What is wrong with an Args column, or null if nothing is. The shape is
+    /// <c>&lt;required&gt;</c>, <c>[optional]</c>, bare literal words, and <c>|</c> between alternatives —
+    /// so brackets must balance and nest, and a placeholder must have something in it.</summary>
+    private static string? ArgSpecError(string spec)
+    {
+        if (spec.Length == 0) return null;                                  // "takes no arguments" is a shape
+        if (spec != spec.Trim()) return "leading or trailing whitespace";
+        if (spec.Contains("  ")) return "a run of spaces";
+
+        var open = new Stack<(char Bracket, int At)>();
+        for (int i = 0; i < spec.Length; i++)
+        {
+            char c = spec[i];
+            if (c is '<' or '[')
+            {
+                // '[' inside '<...>' would mean an optional part of a required placeholder, which the
+                // renderer has no way to show. '<' inside '[...]' is fine and used: "[key] [0 | <icon> ...]".
+                if (open.Count > 0 && open.Peek().Bracket == '<')
+                    return $"'{c}' at {i} nested inside a <...> placeholder";
+                open.Push((c, i));
+            }
+            else if (c is '>' or ']')
+            {
+                if (open.Count == 0) return $"'{c}' at {i} closes nothing";
+                var (bracket, at) = open.Pop();
+                if (bracket != (c == '>' ? '<' : '[')) return $"'{c}' at {i} closes a '{bracket}'";
+                if (i == at + 1) return $"an empty '{bracket}{c}' at {at}";
+            }
+        }
+        return open.Count == 0 ? null : $"{open.Count} unclosed bracket(s)";
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("<n>")]
+    [InlineData("<name|id> [amount]")]
+    [InlineData("[key] [0 | <icon> <color> <text...>]")]
+    [InlineData("clear|rain|snow | raw <n>")]
+    public void WellFormedArgSpecsPass(string spec) => Assert.Null(ArgSpecError(spec));
+
+    [Theory]
+    [InlineData("<n")]                  // unclosed
+    [InlineData("[amount")]
+    [InlineData("n>")]                  // closes nothing
+    [InlineData("<>")]                  // empty placeholder
+    [InlineData("[]")]
+    [InlineData("<name]")]              // crossed
+    [InlineData("<a [b]>")]             // an optional part of a required placeholder
+    [InlineData("<a>  <b>")]            // a run of spaces reaches the rendered usage line
+    [InlineData(" <a>")]
+    public void MalformedArgSpecsAreCaught(string spec) => Assert.NotNull(ArgSpecError(spec));
 }
