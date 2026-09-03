@@ -15,8 +15,8 @@ This script performs the same launch as the bat, and answers those questions:
   * It refuses to start while the login or game ports are held, and says who holds them (PID, command
     line, and the session file's checkout/commit/start time when the holder was started by this script).
     It never stops anything by itself.
-  * Each console is titled "LOGIN 2000/2001 - <clone> @ <short commit>" / "GAME 2005/2006 - ...", so the
-    window says what it is. The commit is git rev-parse HEAD at the moment the tree was built; a "+" after
+  * Each console is titled "LOGIN <base>/<base+1> - <clone> @ <short commit>" / "GAME <base+5>/<base+6> -
+    ...", so the window says what it is. The commit is git rev-parse HEAD at the moment the tree was built; a "+" after
     it means tracked files were modified (untracked files are not counted). git is required: with no
     commit to stamp, the script refuses to start rather than launch a pair labelled "@ unknown".
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
@@ -275,8 +275,8 @@ function Get-SessionSlots($Session, [string]$Root) {
 }
 
 # The four ports a session actually bound, as a plan, or $null for a file written before they were recorded
-# by name. -Status and -Stop work from this, not from -PortBase: the pair on 3000 is stopped by the same
-# command as the pair on 2000.
+# by name. -Status and -Stop work from this, not from -PortBase: a pair on any base is stopped by the same
+# command, with no base repeated.
 function Get-SessionPlan($Session) {
     $p = $Session.ports
     if ($null -eq $p) { return $null }
@@ -484,7 +484,7 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
 # to the target's, and detaching THIS process would take an interactive caller's shell down with it. The
 # helper installs a real handler that swallows both events for itself (ignoring Ctrl+C alone would not
 # survive its own Ctrl+Break). Returns 0 when the process exited after Ctrl+C, 1 when Ctrl+Break was sent
-# as well, 1000+/2000+/3000+ plus the Win32 error when attaching or generating failed. Invoked through
+# as well, 10000+/20000+/30000+ plus the Win32 error when attaching or generating failed. Invoked through
 # cmd so that nothing on the helper's streams reaches this session: a redirected powershell stderr is
 # expected to carry CLIXML, and anything else on it is an error in the caller.
 function Send-ConsoleBreak([int]$ProcessId, [int]$WaitMs) {
@@ -505,15 +505,15 @@ public static class P1998Sig {
   }
   public static int Send(int pid, int waitMs) {
     FreeConsole();
-    if (!AttachConsole((uint)pid)) return 1000 + Marshal.GetLastWin32Error();
+    if (!AttachConsole((uint)pid)) return 10000 + Marshal.GetLastWin32Error();
     SetConsoleCtrlHandler(keep, true);
-    if (!GenerateConsoleCtrlEvent(0, 0)) return 2000 + Marshal.GetLastWin32Error();
+    if (!GenerateConsoleCtrlEvent(0, 0)) return 20000 + Marshal.GetLastWin32Error();
     DateTime until = DateTime.UtcNow.AddMilliseconds(waitMs);
     while (DateTime.UtcNow < until) {
       if (Gone(pid)) { FreeConsole(); return 0; }
       Thread.Sleep(250);
     }
-    if (!GenerateConsoleCtrlEvent(1, 0)) return 3000 + Marshal.GetLastWin32Error();
+    if (!GenerateConsoleCtrlEvent(1, 0)) return 30000 + Marshal.GetLastWin32Error();
     Thread.Sleep(300);
     FreeConsole();
     return 1;
@@ -536,7 +536,7 @@ function Stop-SessionProcess($Slot, [string]$Root) {
     $id = [int]$Slot.ProcessId
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $rc = Send-ConsoleBreak -ProcessId $id -WaitMs 5000
-    if ($rc -ge 1000) { Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered (helper code $rc)." }
+    if ($rc -ge 10000) { Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered (helper code $rc)." }
     if (Wait-Exit $id 30) {
         if ($rc -eq 0) { return "stopped on Ctrl+C after $([int]$sw.Elapsed.TotalSeconds) s" }
         return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s"
