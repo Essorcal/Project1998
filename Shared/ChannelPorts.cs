@@ -12,9 +12,68 @@ namespace Shared;
 /// </summary>
 public static class ChannelPorts
 {
-    /// <summary>Game port paired with a login port. Unknown ports fall back to the V495 channel.</summary>
-    public static int GameFor(int loginPort) => loginPort == 2001 ? 2006 : 2005;
+    private sealed record Pair(int Login495, int Login533, int Game495, int Game533)
+    {
+        public bool Contains(int port) =>
+            port == Login495 || port == Login533 || port == Game495 || port == Game533;
+    }
 
-    /// <summary>Login port paired with a game port. Unknown ports fall back to the V495 channel.</summary>
-    public static int LoginFor(int gamePort) => gamePort == 2006 ? 2001 : 2000;
+    // Ports outside the configured pair fall back here. That keeps ChannelPortsTests free to configure
+    // 3000/3001 process-wide while other test collections concurrently construct Sessions on 2005/2006.
+    // A port unknown to both pairs consequently answers game and 4.95, matching the pre-configuration
+    // behavior: an unknown channel must not gain login framing or opt into the 5.33 protocol path.
+    private static readonly Pair DefaultPair = new(2000, 2001, 2005, 2006);
+    private static Pair? _configuredPair;
+
+    /// <summary>Game port paired with a login port.</summary>
+    public static int GameFor(int loginPort) => loginPort + 5;
+
+    /// <summary>Login port paired with a game port.</summary>
+    public static int LoginFor(int gamePort) => gamePort - 5;
+
+    /// <summary>True when <paramref name="port"/> is one of the configured pair's login channels.</summary>
+    public static bool IsLogin(int port)
+    {
+        Pair pair = CurrentPairFor(port);
+        return port == pair.Login495 || port == pair.Login533;
+    }
+
+    /// <summary>True when <paramref name="port"/> is the second (5.33) channel in either half of the pair.</summary>
+    public static bool IsV533(int port)
+    {
+        Pair pair = CurrentPairFor(port);
+        return port == pair.Login533 || port == pair.Game533;
+    }
+
+    /// <summary>Set this process's channels from the login pair supplied on its command line.</summary>
+    public static void ConfigureLoginPair(IReadOnlyList<int> loginPorts)
+    {
+        RequirePair(loginPorts);
+        Volatile.Write(ref _configuredPair,
+            new Pair(loginPorts[0], loginPorts[1], GameFor(loginPorts[0]), GameFor(loginPorts[1])));
+    }
+
+    /// <summary>Set this process's channels from the game pair supplied on its command line.</summary>
+    public static void ConfigureGamePair(IReadOnlyList<int> gamePorts)
+    {
+        RequirePair(gamePorts);
+        Volatile.Write(ref _configuredPair,
+            new Pair(LoginFor(gamePorts[0]), LoginFor(gamePorts[1]), gamePorts[0], gamePorts[1]));
+    }
+
+    internal static void ResetForTests() => Volatile.Write(ref _configuredPair, null);
+
+    private static Pair CurrentPairFor(int port)
+    {
+        Pair? configured = Volatile.Read(ref _configuredPair);
+        return configured is not null && configured.Contains(port) ? configured : DefaultPair;
+    }
+
+    private static void RequirePair(IReadOnlyList<int> ports)
+    {
+        if (ports.Count != 2)
+            throw new ArgumentException("Exactly two ports are required: first 4.95, then 5.33.", nameof(ports));
+        if (ports[1] != ports[0] + 1)
+            throw new ArgumentException("Ports must be consecutive and ordered: first 4.95, then 5.33.", nameof(ports));
+    }
 }

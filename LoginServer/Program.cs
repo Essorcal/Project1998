@@ -29,6 +29,19 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
 
+try
+{
+    ChannelPorts.ConfigureLoginPair(ports);
+}
+catch (ArgumentException e)
+{
+    Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
+    Environment.ExitCode = 1;
+    return;
+}
+
+Log.Info($"=== channel pairing: login {ports[0]}/{ports[1]} -> " +
+         $"game {ChannelPorts.GameFor(ports[0])}/{ChannelPorts.GameFor(ports[1])} ===");
 var store = new CharacterStore(RepoPaths.CharsDir());
 Log.Info($"=== Project1998 LOGIN starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc; store={store.Directory}; wire-log={(Log.WireEnabled ? "ON (passwords visible!)" : "off")} ===");

@@ -117,7 +117,7 @@ public sealed partial class Session
     // never entered by a 5.33 session. Login 2000 / game 2005 = V495; login 2001 / game 2006 = V533.
     public enum ClientVersion { V495, V533 }
     private readonly ClientVersion _ver;
-    private bool IsLoginPort => _port == 2000 || _port == 2001;
+    private bool IsLoginPort => ChannelPorts.IsLogin(_port);
 
     // --- world-light diagnostic knobs (env-tweakable, no rebuild needed to sweep) ---
     //   P1998_LIGHT      integer 0..65535, the map light/darkness value (default 232, proven bright on 4.95)
@@ -278,7 +278,7 @@ public sealed partial class Session
         _port = port;
         _store = store;
         _world = world;
-        _ver = (port == 2001 || port == 2006) ? ClientVersion.V533 : ClientVersion.V495;
+        _ver = ChannelPorts.IsV533(port) ? ClientVersion.V533 : ClientVersion.V495;
         // Keep the proxy's own address in the log line: when the allow-list or the HAProxy backend is
         // misconfigured, "which proxy claimed this" is the only thing that distinguishes a real player
         // from a forged header, and it is not recoverable after the fact.
