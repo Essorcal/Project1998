@@ -106,12 +106,13 @@ attach to a PR), `-ReadyTimeoutSec` (default 60) and `-ScriptTimeoutSec` (defaul
 independent of the client's own `--timeout-ms`).
 
 It refuses the same way `Serve.ps1` does when the ports are already held or this checkout already has a
-pair running (exit 2, and says who or what); a build failure in the checkout under test is `Serve.ps1`'s
-own exit 1, passed straight through with no test-client build and no scripts run. Exit 2 also covers this
-script's own usage errors (a bad `-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, a
-missing `TestClient.Cli` project, no `dotnet` on PATH) and a test-client build failure. A readiness timeout,
-an interrupted run (Ctrl+C or Ctrl+Break both stop the pair before exiting), or any script exiting nonzero
-or reporting a failed expect is exit 1.
+pair running (exit 2, and says who or what). Exit 2 also covers this script's own usage errors (a bad
+`-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, a missing `TestClient.Cli` project, no
+`dotnet` on PATH). A build failure in the checkout under test is `Serve.ps1`'s own exit 1, passed straight
+through with no test-client build and no scripts run; a test-client build failure is this script's own
+exit 1 the same way, with no scripts run either. A readiness timeout, an interrupted run (Ctrl+C or
+Ctrl+Break both stop the pair before exiting), or any script exiting nonzero or reporting a failed expect
+is also exit 1.
 
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:
