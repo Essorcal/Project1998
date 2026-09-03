@@ -493,6 +493,8 @@ public sealed class CommandTableTests
     [InlineData("@items apple")]
     [InlineData("@npc")]
     [InlineData("@setting")]
+    [InlineData("@maps iron")]
+    [InlineData("@mobs rabbit")]
     public void NothingAListingPrintsOverrunsThePane(string command)
     {
         var (session, outbound) = GmRoster.Session(_fx);
@@ -509,24 +511,43 @@ public sealed class CommandTableTests
                         $"'{command}' printed a {line.Length}-char line that could have been broken: \"{line}\"");
     }
 
-    // ---- @warp, pinned before it moves -----------------------------------------------------------------
+    // ---- Session.Navigation.cs, after the same pass ----------------------------------------------------
     //
-    // @warp's handler lives in Session.Navigation.cs and so was outside the first pass; it is in scope now.
-    // Pinned here FIRST, against the behaviour it has today — everything on the 0x0D bubble, an unwrapped
-    // "Warped to ..." confirmation and a hand-written usage line — so the commit that converts it shows the
-    // move rather than asserting it.
+    // These were pinned first against the old behaviour — everything on the 0x0D bubble, an unwrapped
+    // "Warped to ..." line and a hand-written usage string — so the diff on this block is the record of the
+    // move, exactly as it was for the first 24.
 
     [Theory]
-    // The confirmation. A map id, then a map id with explicit coordinates.
-    [InlineData("@warp 36", new[] { "bubble|Warped to IronHeart's Home (map 36, 12x12) at (6,6)." })]
-    [InlineData("@warp 36 4 9", new[] { "bubble|Warped to IronHeart's Home (map 36, 12x12) at (4,9)." })]
+    // The confirmation, now on the pane and wrapped to it. A map id, then a map id with coordinates.
+    [InlineData("@warp 36", new[]
+    {
+        "pane3|Warped to IronHeart's Home",
+        "pane3|(map 36, 12x12) at (6,6).",
+    })]
+    [InlineData("@warp 36 4 9", new[]
+    {
+        "pane3|Warped to IronHeart's Home",
+        "pane3|(map 36, 12x12) at (4,9).",
+    })]
     // The two refusals: no argument, and a name that matches nothing.
-    [InlineData("@warp", new[] { "bubble|usage: @warp <map name or id> [x y]" })]
+    [InlineData("@warp", new[] { "bubble|usage: @warp <map name|id> [x y]" })]
     [InlineData("@warp zzznosuchmap", new[] { "bubble|no map matches \"zzznosuchmap\" - try  @maps zzznosuchmap" })]
-    // @go is the same file and the same pass. Note its "usage:" line is a CONFIRMATION in disguise: the
-    // command always moves you, and says so even when it had to fall back to (0,0).
-    [InlineData("@go 3 4", new[] { "bubble|Moved to (3,4) on IronHeart's Home (map 36)." })]
-    [InlineData("@go", new[] { "bubble|usage: @go <x> <y>  -  0..11 / 0..11 on IronHeart's Home (map 36); sent you to (0,0)." })]
+    // @go's "usage:" line is a CONFIRMATION in disguise, so it went to the pane with the success line
+    // rather than to the bubble with the refusals: the command always moves you, and that line is what it
+    // says when it could not use the coordinates you typed. Only the shape now comes from the table.
+    [InlineData("@go 3 4", new[]
+    {
+        "pane3|Moved to (3,4) on IronHeart's",
+        "pane3|Home (map 36).",
+    })]
+    [InlineData("@go", new[]
+    {
+        "pane3|usage: @go <x> <y> - 0..11 /",
+        "pane3|0..11 on IronHeart's Home (map",
+        "pane3|36); sent you to (0,0).",
+    })]
+    // The one refusal in the file that stayed a refusal.
+    [InlineData("@summon", new[] { "bubble|usage: @summon <mob name|id>" })]
     public void NavigationCommandSaysAndChannel(string command, string[] expected)
     {
         var (session, outbound) = GmRoster.Session(_fx);

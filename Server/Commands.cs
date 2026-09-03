@@ -38,9 +38,9 @@ public sealed partial class Session
     ///
     /// <para>WHY. Every handler used to parse its own tail, in three house styles that do not agree: across
     /// Session.GmCommands.cs and Session.Media.cs there were 22 <c>ParseInts</c> calls, 26 raw
-    /// <c>.Split</c>s and 39 bare <c>TryParse</c>s. ParseInts SKIPS non-numeric words, so "@stats 1 2 x"
+    /// <c>.Split</c>s and 39 bare <c>TryParse</c>s. ParseInts SKIPPED non-numeric words, so "@stats 1 2 x"
     /// reached the three-argument form as two integers, while a positional reader sees three words and
-    /// refuses. Worse, 33 of those handlers also wrote their own "usage:" line, restating the row's
+    /// refuses. (It is gone now — this type replaced its last caller.) Worse, 33 of those handlers also wrote their own "usage:" line, restating the row's
     /// <c>Args</c> column from memory — so the table said one thing and the refusal another the moment
     /// either drifted, which @hit's row ("[dmg]", against a handler wanting a percent and a crit byte) had
     /// already been doing.</para>
