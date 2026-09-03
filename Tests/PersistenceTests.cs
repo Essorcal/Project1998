@@ -1,5 +1,11 @@
 using Microsoft.Data.Sqlite;
+using Protocol.Tk495;
+using Server;
 using Shared;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
@@ -28,6 +34,13 @@ public class PersistenceTests : IDisposable
         return c;
     }
 
+    private Character LoadOk(string name)
+    {
+        var result = _store.Load(name);
+        Assert.Equal(CharacterLoadStatus.Ok, result.Status);
+        return Assert.IsType<Character>(result.Character);
+    }
+
     public void Dispose()
     {
         // Leave no debris in the live database.
@@ -53,6 +66,16 @@ public class PersistenceTests : IDisposable
     }
 
     [Fact]
+    public void MissingRow_IsNotReportedAsUnreadable()
+    {
+        var load = _store.Load(_a);
+
+        Assert.Equal(CharacterLoadStatus.NotFound, load.Status);
+        Assert.Null(load.Character);
+        Assert.Null(load.Reason);
+    }
+
+    [Fact]
     public void ProductionDatabaseIsUnchanged()
     {
         Assert.Equal(TestProcessState.ProductionDatabaseExisted,
@@ -72,9 +95,9 @@ public class PersistenceTests : IDisposable
 
         Assert.True(_store.SaveMany(new[] { a, b }));
 
-        Assert.Equal(100u, _store.Load(_a)!.Coins);
-        Assert.Equal(200u, _store.Load(_b)!.Coins);
-        Assert.Equal(5, _store.Load(_a)!.Inventory.Single().Amount);
+        Assert.Equal(100u, LoadOk(_a).Coins);
+        Assert.Equal(200u, LoadOk(_b).Coins);
+        Assert.Equal(5, LoadOk(_a).Inventory.Single().Amount);
     }
 
     /// <summary>
@@ -115,8 +138,8 @@ public class PersistenceTests : IDisposable
 
         // Neither side moved. `a` in particular must NOT have been debited — that is the half which, had it
         // committed alone, would have destroyed the goods outright.
-        var reloadedA = _store.Load(_a)!;
-        var reloadedB = _store.Load(_b)!;
+        var reloadedA = LoadOk(_a);
+        var reloadedB = LoadOk(_b);
         Assert.Equal(100u, reloadedA.Coins);
         Assert.Equal(10, reloadedA.Inventory.Single().Amount);
         Assert.Equal(100u, reloadedB.Coins);
@@ -154,7 +177,7 @@ public class PersistenceTests : IDisposable
         });
 
         Assert.False(committed);
-        Assert.Equal(100u, _store.Load(_a)!.Coins);   // the character save rolled back with it
+        Assert.Equal(100u, LoadOk(_a).Coins);   // the character save rolled back with it
         Assert.Equal(1, ParcelCount(_a));             // and the parcel is still in the queue
 
         // Cleanup.
@@ -194,7 +217,7 @@ public class PersistenceTests : IDisposable
         });
 
         Assert.True(committed);
-        Assert.Equal(400u, _store.Load(_a)!.Coins);
+        Assert.Equal(400u, LoadOk(_a).Coins);
         Assert.Equal(0, ParcelCount(_a));
     }
 
@@ -211,7 +234,185 @@ public class PersistenceTests : IDisposable
         c.Dir = 3;                                   // 0=N 1=E 2=S 3=W — anything but the default
         Assert.True(_store.Save(c));
 
-        Assert.Equal(3, _store.Load(_a)!.Dir);
+        Assert.Equal(3, LoadOk(_a).Dir);
+    }
+
+    /// <summary>
+    /// The checked-in blob is the rename alarm. It contains every current <see cref="Character"/> field and
+    /// populated instances of every nested persisted type. Renaming a field without first consuming its old
+    /// name in <see cref="CharacterUpgrader"/> therefore leaves an unmapped fixture member and fails here;
+    /// do not weaken or delete this test when adding an upgrade step.
+    /// </summary>
+    [Fact]
+    public void CurrentFixture_RoundTripsThroughTheUpgraderWithNoUnmappedMembers()
+    {
+        string json = File.ReadAllText(FixturePath());
+
+        var character = CharacterStore.Deserialize(json);
+
+        Assert.Equal(Character.CurrentSchemaVersion, character.SchemaVersion);
+        Assert.Equal("FixtureHero", character.Name);
+        Assert.Equal(123456u, character.Coins);
+        Assert.Equal("Keepsake", character.Inventory.Single().CustomName);
+        Assert.Equal("fixture-buff", character.Effects.Buffs.Single().Key);
+        Assert.True(JsonNode.DeepEquals(
+            JsonNode.Parse(json),
+            JsonNode.Parse(CharacterStore.Serialize(character))));
+    }
+
+    [Fact]
+    public void SchemaZeroBlob_IsStampedBeforeStrictDeserialization()
+    {
+        var root = Assert.IsType<JsonObject>(JsonNode.Parse(File.ReadAllText(FixturePath())));
+        Assert.True(root.Remove(nameof(Character.SchemaVersion)));
+
+        var character = CharacterStore.Deserialize(root.ToJsonString());
+
+        Assert.Equal(Character.CurrentSchemaVersion, character.SchemaVersion);
+        Assert.Equal("FixtureHero", character.Name);
+    }
+
+    [Fact]
+    public void LegacyJsonImport_UsesTheRawJsonUpgrader()
+    {
+        string legacyDir = Path.Combine(_fixture.StateDirectory, $"legacy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(legacyDir);
+        var root = Assert.IsType<JsonObject>(JsonNode.Parse(File.ReadAllText(FixturePath())));
+        Assert.True(root.Remove(nameof(Character.SchemaVersion)));
+        root[nameof(Character.Name)] = _a;
+        File.WriteAllText(Path.Combine(legacyDir, $"{_a}.json"), root.ToJsonString());
+
+        var importingStore = new CharacterStore(legacyDir);
+        var load = importingStore.Load(_a);
+
+        Assert.Equal(CharacterLoadStatus.Ok, load.Status);
+        Assert.Equal(Character.CurrentSchemaVersion, Assert.IsType<Character>(load.Character).SchemaVersion);
+        Assert.Equal(Character.CurrentSchemaVersion,
+            Assert.IsType<JsonObject>(JsonNode.Parse(ReadRawCharacter(_a)))[nameof(Character.SchemaVersion)]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void UnknownPersistedMember_IsRejectedInsteadOfSilentlyDropped()
+    {
+        var root = Assert.IsType<JsonObject>(JsonNode.Parse(File.ReadAllText(FixturePath())));
+        root["FieldRenamedWithoutUpgrade"] = 123;
+
+        Assert.Throws<JsonException>(() => CharacterStore.Deserialize(root.ToJsonString()));
+    }
+
+    /// <summary>An unreadable row is evidence to preserve, not an absent character to recreate. The arrival
+    /// path gives the player a distinct message and closes before entering the world; every store write path
+    /// independently refuses to replace the row, covering a stale duplicate session that flushes first.</summary>
+    [Fact]
+    public void UnreadableRow_IsRejectedDistinctlyAndNeverOverwritten()
+    {
+        const string corrupt = "{\"SchemaVersion\":1,\"Name\":\"FixtureHero\",\"RemovedField\":17}";
+        InsertRawCharacter(_a, corrupt);
+
+        var load = _store.Load(_a);
+        Assert.Equal(CharacterLoadStatus.Unreadable, load.Status);
+        Assert.Null(load.Character);
+        Assert.False(string.IsNullOrWhiteSpace(load.Reason));
+
+        Assert.False(_store.Save(Make(_a, 999)));
+        Assert.Equal(corrupt, ReadRawCharacter(_a));
+        Assert.False(_store.SaveMany(new[] { Make(_a, 888) }));
+        bool callbackRan = false;
+        Assert.False(_store.SaveWith(Make(_a, 777), (_, _) => callbackRan = true));
+        Assert.False(callbackRan);
+        Assert.Equal(corrupt, ReadRawCharacter(_a));
+
+        var outbound = new RecordingOutbound();
+        var session = new Session(outbound, 2005, _store, new World());
+        session.Receive(ArrivalFrame(_a));
+
+        Assert.True(outbound.Closed);
+        var message = Assert.Single(outbound.BodiesOf(0x02));
+        Assert.Equal("Your character record could not be loaded. Please contact an administrator.",
+            Encoding.ASCII.GetString(message, 2, message[1]));
+        Assert.Equal(corrupt, ReadRawCharacter(_a));
+    }
+
+    [Fact]
+    public void DatabaseMigrations_AreVersionedAndIdempotent()
+    {
+        string path = Path.Combine(_fixture.StateDirectory, $"migration-{Guid.NewGuid():N}.db");
+        using (var legacy = new SqliteConnection($"Data Source={path}"))
+        {
+            legacy.Open();
+            using var schema = legacy.CreateCommand();
+            schema.CommandText = @"
+CREATE TABLE handoff_tokens (
+  nonce_hash TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  expires_utc INTEGER NOT NULL,
+  consumed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE parcels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipient TEXT NOT NULL COLLATE NOCASE,
+  position INTEGER NOT NULL,
+  sender TEXT,
+  item_id INTEGER NOT NULL DEFAULT -1,
+  item_amount INTEGER NOT NULL DEFAULT 0,
+  item_dura INTEGER NOT NULL DEFAULT 0,
+  engrave TEXT,
+  month INTEGER,
+  day INTEGER
+);";
+            schema.ExecuteNonQuery();
+        }
+
+        Db.InitializeDatabase(path);
+        Db.InitializeDatabase(path);
+
+        using var cn = new SqliteConnection($"Data Source={path}");
+        cn.Open();
+        using var version = cn.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Assert.Equal(Db.CurrentSchemaVersion, Convert.ToInt32(version.ExecuteScalar()));
+        Assert.Equal(1, ColumnCount(cn, "handoff_tokens", "ip"));
+        Assert.Equal(1, ColumnCount(cn, "parcels", "item_owner"));
+    }
+
+    private static string FixturePath() =>
+        Path.Combine(RepoPaths.Root(), "Tests", "Fixtures", "character-v1.json");
+
+    private static byte[] ArrivalFrame(string user)
+    {
+        var body = new List<byte> { 9 };
+        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
+        body.Add((byte)user.Length);
+        body.AddRange(Encoding.ASCII.GetBytes(user));
+        body.AddRange(HandoffTokens.Mint(user, System.Net.IPAddress.None.ToString()));
+        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
+    }
+
+    private static void InsertRawCharacter(string user, string json)
+    {
+        using var cn = Db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO characters(username, json, updated_utc) VALUES($u, $j, 1);";
+        cmd.Parameters.AddWithValue("$u", CharacterStore.Key(user));
+        cmd.Parameters.AddWithValue("$j", json);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static string ReadRawCharacter(string user)
+    {
+        using var cn = Db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT json FROM characters WHERE username=$u;";
+        cmd.Parameters.AddWithValue("$u", CharacterStore.Key(user));
+        return Assert.IsType<string>(cmd.ExecuteScalar());
+    }
+
+    private static int ColumnCount(SqliteConnection cn, string table, string column)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=$column;";
+        cmd.Parameters.AddWithValue("$column", column);
+        return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
     private static int ParcelCount(string recipient)

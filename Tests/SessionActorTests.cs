@@ -187,9 +187,10 @@ public class SessionActorTests
         Assert.True(saves > 10 && mutations > 100, $"the race never got going: {saves} save(s), {mutations} mutation(s)");
 
         // What was written last has to be a whole character, primed effects and all.
-        var reloaded = _fx.Store.Load("ActorSaveRace");
-        Assert.NotNull(reloaded);
-        Assert.Single(reloaded!.Equipment);
+        var load = _fx.Store.Load("ActorSaveRace");
+        Assert.Equal(CharacterLoadStatus.Ok, load.Status);
+        var reloaded = Assert.IsType<Character>(load.Character);
+        Assert.Single(reloaded.Equipment);
         Assert.Equal(character.Effects.Buffs.Count, reloaded.Effects.Buffs.Count);
         Assert.True(reloaded.Effects.Buffs.Count >= 400);
     }

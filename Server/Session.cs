@@ -960,15 +960,23 @@ public sealed partial class Session
         // login server minted a token for a name that has no character (it checks first, so this is either a
         // race with an admin deleting the record, or a hand-rolled client with P1998_ENFORCE_HANDOFF=0).
         // Creating one on the spot is what let anyone materialize a character by typing a new name at login.
-        var loaded = _store.Load(_user);
-        if (loaded is null)
+        var load = _store.Load(_user);
+        if (load.Status == CharacterLoadStatus.NotFound)
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
             _world.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
             CloseConnection("arrival rejected (no character record)");
             return;
         }
-        _char = loaded;
+        if (load.Status == CharacterLoadStatus.Unreadable)
+        {
+            Log.Warn($"ARRIVAL REJECTED: unreadable character record for user='{_user}': {load.Reason}");
+            SendMessage("Your character record could not be loaded. Please contact an administrator.");
+            _world.Unregister(CharacterStore.Key(_user), this);
+            CloseConnection("arrival rejected (unreadable character record)");
+            return;
+        }
+        _char = load.Character!;
         // Keep the CASING the character was created with — _user is whatever the player typed at the login
         // prompt, and logins are case-insensitive, so assigning it here would rewrite "Snuggle" to "snuggle"
         // (and then broadcast that to every peer) on the first lowercase login.
