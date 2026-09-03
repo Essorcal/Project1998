@@ -339,6 +339,78 @@ public class PersistenceTests : IDisposable
     }
 
     [Fact]
+    public void UnreadableMarker_IsTheSaveGuardAndACurrentBuildCanClearIt()
+    {
+        const string corrupt = "{\"SchemaVersion\":1,\"Name\":\"FixtureHero\",\"RemovedField\":17}";
+        InsertRawCharacter(_a, corrupt);
+        Assert.Equal(CharacterLoadStatus.Unreadable, _store.Load(_a).Status);
+        Assert.NotNull(ReadUnreadableSince(_a));
+
+        // Make the bytes readable without touching the marker. A writer that reparses inside its transaction
+        // would now overwrite this row; the marker-based guard must still refuse it.
+        string current = CharacterStore.Serialize(Make(_a, 123));
+        ReplaceRawJson(_a, current);
+        Assert.False(_store.Save(Make(_a, 999)));
+        Assert.Equal(current, ReadRawCharacter(_a));
+
+        // A later build that can read a formerly bad row removes the stale marker during Load, after which
+        // normal saves resume.
+        Assert.Equal(CharacterLoadStatus.Ok, _store.Load(_a).Status);
+        Assert.Null(ReadUnreadableSince(_a));
+        Assert.True(_store.Save(Make(_a, 999)));
+    }
+
+    [Fact]
+    public void RefusedOverwrite_ReachesTheConfiguredWarningSink()
+    {
+        const string corrupt = "{\"SchemaVersion\":1,\"Name\":\"FixtureHero\",\"RemovedField\":17}";
+        InsertRawCharacter(_a, corrupt);
+        Assert.Equal(CharacterLoadStatus.Unreadable, _store.Load(_a).Status);
+
+        var warnings = new List<string>();
+        var previous = CharacterStore.Warn;
+        try
+        {
+            CharacterStore.Warn = warnings.Add;
+            Assert.False(_store.Save(Make(_a, 999)));
+        }
+        finally
+        {
+            CharacterStore.Warn = previous;
+        }
+
+        string warning = Assert.Single(warnings);
+        Assert.Contains("Refused to overwrite unreadable character row", warning);
+        Assert.Contains(CharacterStore.Key(_a), warning);
+    }
+
+    [Fact]
+    public void LegacyImport_ReportsTheFileItCannotUpgrade()
+    {
+        string legacyDir = Path.Combine(_fixture.StateDirectory, $"legacy-bad-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(legacyDir);
+        string path = Path.Combine(legacyDir, "stale.json");
+        File.WriteAllText(path,
+            "{\"SchemaVersion\":1,\"Name\":\"FixtureHero\",\"RemovedField\":17}");
+
+        var warnings = new List<string>();
+        var previous = CharacterStore.Warn;
+        try
+        {
+            CharacterStore.Warn = warnings.Add;
+            _ = new CharacterStore(legacyDir);
+        }
+        finally
+        {
+            CharacterStore.Warn = previous;
+        }
+
+        string warning = Assert.Single(warnings);
+        Assert.Contains(path, warning);
+        Assert.Contains("RemovedField", warning);
+    }
+
+    [Fact]
     public void DatabaseMigrations_AreVersionedAndIdempotent()
     {
         string path = Path.Combine(_fixture.StateDirectory, $"migration-{Guid.NewGuid():N}.db");
@@ -410,6 +482,26 @@ CREATE TABLE parcels (
         cmd.CommandText = "SELECT json FROM characters WHERE username=$u;";
         cmd.Parameters.AddWithValue("$u", CharacterStore.Key(user));
         return Assert.IsType<string>(cmd.ExecuteScalar());
+    }
+
+    private static long? ReadUnreadableSince(string user)
+    {
+        using var cn = Db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT unreadable_since FROM characters WHERE username=$u;";
+        cmd.Parameters.AddWithValue("$u", CharacterStore.Key(user));
+        object? value = cmd.ExecuteScalar();
+        return value is long timestamp ? timestamp : null;
+    }
+
+    private static void ReplaceRawJson(string user, string json)
+    {
+        using var cn = Db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "UPDATE characters SET json=$j WHERE username=$u;";
+        cmd.Parameters.AddWithValue("$j", json);
+        cmd.Parameters.AddWithValue("$u", CharacterStore.Key(user));
+        Assert.Equal(1, cmd.ExecuteNonQuery());
     }
 
     private static int ColumnCount(SqliteConnection cn, string table, string column)

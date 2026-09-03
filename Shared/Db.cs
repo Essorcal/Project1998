@@ -19,6 +19,7 @@ public static class Db
     {
         new("handoff_tokens", "ip", "ALTER TABLE handoff_tokens ADD COLUMN ip TEXT NOT NULL DEFAULT '';"),
         new("parcels", "item_owner", "ALTER TABLE parcels ADD COLUMN item_owner TEXT NOT NULL DEFAULT '';"),
+        new("characters", "unreadable_since", "ALTER TABLE characters ADD COLUMN unreadable_since INTEGER;"),
     };
 
     internal static int CurrentSchemaVersion => Migrations.Length;
@@ -114,9 +115,10 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 CREATE TABLE IF NOT EXISTS characters (
-  username    TEXT PRIMARY KEY COLLATE NOCASE,
-  json        TEXT NOT NULL,
-  updated_utc INTEGER
+  username         TEXT PRIMARY KEY COLLATE NOCASE,
+  json             TEXT NOT NULL,
+  updated_utc      INTEGER,
+  unreadable_since INTEGER
 );
 
 -- Moderation state, keyed by the same normalized username as accounts/characters. SEPARATE from `accounts`

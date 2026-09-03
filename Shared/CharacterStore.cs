@@ -9,9 +9,11 @@ public enum CharacterLoadStatus
     Ok,
     NotFound,
     Unreadable,
+    StorageError,
 }
 
-/// <summary>The three possible outcomes of reading a character row. An unreadable row is never absence.</summary>
+/// <summary>The four possible outcomes of reading a character row. An unreadable row is never absence,
+/// and a transient storage failure is not evidence that the row itself is corrupt.</summary>
 public sealed record CharacterLoadResult(
     CharacterLoadStatus Status,
     Character? Character = null,
@@ -33,6 +35,11 @@ public sealed record CharacterLoadResult(
 public sealed class CharacterStore
 {
     private readonly string _jsonDir;   // legacy per-file store: migration source + on-disk backup
+
+    /// <summary>Warning sink supplied by each process so persistence failures reach its durable log. The
+    /// fallback stays noisy for tests and consumers that have not wired a logger.</summary>
+    public static Action<string> Warn { get; set; } =
+        message => Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! {message}");
 
     // Character exposes public FIELDS (not properties); System.Text.Json ignores fields unless told.
     private static readonly JsonSerializerOptions Json = new()
@@ -82,23 +89,62 @@ public sealed class CharacterStore
     public CharacterLoadResult Load(string name)
     {
         string user = Key(name);
+        string json;
+        long? unreadableSince;
         try
         {
             using var cn = Db.Open();
             using var cmd = cn.CreateCommand();
-            cmd.CommandText = "SELECT json FROM characters WHERE username=$u LIMIT 1;";
+            cmd.CommandText = "SELECT json, unreadable_since FROM characters WHERE username=$u LIMIT 1;";
             cmd.Parameters.AddWithValue("$u", user);
-            if (cmd.ExecuteScalar() is not string s)
+            using var row = cmd.ExecuteReader();
+            if (!row.Read())
                 return new CharacterLoadResult(CharacterLoadStatus.NotFound);
+            json = row.GetString(0);
+            unreadableSince = row.IsDBNull(1) ? null : row.GetInt64(1);
+        }
+        catch (SqliteException e)
+        {
+            Warn($"Load('{user}') could not read the character store: {e.Message}");
+            return new CharacterLoadResult(CharacterLoadStatus.StorageError, Reason: e.Message);
+        }
 
-            var character = Deserialize(s);
+        try
+        {
+            var character = Deserialize(json);
+            if (unreadableSince is not null && !ClearUnreadableMarker(user, json, unreadableSince.Value))
+            {
+                const string changed = "Character row changed while its unreadable marker was being cleared.";
+                Warn($"Load('{user}') could not clear the unreadable marker: {changed}");
+                return new CharacterLoadResult(CharacterLoadStatus.StorageError, Reason: changed);
+            }
             return new CharacterLoadResult(CharacterLoadStatus.Ok, character);
+        }
+        catch (SqliteException e)
+        {
+            Warn($"Load('{user}') could not update the character store: {e.Message}");
+            return new CharacterLoadResult(CharacterLoadStatus.StorageError, Reason: e.Message);
         }
         catch (Exception e)
         {
-            string reason = e.Message;
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! Load('{user}') failed: {reason}");
-            return new CharacterLoadResult(CharacterLoadStatus.Unreadable, Reason: reason);
+            try
+            {
+                if (unreadableSince is null && !MarkUnreadable(user, json))
+                {
+                    const string changed = "Character row changed before it could be marked unreadable.";
+                    Warn($"Load('{user}') failed safely: {changed}");
+                    return new CharacterLoadResult(CharacterLoadStatus.StorageError, Reason: changed);
+                }
+            }
+            catch (SqliteException markerError)
+            {
+                string reason = $"Could not preserve the unreadable marker: {markerError.Message}";
+                Warn($"Load('{user}') found unreadable JSON but {reason}");
+                return new CharacterLoadResult(CharacterLoadStatus.StorageError, Reason: reason);
+            }
+
+            Warn($"Load('{user}') found unreadable character JSON: {e.Message}");
+            return new CharacterLoadResult(CharacterLoadStatus.Unreadable, Reason: e.Message);
         }
     }
 
@@ -161,7 +207,7 @@ public sealed class CharacterStore
         {
             // Best effort; persistence must never crash a session — but a swallowed write failure is
             // otherwise invisible, so surface it.
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! Save('{user}') failed: {e.Message}");
+            Warn($"Save('{user}') failed: {e.Message}");
             return false;
         }
     }
@@ -217,7 +263,7 @@ public sealed class CharacterStore
         }
         catch (Exception e)
         {
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! SaveMany({rows.Count}) failed: {e.Message}");
+            Warn($"SaveMany({rows.Count}) failed: {e.Message}");
             return false;
         }
     }
@@ -266,7 +312,7 @@ public sealed class CharacterStore
         }
         catch (Exception e)
         {
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] !! SaveWith('{c.Name}') failed: {e.Message}");
+            Warn($"SaveWith('{c.Name}') failed: {e.Message}");
             return false;
         }
     }
@@ -287,7 +333,11 @@ public sealed class CharacterStore
             {
                 Character? c;
                 try { c = Deserialize(File.ReadAllText(f)); }
-                catch { continue; }   // skip corrupt/legacy files
+                catch (Exception e)
+                {
+                    Warn($"Legacy character file '{f}' was skipped: {e.Message}");
+                    continue;
+                }
                 if (c is null || string.IsNullOrEmpty(c.Name)) continue;
 
                 using var cn = Db.Open();
@@ -307,8 +357,10 @@ public sealed class CharacterStore
     }
 
     /// <summary>
-    /// An unreadable existing row is irreplaceable evidence, not an empty slot. Validate it inside the same
-    /// transaction as the write so no save path — including a stale duplicate session — can erase it.
+    /// An unreadable existing row is irreplaceable evidence, not an empty slot. Load validates the JSON
+    /// outside a write transaction and marks a failure once; writers need only check that durable integer
+    /// inside their transaction, so no save path can erase the evidence and no write reservation holds a
+    /// JSON parse.
     /// </summary>
     private static bool CanOverwrite(
         SqliteConnection cn,
@@ -318,28 +370,43 @@ public sealed class CharacterStore
     {
         using var read = cn.CreateCommand();
         read.Transaction = tx;
-        read.CommandText = "SELECT json FROM characters WHERE username=$u LIMIT 1;";
+        read.CommandText = "SELECT unreadable_since FROM characters WHERE username=$u LIMIT 1;";
         read.Parameters.AddWithValue("$u", user);
-        if (read.ExecuteScalar() is not string existing)
+        if (read.ExecuteScalar() is not long unreadableSince)
         {
             reason = null;
             return true;
         }
 
-        try
-        {
-            Deserialize(existing);
-            reason = null;
-            return true;
-        }
-        catch (Exception e)
-        {
-            reason = e.Message;
-            return false;
-        }
+        reason = $"row was marked unreadable at " +
+                 $"{DateTimeOffset.FromUnixTimeSeconds(unreadableSince):O}";
+        return false;
+    }
+
+    private static bool MarkUnreadable(string user, string json)
+    {
+        using var cn = Db.Open();
+        using var mark = cn.CreateCommand();
+        mark.CommandText = @"UPDATE characters SET unreadable_since=$t
+                             WHERE username=$u AND json=$j AND unreadable_since IS NULL;";
+        mark.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        mark.Parameters.AddWithValue("$u", user);
+        mark.Parameters.AddWithValue("$j", json);
+        return mark.ExecuteNonQuery() == 1;
+    }
+
+    private static bool ClearUnreadableMarker(string user, string json, long unreadableSince)
+    {
+        using var cn = Db.Open();
+        using var clear = cn.CreateCommand();
+        clear.CommandText = @"UPDATE characters SET unreadable_since=NULL
+                              WHERE username=$u AND json=$j AND unreadable_since=$t;";
+        clear.Parameters.AddWithValue("$u", user);
+        clear.Parameters.AddWithValue("$j", json);
+        clear.Parameters.AddWithValue("$t", unreadableSince);
+        return clear.ExecuteNonQuery() == 1;
     }
 
     private static void LogRefusedOverwrite(string user, string reason) =>
-        Console.WriteLine(
-            $"[{DateTime.Now:HH:mm:ss}] [db] !! Refused to overwrite unreadable character row '{user}': {reason}");
+        Warn($"Refused to overwrite unreadable character row '{user}': {reason}");
 }

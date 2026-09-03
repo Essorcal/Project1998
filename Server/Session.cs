@@ -970,10 +970,16 @@ public sealed partial class Session
         }
         if (load.Status == CharacterLoadStatus.Unreadable)
         {
-            Log.Warn($"ARRIVAL REJECTED: unreadable character record for user='{_user}': {load.Reason}");
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
             _world.Unregister(CharacterStore.Key(_user), this);
             CloseConnection("arrival rejected (unreadable character record)");
+            return;
+        }
+        if (load.Status == CharacterLoadStatus.StorageError)
+        {
+            SendMessage("Character storage is temporarily unavailable. Please try again.");
+            _world.Unregister(CharacterStore.Key(_user), this);
+            CloseConnection("arrival rejected (character storage unavailable)");
             return;
         }
         _char = load.Character!;
