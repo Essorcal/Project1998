@@ -130,7 +130,7 @@ public sealed partial class Session
         if (!InView(gi.X, gi.Y, ShowPad)) return;
         var def = gi.ItemId >= 0 ? Content.ItemById(gi.ItemId) : null;
         SendCreatureList(new[] { (gi.Id, IconWire(def is null ? gi.Graphic : IconOf(def)), gi.X, gi.Y, (byte)0, (byte)0) });
-        lock (_viewLock) _shownItems.Add(gi.Id);
+        using (EnterView()) _shownItems.Add(gi.Id);
     }
 
     // The 4.95 type-0 form has three gear-driven look bytes: weapon [5], armor [3] and shield [6]. Weapon/
@@ -478,7 +478,16 @@ public sealed partial class Session
     }
 
     internal bool ItemHasStatus(string key)          => HasStatusFlag(key);
-    internal void ItemSetStatus(string key, int ms)  => SetStatusFlag(key, ms);
+
+    /// <summary>The item-verb host's door into the ward store (item_verbs.lua's <c>ward</c>/<c>hardenbody</c>
+    /// through ItemContext). Guarded like any other entry point (#29): in production the Lua runs inside a
+    /// handler and this is a free re-entrant no-op, but it is a real boundary — the state it writes is read
+    /// on the autosave thread — so it stands on its own rather than on where its caller happens to be.</summary>
+    internal void ItemSetStatus(string key, int ms)
+    {
+        using var _ = EnterState();
+        SetStatusFlag(key, ms);
+    }
 
     // ---- item wards that have a SPELL equivalent ---------------------------------------------------------
     // Sanctuary (aqua/green/lime potion), Harden Armor (brown/muddy) and Curse Protection (scroll of
@@ -517,7 +526,30 @@ public sealed partial class Session
     // reads is an item that silently does nothing, which is what this whole store used to be.
     private readonly Dictionary<string, long> _statusFlags = new();
     private bool HasStatusFlag(string key) => _statusFlags.TryGetValue(key, out var exp) && exp > Environment.TickCount64;
-    private void SetStatusFlag(string key, int durationMs) => _statusFlags[key] = Environment.TickCount64 + durationMs;
+
+    // The two writers. Guarded (#29): the ward store is read on the autosave thread (CaptureTimedEffects) and
+    // written from the read loop and from death on the tick thread, so every write has to be under the state
+    // monitor or the dictionary can be resized under an enumeration.
+    private void SetStatusFlag(string key, int durationMs)
+    {
+        AssertStateHeld("_statusFlags");
+        _statusFlags[key] = Environment.TickCount64 + durationMs;
+    }
+
+    /// <summary>The same write, but given an already-computed TickCount64 deadline rather than a duration —
+    /// the relog restore (Session.TimedEffects.RestoreTimedEffects) converts an absolute unix deadline back
+    /// into this clock and must not re-base it off "now".</summary>
+    private void SetStatusFlagUntil(string key, long expiresAtTick)
+    {
+        AssertStateHeld("_statusFlags");
+        _statusFlags[key] = expiresAtTick;
+    }
+
+    private void ClearStatusFlags()
+    {
+        AssertStateHeld("_statusFlags");
+        _statusFlags.Clear();
+    }
 
     // Sum of every stat line across all worn gear. Equipment NEVER writes back into the character's base
     // stats (those stay in _char.*); the effective values the client sees are base + these, recomputed on
@@ -980,6 +1012,60 @@ public sealed partial class Session
     private sealed class ActiveBuff { public string Stat = ""; public int Amount; public long Expires; public string Key = ""; public string Name = ""; public string Category = ""; }
     private readonly List<ActiveBuff> _buffs = new();
 
+    // ---- the only writers of _buffs (#29) ------------------------------------------------------------
+    // This list is the worked example in the ticket: the tick thread removes from it (ExpireBuffs), the read
+    // loop adds to it (eighteen sites in Session.Spells.cs), and the autosave thread enumerates it
+    // (CaptureTimedEffects). Every write funnels through these four so a Debug build fails loudly on any
+    // path that reaches them without the state monitor, instead of losing an entry in silence. READS are
+    // deliberately not funnelled — a torn read of a list of value-ish records shows a stale total for one
+    // frame, where a torn write loses a buff for good.
+    private void BuffAdd(ActiveBuff b)
+    {
+        AssertStateHeld("_buffs");
+        _buffs.Add(b);
+    }
+
+    private int BuffRemoveAll(Predicate<ActiveBuff> match)
+    {
+        AssertStateHeld("_buffs");
+        return _buffs.RemoveAll(match);
+    }
+
+    private void BuffRemoveAt(int index)
+    {
+        AssertStateHeld("_buffs");
+        _buffs.RemoveAt(index);
+    }
+
+    private void BuffClear()
+    {
+        AssertStateHeld("_buffs");
+        _buffs.Clear();
+    }
+
+    // ---- the only writers of the worn-gear list (#29) ------------------------------------------------
+    // Same shape as _buffs and the same reason: equipping happens on the read loop, per-hit durability
+    // (DeductDura) can happen on the tick thread through ApplyMobHit, and the autosave thread serializes the
+    // list. `foreach (var worn in _char.Equipment.ToArray())` in TakeDamage is the copy that used to be the
+    // only thing standing between a mob swing and a "collection was modified" mid-save.
+    private void EquipAdd(InvItem worn)
+    {
+        AssertStateHeld("_char.Equipment");
+        _char.Equipment.Add(worn);
+    }
+
+    private void EquipRemove(InvItem worn)
+    {
+        AssertStateHeld("_char.Equipment");
+        _char.Equipment.Remove(worn);
+    }
+
+    private void EquipClear()
+    {
+        AssertStateHeld("_char.Equipment");
+        _char.Equipment.Clear();
+    }
+
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) BuffTotals()
     {
         long now = Environment.TickCount64;
@@ -1131,14 +1217,14 @@ public sealed partial class Session
                 SendAddItem(it);
                 return;
             }
-            _char.Equipment.Remove(prev);
+            EquipRemove(prev);
             DropEnchantIfWeapon(pdef);        // swapping weapons drops the enchant, same as taking one off
             SendUnequip(wire);
             if (pdef is not null) ApplyAppearance(pdef, equip: false);
         }
 
         var worn = new InvItem(wire, def.Id, 1, it.Dura == 0 ? def.Durability : it.Dura) { CustomName = it.CustomName };
-        _char.Equipment.Add(worn);
+        EquipAdd(worn);
         InvalidateEquipTotals();                      // gear changed (this add + any prev swap above)
         SendEquip(worn);
         ApplyAppearance(def, equip: true);
@@ -1163,7 +1249,7 @@ public sealed partial class Session
         // it outright. Failing here leaves the item worn, which is the only harmless outcome. (UnequipAll
         // already had this order; the single-slot path did not.)
         if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName, owner: worn.Owner)) return;
-        _char.Equipment.Remove(worn);
+        EquipRemove(worn);
         InvalidateEquipTotals();
         DropEnchantIfWeapon(def);
         SendUnequip(wire);
@@ -1183,7 +1269,7 @@ public sealed partial class Session
         {
             var def = Content.ItemById(worn.ItemId);
             if (def is not null && !GiveItem(def, 1, worn.Dura, worn.CustomName, owner: worn.Owner)) break;   // bag full — stop, leave the rest equipped
-            _char.Equipment.Remove(worn);
+            EquipRemove(worn);
             InvalidateEquipTotals();
             DropEnchantIfWeapon(def);
             SendUnequip(worn.Slot);
@@ -1232,7 +1318,7 @@ public sealed partial class Session
     private void BreakItem(InvItem worn, ItemDef def)
     {
         SendMiniText($"Your {def.Name} was destroyed!", type: 5);   // RTK clif_checkdura: type 5 "System"
-        _char.Equipment.Remove(worn);
+        EquipRemove(worn);
         InvalidateEquipTotals();
         DropEnchantIfWeapon(def);
         SendUnequip(worn.Slot);

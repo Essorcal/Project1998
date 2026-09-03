@@ -104,7 +104,14 @@ public sealed partial class Session
     private long _pvpFoeUntil;
     /// <summary>The player this one is currently fighting, or 0 if that's gone stale.</summary>
     internal uint PvpFoeId => Environment.TickCount64 < _pvpFoeUntil ? _pvpFoeId : 0;
-    internal void MarkPvpFoe(uint playerId) { _pvpFoeId = playerId; _pvpFoeUntil = Environment.TickCount64 + PvpFoeMs; }
+    internal void MarkPvpFoe(uint playerId)
+    {
+        // Reached from the OTHER side of the exchange — TakeDamage marks both parties, so this runs on the
+        // victim's thread against the attacker's session (#29).
+        using var _ = EnterState();
+        _pvpFoeId = playerId;
+        _pvpFoeUntil = Environment.TickCount64 + PvpFoeMs;
+    }
 
     // RTK's `owner.attacker` — the last CREATURE to land a blow on this player, stamped by ApplyMobHit. Read
     // by the pet AI as the second half of "things that are attacking you"; the first half (things you have

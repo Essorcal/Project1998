@@ -22,7 +22,6 @@ namespace Server;
 /// </summary>
 public static class MobScript
 {
-    private static readonly object _lock = new();
     private static Script? _script;
     private static Table? _mobs;
     // mobKey|hook pairs that actually exist, so the hot path is a hash lookup and never a Lua call.
@@ -37,7 +36,7 @@ public static class MobScript
     /// replaces the running one once it has compiled and produced a global <c>mobs</c> table.</summary>
     public static bool Load(string? path)
     {
-        lock (_lock)
+        using (Session.EnterScriptGate())
         {
             if (path is null || !File.Exists(path))
             {
@@ -89,7 +88,7 @@ public static class MobScript
         if (!Has(mobKey, hook)) return;
         try
         {
-            lock (_lock)
+            using (Session.EnterScriptGate())
             {
                 var table = _mobs?.Get(mobKey);
                 if (table is null || table.Type != DataType.Table) return;

@@ -278,7 +278,7 @@ public sealed partial class Session
         foreach (var it in _char.Inventory.ToList()) SendDelItem(it.Slot, 0);
         _char.Inventory.Clear();
         foreach (var e in _char.Equipment.ToList()) SendUnequip(e.Slot);
-        _char.Equipment.Clear();
+        EquipClear();
         if (_char.Weapon != 0 || _char.Armor != 0)
         {
             _char.Weapon = 0; _char.Armor = 0;
@@ -658,7 +658,7 @@ public sealed partial class Session
         }
         if (map == 1002) Door(19, 91, "Forever Tree crevasse");
 
-        lock (_viewLock) _warpMarkers.AddRange(marks);
+        using (EnterView()) _warpMarkers.AddRange(marks);
         SyncGroundItems(_world.ItemsOn(map));   // draw the in-view markers now; the rest appear as you walk
 
         var counts = (warps: warpCount, doors: marks.Count - warpCount);
@@ -676,7 +676,7 @@ public sealed partial class Session
     private void ClearWarpMarkers()
     {
         var gone = new List<uint>();
-        lock (_viewLock)
+        using (EnterView())
         {
             foreach (var m in _warpMarkers) if (_shownItems.Remove(m.Id)) gone.Add(m.Id);
             _warpMarkers.Clear();

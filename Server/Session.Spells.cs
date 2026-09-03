@@ -1069,6 +1069,7 @@ public sealed partial class Session
     /// healer and the bystanders saw nothing at all — only the healed player's own HUD number moved.</para></summary>
     internal void ReceiveHeal(int amt)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (amt <= 0 || IsDead) return;
         _char.Hp = Math.Min(EffMaxHp, _char.Hp + (uint)amt);
         SendStats();
@@ -1321,8 +1322,8 @@ public sealed partial class Session
     internal void LuaBuff(string stat, int amount, int durationMs, SpellDef sp)
     {
         if (string.IsNullOrEmpty(stat) || amount == 0 || durationMs <= 0) return;
-        _buffs.RemoveAll(b => b.Key == sp.Key);   // refresh, don't stack
-        _buffs.Add(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durationMs, Key = sp.Key, Name = sp.Name });
+        BuffRemoveAll(b => b.Key == sp.Key);   // refresh, don't stack
+        BuffAdd(new ActiveBuff { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durationMs, Key = sp.Key, Name = sp.Name });
         SendStats();
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
@@ -1714,6 +1715,7 @@ public sealed partial class Session
     /// free move out of it rather than a chain of them — the same rule the mob side follows.</para></summary>
     internal void ReceiveSleep(string category, int durMs, string key, string name, int anim, int repeatFxMs)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (durMs <= 0) { Log.Info($"      -x {name}: zero duration, nothing applied"); return; }
         ReceiveCurse("", 0, durMs, key, name, category);   // no stat effect — the slot IS the effect
         _sleepUntil = Environment.TickCount64 + durMs;
@@ -1786,6 +1788,7 @@ public sealed partial class Session
     internal void ReceivePoison(int dps, int durMs, uint by, int anim, string key, string name, int perTick = 0,
                                 int tickMinMs = 0, int tickMaxMs = 0)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (durMs <= 0 || IsDead) return;
         _poisonPerTick = perTick > 0
             ? perTick
@@ -1807,7 +1810,7 @@ public sealed partial class Session
         bool was = Poisoned;
         _poisonUntil = 0; _poisonFxAnim = 0;
         _poisonTickMin = 0; _poisonTickMax = 0;
-        _buffs.RemoveAll(b => b.Category == "venoms");
+        BuffRemoveAll(b => b.Category == "venoms");
         if (was) { SendMiniText("The poison passes."); SendStats(); }
     }
 
@@ -1818,6 +1821,7 @@ public sealed partial class Session
     /// multiplier — this is not a hit, it is the poison already inside you.</summary>
     internal void TickPoison()
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (_poisonUntil == 0) return;
         if (!Poisoned) { CurePoison(); return; }
         if (IsDead) { CurePoison(); return; }
@@ -1872,7 +1876,12 @@ public sealed partial class Session
     // dozed/slept player is multiplied, then it's spent. Read + consumed by ApplyMobHit / ReceiveSpellDamage.
     private double _dmgAmp;
     private long   _dmgAmpUntil;
-    internal void ArmDamageAmp(double mult, int durMs) { _dmgAmp = mult; _dmgAmpUntil = Environment.TickCount64 + durMs; }
+    internal void ArmDamageAmp(double mult, int durMs)
+    {
+        using var _ = EnterState();   // #29: applied to a PEER by the caster's thread
+        _dmgAmp = mult;
+        _dmgAmpUntil = Environment.TickCount64 + durMs;
+    }
     internal double TakeDamageAmp()
     {
         if (_dmgAmp <= 1.0 || _dmgAmpUntil <= Environment.TickCount64) return 1.0;
@@ -1895,7 +1904,7 @@ public sealed partial class Session
         if (_sleepUntil == 0) return;
         bool was = Asleep;
         _sleepUntil = 0; _sleepFxAnim = 0;
-        _buffs.RemoveAll(b => b.Category == "sleeps");
+        BuffRemoveAll(b => b.Category == "sleeps");
         if (was) { SendMiniText(byDamage ? "The pain wakes you." : "You wake up."); SendStats(); }
     }
 
@@ -1903,6 +1912,7 @@ public sealed partial class Session
     /// the timer runs out. (The mob side rides <see cref="Mob.FxRepeat"/>; a player has no Mob to hang it on.)</summary>
     internal void TickSleep()
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (_sleepUntil == 0) return;
         if (!Asleep) { WakeUp(byDamage: false); return; }
         if (_sleepFxAnim <= 0 || Environment.TickCount64 < _sleepFxNext) return;
@@ -1916,9 +1926,10 @@ public sealed partial class Session
     // effect) and records the Category so checkIfCast / cure-by-category work.
     internal void ReceiveCurse(string stat, int amount, int durMs, string key, string name, string category)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (durMs <= 0) return;
-        _buffs.RemoveAll(b => b.Key == key);   // refresh, don't stack
-        _buffs.Add(new ActiveBuff { Stat = stat ?? "", Amount = amount, Expires = Environment.TickCount64 + durMs, Key = key, Name = name, Category = category ?? "" });
+        BuffRemoveAll(b => b.Key == key);   // refresh, don't stack
+        BuffAdd(new ActiveBuff { Stat = stat ?? "", Amount = amount, Expires = Environment.TickCount64 + durMs, Key = key, Name = name, Category = category ?? "" });
         SendStats();
     }
 
@@ -2069,7 +2080,7 @@ public sealed partial class Session
     internal int LuaCureCategory(string category)
     {
         if (string.IsNullOrEmpty(category)) return 0;
-        int n = _buffs.RemoveAll(b => b.Category.Length > 0 && CureMatches(b.Category, category));   // curing `curses` also clears minor curses
+        int n = BuffRemoveAll(b => b.Category.Length > 0 && CureMatches(b.Category, category));   // curing `curses` also clears minor curses
         // The sleep hold lives in its own timer as well as the buff list (the gates read the timer, so they
         // have to agree). No shipped Cure carries cureCat "sleeps" today — this keeps the two in step if one
         // ever does, rather than leaving a player whose slot is clear but who still can't swing.
@@ -2150,9 +2161,9 @@ public sealed partial class Session
         _crRageTier = tier;
         _rageAmount = mult;
         _rageName   = name;                             // buff box shows the SPELL, not the tier (see BuffBoxText)
-        _buffs.RemoveAll(b => b.Key == CrRageAcKey);
+        BuffRemoveAll(b => b.Key == CrRageAcKey);
         if (ac != 0)
-            _buffs.Add(new ActiveBuff { Stat = "armor", Amount = ac, Expires = _rageUntil, Key = CrRageAcKey, Name = name });
+            BuffAdd(new ActiveBuff { Stat = "armor", Amount = ac, Expires = _rageUntil, Key = CrRageAcKey, Name = name });
         SendStats();
         MarkDirty();
     }
@@ -2466,12 +2477,12 @@ public sealed partial class Session
     {
         if (_pendingMorph is not { } m) return;
         ushort newLook = (m.lookF != 0 && _char.Sex == 1) ? m.lookF : m.look;
-        _buffs.RemoveAll(b => b.Key == _morphKey);
+        BuffRemoveAll(b => b.Key == _morphKey);
         _morphLook = newLook;
         _morphColor = 0;
         _morphUntil = Environment.TickCount64 + m.dur;
         _morphKey = sp.Key;
-        _buffs.Add(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
+        BuffAdd(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
         SendStats();
         var fx = Content.FxFor(sp);
         if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
@@ -2682,19 +2693,19 @@ public sealed partial class Session
     {
         if (durMs <= 0) return;
         category ??= "";
-        _buffs.RemoveAll(b => b.Key == key);   // refresh, don't stack — once, for every stat
+        BuffRemoveAll(b => b.Key == key);   // refresh, don't stack — once, for every stat
         long expires = Environment.TickCount64 + durMs;
         int applied = 0;
         for (int i = 0; i < stats.Count; i++)
         {
             int amt = i < amounts.Count && double.TryParse(amounts[i], out var d) ? (int)Math.Floor(d) : 0;
             if (stats[i].Length == 0 || amt == 0) continue;
-            _buffs.Add(new ActiveBuff
+            BuffAdd(new ActiveBuff
             { Stat = stats[i], Amount = amt, Expires = expires, Key = key, Name = name, Category = category });
             applied++;
         }
         if (applied == 0 && category.Length > 0)
-            _buffs.Add(new ActiveBuff
+            BuffAdd(new ActiveBuff
             { Stat = "", Amount = 0, Expires = expires, Key = key, Name = name, Category = category });
         SendStats();
     }
@@ -2811,7 +2822,7 @@ public sealed partial class Session
     {
         var tier = ChungRyongRageTiers[_crRageTier - 1];
         _crRageTier = 0;
-        _buffs.RemoveAll(b => b.Key == CrRageAcKey);
+        BuffRemoveAll(b => b.Key == CrRageAcKey);
         if (tier.VitaLostPct >= 1.0) { _char.Hp = 1; _char.Mp = 1; }
         else _char.Hp = (uint)Math.Max(1, (int)(_char.Hp * (1.0 - tier.VitaLostPct)));
         SendMiniText("Chung Ryong's rage leaves you drained.");
@@ -2835,7 +2846,13 @@ public sealed partial class Session
     /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
     public bool IsStealthExpired => _stealthShown && !Stealthed;
     /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
-    public void RevertStealth() { if (!_stealthShown) return; _stealthShown = false; RefreshAppearance(); }
+    public void RevertStealth()
+    {
+        using var _ = EnterState();   // #29: World.Tick calls this on the stealth timer lapsing
+        if (!_stealthShown) return;
+        _stealthShown = false;
+        RefreshAppearance();
+    }
 
     /// <summary>Fully drop Invisible — clears BOTH the timer (so the 5x sneak multiplier stops) and the faded
     /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingDamage) and grabbing floor loot
@@ -2905,8 +2922,9 @@ public sealed partial class Session
     /// lapses on its own.</summary>
     public void RevertMorph()
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (_morphLook == 0) return;
-        _buffs.RemoveAll(b => b.Key == _morphKey);
+        BuffRemoveAll(b => b.Key == _morphKey);
         _morphLook = 0; _morphColor = 0; _morphUntil = 0; _morphKey = "";
         BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
@@ -3068,7 +3086,7 @@ public sealed partial class Session
     // Warrior Backstab/Flank stances.
     private void FlushDurations()
     {
-        _buffs.Clear();
+        BuffClear();
         _rageUntil = 0;            _crRageTier = 0;   // see ClearAllTimedEffects: a STRIPPED fury owes no drain
         _stealthUntil = 0;
         _backstabUntil = 0;
@@ -3086,8 +3104,8 @@ public sealed partial class Session
         RevertMorph();      // restore the real look before we wipe the buff that named the disguise
         BreakStealth();     // clears _stealthUntil + the faded (form-5) sprite
 
-        _buffs.Clear();
-        _statusFlags.Clear();
+        BuffClear();
+        ClearStatusFlags();
         // _crRageTier goes with _rageUntil, and must: the tier is what RegenTick reads to charge Chung Ryong's
         // wear-out drain, so leaving it set behind a zeroed deadline fires the drain on the very next tick —
         // on a player who just DIED it ran ChungRyongRageWearOff's Max(1, ...) floor against Hp 0 and stood
@@ -3391,12 +3409,19 @@ public sealed partial class Session
         }
 
         string date = Character.GameDate;
-        AddLegend($"Married to {them} ({date})", "married", 6, 1);
-        fiance.AddLegend($"Married to {me} ({date})", "married", 6, 1);
-        RemoveLegend("engaged"); fiance.RemoveLegend("engaged");
-        ClearEngagement(); fiance.ClearEngagement();
-        SetSpouse(them); fiance.SetSpouse(me);
-        GiveRewardItem("love", 1); fiance.GiveRewardItem("love", 1);
+        // Both characters change together — legend, engagement, spouse and the keepsake — and the whole
+        // ceremony runs on the FIANCÉ's thread (their dialog reply is what resumed us). One critical section
+        // across the pair, in the usual rank order, so neither half can be saved or read mid-wedding (#29).
+        var bride = this;
+        WithStatePair(bride, fiance, () =>
+        {
+            bride.AddLegend($"Married to {them} ({date})", "married", 6, 1);
+            fiance.AddLegend($"Married to {me} ({date})", "married", 6, 1);
+            bride.RemoveLegend("engaged"); fiance.RemoveLegend("engaged");
+            bride.ClearEngagement(); fiance.ClearEngagement();
+            bride.SetSpouse(them); fiance.SetSpouse(me);
+            bride.GiveRewardItem("love", 1); fiance.GiveRewardItem("love", 1);
+        });
         SendMiniText("I now pronounce you (married)");
         fiance.SendMiniText("I now pronounce you (married)");
         return "Congratulations! You are both now married.";

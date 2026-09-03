@@ -148,3 +148,6 @@ game-data/maps/*.orig
 
 # ---- Generated art (re/icon_downscale.py build/sheet output: patched Item.epf/.dat copies, contact sheets) ----
 re/out/
+
+# Per-PR working docs, not repo documentation (durable design notes go in docs/).
+PLAN.md

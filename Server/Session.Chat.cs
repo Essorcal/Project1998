@@ -313,6 +313,7 @@ public sealed partial class Session
     /// tick (World.Tick / AdviceTicks), mirroring RTK's per-player pc_timer advice cadence.</summary>
     internal void SendAdvice()
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (!_char.HasSetting(0x04)) return;
         if (Content.RandomAdvice() is string hint) SendMiniText(hint, type: 11);
     }

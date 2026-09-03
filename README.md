@@ -51,6 +51,34 @@ It finds a .NET 8 SDK or offers to fetch a private one into `.dotnet\` beside th
 no PATH change, delete the folder to undo -- then builds the solution and opens the login and game
 servers in their own windows.
 
+**Dev launcher** (Windows, optional) -- when one machine has several clones and several people or
+agents sharing the same two ports, `Scripts\Serve.ps1` performs the same launch with the checkout and
+commit stamped on it:
+
+```powershell
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Testers botone -Gms botone   # build, then start the pair
+Scripts\Serve.ps1 -Status                                                    # what is on 2000/2005, and whose
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Stop                        # close exactly that pair
+```
+
+It needs `git` on PATH: the commit and branch are what it stamps on the consoles and records, and it
+refuses to start when they cannot be resolved. It refuses to start while either port is held and names
+the holder (PID, command line, and that pair's checkout and commit if it was started the same way); it
+never stops anything by itself. The two consoles are titled `LOGIN 2000/2001 - <clone> @ <commit>` and
+`GAME 2005/2006 - <clone> @ <commit>`, where the commit is `git rev-parse HEAD` at the moment the script
+built the tree and a `+` means tracked files were modified (untracked files are not counted), so the
+window says which build it is. `-Testers` and
+`-Gms` reach only the launched processes, as `P1998_TESTERS` / `P1998_GMS`, unioned with the clone's
+`state/*_accounts.txt` as usual. What it started is recorded in the clone's `run/session.json`
+(`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`, plus each
+slot's executable path, creation time and console PID); `-Status` reads it back. `-Stop` acts only on a
+session file written in the checkout it is given, and only on a PID that is still the recorded
+executable, created at the recorded time and holding its ports: it sends those two processes Ctrl+C,
+closes the two console windows it opened, waits for the ports to free, and deletes the file. Anything
+else on the ports is reported and left alone. `-PortBase` exists for the second pair of #84 but is rejected until that lands: today a
+login on any other base still hands clients off to 2005. `run-server.bat` stays the plain path; the
+script does not replace it.
+
 **Linux/macOS** — install the [.NET 8 SDK](https://dotnet.microsoft.com/download), build, then start
 the **two processes**:
 

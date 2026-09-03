@@ -100,10 +100,15 @@ public sealed partial class Session
     // guard, see World.RegisterOnline/Session.KickForReplacement). Gates the read-loop's disconnect save
     // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
     private int _replaced;
-    // Serializes concurrent Save attempts for THIS session (the on-thread FlushIfDue vs. World's
-    // background sweep vs. a duplicate-login kick) — never held across a mutation, so it can't deadlock
-    // or stall the read loop.
-    private readonly object _saveGate = new();
+    // Serializes the DATABASE WRITE for this session, and nothing else (#29). It used to be _saveGate and it
+    // used to cover the capture as well; consistency of the captured bytes is the state monitor's job now
+    // (see FlushNow), so what is left here is purely write ORDER — the snapshot is taken under the monitor
+    // and written with it released, and without this two flushes could land out of order and roll a
+    // character back to an older snapshot. Never held across a mutation, so it can't deadlock or stall the
+    // read loop.
+    private readonly object _writeGate = new();
+    private long _saveSeq;      // ++ per captured snapshot, under the state monitor
+    private long _writtenSeq;   // the newest snapshot actually written, under _writeGate
 
     // --- client version, tagged by the port the connection arrived on (unified dual-client server) ---
     // 4.95 speaks the original protocol (local map files; incoming 0x06 = walk-sync). 5.33 streams
@@ -375,33 +380,45 @@ public sealed partial class Session
         catch (Exception e) { Log.Error($"{_remote} read loop threw — dropping the connection", e); }
         finally
         {
-            // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's
-            // gone (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is
-            // exactly what a disconnect does here too — the difference is we also close the survivor's
-            // exchange window with RTK's own "Exchange cancelled." box rather than leaving it open on a ghost).
-            if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
-            if (_party is not null) RemoveFromParty(this);
-
-            // Leave the shared world: despawn us for the other players on our map. World mobs persist
-            // (they belong to the map, not this session), so they keep wandering for whoever remains.
-            if (_enteredWorld) _world.LeaveMap(this, _char.Map);
-            if (_enteredWorld) _world.Unregister(UserKey, this);
-            // Persist the last state (position/stats) only for a session that actually entered the world
-            // AND wasn't superseded by a newer login for the same account (KickForReplacement already
-            // flushed the freshest state; saving again here from this now-stale session would clobber it —
-            // see the duplicate-login guard, World.RegisterOnline). The login-channel session never
-            // populates _char, so saving it would clobber the real record with defaults.
-            if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
-            {
-                _dirty = true;
-                FlushNow();
-                Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
-            }
+            // Teardown is one critical section (#29). It is the last thing that touches this session's state
+            // and it runs while the tick and the autosave sweep are still perfectly entitled to enter us —
+            // the leave/unregister is exactly what stops that, so everything before it has to be inside the
+            // monitor too, or a RegenTick can land between the final flush and the deregistration.
+            WithState(TearDownWorldState);
             CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
             // EXPECTED: the writer task has its own catch and has already logged whatever it hit, with a stack
             // where it warranted one. Logging the same exception again here would double every writer fault.
             try { await writer; } catch { /* writer logs its own errors */ }
             Log.Info($"-- CLOSE {_remote}");
+        }
+    }
+
+    /// <summary>Everything the read loop's exit does to this session's own state, in one place so it can run
+    /// as one critical section (see the <c>finally</c> above). Unchanged in order and content from when it
+    /// was inline.</summary>
+    private void TearDownWorldState()
+    {
+        // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's gone
+        // (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is exactly what a
+        // disconnect does here too — the difference is we also close the survivor's exchange window with
+        // RTK's own "Exchange cancelled." box rather than leaving it open on a ghost).
+        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
+        if (_party is not null) RemoveFromParty(this);
+
+        // Leave the shared world: despawn us for the other players on our map. World mobs persist
+        // (they belong to the map, not this session), so they keep wandering for whoever remains.
+        if (_enteredWorld) _world.LeaveMap(this, _char.Map);
+        if (_enteredWorld) _world.Unregister(UserKey, this);
+        // Persist the last state (position/stats) only for a session that actually entered the world
+        // AND wasn't superseded by a newer login for the same account (KickForReplacement already
+        // flushed the freshest state; saving again here from this now-stale session would clobber it —
+        // see the duplicate-login guard, World.RegisterOnline). The login-channel session never
+        // populates _char, so saving it would clobber the real record with defaults.
+        if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
+        {
+            _dirty = true;
+            FlushNow();
+            Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
         }
     }
 
@@ -551,7 +568,18 @@ public sealed partial class Session
         // and kicked the player, whose world state (party, trade, position) was then torn down as a normal
         // disconnect. The packet's own bytes are in the line because they are the repro: an unhandled edge
         // in a handler is nearly always a body shape the parser did not expect.
-        try { Dispatch(pkt, dec); }
+        // The session's state monitor wraps the WHOLE handler (#29), which is what makes a packet an
+        // atomic unit of work against this player: all 42 handlers, every GM command, and every NPC dialog
+        // continuation (the driver completes its TaskCompletionSource inline on this thread, so an awaited
+        // behaviour resumes still holding it). The tick, the autosave sweep and peer sessions take the same
+        // monitor at their own entry points.
+        //
+        // ONE EXCEPTION, and it is deliberate: a handler that enters Lua while some other thread is already
+        // in Lua takes the gate's slow path, which drops this monitor while it waits (Session.State.cs). So a
+        // CONTENDED cast is two critical sections with a gap, not one — the alternative was a deadlock, and
+        // the gap is still strictly better than the nothing that guarded this before. Everything else, and
+        // the uncontended cast, really is atomic.
+        try { WithState(() => Dispatch(pkt, dec)); }
         catch (Exception e)
         {
             Log.Error($"{_remote} handler for opcode 0x{pkt.Opcode:x2} threw — the packet is dropped, the session continues; " +
@@ -1318,8 +1346,13 @@ public sealed partial class Session
     // Viewport-streamed world mobs: the set of shared-mob ids currently drawn on THIS client. The client's
     // 0x07 spawn silently drops entities outside the camera rect, so a 400-mob map can't be blanket-sent —
     // instead SyncMobs spawns mobs as they enter view and despawns them as they leave, keeping the client to
-    // a screenful. Guarded by _viewLock (touched by both this read-loop and the World tick thread). Send()
-    // no longer takes a lock (it's a lock-free channel enqueue), so _viewLock can't participate in a deadlock.
+    // a screenful. Guarded by _viewLock (touched by both this read-loop and the World tick thread).
+    //
+    // _viewLock CAN participate in a deadlock, and the claim that used to sit here that it could not was
+    // about Send() alone (a lock-free channel enqueue). Since #29 it is one of five lock families in the
+    // process and it has a rule: session monitors are OUTSIDE it. Take it only through EnterView(), which
+    // counts the depth so entering a session monitor underneath it trips an assert — see Session.State.cs
+    // and the cycle ReconcilePeer used to close.
     private readonly HashSet<uint> _shownMobs = new();
     // Shown mobs currently sitting in the overdraw band (outside the strict 17x15, inside the drawn 19x17).
     // The client MAY have culled these; if one steps back into the strict rect we re-assert its 0x07 rather

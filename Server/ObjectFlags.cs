@@ -126,6 +126,9 @@ public static class ObjectFlags
         var path = Path.Combine(Shared.RepoPaths.GameDataDir(), "ObjectFlagOverrides.csv");
         try
         {
+            // TODO(#35): the catch below reports a read failure, but this line does not report a file that
+            // is simply absent, and ObjectFlagOverrides.csv is in no Content.LoadReport — one of the three
+            // game-data CSVs outside it. Reading it through Shared/Csv.cs closes both. See #35.
             if (!File.Exists(path)) return rows;
             foreach (var raw in File.ReadAllLines(path))
             {

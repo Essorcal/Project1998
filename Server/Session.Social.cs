@@ -99,16 +99,25 @@ public sealed partial class Session
         if (party is null) return;
         string name = member.Snapshot().Name;
         bool disband = party.Remove(member);
-        member._party = null;
-        member.NotifyGroup("You have left the group.");
-        member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
+        // Each member's own removal is one critical section on THEIR session (#29): a leader kicking someone,
+        // and the disband that can follow, both run on a thread that is not theirs, and SetGroupStatus writes
+        // _char.Grouped and marks them dirty.
+        member.WithState(() =>
+        {
+            member._party = null;
+            member.NotifyGroup("You have left the group.");
+            member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
+        });
         party.Broadcast($"{name} is leaving the group.");
         if (disband && party.Members.Count == 1)
         {
             var last = party.Members[0];
-            last._party = null;
-            last.NotifyGroup("Your group has disbanded.");
-            last.SetGroupStatus(false);   // party fully disbanded -> the last member's status goes OFF too
+            last.WithState(() =>
+            {
+                last._party = null;
+                last.NotifyGroup("Your group has disbanded.");
+                last.SetGroupStatus(false);   // party fully disbanded -> the last member's status goes OFF too
+            });
         }
     }
 
@@ -153,6 +162,16 @@ public sealed partial class Session
     private static void FinalizeTrade(Trade trade)
     {
         var a = trade.A; var b = trade.B;
+        // Both sides' state is frozen for the whole transfer (#29). It runs on ONE side's read loop and
+        // moves items and coin across two characters; without the pair monitor the other side's own thread
+        // could be mid-handler between the debit and the credit, or the autosave sweep could serialize it
+        // half-way through. WithStatePair takes the two in the same global rank order every other nested
+        // acquisition uses, so it cannot deadlock against a trade being finalized from the other side.
+        WithStatePair(a, b, () => FinalizeTradeLocked(trade, a, b));
+    }
+
+    private static void FinalizeTradeLocked(Trade trade, Session a, Session b)
+    {
         uint goldA = Math.Min(trade.OfferA.Gold, a._char.Coins);
         uint goldB = Math.Min(trade.OfferB.Gold, b._char.Coins);
         a._char.Coins = a._char.Coins - goldA + goldB;
