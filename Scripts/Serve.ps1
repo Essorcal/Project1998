@@ -840,8 +840,8 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 if ($Status -and $Stop) { Write-Host "Use one of -Status or -Stop."; exit 1 }
-if ($PortBase -lt 1024 -or ($PortBase + 6) -gt 65535) {
-    Write-Host "-PortBase must be 1024..65000: the pair binds $PortBase, $($PortBase + 1), $($PortBase + 5) and $($PortBase + 6), and all four must be valid ports. Nothing was built or started."
+if ($PortBase -lt 1024 -or $PortBase -gt 65000) {
+    Write-Host "-PortBase must be 1024..65000 (the pair binds $PortBase, $($PortBase + 1), $($PortBase + 5) and $($PortBase + 6)). Nothing was built or started."
     exit 1
 }
 if (($Status -or $Stop) -and (@($Testers).Count -gt 0 -or @($Gms).Count -gt 0)) {
