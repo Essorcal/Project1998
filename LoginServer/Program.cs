@@ -40,6 +40,8 @@ catch (ArgumentException e)
     return;
 }
 
+Log.Info($"=== channel pairing: login {ports[0]}/{ports[1]} -> " +
+         $"game {ChannelPorts.GameFor(ports[0])}/{ChannelPorts.GameFor(ports[1])} ===");
 var store = new CharacterStore(RepoPaths.CharsDir());
 Log.Info($"=== Project1998 LOGIN starting; ports={string.Join(",", ports)}; " +
          $"cipher=NexonInc; store={store.Directory}; wire-log={(Log.WireEnabled ? "ON (passwords visible!)" : "off")} ===");
