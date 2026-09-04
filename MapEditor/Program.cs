@@ -10,6 +10,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using MapEditor;
+using Shared;
 
 // This is a WINDOWED app (WinExe — no console): the default run shows the WebView2 shell.
 //   --browser     use the system browser instead of the window (heartbeat auto-exit armed)
@@ -419,8 +420,8 @@ app.MapPut("/api/warps.csv", (List<WarpEdit> edits, HttpResponse resp, bool dire
         var line = lines[i];
         var bare = line.TrimEnd('\r');
         if (bare.Length == 0 || bare.StartsWith('#')) continue;
-        var cols = bare.Split(',');
-        if (cols.Length < 7 || !int.TryParse(cols[0], out var wid) || !byId.TryGetValue(wid, out var e)) continue;
+        var cols = Csv.Split(bare);
+        if (cols.Count < 7 || !int.TryParse(cols[0], out var wid) || !byId.TryGetValue(wid, out var e)) continue;
         if (!int.TryParse(cols[1], out var sm) || !int.TryParse(cols[4], out var dm)) continue;
         if (!TryMap(sm, out var sd) || !TryMap(dm, out var dd))
             return Results.BadRequest($"WarpId {wid} references an unknown map");
@@ -682,13 +683,14 @@ static string CsvEsc(string v) =>
 static Dictionary<int, (string Name, int Xs, int Ys)> LoadIndex(string path)
 {
     var outp = new Dictionary<int, (string, int, int)>();
-    foreach (var line in File.ReadLines(path).Skip(1))
+    foreach (var row in Csv.Open("map_index.csv", path))
     {
-        // id,name,xs,ys — name may contain commas only if quoted; the file today has none, but split defensively.
-        var p = line.Split(',');
-        if (p.Length < 4) continue;
-        if (!int.TryParse(p[0], out int id)) continue;
-        outp[id] = (string.Join(',', p[1..^2]), int.Parse(p[^2]), int.Parse(p[^1]));
+        if (!int.TryParse(row.Require("id"), out int id)) continue;
+        outp[id] = (
+            row.Require("name"),
+            int.Parse(row.Require("xs")),
+            int.Parse(row.Require("ys")));
+        row.Keep();
     }
     return outp;
 }
