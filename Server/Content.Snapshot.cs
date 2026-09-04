@@ -20,6 +20,8 @@ public static partial class Content
 
     // Every snapshot-backed facade already takes this branch. Keeping the counter here makes the proof cover
     // all current and future facades without adding work to a serving thread beyond its existing null check.
+    // Every read of this property is a counted event on the loading thread; code that does not mean to count
+    // must inspect the raw _snapshotBuilderState field instead.
     private static ContentSnapshotBuilder? _snapshotBuilder
     {
         get
