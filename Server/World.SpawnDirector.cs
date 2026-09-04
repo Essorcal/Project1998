@@ -22,7 +22,7 @@ public sealed partial class World
     ///
     /// <para><b>Takes no lock of its own.</b> Every method that touches map state asserts
     /// <see cref="HoldsWorldLock"/> — the callers already hold <c>_lock</c>, exactly as they did before the
-    /// move — and the four public statics that only read <see cref="Content"/> and the terrain cache
+    /// move — and the three public statics that only read <see cref="Content"/> and the terrain cache
     /// (<see cref="PlacementBox"/>, <see cref="Placeable"/>, <see cref="OpenTiles"/>) need none.</para>
     /// </summary>
     internal sealed class SpawnDirector
@@ -515,5 +515,58 @@ public sealed partial class World
         /// <summary>How many maps carry at least one spawn point / batch group — the start-up log lines.</summary>
         internal int PointMapCount => _spawns.Count;
         internal int GroupMapCount => _groups.Count;
+
+        // ---- test seams (Tests/SpawnDirectorTests.cs) ------------------------------------------------
+        // Kept beside the rosters they open rather than in the test project, for the same reason as
+        // UnderWorldLockForTest: a reader of the roster should be able to see everything that writes it.
+
+        /// <summary>Register one spawn point with a fixed home tile and its own respawn delay, the way
+        /// <see cref="Build"/> registers a <c>Spawns.csv</c> row. Caller holds <c>_lock</c>.</summary>
+        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery });
+        }
+
+        /// <summary>Register one batch group over the whole map, due immediately, the way <see cref="Build"/>
+        /// registers a timed <c>AreaSpawns.csv</c> row. Caller holds <c>_lock</c>.</summary>
+        internal void AddGroupForTest(ushort mapId, int timerSec, params (MobDef Def, int Cap)[] members)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            var g = new SpawnGroup { Map = mapId, TimerSec = timerSec };
+            foreach (var m in members) g.Members.Add(m);
+            if (!_groups.TryGetValue(mapId, out var list)) { list = new(); _groups[mapId] = list; }
+            list.Add(g);
+        }
+
+        /// <summary>When the map's one test group may next top up (unix seconds).</summary>
+        internal long GroupClockForTest(ushort mapId) => _groups[mapId].Single().NextBatchUnix;
+
+        internal int  PointCountForTest(ushort mapId) => _spawns.TryGetValue(mapId, out var l) ? l.Count : 0;
+        internal int  GroupCountForTest(ushort mapId) => _groups.TryGetValue(mapId, out var l) ? l.Count : 0;
+        internal bool IsMaterializedForTest(ushort mapId) => _materialized.Contains(mapId);
+
+        /// <summary>Undo a test's registrations on one map: its points, groups, materialised flag and every
+        /// world-spawned creature on it, so the shared fixture World is as it was. Caller holds <c>_lock</c>.</summary>
+        internal void ForgetMapForTest(ushort mapId)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            if (_spawns.Remove(mapId, out var points))
+                foreach (var sp in points) if (sp.Live is { } live) _mobSpawn.Remove(live.Id);
+            _groups.Remove(mapId);
+            _materialized.Remove(mapId);
+            world.Map(mapId).Mobs.RemoveAll(m => m.WorldSpawned);
+        }
     }
+
+    // ---- test seams (Tests/SpawnDirectorTests.cs) ----------------------------------------------------
+
+    /// <summary>The director itself, so a test can register a point or a group and read the rosters back.</summary>
+    internal SpawnDirector SpawnsForTest => _spawnDirector;
+
+    /// <summary>How many beats a test must drive to be sure phase (1.1) sampled the groups once.</summary>
+    internal static int BatchSweepTicksForTest => BatchSweepTicks;
+
+    /// <summary>Every creature on a map, NPCs included — for a test that has no session to <see cref="View"/> with.</summary>
+    internal int MobCountForTest(ushort mapId) { lock (_lock) return Map(mapId).Mobs.Count; }
 }
