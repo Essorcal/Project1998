@@ -2671,9 +2671,8 @@ public sealed partial class World
     /// a content-only deploy drops a <c>run/reload_now</c> sentinel and <see cref="RestartSchedule.Loop"/>
     /// calls this. That is the whole point of the content lane — a CSV or Lua fix ships without kicking anyone.
     ///
-    /// <para>Returns (ok, report). Until the atomic snapshot in #33 lands, a load error may leave content
-    /// replaced; the report names the public tables it can track and comes back <c>ok: false</c> rather than
-    /// taking down a running world.</para>
+    /// <para>Returns (ok, report). A load error keeps the previous content publication and comes back
+    /// <c>ok: false</c> rather than taking down a running world.</para>
     /// </summary>
     public (bool ok, string report) ReloadFromDisk()
     {

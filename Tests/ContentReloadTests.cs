@@ -96,6 +96,8 @@ public class ContentReloadTests
         }
     }
 
+    // The duplicate tile throws after the era prepare but before Doors and Lua prepare, so this test's unique
+    // job is guarding the era commit against a real mid-load data failure.
     [Fact]
     public void RealMidLoadFailureKeepsEraDoorsLuaAndSnapshot()
     {
@@ -221,6 +223,8 @@ public class ContentReloadTests
         }
     }
 
+    // BeforePublish is the widest failure window, after every candidate is prepared; this is the test that
+    // guards the Doors and all four Lua commits as well as the snapshot and era.
     [Fact]
     public void FailedReloadKeepsEveryPublishedFacade()
     {

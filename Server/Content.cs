@@ -210,9 +210,10 @@ public static partial class Content
     /// <summary>
     /// Hot-reload every file-backed registry WITHOUT a restart (the <c>@reload</c> GM command), so content
     /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence in an
-    /// unpublished builder, then replaces the immutable snapshot with one write. Readers therefore see all
-    /// registries and their derived indexes from the old load or all of them from the new load. Returns a
-    /// one-line count summary.
+    /// unpublished builder, then publishes the immutable snapshot with one write and commits the era calendar,
+    /// Doors configuration and four Lua hosts at that boundary under the shared Lua gate. Readers therefore
+    /// see all registries and their derived indexes from the old load or all of them from the new load. Returns
+    /// a one-line count summary.
     ///
     /// SCOPE: file-backed content only (every registry above is CSV/Lua-backed now — map BGM moved to
     /// MapBgm.csv, so there's no compile-time content table left that a restart would be needed for). The

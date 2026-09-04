@@ -42,7 +42,7 @@ public static partial class Content
             if (builder.ItemScript is { } itemScript) ItemScript.CommitReload(itemScript);
             if (builder.NpcScript is { } npcScript) NpcScript.CommitReload(npcScript);
             if (builder.MobScript is { } mobScript) MobScript.CommitReload(mobScript);
-            Doors.CommitConfig(builder.Doors);
+            if (builder.Doors is { } doors) Doors.CommitConfig(doors);
             if (builder.EraCalendar is { } eraCalendar) Shared.EraCalendar.CommitReload(eraCalendar);
         }
     }
@@ -62,7 +62,7 @@ public static partial class Content
         // Prepared content owned by other facades. These are deliberately not ContentSnapshot members: their
         // serving APIs predate Content, but their commits belong to the same publication boundary.
         internal Shared.EraCalendar.PreparedReload? EraCalendar { get; set; }
-        internal Dictionary<(ushort map, ushort x, ushort y), Doors.DoorConfig> Doors { get; set; } = new();
+        internal Dictionary<(ushort map, ushort x, ushort y), Doors.DoorConfig>? Doors { get; set; }
         internal LuaVerbHost.PreparedReload? SpellScript { get; set; }
         internal LuaVerbHost.PreparedReload? ItemScript { get; set; }
         internal NpcScript.PreparedReload? NpcScript { get; set; }

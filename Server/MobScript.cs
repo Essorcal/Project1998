@@ -25,7 +25,7 @@ namespace Server;
 /// </summary>
 public static class MobScript
 {
-    internal sealed record PreparedReload(Script Script, Table Mobs, HashSet<string> Defined);
+    internal sealed record PreparedReload(Script Script, Table Mobs, HashSet<string> Defined, int CreatureCount);
 
     private static Script? _script;
     private static Table? _mobs;
@@ -91,8 +91,7 @@ public static class MobScript
                 }
 
                 UserData.RegisterType<MobContext>();
-                Log.Info($"   mob_ai.lua: {defined.Count} hooks across {m.Table.Pairs.Count()} creatures");
-                return (true, new PreparedReload(s, m.Table, defined));
+                return (true, new PreparedReload(s, m.Table, defined, m.Table.Pairs.Count()));
             }
             catch (Exception e)
             {
@@ -108,6 +107,7 @@ public static class MobScript
         _script = prepared.Script;
         _mobs = prepared.Mobs;
         _defined = prepared.Defined;
+        Log.Info($"   mob_ai.lua: {prepared.Defined.Count} hooks across {prepared.CreatureCount} creatures");
     }
 
     /// <summary>Does this creature define this hook? The tick calls this before building a context, so the
