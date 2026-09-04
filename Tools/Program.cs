@@ -4,6 +4,35 @@
 // valid 127.0.0.0/8 loopback (no leading zeros -> passes the client's Winsock resolver).
 
 using System.Text;
+using Server;
+using Shared;
+
+if (args is ["readme-tables", ..])
+{
+    string readmePath = args.Length > 1 ? args[1] : Path.Combine(RepoPaths.GameDataDir(), "README.md");
+    Content.Load();
+    string generated;
+    int csvCount;
+    try { generated = Content.RenderTableReadmeBlock(out csvCount); }
+    catch (InvalidOperationException e)
+    {
+        Console.Error.WriteLine(e.Message);
+        return 1;
+    }
+    string readme = File.ReadAllText(readmePath).Replace("\r\n", "\n", StringComparison.Ordinal);
+    int start = readme.IndexOf(Content.TableReadmeStartMarker, StringComparison.Ordinal);
+    int end = readme.IndexOf(Content.TableReadmeEndMarker, StringComparison.Ordinal);
+    if (start < 0 || end < start)
+    {
+        Console.Error.WriteLine($"generated table markers not found in {readmePath}");
+        return 1;
+    }
+    end += Content.TableReadmeEndMarker.Length;
+    string updated = readme[..start] + generated + readme[end..];
+    File.WriteAllText(readmePath, updated, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    Console.WriteLine($"wrote {csvCount} CSV table rows to {readmePath}");
+    return 0;
+}
 
 string src = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "Inter.dat";
 string target = "127.100.10.1";
