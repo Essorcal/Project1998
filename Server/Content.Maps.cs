@@ -7,13 +7,19 @@ public static partial class Content
 {
     // id -> map. Only maps whose dims were validated against the client's own TK&lt;id&gt;.map (see
     // re/build_map_index.py) are present, so a warp target here is always renderable.
-    public static IReadOnlyDictionary<ushort, MapInfo> Maps { get; private set; } =
-        new Dictionary<ushort, MapInfo>();
+    public static IReadOnlyDictionary<ushort, MapInfo> Maps
+    {
+        get => _snapshotBuilder?.Maps ?? Snapshot.Maps;
+        private set => Builder.Maps = value;
+    }
 
     // Portals/doors: (sourceMap, x, y) -> (destMap, x, y). Only warps whose DESTINATION is a renderable
     // client map are kept (a warp to a 7.x-only map would strand the player on a black screen).
     public static IReadOnlyDictionary<(ushort m, ushort x, ushort y), (ushort m, ushort x, ushort y)> Warps
-    { get; private set; } = new Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)>();
+    {
+        get => _snapshotBuilder?.Warps ?? Snapshot.Warps;
+        private set => Builder.Warps = value;
+    }
 
     // Per-map region + warp-out flag (RTK Maps table: MapRegion / MapWarpout). Region groups maps into
     // kingdoms (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …) and is what the Gateway spell keys off to pick
@@ -24,12 +30,15 @@ public static partial class Content
     public sealed record MapMetaInfo(int Region, bool WarpOut, bool Pvp, bool CanTalk, bool CanCast, int ReqLvl, int ReqPath, int ReqMark,
         long ReqVita, long ReqMana, int LvlMax, long VitaMax, long ManaMax, string RejectMsg, bool Indoor);
 
-    public static IReadOnlyDictionary<ushort, MapMetaInfo> MapMeta { get; private set; } =
-        new Dictionary<ushort, MapMetaInfo>();
+    public static IReadOnlyDictionary<ushort, MapMetaInfo> MapMeta
+    {
+        get => _snapshotBuilder?.MapMeta ?? Snapshot.MapMeta;
+        private set => Builder.MapMeta = value;
+    }
 
     // Era-gated content (game-data/EraFeatures.csv + the EraDate scalar) is NOT loaded here: it lives in
     // Shared.EraCalendar, because the LOGIN server needs the same calendar to place new characters. Load()
-    // below calls EraCalendar.Reload() so @reload still picks up edits. See Server/Era.cs.
+    // stages EraCalendar with the snapshot so @reload still picks up edits atomically. See Server/Era.cs.
 
 
     // ---- Mythic Nexus zodiac cave entrances (game-data/MythicCaves.csv) ------------------------------
@@ -42,11 +51,18 @@ public static partial class Content
     public sealed record MythicCaveDef(string Animal, ushort EntranceMap, (ushort X, ushort Y)[] Tiles,
         ushort DestMap, ushort DestX, ushort DestY, MythicTier[] Tiers, string Sources);
 
-    public static IReadOnlyList<MythicCaveDef> MythicCaves { get; private set; } = new List<MythicCaveDef>();
+    public static IReadOnlyList<MythicCaveDef> MythicCaves
+    {
+        get => _snapshotBuilder?.MythicCaves ?? Snapshot.MythicCaves;
+        private set => Builder.MythicCaves = value;
+    }
 
     // Derived (map,x,y) -> cave lookup so the per-step entrance check is a single hash probe on any map.
-    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), MythicCaveDef> MythicCaveTiles { get; private set; }
-        = new Dictionary<(ushort, ushort, ushort), MythicCaveDef>();
+    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), MythicCaveDef> MythicCaveTiles
+    {
+        get => _snapshotBuilder?.MythicCaveTiles ?? Snapshot.MythicCaveTiles;
+        private set => Builder.MythicCaveTiles = value;
+    }
 
     // ---- Tiered "event cave" entrances (game-data/EventCaves.csv + EventCaveTiers.csv) --------------
     // A doorway that reads the character and drops them into one of FIVE parallel copies of the same
@@ -65,7 +81,11 @@ public static partial class Content
             level >= MinLevel && level <= MaxLevel && mark >= MinMark && mark <= MaxMark;
     }
 
-    public static IReadOnlyList<EventCaveBand> EventCaveBands { get; private set; } = new List<EventCaveBand>();
+    public static IReadOnlyList<EventCaveBand> EventCaveBands
+    {
+        get => _snapshotBuilder?.EventCaveBands ?? Snapshot.EventCaveBands;
+        private set => Builder.EventCaveBands = value;
+    }
 
     /// <summary>The band a character of this level/subpath-rank falls in, or null when nothing matches —
     /// which is the refusal case, not an error.</summary>
@@ -85,12 +105,19 @@ public static partial class Content
             TierMaps.Length == 0 ? (ushort)0 : TierMaps[Math.Clamp(tier, 1, TierMaps.Length) - 1];
     }
 
-    public static IReadOnlyList<EventCaveDef> EventCaves { get; private set; } = new List<EventCaveDef>();
+    public static IReadOnlyList<EventCaveDef> EventCaves
+    {
+        get => _snapshotBuilder?.EventCaves ?? Snapshot.EventCaves;
+        private set => Builder.EventCaves = value;
+    }
 
     // Derived (map,x,y) -> entrance lookup, so the per-step check is one hash probe (same shape as
     // MythicCaveTiles / ArenaDoorTiles).
-    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), EventCaveDef> EventCaveTiles { get; private set; }
-        = new Dictionary<(ushort, ushort, ushort), EventCaveDef>();
+    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), EventCaveDef> EventCaveTiles
+    {
+        get => _snapshotBuilder?.EventCaveTiles ?? Snapshot.EventCaveTiles;
+        private set => Builder.EventCaveTiles = value;
+    }
 
     // ---- PvP arena doors (game-data/ArenaDoors.csv) -------------------------------------------------
     // Tower Arena's five side doors are RTK Lua tile-scripts (onScriptedTilesArena.lua ->
@@ -111,19 +138,29 @@ public static partial class Content
         ushort DestX, ushort DestX2, ushort DestY, int MinLevel, int MaxLevel,
         uint MaxVita, uint MaxMana, bool Unmarked, string Label, string Sources);
 
-    public static IReadOnlyList<ArenaDoorDef> ArenaDoors { get; private set; } = new List<ArenaDoorDef>();
+    public static IReadOnlyList<ArenaDoorDef> ArenaDoors
+    {
+        get => _snapshotBuilder?.ArenaDoors ?? Snapshot.ArenaDoors;
+        private set => Builder.ArenaDoors = value;
+    }
 
     // Derived (map,x,y) -> door lookup, so the per-step check is one hash probe (same shape as MythicCaveTiles).
-    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), ArenaDoorDef> ArenaDoorTiles { get; private set; }
-        = new Dictionary<(ushort, ushort, ushort), ArenaDoorDef>();
+    public static IReadOnlyDictionary<(ushort Map, ushort X, ushort Y), ArenaDoorDef> ArenaDoorTiles
+    {
+        get => _snapshotBuilder?.ArenaDoorTiles ?? Snapshot.ArenaDoorTiles;
+        private set => Builder.ArenaDoorTiles = value;
+    }
 
     // ---- Board-sign locations (game-data/BoardLocations.csv) -----------------------------------------
     // RTK's onSign board-sign system (on_event.lua onSign / selectBulletinBoard): a board SPRITE tile that,
     // when faced from the south (player looking north), opens ONE specific board (Server/Boards.cs) straight
     // to its posts. Keyed by the board tile (map,x,y) + the target BoardId; consumed by Session via TryBoardAt
     // with RTK's ±1 X tolerance. Distinct from the `b` mailbox/board-list — this jumps directly to a board.
-    public static IReadOnlyList<(ushort Map, ushort X, ushort Y, int BoardId)> BoardLocations { get; private set; }
-        = new List<(ushort, ushort, ushort, int)>();
+    public static IReadOnlyList<(ushort Map, ushort X, ushort Y, int BoardId)> BoardLocations
+    {
+        get => _snapshotBuilder?.BoardLocations ?? Snapshot.BoardLocations;
+        private set => Builder.BoardLocations = value;
+    }
 
     // Return tiles for Return / yellow_scroll / qui_hyang (Session.ReturnToInn). Grouped by Kugnae/Buya/
     // Nagnang (chosen by nation), Wilderness (the Neutral nation's), and Sanhae/Hausson (bound by a mayor
@@ -131,31 +168,48 @@ public static partial class Content
     // X2/Y2 are an optional bottom-right corner: the wilderness clearing has no bed, so RTK lands you on a
     // random tile in a box there. Blank X2/Y2 -> the box is the single tile X,Y, which is every tavern.
     public sealed record InnDef(ushort Map, ushort X, ushort Y, ushort X2, ushort Y2);
-    public static IReadOnlyDictionary<string, IReadOnlyList<InnDef>> Inns { get; private set; } =
-        new Dictionary<string, IReadOnlyList<InnDef>>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, IReadOnlyList<InnDef>> Inns
+    {
+        get => _snapshotBuilder?.Inns ?? Snapshot.Inns;
+        private set => Builder.Inns = value;
+    }
 
     // Ground-item forage spawn boxes (World forage tick / RTK itemspawner.lua). See ForageAreas.csv.
     public sealed record ForageAreaDef(string ItemKey, ushort Map, int MinX, int MaxX, int MinY, int MaxY,
         int Max, int MinQty, int MaxQty);
-    public static IReadOnlyList<ForageAreaDef> ForageAreas { get; private set; } = new List<ForageAreaDef>();
+    public static IReadOnlyList<ForageAreaDef> ForageAreas
+    {
+        get => _snapshotBuilder?.ForageAreas ?? Snapshot.ForageAreas;
+        private set => Builder.ForageAreas = value;
+    }
 
     // Class path-hall doorways (Session.TryPathHallWarp), keyed by the hall map. Sanctum[0..3] indexed by
     // Character.Alignment (Unaligned/Kwisin/Mingken/Ohaeng). See PathHalls.csv.
     public sealed record PathHallDef(int BaseClass, ushort GuildMap, ushort[] Sanctum);
-    public static IReadOnlyDictionary<ushort, PathHallDef> PathHalls { get; private set; } =
-        new Dictionary<ushort, PathHallDef>();
+    public static IReadOnlyDictionary<ushort, PathHallDef> PathHalls
+    {
+        get => _snapshotBuilder?.PathHalls ?? Snapshot.PathHalls;
+        private set => Builder.PathHalls = value;
+    }
 
     // Gateway spell gate-boxes per kingdom region 0-3 (Session.CastGateway). Gates keyed by 'n'/'e'/'s'/'w'.
     // See GatewayGates.csv.
     public sealed record GatewayDef(ushort Map, string City,
         IReadOnlyDictionary<char, (int Xlo, int Xhi, int Ylo, int Yhi)> Gates);
-    public static IReadOnlyDictionary<int, GatewayDef> GatewayRegions { get; private set; } =
-        new Dictionary<int, GatewayDef>();
+    public static IReadOnlyDictionary<int, GatewayDef> GatewayRegions
+    {
+        get => _snapshotBuilder?.GatewayRegions ?? Snapshot.GatewayRegions;
+        private set => Builder.GatewayRegions = value;
+    }
 
     // Inter-continent world-map travel destinations (Session world-map), order-significant (the wire dots are
     // sent in this order). DotX/DotY are field10 pixel coords. See WorldMapDests.csv.
     public sealed record WorldDestDef(string Name, ushort Map, ushort X, ushort Y, int DotX, int DotY);
-    public static IReadOnlyList<WorldDestDef> WorldDests { get; private set; } = new List<WorldDestDef>();
+    public static IReadOnlyList<WorldDestDef> WorldDests
+    {
+        get => _snapshotBuilder?.WorldDests ?? Snapshot.WorldDests;
+        private set => Builder.WorldDests = value;
+    }
 
     // World-map trigger tiles, keyed by the source (town) map. Hits when the FixedAxis coord is in
     // [FixedLo,FixedHi] AND the other axis is in [RangeLo,RangeHi]. See WorldMapTriggers.csv.
@@ -168,8 +222,11 @@ public static partial class Content
             return fixedC >= FixedLo && fixedC <= FixedHi && rangeC >= RangeLo && rangeC <= RangeHi;
         }
     }
-    public static IReadOnlyDictionary<ushort, WorldTriggerDef> WorldMapTriggers { get; private set; } =
-        new Dictionary<ushort, WorldTriggerDef>();
+    public static IReadOnlyDictionary<ushort, WorldTriggerDef> WorldMapTriggers
+    {
+        get => _snapshotBuilder?.WorldMapTriggers ?? Snapshot.WorldMapTriggers;
+        private set => Builder.WorldMapTriggers = value;
+    }
 
     // Mythic cave fall-room landings (Session.TryMythicFallRoom), keyed by the source sub-map, ALREADY
     // tier-expanded (+0/+3000/+4000) at load. See FallRooms.csv. Most rows come straight from RTK's
@@ -178,8 +235,11 @@ public static partial class Content
     // (trap/tiger_spawn/warp_trap_guardroom.lua), not a fall-room tile — but this server has no trap-NPC
     // tiles, so we reuse the fall mechanic to make the pure-sentry guardroom reachable. Tagged
     // rtk-lua-warptrap in the CSV to mark it as the one non-fall-room source.
-    public static IReadOnlyDictionary<ushort, (ushort Map, ushort X, ushort Y)> FallRooms { get; private set; } =
-        new Dictionary<ushort, (ushort, ushort, ushort)>();
+    public static IReadOnlyDictionary<ushort, (ushort Map, ushort X, ushort Y)> FallRooms
+    {
+        get => _snapshotBuilder?.FallRooms ?? Snapshot.FallRooms;
+        private set => Builder.FallRooms = value;
+    }
     // SplitTrapSpells (0/1, default 0) also lives here — accessor is next to the trap block it gates,
     // see SplitTrapSpellsEnabled / IsOutOfEraSplitTrap.
 
@@ -187,17 +247,26 @@ public static partial class Content
     // Two lookups: DoorSwaps maps a faced object id -> (startDx, new object ids) for the explicit doors (single-tile
     // swings and 3-tile-wide runs where the faced piece tells us which corner we're on); DoorDeltas is the set of
     // ranges whose open<->closed pair differs by a fixed signed delta (single tile). See Content.DoorToggleFor.
-    public static IReadOnlyDictionary<int, (int StartDx, ushort[] Objs)> DoorSwaps { get; private set; } =
-        new Dictionary<int, (int, ushort[])>();
-    public static IReadOnlyList<(int Lo, int Hi, int Delta)> DoorDeltas { get; private set; } =
-        new List<(int, int, int)>();
+    public static IReadOnlyDictionary<int, (int StartDx, ushort[] Objs)> DoorSwaps
+    {
+        get => _snapshotBuilder?.DoorSwaps ?? Snapshot.DoorSwaps;
+        private set => Builder.DoorSwaps = value;
+    }
+    public static IReadOnlyList<(int Lo, int Hi, int Delta)> DoorDeltas
+    {
+        get => _snapshotBuilder?.DoorDeltas ?? Snapshot.DoorDeltas;
+        private set => Builder.DoorDeltas = value;
+    }
 
     // Closed-door object id -> the open id that replaces it, applied cell-by-cell as a .map file is read
     // (MapData.Load). This is how a door "starts open" without editing the client's own map files: the
     // 4.95 client draws its LOCAL copy, so opening one also needs the 0x06 cell-patch every session gets on
     // map entry (Session.SyncMapDoors). Populated from DoorObjects.csv rows flagged defaultOpen=1.
-    public static IReadOnlyDictionary<int, ushort> DoorDefaultOpen { get; private set; } =
-        new Dictionary<int, ushort>();
+    public static IReadOnlyDictionary<int, ushort> DoorDefaultOpen
+    {
+        get => _snapshotBuilder?.DoorDefaultOpen ?? Snapshot.DoorDefaultOpen;
+        private set => Builder.DoorDefaultOpen = value;
+    }
 
     // ---- authored cell overrides (game-data/MapCells.csv) ------------------------------------------
     // "The shipped map is wrong here." One row per cell: Map,X,Y,Tile,Pass,Obj — any of the three value
@@ -205,13 +274,20 @@ public static partial class Content
     // graphic (or vice versa). Applied by MapData.Load as the LAST authored layer, so a hand-written row
     // beats DoorDefaultOpen / DefaultClosed / ForceOpen. The .map files themselves are never modified.
     public sealed record CellOverride(ushort Map, ushort X, ushort Y, ushort? Tile, ushort? Pass, ushort? Obj);
-    private static IReadOnlyDictionary<ushort, List<CellOverride>> _mapCells =
-        new Dictionary<ushort, List<CellOverride>>();
+    private static IReadOnlyDictionary<ushort, List<CellOverride>> MapCells
+    {
+        get => _snapshotBuilder?.MapCells ?? Snapshot.MapCells;
+        set => Builder.MapCells = value;
+    }
     /// <summary>Total authored cell overrides loaded (for the startup summary).</summary>
-    public static int MapCellCount { get; private set; }
+    public static int MapCellCount
+    {
+        get => _snapshotBuilder?.MapCellCount ?? Snapshot.MapCellCount;
+        private set => Builder.MapCellCount = value;
+    }
     /// <summary>Authored cell overrides for one map (empty if none).</summary>
     public static IReadOnlyList<CellOverride> MapCellsFor(ushort map) =>
-        _mapCells.TryGetValue(map, out var l) ? l : (IReadOnlyList<CellOverride>)Array.Empty<CellOverride>();
+        MapCells.TryGetValue(map, out var l) ? l : (IReadOnlyList<CellOverride>)Array.Empty<CellOverride>();
     /// <summary>Given the object a player faces, return the swapped door run (startDx + new ids), or null if it
     /// isn't a door. Mirrors the old Session.Movement.DoorToggle switch, now data-driven.</summary>
     public static (int StartDx, ushort[] Objs)? DoorToggleFor(int obj)
