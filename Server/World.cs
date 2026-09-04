@@ -3164,9 +3164,10 @@ public sealed partial class World
     // One heartbeat: (1) refill dead spawn points that are due, (2) wander every live mob OR, if provoked,
     // chase and swing at its target instead (queuing any landed swings), (3) reconcile each player's
     // viewport (mobs that moved in/out of view, plus this tick's respawns, appear/disappear), (4) stream
-    // moves/turns to observers, (4.5) apply this tick's queued mob swings. All map mutation happens under
-    // the lock; no socket I/O does. Only maps with at least one player are processed — an empty map's
-    // roster stays put.
+    // moves/turns to observers, (4.5) apply this tick's queued mob swings, (5) regen every connected
+    // player, (6) broadcast the day/night hour and any map's changed weather. All map mutation happens
+    // under the lock; no socket I/O does. Only maps with at least one player are processed — an empty map's
+    // roster stays put. (1)-(2) are this method; (3)-(6) are FlushTick, after the lock is released.
     private void Tick()
     {
         _tick++;
@@ -3305,8 +3306,14 @@ public sealed partial class World
     /// The back half of one heartbeat: everything <see cref="Tick"/> queued under <c>_lock</c>, sent now that
     /// it is released. Phases (3) to (6), in the order they are written — viewports first (so a mob that left
     /// the screen is despawned rather than sent an off-screen move), then moves and turns, then the deferred
-    /// visuals, then this beat's swings, then regen, then the clock and the weather. That order is BEHAVIOUR,
-    /// not layout: <c>Tests/MobAiTickTests.cs</c> pins it on the wire.
+    /// visuals, then this beat's swings, then regen, then the clock and the weather.
+    ///
+    /// <para>Three of those boundaries are BEHAVIOUR rather than layout, and
+    /// <c>Tests/MobAiTickTests.cs</c> pins exactly those three on the wire: viewports before moves, moves
+    /// before turns, turns before swings. The rest of the (3)-(6) sequence — the deferred visuals, the Lua
+    /// hooks, regen, the clock, the weather — is NOT pinned by a test; it is preserved because the body was
+    /// moved here verbatim from <c>Tick</c> (135 lines, 0 differing), and reordering any of it would be a
+    /// change no test would catch. Treat it as load-bearing until someone proves otherwise.</para>
     ///
     /// <para>Runs OUTSIDE <c>_lock</c> and must keep doing so — it sends. It takes the lock only where the
     /// body always did (the <c>_deferredFx</c> / <c>_hooks</c> / <c>_deferredTrapClears</c> drain and the

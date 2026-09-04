@@ -293,6 +293,12 @@ public class MobAiTickTests
     /// not three independent loops that happen to be written in that sequence — the sequence IS the
     /// behaviour, and moving the flush into its own method is only safe if it is pinned.
     ///
+    /// <para><b>What this pins, exactly:</b> viewports before moves, moves before turns, turns before swings
+    /// — the three boundaries below, and no more. The rest of the (3)-(6) sequence (the deferred visuals and
+    /// Lua hooks, regen, the clock, the weather) is NOT covered here; it is preserved by the fact that the
+    /// flush body was moved into <c>FlushTick</c> verbatim, which is a different kind of evidence. Do not
+    /// read a green run here as a licence to reorder those.</para>
+    ///
     /// <para>One beat, one watcher, two creatures. The STEPPER stands one row below the watcher's view rect
     /// and walks home into it: its new tile is what phase (3) reconciles, so the watcher gets its spawn
     /// (0x07) from <c>ReconcileViews</c> and then its move (0x0C) from phase (4) — and only in that order,
