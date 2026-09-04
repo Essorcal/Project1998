@@ -551,6 +551,12 @@ public sealed class CommandTableTests
     [Fact]
     public void AListingIsItsOwnSeparator()
     {
+        // The seeded "Born in" legend stamps GameCalendar.Stamp (via Character.GameDate) at character
+        // creation, so the expected text is built from the same clock rather than a season that will
+        // itself roll over. Read immediately before the seed: there is a theoretical race if the
+        // in-game hour rolls between this read and GmRoster.Session's, but that only matters at a
+        // season boundary once every 91 in-game days, and the window is a few CPU instructions wide.
+        var expectedDate = GameCalendar.Stamp;
         var (session, outbound) = GmRoster.Session(_fx);
 
         Run(session, "@legend");
@@ -559,7 +565,7 @@ public sealed class CommandTableTests
         {
             "pane3|= legends (1) =",
             "pane3|(no key) - icon 0 col 128",
-            "pane3| \"Born in Yuri 1, Summer\"",
+            $"pane3| \"Born in {expectedDate}\"",
         }, Transcript(outbound));
     }
 
