@@ -3170,34 +3170,9 @@ public sealed partial class World
     private void Tick()
     {
         _tick++;
-        var moves = new List<(ushort map, uint id, ushort x, ushort y, byte dir)>();
-        var turns = new List<(ushort map, uint id, byte dir)>();
-        var hits = new List<(ushort map, Mob mob, Session target)>();
-        // A creature's spell at a player (MobSpells.csv) and its idle flavour line — both queued for the same
-        // reason as `hits`: landing a spell broadcasts, curses, and can kill.
-        var mobCasts = new List<(Mob mob, Session target, Content.MobSpellDef spell)>();
-        var chatter = new List<(ushort map, Mob mob, byte channel, string line)>();
-        // A pet's swing at another mob (mob-on-mob, the only place that happens) — deferred out of the lock
-        // for the same reason as `hits`: applying it broadcasts and can award the owner exp.
-        var mobHits = new List<(ushort map, Mob attacker, Mob victim)>();
-        // Real damage from a triggered trap (instant hit) or a poison tick — both need Session-facing
-        // broadcasts (damage number, death despawn, owner exp) that must run outside the lock, same as `hits`.
-        var trapDamage = new List<(ushort map, Mob mob, int dmg, uint ownerId)>();
-        // Repeating status effects (RTK `while_cast`): venom re-draws its animation every poison tick, doze
-        // and sleep re-draw theirs for as long as the hold runs. Broadcasting is socket I/O, so — like every
-        // other visual below — the tick only QUEUES them under the lock and sends them after it's released.
-        var fxRepeats = new List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)>();
-        // Over-head HP bars to redraw for a mob whose health changed with NO hit behind it — Sute's self-heal
-        // is the only source. Damage draws its own bar through Session.ShowDamageResult; a heal has no such
-        // path, so without this his bar silently stayed where the last blow left it and the heal was
-        // invisible to the player fighting him.
-        var healthShows = new List<(ushort map, Mob mob)>();
-        var expiredPets = new List<(ushort map, Mob mob)>();
-        var expiredMorphs = new List<Session>();
-        var expiredStealth = new List<Session>();
-        List<(ushort map, GroundItem gi)>? forage = null;
-        bool timeChanged = false;
-        List<(ushort map, byte weather)>? weatherChanges = null;
+        // This beat's outbound work, in one object: the locked phases below fill it, FlushTick drains
+        // it once the lock is released (World.MobAiTick.cs).
+        var q = new TickQueues();
 
         // (0) Warm every active map's terrain BEFORE taking the lock. Both the respawn refill (Materialize ->
         // FreeSpawnTile) and the wander loop below call MapData.For, which on a miss reads the .map off disk,
@@ -3242,10 +3217,10 @@ public sealed partial class World
             // outside the lock same as trapDamage/expiredPets below.
             foreach (var (_, pm) in _maps)
                 foreach (var p in pm.Players)
-                    if (p.IsMorphExpired) expiredMorphs.Add(p);
+                    if (p.IsMorphExpired) q.ExpiredMorphs.Add(p);
             foreach (var (_, pm) in _maps)
                 foreach (var p in pm.Players)
-                    if (p.IsStealthExpired) expiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
+                    if (p.IsStealthExpired) q.ExpiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
 
             // (1.3) bladestorm auto-expiry: an untriggered decoy despawns silently after its 21s lifetime —
             // traps have no ground graphic (same precedent as the hazard family), so this is a plain in-lock
@@ -3254,13 +3229,13 @@ public sealed partial class World
                 pm.Traps.RemoveAll(t => t.ExpiresAt != 0 && Environment.TickCount64 >= t.ExpiresAt);
 
             // (1.5) forage top-up: on a slow cadence, refill each forage box (chestnuts &c.) to its target count.
-            if (_tick % ForageTicks == 0) forage = TopUpForageLocked();
+            if (_tick % ForageTicks == 0) q.Forage = TopUpForageLocked();
 
             // (1.6) day/night clock (see the Epoch doc): re-derive the shared calendar from wall-clock time
             // and, on an in-game hour rollover, flag every connected session for a fresh 0x20 broadcast.
             // Checked every tick rather than every 750th, so the broadcast lands within 600ms of the true
             // rollover instead of drifting by however far into an hour the process happened to start.
-            if (SyncClock()) timeChanged = true;
+            if (SyncClock()) q.TimeChanged = true;
 
             // (1.7) weather: when the deterministic weather PERIOD rolls over (WeatherModel.PeriodHours, ~15
             // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
@@ -3270,14 +3245,14 @@ public sealed partial class World
             if (period != _lastWeatherPeriod)
             {
                 _lastWeatherPeriod = period;
-                weatherChanges = new List<(ushort, byte)>();
+                q.WeatherChanges = new List<(ushort, byte)>();
                 foreach (var (mapId, pm) in _maps)
                 {
                     if (pm.Players.Count == 0) continue;
                     byte w = WeatherForLocked(mapId);
                     if (w == pm.Weather) continue;
                     pm.Weather = w;
-                    weatherChanges.Add((mapId, w));
+                    q.WeatherChanges.Add((mapId, w));
                 }
             }
 
@@ -3303,8 +3278,7 @@ public sealed partial class World
                 try
                 {
                     // The map's collision index and this tick's queues, packaged for MobAiTick.Step (World.MobAiTick.cs).
-                    var ctx = new MobTickContext(this, mapId, m, moves, turns, hits, mobCasts, chatter, mobHits,
-                                                 trapDamage, fxRepeats, healthShows, expiredPets);
+                    var ctx = new MobTickContext(this, mapId, m, q);
 
                     foreach (var mob in m.Mobs)
                     {
@@ -3331,22 +3305,22 @@ public sealed partial class World
 
         // (4) Now stream moves/turns, but only to players who still have that mob in view (MoveMob/SideMob
         // are no-ops otherwise) — bounding on-wire traffic to on-screen mobs even on a 400-spawn map.
-        foreach (var mv in moves)
+        foreach (var mv in q.Moves)
             Broadcast(mv.map, p => p.MoveMob(mv.id, mv.x, mv.y, mv.dir));
-        foreach (var tn in turns)
+        foreach (var tn in q.Turns)
             Broadcast(tn.map, p => p.SideMob(tn.id, tn.dir));
 
         // Repeating status effects queued above (venom's per-tick zap, doze/sleep's drowse) — the same 0x29 +
         // 0x19 pair a cast plays, re-sent over the afflicted creature for as long as the status holds.
         // Bars for health that changed without a hit (the self-heal). Same 0x13 the damage path uses, so the
         // bar animates up exactly the way it animates down.
-        foreach (var hs in healthShows)
+        foreach (var hs in q.HealthShows)
         {
             byte pct = MobHpPercent(hs.mob);
             BroadcastWideArea(hs.map, hs.mob.X, hs.mob.Y, p => p.DamageOver(hs.mob.Id, pct, 0));
         }
 
-        foreach (var fr in fxRepeats)
+        foreach (var fr in q.FxRepeats)
         {
             BroadcastWideArea(fr.map, fr.x, fr.y, p => p.EffectOver(fr.id, fr.anim));
             if (fr.sound > 0) BroadcastSameArea(fr.map, fr.x, fr.y, p => p.SoundAt(fr.sound, fr.id));
@@ -3389,14 +3363,14 @@ public sealed partial class World
             foreach (var s in AllPlayers()) Try(s.SendAdvice, "SendAdvice");
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
-        if (forage is not null)
-            foreach (var (map, gi) in forage)
+        if (q.Forage is not null)
+            foreach (var (map, gi) in q.Forage)
                 Broadcast(map, p => p.ShowGroundItem(gi));
 
         // (4.5) Resolve this tick's mob swings (queued above while still under the lock) — applying player
         // damage runs Session-side (HUD update + broadcast + possible death), so it happens out here like
         // every other socket-touching step.
-        foreach (var h in hits)
+        foreach (var h in q.Hits)
         {
             // On the SWING itself, hit or miss — this is the point where the mob commits to the attack. The
             // 0x1A action makes the mob visibly swing (matching the player's own swing anim in HandleAttack) and
@@ -3409,8 +3383,8 @@ public sealed partial class World
 
         // Creature spells + idle flavour queued above — both broadcast, and a spell can kill, so neither can
         // run under the lock.
-        foreach (var c in mobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell), $"ApplyMobSpell {c.mob.Name} -> {c.target.Remote}");
-        foreach (var ch in chatter)
+        foreach (var c in q.MobCasts) Try(() => c.target.ApplyMobSpell(c.mob, c.spell), $"ApplyMobSpell {c.mob.Name} -> {c.target.Remote}");
+        foreach (var ch in q.Chatter)
         {
             var bytes = System.Text.Encoding.ASCII.GetBytes(
                 ch.channel == 0 ? $"{ch.mob.Name}: {ch.line}" : ch.line);   // RTK talk(0) attributes, talk(2) doesn't
@@ -3420,24 +3394,24 @@ public sealed partial class World
         }
 
         // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.
-        foreach (var ph in mobHits)
+        foreach (var ph in q.MobHits)
             Try(() => ApplyMobOnMobHit(ph.map, ph.attacker, ph.victim, MobSwingDamage(ph.attacker.MinDam, ph.attacker.MaxDam)), "ApplyMobOnMobHit");
 
         // Trap hits + poison ticks queued above (same reasoning as the mob-swing pass: Session-facing
         // broadcasts/exp can't run under the lock).
-        foreach (var td in trapDamage)
+        foreach (var td in q.TrapDamage)
             Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
 
         // Expired pets queued above — plain despawn, no kill/loot.
-        foreach (var ep in expiredPets)
+        foreach (var ep in q.ExpiredPets)
             Try(() => DespawnMob(ep.map, ep.mob), "DespawnMob (expired pet)");
 
         // Expired morphs queued above — revert the peer-visible disguise back to our real human look.
-        foreach (var mp in expiredMorphs)
+        foreach (var mp in q.ExpiredMorphs)
             Try(() => mp.RevertMorph(), "RevertMorph");
 
         // Expired stealth queued above — restore the normal look once the invisible-spell timer lapses w/o a hit.
-        foreach (var sp in expiredStealth)
+        foreach (var sp in q.ExpiredStealth)
             Try(() => sp.RevertStealth(), "RevertStealth");
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
@@ -3449,14 +3423,14 @@ public sealed partial class World
 
         // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
         // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
-        if (timeChanged)
+        if (q.TimeChanged)
         {
             var (h, y) = Time;
             foreach (var p in players2) Try(() => p.SendTime(h, y), "SendTime");
             // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }
-        if (weatherChanges is not null)
-            foreach (var (map, w) in weatherChanges)
+        if (q.WeatherChanges is not null)
+            foreach (var (map, w) in q.WeatherChanges)
                 Broadcast(map, p => p.SendWeather(w));
     }
 
