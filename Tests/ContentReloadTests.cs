@@ -7,6 +7,17 @@ namespace Tests;
 public class ContentReloadTests
 {
     [Fact]
+    public void LoadDoesNotReadFacadesOnTheLoadingThread()
+    {
+        lock (TestProcessState.Gate)
+        {
+            TestProcessState.LoadContent();
+
+            Assert.Equal(0, Content.LoadingThreadFacadeReadsForTests);
+        }
+    }
+
+    [Fact]
     public async Task ConcurrentReloadReportsThatReloadIsAlreadyInProgress()
     {
         TestProcessState.LoadContent();
