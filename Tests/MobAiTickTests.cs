@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using Protocol.Tk495;
 using Server;
 using Shared;
 using Tests.Support;
@@ -36,7 +37,8 @@ public class MobAiTickTests
     public MobAiTickTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
-    private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035;
+    private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035,
+                         OrderMap = 60036, WiringMap = 60037;
 
     private Mob Registered(ushort map, Mob mob)
     {
@@ -285,6 +287,234 @@ public class MobAiTickTests
             Unrig(faulty);
             _fx.World.LeaveMap(watcher, TickMap);
         }
+    }
+
+    /// <summary>The drain ORDER of <c>World.FlushTick</c>, on the wire (#107). Phases (3), (4) and (4.5) are
+    /// not three independent loops that happen to be written in that sequence — the sequence IS the
+    /// behaviour, and moving the flush into its own method is only safe if it is pinned.
+    ///
+    /// <para><b>What this pins, exactly:</b> viewports before moves, moves before turns, turns before swings
+    /// — the three boundaries below, and no more. The rest of the (3)-(6) sequence (the deferred visuals and
+    /// Lua hooks, regen, the clock, the weather) is NOT covered here; it is preserved by the fact that the
+    /// flush body was moved into <c>FlushTick</c> verbatim, which is a different kind of evidence. Do not
+    /// read a green run here as a licence to reorder those.</para>
+    ///
+    /// <para>One beat, one watcher, two creatures. The STEPPER stands one row below the watcher's view rect
+    /// and walks home into it: its new tile is what phase (3) reconciles, so the watcher gets its spawn
+    /// (0x07) from <c>ReconcileViews</c> and then its move (0x0C) from phase (4) — and only in that order,
+    /// because <c>Session.MoveMob</c> is a no-op for a mob the client has not been shown. Send the move
+    /// first and the client never sees the step at all: that is the despawn/off-screen-0x0C desync the
+    /// comment on phase (3) is about. The SWINGER stands adjacent to the watcher but facing away from it, so
+    /// its beat queues a turn and no move: the turn (0x11) comes out of phase (4) after every move, and the
+    /// swing (0x1A) out of phase (4.5) after that.</para>
+    ///
+    /// <para>Also the no-work-queue pin: this beat tops up no forage box (the map is content-free) and, all
+    /// but always, rolls no weather period (the warm-up beat syncs it first), so nothing goes out for either
+    /// — exactly one 0x07 reaches the watcher (the stepper's spawn; a forage placement would be a second one,
+    /// since <c>ShowGroundItem</c> draws through the same packet) and no 0x1F. The weather half has a real
+    /// window: the period turns over every ~15 real minutes, and the gap between the warm-up beat and the
+    /// measured one, while milliseconds wide, is not zero. So <c>WeatherModel.PeriodNow()</c> is read either
+    /// side of the measured beat and the 0x1F assertion is skipped if it moved, rather than the test being
+    /// flaky a few times a year.</para>
+    ///
+    /// <para>What that pins is the WIRE: a beat with no forage and no weather change sends neither packet.
+    /// It does not distinguish <c>null</c> from an empty list — an eager <c>new()</c> on either field would
+    /// pass it just the same. The null-until-used laziness is an allocation property, visible by reading the
+    /// two <c>?</c> declarations on <c>TickQueues</c>, and is not worth a production seam to test.</para>
+    ///
+    /// <para>Deterministic: the stepper is outside its two-tile leash on the same column as its home, so the
+    /// walk-home step has one candidate direction and rolls nothing; the swinger is cardinally adjacent, so
+    /// it turns to face the watcher and swings on its first beat (<c>AttackTime = 1</c>) rather than stepping.
+    ///
+    /// <para>Falsified three ways, each restored afterwards. Moving the <c>q.Hits</c> loop above
+    /// <c>ReconcileViews()</c> in <c>FlushTick</c>: red with "the move must precede the swing (move at 6,
+    /// swing at 0)". Moving the <c>q.Turns</c> loop above <c>q.Moves</c>: red with "the move must precede the
+    /// turn (move at 2, turn at 1)". Moving the <c>q.Hits</c> loop above <c>q.Turns</c>: red with "the turn
+    /// must precede the swing (turn at 7, swing at 2)".</para></summary>
+    [Fact]
+    public void FlushSendsViewportsThenMovesThenHits()
+    {
+        var (watcher, outbound) = _fx.Player("OrderWatcher", OrderMap, x: 5, y: 10);
+        try
+        {
+            // Warm-up beat with the map still empty: it syncs World._lastWeatherPeriod, so the measured beat
+            // below almost never rolls a weather period. Almost: the period turns over every ~15 real
+            // minutes (WeatherModel.PeriodHours) and the window between the two beats, though milliseconds
+            // wide, is not zero. So the period is read either side of the measured beat and the 0x1F
+            // assertion is made only when it did not move — see the end of the test.
+            _fx.World.TickOnceForTest();
+
+            // One row below the watcher's 17x15 view rect (rows -1..13 for a 12x12 map), so it is not drawn
+            // yet; three tiles from home with a two-tile leash, so its beat is one step north into view.
+            var stepper = new Mob(_fx.World.AllocateMobId(), 1, 5, 14, "Stepper", 100) { Wander = true };
+            stepper.HomeX = 5; stepper.HomeY = 11;
+            Registered(OrderMap, stepper);
+
+            var swinger = Registered(OrderMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 9, "Swinger", 100)
+            {
+                Aggressive = true,
+                AttackTime = 1,   // swings on its first beat, whatever TickMs is configured to
+                Dir = 0,          // facing AWAY from the watcher, so the swing branch queues a turn first
+            });
+            outbound.Clear();   // the swinger's own spawn is drawn already; only the beat's traffic from here
+
+            long periodBefore = WeatherModel.PeriodNow();
+            _fx.World.TickOnceForTest();
+            long periodAfter = WeatherModel.PeriodNow();
+
+            Assert.Equal(((ushort)5, (ushort)13), (stepper.X, stepper.Y));   // stepped into view
+            Assert.Equal(watcher.PlayerId, swinger.TargetId);                // locked onto the watcher
+            Assert.Equal(((ushort)5, (ushort)9), (swinger.X, swinger.Y));    // adjacent: swung, did not step
+
+            Assert.Equal(2, swinger.Dir);                                    // turned to face it before swinging
+
+            int spawn = IndexOfFrame(outbound, 0x07, b => BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(6)) == stepper.Id);
+            int move  = IndexOfFrame(outbound, 0x0C, b => BinaryPrimitives.ReadUInt32BigEndian(b) == stepper.Id);
+            int turn  = IndexOfFrame(outbound, 0x11, b => BinaryPrimitives.ReadUInt32BigEndian(b) == swinger.Id);
+            int swing = IndexOfFrame(outbound, 0x1A, b => BinaryPrimitives.ReadUInt32BigEndian(b) == swinger.Id);
+
+            Assert.True(spawn >= 0, "phase (3) should have spawned the stepper into the watcher's view");
+            Assert.True(move  >= 0, "phase (4) should have streamed the stepper's move");
+            Assert.True(turn  >= 0, "phase (4) should have streamed the swinger's turn");
+            Assert.True(swing >= 0, "phase (4.5) should have sent the swinger's attack pose");
+            Assert.True(spawn < move,  $"the viewport spawn must precede the move (spawn at {spawn}, move at {move})");
+            Assert.True(move  < turn,  $"the move must precede the turn (move at {move}, turn at {turn})");
+            Assert.True(turn  < swing, $"the turn must precede the swing (turn at {turn}, swing at {swing})");
+
+            // The turn is the swinger's, facing south — one turn frame, so "after every move" is exact.
+            var tn = Assert.Single(outbound.BodiesOf(0x11));
+            Assert.Equal(swinger.Id, BinaryPrimitives.ReadUInt32BigEndian(tn));
+            Assert.Equal(2, tn[4]);
+            Assert.Single(outbound.BodiesOf(0x0C));
+
+            // The move is the step's SOURCE tile, facing north — the 0x0C overshoot rule.
+            var mv = outbound.BodiesOf(0x0C).Single(b => BinaryPrimitives.ReadUInt32BigEndian(b) == stepper.Id);
+            Assert.Equal(5, BinaryPrimitives.ReadUInt16BigEndian(mv.AsSpan(4)));
+            Assert.Equal(14, BinaryPrimitives.ReadUInt16BigEndian(mv.AsSpan(6)));
+            Assert.Equal(0, mv[8]);
+
+            // No forage placement: the map is content-free, so nothing tops up on it, and a placement would
+            // show as a second 0x07 (ShowGroundItem draws through the same creature-list packet a spawn does).
+            Assert.Single(outbound.BodiesOf(0x07));
+            // No weather frame — asserted only if the period really did stand still across the beat.
+            if (periodBefore == periodAfter) Assert.Empty(outbound.BodiesOf(0x1F));
+        }
+        finally { _fx.World.LeaveMap(watcher, OrderMap); }
+    }
+
+    /// <summary>The context's ten queue fields are the TICK's queues, not copies and not each other (#107).
+    ///
+    /// <para>This PR rewrote a thirteen-argument constructor into a four-argument one, which is exactly the
+    /// edit that ships a crossed pair. Nine of the ten wirings are protected by the compiler — the tuple
+    /// types differ — but <c>HealthShows</c> and <c>ExpiredPets</c> are both
+    /// <c>List&lt;(ushort map, Mob mob)&gt;</c>, so swapping those two compiles and, before this test,
+    /// left the whole suite green. Reference identity covers all ten in one pass and costs nothing.</para>
+    ///
+    /// <para>Falsified by swapping <c>HealthShows</c> and <c>ExpiredPets</c> in the <c>MobTickContext</c>
+    /// constructor: red with "Assert.Same() Failure: Values are not the same instance".</para></summary>
+    [Fact]
+    public void TheContextsQueuesAreTheTicksOwnQueues()
+    {
+        var q = new World.TickQueues();
+        World.MobTickContext ctx = null!;
+        _fx.World.UnderWorldLockForTest(() => ctx = _fx.World.MobTickContextForTest(WiringMap, q));
+
+        Assert.Same(q.Moves, ctx.Moves);
+        Assert.Same(q.Turns, ctx.Turns);
+        Assert.Same(q.Hits, ctx.Hits);
+        Assert.Same(q.MobCasts, ctx.MobCasts);
+        Assert.Same(q.Chatter, ctx.Chatter);
+        Assert.Same(q.MobHits, ctx.MobHits);
+        Assert.Same(q.TrapDamage, ctx.TrapDamage);
+        Assert.Same(q.FxRepeats, ctx.FxRepeats);
+        Assert.Same(q.HealthShows, ctx.HealthShows);
+        Assert.Same(q.ExpiredPets, ctx.ExpiredPets);
+    }
+
+    /// <summary>The same two same-typed wirings again, this time end to end on the wire: an entry on
+    /// <c>HealthShows</c> has to come out as an over-head HP bar (0x13) for that mob, and an entry on
+    /// <c>ExpiredPets</c> as a despawn (0x0E) for that one. Swap the two in the constructor and each mob
+    /// gets the other's packet — a bug the type system cannot see and the reference-identity test above
+    /// states abstractly; this one states it as what the player would witness.
+    ///
+    /// <para>The pet half runs through a REAL producer: a conjured creature whose lifetime has lapsed is
+    /// queued by <c>Step</c>'s ownership-expiry block, with no roll anywhere on the path. The heal half has
+    /// no deterministic producer — <c>SuteAi.TryHeal</c> is the only writer of <c>HealthShows</c> in the
+    /// tree and it is gated on a 1-in-12 <c>Random.Shared</c> roll, a 20 s cooldown and Sute reaching his
+    /// red bar with a target in range — so that entry is placed through <c>ctx.HealthShows</c>, the context
+    /// field the constructor wired, which is the thing under test. Driving <c>Step</c> and then
+    /// <c>FlushTick</c> over one shared <c>TickQueues</c> is what <c>MobTickContextForTest(map, q)</c> and
+    /// <c>FlushTickForTest</c> exist for.</para>
+    ///
+    /// <para>Falsified by swapping <c>HealthShows</c> and <c>ExpiredPets</c> in the <c>MobTickContext</c>
+    /// constructor: red with "the HP bar must be drawn over the healed mob (expected #100001, got #100000)
+    /// — HealthShows and ExpiredPets are crossed". The two producer assertions above it are deliberately
+    /// written against the CONTEXT's fields, so they still pass under the swap and the failure lands where
+    /// it belongs, on the wire.</para></summary>
+    [Fact]
+    public void HealthShowsAndExpiredPetsReachTheWireOnTheirOwnMobs()
+    {
+        var (watcher, outbound) = _fx.Player("WiringWatcher", WiringMap, x: 5, y: 10);
+        try
+        {
+            var pet = Registered(WiringMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 8, "Conjured", 100)
+            {
+                OwnerId = watcher.PlayerId,
+                PetExpiresAt = 1,   // already lapsed: Environment.TickCount64 is never below 1
+                Summoned = true,    // conjured, not mind-controlled: the despawn ending
+            });
+            var healed = Registered(WiringMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 12, "Healed", 100));
+            healed.Hp = 50;
+
+            var q = new World.TickQueues();
+            World.MobTickContext ctx = null!;
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                ctx = _fx.World.MobTickContextForTest(WiringMap, q);
+                World.MobAiTick.Step(ctx, pet);              // real producer for the ExpiredPets half
+                ctx.HealthShows.Add((WiringMap, healed));    // see the doc comment for why this half is placed
+            });
+            // Both producers fired, asserted on the CONTEXT's fields so this holds whatever the wiring is —
+            // what happens to the two entries after that is the flush's business, below.
+            Assert.Same(pet, Assert.Single(ctx.ExpiredPets).mob);
+            Assert.Same(healed, Assert.Single(ctx.HealthShows).mob);
+
+            outbound.Clear();
+            _fx.World.FlushTickForTest(q);
+
+            uint barId = BinaryPrimitives.ReadUInt32BigEndian(Assert.Single(outbound.BodiesOf(0x13)));
+            Assert.True(barId == healed.Id,
+                $"the HP bar must be drawn over the healed mob (expected #{healed.Id}, got #{barId}) — " +
+                "HealthShows and ExpiredPets are crossed");
+            Assert.Equal(50, outbound.BodiesOf(0x13)[0][5]);   // 50/100 hp: a half-full bar, this mob's number
+
+            var despawned = outbound.BodiesOf(0x0E).SelectMany(DespawnedIds).ToList();
+            Assert.True(despawned.Contains(pet.Id) && !despawned.Contains(healed.Id),
+                $"the despawn must be the expired pet's (#{pet.Id}) and not the healed mob's (#{healed.Id}); " +
+                $"despawned: {string.Join(", ", despawned)}");
+        }
+        finally { _fx.World.LeaveMap(watcher, WiringMap); }
+    }
+
+    /// <summary>The ids inside one 4.95 despawn body: a count byte then that many u32BE ids.</summary>
+    private static IEnumerable<uint> DespawnedIds(byte[] body)
+    {
+        for (int i = 0; i < body[0]; i++)
+            yield return BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(1 + i * 4));
+    }
+
+    /// <summary>The position of the FIRST recorded frame carrying <paramref name="opcode"/> whose decrypted
+    /// body satisfies <paramref name="body"/>, or -1. Indexes across every frame rather than within one
+    /// opcode, which is the only way to compare the order of two different packets.</summary>
+    private static int IndexOfFrame(RecordingOutbound outbound, byte opcode, Func<byte[], bool> body)
+    {
+        for (int i = 0; i < outbound.Frames.Count; i++)
+        {
+            if (!TkPacket.TryParse(outbound.Frames[i], out var pkt, out _)) continue;
+            if (pkt.Opcode != opcode) continue;
+            if (body(TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey))) return i;
+        }
+        return -1;
     }
 
     /// <summary>A <c>Console.Out</c> stand-in that can be read back safely while <c>Log</c>'s writer thread is
