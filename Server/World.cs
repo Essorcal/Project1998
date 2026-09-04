@@ -201,7 +201,7 @@ public sealed partial class World
     // Fallback respawn delay for a spawn POINT whose creature somehow carries no SpawnTime (~18s, derived
     // from TickMs so it stays 18s whatever the heartbeat is). Every mob in the table does carry one, so this
     // is a floor, not the cadence: a point's
-    // real delay is its own MobDef.SpawnTime — see SpawnTicksFor.
+    // real delay is its own MobDef.SpawnTime — see SpawnDirector.SpawnTicksFor.
     private static readonly int RespawnTicks = Math.Max(1, 18_000 / TickMs);
     // How often the batch-refill sweep runs, in ticks. RTK's spawner NPC is an actiontime-driven NPC firing
     // about once a second; its timers are whole seconds and the shortest in the table is 2s, so sampling at
@@ -503,7 +503,7 @@ public sealed partial class World
     /// <summary>Build the persistent spawn-point roster from the static table (<see cref="Content.Spawns"/>,
     /// fixed tiles) and the Lua area spawns (<see cref="Content.AreaSpawns"/>, a count of mobs per map/box).
     /// Runs once at startup (Content is already loaded). This only builds cheap point objects — no mob is
-    /// instantiated and no map file is read until the first player enters that map (<see cref="EnsureMaterialized"/>),
+    /// instantiated and no map file is read until the first player enters that map (<see cref="SpawnDirector.EnsureMaterialized"/>),
     /// so the ~21k hunting-map mobs don't flood memory or stall boot. Dead points refill via <see cref="Tick"/>.</summary>
     private void PopulateSpawns()
     {
@@ -957,7 +957,7 @@ public sealed partial class World
     }
 
     // A random passable, object-free, non-warp, unoccupied tile anywhere on a map (the whole-map analogue of
-    // TryPickGroupTile). Caller holds _lock.
+    // SpawnDirector.TryPickGroupTile). Caller holds _lock.
     private bool TryPickMapTile(ushort mapId, HashSet<(int, int)> taken, out ushort x, out ushort y)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
@@ -2284,7 +2284,7 @@ public sealed partial class World
             MapData.Invalidate();
             StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
             // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
-            // (FreeSpawnTile/PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
+            // (FreeSpawnTile/SpawnDirector.PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
             // while holding the world lock (the old reload-stall).
             foreach (var mapId in PopulatedMapIds())
                 if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
