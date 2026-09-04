@@ -1,3 +1,5 @@
+using Shared;
+
 namespace Server;
 
 /// <summary>
@@ -64,8 +66,52 @@ public static class TileTranslation
     /// From <c>TileB.tbl</c>'s <c>base</c> header field, and hardcoded as <c>sub eax,0xC000</c> in the 4.x blitter.</summary>
     public const ushort Sheet2Base = 0xC000;
 
-    /// <summary>Legacy sheet-2 frame index -> 5.33 <c>TILE.EPF</c> frame. Empty if the table failed to load.</summary>
-    private static readonly IReadOnlyDictionary<ushort, ushort> Sheet2 = LoadSheet2();
+    private sealed record Tables(
+        IReadOnlyDictionary<ushort, ushort> Sheet2,
+        IReadOnlyDictionary<ushort, Obj533Fix> Obj533);
+
+    private static readonly object TablesLock = new();
+    private static Tables? _tables;
+
+    internal sealed class PreparedReload
+    {
+        private readonly Tables _value;
+        private PreparedReload(Tables value) => _value = value;
+        private Tables Value => _value;
+
+        private static PreparedReload From(Tables value) => new(value);
+
+        internal static PreparedReload Parse(CsvTable obj533, CsvTable sheet2)
+        {
+            var obj533Map = ParseObj533(obj533);
+            var sheet2Map = ParseSheet2(sheet2);
+            return From(new Tables(sheet2Map, obj533Map));
+        }
+
+        internal void Commit() => Volatile.Write(ref _tables, Value);
+    }
+
+    private static Tables CurrentTables
+    {
+        get
+        {
+            var tables = Volatile.Read(ref _tables);
+            if (tables is not null) return tables;
+            lock (TablesLock)
+            {
+                return _tables ??= new Tables(
+                    ParseSheet2(OpenSheet2()),
+                    ParseObj533(OpenObj533()));
+            }
+        }
+    }
+
+    /// <summary>Parse both report-owned CSVs without changing the live translation tables.</summary>
+    internal static PreparedReload PrepareReload(CsvTable obj533, CsvTable sheet2) =>
+        PreparedReload.Parse(obj533, sheet2);
+
+    /// <summary>Publish both prepared translation tables with one reference write.</summary>
+    internal static void CommitReload(PreparedReload prepared) => prepared.Commit();
 
     /// <summary>Escape hatch: a uniform shift applied to sheet-1 ground on 5.33. Defaults to 0 and should stay
     /// there — it exists so a future sheet revision can be probed without a rebuild, not because 0 is in doubt.</summary>
@@ -88,7 +134,7 @@ public static class TileTranslation
         ver == Session.ClientVersion.V533 ? ObjectOff533 : ObjectOff495;
 
     /// <summary>Number of sheet-2 entries loaded; 0 means <c>Tile533Map.csv</c> is missing or unreadable.</summary>
-    public static int Sheet2Count => Sheet2.Count;
+    public static int Sheet2Count => CurrentTables.Sheet2.Count;
 
     /// <summary>Translate a 4.x ground WORD (not a pre-masked index) into the client's frame number.</summary>
     /// <param name="groundWord">The raw <c>u16</c> exactly as the <c>.map</c> stores it — see
@@ -105,7 +151,7 @@ public static class TileTranslation
         {
             // Sheet 2. No arithmetic relationship survives the re-pack, so an unmapped frame must draw
             // nothing rather than guess — a wrong index here is indistinguishable from correct terrain.
-            return Sheet2.TryGetValue((ushort)(groundWord - Sheet2Base), out var f) ? f : (ushort)0;
+            return CurrentTables.Sheet2.TryGetValue((ushort)(groundWord - Sheet2Base), out var f) ? f : (ushort)0;
         }
 
         // Sheet 1: TILE[v] IS TileA[v-1]. Identity, unless someone set the escape hatch.
@@ -117,7 +163,7 @@ public static class TileTranslation
     /// The id space itself is shared — 5.33's table is the 4.x table with entries appended, and 7,582 of the
     /// first 7,608 records carry identical sprite frames — so this is normally identity. What is NOT shared
     /// is the COLLISION data: 5.33 re-authored 362 flag bytes, and it runs collision locally against its own
-    /// table, so 234 ids block a direction there that they did not on 4.x. See <see cref="LoadObj533"/> and
+    /// table, so 234 ids block a direction there that they did not on 4.x. See <see cref="ParseObj533"/> and
     /// <c>game-data/Obj533Fix.csv</c>.
     /// </remarks>
     public static ushort Object(ushort obj, Session.ClientVersion ver)
@@ -127,7 +173,7 @@ public static class TileTranslation
         if (obj == 0) return 0;
 
         if (ver == Session.ClientVersion.V533 && ObjFixScope != Obj533Scope.Off
-            && Obj533.TryGetValue(obj, out var fix) && fix.Scope <= ObjFixScope)
+            && CurrentTables.Obj533.TryGetValue(obj, out var fix) && fix.Scope <= ObjFixScope)
             return fix.Replacement;   // 0 = suppress (blank the cell's object), else a look-alike swap
 
         return Shift(obj, ObjectOffset(ver));
@@ -165,13 +211,17 @@ public static class TileTranslation
 
     private readonly record struct Obj533Fix(ushort Replacement, Obj533Scope Scope);
 
-    private static readonly IReadOnlyDictionary<ushort, Obj533Fix> Obj533 = LoadObj533();
-
     /// <summary>Objects currently being rewritten for 5.33 at the configured scope.</summary>
-    public static int Obj533FixCount => Obj533.Count(kv => kv.Value.Scope <= ObjFixScope);
+    public static int Obj533FixCount => CurrentTables.Obj533.Count(kv => kv.Value.Scope <= ObjFixScope);
 
     /// <summary>The scope in effect (for tests and the startup log).</summary>
     public static Obj533Scope Obj533FixScope => ObjFixScope;
+
+    internal static IReadOnlyDictionary<ushort, ushort> Sheet2ForTests => CurrentTables.Sheet2;
+    internal static IReadOnlyList<(ushort Legacy, ushort Replacement, int Scope)> Obj533ForTests =>
+        CurrentTables.Obj533
+            .Select(kv => (kv.Key, kv.Value.Replacement, (int)kv.Value.Scope))
+            .ToArray();
 
     /// <summary>
     /// Reads <c>game-data/Obj533Fix.csv</c> — the workaround for 5.33's re-authored collision flags.
@@ -205,25 +255,22 @@ public static class TileTranslation
     /// (<c>ObjectFlags</c> in <c>HandleWalk</c>), so a blanked object still blocks exactly as 4.x intended,
     /// just as a <c>0x04</c> snap-back rather than a client-side refusal.</para>
     /// </summary>
-    private static IReadOnlyDictionary<ushort, Obj533Fix> LoadObj533()
+    private static CsvTable OpenObj533() => Csv.Open(
+        "Obj533Fix.csv",
+        RepoPaths.GameData("P1998_OBJ533_FIX", "Obj533Fix.csv"),
+        "Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope");
+
+    private static IReadOnlyDictionary<ushort, Obj533Fix> ParseObj533(CsvTable csv)
     {
         var map = new Dictionary<ushort, Obj533Fix>();
-        var path = Shared.RepoPaths.GameData("P1998_OBJ533_FIX", "Obj533Fix.csv");
         try
         {
-            if (!File.Exists(path))
+            foreach (var row in csv)
             {
-                Log.Info($"   !! Obj533Fix.csv not found at {path} — 5.33 will over-block ~18k cells");
-                return map;
-            }
-            foreach (var raw in File.ReadLines(path))
-            {
-                var line = raw.Trim();
-                if (line.Length == 0 || line[0] == '#') continue;
-                var p = line.Split(',');
-                if (p.Length < 7 || !ushort.TryParse(p[0], out var id)
-                    || !ushort.TryParse(p[2], out var rep)) continue;
-                var scope = p[6].Trim().ToLowerInvariant() switch
+                if (row.FieldCount < 7
+                    || !ushort.TryParse(row.Require("Legacy"), out var id)
+                    || !ushort.TryParse(row.Require("Replacement"), out var rep)) continue;
+                var scope = row.Require("Scope").Trim().ToLowerInvariant() switch
                 {
                     "free"       => Obj533Scope.Free,
                     "decor"      => Obj533Scope.Decor,
@@ -231,6 +278,7 @@ public static class TileTranslation
                     _            => Obj533Scope.All,
                 };
                 map[id] = new Obj533Fix(rep, scope);
+                row.Keep();
             }
             int active = map.Count(kv => kv.Value.Scope <= ObjFixScope);
             Log.Info($"   .. Obj533Fix: {map.Count} objects known, {active} active at scope={ObjFixScope}");
@@ -255,32 +303,30 @@ public static class TileTranslation
         if (ver != Session.ClientVersion.V533)
             return $"4.95 raw ground word objOff={ObjectOffset(ver)}";
         string src = LegacyGroundOff is null ? "" : " (P1998_TILE_OFF override)";
-        return $"5.33 sheet1Off={GroundOffset(ver)}{src} sheet2Lut={Sheet2.Count} objOff={ObjectOffset(ver)} " +
+        return $"5.33 sheet1Off={GroundOffset(ver)}{src} sheet2Lut={CurrentTables.Sheet2.Count} objOff={ObjectOffset(ver)} " +
                $"objFix={Obj533FixCount}@{ObjFixScope}";
     }
 
     /// <summary>Reads <c>game-data/Tile533Map.csv</c> (run-length: <c>startLegacy,count,start533</c>).</summary>
-    private static IReadOnlyDictionary<ushort, ushort> LoadSheet2()
+    private static CsvTable OpenSheet2() => Csv.Open(
+        "Tile533Map.csv",
+        RepoPaths.GameData("P1998_TILE533_MAP", "Tile533Map.csv"),
+        "StartLegacy", "Count", "Start533");
+
+    private static IReadOnlyDictionary<ushort, ushort> ParseSheet2(CsvTable csv)
     {
         var map = new Dictionary<ushort, ushort>();
-        var path = Shared.RepoPaths.GameData("P1998_TILE533_MAP", "Tile533Map.csv");
         try
         {
-            if (!File.Exists(path))
+            foreach (var row in csv)
             {
-                Log.Info($"   !! Tile533Map.csv not found at {path} — 5.33 sheet-2 cells (30% of terrain) will be blank");
-                return map;
-            }
-            foreach (var raw in File.ReadLines(path))
-            {
-                var line = raw.Trim();
-                if (line.Length == 0 || line[0] == '#') continue;
-                var p = line.Split(',');
-                if (p.Length != 3
-                    || !int.TryParse(p[0], out var start) || !int.TryParse(p[1], out var count)
-                    || !int.TryParse(p[2], out var target)) continue;
+                if (row.FieldCount != 3
+                    || !int.TryParse(row.Require("StartLegacy"), out var start)
+                    || !int.TryParse(row.Require("Count"), out var count)
+                    || !int.TryParse(row.Require("Start533"), out var target)) continue;
                 for (int i = 0; i < count; i++)
                     map[(ushort)(start + i)] = (ushort)(target + i);
+                row.Keep();
             }
             Log.Info($"   .. Tile533Map: {map.Count} sheet-2 tiles -> 5.33 frames");
         }

@@ -6,7 +6,7 @@
 //
 // Column semantics mirror Server/Content.cs's loaders (LoadWarps, LoadSpawns,
 // LoadAreaSpawns, LoadWorldTriggers, LoadWorldDests) — that file is the authority.
-using System.Text;
+using Shared;
 
 namespace MapEditor;
 
@@ -17,14 +17,14 @@ public static class Markers
         string P(string f) => Path.Combine(gameData, f);
 
         var mobNames = new Dictionary<int, string>();
-        foreach (var r in ReadCsv(P("mobs.csv")))
+        foreach (var r in OpenCsv(P("mobs.csv")))
             if (Int(r, "MobId", out var mid))
                 mobNames[mid] = Str(r, "Description") is { Length: > 0 } d ? d : Str(r, "Identifier");
         string MobName(int mob) => mobNames.GetValueOrDefault(mob, "");
 
         var warpsOut = new List<object>();
         var warpsIn = new List<object>();
-        foreach (var r in ReadCsv(P("Warps.csv")))
+        foreach (var r in OpenCsv(P("Warps.csv")))
         {
             if (!Int(r, "SourceMapId", out var sm) || !Int(r, "SourceX", out var sx) || !Int(r, "SourceY", out var sy)
                 || !Int(r, "DestinationMapId", out var dm) || !Int(r, "DestinationX", out var dx) || !Int(r, "DestinationY", out var dy))
@@ -40,7 +40,7 @@ public static class Markers
         // A trigger row is a thin band: the fixed axis in [FixedLo,FixedHi], the other axis
         // in [RangeLo,RangeHi] (stepping onto any of these cells opens the world-map screen).
         var world = new List<object>();
-        foreach (var r in ReadCsv(P("WorldMapTriggers.csv")))
+        foreach (var r in OpenCsv(P("WorldMapTriggers.csv")))
         {
             if (!Int(r, "Map", out var m) || m != id) continue;
             bool fixedIsX = !Str(r, "FixedAxis").Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase);
@@ -52,12 +52,12 @@ public static class Markers
         }
 
         var worldArrivals = new List<object>();
-        foreach (var r in ReadCsv(P("WorldMapDests.csv")))
+        foreach (var r in OpenCsv(P("WorldMapDests.csv")))
             if (Int(r, "Map", out var m) && m == id && Int(r, "X", out var x) && Int(r, "Y", out var y))
                 worldArrivals.Add(new { x, y, name = Str(r, "Name") });
 
         var spawns = new List<object>();
-        foreach (var r in ReadCsv(P("Spawns.csv")))
+        foreach (var r in OpenCsv(P("Spawns.csv")))
             if (Int(r, "SpnMapId", out var m) && m == id
                 && Int(r, "SpnMobId", out var mob) && Int(r, "SpnX", out var x) && Int(r, "SpnY", out var y))
                 spawns.Add(new { x, y, mob, name = MobName(mob) });
@@ -65,14 +65,14 @@ public static class Markers
         // All-zero box = "anywhere walkable on the map" (Server/World.cs Spawn.MinX comment).
         var areas = new List<object>();
         foreach (var file in new[] { "AreaSpawns.csv", "AreaSpawnsTrap.csv" })
-            foreach (var r in ReadCsv(P(file)))
+            foreach (var r in OpenCsv(P(file)))
                 if (Int(r, "Map", out var m) && m == id && Int(r, "MobId", out var mob) && Int(r, "Count", out var count)
                     && Int(r, "MinX", out var x0) && Int(r, "MinY", out var y0)
                     && Int(r, "MaxX", out var x1) && Int(r, "MaxY", out var y1))
                     areas.Add(new { x0, y0, x1, y1, count, mob, name = MobName(mob) });
 
         var npcs = new List<object>();
-        foreach (var r in ReadCsv(P("NPCs.csv")))
+        foreach (var r in OpenCsv(P("NPCs.csv")))
         {
             if (!Int(r, "NpcMapId", out var m) || m != id) continue;
             if (Str(r, "NpcIsF1Npc") == "1") continue;      // virtual, has no world tile
@@ -85,7 +85,7 @@ public static class Markers
         // players see there differs from the shipped file the editor renders. Null = the
         // column was blank (inherits from the .map).
         var overrides = new List<object>();
-        foreach (var r in ReadCsv(P("MapCells.csv")))
+        foreach (var r in OpenCsv(P("MapCells.csv")))
         {
             if (!Int(r, "Map", out var m) || m != id) continue;
             if (!Int(r, "X", out var x) || !Int(r, "Y", out var y)) continue;
@@ -104,7 +104,7 @@ public static class Markers
         // rightward; ForceOpen tiles are authored walkable with no object.
         var defaultClosed = new List<object>();
         var forceOpen = new List<object>();
-        foreach (var r in ReadCsv(P("Doors.csv")))
+        foreach (var r in OpenCsv(P("Doors.csv")))
         {
             if (!Int(r, "Map", out var m) || m != id) continue;
             if (!Int(r, "X", out var x) || !Int(r, "Y", out var y)) continue;
@@ -126,7 +126,7 @@ public static class Markers
     public static List<object> Mobs(string gameData)
     {
         var mobs = new List<object>();
-        foreach (var r in ReadCsv(Path.Combine(gameData, "mobs.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "mobs.csv")))
             if (Int(r, "MobId", out var id))
                 mobs.Add(new { id, name = Str(r, "Description") is { Length: > 0 } d ? d : Str(r, "Identifier") });
         return mobs;
@@ -138,7 +138,7 @@ public static class Markers
     public static Dictionary<int, int> DoorDefaultOpen(string gameData)
     {
         var open = new Dictionary<int, int>();
-        foreach (var r in ReadCsv(Path.Combine(gameData, "DoorObjects.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "DoorObjects.csv")))
         {
             if (Str(r, "kind").Trim() != "map" || Str(r, "defaultOpen").Trim() != "1") continue;
             if (!Int(r, "lo", out var lo)) continue;
@@ -155,7 +155,7 @@ public static class Markers
     public static HashSet<int> ReservedMapIds(string gameData)
     {
         var ids = new HashSet<int>();
-        foreach (var r in ReadCsv(Path.Combine(gameData, "Maps.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "Maps.csv")))
             if (Int(r, "MapId", out var id)) ids.Add(id);
         return ids;
     }
@@ -164,7 +164,7 @@ public static class Markers
     public static int MaxWarpId(string gameData)
     {
         int max = 0;
-        foreach (var r in ReadCsv(Path.Combine(gameData, "Warps.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "Warps.csv")))
             if (Int(r, "WarpId", out var wid) && wid > max) max = wid;
         return max;
     }
@@ -173,7 +173,7 @@ public static class Markers
     public static List<object> NpcTemplates(string gameData)
     {
         var npcs = new List<object>();
-        foreach (var r in ReadCsv(Path.Combine(gameData, "NPCs.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "NPCs.csv")))
             if (Int(r, "NpcId", out var id))
                 npcs.Add(new
                 {
@@ -189,13 +189,7 @@ public static class Markers
     /// <summary>The header row of a CSV (for emitting new rows in the file's own column order).</summary>
     public static string[] CsvHeader(string path)
     {
-        foreach (var line in File.ReadLines(path))
-        {
-            if (line.Length == 0) continue;
-            var cols = SplitCsv(line);
-            if (cols.Length > 0 && !cols[0].StartsWith('#')) return cols;
-        }
-        return Array.Empty<string>();
+        return OpenCsv(path).Header.ToArray();
     }
 
     /// <summary>All NPCs.csv rows keyed by NpcId, plus the highest id (for numbering new rows).</summary>
@@ -203,10 +197,11 @@ public static class Markers
     {
         var byId = new Dictionary<int, Dictionary<string, string>>();
         int max = 0;
-        foreach (var r in ReadCsv(Path.Combine(gameData, "NPCs.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "NPCs.csv")))
             if (Int(r, "NpcId", out var id))
             {
-                byId[id] = r;
+                byId[id] = r.ToDictionary().ToDictionary(kv => kv.Key, kv => kv.Value,
+                    StringComparer.OrdinalIgnoreCase);
                 if (id > max) max = id;
             }
         return (byId, max);
@@ -216,51 +211,12 @@ public static class Markers
     public static int MaxSpawnId(string gameData)
     {
         int max = 0;
-        foreach (var r in ReadCsv(Path.Combine(gameData, "Spawns.csv")))
+        foreach (var r in OpenCsv(Path.Combine(gameData, "Spawns.csv")))
             if (Int(r, "SpnId", out var sid) && sid > max) max = sid;
         return max;
     }
 
-    static string Str(Dictionary<string, string> r, string key) => r.GetValueOrDefault(key, "");
-    static bool Int(Dictionary<string, string> r, string key, out int v) => int.TryParse(r.GetValueOrDefault(key), out v);
-
-    // Header-keyed rows; quote-aware enough for these files (quoted fields, "" escapes,
-    // full-line # comments — quoted or not). No multi-line fields exist in game-data.
-    static IEnumerable<Dictionary<string, string>> ReadCsv(string path)
-    {
-        if (!File.Exists(path)) yield break;
-        string[]? hdr = null;
-        foreach (var line in File.ReadLines(path))
-        {
-            if (line.Length == 0) continue;
-            var cols = SplitCsv(line);
-            if (cols.Length == 0 || cols[0].StartsWith('#')) continue;
-            if (hdr is null) { hdr = cols; continue; }
-            var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < hdr.Length && i < cols.Length; i++) row[hdr[i]] = cols[i];
-            yield return row;
-        }
-    }
-
-    static string[] SplitCsv(string line)
-    {
-        var cells = new List<string>();
-        var sb = new StringBuilder();
-        bool quoted = false;
-        for (int i = 0; i < line.Length; i++)
-        {
-            char c = line[i];
-            if (quoted)
-            {
-                if (c == '"' && i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
-                else if (c == '"') quoted = false;
-                else sb.Append(c);
-            }
-            else if (c == '"') quoted = true;
-            else if (c == ',') { cells.Add(sb.ToString()); sb.Clear(); }
-            else sb.Append(c);
-        }
-        cells.Add(sb.ToString());
-        return cells.ToArray();
-    }
+    static string Str(CsvRow r, string key) => r.Require(key, "");
+    static bool Int(CsvRow r, string key, out int v) => int.TryParse(r.Require(key), out v);
+    static CsvTable OpenCsv(string path) => Csv.Open(Path.GetFileName(path), path);
 }

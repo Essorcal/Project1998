@@ -168,6 +168,121 @@ public class ContentReloadTests
     }
 
     [Fact]
+    public void RealMidLoadFailureKeepsObjectFlagsAndTileTranslations()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "project1998-external-content-failure-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string oldOverrides = Path.Combine(dir, "old-overrides.csv");
+            string newOverrides = Path.Combine(dir, "new-overrides.csv");
+            string oldObj533 = Path.Combine(dir, "old-obj533.csv");
+            string newObj533 = Path.Combine(dir, "new-obj533.csv");
+            string oldSheet2 = Path.Combine(dir, "old-sheet2.csv");
+            string newSheet2 = Path.Combine(dir, "new-sheet2.csv");
+            string caves = Path.Combine(dir, "MythicCaves.csv");
+            File.WriteAllText(oldOverrides, "60000,0x01,old\n");
+            File.WriteAllText(newOverrides, "60001,0x02,new\n");
+            File.WriteAllText(oldObj533, "60000,suppress,0,0,0,0,structural\n");
+            File.WriteAllText(newObj533, "60001,suppress,0,0,0,0,structural\n");
+            File.WriteAllText(oldSheet2, "60000,1,61000\n");
+            File.WriteAllText(newSheet2, "60001,1,61001\n");
+            File.WriteAllText(caves,
+                "Animal,EntranceMap,EntranceTiles,DestMap,DestX,DestY,T1Level,T1Vita,T1Mana,T2Level,T2Vita,T2Mana,T3Level,T3Vita,T3Mana,Sources\n" +
+                "Broken,41,1:1;1:1,201,1,1,1,0,0,1,0,0,1,0,0,test\n");
+
+            string? previousOverrides = Environment.GetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES");
+            string? previousObj533 = Environment.GetEnvironmentVariable("P1998_OBJ533_FIX");
+            string? previousSheet2 = Environment.GetEnvironmentVariable("P1998_TILE533_MAP");
+            string? previousCaves = Environment.GetEnvironmentVariable("P1998_MYTHIC_CAVES");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", oldOverrides);
+                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", oldObj533);
+                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", oldSheet2);
+                TestProcessState.LoadContent();
+
+                Assert.Equal((60000, (byte)1), Assert.Single(ObjectFlags.OverridesForTests));
+                Assert.Equal((ushort)60000, Assert.Single(TileTranslation.Obj533ForTests).Legacy);
+                Assert.Equal((ushort)61000, TileTranslation.Sheet2ForTests[60000]);
+
+                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", newOverrides);
+                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", newObj533);
+                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", newSheet2);
+                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", caves);
+
+                var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
+
+                Assert.Contains("Reload failed (previous content kept).", error.Message);
+                Assert.Equal((60000, (byte)1), Assert.Single(ObjectFlags.OverridesForTests));
+                Assert.Equal((ushort)60000, Assert.Single(TileTranslation.Obj533ForTests).Legacy);
+                Assert.Equal((ushort)61000, TileTranslation.Sheet2ForTests[60000]);
+                Assert.False(TileTranslation.Sheet2ForTests.ContainsKey(60001));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", previousOverrides);
+                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", previousObj533);
+                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", previousSheet2);
+                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", previousCaves);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
+            }
+        }
+    }
+
+    [Fact]
+    public void SuccessfulReloadPublishesObjectFlagsAndTileTranslations()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "project1998-external-content-success-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string oldOverrides = Path.Combine(dir, "old-overrides.csv");
+            string newOverrides = Path.Combine(dir, "new-overrides.csv");
+            string oldObj533 = Path.Combine(dir, "old-obj533.csv");
+            string newObj533 = Path.Combine(dir, "new-obj533.csv");
+            string oldSheet2 = Path.Combine(dir, "old-sheet2.csv");
+            string newSheet2 = Path.Combine(dir, "new-sheet2.csv");
+            File.WriteAllText(oldOverrides, "60000,0x01,old\n");
+            File.WriteAllText(newOverrides, "60001,0x02,new\n");
+            File.WriteAllText(oldObj533, "60000,suppress,0,0,0,0,structural\n");
+            File.WriteAllText(newObj533, "60001,suppress,0,0,0,0,structural\n");
+            File.WriteAllText(oldSheet2, "60000,1,61000\n");
+            File.WriteAllText(newSheet2, "60001,1,61001\n");
+
+            string? previousOverrides = Environment.GetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES");
+            string? previousObj533 = Environment.GetEnvironmentVariable("P1998_OBJ533_FIX");
+            string? previousSheet2 = Environment.GetEnvironmentVariable("P1998_TILE533_MAP");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", oldOverrides);
+                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", oldObj533);
+                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", oldSheet2);
+                TestProcessState.LoadContent();
+
+                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", newOverrides);
+                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", newObj533);
+                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", newSheet2);
+                Content.Reload();
+
+                Assert.Equal((60001, (byte)2), Assert.Single(ObjectFlags.OverridesForTests));
+                Assert.Equal((ushort)60001, Assert.Single(TileTranslation.Obj533ForTests).Legacy);
+                Assert.Equal((ushort)61001, TileTranslation.Sheet2ForTests[60001]);
+                Assert.False(TileTranslation.Sheet2ForTests.ContainsKey(60000));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", previousOverrides);
+                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", previousObj533);
+                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", previousSheet2);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
+            }
+        }
+    }
+
+    [Fact]
     public void ReaderNeverSeesItemsWithoutMatchingIndexDuringReload()
     {
         const int reloadCount = 10;

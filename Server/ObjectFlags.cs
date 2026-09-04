@@ -1,3 +1,5 @@
+using Shared;
+
 namespace Server;
 
 /// <summary>
@@ -39,12 +41,28 @@ public static class ObjectFlags
     public const byte Up = 1, Down = 2, Right = 4, Left = 8;
 
     private static byte[]? _flags;
+    private static IReadOnlyList<(int Id, byte Flag)>? _overrides;
     private static readonly object _lock = new();
 
-    /// <summary>Drop the cached table so the next <see cref="Flag"/> re-reads SObj.tbl AND
-    /// <c>game-data/ObjectFlagOverrides.csv</c>. Called from the hot-reload path (<c>@reload</c>) alongside
-    /// <see cref="MapData.Invalidate"/>, so an added walkable-override row takes effect without a restart.</summary>
+    /// <summary>Drop the cached SObj table so the next <see cref="Flag"/> reapplies the overrides most
+    /// recently staged by <c>Content.Load</c>. Called from the hot-reload path (<c>@reload</c>) alongside
+    /// <see cref="MapData.Invalidate"/>.</summary>
     public static void Invalidate() { lock (_lock) _flags = null; }
+
+    internal sealed record PreparedOverrides(IReadOnlyList<(int Id, byte Flag)> Value);
+
+    /// <summary>Parse the report-owned override table without changing the live SObj flags.</summary>
+    internal static PreparedOverrides PrepareOverrides(CsvTable csv) => new(ParseOverrides(csv));
+
+    /// <summary>Publish prepared overrides and make the next SObj access rebuild against them.</summary>
+    internal static void CommitOverrides(PreparedOverrides prepared)
+    {
+        lock (_lock)
+        {
+            _overrides = prepared.Value;
+            _flags = null;
+        }
+    }
 
     /// <summary>The SObj.tbl flag byte for an object-tile id (0 if unknown / no object / table missing).</summary>
     public static byte Flag(int objId)
@@ -101,7 +119,7 @@ public static class ObjectFlags
                 // its own copy of this table, so each id here must also be patched into the client's .dat
                 // (re/patch_sobj_flags.py) or the client still refuses the step.
                 int applied = 0;
-                foreach (var (id, flag) in FlagOverrides())
+                foreach (var (id, flag) in Overrides())
                     if (id >= 0 && id < flags.Length && flags[id] != flag) { flags[id] = flag; applied++; }
                 Log.Info($"   -> loaded SObj.tbl ({count} objects) from {path}" +
                          (applied > 0 ? $" — {applied} sprite flag(s) overridden by ObjectFlagOverrides.csv" : ""));
@@ -120,35 +138,39 @@ public static class ObjectFlags
     /// <c>re/patch_sobj_flags.py</c>, which reads the same file so the client patch and the server override
     /// can never disagree. A missing or unreadable file just means no overrides — never fatal, same as every
     /// other optional content file.</summary>
-    private static List<(int Id, byte Flag)> FlagOverrides()
+    private static IReadOnlyList<(int Id, byte Flag)> Overrides()
+    {
+        if (_overrides is not null) return _overrides;
+        return _overrides = ParseOverrides(Csv.Open(
+            "ObjectFlagOverrides.csv",
+            RepoPaths.GameData("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv"),
+            "Obj", "Flag", "Note"));
+    }
+
+    internal static IReadOnlyList<(int Id, byte Flag)> OverridesForTests
+    {
+        get { lock (_lock) return Overrides().ToArray(); }
+    }
+
+    private static List<(int Id, byte Flag)> ParseOverrides(CsvTable csv)
     {
         var rows = new List<(int, byte)>();
-        var path = Path.Combine(Shared.RepoPaths.GameDataDir(), "ObjectFlagOverrides.csv");
-        try
+        foreach (var row in csv)
         {
-            // TODO(#35): the catch below reports a read failure, but this line does not report a file that
-            // is simply absent, and ObjectFlagOverrides.csv is in no Content.LoadReport — one of the three
-            // game-data CSVs outside it. Reading it through Shared/Csv.cs closes both. See #35.
-            if (!File.Exists(path)) return rows;
-            foreach (var raw in File.ReadAllLines(path))
+            if (row.FieldCount < 2) continue;
+            if (!int.TryParse(row.Require("Obj").Trim(), out var id)) continue;
+            var f = row.Require("Flag").Trim();
+            bool hex = f.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+            if (!byte.TryParse(hex ? f.AsSpan(2) : f,
+                               hex ? System.Globalization.NumberStyles.HexNumber : System.Globalization.NumberStyles.Integer,
+                               null, out var flag))
             {
-                var line = raw.Trim();
-                if (line.Length == 0 || line[0] == '#') continue;
-                var col = line.Split(',');
-                if (col.Length < 2 || !int.TryParse(col[0].Trim(), out var id)) continue;   // header skips itself
-                var f = col[1].Trim();
-                bool hex = f.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
-                if (!byte.TryParse(hex ? f.AsSpan(2) : f,
-                                   hex ? System.Globalization.NumberStyles.HexNumber : System.Globalization.NumberStyles.Integer,
-                                   null, out var flag))
-                {
-                    Log.Info($"   !! ObjectFlagOverrides.csv: object {id} has unparseable flag '{f}' — row skipped");
-                    continue;
-                }
-                rows.Add((id, flag));
+                Log.Info($"   !! ObjectFlagOverrides.csv: object {id} has unparseable flag '{f}' — row skipped");
+                continue;
             }
+            rows.Add((id, flag));
+            row.Keep();
         }
-        catch (Exception e) { Log.Warn("ObjectFlagOverrides.csv read failed — no flag overrides", e); }
         return rows;
     }
 
