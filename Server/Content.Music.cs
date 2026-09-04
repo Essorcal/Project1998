@@ -110,19 +110,22 @@ public static partial class Content
     //   3. warp-graph spill     -> multi-source BFS from everything claimed above, so each remaining map
     //                             takes its NEAREST claimed map's track (Buya's shops/caves become Tiger
     //                             without being listed; a login inside one starts on the right song)
-    private static Dictionary<ushort, BgmPick> BuildBgmMap()
+    private static Dictionary<ushort, BgmPick> BuildBgmMap(
+        IReadOnlyList<BgmZone> bgmZones,
+        IReadOnlyDictionary<ushort, MapInfo> maps,
+        IReadOnlyDictionary<(ushort m, ushort x, ushort y), (ushort m, ushort x, ushort y)> warps)
     {
         var byMap = new Dictionary<ushort, BgmPick>();
 
-        foreach (var z in BgmZones)
+        foreach (var z in bgmZones)
             foreach (var (lo, hi) in z.Maps)
                 for (int id = lo; id <= hi; id++)
-                    if ((Maps.ContainsKey((ushort)id) || lo == hi) && !byMap.ContainsKey((ushort)id))
+                    if ((maps.ContainsKey((ushort)id) || lo == hi) && !byMap.ContainsKey((ushort)id))
                         byMap[(ushort)id] = new BgmPick(z.Track, z.Type, z.Track5x, z.Type5x, z.Zone, 0);
 
-        foreach (var z in BgmZones)
+        foreach (var z in bgmZones)
             foreach (var pat in z.Names)
-                foreach (var m in Maps.Values)
+                foreach (var m in maps.Values)
                     if (!byMap.ContainsKey(m.Id) && GlobMatch(m.Name, pat))
                         byMap[m.Id] = new BgmPick(z.Track, z.Type, z.Track5x, z.Type5x, z.Zone, 0);
 
@@ -135,14 +138,14 @@ public static partial class Content
             if (!adj.TryGetValue(a, out var l)) adj[a] = l = new List<ushort>();
             if (!l.Contains(b)) l.Add(b);
         }
-        foreach (var (from, to) in Warps)
+        foreach (var (from, to) in warps)
         {
-            if (!Maps.ContainsKey(from.m) || !Maps.ContainsKey(to.m)) continue;
+            if (!maps.ContainsKey(from.m) || !maps.ContainsKey(to.m)) continue;
             Link(from.m, to.m);
             Link(to.m, from.m);
         }
 
-        var queue = new Queue<ushort>(byMap.Keys.Where(Maps.ContainsKey).OrderBy(id => id));
+        var queue = new Queue<ushort>(byMap.Keys.Where(maps.ContainsKey).OrderBy(id => id));
         while (queue.Count > 0)
         {
             var cur = queue.Dequeue();
