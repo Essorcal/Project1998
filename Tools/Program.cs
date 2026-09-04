@@ -11,6 +11,14 @@ if (args is ["readme-tables", ..])
 {
     string readmePath = args.Length > 1 ? args[1] : Path.Combine(RepoPaths.GameDataDir(), "README.md");
     Content.Load();
+    string generated;
+    int csvCount;
+    try { generated = Content.RenderTableReadmeBlock(out csvCount); }
+    catch (InvalidOperationException e)
+    {
+        Console.Error.WriteLine(e.Message);
+        return 1;
+    }
     string readme = File.ReadAllText(readmePath).Replace("\r\n", "\n", StringComparison.Ordinal);
     int start = readme.IndexOf(Content.TableReadmeStartMarker, StringComparison.Ordinal);
     int end = readme.IndexOf(Content.TableReadmeEndMarker, StringComparison.Ordinal);
@@ -20,9 +28,9 @@ if (args is ["readme-tables", ..])
         return 1;
     }
     end += Content.TableReadmeEndMarker.Length;
-    string updated = readme[..start] + Content.RenderTableReadmeBlock() + readme[end..];
+    string updated = readme[..start] + generated + readme[end..];
     File.WriteAllText(readmePath, updated, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-    Console.WriteLine($"wrote 68 CSV table rows to {readmePath}");
+    Console.WriteLine($"wrote {csvCount} CSV table rows to {readmePath}");
     return 0;
 }
 

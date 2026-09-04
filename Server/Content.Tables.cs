@@ -225,15 +225,30 @@ public static partial class Content
     }
 
     /// <summary>Render the generated README block from the declared CSV specs and the last load report.</summary>
-    public static string RenderTableReadmeBlock()
+    public static string RenderTableReadmeBlock() => RenderTableReadmeBlock(out _);
+
+    /// <summary>Render the generated README block, refusing a degraded load so bad counts cannot be committed.</summary>
+    public static string RenderTableReadmeBlock(out int csvCount)
     {
+        var csvSpecs = TableSpecs.Where(spec => spec.Kind == ContentTableKind.Csv).ToArray();
+        csvCount = csvSpecs.Length;
+        var problems = csvSpecs
+            .Select(spec => (Spec: spec, Load: LoadReport[spec.File]))
+            .Where(entry => entry.Load is null || !entry.Load.Ok)
+            .Select(entry => entry.Load?.Problem ?? $"{entry.Spec.File}: absent from the load report")
+            .ToArray();
+        if (problems.Length > 0)
+            throw new InvalidOperationException(
+                "README table generation refused because CSV content did not load cleanly:\n" +
+                string.Join('\n', problems));
+
         var lines = new List<string>
         {
             TableReadmeStartMarker,
             "| File | Environment override | Rows read | Rows kept | Header |",
             "|---|---|---:|---:|---|",
         };
-        foreach (var spec in TableSpecs.Where(spec => spec.Kind == ContentTableKind.Csv))
+        foreach (var spec in csvSpecs)
         {
             var load = LoadReport[spec.File]
                 ?? throw new InvalidOperationException($"Load report has no entry for {spec.File}");

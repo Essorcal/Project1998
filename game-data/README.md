@@ -1,6 +1,6 @@
 # game-data — the content registry
 
-Everything the game *is*, as opposed to how it works: 66 CSVs, 4 Lua scripts, 1,840 `.map` terrain files
+Everything the game *is*, as opposed to how it works: 71 CSVs, 4 Lua scripts, 1,840 `.map` terrain files
 and `SObj.tbl`. Read-only to a running server, hot-reloadable with the `@reload` GM command, and replaced
 wholesale by a deploy.
 
@@ -35,6 +35,9 @@ Regenerable via the `re/*.py` extractors — `re/rtk_extract.py`, `re/build_map_
 `re/extract_mob_drops.py`, `re/extract_shops.py`, `re/extract_lua_spawns.py`,
 `re/extract_minor_quests.py`, `re/extract_spell_formulas.py` — each of which writes here. The C# loader
 in `Server/Content.cs` names the script that generated each table in its doc comment.
+
+The generated block covers the 68 CSV files the server loads. `MobEquipment.csv`, `NPCEquipment.csv`
+and `Sources.csv` are extractor output only and are not loaded by the server.
 
 <!-- generated: tables -->
 | File | Environment override | Rows read | Rows kept | Header |
@@ -108,6 +111,14 @@ in `Server/Content.cs` names the script that generated each table in its doc com
 | `Doors.csv` | `P1998_DOORS` | 8 | 8 | from file |
 | `MapCells.csv` | `P1998_MAP_CELLS` | 32 | 29 | from file |
 <!-- /generated -->
+
+Key-column guide: `mobs.csv` uses `MobLook`, `MobLookColor`, `Vita` (HP), `Exp`, `Level`,
+might/grace/will and minimum/maximum damage; `Maps.csv` uses `MapId` (matching the `0x15` map id and
+`maps/TK<MapId>.map`), `MapName`, BGM, indoor, light, PvP and warp-out fields; `Warps.csv` maps source
+map/X/Y to destination map/X/Y; `Spawns.csv` uses `SpnMobId`, `SpnMapId` and `SpnX`/`SpnY`; `NPCs.csv`
+uses `NpcDescription`, map/X/Y, `NpcLook` and `NpcLookColor`; `Items.csv` uses `ItmDescription`, `ItmType`,
+`ItmLook`, damage, armor, stats and buy/sell price; `Spells.csv` holds spell and skill definitions; and
+`Paths.csv` holds class names and rank titles.
 
 ## Version caveats (RTK is 7.x, our client is 4.95)
 

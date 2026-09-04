@@ -63,6 +63,31 @@ public sealed class TableSpecTests
         }
     }
 
+    [Fact]
+    public void ReadmeRendererRejectsAFailedCsvLoad()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string missing = Path.Combine(Path.GetTempPath(), $"p1998-readme-not-here-{Guid.NewGuid():N}.csv");
+            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_FLEES");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_FLEES", missing);
+                TestProcessState.LoadContent();
+
+                var error = Assert.Throws<InvalidOperationException>(() => Content.RenderTableReadmeBlock(out _));
+
+                Assert.Contains("MobFlees.csv", error.Message);
+                Assert.Contains("FILE NOT FOUND", error.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_FLEES", previous);
+                TestProcessState.LoadContent();
+            }
+        }
+    }
+
     /// <summary>The pre-load fallbacks use the same spec objects as <see cref="Content.Load"/>. Changing a
     /// spec's environment-variable name must redirect the fallback without changing the fallback itself.</summary>
     [Fact]
