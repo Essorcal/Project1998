@@ -62,6 +62,9 @@ public static partial class Content
             }
 
             ObjectFlags.ReloadOverrides(T("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv"));
+            TileTranslation.Reload(
+                T("P1998_OBJ533_FIX", "Obj533Fix.csv"),
+                T("P1998_TILE533_MAP", "Tile533Map.csv"));
             var maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
             Maps = maps;
             var mobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));
