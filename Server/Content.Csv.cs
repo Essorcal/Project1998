@@ -101,7 +101,10 @@ public static partial class Content
         return still;
     }
 
-    private static List<MobDef> LoadMobs(CsvTable csv)
+    private static List<MobDef> LoadMobs(
+        CsvTable csv,
+        IReadOnlyDictionary<string, bool> fleeOverrides,
+        IReadOnlyDictionary<string, bool> stationaryOverrides)
     {
         var mobs = new List<MobDef>();
         foreach (var col in csv)
@@ -134,8 +137,8 @@ public static partial class Content
             int spawnTime = int.TryParse(col.Require("SpawnTime", ""), out var st) && st >= 0
                 ? st : DefaultSpawnTimeSec;
             mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace,
-                Flees: MobFleeOverrides.GetValueOrDefault(key),
-                Stationary: MobStationaryOverrides.GetValueOrDefault(key),
+                Flees: fleeOverrides.GetValueOrDefault(key),
+                Stationary: stationaryOverrides.GetValueOrDefault(key),
                 SpawnTime: spawnTime));
             col.Keep();
         }
@@ -331,7 +334,9 @@ public static partial class Content
     }
     private static bool IsExcludedMap(ushort map) => Array.Exists(ExcludedMapRanges, r => map >= r.lo && map <= r.hi);
 
-    private static Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)> LoadWarps(CsvTable csv)
+    private static Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)> LoadWarps(
+        CsvTable csv,
+        IReadOnlyDictionary<ushort, MapInfo> maps)
     {
         var warps = new Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)>();
         foreach (var col in csv)
@@ -342,7 +347,7 @@ public static partial class Content
                 && ushort.TryParse(col.Require("DestinationMapId"), out var dm)
                 && ushort.TryParse(col.Require("DestinationX"), out var dx)
                 && ushort.TryParse(col.Require("DestinationY"), out var dy)
-                && Maps.ContainsKey(dm)            // don't warp to a map the client can't render
+                && maps.ContainsKey(dm)            // don't warp to a map the client can't render
                 && !IsExcludedMap(sm) && !IsExcludedMap(dm))
             {
                 warps[(sm, sx, sy)] = (dm, dx, dy);   // last write wins on duplicate source tiles
@@ -471,7 +476,9 @@ public static partial class Content
     // sit on a real tile (skip the (0,0) placeholders — f1npc, treasure portals — which aren't placed beings).
     // Look is the creature sprite; the world draws them via the same 0x07 path as a mob (see World.PopulateNpcs).
     // The Enabled column (default 1) is the spawn on/off switch — a disabled NPC keeps its row but World skips it.
-    private static List<NpcDef> LoadNpcs(CsvTable csv)
+    private static List<NpcDef> LoadNpcs(
+        CsvTable csv,
+        IReadOnlyDictionary<ushort, MapInfo> maps)
     {
         var npcs = new List<NpcDef>();
         foreach (var col in csv)
@@ -485,7 +492,7 @@ public static partial class Content
             int.TryParse(col.Require("NpcMoveTime", "0"), out var move);
             int.TryParse(col.Require("NpcReturnDistance", "0"), out var leash);
             bool Flag(string k) => col.Require(k, "0") == "1";
-            if (!Maps.ContainsKey(map)) continue;        // map the 4.95 client can't render
+            if (!maps.ContainsKey(map)) continue;        // map the 4.95 client can't render
             if (x == 0 && y == 0) continue;              // (0,0) = unplaced placeholder / abstract NPC
             var name = Clean(col.Require("NpcDescription", ""));
             var key = Clean(col.Require("NpcIdentifier", ""));
@@ -509,7 +516,11 @@ public static partial class Content
         return npcs;
     }
 
-    private static Dictionary<int, string> LoadPaths(CsvTable csv)
+    private static (
+        Dictionary<int, string> Paths,
+        Dictionary<int, string[]> Ranks,
+        Dictionary<int, int> Bases,
+        Dictionary<int, int> Icons) LoadPaths(CsvTable csv)
     {
         var paths = new Dictionary<int, string>();
         var ranks = new Dictionary<int, string[]>();
@@ -526,10 +537,7 @@ public static partial class Content
                 icons[id] = int.TryParse(col.Require("PthIcon"), out var ic) ? ic : 0;
                 col.Keep();
             }
-        PathRanks = ranks;
-        PathBase = bases;
-        PathIcon = icons;
-        return paths;
+        return (paths, ranks, bases, icons);
     }
 
     private static Dictionary<(int, string), (int, string)> LoadArmorQuestGates(CsvTable csv)
@@ -779,7 +787,9 @@ public static partial class Content
     // `Track5x` (the 5.x one) are each a MusicTracks.csv name or a raw id; `Maps` is a ';'-separated list of
     // ids and lo-hi ranges; `Names` is a ';'-separated list of map-name globs. The row whose Zone is
     // "Default" is pulled out as the fresh-session fallback (DefaultBgm / DefaultBgmNew).
-    private static (List<BgmZone>, (ushort, byte)?, (ushort, byte)?) LoadBgmZones(CsvTable csv)
+    private static (List<BgmZone>, (ushort, byte)?, (ushort, byte)?) LoadBgmZones(
+        CsvTable csv,
+        IReadOnlyList<MusicTrack> musicTracks)
     {
         var zones = new List<BgmZone>();
         (ushort, byte)? def = null, defNew = null;
@@ -787,10 +797,10 @@ public static partial class Content
         foreach (var col in csv)
         {
             var zone = col.Require("Zone", "").Trim();
-            var track = FindTrack(col.Require("Track", ""));
+            var track = FindTrack(col.Require("Track", ""), MusicSet.Old, musicTracks);
             if (zone.Length == 0 || track is null) continue;
             // No Track5x -> the zone's midi, which 5.33 plays too (its Snd.dat carries the same 12 files).
-            var track5x = FindTrack(col.Require("Track5x", ""), MusicSet.New) ?? track;
+            var track5x = FindTrack(col.Require("Track5x", ""), MusicSet.New, musicTracks) ?? track;
 
             if (zone.Equals("Default", StringComparison.OrdinalIgnoreCase))
             {
@@ -1451,7 +1461,9 @@ public static partial class Content
 
     // Spells/skills. Rows that are section headers (name/ident begins with '=') or inactive (SplActive=0)
     // are skipped — they're book dividers in the RTK data, not castable. SplQuestion "NO" means "no prompt".
-    private static List<SpellDef> LoadSpells(CsvTable csv)
+    private static List<SpellDef> LoadSpells(
+        CsvTable csv,
+        IReadOnlyDictionary<string, int> levelOverrides)
     {
         var spells = new List<SpellDef>();
         foreach (var col in csv)
@@ -1464,7 +1476,7 @@ public static partial class Content
             byte.TryParse(col.Require("SplType", "5"), out var type);
             int.TryParse(col.Require("SplPthId", "0"), out var pth);
             int.TryParse(col.Require("SplLevel", "0"), out var lvl);
-            if (SpellLevelOverrides.TryGetValue(key, out var lvlOverride)) lvl = lvlOverride;
+            if (levelOverrides.TryGetValue(key, out var lvlOverride)) lvl = lvlOverride;
             if (!int.TryParse(col.Require("SplAlignment", "-1"), out var align)) align = -1;
             int.TryParse(col.Require("SplMark", "0"), out var mark);
             // Every mark row carries SplLevel 0 (the rank IS the requirement — there is no level past 99),
