@@ -125,8 +125,7 @@ public static partial class Content
                     if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
             PathIdByNameIndex = pathIdByName;
             PathRankByNameIndex = pathRankByName;
-            var spellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
-            SpellFx = spellFx;
+            SpellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
             SpellTexts = LoadSpellTexts(T("P1998_SPELL_TEXT", "SpellText.csv"));
             SpellCosts = LoadSpellCosts(T("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
             Mob5xPalettes = LoadMob5xPalettes(T("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // (Look,Colour)->Palette, V533-only remap
