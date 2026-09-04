@@ -69,4 +69,34 @@ public sealed class NamedRecordConstructionTests
         Assert.True(value.Enabled);
         Assert.Equal("", value.EraFeature);
     }
+
+    [Fact]
+    public void MobDefCarriesItsDefaults()
+    {
+        var value = new MobDef
+        {
+            Id = 1,
+            Key = "key",
+            Name = "name",
+            Look = 2,
+            Color = 3,
+            Hp = 4,
+            Exp = 5,
+            Level = 6,
+            MoveTime = 7,
+        };
+
+        Assert.Equal(0, value.Will);
+        Assert.False(value.Aggressive);
+        Assert.Equal(1, value.MinDam);
+        Assert.Equal(1, value.MaxDam);
+        Assert.False(value.IsBoss);
+        Assert.Equal(0, value.Protection);
+        Assert.Equal(0, value.Hit);
+        Assert.Equal(0, value.Ac);
+        Assert.Equal(0, value.Grace);
+        Assert.False(value.Flees);
+        Assert.False(value.Stationary);
+        Assert.Equal(Content.DefaultSpawnTimeSec, value.SpawnTime);
+    }
 }

@@ -151,10 +151,30 @@ public static partial class Content
             // it and RTK revives them on the next AI pass — so an explicit 0 is honoured.
             int spawnTime = int.TryParse(col.Require("SpawnTime", ""), out var st) && st >= 0
                 ? st : DefaultSpawnTimeSec;
-            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace,
-                Flees: fleeOverrides.GetValueOrDefault(key),
-                Stationary: stationaryOverrides.GetValueOrDefault(key),
-                SpawnTime: spawnTime));
+            mobs.Add(new MobDef
+            {
+                Id = id,
+                Key = key,
+                Name = name,
+                Look = look,
+                Color = color,
+                Hp = hp <= 0 ? 1 : hp,
+                Exp = exp,
+                Level = lvl,
+                MoveTime = move,
+                Will = will,
+                Aggressive = aggressive,
+                MinDam = minDam,
+                MaxDam = maxDam,
+                IsBoss = isBoss,
+                Protection = protection,
+                Hit = hit,
+                Ac = ac,
+                Grace = grace,
+                Flees = fleeOverrides.GetValueOrDefault(key),
+                Stationary = stationaryOverrides.GetValueOrDefault(key),
+                SpawnTime = spawnTime,
+            });
             col.Keep();
         }
         return mobs;
