@@ -298,8 +298,9 @@ public class MobAiTickTests
     /// (0x07) from <c>ReconcileViews</c> and then its move (0x0C) from phase (4) — and only in that order,
     /// because <c>Session.MoveMob</c> is a no-op for a mob the client has not been shown. Send the move
     /// first and the client never sees the step at all: that is the despawn/off-screen-0x0C desync the
-    /// comment on phase (3) is about. The SWINGER stands adjacent to the watcher and lands its swing, whose
-    /// 0x1A comes out of phase (4.5), after both.</para>
+    /// comment on phase (3) is about. The SWINGER stands adjacent to the watcher but facing away from it, so
+    /// its beat queues a turn and no move: the turn (0x11) comes out of phase (4) after every move, and the
+    /// swing (0x1A) out of phase (4.5) after that.</para>
     ///
     /// <para>Also the nullable-queue pin: this beat tops up no forage box (the map is content-free) and rolls
     /// no weather period (the warm-up beat below syncs it first), so <c>TickQueues.Forage</c> and
@@ -307,10 +308,14 @@ public class MobAiTickTests
     /// stepper's spawn, not a forage placement, which draws through the same opcode) and no 0x1F at all.</para>
     ///
     /// <para>Deterministic: the stepper is outside its two-tile leash on the same column as its home, so the
-    /// walk-home step has one candidate direction and rolls nothing; the swinger is cardinally adjacent and
-    /// already facing the watcher, so it swings on its first beat (<c>AttackTime = 1</c>) instead of stepping
-    /// or turning. Falsified by moving the <c>q.Hits</c> loop above <c>ReconcileViews()</c> in
-    /// <c>FlushTick</c>: red with "the move must precede the swing (move at 6, swing at 0)".</para></summary>
+    /// walk-home step has one candidate direction and rolls nothing; the swinger is cardinally adjacent, so
+    /// it turns to face the watcher and swings on its first beat (<c>AttackTime = 1</c>) rather than stepping.
+    ///
+    /// <para>Falsified three ways, each restored afterwards. Moving the <c>q.Hits</c> loop above
+    /// <c>ReconcileViews()</c> in <c>FlushTick</c>: red with "the move must precede the swing (move at 6,
+    /// swing at 0)". Moving the <c>q.Turns</c> loop above <c>q.Moves</c>: red with "the move must precede the
+    /// turn (move at 2, turn at 1)". Moving the <c>q.Hits</c> loop above <c>q.Turns</c>: red with "the turn
+    /// must precede the swing (turn at 7, swing at 2)".</para></summary>
     [Fact]
     public void FlushSendsViewportsThenMovesThenHits()
     {
@@ -331,7 +336,7 @@ public class MobAiTickTests
             {
                 Aggressive = true,
                 AttackTime = 1,   // swings on its first beat, whatever TickMs is configured to
-                Dir = 2,          // already facing the watcher: the swing queues no turn
+                Dir = 0,          // facing AWAY from the watcher, so the swing branch queues a turn first
             });
             outbound.Clear();   // the swinger's own spawn is drawn already; only the beat's traffic from here
 
@@ -341,15 +346,26 @@ public class MobAiTickTests
             Assert.Equal(watcher.PlayerId, swinger.TargetId);                // locked onto the watcher
             Assert.Equal(((ushort)5, (ushort)9), (swinger.X, swinger.Y));    // adjacent: swung, did not step
 
+            Assert.Equal(2, swinger.Dir);                                    // turned to face it before swinging
+
             int spawn = IndexOfFrame(outbound, 0x07, b => BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(6)) == stepper.Id);
             int move  = IndexOfFrame(outbound, 0x0C, b => BinaryPrimitives.ReadUInt32BigEndian(b) == stepper.Id);
+            int turn  = IndexOfFrame(outbound, 0x11, b => BinaryPrimitives.ReadUInt32BigEndian(b) == swinger.Id);
             int swing = IndexOfFrame(outbound, 0x1A, b => BinaryPrimitives.ReadUInt32BigEndian(b) == swinger.Id);
 
             Assert.True(spawn >= 0, "phase (3) should have spawned the stepper into the watcher's view");
             Assert.True(move  >= 0, "phase (4) should have streamed the stepper's move");
+            Assert.True(turn  >= 0, "phase (4) should have streamed the swinger's turn");
             Assert.True(swing >= 0, "phase (4.5) should have sent the swinger's attack pose");
             Assert.True(spawn < move,  $"the viewport spawn must precede the move (spawn at {spawn}, move at {move})");
-            Assert.True(move  < swing, $"the move must precede the swing (move at {move}, swing at {swing})");
+            Assert.True(move  < turn,  $"the move must precede the turn (move at {move}, turn at {turn})");
+            Assert.True(turn  < swing, $"the turn must precede the swing (turn at {turn}, swing at {swing})");
+
+            // The turn is the swinger's, facing south — one turn frame, so "after every move" is exact.
+            var tn = Assert.Single(outbound.BodiesOf(0x11));
+            Assert.Equal(swinger.Id, BinaryPrimitives.ReadUInt32BigEndian(tn));
+            Assert.Equal(2, tn[4]);
+            Assert.Single(outbound.BodiesOf(0x0C));
 
             // The move is the step's SOURCE tile, facing north — the 0x0C overshoot rule.
             var mv = outbound.BodiesOf(0x0C).Single(b => BinaryPrimitives.ReadUInt32BigEndian(b) == stepper.Id);
