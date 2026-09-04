@@ -13,22 +13,13 @@ namespace Server;
 /// </summary>
 public sealed record ItemDef
 {
-    private ushort _icon;
-    private ushort _clientIcon;
+    private ushort? _clientIcon;
 
     public required int Id { get; init; }
     public required string Key { get; init; }
     public required string Name { get; init; }
     public required byte Type { get; init; }
-    public required ushort Icon
-    {
-        get => _icon;
-        init
-        {
-            _icon = value;
-            _clientIcon = value;
-        }
-    }
+    public required ushort Icon { get; init; }
     public required byte IconColor { get; init; }
     public required ushort Look { get; init; }
     public required byte LookColor { get; init; }
@@ -112,7 +103,7 @@ public sealed record ItemDef
     /// from Item.tbl, so a colour variant is a SEPARATE consecutive frame. RTK's (icon, colour) pair is the
     /// later client's encoding of the same thing. Equals <see cref="Icon"/> for everything that isn't part of
     /// a recognised colour run.</summary>
-    public ushort ClientIcon { get => _clientIcon; init => _clientIcon = value; }
+    public ushort ClientIcon { get => _clientIcon ?? Icon; init => _clientIcon = value; }
 
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;

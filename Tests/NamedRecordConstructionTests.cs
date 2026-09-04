@@ -156,5 +156,44 @@ public sealed class NamedRecordConstructionTests
         var resolved = value with { ClientIcon = 22 };
         Assert.Equal(22, resolved.ClientIcon);
         Assert.Equal(value.Icon, resolved.Icon);
+
+        var changedIcon = resolved with { Icon = 23 };
+        Assert.Equal(22, changedIcon.ClientIcon);
+        Assert.Equal(23, changedIcon.Icon);
+    }
+
+    [Fact]
+    public void ItemDefExplicitClientIconIsIndependentOfInitializerOrder()
+    {
+        var explicitBeforeIcon = new ItemDef
+        {
+            Id = 1,
+            Key = "key",
+            Name = "name",
+            Type = 2,
+            ClientIcon = 22,
+            Icon = 3,
+            IconColor = 4,
+            Look = 5,
+            LookColor = 6,
+            Sex = 7,
+            Level = 8,
+            Durability = 9,
+            StackAmount = 10,
+            MaxAmount = 11,
+            Armor = 12,
+            Hit = 13,
+            Dam = 14,
+            Vita = 15,
+            Mana = 16,
+            Might = 17,
+            Will = 18,
+            Grace = 19,
+            NoDrop = true,
+            Thrown = false,
+            BuyPrice = 20,
+            SellPrice = 21,
+        };
+        Assert.Equal(22, explicitBeforeIcon.ClientIcon);
     }
 }
