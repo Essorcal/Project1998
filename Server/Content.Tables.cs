@@ -18,6 +18,9 @@ public sealed record TableSpec(
 
 public static partial class Content
 {
+    public const string TableReadmeStartMarker = "<!-- generated: tables -->";
+    public const string TableReadmeEndMarker = "<!-- /generated -->";
+
     private enum TableId
     {
         ObjectFlagOverrides,
@@ -177,4 +180,27 @@ public static partial class Content
     public static IReadOnlyList<TableSpec> TableSpecifications => TableSpecs;
 
     private static TableSpec Spec(TableId id) => TableSpecs[(int)id];
+
+    /// <summary>Render the generated README block from the declared CSV specs and the last load report.</summary>
+    public static string RenderTableReadmeBlock()
+    {
+        var lines = new List<string>
+        {
+            TableReadmeStartMarker,
+            "| File | Environment override | Rows read | Rows kept | Header |",
+            "|---|---|---:|---:|---|",
+        };
+        foreach (var spec in TableSpecs.Where(spec => spec.Kind == ContentTableKind.Csv))
+        {
+            var load = LoadReport[spec.File]
+                ?? throw new InvalidOperationException($"Load report has no entry for {spec.File}");
+            string header = spec.Header is null
+                ? "from file"
+                : $"supplied (`{string.Join("`, `", spec.Header)}`)";
+            lines.Add(FormattableString.Invariant(
+                $"| `{spec.File}` | `{spec.EnvironmentVariable}` | {load.Read:N0} | {load.Kept:N0} | {header} |"));
+        }
+        lines.Add(TableReadmeEndMarker);
+        return string.Join('\n', lines);
+    }
 }

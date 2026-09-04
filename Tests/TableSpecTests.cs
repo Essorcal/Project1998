@@ -43,4 +43,23 @@ public sealed class TableSpecTests
             Assert.Equal(ExpectedLoadOrder, Content.LoadReport.Select(table => table.Name));
         }
     }
+
+    /// <summary>The committed README block is generated from the same specs and load counts as the server.
+    /// Editing a count or forgetting to regenerate after adding a table must fail in CI.</summary>
+    [Fact]
+    public void ReadmeTableBlockMatchesGenerator()
+    {
+        lock (TestProcessState.Gate)
+        {
+            TestProcessState.LoadContent();
+            string readme = File.ReadAllText(Path.Combine(Shared.RepoPaths.GameDataDir(), "README.md"))
+                .Replace("\r\n", "\n", StringComparison.Ordinal);
+            int start = readme.IndexOf(Content.TableReadmeStartMarker, StringComparison.Ordinal);
+            int end = readme.IndexOf(Content.TableReadmeEndMarker, StringComparison.Ordinal);
+            Assert.True(start >= 0 && end >= start, "README generated-table markers are missing or reversed");
+            end += Content.TableReadmeEndMarker.Length;
+
+            Assert.Equal(Content.RenderTableReadmeBlock(), readme[start..end]);
+        }
+    }
 }

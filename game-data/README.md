@@ -36,16 +36,78 @@ Regenerable via the `re/*.py` extractors — `re/rtk_extract.py`, `re/build_map_
 `re/extract_minor_quests.py`, `re/extract_spell_formulas.py` — each of which writes here. The C# loader
 in `Server/Content.cs` names the script that generated each table in its doc comment.
 
-| File | Rows | Key columns |
-|---|---|---|
-| `mobs.csv` | 716 | `MobLook`, `MobLookColor`, `Vita`(HP), `Exp`, `Level`, might/grace/will, min/max dmg |
-| `Maps.csv` | 9850 | `MapId` (↔ our `0x15` mapId & `Maps\TK<MapId>.map`), `MapName`, BGM, indoor, light, PvP, warpout |
-| `Warps.csv` | 4476 | `SourceMapId/X/Y → DestinationMapId/X/Y` (portals) |
-| `Spawns0.csv` | 1175 | `SpnMobId`, `SpnMapId`, `SpnX/Y` (where mobs spawn) |
-| `NPCs0.csv` | 385 | `NpcDescription`, map/x/y, `NpcLook`, `NpcLookColor` |
-| `Items.csv` | 2545 | `ItmDescription`, `ItmType`, `ItmLook`, damage/armor/stats, buy/sell price |
-| `Spells.csv` | 906 | spell/skill definitions |
-| `Paths.csv` | 23 | class names + rank titles |
+<!-- generated: tables -->
+| File | Environment override | Rows read | Rows kept | Header |
+|---|---|---:|---:|---|
+| `ObjectFlagOverrides.csv` | `P1998_OBJECT_FLAG_OVERRIDES` | 1 | 1 | supplied (`Obj`, `Flag`, `Note`) |
+| `Obj533Fix.csv` | `P1998_OBJ533_FIX` | 128 | 128 | supplied (`Legacy`, `Action`, `Replacement`, `FiveId`, `Flag495`, `Flag533`, `Scope`) |
+| `Tile533Map.csv` | `P1998_TILE533_MAP` | 1,190 | 1,190 | supplied (`StartLegacy`, `Count`, `Start533`) |
+| `map_index.csv` | `P1998_MAP_INDEX` | 2,025 | 2,025 | from file |
+| `MobFlees.csv` | `P1998_MOB_FLEES` | 2 | 2 | from file |
+| `MobStationary.csv` | `P1998_MOB_STATIONARY` | 14 | 14 | from file |
+| `mobs.csv` | `P1998_MOBS` | 716 | 716 | from file |
+| `Items.csv` | `P1998_ITEMS` | 2,544 | 2,544 | from file |
+| `Warps.csv` | `P1998_WARPS` | 4,691 | 4,208 | from file |
+| `Spawns.csv` | `P1998_SPAWNS` | 1,175 | 1,174 | from file |
+| `AreaSpawns.csv` | `P1998_AREASPAWNS` | 2,588 | 2,588 | from file |
+| `AreaSpawnsTrap.csv` | `P1998_AREASPAWNS_TRAP` | 20 | 20 | from file |
+| `AreaSpawnsCrafting.csv` | `P1998_AREASPAWNS_CRAFT` | 8 | 8 | from file |
+| `ServerTuning.csv` | `P1998_SERVER_TUNING` | 16 | 16 | from file |
+| `EraFeatures.csv` | `P1998_ERA_FEATURES` | 10 | 10 | from file |
+| `NPCs.csv` | `P1998_NPCS` | 368 | 288 | from file |
+| `MinorQuests.csv` | `P1998_MINORQUESTS` | 101 | 101 | from file |
+| `ShopStock.csv` | `P1998_SHOPSTOCK` | 38 | 38 | from file |
+| `ShopBuysFrom.csv` | `P1998_SHOPBUYSFROM` | 46 | 46 | from file |
+| `Paths.csv` | `P1998_PATHS` | 23 | 23 | from file |
+| `LevelExp.csv` | `P1998_LEVELEXP` | 491 | 491 | from file |
+| `SpellLevels.csv` | `P1998_SPELL_LEVELS` | 143 | 143 | from file |
+| `Spells.csv` | `P1998_SPELLS` | 927 | 862 | from file |
+| `spell_effects.csv` | `P1998_SPELL_FX` | 641 | 641 | from file |
+| `SpellText.csv` | `P1998_SPELL_TEXT` | 4 | 4 | from file |
+| `SpellLearnCosts.csv` | `P1998_SPELL_COSTS` | 591 | 591 | from file |
+| `Mob5xPalettes.csv` | `P1998_MOB_PALETTES_5X` | 16 | 16 | from file |
+| `ArmorDyeRamps.csv` | `P1998_ARMOR_DYE_RAMPS` | 11 | 11 | from file |
+| `Maps.csv` | `P1998_MAPS_FULL` | 9,850 | 9,850 | from file |
+| `MobDrops.csv` | `P1998_MOB_DROPS` | 377 | 377 | from file |
+| `CraftingToggles.csv` | `P1998_CRAFTING_TOGGLES` | 14 | 14 | from file |
+| `WarpQuestLocks.csv` | `P1998_WARP_QUEST_LOCKS` | 4 | 4 | from file |
+| `ArmorQuests.csv` | `P1998_ARMOR_QUESTS` | 12 | 12 | from file |
+| `MythicCaves.csv` | `P1998_MYTHIC_CAVES` | 12 | 12 | from file |
+| `MythicAlliances.csv` | `P1998_MYTHIC_ALLIANCES` | 12 | 12 | from file |
+| `ArenaDoors.csv` | `P1998_ARENA_DOORS` | 5 | 5 | from file |
+| `EventCaveTiers.csv` | `P1998_EVENT_CAVE_TIERS` | 9 | 9 | from file |
+| `EventCaves.csv` | `P1998_EVENT_CAVES` | 1 | 1 | from file |
+| `MusicTracks.csv` | `P1998_MUSIC_TRACKS` | 89 | 89 | from file |
+| `MapBgm.csv` | `P1998_MAP_BGM` | 7 | 7 | from file |
+| `Inns.csv` | `P1998_INNS` | 14 | 14 | from file |
+| `ForageAreas.csv` | `P1998_FORAGE` | 2 | 2 | from file |
+| `HarvestNodes.csv` | `P1998_HARVEST` | 6 | 6 | from file |
+| `MobSpells.csv` | `P1998_MOB_SPELLS` | 294 | 294 | from file |
+| `MobChatter.csv` | `P1998_MOB_CHATTER` | 21 | 21 | from file |
+| `MobSpawnRules.csv` | `P1998_MOB_SPAWN_RULES` | 67 | 67 | from file |
+| `MobBosses.csv` | `P1998_MOB_BOSSES` | 72 | 72 | from file |
+| `PathHalls.csv` | `P1998_PATHHALLS` | 8 | 8 | from file |
+| `GatewayGates.csv` | `P1998_GATEWAY` | 16 | 16 | from file |
+| `WorldMapDests.csv` | `P1998_WORLDMAP_DESTS` | 7 | 7 | from file |
+| `WorldMapTriggers.csv` | `P1998_WORLDMAP_TRIGGERS` | 7 | 7 | from file |
+| `FallRooms.csv` | `P1998_FALLROOMS` | 12 | 12 | from file |
+| `AmbushBursts.csv` | `P1998_AMBUSH_BURSTS` | 37 | 37 | from file |
+| `AmbushConfig.csv` | `P1998_AMBUSH_CONFIG` | 21 | 21 | from file |
+| `BoardLocations.csv` | `P1998_BOARD_LOCATIONS` | 1 | 1 | from file |
+| `ShopCatalogues.csv` | `P1998_SHOP_CATALOGUES` | 11 | 11 | from file |
+| `SpellParams.csv` | `P1998_SPELL_PARAMS` | 96 | 96 | from file |
+| `ItemParams.csv` | `P1998_ITEM_PARAMS` | 60 | 60 | from file |
+| `Pets.csv` | `P1998_PETS` | 29 | 29 | from file |
+| `WeaponProcs.csv` | `P1998_WEAPON_PROCS` | 25 | 25 | from file |
+| `Traps.csv` | `P1998_TRAPS` | 8 | 8 | from file |
+| `Morphs.csv` | `P1998_MORPHS` | 29 | 29 | from file |
+| `SpellMods.csv` | `P1998_SPELL_MODS` | 25 | 25 | from file |
+| `NpcAbilities.csv` | `P1998_NPC_ABILITIES` | 29 | 29 | from file |
+| `PathGrowth.csv` | `P1998_PATH_GROWTH` | 5 | 5 | from file |
+| `DoorObjects.csv` | `P1998_DOOR_OBJECTS` | 50 | 50 | from file |
+| `Doors.csv` | `P1998_DOORS` | 8 | 8 | from file |
+| `MapCells.csv` | `P1998_MAP_CELLS` | 32 | 29 | from file |
+<!-- /generated -->
 
 ## Version caveats (RTK is 7.x, our client is 4.95)
 
