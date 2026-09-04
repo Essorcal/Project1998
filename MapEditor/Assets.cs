@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text;
+using Shared;
 
 namespace MapEditor;
 
@@ -57,12 +58,15 @@ public sealed class TileAssets
         var t = new TileAssets();
         var files = ReadDat(tileDat);
 
-        foreach (var line in File.ReadLines(sheet2Csv))
+        var sheet2 = Csv.Open("Tile533Map.csv", sheet2Csv,
+            "StartLegacy", "Count", "Start533");
+        foreach (var row in sheet2)
         {
-            var s = line.Trim();
-            if (s.Length == 0 || s.StartsWith('#')) continue;
-            var p = s.Split(',');
-            t.Sheet2Runs.Add((int.Parse(p[0]), int.Parse(p[1]), int.Parse(p[2])));
+            t.Sheet2Runs.Add((
+                int.Parse(row.Require("StartLegacy")),
+                int.Parse(row.Require("Count")),
+                int.Parse(row.Require("Start533"))));
+            row.Keep();
         }
 
         // Ground: bake every frame into an opaque 24x24 block (transparent = black, the client's

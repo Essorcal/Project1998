@@ -1579,6 +1579,9 @@ public class ContentSmokeTests
     // keeps having. A Lua script's floor is 1: "it compiled and took".
     private static readonly IReadOnlyDictionary<string, int> TableFloors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
     {
+        ["ObjectFlagOverrides.csv"] = 1,     // 1 kept today
+        ["Obj533Fix.csv"]            = 100,   // 128 kept today
+        ["Tile533Map.csv"]           = 950,   // 1190 kept today
         ["map_index.csv"]          = 1600,  // 2025 kept today
         ["MobFlees.csv"]           = 1,     // 2 kept today
         ["MobStationary.csv"]      = 11,    // 14 kept today
@@ -1589,6 +1592,7 @@ public class ContentSmokeTests
         ["AreaSpawns.csv"]         = 2000,  // 2588 kept today
         ["AreaSpawnsTrap.csv"]     = 16,    // 20 kept today
         ["AreaSpawnsCrafting.csv"] = 1,     // 8 kept today
+        ["EraFeatures.csv"]        = 1,     // 10 kept today
         ["NPCs.csv"]               = 230,   // 288 kept today
         ["MinorQuests.csv"]        = 80,    // 101 kept today
         ["ShopStock.csv"]          = 30,    // 38 kept today
@@ -1651,7 +1655,7 @@ public class ContentSmokeTests
 
     /// <summary>Every content file loaded, and kept enough rows to still be the table it is meant to be.
     ///
-    /// <para>This is the guard that stops the report drifting back to covering 36 of 68: the report's file
+    /// <para>This is the guard that stops the report drifting back to covering 36 of 72: the report's file
     /// names and <see cref="TableFloors"/>' keys must be the SAME SET in both directions, so adding a table
     /// to <see cref="Content.Load"/> without giving it a floor fails here rather than joining the silent
     /// majority. Then, per table: the file was found and read, every column a loader requires was in the
@@ -1669,11 +1673,11 @@ public class ContentSmokeTests
             TestProcessState.LoadContent();
             var report = Content.LoadReport;
 
-            // 68 literally: 64 CSVs + the 4 Lua scripts. Pinned as a number as well as by the set
+            // 72 literally: 68 CSVs + the 4 Lua scripts. Pinned as a number as well as by the set
             // equality below, because deleting a table AND its floor together would keep the set check
-            // green at 67 — and "all 68 tables" is the contract.
-            Assert.Equal(68, report.Count);
-            Assert.Equal(68, TableFloors.Count);
+            // green at 71 — and "all 72 inputs" is the contract.
+            Assert.Equal(72, report.Count);
+            Assert.Equal(72, TableFloors.Count);
             var reported = report.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
             Assert.Empty(reported.Except(TableFloors.Keys, StringComparer.OrdinalIgnoreCase));   // a table with no floor
             Assert.Empty(TableFloors.Keys.Except(reported, StringComparer.OrdinalIgnoreCase));   // a floor with no table

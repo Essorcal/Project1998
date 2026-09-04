@@ -85,7 +85,19 @@ public static class EraCalendar
             throw new InvalidOperationException("Programming error: EraCalendar reloads cannot be nested on the same thread.");
         lock (_gate)
         {
-            return _preparing = new PreparedReload(new State(ReadEraDate(), ReadFeatures()));
+            return PrepareReload(ReadEraDate(), OpenFeatures());
+        }
+    }
+
+    /// <summary>Build the game server's candidate calendar from its already-loaded tuning value and the
+    /// feature table it opened for the content report. The login server keeps the parameterless lazy path.</summary>
+    internal static PreparedReload PrepareReload(int eraDate, CsvTable features)
+    {
+        if (_preparing is not null)
+            throw new InvalidOperationException("Programming error: EraCalendar reloads cannot be nested on the same thread.");
+        lock (_gate)
+        {
+            return _preparing = new PreparedReload(new State(eraDate, ReadFeatures(features)));
         }
     }
 
@@ -108,7 +120,7 @@ public static class EraCalendar
             if (published is not null) return published;
             lock (_gate)
             {
-                return _published ??= new State(ReadEraDate(), ReadFeatures());
+                return _published ??= new State(ReadEraDate(), ReadFeatures(OpenFeatures()));
             }
         }
     }
@@ -118,6 +130,8 @@ public static class EraCalendar
 
     /// <summary>How many dated features are declared — for the startup/reload line.</summary>
     public static int FeatureCount => Current.Features.Count;
+
+    internal static IReadOnlyDictionary<string, EraWindow> FeaturesForTests => Current.Features;
 
     /// <summary>The date the server is pretending it is, or null when gating is off or the configured
     /// value isn't a real calendar date.</summary>
@@ -156,84 +170,42 @@ public static class EraCalendar
     }
 
     // ---- reading --------------------------------------------------------------------------------------
-    // ServerTuning.csv is also parsed by Server.Content for its other scalars; re-reading it here for one
-    // key is the price of Shared not depending on Server, and it is two files and a few hundred bytes.
+    // The login server has no Content.Load, so its lazy path opens both files here. The game server passes
+    // the value and feature table already opened by Content.Load, keeping one read of each file per load.
 
     private static int ReadEraDate()
     {
-        foreach (var row in ReadCsv(RepoPaths.GameData("P1998_SERVER_TUNING", "ServerTuning.csv")))
-            if (row.TryGetValue("key", out var k) && k.Trim().Equals("EraDate", StringComparison.OrdinalIgnoreCase)
-                && row.TryGetValue("value", out var v)
-                && double.TryParse(v.Trim(), System.Globalization.NumberStyles.Float,
+        foreach (var row in Csv.Open("ServerTuning.csv", RepoPaths.GameData("P1998_SERVER_TUNING", "ServerTuning.csv")))
+            if (row.Require("key").Trim().Equals("EraDate", StringComparison.OrdinalIgnoreCase)
+                && double.TryParse(row.Require("value").Trim(), System.Globalization.NumberStyles.Float,
                                    System.Globalization.CultureInfo.InvariantCulture, out var d))
+            {
+                row.Keep();
                 return (int)d;
+            }
         return DefaultDate;
     }
 
-    private static Dictionary<string, EraWindow> ReadFeatures()
+    private static CsvTable OpenFeatures() =>
+        Csv.Open("EraFeatures.csv", RepoPaths.GameData("P1998_ERA_FEATURES", "EraFeatures.csv"));
+
+    private static Dictionary<string, EraWindow> ReadFeatures(CsvTable csv)
     {
         var feats = new Dictionary<string, EraWindow>(StringComparer.OrdinalIgnoreCase);
         static DateOnly? Date(string s) =>
             DateOnly.TryParse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : null;
 
-        foreach (var row in ReadCsv(RepoPaths.GameData("P1998_ERA_FEATURES", "EraFeatures.csv")))
+        foreach (var row in csv)
         {
-            var key = row.GetValueOrDefault("Feature", "").Trim();
+            var key = row.Require("Feature", "").Trim();
             if (key.Length == 0) continue;
             feats[key] = new EraWindow(
-                Date(row.GetValueOrDefault("Introduced", "")),
-                Date(row.GetValueOrDefault("Retired", "")),
-                row.GetValueOrDefault("Source", "").Trim(),
-                row.GetValueOrDefault("Notes", "").Trim());
+                Date(row.Require("Introduced", "")),
+                Date(row.Require("Retired", "")),
+                row.Require("Source", "").Trim(),
+                row.Require("Notes", "").Trim());
+            row.Keep();
         }
         return feats;
-    }
-
-    // Minimal CSV reader: '#' opens a comment line anywhere including above the header, and quoted fields
-    // may contain commas.
-    //
-    // TODO(#35): fold this onto Shared/Csv.cs. This is the LAST reader that still has both of the silent
-    // failure modes #31 removed from the content loader — a missing file and a parse failure each end in a
-    // bare `yield break` with nothing in the log. It is not a low-stakes file either: EraFeatures.csv gates
-    // whether an NPC exists yet (NPCs.csv EraFeature -> Era.Has), so losing it quietly removes people from
-    // the world. It also reads ServerTuning.csv a SECOND time, and neither file appears in
-    // Content.LoadReport, which is why that report covers 68 of game-data's 71 CSVs. See #35's comment
-    // thread for the full table of what each remaining reader swallows.
-    private static IEnumerable<Dictionary<string, string>> ReadCsv(string? path)
-    {
-        if (path is null || !File.Exists(path)) yield break;
-        string[] lines;
-        try { lines = File.ReadAllLines(path); } catch { yield break; }
-
-        static bool Skip(string s) => string.IsNullOrWhiteSpace(s) || s.TrimStart().StartsWith('#');
-        int h = 0;
-        while (h < lines.Length && Skip(lines[h])) h++;
-        if (h >= lines.Length - 1) yield break;
-
-        var header = SplitCsv(lines[h]);
-        for (int i = h + 1; i < lines.Length; i++)
-        {
-            if (Skip(lines[i])) continue;
-            var vals = SplitCsv(lines[i]);
-            var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            for (int c = 0; c < header.Count && c < vals.Count; c++) row[header[c]] = vals[c];
-            yield return row;
-        }
-    }
-
-    private static List<string> SplitCsv(string line)
-    {
-        var outp = new List<string>();
-        var cur = new System.Text.StringBuilder();
-        bool q = false;
-        for (int i = 0; i < line.Length; i++)
-        {
-            char ch = line[i];
-            if (ch == '"') { if (q && i + 1 < line.Length && line[i + 1] == '"') { cur.Append('"'); i++; } else q = !q; }
-            else if (ch == ',' && !q) { outp.Add(cur.ToString()); cur.Clear(); }
-            else cur.Append(ch);
-        }
-        outp.Add(cur.ToString());
-        return outp;
     }
 }

@@ -32,15 +32,16 @@ public static partial class Content
         try
         {
             // Every content file goes through this: it records the table in `entries` so the load report can
-            // say what happened to all 68 of them, in load order. `ToLoad` is a method group, evaluated at the
+            // say what happened to all 72 of them, in load order. `ToLoad` is a method group, evaluated at the
             // end, so the counts it captures are the ones the loader finished with. `entries` is a LOCAL, so a
             // second Load() building its own report cannot interleave with this one, and LoadReport joins the
             // immutable snapshot published at the end exactly like every other registry here.
             Csv.Warn = Log.Warn;   // Shared cannot see Server.Log; hand it over before the first file is opened
             var entries = new List<Func<TableLoad>>();
-            CsvTable T(string envVar, string file)
+            CsvTable T(string envVar, string file, params string[] header)
             {
-                var t = Csv.Open(file, ResolvePath(envVar, file));
+                string? path = ResolvePath(envVar, file);
+                var t = header.Length == 0 ? Csv.Open(file, path) : Csv.Open(file, path, header);
                 entries.Add(t.ToLoad);
                 return t;
             }
@@ -61,6 +62,12 @@ public static partial class Content
                 return ok;
             }
 
+            snapshotBuilder.ObjectFlagOverrides = ObjectFlags.PrepareOverrides(
+                T("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", "Obj", "Flag", "Note"));
+            snapshotBuilder.TileTranslations = TileTranslation.PrepareReload(
+                T("P1998_OBJ533_FIX", "Obj533Fix.csv",
+                    "Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"),
+                T("P1998_TILE533_MAP", "Tile533Map.csv", "StartLegacy", "Count", "Start533"));
             var maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
             Maps = maps;
             var mobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));
@@ -87,7 +94,13 @@ public static partial class Content
                 // trap rows: re-running the main extractor must not be able to drop them.
                 .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"), grouped: true))
                 .ToList();
-            var eraCalendar = Shared.EraCalendar.PrepareReload();
+            var tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
+            Tuning = tuning;
+            int eraDate = tuning.TryGetValue("EraDate", out var configuredEraDate)
+                ? (int)configuredEraDate
+                : Shared.EraCalendar.DefaultDate;
+            var eraCalendar = Shared.EraCalendar.PrepareReload(
+                eraDate, T("P1998_ERA_FEATURES", "EraFeatures.csv"));
             snapshotBuilder.EraCalendar = eraCalendar;
             // Era.Has resolves to the prepared calendar on this loading thread; serving threads keep the old one.
             // Era gating remains ambient until its prepared value exposes the same fail-open query semantics.
@@ -205,12 +218,11 @@ public static partial class Content
             NpcCompositions = LoadNpcCompositions(T("P1998_NPC_ABILITIES", "NpcAbilities.csv"));
             PathGrowth = LoadPathGrowth(T("P1998_PATH_GROWTH", "PathGrowth.csv"));
             (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T("P1998_DOOR_OBJECTS", "DoorObjects.csv"));
-            Tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
             snapshotBuilder.Doors = LoadDoors(T("P1998_DOORS", "Doors.csv"));
             (MapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
             MapCellCount = mapCellCount;
             // The startup summary. This replaces a hand-written line that named 36 registries and could say
-            // nothing at all about the other 32 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
+            // nothing at all about the other 36 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
             // WarpQuestLocks among them could load zero rows in silence. Problems go out first and through
             // Log.Warn (so they carry the `!!` marker the rest of the codebase greps for); the census follows,
             // several tables per line, and every entry still carries its file name so it greps too.
@@ -233,8 +245,8 @@ public static partial class Content
     /// Hot-reload every file-backed registry WITHOUT a restart (the <c>@reload</c> GM command), so content
     /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence in an
     /// unpublished builder, then publishes the immutable snapshot with one write and commits the era calendar,
-    /// Doors configuration and four Lua hosts at that boundary under the shared Lua gate. Readers therefore
-    /// see all registries and their derived indexes from the old load or all of them from the new load. Returns
+    /// Doors configuration, object/tile tables and four Lua hosts at that boundary under the shared Lua gate.
+    /// Readers therefore see all registries and their derived indexes from the old load or all of them from the new load. Returns
     /// a one-line count summary.
     ///
     /// SCOPE: file-backed content only (every registry above is CSV/Lua-backed now — map BGM moved to
