@@ -89,7 +89,8 @@ public static partial class Content
             var eraCalendar = Shared.EraCalendar.PrepareReload();
             snapshotBuilder.EraCalendar = eraCalendar;
             // Era.Has resolves to the prepared calendar on this loading thread; serving threads keep the old one.
-            var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"), maps, Era.Has);
+            // Era gating remains ambient until its prepared value exposes the same fail-open query semantics.
+            var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"), maps);
             NpcByIdIndex = npcs.ToDictionary(n => n.Id);   // derived from npcs; this dependency order matters
             Npcs = npcs;                                   // only while the unpublished builder is assembled
             MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));

@@ -478,8 +478,7 @@ public static partial class Content
     // The Enabled column (default 1) is the spawn on/off switch — a disabled NPC keeps its row but World skips it.
     private static List<NpcDef> LoadNpcs(
         CsvTable csv,
-        IReadOnlyDictionary<ushort, MapInfo> maps,
-        Func<string, bool> hasEraFeature)
+        IReadOnlyDictionary<ushort, MapInfo> maps)
     {
         var npcs = new List<NpcDef>();
         foreach (var col in csv)
@@ -507,7 +506,7 @@ public static partial class Content
             // is the overwhelming majority and means undated, and an unknown key reads as present, so a typo
             // here can only leave someone in the world, never silently delete him.
             var eraFeature = Clean(col.Require("EraFeature", ""));
-            if (eraFeature.Length > 0 && !hasEraFeature(eraFeature)) enabled = false;
+            if (eraFeature.Length > 0 && !Era.Has(eraFeature)) enabled = false;
             npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
                 IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
                 Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
