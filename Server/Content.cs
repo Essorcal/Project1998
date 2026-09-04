@@ -61,9 +61,11 @@ public static partial class Content
             }
 
             Maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
-            MobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));   // BEFORE Mobs: LoadMobs folds it in
-            MobStationaryOverrides = LoadMobStationary(T("P1998_MOB_STATIONARY", "MobStationary.csv"));   // likewise
-            Mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"));
+            var mobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));
+            MobFleeOverrides = mobFleeOverrides;
+            var mobStationaryOverrides = LoadMobStationary(T("P1998_MOB_STATIONARY", "MobStationary.csv"));
+            MobStationaryOverrides = mobStationaryOverrides;
+            Mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"), mobFleeOverrides, mobStationaryOverrides);
             Items = LoadItems(T("P1998_ITEMS", "Items.csv"));
             LoadStepForTests?.Invoke("ItemsLoaded");
             Warps = LoadWarps(T("P1998_WARPS", "Warps.csv"));   // needs Maps

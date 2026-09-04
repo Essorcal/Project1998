@@ -101,7 +101,10 @@ public static partial class Content
         return still;
     }
 
-    private static List<MobDef> LoadMobs(CsvTable csv)
+    private static List<MobDef> LoadMobs(
+        CsvTable csv,
+        IReadOnlyDictionary<string, bool> fleeOverrides,
+        IReadOnlyDictionary<string, bool> stationaryOverrides)
     {
         var mobs = new List<MobDef>();
         foreach (var col in csv)
@@ -134,8 +137,8 @@ public static partial class Content
             int spawnTime = int.TryParse(col.Require("SpawnTime", ""), out var st) && st >= 0
                 ? st : DefaultSpawnTimeSec;
             mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace,
-                Flees: MobFleeOverrides.GetValueOrDefault(key),
-                Stationary: MobStationaryOverrides.GetValueOrDefault(key),
+                Flees: fleeOverrides.GetValueOrDefault(key),
+                Stationary: stationaryOverrides.GetValueOrDefault(key),
                 SpawnTime: spawnTime));
             col.Keep();
         }
