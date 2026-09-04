@@ -522,10 +522,26 @@ public static partial class Content
             // here can only leave someone in the world, never silently delete him.
             var eraFeature = Clean(col.Require("EraFeature", ""));
             if (eraFeature.Length > 0 && !Era.Has(eraFeature)) enabled = false;
-            npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
-                IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
-                Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
-                MoveTime: move, ReturnDistance: leash, Enabled: enabled, EraFeature: eraFeature));
+            npcs.Add(new NpcDef
+            {
+                Id = id,
+                Key = key,
+                Name = name,
+                Map = map,
+                X = x,
+                Y = y,
+                Dir = 2,
+                Look = look,
+                Color = color,
+                IsChar = Flag("NpcIsChar"),
+                Shop = Flag("NpcIsShopNpc"),
+                Repair = Flag("NpcIsRepairNpc"),
+                Bank = Flag("NpcIsBankNpc"),
+                MoveTime = move,
+                ReturnDistance = leash,
+                Enabled = enabled,
+                EraFeature = eraFeature,
+            });
             col.Keep();
         }
         return npcs;

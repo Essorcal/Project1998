@@ -43,4 +43,30 @@ public sealed class NamedRecordConstructionTests
         Assert.Equal("sentinel", value.RejectMsg);
         Assert.True(value.Indoor);
     }
+
+    [Fact]
+    public void NpcDefCarriesItsDefaults()
+    {
+        var value = new NpcDef
+        {
+            Id = 1,
+            Key = "key",
+            Name = "name",
+            Map = 2,
+            X = 3,
+            Y = 4,
+            Dir = 5,
+            Look = 6,
+            Color = 7,
+            IsChar = true,
+            Shop = false,
+            Repair = true,
+            Bank = false,
+            MoveTime = 8,
+            ReturnDistance = 9,
+        };
+
+        Assert.True(value.Enabled);
+        Assert.Equal("", value.EraFeature);
+    }
 }

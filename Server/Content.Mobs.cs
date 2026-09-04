@@ -108,10 +108,26 @@ public sealed class AmbushMapDef
 /// spawn path already checks stays the whole answer to "does this being exist". <c>EraFeature</c> is kept
 /// alongside it purely so a reader (<c>@npc</c>) can say WHICH of the two switched him off — the remedies are
 /// different, and "edit the Enabled column" is the wrong advice for someone who isn't born yet.</para></summary>
-public sealed record NpcDef(
-    int Id, string Key, string Name, ushort Map, ushort X, ushort Y, byte Dir,
-    ushort Look, byte Color, bool IsChar, bool Shop, bool Repair, bool Bank,
-    int MoveTime, int ReturnDistance, bool Enabled = true, string EraFeature = "");
+public sealed record NpcDef
+{
+    public required int Id { get; init; }
+    public required string Key { get; init; }
+    public required string Name { get; init; }
+    public required ushort Map { get; init; }
+    public required ushort X { get; init; }
+    public required ushort Y { get; init; }
+    public required byte Dir { get; init; }
+    public required ushort Look { get; init; }
+    public required byte Color { get; init; }
+    public required bool IsChar { get; init; }
+    public required bool Shop { get; init; }
+    public required bool Repair { get; init; }
+    public required bool Bank { get; init; }
+    public required int MoveTime { get; init; }
+    public required int ReturnDistance { get; init; }
+    public bool Enabled { get; init; } = true;
+    public string EraFeature { get; init; } = "";
+}
 
 public static partial class Content
 {
