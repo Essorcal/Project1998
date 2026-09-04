@@ -334,7 +334,9 @@ public static partial class Content
     }
     private static bool IsExcludedMap(ushort map) => Array.Exists(ExcludedMapRanges, r => map >= r.lo && map <= r.hi);
 
-    private static Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)> LoadWarps(CsvTable csv)
+    private static Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)> LoadWarps(
+        CsvTable csv,
+        IReadOnlyDictionary<ushort, MapInfo> maps)
     {
         var warps = new Dictionary<(ushort, ushort, ushort), (ushort, ushort, ushort)>();
         foreach (var col in csv)
@@ -345,7 +347,7 @@ public static partial class Content
                 && ushort.TryParse(col.Require("DestinationMapId"), out var dm)
                 && ushort.TryParse(col.Require("DestinationX"), out var dx)
                 && ushort.TryParse(col.Require("DestinationY"), out var dy)
-                && Maps.ContainsKey(dm)            // don't warp to a map the client can't render
+                && maps.ContainsKey(dm)            // don't warp to a map the client can't render
                 && !IsExcludedMap(sm) && !IsExcludedMap(dm))
             {
                 warps[(sm, sx, sy)] = (dm, dx, dy);   // last write wins on duplicate source tiles
