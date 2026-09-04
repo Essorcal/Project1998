@@ -6,9 +6,9 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Where a batch spawn group is allowed to put a creature (<see cref="World.PlacementBox"/>,
-/// <see cref="World.Placeable"/>, <see cref="World.OpenTiles"/>) — and, through them, the guarantee that a
-/// group's cap is a cap rather than an average.
+/// Where a batch spawn group is allowed to put a creature (<see cref="World.SpawnDirector.PlacementBox"/>,
+/// <see cref="World.SpawnDirector.Placeable"/>, <see cref="World.SpawnDirector.OpenTiles"/>) — and, through
+/// them, the guarantee that a group's cap is a cap rather than an average.
 ///
 /// <para><b>The bug these were written for.</b> RTK rolls a random tile at a time and gives up after
 /// <c>maxMobs[z] * 4</c> failures (mobSpawnHandler.lua:3003). Ported literally, that is four rolls for a
@@ -18,9 +18,9 @@ namespace Tests;
 /// for the full 300s until the group's clock next came round. Yachi (cap 15, 60 rolls) and Seki (cap 10, 40
 /// rolls) never came up short, so the room looked fully repopulated with the boss simply missing.</para>
 ///
-/// <para>The fix is <see cref="World.OpenTiles"/>: the roll stays as the cheap common path, and a member the
-/// rolls leave short falls back to enumerating the box. So the interesting case here is the LAST free tile —
-/// the one a random roll finds with probability 1/900 and this has to find every time.</para>
+/// <para>The fix is <see cref="World.SpawnDirector.OpenTiles"/>: the roll stays as the cheap common path, and
+/// a member the rolls leave short falls back to enumerating the box. So the interesting case here is the LAST
+/// free tile — the one a random roll finds with probability 1/900 and this has to find every time.</para>
 ///
 /// <para>Real content, not a fixture: these run against the shipped <c>game-data</c> and the client's own
 /// <c>TK442.map</c>, because a fixture would prove the fixture walkable.</para>
@@ -55,36 +55,36 @@ public class SpawnPlacementTests
         EnsureLoaded();
         // Not a special case we invented: RTK's spawner takes no box at all, so every row the extractor
         // wrote carries 0,0,0,0 and the map IS the box.
-        Assert.Equal((0, 0, NestXs - 1, NestYs - 1), World.PlacementBox(Nest, 0, 0, 0, 0));
+        Assert.Equal((0, 0, NestXs - 1, NestYs - 1), World.SpawnDirector.PlacementBox(Nest, 0, 0, 0, 0));
     }
 
     [Fact]
     public void ABoxIsClampedToTheMapItIsOn()
     {
         EnsureLoaded();
-        Assert.Equal((4, 4, NestXs - 1, NestYs - 1), World.PlacementBox(Nest, 4, 4, 999, 999));
-        Assert.Equal((4, 4, 9, 9), World.PlacementBox(Nest, 4, 4, 9, 9));
+        Assert.Equal((4, 4, NestXs - 1, NestYs - 1), World.SpawnDirector.PlacementBox(Nest, 4, 4, 999, 999));
+        Assert.Equal((4, 4, 9, 9), World.SpawnDirector.PlacementBox(Nest, 4, 4, 9, 9));
     }
 
     [Fact]
     public void AMapWithNoDimensionsOffersNothingRatherThanThrowing()
     {
         EnsureLoaded();
-        var (minX, minY, maxX, maxY) = World.PlacementBox(0xFFFF, 0, 0, 0, 0);
+        var (minX, minY, maxX, maxY) = World.SpawnDirector.PlacementBox(0xFFFF, 0, 0, 0, 0);
         Assert.True(maxX < minX && maxY < minY);
-        Assert.Empty(World.OpenTiles(0xFFFF, Nothing(), 0, 0, 0, 0));
+        Assert.Empty(World.SpawnDirector.OpenTiles(0xFFFF, Nothing(), 0, 0, 0, 0));
     }
 
     [Fact]
     public void TheNestOffersEveryWalkableTileExceptItsWarp()
     {
         EnsureLoaded();
-        var open = World.OpenTiles(Nest, Nothing(), 0, 0, 0, 0);
+        var open = World.SpawnDirector.OpenTiles(Nest, Nothing(), 0, 0, 0, 0);
 
         Assert.Equal(NestOpen, open.Count);
         Assert.DoesNotContain(((ushort)2, (ushort)25), open);      // the way out to Dark Pools
         Assert.Equal(open.Count, open.Distinct().Count());
-        Assert.All(open, t => Assert.True(World.Placeable(Nest, Nothing(), t.X, t.Y)));
+        Assert.All(open, t => Assert.True(World.SpawnDirector.Placeable(Nest, Nothing(), t.X, t.Y)));
     }
 
     [Fact]
@@ -92,9 +92,9 @@ public class SpawnPlacementTests
     {
         EnsureLoaded();
         // (0,0) is the rock border every one of these caves is cut out of.
-        Assert.False(World.Placeable(Nest, Nothing(), 0, 0));
-        Assert.False(World.Placeable(Nest, Nothing(), -1, 5));         // off the west edge
-        Assert.False(World.Placeable(Nest, Nothing(), NestXs, 5));     // off the east edge
+        Assert.False(World.SpawnDirector.Placeable(Nest, Nothing(), 0, 0));
+        Assert.False(World.SpawnDirector.Placeable(Nest, Nothing(), -1, 5));         // off the west edge
+        Assert.False(World.SpawnDirector.Placeable(Nest, Nothing(), NestXs, 5));     // off the east edge
     }
 
     [Fact]
@@ -102,8 +102,8 @@ public class SpawnPlacementTests
     {
         EnsureLoaded();
         var entrance = ((int)2, (int)26);                              // where you arrive from Dark Pools
-        Assert.True(World.Placeable(Nest, Nothing(), entrance.Item1, entrance.Item2));
-        Assert.False(World.Placeable(Nest, new HashSet<(int, int)> { entrance }, entrance.Item1, entrance.Item2));
+        Assert.True(World.SpawnDirector.Placeable(Nest, Nothing(), entrance.Item1, entrance.Item2));
+        Assert.False(World.SpawnDirector.Placeable(Nest, new HashSet<(int, int)> { entrance }, entrance.Item1, entrance.Item2));
     }
 
     /// <summary>The guarantee. One tile left in the whole nest, and it is found — this is the case a
@@ -112,13 +112,13 @@ public class SpawnPlacementTests
     public void TheLastFreeTileIsAlwaysFound()
     {
         EnsureLoaded();
-        var all = World.OpenTiles(Nest, Nothing(), 0, 0, 0, 0);
+        var all = World.SpawnDirector.OpenTiles(Nest, Nothing(), 0, 0, 0, 0);
         Assert.Equal(NestOpen, all.Count);
 
         foreach (var last in new[] { all[0], all[all.Count / 2], all[^1] })
         {
             var taken = new HashSet<(int, int)>(all.Where(t => t != last).Select(t => ((int)t.X, (int)t.Y)));
-            var open = World.OpenTiles(Nest, taken, 0, 0, 0, 0);
+            var open = World.SpawnDirector.OpenTiles(Nest, taken, 0, 0, 0, 0);
             Assert.Single(open);
             Assert.Equal(last, open[0]);
         }
@@ -131,8 +131,8 @@ public class SpawnPlacementTests
     {
         EnsureLoaded();
         var taken = new HashSet<(int, int)>(
-            World.OpenTiles(Nest, Nothing(), 0, 0, 0, 0).Select(t => ((int)t.X, (int)t.Y)));
-        Assert.Empty(World.OpenTiles(Nest, taken, 0, 0, 0, 0));
+            World.SpawnDirector.OpenTiles(Nest, Nothing(), 0, 0, 0, 0).Select(t => ((int)t.X, (int)t.Y)));
+        Assert.Empty(World.SpawnDirector.OpenTiles(Nest, taken, 0, 0, 0, 0));
     }
 
     /// <summary>The row this whole file exists for, pinned so a re-run of the spawn extractor can't quietly
