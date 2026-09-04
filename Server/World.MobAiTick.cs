@@ -849,8 +849,19 @@ public sealed partial class World
     /// escapes the tick to reach it — which is exactly what the per-mob guard has to prevent.</summary>
     internal void TickOnceForTest() => Tick();
 
-    /// <summary>A per-map context with its own fresh queues, for driving <see cref="MobAiTick.Step"/> on one
-    /// creature and reading back what it queued. Caller holds <c>_lock</c> (<see cref="UnderWorldLockForTest"/>).</summary>
-    internal MobTickContext MobTickContextForTest(ushort mapId) =>
-        new(this, mapId, Map(mapId), new TickQueues());
+    /// <summary>A per-map context over <paramref name="q"/>, or over its own fresh queues when none is
+    /// given, for driving <see cref="MobAiTick.Step"/> on one creature and reading back what it queued.
+    /// Caller holds <c>_lock</c> (<see cref="UnderWorldLockForTest"/>).
+    ///
+    /// <para>Passing the queues in is what lets a test drive <see cref="MobAiTick.Step"/> and then
+    /// <see cref="FlushTickForTest"/> over the SAME beat's queues — the only way to check that a queue the
+    /// context filled is the queue the flush drains, which for the two same-typed fields
+    /// (<c>HealthShows</c> and <c>ExpiredPets</c>) the compiler cannot check.</para></summary>
+    internal MobTickContext MobTickContextForTest(ushort mapId, TickQueues? q = null) =>
+        new(this, mapId, Map(mapId), q ?? new TickQueues());
+
+    /// <summary>Drain one beat's queues with no beat in front of them. <see cref="TickOnceForTest"/> builds
+    /// its own <see cref="TickQueues"/> and keeps them, so a test that needs to put a specific entry on a
+    /// specific queue and watch what leaves the wire cannot use it.</summary>
+    internal void FlushTickForTest(TickQueues q) => FlushTick(q);
 }

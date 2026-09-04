@@ -38,7 +38,7 @@ public class MobAiTickTests
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
     private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035,
-                         OrderMap = 60036;
+                         OrderMap = 60036, WiringMap = 60037;
 
     private Mob Registered(ushort map, Mob mob)
     {
@@ -384,6 +384,107 @@ public class MobAiTickTests
             Assert.Empty(outbound.BodiesOf(0x1F));
         }
         finally { _fx.World.LeaveMap(watcher, OrderMap); }
+    }
+
+    /// <summary>The context's ten queue fields are the TICK's queues, not copies and not each other (#107).
+    ///
+    /// <para>This PR rewrote a thirteen-argument constructor into a four-argument one, which is exactly the
+    /// edit that ships a crossed pair. Nine of the ten wirings are protected by the compiler — the tuple
+    /// types differ — but <c>HealthShows</c> and <c>ExpiredPets</c> are both
+    /// <c>List&lt;(ushort map, Mob mob)&gt;</c>, so swapping those two compiles and, before this test,
+    /// left the whole suite green. Reference identity covers all ten in one pass and costs nothing.</para>
+    ///
+    /// <para>Falsified by swapping <c>HealthShows</c> and <c>ExpiredPets</c> in the <c>MobTickContext</c>
+    /// constructor: red with "Assert.Same() Failure: Values are not the same instance".</para></summary>
+    [Fact]
+    public void TheContextsQueuesAreTheTicksOwnQueues()
+    {
+        var q = new World.TickQueues();
+        World.MobTickContext ctx = null!;
+        _fx.World.UnderWorldLockForTest(() => ctx = _fx.World.MobTickContextForTest(WiringMap, q));
+
+        Assert.Same(q.Moves, ctx.Moves);
+        Assert.Same(q.Turns, ctx.Turns);
+        Assert.Same(q.Hits, ctx.Hits);
+        Assert.Same(q.MobCasts, ctx.MobCasts);
+        Assert.Same(q.Chatter, ctx.Chatter);
+        Assert.Same(q.MobHits, ctx.MobHits);
+        Assert.Same(q.TrapDamage, ctx.TrapDamage);
+        Assert.Same(q.FxRepeats, ctx.FxRepeats);
+        Assert.Same(q.HealthShows, ctx.HealthShows);
+        Assert.Same(q.ExpiredPets, ctx.ExpiredPets);
+    }
+
+    /// <summary>The same two same-typed wirings again, this time end to end on the wire: an entry on
+    /// <c>HealthShows</c> has to come out as an over-head HP bar (0x13) for that mob, and an entry on
+    /// <c>ExpiredPets</c> as a despawn (0x0E) for that one. Swap the two in the constructor and each mob
+    /// gets the other's packet — a bug the type system cannot see and the reference-identity test above
+    /// states abstractly; this one states it as what the player would witness.
+    ///
+    /// <para>The pet half runs through a REAL producer: a conjured creature whose lifetime has lapsed is
+    /// queued by <c>Step</c>'s ownership-expiry block, with no roll anywhere on the path. The heal half has
+    /// no deterministic producer — <c>SuteAi.TryHeal</c> is the only writer of <c>HealthShows</c> in the
+    /// tree and it is gated on a 1-in-12 <c>Random.Shared</c> roll, a 20 s cooldown and Sute reaching his
+    /// red bar with a target in range — so that entry is placed through <c>ctx.HealthShows</c>, the context
+    /// field the constructor wired, which is the thing under test. Driving <c>Step</c> and then
+    /// <c>FlushTick</c> over one shared <c>TickQueues</c> is what <c>MobTickContextForTest(map, q)</c> and
+    /// <c>FlushTickForTest</c> exist for.</para>
+    ///
+    /// <para>Falsified by swapping <c>HealthShows</c> and <c>ExpiredPets</c> in the <c>MobTickContext</c>
+    /// constructor: red with "the HP bar must be drawn over the healed mob (expected #100001, got #100000)
+    /// — HealthShows and ExpiredPets are crossed". The two producer assertions above it are deliberately
+    /// written against the CONTEXT's fields, so they still pass under the swap and the failure lands where
+    /// it belongs, on the wire.</para></summary>
+    [Fact]
+    public void HealthShowsAndExpiredPetsReachTheWireOnTheirOwnMobs()
+    {
+        var (watcher, outbound) = _fx.Player("WiringWatcher", WiringMap, x: 5, y: 10);
+        try
+        {
+            var pet = Registered(WiringMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 8, "Conjured", 100)
+            {
+                OwnerId = watcher.PlayerId,
+                PetExpiresAt = 1,   // already lapsed: Environment.TickCount64 is never below 1
+                Summoned = true,    // conjured, not mind-controlled: the despawn ending
+            });
+            var healed = Registered(WiringMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 12, "Healed", 100));
+            healed.Hp = 50;
+
+            var q = new World.TickQueues();
+            World.MobTickContext ctx = null!;
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                ctx = _fx.World.MobTickContextForTest(WiringMap, q);
+                World.MobAiTick.Step(ctx, pet);              // real producer for the ExpiredPets half
+                ctx.HealthShows.Add((WiringMap, healed));    // see the doc comment for why this half is placed
+            });
+            // Both producers fired, asserted on the CONTEXT's fields so this holds whatever the wiring is —
+            // what happens to the two entries after that is the flush's business, below.
+            Assert.Same(pet, Assert.Single(ctx.ExpiredPets).mob);
+            Assert.Same(healed, Assert.Single(ctx.HealthShows).mob);
+
+            outbound.Clear();
+            _fx.World.FlushTickForTest(q);
+
+            uint barId = BinaryPrimitives.ReadUInt32BigEndian(Assert.Single(outbound.BodiesOf(0x13)));
+            Assert.True(barId == healed.Id,
+                $"the HP bar must be drawn over the healed mob (expected #{healed.Id}, got #{barId}) — " +
+                "HealthShows and ExpiredPets are crossed");
+            Assert.Equal(50, outbound.BodiesOf(0x13)[0][5]);   // 50/100 hp: a half-full bar, this mob's number
+
+            var despawned = outbound.BodiesOf(0x0E).SelectMany(DespawnedIds).ToList();
+            Assert.True(despawned.Contains(pet.Id) && !despawned.Contains(healed.Id),
+                $"the despawn must be the expired pet's (#{pet.Id}) and not the healed mob's (#{healed.Id}); " +
+                $"despawned: {string.Join(", ", despawned)}");
+        }
+        finally { _fx.World.LeaveMap(watcher, WiringMap); }
+    }
+
+    /// <summary>The ids inside one 4.95 despawn body: a count byte then that many u32BE ids.</summary>
+    private static IEnumerable<uint> DespawnedIds(byte[] body)
+    {
+        for (int i = 0; i < body[0]; i++)
+            yield return BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(1 + i * 4));
     }
 
     /// <summary>The position of the FIRST recorded frame carrying <paramref name="opcode"/> whose decrypted
