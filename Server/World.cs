@@ -2686,7 +2686,7 @@ public sealed partial class World
                 Log.Error("content reload failed — the previous content publication remains live", e);
                 return (false, e.Message);
             }
-            ObjectFlags.Invalidate();   // BEFORE MapData: a re-read map's collision should see the new overrides
+            ObjectFlags.Invalidate();   // Overrides arrive in Content.Load's commit; this only drops the SObj.tbl cache
             MapData.Invalidate();
             StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
             // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization

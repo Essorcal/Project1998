@@ -157,6 +157,7 @@ public static class ObjectFlags
         var rows = new List<(int, byte)>();
         foreach (var row in csv)
         {
+            if (row.FieldCount < 2) continue;
             if (!int.TryParse(row.Require("Obj").Trim(), out var id)) continue;
             var f = row.Require("Flag").Trim();
             bool hex = f.StartsWith("0x", StringComparison.OrdinalIgnoreCase);

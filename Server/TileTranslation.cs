@@ -267,7 +267,8 @@ public static class TileTranslation
         {
             foreach (var row in csv)
             {
-                if (!ushort.TryParse(row.Require("Legacy"), out var id)
+                if (row.FieldCount < 7
+                    || !ushort.TryParse(row.Require("Legacy"), out var id)
                     || !ushort.TryParse(row.Require("Replacement"), out var rep)) continue;
                 var scope = row.Require("Scope").Trim().ToLowerInvariant() switch
                 {
@@ -319,7 +320,8 @@ public static class TileTranslation
         {
             foreach (var row in csv)
             {
-                if (!int.TryParse(row.Require("StartLegacy"), out var start)
+                if (row.FieldCount != 3
+                    || !int.TryParse(row.Require("StartLegacy"), out var start)
                     || !int.TryParse(row.Require("Count"), out var count)
                     || !int.TryParse(row.Require("Start533"), out var target)) continue;
                 for (int i = 0; i < count; i++)

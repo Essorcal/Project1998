@@ -219,6 +219,7 @@ public sealed class CsvRow
 
     /// <summary>1-based line number in the file — what an operator needs to find the row.</summary>
     public int Line { get; }
+    internal int FieldCount => _values.Count;
 
     internal CsvRow(CsvTable table, List<string> values, int line)
     {
@@ -273,14 +274,22 @@ public sealed record TableLoad(string Name, string? Path, CsvStatus Status,
     /// <summary>Why this table is not <see cref="Ok"/>, or null when it is.</summary>
     public string? Problem => IsScript ? ScriptProblem : Status switch
     {
-        CsvStatus.Missing => $"{Name}: FILE NOT FOUND ({Path ?? "no path resolved"}) — nothing loaded",
-        CsvStatus.Unreadable => $"{Name}: UNREADABLE ({Path}) — nothing loaded",
+        CsvStatus.Missing => WithMissingTableConsequence(
+            $"{Name}: FILE NOT FOUND ({Path ?? "no path resolved"}) — nothing loaded"),
+        CsvStatus.Unreadable => WithMissingTableConsequence($"{Name}: UNREADABLE ({Path}) — nothing loaded"),
         CsvStatus.Empty => $"{Name}: NO DATA ROWS ({Path}) — nothing loaded",
         _ when MissingColumns.Count > 0 =>
             $"{Name}: column(s) {string.Join(", ", MissingColumns.Select(c => $"'{c}'"))} " +
             "missing from the header — every row read them as their default (renamed column?)",
         _ when Kept == 0 => $"{Name}: 0 of {Read} row(s) kept — every row was skipped",
         _ => null,
+    };
+
+    private string WithMissingTableConsequence(string problem) => Name switch
+    {
+        "Obj533Fix.csv" => problem + "; 5.33 will over-block ~18k cells",
+        "Tile533Map.csv" => problem + "; 5.33 sheet-2 cells (30% of terrain) will be blank",
+        _ => problem,
     };
 
     // A Lua script fails differently: it is loaded atomically and a rejected one leaves the PREVIOUS version
