@@ -99,4 +99,62 @@ public sealed class NamedRecordConstructionTests
         Assert.False(value.Stationary);
         Assert.Equal(Content.DefaultSpawnTimeSec, value.SpawnTime);
     }
+
+    [Fact]
+    public void ItemDefCarriesItsDefaults()
+    {
+        var value = new ItemDef
+        {
+            Id = 1,
+            Key = "key",
+            Name = "name",
+            Type = 2,
+            Icon = 3,
+            IconColor = 4,
+            Look = 5,
+            LookColor = 6,
+            Sex = 7,
+            Level = 8,
+            Durability = 9,
+            StackAmount = 10,
+            MaxAmount = 11,
+            Armor = 12,
+            Hit = 13,
+            Dam = 14,
+            Vita = 15,
+            Mana = 16,
+            Might = 17,
+            Will = 18,
+            Grace = 19,
+            NoDrop = true,
+            Thrown = false,
+            BuyPrice = 20,
+            SellPrice = 21,
+        };
+
+        Assert.Equal(0, value.MightReq);
+        Assert.Equal(0, value.Sound);
+        Assert.False(value.Indestructible);
+        Assert.Equal(0, value.MinSDam);
+        Assert.Equal(0, value.MaxSDam);
+        Assert.Equal(0, value.MinLDam);
+        Assert.Equal(0, value.MaxLDam);
+        Assert.Equal(0, value.Protection);
+        Assert.Equal(0, value.Healing);
+        Assert.Equal(0, value.Wisdom);
+        Assert.Equal("", value.Text);
+        Assert.Equal("", value.BuyText);
+        Assert.Equal(0, value.PathId);
+        Assert.Equal(0, value.Mark);
+        Assert.False(value.BreakOnDeath);
+        Assert.False(value.Protected);
+        Assert.True(value.Repairable);
+        Assert.False(value.NoTrade);
+        Assert.False(value.NoDeposit);
+        Assert.Equal(value.Icon, value.ClientIcon);
+
+        var resolved = value with { ClientIcon = 22 };
+        Assert.Equal(22, resolved.ClientIcon);
+        Assert.Equal(value.Icon, resolved.Icon);
+    }
 }
