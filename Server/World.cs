@@ -3297,6 +3297,23 @@ public sealed partial class World
             }
         }
 
+        // (3)-(6): everything queued above, sent now the lock is released.
+        FlushTick(q);
+    }
+
+    /// <summary>
+    /// The back half of one heartbeat: everything <see cref="Tick"/> queued under <c>_lock</c>, sent now that
+    /// it is released. Phases (3) to (6), in the order they are written — viewports first (so a mob that left
+    /// the screen is despawned rather than sent an off-screen move), then moves and turns, then the deferred
+    /// visuals, then this beat's swings, then regen, then the clock and the weather. That order is BEHAVIOUR,
+    /// not layout: <c>Tests/MobAiTickTests.cs</c> pins it on the wire.
+    ///
+    /// <para>Runs OUTSIDE <c>_lock</c> and must keep doing so — it sends. It takes the lock only where the
+    /// body always did (the <c>_deferredFx</c> / <c>_hooks</c> / <c>_deferredTrapClears</c> drain and the
+    /// player snapshot), and <see cref="ReconcileViews"/>, its first statement, takes its own.</para>
+    /// </summary>
+    private void FlushTick(TickQueues q)
+    {
         // (3) Reconcile viewports FIRST, using the mobs' NEW positions: spawn any that stepped into view,
         // despawn any that stepped out. Doing this before the moves means a mob that just left the screen is
         // despawned (0x0E) rather than sent an off-screen 0x0C the client would cull — the desync that made
