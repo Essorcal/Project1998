@@ -48,7 +48,13 @@ public static class Csv
     /// carrying the <see cref="CsvStatus"/> that says which, having already reported itself.</summary>
     /// <param name="name">What this table is called in the log and the load report — the bare file name
     /// (<c>mobs.csv</c>), not the resolved path, so the message reads the same on every host.</param>
-    public static CsvTable Open(string name, string? path) => CsvTable.Open(name, path);
+    public static CsvTable Open(string name, string? path) => CsvTable.Open(name, path, null);
+
+    /// <summary>Read a headerless CSV table whose column names are supplied by its consumer. This is the
+    /// same reader and reporting path as <see cref="Open(string, string?)"/>; only the source of the header
+    /// differs, and every non-comment line is therefore a data row.</summary>
+    public static CsvTable Open(string name, string? path, params string[] header) =>
+        CsvTable.Open(name, path, header);
 
     // '#' opens a comment line, anywhere including above the header — these tables are hand-maintained and
     // the ones carrying a derivation (ArmorDyeRamps.csv) are unusable without somewhere to write it down.
@@ -112,7 +118,7 @@ public sealed class CsvTable : IEnumerable<CsvRow>
         Name = name; Path = path; Status = status; Header = header; _rows = rows; _index = index;
     }
 
-    internal static CsvTable Open(string name, string? path)
+    internal static CsvTable Open(string name, string? path, IReadOnlyList<string>? suppliedHeader)
     {
         static CsvTable Barren(string name, string? path, CsvStatus status) =>
             new(name, path, status, Array.Empty<string>(), new List<CsvRow>(),
@@ -132,21 +138,22 @@ public sealed class CsvTable : IEnumerable<CsvRow>
             return Barren(name, path, CsvStatus.Unreadable);
         }
 
-        int h = 0;
-        while (h < lines.Length && Csv.IsSkippable(lines[h])) h++;
-        if (h >= lines.Length)
+        int first = 0;
+        while (first < lines.Length && Csv.IsSkippable(lines[first])) first++;
+        if (first >= lines.Length && suppliedHeader is null)
         {
             Csv.Warn($"{name}: no header row ({path}) — the table is EMPTY");
             return Barren(name, path, CsvStatus.Empty);
         }
 
-        var header = Csv.Split(lines[h]);
+        IReadOnlyList<string> header = suppliedHeader is null ? Csv.Split(lines[first]) : suppliedHeader.ToArray();
+        int dataStart = suppliedHeader is null ? first + 1 : first;
         var index = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (int c = 0; c < header.Count; c++) index[header[c]] = c;
 
         var rows = new List<CsvRow>();
         var table = new CsvTable(name, path, CsvStatus.Ok, header, rows, index);
-        for (int i = h + 1; i < lines.Length; i++)
+        for (int i = dataStart; i < lines.Length; i++)
         {
             if (Csv.IsSkippable(lines[i])) continue;
             rows.Add(new CsvRow(table, Csv.Split(lines[i]), i + 1));

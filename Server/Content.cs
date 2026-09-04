@@ -87,7 +87,13 @@ public static partial class Content
                 // trap rows: re-running the main extractor must not be able to drop them.
                 .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"), grouped: true))
                 .ToList();
-            var eraCalendar = Shared.EraCalendar.PrepareReload();
+            var tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
+            Tuning = tuning;
+            int eraDate = tuning.TryGetValue("EraDate", out var configuredEraDate)
+                ? (int)configuredEraDate
+                : Shared.EraCalendar.DefaultDate;
+            var eraCalendar = Shared.EraCalendar.PrepareReload(
+                eraDate, T("P1998_ERA_FEATURES", "EraFeatures.csv"));
             snapshotBuilder.EraCalendar = eraCalendar;
             // Era.Has resolves to the prepared calendar on this loading thread; serving threads keep the old one.
             // Era gating remains ambient until its prepared value exposes the same fail-open query semantics.
@@ -205,7 +211,6 @@ public static partial class Content
             NpcCompositions = LoadNpcCompositions(T("P1998_NPC_ABILITIES", "NpcAbilities.csv"));
             PathGrowth = LoadPathGrowth(T("P1998_PATH_GROWTH", "PathGrowth.csv"));
             (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T("P1998_DOOR_OBJECTS", "DoorObjects.csv"));
-            Tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
             snapshotBuilder.Doors = LoadDoors(T("P1998_DOORS", "Doors.csv"));
             (MapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
             MapCellCount = mapCellCount;
