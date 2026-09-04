@@ -627,7 +627,9 @@ public static partial class Content
         set => Builder.LadderOf = value;
     }
 
-    private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(IReadOnlyList<SpellDef> spells)
+    private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(
+        IReadOnlyList<SpellDef> spells,
+        IReadOnlyDictionary<string, SpellFx> spellFx)
     {
         var family = BuildAlignFamilies(spells);
         var byLeader = spells.GroupBy(s => family.GetValueOrDefault(s.Key, s.Key), StringComparer.OrdinalIgnoreCase)
@@ -644,7 +646,8 @@ public static partial class Content
                     // "A RUNG MUST HAVE NO AETHER" note on LadderRungs. Dropping it here leaves it OFF every
                     // ladder, which means RespecSpellSet keeps it outright instead of letting it displace the
                     // class's actual attack.
-                    else if (siblings.Select(FxFor).FirstOrDefault(fx => fx is not null)?.Aether is > 0 and var aether)
+                    else if (siblings.Select(s => spellFx.GetValueOrDefault(s.Key))
+                                     .FirstOrDefault(fx => fx is not null)?.Aether is > 0 and var aether)
                         Log.Info($"!! spell ladder {pathId}/{ladderId}: '{rungs[i]}' has a {aether}ms aether — " +
                                  $"not a rung, granted on its own instead");
                     else

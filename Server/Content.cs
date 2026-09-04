@@ -113,7 +113,6 @@ public static partial class Content
             MobByKeyIndex = IndexFirst(mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
             SpellByIdIndex = IndexFirst(spells, s => s.Id);
             SpellByKeyIndex = IndexFirst(spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
-            LadderOf = BuildSpellLadders(spells);
             // name -> id, first wins. BASE names go in first so a string that is one path's class name and
             // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
             var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -125,7 +124,9 @@ public static partial class Content
                     if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
             PathIdByNameIndex = pathIdByName;
             PathRankByNameIndex = pathRankByName;
-            SpellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
+            var spellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
+            SpellFx = spellFx;
+            LadderOf = BuildSpellLadders(spells, spellFx);
             SpellTexts = LoadSpellTexts(T("P1998_SPELL_TEXT", "SpellText.csv"));
             SpellCosts = LoadSpellCosts(T("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
             Mob5xPalettes = LoadMob5xPalettes(T("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // (Look,Colour)->Palette, V533-only remap
