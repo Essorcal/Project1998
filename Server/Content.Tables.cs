@@ -1,3 +1,5 @@
+using Shared;
+
 namespace Server;
 
 /// <summary>The kind of content input described by a <see cref="TableSpec"/>.</summary>
@@ -21,7 +23,7 @@ public static partial class Content
     public const string TableReadmeStartMarker = "<!-- generated: tables -->";
     public const string TableReadmeEndMarker = "<!-- /generated -->";
 
-    private enum TableId
+    internal enum TableId
     {
         ObjectFlagOverrides,
         Obj533Fix,
@@ -179,7 +181,32 @@ public static partial class Content
     /// <summary>All 68 CSV tables and four Lua scripts, in load/report order.</summary>
     public static IReadOnlyList<TableSpec> TableSpecifications => TableSpecs;
 
-    private static TableSpec Spec(TableId id) => TableSpecs[(int)id];
+    internal static TableSpec Spec(TableId id)
+    {
+        lock (TableSpecs) return TableSpecs[(int)id];
+    }
+
+    internal static TableSpec ReplaceSpecForTests(TableId id, TableSpec replacement)
+    {
+        lock (TableSpecs)
+        {
+            var previous = TableSpecs[(int)id];
+            TableSpecs[(int)id] = replacement;
+            return previous;
+        }
+    }
+
+    internal static CsvTable OpenTable(TableId id) => OpenTable(Spec(id));
+
+    internal static CsvTable OpenTable(TableSpec spec)
+    {
+        if (spec.Kind != ContentTableKind.Csv)
+            throw new InvalidOperationException($"Programming error: {spec.File} is not a CSV table");
+        string? path = ResolvePath(spec.EnvironmentVariable, spec.File);
+        return spec.Header is null
+            ? Csv.Open(spec.File, path)
+            : Csv.Open(spec.File, path, spec.Header.ToArray());
+    }
 
     /// <summary>Render the generated README block from the declared CSV specs and the last load report.</summary>
     public static string RenderTableReadmeBlock()

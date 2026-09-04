@@ -39,12 +39,7 @@ public static partial class Content
             var entries = new List<Func<TableLoad>>();
             CsvTable T(TableSpec spec)
             {
-                if (spec.Kind != ContentTableKind.Csv)
-                    throw new InvalidOperationException($"Programming error: {spec.File} is not a CSV table");
-                string? path = ResolvePath(spec.EnvironmentVariable, spec.File);
-                var t = spec.Header is null
-                    ? Csv.Open(spec.File, path)
-                    : Csv.Open(spec.File, path, spec.Header.ToArray());
+                var t = OpenTable(spec);
                 entries.Add(() => t.ToLoad(spec.MissingConsequence));
                 return t;
             }

@@ -62,4 +62,46 @@ public sealed class TableSpecTests
             Assert.Equal(Content.RenderTableReadmeBlock(), readme[start..end]);
         }
     }
+
+    /// <summary>The pre-load fallbacks use the same spec objects as <see cref="Content.Load"/>. Changing a
+    /// spec's environment-variable name must redirect the fallback without changing the fallback itself.</summary>
+    [Fact]
+    public void LazyFallbacksResolveTheirFilesThroughTheSpec()
+    {
+        lock (TestProcessState.Gate)
+        {
+            AssertFallbackUsesSpec(Content.TableId.ObjectFlagOverrides, ObjectFlags.OpenOverrides,
+                "777,0x0F,test\n", "Obj", "777");
+            AssertFallbackUsesSpec(Content.TableId.Obj533Fix, TileTranslation.OpenObj533,
+                "777,suppress,0,0,0,0,free\n", "Legacy", "777");
+            AssertFallbackUsesSpec(Content.TableId.Tile533Map, TileTranslation.OpenSheet2,
+                "777,1,888\n", "StartLegacy", "777");
+        }
+    }
+
+    private static void AssertFallbackUsesSpec(Content.TableId id, Func<Shared.CsvTable> open,
+                                               string contents, string column, string expected)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"p1998-spec-fallback-{Guid.NewGuid():N}.csv");
+        string environmentVariable = $"P1998_TEST_FALLBACK_{Guid.NewGuid():N}";
+        var original = Content.Spec(id);
+        string? previous = Environment.GetEnvironmentVariable(environmentVariable);
+        try
+        {
+            File.WriteAllText(path, contents);
+            Environment.SetEnvironmentVariable(environmentVariable, path);
+            Content.ReplaceSpecForTests(id, original with { EnvironmentVariable = environmentVariable });
+
+            var table = open();
+
+            Assert.Equal(path, table.Path);
+            Assert.Equal(expected, Assert.Single(table).Require(column));
+        }
+        finally
+        {
+            Content.ReplaceSpecForTests(id, original);
+            Environment.SetEnvironmentVariable(environmentVariable, previous);
+            try { File.Delete(path); } catch { /* best-effort cleanup of a test fixture */ }
+        }
+    }
 }
