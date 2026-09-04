@@ -52,9 +52,24 @@ public static partial class Content
             // the weather gate (WeatherModel.For): no rain/snow indoors. Deliberately NOT reused as a casting
             // gate — casting has to work in caves, which is why MapSpells above is the separate no-cast flag.
             bool indoor = col.Require("MapIndoor", "0") == "1";
-            meta[id] = new MapMetaInfo(region, warpOut, pvp, canTalk, canCast,
-                Rd("MapReqLvl"), Rd("MapReqPath"), Rd("MapReqMark"), Rl("MapReqVita"), Rl("MapReqMana"),
-                Rd("MapLvlMax"), Rl("MapVitaMax"), Rl("MapManaMax"), Clean(col.Require("MapRejectMsg", "")), indoor);
+            meta[id] = new MapMetaInfo
+            {
+                Region = region,
+                WarpOut = warpOut,
+                Pvp = pvp,
+                CanTalk = canTalk,
+                CanCast = canCast,
+                ReqLvl = Rd("MapReqLvl"),
+                ReqPath = Rd("MapReqPath"),
+                ReqMark = Rd("MapReqMark"),
+                ReqVita = Rl("MapReqVita"),
+                ReqMana = Rl("MapReqMana"),
+                LvlMax = Rd("MapLvlMax"),
+                VitaMax = Rl("MapVitaMax"),
+                ManaMax = Rl("MapManaMax"),
+                RejectMsg = Clean(col.Require("MapRejectMsg", "")),
+                Indoor = indoor,
+            };
             col.Keep();
         }
         return meta;
@@ -136,10 +151,30 @@ public static partial class Content
             // it and RTK revives them on the next AI pass — so an explicit 0 is honoured.
             int spawnTime = int.TryParse(col.Require("SpawnTime", ""), out var st) && st >= 0
                 ? st : DefaultSpawnTimeSec;
-            mobs.Add(new MobDef(id, key, name, look, color, hp <= 0 ? 1 : hp, exp, lvl, move, will, aggressive, minDam, maxDam, isBoss, protection, hit, ac, grace,
-                Flees: fleeOverrides.GetValueOrDefault(key),
-                Stationary: stationaryOverrides.GetValueOrDefault(key),
-                SpawnTime: spawnTime));
+            mobs.Add(new MobDef
+            {
+                Id = id,
+                Key = key,
+                Name = name,
+                Look = look,
+                Color = color,
+                Hp = hp <= 0 ? 1 : hp,
+                Exp = exp,
+                Level = lvl,
+                MoveTime = move,
+                Will = will,
+                Aggressive = aggressive,
+                MinDam = minDam,
+                MaxDam = maxDam,
+                IsBoss = isBoss,
+                Protection = protection,
+                Hit = hit,
+                Ac = ac,
+                Grace = grace,
+                Flees = fleeOverrides.GetValueOrDefault(key),
+                Stationary = stationaryOverrides.GetValueOrDefault(key),
+                SpawnTime = spawnTime,
+            });
             col.Keep();
         }
         return mobs;
@@ -283,25 +318,53 @@ public static partial class Content
             var key  = Clean(col.Require("ItmIdentifier", ""));
             if (string.IsNullOrEmpty(name)) name = string.IsNullOrEmpty(key) ? $"item{id}" : key;
 
-            items.Add(new ItemDef(
-                id, key, name, B("ItmType"),
-                U("ItmIcon"), B("ItmIconColor"), U("ItmLook"), B("ItmLookColor"),
-                B("ItmSex"), B("ItmLevel"), U("ItmDurability"), I("ItmStackAmount"), I("ItmMaximumAmount"),
-                I("ItmArmor"), I("ItmHit"), I("ItmDam"), I("ItmVita"), I("ItmMana"),
-                I("ItmMight"), I("ItmWill"), I("ItmGrace"),
-                NoDrop: I("ItmDroppable") != 0, Thrown: I("ItmThrown") != 0,
-                I("ItmBuyPrice"), I("ItmSellPrice"), I("ItmMightRequired"), Sound: I("ItmSound"),
-                Indestructible: I("ItmIndestructible") != 0,
-                MinSDam: I("ItmMinimumSDamage"), MaxSDam: I("ItmMaximumSDamage"),
-                MinLDam: I("ItmMinimumLDamage"), MaxLDam: I("ItmMaximumLDamage"),
-                Protection: I("ItmProtection"),
-                Healing: I("ItmHealing"), Wisdom: I("ItmWisdom"),
-                Text: Clean(col.Require("ItmText", "")),
-                BuyText: Clean(col.Require("ItmBuyText", "")),
-                PathId: I("ItmPthId"), Mark: I("ItmMark"),
-                BreakOnDeath: I("ItmBoD") != 0, Protected: I("ItmProtected") != 0,
-                Repairable: I("ItmRepairable") != 0,
-                NoTrade: I("ItmExchangeable") != 0, NoDeposit: I("ItmDepositable") != 0));
+            items.Add(new ItemDef
+            {
+                Id = id,
+                Key = key,
+                Name = name,
+                Type = B("ItmType"),
+                Icon = U("ItmIcon"),
+                IconColor = B("ItmIconColor"),
+                Look = U("ItmLook"),
+                LookColor = B("ItmLookColor"),
+                Sex = B("ItmSex"),
+                Level = B("ItmLevel"),
+                Durability = U("ItmDurability"),
+                StackAmount = I("ItmStackAmount"),
+                MaxAmount = I("ItmMaximumAmount"),
+                Armor = I("ItmArmor"),
+                Hit = I("ItmHit"),
+                Dam = I("ItmDam"),
+                Vita = I("ItmVita"),
+                Mana = I("ItmMana"),
+                Might = I("ItmMight"),
+                Will = I("ItmWill"),
+                Grace = I("ItmGrace"),
+                NoDrop = I("ItmDroppable") != 0,
+                Thrown = I("ItmThrown") != 0,
+                BuyPrice = I("ItmBuyPrice"),
+                SellPrice = I("ItmSellPrice"),
+                MightReq = I("ItmMightRequired"),
+                Sound = I("ItmSound"),
+                Indestructible = I("ItmIndestructible") != 0,
+                MinSDam = I("ItmMinimumSDamage"),
+                MaxSDam = I("ItmMaximumSDamage"),
+                MinLDam = I("ItmMinimumLDamage"),
+                MaxLDam = I("ItmMaximumLDamage"),
+                Protection = I("ItmProtection"),
+                Healing = I("ItmHealing"),
+                Wisdom = I("ItmWisdom"),
+                Text = Clean(col.Require("ItmText", "")),
+                BuyText = Clean(col.Require("ItmBuyText", "")),
+                PathId = I("ItmPthId"),
+                Mark = I("ItmMark"),
+                BreakOnDeath = I("ItmBoD") != 0,
+                Protected = I("ItmProtected") != 0,
+                Repairable = I("ItmRepairable") != 0,
+                NoTrade = I("ItmExchangeable") != 0,
+                NoDeposit = I("ItmDepositable") != 0,
+            });
             col.Keep();
         }
         return ResolveIconColors(items);
@@ -507,10 +570,26 @@ public static partial class Content
             // here can only leave someone in the world, never silently delete him.
             var eraFeature = Clean(col.Require("EraFeature", ""));
             if (eraFeature.Length > 0 && !Era.Has(eraFeature)) enabled = false;
-            npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
-                IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
-                Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
-                MoveTime: move, ReturnDistance: leash, Enabled: enabled, EraFeature: eraFeature));
+            npcs.Add(new NpcDef
+            {
+                Id = id,
+                Key = key,
+                Name = name,
+                Map = map,
+                X = x,
+                Y = y,
+                Dir = 2,
+                Look = look,
+                Color = color,
+                IsChar = Flag("NpcIsChar"),
+                Shop = Flag("NpcIsShopNpc"),
+                Repair = Flag("NpcIsRepairNpc"),
+                Bank = Flag("NpcIsBankNpc"),
+                MoveTime = move,
+                ReturnDistance = leash,
+                Enabled = enabled,
+                EraFeature = eraFeature,
+            });
             col.Keep();
         }
         return npcs;

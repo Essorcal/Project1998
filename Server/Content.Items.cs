@@ -11,29 +11,63 @@ namespace Server;
 /// taken is <c>raw x (1 + ac/100)</c>, so MORE AC = MORE DAMAGE: a spring garb is -4 (protective) and a
 /// wedding dress is +30 (a real penalty). It just ADDS to the wearer's AC — nothing negates it anywhere.</para>
 /// </summary>
-public sealed record ItemDef(
-    int Id, string Key, string Name, byte Type,
-    ushort Icon, byte IconColor, ushort Look, byte LookColor,
-    byte Sex, byte Level, ushort Durability, int StackAmount, int MaxAmount,
-    int Armor, int Hit, int Dam, int Vita, int Mana, int Might, int Will, int Grace,
-    bool NoDrop, bool Thrown, int BuyPrice, int SellPrice, int MightReq = 0, int Sound = 0,
-    bool Indestructible = false,
+public sealed record ItemDef
+{
+    private ushort? _clientIcon;
+
+    public required int Id { get; init; }
+    public required string Key { get; init; }
+    public required string Name { get; init; }
+    public required byte Type { get; init; }
+    public required ushort Icon { get; init; }
+    public required byte IconColor { get; init; }
+    public required ushort Look { get; init; }
+    public required byte LookColor { get; init; }
+    public required byte Sex { get; init; }
+    public required byte Level { get; init; }
+    public required ushort Durability { get; init; }
+    public required int StackAmount { get; init; }
+    public required int MaxAmount { get; init; }
+    public required int Armor { get; init; }
+    public required int Hit { get; init; }
+    public required int Dam { get; init; }
+    public required int Vita { get; init; }
+    public required int Mana { get; init; }
+    public required int Might { get; init; }
+    public required int Will { get; init; }
+    public required int Grace { get; init; }
+    public required bool NoDrop { get; init; }
+    public required bool Thrown { get; init; }
+    public required int BuyPrice { get; init; }
+    public required int SellPrice { get; init; }
+    public int MightReq { get; init; } = 0;
+    public int Sound { get; init; } = 0;
+    public bool Indestructible { get; init; } = false;
+
     // A weapon's real swing range (RTK ItmMinimumSDamage/ItmMaximumSDamage/ItmMinimumLDamage/
     // ItmMaximumLDamage) — the actual source of player melee damage (swingDamage.lua
     // _getPlayerSwingDamage), previously parsed nowhere despite being present in Items.csv (same class
     // of bug as the mob MinDam/MaxDam gap). "L" (Large) replaces "S" (Small) as the roll when the target
     // is a boss mob. Protection (RTK ItmProtection) is the wearer's own magic-resist contribution,
     // folded into Session.RollDeflect the same way a mob's Protection is.
-    int MinSDam = 0, int MaxSDam = 0, int MinLDam = 0, int MaxLDam = 0, int Protection = 0,
+    public int MinSDam { get; init; } = 0;
+    public int MaxSDam { get; init; } = 0;
+    public int MinLDam { get; init; } = 0;
+    public int MaxLDam { get; init; } = 0;
+    public int Protection { get; init; } = 0;
+
     // ItmHealing / ItmWisdom: the last two stat columns, parsed nowhere until the item tooltip needed them
     // ("Healing increase:" is a line in the real examine box). Carried for display; nothing consumes them
     // mechanically yet.
-    int Healing = 0, int Wisdom = 0,
-    string Text = "",
+    public int Healing { get; init; } = 0;
+    public int Wisdom { get; init; } = 0;
+    public string Text { get; init; } = "";
+
     // ItmBuyText: the shop blurb the game itself writes for an item's restriction ("Strength of 35 req",
     // "For level 5 or higher", "For peasants") -- 182 rows carry one. Free-text, so it's shown as a note on
     // the examine popup (Session.ItemInfoText) rather than parsed; the real gates are the numeric columns.
-    string BuyText = "",
+    public string BuyText { get; init; } = "";
+
     // Wear restrictions that were parsed nowhere until now (RTK pc_useitem's path/mark gate, clif_checkinvbod's
     // break-on-death flag). PathId is ItmPthId: 0 = anyone; 1..5 = a BASE path (Warrior/Rogue/Mage/Poet/
     // Dreamweaver) which every subpath under it satisfies; >=6 = one EXACT subpath class (Chung ryong, Barbarian,
@@ -41,7 +75,11 @@ public sealed record ItemDef(
     // BreakOnDeath is ItmBoD (77 items): destroyed outright when you die, wherever it sits. Protected is
     // ItmProtected — RTK consumes a charge to RESTORE the item instead of breaking it; no row in the live
     // registry sets it, so it is carried for fidelity and never fires today.
-    int PathId = 0, int Mark = 0, bool BreakOnDeath = false, bool Protected = false,
+    public int PathId { get; init; } = 0;
+    public int Mark { get; init; } = 0;
+    public bool BreakOnDeath { get; init; } = false;
+    public bool Protected { get; init; } = false;
+
     // ItmRepairable: 1 = a smith or a repair spell can restore its durability, 0 = it can never be mended.
     // POSITIVE, unlike the restriction flags beside it (ItmDroppable/ItmExchangeable/ItmDepositable all mean
     // NOT-x when set) — RTK reads it both ways round and agrees with itself: the smith's single-item gate is
@@ -50,20 +88,22 @@ public sealed record ItemDef(
     // item."` (player.lua:1622). 605 of the 1241 equip rows are 0, but 482 of those are ItmIndestructible as
     // well (nothing to repair on gear that never wears), leaving ~123 that really do decay permanently —
     // the totem helms, the smith-forged subpath weapons, the headbands and the gauntlets.
-    bool Repairable = true,
+    public bool Repairable { get; init; } = true;
+
     // ItmExchangeable / ItmDepositable — ItmDroppable's two sibling restriction flags, same inverted sense
     // (set = you CAN'T). NoTrade refuses the exchange window (RTK clif_exchange_additem: "You cannot exchange
     // that."); NoDeposit refuses bank storage (RTK player.lua depositNoConfirm: "You cannot deposit that
     // item."). 42 / 23 registry rows set them — mostly one-shot quest tokens like this file's namesake keys.
-    bool NoTrade = false, bool NoDeposit = false)
-{
+    public bool NoTrade { get; init; } = false;
+    public bool NoDeposit { get; init; } = false;
+
     /// <summary>The Item.epf id the 4.95 client must be told to draw — <see cref="Icon"/> with
     /// <see cref="IconColor"/> already folded in (see Content.ResolveIconColors). 4.95 has NO colour channel
     /// for item graphics at all: the bag/equip/ground draw calls take only a frame index and pull the palette
     /// from Item.tbl, so a colour variant is a SEPARATE consecutive frame. RTK's (icon, colour) pair is the
     /// later client's encoding of the same thing. Equals <see cref="Icon"/> for everything that isn't part of
     /// a recognised colour run.</summary>
-    public ushort ClientIcon { get; init; } = Icon;
+    public ushort ClientIcon { get => _clientIcon ?? Icon; init => _clientIcon = value; }
 
     /// <summary>ITM_WEAP..ITM_COAT (3..16) are wearable; everything else is consumable/junk.</summary>
     public bool IsEquip => Type is >= 3 and <= 16;
