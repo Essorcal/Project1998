@@ -62,9 +62,9 @@ public static partial class Content
                 return ok;
             }
 
-            var objectFlagOverrides = ObjectFlags.PrepareOverrides(
+            snapshotBuilder.ObjectFlagOverrides = ObjectFlags.PrepareOverrides(
                 T("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", "Obj", "Flag", "Note"));
-            var tileTranslations = TileTranslation.PrepareReload(
+            snapshotBuilder.TileTranslations = TileTranslation.PrepareReload(
                 T("P1998_OBJ533_FIX", "Obj533Fix.csv",
                     "Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"),
                 T("P1998_TILE533_MAP", "Tile533Map.csv", "StartLegacy", "Count", "Start533"));
@@ -233,8 +233,6 @@ public static partial class Content
             if (maps.Count == 0 || mobs.Count == 0)
                 Log.Warn("content: no maps and/or no mobs — run re/build_map_index.py and check game-data/mobs.csv");
             PublishSnapshot(snapshotBuilder);
-            ObjectFlags.CommitOverrides(objectFlagOverrides);
-            TileTranslation.CommitReload(tileTranslations);
         }
         finally
         {
@@ -247,8 +245,8 @@ public static partial class Content
     /// Hot-reload every file-backed registry WITHOUT a restart (the <c>@reload</c> GM command), so content
     /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence in an
     /// unpublished builder, then publishes the immutable snapshot with one write and commits the era calendar,
-    /// Doors configuration and four Lua hosts at that boundary under the shared Lua gate. Readers therefore
-    /// see all registries and their derived indexes from the old load or all of them from the new load. Returns
+    /// Doors configuration, object/tile tables and four Lua hosts at that boundary under the shared Lua gate.
+    /// Readers therefore see all registries and their derived indexes from the old load or all of them from the new load. Returns
     /// a one-line count summary.
     ///
     /// SCOPE: file-backed content only (every registry above is CSV/Lua-backed now — map BGM moved to

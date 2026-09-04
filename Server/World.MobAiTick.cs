@@ -11,6 +11,58 @@ namespace Server;
 public sealed partial class World
 {
     /// <summary>
+    /// One beat's outbound work, built ONCE per tick by <see cref="Tick"/> before it takes <c>_lock</c> and
+    /// drained ONCE by <see cref="FlushTick"/> after it releases it. Nothing here sends: the locked phases
+    /// decide and queue, the flush acts (<c>docs/common/Locking.md</c>, "decide under the lock, act outside
+    /// it"). The lists are the tick's own and are shared by every map's <see cref="MobTickContext"/> that
+    /// beat, so their order across maps is the order the maps were walked in.
+    ///
+    /// <para>The last three are not queues and are deliberately mutable: <see cref="Forage"/> and
+    /// <see cref="WeatherChanges"/> stay NULL unless the beat produced any (the flush tests for null rather
+    /// than walking an empty list), and <see cref="TimeChanged"/> is the day/night rollover flag, which
+    /// drives its broadcast independently of the weather one. They ride here for the same reason the queues
+    /// do — they are written under the lock and read after it — so the flush needs one parameter.</para>
+    /// </summary>
+    internal sealed class TickQueues
+    {
+        public readonly List<(ushort map, uint id, ushort x, ushort y, byte dir)> Moves = new();
+        public readonly List<(ushort map, uint id, byte dir)> Turns = new();
+        public readonly List<(ushort map, Mob mob, Session target)> Hits = new();
+        /// <summary>A creature's spell at a player (MobSpells.csv) and its idle flavour line — both queued for
+        /// the same reason as <see cref="Hits"/>: landing a spell broadcasts, curses, and can kill.</summary>
+        public readonly List<(Mob mob, Session target, Content.MobSpellDef spell)> MobCasts = new();
+        public readonly List<(ushort map, Mob mob, byte channel, string line)> Chatter = new();
+        /// <summary>A pet's swing at another mob (mob-on-mob, the only place that happens) — deferred out of
+        /// the lock for the same reason as <see cref="Hits"/>: applying it broadcasts and can award the owner
+        /// exp.</summary>
+        public readonly List<(ushort map, Mob attacker, Mob victim)> MobHits = new();
+        /// <summary>Real damage from a triggered trap (instant hit) or a poison tick — both need
+        /// Session-facing broadcasts (damage number, death despawn, owner exp) that must run outside the
+        /// lock, same as <see cref="Hits"/>.</summary>
+        public readonly List<(ushort map, Mob mob, int dmg, uint ownerId)> TrapDamage = new();
+        /// <summary>Repeating status effects (RTK <c>while_cast</c>): venom re-draws its animation every
+        /// poison tick, doze and sleep re-draw theirs for as long as the hold runs. Broadcasting is socket
+        /// I/O, so — like every other visual here — the tick only QUEUES them under the lock and sends them
+        /// after it's released.</summary>
+        public readonly List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> FxRepeats = new();
+        /// <summary>Over-head HP bars to redraw for a mob whose health changed with NO hit behind it — Sute's
+        /// self-heal is the only source. Damage draws its own bar through <c>Session.ShowDamageResult</c>; a
+        /// heal has no such path, so without this his bar silently stayed where the last blow left it and the
+        /// heal was invisible to the player fighting him.</summary>
+        public readonly List<(ushort map, Mob mob)> HealthShows = new();
+        public readonly List<(ushort map, Mob mob)> ExpiredPets = new();
+        public readonly List<Session> ExpiredMorphs = new();
+        public readonly List<Session> ExpiredStealth = new();
+
+        /// <summary>Null unless this beat's forage top-up ran and placed something.</summary>
+        public List<(ushort map, GroundItem gi)>? Forage;
+        /// <summary>Set when the in-game hour rolled over; drives the 0x20 broadcast on its own.</summary>
+        public bool TimeChanged;
+        /// <summary>Null unless the weather period rolled over this beat.</summary>
+        public List<(ushort map, byte weather)>? WeatherChanges;
+    }
+
+    /// <summary>
     /// Everything <see cref="MobAiTick.Step"/> needs about the map it is stepping on, built ONCE per map per
     /// tick by <see cref="Tick"/> just before the mob loop. The two tile sets are the beat's collision index
     /// (kept current as mobs move, so two creatures cannot step onto the same tile in one sweep); the lists
@@ -51,23 +103,15 @@ public sealed partial class World
         public readonly List<(ushort map, Mob mob)> ExpiredPets;
 
         /// <summary>Caller holds <c>_lock</c>: the two tile sets are read off live player and mob lists.
-        /// <paramref name="map"/> is read here and not kept — see the class doc.</summary>
-        public MobTickContext(World world, ushort mapId, MapState map,
-                              List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
-                              List<(ushort map, uint id, byte dir)> turns,
-                              List<(ushort map, Mob mob, Session target)> hits,
-                              List<(Mob mob, Session target, Content.MobSpellDef spell)> mobCasts,
-                              List<(ushort map, Mob mob, byte channel, string line)> chatter,
-                              List<(ushort map, Mob attacker, Mob victim)> mobHits,
-                              List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage,
-                              List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> fxRepeats,
-                              List<(ushort map, Mob mob)> healthShows,
-                              List<(ushort map, Mob mob)> expiredPets)
+        /// <paramref name="map"/> is read here and not kept — see the class doc. The ten queue fields are
+        /// aliases of <paramref name="q"/>'s lists, not copies, so <c>Step</c>'s body reaches the tick's own
+        /// queues exactly as it did when they were thirteen separate constructor arguments.</summary>
+        public MobTickContext(World world, ushort mapId, MapState map, TickQueues q)
         {
             Debug.Assert(world.HoldsWorldLock, "MobTickContext reads the live player and mob lists; build it under World._lock");
             World = world; MapId = mapId;
-            Moves = moves; Turns = turns; Hits = hits; MobCasts = mobCasts; Chatter = chatter; MobHits = mobHits;
-            TrapDamage = trapDamage; FxRepeats = fxRepeats; HealthShows = healthShows; ExpiredPets = expiredPets;
+            Moves = q.Moves; Turns = q.Turns; Hits = q.Hits; MobCasts = q.MobCasts; Chatter = q.Chatter; MobHits = q.MobHits;
+            TrapDamage = q.TrapDamage; FxRepeats = q.FxRepeats; HealthShows = q.HealthShows; ExpiredPets = q.ExpiredPets;
 
             Dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
             Terrain = Dims.Item1 > 0 ? MapData.For(mapId, Dims.Item1, Dims.Item2) : null;
@@ -805,8 +849,19 @@ public sealed partial class World
     /// escapes the tick to reach it — which is exactly what the per-mob guard has to prevent.</summary>
     internal void TickOnceForTest() => Tick();
 
-    /// <summary>A per-map context with its own fresh queues, for driving <see cref="MobAiTick.Step"/> on one
-    /// creature and reading back what it queued. Caller holds <c>_lock</c> (<see cref="UnderWorldLockForTest"/>).</summary>
-    internal MobTickContext MobTickContextForTest(ushort mapId) =>
-        new(this, mapId, Map(mapId), new(), new(), new(), new(), new(), new(), new(), new(), new(), new());
+    /// <summary>A per-map context over <paramref name="q"/>, or over its own fresh queues when none is
+    /// given, for driving <see cref="MobAiTick.Step"/> on one creature and reading back what it queued.
+    /// Caller holds <c>_lock</c> (<see cref="UnderWorldLockForTest"/>).
+    ///
+    /// <para>Passing the queues in is what lets a test drive <see cref="MobAiTick.Step"/> and then
+    /// <see cref="FlushTickForTest"/> over the SAME beat's queues — the only way to check that a queue the
+    /// context filled is the queue the flush drains, which for the two same-typed fields
+    /// (<c>HealthShows</c> and <c>ExpiredPets</c>) the compiler cannot check.</para></summary>
+    internal MobTickContext MobTickContextForTest(ushort mapId, TickQueues? q = null) =>
+        new(this, mapId, Map(mapId), q ?? new TickQueues());
+
+    /// <summary>Drain one beat's queues with no beat in front of them. <see cref="TickOnceForTest"/> builds
+    /// its own <see cref="TickQueues"/> and keeps them, so a test that needs to put a specific entry on a
+    /// specific queue and watch what leaves the wire cannot use it.</summary>
+    internal void FlushTickForTest(TickQueues q) => FlushTick(q);
 }
