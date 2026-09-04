@@ -22,9 +22,10 @@ public static partial class Content
     /// <summary>Replace every file-backed content registry from disk in its required dependency order.</summary>
     /// <remarks>Any runtime caller must hold the world reload gate by going through
     /// <see cref="World.ReloadFromDisk"/>. Startup calls this before the World and its scheduler exist; tests
-    /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized. On the
-    /// loading thread, reading a facade before its registry has been assigned returns that builder member's
-    /// empty default rather than the previous snapshot; #35 will replace these implicit dependencies.</remarks>
+    /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized. Loaders
+    /// and <c>Load</c> read no content facade on the loading thread, as the facade-read counter test proves;
+    /// the builder-backed facade view remains as a safety net. The remaining #35 work is the single CSV reader,
+    /// named records, and <c>TableSpec</c>.</remarks>
     public static void Load()
     {
         var snapshotBuilder = BeginSnapshotBuild();
