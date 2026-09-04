@@ -627,7 +627,9 @@ public static partial class Content
         set => Builder.LadderOf = value;
     }
 
-    private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(IReadOnlyList<SpellDef> spells)
+    private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(
+        IReadOnlyList<SpellDef> spells,
+        Func<SpellDef, SpellFx?> FxFor)
     {
         var family = BuildAlignFamilies(spells);
         var byLeader = spells.GroupBy(s => family.GetValueOrDefault(s.Key, s.Key), StringComparer.OrdinalIgnoreCase)

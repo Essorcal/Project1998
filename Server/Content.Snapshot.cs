@@ -5,26 +5,44 @@ namespace Server;
 public static partial class Content
 {
     // A loader writes only to its thread-local builder. Runtime readers continue to see the last fully
-    // published snapshot until the single Volatile.Write at the end of Load. The thread-local view also
-    // preserves the loaders' existing dependency reads (for example LoadWarps reads Maps) without exposing
-    // a half-built registry to another thread; #35 will make those dependencies explicit parameters.
+    // published snapshot until the single Volatile.Write at the end of Load. Dependencies within Load are
+    // explicit locals and parameters; the thread-local facade view remains only as a safety net whose test
+    // counter proves the loader path does not use it.
     // Partial-file field initializer order is unspecified, so a facade reached by another partial's static
     // initializer must have a usable fallback even before this field receives its first published snapshot.
     private static ContentSnapshot? _snapshot;
 
     [ThreadStatic]
-    private static ContentSnapshotBuilder? _snapshotBuilder;
+    private static ContentSnapshotBuilder? _snapshotBuilderState;
+
+    [ThreadStatic]
+    private static int _loadingThreadFacadeReads;
+
+    // Every snapshot-backed facade already takes this branch. Keeping the counter here makes the proof cover
+    // all current and future facades without adding work to a serving thread beyond its existing null check.
+    // Every read of this property is a counted event on the loading thread; code that does not mean to count
+    // must inspect the raw _snapshotBuilderState field instead.
+    private static ContentSnapshotBuilder? _snapshotBuilder
+    {
+        get
+        {
+            var builder = _snapshotBuilderState;
+            if (builder is not null) _loadingThreadFacadeReads++;
+            return builder;
+        }
+    }
 
     private static ContentSnapshot Snapshot => Volatile.Read(ref _snapshot) ?? ContentSnapshot.Empty;
 
-    private static ContentSnapshotBuilder Builder => _snapshotBuilder
+    private static ContentSnapshotBuilder Builder => _snapshotBuilderState
         ?? throw new InvalidOperationException("Programming error: content registries can only be assigned while Content.Load is building a snapshot.");
 
     private static ContentSnapshotBuilder BeginSnapshotBuild()
     {
-        if (_snapshotBuilder is not null)
+        if (_snapshotBuilderState is not null)
             throw new InvalidOperationException("Programming error: Content.Load cannot be nested on the same thread.");
-        return _snapshotBuilder = new ContentSnapshotBuilder();
+        _loadingThreadFacadeReads = 0;
+        return _snapshotBuilderState = new ContentSnapshotBuilder();
     }
 
     private static void PublishSnapshot(ContentSnapshotBuilder builder)
@@ -49,10 +67,11 @@ public static partial class Content
 
     private static void EndSnapshotBuild(ContentSnapshotBuilder builder)
     {
-        if (ReferenceEquals(_snapshotBuilder, builder)) _snapshotBuilder = null;
+        if (ReferenceEquals(_snapshotBuilderState, builder)) _snapshotBuilderState = null;
     }
 
     internal static Action<string>? LoadStepForTests { get; set; }
+    internal static int LoadingThreadFacadeReadsForTests => _loadingThreadFacadeReads;
     internal static object SnapshotIdentityForTests => Snapshot;
     internal static int SnapshotMemberCountForTests => typeof(ContentSnapshot)
         .GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Length;
