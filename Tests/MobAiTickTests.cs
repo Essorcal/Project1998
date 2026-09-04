@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using Protocol.Tk495;
 using Server;
 using Shared;
 using Tests.Support;
@@ -36,7 +37,8 @@ public class MobAiTickTests
     public MobAiTickTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
-    private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035;
+    private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035,
+                         OrderMap = 60036;
 
     private Mob Registered(ushort map, Mob mob)
     {
@@ -285,6 +287,95 @@ public class MobAiTickTests
             Unrig(faulty);
             _fx.World.LeaveMap(watcher, TickMap);
         }
+    }
+
+    /// <summary>The drain ORDER of <c>World.FlushTick</c>, on the wire (#107). Phases (3), (4) and (4.5) are
+    /// not three independent loops that happen to be written in that sequence — the sequence IS the
+    /// behaviour, and moving the flush into its own method is only safe if it is pinned.
+    ///
+    /// <para>One beat, one watcher, two creatures. The STEPPER stands one row below the watcher's view rect
+    /// and walks home into it: its new tile is what phase (3) reconciles, so the watcher gets its spawn
+    /// (0x07) from <c>ReconcileViews</c> and then its move (0x0C) from phase (4) — and only in that order,
+    /// because <c>Session.MoveMob</c> is a no-op for a mob the client has not been shown. Send the move
+    /// first and the client never sees the step at all: that is the despawn/off-screen-0x0C desync the
+    /// comment on phase (3) is about. The SWINGER stands adjacent to the watcher and lands its swing, whose
+    /// 0x1A comes out of phase (4.5), after both.</para>
+    ///
+    /// <para>Also the nullable-queue pin: this beat tops up no forage box (the map is content-free) and rolls
+    /// no weather period (the warm-up beat below syncs it first), so <c>TickQueues.Forage</c> and
+    /// <c>TickQueues.WeatherChanges</c> are the null case — exactly one 0x07 reaches the watcher (the
+    /// stepper's spawn, not a forage placement, which draws through the same opcode) and no 0x1F at all.</para>
+    ///
+    /// <para>Deterministic: the stepper is outside its two-tile leash on the same column as its home, so the
+    /// walk-home step has one candidate direction and rolls nothing; the swinger is cardinally adjacent and
+    /// already facing the watcher, so it swings on its first beat (<c>AttackTime = 1</c>) instead of stepping
+    /// or turning. Falsified by moving the <c>q.Hits</c> loop above <c>ReconcileViews()</c> in
+    /// <c>FlushTick</c>: red with "the move must precede the swing (move at 6, swing at 0)".</para></summary>
+    [Fact]
+    public void FlushSendsViewportsThenMovesThenHits()
+    {
+        var (watcher, outbound) = _fx.Player("OrderWatcher", OrderMap, x: 5, y: 10);
+        try
+        {
+            // Warm-up beat with the map still empty: it syncs the weather period, so the MEASURED beat below
+            // cannot roll one over and the weather queue stays null.
+            _fx.World.TickOnceForTest();
+
+            // One row below the watcher's 17x15 view rect (rows -1..13 for a 12x12 map), so it is not drawn
+            // yet; three tiles from home with a two-tile leash, so its beat is one step north into view.
+            var stepper = new Mob(_fx.World.AllocateMobId(), 1, 5, 14, "Stepper", 100) { Wander = true };
+            stepper.HomeX = 5; stepper.HomeY = 11;
+            Registered(OrderMap, stepper);
+
+            var swinger = Registered(OrderMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 9, "Swinger", 100)
+            {
+                Aggressive = true,
+                AttackTime = 1,   // swings on its first beat, whatever TickMs is configured to
+                Dir = 2,          // already facing the watcher: the swing queues no turn
+            });
+            outbound.Clear();   // the swinger's own spawn is drawn already; only the beat's traffic from here
+
+            _fx.World.TickOnceForTest();
+
+            Assert.Equal(((ushort)5, (ushort)13), (stepper.X, stepper.Y));   // stepped into view
+            Assert.Equal(watcher.PlayerId, swinger.TargetId);                // locked onto the watcher
+            Assert.Equal(((ushort)5, (ushort)9), (swinger.X, swinger.Y));    // adjacent: swung, did not step
+
+            int spawn = IndexOfFrame(outbound, 0x07, b => BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(6)) == stepper.Id);
+            int move  = IndexOfFrame(outbound, 0x0C, b => BinaryPrimitives.ReadUInt32BigEndian(b) == stepper.Id);
+            int swing = IndexOfFrame(outbound, 0x1A, b => BinaryPrimitives.ReadUInt32BigEndian(b) == swinger.Id);
+
+            Assert.True(spawn >= 0, "phase (3) should have spawned the stepper into the watcher's view");
+            Assert.True(move  >= 0, "phase (4) should have streamed the stepper's move");
+            Assert.True(swing >= 0, "phase (4.5) should have sent the swinger's attack pose");
+            Assert.True(spawn < move,  $"the viewport spawn must precede the move (spawn at {spawn}, move at {move})");
+            Assert.True(move  < swing, $"the move must precede the swing (move at {move}, swing at {swing})");
+
+            // The move is the step's SOURCE tile, facing north — the 0x0C overshoot rule.
+            var mv = outbound.BodiesOf(0x0C).Single(b => BinaryPrimitives.ReadUInt32BigEndian(b) == stepper.Id);
+            Assert.Equal(5, BinaryPrimitives.ReadUInt16BigEndian(mv.AsSpan(4)));
+            Assert.Equal(14, BinaryPrimitives.ReadUInt16BigEndian(mv.AsSpan(6)));
+            Assert.Equal(0, mv[8]);
+
+            // Nullable queues: no forage placement (0x07 is also how a ground item is drawn) and no weather.
+            Assert.Single(outbound.BodiesOf(0x07));
+            Assert.Empty(outbound.BodiesOf(0x1F));
+        }
+        finally { _fx.World.LeaveMap(watcher, OrderMap); }
+    }
+
+    /// <summary>The position of the FIRST recorded frame carrying <paramref name="opcode"/> whose decrypted
+    /// body satisfies <paramref name="body"/>, or -1. Indexes across every frame rather than within one
+    /// opcode, which is the only way to compare the order of two different packets.</summary>
+    private static int IndexOfFrame(RecordingOutbound outbound, byte opcode, Func<byte[], bool> body)
+    {
+        for (int i = 0; i < outbound.Frames.Count; i++)
+        {
+            if (!TkPacket.TryParse(outbound.Frames[i], out var pkt, out _)) continue;
+            if (pkt.Opcode != opcode) continue;
+            if (body(TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey))) return i;
+        }
+        return -1;
     }
 
     /// <summary>A <c>Console.Out</c> stand-in that can be read back safely while <c>Log</c>'s writer thread is
