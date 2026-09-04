@@ -32,15 +32,16 @@ public static partial class Content
         try
         {
             // Every content file goes through this: it records the table in `entries` so the load report can
-            // say what happened to all 68 of them, in load order. `ToLoad` is a method group, evaluated at the
+            // say what happened to all 72 of them, in load order. `ToLoad` is a method group, evaluated at the
             // end, so the counts it captures are the ones the loader finished with. `entries` is a LOCAL, so a
             // second Load() building its own report cannot interleave with this one, and LoadReport joins the
             // immutable snapshot published at the end exactly like every other registry here.
             Csv.Warn = Log.Warn;   // Shared cannot see Server.Log; hand it over before the first file is opened
             var entries = new List<Func<TableLoad>>();
-            CsvTable T(string envVar, string file)
+            CsvTable T(string envVar, string file, params string[] header)
             {
-                var t = Csv.Open(file, ResolvePath(envVar, file));
+                string? path = ResolvePath(envVar, file);
+                var t = header.Length == 0 ? Csv.Open(file, path) : Csv.Open(file, path, header);
                 entries.Add(t.ToLoad);
                 return t;
             }
@@ -61,10 +62,12 @@ public static partial class Content
                 return ok;
             }
 
-            ObjectFlags.ReloadOverrides(T("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv"));
-            TileTranslation.Reload(
-                T("P1998_OBJ533_FIX", "Obj533Fix.csv"),
-                T("P1998_TILE533_MAP", "Tile533Map.csv"));
+            var objectFlagOverrides = ObjectFlags.PrepareOverrides(
+                T("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", "Obj", "Flag", "Note"));
+            var tileTranslations = TileTranslation.PrepareReload(
+                T("P1998_OBJ533_FIX", "Obj533Fix.csv",
+                    "Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"),
+                T("P1998_TILE533_MAP", "Tile533Map.csv", "StartLegacy", "Count", "Start533"));
             var maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
             Maps = maps;
             var mobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));
@@ -219,7 +222,7 @@ public static partial class Content
             (MapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
             MapCellCount = mapCellCount;
             // The startup summary. This replaces a hand-written line that named 36 registries and could say
-            // nothing at all about the other 32 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
+            // nothing at all about the other 36 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
             // WarpQuestLocks among them could load zero rows in silence. Problems go out first and through
             // Log.Warn (so they carry the `!!` marker the rest of the codebase greps for); the census follows,
             // several tables per line, and every entry still carries its file name so it greps too.
@@ -230,6 +233,8 @@ public static partial class Content
             if (maps.Count == 0 || mobs.Count == 0)
                 Log.Warn("content: no maps and/or no mobs — run re/build_map_index.py and check game-data/mobs.csv");
             PublishSnapshot(snapshotBuilder);
+            ObjectFlags.CommitOverrides(objectFlagOverrides);
+            TileTranslation.CommitReload(tileTranslations);
         }
         finally
         {

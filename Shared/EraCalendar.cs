@@ -131,6 +131,8 @@ public static class EraCalendar
     /// <summary>How many dated features are declared — for the startup/reload line.</summary>
     public static int FeatureCount => Current.Features.Count;
 
+    internal static IReadOnlyDictionary<string, EraWindow> FeaturesForTests => Current.Features;
+
     /// <summary>The date the server is pretending it is, or null when gating is off or the configured
     /// value isn't a real calendar date.</summary>
     public static DateOnly? Today

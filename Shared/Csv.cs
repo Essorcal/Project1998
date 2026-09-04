@@ -44,17 +44,33 @@ public static class Csv
     public static Action<string> Warn { get; set; } =
         m => Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [csv] !! {m}");
 
+    internal static Action<string>? WarningObserverForTests { get; set; }
+    internal static Action<string, string?>? OpenObserverForTests { get; set; }
+
+    internal static void Report(string message)
+    {
+        WarningObserverForTests?.Invoke(message);
+        Warn(message);
+    }
+
     /// <summary>Read a CSV table. Never throws: a missing or unreadable file comes back as an empty table
     /// carrying the <see cref="CsvStatus"/> that says which, having already reported itself.</summary>
     /// <param name="name">What this table is called in the log and the load report — the bare file name
     /// (<c>mobs.csv</c>), not the resolved path, so the message reads the same on every host.</param>
-    public static CsvTable Open(string name, string? path) => CsvTable.Open(name, path, null);
+    public static CsvTable Open(string name, string? path)
+    {
+        OpenObserverForTests?.Invoke(name, path);
+        return CsvTable.Open(name, path, null);
+    }
 
     /// <summary>Read a headerless CSV table whose column names are supplied by its consumer. This is the
     /// same reader and reporting path as <see cref="Open(string, string?)"/>; only the source of the header
     /// differs, and every non-comment line is therefore a data row.</summary>
-    public static CsvTable Open(string name, string? path, params string[] header) =>
-        CsvTable.Open(name, path, header);
+    public static CsvTable Open(string name, string? path, params string[] header)
+    {
+        OpenObserverForTests?.Invoke(name, path);
+        return CsvTable.Open(name, path, header);
+    }
 
     // '#' opens a comment line, anywhere including above the header — these tables are hand-maintained and
     // the ones carrying a derivation (ArmorDyeRamps.csv) are unusable without somewhere to write it down.
@@ -126,7 +142,7 @@ public sealed class CsvTable : IEnumerable<CsvRow>
 
         if (path is null || !File.Exists(path))
         {
-            Csv.Warn($"{name}: file not found ({path ?? "no path resolved"}) — the table is EMPTY");
+            Csv.Report($"{name}: file not found ({path ?? "no path resolved"}) — the table is EMPTY");
             return Barren(name, path, CsvStatus.Missing);
         }
 
@@ -134,7 +150,7 @@ public sealed class CsvTable : IEnumerable<CsvRow>
         try { lines = File.ReadAllLines(path); }
         catch (Exception e)
         {
-            Csv.Warn($"{name}: unreadable ({path}): {e.Message} — the table is EMPTY");
+            Csv.Report($"{name}: unreadable ({path}): {e.Message} — the table is EMPTY");
             return Barren(name, path, CsvStatus.Unreadable);
         }
 
@@ -142,7 +158,7 @@ public sealed class CsvTable : IEnumerable<CsvRow>
         while (first < lines.Length && Csv.IsSkippable(lines[first])) first++;
         if (first >= lines.Length && suppliedHeader is null)
         {
-            Csv.Warn($"{name}: no header row ({path}) — the table is EMPTY");
+            Csv.Report($"{name}: no header row ({path}) — the table is EMPTY");
             return Barren(name, path, CsvStatus.Empty);
         }
 
@@ -161,7 +177,7 @@ public sealed class CsvTable : IEnumerable<CsvRow>
 
         if (rows.Count == 0)
         {
-            Csv.Warn($"{name}: header but no data rows ({path}) — the table is EMPTY");
+            Csv.Report($"{name}: header but no data rows ({path}) — the table is EMPTY");
             return new CsvTable(name, path, CsvStatus.Empty, header, rows, index);
         }
         return table;
@@ -175,7 +191,7 @@ public sealed class CsvTable : IEnumerable<CsvRow>
     {
         if (!_missingSeen.Add(column)) return;
         _missing.Add(column);
-        Csv.Warn($"{Name}: column '{column}' is not in the header — every row reads it as its default. " +
+        Csv.Report($"{Name}: column '{column}' is not in the header — every row reads it as its default. " +
                  $"Header is: {string.Join(", ", Header)}");
     }
 
@@ -277,7 +293,7 @@ public sealed record TableLoad(string Name, string? Path, CsvStatus Status,
 }
 
 /// <summary>Every content file's <see cref="TableLoad"/> from one load, in load order — what replaced the
-/// hand-written startup summary that covered 36 of 68 tables and could not tell you about the other 32.</summary>
+/// hand-written startup summary that covered 36 of 72 inputs and could not tell you about the other 36.</summary>
 public sealed class ContentLoadReport : IReadOnlyList<TableLoad>
 {
     private readonly IReadOnlyList<TableLoad> _tables;
@@ -299,8 +315,8 @@ public sealed class ContentLoadReport : IReadOnlyList<TableLoad>
     public IReadOnlyList<string> Problems =>
         _tables.Select(t => t.Problem).Where(p => p is not null).Select(p => p!).ToArray();
 
-    /// <summary>The full census: every table with its read/kept/skipped counts, several per line so 68
-    /// tables cost a handful of lines rather than 68 — each entry still carries its file name, so it greps.
+    /// <summary>The full census: every table with its read/kept/skipped counts, several per line so 72
+    /// inputs cost a handful of lines rather than 72 — each entry still carries its file name, so it greps.
     /// The first line is the roll-up.</summary>
     public IEnumerable<string> Census(int perLine = 4)
     {

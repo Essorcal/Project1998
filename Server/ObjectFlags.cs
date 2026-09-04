@@ -49,13 +49,17 @@ public static class ObjectFlags
     /// <see cref="MapData.Invalidate"/>.</summary>
     public static void Invalidate() { lock (_lock) _flags = null; }
 
-    /// <summary>Parse and stage the report-owned override table for the next SObj load.</summary>
-    internal static void ReloadOverrides(CsvTable csv)
+    internal sealed record PreparedOverrides(IReadOnlyList<(int Id, byte Flag)> Value);
+
+    /// <summary>Parse the report-owned override table without changing the live SObj flags.</summary>
+    internal static PreparedOverrides PrepareOverrides(CsvTable csv) => new(ParseOverrides(csv));
+
+    /// <summary>Publish prepared overrides and make the next SObj access rebuild against them.</summary>
+    internal static void CommitOverrides(PreparedOverrides prepared)
     {
-        var overrides = ParseOverrides(csv);
         lock (_lock)
         {
-            _overrides = overrides;
+            _overrides = prepared.Value;
             _flags = null;
         }
     }
@@ -141,6 +145,11 @@ public static class ObjectFlags
             "ObjectFlagOverrides.csv",
             RepoPaths.GameData("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv"),
             "Obj", "Flag", "Note"));
+    }
+
+    internal static IReadOnlyList<(int Id, byte Flag)> OverridesForTests
+    {
+        get { lock (_lock) return Overrides().ToArray(); }
     }
 
     private static List<(int Id, byte Flag)> ParseOverrides(CsvTable csv)

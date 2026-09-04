@@ -73,6 +73,24 @@ public static class TileTranslation
     private static readonly object TablesLock = new();
     private static Tables? _tables;
 
+    internal sealed class PreparedReload
+    {
+        private readonly Tables _value;
+        private PreparedReload(Tables value) => _value = value;
+        private Tables Value => _value;
+
+        private static PreparedReload From(Tables value) => new(value);
+
+        internal static PreparedReload Parse(CsvTable obj533, CsvTable sheet2)
+        {
+            var obj533Map = ParseObj533(obj533);
+            var sheet2Map = ParseSheet2(sheet2);
+            return From(new Tables(sheet2Map, obj533Map));
+        }
+
+        internal void Commit() => Volatile.Write(ref _tables, Value);
+    }
+
     private static Tables CurrentTables
     {
         get
@@ -88,14 +106,12 @@ public static class TileTranslation
         }
     }
 
-    /// <summary>Replace both translation tables from the report-owned CSVs opened by Content.Load.</summary>
-    internal static void Reload(CsvTable obj533, CsvTable sheet2)
-    {
-        var obj533Map = ParseObj533(obj533);
-        var sheet2Map = ParseSheet2(sheet2);
-        var tables = new Tables(sheet2Map, obj533Map);
-        Volatile.Write(ref _tables, tables);
-    }
+    /// <summary>Parse both report-owned CSVs without changing the live translation tables.</summary>
+    internal static PreparedReload PrepareReload(CsvTable obj533, CsvTable sheet2) =>
+        PreparedReload.Parse(obj533, sheet2);
+
+    /// <summary>Publish both prepared translation tables with one reference write.</summary>
+    internal static void CommitReload(PreparedReload prepared) => prepared.Commit();
 
     /// <summary>Escape hatch: a uniform shift applied to sheet-1 ground on 5.33. Defaults to 0 and should stay
     /// there — it exists so a future sheet revision can be probed without a rebuild, not because 0 is in doubt.</summary>
@@ -200,6 +216,12 @@ public static class TileTranslation
 
     /// <summary>The scope in effect (for tests and the startup log).</summary>
     public static Obj533Scope Obj533FixScope => ObjFixScope;
+
+    internal static IReadOnlyDictionary<ushort, ushort> Sheet2ForTests => CurrentTables.Sheet2;
+    internal static IReadOnlyList<(ushort Legacy, ushort Replacement, int Scope)> Obj533ForTests =>
+        CurrentTables.Obj533
+            .Select(kv => (kv.Key, kv.Value.Replacement, (int)kv.Value.Scope))
+            .ToArray();
 
     /// <summary>
     /// Reads <c>game-data/Obj533Fix.csv</c> — the workaround for 5.33's re-authored collision flags.
