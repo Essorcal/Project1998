@@ -62,6 +62,9 @@ public static partial class Content
             if (builder.MobScript is { } mobScript) MobScript.CommitReload(mobScript);
             if (builder.Doors is { } doors) Doors.CommitConfig(doors);
             if (builder.EraCalendar is { } eraCalendar) Shared.EraCalendar.CommitReload(eraCalendar);
+            if (builder.ObjectFlagOverrides is { } objectFlagOverrides)
+                ObjectFlags.CommitOverrides(objectFlagOverrides);
+            if (builder.TileTranslations is { } tileTranslations) TileTranslation.CommitReload(tileTranslations);
         }
     }
 
@@ -82,6 +85,8 @@ public static partial class Content
         // serving APIs predate Content, but their commits belong to the same publication boundary.
         internal Shared.EraCalendar.PreparedReload? EraCalendar { get; set; }
         internal Dictionary<(ushort map, ushort x, ushort y), Doors.DoorConfig>? Doors { get; set; }
+        internal ObjectFlags.PreparedOverrides? ObjectFlagOverrides { get; set; }
+        internal TileTranslation.PreparedReload? TileTranslations { get; set; }
         internal LuaVerbHost.PreparedReload? SpellScript { get; set; }
         internal LuaVerbHost.PreparedReload? ItemScript { get; set; }
         internal NpcScript.PreparedReload? NpcScript { get; set; }
