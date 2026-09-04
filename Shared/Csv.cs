@@ -198,7 +198,8 @@ public sealed class CsvTable : IEnumerable<CsvRow>
     internal void NoteKept() => Kept++;
 
     /// <summary>This table's line in the load report, as it stands now. Call it after the loader has run.</summary>
-    public TableLoad ToLoad() => new(Name, Path, Status, Read, Kept, MissingColumns.ToArray());
+    public TableLoad ToLoad(string? missingConsequence = null) =>
+        new(Name, Path, Status, Read, Kept, MissingColumns.ToArray(), missingConsequence);
 
     public IEnumerator<CsvRow> GetEnumerator() => _rows.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
@@ -262,6 +263,13 @@ public sealed class CsvRow
 public sealed record TableLoad(string Name, string? Path, CsvStatus Status,
                                int Read, int Kept, IReadOnlyList<string> MissingColumns)
 {
+    private readonly string? _missingConsequence;
+
+    public TableLoad(string name, string? path, CsvStatus status, int read, int kept,
+                     IReadOnlyList<string> missingColumns, string? missingConsequence)
+        : this(name, path, status, read, kept, missingColumns) =>
+        _missingConsequence = missingConsequence;
+
     public int Skipped => Read - Kept;
 
     /// <summary>True for a Lua script rather than a CSV — it has no rows, so its 1/1 or 1/0 read/kept is a
@@ -285,12 +293,8 @@ public sealed record TableLoad(string Name, string? Path, CsvStatus Status,
         _ => null,
     };
 
-    private string WithMissingTableConsequence(string problem) => Name switch
-    {
-        "Obj533Fix.csv" => problem + "; 5.33 will over-block ~18k cells",
-        "Tile533Map.csv" => problem + "; 5.33 sheet-2 cells (30% of terrain) will be blank",
-        _ => problem,
-    };
+    private string WithMissingTableConsequence(string problem) =>
+        _missingConsequence is null ? problem : problem + "; " + _missingConsequence;
 
     // A Lua script fails differently: it is loaded atomically and a rejected one leaves the PREVIOUS version
     // running, which is the single most important thing to say (a silent "reload ok" after a typo is how you

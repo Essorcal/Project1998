@@ -45,7 +45,7 @@ public static partial class Content
                 var t = spec.Header is null
                     ? Csv.Open(spec.File, path)
                     : Csv.Open(spec.File, path, spec.Header.ToArray());
-                entries.Add(t.ToLoad);
+                entries.Add(() => t.ToLoad(spec.MissingConsequence));
                 return t;
             }
             // The Lua scripts have no rows, so they report 1/1 loaded and 1/0 rejected — see TableLoad.IsScript.
