@@ -308,10 +308,19 @@ public class MobAiTickTests
     /// its beat queues a turn and no move: the turn (0x11) comes out of phase (4) after every move, and the
     /// swing (0x1A) out of phase (4.5) after that.</para>
     ///
-    /// <para>Also the nullable-queue pin: this beat tops up no forage box (the map is content-free) and rolls
-    /// no weather period (the warm-up beat below syncs it first), so <c>TickQueues.Forage</c> and
-    /// <c>TickQueues.WeatherChanges</c> are the null case — exactly one 0x07 reaches the watcher (the
-    /// stepper's spawn, not a forage placement, which draws through the same opcode) and no 0x1F at all.</para>
+    /// <para>Also the no-work-queue pin: this beat tops up no forage box (the map is content-free) and, all
+    /// but always, rolls no weather period (the warm-up beat syncs it first), so nothing goes out for either
+    /// — exactly one 0x07 reaches the watcher (the stepper's spawn; a forage placement would be a second one,
+    /// since <c>ShowGroundItem</c> draws through the same packet) and no 0x1F. The weather half has a real
+    /// window: the period turns over every ~15 real minutes, and the gap between the warm-up beat and the
+    /// measured one, while milliseconds wide, is not zero. So <c>WeatherModel.PeriodNow()</c> is read either
+    /// side of the measured beat and the 0x1F assertion is skipped if it moved, rather than the test being
+    /// flaky a few times a year.</para>
+    ///
+    /// <para>What that pins is the WIRE: a beat with no forage and no weather change sends neither packet.
+    /// It does not distinguish <c>null</c> from an empty list — an eager <c>new()</c> on either field would
+    /// pass it just the same. The null-until-used laziness is an allocation property, visible by reading the
+    /// two <c>?</c> declarations on <c>TickQueues</c>, and is not worth a production seam to test.</para>
     ///
     /// <para>Deterministic: the stepper is outside its two-tile leash on the same column as its home, so the
     /// walk-home step has one candidate direction and rolls nothing; the swinger is cardinally adjacent, so
@@ -328,8 +337,11 @@ public class MobAiTickTests
         var (watcher, outbound) = _fx.Player("OrderWatcher", OrderMap, x: 5, y: 10);
         try
         {
-            // Warm-up beat with the map still empty: it syncs the weather period, so the MEASURED beat below
-            // cannot roll one over and the weather queue stays null.
+            // Warm-up beat with the map still empty: it syncs World._lastWeatherPeriod, so the measured beat
+            // below almost never rolls a weather period. Almost: the period turns over every ~15 real
+            // minutes (WeatherModel.PeriodHours) and the window between the two beats, though milliseconds
+            // wide, is not zero. So the period is read either side of the measured beat and the 0x1F
+            // assertion is made only when it did not move — see the end of the test.
             _fx.World.TickOnceForTest();
 
             // One row below the watcher's 17x15 view rect (rows -1..13 for a 12x12 map), so it is not drawn
@@ -346,7 +358,9 @@ public class MobAiTickTests
             });
             outbound.Clear();   // the swinger's own spawn is drawn already; only the beat's traffic from here
 
+            long periodBefore = WeatherModel.PeriodNow();
             _fx.World.TickOnceForTest();
+            long periodAfter = WeatherModel.PeriodNow();
 
             Assert.Equal(((ushort)5, (ushort)13), (stepper.X, stepper.Y));   // stepped into view
             Assert.Equal(watcher.PlayerId, swinger.TargetId);                // locked onto the watcher
@@ -379,9 +393,11 @@ public class MobAiTickTests
             Assert.Equal(14, BinaryPrimitives.ReadUInt16BigEndian(mv.AsSpan(6)));
             Assert.Equal(0, mv[8]);
 
-            // Nullable queues: no forage placement (0x07 is also how a ground item is drawn) and no weather.
+            // No forage placement: the map is content-free, so nothing tops up on it, and a placement would
+            // show as a second 0x07 (ShowGroundItem draws through the same creature-list packet a spawn does).
             Assert.Single(outbound.BodiesOf(0x07));
-            Assert.Empty(outbound.BodiesOf(0x1F));
+            // No weather frame — asserted only if the period really did stand still across the beat.
+            if (periodBefore == periodAfter) Assert.Empty(outbound.BodiesOf(0x1F));
         }
         finally { _fx.World.LeaveMap(watcher, OrderMap); }
     }
