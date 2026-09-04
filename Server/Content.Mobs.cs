@@ -17,14 +17,14 @@ namespace Server;
 /// resist roll (RTK clif.c <c>tprotection</c>) — melee and magic defense do not share a stat in RTK.
 /// <see cref="MobDef.Grace"/> (SQL <c>Grace</c>, already in the CSV but previously unparsed like the rest of
 /// this list) is read as the DEFENDER's grace in <see cref="Session.PlayerSwingDamage"/>'s crit-chance roll
-/// when a player attacks this mob.</summary>
+/// when a player attacks this mob.
 /// <para><see cref="MobDef.SpawnTime"/> is RTK <c>Mobs.MobSpawnTime</c>, in seconds: how long a STATIC spawn point stays
 /// empty after this creature dies before the engine revives it on its own tile (<c>mob.c</c>:
 /// <c>last_death + spawntime &lt;= now</c>). Per creature, not per point — the table runs 9/12/18/24/30/42/60/360
 /// with a SQL default of 180, so the Mythic elites on 360 are meant to be a twenty-times-slower refill than a
 /// town rat, not the one shared cadence we used to give everything. Merged in by
 /// <c>re/merge_mob_spawn_time.py</c>. Nothing to do with the hunting maps, which batch-refill instead
-/// (see <see cref="AreaSpawnDef.Timer"/>).</para>
+/// (see <see cref="AreaSpawnDef.Timer"/>).</para></summary>
 public sealed record MobDef
 {
     public required int Id { get; init; }
