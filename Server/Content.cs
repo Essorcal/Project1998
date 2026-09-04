@@ -113,7 +113,9 @@ public static partial class Content
             MobByKeyIndex = IndexFirst(mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
             SpellByIdIndex = IndexFirst(spells, s => s.Id);
             SpellByKeyIndex = IndexFirst(spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
-            LadderOf = BuildSpellLadders(spells);
+            LadderOf = BuildSpellLadders(
+                spells,
+                sp => snapshotBuilder.SpellFx.GetValueOrDefault(sp.Key));
             // name -> id, first wins. BASE names go in first so a string that is one path's class name and
             // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
             var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
