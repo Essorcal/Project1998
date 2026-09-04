@@ -66,8 +66,10 @@ public static partial class Content
             MobFleeOverrides = mobFleeOverrides;
             var mobStationaryOverrides = LoadMobStationary(T("P1998_MOB_STATIONARY", "MobStationary.csv"));
             MobStationaryOverrides = mobStationaryOverrides;
-            Mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"), mobFleeOverrides, mobStationaryOverrides);
-            Items = LoadItems(T("P1998_ITEMS", "Items.csv"));
+            var mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"), mobFleeOverrides, mobStationaryOverrides);
+            Mobs = mobs;
+            var items = LoadItems(T("P1998_ITEMS", "Items.csv"));
+            Items = items;
             LoadStepForTests?.Invoke("ItemsLoaded");
             var warps = LoadWarps(T("P1998_WARPS", "Warps.csv"), maps);
             Warps = warps;
@@ -97,16 +99,17 @@ public static partial class Content
             LevelExp = LoadLevelExp(T("P1998_LEVELEXP", "LevelExp.csv"));
             var spellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));
             SpellLevelOverrides = spellLevelOverrides;
-            Spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"), spellLevelOverrides);
+            var spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"), spellLevelOverrides);
+            Spells = spells;
             // O(1) lookup indexes (0.1) — rebuilt every Load()/@reload so they swap with the lists above. Nothing
             // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
-            ItemByIdIndex = IndexFirst(Items, i => i.Id);
-            ItemByKeyIndex = IndexFirst(Items, i => i.Key, StringComparer.OrdinalIgnoreCase);
-            MobByIdIndex = IndexFirst(Mobs, m => m.Id);
-            MobByKeyIndex = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
-            SpellByIdIndex = IndexFirst(Spells, s => s.Id);
-            SpellByKeyIndex = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
-            LadderOf = BuildSpellLadders(Spells);
+            ItemByIdIndex = IndexFirst(items, i => i.Id);
+            ItemByKeyIndex = IndexFirst(items, i => i.Key, StringComparer.OrdinalIgnoreCase);
+            MobByIdIndex = IndexFirst(mobs, m => m.Id);
+            MobByKeyIndex = IndexFirst(mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
+            SpellByIdIndex = IndexFirst(spells, s => s.Id);
+            SpellByKeyIndex = IndexFirst(spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
+            LadderOf = BuildSpellLadders(spells);
             // name -> id, first wins. BASE names go in first so a string that is one path's class name and
             // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
             var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -163,8 +166,9 @@ public static partial class Content
             WorldDests = LoadWorldDests(T("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"));
             WorldMapTriggers = LoadWorldTriggers(T("P1998_WORLDMAP_TRIGGERS", "WorldMapTriggers.csv"));
             FallRooms = LoadFallRooms(T("P1998_FALLROOMS", "FallRooms.csv"));
-            AmbushBursts = LoadAmbushBursts(T("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"));
-            Ambushes = LoadAmbushConfig(T("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"), AmbushBursts);
+            var ambushBursts = LoadAmbushBursts(T("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"));
+            AmbushBursts = ambushBursts;
+            Ambushes = LoadAmbushConfig(T("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"), ambushBursts);
             BoardLocations = LoadBoardLocations(T("P1998_BOARD_LOCATIONS", "BoardLocations.csv"));
             ShopCatalogues = LoadShopCatalogues(T("P1998_SHOP_CATALOGUES", "ShopCatalogues.csv"));
             SpellParams = LoadKeyedRows(T("P1998_SPELL_PARAMS", "SpellParams.csv"));
@@ -204,7 +208,7 @@ public static partial class Content
             LoadReport = report;
             foreach (var problem in report.Problems) Log.Warn("content: " + problem);
             foreach (var line in report.Census()) Log.Info(line);
-            if (Maps.Count == 0 || Mobs.Count == 0)
+            if (maps.Count == 0 || mobs.Count == 0)
                 Log.Warn("content: no maps and/or no mobs — run re/build_map_index.py and check game-data/mobs.csv");
             PublishSnapshot(snapshotBuilder);
         }
