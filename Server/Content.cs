@@ -153,8 +153,10 @@ public static partial class Content
                 .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
                 .ToDictionary(e => e.key, e => e.cave);
             EventCaves = eventCaves;
-            MusicTracks = LoadMusicTracks(T("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
-            var (bgmZones, defaultBgm, defaultBgmNew) = LoadBgmZones(T("P1998_MAP_BGM", "MapBgm.csv"));
+            var musicTracks = LoadMusicTracks(T("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
+            MusicTracks = musicTracks;
+            var (bgmZones, defaultBgm, defaultBgmNew) = LoadBgmZones(
+                T("P1998_MAP_BGM", "MapBgm.csv"), musicTracks);
             BgmZones = bgmZones;
             DefaultBgm = defaultBgm;
             DefaultBgmNew = defaultBgmNew;

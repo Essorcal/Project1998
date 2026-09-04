@@ -168,11 +168,17 @@ public static partial class Content
     /// (midi 2 = "dragon", mp3 2 = "buyeo") while a player in either mode can still name any track he can
     /// hear. An id with no row resolves to an unnamed track in <paramref name="set"/> rather than to null —
     /// the client will happily play a number we have never given a name.</para></summary>
-    public static MusicTrack? FindTrack(string query, MusicSet set = MusicSet.Old)
+    public static MusicTrack? FindTrack(string query, MusicSet set = MusicSet.Old) =>
+        FindTrack(query, set, MusicTracks);
+
+    private static MusicTrack? FindTrack(
+        string query,
+        MusicSet set,
+        IReadOnlyList<MusicTrack> musicTracks)
     {
         query = query.Trim();
         if (query.Length == 0) return null;
-        var (mine, theirs) = (MusicTracks.Where(t => t.Set == set), MusicTracks.Where(t => t.Set != set));
+        var (mine, theirs) = (musicTracks.Where(t => t.Set == set), musicTracks.Where(t => t.Set != set));
         if (ushort.TryParse(query, out var id))
             return mine.FirstOrDefault(t => t.Id == id)
                 ?? theirs.FirstOrDefault(t => t.Id == id)

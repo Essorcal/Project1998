@@ -788,7 +788,9 @@ public static partial class Content
     // `Track5x` (the 5.x one) are each a MusicTracks.csv name or a raw id; `Maps` is a ';'-separated list of
     // ids and lo-hi ranges; `Names` is a ';'-separated list of map-name globs. The row whose Zone is
     // "Default" is pulled out as the fresh-session fallback (DefaultBgm / DefaultBgmNew).
-    private static (List<BgmZone>, (ushort, byte)?, (ushort, byte)?) LoadBgmZones(CsvTable csv)
+    private static (List<BgmZone>, (ushort, byte)?, (ushort, byte)?) LoadBgmZones(
+        CsvTable csv,
+        IReadOnlyList<MusicTrack> musicTracks)
     {
         var zones = new List<BgmZone>();
         (ushort, byte)? def = null, defNew = null;
@@ -796,10 +798,10 @@ public static partial class Content
         foreach (var col in csv)
         {
             var zone = col.Require("Zone", "").Trim();
-            var track = FindTrack(col.Require("Track", ""));
+            var track = FindTrack(col.Require("Track", ""), MusicSet.Old, musicTracks);
             if (zone.Length == 0 || track is null) continue;
             // No Track5x -> the zone's midi, which 5.33 plays too (its Snd.dat carries the same 12 files).
-            var track5x = FindTrack(col.Require("Track5x", ""), MusicSet.New) ?? track;
+            var track5x = FindTrack(col.Require("Track5x", ""), MusicSet.New, musicTracks) ?? track;
 
             if (zone.Equals("Default", StringComparison.OrdinalIgnoreCase))
             {
