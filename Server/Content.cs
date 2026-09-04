@@ -95,7 +95,11 @@ public static partial class Content
             MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));
             ShopStock = LoadShopStock(T("P1998_SHOPSTOCK", "ShopStock.csv"));
             ShopBuysFrom = LoadShopBuysFrom(T("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"));
-            Paths = LoadPaths(T("P1998_PATHS", "Paths.csv"));
+            var (paths, pathRanks, pathBase, pathIcon) = LoadPaths(T("P1998_PATHS", "Paths.csv"));
+            Paths = paths;
+            PathRanks = pathRanks;
+            PathBase = pathBase;
+            PathIcon = pathIcon;
             LevelExp = LoadLevelExp(T("P1998_LEVELEXP", "LevelExp.csv"));
             var spellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));
             SpellLevelOverrides = spellLevelOverrides;
@@ -114,9 +118,9 @@ public static partial class Content
             // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
             var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var pathRankByName = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
-            foreach (var kv in Paths)
+            foreach (var kv in paths)
                 if (!string.IsNullOrEmpty(kv.Value)) { pathIdByName.TryAdd(kv.Value, kv.Key); pathRankByName.TryAdd(kv.Value, (kv.Key, 0)); }
-            foreach (var (id, ladder) in PathRanks)
+            foreach (var (id, ladder) in pathRanks)
                 for (int m = 1; m < ladder.Length; m++)
                     if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
             PathIdByNameIndex = pathIdByName;

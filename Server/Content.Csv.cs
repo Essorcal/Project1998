@@ -517,7 +517,11 @@ public static partial class Content
         return npcs;
     }
 
-    private static Dictionary<int, string> LoadPaths(CsvTable csv)
+    private static (
+        Dictionary<int, string> Paths,
+        Dictionary<int, string[]> Ranks,
+        Dictionary<int, int> Bases,
+        Dictionary<int, int> Icons) LoadPaths(CsvTable csv)
     {
         var paths = new Dictionary<int, string>();
         var ranks = new Dictionary<int, string[]>();
@@ -534,10 +538,7 @@ public static partial class Content
                 icons[id] = int.TryParse(col.Require("PthIcon"), out var ic) ? ic : 0;
                 col.Keep();
             }
-        PathRanks = ranks;
-        PathBase = bases;
-        PathIcon = icons;
-        return paths;
+        return (paths, ranks, bases, icons);
     }
 
     private static Dictionary<(int, string), (int, string)> LoadArmorQuestGates(CsvTable csv)
