@@ -27,8 +27,24 @@ public static partial class Content
     // Also carries the warp-entry gate (RTK map_data.reqlvl/reqvita/reqmana/reqmark/reqpath/*max/rejectmsg,
     // map.c:1102) and the PvP flag (MapPvP — durability loss is disabled on PvP maps, RTK clif.c:6650).
     // Loaded from the full RTK Maps.csv (map_index.csv, the renderable subset, doesn't carry these columns).
-    public sealed record MapMetaInfo(int Region, bool WarpOut, bool Pvp, bool CanTalk, bool CanCast, int ReqLvl, int ReqPath, int ReqMark,
-        long ReqVita, long ReqMana, int LvlMax, long VitaMax, long ManaMax, string RejectMsg, bool Indoor);
+    public sealed record MapMetaInfo
+    {
+        public required int Region { get; init; }
+        public required bool WarpOut { get; init; }
+        public required bool Pvp { get; init; }
+        public required bool CanTalk { get; init; }
+        public required bool CanCast { get; init; }
+        public required int ReqLvl { get; init; }
+        public required int ReqPath { get; init; }
+        public required int ReqMark { get; init; }
+        public required long ReqVita { get; init; }
+        public required long ReqMana { get; init; }
+        public required int LvlMax { get; init; }
+        public required long VitaMax { get; init; }
+        public required long ManaMax { get; init; }
+        public required string RejectMsg { get; init; }
+        public required bool Indoor { get; init; }
+    }
 
     public static IReadOnlyDictionary<ushort, MapMetaInfo> MapMeta
     {

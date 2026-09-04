@@ -52,9 +52,24 @@ public static partial class Content
             // the weather gate (WeatherModel.For): no rain/snow indoors. Deliberately NOT reused as a casting
             // gate — casting has to work in caves, which is why MapSpells above is the separate no-cast flag.
             bool indoor = col.Require("MapIndoor", "0") == "1";
-            meta[id] = new MapMetaInfo(region, warpOut, pvp, canTalk, canCast,
-                Rd("MapReqLvl"), Rd("MapReqPath"), Rd("MapReqMark"), Rl("MapReqVita"), Rl("MapReqMana"),
-                Rd("MapLvlMax"), Rl("MapVitaMax"), Rl("MapManaMax"), Clean(col.Require("MapRejectMsg", "")), indoor);
+            meta[id] = new MapMetaInfo
+            {
+                Region = region,
+                WarpOut = warpOut,
+                Pvp = pvp,
+                CanTalk = canTalk,
+                CanCast = canCast,
+                ReqLvl = Rd("MapReqLvl"),
+                ReqPath = Rd("MapReqPath"),
+                ReqMark = Rd("MapReqMark"),
+                ReqVita = Rl("MapReqVita"),
+                ReqMana = Rl("MapReqMana"),
+                LvlMax = Rd("MapLvlMax"),
+                VitaMax = Rl("MapVitaMax"),
+                ManaMax = Rl("MapManaMax"),
+                RejectMsg = Clean(col.Require("MapRejectMsg", "")),
+                Indoor = indoor,
+            };
             col.Keep();
         }
         return meta;
