@@ -539,15 +539,44 @@ public sealed partial class World
             list.Add(g);
         }
 
-        /// <summary>When the map's one test group may next top up (unix seconds).</summary>
-        internal long GroupClockForTest(ushort mapId) => _groups[mapId].Single().NextBatchUnix;
+        /// <summary>When the map's one test group may next top up (unix seconds). Caller holds <c>_lock</c>.</summary>
+        internal long GroupClockForTest(ushort mapId)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            return _groups[mapId].Single().NextBatchUnix;
+        }
 
-        internal int  PointCountForTest(ushort mapId) => _spawns.TryGetValue(mapId, out var l) ? l.Count : 0;
-        internal int  GroupCountForTest(ushort mapId) => _groups.TryGetValue(mapId, out var l) ? l.Count : 0;
-        internal bool IsMaterializedForTest(ushort mapId) => _materialized.Contains(mapId);
+        /// <summary>Roster reads for the rebuild test. Reads, but reads of state every writer holds the lock
+        /// for, so they hold it too. Caller holds <c>_lock</c>.</summary>
+        internal int PointCountForTest(ushort mapId)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            return _spawns.TryGetValue(mapId, out var l) ? l.Count : 0;
+        }
 
-        /// <summary>Undo a test's registrations on one map: its points, groups, materialised flag and every
-        /// world-spawned creature on it, so the shared fixture World is as it was. Caller holds <c>_lock</c>.</summary>
+        internal int GroupCountForTest(ushort mapId)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            return _groups.TryGetValue(mapId, out var l) ? l.Count : 0;
+        }
+
+        internal bool IsMaterializedForTest(ushort mapId)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            return _materialized.Contains(mapId);
+        }
+
+        /// <summary>Overwrite one death-registry stamp, so the death-cooldown test can move a kill into the
+        /// past instead of waiting the real half hour out. Caller holds <c>_lock</c>.</summary>
+        internal void StampDeathForTest(ushort mapId, string key, long unixSeconds)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            _lastDeath[(mapId, key)] = unixSeconds;
+        }
+
+        /// <summary>Undo a test's registrations on one map: its points, groups, materialised flag, death stamps
+        /// and every world-spawned creature on it, so the shared fixture World is as it was. Caller holds
+        /// <c>_lock</c>.</summary>
         internal void ForgetMapForTest(ushort mapId)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
@@ -555,6 +584,7 @@ public sealed partial class World
                 foreach (var sp in points) if (sp.Live is { } live) _mobSpawn.Remove(live.Id);
             _groups.Remove(mapId);
             _materialized.Remove(mapId);
+            foreach (var stamp in _lastDeath.Keys.Where(k => k.Map == mapId).ToList()) _lastDeath.Remove(stamp);
             world.Map(mapId).Mobs.RemoveAll(m => m.WorldSpawned);
         }
     }
@@ -566,6 +596,10 @@ public sealed partial class World
 
     /// <summary>How many beats a test must drive to be sure phase (1.1) sampled the groups once.</summary>
     internal static int BatchSweepTicksForTest => BatchSweepTicks;
+
+    /// <summary>The heartbeat counter, so a test driving beats one at a time can tell a sampled beat
+    /// (<c>tick % BatchSweepTicks == 0</c>) from the ones phase (1.1) skips.</summary>
+    internal long TickForTest { get { lock (_lock) return _tick; } }
 
     /// <summary>Every creature on a map, NPCs included — for a test that has no session to <see cref="View"/> with.</summary>
     internal int MobCountForTest(ushort mapId) { lock (_lock) return Map(mapId).Mobs.Count; }
