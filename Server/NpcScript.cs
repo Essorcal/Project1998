@@ -27,6 +27,8 @@ namespace Server;
 /// </summary>
 public static class NpcScript
 {
+    internal sealed record PreparedReload(Script Script, Table Npcs, Table? NpcsSay);
+
     private static Script? _script;
     private static Table? _npcs;       // npcs[key]      = function(ctx)         -- click dialog
     private static Table? _npcsSay;    // npcs_say[key]  = function(ctx, speech)  -- spoken trigger, returns consumed?
@@ -41,10 +43,21 @@ public static class NpcScript
     {
         using (Session.EnterScriptGate())
         {
+            var (ok, prepared) = PrepareReload(path);
+            if (prepared is not null) CommitReload(prepared);
+            return ok;
+        }
+    }
+
+    /// <summary>Compile candidate dialogs without replacing the live Lua state.</summary>
+    internal static (bool Ok, PreparedReload? Prepared) PrepareReload(string? path)
+    {
+        using (Session.EnterScriptGate())
+        {
             if (path is null || !File.Exists(path))
             {
                 Log.Info($"!! npc_dialog.lua: no file at '{path ?? "(null)"}' — keeping {(_npcs is null ? "the Lua NPC path disabled" : "the previously-loaded dialogs")}");
-                return _npcs is not null;
+                return (_npcs is not null, null);
             }
             try
             {
@@ -55,21 +68,26 @@ public static class NpcScript
                 var n = s.Globals.Get("npcs");
                 if (n.Type == DataType.Table && s.Globals.Get("__make_ctx").Type == DataType.Function)
                 {
-                    _script = s;
-                    _npcs = n.Table;
                     var sy = s.Globals.Get("npcs_say");            // optional — speech-trigger handlers
-                    _npcsSay = sy.Type == DataType.Table ? sy.Table : null;
-                    return true;
+                    return (true, new PreparedReload(s, n.Table, sy.Type == DataType.Table ? sy.Table : null));
                 }
                 Log.Info("!! npc_dialog.lua missing global `npcs` table or `__make_ctx` — reload REJECTED, keeping the previous dialogs");
-                return _npcs is not null;
+                return (_npcs is not null, null);
             }
             catch (Exception e)
             {
                 Log.Warn($"npc_dialog.lua load failed: {LuaVerbHost.Describe(e)} — reload REJECTED, keeping the previous dialogs", e);
-                return _npcs is not null;
+                return (_npcs is not null, null);
             }
         }
+    }
+
+    /// <summary>Install candidate dialogs while the caller holds the shared Lua gate.</summary>
+    internal static void CommitReload(PreparedReload prepared)
+    {
+        _script = prepared.Script;
+        _npcs = prepared.Npcs;
+        _npcsSay = prepared.NpcsSay;
     }
 
     /// <summary>Is there a Lua CLICK dialog script for this NPC identifier?</summary>

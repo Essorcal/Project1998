@@ -16,7 +16,7 @@ Outermost first. A thread may hold locks from several rows, but **only ever in t
 
 | # | Lock | Scope | Guards |
 |---|---|---|---|
-| 1 | **Lua gate** — `Session.EnterScriptGate()` | one, process-wide | every MoonSharp `Script`: `LuaVerbHost` (spell + item verbs), `NpcScript`, `MobScript` |
+| 1 | **Lua gate** — `Session.EnterScriptGate()` | one, process-wide | every MoonSharp `Script`: `LuaVerbHost` (spell + item verbs), `NpcScript`, `MobScript`; the `Content.PublishSnapshot` publication boundary |
 | 2 | **Session state monitor** — `Session.EnterState()` / `WithState` | one per player | `_buffs`, `_statusFlags`, `_char` and everything hanging off it (inventory, equipment, quests, legends) |
 | 3 | **World lock** — `World._lock` | one, process-wide | the maps: player lists, mob lists, ground items, spawn rosters, traps, weather |
 | 3 | **Session viewport lock** — `Session.EnterView()` | one per player | `_shownMobs`, `_shownPeers`, `_shownItems`, `_edge*`, the trap/warp markers |
@@ -28,6 +28,8 @@ Two consequences of the gate's slow path, both easy to miss. A **contended** cas
 with a gap, not one — the monitor is dropped while waiting — so `Handle`'s "a packet is atomic" holds for
 everything except that case. And a **paired** body (`WithStatePair`: the trade finalizer, the wedding) must
 never enter the gate, because the gap it would open is exactly the tear the pair form exists to prevent.
+The GM `@reload` path also enters the gate from its session read-loop while holding that session's monitor;
+when contended, it takes this same slow path and drops the monitor while it waits.
 
 Between two session monitors (row 2), the order is **ascending `Session.StateRank`**. A handler runs under
 its own monitor and can reach a peer — A casting at B while B casts at A is the standard cycle, and on a PvP

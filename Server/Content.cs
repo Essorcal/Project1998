@@ -22,179 +22,198 @@ public static partial class Content
     /// <summary>Replace every file-backed content registry from disk in its required dependency order.</summary>
     /// <remarks>Any runtime caller must hold the world reload gate by going through
     /// <see cref="World.ReloadFromDisk"/>. Startup calls this before the World and its scheduler exist; tests
-    /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized.</remarks>
+    /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized. On the
+    /// loading thread, reading a facade before its registry has been assigned returns that builder member's
+    /// empty default rather than the previous snapshot; #35 will replace these implicit dependencies.</remarks>
     public static void Load()
     {
-        // Every content file goes through this: it records the table in `entries` so the load report can
-        // say what happened to all 68 of them, in load order. `ToLoad` is a method group, evaluated at the
-        // end, so the counts it captures are the ones the loader finished with. `entries` is a LOCAL, so a
-        // second Load() building its own report cannot interleave with this one, and LoadReport swaps by
-        // reference at the end exactly like every other registry here.
-        Csv.Warn = Log.Warn;   // Shared cannot see Server.Log; hand it over before the first file is opened
-        var entries = new List<Func<TableLoad>>();
-        CsvTable T(string envVar, string file)
+        var snapshotBuilder = BeginSnapshotBuild();
+        try
         {
-            var t = Csv.Open(file, ResolvePath(envVar, file));
-            entries.Add(t.ToLoad);
-            return t;
-        }
-        // The Lua scripts have no rows, so they report 1/1 loaded and 1/0 rejected — see TableLoad.IsScript.
-        // They belong in the same report as the CSVs because "68 tables" is what an operator has to account
-        // for, and a rejected script is the loudest thing a reload can have to say.
-        bool Script(string envVar, string file, Func<string?, bool> load)
-        {
-            var scriptPath = ResolvePath(envVar, file);
-            bool present = scriptPath is not null && File.Exists(scriptPath);
-            bool ok = load(scriptPath);
-            var entry = new TableLoad(file, scriptPath, present ? CsvStatus.Ok : CsvStatus.Missing,
-                                      Read: 1, Kept: ok ? 1 : 0, Array.Empty<string>()) { IsScript = true };
-            entries.Add(() => entry);
-            return ok;
-        }
+            // Every content file goes through this: it records the table in `entries` so the load report can
+            // say what happened to all 68 of them, in load order. `ToLoad` is a method group, evaluated at the
+            // end, so the counts it captures are the ones the loader finished with. `entries` is a LOCAL, so a
+            // second Load() building its own report cannot interleave with this one, and LoadReport joins the
+            // immutable snapshot published at the end exactly like every other registry here.
+            Csv.Warn = Log.Warn;   // Shared cannot see Server.Log; hand it over before the first file is opened
+            var entries = new List<Func<TableLoad>>();
+            CsvTable T(string envVar, string file)
+            {
+                var t = Csv.Open(file, ResolvePath(envVar, file));
+                entries.Add(t.ToLoad);
+                return t;
+            }
+            // The Lua scripts have no rows, so they report 1/1 loaded and 1/0 rejected — see TableLoad.IsScript.
+            // They belong in the same report as the CSVs because an operator must account for every content
+            // input, and a rejected script is the loudest thing a reload can have to say.
+            bool Script<T>(string envVar, string file, Func<string?, (bool Ok, T? Prepared)> prepare,
+                Action<T> stage) where T : class
+            {
+                var scriptPath = ResolvePath(envVar, file);
+                bool present = scriptPath is not null && File.Exists(scriptPath);
+                var (ok, prepared) = prepare(scriptPath);
+                if (prepared is not null) stage(prepared);
+                var entry = new TableLoad(file, scriptPath, present ? CsvStatus.Ok : CsvStatus.Missing,
+                                          Read: 1, Kept: ok ? 1 : 0, Array.Empty<string>())
+                { IsScript = true };
+                entries.Add(() => entry);
+                return ok;
+            }
 
-        Maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
-        MobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));   // BEFORE Mobs: LoadMobs folds it in
-        MobStationaryOverrides = LoadMobStationary(T("P1998_MOB_STATIONARY", "MobStationary.csv"));   // likewise
-        Mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"));
-        Items = LoadItems(T("P1998_ITEMS", "Items.csv"));
-        Warps = LoadWarps(T("P1998_WARPS", "Warps.csv"));   // needs Maps
-        Spawns = LoadSpawns(T("P1998_SPAWNS", "Spawns.csv"));
-        // Base area spawns + trap-ambush populations (tiger cave, rabbit boss-tier, trapdoor spiders) that RTK
-        // spawns via trap/mob_spawn.lua rather than handleSpawn (rare-boss rows carry RespawnSec; generated by
-        // re/extract_trap_spawns.py). Concatenated into a LOCAL and assigned to AreaSpawns ONCE — so a
-        // concurrent reader on @reload never sees the base list without its 362 trap mobs (the old two-step
-        // assign had that tear window).
-        AreaSpawns = LoadAreaSpawns(T("P1998_AREASPAWNS", "AreaSpawns.csv"), grouped: true)
-            .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_TRAP", "AreaSpawnsTrap.csv"), grouped: false))
-            // …plus the crafting nodes (ore veins, ginko trees), which come from RTK's OTHER two spawner
-            // NPCs — mining/woodcuttingSpawnHandler.lua. Kept in their own file for the same reason as the
-            // trap rows: re-running the main extractor must not be able to drop them.
-            .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"), grouped: true))
-            .ToList();
-        Shared.EraCalendar.Reload();   // era date + windows live in Shared (login server shares them)
-        // BEFORE LoadNpcs, which now asks it whether an NPC existed yet (NPCs.csv EraFeature). Left where it
-        // was, this read the PREVIOUS calendar on @reload, so moving EraDate and reloading placed NPCs by the
-        // old date — with nothing to say so, since a wrong era never throws.
-        var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"));   // needs Maps + the era calendar
-        _npcById = npcs.ToDictionary(n => n.Id);   // assign the index BEFORE the public list, so a reader that
-        Npcs = npcs;                               // sees the new Npcs always sees the matching new _npcById
-        MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));
-        ShopStock = LoadShopStock(T("P1998_SHOPSTOCK", "ShopStock.csv"));
-        ShopBuysFrom = LoadShopBuysFrom(T("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"));
-        Paths = LoadPaths(T("P1998_PATHS", "Paths.csv"));
-        LevelExp = LoadLevelExp(T("P1998_LEVELEXP", "LevelExp.csv"));
-        SpellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));   // BEFORE Spells: LoadSpells reads it
-        Spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"));
-        // O(1) lookup indexes (0.1) — rebuilt every Load()/@reload so they swap with the lists above. Nothing
-        // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
-        _itemById  = IndexFirst(Items, i => i.Id);
-        _itemByKey = IndexFirst(Items, i => i.Key, StringComparer.OrdinalIgnoreCase);
-        _mobById   = IndexFirst(Mobs, m => m.Id);
-        _mobByKey  = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
-        _spellById = IndexFirst(Spells, s => s.Id);
-        _spellByKey = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
-        _ladderOf = BuildSpellLadders(Spells);
-        // name -> id, first wins. BASE names go in first so a string that is one path's class name and
-        // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
-        var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var pathRankByName = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in Paths)
-            if (!string.IsNullOrEmpty(kv.Value)) { pathIdByName.TryAdd(kv.Value, kv.Key); pathRankByName.TryAdd(kv.Value, (kv.Key, 0)); }
-        foreach (var (id, ladder) in PathRanks)
-            for (int m = 1; m < ladder.Length; m++)
-                if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
-        _pathIdByName = pathIdByName;
-        _pathRankByName = pathRankByName;
-        SpellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
-        SpellTexts = LoadSpellTexts(T("P1998_SPELL_TEXT", "SpellText.csv"));
-        SpellCosts = LoadSpellCosts(T("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
-        Mob5xPalettes = LoadMob5xPalettes(T("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // (Look,Colour)->Palette, V533-only remap
-        ArmorDyeRamps = LoadArmorDyeRamps(T("P1998_ARMOR_DYE_RAMPS", "ArmorDyeRamps.csv"));
-        MapMeta = LoadMapMeta(T("P1998_MAPS_FULL", "Maps.csv"));   // region + warpOut for Gateway
-        MobDrops = LoadMobDrops(T("P1998_MOB_DROPS", "MobDrops.csv"));
-        CraftingToggleOverrides = LoadCraftingToggles(T("P1998_CRAFTING_TOGGLES", "CraftingToggles.csv"));
-        WarpQuestLocks = LoadWarpQuestLocks(T("P1998_WARP_QUEST_LOCKS", "WarpQuestLocks.csv"));
-        ArmorQuestGates = LoadArmorQuestGates(T("P1998_ARMOR_QUESTS", "ArmorQuests.csv"));
-        var mythicCaves = LoadMythicCaves(T("P1998_MYTHIC_CAVES", "MythicCaves.csv"));
-        MythicCaveTiles = mythicCaves   // assign the derived tile index BEFORE the public list (same reason as Npcs/_npcById)
-            .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
-            .ToDictionary(e => e.key, e => e.cave);
-        MythicCaves = mythicCaves;
-        MythicAlliances = LoadMythicAlliances(T("P1998_MYTHIC_ALLIANCES", "MythicAlliances.csv"));
-        var arenaDoors = LoadArenaDoors(T("P1998_ARENA_DOORS", "ArenaDoors.csv"));
-        ArenaDoorTiles = arenaDoors   // derived tile index first, public list second (same reason as Npcs/_npcById)
-            .SelectMany(d => d.Tiles.Select(t => (key: (d.Map, t.X, t.Y), door: d)))
-            .ToDictionary(e => e.key, e => e.door);
-        ArenaDoors = arenaDoors;
-        EventCaveBands = LoadEventCaveBands(T("P1998_EVENT_CAVE_TIERS", "EventCaveTiers.csv"));
-        var eventCaves = LoadEventCaves(T("P1998_EVENT_CAVES", "EventCaves.csv"));
-        EventCaveTiles = eventCaves   // derived tile index first, public list second (same reason as Npcs/_npcById)
-            .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
-            .ToDictionary(e => e.key, e => e.cave);
-        EventCaves = eventCaves;
-        MusicTracks = LoadMusicTracks(T("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
-        (BgmZones, DefaultBgm, DefaultBgmNew) = LoadBgmZones(T("P1998_MAP_BGM", "MapBgm.csv"));
-        _bgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
-        Inns = LoadInns(T("P1998_INNS", "Inns.csv"));
-        ForageAreas = LoadForageAreas(T("P1998_FORAGE", "ForageAreas.csv"));
-        HarvestNodes = LoadHarvestNodes(T("P1998_HARVEST", "HarvestNodes.csv"));
-        MobSpells    = LoadMobSpells(T("P1998_MOB_SPELLS", "MobSpells.csv"));
-        MobChatter   = LoadMobChatter(T("P1998_MOB_CHATTER", "MobChatter.csv"));
-        MobSpawnRules = LoadMobSpawnRules(T("P1998_MOB_SPAWN_RULES", "MobSpawnRules.csv"));
-        MobBosses    = LoadMobBosses(T("P1998_MOB_BOSSES", "MobBosses.csv"));
-        PathHalls = LoadPathHalls(T("P1998_PATHHALLS", "PathHalls.csv"));
-        GatewayRegions = LoadGatewayGates(T("P1998_GATEWAY", "GatewayGates.csv"));
-        WorldDests = LoadWorldDests(T("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"));
-        WorldMapTriggers = LoadWorldTriggers(T("P1998_WORLDMAP_TRIGGERS", "WorldMapTriggers.csv"));
-        FallRooms = LoadFallRooms(T("P1998_FALLROOMS", "FallRooms.csv"));
-        AmbushBursts = LoadAmbushBursts(T("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"));
-        Ambushes = LoadAmbushConfig(T("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"), AmbushBursts);
-        BoardLocations = LoadBoardLocations(T("P1998_BOARD_LOCATIONS", "BoardLocations.csv"));
-        ShopCatalogues = LoadShopCatalogues(T("P1998_SHOP_CATALOGUES", "ShopCatalogues.csv"));
-        SpellParams = LoadKeyedRows(T("P1998_SPELL_PARAMS", "SpellParams.csv"));
-        // The three Lua files load ATOMICALLY (see LuaVerbHost.Load): a broken edit is REJECTED and the
-        // previously-loaded script keeps running. RejectedScripts records which ones didn't take so @reload can
-        // say so to the GM's face — a silent "reload ok" after a typo is how you end up debugging the wrong thing.
-        var rejected = new List<string>();
-        if (!Script("P1998_SPELL_VERBS", "spell_verbs.lua", SpellScript.Load)) rejected.Add("spell_verbs.lua");
-        ItemParams = LoadKeyedRows(T("P1998_ITEM_PARAMS", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
-        if (!Script("P1998_ITEM_VERBS", "item_verbs.lua", ItemScript.Load)) rejected.Add("item_verbs.lua");
-        if (!Script("P1998_NPC_DIALOG", "npc_dialog.lua", NpcScript.Load)) rejected.Add("npc_dialog.lua");
-        if (!Script("P1998_MOB_AI", "mob_ai.lua", MobScript.Load)) rejected.Add("mob_ai.lua");
-        RejectedScripts = rejected;
-        // Phase-1 spell-DATA tables (extracted from Content.cs literals; see re/extract_spell_tables.py).
-        PetSpells = LoadPets(T("P1998_PETS", "Pets.csv"));
-        WeaponProcs = LoadWeaponProcs(T("P1998_WEAPON_PROCS", "WeaponProcs.csv"));
-        TrapSpells = LoadTrapSpells(T("P1998_TRAPS", "Traps.csv"));
-        (MorphSpells, MorphDispatchSpells) = LoadMorphs(T("P1998_MORPHS", "Morphs.csv"));
-        (RageAmount, EnchantSpells) = LoadSpellMods(T("P1998_SPELL_MODS", "SpellMods.csv"));
-        NpcCompositions = LoadNpcCompositions(T("P1998_NPC_ABILITIES", "NpcAbilities.csv"));
-        PathGrowth = LoadPathGrowth(T("P1998_PATH_GROWTH", "PathGrowth.csv"));
-        (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T("P1998_DOOR_OBJECTS", "DoorObjects.csv"));
-        Tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
-        Doors.SetConfig(LoadDoors(T("P1998_DOORS", "Doors.csv")));
-        (_mapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
-        MapCellCount = mapCellCount;
-        // The startup summary. This replaces a hand-written line that named 36 registries and could say
-        // nothing at all about the other 32 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
-        // WarpQuestLocks among them could load zero rows in silence. Problems go out first and through
-        // Log.Warn (so they carry the `!!` marker the rest of the codebase greps for); the census follows,
-        // several tables per line, and every entry still carries its file name so it greps too.
-        var report = new ContentLoadReport(entries.Select(f => f()));
-        LoadReport = report;
-        foreach (var problem in report.Problems) Log.Warn("content: " + problem);
-        foreach (var line in report.Census()) Log.Info(line);
-        if (Maps.Count == 0 || Mobs.Count == 0)
-            Log.Warn("content: no maps and/or no mobs — run re/build_map_index.py and check game-data/mobs.csv");
+            Maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
+            MobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));   // BEFORE Mobs: LoadMobs folds it in
+            MobStationaryOverrides = LoadMobStationary(T("P1998_MOB_STATIONARY", "MobStationary.csv"));   // likewise
+            Mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"));
+            Items = LoadItems(T("P1998_ITEMS", "Items.csv"));
+            LoadStepForTests?.Invoke("ItemsLoaded");
+            Warps = LoadWarps(T("P1998_WARPS", "Warps.csv"));   // needs Maps
+            Spawns = LoadSpawns(T("P1998_SPAWNS", "Spawns.csv"));
+            // Base area spawns + trap-ambush populations (tiger cave, rabbit boss-tier, trapdoor spiders) that RTK
+            // spawns via trap/mob_spawn.lua rather than handleSpawn (rare-boss rows carry RespawnSec; generated by
+            // re/extract_trap_spawns.py). Concatenated into a LOCAL and assigned to AreaSpawns ONCE — so a
+            // Dependency order stays explicit in the unpublished builder: base rows first, then both generated
+            // sources, before the combined list is assigned once.
+            AreaSpawns = LoadAreaSpawns(T("P1998_AREASPAWNS", "AreaSpawns.csv"), grouped: true)
+                .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_TRAP", "AreaSpawnsTrap.csv"), grouped: false))
+                // …plus the crafting nodes (ore veins, ginko trees), which come from RTK's OTHER two spawner
+                // NPCs — mining/woodcuttingSpawnHandler.lua. Kept in their own file for the same reason as the
+                // trap rows: re-running the main extractor must not be able to drop them.
+                .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"), grouped: true))
+                .ToList();
+            snapshotBuilder.EraCalendar = Shared.EraCalendar.PrepareReload(); // BEFORE LoadNpcs, which asks
+                                           // whether an NPC existed yet. PrepareReload gives only this loading
+                                           // thread the candidate calendar; serving threads keep the old one.
+            var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"));   // needs Maps + the era calendar
+            NpcByIdIndex = npcs.ToDictionary(n => n.Id);   // derived from npcs; this dependency order matters
+            Npcs = npcs;                                   // only while the unpublished builder is assembled
+            MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));
+            ShopStock = LoadShopStock(T("P1998_SHOPSTOCK", "ShopStock.csv"));
+            ShopBuysFrom = LoadShopBuysFrom(T("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"));
+            Paths = LoadPaths(T("P1998_PATHS", "Paths.csv"));
+            LevelExp = LoadLevelExp(T("P1998_LEVELEXP", "LevelExp.csv"));
+            SpellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));   // BEFORE Spells: LoadSpells reads it
+            Spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"));
+            // O(1) lookup indexes (0.1) — rebuilt every Load()/@reload so they swap with the lists above. Nothing
+            // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
+            ItemByIdIndex = IndexFirst(Items, i => i.Id);
+            ItemByKeyIndex = IndexFirst(Items, i => i.Key, StringComparer.OrdinalIgnoreCase);
+            MobByIdIndex = IndexFirst(Mobs, m => m.Id);
+            MobByKeyIndex = IndexFirst(Mobs, m => m.Key, StringComparer.OrdinalIgnoreCase);
+            SpellByIdIndex = IndexFirst(Spells, s => s.Id);
+            SpellByKeyIndex = IndexFirst(Spells, s => s.Key, StringComparer.OrdinalIgnoreCase);
+            LadderOf = BuildSpellLadders(Spells);
+            // name -> id, first wins. BASE names go in first so a string that is one path's class name and
+            // another's rank title (Paths.csv has a few) always resolves to the class, never the rank.
+            var pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var pathRankByName = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in Paths)
+                if (!string.IsNullOrEmpty(kv.Value)) { pathIdByName.TryAdd(kv.Value, kv.Key); pathRankByName.TryAdd(kv.Value, (kv.Key, 0)); }
+            foreach (var (id, ladder) in PathRanks)
+                for (int m = 1; m < ladder.Length; m++)
+                    if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
+            PathIdByNameIndex = pathIdByName;
+            PathRankByNameIndex = pathRankByName;
+            SpellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
+            SpellTexts = LoadSpellTexts(T("P1998_SPELL_TEXT", "SpellText.csv"));
+            SpellCosts = LoadSpellCosts(T("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
+            Mob5xPalettes = LoadMob5xPalettes(T("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // (Look,Colour)->Palette, V533-only remap
+            ArmorDyeRamps = LoadArmorDyeRamps(T("P1998_ARMOR_DYE_RAMPS", "ArmorDyeRamps.csv"));
+            MapMeta = LoadMapMeta(T("P1998_MAPS_FULL", "Maps.csv"));   // region + warpOut for Gateway
+            MobDrops = LoadMobDrops(T("P1998_MOB_DROPS", "MobDrops.csv"));
+            CraftingToggleOverrides = LoadCraftingToggles(T("P1998_CRAFTING_TOGGLES", "CraftingToggles.csv"));
+            WarpQuestLocks = LoadWarpQuestLocks(T("P1998_WARP_QUEST_LOCKS", "WarpQuestLocks.csv"));
+            ArmorQuestGates = LoadArmorQuestGates(T("P1998_ARMOR_QUESTS", "ArmorQuests.csv"));
+            var mythicCaves = LoadMythicCaves(T("P1998_MYTHIC_CAVES", "MythicCaves.csv"));
+            MythicCaveTiles = mythicCaves   // build the derived tile index from the same local list
+                .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
+                .ToDictionary(e => e.key, e => e.cave);
+            MythicCaves = mythicCaves;
+            MythicAlliances = LoadMythicAlliances(T("P1998_MYTHIC_ALLIANCES", "MythicAlliances.csv"));
+            var arenaDoors = LoadArenaDoors(T("P1998_ARENA_DOORS", "ArenaDoors.csv"));
+            ArenaDoorTiles = arenaDoors   // build the derived tile index from the same local list
+                .SelectMany(d => d.Tiles.Select(t => (key: (d.Map, t.X, t.Y), door: d)))
+                .ToDictionary(e => e.key, e => e.door);
+            ArenaDoors = arenaDoors;
+            EventCaveBands = LoadEventCaveBands(T("P1998_EVENT_CAVE_TIERS", "EventCaveTiers.csv"));
+            var eventCaves = LoadEventCaves(T("P1998_EVENT_CAVES", "EventCaves.csv"));
+            EventCaveTiles = eventCaves   // build the derived tile index from the same local list
+                .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
+                .ToDictionary(e => e.key, e => e.cave);
+            EventCaves = eventCaves;
+            MusicTracks = LoadMusicTracks(T("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
+            (BgmZones, DefaultBgm, DefaultBgmNew) = LoadBgmZones(T("P1998_MAP_BGM", "MapBgm.csv"));
+            BgmByMap = BuildBgmMap();   // needs Maps + Warps + BgmZones — resolves every map to a track
+            Inns = LoadInns(T("P1998_INNS", "Inns.csv"));
+            ForageAreas = LoadForageAreas(T("P1998_FORAGE", "ForageAreas.csv"));
+            HarvestNodes = LoadHarvestNodes(T("P1998_HARVEST", "HarvestNodes.csv"));
+            MobSpells = LoadMobSpells(T("P1998_MOB_SPELLS", "MobSpells.csv"));
+            MobChatter = LoadMobChatter(T("P1998_MOB_CHATTER", "MobChatter.csv"));
+            MobSpawnRules = LoadMobSpawnRules(T("P1998_MOB_SPAWN_RULES", "MobSpawnRules.csv"));
+            MobBosses = LoadMobBosses(T("P1998_MOB_BOSSES", "MobBosses.csv"));
+            PathHalls = LoadPathHalls(T("P1998_PATHHALLS", "PathHalls.csv"));
+            GatewayRegions = LoadGatewayGates(T("P1998_GATEWAY", "GatewayGates.csv"));
+            WorldDests = LoadWorldDests(T("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"));
+            WorldMapTriggers = LoadWorldTriggers(T("P1998_WORLDMAP_TRIGGERS", "WorldMapTriggers.csv"));
+            FallRooms = LoadFallRooms(T("P1998_FALLROOMS", "FallRooms.csv"));
+            AmbushBursts = LoadAmbushBursts(T("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"));
+            Ambushes = LoadAmbushConfig(T("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"), AmbushBursts);
+            BoardLocations = LoadBoardLocations(T("P1998_BOARD_LOCATIONS", "BoardLocations.csv"));
+            ShopCatalogues = LoadShopCatalogues(T("P1998_SHOP_CATALOGUES", "ShopCatalogues.csv"));
+            SpellParams = LoadKeyedRows(T("P1998_SPELL_PARAMS", "SpellParams.csv"));
+            // The four Lua files compile into candidates: a broken edit is REJECTED and the
+            // previously-loaded script keeps running. RejectedScripts records which ones didn't take so @reload can
+            // say so to the GM's face. Accepted candidates commit only after the matching row snapshot publishes.
+            var rejected = new List<string>();
+            if (!Script("P1998_SPELL_VERBS", "spell_verbs.lua", SpellScript.PrepareReload,
+                        prepared => snapshotBuilder.SpellScript = prepared)) rejected.Add("spell_verbs.lua");
+            ItemParams = LoadKeyedRows(T("P1998_ITEM_PARAMS", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
+            if (!Script("P1998_ITEM_VERBS", "item_verbs.lua", ItemScript.PrepareReload,
+                        prepared => snapshotBuilder.ItemScript = prepared)) rejected.Add("item_verbs.lua");
+            if (!Script("P1998_NPC_DIALOG", "npc_dialog.lua", NpcScript.PrepareReload,
+                        prepared => snapshotBuilder.NpcScript = prepared)) rejected.Add("npc_dialog.lua");
+            if (!Script("P1998_MOB_AI", "mob_ai.lua", MobScript.PrepareReload,
+                        prepared => snapshotBuilder.MobScript = prepared)) rejected.Add("mob_ai.lua");
+            RejectedScripts = rejected;
+            // Phase-1 spell-DATA tables (extracted from Content.cs literals; see re/extract_spell_tables.py).
+            PetSpells = LoadPets(T("P1998_PETS", "Pets.csv"));
+            WeaponProcs = LoadWeaponProcs(T("P1998_WEAPON_PROCS", "WeaponProcs.csv"));
+            TrapSpells = LoadTrapSpells(T("P1998_TRAPS", "Traps.csv"));
+            (MorphSpells, MorphDispatchSpells) = LoadMorphs(T("P1998_MORPHS", "Morphs.csv"));
+            (RageAmount, EnchantSpells) = LoadSpellMods(T("P1998_SPELL_MODS", "SpellMods.csv"));
+            NpcCompositions = LoadNpcCompositions(T("P1998_NPC_ABILITIES", "NpcAbilities.csv"));
+            PathGrowth = LoadPathGrowth(T("P1998_PATH_GROWTH", "PathGrowth.csv"));
+            (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T("P1998_DOOR_OBJECTS", "DoorObjects.csv"));
+            Tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
+            snapshotBuilder.Doors = LoadDoors(T("P1998_DOORS", "Doors.csv"));
+            (MapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
+            MapCellCount = mapCellCount;
+            // The startup summary. This replaces a hand-written line that named 36 registries and could say
+            // nothing at all about the other 32 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and
+            // WarpQuestLocks among them could load zero rows in silence. Problems go out first and through
+            // Log.Warn (so they carry the `!!` marker the rest of the codebase greps for); the census follows,
+            // several tables per line, and every entry still carries its file name so it greps too.
+            var report = new ContentLoadReport(entries.Select(f => f()));
+            LoadReport = report;
+            foreach (var problem in report.Problems) Log.Warn("content: " + problem);
+            foreach (var line in report.Census()) Log.Info(line);
+            if (Maps.Count == 0 || Mobs.Count == 0)
+                Log.Warn("content: no maps and/or no mobs — run re/build_map_index.py and check game-data/mobs.csv");
+            PublishSnapshot(snapshotBuilder);
+        }
+        finally
+        {
+            if (snapshotBuilder.EraCalendar is { } eraCalendar) Shared.EraCalendar.EndReload(eraCalendar);
+            EndSnapshotBuild(snapshotBuilder);
+        }
     }
 
     /// <summary>
     /// Hot-reload every file-backed registry WITHOUT a restart (the <c>@reload</c> GM command), so content
-    /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence — which
-    /// re-reads every CSV and rebuilds the derived <c>_npcById</c> — reassigning the public registries. Each
-    /// registry is a lock-free reference, and a reference assignment is atomic, so a reader always sees a whole
-    /// old-or-new dictionary, never a torn one (a reader that straddles the swap across two registries is
-    /// harmless — they're independent). Returns a one-line count summary.
+    /// fixes ship without kicking players. Re-runs the exact ordered <see cref="Load"/> sequence in an
+    /// unpublished builder, then publishes the immutable snapshot with one write and commits the era calendar,
+    /// Doors configuration and four Lua hosts at that boundary under the shared Lua gate. Readers therefore
+    /// see all registries and their derived indexes from the old load or all of them from the new load. Returns
+    /// a one-line count summary.
     ///
     /// SCOPE: file-backed content only (every registry above is CSV/Lua-backed now — map BGM moved to
     /// MapBgm.csv, so there's no compile-time content table left that a restart would be needed for). The
@@ -205,18 +224,10 @@ public static partial class Content
     /// </summary>
     public static string Reload()
     {
-        var before = CaptureReloadTables();
         try { Load(); }
         catch (Exception e)
         {
-            var replaced = CaptureReloadTables()
-                .Where(kv => before.TryGetValue(kv.Key, out var old) && !ReferenceEquals(old, kv.Value))
-                .Select(kv => kv.Key)
-                .ToArray();
-            string progress = replaced.Length == 0
-                ? "No public content tables were replaced (private tables, the era calendar and Lua scripts are not tracked until #33)."
-                : $"Public content tables replaced before failure: {string.Join(", ", replaced)}.";
-            throw new InvalidOperationException($"{e.Message} {progress}", e);
+            throw new InvalidOperationException($"{e.Message} Reload failed (previous content kept).", e);
         }
 
         var summary = $"{Maps.Count} maps, {Mobs.Count} mobs, {Items.Count} items, {Warps.Count} warps, " +
@@ -236,29 +247,28 @@ public static partial class Content
              : $"*** REJECTED (still running the previous version, see log): {string.Join(", ", RejectedScripts)} *** — {summary}";
     }
 
-    /// <summary>Snapshot the public reference-backed tables so a failed pre-#33 reload can say which tracked
-    /// tables already swapped. Deliberately not exhaustive: private tables, the era calendar and Lua script
-    /// hosts stay outside this bounded operator hint until #33 makes the whole load atomic.</summary>
-    private static Dictionary<string, object?> CaptureReloadTables() =>
-        typeof(Content).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-            .Where(p => !p.PropertyType.IsValueType && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)
-            .OrderBy(p => p.MetadataToken)
-            .ToDictionary(p => p.Name, p => p.GetValue(null));
-
     /// <summary>Lua files whose most recent (re)load was rejected for a compile/shape error — their previously
     /// loaded version is still live. Empty when everything took. See <see cref="Reload"/>.</summary>
-    public static IReadOnlyList<string> RejectedScripts { get; private set; } = Array.Empty<string>();
+    public static IReadOnlyList<string> RejectedScripts
+    {
+        get => _snapshotBuilder?.RejectedScripts ?? Snapshot.RejectedScripts;
+        private set => Builder.RejectedScripts = value;
+    }
 
-    /// <summary>What every one of the 68 content files did on the last <see cref="Load"/>: its status, and
-    /// how many rows it read, kept and skipped. Swapped by reference at the end of Load like every other
-    /// registry, so a reader always sees one whole report.
+    /// <summary>What every CSV and Lua input opened by the last <see cref="Load"/> did: its status, and how
+    /// many rows it read, kept and skipped. The report is a member of the published snapshot, so a reader
+    /// always sees the report for the same load as every registry.
     ///
     /// <para>This is the thing the old startup line could not be: it covers ALL of them. The hand-written
     /// summary named 36 registries, which meant MobSpells, Doors, SpellParams, NpcAbilities, MapCells,
     /// WarpQuestLocks and about twenty-five others could load zero rows and say nothing — and the reader
     /// underneath swallowed a missing file and a parse failure alike. ContentSmokeTests asserts a floor over
     /// this for every table, so a registry that collapses fails CI instead of shipping.</para></summary>
-    public static ContentLoadReport LoadReport { get; private set; } = ContentLoadReport.Empty;
+    public static ContentLoadReport LoadReport
+    {
+        get => _snapshotBuilder?.LoadReport ?? Snapshot.LoadReport;
+        private set => Builder.LoadReport = value;
+    }
 
     /// <summary>Offline check of the registries + fuzzy lookups (run via <c>--selftest</c>).</summary>
     public static void SelfTest()
@@ -302,15 +312,21 @@ public static partial class Content
         // A representative caster: level 50, will 30, grace 20, might 40, 200 mana, 1000 HP.
         var vars = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
         {
-            ["player.level"] = 50, ["player.will"] = 30, ["player.grace"] = 20, ["player.might"] = 40,
-            ["player.magic"] = 200, ["player.maxMagic"] = 200, ["player.health"] = 1000, ["player.maxHealth"] = 1000,
+            ["player.level"] = 50,
+            ["player.will"] = 30,
+            ["player.grace"] = 20,
+            ["player.might"] = 40,
+            ["player.magic"] = 200,
+            ["player.maxMagic"] = 200,
+            ["player.health"] = 1000,
+            ["player.maxHealth"] = 1000,
         };
         Line("--- Formula.Eval (level50 will30 grace20 might40 mana200 hp1000) ---");
         foreach (var key in new[] { "spark_mage", "heal_mage", "invoke_mage", "thunder_bolt_mage", "singe_mage" })
         {
             if (!SpellFx.TryGetValue(key, out var fx)) { Line($"    {key,-20} (no fx row)"); continue; }
             string amt = string.IsNullOrEmpty(fx.AmountExpr) ? "" : $" amount={Formula.Eval(fx.AmountExpr, vars):0}";
-            string hc  = string.IsNullOrEmpty(fx.HealthCost) ? "" : $" healthCost={Formula.Eval(fx.HealthCost, vars):0}";
+            string hc = string.IsNullOrEmpty(fx.HealthCost) ? "" : $" healthCost={Formula.Eval(fx.HealthCost, vars):0}";
             Line($"    {key,-20} {fx.Archetype,-11} mana={fx.Mana,-4}{amt}{hc}  [{fx.AmountExpr}]");
         }
         // spot-check the arithmetic evaluator itself (independent of any spell row)
@@ -352,7 +368,7 @@ public static partial class Content
              $"{MusicTracks.Count(t => t.Set == MusicSet.New && !t.Playlist)} 5.x mp3s / " +
              $"{MusicTracks.Count(t => t.Playlist && !t.Shuffle)} ordered + " +
              $"{MusicTracks.Count(t => t.Shuffle)} shuffled playlists, {BgmZones.Count} zones, " +
-             $"{_bgmByMap.Count} maps resolved, " +
+                 $"{BgmByMap.Count} maps resolved, " +
              $"default {(DefaultBgm is null ? "(none)" : $"{DefaultBgm.Value.bgm} '{TrackName(DefaultBgm.Value.bgm)}'")}" +
              $" / 5.x {(DefaultBgmNew is null ? "(none)" : $"{DefaultBgmNew.Value.bgm} '{TrackName(DefaultBgmNew.Value.bgm, MusicSet.New)}'")} ---");
         foreach (var q in new[] { "mist", "tiger", "mon", "6", "10", "nope" })
@@ -422,7 +438,7 @@ public static partial class Content
             bgm5xOk &= hit;
             string kind = track is null ? "?"
                         : !track.Playlist ? "SINGLE — never advances"
-                        : track.Shuffle   ? "SHUFFLED — will stall dead"
+                        : track.Shuffle ? "SHUFFLED — will stall dead"
                                           : "ordered playlist";
             Line($"    {(hit ? "ok " : "XX ")}map {map,-6} (5.x) -> {name,-8} " +
                  $"id {(got?.bgm.ToString() ?? "-"),-4} type{got?.type} {kind} (want {want})");

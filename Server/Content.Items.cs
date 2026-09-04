@@ -208,23 +208,38 @@ public sealed record ItemDef(
 
 public static partial class Content
 {
-    public static IReadOnlyList<ItemDef> Items { get; private set; } = new List<ItemDef>();
+    public static IReadOnlyList<ItemDef> Items
+    {
+        get => _snapshotBuilder?.Items ?? Snapshot.Items;
+        private set => Builder.Items = value;
+    }
 
     // O(1) lookup indexes over the Items/Mobs/Spells lists + the class-name→path map, all rebuilt in Load() so
-    // each swaps together with its source list (same atomicity story as _npcById). These replace the old
+    // each is built after its source list in the unpublished builder. These replace the old
     // per-call LINQ FirstOrDefault scans over 2.5k items / 700 mobs / 900 spells, which ran on hot paths
     // (RegenTick, combat). FIRST occurrence wins on a duplicate id/key — matches the old FirstOrDefault. Key
     // lookups are case-insensitive.
-    private static IReadOnlyDictionary<int, ItemDef> _itemById = new Dictionary<int, ItemDef>();
-    private static IReadOnlyDictionary<string, ItemDef> _itemByKey = new Dictionary<string, ItemDef>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<int, ItemDef> ItemByIdIndex
+    {
+        get => _snapshotBuilder?.ItemById ?? Snapshot.ItemById;
+        set => Builder.ItemById = value;
+    }
+    private static IReadOnlyDictionary<string, ItemDef> ItemByKeyIndex
+    {
+        get => _snapshotBuilder?.ItemByKey ?? Snapshot.ItemByKey;
+        set => Builder.ItemByKey = value;
+    }
 
     // Armor-dye ramp remap, keyed (bodyLook, canonicalDye) -> the ramp to actually send in appearance[4].
     // The PLAYER equivalent of Mob5xPalettes above, and it exists for the same reason: appearance[4] is a
     // ramp shift resolved against the body sprite's OWN Body.tbl palette, so one canonical number is a
     // different hue on different armor. Only pairs that disagree with palette 0 are stored; everything
     // else passes through. Populated from ArmorDyeRamps.csv, which carries the full derivation. See Session.ArmorDye().
-    public static IReadOnlyDictionary<(ushort Look, byte Dye), byte> ArmorDyeRamps { get; private set; } =
-        new Dictionary<(ushort, byte), byte>();
+    public static IReadOnlyDictionary<(ushort Look, byte Dye), byte> ArmorDyeRamps
+    {
+        get => _snapshotBuilder?.ArmorDyeRamps ?? Snapshot.ArmorDyeRamps;
+        private set => Builder.ArmorDyeRamps = value;
+    }
 
     /// <summary>The byte to put in <c>appearance[4]</c> so <paramref name="dye"/> renders as its canonical
     /// colour on the body sprite <paramref name="look"/> is wearing. Identity unless ArmorDyeRamps.csv says
@@ -236,8 +251,11 @@ public static partial class Content
     // Lua verb reads (the `verb` column + params like amount/hpcost/statuskey/duration). The "row" half of the
     // verb/row item-effect model — the "verb" logic lives in item_verbs.lua (see Server/ItemScript.cs +
     // Session.ApplyItemEffect). Items without a row fall back to the item DB's Vita/Mana. Hot-reloads via @reload.
-    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> ItemParams { get; private set; } =
-        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> ItemParams
+    {
+        get => _snapshotBuilder?.ItemParams ?? Snapshot.ItemParams;
+        private set => Builder.ItemParams = value;
+    }
 
     public static ItemDef? FindItem(string query)
     {
@@ -250,8 +268,8 @@ public static partial class Content
         return BestByName(Items, query, i => i.Name) ?? BestByName(Items, query, i => i.Key);
     }
 
-    public static ItemDef? ItemById(int id) => _itemById.TryGetValue(id, out var v) ? v : null;
-    public static ItemDef? ItemByKey(string? key) => key is not null && _itemByKey.TryGetValue(key, out var v) ? v : null;
+    public static ItemDef? ItemById(int id) => ItemByIdIndex.TryGetValue(id, out var v) ? v : null;
+    public static ItemDef? ItemByKey(string? key) => key is not null && ItemByKeyIndex.TryGetValue(key, out var v) ? v : null;
 
     public static List<ItemDef> SearchItems(string query, int limit) =>
         RankByName(Items, query, i => i.Name).Take(limit).ToList();
@@ -290,8 +308,11 @@ public static partial class Content
     //                bird lands on YOU, yet RTK still gates the whole handler on getTargetFacing.
     public readonly record struct WeaponProc(string Item, int ChancePct, string Spell, bool SelfCast, bool NeedsFacing);
 
-    private static IReadOnlyDictionary<string, WeaponProc> WeaponProcs =
-        new Dictionary<string, WeaponProc>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, WeaponProc> WeaponProcs
+    {
+        get => _snapshotBuilder?.WeaponProcs ?? Snapshot.WeaponProcs;
+        set => Builder.WeaponProcs = value;
+    }
 
     /// <summary>The on-swing proc for an equipped weapon/armour identifier, if it has one.</summary>
     public static WeaponProc? WeaponProcFor(string? itemKey) =>

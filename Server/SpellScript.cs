@@ -18,6 +18,11 @@ public static class SpellScript
 
     public static bool Load(string? path) => _host.Load(path);
 
+    internal static (bool Ok, LuaVerbHost.PreparedReload? Prepared) PrepareReload(string? path) =>
+        _host.PrepareReload(path);
+
+    internal static void CommitReload(LuaVerbHost.PreparedReload prepared) => _host.CommitReload(prepared);
+
     public static bool HasVerb(string verb) => _host.HasVerb(verb);
 
     /// <summary>The empty row an archetype-style call runs against: those verbs take their numbers off

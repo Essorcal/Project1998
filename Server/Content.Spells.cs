@@ -169,34 +169,63 @@ public static partial class Content
 
     // All learnable spells/skills (RTK Spells table, section-headers + inactive rows filtered out), and the
     // class/path id -> display name table (RTK Paths table). Read-only after Load, shared lock-free.
-    public static IReadOnlyList<SpellDef> Spells { get; private set; } = new List<SpellDef>();
-    public static IReadOnlyDictionary<int, string> Paths { get; private set; } = new Dictionary<int, string>();
+    public static IReadOnlyList<SpellDef> Spells
+    {
+        get => _snapshotBuilder?.Spells ?? Snapshot.Spells;
+        private set => Builder.Spells = value;
+    }
+    public static IReadOnlyDictionary<int, string> Paths
+    {
+        get => _snapshotBuilder?.Paths ?? Snapshot.Paths;
+        private set => Builder.Paths = value;
+    }
 
     // Per-spell runtime effect (archetype + real RTK formulas), keyed by spell identifier. Drives the magic
     // engine in Session.ApplyCast. Extracted from RTK's Lua by re/extract_spell_formulas.py; empty ⇒ every
     // cast falls back to the keyword classifier. Read-only after Load, shared lock-free.
-    public static IReadOnlyDictionary<string, SpellFx> SpellFx { get; private set; } =
-        new Dictionary<string, SpellFx>();
+    public static IReadOnlyDictionary<string, SpellFx> SpellFx
+    {
+        get => _snapshotBuilder?.SpellFx ?? Snapshot.SpellFx;
+        private set => Builder.SpellFx = value;
+    }
 
     // Per-spell TARGET flavor line (game-data/SpellText.csv), CANONICAL from LIVE NexusTK — supersedes RTK.
     // The caster always just sees "You cast <name>." (Session.HandleCast); the TARGET of a spell additionally
     // sees this line when present. On a self-cast you are both, so you see the flavor THEN the cast line.
-    public static IReadOnlyDictionary<string, (string Target, string Fade)> SpellTexts { get; private set; } =
-        new Dictionary<string, (string, string)>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, (string Target, string Fade)> SpellTexts
+    {
+        get => _snapshotBuilder?.SpellTexts ?? Snapshot.SpellTexts;
+        private set => Builder.SpellTexts = value;
+    }
     /// <summary>The live flavor shown to the TARGET when a spell is applied, or "" if none is recorded.</summary>
     public static string TargetTextFor(string key) => SpellTexts.TryGetValue(key, out var t) ? t.Target : "";
     /// <summary>The live flavor shown when a timed buff FADES (RTK uncast), or "" if none is recorded.</summary>
     public static string FadeTextFor(string key) => SpellTexts.TryGetValue(key, out var t) ? t.Fade : "";
-    private static IReadOnlyDictionary<int, SpellDef> _spellById = new Dictionary<int, SpellDef>();
-    private static IReadOnlyDictionary<string, SpellDef> _spellByKey = new Dictionary<string, SpellDef>(StringComparer.OrdinalIgnoreCase);
-    private static IReadOnlyDictionary<string, int> _pathIdByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<int, SpellDef> SpellByIdIndex
+    {
+        get => _snapshotBuilder?.SpellById ?? Snapshot.SpellById;
+        set => Builder.SpellById = value;
+    }
+    private static IReadOnlyDictionary<string, SpellDef> SpellByKeyIndex
+    {
+        get => _snapshotBuilder?.SpellByKey ?? Snapshot.SpellByKey;
+        set => Builder.SpellByKey = value;
+    }
+    private static IReadOnlyDictionary<string, int> PathIdByNameIndex
+    {
+        get => _snapshotBuilder?.PathIdByName ?? Snapshot.PathIdByName;
+        set => Builder.PathIdByName = value;
+    }
 
     // Data-driven spell params (game-data/SpellParams.csv): per spell key, the raw CSV row its Lua verb
     // reads (the `verb` column + numeric params like coeff/mana/amount). The "row" half of the verb/row spell
     // model — the "verb" logic lives in spell_verbs.lua (see Server/SpellScript.cs + Session.ApplyCast). Sparse:
     // only migrated spells have a row; everything else uses the C# CastX dispatch. Hot-reloads via @reload.
-    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> SpellParams { get; private set; } =
-        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> SpellParams
+    {
+        get => _snapshotBuilder?.SpellParams ?? Snapshot.SpellParams;
+        private set => Builder.SpellParams = value;
+    }
 
     // ---- spells / classes (used by the @lvl/@class/@mark/@align book rebuild + casting) -------
 
@@ -209,7 +238,7 @@ public static partial class Content
     public static int PathIdForClass(string? className)
     {
         var name = (className ?? "").Trim();
-        return name.Length != 0 && _pathIdByName.TryGetValue(name, out var id) ? id : -1;
+        return name.Length != 0 && PathIdByNameIndex.TryGetValue(name, out var id) ? id : -1;
     }
 
     /// <summary>Real per-class level + item/gold cost to LEARN a spell from a trainer. <c>Items</c> is
@@ -235,8 +264,11 @@ public static partial class Content
     /// this server doesn't implement, not a character level — would need a fake level to force into this
     /// table, which was deliberately avoided rather than guessed). Any spell with no entry here still teaches
     /// free at its CSV <c>SplLevel</c>/<c>PathId</c>, the pre-existing behavior.</summary>
-    public static IReadOnlyDictionary<string, Dictionary<int, LearnCost>> SpellCosts { get; private set; } =
-        new Dictionary<string, Dictionary<int, LearnCost>>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, Dictionary<int, LearnCost>> SpellCosts
+    {
+        get => _snapshotBuilder?.SpellCosts ?? Snapshot.SpellCosts;
+        private set => Builder.SpellCosts = value;
+    }
 
     /// <summary>The real cost to learn <paramref name="sp"/> as class <paramref name="pathId"/>, or null if
     /// this spell has no entry in <see cref="SpellCosts"/> (learned free at its CSV level, as before).</summary>
@@ -589,8 +621,11 @@ public static partial class Content
     /// the alignment families. Keyed per path because <c>soothe</c> is the bottom rung of three different
     /// classes' self-heal ladders. The rung INDEX is what <see cref="RespecSpellSet"/> ranks by — see there
     /// for why the learn level can't be trusted to order a ladder.</summary>
-    private static IReadOnlyDictionary<int, Dictionary<string, (string Ladder, int Rung)>> _ladderOf =
-        new Dictionary<int, Dictionary<string, (string, int)>>();
+    private static IReadOnlyDictionary<int, Dictionary<string, (string Ladder, int Rung)>> LadderOf
+    {
+        get => _snapshotBuilder?.LadderOf ?? Snapshot.LadderOf;
+        set => Builder.LadderOf = value;
+    }
 
     private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(IReadOnlyList<SpellDef> spells)
     {
@@ -676,7 +711,7 @@ public static partial class Content
         // it inherits the ladders with it. The two Dog spells are deliberately not on any ladder: Fissure ->
         // Lava Surge is a tier pair, but it is two spells from a separate trainer, and collapsing it would
         // erase half of the only reward the subpath grants outright.
-        if (!_ladderOf.TryGetValue(PathBaseOf(pathId), out var ladders)) return all;
+        if (!LadderOf.TryGetValue(PathBaseOf(pathId), out var ladders)) return all;
 
         var top = new Dictionary<string, (SpellDef Spell, int Rung)>(StringComparer.OrdinalIgnoreCase);
         foreach (var s in all)
@@ -697,8 +732,8 @@ public static partial class Content
                               || ReferenceEquals(top[rung.Ladder].Spell, s)).ToList();
     }
 
-    public static SpellDef? SpellById(int id) => _spellById.TryGetValue(id, out var v) ? v : null;
-    public static SpellDef? SpellByKey(string? key) => key is not null && _spellByKey.TryGetValue(key, out var v) ? v : null;
+    public static SpellDef? SpellById(int id) => SpellByIdIndex.TryGetValue(id, out var v) ? v : null;
+    public static SpellDef? SpellByKey(string? key) => key is not null && SpellByKeyIndex.TryGetValue(key, out var v) ? v : null;
 
     /// <summary>The extracted RTK effect for a spell (real formula/archetype), or null if the export has no
     /// row for its identifier (⇒ caller falls back to the keyword classifier).</summary>
@@ -799,7 +834,11 @@ public static partial class Content
     // SplMark and PthMarkN are the same rank axis. PthType is loaded alongside into PathBase (PathBaseOf).
     private const int MaxPathRank = 15;   // Paths.csv goes PthMark0..PthMark15; only 0..5 are ever populated
 
-    private static Dictionary<int, string[]> PathRanks = new();
+    private static Dictionary<int, string[]> PathRanks
+    {
+        get => _snapshotBuilder?.PathRanks ?? Snapshot.PathRanks;
+        set => Builder.PathRanks = value;
+    }
 
     /// <summary>What a character of this path and mark is CALLED — Paths.csv <c>PthMark&lt;mark&gt;</c>.
     /// A Ju jak is "Force" at mark 1, "Inferno" at 2, "Pandemonium" at 3, "Catastrophe" at 4; a Warrior is
@@ -818,11 +857,14 @@ public static partial class Content
     public static (int PathId, int Mark)? PathRankForName(string? name)
     {
         var n = (name ?? "").Trim();
-        return n.Length != 0 && _pathRankByName.TryGetValue(n, out var v) ? v : null;
+        return n.Length != 0 && PathRankByNameIndex.TryGetValue(n, out var v) ? v : null;
     }
 
-    private static IReadOnlyDictionary<string, (int PathId, int Mark)> _pathRankByName =
-        new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, (int PathId, int Mark)> PathRankByNameIndex
+    {
+        get => _snapshotBuilder?.PathRankByName ?? Snapshot.PathRankByName;
+        set => Builder.PathRankByName = value;
+    }
 
     /// <summary>The paths a character may actually BE: the four base classes and Peasant, plus the four NPC
     /// subpaths (Chung ryong / Baekho / Ju jak / Hyun moo). Everything else in Paths.csv is either RTK's GM
@@ -845,7 +887,11 @@ public static partial class Content
     //     icon 3  Do        / Spy       / Shaman    / Muse
     //     icon 4  Chung ryong / Baekho  / Ju jak    / Hyun moo
     // So a character's whole user-list identity is one PthId: PthType picks the column, PthIcon the badge.
-    private static Dictionary<int, int> PathIcon = new();
+    private static Dictionary<int, int> PathIcon
+    {
+        get => _snapshotBuilder?.PathIcon ?? Snapshot.PathIcon;
+        set => Builder.PathIcon = value;
+    }
 
     /// <summary>Subpath badge index for a path id (Paths.csv PthIcon) — see <see cref="PathIcon"/>.</summary>
     public static int PathIconOf(int pathId) => PathIcon.GetValueOrDefault(pathId, 0);
@@ -853,7 +899,11 @@ public static partial class Content
     // PthId -> PthType, the BASE path a (sub)class descends from (RTK class_db.c classdb_path): every subpath
     // collapses onto 1 Warrior / 2 Rogue / 3 Mage / 4 Poet, e.g. Chung ryong (6) and Barbarian (10) are both
     // base 1. 0 = Peasant, 5 = Dreamweaver/Archon (RTK's GM branch, which skips every wear restriction).
-    private static Dictionary<int, int> PathBase = new();
+    private static Dictionary<int, int> PathBase
+    {
+        get => _snapshotBuilder?.PathBase ?? Snapshot.PathBase;
+        set => Builder.PathBase = value;
+    }
 
     /// <summary>The base path (PthType) a class/path id descends from — RTK <c>classdb_path</c>. Unknown ids
     /// and Peasant both give 0.</summary>
@@ -867,7 +917,11 @@ public static partial class Content
     // SplLevel is 0 for these in the export (see SpellLevelOverrides below — the real gate lives in each
     // spell's Lua requirements() function, which the CSV export never captured for Type-5 skills).
     // Loaded from game-data/SpellMods.csv (`rage` column) in Load() — see LoadSpellMods.
-    private static IReadOnlyDictionary<string, int> RageAmount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, int> RageAmount
+    {
+        get => _snapshotBuilder?.RageAmount ?? Snapshot.RageAmount;
+        set => Builder.RageAmount = value;
+    }
 
     /// <summary>The rage multiplier this spell/skill arms, or null if it isn't a rage-tier spell. See
     /// <see cref="RageAmount"/>.</summary>
@@ -914,7 +968,11 @@ public static partial class Content
     // level 99. That looks wrong but it is what both early sources say; flagged, not "corrected".
     // STILL UNRESOLVED: art_of_war — DM calls it a x4 weapon enhancer, but RTK's art_of_war.lua implements
     // something ELSE entirely (an 80-mana reveal of a mob's max health). Not wired as an enchant here.
-    private static IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells = new Dictionary<string, (double, int)>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells
+    {
+        get => _snapshotBuilder?.EnchantSpells ?? Snapshot.EnchantSpells;
+        set => Builder.EnchantSpells = value;
+    }
     public static (double Amt, int Mana)? EnchantFor(SpellDef sp) => EnchantSpells.TryGetValue(sp.Key, out var e) ? e : null;
 
     // Rogue Invisible (+3 same-mechanic aliases per alignment: Spirit's Form/Life's Cloak/Glass Form):
@@ -1452,7 +1510,11 @@ public static partial class Content
     public enum TrapKind { Dart, Snare, RepeatingDart, Flash, Spear, Poison, Death, Sleep }
     // Loaded from game-data/Traps.csv (spell-side cast cost; kind = TrapKind enum name) in Load() — see
     // LoadTrapSpells. The trigger-side effect (damage/durations) stays in World.TriggerTrapLocked.
-    private static IReadOnlyDictionary<string, (TrapKind Kind, int Level, int Mana)> TrapSpells = new Dictionary<string, (TrapKind, int, int)>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, (TrapKind Kind, int Level, int Mana)> TrapSpells
+    {
+        get => _snapshotBuilder?.TrapSpells ?? Snapshot.TrapSpells;
+        set => Builder.TrapSpells = value;
+    }
     public static (TrapKind Kind, int Level, int Mana)? TrapSpellFor(SpellDef sp) => TrapSpells.TryGetValue(sp.Key, out var t) ? t : null;
     public static bool IsTrapDispatcher(SpellDef sp) => sp.Key.Equals("set_trap", StringComparison.OrdinalIgnoreCase);
 
@@ -1570,8 +1632,11 @@ public static partial class Content
     // (Look, LookFemale, Mana, DurationMs) — LookFemale=0 means every sex uses Look (only the two
     // "mingken_mask" reskins are sex-dependent buck/doe, per gangrel.lua's `if player.sex==1`).
     // Loaded from game-data/Morphs.csv (rows with an empty `answers` column) in Load() — see LoadMorphs.
-    public static IReadOnlyDictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> MorphSpells { get; private set; } =
-        new Dictionary<string, (ushort, ushort, int, int)>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, (ushort Look, ushort LookFemale, int Mana, int DurationMs)> MorphSpells
+    {
+        get => _snapshotBuilder?.MorphSpells ?? Snapshot.MorphSpells;
+        private set => Builder.MorphSpells = value;
+    }
     public static (ushort Look, ushort LookFemale, int Mana, int DurationMs)? MorphFor(SpellDef sp) =>
         MorphSpells.TryGetValue(sp.Key, out var m) ? m : null;
 
@@ -1589,8 +1654,11 @@ public static partial class Content
     // directly into wilderness_guise's own answer table instead of modeling that indirection.
     // Loaded from game-data/Morphs.csv (rows with a non-empty `answers` column, "ans:look;ans:look") in
     // Load() — see LoadMorphs.
-    public static IReadOnlyDictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells { get; private set; } =
-        new Dictionary<string, (Dictionary<string, ushort>, int, int)>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, (Dictionary<string, ushort> Answers, int Mana, int DurationMs)> MorphDispatchSpells
+    {
+        get => _snapshotBuilder?.MorphDispatchSpells ?? Snapshot.MorphDispatchSpells;
+        private set => Builder.MorphDispatchSpells = value;
+    }
     public static (Dictionary<string, ushort> Answers, int Mana, int DurationMs)? MorphDispatchFor(SpellDef sp) =>
         MorphDispatchSpells.TryGetValue(sp.Key, out var m) ? m : null;
     public static bool IsMorphSpell(SpellDef sp) => MorphSpells.ContainsKey(sp.Key) || MorphDispatchSpells.ContainsKey(sp.Key);
@@ -1615,8 +1683,11 @@ public static partial class Content
     // real outlier: RTK charges GOLD (via requirements(), not mana) plus an 8-minute cooldown instead of the
     // flat 10-mana every other tier uses (cotw_wind_warrior.lua has no `player.magic` check at all).
     // Loaded from game-data/Pets.csv in Load() — see LoadPets.
-    private static IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells =
-        new Dictionary<string, (string, int, int, int)>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells
+    {
+        get => _snapshotBuilder?.PetSpells ?? Snapshot.PetSpells;
+        set => Builder.PetSpells = value;
+    }
     public static (string MobKey, int Level, int Mana, int CooldownMs)? PetSpellFor(SpellDef sp) =>
         PetSpells.TryGetValue(sp.Key, out var p) ? p : null;
 
@@ -1631,5 +1702,9 @@ public static partial class Content
     // not fixed here.
     // Loaded from game-data/SpellLevels.csv in Load() — see LoadSpellLevels. Assigned BEFORE Spells is
     // loaded (LoadSpells reads it to override SplLevel for Type-5 skills whose export level is 0).
-    private static IReadOnlyDictionary<string, int> SpellLevelOverrides = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    private static IReadOnlyDictionary<string, int> SpellLevelOverrides
+    {
+        get => _snapshotBuilder?.SpellLevelOverrides ?? Snapshot.SpellLevelOverrides;
+        set => Builder.SpellLevelOverrides = value;
+    }
 }

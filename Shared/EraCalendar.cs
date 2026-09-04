@@ -46,53 +46,94 @@ public static class EraCalendar
     /// <summary>Target date when <c>EraDate</c> is absent — the day client 4.95 shipped.</summary>
     public const int DefaultDate = 20010709;
 
-    private static readonly object _gate = new();
-    private static volatile bool _loaded;
-    private static int _date;
-    private static IReadOnlyDictionary<string, EraWindow> _features =
-        new Dictionary<string, EraWindow>(StringComparer.OrdinalIgnoreCase);
+    internal sealed record State(int Date, IReadOnlyDictionary<string, EraWindow> Features);
 
-    /// <summary>Force a re-read of both files. Called by <c>Content.Load</c> so <c>@reload</c> works.</summary>
-    public static void Reload() { lock (_gate) { LoadLocked(); } }
-
-    private static void Ensure() { if (!_loaded) lock (_gate) { if (!_loaded) LoadLocked(); } }
-
-    private static void LoadLocked()
+    /// <summary>An opaque calendar built from disk but not yet visible to serving threads.</summary>
+    internal sealed class PreparedReload
     {
-        _date = ReadEraDate();
-        _features = ReadFeatures();
-        _loaded = true;   // last: a reader must never see a half-built calendar
+        private readonly State _state;
+        internal PreparedReload(State state) => _state = state;
+        internal State Value => _state;
+    }
+
+    private static readonly object _gate = new();
+    private static State? _published;
+
+    // Content.Load must evaluate era-gated rows against the candidate calendar while it builds them, without
+    // exposing that calendar to serving threads before the content snapshot commits. Only the loading thread
+    // receives this view, and Content's finally always clears it after success or failure.
+    [ThreadStatic]
+    private static PreparedReload? _preparing;
+
+    /// <summary>Force a re-read of both files. Direct callers still receive the old one-step behaviour;
+    /// <c>Content.Load</c> uses <see cref="PrepareReload"/> and <see cref="CommitReload"/> so the calendar
+    /// publishes with the rest of content.</summary>
+    public static void Reload()
+    {
+        lock (_gate)
+        {
+            var prepared = PrepareReload();
+            try { CommitReload(prepared); }
+            finally { EndReload(prepared); }
+        }
+    }
+
+    /// <summary>Read a candidate calendar and expose it only to this loading thread.</summary>
+    internal static PreparedReload PrepareReload()
+    {
+        if (_preparing is not null)
+            throw new InvalidOperationException("Programming error: EraCalendar reloads cannot be nested on the same thread.");
+        lock (_gate)
+        {
+            return _preparing = new PreparedReload(new State(ReadEraDate(), ReadFeatures()));
+        }
+    }
+
+    /// <summary>Publish a previously prepared calendar with one reference write.</summary>
+    internal static void CommitReload(PreparedReload prepared) =>
+        Volatile.Write(ref _published, prepared.Value);
+
+    /// <summary>Remove the loading thread's candidate view after success or failure.</summary>
+    internal static void EndReload(PreparedReload prepared)
+    {
+        if (ReferenceEquals(_preparing, prepared)) _preparing = null;
+    }
+
+    private static State Current
+    {
+        get
+        {
+            if (_preparing is { } preparing) return preparing.Value;
+            var published = Volatile.Read(ref _published);
+            if (published is not null) return published;
+            lock (_gate)
+            {
+                return _published ??= new State(ReadEraDate(), ReadFeatures());
+            }
+        }
     }
 
     /// <summary>The configured <c>EraDate</c> as the raw yyyymmdd integer (0 = gating off).</summary>
-    public static int RawDate { get { Ensure(); return _date; } }
+    public static int RawDate => Current.Date;
 
     /// <summary>How many dated features are declared — for the startup/reload line.</summary>
-    public static int FeatureCount { get { Ensure(); return _features.Count; } }
+    public static int FeatureCount => Current.Features.Count;
 
     /// <summary>The date the server is pretending it is, or null when gating is off or the configured
     /// value isn't a real calendar date.</summary>
     public static DateOnly? Today
     {
-        get
-        {
-            Ensure();
-            int v = _date;
-            if (v <= 0) return null;
-            int y = v / 10000, m = v / 100 % 100, d = v % 100;
-            if (y < 1 || y > 9999 || m is < 1 or > 12) return null;
-            if (d < 1 || d > DateTime.DaysInMonth(y, m)) return null;
-            return new DateOnly(y, m, d);
-        }
+        get => Date(Current.Date);
     }
 
     /// <summary>Does this feature exist at the target date? True when gating is off, and true for any
     /// feature with no row — the fail-open default.</summary>
     public static bool Has(string feature)
     {
-        var now = Today;                       // Ensure()s
+        var state = Current;
+        var now = Date(state.Date);
         if (now is null) return true;
-        if (!_features.TryGetValue(feature, out var w)) return true;
+        if (!state.Features.TryGetValue(feature, out var w)) return true;
         if (w.Introduced is { } intro && now.Value < intro) return false;
         if (w.Retired    is { } ret   && now.Value >= ret)   return false;
         return true;
@@ -101,8 +142,17 @@ public static class EraCalendar
     /// <summary>The declared window for a feature, or null if it has no row.</summary>
     public static EraWindow? Window(string feature)
     {
-        Ensure();
-        return _features.TryGetValue(feature, out var w) ? w : null;
+        var features = Current.Features;
+        return features.TryGetValue(feature, out var w) ? w : null;
+    }
+
+    private static DateOnly? Date(int v)
+    {
+        if (v <= 0) return null;
+        int y = v / 10000, m = v / 100 % 100, d = v % 100;
+        if (y < 1 || y > 9999 || m is < 1 or > 12) return null;
+        if (d < 1 || d > DateTime.DaysInMonth(y, m)) return null;
+        return new DateOnly(y, m, d);
     }
 
     // ---- reading --------------------------------------------------------------------------------------

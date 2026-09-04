@@ -115,7 +115,11 @@ public sealed record NpcDef(
 
 public static partial class Content
 {
-    public static IReadOnlyList<MobDef> Mobs { get; private set; } = new List<MobDef>();
+    public static IReadOnlyList<MobDef> Mobs
+    {
+        get => _snapshotBuilder?.Mobs ?? Snapshot.Mobs;
+        private set => Builder.Mobs = value;
+    }
 
     /// <summary>Respawn delay for a static spawn whose creature carries no <see cref="MobDef.SpawnTime"/> —
     /// RTK's own <c>Mobs.MobSpawnTime</c> column default, so a mob missing from the dump behaves like a new
@@ -123,25 +127,52 @@ public static partial class Content
     public const int DefaultSpawnTimeSec = 180;
 
     // Fixed monster spawn points (game-data/Spawns.csv). One live mob per point; the world respawns it on death.
-    public static IReadOnlyList<SpawnDef> Spawns { get; private set; } = new List<SpawnDef>();
+    public static IReadOnlyList<SpawnDef> Spawns
+    {
+        get => _snapshotBuilder?.Spawns ?? Snapshot.Spawns;
+        private set => Builder.Spawns = value;
+    }
 
     // Area spawns from RTK's Lua spawner (game-data/AreaSpawns.csv): the hunting-map mob populations
     // (Mythic caves, wilderness, dungeons) that the static Spawns table doesn't cover. See AreaSpawnDef.
-    public static IReadOnlyList<AreaSpawnDef> AreaSpawns { get; private set; } = new List<AreaSpawnDef>();
+    public static IReadOnlyList<AreaSpawnDef> AreaSpawns
+    {
+        get => _snapshotBuilder?.AreaSpawns ?? Snapshot.AreaSpawns;
+        private set => Builder.AreaSpawns = value;
+    }
 
     // Stationary NPCs (game-data/NPCs.csv), placed once by the world as non-fighting mobs. Keyed by NpcId for
     // click-time dialog lookup.
-    public static IReadOnlyList<NpcDef> Npcs { get; private set; } = new List<NpcDef>();
-    private static IReadOnlyDictionary<int, NpcDef> _npcById = new Dictionary<int, NpcDef>();
-    public static NpcDef? NpcById(int id) => _npcById.TryGetValue(id, out var n) ? n : null;
-    private static IReadOnlyDictionary<int, MobDef> _mobById = new Dictionary<int, MobDef>();
-    private static IReadOnlyDictionary<string, MobDef> _mobByKey = new Dictionary<string, MobDef>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyList<NpcDef> Npcs
+    {
+        get => _snapshotBuilder?.Npcs ?? Snapshot.Npcs;
+        private set => Builder.Npcs = value;
+    }
+    private static IReadOnlyDictionary<int, NpcDef> NpcByIdIndex
+    {
+        get => _snapshotBuilder?.NpcById ?? Snapshot.NpcById;
+        set => Builder.NpcById = value;
+    }
+    public static NpcDef? NpcById(int id) => NpcByIdIndex.TryGetValue(id, out var n) ? n : null;
+    private static IReadOnlyDictionary<int, MobDef> MobByIdIndex
+    {
+        get => _snapshotBuilder?.MobById ?? Snapshot.MobById;
+        set => Builder.MobById = value;
+    }
+    private static IReadOnlyDictionary<string, MobDef> MobByKeyIndex
+    {
+        get => _snapshotBuilder?.MobByKey ?? Snapshot.MobByKey;
+        set => Builder.MobByKey = value;
+    }
 
     // NPC identifier -> its buy stock (item keys), auto-extracted from the RTK NPC scripts
     // (re/extract_shops.py -> ShopStock.csv). A fallback behind the curated Shops.cs catalogues, so every
     // shop-flagged NPC has something to sell without hand-authoring each. See Shops.For.
-    public static IReadOnlyDictionary<string, string[]> ShopStock { get; private set; } =
-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, string[]> ShopStock
+    {
+        get => _snapshotBuilder?.ShopStock ?? Snapshot.ShopStock;
+        private set => Builder.ShopStock = value;
+    }
 
     // NPC identifier -> what it will BUY FROM the player (item keys), auto-extracted from the same RTK NPC
     // scripts (re/extract_shop_sell.py -> ShopBuysFrom.csv). A SEPARATE list from ShopStock: RTK's shops sell
@@ -154,8 +185,11 @@ public static partial class Content
     //     those are folded into the one list rather than modelled per-map, so any butcher takes them.
     //   • An NPC with no row here still buys anything sellable, exactly as before — shops whose Lua list
     //     can't be read statically (or that RTK has no script for) keep working instead of refusing everything.
-    public static IReadOnlyDictionary<string, string[]> ShopBuysFrom { get; private set; } =
-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, string[]> ShopBuysFrom
+    {
+        get => _snapshotBuilder?.ShopBuysFrom ?? Snapshot.ShopBuysFrom;
+        private set => Builder.ShopBuysFrom = value;
+    }
 
     // 0x07 colour-byte remap for the 5.33 client ONLY, keyed (Look, Colour). The colour byte is a RAMP
     // SHIFT the client applies to the mob's own base palette block (sprite indices >= 0x30 read
@@ -164,8 +198,11 @@ public static partial class Content
     // ramp colour-32). mobs.csv MobLookColor is era-tuned, so (look, colour >= 32) pairs render wrong
     // SUPER hues on 5.33 unless remapped here. Populated from Mob5xPalettes.csv (header has the full
     // derivation; Sources.csv binary-re-533 the RE). See Palette5x and Session.SendCreatureList.
-    public static IReadOnlyDictionary<(ushort Look, byte Colour), byte> Mob5xPalettes { get; private set; } =
-        new Dictionary<(ushort, byte), byte>();
+    public static IReadOnlyDictionary<(ushort Look, byte Colour), byte> Mob5xPalettes
+    {
+        get => _snapshotBuilder?.Mob5xPalettes ?? Snapshot.Mob5xPalettes;
+        private set => Builder.Mob5xPalettes = value;
+    }
 
     /// <summary>The colour byte to send a V533 client for <paramref name="look"/>, given the colour the
     /// 4.95 path would use. Returns the 5.33 remap when one exists for this (look, colour) pair, else
@@ -175,8 +212,11 @@ public static partial class Content
 
     // Mob floor-loot tables (RTK Mobs/MobDrops.lua -> re/extract_mob_drops.py -> MobDrops.csv). Keyed by
     // MobDef.Key; a mob with no entry here drops nothing, matching RTK (no _mobDropsTable entry = no loot).
-    public static IReadOnlyDictionary<string, MobDropDef> MobDrops { get; private set; } =
-        new Dictionary<string, MobDropDef>();
+    public static IReadOnlyDictionary<string, MobDropDef> MobDrops
+    {
+        get => _snapshotBuilder?.MobDrops ?? Snapshot.MobDrops;
+        private set => Builder.MobDrops = value;
+    }
 
     /// <summary>One gathering node (wheat/ore/tree) — see game-data/HarvestNodes.csv for the column meanings
     /// and Server/Session.Harvest.cs for the loop. <see cref="Yield"/> and <see cref="Bonus"/> are weighted
@@ -199,8 +239,11 @@ public static partial class Content
 
     /// <summary>Gathering nodes by mob identifier. Empty = no node is harvestable, which is exactly how the
     /// world behaved before this existed (the wheat in Kugnae's field was an inert 1200-HP shrub).</summary>
-    public static IReadOnlyDictionary<string, HarvestNodeDef> HarvestNodes { get; private set; } =
-        new Dictionary<string, HarvestNodeDef>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, HarvestNodeDef> HarvestNodes
+    {
+        get => _snapshotBuilder?.HarvestNodes ?? Snapshot.HarvestNodes;
+        private set => Builder.HarvestNodes = value;
+    }
 
     /// <summary>One spell a creature can throw at whoever it is fighting (RTK's <c>peck.cast(mob, target)</c>
     /// family — its spell scripts take a caster "block" that may be a mob as easily as a player). See
@@ -242,15 +285,21 @@ public static partial class Content
     }
 
     /// <summary>Creature spell repertoires by mob identifier, in the order the CSV lists them.</summary>
-    public static IReadOnlyDictionary<string, MobSpellDef[]> MobSpells { get; private set; } =
-        new Dictionary<string, MobSpellDef[]>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, MobSpellDef[]> MobSpells
+    {
+        get => _snapshotBuilder?.MobSpells ?? Snapshot.MobSpells;
+        private set => Builder.MobSpells = value;
+    }
 
     /// <summary>Idle flavour lines (RTK's <c>if math.random(1,100) == 1 then mob:talk(…)</c>, which is all
     /// most "custom AI" scripts actually are). Chance is 1-in-N per move tick.</summary>
     public sealed record MobChatterDef(string MobKey, int Chance, byte Channel, string[] Lines);
 
-    public static IReadOnlyDictionary<string, MobChatterDef> MobChatter { get; private set; } =
-        new Dictionary<string, MobChatterDef>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, MobChatterDef> MobChatter
+    {
+        get => _snapshotBuilder?.MobChatter ?? Snapshot.MobChatter;
+        private set => Builder.MobChatter = value;
+    }
 
     /// <summary>What happens when a creature spawns (RTK's <c>on_spawn</c> hooks, which are placement and
     /// population rules rather than behaviour — see game-data/MobSpawnRules.csv).</summary>
@@ -263,42 +312,64 @@ public static partial class Content
     public sealed record MobSpawnRuleDef(string MobKey, (ushort Map, ushort X, ushort Y)[] Rooms,
         int MaxAlive, ushort[] CapMaps, int FleeBelowPct = 0, int SpawnChance = 0, int DeathCooldownSec = 0);
 
-    public static IReadOnlyDictionary<string, MobSpawnRuleDef> MobSpawnRules { get; private set; } =
-        new Dictionary<string, MobSpawnRuleDef>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, MobSpawnRuleDef> MobSpawnRules
+    {
+        get => _snapshotBuilder?.MobSpawnRules ?? Snapshot.MobSpawnRules;
+        private set => Builder.MobSpawnRules = value;
+    }
 
     /// <summary>Is the global spawn HP jitter on (the <c>*</c> row)? RTK's mob_on_spawn.lua is the default
     /// hook for every creature without its own, and it does exactly one thing: vary max HP.</summary>
-    public static bool MobHpJitter { get; private set; }
+    public static bool MobHpJitter
+    {
+        get => _snapshotBuilder?.MobHpJitter ?? Snapshot.MobHpJitter;
+        private set => Builder.MobHpJitter = value;
+    }
 
     /// <summary>A mythic boss's survival kit (RTK mob_ai_mythic): it can shrug off a killing blow, break its
     /// own paralysis, and regenerate while its Last Stand runs. See game-data/MobBosses.csv.</summary>
     public sealed record MobBossDef(string MobKey, int HealAmount, int HealChance, int ParaBreakChance,
         int LastStandMs, int Anim, int Sound);
 
-    public static IReadOnlyDictionary<string, MobBossDef> MobBosses { get; private set; } =
-        new Dictionary<string, MobBossDef>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, MobBossDef> MobBosses
+    {
+        get => _snapshotBuilder?.MobBosses ?? Snapshot.MobBosses;
+        private set => Builder.MobBosses = value;
+    }
 
     // Ambush-trap system (game-data/AmbushBursts.csv + AmbushConfig.csv): RTK's hidden MobSpawnNpc tiles in the
     // mythic caves (mob_spawn.lua + rabbitTrap.lua + tigerTrap.lua). AmbushBursts maps a burst-table name to
     // its exact weighted variant lists (extractor-generated, re/extract_ambush_tables.py); Ambushes maps a
     // (tier-resolved) cave map to its trigger config. Warrior Watchful Eye reveals these traps. See
     // World.RefillAmbush / World.FireAmbushLocked and Session's spot-traps reveal fork.
-    public static IReadOnlyDictionary<string, IReadOnlyList<int[]>> AmbushBursts { get; private set; } =
-        new Dictionary<string, IReadOnlyList<int[]>>();
-    public static IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes { get; private set; } =
-        new Dictionary<ushort, AmbushMapDef>();
+    public static IReadOnlyDictionary<string, IReadOnlyList<int[]>> AmbushBursts
+    {
+        get => _snapshotBuilder?.AmbushBursts ?? Snapshot.AmbushBursts;
+        private set => Builder.AmbushBursts = value;
+    }
+    public static IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes
+    {
+        get => _snapshotBuilder?.Ambushes ?? Snapshot.Ambushes;
+        private set => Builder.Ambushes = value;
+    }
 
     // Curated shop catalogues (game-data/ShopCatalogues.csv) — hand-authored, ORDERED sub-category buy
     // menus (e.g. SmithNpc's armor menus) that the auto-extracted flat ShopStock can't represent. Keyed by
     // NpcDef.Key; consulted first by Shops.For, else it falls back to ShopStock. Hot-reloads via @reload.
-    public static IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues { get; private set; } =
-        new Dictionary<string, IReadOnlyList<(string, string[])>>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues
+    {
+        get => _snapshotBuilder?.ShopCatalogues ?? Snapshot.ShopCatalogues;
+        private set => Builder.ShopCatalogues = value;
+    }
 
     // NPC composition (game-data/NpcAbilities.csv): NpcKey -> the ability NAMES it's built from (a
     // pipe-list). NpcScripts.For resolves each name to its C# INpcAbility instance (NpcScripts.AbilityByName).
     // The "which abilities" is data; the ability code stays code. Hot-reloads via @reload.
-    public static IReadOnlyDictionary<string, string[]> NpcCompositions { get; private set; } =
-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+    public static IReadOnlyDictionary<string, string[]> NpcCompositions
+    {
+        get => _snapshotBuilder?.NpcCompositions ?? Snapshot.NpcCompositions;
+        private set => Builder.NpcCompositions = value;
+    }
 
     public static MobDef? FindMob(string query)
     {
@@ -315,8 +386,8 @@ public static partial class Content
     public static List<MobDef> SearchMobs(string query, int limit) =>
         RankByName(Mobs, query, m => m.Name).Take(limit).ToList();
 
-    public static MobDef? MobById(int id) => _mobById.TryGetValue(id, out var v) ? v : null;
-    public static MobDef? MobByKey(string? key) => key is not null && _mobByKey.TryGetValue(key, out var v) ? v : null;
+    public static MobDef? MobById(int id) => MobByIdIndex.TryGetValue(id, out var v) ? v : null;
+    public static MobDef? MobByKey(string? key) => key is not null && MobByKeyIndex.TryGetValue(key, out var v) ? v : null;
 
     /// <summary>The fixed spawn points on a map (empty if none / map has no spawn data).</summary>
     public static List<SpawnDef> SpawnsFor(ushort map) => Spawns.Where(s => s.Map == map).ToList();
@@ -354,9 +425,17 @@ public static partial class Content
     }
 
     // Prey creatures — see LoadMobFlees / MobDef.Flees. Loaded BEFORE Mobs so LoadMobs can fold the flag in.
-    private static Dictionary<string, bool> MobFleeOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<string, bool> MobFleeOverrides
+    {
+        get => _snapshotBuilder?.MobFleeOverrides ?? Snapshot.MobFleeOverrides;
+        set => Builder.MobFleeOverrides = value;
+    }
 
-    private static Dictionary<string, bool> MobStationaryOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<string, bool> MobStationaryOverrides
+    {
+        get => _snapshotBuilder?.MobStationaryOverrides ?? Snapshot.MobStationaryOverrides;
+        set => Builder.MobStationaryOverrides = value;
+    }
 
     // Spawns dropped as NOT CLASSIC: content whose only purpose is a questline we don't (and won't yet) model,
     // left standing would just be a mute, purposeless mob wandering the map — worse than not spawning at all.
