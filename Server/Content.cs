@@ -83,10 +83,10 @@ public static partial class Content
                 // trap rows: re-running the main extractor must not be able to drop them.
                 .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"), grouped: true))
                 .ToList();
-            snapshotBuilder.EraCalendar = Shared.EraCalendar.PrepareReload(); // BEFORE LoadNpcs, which asks
-                                           // whether an NPC existed yet. PrepareReload gives only this loading
-                                           // thread the candidate calendar; serving threads keep the old one.
-            var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"));   // needs Maps + the era calendar
+            var eraCalendar = Shared.EraCalendar.PrepareReload();
+            snapshotBuilder.EraCalendar = eraCalendar;
+            // Era.Has resolves to the prepared calendar on this loading thread; serving threads keep the old one.
+            var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"), maps, Era.Has);
             NpcByIdIndex = npcs.ToDictionary(n => n.Id);   // derived from npcs; this dependency order matters
             Npcs = npcs;                                   // only while the unpublished builder is assembled
             MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));

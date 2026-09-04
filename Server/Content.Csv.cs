@@ -476,7 +476,10 @@ public static partial class Content
     // sit on a real tile (skip the (0,0) placeholders — f1npc, treasure portals — which aren't placed beings).
     // Look is the creature sprite; the world draws them via the same 0x07 path as a mob (see World.PopulateNpcs).
     // The Enabled column (default 1) is the spawn on/off switch — a disabled NPC keeps its row but World skips it.
-    private static List<NpcDef> LoadNpcs(CsvTable csv)
+    private static List<NpcDef> LoadNpcs(
+        CsvTable csv,
+        IReadOnlyDictionary<ushort, MapInfo> maps,
+        Func<string, bool> hasEraFeature)
     {
         var npcs = new List<NpcDef>();
         foreach (var col in csv)
@@ -490,7 +493,7 @@ public static partial class Content
             int.TryParse(col.Require("NpcMoveTime", "0"), out var move);
             int.TryParse(col.Require("NpcReturnDistance", "0"), out var leash);
             bool Flag(string k) => col.Require(k, "0") == "1";
-            if (!Maps.ContainsKey(map)) continue;        // map the 4.95 client can't render
+            if (!maps.ContainsKey(map)) continue;        // map the 4.95 client can't render
             if (x == 0 && y == 0) continue;              // (0,0) = unplaced placeholder / abstract NPC
             var name = Clean(col.Require("NpcDescription", ""));
             var key = Clean(col.Require("NpcIdentifier", ""));
@@ -504,7 +507,7 @@ public static partial class Content
             // is the overwhelming majority and means undated, and an unknown key reads as present, so a typo
             // here can only leave someone in the world, never silently delete him.
             var eraFeature = Clean(col.Require("EraFeature", ""));
-            if (eraFeature.Length > 0 && !Era.Has(eraFeature)) enabled = false;
+            if (eraFeature.Length > 0 && !hasEraFeature(eraFeature)) enabled = false;
             npcs.Add(new NpcDef(id, key, name, map, x, y, Dir: 2, look, color,
                 IsChar: Flag("NpcIsChar"), Shop: Flag("NpcIsShopNpc"),
                 Repair: Flag("NpcIsRepairNpc"), Bank: Flag("NpcIsBankNpc"),
