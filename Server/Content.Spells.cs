@@ -583,6 +583,8 @@ public static partial class Content
     // Both are still LEARNED — dropping a spell from LadderRungs doesn't remove it, it exempts it from the
     // collapse, which is how every other one-of-a-kind ability (Inferno, Dooms Fire, the traps, the summons)
     // already survives. The mage now ends up with Stormstrike AND Hellfire, which is the real spellbook.
+    // BuildSpellLadders enforces this at load, so a rung added back here is dropped with a log line rather
+    // than quietly eating a class's attack again.
     private static readonly Dictionary<int, Dictionary<string, string[]>> LadderRungs = new()
     {
         [1] = new()   // Warrior — no zap ladder; its damage skills (Taunt/Slash/Berserk/Whirlwind) are all
@@ -625,8 +627,7 @@ public static partial class Content
         set => Builder.LadderOf = value;
     }
 
-    private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(
-        IReadOnlyList<SpellDef> spells)
+    private static Dictionary<int, Dictionary<string, (string Ladder, int Rung)>> BuildSpellLadders(IReadOnlyList<SpellDef> spells)
     {
         var family = BuildAlignFamilies(spells);
         var byLeader = spells.GroupBy(s => family.GetValueOrDefault(s.Key, s.Key), StringComparer.OrdinalIgnoreCase)
@@ -639,6 +640,13 @@ public static partial class Content
                 for (int i = 0; i < rungs.Length; i++)
                     if (!byLeader.TryGetValue(rungs[i], out var siblings))
                         Log.Info($"!! spell ladder {pathId}/{ladderId}: no spell keyed '{rungs[i]}' — rung ignored");
+                    // A spell on a cooldown is a different ability, not a louder version of this one — see the
+                    // "A RUNG MUST HAVE NO AETHER" note on LadderRungs. Dropping it here leaves it OFF every
+                    // ladder, which means RespecSpellSet keeps it outright instead of letting it displace the
+                    // class's actual attack.
+                    else if (siblings.Select(FxFor).FirstOrDefault(fx => fx is not null)?.Aether is > 0 and var aether)
+                        Log.Info($"!! spell ladder {pathId}/{ladderId}: '{rungs[i]}' has a {aether}ms aether — " +
+                                 $"not a rung, granted on its own instead");
                     else
                         foreach (var s in siblings) map[s.Key] = (ladderId, i);
             result[pathId] = map;
