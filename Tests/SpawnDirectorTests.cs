@@ -34,7 +34,19 @@ public class SpawnDirectorTests
     private World.SpawnDirector Spawns => _fx.World.SpawnsForTest;
 
     private static MobDef Creature(int id, string key) =>
-        new(id, key, "Test " + key, Look: 1, Color: 0, Hp: 100, Exp: 0, Level: 1, MoveTime: 1_000_000, Stationary: true);
+        new()
+        {
+            Id = id,
+            Key = key,
+            Name = "Test " + key,
+            Look = 1,
+            Color = 0,
+            Hp = 100,
+            Exp = 0,
+            Level = 1,
+            MoveTime = 1_000_000,
+            Stationary = true,
+        };
 
     private List<Mob> MobsOf(Session viewer, ushort map, MobDef def) =>
         _fx.World.View(viewer, map).mobs.Where(m => m.DefId == def.Id).ToList();
@@ -385,8 +397,19 @@ public class SpawnDirectorRebuildTests
         int kugnaeBefore = Locked(world, () => spawns.PointCountForTest(Kugnae));
         Assert.True(kugnaeBefore > 0, "Kugnae should have spawn points from Spawns.csv");
 
-        var def = new MobDef(990_003, "test_rebuild", "Test rebuild", Look: 1, Color: 0, Hp: 100, Exp: 0, Level: 1,
-                             MoveTime: 1_000_000, Stationary: true);
+        var def = new MobDef
+        {
+            Id = 990_003,
+            Key = "test_rebuild",
+            Name = "Test rebuild",
+            Look = 1,
+            Color = 0,
+            Hp = 100,
+            Exp = 0,
+            Level = 1,
+            MoveTime = 1_000_000,
+            Stationary = true,
+        };
         world.UnderWorldLockForTest(() =>
         {
             spawns.AddPointForTest(RebuildMap, def, 3, 3, respawnEvery: 1);

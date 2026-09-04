@@ -1,31 +1,54 @@
 namespace Server;
 
 /// <summary>A summonable creature definition (name, sprite look, palette colour, HP, reward, move pace).
-/// <paramref name="Aggressive"/> is RTK's <c>MobBehavior</c> (mob.c: 0=Normal/fights-back-only,
+/// <see cref="MobDef.Aggressive"/> is RTK's <c>MobBehavior</c> (mob.c: 0=Normal/fights-back-only,
 /// 1=Aggressive/attacks on sight, 2=Stationary) — we don't model Stationary separately since those are
-/// loaded as NPCs (Content.Npcs), not MobDef entries. <paramref name="MinDam"/>/<paramref name="MaxDam"/>
+/// loaded as NPCs (Content.Npcs), not MobDef entries. <see cref="MobDef.MinDam"/>/<see cref="MobDef.MaxDam"/>
 /// are RTK's per-mob swing range (SQL <c>MobMinimumDamage</c>/<c>MobMaximumDamage</c>, RTK
 /// <c>swingDamage.lua</c> <c>_getMobSwingDamage</c>) — the ACTUAL melee damage a mob deals, unrelated to
 /// its Level (Level is only exp/display; a level-99 dragon can carry a MinDam/MaxDam in the thousands).
-/// <paramref name="Hit"/> (SQL <c>MobHit</c>) feeds its crit chance (RTK <c>hitCritChance.lua</c>).
-/// <paramref name="IsBoss"/> (SQL <c>MobIsBoss</c>) selects a player weapon's Large-damage range instead of
+/// <see cref="MobDef.Hit"/> (SQL <c>MobHit</c>) feeds its crit chance (RTK <c>hitCritChance.lua</c>).
+/// <see cref="MobDef.IsBoss"/> (SQL <c>MobIsBoss</c>) selects a player weapon's Large-damage range instead of
 /// Small (RTK <c>swingDamage.lua</c> <c>_getPlayerSwingDamage</c>). RTK's mob struct actually carries TWO
-/// separate defense stats, both previously treated as 0 for lack of a source column: <paramref name="Ac"/>
+/// separate defense stats, both previously treated as 0 for lack of a source column: <see cref="MobDef.Ac"/>
 /// (SQL <c>MobArmor</c> — signed, lower-is-better, same convention as <c>Character.Ac</c>) is what reduces
-/// an incoming MELEE swing (RTK <c>swingDamage.lua</c>'s <c>target.armor</c>); <paramref name="Protection"/>
+/// an incoming MELEE swing (RTK <c>swingDamage.lua</c>'s <c>target.armor</c>); <see cref="MobDef.Protection"/>
 /// (SQL <c>MobProtection</c>) is a DIFFERENT stat that only feeds <see cref="Session.RollDeflect"/>'s magic
 /// resist roll (RTK clif.c <c>tprotection</c>) — melee and magic defense do not share a stat in RTK.
-/// <paramref name="Grace"/> (SQL <c>Grace</c>, already in the CSV but previously unparsed like the rest of
+/// <see cref="MobDef.Grace"/> (SQL <c>Grace</c>, already in the CSV but previously unparsed like the rest of
 /// this list) is read as the DEFENDER's grace in <see cref="Session.PlayerSwingDamage"/>'s crit-chance roll
-/// when a player attacks this mob.</summary>
-/// <param name="SpawnTime">RTK <c>Mobs.MobSpawnTime</c>, seconds: how long a STATIC spawn point stays
+/// when a player attacks this mob.
+/// <para><see cref="MobDef.SpawnTime"/> is RTK <c>Mobs.MobSpawnTime</c>, in seconds: how long a STATIC spawn point stays
 /// empty after this creature dies before the engine revives it on its own tile (<c>mob.c</c>:
 /// <c>last_death + spawntime &lt;= now</c>). Per creature, not per point — the table runs 9/12/18/24/30/42/60/360
 /// with a SQL default of 180, so the Mythic elites on 360 are meant to be a twenty-times-slower refill than a
 /// town rat, not the one shared cadence we used to give everything. Merged in by
 /// <c>re/merge_mob_spawn_time.py</c>. Nothing to do with the hunting maps, which batch-refill instead
-/// (see <see cref="AreaSpawnDef.Timer"/>).</param>
-public sealed record MobDef(int Id, string Key, string Name, ushort Look, byte Color, int Hp, int Exp, int Level, int MoveTime, int Will = 0, bool Aggressive = false, int MinDam = 1, int MaxDam = 1, bool IsBoss = false, int Protection = 0, int Hit = 0, int Ac = 0, int Grace = 0, bool Flees = false, bool Stationary = false, int SpawnTime = Content.DefaultSpawnTimeSec);
+/// (see <see cref="AreaSpawnDef.Timer"/>).</para></summary>
+public sealed record MobDef
+{
+    public required int Id { get; init; }
+    public required string Key { get; init; }
+    public required string Name { get; init; }
+    public required ushort Look { get; init; }
+    public required byte Color { get; init; }
+    public required int Hp { get; init; }
+    public required int Exp { get; init; }
+    public required int Level { get; init; }
+    public required int MoveTime { get; init; }
+    public int Will { get; init; } = 0;
+    public bool Aggressive { get; init; } = false;
+    public int MinDam { get; init; } = 1;
+    public int MaxDam { get; init; } = 1;
+    public bool IsBoss { get; init; } = false;
+    public int Protection { get; init; } = 0;
+    public int Hit { get; init; } = 0;
+    public int Ac { get; init; } = 0;
+    public int Grace { get; init; } = 0;
+    public bool Flees { get; init; } = false;
+    public bool Stationary { get; init; } = false;
+    public int SpawnTime { get; init; } = Content.DefaultSpawnTimeSec;
+}
 
 /// <summary>One independently-rolled line of a mob's RTK <c>loot</c> table (<c>MobDrops.lua</c>
 /// <c>_handleLoot</c>): a null <see cref="ItemKey"/> means gold rather than an item. The dropped amount is
@@ -108,10 +131,26 @@ public sealed class AmbushMapDef
 /// spawn path already checks stays the whole answer to "does this being exist". <c>EraFeature</c> is kept
 /// alongside it purely so a reader (<c>@npc</c>) can say WHICH of the two switched him off — the remedies are
 /// different, and "edit the Enabled column" is the wrong advice for someone who isn't born yet.</para></summary>
-public sealed record NpcDef(
-    int Id, string Key, string Name, ushort Map, ushort X, ushort Y, byte Dir,
-    ushort Look, byte Color, bool IsChar, bool Shop, bool Repair, bool Bank,
-    int MoveTime, int ReturnDistance, bool Enabled = true, string EraFeature = "");
+public sealed record NpcDef
+{
+    public required int Id { get; init; }
+    public required string Key { get; init; }
+    public required string Name { get; init; }
+    public required ushort Map { get; init; }
+    public required ushort X { get; init; }
+    public required ushort Y { get; init; }
+    public required byte Dir { get; init; }
+    public required ushort Look { get; init; }
+    public required byte Color { get; init; }
+    public required bool IsChar { get; init; }
+    public required bool Shop { get; init; }
+    public required bool Repair { get; init; }
+    public required bool Bank { get; init; }
+    public required int MoveTime { get; init; }
+    public required int ReturnDistance { get; init; }
+    public bool Enabled { get; init; } = true;
+    public string EraFeature { get; init; } = "";
+}
 
 public static partial class Content
 {
