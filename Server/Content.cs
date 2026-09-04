@@ -94,8 +94,9 @@ public static partial class Content
             ShopBuysFrom = LoadShopBuysFrom(T("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"));
             Paths = LoadPaths(T("P1998_PATHS", "Paths.csv"));
             LevelExp = LoadLevelExp(T("P1998_LEVELEXP", "LevelExp.csv"));
-            SpellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));   // BEFORE Spells: LoadSpells reads it
-            Spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"));
+            var spellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));
+            SpellLevelOverrides = spellLevelOverrides;
+            Spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"), spellLevelOverrides);
             // O(1) lookup indexes (0.1) — rebuilt every Load()/@reload so they swap with the lists above. Nothing
             // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
             ItemByIdIndex = IndexFirst(Items, i => i.Id);

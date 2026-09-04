@@ -1459,7 +1459,9 @@ public static partial class Content
 
     // Spells/skills. Rows that are section headers (name/ident begins with '=') or inactive (SplActive=0)
     // are skipped — they're book dividers in the RTK data, not castable. SplQuestion "NO" means "no prompt".
-    private static List<SpellDef> LoadSpells(CsvTable csv)
+    private static List<SpellDef> LoadSpells(
+        CsvTable csv,
+        IReadOnlyDictionary<string, int> levelOverrides)
     {
         var spells = new List<SpellDef>();
         foreach (var col in csv)
@@ -1472,7 +1474,7 @@ public static partial class Content
             byte.TryParse(col.Require("SplType", "5"), out var type);
             int.TryParse(col.Require("SplPthId", "0"), out var pth);
             int.TryParse(col.Require("SplLevel", "0"), out var lvl);
-            if (SpellLevelOverrides.TryGetValue(key, out var lvlOverride)) lvl = lvlOverride;
+            if (levelOverrides.TryGetValue(key, out var lvlOverride)) lvl = lvlOverride;
             if (!int.TryParse(col.Require("SplAlignment", "-1"), out var align)) align = -1;
             int.TryParse(col.Require("SplMark", "0"), out var mark);
             // Every mark row carries SplLevel 0 (the rank IS the requirement — there is no level past 99),
