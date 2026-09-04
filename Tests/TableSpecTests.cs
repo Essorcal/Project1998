@@ -79,6 +79,71 @@ public sealed class TableSpecTests
         }
     }
 
+    [Fact]
+    public void EmptySuppliedHeaderUsesTheFilesOwnHeader()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"p1998-empty-spec-header-{Guid.NewGuid():N}.csv");
+        string environmentVariable = $"P1998_TEST_EMPTY_HEADER_{Guid.NewGuid():N}";
+        try
+        {
+            File.WriteAllText(path, "Id,Name\n1,alpha\n");
+            Environment.SetEnvironmentVariable(environmentVariable, path);
+            var spec = new TableSpec(environmentVariable, "empty-header.csv", header: []);
+
+            var table = Content.OpenTable(spec);
+
+            Assert.Null(spec.Header);
+            var row = Assert.Single(table);
+            Assert.Equal("1", row.Require("Id"));
+            Assert.Equal("alpha", row.Require("Name"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(environmentVariable, null);
+            try { File.Delete(path); } catch { /* best-effort cleanup of a test fixture */ }
+        }
+    }
+
+    [Fact]
+    public void PublishedSpecificationListCannotReplaceAnEntry()
+    {
+        var list = Assert.IsAssignableFrom<IList<TableSpec>>(Content.TableSpecifications);
+
+        Assert.Throws<NotSupportedException>(() => list[0] = list[0]);
+    }
+
+    [Fact]
+    public void MissingLuaScriptIncludesItsSpecifiedConsequence()
+    {
+        lock (TestProcessState.Gate)
+        {
+            const string consequence = "test script consequence";
+            string environmentVariable = $"P1998_TEST_SCRIPT_{Guid.NewGuid():N}";
+            string missing = Path.Combine(Path.GetTempPath(), $"p1998-script-not-here-{Guid.NewGuid():N}.lua");
+            var id = Content.TableId.SpellVerbs;
+            var original = Content.Spec(id);
+            try
+            {
+                Environment.SetEnvironmentVariable(environmentVariable, missing);
+                Content.ReplaceSpecForTests(id, original with
+                {
+                    EnvironmentVariable = environmentVariable,
+                    MissingConsequence = consequence,
+                });
+                TestProcessState.LoadContent();
+
+                Assert.Contains(Content.LoadReport.Problems,
+                    problem => problem.Contains(original.File) && problem.Contains(consequence));
+            }
+            finally
+            {
+                Content.ReplaceSpecForTests(id, original);
+                Environment.SetEnvironmentVariable(environmentVariable, null);
+                TestProcessState.LoadContent();
+            }
+        }
+    }
+
     private static void AssertFallbackUsesSpec(Content.TableId id, Func<Shared.CsvTable> open,
                                                string contents, string column, string expected)
     {

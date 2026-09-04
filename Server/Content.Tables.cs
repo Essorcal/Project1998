@@ -3,7 +3,7 @@ using Shared;
 namespace Server;
 
 /// <summary>The kind of content input described by a <see cref="TableSpec"/>.</summary>
-public enum ContentTableKind
+internal enum ContentTableKind
 {
     Csv,
     Lua,
@@ -11,12 +11,26 @@ public enum ContentTableKind
 
 /// <summary>One file-backed content input. The ordered inventory is the single source for its path,
 /// optional supplied header, missing-file consequence and position in the load report.</summary>
-public sealed record TableSpec(
-    string EnvironmentVariable,
-    string File,
-    ContentTableKind Kind = ContentTableKind.Csv,
-    IReadOnlyList<string>? Header = null,
-    string? MissingConsequence = null);
+internal sealed record TableSpec
+{
+    internal string EnvironmentVariable { get; init; }
+    internal string File { get; init; }
+    internal ContentTableKind Kind { get; init; }
+    internal IReadOnlyList<string>? Header { get; init; }
+    internal string? MissingConsequence { get; init; }
+
+    internal TableSpec(string environmentVariable, string file,
+                       ContentTableKind kind = ContentTableKind.Csv,
+                       IReadOnlyList<string>? header = null,
+                       string? missingConsequence = null)
+    {
+        EnvironmentVariable = environmentVariable;
+        File = file;
+        Kind = kind;
+        Header = header is { Count: > 0 } ? Array.AsReadOnly(header.ToArray()) : null;
+        MissingConsequence = missingConsequence;
+    }
+}
 
 public static partial class Content
 {
@@ -101,12 +115,12 @@ public static partial class Content
 
     private static readonly TableSpec[] TableSpecs =
     [
-        new("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", Header: ["Obj", "Flag", "Note"]),
+        new("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", header: ["Obj", "Flag", "Note"]),
         new("P1998_OBJ533_FIX", "Obj533Fix.csv",
-            Header: ["Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"],
-            MissingConsequence: "5.33 will over-block ~18k cells"),
-        new("P1998_TILE533_MAP", "Tile533Map.csv", Header: ["StartLegacy", "Count", "Start533"],
-            MissingConsequence: "5.33 sheet-2 cells (30% of terrain) will be blank"),
+            header: ["Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"],
+            missingConsequence: "5.33 will over-block ~18k cells"),
+        new("P1998_TILE533_MAP", "Tile533Map.csv", header: ["StartLegacy", "Count", "Start533"],
+            missingConsequence: "5.33 sheet-2 cells (30% of terrain) will be blank"),
         new("P1998_MAP_INDEX", "map_index.csv"),
         new("P1998_MOB_FLEES", "MobFlees.csv"),
         new("P1998_MOB_STATIONARY", "MobStationary.csv"),
@@ -178,8 +192,10 @@ public static partial class Content
         new("P1998_MAP_CELLS", "MapCells.csv"),
     ];
 
+    private static readonly IReadOnlyList<TableSpec> ReadOnlyTableSpecs = Array.AsReadOnly(TableSpecs);
+
     /// <summary>All 68 CSV tables and four Lua scripts, in load/report order.</summary>
-    public static IReadOnlyList<TableSpec> TableSpecifications => TableSpecs;
+    internal static IReadOnlyList<TableSpec> TableSpecifications => ReadOnlyTableSpecs;
 
     internal static TableSpec Spec(TableId id)
     {

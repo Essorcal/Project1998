@@ -56,7 +56,8 @@ public static partial class Content
                 var (ok, prepared) = prepare(scriptPath);
                 if (prepared is not null) stage(prepared);
                 var entry = new TableLoad(spec.File, scriptPath, present ? CsvStatus.Ok : CsvStatus.Missing,
-                                          Read: 1, Kept: ok ? 1 : 0, Array.Empty<string>())
+                                          read: 1, kept: ok ? 1 : 0, Array.Empty<string>(),
+                                          spec.MissingConsequence)
                 { IsScript = true };
                 entries.Add(() => entry);
                 return ok;

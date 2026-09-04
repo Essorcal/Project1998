@@ -300,7 +300,8 @@ public sealed record TableLoad(string Name, string? Path, CsvStatus Status,
     // running, which is the single most important thing to say (a silent "reload ok" after a typo is how you
     // end up debugging the wrong thing).
     private string? ScriptProblem =>
-        Status == CsvStatus.Missing ? $"{Name}: FILE NOT FOUND ({Path ?? "no path resolved"}) — nothing loaded"
+        Status == CsvStatus.Missing ? WithMissingTableConsequence(
+                                      $"{Name}: FILE NOT FOUND ({Path ?? "no path resolved"}) — nothing loaded")
       : Kept == 0 ? $"{Name}: REJECTED — the previously loaded version is still running (the compile error is above)"
       : null;
 }
