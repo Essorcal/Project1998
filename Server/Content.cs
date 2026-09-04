@@ -24,8 +24,7 @@ public static partial class Content
     /// <see cref="World.ReloadFromDisk"/>. Startup calls this before the World and its scheduler exist; tests
     /// must use TestProcessState.LoadContent so environment mutation and direct loads stay serialized. Loaders
     /// and <c>Load</c> read no content facade on the loading thread, as the facade-read counter test proves;
-    /// the builder-backed facade view remains as a safety net. The remaining #35 work is the single CSV reader,
-    /// named records, and <c>TableSpec</c>.</remarks>
+    /// the builder-backed facade view remains as a safety net.</remarks>
     public static void Load()
     {
         var snapshotBuilder = BeginSnapshotBuild();
@@ -38,87 +37,88 @@ public static partial class Content
             // immutable snapshot published at the end exactly like every other registry here.
             Csv.Warn = Log.Warn;   // Shared cannot see Server.Log; hand it over before the first file is opened
             var entries = new List<Func<TableLoad>>();
-            CsvTable T(string envVar, string file, params string[] header)
+            CsvTable T(TableSpec spec)
             {
-                string? path = ResolvePath(envVar, file);
-                var t = header.Length == 0 ? Csv.Open(file, path) : Csv.Open(file, path, header);
-                entries.Add(t.ToLoad);
+                var t = OpenTable(spec);
+                entries.Add(() => t.ToLoad(spec.MissingConsequence));
                 return t;
             }
             // The Lua scripts have no rows, so they report 1/1 loaded and 1/0 rejected — see TableLoad.IsScript.
             // They belong in the same report as the CSVs because an operator must account for every content
             // input, and a rejected script is the loudest thing a reload can have to say.
-            bool Script<T>(string envVar, string file, Func<string?, (bool Ok, T? Prepared)> prepare,
+            bool Script<T>(TableSpec spec, Func<string?, (bool Ok, T? Prepared)> prepare,
                 Action<T> stage) where T : class
             {
-                var scriptPath = ResolvePath(envVar, file);
+                if (spec.Kind != ContentTableKind.Lua)
+                    throw new InvalidOperationException($"Programming error: {spec.File} is not a Lua script");
+                var scriptPath = ResolvePath(spec.EnvironmentVariable, spec.File);
                 bool present = scriptPath is not null && File.Exists(scriptPath);
                 var (ok, prepared) = prepare(scriptPath);
                 if (prepared is not null) stage(prepared);
-                var entry = new TableLoad(file, scriptPath, present ? CsvStatus.Ok : CsvStatus.Missing,
-                                          Read: 1, Kept: ok ? 1 : 0, Array.Empty<string>())
+                var entry = new TableLoad(spec.File, scriptPath, present ? CsvStatus.Ok : CsvStatus.Missing,
+                                          read: 1, kept: ok ? 1 : 0, Array.Empty<string>(),
+                                          spec.MissingConsequence)
                 { IsScript = true };
                 entries.Add(() => entry);
                 return ok;
             }
 
             snapshotBuilder.ObjectFlagOverrides = ObjectFlags.PrepareOverrides(
-                T("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", "Obj", "Flag", "Note"));
+                T(Spec(TableId.ObjectFlagOverrides)));
             snapshotBuilder.TileTranslations = TileTranslation.PrepareReload(
-                T("P1998_OBJ533_FIX", "Obj533Fix.csv",
-                    "Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"),
-                T("P1998_TILE533_MAP", "Tile533Map.csv", "StartLegacy", "Count", "Start533"));
-            var maps = LoadMaps(T("P1998_MAP_INDEX", "map_index.csv"));
+                T(Spec(TableId.Obj533Fix)),
+                T(Spec(TableId.Tile533Map)));
+            var maps = LoadMaps(T(Spec(TableId.MapIndex)));
             Maps = maps;
-            var mobFleeOverrides = LoadMobFlees(T("P1998_MOB_FLEES", "MobFlees.csv"));
+            var mobFleeOverrides = LoadMobFlees(T(Spec(TableId.MobFlees)));
             MobFleeOverrides = mobFleeOverrides;
-            var mobStationaryOverrides = LoadMobStationary(T("P1998_MOB_STATIONARY", "MobStationary.csv"));
+            var mobStationaryOverrides = LoadMobStationary(T(Spec(TableId.MobStationary)));
             MobStationaryOverrides = mobStationaryOverrides;
-            var mobs = LoadMobs(T("P1998_MOBS", "mobs.csv"), mobFleeOverrides, mobStationaryOverrides);
+            var mobs = LoadMobs(T(Spec(TableId.Mobs)), mobFleeOverrides, mobStationaryOverrides);
             Mobs = mobs;
-            var items = LoadItems(T("P1998_ITEMS", "Items.csv"));
+            var items = LoadItems(T(Spec(TableId.Items)));
             Items = items;
             LoadStepForTests?.Invoke("ItemsLoaded");
-            var warps = LoadWarps(T("P1998_WARPS", "Warps.csv"), maps);
+            var warps = LoadWarps(T(Spec(TableId.Warps)), maps);
             Warps = warps;
-            Spawns = LoadSpawns(T("P1998_SPAWNS", "Spawns.csv"));
+            Spawns = LoadSpawns(T(Spec(TableId.Spawns)));
             // Base area spawns + trap-ambush populations (tiger cave, rabbit boss-tier, trapdoor spiders) that RTK
             // spawns via trap/mob_spawn.lua rather than handleSpawn (rare-boss rows carry RespawnSec; generated by
             // re/extract_trap_spawns.py). Concatenated into a LOCAL and assigned to AreaSpawns ONCE — so a
             // Dependency order stays explicit in the unpublished builder: base rows first, then both generated
             // sources, before the combined list is assigned once.
-            AreaSpawns = LoadAreaSpawns(T("P1998_AREASPAWNS", "AreaSpawns.csv"), grouped: true)
-                .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_TRAP", "AreaSpawnsTrap.csv"), grouped: false))
+            AreaSpawns = LoadAreaSpawns(T(Spec(TableId.AreaSpawns)), grouped: true)
+                .Concat(LoadAreaSpawns(T(Spec(TableId.AreaSpawnsTrap)), grouped: false))
                 // …plus the crafting nodes (ore veins, ginko trees), which come from RTK's OTHER two spawner
                 // NPCs — mining/woodcuttingSpawnHandler.lua. Kept in their own file for the same reason as the
                 // trap rows: re-running the main extractor must not be able to drop them.
-                .Concat(LoadAreaSpawns(T("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"), grouped: true))
+                .Concat(LoadAreaSpawns(T(Spec(TableId.AreaSpawnsCrafting)), grouped: true))
                 .ToList();
-            var tuning = LoadTuning(T("P1998_SERVER_TUNING", "ServerTuning.csv"));
+            var tuning = LoadTuning(T(Spec(TableId.ServerTuning)));
             Tuning = tuning;
             int eraDate = tuning.TryGetValue("EraDate", out var configuredEraDate)
                 ? (int)configuredEraDate
                 : Shared.EraCalendar.DefaultDate;
             var eraCalendar = Shared.EraCalendar.PrepareReload(
-                eraDate, T("P1998_ERA_FEATURES", "EraFeatures.csv"));
+                eraDate, T(Spec(TableId.EraFeatures)));
             snapshotBuilder.EraCalendar = eraCalendar;
             // Era.Has resolves to the prepared calendar on this loading thread; serving threads keep the old one.
             // Era gating remains ambient until its prepared value exposes the same fail-open query semantics.
-            var npcs = LoadNpcs(T("P1998_NPCS", "NPCs.csv"), maps);
+            var npcs = LoadNpcs(T(Spec(TableId.Npcs)), maps);
             NpcByIdIndex = npcs.ToDictionary(n => n.Id);   // derived from npcs; this dependency order matters
             Npcs = npcs;                                   // only while the unpublished builder is assembled
-            MinorQuests = LoadMinorQuests(T("P1998_MINORQUESTS", "MinorQuests.csv"));
-            ShopStock = LoadShopStock(T("P1998_SHOPSTOCK", "ShopStock.csv"));
-            ShopBuysFrom = LoadShopBuysFrom(T("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"));
-            var (paths, pathRanks, pathBase, pathIcon) = LoadPaths(T("P1998_PATHS", "Paths.csv"));
+            MinorQuests = LoadMinorQuests(T(Spec(TableId.MinorQuests)));
+            ShopStock = LoadShopStock(T(Spec(TableId.ShopStock)));
+            ShopBuysFrom = LoadShopBuysFrom(T(Spec(TableId.ShopBuysFrom)));
+            var (paths, pathRanks, pathBase, pathIcon) = LoadPaths(T(Spec(TableId.Paths)));
             Paths = paths;
             PathRanks = pathRanks;
             PathBase = pathBase;
             PathIcon = pathIcon;
-            LevelExp = LoadLevelExp(T("P1998_LEVELEXP", "LevelExp.csv"));
-            var spellLevelOverrides = LoadSpellLevels(T("P1998_SPELL_LEVELS", "SpellLevels.csv"));
+            LevelExp = LoadLevelExp(T(Spec(TableId.LevelExp)));
+            var spellLevelOverrides = LoadSpellLevels(T(Spec(TableId.SpellLevels)));
             SpellLevelOverrides = spellLevelOverrides;
-            var spells = LoadSpells(T("P1998_SPELLS", "Spells.csv"), spellLevelOverrides);
+            var spells = LoadSpells(T(Spec(TableId.Spells)), spellLevelOverrides);
             Spells = spells;
             // O(1) lookup indexes (0.1) — rebuilt every Load()/@reload so they swap with the lists above. Nothing
             // in Load reads them (RollDrops is the only in-Content consumer, and it runs at mob-death, not load).
@@ -142,84 +142,84 @@ public static partial class Content
                     if (ladder[m].Length > 0) { pathIdByName.TryAdd(ladder[m], id); pathRankByName.TryAdd(ladder[m], (id, m)); }
             PathIdByNameIndex = pathIdByName;
             PathRankByNameIndex = pathRankByName;
-            SpellFx = LoadSpellFx(T("P1998_SPELL_FX", "spell_effects.csv"));
-            SpellTexts = LoadSpellTexts(T("P1998_SPELL_TEXT", "SpellText.csv"));
-            SpellCosts = LoadSpellCosts(T("P1998_SPELL_COSTS", "SpellLearnCosts.csv"));
-            Mob5xPalettes = LoadMob5xPalettes(T("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"));   // (Look,Colour)->Palette, V533-only remap
-            ArmorDyeRamps = LoadArmorDyeRamps(T("P1998_ARMOR_DYE_RAMPS", "ArmorDyeRamps.csv"));
-            MapMeta = LoadMapMeta(T("P1998_MAPS_FULL", "Maps.csv"));   // region + warpOut for Gateway
-            MobDrops = LoadMobDrops(T("P1998_MOB_DROPS", "MobDrops.csv"));
-            CraftingToggleOverrides = LoadCraftingToggles(T("P1998_CRAFTING_TOGGLES", "CraftingToggles.csv"));
-            WarpQuestLocks = LoadWarpQuestLocks(T("P1998_WARP_QUEST_LOCKS", "WarpQuestLocks.csv"));
-            ArmorQuestGates = LoadArmorQuestGates(T("P1998_ARMOR_QUESTS", "ArmorQuests.csv"));
-            var mythicCaves = LoadMythicCaves(T("P1998_MYTHIC_CAVES", "MythicCaves.csv"));
+            SpellFx = LoadSpellFx(T(Spec(TableId.SpellEffects)));
+            SpellTexts = LoadSpellTexts(T(Spec(TableId.SpellText)));
+            SpellCosts = LoadSpellCosts(T(Spec(TableId.SpellLearnCosts)));
+            Mob5xPalettes = LoadMob5xPalettes(T(Spec(TableId.Mob5xPalettes)));   // (Look,Colour)->Palette, V533-only remap
+            ArmorDyeRamps = LoadArmorDyeRamps(T(Spec(TableId.ArmorDyeRamps)));
+            MapMeta = LoadMapMeta(T(Spec(TableId.Maps)));   // region + warpOut for Gateway
+            MobDrops = LoadMobDrops(T(Spec(TableId.MobDrops)));
+            CraftingToggleOverrides = LoadCraftingToggles(T(Spec(TableId.CraftingToggles)));
+            WarpQuestLocks = LoadWarpQuestLocks(T(Spec(TableId.WarpQuestLocks)));
+            ArmorQuestGates = LoadArmorQuestGates(T(Spec(TableId.ArmorQuests)));
+            var mythicCaves = LoadMythicCaves(T(Spec(TableId.MythicCaves)));
             MythicCaveTiles = mythicCaves   // build the derived tile index from the same local list
                 .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
                 .ToDictionary(e => e.key, e => e.cave);
             MythicCaves = mythicCaves;
-            MythicAlliances = LoadMythicAlliances(T("P1998_MYTHIC_ALLIANCES", "MythicAlliances.csv"));
-            var arenaDoors = LoadArenaDoors(T("P1998_ARENA_DOORS", "ArenaDoors.csv"));
+            MythicAlliances = LoadMythicAlliances(T(Spec(TableId.MythicAlliances)));
+            var arenaDoors = LoadArenaDoors(T(Spec(TableId.ArenaDoors)));
             ArenaDoorTiles = arenaDoors   // build the derived tile index from the same local list
                 .SelectMany(d => d.Tiles.Select(t => (key: (d.Map, t.X, t.Y), door: d)))
                 .ToDictionary(e => e.key, e => e.door);
             ArenaDoors = arenaDoors;
-            EventCaveBands = LoadEventCaveBands(T("P1998_EVENT_CAVE_TIERS", "EventCaveTiers.csv"));
-            var eventCaves = LoadEventCaves(T("P1998_EVENT_CAVES", "EventCaves.csv"));
+            EventCaveBands = LoadEventCaveBands(T(Spec(TableId.EventCaveTiers)));
+            var eventCaves = LoadEventCaves(T(Spec(TableId.EventCaves)));
             EventCaveTiles = eventCaves   // build the derived tile index from the same local list
                 .SelectMany(c => c.Tiles.Select(t => (key: (c.EntranceMap, t.X, t.Y), cave: c)))
                 .ToDictionary(e => e.key, e => e.cave);
             EventCaves = eventCaves;
-            var musicTracks = LoadMusicTracks(T("P1998_MUSIC_TRACKS", "MusicTracks.csv"));
+            var musicTracks = LoadMusicTracks(T(Spec(TableId.MusicTracks)));
             MusicTracks = musicTracks;
             var (bgmZones, defaultBgm, defaultBgmNew) = LoadBgmZones(
-                T("P1998_MAP_BGM", "MapBgm.csv"), musicTracks);
+                T(Spec(TableId.MapBgm)), musicTracks);
             BgmZones = bgmZones;
             DefaultBgm = defaultBgm;
             DefaultBgmNew = defaultBgmNew;
             BgmByMap = BuildBgmMap(bgmZones, maps, warps);
-            Inns = LoadInns(T("P1998_INNS", "Inns.csv"));
-            ForageAreas = LoadForageAreas(T("P1998_FORAGE", "ForageAreas.csv"));
-            HarvestNodes = LoadHarvestNodes(T("P1998_HARVEST", "HarvestNodes.csv"));
-            MobSpells = LoadMobSpells(T("P1998_MOB_SPELLS", "MobSpells.csv"));
-            MobChatter = LoadMobChatter(T("P1998_MOB_CHATTER", "MobChatter.csv"));
-            MobSpawnRules = LoadMobSpawnRules(T("P1998_MOB_SPAWN_RULES", "MobSpawnRules.csv"));
-            MobBosses = LoadMobBosses(T("P1998_MOB_BOSSES", "MobBosses.csv"));
-            PathHalls = LoadPathHalls(T("P1998_PATHHALLS", "PathHalls.csv"));
-            GatewayRegions = LoadGatewayGates(T("P1998_GATEWAY", "GatewayGates.csv"));
-            WorldDests = LoadWorldDests(T("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"));
-            WorldMapTriggers = LoadWorldTriggers(T("P1998_WORLDMAP_TRIGGERS", "WorldMapTriggers.csv"));
-            FallRooms = LoadFallRooms(T("P1998_FALLROOMS", "FallRooms.csv"));
-            var ambushBursts = LoadAmbushBursts(T("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"));
+            Inns = LoadInns(T(Spec(TableId.Inns)));
+            ForageAreas = LoadForageAreas(T(Spec(TableId.ForageAreas)));
+            HarvestNodes = LoadHarvestNodes(T(Spec(TableId.HarvestNodes)));
+            MobSpells = LoadMobSpells(T(Spec(TableId.MobSpells)));
+            MobChatter = LoadMobChatter(T(Spec(TableId.MobChatter)));
+            MobSpawnRules = LoadMobSpawnRules(T(Spec(TableId.MobSpawnRules)));
+            MobBosses = LoadMobBosses(T(Spec(TableId.MobBosses)));
+            PathHalls = LoadPathHalls(T(Spec(TableId.PathHalls)));
+            GatewayRegions = LoadGatewayGates(T(Spec(TableId.GatewayGates)));
+            WorldDests = LoadWorldDests(T(Spec(TableId.WorldMapDests)));
+            WorldMapTriggers = LoadWorldTriggers(T(Spec(TableId.WorldMapTriggers)));
+            FallRooms = LoadFallRooms(T(Spec(TableId.FallRooms)));
+            var ambushBursts = LoadAmbushBursts(T(Spec(TableId.AmbushBursts)));
             AmbushBursts = ambushBursts;
-            Ambushes = LoadAmbushConfig(T("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"), ambushBursts);
-            BoardLocations = LoadBoardLocations(T("P1998_BOARD_LOCATIONS", "BoardLocations.csv"));
-            ShopCatalogues = LoadShopCatalogues(T("P1998_SHOP_CATALOGUES", "ShopCatalogues.csv"));
-            SpellParams = LoadKeyedRows(T("P1998_SPELL_PARAMS", "SpellParams.csv"));
+            Ambushes = LoadAmbushConfig(T(Spec(TableId.AmbushConfig)), ambushBursts);
+            BoardLocations = LoadBoardLocations(T(Spec(TableId.BoardLocations)));
+            ShopCatalogues = LoadShopCatalogues(T(Spec(TableId.ShopCatalogues)));
+            SpellParams = LoadKeyedRows(T(Spec(TableId.SpellParams)));
             // The four Lua files compile into candidates: a broken edit is REJECTED and the
             // previously-loaded script keeps running. RejectedScripts records which ones didn't take so @reload can
             // say so to the GM's face. Accepted candidates commit only after the matching row snapshot publishes.
             var rejected = new List<string>();
-            if (!Script("P1998_SPELL_VERBS", "spell_verbs.lua", SpellScript.PrepareReload,
-                        prepared => snapshotBuilder.SpellScript = prepared)) rejected.Add("spell_verbs.lua");
-            ItemParams = LoadKeyedRows(T("P1998_ITEM_PARAMS", "ItemParams.csv"));   // same "whole row keyed by `key`" shape as SpellParams
-            if (!Script("P1998_ITEM_VERBS", "item_verbs.lua", ItemScript.PrepareReload,
-                        prepared => snapshotBuilder.ItemScript = prepared)) rejected.Add("item_verbs.lua");
-            if (!Script("P1998_NPC_DIALOG", "npc_dialog.lua", NpcScript.PrepareReload,
-                        prepared => snapshotBuilder.NpcScript = prepared)) rejected.Add("npc_dialog.lua");
-            if (!Script("P1998_MOB_AI", "mob_ai.lua", MobScript.PrepareReload,
-                        prepared => snapshotBuilder.MobScript = prepared)) rejected.Add("mob_ai.lua");
+            if (!Script(Spec(TableId.SpellVerbs), SpellScript.PrepareReload,
+                        prepared => snapshotBuilder.SpellScript = prepared)) rejected.Add(Spec(TableId.SpellVerbs).File);
+            ItemParams = LoadKeyedRows(T(Spec(TableId.ItemParams)));   // same "whole row keyed by `key`" shape as SpellParams
+            if (!Script(Spec(TableId.ItemVerbs), ItemScript.PrepareReload,
+                        prepared => snapshotBuilder.ItemScript = prepared)) rejected.Add(Spec(TableId.ItemVerbs).File);
+            if (!Script(Spec(TableId.NpcDialog), NpcScript.PrepareReload,
+                        prepared => snapshotBuilder.NpcScript = prepared)) rejected.Add(Spec(TableId.NpcDialog).File);
+            if (!Script(Spec(TableId.MobAi), MobScript.PrepareReload,
+                        prepared => snapshotBuilder.MobScript = prepared)) rejected.Add(Spec(TableId.MobAi).File);
             RejectedScripts = rejected;
             // Phase-1 spell-DATA tables (extracted from Content.cs literals; see re/extract_spell_tables.py).
-            PetSpells = LoadPets(T("P1998_PETS", "Pets.csv"));
-            WeaponProcs = LoadWeaponProcs(T("P1998_WEAPON_PROCS", "WeaponProcs.csv"));
-            TrapSpells = LoadTrapSpells(T("P1998_TRAPS", "Traps.csv"));
-            (MorphSpells, MorphDispatchSpells) = LoadMorphs(T("P1998_MORPHS", "Morphs.csv"));
-            (RageAmount, EnchantSpells) = LoadSpellMods(T("P1998_SPELL_MODS", "SpellMods.csv"));
-            NpcCompositions = LoadNpcCompositions(T("P1998_NPC_ABILITIES", "NpcAbilities.csv"));
-            PathGrowth = LoadPathGrowth(T("P1998_PATH_GROWTH", "PathGrowth.csv"));
-            (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T("P1998_DOOR_OBJECTS", "DoorObjects.csv"));
-            snapshotBuilder.Doors = LoadDoors(T("P1998_DOORS", "Doors.csv"));
-            (MapCells, var mapCellCount) = LoadMapCells(T("P1998_MAP_CELLS", "MapCells.csv"));
+            PetSpells = LoadPets(T(Spec(TableId.Pets)));
+            WeaponProcs = LoadWeaponProcs(T(Spec(TableId.WeaponProcs)));
+            TrapSpells = LoadTrapSpells(T(Spec(TableId.Traps)));
+            (MorphSpells, MorphDispatchSpells) = LoadMorphs(T(Spec(TableId.Morphs)));
+            (RageAmount, EnchantSpells) = LoadSpellMods(T(Spec(TableId.SpellMods)));
+            NpcCompositions = LoadNpcCompositions(T(Spec(TableId.NpcAbilities)));
+            PathGrowth = LoadPathGrowth(T(Spec(TableId.PathGrowth)));
+            (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T(Spec(TableId.DoorObjects)));
+            snapshotBuilder.Doors = LoadDoors(T(Spec(TableId.Doors)));
+            (MapCells, var mapCellCount) = LoadMapCells(T(Spec(TableId.MapCells)));
             MapCellCount = mapCellCount;
             // The startup summary. This replaces a hand-written line that named 36 registries and could say
             // nothing at all about the other 36 — MobSpells, Doors, SpellParams, NpcAbilities, MapCells and

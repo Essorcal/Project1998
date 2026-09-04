@@ -255,10 +255,7 @@ public static class TileTranslation
     /// (<c>ObjectFlags</c> in <c>HandleWalk</c>), so a blanked object still blocks exactly as 4.x intended,
     /// just as a <c>0x04</c> snap-back rather than a client-side refusal.</para>
     /// </summary>
-    private static CsvTable OpenObj533() => Csv.Open(
-        "Obj533Fix.csv",
-        RepoPaths.GameData("P1998_OBJ533_FIX", "Obj533Fix.csv"),
-        "Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope");
+    internal static CsvTable OpenObj533() => Content.OpenTable(Content.TableId.Obj533Fix);
 
     private static IReadOnlyDictionary<ushort, Obj533Fix> ParseObj533(CsvTable csv)
     {
@@ -285,7 +282,8 @@ public static class TileTranslation
         }
         catch (Exception e)
         {
-            Log.Error("Obj533Fix.csv unreadable — 5.33 will over-block ~18k cells", e);
+            var spec = Content.Spec(Content.TableId.Obj533Fix);
+            Log.Error($"{spec.File} unreadable — {spec.MissingConsequence}", e);
         }
         return map;
     }
@@ -308,10 +306,7 @@ public static class TileTranslation
     }
 
     /// <summary>Reads <c>game-data/Tile533Map.csv</c> (run-length: <c>startLegacy,count,start533</c>).</summary>
-    private static CsvTable OpenSheet2() => Csv.Open(
-        "Tile533Map.csv",
-        RepoPaths.GameData("P1998_TILE533_MAP", "Tile533Map.csv"),
-        "StartLegacy", "Count", "Start533");
+    internal static CsvTable OpenSheet2() => Content.OpenTable(Content.TableId.Tile533Map);
 
     private static IReadOnlyDictionary<ushort, ushort> ParseSheet2(CsvTable csv)
     {

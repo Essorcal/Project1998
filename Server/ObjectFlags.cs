@@ -141,11 +141,11 @@ public static class ObjectFlags
     private static IReadOnlyList<(int Id, byte Flag)> Overrides()
     {
         if (_overrides is not null) return _overrides;
-        return _overrides = ParseOverrides(Csv.Open(
-            "ObjectFlagOverrides.csv",
-            RepoPaths.GameData("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv"),
-            "Obj", "Flag", "Note"));
+        return _overrides = ParseOverrides(OpenOverrides());
     }
+
+    internal static CsvTable OpenOverrides() =>
+        Content.OpenTable(Content.TableId.ObjectFlagOverrides);
 
     internal static IReadOnlyList<(int Id, byte Flag)> OverridesForTests
     {
