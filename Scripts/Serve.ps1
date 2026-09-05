@@ -94,13 +94,13 @@ Close the two processes named in the checkout's run/session.json, wait for the p
 the file. Anything not named in the file is left alone.
 
 .EXAMPLE
-Scripts\Serve.ps1 -Checkout C:\Repo\NexusTK-codex -Testers botone -Gms botone
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998\NexusTK-codex -Testers botone -Gms botone
 
 .EXAMPLE
 Scripts\Serve.ps1 -Status
 
 .EXAMPLE
-Scripts\Serve.ps1 -Checkout C:\Repo\NexusTK-codex -Stop
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998\NexusTK-codex -Stop
 
 .NOTES
 Windows PowerShell 5.1 compatible. Exit codes: 0 done; 1 usage, build or launch failure (or nothing to

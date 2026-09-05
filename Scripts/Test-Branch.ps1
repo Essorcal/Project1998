@@ -91,7 +91,7 @@ matching Serve.ps1 -Testers/-Gms). Default: every *.txt directly under -TestClie
 by that same default glob because it only matches scripts\ directly, not subdirectories).
 
 .PARAMETER TestClient
-The project1998-testclient checkout. Default C:\Repo\project1998-testclient (its README's own assumed
+The project1998-testclient checkout. Default C:\Repo\Project1998\project1998-testclient (its README's own assumed
 path: "every agent works on the one machine where C:\Repo\NexusTK exists"). Read-only: this script never
 edits or commits there (it builds there, into a directory under -Checkout, not under -TestClient).
 
@@ -122,10 +122,10 @@ Wall-clock ceiling per script process, independent of the client's own --timeout
 Default 120.
 
 .EXAMPLE
-Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet
 
 .EXAMPLE
-Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet -Scripts C:\scratch\one-liner.txt -ReadyTimeoutSec 5
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet -Scripts C:\scratch\one-liner.txt -ReadyTimeoutSec 5
 
 .NOTES
 Windows PowerShell 5.1 compatible. Exit codes: 0 every script exited 0 with zero failed expects; 1 a
@@ -141,7 +141,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Checkout,
     [int]$PortBase = 3000,
     [string[]]$Scripts,
-    [string]$TestClient = 'C:\Repo\project1998-testclient',
+    [string]$TestClient = 'C:\Repo\Project1998\project1998-testclient',
     [string[]]$Bots = @('botone', 'bottwo'),
     [string[]]$Passes = @('bot1pass', 'bot2pass'),
     [switch]$KeepRunning,
