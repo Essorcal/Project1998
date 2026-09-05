@@ -3,8 +3,8 @@
 Put a worker clone on a fresh pr/* branch from upstream master, guarded, with the branch already on the fork.
 
 .DESCRIPTION
-Each worker (Claude, Fable, Codex) has its own standalone clone, e.g. C:\Repo\NexusTK-claude and
-C:\Repo\NexusTK-codex, with remotes origin (the Essorcal fork) and upstream (project1998). The
+Each worker (Claude, Fable, Codex) has its own standalone clone, e.g. C:\Repo\Project1998\NexusTK-claude and
+C:\Repo\Project1998\NexusTK-codex, with remotes origin (the Essorcal fork) and upstream (project1998). The
 coordinator runs this once per brief, before the worker session opens, because the worker itself is
 not allowed to switch branches (worker_guard blocks checkout/switch in worker mode).
 
@@ -26,8 +26,8 @@ Close any agent session that has the clone open before running with -Branch. A l
 directory; the only reliable closed-session test is that a rename of the directory succeeds.
 
 .EXAMPLE
-Scripts\Prep-WorkerClone.ps1 -Clone C:\Repo\NexusTK-claude -Branch pr/move-under-lock
-Scripts\Prep-WorkerClone.ps1 -Clone C:\Repo\NexusTK-codex -SetMode review
+Scripts\Prep-WorkerClone.ps1 -Clone C:\Repo\Project1998\NexusTK-claude -Branch pr/move-under-lock
+Scripts\Prep-WorkerClone.ps1 -Clone C:\Repo\Project1998\NexusTK-codex -SetMode review
 #>
 [CmdletBinding()]
 param(

@@ -92,12 +92,12 @@ expects failed, wall clock, first failing expect -- exiting 0 only if every scri
 failed expects.
 
 ```powershell
-Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet
 ```
 
 Full parameter list: `-Checkout` (required), `-PortBase` (default 3000), `-Scripts` (a glob or a list,
 default every `*.txt` directly under the test client's `scripts\`), `-TestClient` (default
-`C:\Repo\project1998-testclient`), `-Bots` (default `botone,bottwo` -- every name gets both tester and GM
+`C:\Repo\Project1998\project1998-testclient`), `-Bots` (default `botone,bottwo` -- every name gets both tester and GM
 tier; `-Bots[0]` is the primary account TestClient.Cli logs in as, any others are for scripts that declare
 a second bot themselves), `-Passes` (one password per `-Bots` name, same order, default
 `bot1pass,bot2pass`), `-KeepRunning` (skip the stop -- for a developer who wants to poke at the pair
