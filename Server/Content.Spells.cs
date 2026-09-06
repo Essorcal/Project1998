@@ -1,3 +1,5 @@
+using Shared;
+
 namespace Server;
 
 // The old hard-coded item -> effect table (ItemUseEffect record + Content.ItemEffects dictionary) has moved
@@ -1060,14 +1062,16 @@ public static partial class Content
     public static bool ShowsSwingAnim(SpellDef sp) => SacrificeFamilyFor(sp) is not null || TakesChinBaekHoRyung(sp);
 
     /// <summary>The 0x1A action type the caster strikes when this spell is cast: a physical strike swings
-    /// (type 1); a spell whose <c>action</c> cell is an emote-range value (9–28) casts with that body emote —
-    /// e.g. the furies use 18, the 'h'/rage emote; everything else uses the default magic pose (type 6).</summary>
-    public static byte CastActionType(SpellDef sp)
+    /// (<see cref="ActionType.Attack"/>); a spell whose <c>action</c> cell is an emote-range value (9–28)
+    /// casts with that body emote — e.g. the furies use 18, <see cref="ActionType.Rage"/> — and everything
+    /// else uses the default magic pose. The emote-range cell is passed through as-is rather than matched
+    /// against the named set: the range is the validation, exactly as before.</summary>
+    public static ActionType CastActionType(SpellDef sp)
     {
-        if (ShowsSwingAnim(sp)) return 1;
+        if (ShowsSwingAnim(sp)) return ActionType.Attack;
         var fx = FxFor(sp);
-        if (fx is not null && fx.Action >= 9 && fx.Action <= 28) return (byte)fx.Action;
-        return 6;
+        if (fx is not null && fx.Action >= 9 && fx.Action <= 28) return (ActionType)fx.Action;
+        return ActionType.Magic;
     }
 
     // ---- Wisdom / "Listen to advice" hints -----------------------------------------------------------------

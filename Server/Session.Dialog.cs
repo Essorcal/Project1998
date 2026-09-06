@@ -505,10 +505,11 @@ public sealed partial class Session
 
         int taken = RecoverDeathPile();
         if (taken == 0) return;   // pack was already full on the first stack — GiveItem said so
-        // RTK: sendAction(6, 20) then talk(2, "I'll take that.") — the reach-out pose, then a PUBLIC bubble
+        // RTK: sendAction(6, 20) then talk(2, "I'll take that.") — the client's MAGIC pose (type 6), reused
+        // by RTK as the reach-out gesture, and no separate pose of its own — then a PUBLIC bubble
         // (chatType 2, the same line Filch speaks), so anyone loitering over the pile sees who took it back.
-        SendAction(_char.Id, 6, 20, 0);
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 6, 20, 0), except: this);
+        SendAction(_char.Id, ActionType.Magic, 20, 0);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Magic, 20, 0), except: this);
         var line = AsciiBytes("I'll take that.");   // RTK talk(2) — proximity-gated to onlookers near the pile
         _world.BroadcastArea(_char.Map, _char.X, _char.Y, SayHalfW, SayHalfH, p => p.SpeakEntity(2, _char.Id, line));
         Log.Info($"   -> death pile recovered: {taken} stack(s) by {_char.Name} @({_char.X},{_char.Y}) facing {_facing}");
@@ -744,13 +745,13 @@ public sealed partial class Session
             if (await DlgMenu(npc, $"I'll pay you {total} gold for that, is it a deal?",
                               new[] { "Yes", "No" }) != 1) continue;
             _char.Coins += (uint)total;
-            // Reason 10 is literally "You sold <item>." (9 is "You gave", for a bank deposit — an earlier
-            // comment here had those two the wrong way round). Sent only when the whole entry goes; selling
+            // Sold is literally "You sold <item>." (Gave is a bank deposit's line — an earlier comment
+            // here had those two the wrong way round). Sent only when the whole entry goes; selling
             // part of a stack redraws it and stays silent. That client line is the whole confirmation — the
             // gold figure was already quoted and accepted a step ago, so a dialog box repeating it would be
             // a second thing to dismiss between the sale and the list reappearing.
             inv.Amount -= qty;
-            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 10); }
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Sold); }
             else SendAddItem(inv);
             SendStats();
             MarkDirty();
@@ -928,14 +929,14 @@ public sealed partial class Session
     }
 
     /// <summary>Remove <paramref name="amount"/> from a bag stack and update the client (whole stack removed
-    /// with reason 7 = "You posted &lt;item&gt;.", the client's own parcel line — it was reason 4, which says
-    /// "You threw &lt;item&gt;."). False without change if the stack is gone or too small — the possession
+    /// with <see cref="DelReason.Posted"/> = "You posted &lt;item&gt;.", the client's own parcel line — it was
+    /// Threw, which says "You threw &lt;item&gt;."). False without change if the stack is gone or too small — the possession
     /// re-check after the async send prompts.</summary>
     private bool RemoveInventoryStack(InvItem inv, int amount)
     {
         if (!_char.Inventory.Contains(inv) || inv.Amount < amount) return false;
         inv.Amount -= amount;
-        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 7); }
+        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Posted); }
         else SendAddItem(inv);
         MarkDirty();
         return true;
@@ -979,7 +980,7 @@ public sealed partial class Session
             sold += take;
             remaining -= take;
             inv.Amount -= take;
-            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 10); }   // "You gave X.", as above
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Sold); }   // "You sold X.", as in DlgSell
             else SendAddItem(inv);
         }
         _char.Coins += earned;
@@ -1132,10 +1133,10 @@ public sealed partial class Session
             int take = Math.Min(remaining, inv.Amount);
             moved += take;
             remaining -= take;
-            // Reason 10 = "You gave <item>." — right for handing the whole entry over, and only sent when the
+            // Gave = "You gave <item>." — right for handing the whole entry over, and only sent when the
             // entry really leaves the pack. A partial deposit takes the SendAddItem branch below and stays
             // silent: nothing left your bag, the count just dropped. (See BankDepositItem for the same split.)
-            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 9); VaultAdd(inv); }
+            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Gave); VaultAdd(inv); }
             else { inv.Amount -= take; SendAddItem(inv); VaultAdd(new InvItem(0, def.Id, take, inv.Dura)); }
         }
         if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
@@ -1268,9 +1269,9 @@ public sealed partial class Session
         if (take >= inv.Amount)
         {
             _char.Inventory.Remove(inv);
-            // Reason 9 = "You gave <item>." — the whole entry is leaving the pack. A partial deposit takes
+            // Gave = "You gave <item>." — the whole entry is leaving the pack. A partial deposit takes
             // the else branch, which sends no delitem and so says nothing (the count just drops).
-            SendDelItem((byte)inv.Slot, 9);
+            SendDelItem((byte)inv.Slot, DelReason.Gave);
             VaultAdd(inv);                      // whole stack goes to the vault
         }
         else

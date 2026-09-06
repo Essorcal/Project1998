@@ -350,7 +350,7 @@ public sealed partial class Session
         // sacrifice + Chin-Baek warrior-strike family, Content.ShowsSwingAnim) are swings, not spells: show the
         // attack pose (0x1A type 1) with the swing's own timing, not the magic cast pose. Everything else casts.
         bool swingAnim = Content.ShowsSwingAnim(sp);
-        byte animType   = Content.CastActionType(sp);   // swing=1, an emote-range action override (furies=18 'h' rage), else magic pose 6
+        ActionType animType = Content.CastActionType(sp);   // swing, an emote-range action override (furies = Rage), else the magic pose
         ushort animTime = swingAnim ? (ushort)AttackSpeed : Content.CastAnimFrames;
         SendAction(_char.Id, animType, animTime, param: 0);                                                     // strike swing / cast pose
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, animType, animTime, 0), except: this);          // peers see it
@@ -2604,8 +2604,8 @@ public sealed partial class Session
             _facing = (byte)((sideDir + 2) & 3);   // arrive facing back toward the mob
             string mapName = Content.Maps.TryGetValue(_char.Map, out var mi) ? mi.Name : "";
             EnterMap(_char.Map, _char.MapXs, _char.MapYs, (ushort)tx, (ushort)ty, mapName);
-            SendAction(_char.Id, type: 1, time: 8, param: 0);
-            _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 1, 8, 0), except: this);
+            SendAction(_char.Id, ActionType.Attack, time: 8, param: 0);
+            _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Attack, 8, 0), except: this);
             return true;
         }
         return false;

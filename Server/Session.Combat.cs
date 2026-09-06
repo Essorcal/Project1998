@@ -155,8 +155,8 @@ public sealed partial class Session
         ArmActionSlot(SwingIntervalMs);
 
         // Swing pose length == the swing interval, which is why RTK passes attack_speed as the action `time`.
-        SendAction(_char.Id, type: 1, time: AttackSpeed, param: 0);                                 // our own swing anim
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 1, AttackSpeed, 0), except: this);  // peers see us swing
+        SendAction(_char.Id, ActionType.Attack, AttackSpeed, param: 0);                             // our own swing anim
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Attack, AttackSpeed, 0), except: this);  // peers see us swing
 
         // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 on
         // EVERY swing, armed or not — weapon in hand -> its own ItmSound (RTK's per-weapon mapping — most
@@ -439,9 +439,9 @@ public sealed partial class Session
     private void HandleEmotion(byte[] dec)
     {
         if (dec.Length < 1) return;
-        byte action = (byte)(dec[0] + 11);
+        byte action = (byte)(dec[0] + (byte)ActionType.Laughter);   // wheel index 0 is Laughter (11)
         const ushort time = 0x4E;
-        SendAction(_char.Id, action, time, 0);                                       // play it on our own client
+        SendAction(_char.Id, (ActionType)action, time, 0);                            // play it on our own client
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, action, time, 0), except: this);  // and for peers
         Log.Info($"   -> EMOTE idx={dec[0]} -> action {action} (0x1A)");
     }
@@ -570,14 +570,15 @@ public sealed partial class Session
     private Mob? MobAt(int x, int y) =>
         _mobs.FirstOrDefault(m => m.Alive && m.X == x && m.Y == y);
 
-    private void SendAction(uint id, byte type, ushort time, byte param)
-    {
-        var d = new List<byte>();
-        d.AddRange(PacketWriter.U32BEBytes(id));
-        d.Add(type);
-        d.AddRange(PacketWriter.U16BEBytes(time));
-        d.Add(param);
-        SendMap(ServerOp.Action, _gameInc++, d.ToArray(), $"action(0x1A) type={type} time={time}");
-    }
+    /// <summary>The <c>0x1A</c> action body: <c>entityId(u32) type(u8) time(u16) param(u8)</c>, per handler
+    /// <c>0x4503a0</c>. Identical on both clients — nothing in it is version-gated.</summary>
+    internal static byte[] ActionBody(uint id, ActionType type, ushort time, byte param) =>
+        new PacketWriter().U32BE(id).U8((byte)type).U16BE(time).U8(param).ToArray();
+
+    // `type` is an ActionType so the fixed poses read by name, but the field stays a whole byte: the emote
+    // wheel, the per-spell action override and @mobact all cast dynamic values through it unchanged.
+    private void SendAction(uint id, ActionType type, ushort time, byte param) =>
+        SendMap(ServerOp.Action, _gameInc++, ActionBody(id, type, time, param),
+                $"action(0x1A) type={(byte)type} time={time}");
 
 }

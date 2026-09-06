@@ -1,3 +1,5 @@
+using Shared;
+
 namespace Server;
 
 public static partial class Content
@@ -70,13 +72,15 @@ public static partial class Content
     // handler (0x48fe10) — which range-checks the slot and ignores the reason byte completely. The 0x37
     // equip-window entry never touches that array, so it cannot stand alone.
     //
-    // Reason 12 is the one code that says NOTHING, so equipping gets both: the bag entry is cleared and the
-    // player isn't told they "used" their armour. Full table swept live 2026-08-07 (@delreason):
+    // Reason 12 (DelReason.Silent) is the one code that says NOTHING, so equipping gets both: the bag entry
+    // is cleared and the player isn't told they "used" their armour. This is a raw int, not a DelReason: it
+    // is operator-configurable to ANY byte plus the -1 "send no packet" sentinel, and the @delreason sweep
+    // deliberately walks values the enum does not name. Full table swept live 2026-08-07 (@delreason):
     //   0 "<item> removed."   1 "You dropped"   2 "You ate"     3 "You smoked" (herb/sonhi pipes)
     //   4 "You threw"         5 "You shot"      6 "You used"    7 "You posted"
     //   8 "<item> decayed."   9 "You gave"     10 "You sold"   11 "<item> removed."
     //  12 SILENT             13 "<item> broken."               14+ all "<item> removed."
-    public static int EquipDelReason => (int)Tune("EquipDelReason", 12);
+    public static int EquipDelReason => (int)Tune("EquipDelReason", (int)DelReason.Silent);
     /// <summary>Open the board request straight into the MAILBOX when the player has unread n-mail, instead
     /// of the board list. 'm' is armed only while the mail arrow is up and sends the same `3b 01 00` as 'b',
     /// so this would be the only way to make 'm' behave like a mailbox key — at the cost of 'b' doing the same

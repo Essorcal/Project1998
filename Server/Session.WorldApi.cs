@@ -296,7 +296,11 @@ public sealed partial class Session
     }
     public void SideEntity(uint id, byte side) => SendSide(id, side);                              // 0x11
     public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
-    public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, type, time, param);  // 0x1A
+    /// <summary>Play a <c>0x1A</c> action over an entity on this client. The byte overload is the boundary
+    /// the dynamic senders cross — the <c>@mobact</c> calibration probe and the mob swing type it sets —
+    /// so it stays a raw byte and casts unchanged; peers rendering a KNOWN pose take the named overload.</summary>
+    public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, (ActionType)type, time, param);  // 0x1A
+    public void ActionOver(uint id, ActionType type, ushort time, byte param) => SendAction(id, type, time, param);        // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
     public void DespawnEntity(uint id) { using (EnterView()) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); } SendDespawn(id); }  // 0x0E
 
