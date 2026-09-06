@@ -69,7 +69,9 @@ $wf = 'C:\Repo\NexusTK\Scripts\Workflow.ps1'
 ```
 
 For test-client branches pass `-Base origin/main`; server defaults to `upstream/master`.
-Use `-Switch pr/existing` for fix rounds, and `-SetMode review` for Claude reviewers.
+Use `-Switch pr/existing` for fix rounds, and `-SetMode review` for Claude reviewers. `-SetMode`
+alone (review, worker, off) flips the guard file and nothing else; it needs no claim or preflight,
+which is what the xreview skill and the worker_guard hook's own advice rely on.
 `-GuardProfile Claude` installs the existing local Claude hook; `None` is explicit for
 Codex. A Claude hook is not a Codex enforcement mechanism. All agents follow the packet
 and preflight rules. Preflight treats untracked files as dirty; preserve and classify them,

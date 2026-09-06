@@ -9,14 +9,21 @@ Existing branch names are refused; use -Switch to resume one. -DryRun changes no
 including refs, guard files and remotes; its checks use cached remote refs.
 Explicit -Base origin/main supports the test-client repo, which has no upstream remote.
 Use -GuardProfile None for Codex; Claude hooks do not enforce Codex actions.
+-SetMode alone flips the clone's guard mode (worker | review | off) and touches nothing else:
+no claim, no registry preflight, no branch, no hook overlay. That is the cross-review milestone
+(the xreview skill's -SetMode review / -SetMode worker) and the coordinator-only escape hatch the
+worker_guard hook names (-SetMode off). -AssignmentId and -Owner are required only when -Branch or
+-Switch prepares a branch; given with -SetMode they are verified against the registry as well.
 .EXAMPLE
 Scripts\Prep-WorkerClone.ps1 -Clone C:\Repo\Project1998\NexusTK-codex -AssignmentId server-101-r1 -Owner sprint7 -Branch pr/outbound-drain -GuardProfile None
+.EXAMPLE
+Scripts\Prep-WorkerClone.ps1 -Clone C:\Repo\Project1998\NexusTK-review -SetMode review
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Clone,
-    [Parameter(Mandatory = $true)][string]$AssignmentId,
-    [Parameter(Mandatory = $true)][string]$Owner,
+    [string]$AssignmentId,
+    [string]$Owner,
     [string]$Registry = (Join-Path (Split-Path $PSScriptRoot -Parent) '..\Project1998\workflow\registry.json'),
     [string]$Branch,
     [string]$Base = 'upstream/master',
@@ -42,9 +49,29 @@ try {
         throw 'New branches must be named pr/<kebab-slug>.'
     }
     $Clone = (Resolve-Path -LiteralPath $Clone).ProviderPath.TrimEnd('\')
-    & (Join-Path $PSScriptRoot 'Workflow.ps1') --registry $Registry preflight --resource (Split-Path $Clone -Leaf) --checkout $Clone --id $AssignmentId --owner $Owner
-    if ($LASTEXITCODE -ne 0) { throw 'Assignment preflight failed; nothing was prepared.' }
+    $modeOnly = -not $Branch -and -not $Switch
+    if (($AssignmentId -and -not $Owner) -or ($Owner -and -not $AssignmentId)) {
+        throw '-AssignmentId and -Owner go together.'
+    }
+    if (-not $modeOnly -and -not $AssignmentId) {
+        throw 'Preparing a branch (-Branch or -Switch) needs -AssignmentId and -Owner from Workflow.ps1 claim. A mode flip (-SetMode alone) does not.'
+    }
+    $preflightRan = $false
+    if ($AssignmentId) {
+        $preflightRan = $true
+        & (Join-Path $PSScriptRoot 'Workflow.ps1') --registry $Registry preflight --resource (Split-Path $Clone -Leaf) --checkout $Clone --id $AssignmentId --owner $Owner
+        if ($LASTEXITCODE -ne 0) { throw 'Assignment preflight failed; nothing was prepared.' }
+    }
     $gitDir = Invoke-Git @('rev-parse', '--absolute-git-dir')
+    if ($modeOnly) {
+        if ($DryRun) {
+            Write-Host "Dry run: would set $Clone guard mode to $SetMode (currently $(if (Test-Path -LiteralPath (Join-Path $gitDir 'guard-mode')) { (Get-Content -LiteralPath (Join-Path $gitDir 'guard-mode') -Raw).Trim() } else { 'worker (no file)' })). Nothing else would change."
+            exit 0
+        }
+        Set-Content -LiteralPath (Join-Path $gitDir 'guard-mode') -Value $SetMode -Encoding ascii
+        Write-Host "Mode: $Clone guard mode set to $SetMode. Branch, hooks and registry untouched."
+        exit 0
+    }
     $target = Join-Path $Clone '.claude\settings.local.json'
     $overlay = Join-Path $env:USERPROFILE '.claude\hooks\worker.settings.local.json'
     if ($GuardProfile -eq 'Claude' -and -not (Test-Path -LiteralPath $overlay)) {
@@ -111,6 +138,6 @@ try {
     exit 0
 } catch {
     Write-Host "ERROR: $($_.Exception.Message)"
-    Write-Host 'The claim is retained. Inspect any partial preparation before retrying; no automatic rollback or reset is performed.'
+    if ($preflightRan) { Write-Host 'The claim is retained. Inspect any partial preparation before retrying; no automatic rollback or reset is performed.' }
     exit 2
 }
