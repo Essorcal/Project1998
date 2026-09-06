@@ -2284,6 +2284,22 @@ Consequences: **every** reason 1-12 narrates, so there is no "silent remove" amo
 which has no line of its own (line 84 is `"To: "`), rendering the *last* line is the signature of a
 `default:` branch.
 
+> **⚠ SUPERSEDED FROM 9 UP — the table above is the 2026-08-06 *inference*, not the live result.** The
+> `@delreason` sweep run live the next day (2026-08-07) drove every reason byte through the real client and
+> read back what it printed: **`9` gave, `10` sold, `11` "&lt;item&gt; removed.", `12` SILENT, `13`
+> "&lt;item&gt; broken."**, with `14+` all falling back to "removed". That contradicts this section on four
+> codes and on the "no silent remove" conclusion directly above, which had probed only the out-of-range `15`.
+> The sweep is what the server follows (`Shared/WireValues.cs` `DelReason`, `Content.EquipDelReason`, whose
+> shipped default is `12` and not the `-1` claimed further down §11c), on the grounds that direct observation
+> beats a line-index inference — especially here, where the handler is now known to **clamp** rather than
+> index raw, which is exactly the error mode that would shift a dumped line list against the reason byte.
+> Two later findings in this same document agree with the sweep and not with the table: the give-to-mob
+> path (RE'd 2026-08-18) uses **`9`** for the client's own `You gave <item>.`, and the NPC refusal drops an
+> item with the **silent `12`**. The rows above are kept because the Inter.dat dump is real evidence and
+> whatever explains the offset is still unknown; treat 1-8 as agreed and 9+ as settled by the sweep.
+> `Tests/ActionAndDeleteWireTests.cs` pins the sweep's numbering, so re-confirming this table means changing
+> that test first and seeing every callsite whose wording moves with it.
+
 **⚠ SETTLED LIVE 2026-08-07: no reason byte is silent.** The open question above — whether an out-of-range
 reason is silent or falls into the same default — was probed with `SilentDelReason` 15 on the equip path:
 it renders "`X` removed.", the *same* line reason `0` gives. Both ends land on the last of the twelve lines,
@@ -2303,12 +2319,15 @@ already correct; handing an item over in a **trade** is `10` "You gave `X`."; a 
 
 **Consuming and wearing (user-specified 2026-08-07, `Session.HandleUseItem` / `EquipFromSlot`).** Three
 distinct behaviours, one rule each:
-- **Wearing gear — SILENT, by sending no `0x10` at all.** RTK's `pc_equipscript` passes reason `6`, which on
-  this client reads "You used `X`." — a consumable's line; the out-of-range 15 was tried next and reads
-  "`X` removed." Since no reason is silent (above), `EquipFromSlot` now omits the delitem entirely and lets
-  the `0x37` equip-window entry carry the move. The tunable `EquipDelReason` (default `-1` = send nothing)
-  puts the packet back without a rebuild if the client turns out to leave the bag slot drawn — which is the
-  one thing this depends on, and the likely reason the real game can be silent here at all.
+- **Wearing gear — SILENT, and by reason `12`, not by silence on the wire.** RTK's `pc_equipscript` passes
+  reason `6`, which on this client reads "You used `X`." — a consumable's line; the out-of-range 15 was tried
+  next and reads "`X` removed." Omitting the `0x10` entirely was tried after that and is **wrong**: it leaves
+  a ghost bag row that can't be dropped, equipped or used, because the bag and the equip window are separate
+  client structures and only the `0x10` handler clears a bag cell. The `@delreason` sweep then found the code
+  that says nothing, so `EquipFromSlot` sends reason **`12`** and gets both halves. The tunable
+  `EquipDelReason` (**shipped default `12`**; `-1` suppresses the packet) is the knob, and
+  `Content.EquipDelReason` carries the full swept table. *(This bullet previously described the `-1` default
+  and the "no reason is silent" conclusion; both predate the sweep.)*
 - **Consumables — silent until gone, then exactly one line, from the client.** No line while any of the stack
   (or any charge) remains; the use that removes the last of it sends the delitem, and its reason picks the
   wording: **food (ITM_EAT) → `2`** "You ate `X`.", **everything else** (wine/liquor charges, herbs, powders,
