@@ -350,7 +350,9 @@ public sealed partial class Session
         // sacrifice + Chin-Baek warrior-strike family, Content.ShowsSwingAnim) are swings, not spells: show the
         // attack pose (0x1A type 1) with the swing's own timing, not the magic cast pose. Everything else casts.
         bool swingAnim = Content.ShowsSwingAnim(sp);
-        ActionType animType = Content.CastActionType(sp);   // swing, an emote-range action override (furies = Rage), else the magic pose
+        // CastActionType stays a public byte API (see its doc comment); the cast is ours, at our end, and
+        // accepts any byte it returns rather than narrowing to ActionType's named members.
+        ActionType animType = (ActionType)Content.CastActionType(sp);   // swing, an emote-range override (furies = Rage), else the magic pose
         ushort animTime = swingAnim ? (ushort)AttackSpeed : Content.CastAnimFrames;
         SendAction(_char.Id, animType, animTime, param: 0);                                                     // strike swing / cast pose
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, animType, animTime, 0), except: this);          // peers see it

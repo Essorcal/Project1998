@@ -1065,13 +1065,21 @@ public static partial class Content
     /// (<see cref="ActionType.Attack"/>); a spell whose <c>action</c> cell is an emote-range value (9–28)
     /// casts with that body emote — e.g. the furies use 18, <see cref="ActionType.Rage"/> — and everything
     /// else uses the default magic pose. The emote-range cell is passed through as-is rather than matched
-    /// against the named set: the range is the validation, exactly as before.</summary>
-    public static ActionType CastActionType(SpellDef sp)
+    /// against the named set: the range is the validation, exactly as before.
+    /// <para><b>The return type is a plain <c>byte</c> and must stay one.</b> This is a public member and
+    /// returning <see cref="ActionType"/> instead is a source-breaking change for any existing caller that
+    /// assigns the result to a byte — it fails with CS0266, since there is no implicit enum-to-byte
+    /// conversion. Naming the values is a readability change and does not license moving the public
+    /// contract; the named constants therefore live inside the body, and callers that want the enum cast at
+    /// their own end. <c>Tests/ContentApiSurfaceTests.cs</c> pins this.</para></summary>
+    public static byte CastActionType(SpellDef sp)
     {
-        if (ShowsSwingAnim(sp)) return ActionType.Attack;
+        if (ShowsSwingAnim(sp)) return (byte)ActionType.Attack;
         var fx = FxFor(sp);
-        if (fx is not null && fx.Action >= 9 && fx.Action <= 28) return (ActionType)fx.Action;
-        return ActionType.Magic;
+        // Passed through on the RANGE alone, exactly as before — an emote-range cell need not be a value the
+        // enum happens to name, so this must not become a lookup against ActionType's members.
+        if (fx is not null && fx.Action >= 9 && fx.Action <= 28) return (byte)fx.Action;
+        return (byte)ActionType.Magic;
     }
 
     // ---- Wisdom / "Listen to advice" hints -----------------------------------------------------------------
