@@ -402,7 +402,15 @@ def main():
         meta.append({"id": mid, "name": name, "xs": xs, "ys": ys, "w": native[0], "h": native[1]})
         if (k + 1) % 100 == 0:
             print(f"  {k + 1}/{len(ids)}  ({time.time() - t0:.0f}s)", flush=True)
-    json.dump(meta, open(os.path.join(args.outdir, "maps.json"), "w"), separators=(",", ":"))
+    # --only renders a SUBSET; merge into the existing index instead of replacing it, or the viewer
+    # loses every map not named on this run. (The RTK renderer had exactly this bug and it bit.)
+    index_path = os.path.join(args.outdir, "maps.json")
+    if args.only and os.path.exists(index_path):
+        with open(index_path, encoding="utf-8") as fh:
+            prev = {m["id"]: m for m in json.load(fh)}
+        prev.update({m["id"]: m for m in meta})
+        meta = [prev[k] for k in sorted(prev)]
+    json.dump(meta, open(index_path, "w"), separators=(",", ":"))
     open(os.path.join(args.outdir, "maps.js"), "w").write(
         "window.MAPS=" + json.dumps(meta, separators=(",", ":")) + ";")
     print(f"done: {len(meta)} maps in {time.time() - t0:.0f}s -> {args.outdir}")
