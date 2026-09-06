@@ -594,28 +594,28 @@ public sealed partial class Session
 
         switch (pkt.Opcode)
         {
-            case Opcode.Arrival:          HandleArrival(pkt); break;
+            case ClientOp.Arrival:          HandleArrival(pkt); break;
             // 0x0B = "I just left the world for the select screen" (Alt+X). Answer it by sending the client
             // BACK to the login server, which is what RTK does and the only reason account creation from
             // that screen can work at all: NameCheck (0x02) and CreateAppearance (0x04) are handled by the
             // LoginServer process and there is no dispatch for them here. See HandleExitToSelect.
-            case Opcode.ExitToSelect:     HandleExitToSelect(); break;   // body is a constant 00
+            case ClientOp.ExitToSelect:     HandleExitToSelect(); break;   // body is a constant 00
             // Login (0x03) arrives here when the client stayed on the game socket anyway — the pre-0x0B
             // behaviour, kept as a fallback: re-authenticate and hand it back to this same game port like
             // the old unified server did, so a client that ignores the bounce still gets in. See HandleReLogin.
-            case Opcode.Login:            HandleReLogin(dec); break;
-            case 0x32:                    HandleWalk(dec); break;   // client walk step -> confirm move
+            case ClientOp.Login:            HandleReLogin(dec); break;
+            case ClientOp.WalkAlternate:                    HandleWalk(dec); break;   // client walk step -> confirm move
             // 0x11 = "side" (turn to face a direction, NO movement) for BOTH clients. The 4.95 client's
             // 0x11 recv handler (@0x450350) reads id(u32)@+1, side(u8)@+5, looks the entity up and calls
             // its turn method (@0x462410) -- exactly SendSide's layout. Previously dropped for 4.95, which
             // left facing unconfirmed until the next walk ("press a new direction, first step goes the OLD
             // way"). In NexusTK the first press in a new direction turns in place; only the second walks.
-            case 0x11:
+            case ClientOp.Turn:
                 HandleTurn(dec);
                 break;
             // 0x1b = client setting toggle. body[0] = which setting (RTK settings-parse cases):
             //   0x07 = Realm center (F4)   0x09 = Fast move   ... others not yet handled.
-            case 0x1b:
+            case ClientOp.Setting:
                 HandleSetting(dec);
                 break;
             // Map/walk split — the SAME for both clients (4.95 corrected 2026-08-07):
@@ -631,64 +631,64 @@ public sealed partial class Session
             // from the server like every later client; the local .map files are a CACHE it verifies (hence
             // the checksum, which the walk 0x06 also carries), not the only source. That's why some 4.x
             // client distributions ship no Maps directory at all.
-            case 0x05:
+            case ClientOp.MapRequest:
                 HandleMapRequest(dec);
                 break;
-            case 0x06:
+            case ClientOp.Walk:
                 HandleWalk(dec);
                 break;
             // 0x38 = hard refresh (Ctrl+R): the client grays the screen and asks the server to re-assert
             // authoritative state. RTK's clif_refresh replies with sendmapinfo + sendxy + re-drawn entities
             // (0x04 is the re-anchor primitive here — authoritative position + recentered camera). See §refresh.
-            case 0x38:
+            case ClientOp.Refresh:
                 HandleRefresh(dec);
                 break;
-            case 0x0E:                    HandleChat(dec); break;   // client chat -> echo as over-head speech
+            case ClientOp.Chat:                    HandleChat(dec); break;   // client chat -> echo as over-head speech
             // 0x1d = emotion request (the ':' emote wheel). body[0] = emote index; the client plays action
             // type = index + 11 (RTK clif_parseemotion: sendaction(index+11)). Broadcast as a 0x1A action.
-            case 0x1D:                    if (ActionAllowed(0x1D)) HandleEmotion(dec); break;
+            case ClientOp.Emotion:                    if (ActionAllowed(ClientOp.Emotion)) HandleEmotion(dec); break;
             // 0x13 pays into the shared action budget but is NOT gated by it (RTK clif.c:11446) — melee has
             // its own attack_speed timer, and HandleAttack applies our equivalent swing pacing.
-            case 0x13:                    BumpActionTime(); HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
-            case 0x2D:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
-            case 0x43:                    HandleClickInfo(dec); break;       // click entity -> profile / NPC dialog
+            case ClientOp.Attack:                    BumpActionTime(); HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
+            case ClientOp.ProfileRequest:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
+            case ClientOp.ClickInfo:                    HandleClickInfo(dec); break;       // click entity -> profile / NPC dialog
             // 0x3A = NPC dialog response (RTK clif_parsenpcdialog): the client sends this after the player
             // acts on a dialog we opened via 0x30. body[0] = kind (01 text next/close, 02 menu pick, 04 input
             // text). See HandleNpcDialog — a logging stub until the 0x30 send format is confirmed live.
-            case 0x3A:                    HandleNpcDialog(dec); break;
-            case 0x4F:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
+            case ClientOp.NpcDialog:                    HandleNpcDialog(dec); break;
+            case ClientOp.ChangeProfile:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
             // ---- items (opcode numbers from RTK 7.x recv dispatch; confirmed to align with 4.95 by the
             // walk/turn/chat/attack/setting opcodes already matching). See §11c. ----
-            case 0x07:                    if (ActionAllowed(0x07)) HandlePickup(dec); break;    // pick up the floor item under me
-            case 0x08:                    HandleDropItem(dec); break;  // drop a bag slot to the floor
-            case 0x17:                    HandleThrow(dec); break;     // throw a bag slot (flies ahead)
-            case 0x1A:                    HandleUseItem(dec, eat: true); break;   // eat/consume a slot
+            case ClientOp.Pickup:                    if (ActionAllowed(ClientOp.Pickup)) HandlePickup(dec); break;    // pick up the floor item under me
+            case ClientOp.DropItem:                    HandleDropItem(dec); break;  // drop a bag slot to the floor
+            case ClientOp.Throw:                    HandleThrow(dec); break;     // throw a bag slot (flies ahead)
+            case ClientOp.Eat:                    HandleUseItem(dec, eat: true); break;   // eat/consume a slot
             // 0x12 = the WIELD hotkey (press 'w', then the item's letter). Body = [slot(1-based), 00] — the
             // same shape as 0x1C, confirmed by live capture (wield sent `12 01 00`). Double-click already used
             // 0x1C; the hotkey just uses a different opcode, so route it to the same use/equip path.
-            case 0x12:                    HandleUseItem(dec, eat: false); break;  // wield hotkey -> equip a slot
-            case 0x1C:                    HandleUseItem(dec, eat: false); break;  // use/equip a slot
+            case ClientOp.Wield:                    HandleUseItem(dec, eat: false); break;  // wield hotkey -> equip a slot
+            case ClientOp.UseItem:                    HandleUseItem(dec, eat: false); break;  // use/equip a slot
             // RTK checks the budget here WITHOUT incrementing (clif.c:11514) — unequip is free but blocked
             // once the second's allowance is already gone. 0x12/0x1C (wield/use) are ungated in RTK too.
-            case 0x1F:                    if (ActionBudgetLeft()) HandleUnequip(dec); break;   // remove a worn item back to the bag
-            case 0x24:                    HandleDropGold(dec); break;  // drop a gold amount
+            case ClientOp.Unequip:                    if (ActionBudgetLeft()) HandleUnequip(dec); break;   // remove a worn item back to the bag
+            case ClientOp.DropGold:                    HandleDropGold(dec); break;  // drop a gold amount
             // 0x30 = Shift+C "rearrange a pane" (RTK case 0x30 -> clif_parsechangepos/clif_parsechangespell):
             // dec[0] picks the pane (0=bag, 1=spellbook), dec[1]/dec[2] = the two 1-based slots to swap.
             // Live-confirmed shape (user capture 2026-08-17): `30 01 01 02 00`. See HandleChangePos.
-            case 0x30:                    HandleChangePos(dec); break;
+            case ClientOp.ChangePos:                    HandleChangePos(dec); break;
             // 0x29 / 0x2A = the native hand-item / hand-gold gestures ('h'/'H' with a bag item, and the gold
             // gesture), aimed at the tile you're facing (RTK clif_handitem/clif_handgold). See Session.Social.
-            case 0x29:                    HandleHandItem(dec); break;
-            case 0x2A:                    HandleHandGold(dec); break;
+            case ClientOp.HandItem:                    HandleHandItem(dec); break;
+            case ClientOp.HandGold:                    HandleHandGold(dec); break;
             // 0x20 = the 'o' / Open key (RTK clif_parse case 0x20 "Clicked 'O'" -> clif_cancelafk + clif_open_sub
             // -> onOpen script). A deliberate action (RTK's handler clears AFK, so NOT a heartbeat): in NexusTK it
             // toggles the faced door object's open/closed graphic in place. See HandleOpen (swaps the object tile
             // via the 0x06 cell-patch and broadcasts it to the map).
-            case 0x20:                    HandleOpen(dec); break;
+            case ClientOp.Open:                    HandleOpen(dec); break;
             // 0x0F = cast a learned spell (RTK clif_parsemagic): body[0]=book slot+1, then per spell type
             // 1 -> typed answer string, type 2 -> target entity id (u32BE), type 5 -> nothing. See HandleCast.
-            case 0x0F:
-                if (ActionAllowed(0x0F)) HandleCast(dec);
+            case ClientOp.Cast:
+                if (ActionAllowed(ClientOp.Cast)) HandleCast(dec);
                 else if (CastQueueEnabled) QueueCast(dec);
                 break;
             // 0x66 = right-click "examine item" on a bag slot. Answered with a 0x66 reply that the client's
@@ -698,46 +698,46 @@ public sealed partial class Session
             // body[0] splits the two: 0 = examine (`00 cursorY 00 01 01 SLOT 01 00 00 00`), 1 = "send me
             // the town/nation table" (the fixed `01 00 01 01 00 01 01 00` the client emits from 0x449ed0
             // when its own table is empty, right before the 0x18 user-list request). See Session.UserList.
-            case 0x66:
+            case ClientOp.ItemOrTownInfo:
                 if (dec.Length > 0 && dec[0] == 1) HandleTownListRequest(dec);
                 else HandleItemInfoRequest(dec);
                 break;
             // 0x09 = the ';' Look key (RTK clif_parselookat_2). No coordinates in the body — it always
             // inspects the tile immediately in front of us (facing direction). See HandleLookAt.
-            case 0x09:                    HandleLookAt(dec); break;
+            case ClientOp.LookAt:                    HandleLookAt(dec); break;
             // 0x19 = whisper (Shift+' , type a name, Enter, type the message, Enter). LIVE-confirmed
             // 2026-07-26: body = dstlen(u8) dst_name[dstlen] msglen(u8) msg[msglen] 00 — exactly RTK
             // clif_parsewisp's wire layout (clif.c:7644). See HandleWhisperPacket.
-            case 0x19:                    HandleWhisperPacket(dec); break;
+            case ClientOp.Whisper:                    HandleWhisperPacket(dec); break;
             // 0x3B = the 'b' key (Board). LIVE-confirmed 2026-07-26: body `01 00` = sub-command 1
             // ("Show Board"). Matches RTK's clif_parse dispatch exactly (clif.c:11613: `case 0x3B:
             // clif_handle_boards(sd);`). See HandleBoard.
-            case 0x3B:                    HandleBoard(dec); break;
+            case ClientOp.Board:                    HandleBoard(dec); break;
             // 0x41 = the mail-arrow widget's PARCEL-bag click (empty body). RE'd 2026-07-28: the widget's
             // parcel branch (0x469760) stages the single byte 0x41 and sends it. RTK maps it to
             // clif_parseparcel (clif.c:15508) = a minitext pointing at the messenger — and that's exactly what
             // a parcel needs (collect it from a MessengerNpc, see MessengerAbility), so we mirror it verbatim.
-            case 0x41:                    SendMiniText("You should go see your kingdom's messenger to collect this parcel."); break;
+            case ClientOp.Parcel:                    SendMiniText("You should go see your kingdom's messenger to collect this parcel."); break;
             // 0x2E = RTK's party-invite opcode (clif_addgroup: body = nameLen(u8) name[nameLen], same shape
             // as 0x19 whisper above) — the "Group" button on another player's profile window, and since the
             // "@party" chat fallback was removed, the ONLY way into a group. Bad/garbage bytes just fail the
             // name lookup, so nothing risky is ever sent back.
-            case 0x2E:                    HandlePartyInvite(dec); break;
+            case ClientOp.PartyInvite:                    HandlePartyInvite(dec); break;
             // 0x4A = RTK's exchange sub-protocol (clif_parse_exchange) — every message the client's real
             // trade WINDOW sends: 0 initiate (the profile window's "Exchange" button), 1/2 offer a bag slot,
             // 3 offer gold, 4 cancel, 5 confirm. The window itself is opcode 0x42 going the other way. Full
             // wire format + the client RE behind it: Session.Exchange.cs, docs §11l.
-            case 0x4A:                    HandleExchangeRequest(dec); break;
+            case ClientOp.Exchange:                    HandleExchangeRequest(dec); break;
             // 0x3F = world-map click / ESC reply (§11m). LIVE-CONFIRMED 2026-07-26: body =
             // mapId(u32BE) x(u16BE) y(u16BE) 00 -- RTK's case 0x3F map-change. See HandleWorldMapSelect.
-            case 0x3F:                    HandleWorldMapSelect(dec); break;
+            case ClientOp.WorldMapSelect:                    HandleWorldMapSelect(dec); break;
             // 0x18 = "send me the user list" (empty body; client 0x490e00 stages the lone byte 0x18 and
             // sends length 1). Reached from modifier+'W' (0x48e5cf) and menu-action 3 (table 0x430914),
             // both via 0x48e3d0. RTK dispatches the same opcode to clif_user_list. See Session.UserList.
-            case 0x18:                    HandleUserListRequest(); break;
+            case ClientOp.UserList:                    HandleUserListRequest(); break;
             // 0x39 in = the answer from any 0x2f merchant window (RTK case 0x39 -> clif_handle_menuinput),
             // tagged by the byte the server put at body[1]. Unrelated to 0x39 OUT, which is the self-profile.
-            case 0x39:                    HandleShopReply(dec); break;
+            case ClientOp.ShopReply:                    HandleShopReply(dec); break;
             // Dump the BODY, not just the opcode. An unhandled opcode is nearly always one we're mid-way
             // through decoding, and its bytes are the whole point — without them every probe needs Frida
             // running on the client just to read what the client already told us.
@@ -1023,7 +1023,7 @@ public sealed partial class Session
         // dropped. Handler 0x444de0 shows the client only builds that world object when it receives
         // opcode 0x02 whose first payload byte is 0x00. The 6.x/7.x reference servers never send this,
         // which is why every prior attempt sat silent. Send it FIRST.
-        SendMap(0x02, _gameInc++, new byte[] { 0x00 }, "ENTER-WORLD (0x02.00)");
+        SendMap(ServerOp.Message, _gameInc++, new byte[] { 0x00 }, "ENTER-WORLD (0x02.00)");
 
         // Now the world object exists. Replicate the PROVEN 6.x entry order (Replay6x): the map
         // alone loads (confirmed by Frida: CreateFileW("Maps\TK32.map") ok) but the client stays
@@ -1031,7 +1031,7 @@ public sealed partial class Session
         //   0x1E ack, 0x20 time  -> handshake acks (harmless, part of the working sequence)
         //   0x05 = YOUR entity id (binds camera/input to the self player)  <-- the missing piece
         //   0x15 = enter-map (loads Maps\TK<mapId>.map), 0x04 = coords, 0x33 = our appearance
-        SendMap(0x1E, _gameInc++, new byte[] { 0x06, 0x00, 0x00 }, "ack(0x1E)");
+        SendMap(ServerOp.Ack, _gameInc++, new byte[] { 0x06, 0x00, 0x00 }, "ack(0x1E)");
         { var (h, y) = _world.Time; SendTime(h, y); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232, _gameInc++);
@@ -1106,8 +1106,8 @@ public sealed partial class Session
         // leading 0x00 shifted every field by one byte, making w read as 0 -> zero cells -> black void).
         // (Mithia 7.x's clif_sendmapdata DOES emit a leading 0 here; 5.33 differs.)
         var b = new List<byte>();
-        b.AddRange(Be((ushort)x0));
-        b.AddRange(Be((ushort)y0));
+        b.AddRange(PacketWriter.U16BEBytes((ushort)x0));
+        b.AddRange(PacketWriter.U16BEBytes((ushort)y0));
         b.Add((byte)w);
         b.Add((byte)h);
 
@@ -1178,7 +1178,7 @@ public sealed partial class Session
         string mode = MapDiag.Length == 0 ? $"real {TileTranslation.Describe(_ver)}" : $"DIAG={MapDiag}";
         Log.Info($"   -> map-data(0x06) [{why}] rect ({x0},{y0}) req {reqW}x{reqH} -> {w}x{h} cells={total} " +
                  $"[{mode}] {(_ver == ClientVersion.V533 ? "3-short" : "2-short")} cells");
-        Send(MapBuild(0x06, _gameInc++, b.ToArray()));
+        Send(TkPacket.BuildGame(ServerOp.MapCells, _gameInc++, b.ToArray()));
         NoteStreamed(x0, y0, w, h);
     }
 

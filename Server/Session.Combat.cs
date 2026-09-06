@@ -573,11 +573,11 @@ public sealed partial class Session
     private void SendAction(uint id, byte type, ushort time, byte param)
     {
         var d = new List<byte>();
-        d.AddRange(Be32(id));
+        d.AddRange(PacketWriter.U32BEBytes(id));
         d.Add(type);
-        d.AddRange(Be(time));
+        d.AddRange(PacketWriter.U16BEBytes(time));
         d.Add(param);
-        SendMap(0x1A, _gameInc++, d.ToArray(), $"action(0x1A) type={type} time={time}");
+        SendMap(ServerOp.Action, _gameInc++, d.ToArray(), $"action(0x1A) type={type} time={time}");
     }
 
 }

@@ -1,3 +1,4 @@
+using Protocol.Tk495;
 using System.Text;
 using Shared;
 
@@ -110,8 +111,8 @@ public sealed partial class Session
     {
         bool v533 = ver == ClientVersion.V533;
         var d = new List<byte>();
-        d.AddRange(Be((ushort)(headlineTotal < 0 ? rows.Count : headlineTotal)));
-        d.AddRange(Be((ushort)rows.Count));
+        d.AddRange(PacketWriter.U16BEBytes((ushort)(headlineTotal < 0 ? rows.Count : headlineTotal)));
+        d.AddRange(PacketWriter.U16BEBytes((ushort)rows.Count));
         d.Add(sortMode);
         foreach (var r in rows)
         {
@@ -130,7 +131,7 @@ public sealed partial class Session
             {
                 d.Add((byte)(r.Icon & 0x0F));    // hidden nibble 0 = always visible (see header)
                 d.Add(r.Colour);                 // NAME TEXT COLOUR — 0 paints black on black
-                d.AddRange(Be32(r.Rank));        // 4.95 only; 5.33 synthesises this from wire order
+                d.AddRange(PacketWriter.U32BEBytes(r.Rank));        // 4.95 only; 5.33 synthesises this from wire order
                 d.Add((byte)(((r.Mark & 0x0F) << 4) | name.Length));
             }
             d.AddRange(name);
@@ -166,7 +167,7 @@ public sealed partial class Session
         // the user-list window gets columns and a name for.
         var ids = Content.UserListNations;
         var d = new List<byte> { 1, 0 };
-        d.AddRange(Be((ushort)ids.Count));      // guard: the handler bails on <= 0 (signed test)
+        d.AddRange(PacketWriter.U16BEBytes((ushort)ids.Count));      // guard: the handler bails on <= 0 (signed test)
         d.Add((byte)ids.Count);                 // the count it actually loops on
         foreach (var id in ids)
         {
@@ -175,7 +176,7 @@ public sealed partial class Session
             d.Add((byte)n.Length);
             d.AddRange(n);
         }
-        SendMap(0x59, _gameInc++, d.ToArray(),
+        SendMap(ServerOp.TooltipOrTownList, _gameInc++, d.ToArray(),
                 $"town-list(0x59/1) {ids.Count} nations [{string.Join(",", ids.Select(i => $"{i}={Character.NationName(i)}"))}]");
     }
 
@@ -216,7 +217,7 @@ public sealed partial class Session
 
         Log.Info($"   -> viewer '{_char.Name}' nation={_char.Nation} — rows whose nation nibble differs " +
                  $"from {_char.Nation} are dropped from every column");
-        SendMap(0x36, _gameInc++, UserListBody(_ver, sortMode, ordered),
+        SendMap(ServerOp.UserList, _gameInc++, UserListBody(_ver, sortMode, ordered),
                 $"user-list(0x36) {players.Count} users sort={sortMode} " +
                 $"{(IsV533 ? "5.33 4-byte rows" : "4.95 8-byte rows")}");
     }
@@ -228,7 +229,7 @@ public sealed partial class Session
     {
         var body = UserListBody(_ver, sortMode,
             rows.Select(r => new UserListRow(r.nation, r.path, r.icon, r.hunter, r.rank, r.tier, r.name)).ToList());
-        SendMap(0x36, _gameInc++, body, $"user-list(0x36) {label} {rows.Count} rows sort={sortMode}");
+        SendMap(ServerOp.UserList, _gameInc++, body, $"user-list(0x36) {label} {rows.Count} rows sort={sortMode}");
     }
 
     // The icon nibble indexes sixteen sprites each column listbox loads at construction (0x48af92: sixteen

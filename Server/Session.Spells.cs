@@ -48,7 +48,7 @@ public sealed partial class Session
         var d = new List<byte> { (byte)(slot + 1), sp.Type };
         var nm = Ascii(sp.Name);     d.Add((byte)nm.Length); d.AddRange(nm);
         var q  = Ascii(sp.Question); d.Add((byte)q.Length);  d.AddRange(q);
-        SendMap(0x17, _gameInc++, d.ToArray(), $"addspell(0x17) slot={slot} '{sp.Name}' t{sp.Type}");
+        SendMap(ServerOp.AddSpell, _gameInc++, d.ToArray(), $"addspell(0x17) slot={slot} '{sp.Name}' t{sp.Type}");
     }
 
     /// <summary>Replace the whole book with EXACTLY the abilities this character's class, level, mark and
@@ -216,7 +216,7 @@ public sealed partial class Session
     private void ClearSpellbook()
     {
         for (int slot = _char.Spells.Count - 1; slot >= 0; slot--)
-            SendMap(0x18, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
+            SendMap(ServerOp.RemoveSpell, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
         _char.Spells.Clear();
     }
 

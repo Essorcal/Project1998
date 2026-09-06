@@ -33,7 +33,7 @@ public sealed partial class Session
                     : name;
 
         var d = new List<byte> { WireSlot(it) };
-        d.AddRange(Be(IconWire(IconOf(def))));   // client Item.epf frame; encode for the +0x4000 resolver
+        d.AddRange(PacketWriter.U16BEBytes(IconWire(IconOf(def))));   // client Item.epf frame; encode for the +0x4000 resolver
         // 5.x (V533) carries an icon-color byte here; 4.95 (V495) does NOT — it reads the name length
         // right after the icon. Proven live: on 4.95 an extra byte here made the client read the name
         // one byte early (Apple iconColor=0 → empty name "You ate ."; Poison apple iconColor=12 → 12-char
@@ -54,19 +54,19 @@ public sealed partial class Session
         {
             var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
         }
-        d.AddRange(Be32((uint)it.Amount));
-        if (def.IsEquip) { d.Add(0); d.AddRange(Be32(it.Dura)); d.Add(0); }
-        else { d.Add((byte)(def.Stackable ? 1 : 0)); d.AddRange(Be32(0)); d.Add(0); }
+        d.AddRange(PacketWriter.U32BEBytes((uint)it.Amount));
+        if (def.IsEquip) { d.Add(0); d.AddRange(PacketWriter.U32BEBytes(it.Dura)); d.Add(0); }
+        else { d.Add((byte)(def.Stackable ? 1 : 0)); d.AddRange(PacketWriter.U32BEBytes(0)); d.Add(0); }
         d.Add(0);                 // owner name length (0 = unowned)
-        d.AddRange(Be(0));        // trailing u16
+        d.AddRange(PacketWriter.U16BEBytes(0));        // trailing u16
         d.Add(0);                 // trailing u8
-        SendMap(0x0F, _gameInc++, d.ToArray(), $"additem(0x0F) slot={it.Slot} '{name}' x{it.Amount}");
+        SendMap(ServerOp.AddItem, _gameInc++, d.ToArray(), $"additem(0x0F) slot={it.Slot} '{name}' x{it.Amount}");
     }
 
     // 0x10 remove-from-slot: slot(u8=idx+1) reason(u8) 00 00. The reason picks the line the CLIENT prints;
     // 12 is the only silent one. Full table swept live 2026-08-07 — see Content.EquipDelReason.
     private void SendDelItem(byte slot, byte reason) =>
-        SendMap(0x10, _gameInc++, new byte[] { (byte)(slot + 1), reason, 0, 0 }, $"delitem(0x10) slot={slot} r={reason}");
+        SendMap(ServerOp.DeleteItem, _gameInc++, new byte[] { (byte)(slot + 1), reason, 0, 0 }, $"delitem(0x10) slot={slot} r={reason}");
 
     // 0x37 equip-window: equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00.
     private void SendEquip(InvItem worn)
@@ -75,13 +75,13 @@ public sealed partial class Session
         if (def is null) return;
         string name = string.IsNullOrEmpty(worn.CustomName) ? def.Name : worn.CustomName;
         var d = new List<byte> { worn.Slot };     // worn.Slot holds the wire equip-slot byte
-        d.AddRange(Be(IconWire(IconOf(def))));     // +0x4000 resolver encoding (see SendAddItem / IconWire)
+        d.AddRange(PacketWriter.U16BEBytes(IconWire(IconOf(def))));     // +0x4000 resolver encoding (see SendAddItem / IconWire)
         if (_ver == ClientVersion.V533) d.Add(def.IconColor);   // 4.95 omits the icon-color byte (see SendAddItem)
         var nn = Ascii(name); d.Add((byte)nn.Length); d.AddRange(nn);
         var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
-        d.AddRange(Be32(worn.Dura));
-        d.AddRange(Be(0));
-        SendMap(0x37, _gameInc++, d.ToArray(), $"equip(0x37) slot={worn.Slot} '{name}'");
+        d.AddRange(PacketWriter.U32BEBytes(worn.Dura));
+        d.AddRange(PacketWriter.U16BEBytes(0));
+        SendMap(ServerOp.Equip, _gameInc++, d.ToArray(), $"equip(0x37) slot={worn.Slot} '{name}'");
     }
 
     // The profile-screen equipment ICON cells (helm + two rings). 4.95 has no character-sprite layer for these
@@ -105,7 +105,7 @@ public sealed partial class Session
 
     // 0x38 unequip-window: spot(u8) 00.
     private void SendUnequip(byte wireSlot) =>
-        SendMap(0x38, _gameInc++, new byte[] { wireSlot, 0 }, $"unequip(0x38) slot={wireSlot}");
+        SendMap(ServerOp.Unequip, _gameInc++, new byte[] { wireSlot, 0 }, $"unequip(0x38) slot={wireSlot}");
 
     /// <summary>Draw a floor item AT REST via the 0x07 static-object path (NOT 0x16). Full RE (2026-07-24):
     /// 0x16 builds a WALK projectile (vtable 0x4cd18c, tick 0x463270) that interpolates in then drops off the
