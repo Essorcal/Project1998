@@ -2331,7 +2331,7 @@ line. (An earlier revision had both at `10` and called `10` "You gave", which is
 the jump table settles.) Both send it ONLY when the
 whole entry leaves the pack; selling or storing part of a stack redraws the stack with `0x0F`, sends no
 delitem, and is therefore silent by construction. A **drop** is `1` and a **full pack** is our own NPC line, both
-already correct; handing an item over in a **trade** is `10` "You gave `X`."; a **parcel** is `7`
+already correct; handing an item over in a **trade** is `9` "You gave `X`."; a **parcel** is `7`
 "You posted `X`." (it was `1`/`4`, announcing a posted parcel as dropped or thrown). Still using reason `0`
 (→ "`X` removed."), unreviewed: quest turn-ins (`TakeItem`) and the GM bag wipe.
 
