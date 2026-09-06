@@ -207,7 +207,7 @@ public sealed partial class Session
     private void SendMusicStop(byte channel)
     {
         if (channel == 0) return;
-        SendMap(0x19, _gameInc++, MusicStopBody(_ver, channel), $"music(0x19) STOP channel={channel}");
+        SendMap(ServerOp.Audio, _gameInc++, MusicStopBody(_ver, channel), $"music(0x19) STOP channel={channel}");
     }
 
     /// <summary>The 0x19 body that silences one audio channel (1 = mp3, 2 = midi), per client. Static and
@@ -227,7 +227,7 @@ public sealed partial class Session
         // `bgm == 0` arm fires regardless of which channel that was), so there is nothing left to send.
         if (bgm == 0) { _bgm = 0; _bgmType = 0; return; }
 
-        SendMap(0x19, _gameInc++, MusicBody(_ver, bgm, type, volume),
+        SendMap(ServerOp.Audio, _gameInc++, MusicBody(_ver, bgm, type, volume),
                 $"music(0x19) bgm={bgm} type={type} vol={volume}");
         _bgm = bgm;
         _bgmType = type;
@@ -242,8 +242,8 @@ public sealed partial class Session
         {
             d.Add(0x01);                // +1 type 1 = mp3/playlist (client opens %08d.LST / .LSR / .MP3)
             d.Add(0x00);                // +2 unread on this arm
-            d.AddRange(Be(bgm));        // +3 track or playlist id (u16BE)
-            d.AddRange(Be((ushort)0));  // +5 fallback id, reached only if NOTHING resolves for +3. 0 = stop,
+            d.AddRange(PacketWriter.U16BEBytes(bgm));        // +3 track or playlist id (u16BE)
+            d.AddRange(PacketWriter.U16BEBytes((ushort)0));  // +5 fallback id, reached only if NOTHING resolves for +3. 0 = stop,
                                         //    i.e. a track we don't actually have goes quiet instead of
                                         //    driving the player at a resource that isn't there.
             d.Add(volume);              // +7 volume 0..100
@@ -252,7 +252,7 @@ public sealed partial class Session
         {
             d.Add(0x01);                              // +1 type 1 = mp3 (client loads "<bgm:D3>.MP3")
             d.Add(0x03);                              // +2 P0=3 -> TLV tail starts after the 5-byte header
-            d.AddRange(Be(bgm));                      // +3 track id (u16BE)
+            d.AddRange(PacketWriter.U16BEBytes(bgm));                      // +3 track id (u16BE)
             d.Add(volume);                            // +5 volume (0..100 -> dB gain; 100 = 0 dB)
             d.Add(0x03); d.Add(0x00); d.Add(ModeLoop);// +6..8 tagA=3, B0=0, mode=2 (loop; see table above)
             d.Add(0x00); d.Add(0x00); d.Add(0x00);    // +9..11 B1=0, [obj+0x154]=0, skip=0 -> the loop=1 branch
@@ -262,7 +262,7 @@ public sealed partial class Session
         {
             d.Add(type);            // +1 type/channel (2 = midi — returns before the TLV tail, so no tail)
             d.Add(0);               // +2 reserved
-            d.AddRange(Be(bgm));    // +3 track id (u16 BE)
+            d.AddRange(PacketWriter.U16BEBytes(bgm));    // +3 track id (u16 BE)
             d.Add(volume);          // +5 volume 0..100
         }
         return d.ToArray();
@@ -274,7 +274,7 @@ public sealed partial class Session
     // client's day/night overlay actually advances, server-wide, exactly like RTK's own broadcast-to-every-
     // session change_time_char.
     internal void SendTime(byte hour, byte year) =>
-        SendMap(0x20, _gameInc++, new byte[] { hour, year }, $"time(0x20) hour={hour} year={year}");
+        SendMap(ServerOp.Time, _gameInc++, new byte[] { hour, year }, $"time(0x20) hour={hour} year={year}");
 
     // 0x1F = weather (RTK clif_sendweather, clif.c:4565): a single byte.
     //
@@ -298,7 +298,7 @@ public sealed partial class Session
     {
         bool on = _char.HasSetting(0x06);
         byte wire = on && weather < WeatherWire.Length ? WeatherWire[weather] : (byte)0;
-        SendMap(0x1F, _gameInc++, new byte[] { wire }, $"weather(0x1F) {weather} -> wire {wire}{(on ? "" : " (toggle off)")}");
+        SendMap(ServerOp.Weather, _gameInc++, new byte[] { wire }, $"weather(0x1F) {weather} -> wire {wire}{(on ? "" : " (toggle off)")}");
     }
 
     /// <summary>Re-assert the current map's weather — used by the 0x1b sub-6 toggle, which has to take
@@ -338,7 +338,7 @@ public sealed partial class Session
         // it reads uniformly here and survives relog. Fast-move behaviour stays client-authoritative per walk;
         // this bit is just the remembered preference the checkbox reflects.
         var body = new byte[] { Box(0x06), Box(0x05), Box(0x04), Box(0x09) };
-        SendMap(0x23, _gameInc++, body, "options(0x23) weather/magic/advice/fastmove");
+        SendMap(ServerOp.Options, _gameInc++, body, "options(0x23) weather/magic/advice/fastmove");
     }
 
     // Music follows the AREA, not the map. Re-sending a track id restarts the song from the top, so a map
@@ -560,7 +560,7 @@ public sealed partial class Session
     {
         if (a.Is(0, "raw") && a.Int(1, out var raw) && raw is >= 0 and <= 255)
         {
-            SendMap(0x1F, _gameInc++, new byte[] { (byte)raw }, $"weather(0x1F) RAW {raw}");
+            SendMap(ServerOp.Weather, _gameInc++, new byte[] { (byte)raw }, $"weather(0x1F) RAW {raw}");
             string band = raw < 0x0b ? "0 (clear)" : raw <= 0x63 ? "1" : raw == 0x64 ? "NONE - falls through, client bug" : "2";
             Reply($"raw 0x1F byte {raw} -> band {band}   (not stored on the map; @weather <name> to persist)");
             return;

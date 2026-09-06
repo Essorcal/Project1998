@@ -1102,7 +1102,7 @@ public sealed partial class Session
         int old = _char.Spells.Count;
         if (!_char.Spells.Remove(spellId)) return;
         for (int slot = old - 1; slot >= 0; slot--)
-            SendMap(0x18, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
+            SendMap(ServerOp.RemoveSpell, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
         for (int i = 0; i < _char.Spells.Count; i++)
         {
             var sp = Content.SpellById(_char.Spells[i]);

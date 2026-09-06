@@ -1,3 +1,4 @@
+using Protocol.Tk495;
 using System.Text;
 using Shared;
 
@@ -48,10 +49,10 @@ public sealed partial class Session
     {
         d.Add(subKind);                 // [0] which window
         d.Add(tag);                     // [1] echoed back at reply body[0]
-        d.AddRange(Be32(npc.Id));       // [2..5] npc entity id
+        d.AddRange(PacketWriter.U32BEBytes(npc.Id));       // [2..5] npc entity id
         WriteHead(d, DialogPortrait.Npc(npc));   // [6] head kind, [7..] descriptor, then 4 skipped bytes
         var p = Encoding.ASCII.GetBytes(prompt);
-        d.AddRange(Be((ushort)p.Length));
+        d.AddRange(PacketWriter.U16BEBytes((ushort)p.Length));
         d.AddRange(p);
     }
 
@@ -70,10 +71,10 @@ public sealed partial class Session
         WriteGridPrefix(d, 4, ShopTagBuy, npc, prompt);
         // An unknown u16BE the client feeds straight into the grid widget ctor (0x454fa0). RTK fills it with
         // strlen(dialog) UNSWAPPED, which cannot be meaningful, so 0 is as good a value as any until it's swept.
-        d.AddRange(Be(0));
-        d.AddRange(Be((ushort)rows.Count));
+        d.AddRange(PacketWriter.U16BEBytes(0));
+        d.AddRange(PacketWriter.U16BEBytes((ushort)rows.Count));
         foreach (var r in rows) d.AddRange(BuyGridRowBody(_ver, r.Icon, r.Color, r.Number, r.Name, r.Blurb));
-        SendMap(0x2F, _gameInc++, d.ToArray(), $"buy-grid(0x2f) npc={npc.Id} x{rows.Count}");
+        SendMap(ServerOp.Shop, _gameInc++, d.ToArray(), $"buy-grid(0x2f) npc={npc.Id} x{rows.Count}");
     }
 
     /// <summary>One buy-grid row in the shape THIS client's row loop expects. Pure and static so
@@ -96,9 +97,9 @@ public sealed partial class Session
                                         string name, string blurb)
     {
         var d = new List<byte>();
-        d.AddRange(Be(icon));
+        d.AddRange(PacketWriter.U16BEBytes(icon));
         if (ver == ClientVersion.V533) d.Add(iconColor);
-        d.AddRange(Be32((uint)Math.Max(0, number)));
+        d.AddRange(PacketWriter.U32BEBytes((uint)Math.Max(0, number)));
         WriteAscii8(d, name);
         WriteAscii8(d, blurb);
         return d.ToArray();
@@ -145,10 +146,10 @@ public sealed partial class Session
     {
         var d = new List<byte>();
         WriteGridPrefix(d, 5, ShopTagSell, npc, prompt);
-        d.AddRange(Be(0));
+        d.AddRange(PacketWriter.U16BEBytes(0));
         d.Add((byte)slots.Count);
         d.AddRange(slots);
-        SendMap(0x2F, _gameInc++, d.ToArray(), $"sell-grid(0x2f) npc={npc.Id} x{slots.Count}");
+        SendMap(ServerOp.Shop, _gameInc++, d.ToArray(), $"sell-grid(0x2f) npc={npc.Id} x{slots.Count}");
     }
 
     /// <summary>Quantity prompt (sub-kind 3) — the native "how many?" box, used when selling a stack. After
@@ -161,8 +162,8 @@ public sealed partial class Session
         var d = new List<byte>();
         WriteGridPrefix(d, 3, ShopTagAmount, npc, prompt);
         WriteAscii8(d, itemName);
-        d.AddRange(Be((ushort)Math.Clamp(max, 1, 9999)));
-        SendMap(0x2F, _gameInc++, d.ToArray(), $"amount(0x2f) npc={npc.Id} '{itemName}' max={max}");
+        d.AddRange(PacketWriter.U16BEBytes((ushort)Math.Clamp(max, 1, 9999)));
+        SendMap(ServerOp.Shop, _gameInc++, d.ToArray(), $"amount(0x2f) npc={npc.Id} '{itemName}' max={max}");
     }
 
     private static void WriteAscii8(List<byte> d, string s)

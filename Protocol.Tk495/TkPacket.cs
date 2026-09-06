@@ -2,7 +2,7 @@ namespace Protocol.Tk495;
 
 /// <summary>
 /// NexusTK wire framing:  AA | length(u16 BE) | opcode | increment | body[...].
-/// length counts opcode + increment + body. Game packets append 3 index bytes.
+/// length counts opcode + increment + body. These clients have no game-packet trailer.
 /// </summary>
 public readonly struct TkPacket
 {
@@ -41,4 +41,9 @@ public readonly struct TkPacket
         body.CopyTo(p.AsSpan(5));
         return p;
     }
+
+    /// <summary>4.95/5.33 game framing uses the same NexonInc cipher as login, with no 7.x trailer.
+    /// Proven by the 4.95 decrypt routine at 0x478680 and its key buffer at 0x50211c.</summary>
+    public static byte[] BuildGame(byte opcode, byte inc, byte[] body) =>
+        Build(opcode, inc, TkCrypt.Crypt(body, inc, TkCrypt.LoginKey));
 }

@@ -9,7 +9,7 @@ namespace Tests.Support;
 ///
 /// <para>Frames are recorded EXACTLY as they would have hit the wire (<c>AA | len(u16 BE) | opcode | inc |
 /// encrypted body</c>), because that is the only thing a test can meaningfully pin: the client parses bytes,
-/// not intent. <see cref="BodiesOf"/> decrypts them back with the same cipher <c>Session.MapBuild</c> encrypts
+/// not intent. <see cref="BodiesOf"/> decrypts them back with the same cipher <c>TkPacket.BuildGame</c> encrypts
 /// with, so an assertion reads as the layout the client's own parser walks.</para>
 ///
 /// <para>Not thread-safe and deliberately not made so: a handler test drives one session from one thread, and
@@ -51,7 +51,7 @@ public sealed class RecordingOutbound : IOutbound
     public void Clear() => _frames.Clear();
 
     /// <summary>The DECRYPTED bodies of every recorded frame carrying <paramref name="opcode"/>, in order.
-    /// 4.95 has one cipher on both channels (see TkCrypt), and <c>Session.MapBuild</c> encrypts every game
+    /// 4.95 has one cipher on both channels (see TkCrypt), and <c>TkPacket.BuildGame</c> encrypts every game
     /// packet with it, so this is the reverse of the exact step the send path took.</summary>
     public List<byte[]> BodiesOf(byte opcode)
     {
