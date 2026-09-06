@@ -19,9 +19,14 @@ namespace Tests;
 /// <see cref="ActionType"/> or <see cref="DelReason"/>, so renaming a member cannot move an expectation with
 /// it, and renumbering one fails these tests instead of silently changing the wire.</para>
 ///
-/// <para>Both frames are version-independent, which the port-parameterised cases below assert rather than
-/// assume: the 4.95 parser and the 5.33 parser read the same layout, unlike <c>0x0F</c>/<c>0x42</c>, whose
-/// icon-colour byte 5.33 alone consumes (see <see cref="ExchangeWireTests"/>).</para>
+/// <para>The port-parameterised cases assert one specific thing, and only that: <b>the SERVER emits the
+/// same bytes for both client versions</b> — a session tagged V533 (port 2006) produces byte-identical
+/// <c>0x1A</c> and <c>0x10</c> bodies to a V495 one (port 2005). That is a statement about our send path,
+/// not about either client's parser. It is worth pinning because these two frames have no version branch
+/// while neighbouring item packets do: <c>0x0F</c>/<c>0x42</c> carry an icon-colour byte that 5.33 alone
+/// consumes (see <see cref="ExchangeWireTests"/>), so "no branch here" is a choice a future edit could
+/// quietly reverse. No claim is made here about how the 5.33 CLIENT parses these two bodies; the 4.95 side
+/// is what the in-tree handler decodes document.</para>
 /// </summary>
 public class ActionAndDeleteWireTests
 {
@@ -61,14 +66,16 @@ public class ActionAndDeleteWireTests
     public void ActionTypeNamesKeepTheirDocumentedByte(byte wire, string name) =>
         Assert.Equal(wire, (byte)Enum.Parse<ActionType>(name));
 
-    /// <summary>The <c>0x10</c> reason table from the LIVE <c>@delreason</c> sweep of 2026-08-07 recorded on
-    /// <c>Content.EquipDelReason</c> — NOT the older Inter.dat-derived table in <c>Protocol.md</c> §11c,
-    /// which disagrees from 9 up (it has 9=sold 10=gave 11=broken 12=removed, and claims no reason is
-    /// silent). The sweep is preferred because it is later, is direct observation of what the client
-    /// actually printed, and agrees with Protocol.md's own later give-to-mob prose (RE'd 2026-08-18), which
-    /// uses 9 for "You gave" and 12 for the silent removal. See the <see cref="DelReason"/> doc comment.
-    /// <para>If §11c is ever re-confirmed instead, THIS test is the thing that must change first — and
-    /// changing it will show every callsite whose wording moves with it.</para></summary>
+    /// <summary>The <c>0x10</c> reason table from the LIVE <c>@delreason</c> sweep of 2026-08-07, since
+    /// confirmed against the 4.95 binary: the reason byte is switched on by handler <c>0x47c800</c> through
+    /// a 13-entry jump table at <c>0x47c958</c>, whose arms for 9 and 10 are reversed against
+    /// <c>Inter.dat</c> file order and whose arm for 12 pushes no string at all. That is NOT the older
+    /// Inter.dat-derived table in <c>Protocol.md</c> §11c, which read the message run linearly and so has
+    /// 9=sold 10=gave 11=broken 12=removed and claims no reason is silent; §11c now carries a correction
+    /// note. See the <see cref="DelReason"/> doc comment.
+    /// <para>These bytes are what the client switches on, so this test is the thing that must change first
+    /// if the table is ever revisited — and changing it will show every callsite whose wording moves with
+    /// it.</para></summary>
     [Theory]
     [InlineData(0, "Removed")]              // "<item> removed." — the default/clamp line, not silence
     [InlineData(1, "Dropped")]              // "You dropped <item>." — drop ONLY
@@ -79,7 +86,7 @@ public class ActionAndDeleteWireTests
     [InlineData(6, "Used")]
     [InlineData(7, "Posted")]
     [InlineData(8, "Decayed")]
-    [InlineData(9, "Gave")]                 // §11c says "sold" here
+    [InlineData(9, "Gave")]                 // §11c says "sold" — the jump table's 9/10 transposition
     [InlineData(10, "Sold")]                // §11c says "gave" here
     [InlineData(11, "RemovedAlternate")]    // §11c says "broken" here
     [InlineData(12, "Silent")]              // §11c says "removed" here, and that nothing is silent
@@ -180,16 +187,28 @@ public sealed class ActionAndDeleteCallsiteWireTests
     }
 
     /// <summary>The ':' emote wheel: the client sends an INDEX and the server replies with an action, so the
-    /// mapping is <c>index + 11</c>. Index 0 is Laughter and index 11 is Dance — the case the protocol notes
-    /// call out by name (':' 'l'). A wrong base silently plays a different gesture for every emote there is.
-    /// </summary>
+    /// mapping is <c>index + 11</c> in BYTE arithmetic. Index 0 is Laughter and index 11 is Dance — the case
+    /// the protocol notes call out by name (':' 'l'). A wrong base silently plays a different gesture for
+    /// every emote there is.
+    /// <para>The last four cases are the ones worth having. The client's key handler (0x491560) puts
+    /// 'm'/'n' at actions 9/10, below the 11 its sender (0x491810) subtracts, so those two travel as
+    /// <c>0xFE</c>/<c>0xFF</c> and are recovered only by wraparound. Nothing else in the wheel behaves that
+    /// way, so a clamp or a range check added later would break precisely these two emotes and leave every
+    /// other test in this file green.</para></summary>
     [Theory]
-    [InlineData(2005, 0, "0b")]    // index 0  -> 11 laughter
+    [InlineData(2005, 0, "0b")]      // index 0  -> 11 laughter ('a')
     [InlineData(2006, 0, "0b")]
-    [InlineData(2005, 11, "16")]   // index 11 -> 22 dance
+    [InlineData(2005, 11, "16")]     // index 11 -> 22 dance ('l')
     [InlineData(2006, 11, "16")]
-    [InlineData(2005, 13, "18")]   // index 13 -> 24 kiss
+    [InlineData(2005, 13, "18")]     // index 13 -> 24 kiss ('p')
     [InlineData(2006, 13, "18")]
+    // THE TWO THAT WRAP. 'm' and 'n' are actions 9 and 10, BELOW the 11 the client subtracts before
+    // sending, so they arrive as 0xFE and 0xFF and only byte wraparound recovers them. A clamp, a range
+    // check, or CheckForOverflowUnderflow would break exactly these two and nothing else.
+    [InlineData(2005, 0xFE, "09")]   // index 0xFE -> 9  respect ('m')
+    [InlineData(2006, 0xFE, "09")]
+    [InlineData(2005, 0xFF, "0a")]   // index 0xFF -> 10 triumph ('n')
+    [InlineData(2006, 0xFF, "0a")]
     public void EmoteWheelIndexPlaysTheActionElevenAbove(int port, byte index, string expectedTypeHex)
     {
         var (session, rec, ch) = _fx.PlayerWith($"act_emo_{port}_{index}", c => c.Hp = 100, port: port);

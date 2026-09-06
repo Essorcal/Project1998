@@ -436,10 +436,20 @@ public sealed partial class Session
     // index 0 -> action 11 (Laughter) ... index 11 -> action 22 (Dance) ... index 13 -> 24 (Kiss).
     // Broadcast it as a 0x1A action so we AND every peer on the map see the animation (the client's own
     // action sprite carries any looped sound). time 0x4E matches RTK's emote length; param 0 = no extra sound.
+    //
+    // TWO OF THE SIXTEEN WHEEL KEYS ARRIVE AS A WRAPPED BYTE, AND THAT IS LOAD-BEARING. The client's key
+    // handler (0x491560) maps 'a'..'l' to actions 11..22 but 'm'/'n' to 9 (Respect) and 10 (Triumph), then
+    // its sender (0x491810) transmits `action - 11` in ONE unsigned byte -- so m and n go out as 0xFE and
+    // 0xFF, and only wrapping recovers them: 0xFE + 11 = 265 -> 9, 0xFF + 11 = 266 -> 10. The `unchecked`
+    // below is therefore not decoration and not a behaviour change (C# is unchecked by default and always
+    // was); it states the intent so that turning on CheckForOverflowUnderflow, or "hardening" this with a
+    // clamp or a range check, cannot silently kill Respect and Triumph while every other emote still works.
+    // Tests/ActionAndDeleteWireTests.cs pins 0xFE/0xFF to 9/10 for exactly that reason.
     private void HandleEmotion(byte[] dec)
     {
         if (dec.Length < 1) return;
-        byte action = (byte)(dec[0] + (byte)ActionType.Laughter);   // wheel index 0 is Laughter (11)
+        // Wheel index 0 is Laughter (11); indices 0xFE/0xFF are m/n and wrap to Respect (9) / Triumph (10).
+        byte action = unchecked((byte)(dec[0] + (byte)ActionType.Laughter));
         const ushort time = 0x4E;
         SendAction(_char.Id, (ActionType)action, time, 0);                            // play it on our own client
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, action, time, 0), except: this);  // and for peers

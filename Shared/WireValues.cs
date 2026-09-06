@@ -6,12 +6,13 @@ namespace Shared;
 /// <para>Source: the 4.95 handler <c>0x4503a0</c>, decoded in <c>docs/4.x/Protocol.md</c> §"0x1A — action".
 /// The client scales <c>time</c> ×10 and passes <c>param</c> as the third argument to the entity's action
 /// vtable method <c>[vtbl+0x78]</c>. Emotes are actions too: the <c>0x1d</c> emote wheel replies with
-/// <c>type = index + 11</c> (RTK <c>clif_parseemotion</c>), which is why <see cref="Laughter"/> = 11 is the
-/// base of the emote block.</para>
+/// <c>type = index + 11</c> in BYTE arithmetic (RTK <c>clif_parseemotion</c>), which is why
+/// <see cref="Laughter"/> = 11 is the base of the emote block — and why two of the sixteen keys arrive as a
+/// wrapped index, see the note on <see cref="Respect"/>.</para>
 ///
 /// <para>This enum NAMES the byte; it does not constrain it. The wire field is a full byte and several
 /// senders are legitimately dynamic — the emote wheel's <c>index + 11</c>, the per-spell <c>action</c>
-/// column in SpellEffects.csv (see <c>Content.CastActionType</c>), and the <c>@mobact</c> calibration
+/// column in spell_effects.csv (see <c>Content.CastActionType</c>), and the <c>@mobact</c> calibration
 /// probe, which sweeps types the creature vtable may interpret differently from the player's. Casting an
 /// unnamed byte to this type is expected and preserves it exactly; nothing here validates against the
 /// named set.</para>
@@ -40,9 +41,19 @@ public enum ActionType : byte
     Eat = 8,
 
     // ---- the emote block: 0x1d wheel index + 11 -------------------------------------------------------
+    // The wheel's sixteen keys are NOT a contiguous 11..26 run. The client's key handler (0x491560) maps
+    // 'a'..'l' to 11..22, 'm'/'n' to 9/10, and 'o'/'p' to 23/24; its sender (0x491810) then transmits
+    // `action - 11` in one unsigned byte. So Respect and Triumph arrive as 0xFE and 0xFF and are recovered
+    // only by BYTE WRAPAROUND on the server side (0xFE + 11 = 265 -> 9). See Session.HandleEmotion, which
+    // spells that `unchecked` out, and the 0x1d row in docs/4.x/Protocol.md.
+    /// <summary>Wheel key 'm'. Reaches the server as index <c>0xFE</c>, not <c>-2</c> — see the note above;
+    /// a clamp or range check on the emote index would silently kill this emote and <see cref="Triumph"/>
+    /// while leaving the other fourteen working.</summary>
     Respect = 9,
+    /// <summary>Wheel key 'n', arriving as index <c>0xFF</c>. See <see cref="Respect"/>.</summary>
     Triumph = 10,
-    /// <summary>Emote wheel index 0, and therefore the base the <c>0x1d</c> handler adds its index to.</summary>
+    /// <summary>Emote wheel index 0 (key 'a'), and therefore the base the <c>0x1d</c> handler adds its
+    /// index to — including the two indices that wrap.</summary>
     Laughter = 11,
     Grief = 12,
     Shame = 13,
@@ -70,17 +81,20 @@ public enum ActionType : byte
 /// has already drawn in that slot, keyed purely off this byte. So the reason is the entire wording of the
 /// removal, and picking the wrong one narrates a sale as a drop.</para>
 ///
-/// <para><b>Source, and a conflict worth knowing about.</b> Two tables exist in this repo and they
-/// disagree from 9 upward. <c>docs/4.x/Protocol.md</c> §11c carries a table inferred on 2026-08-06 from
-/// the <c>Inter.dat</c> message lines (9=sold 10=gave 11=broken 12=removed, and "no reason is silent").
-/// The names below instead follow the LIVE <c>@delreason</c> sweep of 2026-08-07 recorded on
-/// <c>Content.EquipDelReason</c> (9=gave 10=sold 11=removed 12=silent 13=broken), because:
-/// it is later and is direct observation rather than a line-index inference — and the doc itself shows why
-/// that inference is unsafe, since the handler CLAMPS/defaults rather than indexing raw;
-/// Protocol.md's own later prose (the give-to-mob section, RE'd 2026-08-18) uses 9 for "You gave" and
-/// calls 12 the silent reason, agreeing with the sweep and not with §11c;
-/// and §11c is stale in two further respects — it says no byte is silent (only 15 was probed) and that
-/// <c>EquipDelReason</c> defaults to -1, while the shipped default is 12.</para>
+/// <para><b>Source: the client's own jump table, confirming the live sweep.</b> These names follow the
+/// <c>@delreason</c> sweep of 2026-08-07 recorded on <c>Content.EquipDelReason</c> (9=gave 10=sold
+/// 11=removed 12=silent 13=broken), which was independently confirmed against the 4.95 binary on
+/// 2026-09-06: the reason byte is narrated by handler <c>0x47c800</c> (reached from dispatcher
+/// <c>0x47bb90</c>), which does <c>ecx = body[1] - 1; cmp ecx, 0xC; ja default;</c> then
+/// <c>jmp [0x47c958 + ecx*4]</c> — a 13-entry SWITCH, not a linear index into the message run. The arms for
+/// 9 and 10 push string indices 58 and 57, i.e. reversed against <c>Inter.dat</c> file order; 11 shares the
+/// default arm; and 12's arm carries no string index at all, which is what makes it silent.</para>
+///
+/// <para>That last point is why <c>docs/4.x/Protocol.md</c> §11c disagrees from 9 upward (it has 9=sold
+/// 10=gave 11=broken 12=removed and "no reason is silent"): it was inferred on 2026-08-06 by reading the
+/// <c>Inter.dat</c> lines in file order, which a switch does not follow. The dump itself was correct; the
+/// assumption of linear indexing was not. §11c carries a correction note. Reasons 1-8 were never in
+/// dispute.</para>
 ///
 /// <para>Like <see cref="ActionType"/> this names the byte without constraining it. <c>EquipDelReason</c>
 /// is operator-configurable to any byte (or -1 to send no packet at all) and <c>@delreason</c> sweeps
@@ -107,12 +121,14 @@ public enum DelReason : byte
     Gave = 9,
     /// <summary>"You sold &lt;item&gt;." The vendor's line.</summary>
     Sold = 10,
-    /// <summary>A SECOND code rendering the same "&lt;item&gt; removed." line as <see cref="Removed"/>,
-    /// per the live sweep. Nothing sends it; named only so the table has no unexplained gap.</summary>
+    /// <summary>A SECOND code rendering the same "&lt;item&gt; removed." line as <see cref="Removed"/> —
+    /// in the binary its arm IS the default arm (<c>0x47c904</c>), which is why the two are identical rather
+    /// than merely observed alike. Nothing sends it; named so the table has no unexplained gap.</summary>
     RemovedAlternate = 11,
-    /// <summary>The one code that prints NOTHING. It is what lets wearing gear clear the bag cell without
-    /// narrating — the bag and the equip window are separate client structures and only the <c>0x10</c>
-    /// handler clears a bag entry, so the packet cannot simply be omitted.</summary>
+    /// <summary>The one code that prints NOTHING: its arm in the jump table pushes no string index and
+    /// jumps straight to the epilogue. It is what lets wearing gear clear the bag cell without narrating —
+    /// the bag and the equip window are separate client structures and only the <c>0x10</c> handler clears a
+    /// bag entry, so the packet cannot simply be omitted.</summary>
     Silent = 12,
     /// <summary>"&lt;item&gt; broken."</summary>
     Broken = 13,

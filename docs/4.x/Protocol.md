@@ -476,7 +476,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x06` | Walk (long form) | `dir(u8) step(u8) X(u16BE) Y(u16BE)` + the same 4 junk bytes | Sent every few steps instead of `0x32`. Handle identically for movement. **Both** client packets are 10 bytes = a 6-byte payload + 4 trailing bytes; `0x32` is the same walk without them (7 bytes). **Those 4 bytes are UNINITIALIZED STACK, not a checksum** — ignore them (see §10.7). |
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
-| `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` (see §11). |
+| `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` **in byte arithmetic — two of the sixteen keys wrap**. The client's key handler `0x491560` maps `a`..`l` → 11..22, `m`/`n` → **9**/**10**, `o`/`p` → 23/24, and its sender `0x491810` transmits `action - 11` in one unsigned byte. So `m`/`n` arrive as **`0xFE`/`0xFF`** and only wraparound recovers Respect/Triumph. Do not clamp or range-check `idx`. (see §11). |
 | `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e). |
 | `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
@@ -2284,33 +2284,51 @@ Consequences: **every** reason 1-12 narrates, so there is no "silent remove" amo
 which has no line of its own (line 84 is `"To: "`), rendering the *last* line is the signature of a
 `default:` branch.
 
-> **⚠ SUPERSEDED FROM 9 UP — the table above is the 2026-08-06 *inference*, not the live result.** The
-> `@delreason` sweep run live the next day (2026-08-07) drove every reason byte through the real client and
-> read back what it printed: **`9` gave, `10` sold, `11` "&lt;item&gt; removed.", `12` SILENT, `13`
-> "&lt;item&gt; broken."**, with `14+` all falling back to "removed". That contradicts this section on four
-> codes and on the "no silent remove" conclusion directly above, which had probed only the out-of-range `15`.
-> The sweep is what the server follows (`Shared/WireValues.cs` `DelReason`, `Content.EquipDelReason`, whose
-> shipped default is `12` and not the `-1` claimed further down §11c), on the grounds that direct observation
-> beats a line-index inference — especially here, where the handler is now known to **clamp** rather than
-> index raw, which is exactly the error mode that would shift a dumped line list against the reason byte.
-> Two later findings in this same document agree with the sweep and not with the table: the give-to-mob
-> path (RE'd 2026-08-18) uses **`9`** for the client's own `You gave <item>.`, and the NPC refusal drops an
-> item with the **silent `12`**. The rows above are kept because the Inter.dat dump is real evidence and
-> whatever explains the offset is still unknown; treat 1-8 as agreed and 9+ as settled by the sweep.
-> `Tests/ActionAndDeleteWireTests.cs` pins the sweep's numbering, so re-confirming this table means changing
-> that test first and seeing every callsite whose wording moves with it.
+> **⚠ WRONG FROM 9 UP — settled against the client binary. The table above is the 2026-08-06 *inference*.**
+> The live `@delreason` sweep the next day (2026-08-07) read back **`9` gave, `10` sold, `11`
+> "&lt;item&gt; removed.", `12` SILENT, `13` "&lt;item&gt; broken."**, `14+` falling back to "removed", and
+> that has since been confirmed statically from the 4.95 binary (2026-09-06):
+>
+> **The narration handler is `0x47c800`, not `0x48fe10`.** `0x48fe10` — the one this section's reasoning was
+> built around — range-checks the slot, calls `0x48f0b0` to clear the bag cell, and **never reads `body[1]`
+> at all**. The reason byte is consumed by `0x47c800`, reached from dispatcher `0x47bb90`, which does
+> `ecx = body[1] - 1; cmp ecx, 0xC; ja default;` and then `jmp [0x47c958 + ecx*4]` — a **13-entry jump
+> table**, not a linear index into the message run. Each arm pushes an explicit string index, and the arms
+> for 9 and 10 push **58 and 57** — i.e. the switch deliberately reverses the two relative to their order in
+> `Inter.dat`. That single fact explains the whole disagreement: reading the message run in file order, as
+> the 2026-08-06 dump did, necessarily transposes `gave`/`sold` and slides everything after them. Reason
+> `11` and reason `0`/`14+` share one arm (`0x47c904`, "&lt;item&gt; removed."), and reason `12` has an arm
+> that jumps straight to the epilogue — **no string index, no status line**, which is the silent code this
+> section says does not exist.
+>
+> So the correct reading is a `switch`, and the parts of §11c that survive are reasons 1-8 (which both
+> readings agree on) and the observation that out-of-range values default rather than indexing raw. The rows
+> above are kept as the record of the inference and of the `Inter.dat` line run, which is real evidence and
+> correctly dumped — it was the assumption that the client indexed it linearly that was wrong. Two later
+> findings in this document already matched the corrected table before it was confirmed: the give-to-mob
+> path (RE'd 2026-08-18) uses **`9`** for `You gave <item>.`, and the NPC refusal drops an item with the
+> **silent `12`**.
+>
+> The server follows the corrected table (`Shared/WireValues.cs` `DelReason`, and `Content.EquipDelReason`,
+> whose shipped default is `12` — not the `-1` claimed further down §11c). `Tests/ActionAndDeleteWireTests.cs`
+> pins it, so revisiting this means changing that test first and seeing every callsite whose wording moves.
 
-**⚠ SETTLED LIVE 2026-08-07: no reason byte is silent.** The open question above — whether an out-of-range
-reason is silent or falls into the same default — was probed with `SilentDelReason` 15 on the equip path:
-it renders "`X` removed.", the *same* line reason `0` gives. Both ends land on the last of the twelve lines,
-so the handler **clamps/defaults** rather than indexing raw (a raw index would have shown line 97,
-"Your profile has been saved.", for 13). There is therefore no silent code to pick: **a path that must say
-nothing cannot send `0x10` at all.** `SilentDelReason` is gone with the theory that named it — every path
-that used it now names a real reason, and the equip path sends no delitem (below).
+**⚠ OUT-OF-RANGE IS NOT SILENT — but reason `12` IS. (Probe 2026-08-07; corrected by the `0x47c800` jump
+table, above.)** The open question — whether an out-of-range reason is silent or falls into the same default
+— was probed with `SilentDelReason` 15 on the equip path: it renders "`X` removed.", the *same* line reason
+`0` gives, so the handler **defaults** rather than indexing raw (a raw index would have shown line 97,
+"Your profile has been saved.", for 13). That part stands. The conclusion drawn from it — "there is
+therefore no silent code to pick" — does **not**: it generalised from one out-of-range probe to the whole
+range, and reason `12`'s arm in the jump table carries no string index and prints nothing. So a path that
+must say nothing sends `12`; it does **not** have to omit the `0x10`, which matters because omitting it
+leaves an uncleared bag cell. `SilentDelReason` is gone with the theory that named it — every path that used
+it now names a real reason, and the equip path sends reason `12` (below).
 
 Which reason each removal path should use, per the live game (user-confirmed 2026-08-06, banking and selling
-revised 2026-08-07): a **bank deposit** and a **shop sale** are both `10` "You gave `X`." — you handed the
-item over, and reason `9` ("You sold `X`.") is a line the real game doesn't use. Both send it ONLY when the
+revised 2026-08-07; the reason NUMBERS here follow the corrected table above): a **bank deposit** is `9`
+"You gave `X`." — you handed the item over — and a **shop sale** is `10` "You sold `X`.", the vendor's own
+line. (An earlier revision had both at `10` and called `10` "You gave", which is the same 9/10 transposition
+the jump table settles.) Both send it ONLY when the
 whole entry leaves the pack; selling or storing part of a stack redraws the stack with `0x0F`, sends no
 delitem, and is therefore silent by construction. A **drop** is `1` and a **full pack** is our own NPC line, both
 already correct; handing an item over in a **trade** is `10` "You gave `X`."; a **parcel** is `7`

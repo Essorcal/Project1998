@@ -57,11 +57,14 @@ public static partial class Content
     // gates a quest you dropped without being paid for, so it isn't part of the reward rate limit — and
     // making a failed quest cost a full day would just teach players to sit on one they can't finish.
     public static int MinorQuestCooldownHours => (int)Tune("MinorQuestCooldownHours", 24);
-    // (SilentDelReason is GONE, 2026-08-07. It existed to probe whether an out-of-range 0x10 reason was the
-    // client's silent path; the live answer was no — 15 renders "<item> removed.", the same line reason 0
-    // gives, so the handler clamps/defaults and NO reason byte is silent. Every path that used it has since
-    // moved to a real reason (bank deposit and shop sale both hand the item over: 10, "You gave X."), and a
-    // path that must truly say nothing sends no 0x10 at all — see EquipDelReason.)
+    // (SilentDelReason is GONE, 2026-08-07. It existed to probe whether an OUT-OF-RANGE 0x10 reason was the
+    // client's silent path; the answer was no — 15 renders "<item> removed.", the same line reason 0 gives,
+    // because the handler defaults rather than indexing raw. That much still holds. Its conclusion did NOT:
+    // "no reason byte is silent" was drawn before the full sweep, and reason 12 IS silent — which is what
+    // the equip path uses (below) instead of omitting the packet. Every path that used SilentDelReason has
+    // since moved to a real reason, each picked for the line it prints: a bank deposit is 9 "You gave X.",
+    // a shop sale is 10 "You sold X." — two DIFFERENT reasons, not the single 10-as-"You gave" an earlier
+    // revision of this sentence claimed. See the table below and Shared/WireValues.cs DelReason.)
     // Equipping is the one removal that ought to be TRULY silent: the item didn't leave you, it moved onto
     // your body, and the real game says nothing. Suppressing the 0x10 entirely was tried (default -1) and is
     // WRONG — it leaves a ghost row in the bag that can't be dropped, equipped or used, because the server
