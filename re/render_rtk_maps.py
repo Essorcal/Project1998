@@ -25,12 +25,12 @@ coherent (river, bridge, roofs, shop signs). Two known gaps, reported by --stats
     Only a later 7.x client's Tile.dat would fill either gap; this box has 4.x and 5.33 only.
 Both are 7.x art we do not have a client for; they show up as holes, never as wrong tiles.
 
-EMPTY MARGINS: RTK's editor allocates a map at one size and fills a smaller rectangle, so 554 of the
-3,248 maps carry an all-zero right/bottom margin that renders as a hard black bar (map 3605 declares
-23x23 for an 18x16 room; 9097 declares 250x250 for the same 18x16). Those bars are NOT missing art —
-the file has no tile there. They are trimmed by default, right and bottom only so every cell keeps
-its (x, y) and the overlay still lines up, and never past a warp or NPC. `--no-crop` keeps them, and
-maps.json records the declared size in `decl` whenever it differs.
+EMPTY MARGINS: RTK's editor allocates a map at one size and fills a smaller rectangle, so 533 maps
+carry an all-zero right/bottom margin that renders as a black bar (3605 declares 23x23 for an 18x16
+room). Those bars are NOT missing art — the file has no tile there. They are rendered AS-IS and the
+map keeps its declared size. An earlier version trimmed them, which made the viewer report 3605 as
+18x16; a map's declared size is its size, and a wrong dimension is worse than an honest black
+margin. Do not re-add cropping.
 
 OBJECTS: uses **RTK's own SObj.tbl** (`RTK-Server/rtk/SObj.tbl`, 18,954 records vs 5.33's 12,696).
 Every object id RTK's maps use is in range there; 5.33's table would silently drop the top third.
@@ -40,7 +40,6 @@ Usage:
     python re/render_rtk_maps.py one <id> [out.png]
     python re/render_rtk_maps.py --stats                    # coverage report, renders nothing
     python re/render_rtk_maps.py --stats --only 3918,3712   # why IS THAT MAP black?
-    python re/render_rtk_maps.py all --no-crop              # keep RTK's padded dims
     python re/render_rtk_maps.py --learn-tiles              # rebuild the fallback table
     python re/render_rtk_maps.py all --no-fill              # show missing art as black
     python re/render_rtk_maps.py --check        # self-check
@@ -84,34 +83,6 @@ def rtk_cells(path):
     cells[:, 0] = a[:, 0]          # ground word (flat index; RTK never sets the sheet-2 tag)
     cells[:, 1] = a[:, 2]          # object id   (a[:,1] is passability, not drawn)
     return cells, xs, ys
-
-
-def content_extent(cells, xs, ys):
-    """Right/bottom extent of real content: (w, h) such that everything past it is empty.
-
-    RTK's editor allocates a map at one size and fills a smaller rectangle, leaving the right and
-    bottom margins as ground word 0. Rendered literally that is a hard black bar, which reads as
-    missing art but is not — the file simply has no tile there. 554 of the 3,248 RTK maps have such
-    a margin, 339 of them wasting more than a quarter of the image (map 9097 declares 250x250 for an
-    18x16 room).
-
-    Trimmed from the RIGHT and BOTTOM only, never the left or top, so every cell keeps its (x, y)
-    and the warp/NPC overlay still lines up. Objects count as content too: an object anchored in the
-    margin can draw north into the visible area.
-    """
-    g = cells[:, 0].reshape(ys, xs)
-    ob = cells[:, 1].reshape(ys, xs)
-    nz = np.argwhere((g != 0) | (ob != 0))
-    if not len(nz):
-        return xs, ys
-    return int(nz[:, 1].max()) + 1, int(nz[:, 0].max()) + 1
-
-
-def crop_cells(cells, xs, ys, w, h):
-    if (w, h) == (xs, ys):
-        return cells, xs, ys
-    grid = cells.reshape(ys, xs, 2)[:h, :w]
-    return grid.reshape(-1, 2).copy(), w, h
 
 
 _TUPLE = re.compile(r"\(((?:[^()']|'(?:[^'\\]|\\.)*')*)\)")
@@ -176,33 +147,6 @@ def map_files():
         if m:
             out[int(m.group(1))] = os.path.join(RTK_MAPS, fn)
     return out
-
-
-def overlay_extents():
-    """map id -> (max warp/NPC x, max y), so trimming never hides a pin."""
-    import csv
-    ext = {}
-
-    def bump(mid, x, y):
-        a, b = ext.get(mid, (0, 0))
-        ext[mid] = (max(a, x), max(b, y))
-
-    for t in sql_rows('Warps'):
-        f = sql_split(t)
-        try:
-            bump(int(f[1]), int(f[2]), int(f[3]))
-        except (ValueError, IndexError):
-            continue
-    try:
-        with open(os.path.join(REPO, 'game-data', 'NPCs.csv'), newline='', encoding='utf-8-sig') as fh:
-            for r in csv.DictReader(fh):
-                try:
-                    bump(int(r['NpcMapId']), int(r['NpcX']), int(r['NpcY']))
-                except (ValueError, KeyError, TypeError):
-                    continue
-    except OSError:
-        pass
-    return ext
 
 
 FALLBACK_CSV = os.path.join(HERE, 'rtk_tile_fallback.csv')
@@ -365,8 +309,6 @@ def main():
     ap.add_argument('--thumb', type=int, default=400)
     ap.add_argument('--maxfull', type=int, default=2560)
     ap.add_argument('--only', default='')
-    ap.add_argument('--no-crop', action='store_true',
-                    help="keep RTK's declared dims, empty margins and all")
     ap.add_argument('--no-fill', action='store_true',
                     help='do not substitute learned tiles for missing 7.x art')
     ap.add_argument('--learn-tiles', action='store_true',
@@ -411,19 +353,16 @@ def main():
         os.makedirs(thumb, exist_ok=True)
 
     ids = [int(x) for x in args.only.split(',') if x.strip()] or sorted(files)
-    pins = {} if args.no_crop else overlay_extents()
     fb = {} if args.no_fill else load_fallback()
     if fb:
         print('  %d fallback tiles for art 5.33 does not have' % len(fb), flush=True)
     filled = 0
     meta, t0 = [], time.time()
-    cropped = 0
     for k, mid in enumerate(ids):
         r = rtk_cells(files[mid]) if mid in files else None
         if not r:
             continue
         cells, xs, ys = r
-        decl = (xs, ys)
         if fb:
             g = cells[:, 0]
             oor = np.flatnonzero(g >= ts.nground)
@@ -431,11 +370,6 @@ def main():
                 sub = np.array([fb.get(int(g[i]), 0) for i in oor], dtype=np.uint16)
                 filled += int((sub > 0).sum())
                 g[oor] = np.where(sub > 0, sub, g[oor])
-        if not args.no_crop:
-            w, h = content_extent(cells, xs, ys)
-            px, py = pins.get(mid, (0, 0))          # never crop a warp or NPC off the image
-            cells, xs, ys = crop_cells(cells, xs, ys, max(w, px + 1), max(h, py + 1))
-            cropped += (xs, ys) != decl
         try:
             img = rm.render(ts, cells, xs, ys)
         except Exception as e:                      # noqa: BLE001 - keep the batch going
@@ -450,19 +384,16 @@ def main():
             th = img.copy()
             th.thumbnail((args.thumb, args.thumb), Image.LANCZOS)
             th.save(os.path.join(thumb, 'TK%d.png' % mid))
-        m = {'id': mid, 'name': names.get(mid, 'Map %d' % mid),
-             'xs': xs, 'ys': ys, 'w': native[0], 'h': native[1]}
-        if (xs, ys) != decl:
-            m['decl'] = list(decl)                 # RTK's declared size, before the empty margin
-        meta.append(m)
+        meta.append({'id': mid, 'name': names.get(mid, 'Map %d' % mid),
+                     'xs': xs, 'ys': ys, 'w': native[0], 'h': native[1]})
         if (k + 1) % 250 == 0:
             print('  %d/%d  (%.0fs)' % (k + 1, len(ids), time.time() - t0), flush=True)
 
     json.dump(meta, open(os.path.join(OUTDIR, 'maps.json'), 'w'), separators=(',', ':'))
     open(os.path.join(OUTDIR, 'maps.js'), 'w').write(
         'window.RTK_MAPS=' + json.dumps(meta, separators=(',', ':')) + ';')
-    print('done: %d RTK maps in %.0fs (%d trimmed of an empty margin, %d cells filled from the '
-          '4.95 world) -> %s' % (len(meta), time.time() - t0, cropped, filled, OUTDIR))
+    print('done: %d RTK maps in %.0fs (%d cells filled from the 4.95 world) -> %s' % (
+        len(meta), time.time() - t0, filled, OUTDIR))
 
 
 if __name__ == '__main__':
