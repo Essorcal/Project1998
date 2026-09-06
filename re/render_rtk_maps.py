@@ -13,7 +13,8 @@ RTK .map FORMAT (differs from the 4.x client's headerless 4-byte cells):
 The 4.x client file is 4 bytes/cell with no header and little-endian words; do not confuse them.
 Confirmed against re/rtk_cavern_to_4x.py, which already parses this format.
 
-ART: rendered with the SAME 5.33 Tile.dat we use for our own maps. That is not a compromise — RTK's
+ART: rendered with the richest Tile.dat on the box (see TILE_CANDIDATES) -- OTK 5.56 where
+present, else 5.33. Both index the same frame space; 5.56 simply appends. That is not a compromise — RTK's
 ground words index the same extended sheet 5.33 ships, and a spot render of RTK's Kugnae comes out
 coherent (river, bridge, roofs, shop signs). Two known gaps, reported by --stats:
   * 5.2% of all ground cells reference a frame beyond 5.33's 28,551 -> those cells draw BLACK.
@@ -63,9 +64,29 @@ RTK_SOBJ = os.path.join(REPO, 'RTK-Server', 'rtk', 'SObj.tbl')
 RTK_SQL = os.path.join(REPO, 'RTK-Server', 'database', '2020-09-02-21-55-01_RTK.sql.bak')
 OUTDIR = os.path.join(REPO, 're', 'mapviewer', 'assets', 'rtk')
 
+
+
 _spec = importlib.util.spec_from_file_location('render_maps', os.path.join(HERE, 'render_maps.py'))
 rm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rm)
+
+
+# Tile art, richest first. OTK 5.56 is a strict SUPERSET of 5.33 -- verified append-only (402/402
+# sampled shared ground frames byte-identical) -- with 29,972 ground frames against 28,551 and
+# 32,585 object frames against 29,414. That extra art is 7.x-era, so it only matters here: it renders
+# 21% of the ground cells RTK maps left black (63k) and recovers 50k object frames. Our own 4.95 maps
+# resolve 100% on plain 5.33, so render_maps.py deliberately stays on it.
+TILE_CANDIDATES = [
+    'C:/Users/brian/Downloads/OTK-556.1/Tile.dat',
+    rm.DEFAULT_DATA,
+]
+
+
+def best_tile_dat():
+    for cand in TILE_CANDIDATES:
+        if os.path.exists(cand):
+            return cand
+    return rm.DEFAULT_DATA
 
 
 # ----------------------------------------------------------------------------- RTK data
@@ -133,9 +154,9 @@ def rtk_map_names():
     return names
 
 
-def rtk_tileset(data=rm.DEFAULT_DATA):
+def rtk_tileset(data=None):
     """5.33 art, but RTK's SObj table — its object id space is a third larger than 5.33's."""
-    ts = rm.TileSet(data)
+    ts = rm.TileSet(data or best_tile_dat())
     ts.objs = rm.TileSet._parse_sobj(open(RTK_SOBJ, 'rb').read())
     return ts
 
@@ -305,7 +326,8 @@ def main():
     ap.add_argument('cmd', nargs='?', default='all', choices=['all', 'one'])
     ap.add_argument('id', nargs='?', type=int)
     ap.add_argument('out', nargs='?')
-    ap.add_argument('--data', default=rm.DEFAULT_DATA)
+    ap.add_argument('--data', default=None,
+                    help='Tile.dat to render with (default: richest available)')
     ap.add_argument('--thumb', type=int, default=400)
     ap.add_argument('--maxfull', type=int, default=2560)
     ap.add_argument('--only', default='')
@@ -321,8 +343,9 @@ def main():
         selfcheck()
         return
 
-    print('loading 5.33 tileset + RTK SObj ...', flush=True)
-    ts = rtk_tileset(args.data)
+    src = args.data or best_tile_dat()
+    print('tile art: %s' % src, flush=True)
+    ts = rtk_tileset(src)
     if args.learn_tiles:
         learn_fallback(ts)
         return
