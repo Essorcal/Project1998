@@ -22,6 +22,9 @@ build-test-out/
 # nothing to anyone else.
 .claude/settings.local.json
 
+# Offline workflow tests import the shared Python CLI.
+Scripts/__pycache__/
+
 # ---- Live instance state — NEVER committed ----
 # The counterpart to game-data/. Created by running the server, unique to this machine, and the entire
 # backup target (the nightly sqlite3 .backup lives in Project1998-infra, scripts/p1998-backup.sh):

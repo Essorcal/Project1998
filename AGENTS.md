@@ -20,6 +20,12 @@ in 2001, and how do we know?"
 
 ## Orientation
 
+For Caleb's local Claude/Codex coordination, read
+[`docs/common/Development-Workflow.md`](docs/common/Development-Workflow.md).
+Current clone assignments live in `C:\Repo\Project1998\workflow\registry.json`;
+historical handoffs do not allocate clones. Use the canonical workflow/preparation scripts
+from `C:\Repo\NexusTK\Scripts`, even when a worker clone has older copies.
+
 ```
 Server/          the game process (~62 files; Session.*.cs are partials of one class)
 LoginServer/     the login process

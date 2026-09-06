@@ -1,0 +1,25 @@
+diff --git a/Directory.Build.props b/Directory.Build.props
+index 62f1b14..de04617 100644
+--- a/Directory.Build.props
++++ b/Directory.Build.props
+@@ -11,14 +11,15 @@
+   </PropertyGroup>
+ 
+   <!-- The main repo, for Protocol.Tk495 (TkCrypt/TkPacket — the ONE copy of the cipher). Referenced by
+-       sibling path on purpose: every agent works on the one machine where C:\Repo\NexusTK always exists,
+-       copying the crypto would fork it, and a submodule would drag hundreds of MB of map data into every
+-       fresh clone. Override with -p:P1998Repo=<path> or the P1998_REPO environment variable if the layout
+-       ever differs. Fallback if the sibling truly cannot exist: add project1998/Project1998 as a shallow
++       sibling path when present, otherwise two levels up for the C:\Repo\Project1998 clone layout;
++       the main checkout stays at C:\Repo\NexusTK. Copying the crypto would fork it, and a submodule
++       would drag hundreds of MB of map data into every fresh clone. Override with -p:P1998Repo=<path>
++       or P1998_REPO if the layout differs. Fallback: add project1998/Project1998 as a shallow
+        submodule at external/Project1998 and point this at it. -->
+   <PropertyGroup>
+     <P1998Repo Condition="'$(P1998Repo)' == '' and '$(P1998_REPO)' != ''">$(P1998_REPO)</P1998Repo>
+-    <P1998Repo Condition="'$(P1998Repo)' == ''">$(MSBuildThisFileDirectory)..\NexusTK</P1998Repo>
++    <P1998Repo Condition="'$(P1998Repo)' == '' and Exists('$(MSBuildThisFileDirectory)..\NexusTK\Protocol.Tk495\Protocol.Tk495.csproj')">$(MSBuildThisFileDirectory)..\NexusTK</P1998Repo>
++    <P1998Repo Condition="'$(P1998Repo)' == ''">$(MSBuildThisFileDirectory)..\..\NexusTK</P1998Repo>
+     <!-- ...and where that referenced project's OUTPUT goes. A build here must leave the server checkout
+          alone: it is the tree Scripts\Serve.ps1 runs the pair from, and its bin\ holds the assemblies a live
+          server has loaded (#11). The props file says how; TestClient.csproj passes it down the reference as a

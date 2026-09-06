@@ -18,6 +18,8 @@
 *.lua       text eol=lf
 *.csv       text eol=lf
 *.json      text eol=lf
+# Unified diffs represent an unchanged blank line with a single context space.
+docs/workflow/patches/*.patch text eol=lf whitespace=-blank-at-eol
 *.yml       text eol=lf
 *.yaml      text eol=lf
 
