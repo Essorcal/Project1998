@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""Backport an RTK (7.x) map into 4.95-client TK<id>.map terrain.
+"""Backport an RTK (7.x) map into TK<id>.map terrain in our 4-bytes/cell map format.
 
-    python re/rtk_map_to_4x.py 2511 2517            # report only, writes nothing
-    python re/rtk_map_to_4x.py 2511 2517 --write    # emit game-data/maps/TK<id>.map
-    python re/rtk_map_to_4x.py --check              # self-check
+    python re/rtk_map_to_4x.py 2511 2517                  # report only, writes nothing
+    python re/rtk_map_to_4x.py 2511 2517 --write          # emit game-data/maps/TK<id>.map
+    python re/rtk_map_to_4x.py 2511 --target 5x --write   # aim the ART at the 5.33 client
+    python re/rtk_map_to_4x.py --check                    # self-check
+
+TWO TARGETS. The FILE format is the same either way — what changes is which client's tile tables the
+art is chosen from:
+
+  --target 4x   every cell drawn with art the 4.95 client owns. Blocked cells whose art has no 4.x
+                sheet-2 slot take a substitute tile, so those cells are the wrong stone.
+  --target 5x   blocked cells keep RTK's EXACT art on 5.33 by RE-POINTING a free sheet-2 slot (see
+                `slot`), and objects 4.95 lacks are kept rather than dropped. 4.95 still draws a
+                near-miss for those cells and TileTranslation blanks the objects it has no record
+                for, so a 4.95 player sees the 4x-target result and a 5.33 player sees RTK's.
 
 THE 4.x GROUND WORD IS TAGGED, AND ITS TOP TWO BITS ARE OVERLOADED. This is the whole difficulty and
 it is the thing to get right:
@@ -100,7 +111,9 @@ class Backporter:
 
         a4 = self.rm.read_dat(CLIENT_4X)
         self.na = int(np.frombuffer(a4['TILEA.TBL'], np.uint32, 1)[0])     # 9922 sheet-1 frames
+        self.nb = int(np.frombuffer(a4['TILEB.TBL'], np.uint32, 1)[0])     # 8938 sheet-2 frames
         self.nsobj = len(self.rm.TileSet._parse_sobj(a4['SOBJ.TBL']))      # 7608 objects
+        self.nsobj5 = len(self.ts.objs)                                    # 12696 on 5.33
         self.flags = sobj_flags(open(os.path.join(REPO, 'game-data', 'SObj.tbl'), 'rb').read())
 
         # Candidate sheet-2 words, and the art each one draws, for the nearest-art search.
@@ -113,6 +126,58 @@ class Backporter:
 
     def solid_object(self, oid):
         return 0 < oid < len(self.flags) and self.flags[oid] == 0x0F
+
+    # ------------------------------------------------------------------ 5.x target: re-pointed slots
+    def _free_slots(self):
+        """Legacy sheet-2 indices the 4.95 client can draw that NO map of ours references.
+
+        `Tile533Map.csv` says what 5.33 draws for each legacy sheet-2 index, and it is ours to edit.
+        So a slot nothing points at is a free channel: give it RTK's merged frame as its 5.33 target
+        and a blocked cell can carry art 4.x never had, with no format change and no server change.
+        Only slots unreferenced by every shipped map qualify — re-pointing a slot some other room
+        stands on would re-tile that room on 5.33."""
+        used = set()
+        for mid in self.rm.load_index():
+            try:
+                w = self.rm.map_cells(mid)[:, 0].astype(int)
+            except Exception:                        # noqa: BLE001  (missing/short file)
+                continue
+            used |= set((w[w >= SHEET2_BASE] - SHEET2_BASE).tolist())
+        # MapCells.csv authors cells too, and a pass-3 row rebuilds a sheet-2 word in MapData.GroundWord.
+        p = os.path.join(REPO, 'game-data', 'MapCells.csv')
+        for line in open(p, encoding='utf-8'):
+            f = line.split(',')
+            if len(f) > 5 and f[0].strip().isdigit() and f[4].strip() == '3':
+                used.add(int(f[3]))
+        free = [L for L in range(self.nb) if L not in used and L in self.sheet2]
+        self.free_legacy = np.array(free, np.int32)
+        self.free_art = self.ts.ground[np.array([self.sheet2[L] for L in free], np.int32)].astype(np.float32)
+        self.free_taken = np.zeros(len(free), bool)
+        self.repoint = {}                            # legacy L -> merged frame to point it at
+
+    def slot(self, merged):
+        """-> (word, legacy, distance). The legacy index whose 5.33 target we re-point at `merged`.
+
+        Picked as the NEAREST 4.x art among the free slots, so the cell a 4.95 client draws is the
+        same near-miss the 4x target would have chosen, while 5.33 gets RTK's frame exactly."""
+        if merged in self.inv:                       # already reachable (or re-pointed on an earlier map)
+            return SHEET2_BASE + self.inv[merged], self.inv[merged], 0.0
+        want = self.ts.ground[merged].astype(np.float32) if 0 < merged < self.ts.nground else None
+        if want is None:
+            k = int(np.argmax(~self.free_taken))
+            dist = -1.0
+        else:
+            d = ((self.free_art - want) ** 2).mean(axis=(1, 2, 3))
+            d[self.free_taken] = np.inf              # one merged frame per slot
+            k = int(d.argmin())
+            dist = float(np.sqrt(d[k]))
+        self.free_taken[k] = True
+        L = int(self.free_legacy[k])
+        self.repoint[L] = merged
+        self.inv[merged] = L
+        self.sheet2[L] = merged
+        self.ts.sheet2[L] = merged           # so verify() and the renderer read the new mapping
+        return SHEET2_BASE + L, L, dist
 
     def nearest_sheet2(self, merged):
         """-> (word, chosen legacy, chosen merged, mean per-channel distance)."""
@@ -136,7 +201,7 @@ class Backporter:
         self._near[merged] = out
         return out
 
-    def convert(self, mid):
+    def convert(self, mid, target='4x'):
         """-> (bytes, xs, ys, report dict)."""
         path = self.rrm.map_files()[mid]
         raw = open(path, 'rb').read()
@@ -144,13 +209,17 @@ class Backporter:
         a = np.frombuffer(raw, dtype='>u2', count=xs * ys * 3, offset=4).reshape(-1, 3)
         ground, passable, obj = (a[:, 0].astype(int), a[:, 1].astype(int), a[:, 2].astype(int))
 
+        # The object ceiling is the target client's SObj table. On 5.x we keep everything 5.33 has;
+        # TileTranslation.Object blanks the ones 4.95 has no record for, per client, at send time.
+        keep_obj = self.nsobj5 if target == '5x' else self.nsobj
+
         out = bytearray()
         rep = {'exact': 0, 'void': 0, 'obj_blocks': 0, 'subst': {}, 'dropped_obj': {},
-               'walk_noart': {}, 'unwalled': 0, 'xs': xs, 'ys': ys}
+               'walk_noart': {}, 'unwalled': 0, 'repoint': {}, 'xs': xs, 'ys': ys}
         for i in range(xs * ys):
             g, p, o = ground[i], passable[i], obj[i]
 
-            dropped = o >= self.nsobj                    # 4.x has no such object
+            dropped = o >= keep_obj                      # the target client has no such object
             if dropped:
                 rep['dropped_obj'][o] = rep['dropped_obj'].get(o, 0) + 1
                 o = 0
@@ -178,6 +247,10 @@ class Backporter:
                     # object; the floor underneath is exact sheet-1 art.
                     word = g if 1 <= g <= self.na else 0
                     rep['unwalled'] += 1
+                elif target == '5x':
+                    word, L, dist = self.slot(g)
+                    e = rep['repoint'].setdefault(g, [0, L, dist])
+                    e[0] += 1
                 else:
                     word, L, mg, dist = self.nearest_sheet2(g)
                     e = rep['subst'].setdefault(g, [0, L, mg, dist])
@@ -202,6 +275,12 @@ def report(bp, mid, rep):
             tag = '  [hand-picked]' if g in GROUND_OVERRIDE else ''
             print('      merged %-6d x%-4d -> sheet-2 legacy %-5d (merged %-6d)  pixel dist %.1f%s'
                   % (g, cnt, L, mg, dist, tag))
+    if rep['repoint']:
+        tot = sum(v[0] for v in rep['repoint'].values())
+        print('   %d cells keep RTK art exactly on 5.33 via a re-pointed sheet-2 slot:' % tot)
+        for g, (cnt, L, dist) in sorted(rep['repoint'].items(), key=lambda kv: -kv[1][0]):
+            print('      merged %-6d x%-4d -> free legacy slot %-5d  (4.95 draws its own art, dist %.1f)'
+                  % (g, cnt, L, dist))
     if rep['walk_noart']:
         tot = sum(rep['walk_noart'].values())
         print('   %d walkable cells left VOID (4.x has no art): %s'
@@ -258,14 +337,51 @@ def selfcheck():
     assert rep['dropped_obj'], 'Gale Chapel should drop its 13 later-era objects'
     w = np.frombuffer(blob, np.uint16).reshape(-1, 2)[:, 0].astype(int)
     assert not ((w >= 0x4000) & (w < SHEET2_BASE)).any(), 'impossible band'
-    print('selfcheck ok: TileA %d, SObj %d, %d sheet-2 candidates, no impossible words'
-          % (bp.na, bp.nsobj, len(bp.cand_legacy)))
+
+    # 5.x target: every blocked cell must end up on a sheet-2 word that resolves to RTK's own frame,
+    # and the slots it spends must be ones no map of ours stands on.
+    bp._free_slots()
+    assert len(bp.free_legacy) > 1000, 'only %d free sheet-2 slots' % len(bp.free_legacy)
+    blob5, xs, ys, rep5 = bp.convert(2511, '5x')
+    assert not rep5['subst'], '5x target must never substitute art'
+    assert not rep5['dropped_obj'], 'Gale Chapel objects all fit 5.33 (max 8811 < %d)' % bp.nsobj5
+    raw = open(bp.rrm.map_files()[2511], 'rb').read()
+    a = np.frombuffer(raw, dtype='>u2', count=xs * ys * 3, offset=4).reshape(-1, 3).astype(int)
+    w5 = np.frombuffer(blob5, np.uint16).reshape(-1, 2)[:, 0].astype(int)
+    drawn = np.array([bp.ts.ground_frame(int(x)) for x in w5])
+    assert (drawn == a[:, 0]).all(), '5x target lost art on %d cells' % int((drawn != a[:, 0]).sum())
+    print('selfcheck ok: TileA %d, TileB %d, SObj %d/%d, %d sheet-2 candidates, %d free slots, '
+          '5x target reproduces Gale Chapel exactly'
+          % (bp.na, bp.nb, bp.nsobj, bp.nsobj5, len(bp.cand_legacy), len(bp.free_legacy)))
+
+
+def write_repoints(bp, target):
+    """Append the re-pointed slots to Tile533Map.csv. Later rows win in both readers (the server's
+    ParseSheet2 and re/render_maps.load_sheet2 both build a dict in file order), so this needs no
+    surgery on the generated run block above it."""
+    p = os.path.join(REPO, 'game-data', 'Tile533Map.csv')
+    body = ['%d,1,%d' % (L, m) for L, m in sorted(bp.repoint.items())]
+    if not body:
+        return
+    with open(p, 'a', encoding='utf-8', newline='\n') as f:
+        f.write('\n# --- RE-POINTED SLOTS (re/rtk_map_to_4x.py --target %s) ------------------------\n'
+                '# Legacy sheet-2 indices NO map of ours stands on, aimed at a 5.33 frame the 4.x\n'
+                '# client never had. A backported room can then carry RTK art exactly on 5.33 while\n'
+                '# 4.95 still draws the slot\'s own near-miss tile. These rows OVERRIDE the generated\n'
+                '# block above (later wins), so re-generating that block must keep them last.\n'
+                % target)
+        f.write('\n'.join(body) + '\n')
+    print('\nTile533Map.csv: re-pointed %d slot(s) %s'
+          % (len(body), ', '.join('%d->%d' % (L, m) for L, m in sorted(bp.repoint.items()))))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('ids', nargs='*', type=int)
-    ap.add_argument('--write', action='store_true', help='write game-data/maps/TK<id>.map')
+    ap.add_argument('--target', choices=['4x', '5x'], default='4x',
+                    help='which client the ART is chosen for (the file format is the same)')
+    ap.add_argument('--write', action='store_true',
+                    help='write game-data/maps/TK<id>.map (and, for 5x, the Tile533Map.csv rows)')
     ap.add_argument('--check', action='store_true')
     args = ap.parse_args()
     if args.check:
@@ -275,10 +391,14 @@ def main():
         ap.error('give at least one RTK map id')
 
     bp = Backporter()
+    if args.target == '5x':
+        bp._free_slots()
+        print('%d free sheet-2 slots (drawable by 4.95, referenced by no map of ours)'
+              % len(bp.free_legacy))
     names = bp.rrm.rtk_map_names()
     rows = []
     for mid in args.ids:
-        blob, xs, ys, rep = bp.convert(mid)
+        blob, xs, ys, rep = bp.convert(mid, args.target)
         report(bp, mid, rep)
         verify(bp, mid, blob, xs, ys)
         rows.append((mid, names.get(mid, 'Map %d' % mid), xs, ys))
@@ -286,6 +406,8 @@ def main():
             p = os.path.join(OUT, 'TK%d.map' % mid)
             open(p, 'wb').write(blob)
             print('   wrote %s (%d bytes)' % (p, len(blob)))
+    if args.write and args.target == '5x':
+        write_repoints(bp, args.target)
     print('\nmap_index.csv rows:')
     for mid, nm, xs, ys in rows:
         print('%d,%s,%d,%d' % (mid, nm.replace("'", "\\'"), xs, ys))

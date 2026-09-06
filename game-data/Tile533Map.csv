@@ -1207,3 +1207,19 @@
 8913,4,24030
 8917,20,9883
 8937,1,24034
+
+# --- RE-POINTED SLOTS (re/rtk_map_to_4x.py --target 5x) ------------------------
+# Legacy sheet-2 indices NO map of ours stands on, aimed at a 5.33 frame the 4.x
+# client never had. A backported room can then carry RTK art exactly on 5.33 while
+# 4.95 still draws the slot's own near-miss tile. These rows OVERRIDE the generated
+# block above (later wins), so re-generating that block must keep them last.
+5181,1,24311
+5876,1,27463
+7000,1,505
+7001,1,510
+7010,1,508
+7011,1,509
+7045,1,506
+7173,1,507
+7825,1,337
+8720,1,326

@@ -64,6 +64,12 @@ public static class ObjectFlags
         }
     }
 
+    /// <summary>How many object records <c>SObj.tbl</c> actually holds — ids <c>1..Count</c> are real, and
+    /// anything above is an id the 4.x client has no record for. 0 means the table is missing, in which case
+    /// callers must NOT treat every id as unknown. Used by <see cref="TileTranslation.Object"/> to keep an
+    /// out-of-range id off a 4.95 client, which indexes its own copy with no bounds check.</summary>
+    public static int Count => Math.Max(0, (_flags ?? Load()).Length - 1);
+
     /// <summary>The SObj.tbl flag byte for an object-tile id (0 if unknown / no object / table missing).</summary>
     public static byte Flag(int objId)
     {
