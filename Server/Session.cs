@@ -422,14 +422,15 @@ public sealed partial class Session
         }
     }
 
-    // Idempotent teardown: closes the transport, which for TCP completes the outbound channel (so the writer
-    // finishes after draining) and closes the socket (which unblocks the read loop's ReadAsync). Safe to call
-    // from the reader, the writer, or a Send() that found the queue full — whichever gets here first wins;
-    // the rest are no-ops.
-    private void CloseConnection(string reason)
+    // Ordinary failures drop the socket immediately. A rejection that just queued its explanation instead
+    // lets TCP drain asynchronously, with a deadline; neither path waits while holding session/world locks.
+    private void CloseConnection(string reason) => CloseConnection(reason, drain: false);
+
+    private void CloseConnection(string reason, bool drain)
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
-        _out.Close();
+        if (drain && _tcp is not null) _tcp.CloseAfterDrain();
+        else _out.Close();
         Log.Info($"   -> connection teardown ({reason})");
     }
 
@@ -590,6 +591,8 @@ public sealed partial class Session
     // The opcode switch, split from Handle so the guard above wraps exactly the handlers and nothing else.
     private void Dispatch(TkPacket pkt, byte[] dec)
     {
+        // A draining disconnect keeps the socket alive briefly for delivery, never for more commands.
+        if (Volatile.Read(ref _closed) != 0) return;
         StartEntryMusicIfArmed(pkt.Opcode);   // login music waits for proof the client's world object is live
 
         switch (pkt.Opcode)
@@ -939,7 +942,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: account '{_user}' is banned — closing connection");
             SendMessage(LoginAuth.BanMessageFor(_user));
-            CloseConnection("arrival rejected (account banned)");
+            CloseConnection("arrival rejected (account banned)", drain: true);
             return;
         }
 
@@ -972,14 +975,14 @@ public sealed partial class Session
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
             _world.Unregister(CharacterStore.Key(_user), this);
-            CloseConnection("arrival rejected (unreadable character record)");
+            CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
         if (load.Status == CharacterLoadStatus.StorageError)
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
             _world.Unregister(CharacterStore.Key(_user), this);
-            CloseConnection("arrival rejected (character storage unavailable)");
+            CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }
         _char = load.Character!;
@@ -1502,6 +1505,10 @@ public sealed class TcpOutbound : IOutbound
         int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
 
     private readonly TcpClient _client;
+    private readonly TaskCompletionSource _writerFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _socketClosed;
+    private int _draining;
+    internal const int DrainTimeoutMs = 1000;
 
     /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
     /// has already consumed its PROXY header (see Shared/ProxyProtocol.cs). Null on a direct connection,
@@ -1541,9 +1548,27 @@ public sealed class TcpOutbound : IOutbound
     public void Close()
     {
         _queue.Writer.TryComplete();
+        if (Interlocked.Exchange(ref _socketClosed, 1) != 0) return;
         // EXPECTED: teardown races itself (reader, writer and a full-queue Send all reach here) and the loser
         // finds the socket already closed.
         try { _client.Close(); } catch { /* already closing */ }
+    }
+
+    /// <summary>Stop accepting frames and close after the writer finishes, or after a bounded deadline.
+    /// Completion covers the in-flight write AND writer startup: an empty channel alone cannot prove
+    /// delivery. This method never blocks its caller, including a GM command holding the world lock.</summary>
+    public void CloseAfterDrain()
+    {
+        if (Interlocked.Exchange(ref _draining, 1) != 0) return;
+        _queue.Writer.TryComplete();
+        _ = DrainAndCloseAsync();
+    }
+
+    private async Task DrainAndCloseAsync()
+    {
+        try { await _writerFinished.Task.WaitAsync(TimeSpan.FromMilliseconds(DrainTimeoutMs)); }
+        catch (TimeoutException) { /* A stalled peer or an unscheduled writer must not retain the socket. */ }
+        finally { Close(); }
     }
 
     /// <summary>Drains the queue and performs the ONLY socket writes for this connection. Runs on its own
@@ -1589,6 +1614,13 @@ public sealed class TcpOutbound : IOutbound
             Log.Warn($"{Remote} writer stopped: {e.GetType().Name}: {e.Message}");
         }
         catch (Exception e) { Log.Error($"{Remote} writer threw — dropping the connection", e); }
-        finally { onExit("writer exit"); }   // e.g. client closed the socket -> unblock the reader
+        finally
+        {
+            // Close here as well: Session's idempotence gate may already have accepted a draining close.
+            // Publish completion only after the last WriteAsync, never merely after dequeueing its frame.
+            Close();
+            _writerFinished.TrySetResult();
+            onExit("writer exit");
+        }
     }
 }
