@@ -65,8 +65,11 @@ public sealed class TcpOutboundTests
             Task writer = pair.Outbound.RunWriterAsync(_ => { });
             session.LuaMessage("You were disconnected by a GM."); // same SendMessage encoder as KickCmd
             session.Disconnect("kicked");
-            // An arrival after disconnect must not claim an online slot or produce another response.
-            session.Receive(Arrival("zz_closed"));
+            // An arrival after disconnect must not even consume its handoff token. Merely asserting
+            // no reply would miss dispatch: Session.Send already suppresses frames after closure.
+            byte[] ignoredArrival = Arrival("zzclosed");
+            session.Receive(ignoredArrival);
+            Assert.True(HandoffTokens.Consume(ignoredArrival[^5..], "zzclosed", IPAddress.Loopback.ToString()));
             byte[] bytes = await ReadToEof(pair.Client.GetStream());
             Assert.True(TkPacket.TryParse(bytes, out var packet, out int consumed));
             Assert.Equal(bytes.Length, consumed);
