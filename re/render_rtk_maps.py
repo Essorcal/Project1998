@@ -42,7 +42,8 @@ Every object id RTK's maps use is in range there; 5.33's table would silently dr
 
 CLIENT-ERA TAGS: each map in the index carries `t` = ["4.x","5.x"] / ["5.x"] / ["modern"], the
 oldest client that owns every tile and object the map names, plus `b4`/`b5` = how many cells the
-4.95 / 5.33 clients are missing. Stamped here at render time; re/tag_rtk_client_support.py --apply
+4.95 / 5.33 clients are missing. A map whose TERRAIN is 4.x-drawable and that only misses later
+OBJECTS also gets "4.x-props" (b4 is then the prop count). Stamped here at render time; re/tag_rtk_client_support.py --apply
 re-stamps an existing index without re-rendering.
 
 Usage:
@@ -575,9 +576,9 @@ def main():
         row = {'id': mid, 'name': names.get(mid, 'Map %d' % mid),
                'xs': xs, 'ys': ys, 'w': native[0], 'h': native[1]}
         if sup:
-            b4, b5, _ = sup.missing(cells)
-            row['t'] = ['4.x', '5.x'] if not b4 else (['5.x'] if not b5 else ['modern'])
-            row['b4'], row['b5'] = b4, b5
+            miss = sup.missing(cells)
+            row['t'] = sup.tags(miss)
+            row['b4'], row['b5'] = miss['b4'], miss['b5']
         meta.append(row)
         if (k + 1) % 250 == 0:
             print('  %d/%d  (%.0fs)' % (k + 1, len(ids), time.time() - t0), flush=True)

@@ -11,7 +11,14 @@ every SObj id it names must exist in C's SObj table.
     modern      needs the modern split-archive client; 5.33 cannot draw it either
 
 The tiers nest (4.x art is a subset of 5.33's, which is a subset of the modern client's), so the
-tags are exactly "4.x","5.x" / "5.x" / "modern" -- asserted, not assumed, in selfcheck().
+tier tag is exactly "4.x","5.x" / "5.x" / "modern" -- asserted, not assumed, in selfcheck().
+
+    4.x-props   EXTRA tag, alongside the tier. The map's TERRAIN is entirely 4.x-drawable and only
+                later OBJECTS are missing -- RTK 2511 "Gale Chapel" is 4.x ground throughout and
+                loses 13 cells of altar dressing, a fruit stall and a shelf. A pass/fail tier alone
+                buries that: "5.x" reads the same for a room 4.95 cannot start to draw and one that
+                just wants three props. `b4` on such a map IS the missing-prop count (its ground
+                misses are zero by definition).
 
 CEILINGS, read from each client's own tables (nothing here is hardcoded lore):
     4.95  TileA 9,922 + TileB 8,938 ground frames, 16,409 object frames, 7,608 SObj records
@@ -88,30 +95,40 @@ class Support:
         self.src4 = dat4
 
     def missing(self, cells):
-        """-> (unsupported cells on 4.x, on 5.33, on modern) for one map's [ground, object] array."""
+        """Unsupported cell counts for one map's [ground, object] array.
+
+        g4/o4 are kept apart so "4.95 cannot draw this room" and "4.95 draws the room but not the
+        furniture" do not collapse into the same answer; see the 4.x-props tag.
+        """
         g = cells[:, 0]
         o = cells[:, 1]
         g, o = g[g > 0], o[o > 0]
-        return (int((~self.ok4[g]).sum()) + int((o >= self.sobj4).sum()),
-                int((g >= self.ground5).sum()) + int((o >= self.sobj5).sum()),
-                int((g >= self.groundm).sum()) + int((o >= self.sobjm).sum()))
+        g4 = int((~self.ok4[g]).sum())
+        o4 = int((o >= self.sobj4).sum())
+        return {'g4': g4, 'o4': o4, 'b4': g4 + o4,
+                'b5': int((g >= self.ground5).sum()) + int((o >= self.sobj5).sum()),
+                'bm': int((g >= self.groundm).sum()) + int((o >= self.sobjm).sum())}
 
-    def tags(self, cells):
-        b4, b5, _ = self.missing(cells)
-        return ['4.x', '5.x'] if not b4 else (['5.x'] if not b5 else ['modern'])
+    def tags(self, m):
+        """m: a missing() dict -> the tag list. The ONE place the rule lives."""
+        if not m['b4']:
+            return ['4.x', '5.x']
+        t = ['5.x'] if not m['b5'] else ['modern']
+        if not m['g4']:
+            t.append('4.x-props')      # 4.95 owns every TILE here; only later objects are missing
+        return t
 
 
 def tag_all(sup=None):
-    """-> {map id: {'tags': [...], 'b4': n, 'b5': n}} for every RTK map file."""
+    """-> {map id: {'tags': [...], 'b4': n, 'b5': n, 'bm': n}} for every RTK map file."""
     sup = sup or Support()
     out = {}
     for mid, path in sorted(sup.rrm.map_files().items()):
         r = sup.rrm.rtk_cells(path)
         if not r:
             continue
-        b4, b5, bm = sup.missing(r[0])
-        out[mid] = {'tags': ['4.x', '5.x'] if not b4 else (['5.x'] if not b5 else ['modern']),
-                    'b4': b4, 'b5': b5, 'bm': bm}
+        m = sup.missing(r[0])
+        out[mid] = {'tags': sup.tags(m), 'b4': m['b4'], 'b5': m['b5'], 'bm': m['bm']}
     return out
 
 
@@ -141,8 +158,10 @@ def apply(tags):
 def report(tags):
     from collections import Counter
     c = Counter(' + '.join(t['tags']) for t in tags.values())
-    for k in ('4.x + 5.x', '5.x', 'modern'):
-        print('  %-10s %5d maps' % (k, c.get(k, 0)))
+    for k in ('4.x + 5.x', '5.x', '5.x + 4.x-props', 'modern', 'modern + 4.x-props'):
+        print('  %-20s %5d maps' % (k, c.get(k, 0)))
+    props = sum(v for k, v in c.items() if '4.x-props' in k)
+    print('  %-20s %5d maps have 4.x terrain and only later props' % ('(of those)', props))
     worst = sorted(tags.items(), key=lambda kv: -kv[1]['b5'])[:5]
     print('  most 5.33-unsupported cells: ' + ', '.join(
         '%d (%d)' % (mid, t['b5']) for mid, t in worst))
@@ -161,6 +180,12 @@ def selfcheck():
     assert len(t) > 3000, 'only tagged %d maps' % len(t)
     # The whole tag scheme rests on the tiers nesting. Prove it on the real data every run.
     assert not [m for m, v in t.items() if not v['b4'] and v['b5']], '4.x-ok but 5.33-missing'
+    # 4.x-props only ever rides along with a tier, never replaces one, and never on a clean 4.x map.
+    assert not [m for m, v in t.items()
+                if '4.x-props' in v['tags'] and v['tags'][0] not in ('5.x', 'modern')], \
+        '4.x-props on the wrong tier'
+    assert not [m for m, v in t.items() if '4.x-props' in v['tags'] and not v['b4']], \
+        '4.x-props needs a nonzero missing-prop count'
     assert not [m for m, v in t.items() if not v['b5'] and v['bm']], '5.33-ok but modern-missing'
     assert not [m for m, v in t.items() if v['bm']], 'the modern client should cover every RTK map'
     # Canary 1: Walsuk Tavern is drawable on 4.95 ONLY through the sheet-2 remap -- its ground ids
@@ -168,6 +193,9 @@ def selfcheck():
     c2 = sup.rrm.rtk_cells(sup.rrm.map_files()[2])[0]
     assert int(c2[:, 0].max()) > 9922, 'canary map 2 no longer exercises the sheet-2 remap'
     assert t[2]['tags'] == ['4.x', '5.x'], 'Walsuk Tavern should be 4.x art, got %r' % t[2]
+    # Canary 3: Gale Chapel is 4.x ground throughout and misses exactly 13 object cells.
+    assert t[2511]['tags'] == ['5.x', '4.x-props'], 'Gale Chapel: %r' % t[2511]
+    assert t[2511]['b4'] == 13, 'Gale Chapel should miss 13 prop cells, got %d' % t[2511]['b4']
     # Canary 2: Foxy Hole is built from 7.x-only tiles (render_rtk_maps: 324/324 cells, 10 ids).
     assert t[3712]['tags'] == ['modern'], 'Foxy Hole is 7.x-only art, got %r' % t[3712]
     report(t)
