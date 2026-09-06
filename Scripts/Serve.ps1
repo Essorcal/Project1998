@@ -21,8 +21,14 @@ This script performs the same launch as the bat, and answers those questions:
     commit to stamp, the script refuses to start rather than launch a pair labelled "@ unknown".
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
     P1998_GMS, which the game server unions with state/*_accounts.txt). The calling shell is untouched.
+  * The pair binds 127.0.0.1 unless -Bind says otherwise (P1998_BIND in the launched processes only;
+    Shared/NetBind.cs). A loopback listener is not filtered by Windows Defender Firewall, so a pair
+    started this way never raises the allow-or-cancel prompt, which otherwise fires once per
+    LoginServer.exe / Server.exe path, i.e. twice per clone. Bots, the test client and the Frida-
+    redirected real client all dial 127.0.0.1, so a dev pair loses nothing. -Bind 0.0.0.0 (every
+    interface, run-server.bat's behaviour) or a LAN address is for a pair other machines must reach.
   * It writes run/session.json in the checkout: { pid_login, pid_game, checkout, commit, branch, ports,
-    testers, gms, started }, plus exe_login/exe_game, created_login/created_game and
+    testers, gms, bind, started }, plus exe_login/exe_game, created_login/created_game and
     host_login/host_game: the executable path, creation time and console PID of each slot. -Status reads
     it back; -Stop closes exactly those two processes, waits for the ports to free, and removes it. A
     session file only counts for the checkout it was written in:
@@ -80,6 +86,10 @@ Account names to grant the tester tier for this run (P1998_TESTERS in the launch
 .PARAMETER Gms
 Account names to grant the GM tier for this run (P1998_GMS in the launched processes only).
 
+.PARAMETER Bind
+The interface the pair listens on, as an IPv4 literal (P1998_BIND in the launched processes only).
+Default 127.0.0.1: loopback, which Windows Defender Firewall never prompts for. 0.0.0.0 is every
+interface. Applies only to a start.
 .PARAMETER PortBase
 First login port, 1024..65000; the pair binds base, base+1, base+5 and base+6. Default 2000. Used by a
 start, and by -Status to choose which ports to scan when there is no session file; otherwise the recorded
@@ -112,6 +122,7 @@ param(
     [string[]]$Testers = @(),
     [string[]]$Gms = @(),
     [int]$PortBase = 2000,
+    [string]$Bind = '127.0.0.1',
     [switch]$Status,
     [switch]$Stop
 )
@@ -429,7 +440,7 @@ function Find-Dotnet([string]$Root) {
 # ---------------------------------------------------------------------------------------------------
 
 function Write-LaunchBatch([string]$Path, [string]$Title, [string]$Dotnet, [string]$Project, [int[]]$Ports,
-                           [string[]]$TesterNames, [string[]]$GmNames) {
+                           [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress) {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     $lines = @(
@@ -442,6 +453,7 @@ function Write-LaunchBatch([string]$Path, [string]$Title, [string]$Dotnet, [stri
     )
     if (@($TesterNames).Count -gt 0) { $lines += "set `"P1998_TESTERS=$($TesterNames -join ',')`"" }
     if (@($GmNames).Count -gt 0)     { $lines += "set `"P1998_GMS=$($GmNames -join ',')`"" }
+    $lines += "set `"P1998_BIND=$BindAddress`""
     $lines += "`"$Dotnet`" run --no-build --project `"$Project`" -- --ports $($Ports -join ',')"
     Set-Content -LiteralPath $Path -Value $lines -Encoding Oem
 }
@@ -590,6 +602,7 @@ function Show-Status([string]$Root, $Plan) {
         Write-Host "  checkout: $($s.checkout)  ($($s.branch) @ $(Get-ShortCommit $s.commit))"
         Write-Host "  started:  $($s.started)"
         Write-Host "  testers:  [$(@($s.testers) -join ', ')]  gms: [$(@($s.gms) -join ', ')]"
+        Write-Host "  bind:     $(if ($s.bind) { $s.bind } else { '0.0.0.0 (started before -Bind existed)' })"
     } else {
         Write-Host "Nothing running from $Root via Serve.ps1 (no $SessionRel)."
     }
@@ -692,7 +705,7 @@ function Invoke-Stop([string]$Root, $Plan) {
 # Start
 # ---------------------------------------------------------------------------------------------------
 
-function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$GmNames) {
+function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress) {
     $allPorts = @($Plan.Login + $Plan.Game)
 
     # 0. Identify the build first. Without git there is no commit to stamp on the consoles or record in
@@ -779,9 +792,9 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     $loginBat = Join-Path $Root $LoginBatRel
     $gameBat  = Join-Path $Root $GameBatRel
     Write-LaunchBatch -Path $loginBat -Title $loginTitle -Dotnet $dotnet -Project (Join-Path $Root 'LoginServer') `
-                      -Ports $Plan.Login -TesterNames $effTesters -GmNames $effGms
+                      -Ports $Plan.Login -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress
     Write-LaunchBatch -Path $gameBat  -Title $gameTitle  -Dotnet $dotnet -Project (Join-Path $Root 'Server') `
-                      -Ports $Plan.Game  -TesterNames $effTesters -GmNames $effGms
+                      -Ports $Plan.Game  -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress
 
     Write-Host "Starting $loginTitle ..."
     $loginConsole = Start-Console -BatchPath $loginBat -WorkingDirectory $Root
@@ -822,6 +835,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         ports     = [ordered]@{ login495 = [int]$Plan.Login[0]; login533 = [int]$Plan.Login[1]; game495 = [int]$Plan.Game[0]; game533 = [int]$Plan.Game[1] }
         testers   = @($effTesters)
         gms       = @($effGms)
+        bind      = $BindAddress
         started   = (Get-Date).ToString('o')
         exe_login     = [string]$loginProc.ExecutablePath
         exe_game      = [string]$gameProc.ExecutablePath
@@ -835,6 +849,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     Write-Host "  LOGIN $($Plan.Login -join '/')  PID $($login.ProcessId)"
     Write-Host "  GAME  $($Plan.Game -join '/')  PID $($game.ProcessId)"
     Write-Host "  testers: [$($effTesters -join ', ')]  gms: [$($effGms -join ', ')]"
+    Write-Host "  bind:    $BindAddress"
     Write-Host "  session: $file"
     return 0
 }
@@ -854,6 +869,15 @@ if ($PortBase -lt 1024 -or $PortBase -gt 65000) {
 if (($Status -or $Stop) -and (@($Testers).Count -gt 0 -or @($Gms).Count -gt 0)) {
     Write-Host "-Testers / -Gms only apply when starting."; exit 1
 }
+if (($Status -or $Stop) -and $PSBoundParameters.ContainsKey('Bind')) {
+    Write-Host "-Bind only applies when starting."; exit 1
+}
+$bindAddress = $null
+if (-not [System.Net.IPAddress]::TryParse($Bind.Trim(), [ref]$bindAddress) -or
+    $bindAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+    Write-Host "-Bind must be an IPv4 address literal (127.0.0.1 for loopback, 0.0.0.0 for every interface); got '$Bind'. Nothing was built or started."
+    exit 1
+}
 
 try {
     $root = Resolve-Checkout $Checkout
@@ -865,4 +889,4 @@ $plan = Get-PortPlan $PortBase
 
 if ($Status) { Show-Status $root $plan; exit 0 }
 if ($Stop)   { exit (Invoke-Stop $root $plan) }
-exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms))
+exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms) $bindAddress.ToString())
