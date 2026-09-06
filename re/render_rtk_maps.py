@@ -1,0 +1,267 @@
+"""Render the RTK (7.x reference server) maps into the map viewer, ISOLATED from our own maps.
+
+WHY SEPARATE: RTK is a later, re-tiled 7.x fork (see memory/nexustk-rtk-vs-client-maps). Its rooms
+often differ from the 4.95 client's for the SAME map id — different tiles, different geometry, rooms
+we do not ship at all. Mixing the two sets in one gallery would make it impossible to tell which
+world you are looking at, so everything here writes to `assets/rtk/` and defines its OWN globals
+(`window.RTK_MAPS`, and `window.RTK_OVERLAY` from gen_map_overlay.py --rtk). Nothing overwrites the
+official set.
+
+RTK .map FORMAT (differs from the 4.x client's headerless 4-byte cells):
+    u16 xs, u16 ys              BIG-ENDIAN header
+    then xs*ys * (u16 ground, u16 pass, u16 object)   all BIG-ENDIAN  -- 6 bytes per cell
+The 4.x client file is 4 bytes/cell with no header and little-endian words; do not confuse them.
+Confirmed against re/rtk_cavern_to_4x.py, which already parses this format.
+
+ART: rendered with the SAME 5.33 Tile.dat we use for our own maps. That is not a compromise — RTK's
+ground words index the same extended sheet 5.33 ships, and a spot render of RTK's Kugnae comes out
+coherent (river, bridge, roofs, shop signs). Two known gaps, reported by --stats:
+  * ~8.5% of drawn ground cells reference a frame beyond 5.33's 28,551 -> those cells draw nothing.
+  * ~3.8% of object frames RTK asks for are beyond 5.33's TILEC -> those pieces are missing.
+Both are 7.x art we do not have a client for; they show up as holes, never as wrong tiles.
+
+OBJECTS: uses **RTK's own SObj.tbl** (`RTK-Server/rtk/SObj.tbl`, 18,954 records vs 5.33's 12,696).
+Every object id RTK's maps use is in range there; 5.33's table would silently drop the top third.
+
+Usage:
+    python re/render_rtk_maps.py all [outdir] [--thumb 400] [--maxfull 2560] [--only a,b]
+    python re/render_rtk_maps.py one <id> [out.png]
+    python re/render_rtk_maps.py --stats        # coverage report, renders nothing
+    python re/render_rtk_maps.py --check        # self-check
+"""
+import argparse
+import importlib.util
+import json
+import os
+import re
+import struct
+import sys
+import time
+
+import numpy as np
+from PIL import Image
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+RTK_MAPS = os.path.join(REPO, 'RTK-Server', 'rtkmaps', 'Accepted')
+RTK_SOBJ = os.path.join(REPO, 'RTK-Server', 'rtk', 'SObj.tbl')
+RTK_SQL = os.path.join(REPO, 'RTK-Server', 'database', '2020-09-02-21-55-01_RTK.sql.bak')
+OUTDIR = os.path.join(REPO, 're', 'mapviewer', 'assets', 'rtk')
+
+_spec = importlib.util.spec_from_file_location('render_maps', os.path.join(HERE, 'render_maps.py'))
+rm = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rm)
+
+
+# ----------------------------------------------------------------------------- RTK data
+def rtk_cells(path):
+    """RTK .map -> (cells[n,2] = [ground, object], xs, ys), or None if the file is malformed."""
+    d = open(path, 'rb').read()
+    if len(d) < 4:
+        return None
+    xs, ys = struct.unpack('>HH', d[:4])
+    n = xs * ys
+    if n == 0 or len(d) < 4 + n * 6:
+        return None
+    a = np.frombuffer(d, dtype='>u2', count=n * 3, offset=4).reshape(n, 3)
+    cells = np.empty((n, 2), np.uint16)
+    cells[:, 0] = a[:, 0]          # ground word (flat index; RTK never sets the sheet-2 tag)
+    cells[:, 1] = a[:, 2]          # object id   (a[:,1] is passability, not drawn)
+    return cells, xs, ys
+
+
+_TUPLE = re.compile(r"\(((?:[^()']|'(?:[^'\\]|\\.)*')*)\)")
+
+
+def sql_rows(table, sql=None):
+    """Pull one table's INSERT ... VALUES tuples out of RTK's mysqldump."""
+    d = sql if sql is not None else open(RTK_SQL, 'rb').read().decode('utf8', 'replace')
+    out = []
+    for m in re.finditer(r'INSERT INTO `%s`[^\n]*?VALUES\s*(.*?);\s*\n' % table, d, re.S):
+        out += _TUPLE.findall(m.group(1))
+    return out
+
+
+def sql_split(t):
+    """Split a VALUES tuple on commas that are not inside a quoted string."""
+    f, cur, q, i = [], '', False, 0
+    while i < len(t):
+        c = t[i]
+        if q:
+            if c == '\\':
+                cur += t[i:i + 2]
+                i += 2
+                continue
+            if c == "'":
+                q = False
+            cur += c
+        elif c == "'":
+            q = True
+            cur += c
+        elif c == ',':
+            f.append(cur.strip())
+            cur = ''
+        else:
+            cur += c
+        i += 1
+    f.append(cur.strip())
+    return [x[1:-1] if len(x) > 1 and x[0] == "'" and x[-1] == "'" else x for x in f]
+
+
+def rtk_map_names():
+    """RTK's own Maps table: id -> name (9,850 rows, including ids the 4.95 client has no file for)."""
+    names = {}
+    for t in sql_rows('Maps'):
+        f = sql_split(t)
+        if f and f[0].lstrip('-').isdigit():
+            names[int(f[0])] = f[1]
+    return names
+
+
+def rtk_tileset(data=rm.DEFAULT_DATA):
+    """5.33 art, but RTK's SObj table — its object id space is a third larger than 5.33's."""
+    ts = rm.TileSet(data)
+    ts.objs = rm.TileSet._parse_sobj(open(RTK_SOBJ, 'rb').read())
+    return ts
+
+
+def map_files():
+    out = {}
+    for fn in os.listdir(RTK_MAPS):
+        m = re.fullmatch(r'TK(\d+)\.map', fn)
+        if m:
+            out[int(m.group(1))] = os.path.join(RTK_MAPS, fn)
+    return out
+
+
+# ----------------------------------------------------------------------------- reporting
+def stats(ts, sample=60):
+    import random
+    files = sorted(map_files().items())
+    random.seed(1)
+    pick = random.sample(files, min(sample, len(files)))
+    g_tot = g_bad = f_tot = f_bad = 0
+    for _, p in pick:
+        r = rtk_cells(p)
+        if not r:
+            continue
+        cells = r[0]
+        g = cells[:, 0]
+        g_tot += int((g > 0).sum())
+        g_bad += int((g >= ts.nground).sum())
+        for z in cells[:, 1][cells[:, 1] > 0]:
+            z = int(z)
+            if z >= len(ts.objs):
+                continue
+            for fr in ts.objs[z]:
+                if fr:
+                    f_tot += 1
+                    f_bad += fr >= len(ts.cents)
+    print('sampled %d RTK maps' % len(pick))
+    print('  ground cells drawn      %7d   beyond 5.33 TILE  %6d  (%.2f%%)' % (
+        g_tot, g_bad, 100 * g_bad / max(g_tot, 1)))
+    print('  object frames requested %7d   beyond 5.33 TILEC %6d  (%.2f%%)' % (
+        f_tot, f_bad, 100 * f_bad / max(f_tot, 1)))
+
+
+def selfcheck():
+    files = map_files()
+    assert len(files) > 3000, 'expected the full RTK map set, got %d' % len(files)
+    # header dims must exactly account for the file at 6 bytes/cell
+    bad = []
+    for mid, p in sorted(files.items())[:200]:
+        xs, ys = struct.unpack('>HH', open(p, 'rb').read(4))
+        if os.path.getsize(p) != 4 + xs * ys * 6:
+            bad.append(mid)
+    assert not bad, 'these RTK maps are not 4+xs*ys*6 bytes: %s' % bad[:5]
+    # a known room: RTK's Kugnae is 220x220, same as the 4.95 client's
+    c, xs, ys = rtk_cells(files[0])
+    assert (xs, ys) == (220, 220), 'RTK map 0 should be 220x220, got %dx%d' % (xs, ys)
+    assert c[:, 0].max() > 1000, 'ground words look empty'
+    names = rtk_map_names()
+    assert names.get(0) == 'Kugnae', 'RTK Maps table did not parse (id 0 = %r)' % names.get(0)
+    assert len(names) > 9000, 'expected ~9850 RTK map names, got %d' % len(names)
+    objs = rm.TileSet._parse_sobj(open(RTK_SOBJ, 'rb').read())
+    assert len(objs) > 18000, 'RTK SObj.tbl parsed to only %d records' % len(objs)
+    print('selfcheck ok: %d map files, %d names, %d SObj records' % (len(files), len(names), len(objs)))
+
+
+# ----------------------------------------------------------------------------- cli
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('cmd', nargs='?', default='all', choices=['all', 'one'])
+    ap.add_argument('id', nargs='?', type=int)
+    ap.add_argument('out', nargs='?')
+    ap.add_argument('--data', default=rm.DEFAULT_DATA)
+    ap.add_argument('--thumb', type=int, default=400)
+    ap.add_argument('--maxfull', type=int, default=2560)
+    ap.add_argument('--only', default='')
+    ap.add_argument('--stats', action='store_true')
+    ap.add_argument('--check', action='store_true')
+    args = ap.parse_args()
+
+    if args.check:
+        selfcheck()
+        return
+
+    print('loading 5.33 tileset + RTK SObj ...', flush=True)
+    ts = rtk_tileset(args.data)
+    print('  %d ground frames, %d object frames, %d RTK SObj records' % (
+        ts.nground, len(ts.cents), len(ts.objs)), flush=True)
+
+    if args.stats:
+        stats(ts)
+        return
+
+    files = map_files()
+    names = rtk_map_names()
+
+    if args.cmd == 'one':
+        r = rtk_cells(files[args.id])
+        cells, xs, ys = r
+        img = rm.render(ts, cells, xs, ys)
+        out = args.out or 'rtk%d.png' % args.id
+        img.save(out)
+        print('RTK TK%d %r %dx%d -> %s' % (args.id, names.get(args.id, '?'), xs, ys, out))
+        return
+
+    full = os.path.join(OUTDIR, 'full')
+    thumb = os.path.join(OUTDIR, 'thumb')
+    os.makedirs(full, exist_ok=True)
+    if args.thumb:
+        os.makedirs(thumb, exist_ok=True)
+
+    ids = [int(x) for x in args.only.split(',') if x.strip()] or sorted(files)
+    meta, t0 = [], time.time()
+    for k, mid in enumerate(ids):
+        r = rtk_cells(files[mid]) if mid in files else None
+        if not r:
+            continue
+        cells, xs, ys = r
+        try:
+            img = rm.render(ts, cells, xs, ys)
+        except Exception as e:                      # noqa: BLE001 - keep the batch going
+            print('  !! TK%d: %s' % (mid, e))
+            continue
+        native = (img.width, img.height)
+        if args.maxfull and max(native) > args.maxfull:
+            img = img.copy()
+            img.thumbnail((args.maxfull, args.maxfull), Image.LANCZOS)
+        img.save(os.path.join(full, 'TK%d.png' % mid))
+        if args.thumb:
+            th = img.copy()
+            th.thumbnail((args.thumb, args.thumb), Image.LANCZOS)
+            th.save(os.path.join(thumb, 'TK%d.png' % mid))
+        meta.append({'id': mid, 'name': names.get(mid, 'Map %d' % mid),
+                     'xs': xs, 'ys': ys, 'w': native[0], 'h': native[1]})
+        if (k + 1) % 250 == 0:
+            print('  %d/%d  (%.0fs)' % (k + 1, len(ids), time.time() - t0), flush=True)
+
+    json.dump(meta, open(os.path.join(OUTDIR, 'maps.json'), 'w'), separators=(',', ':'))
+    open(os.path.join(OUTDIR, 'maps.js'), 'w').write(
+        'window.RTK_MAPS=' + json.dumps(meta, separators=(',', ':')) + ';')
+    print('done: %d RTK maps in %.0fs -> %s' % (len(meta), time.time() - t0, OUTDIR))
+
+
+if __name__ == '__main__':
+    main()

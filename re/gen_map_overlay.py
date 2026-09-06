@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
-"""Build re/mapviewer/assets/overlay.js from the game-data CSVs.
+"""Build the map viewer's warp/NPC overlay data.
 
-Emits warp + NPC markers per source map, in CELL coordinates, for the overlay
-layer in re/mapviewer/index.html. Adjacent warp cells that share a destination
-map are merged into one run, so a four-tile doorway gets one label instead of
-four. Re-run after editing Warps.csv / NPCs.csv / Maps.csv:
+Two datasets, kept ISOLATED from each other (see re/render_rtk_maps.py for why):
 
-    python re/gen_map_overlay.py            # regenerate
-    python re/gen_map_overlay.py --check    # self-check, writes nothing
+  default   our official 4.95 world.  Warps.csv + NPCs.csv + Maps.csv
+            -> re/mapviewer/assets/overlay.js       window.OVERLAY
+  --rtk     the RTK 7.x reference server.  RTK's own mysqldump Warps + Maps tables
+            -> re/mapviewer/assets/rtk/overlay.js   window.RTK_OVERLAY
 
-Output shape:
-    window.OVERLAY = {
-      "<mapId>": {
-        "w": [{x, y, c:[[x,y],...], l:"to Kugnae (12,40)", d:<destMapId>, r:0|1}],
-        "n": [{x, y, l:"Wand"}]
-      }
-    }
-`r` is 1 when the destination map has a rendered PNG (so the viewer can follow
-the warp), 0 when it does not.
+Adjacent warp cells sharing a destination map are merged into one labelled run, so a four-tile
+doorway gets one label instead of four. Re-run after editing the CSVs:
+
+    python re/gen_map_overlay.py            # official
+    python re/gen_map_overlay.py --rtk      # RTK reference set
+    python re/gen_map_overlay.py --check    # self-check both, writes nothing
+
+Output shape (both):
+    { "<mapId>": { "w": [{x, y, c:[[x,y],...], l:"to Kugnae (12,40)", d:<dest>, r:0|1}],
+                   "n": [{x, y, l:"Wand"}] } }
+`r` is 1 when the destination map has a rendered PNG, so the viewer can follow the warp.
+
+NOTE on RTK NPCs: RTK's mysqldump carries no NPC *placement* table (its Mobs table has no map/x/y,
+and placement lives outside this dump), so the RTK overlay reuses our NPCs.csv positions, which are
+themselves RTK-derived. A handful have since been moved to suit the 4.95 client. The viewer labels
+this layer accordingly — treat RTK NPC pins as indicative, not as RTK ground truth.
 """
-import csv, json, os, sys
+import csv, importlib.util, json, os, sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 GD = os.path.join(ROOT, 'game-data')
 VIEWER = os.path.join(ROOT, 're', 'mapviewer', 'assets')
-OUT = os.path.join(VIEWER, 'overlay.js')
 
 
 def rows(name):
@@ -32,17 +38,11 @@ def rows(name):
         return list(csv.DictReader(f))
 
 
-def map_names():
-    """Maps.csv is authoritative; maps.json fills in maps rendered without a row."""
-    names = {}
-    with open(os.path.join(VIEWER, 'maps.json'), encoding='utf-8') as f:
-        rendered = json.load(f)
-    for m in rendered:
-        names[m['id']] = m['name']
-    for r in rows('Maps.csv'):
-        if r['MapId'].strip() and r['MapName'].strip():
-            names[int(r['MapId'])] = r['MapName']
-    return names, {m['id'] for m in rendered}
+def rendered(assets):
+    """ids that actually have a PNG, plus each map's name from its rendered index."""
+    with open(os.path.join(assets, 'maps.json'), encoding='utf-8') as f:
+        idx = json.load(f)
+    return {m['id'] for m in idx}, {m['id']: m['name'] for m in idx}
 
 
 def runs(cells):
@@ -62,21 +62,15 @@ def runs(cells):
     return out
 
 
-def build():
-    names, rendered = map_names()
+def assemble(warps, npcs, names, have_png):
+    """warps: (src,sx,sy,dst,dx,dy) tuples. npcs: (map,x,y,label). -> overlay dict."""
     ov = {}
 
     def bucket(mid):
         return ov.setdefault(str(mid), {'w': [], 'n': []})
 
-    # warps: bucket by (source map, destination map), then split into adjacent runs
     grouped = {}
-    for r in rows('Warps.csv'):
-        try:
-            src, sx, sy = int(r['SourceMapId']), int(r['SourceX']), int(r['SourceY'])
-            dst, dx, dy = int(r['DestinationMapId']), int(r['DestinationX']), int(r['DestinationY'])
-        except (ValueError, KeyError, TypeError):
-            continue
+    for src, sx, sy, dst, dx, dy in warps:
         grouped.setdefault((src, dst), {})[(sx, sy)] = (dx, dy)
 
     for (src, dst), cells in sorted(grouped.items()):
@@ -86,8 +80,33 @@ def build():
             dx, dy = cells[(ax, ay)]
             label = 'to %s (%d,%d)' % (names.get(dst, '#%d' % dst), dx, dy)
             bucket(src)['w'].append({'x': ax, 'y': ay, 'c': blob, 'l': label,
-                                     'd': dst, 'r': 1 if dst in rendered else 0})
+                                     'd': dst, 'r': 1 if dst in have_png else 0})
 
+    for mid, x, y, label in npcs:
+        bucket(mid)['n'].append({'x': x, 'y': y, 'l': label})
+    return ov
+
+
+# ----------------------------------------------------------------------------- official 4.95
+def build_official():
+    have_png, png_names = rendered(VIEWER)
+    names = dict(png_names)                        # rendered maps without a Maps.csv row
+    for r in rows('Maps.csv'):                     # Maps.csv is authoritative where it has a row
+        if r['MapId'].strip() and r['MapName'].strip():
+            names[int(r['MapId'])] = r['MapName']
+
+    warps = []
+    for r in rows('Warps.csv'):
+        try:
+            warps.append((int(r['SourceMapId']), int(r['SourceX']), int(r['SourceY']),
+                          int(r['DestinationMapId']), int(r['DestinationX']), int(r['DestinationY'])))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return assemble(warps, npc_rows(), names, have_png)
+
+
+def npc_rows():
+    out = []
     for r in rows('NPCs.csv'):
         if (r.get('Enabled') or '1').strip() == '0':
             continue
@@ -95,34 +114,69 @@ def build():
             mid, x, y = int(r['NpcMapId']), int(r['NpcX']), int(r['NpcY'])
         except (ValueError, KeyError, TypeError):
             continue
-        name = (r.get('NpcDescription') or r.get('NpcIdentifier') or '?').strip()
-        bucket(mid)['n'].append({'x': x, 'y': y, 'l': name})
+        out.append((mid, x, y, (r.get('NpcDescription') or r.get('NpcIdentifier') or '?').strip()))
+    return out
 
-    return ov
+
+# ----------------------------------------------------------------------------- RTK reference
+def _rtk():
+    spec = importlib.util.spec_from_file_location('rrm', os.path.join(HERE, 'render_rtk_maps.py'))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def build_rtk():
+    rtk = _rtk()
+    assets = os.path.join(VIEWER, 'rtk')
+    have_png, _ = rendered(assets)
+    names = rtk.rtk_map_names()                    # RTK's own Maps table, 9,850 rows
+
+    warps = []
+    for t in rtk.sql_rows('Warps'):
+        f = rtk.sql_split(t)
+        try:
+            warps.append((int(f[1]), int(f[2]), int(f[3]), int(f[4]), int(f[5]), int(f[6])))
+        except (ValueError, IndexError):
+            continue
+    return assemble(warps, npc_rows(), names, have_png)
+
+
+# ----------------------------------------------------------------------------- io
+def write(ov, path, global_name):
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('window.%s=%s;\n' % (global_name, json.dumps(ov, separators=(',', ':'))))
+    print('wrote %s\n  %d maps, %d warp runs (%d cells), %d npcs, %.0f KB' % (
+        path, len(ov),
+        sum(len(v['w']) for v in ov.values()),
+        sum(len(r['c']) for v in ov.values() for r in v['w']),
+        sum(len(v['n']) for v in ov.values()),
+        os.path.getsize(path) / 1024))
 
 
 def selfcheck():
     assert len(runs([(0, 0), (1, 0), (2, 0), (5, 5)])) == 2, 'non-adjacent cells must split'
     assert len(runs([(0, 0), (0, 1), (1, 1)])) == 1, 'L-shaped run is one blob'
-    ov = build()
-    assert ov, 'no overlay data produced'
+    ov = build_official()
+    assert ov, 'no official overlay data'
     w = ov['4711']['w']
     assert sum(len(r['c']) for r in w) > len(w), 'expected multi-cell doorways to collapse'
     assert all(r['l'].startswith('to ') and '(' in r['l'] for v in ov.values() for r in v['w'])
-    print('selfcheck ok: %d maps, %d warp runs, %d npcs' % (
+    print('official ok: %d maps, %d warp runs, %d npcs' % (
         len(ov), sum(len(v['w']) for v in ov.values()), sum(len(v['n']) for v in ov.values())))
+    if os.path.exists(os.path.join(VIEWER, 'rtk', 'maps.json')):
+        r = build_rtk()
+        assert r, 'no RTK overlay data'
+        print('rtk ok:      %d maps, %d warp runs, %d npcs' % (
+            len(r), sum(len(v['w']) for v in r.values()), sum(len(v['n']) for v in r.values())))
+    else:
+        print('rtk skipped: render it first with re/render_rtk_maps.py')
 
 
 if __name__ == '__main__':
     if '--check' in sys.argv:
         selfcheck()
-        raise SystemExit
-    ov = build()
-    with open(OUT, 'w', encoding='utf-8') as f:
-        f.write('window.OVERLAY=' + json.dumps(ov, separators=(',', ':')) + ';\n')
-    print('wrote %s\n  %d maps, %d warp runs (%d cells), %d npcs, %.0f KB' % (
-        OUT, len(ov),
-        sum(len(v['w']) for v in ov.values()),
-        sum(len(r['c']) for v in ov.values() for r in v['w']),
-        sum(len(v['n']) for v in ov.values()),
-        os.path.getsize(OUT) / 1024))
+    elif '--rtk' in sys.argv:
+        write(build_rtk(), os.path.join(VIEWER, 'rtk', 'overlay.js'), 'RTK_OVERLAY')
+    else:
+        write(build_official(), os.path.join(VIEWER, 'overlay.js'), 'OVERLAY')
