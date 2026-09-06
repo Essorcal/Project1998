@@ -16,8 +16,13 @@ Confirmed against re/rtk_cavern_to_4x.py, which already parses this format.
 ART: rendered with the SAME 5.33 Tile.dat we use for our own maps. That is not a compromise — RTK's
 ground words index the same extended sheet 5.33 ships, and a spot render of RTK's Kugnae comes out
 coherent (river, bridge, roofs, shop signs). Two known gaps, reported by --stats:
-  * ~8.5% of drawn ground cells reference a frame beyond 5.33's 28,551 -> those cells draw nothing.
-  * ~3.8% of object frames RTK asks for are beyond 5.33's TILEC -> those pieces are missing.
+  * 5.2% of all ground cells reference a frame beyond 5.33's 28,551 -> those cells draw BLACK.
+    RTK maps reach tile id 47,907, so ~19,400 frames of 7.x art are simply absent here. The gap is
+    CLUSTERED, not spread: most maps are clean, but 152 of 3,250 are more than half black because
+    their room is built from a handful of high-id tiles (e.g. 3712 Foxy Hole, 324/324 cells from 10
+    missing ids). Use `--stats --only <id>` to see which ids a given map is missing.
+  * ~7.5% of object frames RTK asks for are beyond 5.33's TILEC -> those pieces are missing.
+    Only a later 7.x client's Tile.dat would fill either gap; this box has 4.x and 5.33 only.
 Both are 7.x art we do not have a client for; they show up as holes, never as wrong tiles.
 
 OBJECTS: uses **RTK's own SObj.tbl** (`RTK-Server/rtk/SObj.tbl`, 18,954 records vs 5.33's 12,696).
@@ -26,7 +31,8 @@ Every object id RTK's maps use is in range there; 5.33's table would silently dr
 Usage:
     python re/render_rtk_maps.py all [outdir] [--thumb 400] [--maxfull 2560] [--only a,b]
     python re/render_rtk_maps.py one <id> [out.png]
-    python re/render_rtk_maps.py --stats        # coverage report, renders nothing
+    python re/render_rtk_maps.py --stats                    # coverage report, renders nothing
+    python re/render_rtk_maps.py --stats --only 3918,3712   # why IS THAT MAP black?
     python re/render_rtk_maps.py --check        # self-check
 """
 import argparse
@@ -135,6 +141,29 @@ def map_files():
 
 
 # ----------------------------------------------------------------------------- reporting
+def why_black(ts, ids):
+    """Per-map breakdown of why cells render black: no data (id 0) vs no art (id past TILE.EPF)."""
+    files, names = map_files(), rtk_map_names()
+    print('%-6s %-22s %-9s %7s %7s %7s  %s' % (
+        'id', 'name', 'dims', 'cells', 'void', 'no-art', 'missing tile ids'))
+    for mid in ids:
+        r = rtk_cells(files[mid]) if mid in files else None
+        if not r:
+            print('%-6d (no RTK map file)' % mid)
+            continue
+        cells, xs, ys = r
+        g = cells[:, 0]
+        oor = g[g >= ts.nground]
+        u = sorted({int(v) for v in oor})
+        print('%-6d %-22.22s %-9s %7d %7d %7d  %s%s' % (
+            mid, names.get(mid, '?'), '%dx%d' % (xs, ys), len(g),
+            int((g == 0).sum()), len(oor),
+            ','.join(str(v) for v in u[:6]), ' ...' if len(u) > 6 else ''))
+    print('')
+    print('void   = ground word 0, the map genuinely has no tile there')
+    print('no-art = a real tile id we have no frame for; 5.33 TILE.EPF stops at %d' % (ts.nground - 1))
+
+
 def stats(ts, sample=60):
     import random
     files = sorted(map_files().items())
@@ -210,7 +239,8 @@ def main():
         ts.nground, len(ts.cents), len(ts.objs)), flush=True)
 
     if args.stats:
-        stats(ts)
+        ids = [int(x) for x in args.only.split(',') if x.strip()]
+        why_black(ts, ids) if ids else stats(ts)
         return
 
     files = map_files()
