@@ -70,8 +70,11 @@ never stops anything by itself. The two consoles are titled `LOGIN 2000/2001 - <
 built the tree and a `+` means tracked files were modified (untracked files are not counted), so the
 window says which build it is. `-Testers` and
 `-Gms` reach only the launched processes, as `P1998_TESTERS` / `P1998_GMS`, unioned with the clone's
-`state/*_accounts.txt` as usual. What it started is recorded in the clone's `run/session.json`
-(`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `started`, plus each
+`state/*_accounts.txt` as usual. The pair listens on `127.0.0.1` unless `-Bind` names another IPv4 address
+(`0.0.0.0` for every interface, as `run-server.bat` does): a loopback listener never triggers the Windows
+Defender Firewall prompt, and bots, the test client and the Frida-redirected real client all dial loopback.
+What it started is recorded in the clone's `run/session.json`
+(`pid_login`, `pid_game`, `checkout`, `commit`, `branch`, `ports`, `testers`, `gms`, `bind`, `started`, plus each
 slot's executable path, creation time and console PID); `-Status` reads it back. `-Stop` acts only on a
 session file written in the checkout it is given, and only on a PID that is still the recorded
 executable, created at the recorded time and holding its ports: it sends those two processes Ctrl+C,
@@ -92,12 +95,12 @@ expects failed, wall clock, first failing expect -- exiting 0 only if every scri
 failed expects.
 
 ```powershell
-Scripts\Test-Branch.ps1 -Checkout C:\Repo\NexusTK-sonnet
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet
 ```
 
 Full parameter list: `-Checkout` (required), `-PortBase` (default 3000), `-Scripts` (a glob or a list,
 default every `*.txt` directly under the test client's `scripts\`), `-TestClient` (default
-`C:\Repo\project1998-testclient`), `-Bots` (default `botone,bottwo` -- every name gets both tester and GM
+`C:\Repo\Project1998\project1998-testclient`), `-Bots` (default `botone,bottwo` -- every name gets both tester and GM
 tier; `-Bots[0]` is the primary account TestClient.Cli logs in as, any others are for scripts that declare
 a second bot themselves), `-Passes` (one password per `-Bots` name, same order, default
 `bot1pass,bot2pass`), `-KeepRunning` (skip the stop -- for a developer who wants to poke at the pair
