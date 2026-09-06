@@ -40,6 +40,11 @@ margin. Do not re-add cropping.
 OBJECTS: uses **RTK's own SObj.tbl** (`RTK-Server/rtk/SObj.tbl`, 18,954 records vs 5.33's 12,696).
 Every object id RTK's maps use is in range there; 5.33's table would silently drop the top third.
 
+CLIENT-ERA TAGS: each map in the index carries `t` = ["4.x","5.x"] / ["5.x"] / ["modern"], the
+oldest client that owns every tile and object the map names, plus `b4`/`b5` = how many cells the
+4.95 / 5.33 clients are missing. Stamped here at render time; re/tag_rtk_client_support.py --apply
+re-stamps an existing index without re-rendering.
+
 Usage:
     python re/render_rtk_maps.py all                        # modern art -> assets/rtk-modern/
     python re/render_rtk_maps.py all --legacy-art           # 5.33 art   -> assets/rtk/
@@ -367,6 +372,22 @@ def render_latest(ts, cells, xs, ys):
             dst[m] = rgb[sy0:ey, sx0:ex][m]
     return Image.fromarray(canvas)
 
+# ----------------------------------------------------------------------------- client support
+def client_support():
+    """Tagger for "which client era can draw this map" -- see re/tag_rtk_client_support.py.
+    Returns None if the 4.x client archive is not on this box; rendering still works, the maps just
+    come out untagged (run tag_rtk_client_support.py --apply later to stamp them in)."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'tag_rtk', os.path.join(HERE, 'tag_rtk_client_support.py'))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m.Support()
+    except Exception as e:                          # noqa: BLE001 - tags are a nicety, not the job
+        print('  (no client-support tags: %s)' % e, flush=True)
+        return None
+
+
 # ----------------------------------------------------------------------------- reporting
 def why_black(ts, ids):
     """Per-map breakdown of why cells render black: no data (id 0) vs no art (id past TILE.EPF)."""
@@ -523,6 +544,7 @@ def main():
     if fb:
         print('  %d fallback tiles for art 5.33 does not have' % len(fb), flush=True)
     filled = 0
+    sup = client_support()
     meta, t0 = [], time.time()
     for k, mid in enumerate(ids):
         r = rtk_cells(files[mid]) if mid in files else None
@@ -550,8 +572,13 @@ def main():
             th = img.copy()
             th.thumbnail((args.thumb, args.thumb), Image.LANCZOS)
             th.save(os.path.join(thumb, 'TK%d.png' % mid))
-        meta.append({'id': mid, 'name': names.get(mid, 'Map %d' % mid),
-                     'xs': xs, 'ys': ys, 'w': native[0], 'h': native[1]})
+        row = {'id': mid, 'name': names.get(mid, 'Map %d' % mid),
+               'xs': xs, 'ys': ys, 'w': native[0], 'h': native[1]}
+        if sup:
+            b4, b5, _ = sup.missing(cells)
+            row['t'] = ['4.x', '5.x'] if not b4 else (['5.x'] if not b5 else ['modern'])
+            row['b4'], row['b5'] = b4, b5
+        meta.append(row)
         if (k + 1) % 250 == 0:
             print('  %d/%d  (%.0fs)' % (k + 1, len(ids), time.time() - t0), flush=True)
 
