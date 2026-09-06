@@ -1,0 +1,23 @@
+# 4.x client maps displaced from game-data/maps/ so their ids could take RTK's
+# labelling. NOTHING HERE WAS DELETED -- each file is intact beside this CSV and
+# still in git history at its old path. sha256 is of the file as parked.
+#
+# WHY: RTK reserves 3820-3835 for the 16 class sanctums (Sword/Dagger/Wand/Staff x
+# base + Kwi-Sin/Ming-Ken/Ohaeng). Our 4.x set had unrelated terrain on eight of
+# those ids, wearing RTK's sanctum NAMES only because map_index.csv names maps by
+# bare id from RTK's Maps table. 3825-3831 are seven near-identical 64x64 desert
+# maps; 3835 is a 100x100 arctic city that belongs with the 3811-3819 arctic
+# cluster (Arctic Village/Tavern, Othotsk Blacksmith, Taimyr Butcher, ...).
+# None of them is referenced by any warp, NPC, spawn or script -- checked across
+# every game-data CSV before the move.
+#
+# These are worth re-homing at free ids rather than leaving parked.
+map_id,file,xs,ys,cells,bytes,sha256,provenance,name_when_displaced,name_is_reliable,reason,displaced_on,restore
+3825,TK3825.map,64,64,4096,16384,b6d30b806f9a723c7b6e919765bbf5186503d1838a40ce10bb6baacd973a1df1,"4.x client (NextAeon5\Maps), via game-data/maps",Kwi-Sin Dagger,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3825.map game-data/maps/ (and re-add its map_index.csv row)
+3826,TK3826.map,64,64,4096,16384,43be4bfce1aff79faea799b83e676f4468874d55aa9d928dc50cd7d2f548499b,"4.x client (NextAeon5\Maps), via game-data/maps",Ming-Ken Dagger,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3826.map game-data/maps/ (and re-add its map_index.csv row)
+3827,TK3827.map,64,64,4096,16384,4e5608ae95420b4046a563b4956253487f63b36baa8bc62902a950858eb2bdf3,"4.x client (NextAeon5\Maps), via game-data/maps",Ohaeng Dagger,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3827.map game-data/maps/ (and re-add its map_index.csv row)
+3828,TK3828.map,64,64,4096,16384,30c5c515f9c2c2b752bb8be23c4e04a7fa32f143798f6794a306488501afab7c,"4.x client (NextAeon5\Maps), via game-data/maps",Wand,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3828.map game-data/maps/ (and re-add its map_index.csv row)
+3829,TK3829.map,64,64,4096,16384,781fb5a6267e16f06c7dbad027fdd0639d0b73eddafd398b313059f97d1cb5ff,"4.x client (NextAeon5\Maps), via game-data/maps",Kwi-Sin Wand,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3829.map game-data/maps/ (and re-add its map_index.csv row)
+3830,TK3830.map,64,64,4096,16384,21a8b4c3f92c2a66d3fec9ff28bb278afdabac596393b3d750500d988b6a8d3a,"4.x client (NextAeon5\Maps), via game-data/maps",Ming-Ken Wand,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3830.map game-data/maps/ (and re-add its map_index.csv row)
+3831,TK3831.map,64,64,4096,16384,ce4e6fbe9f4e8f9fcee20ad407d9e3f0ca3286cc8df22d56d43891a0c29897af,"4.x client (NextAeon5\Maps), via game-data/maps",Ohaeng Wand,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3831.map game-data/maps/ (and re-add its map_index.csv row)
+3835,TK3835.map,100,100,10000,40000,a100dcb9bde894e2da39c89330a59d1d6d8c2b6e3958054b1e55dafcb42769b7,"4.x client (NextAeon5\Maps), via game-data/maps",Ohaeng Staff,no,id reclaimed for RTK class-sanctum block 3820-3835; this terrain is unrelated to the sanctum RTK names that id,2026-09-06,git mv game-data/maps/backup-4x/TK3835.map game-data/maps/ (and re-add its map_index.csv row)

@@ -960,13 +960,9 @@ id,name,xs,ys
 2508,Tilsa Tailors,12,12
 2509,Mountain Shaman,10,10
 2510,Warrior Sword,18,24
-2511,Sword,12,12
 2512,Mage Wand,18,24
-2513,Wand,12,12
 2514,Rogue Dagger,18,24
-2515,Dagger,12,12
 2516,Poet Staff,18,24
-2517,Staff,12,12
 2518,Chul Smith,12,12
 2519,Tinbae Message,12,12
 2520,Nagnang Gathering,18,20
@@ -1298,14 +1294,10 @@ id,name,xs,ys
 3817,Laptev Crafter,12,12
 3818,Yakutsk Oracle,16,16
 3819,Lovers\' Lake,30,40
-3825,Kwi-Sin Dagger,64,64
-3826,Ming-Ken Dagger,64,64
-3827,Ohaeng Dagger,64,64
-3828,Wand,64,64
-3829,Kwi-Sin Wand,64,64
-3830,Ming-Ken Wand,64,64
-3831,Ohaeng Wand,64,64
-3835,Ohaeng Staff,100,100
+3820,Sword,12,12
+3824,Dagger,12,12
+3828,Wand,12,12
+3832,Staff,12,12
 3836,Sa San\'s Haven,125,80
 3837,Warrior\'s Rage,100,100
 3838,Rogue\'s Strike,100,100
