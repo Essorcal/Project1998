@@ -5,8 +5,10 @@ Two datasets, kept ISOLATED from each other (see re/render_rtk_maps.py for why):
 
   default   our official 4.95 world.  Warps.csv + NPCs.csv + Maps.csv
             -> re/mapviewer/assets/overlay.js       window.OVERLAY
-  --rtk     the RTK 7.x reference server.  RTK's own mysqldump Warps + Maps tables
-            -> re/mapviewer/assets/rtk/overlay.js   window.RTK_OVERLAY
+  --rtk     the RTK 7.x reference server.  RTK's own mysqldump Warps + Maps tables.
+            Writes BOTH RTK sets, which are rendered from different client art:
+            -> assets/rtk/overlay.js         window.RTK_OVERLAY   (5.33 art, 24px)
+            -> assets/rtk-modern/overlay.js  window.RTKM_OVERLAY  (modern client, 48px)
 
 Adjacent warp cells sharing a destination map are merged into one labelled run, so a four-tile
 doorway gets one label instead of four. Re-run after editing the CSVs:
@@ -126,9 +128,9 @@ def _rtk():
     return m
 
 
-def build_rtk():
+def build_rtk(subdir='rtk'):
     rtk = _rtk()
-    assets = os.path.join(VIEWER, 'rtk')
+    assets = os.path.join(VIEWER, subdir)
     have_png, _ = rendered(assets)
     names = rtk.rtk_map_names()                    # RTK's own Maps table, 9,850 rows
 
@@ -165,7 +167,7 @@ def selfcheck():
     print('official ok: %d maps, %d warp runs, %d npcs' % (
         len(ov), sum(len(v['w']) for v in ov.values()), sum(len(v['n']) for v in ov.values())))
     if os.path.exists(os.path.join(VIEWER, 'rtk', 'maps.json')):
-        r = build_rtk()
+        r = build_rtk('rtk')
         assert r, 'no RTK overlay data'
         print('rtk ok:      %d maps, %d warp runs, %d npcs' % (
             len(r), sum(len(v['w']) for v in r.values()), sum(len(v['n']) for v in r.values())))
@@ -177,6 +179,10 @@ if __name__ == '__main__':
     if '--check' in sys.argv:
         selfcheck()
     elif '--rtk' in sys.argv:
-        write(build_rtk(), os.path.join(VIEWER, 'rtk', 'overlay.js'), 'RTK_OVERLAY')
+        # Same warps and NPCs for both RTK sets -- only the rendered-map list differs, so each
+        # directory gets its own file with its own global.
+        for sub, glob_name in (('rtk', 'RTK_OVERLAY'), ('rtk-modern', 'RTKM_OVERLAY')):
+            if os.path.exists(os.path.join(VIEWER, sub, 'maps.json')):
+                write(build_rtk(sub), os.path.join(VIEWER, sub, 'overlay.js'), glob_name)
     else:
         write(build_official(), os.path.join(VIEWER, 'overlay.js'), 'OVERLAY')

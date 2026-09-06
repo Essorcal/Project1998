@@ -13,10 +13,12 @@ RTK .map FORMAT (differs from the 4.x client's headerless 4-byte cells):
 The 4.x client file is 4 bytes/cell with no header and little-endian words; do not confuse them.
 Confirmed against re/rtk_cavern_to_4x.py, which already parses this format.
 
-ART: the modern split-archive client (see LatestTileSet) is used automatically when present and
-covers RTK COMPLETELY -- 0 unresolved cells of 3.7M, at 48px. Without it, falls back to the richest
-single Tile.dat on the box (OTK 5.56, else 5.33) at 24px, which leaves ~295k cells black. All three
-index the same frame space; each later client simply appends. That is not a compromise — RTK's
+ART: two sets are rendered and KEPT SIDE BY SIDE, because the difference between them is the point.
+  assets/rtk/         5.33 Tile.dat, 24px. ~295k ground cells have no art and render black -- that
+                      black is exactly the 7.x-only content our own era's client cannot draw.
+  assets/rtk-modern/  the modern split-archive client (LatestTileSet), 48px. 0 unresolved cells.
+All of them index the same frame space; each later client simply appends to it. --data swaps the
+legacy archive (OTK 5.56 sits between the two: 29,972 ground frames, recovers ~21% of the black). That is not a compromise — RTK's
 ground words index the same extended sheet 5.33 ships, and a spot render of RTK's Kugnae comes out
 coherent (river, bridge, roofs, shop signs). Two known gaps, reported by --stats:
   * 5.2% of all ground cells reference a frame beyond 5.33's 28,551 -> those cells draw BLACK.
@@ -39,12 +41,13 @@ OBJECTS: uses **RTK's own SObj.tbl** (`RTK-Server/rtk/SObj.tbl`, 18,954 records 
 Every object id RTK's maps use is in range there; 5.33's table would silently drop the top third.
 
 Usage:
-    python re/render_rtk_maps.py all [outdir] [--thumb 400] [--maxfull 2560] [--only a,b]
+    python re/render_rtk_maps.py all                        # modern art -> assets/rtk-modern/
+    python re/render_rtk_maps.py all --legacy-art           # 5.33 art   -> assets/rtk/
     python re/render_rtk_maps.py one <id> [out.png] [--client]   # --client = full 7.x art, 48px
     python re/render_rtk_maps.py --stats                    # coverage report, renders nothing
     python re/render_rtk_maps.py --stats --only 3918,3712   # why IS THAT MAP black?
     python re/render_rtk_maps.py --learn-tiles              # rebuild the fallback table
-    python re/render_rtk_maps.py all --no-fill              # show missing art as black
+    python re/render_rtk_maps.py all --legacy-art --fill-missing   # patch gaps with guesses
     python re/render_rtk_maps.py --check        # self-check
 """
 import argparse
@@ -64,7 +67,15 @@ REPO = os.path.dirname(HERE)
 RTK_MAPS = os.path.join(REPO, 'RTK-Server', 'rtkmaps', 'Accepted')
 RTK_SOBJ = os.path.join(REPO, 'RTK-Server', 'rtk', 'SObj.tbl')
 RTK_SQL = os.path.join(REPO, 'RTK-Server', 'database', '2020-09-02-21-55-01_RTK.sql.bak')
-OUTDIR = os.path.join(REPO, 're', 'mapviewer', 'assets', 'rtk')
+# TWO RTK sets, kept side by side ON PURPOSE so you can see what the older client cannot draw:
+#   assets/rtk/         5.33-era art, 24px  -- the era our own server targets; ~295k cells come out
+#                       black, and that black IS the finding (7.x-only content)
+#   assets/rtk-modern/  modern client, 48px -- complete, 0 unresolved cells
+# The output dir follows the art automatically; you cannot render one over the other by forgetting
+# a flag (I did exactly that once).
+OUTDIR_LEGACY = os.path.join(REPO, 're', 'mapviewer', 'assets', 'rtk')
+OUTDIR_MODERN = os.path.join(REPO, 're', 'mapviewer', 'assets', 'rtk-modern')
+OUTDIR = OUTDIR_LEGACY
 
 
 
@@ -85,9 +96,8 @@ TILE_CANDIDATES = [
 
 
 def best_tile_dat():
-    for cand in TILE_CANDIDATES:
-        if os.path.exists(cand):
-            return cand
+    """Legacy path defaults to plain 5.33 -- that is the era baseline the rtk/ set exists to show.
+    Pass --data to use a richer 5.x archive instead (OTK 5.56 recovers ~21% of the black)."""
     return rm.DEFAULT_DATA
 
 
@@ -443,8 +453,10 @@ def main():
     ap.add_argument('--thumb', type=int, default=400)
     ap.add_argument('--maxfull', type=int, default=2560)
     ap.add_argument('--only', default='')
-    ap.add_argument('--no-fill', action='store_true',
-                    help='do not substitute learned tiles for missing 7.x art')
+    ap.add_argument('--fill-missing', action='store_true',
+                    help='substitute learned tiles from re/rtk_tile_fallback.csv for missing 7.x '
+                         'art. OFF by default: the legacy set exists to SHOW the gaps, and the '
+                         'modern client renders them for real.')
     ap.add_argument('--learn-tiles', action='store_true',
                     help='rebuild re/rtk_tile_fallback.csv, then exit')
     ap.add_argument('--client', nargs='?', const=LATEST_CLIENT, default=None,
@@ -460,6 +472,8 @@ def main():
     if not args.legacy_art and not args.client and os.path.exists(
             os.path.join(LATEST_CLIENT, 'Data', 'tile.dat')):
         args.client = LATEST_CLIENT
+    global OUTDIR
+    OUTDIR = OUTDIR_MODERN if args.client else OUTDIR_LEGACY
 
     if args.check:
         selfcheck()
@@ -505,7 +519,7 @@ def main():
         os.makedirs(thumb, exist_ok=True)
 
     ids = [int(x) for x in args.only.split(',') if x.strip()] or sorted(files)
-    fb = {} if (args.no_fill or args.client) else load_fallback()
+    fb = load_fallback() if (args.fill_missing and not args.client) else {}
     if fb:
         print('  %d fallback tiles for art 5.33 does not have' % len(fb), flush=True)
     filled = 0
@@ -550,8 +564,10 @@ def main():
         prev.update({m['id']: m for m in meta})
         meta = [prev[k] for k in sorted(prev)]
     json.dump(meta, open(index_path, 'w'), separators=(',', ':'))
+    # Distinct global per set, or the two maps.js files clobber each other in the viewer.
+    gname = 'RTKM_MAPS' if OUTDIR == OUTDIR_MODERN else 'RTK_MAPS'
     open(os.path.join(OUTDIR, 'maps.js'), 'w').write(
-        'window.RTK_MAPS=' + json.dumps(meta, separators=(',', ':')) + ';')
+        'window.%s=' % gname + json.dumps(meta, separators=(',', ':')) + ';')
     print('done: %d RTK maps in %.0fs (%d cells filled from the 4.95 world) -> %s' % (
         len(meta), time.time() - t0, filled, OUTDIR))
 
