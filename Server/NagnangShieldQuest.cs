@@ -4,16 +4,18 @@ namespace Server;
 
 /// <summary>
 /// The Warrior's Nagnang Shield quest — Nagnang's level-10 trial of restraint, and the only way into the
-/// Gauntlet (maps 2545-2569). Ported from RTK <c>NPCs/Common/warrior_trainer.lua</c> (its "Strangers" /
-/// "Shield" branches), <c>NPCs/quest/nagnangWarriorShieldTotem.lua</c> (the statue at the end) and the
+/// Gauntlet (maps 2545-2569). Ported from RTK <c>NPCs/Common/warrior_trainer.lua</c> (its "Shield" branch;
+/// its "Strangers" branch is deliberately NOT followed — see <c>NagnangShieldAbility.Entries</c>),
+/// <c>NPCs/quest/nagnangWarriorShieldTotem.lua</c> (the statue at the end) and the
 /// Nagnang + "Objective" blocks of <c>onScriptedTiles/onScriptedTilesQuest.lua</c> — see
 /// <c>Session.TryGauntletEntrance</c> and <c>Session.TryGauntletAltar</c> in Session.Navigation.cs.
 ///
 /// <para>The chain, in the order a player walks it:</para>
 /// <list type="number">
 /// <item>Click <b>Sword</b>, the Nagnang warrior guildmaster (NPCs.csv 91), at level 10+ on the Warrior
-/// path. He wants <b>a green squirrel pelt</b> — the squirrels are through Nagnang's southern warp at
-/// (134,155) into Southern Path, and drop the pelt at 5% (MobDrops.csv).</item>
+/// path, carrying <b>a green squirrel pelt</b>. He only LOOKS at it — the pelt is what proves you can kill
+/// a green squirrel, and he never takes it. The squirrels are through Nagnang's southern warp at (134,155)
+/// into Southern Path, and drop the pelt at 5% (MobDrops.csv).</item>
 /// <item>He sends you into the Gauntlet: <b>kill nothing red or blue</b>. The cave mouth is the alcove in
 /// Nagnang's west wall (<see cref="MouthX"/>, <see cref="MouthY"/>), and which of the five parallel copies
 /// you get is read off your level (<see cref="Tiers"/>).</item>
@@ -28,8 +30,11 @@ namespace Server;
 /// <para><b>Sources.</b> nexusatlas.com/quests/warriorsnagnangshield.php for the shape and the gates
 /// ("Level Required: 10", "Warrior Path", "Karma Needed: Not applicable", "Items Lost to Sacrifice: None",
 /// rewards "Nagnang Shield" + "New legend mark", and the closing pointer to "Chul Smith in Nagnang for
-/// information about making a Tall Shield (bonded item)"). Every line of dialog is RTK's, which is the only
-/// surviving transcript of it. The GEOMETRY is ours, not RTK's — see <see cref="MouthY"/>.</para>
+/// information about making a Tall Shield (bonded item)"). <b>Sword's dialog is transcribed from client
+/// screenshots</b> (owner-supplied, 2026-09-06: <c>warrior-shield-0..4</c> plus the post-completion repeat),
+/// which outrank RTK — RTK is missing the opening page, repairs a typo the client printed, and reuses the
+/// whole briefing where the client shows one line. The statue's lines are RTK's, which is still the only
+/// transcript of those. The GEOMETRY is ours, not RTK's — see <see cref="MouthY"/>.</para>
 ///
 /// <para><b>Sword had to be moved, and stood nowhere until he was.</b> NPCs.csv put him on map 3820
 /// ("Sword", the guildmaster's inner chamber), which has NO terrain in game-data/maps — the 4.95 map set
@@ -133,13 +138,26 @@ public static class NagnangShieldQuest
     /// the misspelling is not carried over.</summary>
     public const byte LegendIcon = 9, LegendColor = 128;
 
-    /// <summary>Sword's briefing — the same four pages whether he is setting the task or repeating it.</summary>
+    /// <summary>Sword's briefing, the whole of it, transcribed from the client screenshots — ORIGINAL TYPO
+    /// INTACT ("For one does can not attack"), because that is what the client printed.
+    ///
+    /// <para>RTK's copy is missing the first page entirely and silently repairs the grammar of the second,
+    /// so the screenshots win on both counts (and on the fifth page's comma, which RTK adds). RTK also
+    /// reuses this whole speech as the in-progress reminder; the real client does not — see
+    /// <see cref="Reminder"/>.</para></summary>
     public static readonly string[] Briefing =
     {
-        "Anyone who dedicates their lives to the weapon should learn how to use a shield.",
+        "Ah, I see that you dare to kill the green squirrels to the South. Why is this so daring? Heh, perhaps one day you will regret finding out.",
+        "But anyone who dedicates their lives to the weapon should learn how to use a shield. For one does can not attack unless they know how to defend.",
         "First, though, I will ask you to prove this to me. To the West and North of here, there is a cave. This is the training caves for our Warriors.",
         "In it, you will find many different dyed creatures. You may not kill the red and blue ones, you must avoid them.",
-        "At the end of the caves, there is a statue of Chung Ryong. If you reach it without killing any of the Blue or Red animals, you will be rewarded with a shield.",
+        "At the end of the caves, there is a statue of Chung Ryong. If you reach it without killing any of the Blue or Red animals you will be rewarded with a shield.",
+    };
+
+    /// <summary>What "Shield" says once you are already on the trial — one page, not the briefing again.</summary>
+    public static readonly string[] Reminder =
+    {
+        "You should be on your way to the cave already, remember, don't kill the blue and red creatures!",
     };
 
     /// <summary>What the statue says when the trial was kept.</summary>
@@ -175,27 +193,53 @@ public sealed class NagnangShieldAbility : INpcAbility
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
         if (ctx.Def.Id != NagnangShieldQuest.SwordNpcId) yield break;
+
+        // "Strangers" is FLAVOUR, not a step. It is Sword's brush-off to an outsider — the same line the
+        // Nagnang mage trainer gives, verbatim — so it is offered unconditionally and touches no quest
+        // state: clicking it can never start, advance or block the shield.
+        //
+        // RTK folds this slot INTO the chain (its "Strangers" branch is the pelt hand-in, and the label
+        // flips to "Shield" only at stage 1), which is wrong twice over: a warrior who does not yet qualify
+        // never hears the brush-off at all, and one who does qualify never sees a "Shield" entry until
+        // after the quest has already begun. The two are separate options here, both visible at once.
+        yield return ("Strangers", Strangers);
+
         if (ctx.BaseClass != NagnangShieldQuest.WarriorPath) yield break;
         if (ctx.Level < NagnangShieldQuest.MinLevel) yield break;
         if (ctx.HasLegend(NagnangShieldQuest.Legend)) yield break;
-        // RTK's own two labels: the offer, then the reminder once you are on it.
-        yield return (ctx.Stage(NagnangShieldQuest.StageReg) == 0 ? "Strangers" : "Shield", Talk);
+        yield return ("Shield", Talk);
+    }
+
+    /// <summary>The brush-off. Status box, no dialog window, no state touched — whoever you are, Sword has
+    /// nothing to say to a stranger.</summary>
+    private static Task Strangers(NpcContext ctx)
+    {
+        ctx.Notify("I have nothing for you, Stranger.");
+        return Task.CompletedTask;
     }
 
     private static async Task Talk(NpcContext ctx)
     {
-        if (ctx.Stage(NagnangShieldQuest.StageReg) == 0)
+        // Already sent. One page, not the briefing again.
+        if (ctx.Stage(NagnangShieldQuest.StageReg) != 0)
         {
-            if (!ctx.HasItem(NagnangShieldQuest.Pelt))
-            {
-                // Status box, not a dialog — RTK sendMinitext, and he does not open his mouth for you.
-                ctx.Notify("Eh? Please don't bother me.");
-                ctx.Notify("You probably couldn't even kill one of the Green squirrels to the south.");
-                return;
-            }
-            ctx.TakeItem(NagnangShieldQuest.Pelt, 1);
-            ctx.SetStage(NagnangShieldQuest.StageReg, 1);
+            await ctx.Say(NagnangShieldQuest.Reminder);
+            return;
         }
+
+        if (!ctx.HasItem(NagnangShieldQuest.Pelt))
+        {
+            // Status box, not a dialog — RTK sendMinitext, and he does not open his mouth for you.
+            ctx.Notify("Eh? Please don't bother me.");
+            ctx.Notify("You probably couldn't even kill one of the Green squirrels to the south.");
+            return;
+        }
+
+        // The pelt is a QUALIFIER, not a payment: he wants to see that you can kill a green squirrel, and
+        // his first line says so ("I see that you dare to kill the green squirrels to the South"). He never
+        // takes it. RTK's removeItem here is wrong, and it matters — the pelt is also what the Nagnang
+        // border patrol wants, so eating it would cost the player a second hunt for no reason.
+        ctx.SetStage(NagnangShieldQuest.StageReg, 1);
         await ctx.Say(NagnangShieldQuest.Briefing);
     }
 }
