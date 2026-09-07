@@ -109,7 +109,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `PathGrowth.csv` | `P1998_PATH_GROWTH` | 5 | 5 | from file |
 | `DoorObjects.csv` | `P1998_DOOR_OBJECTS` | 50 | 50 | from file |
 | `Doors.csv` | `P1998_DOORS` | 8 | 8 | from file |
-| `MapCells.csv` | `P1998_MAP_CELLS` | 32 | 29 | from file |
+| `MapCells.csv` | `P1998_MAP_CELLS` | 29 | 29 | from file |
 <!-- /generated -->
 
 Key-column guide: `mobs.csv` uses `MobLook`, `MobLookColor`, `Vita` (HP), `Exp`, `Level`,

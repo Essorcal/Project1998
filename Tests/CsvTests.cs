@@ -92,12 +92,23 @@ public sealed class CsvTests
         Assert.All(rows, row => Assert.Equal(1, row.FieldCount));
     }
 
-    [Fact(Skip = "#131")]
+    [Fact]
     public void QuotedHashRowIsTreatedAsAComment()
     {
         using var file = new TempCsv("\"# comment\",ignored\n");
 
         Assert.Empty(Csv.Open("quoted-comment.csv", file.Path, "Id", "Name"));
+    }
+
+    [Fact]
+    public void QuotedHashInSecondFieldIsNotAComment()
+    {
+        using var file = new TempCsv("plain,\"# not a comment\"\n");
+
+        var row = Assert.Single(Csv.Open("quoted-comment-second-field.csv", file.Path, "Id", "Name"));
+
+        Assert.Equal("plain", row.Require("Id"));
+        Assert.Equal("# not a comment", row.Require("Name"));
     }
 
     private sealed class TempCsv : IDisposable
