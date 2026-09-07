@@ -13,7 +13,8 @@ namespace Server;
 /// <para>The chain, in the order a player walks it:</para>
 /// <list type="number">
 /// <item>Enter the Nagnang Rogue Guild — Nagnang (map 2500) at 019-020/140, into <b>Rogue Dagger</b>
-/// (<see cref="GuildMap"/>) — and tap <b>Master Dagger</b> (NPCs.csv <see cref="DaggerNpcId"/>) on
+/// (<see cref="GuildMap"/>), then north again into his sanctum (<see cref="SanctumMap"/>) — and tap
+/// <b>Master Dagger</b> (NPCs.csv <see cref="DaggerNpcId"/>) on
 /// the shoulder. He warns you off twice; on the third tap he sets three <b>Dagger assassins</b> on you.
 /// They are not meant to be fought — run, and they vanish (<see cref="AssassinSeconds"/>).</item>
 /// <item>Come back once they are gone. Coming back at all is the test; he tells you to watch for a
@@ -82,10 +83,15 @@ public static class DaggerUniformQuest
     /// world at all: his row was there, his warps were there, and clicking where he should have stood did
     /// nothing. He now stands in the guild hall itself, at the head of the entrance corridor.</para>
     ///
-    /// <para>The two warp pairs between this hall and 3824 are left alone: they already refuse (Warp checks
-    /// the map is renderable), and deleting a warp because its destination is missing is a different change
-    /// from placing an NPC where the client can see him.</para></summary>
+    /// <para>RESOLVED 2026-09-06. That workaround is retired: master supplied the terrain for the whole
+    /// 3820-3835 sanctum block, which is what Warps.csv had pointed at all along, so 3824 renders and
+    /// Dagger stands back in his own sanctum. The hall and the sanctum are two rooms, not one — the hall
+    /// is what you enter from Nagnang, the sanctum is where the trainer is — so they are two constants.
+    /// The warp pairs between them were left alone throughout and now carry the player.</para></summary>
     public const ushort GuildMap = 2514;
+    /// <summary>Rogue Dagger's 12x12 sanctum (map 3824), one hop north of <see cref="GuildMap"/> via the
+    /// hall's (8|9,0) doorway. Master Dagger stands here at 6/3; see NPCs.csv 138.</summary>
+    public const ushort SanctumMap = 3824;
     /// <summary>Maro, the Kugnae Rogue Master (NPCs.csv 37, Maro Sanctum map 16) — the mark.</summary>
     public const int MaroNpcId = 37;
     /// <summary>Maso, the Buya Rogue Master (NPCs.csv 42, Maso Sanctum map 368) — the frame-up. His row

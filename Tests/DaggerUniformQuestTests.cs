@@ -146,18 +146,24 @@ public class DaggerUniformQuestTests
         Assert.NotNull(dagger);
 
         // He must be on a map the 4.95 client can render, or the NPC loader drops him and the whole quest is
-        // silently absent — which is exactly what his old map 3824 did (see DaggerUniformQuest.GuildMap).
-        Assert.Equal(DaggerUniformQuest.GuildMap, dagger!.Map);
-        Assert.True(Content.Maps.ContainsKey(DaggerUniformQuest.GuildMap));
-        var hall = MapData.For(DaggerUniformQuest.GuildMap);
-        Assert.NotNull(hall);
-        Assert.False(hall!.Solid(dagger.X, dagger.Y), $"Dagger stands on solid ground at ({dagger.X},{dagger.Y})");
+        // silently absent. 3824 is that map now: it had no terrain when this quest was built, which is why he
+        // was parked in the hall, and it has had terrain since the 3820-3835 block was supplied.
+        Assert.Equal(DaggerUniformQuest.SanctumMap, dagger!.Map);
+        Assert.True(Content.Maps.ContainsKey(DaggerUniformQuest.SanctumMap));
+        var sanctum = MapData.For(DaggerUniformQuest.SanctumMap);
+        Assert.NotNull(sanctum);
+        Assert.False(sanctum!.Solid(dagger.X, dagger.Y), $"Dagger stands on solid ground at ({dagger.X},{dagger.Y})");
 
         const ushort nagnang = 2500;
         var intoGuild = Content.Warps.Where(w => w.Key.m == nagnang && w.Value.m == DaggerUniformQuest.GuildMap).ToList();
         Assert.NotEmpty(intoGuild);
         // The Atlas coordinate is the tile you stand on to step north into the doorway row.
         Assert.All(intoGuild, w => Assert.Equal((ushort)140, w.Key.y));
+
+        // Second hop: the hall's north doorway into the sanctum he actually stands in.
+        var intoSanctum = Content.Warps
+            .Where(w => w.Key.m == DaggerUniformQuest.GuildMap && w.Value.m == DaggerUniformQuest.SanctumMap).ToList();
+        Assert.NotEmpty(intoSanctum);
     }
 
     /// <summary>The crow speaks one line with no NPC in front of the player, so its portrait is passed as a
