@@ -344,7 +344,7 @@ public sealed partial class World
                     // no steering: it is running, not wandering, and it stops when it hits something.
                     byte side = (byte)Random.Shared.Next(4);
                     if (side != mob.Dir) { mob.Dir = side; turns.Add((mapId, mob.Id, side)); }
-                    w.Dart(DartMode.Straight, RoutDartTiles, mapId, m, mob, mob.X, mob.Y,
+                    MobMovement.Dart(w, MobMovement.DartMode.Straight, RoutDartTiles, mapId, m, mob, mob.X, mob.Y,
                          dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                 }
                 return;
@@ -469,7 +469,7 @@ public sealed partial class World
                             mob.AttackTimer += TickMs;
                             if (mob.AttackTimer >= mob.AttackTime) { mob.AttackTimer = 0; mobHits.Add((mapId, mob, foe)); }
                         }
-                        else w.StepMobToward(mapId, m, mob, foe.X, foe.Y, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                        else MobMovement.StepMobToward(w, mapId, m, mob, foe.X, foe.Y, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                         return;
                     }
 
@@ -512,7 +512,7 @@ public sealed partial class World
                     mob.MoveTimer += TickMs;
                     if (mob.MoveTimer < mob.MoveTime) return;
                     mob.MoveTimer -= mob.MoveTime;
-                    w.Dart(DartMode.Away, PreyDartTiles, mapId, m, mob, scare.PlayerX, scare.PlayerY,
+                    MobMovement.Dart(w, MobMovement.DartMode.Away, PreyDartTiles, mapId, m, mob, scare.PlayerX, scare.PlayerY,
                          dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                     return;
                 }
@@ -666,7 +666,7 @@ public sealed partial class World
                             // several at once (see SuteAi.StepTilesPerTurn). His speed comes from a
                             // 333ms MobMoveTime, i.e. a step every acting beat, not a longer stride.
                             // Still routed through Dart so the step rules stay shared.
-                            int hops = w.Dart(act == SuteAi.Act.Retreat ? DartMode.Away : DartMode.Toward,
+                            int hops = MobMovement.Dart(w, act == SuteAi.Act.Retreat ? MobMovement.DartMode.Away : MobMovement.DartMode.Toward,
                                             SuteAi.StepTilesPerTurn, mapId, m, mob, target.PlayerX, target.PlayerY,
                                             dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
 
@@ -716,7 +716,7 @@ public sealed partial class World
                     // Step toward the target — the direction(s) that close the gap first, then a
                     // sideways shuffle. See StepMobToward: this used to be an inline greedy step that
                     // gave up when blocked, i.e. "mob stands on one tile facing you through a wall".
-                    w.StepMobToward(mapId, m, mob, target.PlayerX, target.PlayerY,
+                    MobMovement.StepMobToward(w, mapId, m, mob, target.PlayerX, target.PlayerY,
                                   dims, terrain, occupied, mobTiles, moves, turns, trapDamage,
                                   out bool towardBlocked);
 
@@ -768,7 +768,7 @@ public sealed partial class World
                         if (mob.MoveTimer >= mob.MoveTime)
                         {
                             mob.MoveTimer -= mob.MoveTime;
-                            w.StepMobToward(mapId, m, mob, foe.X, foe.Y, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
+                            MobMovement.StepMobToward(w, mapId, m, mob, foe.X, foe.Y, dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                         }
                     }
                     return;
@@ -796,7 +796,7 @@ public sealed partial class World
                 if (mob.X == mob.HomeX && mob.Y == mob.HomeY) { mob.Returning = false; mob.MoveTimer = 0; }
                 else
                 {
-                    w.StepMobToward(mapId, m, mob, mob.HomeX, mob.HomeY,
+                    MobMovement.StepMobToward(w, mapId, m, mob, mob.HomeX, mob.HomeY,
                                   dims, terrain, occupied, mobTiles, moves, turns, trapDamage);
                     return;
                 }
@@ -826,7 +826,7 @@ public sealed partial class World
                       && Math.Abs(ny - mob.HomeY) <= mob.Leash                             // leash to spawn
                       && !occupied.Contains(((ushort)nx, (ushort)ny))                     // not onto a player
                       && !mobTiles.Contains((nx, ny))                                      // not onto another mob
-                      && !MobBlocked(mapId, terrain, nx, ny, stepDir);                     // pass flag / SObj wall / warp tile
+                      && !MobMovement.MobBlocked(mapId, terrain, nx, ny, stepDir);                     // pass flag / SObj wall / warp tile
             if (!ok) return;   // blocked/leashed: hold position (already facing stepDir)
 
             ushort ox = mob.X, oy = mob.Y;                   // SOURCE tile (see the move broadcast below)
