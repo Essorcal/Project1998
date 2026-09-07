@@ -352,7 +352,9 @@ public sealed partial class Session
                 eligible.Add(m);
             }
 
-        foreach (var m in eligible) m.TallyKill(mobKey);
+        // Each eligible character owns its own state monitor. This is re-entrant for the killer (whose
+        // packet handler already holds it) and takes a peer's monitor before touching that peer's tally.
+        foreach (var m in eligible) m.WithState(() => m.TallyKill(mobKey));
 
         if (reward == 0) return;
         if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // solo, or nobody else in range
@@ -380,7 +382,7 @@ public sealed partial class Session
         foreach (var m in eligible)
         {
             uint share = (uint)Math.Ceiling(amount * (double)Eff(m) / highest);
-            m.AwardExp(share, killExp: true, totemTime: anyTotem);
+            m.WithState(() => m.AwardExp(share, killExp: true, totemTime: anyTotem));
         }
         Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members " +
                  $"(highest eff {highest}{(anyTotem ? ", TOTEM TIME" : "")})");
