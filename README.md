@@ -115,14 +115,16 @@ of the defaults above: `# budget: <N>s` sets that script's timeout, taking prece
 anything starts, not honoured); and `# requires bots: <name> ...` is unioned onto `-Bots` (added, never
 replacing it) before the pair starts, with a password from `-Passes` or, for the three standing accounts,
 the README's "Bot accounts" convention -- a required name with no known password is a refusal before
-anything starts.
+anything starts. `-Plan` prints the resolved plan (scripts, budgets, roster, which names have a password)
+and exits without building or starting anything, running the same header parsing and refusals a real run
+would; it is mutually exclusive with `-KeepRunning` and `-Json`.
 
 It refuses the same way `Serve.ps1` does when the ports are already held or this checkout already has a
 pair running (exit 2, and says who or what). Exit 2 also covers this script's own usage errors (a bad
-`-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, a script's `# budget:` header over the
-3600s ceiling, a script's `# requires bots:` name with no known password, a missing `TestClient.Cli`
-project, no `dotnet` on PATH). A build failure in the checkout under test is `Serve.ps1`'s own exit 1,
-passed straight
+`-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, `-Plan` combined with `-KeepRunning` or
+`-Json`, a script's `# budget:` header over the 3600s ceiling, a script's `# requires bots:` name with no
+known password, a missing `TestClient.Cli` project, no `dotnet` on PATH). A build failure in the checkout
+under test is `Serve.ps1`'s own exit 1, passed straight
 through with no test-client build and no scripts run; a test-client build failure is this script's own
 exit 1 the same way, with no scripts run either. A readiness timeout, an interrupted run (Ctrl+C or
 Ctrl+Break both stop the pair before exiting), or any script exiting nonzero or reporting a failed expect

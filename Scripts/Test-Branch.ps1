@@ -116,11 +116,11 @@ a refusal.
 .PARAMETER KeepRunning
 Skip the -Stop this script would otherwise run once every script has finished (or the ready-probe timed
 out, or the run was interrupted), so a developer can keep poking at the pair. Stop it yourself afterwards:
-Scripts\Serve.ps1 -Checkout <Checkout> -PortBase <PortBase> -Stop
+Scripts\Serve.ps1 -Checkout <Checkout> -PortBase <PortBase> -Stop. Mutually exclusive with -Plan.
 
 .PARAMETER Json
 Also write the per-script results (plus the run's checkout/portBase/timestamps) as JSON to this path, for
-a reviewer to attach to a PR.
+a reviewer to attach to a PR. Mutually exclusive with -Plan.
 
 .PARAMETER ReadyTimeoutSec
 How long to poll the status probe before giving up. Default 60.
@@ -132,22 +132,32 @@ one (a leading comment, the test client's convention, e.g. `# budget: 900s`) use
 timeout regardless of -ScriptTimeoutSec, default or explicit; -ScriptTimeoutSec only ever governs the
 scripts that declare nothing. A header above 3600s is refused before the pair starts rather than honoured.
 
+.PARAMETER Plan
+Print what this run WOULD do -- the checkout, port base, the selected scripts with each one's resolved
+budget and required bots, the resolved bot roster, and which names have a known password (never the
+passwords themselves) -- and exit 0 without building or starting anything. Runs the same header parsing
+and refusal checks (a budget over the 3600s ceiling, a required bot with no known password) as a real run,
+so a refusal is reported here too, without a server. Mutually exclusive with -KeepRunning and -Json.
+
 .EXAMPLE
 Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet
 
 .EXAMPLE
 Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet -Scripts C:\scratch\one-liner.txt -ReadyTimeoutSec 5
 
+.EXAMPLE
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet -Plan
+
 .NOTES
-Windows PowerShell 5.1 compatible. Exit codes: 0 every script exited 0 with zero failed expects; 1 a
-script exited nonzero or reported a failed expect, the ready-probe timed out, the run was interrupted
-(Ctrl+C/Ctrl+Break), a test-client build failure, or Serve.ps1 -Start reported success (exit 0) but did
-not actually write a fresh run\session.json -- this also covers Serve.ps1's own exit 1 (a build failure in
--Checkout, passed through as-is); 2 Serve.ps1 refused to start (ports held, or this checkout already has a
-pair running -- its own exit 2, passed through as-is) and this script's own usage errors (a bad
--Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, a script's `# budget:` header over the 3600s
-ceiling, a script's `# requires bots:` name with no known password, TestClient.Cli project missing, dotnet
-not found).
+Windows PowerShell 5.1 compatible. Exit codes: 0 every script exited 0 with zero failed expects, or -Plan
+printed its plan; 1 a script exited nonzero or reported a failed expect, the ready-probe timed out, the run
+was interrupted (Ctrl+C/Ctrl+Break), a test-client build failure, or Serve.ps1 -Start reported success
+(exit 0) but did not actually write a fresh run\session.json -- this also covers Serve.ps1's own exit 1 (a
+build failure in -Checkout, passed through as-is); 2 Serve.ps1 refused to start (ports held, or this
+checkout already has a pair running -- its own exit 2, passed through as-is) and this script's own usage
+errors (a bad -Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, -Plan combined with -KeepRunning or
+-Json, a script's `# budget:` header over the 3600s ceiling, a script's `# requires bots:` name with no
+known password, TestClient.Cli project missing, dotnet not found).
 #>
 [CmdletBinding()]
 param(
@@ -160,7 +170,8 @@ param(
     [switch]$KeepRunning,
     [string]$Json,
     [int]$ReadyTimeoutSec = 60,
-    [int]$ScriptTimeoutSec = 120
+    [int]$ScriptTimeoutSec = 120,
+    [switch]$Plan
 )
 
 # #146: a script's own budget always wins over -ScriptTimeoutSec (default or explicit) for that script;
@@ -413,6 +424,11 @@ if ($Passes.Count -ne $Bots.Count) {
     exit 2
 }
 
+if ($Plan -and ($KeepRunning -or $Json)) {
+    Write-Host "-Plan is mutually exclusive with -KeepRunning and -Json (it starts nothing to keep running or report on)."
+    exit 2
+}
+
 $scriptFiles = New-Object System.Collections.Generic.List[string]
 if ($Scripts -and $Scripts.Count -gt 0) {
     foreach ($s in $Scripts) {
@@ -490,6 +506,23 @@ if ($missingPasswords.Count -gt 0) {
 }
 $FinalRoster = @($roster)
 $FinalPasses = @($FinalRoster | ForEach-Object { $passwordByName[$_] })
+
+if ($Plan) {
+    $planLoginPort = $PortBase
+    $planGamePort = $PortBase + 5
+    Write-Host "Test-Branch -Plan: checkout=$CheckoutFull  portBase=$PortBase (login=$planLoginPort game=$planGamePort)  testClient=$TestClientFull"
+    Write-Host "Precedence: a script's own '# budget:' header is its timeout; -ScriptTimeoutSec (default 120, here $ScriptTimeoutSec) applies only to a script without one."
+    Write-Host "Scripts ($($scriptInfos.Count)):"
+    foreach ($si in $scriptInfos) {
+        $budgetDisp = if ($null -ne $si.HeaderBudget) { "$($si.EffectiveBudget)s (header)" } else { "$($si.EffectiveBudget)s (default)" }
+        $requiresDisp = if ($si.RequiredBots.Count -gt 0) { $si.RequiredBots -join ', ' } else { '(none)' }
+        Write-Host ("  {0,-28} budget={1,-16} requires: {2}" -f $si.Name, $budgetDisp, $requiresDisp)
+    }
+    Write-Host "Resolved roster (Testers/Gms): $($FinalRoster -join ', ')  (primary: $($Bots[0]))"
+    Write-Host "Passwords known for: $($FinalRoster -join ', ')"
+    Write-Host "Nothing built, nothing started."
+    exit 0
+}
 
 $dotnetCmd = Get-Command dotnet.exe -ErrorAction SilentlyContinue
 if ($null -eq $dotnetCmd) { Write-Host "dotnet not found on PATH."; exit 2 }
