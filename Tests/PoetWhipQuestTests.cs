@@ -29,29 +29,41 @@ public class PoetWhipQuestTests
 
     /// <summary>The composition row IS the quest's reachability: without it Staff still stands there with the
     /// ordinary trainer menu and "Welcome Stranger" simply never appears, with nothing anywhere to say why.
-    /// Nine NPCs share the PoetTrainerNpc identifier the row is keyed by, so the in-code narrowing to Staff's
-    /// own id is load-bearing too — this pins both halves.
-    ///
-    /// <para>It also pins that Staff EXISTS, which he did not: on his old map (3832, RTK-only, no client
-    /// terrain) <c>Content.LoadNpcs</c> dropped him without a word and this assert is the thing that caught
-    /// it. See <see cref="PoetWhipQuest.StaffNpcId"/>.</para></summary>
+    /// Nine NPCs share the PoetTrainerNpc identifier the row is keyed by, so the in-code narrowing is
+    /// load-bearing too — this pins both halves, for every Staff an aligned Poet might actually meet.</summary>
     [Fact]
-    public void StaffCarriesTheQuestAndTheOtherPoetTrainersDoNot()
+    public void EveryStaffCarriesTheQuestAndTheOtherPoetTrainersDoNot()
     {
         EnsureLoaded();
 
-        var staff = Content.Npcs.FirstOrDefault(n => n.Id == PoetWhipQuest.StaffNpcId);
-        Assert.NotNull(staff);
-        Assert.Equal("PoetTrainerNpc", staff!.Key);
-        Assert.Equal("Staff", staff.Name);
-        Assert.Equal(PoetWhipQuest.StaffMap, staff.Map);
-        Assert.Contains(NpcScripts.For(staff), a => a is PoetWhipQuestAbility);
+        foreach (int id in PoetWhipQuest.Everyone)
+        {
+            var npc = Content.Npcs.FirstOrDefault(n => n.Id == id);
+            Assert.True(npc is not null, $"NPC {id} is not in the world — that Staff cannot give the quest");
+            Assert.Equal("PoetTrainerNpc", npc!.Key);
+            Assert.EndsWith("Staff", npc.Name, System.StringComparison.Ordinal);
+            Assert.Contains(NpcScripts.For(npc), a => a is PoetWhipQuestAbility);
+        }
 
-        // Every other poet trainer carries the ABILITY (the row is per identifier) but the entry is gated on
-        // the npc id, so only Staff can ever offer it. If a second NPC takes id 137 this stops being true.
-        Assert.Single(Content.Npcs, n => n.Id == PoetWhipQuest.StaffNpcId);
-        Assert.True(Content.Npcs.Count(n => n.Key == "PoetTrainerNpc") > 1,
+        // The other poet trainers carry the ABILITY (the row is per identifier) but not the quest.
+        Assert.True(Content.Npcs.Count(n => n.Key == "PoetTrainerNpc") > PoetWhipQuest.Everyone.Length,
                     "the identifier is no longer shared — the in-code Staff gate may now be dead weight");
+    }
+
+    /// <summary>The gate is a hardcoded id set, so a Staff added later would go missing in the one way this
+    /// project calls characteristic: no error, no log, the menu option just never appears. An ALIGNED Poet is
+    /// routed by <c>TryPathHallWarp</c> to his own sanctum and never meets NPC 137 at all, which is exactly
+    /// how the first cut of this quest hid itself from three quarters of the path.</summary>
+    [Fact]
+    public void NoStaffIsMissingFromTheGate()
+    {
+        EnsureLoaded();
+
+        var byName = Content.Npcs
+            .Where(n => n.Key == "PoetTrainerNpc" && n.Name.EndsWith("Staff", System.StringComparison.Ordinal))
+            .Select(n => n.Id).OrderBy(id => id).ToList();
+
+        Assert.Equal(PoetWhipQuest.Everyone.OrderBy(id => id).ToList(), byName);
     }
 
     /// <summary>The four items the chain moves between hands. A rename anywhere here is invisible: the pipe
@@ -225,27 +237,25 @@ public class PoetWhipQuestTests
         Assert.False(PoetWhipQuest.InTreeGround(PoetWhipQuest.PagodaMap, 19, 91), "the box is not map-scoped");
     }
 
-    /// <summary>And he has to be REACHABLE, which is the failure this whole port tripped over first: a quest
-    /// giver on a map with no client terrain is dropped at load along with the warp to him, and the only
-    /// symptom is that clicking where he should stand does nothing. Pins that his room is renderable, that
-    /// Nagnang has a door into it, and that he is standing on floor rather than inside the scenery.</summary>
+    /// <summary>And every Staff has to be REACHABLE, which is the failure this port tripped over first: a
+    /// quest giver on a map with no client terrain is dropped at load along with the warp to him, and the only
+    /// symptom is that clicking where he should stand does nothing. Pins that each room is renderable and that
+    /// each Staff stands on floor rather than inside the scenery.</summary>
     [Fact]
-    public void StaffIsStandingSomewhereAPlayerCanWalkTo()
+    public void EveryStaffIsStandingSomewhereAPlayerCanWalkTo()
     {
         EnsureLoaded();
 
-        Assert.True(Content.TryMap(PoetWhipQuest.StaffMap, out var hall),
-                    $"map {PoetWhipQuest.StaffMap} is not renderable — Staff is dropped at load and the quest has no giver");
+        foreach (int id in PoetWhipQuest.Everyone)
+        {
+            var staff = Content.Npcs.Single(n => n.Id == id);
+            Assert.True(Content.TryMap(staff.Map, out var room),
+                        $"map {staff.Map} is not renderable — {staff.Name} is dropped at load and cannot give the quest");
 
-        // Reachable from the street. (The hall also keeps the way BACK from RTK's 3832 sanctum — that warp
-        // survives load because its DESTINATION is renderable — but nobody can ever be standing on 3832 to
-        // use it, so the Nagnang door is the only one that matters.)
-        Assert.Contains(Content.Warps, w => w.Value.m == PoetWhipQuest.StaffMap && w.Key.m == PoetWhipQuest.PagodaMap);
-
-        var staff = Content.Npcs.Single(n => n.Id == PoetWhipQuest.StaffNpcId);
-        var ground = MapData.For(PoetWhipQuest.StaffMap, hall.Xs, hall.Ys);
-        Assert.NotNull(ground);
-        Assert.False(ground!.Solid(staff.X, staff.Y),
-                     $"Staff stands on a solid tile ({staff.X},{staff.Y}) — he cannot be clicked from beside him");
+            var ground = MapData.For(staff.Map, room.Xs, room.Ys);
+            Assert.NotNull(ground);
+            Assert.False(ground!.Solid(staff.X, staff.Y),
+                         $"{staff.Name} stands on a solid tile ({staff.X},{staff.Y}) on map {staff.Map}");
+        }
     }
 }

@@ -13,8 +13,8 @@ namespace Server;
 /// <para>The chain, in the order a player walks it:</para>
 /// <list type="number">
 /// <item>Buy a <b>Sonhi pipe</b> from Sying (Sying's Shop, Kaming's Encampment — MessengerNpc stock) and give
-/// it to <b>Staff</b>, the Poet guildmaster of Nagnang (NPCs.csv 137, map 2516 — see
-/// <see cref="PoetWhipQuest.StaffNpcId"/>, which had to be moved before any of this was reachable).
+/// it to <b>Staff</b>, the Poet guildmaster of Nagnang (NPCs.csv 137, map 3832 — or whichever of his
+/// alignment-sanctum copies your own alignment routes you to; see <see cref="PoetWhipQuest.Everyone"/>).
 /// "Welcome Stranger" without a pipe in the bag gets you nothing but "Hmmm, what? Oh hello, Stranger". The
 /// pipe is the quest's one sacrifice.</item>
 /// <item>He asks for "a shard of wood that will last forever". Walk the ground around the Forever Tree in the
@@ -82,27 +82,23 @@ public static class PoetWhipQuest
     /// page records a glyph index. Cosmetic either way (the same call ArmorQuest made).</summary>
     public const byte AcolyteIcon = 4, DestroyedIcon = 7, LegendColor = 128;
 
-    /// <summary>Staff, Poet guildmaster of Nagnang. Nine NPCs share the PoetTrainerNpc identifier the
-    /// composition row is keyed by, so this is what keeps the chain in his mouth — RTK narrows the same way,
-    /// on <c>npc.mapTitle == "Staff"</c>.
+    /// <summary>Every NPC who runs this chain: <b>Staff</b>, Poet guildmaster of Nagnang (137, map 3832),
+    /// and his three alignment-sanctum copies — Kwi-Sin (408, 3833), Ming-Ken (409, 3834) and Ohaeng Staff
+    /// (410, 3835). Nine NPCs share the PoetTrainerNpc identifier the composition row is keyed by, so this set
+    /// is what keeps the chain in Staff's mouth alone; RTK narrows the same way, on
+    /// <c>npc.mapTitle == "Staff"</c>, which matches its alignment rooms for exactly the same reason.
     ///
-    /// <para><b>He was not in the world at all.</b> NPCs.csv had him on map <b>3832</b>, an RTK-only inner
-    /// sanctum: no <c>TK3832.map</c> ships with the 4.95 client, so the map-registry gate in
-    /// <c>Content.LoadNpcs</c> ("map the 4.95 client can't render") silently dropped both him and the warp
-    /// that reaches him, and clicking where he should stand did nothing. He is now on <b>2516</b>, the last
-    /// renderable room on that path — reached from Nagnang (96|97,101), and named "<b>Poet Staff</b>" by the
-    /// client's own map table, which is the evidence: 4.95 shipped ONE guild room per class per city and RTK's
-    /// later client split it into an outer hall plus a 38xx sanctum with the master moved inside. He stands at
-    /// (8,3), the north end of the hall in front of its dais, facing the door you come in by.</para>
-    ///
-    /// <para>The same gate still hides <b>Sword</b> (NPC 91, map 3820) and <b>Dagger</b> (NPC 138, map 3824),
-    /// Nagnang's Warrior and Rogue masters, whose 2510/2514 halls are named for them in exactly the same way.
-    /// Not moved here — that is a separate content call and no quest in this change needs them — but it is the
-    /// same bug with the same fix. <b>Wand</b> (NPC 133, map 3828) happens to be renderable and is
-    /// unaffected.</para></summary>
+    /// <para><b>All four, not just 137.</b> An ALIGNED Poet never meets 137: <c>Session.TryPathHallWarp</c>
+    /// routes the Poet Staff hall's north doorway to the sanctum for the player's own alignment, so a Kwi-Sin
+    /// Poet only ever stands in front of NPC 408. Gating on the base id alone silently hid the whole quest
+    /// from three quarters of the path — and silently is the operative word, because the menu option simply
+    /// does not appear and nothing says why. <see cref="Everyone"/> is asserted complete against NPCs.csv in
+    /// the tests, so a future variant fails loudly instead of going missing.</para></summary>
     public const int StaffNpcId = 137;
-    /// <summary>The hall he stands in, and the reason the move was needed — see <see cref="StaffNpcId"/>.</summary>
-    public const ushort StaffMap = 2516;
+    public static readonly int[] Everyone = { StaffNpcId, 408, 409, 410 };
+
+    /// <summary>Whether this NPC runs the chain — see <see cref="Everyone"/>.</summary>
+    public static bool IsStaff(int npcId) => Array.IndexOf(Everyone, npcId) >= 0;
 
     public const int MinLevel = 50;   // nexusatlas/quests/poetswhip.php; RTK asks 10
     public const int PoetPath = 4;
@@ -175,8 +171,9 @@ public static class PoetWhipQuest
 
 /// <summary>
 /// Staff's half of the chain. Composed onto every PoetTrainerNpc (game-data/NpcAbilities.csv) and narrowed
-/// here to Staff himself, to Poets, and to level <see cref="PoetWhipQuest.MinLevel"/> — RTK hides the option
-/// the same way rather than refusing inside it, so a Warrior clicking Staff sees the ordinary trainer menu.
+/// here to Staff and his alignment copies (<see cref="PoetWhipQuest.Everyone"/>), to Poets, and to level
+/// <see cref="PoetWhipQuest.MinLevel"/> — RTK hides the option the same way rather than refusing inside it,
+/// so a Warrior clicking Staff sees the ordinary trainer menu.
 /// </summary>
 public sealed class PoetWhipQuestAbility : INpcAbility
 {
@@ -184,7 +181,7 @@ public sealed class PoetWhipQuestAbility : INpcAbility
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        if (ctx.Def.Id != PoetWhipQuest.StaffNpcId) yield break;
+        if (!PoetWhipQuest.IsStaff(ctx.Def.Id)) yield break;
         if (ctx.BasePathId != PoetWhipQuest.PoetPath) yield break;
         if (ctx.Level < PoetWhipQuest.MinLevel) yield break;
         if (ctx.HasLegend(PoetWhipQuest.LegendDestroyed)) yield break;   // done, and it is once per character
