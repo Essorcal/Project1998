@@ -3860,7 +3860,8 @@ same status pane. User-confirmed working 2026-07-27.
 entrance, world-map hop, Gateway or GM teleport puts a player on a tile another player already stands on,
 the original game stacked them — it neither refused the warp nor moved the arriver to a neighbouring tile
 (Caleb, from play; `game-data/Sources.csv` `live-2026-09-06-arrival-stack`, a recollection rather than a
-dated capture, with no contrary source). Structurally consistent with RTK at weight 0: `pc_warp` applies no
+dated capture, so weight 2 rather than 3; no contrary source is recorded in this tree or the research
+archive). Structurally consistent with RTK at weight 0: `pc_warp` applies no
 occupancy test (§11m), and the `slash.lua` note earlier in this document has `getAliveObjectsInCell(m, x, y,
 BL_PC)` returning *everyone* on one cell, which only makes sense if several can be there. Server side this
 is `ArrivalPolicy.Clamp`, the default every arrival passes to `World.PlacePlayer` except the three
