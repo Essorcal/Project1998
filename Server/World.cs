@@ -67,17 +67,22 @@ public readonly record struct FromTile(ushort Map, ushort X, ushort Y);
 /// <summary>How <see cref="World.PlacePlayer"/> turns a requested arrival tile into the one the player
 /// actually lands on.
 ///
-/// <para><b>Every arrival in the tree uses one of these two today, and both reproduce exactly what that
-/// caller already did</b> — this is a lock-scope change, not a behaviour one. The question of what the
-/// original game did when a warp's destination was occupied is open (#99, "Needs source check"), so no
-/// policy that would answer it exists yet: there is deliberately no Refuse and no "step aside on a warp".
-/// When the source check lands, its answer arrives here as a third member and a change of default.</para>
+/// <para><b>Every arrival in the tree uses one of these two, and the default is the original game's own
+/// behaviour.</b> The source check #99 waited on is answered: when a warp put a player on a tile another
+/// player already stood on, the game stacked them — it neither refused the warp nor moved the arriver to a
+/// neighbouring tile (Caleb, from play, 2026-09-06; <c>game-data/Sources.csv</c>
+/// <c>live-2026-09-06-arrival-stack</c>; structurally consistent with RTK's <c>pc_warp</c>, which applies
+/// no occupancy test, and with its per-cell player list holding several — docs/4.x/Protocol.md §11g). So
+/// <see cref="Clamp"/> is the game-faithful default, there is deliberately no Refuse and no "step aside on
+/// a warp", and <see cref="AdjacentFreeElseStack"/> is a GM-tool convenience — a house choice for
+/// <c>@approach</c>/<c>@bring</c>/<c>@npc</c>, not a game fact.</para>
 /// </summary>
 public enum ArrivalPolicy
 {
     /// <summary>Take the requested tile, clamped to the map, occupied or not. What every warp, scripted-tile
     /// entrance, world-map hop, Gateway and GM teleport has always done — a bounds clamp was the whole of the
-    /// validation. Two players through one door land on the same tile, as they always have.</summary>
+    /// validation. Two players through one door land on the same tile, as they always have — and as they did
+    /// in the original game (#99).</summary>
     Clamp,
 
     /// <summary>The first free cardinal neighbour of the requested tile (N/E/S/W in that order), else the
@@ -2113,9 +2118,9 @@ public sealed partial class World
     ///
     /// <para><b>This is a lock-scope change and nothing else.</b> <see cref="ArrivalPolicy.Clamp"/> is the
     /// default and is what all 21 non-GM-adjacency callers pass, and it does exactly what the old inline
-    /// clamp did, occupancy included: it does not test it. Two players through one door still land on one
-    /// tile. Whether they SHOULD is #99's open source question, and answering it is not this method's job —
-    /// see <see cref="ArrivalPolicy"/>.</para>
+    /// clamp did, occupancy included: it does not test it. Two players through one door land on one tile,
+    /// which is what the original game did too — #99's source check settled it as stacking, so the default
+    /// is the game's behaviour and not merely the code's history; see <see cref="ArrivalPolicy"/>.</para>
     ///
     /// <para><b>Lock order (#29)</b> is the same as <see cref="TryMovePlayer"/>'s: the caller is
     /// <c>Session.EnterMap</c>, already inside the mover's own state monitor, and this takes <c>_lock</c>

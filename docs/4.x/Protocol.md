@@ -3856,6 +3856,20 @@ The sibling scripted-tile rejection `TryMythicCaveEntrance` already snapped back
 using `SendMessage` (the `0x02` login box); switched to `SendMiniText` so both rejection paths land in the
 same status pane. User-confirmed working 2026-07-27.
 
+**Arrival on an occupied tile = stack, settled 2026-09-06 (#99 part 2).** When a warp, scripted-tile
+entrance, world-map hop, Gateway or GM teleport puts a player on a tile another player already stands on,
+the original game stacked them — it neither refused the warp nor moved the arriver to a neighbouring tile
+(Caleb, from play; `game-data/Sources.csv` `live-2026-09-06-arrival-stack`, a recollection rather than a
+dated capture, so weight 2 rather than 3; no contrary source is recorded in this tree or the research
+archive). Structurally consistent with RTK at weight 0: `pc_warp` applies no
+occupancy test (§11m), and the `slash.lua` note earlier in this document has `getAliveObjectsInCell(m, x, y,
+BL_PC)` returning *everyone* on one cell, which only makes sense if several can be there. Server side this
+is `ArrivalPolicy.Clamp`, the default every arrival passes to `World.PlacePlayer` except the three
+free-neighbour GM commands (`@approach`/`@bring`/`@npc` use `AdjacentFreeElseStack`, a GM convenience and a
+house choice, not a game fact). PR #102 put the resolve and the position write under one `World._lock`
+acquisition; part 2 changed no behaviour, only the record and the tests' names. A walk STEP is a different
+rule and untouched: `World.TryMovePlayer` (#30) checks occupancy for steps.
+
 **Full `SendMessage`→`SendMiniText` audit, 2026-07-26.** The class-gate path-hall doorway (§ above,
 `TryPathHallWarp`) turned out to be one instance of a systemic mislabeling: `SendMessage` is specifically
 RTK's `0x02` **login-box** packet (`TkCrypt.LoginKey`-encrypted), reserved for the pre-world / re-login
