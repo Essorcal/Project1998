@@ -100,10 +100,18 @@ Every account name to grant both tester and GM tier for this run (Serve.ps1 -Tes
 -Bots[0] is the PRIMARY: the one TestClient.Cli logs in as (--user). Default botone,bottwo -- the test
 suite's two standing accounts (project1998-testclient README, "Bot accounts"); any script that needs a
 second bot names it with its own `bot <alias> <user> <pass>` line, and that name must be in this list.
+This is a floor, not the whole roster: every selected script's own `# requires bots:` header (the test
+client's convention) is unioned in on top of -Bots (adding, never replacing) before the pair starts, so a
+script naming a bot -Bots omits (e.g. botgrind) still gets it. A name added this way that is not one of
+the three standing accounts (botone, bottwo, botgrind -- see -Passes) and has no password from -Passes is
+a refusal before the pair starts, naming the script and the bot.
 
 .PARAMETER Passes
 Password for each name in -Bots, same order, same count. Default bot1pass,bot2pass (project1998-testclient
-README; passwords need a digit).
+README; passwords need a digit). A bot name unioned in from a script header (see -Bots) that is not
+covered by -Bots/-Passes falls back to the project1998-testclient README's standing-account passwords
+(botone/bot1pass, bottwo/bot2pass, botgrind/bot3pass) if it is one of those three names; any other name is
+a refusal.
 
 .PARAMETER KeepRunning
 Skip the -Stop this script would otherwise run once every script has finished (or the ready-probe timed
@@ -138,7 +146,8 @@ not actually write a fresh run\session.json -- this also covers Serve.ps1's own 
 -Checkout, passed through as-is); 2 Serve.ps1 refused to start (ports held, or this checkout already has a
 pair running -- its own exit 2, passed through as-is) and this script's own usage errors (a bad
 -Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, a script's `# budget:` header over the 3600s
-ceiling, TestClient.Cli project missing, dotnet not found).
+ceiling, a script's `# requires bots:` name with no known password, TestClient.Cli project missing, dotnet
+not found).
 #>
 [CmdletBinding()]
 param(
@@ -158,6 +167,10 @@ param(
 # -ScriptTimeoutSec only ever applies to a script with no header. A header above this is refused, not
 # honoured -- see Get-ScriptHeader / the ceiling check below.
 $MaxBudgetSec = 3600
+
+# #147: the project1998-testclient README's own standing bot accounts ("Bot accounts"), used only to fill
+# in a password for a name a script's `# requires bots:` header adds that -Bots/-Passes did not cover.
+$StandardBotPasswords = [ordered]@{ botone = 'bot1pass'; bottwo = 'bot2pass'; botgrind = 'bot3pass' }
 
 $ErrorActionPreference = 'Stop'
 
@@ -185,24 +198,29 @@ function Format-Args([string[]]$Parts) {
     }) -join ' ')
 }
 
-# #146: a selected script's own leading comment block (project1998-testclient's convention -- README.md
-# "requires bots", extended here to a budget) can declare `# budget: <N>s`. Read only from the CONTIGUOUS
-# run of comment (and blank) lines at the top of the file -- stopping at the first real script line --
-# rather than scanning the whole file with Select-String the way the test client's own one-line README
-# snippet does, because a script body line could otherwise coincidentally match the pattern inside a
-# quoted string or a later comment. Returns $null Budget when the header is absent; caller falls back to
-# -ScriptTimeoutSec.
+# #146/#147: a selected script's own leading comment block (project1998-testclient's convention --
+# README.md "requires bots") can declare `# budget: <N>s` and/or `# requires bots: <name> <name> ...`.
+# Read only from the CONTIGUOUS run of comment (and blank) lines at the top of the file -- stopping at the
+# first real script line -- rather than scanning the whole file with Select-String the way the test
+# client's own one-line README snippet does, because a script body line could otherwise coincidentally
+# match either pattern inside a quoted string or a later comment. Returns $null Budget (no header; caller
+# falls back to -ScriptTimeoutSec) and an empty RequiredBots array (no header; caller's roster is
+# unaffected by this script) when neither is present -- same "empty array means no header" contract the
+# README documents for its own snippet.
 function Get-ScriptHeader([string]$Path) {
     $budget = $null
+    $requiredBots = @()
     foreach ($line in (Get-Content -LiteralPath $Path)) {
         $trimmed = $line.Trim()
         if ($trimmed -eq '') { continue }
         if ($trimmed -notmatch '^#') { break }
         if ($trimmed -imatch '^#\s*budget:\s*(\d+)\s*s?\s*$') {
             $budget = [int]$Matches[1]
+        } elseif ($trimmed -match '^#\s*requires bots:\s*(.+)$') {
+            $requiredBots = @($Matches[1].Trim() -split '\s+' | Where-Object { $_ -ne '' })
         }
     }
-    return [pscustomobject]@{ Budget = $budget }
+    return [pscustomobject]@{ Budget = $budget; RequiredBots = $requiredBots }
 }
 
 # taskkill /T: the process this script starts is `dotnet`, which for `dotnet run` launches the built
@@ -432,6 +450,7 @@ foreach ($f in $scriptFiles) {
         Name            = $name
         HeaderBudget    = $header.Budget
         EffectiveBudget = $effectiveBudget
+        RequiredBots    = $header.RequiredBots
     })
 }
 if ($ceilingViolations.Count -gt 0) {
@@ -439,6 +458,38 @@ if ($ceilingViolations.Count -gt 0) {
     foreach ($v in $ceilingViolations) { Write-Host "  $v" }
     exit 2
 }
+
+# #147: -Bots/-Passes is the floor of the roster (and fixes the PRIMARY at index 0); every selected
+# script's own `# requires bots:` names are unioned in on top of it (added, never replacing -Bots), with
+# a password from -Passes if the name is already in -Bots, else from the project1998-testclient README's
+# standing accounts (botone/bottwo/botgrind) if it is one of those, else this run is refused before the
+# pair starts, naming the script and the bot.
+$passwordByName = [ordered]@{}
+for ($i = 0; $i -lt $Bots.Count; $i++) { $passwordByName[$Bots[$i]] = $Passes[$i] }
+$roster = New-Object System.Collections.Generic.List[string]
+foreach ($b in $Bots) { if (-not $roster.Contains($b)) { $roster.Add($b) } }
+$missingPasswords = New-Object System.Collections.Generic.List[string]
+foreach ($si in $scriptInfos) {
+    foreach ($name in $si.RequiredBots) {
+        if ($passwordByName.Contains($name)) {
+            if (-not $roster.Contains($name)) { $roster.Add($name) }
+            continue
+        }
+        if ($StandardBotPasswords.Contains($name)) {
+            $passwordByName[$name] = $StandardBotPasswords[$name]
+            if (-not $roster.Contains($name)) { $roster.Add($name) }
+        } else {
+            $missingPasswords.Add("$($si.Name) requires bot '$name', which is not in -Bots/-Passes and is not one of the standing accounts (botone, bottwo, botgrind).")
+        }
+    }
+}
+if ($missingPasswords.Count -gt 0) {
+    Write-Host "Refusing to start: required bot(s) with no known password."
+    foreach ($m in $missingPasswords) { Write-Host "  $m" }
+    exit 2
+}
+$FinalRoster = @($roster)
+$FinalPasses = @($FinalRoster | ForEach-Object { $passwordByName[$_] })
 
 $dotnetCmd = Get-Command dotnet.exe -ErrorAction SilentlyContinue
 if ($null -eq $dotnetCmd) { Write-Host "dotnet not found on PATH."; exit 2 }
@@ -454,7 +505,7 @@ $BuildRoot = Join-Path $CheckoutFull 'run\test-branch-testclient'
 $CopiedCliProject = Join-Path $BuildRoot 'TestClient.Cli'
 $SessionFile = Join-Path $CheckoutFull 'run\session.json'
 
-Write-Host "Test-Branch: checkout=$CheckoutFull  portBase=$PortBase  testClient=$TestClientFull  bots=$($Bots -join ',')  primary=$PrimaryBot"
+Write-Host "Test-Branch: checkout=$CheckoutFull  portBase=$PortBase  testClient=$TestClientFull  bots=$($FinalRoster -join ',')  primary=$PrimaryBot"
 Write-Host "Scripts ($($scriptFiles.Count)):"
 foreach ($f in $scriptFiles) { Write-Host "  $f" }
 
@@ -530,8 +581,8 @@ try {
     $sessionBefore = $null
     if (Test-Path -LiteralPath $SessionFile -PathType Leaf) { $sessionBefore = (Get-Item -LiteralPath $SessionFile).LastWriteTimeUtc }
 
-    Write-Host "Starting the server pair (Scripts\Serve.ps1 -Checkout $CheckoutFull -PortBase $PortBase -Testers $($Bots -join ',') -Gms $($Bots -join ',')) ..."
-    & $ServePs1 -Checkout $CheckoutFull -PortBase $PortBase -Testers $Bots -Gms $Bots
+    Write-Host "Starting the server pair (Scripts\Serve.ps1 -Checkout $CheckoutFull -PortBase $PortBase -Testers $($FinalRoster -join ',') -Gms $($FinalRoster -join ',')) ..."
+    & $ServePs1 -Checkout $CheckoutFull -PortBase $PortBase -Testers $FinalRoster -Gms $FinalRoster
     $serveExit = $LASTEXITCODE
 
     $sessionWritten = $false
