@@ -797,13 +797,25 @@ public sealed partial class Session
     // else in the server lets a player mail an item — Mail.Send still takes the item arguments and ReadMail
     // still claims an attachment, so a scripted/quest sender works; only the player-facing path is gone.
 
+    // Whether the given (already trimmed+lowercased) chat text should be excluded from NPC speech dispatch:
+    // empty, or starting with the real command prefix (Prefix, '@' — see Commands.cs). BEHAVIOUR CHANGE (#56):
+    // this used to test for the OLD '!' prefix, which stopped meaning "GM command" when commands moved to
+    // '@' — so every '@command' typed in chat was ALSO being dispatched as NPC speech. Fixed to gate on the
+    // real prefix. Note what the flow is today: Session.Chat.cs's HandleChat runs TryRunCommand first, and it
+    // returns true for anything with the '@' prefix, so '@text' never reaches DispatchSpeech at all any more
+    // — this predicate is a second, defensive gate against a raw '@word' that somehow got past it. The
+    // practical effect of the fix: a player saying "!..." now reaches nearby NPC say handlers (it no longer
+    // gets swallowed here); "@..." still does not (it was already being intercepted upstream, and now this
+    // gate agrees with that interception instead of gating on the wrong character).
+    internal static bool IsCommandNotSpeech(string say) => say.Length == 0 || say[0] == Prefix;
+
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
     // handler that consumes the speech (runs a dialog) wins, so unrelated chatter just falls through. Async
     // (dialog awaits replies), so fire-and-forget like OpenNpcDialog. See INpcSayHandler / RTK onSayClick.
     private void DispatchSpeech(string text)
     {
         string say = text.Trim().ToLowerInvariant();
-        if (say.Length == 0 || say[0] == '!') return;   // empty / GM command -> not NPC speech
+        if (IsCommandNotSpeech(say)) return;
 
         var candidates = new List<(Mob npc, NpcDef def, List<INpcSayHandler> handlers)>();
         foreach (var npc in _world.NpcsNear(_char.Map, _char.X, _char.Y, Content.SpeechRange))
