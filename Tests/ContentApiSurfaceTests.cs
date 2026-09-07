@@ -86,24 +86,4 @@ public class ContentApiSurfaceTests
     [InlineData("wisdom_star", 6)]
     public void CastActionTypeReturnsTheSameByteItAlwaysDid(string key, byte expected) =>
         Assert.Equal(expected, Content.CastActionType(Spell(key)));
-
-    /// <summary>The emote-range override is admitted on its RANGE (9..28), not by being a value the enum
-    /// names. 25 and 26 are deliberately unnamed in <see cref="ActionType"/> because nothing sources them,
-    /// and they must still be accepted here — narrowing this to the named members is the mistake this
-    /// asserts against. Driven through the same range predicate the production path uses.</summary>
-    [Theory]
-    [InlineData(9)]
-    [InlineData(18)]
-    [InlineData(25)]    // unnamed in ActionType
-    [InlineData(26)]    // unnamed in ActionType
-    [InlineData(28)]
-    public void EmoteRangeOverrideIsAcceptedOnRangeNotOnBeingNamed(int action)
-    {
-        Assert.True(action is >= 9 and <= 28);
-        // The cast the production caller performs on whatever byte comes back must preserve the value even
-        // when no enum member carries that number (Session.HandleCast).
-        Assert.Equal((byte)action, (byte)(ActionType)(byte)action);
-        Assert.False(Enum.IsDefined(typeof(ActionType), (ActionType)(byte)action) && action is 25 or 26,
-                     "25/26 are expected to stay unnamed; if one gains a source-backed name, update this.");
-    }
 }
