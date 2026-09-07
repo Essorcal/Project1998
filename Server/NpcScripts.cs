@@ -47,6 +47,7 @@ public static class NpcScripts
         ["mage_stone"] = MageStoneAbility.Instance,
         ["tiger_mail"] = TigerMailAbility.Instance,
         ["armor_quest"] = ArmorQuestAbility.Instance,
+        ["poet_whip"] = PoetWhipQuestAbility.Instance,
         ["stars_hint"] = StarHintAbility.Instance,
         ["totem_worship"] = TotemWorshipAbility.Instance,
         ["mythic_alliance"] = MythicAllianceAbility.Instance,
