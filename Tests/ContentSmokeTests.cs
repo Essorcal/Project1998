@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using Server;
 using Shared;
 using Xunit;
@@ -1819,6 +1819,54 @@ public class ContentSmokeTests
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
             }
+        }
+    }
+    /// <summary>Every crypt off the Cemetery has a door, and every door is one a player can actually stand on.
+    ///
+    /// <para>Two silent failures at once. Eight of the nine mudum crypts (2201-2209) shipped with ZERO rows in
+    /// Warps.csv: the terrain loaded, the Maps.csv rows parsed, and nothing anywhere complained that no player
+    /// could ever reach them (issue #152). And a warp whose source tile sits under an <c>SObj.tbl</c>-solid
+    /// sprite is dead on arrival — the 4.x client refuses that step locally and the server never sees it, so
+    /// the row exists, tests green, door never opens. Assert the round trip and the walkability of both ends.</para>
+    ///
+    /// <para>The door coordinates are Nexus Atlas' period clickable Cemetery map (<c>50atlas/cemetary.php</c>,
+    /// 15 px per tile), which names all nine; they are also the only nine cells on TK2200 carrying the crypt
+    /// doorway ground tile 25.</para></summary>
+    [Fact]
+    public void EveryCemeteryCryptIsReachableAndItsDoorIsWalkable()
+    {
+        EnsureLoaded();
+
+        // crypt map id -> its doorway tile on the Cemetery
+        var doors = new (ushort Map, ushort X, ushort Y)[]
+        {
+            (2201, 3, 6), (2202, 10, 8), (2203, 17, 4), (2204, 27, 9), (2205, 3, 18),
+            (2206, 12, 17), (2207, 23, 18), (2208, 7, 26), (2209, 27, 26),
+        };
+
+        var cemetery = MapData.For(2200);
+        Assert.NotNull(cemetery);
+
+        foreach (var (map, x, y) in doors)
+        {
+            // The way in, and it lands you somewhere you can stand.
+            Assert.True(Content.TryWarp(2200, x, y, out var into) && into.m == map,
+                $"Cemetery tile ({x},{y}) must warp into map {map}");
+            var crypt = MapData.For(map);
+            Assert.NotNull(crypt);
+            Assert.False(crypt!.Solid(into.x, into.y),
+                $"crypt {map} landing tile ({into.x},{into.y}) is solid — the player warps into a wall");
+
+            // The way out, back onto a tile you can stand on.
+            Assert.True(Content.TryWarp(map, 15, 31, out var back) && back.m == 2200,
+                $"crypt {map} tile (15,31) must warp back to the Cemetery");
+            Assert.False(cemetery!.Solid(back.x, back.y),
+                $"crypt {map} exit lands on solid Cemetery tile ({back.x},{back.y})");
+
+            // The trap: a warp under a solid sprite never fires, because the client self-blocks the step.
+            // The doorway is entered heading NORTH (dir 0) off the tile the exit drops you back onto.
+            Assert.False(cemetery.BlockedMove(x, y, 0),
+                $"Cemetery door ({x},{y}) into crypt {map} is blocked walking north — SObj-solid sprite over a warp");
         }
     }
 }

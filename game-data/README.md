@@ -50,7 +50,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `MobStationary.csv` | `P1998_MOB_STATIONARY` | 14 | 14 | from file |
 | `mobs.csv` | `P1998_MOBS` | 716 | 716 | from file |
 | `Items.csv` | `P1998_ITEMS` | 2,544 | 2,544 | from file |
-| `Warps.csv` | `P1998_WARPS` | 4,800 | 4,323 | from file |
+| `Warps.csv` | `P1998_WARPS` | 4,824 | 4,347 | from file |
 | `Spawns.csv` | `P1998_SPAWNS` | 1,175 | 1,174 | from file |
 | `AreaSpawns.csv` | `P1998_AREASPAWNS` | 2,588 | 2,588 | from file |
 | `AreaSpawnsTrap.csv` | `P1998_AREASPAWNS_TRAP` | 20 | 20 | from file |
