@@ -337,6 +337,43 @@ public sealed class CommandTableTests
         Assert.Equal("", args);
     }
 
+    // ---- @questreset -----------------------------------------------------------------------------------
+
+    /// <summary>@questreset clears BOTH halves of quest state — the registry and the quest legend marks —
+    /// because most chains gate on the legend rather than the stage, so wiping stages alone replays nothing
+    /// (the giver still sees the mark and skips to "already done"). What it must NOT take is the
+    /// relationship and mentorship marks: "married" travels with <c>SetSpouse</c>, so dropping the mark
+    /// alone would leave a character married in state with nothing on the profile saying so.
+    ///
+    /// <para>The second run is the deny-list's real assertion: with the quest state gone, "Nothing to reset"
+    /// can only appear if "married" was never counted as clearable in the first place.</para></summary>
+    [Fact]
+    public void QuestResetClearsQuestStateAndQuestMarksButSparesRelationships()
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        // Set up through the commands themselves rather than the internal setters: a packet is the atomic
+        // unit of work against a session (#29) and the state monitor wraps Session.Handle, so calling
+        // SetQuestStr directly from here writes _char outside the monitor and trips its Debug.Fail.
+        Run(session, "@quest poet_whip 3");
+        Run(session, "@quest minor_quest squirrel");        // non-numeric -> the string registry
+        Run(session, "@legend family_nangen_mages 7 128 Family to the Nangen Mages");
+        Run(session, "@legend married 7 128 Married to Someone");
+
+        outbound.Clear();
+        Run(session, "@questreset");
+
+        Assert.Equal(0, session.QuestStage("poet_whip"));            // stage: gone
+        Assert.Equal("", session.QuestStr("minor_quest"));           // string registry: gone
+        Assert.False(session.HasLegend("family_nangen_mages"));      // a quest mark: gone
+        Assert.True(session.HasLegend("married"));                   // not a quest: spared
+        Assert.True(session.HasLegend(""));                          // the unkeyed "Born in ..." seed: spared
+
+        outbound.Clear();
+        Run(session, "@questreset");
+        Assert.Contains("pane3|Nothing to reset.", Transcript(outbound));
+    }
+
     // ---- the table itself ------------------------------------------------------------------------------
 
     /// <summary>The real table, built eagerly. This is what Program calls at startup, and it is the only

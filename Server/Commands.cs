@@ -215,6 +215,7 @@ public sealed partial class Session
         // The generic quest-state pair (docs/common/Quest-Registry.md is the key catalogue). Most chains gate
         // on the LEGEND, not the stage, so re-testing one usually takes both commands.
         T("quest",   (s, a) => s.QuestCmd(a),      "[key] [stage]",       "read/set the raw quest registry (bare = dump your keys; stage 0 clears; non-numeric sets the string registry)"),
+        T("questreset", (s, a) => s.QuestResetCmd(a), "",           "clear EVERY quest key and keyed legend mark, so all chains replay from the start (kills untouched)"),
         T("legend",  (s, a) => s.LegendCmd(a),     "[key] [0 | <icon> <color> <text...>]", "list legend marks with their internal keys; remove one, or (re)create one by key (colour 128 is the usual white; 0 renders invisible)"),
         // 0x0A's `type` decides which pane/colour a line lands in, and a wrong one is INVISIBLE from the
         // server side — the packet sends, the log says so, the client draws nothing. See TextChannelCmd.

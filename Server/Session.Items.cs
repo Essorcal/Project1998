@@ -730,9 +730,12 @@ public sealed partial class Session
     /// 21. The gaps are 9-10 then 15-17 — they GROW. Five ramp/period shapes have now been fitted and
     /// killed in turn; do not fit a sixth without a measurement in every gap it spans.
     ///
-    /// WARRIOR — measured at levels 5,6,7 (0.0), 8,9,14,15,16 (0.5), 18,19,25,28,30,32 (1.0), 35 (1.5).
-    /// Steps: #1 EXACTLY 8. #2 in 17-18. #3 in 33-35. Nothing above 35 is measured; the table holds at
-    /// 1.5 rather than extrapolating, because the gap growth makes extrapolation guesswork.
+    /// WARRIOR — measured: 5,6,7 (0.0), 8,9,14,15,16 (0.5), 18,19,25,28,30,32 (1.0), 35,42 (1.5), 46..57 (2.0).
+    /// Steps: #1 EXACTLY 8. #2 in 17-18. #3 in 33-35. #4 in 43-46 (42 reads 1.5 n=31; 46 reads 2.0 n=18,
+    /// chi2 1.33/5df). Tread #4 holds 46-57 (49,52,55,57 all unique to cf 2.0), so step #5 is above 57 —
+    /// this tread is already ~12 levels, wider than #3, so the gaps keep growing. NOTE: the 55 reading was
+    /// with +2 Dam of rings on (total Dam 4); solved at Dam 2 it faked cf 7.0 (Dam/cf confound, not a step).
+    /// The ramp to the RTK-9 level-99 target is a placeholder from 57 up.
     /// ROGUE — lvl~15 = 1.0 (early, low precision), lvl18 and lvl19 = 1.0 (mined out of re/auto/swings.csv,
     /// see below), lvl65 = 6.0. Its step SIZE has still never been observed. The interpolation between 19
     /// and 65 is a placeholder; only the endpoints are real.
@@ -752,7 +755,7 @@ public sealed partial class Session
     /// offset moved -0.5 -> -1.0 (pinned by a level-1 peasant) and this absorbed the same 0.5, so
     /// warrior/rogue damage is bit-identical and Peasant lands on exactly 0.</summary>
     private static readonly (int Level, double Cf)[] WarriorClassFactor =
-        { (1, 0.0), (7, 0.0), (8, 0.5), (16, 0.5), (18, 1.0), (32, 1.0), (35, 1.5), (36, 1.5), (37, 1.5), (38, 1.5) };
+        { (1, 0.0), (7, 0.0), (8, 0.5), (16, 0.5), (18, 1.0), (32, 1.0), (35, 1.5), (42, 1.5), (46, 2.0), (57, 2.0) };
     /// <summary>ROGUE — MEASURED: 0.0 @5, 0.5 @7, 1.0 @18 and @19, 6.0 @65.
     ///
     /// !! THE ROGUE IS NOT ON THE WARRIOR'S LADDER. Rogue step #1 is at EXACTLY 7, warrior step #1 at

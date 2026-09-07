@@ -1214,6 +1214,45 @@ public sealed partial class Session
         Log.Info($"   -> @quest '{_char.Name}': {key} <- {val}");
     }
 
+    /// <summary>Keyed legend marks that @questreset must NOT touch: they are relationship and mentorship
+    /// state, not quest progress, and each is half of a pair the rest of the server keeps in step.
+    /// "married"/"engaged" travel with <c>SetSpouse</c>/<c>ClearEngagement</c> (Session.CharacterApi), so
+    /// dropping the mark alone leaves a character married in state with nothing on the profile saying so —
+    /// a half-divorce no real code path can produce. The mentorship trio is a lifetime record ("Mentored 12
+    /// new players"), not a flag any chain gates on, and clearing it destroys history a replay never restores.
+    ///
+    /// <para>A DENY-list rather than an allow-list because quest legends are open-ended — every new chain
+    /// adds one — so an allow-list would silently stop clearing the newest quest's mark, which is exactly the
+    /// failure this command exists to prevent.</para></summary>
+    private static readonly HashSet<string> NonQuestLegends = new(StringComparer.Ordinal)
+    { "married", "engaged", "mentored", "mentored_by", "being_mentored_by" };
+
+    // "@questreset" — clear the WHOLE quest registry and every keyed legend, so every chain can be walked
+    // again from nothing. This is "@quest <key> 0" for all keys at once plus the half that command cannot
+    // reach: most chains gate on the LEGEND rather than the stage (see the note above LegendCmd), so wiping
+    // stages alone re-tests nothing — the giver still sees the mark and skips to "you have already done
+    // this". Clearing both is the only combination that actually replays a quest, which is why one command
+    // owns them rather than leaving a tester to pair @quest with @legend and find out later they missed one.
+    // The seeded "Born in ..." mark has no key and so survives, exactly as it does in @legend.
+    // Kills and the kill track are deliberately LEFT ALONE: quests read a kill delta since accept, so a
+    // lifetime tally never blocks a replay, and "@killtrack clear" already owns the eight-slot track.
+    private void QuestResetCmd(CommandArgs a)
+    {
+        int stages = _char.Quests.Count;
+        int strings = _char.QuestStrings.Count;
+        int marks = _char.Legends.RemoveAll(l => l.Name.Length > 0 && !NonQuestLegends.Contains(l.Name));
+        if (stages + strings + marks == 0) { Reply("Nothing to reset."); return; }
+
+        _char.Quests.Clear();
+        _char.QuestStrings.Clear();
+        SaveChar();
+
+        // Kept short on purpose: Reply wraps at PaneWidth (30), so a sentence of prose here arrives as a
+        // five-line wall on the status pane. The counts are the whole message.
+        Reply($"Quest reset: {stages} stages, {strings} strings, {marks} marks.");
+        Log.Info($"   -> @questreset '{_char.Name}': {stages} stages, {strings} strings, {marks} legends");
+    }
+
     // "@legend [key] [0 | <icon> <color> <text...>]" — the legend list with its INTERNAL keys showing. The
     // profile window renders only each mark's text; the key (RTK's legend name) is what quests gate on
     // (HasLegend), so this is the only place a tester can see which key a mark answers to. "@legend <key> 0"

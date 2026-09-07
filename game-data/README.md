@@ -44,20 +44,20 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 |---|---|---:|---:|---|
 | `ObjectFlagOverrides.csv` | `P1998_OBJECT_FLAG_OVERRIDES` | 1 | 1 | supplied (`Obj`, `Flag`, `Note`) |
 | `Obj533Fix.csv` | `P1998_OBJ533_FIX` | 128 | 128 | supplied (`Legacy`, `Action`, `Replacement`, `FiveId`, `Flag495`, `Flag533`, `Scope`) |
-| `Tile533Map.csv` | `P1998_TILE533_MAP` | 1,190 | 1,190 | supplied (`StartLegacy`, `Count`, `Start533`) |
-| `map_index.csv` | `P1998_MAP_INDEX` | 2,025 | 2,025 | from file |
+| `Tile533Map.csv` | `P1998_TILE533_MAP` | 1,200 | 1,200 | supplied (`StartLegacy`, `Count`, `Start533`) |
+| `map_index.csv` | `P1998_MAP_INDEX` | 2,031 | 2,031 | from file |
 | `MobFlees.csv` | `P1998_MOB_FLEES` | 2 | 2 | from file |
 | `MobStationary.csv` | `P1998_MOB_STATIONARY` | 14 | 14 | from file |
 | `mobs.csv` | `P1998_MOBS` | 716 | 716 | from file |
 | `Items.csv` | `P1998_ITEMS` | 2,544 | 2,544 | from file |
-| `Warps.csv` | `P1998_WARPS` | 4,691 | 4,208 | from file |
+| `Warps.csv` | `P1998_WARPS` | 4,800 | 4,323 | from file |
 | `Spawns.csv` | `P1998_SPAWNS` | 1,175 | 1,174 | from file |
 | `AreaSpawns.csv` | `P1998_AREASPAWNS` | 2,588 | 2,588 | from file |
 | `AreaSpawnsTrap.csv` | `P1998_AREASPAWNS_TRAP` | 20 | 20 | from file |
 | `AreaSpawnsCrafting.csv` | `P1998_AREASPAWNS_CRAFT` | 8 | 8 | from file |
 | `ServerTuning.csv` | `P1998_SERVER_TUNING` | 16 | 16 | from file |
 | `EraFeatures.csv` | `P1998_ERA_FEATURES` | 10 | 10 | from file |
-| `NPCs.csv` | `P1998_NPCS` | 368 | 288 | from file |
+| `NPCs.csv` | `P1998_NPCS` | 380 | 303 | from file |
 | `MinorQuests.csv` | `P1998_MINORQUESTS` | 101 | 101 | from file |
 | `ShopStock.csv` | `P1998_SHOPSTOCK` | 38 | 38 | from file |
 | `ShopBuysFrom.csv` | `P1998_SHOPBUYSFROM` | 46 | 46 | from file |
@@ -89,7 +89,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `MobChatter.csv` | `P1998_MOB_CHATTER` | 21 | 21 | from file |
 | `MobSpawnRules.csv` | `P1998_MOB_SPAWN_RULES` | 67 | 67 | from file |
 | `MobBosses.csv` | `P1998_MOB_BOSSES` | 72 | 72 | from file |
-| `PathHalls.csv` | `P1998_PATHHALLS` | 8 | 8 | from file |
+| `PathHalls.csv` | `P1998_PATHHALLS` | 12 | 12 | from file |
 | `GatewayGates.csv` | `P1998_GATEWAY` | 16 | 16 | from file |
 | `WorldMapDests.csv` | `P1998_WORLDMAP_DESTS` | 7 | 7 | from file |
 | `WorldMapTriggers.csv` | `P1998_WORLDMAP_TRIGGERS` | 7 | 7 | from file |
