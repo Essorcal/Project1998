@@ -1074,6 +1074,10 @@ public sealed partial class Session
     {
         Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
         _char.Mounted = false;                                            // a horse doesn't carry a ghost
+        // #57: a ghost cannot finish an exchange. TryStartTrade already refuses to OPEN a window on a dead
+        // player; until this line nothing closed one that was already open, so a corpse could still confirm
+        // and the goods moved. First, so the window is gone before the death penalties touch the bag.
+        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
         ClearAllTimedEffects();                                           // RTK pc_diescript wipes every timer on death — buffs, curses, stances, and any morph/stealth disguise (must run before the ghost redraw so it draws from the real look, not the morph)
         RefreshAppearance();                                              // redraw self as a ghost + everyone watching
         ResyncPeers();                                                    // we're a ghost now — reveal the OTHER ghosts to us (PvP), and re-evaluate what we can see
