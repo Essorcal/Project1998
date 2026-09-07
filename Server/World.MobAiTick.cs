@@ -5,9 +5,9 @@ namespace Server;
 
 // The per-mob half of World.Tick (#36). World.cs keeps the heartbeat, the lock and the flush; this file
 // keeps what one creature does on one beat. Both types are NESTED in World rather than top-level so they
-// reach MapState, the step helpers (Dart, StepMobToward, TriggerTrapLocked...) and the AI constants as
-// they are, without widening any of them to internal — the one widening the split needed is MapState
-// itself, because a field on an internal type cannot be of a private one.
+// reach MapState, TriggerTrapLocked and the AI constants as they are; the one widening #36 needed was
+// MapState, because a field on an internal type cannot be of a private one. Since #37 section 2 the step
+// primitives (Dart, StepMobToward, DartMode, MobBlocked) are internal on World.MobMovement, reached by name.
 public sealed partial class World
 {
     /// <summary>
@@ -826,7 +826,7 @@ public sealed partial class World
                       && Math.Abs(ny - mob.HomeY) <= mob.Leash                             // leash to spawn
                       && !occupied.Contains(((ushort)nx, (ushort)ny))                     // not onto a player
                       && !mobTiles.Contains((nx, ny))                                      // not onto another mob
-                      && !MobMovement.MobBlocked(mapId, terrain, nx, ny, stepDir);                     // pass flag / SObj wall / warp tile
+                      && !MobMovement.MobBlocked(mapId, terrain, nx, ny, stepDir);         // pass flag / SObj wall / warp tile
             if (!ok) return;   // blocked/leashed: hold position (already facing stepDir)
 
             ushort ox = mob.X, oy = mob.Y;                   // SOURCE tile (see the move broadcast below)
