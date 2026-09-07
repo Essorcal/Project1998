@@ -89,6 +89,7 @@ re/**/*.frm
 re/**/*.cmp
 re/**/*.exe
 re/snd/
+re/snd533/
 re/mus/
 re/probe_log*.txt
 re/dispatch_log*.txt

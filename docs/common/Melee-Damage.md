@@ -485,6 +485,14 @@ Two consequences:
 This also explains the level-20 run previously filed as "contaminated": the relog happened around
 there, so Dam changed mid-series.
 
+#### Gear Dam is a classFactor poison — count your rings
+
+An unnoticed +2 Dam from gear adds `2 × 2.5 = +5` to the raw swing = **+10 damage** on a squirrel, which
+the solver blames on classFactor if you give it the wrong Dam. A level-55 warrior wearing +2 Dam of
+rings, solved as though Dam were 2, reported a bogus **cf 7.0** (a 10-step jump); with the rings counted
+(Dam 4) it was a clean **cf 2.0**, staircase intact. Before any swing session, **read total Dam off the
+profile with the gear you are actually wearing** and pass it to the solver — or take the rings off.
+
 ### Unarmed weapon range
 
 **`S = 1-2`.** Bare-handed is NOT zero — a zero range is deterministic, and every unarmed sample shows

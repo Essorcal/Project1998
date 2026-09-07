@@ -6,7 +6,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Arrivals under the world lock (#99 part 1) — the lock-scope half, and only that half.
+/// Arrivals under the world lock (#99) — the lock scope from part 1, and the arrival policy part 2 settled.
 ///
 /// <para><c>Session.EnterMap</c> is the funnel for every player position change that is not a walk step: 24
 /// callers, covering the SQL warp a step takes, the five scripted-tile entrances, world-map travel, the
@@ -15,11 +15,13 @@ namespace Tests;
 /// earlier, through a <c>World.PeerAt</c> and a <c>World.MobAt</c> that each took and released the lock. The
 /// resolve and the write are now one acquisition, in <see cref="World.PlacePlayer"/>.</para>
 ///
-/// <para><b>What these tests deliberately do NOT decide.</b> Whether an occupied arrival tile should refuse
-/// the warp, step the arriver aside, or stack is #99's open source question, and nothing here answers it.
-/// The default <see cref="ArrivalPolicy.Clamp"/> is the behaviour that has always shipped — clamp and take
-/// the tile, occupancy untested — and <see cref="TwoWarpsThroughOneDoorBothLandWhereClampSays"/> pins that
-/// by name, so a later policy change has to come past a test that says which policy it is replacing.</para>
+/// <para><b>What the source check settled (#99 part 2).</b> An occupied arrival tile is neither refused nor
+/// stepped aside from: the original game stacked the arriver on whoever was already there (Caleb, from play,
+/// 2026-09-06; Sources.csv <c>live-2026-09-06-arrival-stack</c>). The default
+/// <see cref="ArrivalPolicy.Clamp"/> — clamp and take the tile, occupancy untested — is therefore the game's
+/// behaviour, <see cref="ArrivalsStackOnAnOccupiedTileAsTheOriginalGameDid"/> is the source-backed guard for
+/// it, and <see cref="TwoWarpsThroughOneDoorBothLandWhereClampSays"/> pins the policy by name so any later
+/// change has to come past a test that says which policy it is replacing.</para>
 /// </summary>
 [Collection("world")]
 public class WarpUnderLockTests
@@ -87,15 +89,17 @@ public class WarpUnderLockTests
     }
 
     /// <summary>
-    /// <b>The 24 callers are otherwise unchanged: the default policy still does not test occupancy.</b> A
-    /// player is standing on the destination tile and the arriver lands on it anyway, exactly as before this
-    /// PR — a warp has never asked whether anyone was already there.
+    /// <b>Arrivals stack on an occupied tile, as the original game did.</b> A player is standing on the
+    /// destination tile and the arriver lands on it anyway: the warp is not refused and the arriver is not
+    /// moved to a neighbour. That is #99's source-check answer (Caleb, from play, 2026-09-06; Sources.csv
+    /// <c>live-2026-09-06-arrival-stack</c>), and this is the sequential half of the acceptance — the
+    /// concurrent half is <see cref="TwoWarpsThroughOneDoorBothLandWhereClampSays"/>.
     ///
-    /// <para>This is the test that would go red if the lock-scope refactor quietly acquired an opinion, which
-    /// is the one thing part 1 must not do.</para>
+    /// <para>Before part 2 this test only said the lock-scope refactor had acquired no opinion; it is the
+    /// same body, and now it is the guard for a game fact. Red if the default ever refuses or steps aside.</para>
     /// </summary>
     [Fact]
-    public void TheDefaultPolicyStillDoesNotTestOccupancy()
+    public void ArrivalsStackOnAnOccupiedTileAsTheOriginalGameDid()
     {
         long writesBefore = Session.PositionWritesUnderWorldLock;
         Assert.True(Content.TryWarp(DoorMap, DoorX, DoorY, out var dest));
@@ -112,7 +116,7 @@ public class WarpUnderLockTests
 
         Assert.Equal(dest.x, mover.PlayerX);
         Assert.Equal(dest.y, mover.PlayerY);
-        Assert.Equal(sitter.PlayerX, mover.PlayerX);   // stacked, as it always has
+        Assert.Equal(sitter.PlayerX, mover.PlayerX);   // stacked, as the original game did
         Assert.Equal(sitter.PlayerY, mover.PlayerY);
         Assert.True(Session.PositionWritesUnderWorldLock > writesBefore, "the arrival bypassed the seam");
     }
@@ -122,9 +126,10 @@ public class WarpUnderLockTests
     /// since they contend for it — and both land where <see cref="ArrivalPolicy.Clamp"/> says, which is the
     /// requested tile, because Clamp does not look at who is standing there.
     ///
-    /// <para><b>The policy is named on purpose.</b> If #99's source check later says an occupied arrival tile
-    /// should refuse or step aside, this test is where that shows up: it has to be rewritten to name the new
-    /// policy, rather than silently continuing to pass. Part 1 does not decide it.</para>
+    /// <para><b>The policy is named on purpose.</b> #99's source check settled the occupied-tile question as
+    /// stacking, which is what Clamp does, so this test is the concurrent half of that acceptance line. Should
+    /// a policy change ever be proposed anyway, this is where it shows up: the test has to be rewritten to
+    /// name the new policy rather than silently continuing to pass.</para>
     ///
     /// <para><b>What this is NOT.</b> It is not a race test, and the #102 reviewer was right to say so: under
     /// <see cref="ArrivalPolicy.Clamp"/> there is no contested resource, so the only way it can fail is an

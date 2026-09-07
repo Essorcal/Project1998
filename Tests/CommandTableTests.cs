@@ -41,7 +41,7 @@ public sealed class CommandTableTests
     /// rosters wholesale and content loads race it.</summary>
     private static class GmRoster
     {
-        private const string Name = "cmdgm";
+        public const string Name = "cmdgm";
         private static bool _done;
 
         public static void Ensure()
@@ -335,6 +335,43 @@ public sealed class CommandTableTests
         Assert.False(Session.SplitCommand(text, out var name, out var args));
         Assert.Equal("", name);
         Assert.Equal("", args);
+    }
+
+    // ---- @questreset -----------------------------------------------------------------------------------
+
+    /// <summary>@questreset clears BOTH halves of quest state — the registry and the quest legend marks —
+    /// because most chains gate on the legend rather than the stage, so wiping stages alone replays nothing
+    /// (the giver still sees the mark and skips to "already done"). What it must NOT take is the
+    /// relationship and mentorship marks: "married" travels with <c>SetSpouse</c>, so dropping the mark
+    /// alone would leave a character married in state with nothing on the profile saying so.
+    ///
+    /// <para>The second run is the deny-list's real assertion: with the quest state gone, "Nothing to reset"
+    /// can only appear if "married" was never counted as clearable in the first place.</para></summary>
+    [Fact]
+    public void QuestResetClearsQuestStateAndQuestMarksButSparesRelationships()
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        // Set up through the commands themselves rather than the internal setters: a packet is the atomic
+        // unit of work against a session (#29) and the state monitor wraps Session.Handle, so calling
+        // SetQuestStr directly from here writes _char outside the monitor and trips its Debug.Fail.
+        Run(session, "@quest poet_whip 3");
+        Run(session, "@quest minor_quest squirrel");        // non-numeric -> the string registry
+        Run(session, "@legend family_nangen_mages 7 128 Family to the Nangen Mages");
+        Run(session, "@legend married 7 128 Married to Someone");
+
+        outbound.Clear();
+        Run(session, "@questreset");
+
+        Assert.Equal(0, session.QuestStage("poet_whip"));            // stage: gone
+        Assert.Equal("", session.QuestStr("minor_quest"));           // string registry: gone
+        Assert.False(session.HasLegend("family_nangen_mages"));      // a quest mark: gone
+        Assert.True(session.HasLegend("married"));                   // not a quest: spared
+        Assert.True(session.HasLegend(""));                          // the unkeyed "Born in ..." seed: spared
+
+        outbound.Clear();
+        Run(session, "@questreset");
+        Assert.Contains("pane3|Nothing to reset.", Transcript(outbound));
     }
 
     // ---- the table itself ------------------------------------------------------------------------------
@@ -745,5 +782,65 @@ public sealed class CommandTableTests
         Run(session, command);
 
         Assert.Equal(expected, Transcript(outbound));
+    }
+
+    /// <summary>#99's last acceptance line: a GM <c>@warp</c> into an OCCUPIED tile still succeeds. Someone
+    /// is standing on (4,9) of IronHeart's Home, the GM warps onto it, and lands there — stacked, not refused
+    /// and not nudged aside — with the ordinary success reply. <c>@warp</c> passes the default
+    /// <see cref="ArrivalPolicy.Clamp"/>, and Clamp is the original game's behaviour (Sources.csv
+    /// <c>live-2026-09-06-arrival-stack</c>), so a GM teleport never has to look at who is there. The
+    /// <c>@bring</c> half of that line is <see cref="BringOntoABoxedInTileStillSucceeds"/>.</summary>
+    [Fact]
+    public void WarpOntoAnOccupiedTileStillSucceeds()
+    {
+        Assert.True(Content.TryMap(36, out var home));   // IronHeart's Home, the roster's home map
+        var (sitter, _, _) = _fx.PlayerWith("WarpTileSitter", c => { c.MapXs = home.Xs; c.MapYs = home.Ys; },
+                                            36, 4, 9);
+        var (session, outbound) = GmRoster.Session(_fx);
+
+        Run(session, "@warp 36 4 9");
+
+        Assert.Equal((ushort)4, session.PlayerX);
+        Assert.Equal((ushort)9, session.PlayerY);
+        Assert.Equal(sitter.PlayerX, session.PlayerX);   // stacked on the sitter
+        Assert.Equal(sitter.PlayerY, session.PlayerY);
+        Assert.Equal(new[]
+        {
+            "pane3|------------------------------",
+            "pane3|Warped to IronHeart's Home",
+            "pane3|(map 36, 12x12) at (4,9).",
+        }, Transcript(outbound));
+    }
+
+    /// <summary>The <c>@bring</c> half of #99's last acceptance line: pulling a player to a GM whose every
+    /// cardinal neighbour is taken still succeeds. <c>@bring</c> passes
+    /// <see cref="ArrivalPolicy.AdjacentFreeElseStack"/>; with N/E/S/W all occupied the search falls back to
+    /// the GM's own tile and the target lands there, stacked on the GM, with the ordinary success reply. The
+    /// GM is built directly on a content-free map (no Maps.csv row, so no terrain can block a neighbour and
+    /// the four sitters are the only thing the search reacts to) rather than through
+    /// <see cref="GmRoster.Session"/>, which puts every GM on IronHeart's Home. The World-level pin of the
+    /// same fallback is <c>WarpUnderLockTests.AdjacentPolicyStacksWhenTheAnchorIsBoxedIn</c>; this one runs
+    /// it through the command.</summary>
+    [Fact]
+    public void BringOntoABoxedInTileStillSucceeds()
+    {
+        const ushort BoxMap = 60019, Gx = 6, Gy = 6;   // content-free; unique to this test (the fixture World is shared)
+        var (gm, outbound, _) = _fx.PlayerWith(GmRoster.Name, c => { c.MapXs = 12; c.MapYs = 12; }, BoxMap, Gx, Gy);
+        _fx.Player("BoxN", BoxMap, Gx, Gy - 1);
+        _fx.Player("BoxE", BoxMap, Gx + 1, Gy);
+        _fx.Player("BoxS", BoxMap, Gx, Gy + 1);
+        _fx.Player("BoxW", BoxMap, Gx - 1, Gy);
+        var (target, _) = _fx.Player("Bt", BoxMap, 1, 1);
+        outbound.Clear();
+
+        Run(gm, "@bring Bt");
+
+        Assert.Equal(Gx, target.PlayerX);   // stacked on the GM: every neighbour was taken
+        Assert.Equal(Gy, target.PlayerY);
+        Assert.Equal(new[]
+        {
+            "pane3|------------------------------",
+            "pane3|Brought Bt to (6,6).",
+        }, Transcript(outbound));
     }
 }

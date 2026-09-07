@@ -176,6 +176,14 @@ public static class TileTranslation
             && CurrentTables.Obj533.TryGetValue(obj, out var fix) && fix.Scope <= ObjFixScope)
             return fix.Replacement;   // 0 = suppress (blank the cell's object), else a look-alike swap
 
+        // An id past 4.95's SObj.tbl is an OUT-OF-RANGE READ on that client — it indexes its 7,608 records
+        // with no bounds check. No 4.x-sourced map ever carried one; a 5.x-TARGETED backport does, because
+        // it keeps the objects 5.33 has and 4.95 does not (Gale Chapel's altar dressing, ids 7911-8811).
+        // Blank them for 4.95 only, the same "draw nothing rather than guess" rule the 5.33 sheet-2 lookup
+        // above already follows. Skipped when the table is missing (Count 0) — blanking every object on the
+        // map would be far worse than the read this guards.
+        if (ver != Session.ClientVersion.V533 && ObjectFlags.Count > 0 && obj > ObjectFlags.Count) return 0;
+
         return Shift(obj, ObjectOffset(ver));
     }
 

@@ -35,14 +35,21 @@ Output: game-data/map_index.csv (id,name,xs,ys) — gitignored (logic-only repo,
 Env overrides: RTK_MAPS_CSV, RTK_MAPS_DIR, CLIENT_MAPS, OUT, RTK_WARPS_CSV.
 """
 import csv, os, struct, glob
-from _paths import CLIENT
+from _paths import CLIENT, DATA as _DATA
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
-DATA       = os.path.join(HERE, '..', 'data', 'game-data')
+DATA       = str(_DATA)                     # was ../data/game-data, stale since the repo flatten
 MAPS_CSV   = os.environ.get('RTK_MAPS_CSV', os.path.join(DATA, 'Maps.csv'))
 WARPS_CSV  = os.environ.get('RTK_WARPS_CSV', os.path.join(DATA, 'Warps.csv'))
 RTK_MAPS   = os.environ.get('RTK_MAPS_DIR', os.path.join(HERE, '..', 'RTK-Server', 'rtkmaps', 'Accepted'))
+# Prefer the client's own Maps dir, but fall back to game-data/maps when it has none. That fallback
+# is not a shortcut: game-data/maps is the AUTHORED superset and is what MapData.SearchDirs() reads
+# first at runtime, so regenerating from it reproduces the world the server actually serves. Reading
+# a bare client set instead would silently revert authored moves -- e.g. the class sanctums that now
+# sit on RTK's 3820/3824/3828/3832 rather than 2511/2513/2515/2517.
 CLIENT_MAP = os.environ.get('CLIENT_MAPS', str(CLIENT / "Maps"))
+if not glob.glob(os.path.join(CLIENT_MAP, 'TK*.map')):
+    CLIENT_MAP = os.path.join(DATA, 'maps')
 OUT        = os.environ.get('OUT', os.path.join(DATA, 'map_index.csv'))
 
 WALL_MIN, DENSITY_MIN, MAX_ASPECT, MIN_DIM, IMPROVE_EPS = 20, 0.05, 3.2, 8, 0.02

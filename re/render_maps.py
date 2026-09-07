@@ -21,8 +21,14 @@ WHAT A .map IS (Server/MapData.cs): headerless, 4 bytes/cell, row-major, dims fr
                      prepended null cancels it), so sheet-1 word v -> TILE.EPF[v] with no math.
   TILEC.EPF/PAL/TBL  objects. Boxed 24x24 frames + a trailing RLE STENCIL (see cframe()).
   SOBJ.TBL           per object: u8 tileCount, tileCount*u16 TILEC frame ids, FF FF FF FF 00, u8 flag.
-                     The frame ids are a vertical column; the LAST sits on the anchor cell and the
-                     column grows NORTH one 24px cell per frame.
+                     The frame ids are a vertical column; the FIRST sits on the anchor cell and the
+                     column grows NORTH one 24px cell per frame (frames run base -> top). Two
+                     independent checks, if this is ever doubted again: (1) seam continuity -- pairing
+                     each frame's bottom row against the next frame's top row, base->top is the more
+                     continuous order on 5814 of 6706 multi-frame objects and has half the total
+                     discontinuity; (2) the zero padding -- a wide tree's outer columns (e.g. SObj
+                     801/802/809) are padded with frame id 0 at the START of the list, so index 0 is
+                     the narrow base and the canopy is on top. Reversing this shreds every tree.
   .tbl format        u32 count, then count * 2 bytes = [paletteIndex, flag].  (Palette is byte 0.)
   .pal (DLPalette)   u32 count, then blocks each starting "DLPalette"; header length VARIES, so the
                      256 RGBA color entries are the block's LAST 1024 bytes. RGB, drop A.
@@ -258,7 +264,6 @@ def render(ts, cells, xs, ys):
         if z == 0 or z >= len(ts.objs):
             continue
         fids = ts.objs[z]
-        n = len(fids)
         cy, cx = divmod(i, xs)
         for k, fid in enumerate(fids):
             dec = ts.cframe(fid)
@@ -397,7 +402,15 @@ def main():
         meta.append({"id": mid, "name": name, "xs": xs, "ys": ys, "w": native[0], "h": native[1]})
         if (k + 1) % 100 == 0:
             print(f"  {k + 1}/{len(ids)}  ({time.time() - t0:.0f}s)", flush=True)
-    json.dump(meta, open(os.path.join(args.outdir, "maps.json"), "w"), separators=(",", ":"))
+    # --only renders a SUBSET; merge into the existing index instead of replacing it, or the viewer
+    # loses every map not named on this run. (The RTK renderer had exactly this bug and it bit.)
+    index_path = os.path.join(args.outdir, "maps.json")
+    if args.only and os.path.exists(index_path):
+        with open(index_path, encoding="utf-8") as fh:
+            prev = {m["id"]: m for m in json.load(fh)}
+        prev.update({m["id"]: m for m in meta})
+        meta = [prev[k] for k in sorted(prev)]
+    json.dump(meta, open(index_path, "w"), separators=(",", ":"))
     open(os.path.join(args.outdir, "maps.js"), "w").write(
         "window.MAPS=" + json.dumps(meta, separators=(",", ":")) + ";")
     print(f"done: {len(meta)} maps in {time.time() - t0:.0f}s -> {args.outdir}")

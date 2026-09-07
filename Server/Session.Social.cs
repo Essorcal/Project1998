@@ -215,9 +215,9 @@ public sealed partial class Session
             int placed = to.GivePlaced(def, amount, snap.Dura, snap.CustomName, owner: snap.Owner);
             if (placed <= 0) continue;                  // wouldn't fit; it stays with its owner
             have.Amount -= placed;
-            // reason 9 = "You gave <item>." — a trade hand-over is exactly what that client line is for
-            // (10 is "You sold", which is the vendor's). See the table in Content.EquipDelReason.
-            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 9); }
+            // "You gave <item>." — a trade hand-over is exactly what that client line is for (Sold is the
+            // vendor's). See the DelReason enum and the table in Content.EquipDelReason.
+            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, DelReason.Gave); }
             else from.SendAddItem(have);                // partial take: redraw the shrunken stack
         }
     }
@@ -361,7 +361,7 @@ public sealed partial class Session
         int give = Math.Min(amount, it.Amount);
         if (give <= 0) return;
         it.Amount -= give;
-        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 12); }  // 12 = silent; the NPC already spoke
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Silent); }  // the NPC already spoke
         else SendAddItem(it);
         MarkDirty();
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
@@ -397,7 +397,7 @@ public sealed partial class Session
 
         ushort dura = it.Dura; string cname = it.CustomName; string owner = it.Owner;   // capture before the stack mutates
         it.Amount -= give;
-        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 9); }  // 9 = client "You gave %s."
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Gave); }  // the client's own "You gave %s."
         else SendAddItem(it);
         MarkDirty();
         // The creature is carrying it now; killing the creature drops it back (World.TryDamage). Through the
@@ -462,10 +462,10 @@ public sealed partial class Session
                 if (Content.MailFirstOnBoard && Mail.UnreadCount(_char.Name) > 0) SendBoardPosts(0);
                 else SendBoardList();
                 break;
-            case 2: if (dec.Length >= 3) SendBoardPosts(U16(dec, 1)); break;                  // Show posts from board # (board 0 -> own mailbox)
-            case 3: if (dec.Length >= 5) SendBoardReadPost(U16(dec, 1), U16(dec, 3)); break;  // Read post (board 0 -> own mailbox)
+            case 2: if (dec.Length >= 3) SendBoardPosts(new PacketReader(dec.AsSpan(1)).U16BE()); break;                  // Show posts from board # (board 0 -> own mailbox)
+            case 3: if (dec.Length >= 5) SendBoardReadPost(new PacketReader(dec.AsSpan(1)).U16BE(), new PacketReader(dec.AsSpan(3)).U16BE()); break;  // Read post (board 0 -> own mailbox)
             case 4: HandleBoardMakePost(dec); break;                                          // Make post (board 0 rejected — see its own doc)
-            case 5: if (dec.Length >= 5) HandleBoardDelete(U16(dec, 1), U16(dec, 3)); break;   // Delete post (board 0 -> own mailbox)
+            case 5: if (dec.Length >= 5) HandleBoardDelete(new PacketReader(dec.AsSpan(1)).U16BE(), new PacketReader(dec.AsSpan(3)).U16BE()); break;   // Delete post (board 0 -> own mailbox)
             case 6: HandleNmailSend(dec); break;                                              // Send nmail — the NATIVE compose window's packet
             case 9: SendBoardPosts(0); break;   // "Nmail": RTK's own case 9 is just boards_showposts(sd, 0) — open the mailbox
             // 7 (GM postcolor) / 8 (special write) aren't modelled — they need a GM-level concept this server lacks.
@@ -484,14 +484,12 @@ public sealed partial class Session
         try
         {
             if (dec.Length < 4) { SendBoardAck(6, false, "That letter didn't go through."); return; }
-            int toLen = dec[3];
-            int p = 4;
-            string toName = Encoding.ASCII.GetString(dec, p, toLen).TrimEnd('\0').Trim(); p += toLen;
-            int topicLen = dec[p]; p += 1;
-            string subject = Encoding.ASCII.GetString(dec, p, topicLen).TrimEnd('\0').Trim(); p += topicLen;
-            int msgLen = (dec[p] << 8) | dec[p + 1]; p += 2;
-            string body = Encoding.ASCII.GetString(dec, p, msgLen).TrimEnd('\0').Trim(); p += msgLen;
-            bool sendCopy = p < dec.Length && dec[p] != 0;
+            var reader = new PacketReader(dec.AsSpan(3));
+            string toName = Encoding.ASCII.GetString(reader.Str8()).TrimEnd('\0').Trim();
+            string subject = Encoding.ASCII.GetString(reader.Str8()).TrimEnd('\0').Trim();
+            int msgLen = reader.U16BE();
+            string body = Encoding.ASCII.GetString(reader.Bytes(msgLen)).TrimEnd('\0').Trim();
+            bool sendCopy = reader.Remaining > 0 && reader.U8() != 0;
             Log.Info($"   -> NMAIL compose: to='{toName}' topic='{subject}' bodyLen={body.Length} sendCopy={sendCopy}");
 
             // Failure acks use type=0 so the compose window stays open for the player to fix the field
@@ -523,15 +521,16 @@ public sealed partial class Session
     // posting/sending/deleting (intif.c: "Your message has been posted."/"...sent."/"...deleted.").
     private void SendBoardAck(byte other, bool ok, string msg)
     {
-        var d = new List<byte> { other, (byte)(ok ? 1 : 0) };
+        // Existing board/mail builders keep their historical length casts (including overlong persisted
+        // fields). New layouts can use Str8's strict limit; silently retuning old layouts is not this refactor.
+        var d = new PacketWriter().U8(other).U8((byte)(ok ? 1 : 0));
         var mb = Ascii(msg);
-        d.Add((byte)mb.Length);
-        d.AddRange(mb);
-        d.Add(7);
-        SendMap(0x31, _gameInc++, d.ToArray(), $"boardack(0x31) other={other} ok={ok} '{msg}'");
+        d.U8((byte)mb.Length);
+        d.Bytes(mb);
+        d.U8(7);
+        SendMap(ServerOp.Board, _gameInc++, d.ToArray(), $"boardack(0x31) other={other} ok={ok} '{msg}'");
     }
 
-    private static int U16(byte[] d, int i) => (d[i] << 8) | d[i + 1];
 
     // Sub-1 "Show Board": the board list. RTK clif_showboards: type(1) titlelen(u8) title[titlelen]
     // boardCount(u8) then per board [id(u16BE) nameLen(u8) name[nameLen]]. RTK's own board list
@@ -540,15 +539,15 @@ public sealed partial class Session
     // selecting an entry opens it).
     private void SendBoardList()
     {
-        var d = new List<byte> { 1, 13 };
-        d.AddRange(Ascii("NexusTKBoards"));
-        d.Add((byte)(Boards.All.Count + 1));   // +1 for the personal Mailbox
+        var d = new PacketWriter().U8(1).U8(13);
+        d.Bytes(Ascii("NexusTKBoards"));
+        d.U8((byte)(Boards.All.Count + 1));   // +1 for the personal Mailbox
         foreach (var b in Boards.All)
         {
-            d.AddRange(Be((ushort)b.Id));
+            d.U16BE((ushort)b.Id);
             var n = Ascii(b.Name);
-            d.Add((byte)n.Length);
-            d.AddRange(n);
+            d.U8((byte)n.Length);
+            d.Bytes(n);
         }
         // Board 0 = the player's nmail mailbox, listed LAST. Per RTK ("Board(0) == NMail"), opening board 0
         // switches the window into mailbox mode (reply flags2=4), where Write composes WITH a recipient
@@ -557,11 +556,11 @@ public sealed partial class Session
         // is dead in this build (see the note on the 'm' key in docs §11h) and there's no way to open the
         // mailbox without going through this list: an unsolicited mailbox 0x31 is IGNORED unless the board
         // window is already open (tested live 2026-07-28 — the client opens no window from it).
-        d.AddRange(Be((ushort)0));
+        d.U16BE((ushort)0);
         var mn = Ascii("Mailbox");
-        d.Add((byte)mn.Length);
-        d.AddRange(mn);
-        SendMap(0x31, _gameInc++, d.ToArray(), "boardlist(0x31) +Mailbox");
+        d.U8((byte)mn.Length);
+        d.Bytes(mn);
+        SendMap(ServerOp.Board, _gameInc++, d.ToArray(), "boardlist(0x31) +Mailbox");
     }
 
     // Sub-2 "Show posts from board #": flags2(u8) flags1(u8) board(u16BE) boardNameLen(u8) boardName[...]
@@ -587,27 +586,27 @@ public sealed partial class Session
             // board_header.flags2 = 4; else = 2") — THE byte that flips the client's board window into
             // mailbox mode, where Write composes WITH a recipient field (sub-6) instead of a board post
             // (sub-4). flags1=3 = CAN_WRITE|CAN_DEL (board 0 always grants both in boards_showposts).
-            var d0 = new List<byte> { 4, 3 };
-            d0.AddRange(Be((ushort)0));
+            var d0 = new PacketWriter().U8(4).U8(3);
+            d0.U16BE((ushort)0);
             var mbn = Ascii("Mailbox");
-            d0.Add((byte)mbn.Length);
-            d0.AddRange(mbn);
-            d0.Add((byte)inbox.Count);
+            d0.U8((byte)mbn.Length);
+            d0.Bytes(mbn);
+            d0.U8((byte)inbox.Count);
             foreach (var m in inbox)
             {
-                d0.Add(0);
-                d0.AddRange(Be((ushort)m.Position));
+                d0.U8(0);
+                d0.U16BE((ushort)m.Position);
                 var sn = Ascii(m.Sender);
-                d0.Add((byte)sn.Length);
-                d0.AddRange(sn);
-                d0.Add(m.Month);
-                d0.Add(m.Day);
+                d0.U8((byte)sn.Length);
+                d0.Bytes(sn);
+                d0.U8(m.Month);
+                d0.U8(m.Day);
                 var topic = (m.IsRead ? "" : "* ") + m.Topic;
                 var tn0 = Ascii(topic);
-                d0.Add((byte)tn0.Length);
-                d0.AddRange(tn0);
+                d0.U8((byte)tn0.Length);
+                d0.Bytes(tn0);
             }
-            SendMap(0x31, _gameInc++, d0.ToArray(), $"boardposts(0x31) mailbox n={inbox.Count}");
+            SendMap(ServerOp.Board, _gameInc++, d0.ToArray(), $"boardposts(0x31) mailbox n={inbox.Count}");
             return;
         }
 
@@ -615,26 +614,26 @@ public sealed partial class Session
         var posts = Boards.PostsFor(boardId);
 
         // flags2=2 (real board), flags1=3 normally / 2 when we pop the window open (see popup note above).
-        var d = new List<byte> { 2, (byte)(popup ? 2 : 3) };
-        d.AddRange(Be((ushort)boardId));
+        var d = new PacketWriter().U8(2).U8((byte)(popup ? 2 : 3));
+        d.U16BE((ushort)boardId);
         var bn = Ascii(name);
-        d.Add((byte)bn.Length);
-        d.AddRange(bn);
-        d.Add((byte)posts.Count);
+        d.U8((byte)bn.Length);
+        d.Bytes(bn);
+        d.U8((byte)posts.Count);
         foreach (var p in posts)
         {
-            d.Add(0);   // color/highlighted (BrdHighlighted) — not modelled, always 0
-            d.AddRange(Be((ushort)p.Id));
+            d.U8(0);   // color/highlighted (BrdHighlighted) — not modelled, always 0
+            d.U16BE((ushort)p.Id);
             var an = Ascii(p.Author);
-            d.Add((byte)an.Length);
-            d.AddRange(an);
-            d.Add(p.Month);
-            d.Add(p.Day);
+            d.U8((byte)an.Length);
+            d.Bytes(an);
+            d.U8(p.Month);
+            d.U8(p.Day);
             var tn = Ascii(p.Topic);
-            d.Add((byte)tn.Length);
-            d.AddRange(tn);
+            d.U8((byte)tn.Length);
+            d.Bytes(tn);
         }
-        SendMap(0x31, _gameInc++, d.ToArray(), $"boardposts(0x31) board={boardId} n={posts.Count}");
+        SendMap(ServerOp.Board, _gameInc++, d.ToArray(), $"boardposts(0x31) board={boardId} n={posts.Count}");
     }
 
     // Sub-3 "Read post": type(u8: 3=board post, 5=nmail letter) buttons(u8=3, always writable)
@@ -650,20 +649,20 @@ public sealed partial class Session
         var post = Boards.Get(boardId, postId);
         if (post is null) { SendLog("That post no longer exists."); return; }
 
-        var d = new List<byte> { 3, 3, 0 };
-        d.AddRange(Be((ushort)postId));
+        var d = new PacketWriter().U8(3).U8(3).U8(0);
+        d.U16BE((ushort)postId);
         var an = Ascii(post.Author);
-        d.Add((byte)an.Length);
-        d.AddRange(an);
-        d.Add(post.Month);
-        d.Add(post.Day);
+        d.U8((byte)an.Length);
+        d.Bytes(an);
+        d.U8(post.Month);
+        d.U8(post.Day);
         var tn = Ascii(post.Topic);
-        d.Add((byte)tn.Length);
-        d.AddRange(tn);
+        d.U8((byte)tn.Length);
+        d.Bytes(tn);
         var bn = Ascii(post.Body);
-        d.AddRange(Be((ushort)bn.Length));
-        d.AddRange(bn);
-        SendMap(0x31, _gameInc++, d.ToArray(), $"boardread(0x31) board={boardId} post={postId}");
+        d.U16BE((ushort)bn.Length);
+        d.Bytes(bn);
+        SendMap(ServerOp.Board, _gameInc++, d.ToArray(), $"boardread(0x31) board={boardId} post={postId}");
     }
 
     // Sub-4 "Make post": board(u16BE) topicLen(u8) topic[...] bodyLen(u16BE) body[...]. RTK's own denial
@@ -674,12 +673,12 @@ public sealed partial class Session
     private void HandleBoardMakePost(byte[] dec)
     {
         if (dec.Length < 4) return;
-        int boardId = U16(dec, 1);
+        int boardId = new PacketReader(dec.AsSpan(1)).U16BE();
         if (boardId == 0) { SendBoardAck(6, false, "Use the mailbox Write button to send mail."); return; }
         int topicLen = dec[3];
         if (4 + topicLen + 2 > dec.Length) return;
         string topic = Encoding.ASCII.GetString(dec, 4, topicLen);
-        int bodyLen = U16(dec, 4 + topicLen);
+        int bodyLen = new PacketReader(dec.AsSpan(4 + topicLen)).U16BE();
         int bodyStart = 4 + topicLen + 2;
         if (bodyStart + bodyLen > dec.Length) return;
         string body = Encoding.ASCII.GetString(dec, bodyStart, bodyLen);
@@ -772,20 +771,20 @@ public sealed partial class Session
         // type=5/buttons=3/nmailFlag=1 are RTK's nmail read-view values (map/intif.c intif_parse_readpost:
         // body[2]=1 when board==0; char/mapif.c mapif_parse_readpost: type=5, buttons=3 for nmail) — the
         // letter view (with Reply) rather than the plain board-post view (type=3, flag=0).
-        var d = new List<byte> { 5, 3, 1 };
-        d.AddRange(Be((ushort)position));
+        var d = new PacketWriter().U8(5).U8(3).U8(1);
+        d.U16BE((ushort)position);
         var sn = Ascii(mail.Sender);
-        d.Add((byte)sn.Length);
-        d.AddRange(sn);
-        d.Add(mail.Month);
-        d.Add(mail.Day);
+        d.U8((byte)sn.Length);
+        d.Bytes(sn);
+        d.U8(mail.Month);
+        d.U8(mail.Day);
         var tn = Ascii(mail.Topic);
-        d.Add((byte)tn.Length);
-        d.AddRange(tn);
+        d.U8((byte)tn.Length);
+        d.Bytes(tn);
         var bn = Ascii(mail.Body);
-        d.AddRange(Be((ushort)bn.Length));
-        d.AddRange(bn);
-        SendMap(0x31, _gameInc++, d.ToArray(), $"boardread(0x31) mailbox post={position}");
+        d.U16BE((ushort)bn.Length);
+        d.Bytes(bn);
+        SendMap(ServerOp.Board, _gameInc++, d.ToArray(), $"boardread(0x31) mailbox post={position}");
 
         SendLog($"From {mail.Sender} ({mail.Month}/{mail.Day}): {mail.Topic} — {mail.Body}{attachNote}");
         RefreshMailFlags();   // reading (+ claiming any parcel) may clear the HUD mail/parcel arrow — refresh body[45]

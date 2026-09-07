@@ -93,6 +93,36 @@ public sealed partial class Session
         return mob;
     }
 
+    /// <summary>Set a scripted AMBUSH on the player around the NPC they are talking to — Master Dagger's
+    /// three assassins (<see cref="DaggerUniformQuest"/>). These are not pets: nobody owns them, so they
+    /// fight the player like any wild creature, and they leave play on a lifespan
+    /// (<see cref="World.ExpireUnowned"/>) rather than on a dismiss.
+    ///
+    /// <para>The three tiles are RTK's own (<c>rogue_trainer.lua</c>: x-1, x+1, y+1 of the NPC). One that is
+    /// off the map or already occupied is skipped rather than stacked — an assassin buried under another
+    /// assassin is a free ambush. Returns how many actually landed, so a caller can tell.</para></summary>
+    internal int SpawnNpcAmbush(Mob npc, string mobKey, int seconds)
+    {
+        var def = Content.MobByKey(mobKey);
+        if (def is null) { Log.Warn($"ambush mob '{mobKey}' is not in mobs.csv — nothing spawned"); return 0; }
+
+        int spawned = 0;
+        foreach (var (dx, dy) in new[] { (-1, 0), (1, 0), (0, 1) })
+        {
+            int x = npc.X + dx, y = npc.Y + dy;
+            if (x < 0 || y < 0 || x >= _char.MapXs || y >= _char.MapYs) continue;
+            if (_world.MobAt(_char.Map, x, y) is not null) continue;
+
+            var mob = SummonWorldMob(def.Look, (ushort)x, (ushort)y, def.Name, def.Hp, dir: npc.Dir,
+                                     color: def.Color, exp: def.Exp, moveTime: def.MoveTime,
+                                     key: def.Key, def: def);
+            _world.ExpireUnowned(mob, seconds * 1000);
+            spawned++;
+        }
+        Log.Info($"   -> ambush: {spawned} x '{def.Name}' around npc {npc.Id} for {seconds}s");
+        return spawned;
+    }
+
     // ===== navigation: warp + map/mob listing + data-driven summon ==========================
 
     // ---- Mythic Nexus zodiac cave entrances ----
@@ -317,8 +347,11 @@ public sealed partial class Session
     {
         if (!Content.PathHalls.TryGetValue(_char.Map, out var hall)) return false;
 
-        // South doorway -> class guild hall (members of that base class only).
-        if ((x == 1 || x == 2) && y == 23)
+        // South doorway -> class guild hall (members of that base class only). GuildMap 0 means this
+        // city has no guild hall wired (Nagnang: RTK's guild block stops at 3708, Buya's Poet hall),
+        // so the door is inert and the step just completes — 0 is Kugnae, never a guild hall, so it
+        // is safe as the "unwired" value.
+        if ((x == 1 || x == 2) && y == 23 && hall.GuildMap != 0)
         {
             if (CharClassId != hall.BaseClass)
             {
@@ -343,7 +376,14 @@ public sealed partial class Session
         if ((x == 8 || x == 9) && y == 1)
         {
             byte a = _char.Alignment <= 3 ? _char.Alignment : (byte)0;
-            return WarpHall(hall.Sanctum[a], (ushort)(x - 3), 18);
+            ushort dest = hall.Sanctum[a];
+            // Land two rows up from the sanctum's south wall, NOT a hardcoded 18. That constant only
+            // fitted Kugnae's and Buya's 12x20 rooms; Nagnang's sanctums are 12x12, where it clamps
+            // onto the exit doorway and bounces the player straight back out. 20-2 = 18 keeps those
+            // two cities byte-identical, and 12-2 = 10 is exactly where RTK's own Nagnang warps land
+            // (Warps.csv 1665: 2510 (8,0) -> 3820 (5,10)).
+            ushort dy = Content.TryMap(dest, out var sanctum) ? (ushort)(sanctum.Ys - 2) : (ushort)18;
+            return WarpHall(dest, (ushort)(x - 3), dy);
         }
         return false;
     }
@@ -411,10 +451,17 @@ public sealed partial class Session
         TryForage();                         // adjacent apple tree / rose bush -> small chance of an item
         TryGinseng();                        // Guol Tiger Pass ginseng rocks -> young_ginseng (Chu Rua quest)
         TryFoxSpirit();                      // Worn path/trail: 1 step in 10 a fox pops up with a riddle
+        TryMageStoneSpirit();                // Oh-mudum crypt: the dead answer Void's task, once
+        TryForeverBranch();                  // Forever Tree ground: 1 step in 100 turns up a Forever branch
+        TryCrowSnatch();                     // Kugnae streets: a crow takes Maro's stolen acorn and flies east
         if (TryLeviathanHermitDoor()) return;// the Hermit's hut door: in if you freed one, shoved back if not (warps)
         if (TrySuteCaveMouth()) return;      // Buya's north edge: coated -> into Sute's Cave, else shoved back (warps)
+        if (TryGauntletEntrance()) return;   // Nagnang's west alcove: on the shield trial -> the Gauntlet, else shoved back
+        if (TryGauntletAltar()) return;      // Objective: the statue of Chung Ryong pays (or refuses) the trial
         if (TryIceBeastLava()) return;       // Northeast Koguryo lava row: shoes gate + spend-on-return (warps)
         if (TryMythicFallRoom()) return;     // mythic cave trap floor -> drop to a lower sub-room (warps)
+        if (TryNangenPagoda()) return;       // Nagnang pagoda: acolytes into Path of Choice, everyone else shoved back (warps)
+        if (TryOblivionFall()) return;       // Oblivion floor: 1 step in 100 drops you into the Subvoid (warps)
         TryWorldMapTravel();                 // town edge tile -> inter-continent travel picker
     }
 
@@ -504,6 +551,68 @@ public sealed partial class Session
             Warp(FoxSpirit.FailMap, FoxSpirit.FailX, FoxSpirit.FailY);
         }
         catch (Exception e) { Log.Error($"fox spirit encounter threw for '{_char.Name}' — abandoned, no reward and no penalty", e); }
+    }
+
+    // ---- Mage's Spirit Stone: the crypt spirit (see Server/MageStoneQuest.cs) --------------------
+
+    /// <summary>Void's task, and the only part of the chain that is walked rather than clicked: somewhere in
+    /// the tombs under the Cemetery the dead answer him. RTK puts the encounter in Oh-mudum crypt alone and
+    /// rolls <c>math.random(1,1)</c> for it, i.e. it always fires on the first step taken inside; from the
+    /// player's side that is exactly Atlas's "walk through the tombs until a spirit speaks to you", because
+    /// nothing tells you which of the nine tombs it is.
+    ///
+    /// <para>Gated on having offered Void his mouse, so it cannot fire for someone who has never met him,
+    /// and on the flag being unset, so it fires ONCE. RTK tests <c>mage_stone_met_ghost</c> and sets
+    /// <c>mage_ward_met_ghost</c> — with the two names never meeting, its spirit re-fires on every step and
+    /// its Wand can never be satisfied. One name here, tested and set.</para>
+    ///
+    /// <para>Void asks you to listen, so the flag is set BEFORE the pages open rather than after: a player
+    /// who closes the box halfway has still met the spirit, and there is no second chance in the room to
+    /// give them. Fire-and-forget with the same DialogBusy/ghost guards as the fox — see
+    /// <see cref="TryFoxSpirit"/> for why both matter on a step hook.</para></summary>
+    private void TryMageStoneSpirit()
+    {
+        if (_char.Map != MageStoneQuest.CryptMap) return;
+        if (IsDead || DialogBusy) return;
+        if (QuestStage(MageStoneQuest.ZapReg + "void_mouse") != 1) return;
+        if (QuestStage(MageStoneQuest.GhostReg) != 0) return;
+
+        SetQuestStage(MageStoneQuest.GhostReg, 1);
+        Notify("A spirit appears!");
+        _ = ShowMageStoneSpiritAsync();
+    }
+
+    private async Task ShowMageStoneSpiritAsync()
+    {
+        try { await DlgPush(MageStoneQuest.SpiritLook, MageStoneQuest.SpiritColor, MageStoneQuest.SpiritPages); }
+        catch (Exception e) { Log.Error($"crypt spirit dialog threw for '{_char.Name}' — the task is already credited", e); }
+    }
+
+    // ---- Dagger Uniform: the crow that takes Maro's acorn (see Server/DaggerUniformQuest.cs) ------
+
+    /// <summary>Step out of the Kugnae Rogue Guild with Maro's Silvery acorn on you and a crow takes it.
+    /// RTK runs this from its map-entry hook gated on the same map; a step hook is the same moment on a map
+    /// whose only entrance from the guild is that doorway, and it is what the line itself describes ("as you
+    /// step out into the sunlight"). The theft is therefore unavoidable — which is the point, since the crow
+    /// IS the next step of the quest and not a punishment for being seen.
+    ///
+    /// <para>Order matters: the busy/ghost guards come BEFORE the acorn is taken, so a player mid-dialog
+    /// keeps the acorn and gets the whole beat on their next step rather than losing it unannounced.</para></summary>
+    private void TryCrowSnatch()
+    {
+        if (_char.Map != DaggerUniformQuest.KugnaeMap) return;
+        if (QuestStage(DaggerUniformQuest.Key) != DaggerUniformQuest.Stage.StealAcorn) return;
+        if (IsDead || DialogBusy) return;
+        if (!TakeItem(DaggerUniformQuest.StolenAcorn, 1)) return;
+
+        SetQuestStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.CrowTookIt);
+        _ = ShowCrowSnatchAsync();
+    }
+
+    private async Task ShowCrowSnatchAsync()
+    {
+        try { await DlgPush(DaggerUniformQuest.CrowLook, DaggerUniformQuest.CrowColor, DaggerUniformQuest.CrowSnatch); }
+        catch (Exception e) { Log.Error($"crow snatch dialog threw for '{_char.Name}' — the acorn is already gone east", e); }
     }
 
     // ---- Leviathan quest: freeing a captive (see Server/LeviathanQuest.cs) -----------------------
@@ -647,6 +756,99 @@ public sealed partial class Session
         Notify("The powder disappears as you pass the portal.");
         return Warp(SuteQuest.WelcomeMap,
                     (ushort)(QuestRandom(2) == 1 ? SuteQuest.LandX0 : SuteQuest.LandX1), SuteQuest.LandY);
+    }
+
+    // ---- The Gauntlet (onScriptedTilesQuest.lua; see Server/NagnangShieldQuest.cs) ----------------
+    // Nagnang's warrior trial. Two scripted tiles: the cave mouth, and the statue at the far end.
+    //
+    // The MOUTH is a scripted tile rather than a Warps.csv row for the same reason Sute's is — the
+    // destination is conditional. It is only a door for a Warrior who has paid Sword the green squirrel pelt
+    // and has not already won the shield, and WHICH of the five parallel copies of the cave it opens onto is
+    // read off the character's level. Everyone else it simply does not carry, and (as in RTK) says nothing
+    // about it: the trial has no refusal line in any surviving source, and inventing one would put words in
+    // an NPC's mouth. Crossing snapshots the forbidden kill counters, which is what makes the trial a
+    // per-RUN test rather than a lifetime one.
+    private bool TryGauntletEntrance()
+    {
+        if (_char.Map != NagnangShieldQuest.NagnangMap || _char.Y != NagnangShieldQuest.MouthY) return false;
+        if (!NagnangShieldQuest.MouthX.Contains(_char.X)) return false;
+
+        bool onTrial = CharBasePathId == NagnangShieldQuest.WarriorPath
+                       && QuestStage(NagnangShieldQuest.StageReg) >= 1
+                       && !HasLegend(NagnangShieldQuest.Legend);
+        ushort dest = NagnangShieldQuest.EntranceFor(_char.Level);
+
+        if (!onTrial || dest == 0)
+        {
+            // @anywarp: the mouth becomes a plain portal into the tier the level would have picked (or the
+            // shallowest, below the ladder's floor), with the usual echo of what it would have done.
+            if (!_waiveWarpGate)
+            {
+                Log.Info($"   -> GAUNTLET mouth REFUSED for {_char.Name} (path {CharBasePathId} level {_char.Level} " +
+                         $"stage {QuestStage(NagnangShieldQuest.StageReg)} done={HasLegend(NagnangShieldQuest.Legend)})");
+                return Warp(_char.Map, (ushort)_char.X, NagnangShieldQuest.MouthPushToY);
+            }
+            SendMiniText("[anywarp] Gauntlet entry requirement waived — the trial would not have let you in.");
+            if (dest == 0) dest = NagnangShieldQuest.Tiers[0].Map;
+        }
+
+        SetQuestStage(NagnangShieldQuest.KillSnapshotReg, ForbiddenGauntletKills());
+        Log.Info($"   -> GAUNTLET entrance -> map {dest} for {_char.Name} (level {_char.Level})");
+        return Warp(dest, (ushort)(QuestRandom(2) == 1 ? NagnangShieldQuest.LandX0 : NagnangShieldQuest.LandX1),
+                    NagnangShieldQuest.LandY);
+    }
+
+    /// <summary>Lifetime kills of the six creatures the trial forbids. The trial compares this against the
+    /// snapshot taken at the mouth, so only what died on THIS run counts.</summary>
+    private int ForbiddenGauntletKills()
+    {
+        int n = 0;
+        foreach (var key in NagnangShieldQuest.Forbidden) n += KillCount(key);
+        return n;
+    }
+
+    // The statue of Chung Ryong at the end of every tier's Objective room. Standing on the ring of tiles
+    // around it IS touching it (RTK runs the same check off its own perimeter box), so there is no click:
+    //   * nothing red or blue died on this run -> the shield and the legend, then the statue's speech,
+    //   * something did                        -> two lines and a throw back out to the cave mouth. The
+    //     stage stays at 1, so the run can be walked again — and re-entering re-snapshots, which is what
+    //     "the run" means.
+    // Returns true when it fired, so the remaining step hooks are skipped.
+    private bool TryGauntletAltar()
+    {
+        if (!NagnangShieldQuest.IsObjective(_char.Map)) return false;
+        if (!NagnangShieldQuest.AtAltar(_char.X, _char.Y)) return false;
+        if (HasLegend(NagnangShieldQuest.Legend)) return false;   // already won — it is stone again
+        if (IsDead || DialogBusy) return false;
+
+        if (ForbiddenGauntletKills() > QuestCounter(NagnangShieldQuest.KillSnapshotReg))
+        {
+            foreach (var line in NagnangShieldQuest.StatueRefusal) SendMiniText(line);
+            Log.Info($"   -> GAUNTLET altar REFUSED {_char.Name} — killed a forbidden creature on this run");
+            return Warp(NagnangShieldQuest.NagnangMap, (ushort)NagnangShieldQuest.MouthX[0],
+                        NagnangShieldQuest.MouthExitY);
+        }
+
+        // Shield first: a full pack must not consume the trial. Nothing is spent until it lands.
+        if (!GiveRewardItem(NagnangShieldQuest.Shield, 1))
+        {
+            SendMiniText("There is no room in your pack for the shield.");
+            return true;
+        }
+        SetQuestStage(NagnangShieldQuest.StageReg, 0);
+        AddLegend($"Completed the Nagnang Warrior Trial ({Character.GameDate})", NagnangShieldQuest.Legend,
+                  NagnangShieldQuest.LegendIcon, NagnangShieldQuest.LegendColor);
+        Log.Info($"   -> GAUNTLET altar PAID {_char.Name} the Nagnang shield");
+
+        // Fire-and-forget: the statue's five pages are awaited one at a time and a step handler cannot block.
+        _ = RunGauntletAltarAsync();
+        return true;
+    }
+
+    private async Task RunGauntletAltarAsync()
+    {
+        try { await DlgPush(NagnangShieldQuest.StatueLook, NagnangShieldQuest.StatueColor, NagnangShieldQuest.StatueReward); }
+        catch (Exception e) { Log.Error($"Gauntlet statue speech threw for '{_char.Name}' — the shield and legend are already granted", e); }
     }
 
     // ---- Newbie area, quest 3: the coordinate lesson (npc_dialog.lua TutorialNpc1) ------------------
@@ -813,15 +1015,15 @@ public sealed partial class Session
         for (int i = 0; i < n; i++)
         {
             var e = entries[i];
-            d.AddRange(Be((ushort)e.DotX));
-            d.AddRange(Be((ushort)e.DotY));
+            d.AddRange(PacketWriter.U16BEBytes((ushort)e.DotX));
+            d.AddRange(PacketWriter.U16BEBytes((ushort)e.DotY));
             AddLenStr(d, e.Name);
-            d.AddRange(Be32(e.Map));                // 5.33 keeps only the low half of this
-            d.AddRange(Be(e.X));
-            d.AddRange(Be(e.Y));
+            d.AddRange(PacketWriter.U32BEBytes(e.Map));                // 5.33 keeps only the low half of this
+            d.AddRange(PacketWriter.U16BEBytes(e.X));
+            d.AddRange(PacketWriter.U16BEBytes(e.Y));
             if (!v533) continue;
-            d.AddRange(Be((ushort)(n - 1)));        // complete graph: every other node is one hop away
-            for (int j = 0; j < n; j++) if (j != i) d.AddRange(Be((ushort)j));
+            d.AddRange(PacketWriter.U16BEBytes((ushort)(n - 1)));        // complete graph: every other node is one hop away
+            for (int j = 0; j < n; j++) if (j != i) d.AddRange(PacketWriter.U16BEBytes((ushort)j));
         }
         return d.ToArray();
     }
@@ -872,7 +1074,7 @@ public sealed partial class Session
         _worldMapReturnMap = originMap;
         _worldMapReturnX   = originX;
         _worldMapReturnY   = originY;
-        SendMap(0x2e, _gameInc++, WorldMapBody(_ver, bgName, entries, originIndex),
+        SendMap(ServerOp.WorldMap, _gameInc++, WorldMapBody(_ver, bgName, entries, originIndex),
                 $"worldmap(0x2e) bg='{bgName}' {entries.Count} dests (origin map {originMap} @ index {originIndex}){(_ver == ClientVersion.V533 ? " +graph" : "")}");
     }
 
@@ -1018,6 +1220,121 @@ public sealed partial class Session
         return true;
     }
 
+    // ---- Poet's whip: the three tile triggers (onScriptedTilesQuest.lua) — see Server/PoetWhipQuest.cs ----
+
+    /// <summary>The Forever Tree's ground. While Staff is owed a branch, each step inside RTK's box has a
+    /// 1-in-<see cref="PoetWhipQuest.BranchRate"/> chance to turn one up — and only one: holding a branch
+    /// already stops the roll, which is RTK's own guard and what keeps a Poet from farming them for friends
+    /// ("it MUST be you who picks up the branch from the tree").
+    ///
+    /// <para>The dialog is the branch's own icon rather than a minitext, matching RTK's <c>dialogSeq</c>
+    /// against the item portrait — the same shape (and the same reasoning) as <see cref="TryGinseng"/>.</para></summary>
+    private void TryForeverBranch()
+    {
+        if (!PoetWhipQuest.InTreeGround(_char.Map, _char.X, _char.Y)) return;
+        if (QuestStage(PoetWhipQuest.Key) != PoetWhipQuest.StageBranch) return;
+        if (CountItem(PoetWhipQuest.Branch) > 0) return;
+        if (Random.Shared.Next(PoetWhipQuest.BranchRate) != 0) return;
+
+        var def = Content.ItemByKey(PoetWhipQuest.Branch);
+        if (def is null) return;
+        if (!GiveItem(def, 1)) return;   // bag full: no branch, and the roll simply comes round again
+
+        var icon = DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0);
+        SendScriptMessageP(_char.Id, "You find one of the Tree's branches upon the ground.",
+                           icon, prev: false, next: false);
+        Log.Info($"   -> FOREVER BRANCH found by {_char.Name} at ({_char.X},{_char.Y})");
+    }
+
+    /// <summary>The pagoda south of Nagnang's Poet guild — the only door into Path of Choice, and there is no
+    /// Warps.csv row for it (the way BACK is one, which is how the tile pairing was pinned). Acolytes are
+    /// dropped on the entry row; everyone else is shoved two tiles south with RTK's own refusal. True when it
+    /// moved the player, so the remaining step hooks are skipped.</summary>
+    private bool TryNangenPagoda()
+    {
+        if (_char.Map != PoetWhipQuest.PagodaMap || _char.Y != PoetWhipQuest.PagodaY) return false;
+        if (Array.IndexOf(PoetWhipQuest.PagodaX, (int)_char.X) < 0) return false;
+
+        if (!HasLegend(PoetWhipQuest.LegendAcolyte))
+        {
+            // @anywarp waives the legend gate with the usual echo, as every other quest door here does.
+            if (_waiveWarpGate)
+            {
+                SendMiniText("[anywarp] pagoda gate waived — would have said: Only Nangen Acolyte may enter.");
+                Log.Info($"   -> NANGEN pagoda WAIVED (@anywarp) for {_char.Name}");
+            }
+            else
+            {
+                SendMiniText("Only Nangen Acolyte may enter.");
+                _world.SetPlayerPosition(this, _char.X, PoetWhipQuest.PagodaPushY);
+                _char.Y = (ushort)PoetWhipQuest.PagodaPushY;
+                SendXy();
+                return true;
+            }
+        }
+
+        if (!Content.TryMap(PoetWhipQuest.PathOfChoiceMap, out var dm) || dm is null) { SendXy(); return true; }
+        ushort ex = (ushort)Random.Shared.Next(PoetWhipQuest.PathEntryMinX, PoetWhipQuest.PathEntryMaxX + 1);
+        Log.Info($"   -> NANGEN pagoda -> map {PoetWhipQuest.PathOfChoiceMap} '{dm.Name}' ({ex},{PoetWhipQuest.PathEntryY}) for {_char.Name}");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, ex, PoetWhipQuest.PathEntryY, dm.Name);
+        return true;
+    }
+
+    /// <summary>Oblivion's floor. Every step inside RTK's box has a 1-in-<see cref="PoetWhipQuest.FallRate"/>
+    /// chance to drop you into the Subvoid pocket where The Infected waits. Unconditional on quest state, as
+    /// RTK has it — the acolyte gate is the pagoda, so only acolytes are ever standing here. True when it moved
+    /// the player.</summary>
+    private bool TryOblivionFall()
+    {
+        if (!PoetWhipQuest.InOblivionFallBox(_char.Map, _char.X, _char.Y)) return false;
+        if (Random.Shared.Next(PoetWhipQuest.FallRate) != 0) return false;
+        if (!Content.TryMap(PoetWhipQuest.SubvoidMap, out var dm) || dm is null) return false;   // dest unrenderable -> no fall
+
+        SendMiniText("You fall into a sub void.");
+        Log.Info($"   -> SUBVOID fall from ({_char.X},{_char.Y}) for {_char.Name}");
+        EnterMap(dm.Id, dm.Xs, dm.Ys, PoetWhipQuest.SubvoidX, PoetWhipQuest.SubvoidY, dm.Name);
+        return true;
+    }
+
+    /// <summary>The rite that ends the quest: DROP the sacred water while standing next to The Infected and
+    /// facing it, and the water destroys it (RTK <c>Items/Quest/sacred_water.lua</c> <c>on_drop</c>). Facing is
+    /// the whole targeting rule — RTK uses <c>getTargetFacing</c> and Staff says so in capitals — so this reads
+    /// <see cref="FrontTile"/> and nothing else.
+    ///
+    /// <para><b>In the Subvoid every outcome SPEAKS, and keeps the vial.</b> Same call as the leviathan
+    /// talisman: the vial is registry-hardened NoDrop (Items.csv 29015 <c>ItmDroppable</c> 0→1) so this is the
+    /// only drop that does anything, and a one-shot quest item must never end up on the floor because the
+    /// player was facing the wrong way. Off this map the NoDrop flag answers instead, so nothing is said.</para>
+    ///
+    /// <para>The Infected is DESPAWNED, not killed — no exp, no loot, and its spawn point refills so the next
+    /// acolyte finds one. (RTK removes its full health, which is the same thing said in the engine's only
+    /// vocabulary; going through the kill path here would also bank a kill and pay exp for a scripted event.)
+    /// Returns true if the drop was consumed — performed OR refused with a reason — so
+    /// <see cref="HandleDropItem"/> stops, the same contract as <see cref="TryLeviathanTalismanDrop"/>.</para></summary>
+    private bool TrySacredWaterDrop(ItemDef def)
+    {
+        if (def.Key != PoetWhipQuest.Water) return false;
+        if (_char.Map != PoetWhipQuest.SubvoidMap) return false;   // elsewhere the NoDrop flag refuses the drop
+
+        var (fx, fy) = FrontTile();
+        var mob = _world.MobAt(_char.Map, (ushort)fx, (ushort)fy);
+        Log.Info($"   -> SACRED WATER dropped by {_char.Name} at ({_char.X},{_char.Y}) facing ({fx},{fy}): " +
+                 $"target={mob?.Key ?? "NOTHING"}, stage={QuestStage(PoetWhipQuest.Key)}");
+
+        if (QuestStage(PoetWhipQuest.Key) != PoetWhipQuest.StageWater)
+        { Notify("The water lies still in your hands."); return true; }
+        if (mob is null || mob.Key != PoetWhipQuest.InfectedMob)
+        { Notify("You must stand NEXT to the infected creature, and FACE it."); return true; }
+
+        if (!TakeItem(PoetWhipQuest.Water, 1)) return false;
+
+        NpcBubble(mob, "NUUUGHHH! I shall be reborn...");   // NpcBubble prefixes the speaker's own name, as RTK's talk does
+        _world.DespawnMob(_char.Map, mob);
+        SetQuestStage(PoetWhipQuest.InfectedReg, 1);
+        Log.Info($"   -> INFECTED destroyed by {_char.Name} — return to Staff for the whip");
+        return true;
+    }
+
     // Bush/tree foraging (onScriptedTilesBushTree.lua): standing next to an apple tree (object ids 860-864)
     // or a rose bush (876-889), each step has a 1/50 chance to pick an apple / rose. Objects are read from the
     // map's OWN object layer (same ids RTK's checkProximityObjects uses), scanned in the 3x3 around the player.
@@ -1061,8 +1378,9 @@ public sealed partial class Session
     // entry trio — 0x15 (map) + 0x04 (coords + camera) + 0x33 (our sprite). The world object (0x02) and
     // our entity id (0x05) are already established this session, so those are NOT resent.
     /// <param name="arrival">How the requested tile becomes the tile landed on. The default is what every
-    /// arrival in this file has always done — clamp to the map and take it, occupied or not. Only
-    /// <c>@approach</c>/<c>@bring</c> pass anything else; see <see cref="ArrivalPolicy"/>.</param>
+    /// arrival in this file has always done — clamp to the map and take it, occupied or not; the
+    /// occupied-or-not half is what the original game did (#99, settled as stacking). Only
+    /// <c>@approach</c>/<c>@bring</c>/<c>@npc</c> pass anything else; see <see cref="ArrivalPolicy"/>.</param>
     /// <returns>The tile actually landed on. Callers that report it (<c>@bring</c>) read it from here rather
     /// than from what they asked for, since a policy may have moved it.</returns>
     private (ushort x, ushort y) EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName,

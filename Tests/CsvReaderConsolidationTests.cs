@@ -48,8 +48,12 @@ public class CsvReaderConsolidationTests
             var sheet2 = TileTranslation.Sheet2ForTests
                 .OrderBy(kv => kv.Key)
                 .Select(kv => $"{kv.Key}|{kv.Value}");
+            // Moved 2026-09-06 with the RE-POINTED SLOTS block at the end of Tile533Map.csv: ten legacy
+            // sheet-2 indices no map stood on now aim at 5.33 frames the 4.x client never had, so the
+            // 5.x-targeted backports of Gale Chapel and Nagnang Valley draw RTK's own art. The entry COUNT
+            // is unchanged (they re-point, they do not add), which is what the assert above still pins.
             Assert.Equal(8930, TileTranslation.Sheet2ForTests.Count);
-            Assert.Equal("0eea3e797a4f5b573a1cfdf2194bb610b3da14e63dff3526d6dcde28b257531f",
+            Assert.Equal("15f529d108a079069eef12f1132838b0165356cdcae033d4e723881649dde7e3",
                 Hash(sheet2));
         }
     }
