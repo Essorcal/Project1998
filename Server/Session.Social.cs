@@ -719,7 +719,7 @@ public sealed partial class Session
     // The one read path: RTK case 3 aimed at board 0 (SendBoardReadPost) funnels through here — it marks the
     // letter read, and if it's carrying an
     // unclaimed parcel, gives the item now (pack-full falls back to dropping it at your feet, same recovery
-    // as CastGroundLoot). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
+    // as LuaFilch). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
     // shape is unverified (see SendBoardReadPost's doc), so the chat log stays the one channel guaranteed
     // to actually show the player what they got.
     private void ReadMail(int position)
