@@ -332,5 +332,38 @@ public sealed partial class World
             if (trap is not null) { m.Traps.Remove(trap); world.TriggerTrapLocked(mapId, mob, trap, trapDamage); }
             return true;
         }
+
+        // ---- test seams (Tests/MobMovementTests.cs) -----------------------------------------------------
+        // Kept beside the code they open rather than in the test project, for the same reason as
+        // UnderWorldLockForTest: a reader of the primitives should be able to see everything that runs them.
+        // Each takes the tick's per-map context (MobTickContextForTest, built under _lock) and unpacks it
+        // under the names the primitive takes, exactly as MobAiTick.Step does; the map comes from World, not
+        // the context, so a test reaches its own queues and tile sets and nothing the tick shares. The lock
+        // is NOT taken here — the primitive's own assert is what a test off the lock is meant to hit.
+
+        /// <summary>The chase step, <c>out</c> overload, on <paramref name="ctx"/>'s map and queues.</summary>
+        internal static bool StepTowardForTest(MobTickContext ctx, Mob mob, int tx, int ty, out bool towardBlocked) =>
+            StepMobToward(ctx.World, ctx.MapId, ctx.World.Map(ctx.MapId), mob, tx, ty, ctx.Dims, ctx.Terrain,
+                          ctx.Occupied, ctx.MobTiles, ctx.Moves, ctx.Turns, ctx.TrapDamage, out towardBlocked);
+
+        /// <summary>The retreat step on <paramref name="ctx"/>'s map and queues.</summary>
+        internal static bool StepAwayForTest(MobTickContext ctx, Mob mob, int tx, int ty) =>
+            StepMobAway(ctx.World, ctx.MapId, ctx.World.Map(ctx.MapId), mob, tx, ty, ctx.Dims, ctx.Terrain,
+                        ctx.Occupied, ctx.MobTiles, ctx.Moves, ctx.Turns, ctx.TrapDamage);
+
+        /// <summary>The straight hop on <paramref name="ctx"/>'s map and queues.</summary>
+        internal static bool StepStraightForTest(MobTickContext ctx, Mob mob) =>
+            StepMobStraight(ctx.World, ctx.MapId, ctx.World.Map(ctx.MapId), mob, ctx.Dims, ctx.Terrain,
+                            ctx.Occupied, ctx.MobTiles, ctx.Moves, ctx.TrapDamage);
+
+        /// <summary>The flee dart on <paramref name="ctx"/>'s map and queues.</summary>
+        internal static int DartForTest(MobTickContext ctx, DartMode mode, int tiles, Mob mob, int tx, int ty) =>
+            Dart(ctx.World, mode, tiles, ctx.MapId, ctx.World.Map(ctx.MapId), mob, tx, ty, ctx.Dims, ctx.Terrain,
+                 ctx.Occupied, ctx.MobTiles, ctx.Moves, ctx.Turns, ctx.TrapDamage);
+
+        /// <summary>The commit on <paramref name="ctx"/>'s map and queues, with no validation in front of it —
+        /// the caller is asserting what a committed step does, not whether it was allowed.</summary>
+        internal static bool StepToForTest(MobTickContext ctx, Mob mob, int nx, int ny, byte dir) =>
+            StepMobTo(ctx.World, ctx.MapId, ctx.World.Map(ctx.MapId), mob, nx, ny, dir, ctx.MobTiles, ctx.Moves, ctx.TrapDamage);
     }
 }
