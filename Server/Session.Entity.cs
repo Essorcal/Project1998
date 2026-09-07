@@ -28,7 +28,7 @@ public sealed partial class Session
         SendXy();
         SendMap(ServerOp.MapDone, 3, Array.Empty<byte>(), "map-done(0x22)");
         PlayMapMusic(_char.Map);   // 0x19: start this map's background track
-        SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
+        SendWeather(_world.Weather.Get(_char.Map));   // 0x1F: whatever this map's weather already is
 
         Log.Info("   == burst sent; watching for client packets (walk/request = progress, disconnect = a packet was rejected) ==");
     }

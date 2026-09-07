@@ -1044,7 +1044,7 @@ public sealed partial class Session
         PrimeViewport("login");   // 0x06 fill the window now — don't wait on the client's own 0x05
         SendStats();
         ArmEntryMusic();           // 0x19 music: ARMED here, sent on the client's first packet — see Handle()
-        SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
+        SendWeather(_world.Weather.Get(_char.Map));   // 0x1F: whatever this map's weather already is
         SendSound(412, _char.Id);  // "successfully logging in" sfx, confirmed live 2026-07-27
 
         Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 412 login sfx (music armed) ==");

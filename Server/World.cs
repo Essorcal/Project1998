@@ -305,18 +305,11 @@ public sealed partial class World
     // and the @clock pin — lives in World.WorldClock.cs (#37). Constructed before the constructor's first
     // Sync, which is the first call into it. Sessions read it through World.Clock.
 
-    // ---- weather (opcode 0x1F / RTK clif_sendweather) ------------------------------------------
-    // Weather is now a deterministic function of region-zone + time-period + season (see WeatherModel) rather
-    // than the old per-map random roll: it is identical for every player, survives restarts, persists while a
-    // player steps indoors, and is driven by the season. This world only (a) broadcasts a change when the
-    // weather PERIOD rolls over for an active map and (b) holds optional admin OVERRIDES set via @weather.
-    // 0=clear, 1=WRAIN(rain), 2=WSNOW(snow) — the three states the 4.95 client can draw.
-    private static readonly int AdviceTicks = Math.Max(1, 900_000 / TickMs);   // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer)
-
-    // Admin/debug weather overrides keyed by WeatherModel.ZoneOf(map). When present, a zone shows this state
-    // instead of the seasonal model until "@weather auto" clears it (indoors still wins → clear). Guarded by _lock.
-    private readonly Dictionary<int, byte> _weatherOverride = new();
-    private long _lastWeatherPeriod = -1;          // last WeatherModel period broadcast; -1 forces the first tick to sync
+    // The weather (opcode 0x1F / RTK clif_sendweather) — the admin overrides, the per-map resolution and the
+    // period-rollover sweep phase (1.7) drives — lives in World.WeatherService.cs (#37). World keeps the
+    // per-map last-sent cache (MapState.Weather) and the flush that puts 0x1F on the wire; sessions read it
+    // through World.Weather.
+    private static readonly int AdviceTicks = Math.Max(1, 900_000 / TickMs);   // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer, NOT weather)
 
     // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
     // Tick — TryDamage can't broadcast where it stands, and its callers only know how to draw the damage.
@@ -421,6 +414,7 @@ public sealed partial class World
     {
         _spawnDirector = new SpawnDirector(this);
         Clock = new WorldClock(this);
+        Weather = new WeatherService(this);
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
         // Derive the in-game calendar from the fixed real-world epoch. Under _lock like the two Populate
@@ -1149,10 +1143,10 @@ public sealed partial class World
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
             // Seed the weather cache to what the newcomer is about to be shown (Session sends it on entry via
-            // GetWeather), so the tick's period-rollover diff compares against the on-screen state and never
+            // Weather.Get), so the tick's period-rollover diff compares against the on-screen state and never
             // skips a real change as a no-op — otherwise a player who entered mid-period could stay stuck on
             // stale weather when the period rolls to a value that happens to match the default-0 cache.
-            m.Weather = WeatherForLocked(mapId);
+            m.Weather = Weather.For(mapId);
             peers = m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray();
             mobs = m.Mobs.ToArray();
             // The newcomer's own tile is snapshotted here too: the loop below draws THEM on every peer's
@@ -1304,56 +1298,6 @@ public sealed partial class World
             var pc = PlayerByIdLocked(id);
             return pc is null ? null : ((ushort, ushort)?)(pc.PlayerX, pc.PlayerY);
         }
-    }
-
-    /// <summary>Current weather for a map (0=clear/1=rain/2=snow), for a player entering/re-entering it.
-    /// Deterministic from the season + the map's region-zone + the time period (WeatherModel), unless an
-    /// admin override is pinned on the zone; indoors is always clear. Needs no map to be "active".</summary>
-    public byte GetWeather(ushort mapId) { lock (_lock) return WeatherForLocked(mapId); }
-
-    // The weather a map should currently show, computed under _lock: clear indoors, else a zone override if
-    // one is pinned, else the seasonal model. This is the single source of truth GetWeather and the tick share.
-    private byte WeatherForLocked(ushort mapId)
-    {
-        if (Content.IsIndoor(mapId)) return WeatherModel.Clear;
-        if (_weatherOverride.TryGetValue(WeatherModel.ZoneOf(mapId), out var forced)) return forced;
-        return WeatherModel.For(mapId);
-    }
-
-    /// <summary>Pin a weather state onto a map's whole region-zone (the "@weather" admin lever) until
-    /// <see cref="ClearWeatherOverride"/>. Broadcasts to everyone on any active map in that zone right away.</summary>
-    public void SetWeather(ushort mapId, byte weather)
-    {
-        lock (_lock) _weatherOverride[WeatherModel.ZoneOf(mapId)] = weather;
-        BroadcastZoneWeather(mapId);
-    }
-
-    /// <summary>Drop a zone's admin override so it returns to the seasonal model, and re-broadcast the now-live
-    /// weather to everyone on it.</summary>
-    public void ClearWeatherOverride(ushort mapId)
-    {
-        lock (_lock) _weatherOverride.Remove(WeatherModel.ZoneOf(mapId));
-        BroadcastZoneWeather(mapId);
-    }
-
-    // Re-broadcast the current weather to every active map sharing this map's zone, updating each map's
-    // last-sent cache. Used after an override is set or cleared so the change lands immediately, not at the
-    // next period rollover.
-    private void BroadcastZoneWeather(ushort mapId)
-    {
-        int zone = WeatherModel.ZoneOf(mapId);
-        List<(ushort map, byte w)> hits = new();
-        lock (_lock)
-        {
-            foreach (var (id, pm) in _maps)
-            {
-                if (pm.Players.Count == 0 || WeatherModel.ZoneOf(id) != zone) continue;
-                byte w = WeatherForLocked(id);
-                pm.Weather = w;
-                hits.Add((id, w));
-            }
-        }
-        foreach (var (id, w) in hits) Broadcast(id, p => p.SendWeather(w));
     }
 
     // ---- mobs ---------------------------------------------------------------------------------
@@ -2495,20 +2439,7 @@ public sealed partial class World
             // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
             // A season change lands on a period boundary too, so this pass catches those as well. Cheap: the
             // period only advances a couple of times an hour. Overrides are broadcast eagerly elsewhere.
-            long period = WeatherModel.PeriodNow();
-            if (period != _lastWeatherPeriod)
-            {
-                _lastWeatherPeriod = period;
-                q.WeatherChanges = new List<(ushort, byte)>();
-                foreach (var (mapId, pm) in _maps)
-                {
-                    if (pm.Players.Count == 0) continue;
-                    byte w = WeatherForLocked(mapId);
-                    if (w == pm.Weather) continue;
-                    pm.Weather = w;
-                    q.WeatherChanges.Add((mapId, w));
-                }
-            }
+            Weather.SweepPeriod(q);
 
             // (2) wander: each mob acts only when its own MoveTime has elapsed (RTK MobMoveTime), and even
             // then usually just turns instead of stepping — mirroring RTK mob_ai_normal (checkmove: pick a
