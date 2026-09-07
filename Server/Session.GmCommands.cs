@@ -742,14 +742,13 @@ public sealed partial class Session
         byte b = (byte)Math.Clamp(a.Int(0, 0), 0, 255);
         switch (which)
         {
-            case "level": _char.Level = (byte)Math.Clamp(a.Int(0, 1), 1, 99); break;
             case "might": _char.Might = b; break;
             case "will":  _char.Will  = b; break;
             case "grace": _char.Grace = b; break;
         }
         if (_enteredWorld) StoreSave();
         SendStats();
-        byte now = which switch { "level" => _char.Level, "will" => _char.Will, "grace" => _char.Grace, _ => _char.Might };
+        byte now = which switch { "will" => _char.Will, "grace" => _char.Grace, _ => _char.Might };
         Reply($"{which} set to {now}");
         Log.Info($"   -> {which.ToUpperInvariant()} set to {now}");
     }
