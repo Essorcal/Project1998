@@ -92,7 +92,7 @@ public sealed class CsvTests
         Assert.All(rows, row => Assert.Equal(1, row.FieldCount));
     }
 
-    [Fact(Skip = "#131")]
+    [Fact]
     public void QuotedHashRowIsTreatedAsAComment()
     {
         using var file = new TempCsv("\"# comment\",ignored\n");
