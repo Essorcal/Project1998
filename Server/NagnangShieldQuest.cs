@@ -36,17 +36,12 @@ namespace Server;
 /// whole briefing where the client shows one line. The statue's lines are RTK's, which is still the only
 /// transcript of those. The GEOMETRY is ours, not RTK's — see <see cref="MouthY"/>.</para>
 ///
-/// <para><b>Sword had to be moved, and stood nowhere until he was.</b> NPCs.csv put him on map 3820
-/// ("Sword", the guildmaster's inner chamber), which has NO terrain in game-data/maps — the 4.95 map set
-/// does not contain it, and RTK's own copy is 7.x-tiled and would render as garbage here. An NPC on a map
-/// the client cannot render is dropped at load (Content.LoadNpcs), so he existed in the CSV and nowhere
-/// else, which is exactly the silent failure this project is full of. He now stands in <b>map 2510,
-/// "Warrior Sword"</b> — Nagnang's warrior guild hall, region 3, the room the chamber opens off (Warps.csv
-/// 1665-1668), which our world DOES render and which was otherwise empty of NPCs. That is the room the
-/// Atlas means by "the Warrior Guild in Nagnang", and 4.95 shipped one guild room per class per city — the
-/// outer-hall/inner-sanctum split is RTK's later client. He stands at (8,3), the north end in front of the
-/// dais, matching where Staff was put in 2516 for the same reason. Dagger (138, map 3824) is still dark.
-/// The inner chamber stays unbuilt; if it is ever authored, moving him back is one CSV field.</para>
+/// <para><b>Sword lives on map 3820 ("Sword", the Nagnang guild sanctum), and that room only recently
+/// gained terrain.</b> Before it did, <c>Content.LoadNpcs</c> dropped him — an NPC on a map the client
+/// cannot render is silently deleted — so this quest had no giver and nothing said so. Nothing here places
+/// him; his row is master's. If a Nagnang trainer quest ever "does nothing" again, check that his
+/// <c>NpcMapId</c> is present in <c>game-data/map_index.csv</c> before looking anywhere else, and read the
+/// loaded-NPC count in <c>game-data/README.md</c>, which is the canary.</para>
 ///
 /// <para><b>The two shields are deliberately different.</b> The trial's Nagnang shield (51001) is NOT in
 /// <c>Content.BondedItemIds</c> and the Tall shield (51002) is — exactly what the Atlas says of each — so
