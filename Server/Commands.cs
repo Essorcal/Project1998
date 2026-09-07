@@ -613,7 +613,7 @@ public sealed partial class Session
 
         // @help — special-cased before the table so it works at every tier. Accepts a page (as a suffix,
         // "@help2", or an argument, "@help 2") or a keyword filter ("@help item"). The full detail list runs
-        // past the chat pane, so a bare @help pages it rather than dumping all ~90 lines (see ShowCommandHelp).
+        // past the chat pane, so a bare @help pages it rather than dumping all 107 lines (see ShowCommandHelp).
         if (name.Equals("help", StringComparison.OrdinalIgnoreCase)
             || (name.Length > 4 && name.StartsWith("help", StringComparison.OrdinalIgnoreCase)
                                 && int.TryParse(name.AsSpan(4), out _)))
@@ -662,7 +662,7 @@ public sealed partial class Session
         var access = Access;
         var reachable = CommandTable.Where(c => access >= c.Min).ToList();
 
-        // Keyword filter: show every match in full. A keyword narrows ~90 commands to a few, so this fits.
+        // Keyword filter: show every match in full. A keyword narrows 107 commands to a few, so this fits.
         if (filter.Length > 0)
         {
             var matches = reachable
