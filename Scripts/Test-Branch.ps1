@@ -119,7 +119,10 @@ How long to poll the status probe before giving up. Default 60.
 
 .PARAMETER ScriptTimeoutSec
 Wall-clock ceiling per script process, independent of the client's own --timeout-ms (see DESCRIPTION).
-Default 120.
+Default 120, and applies only to a script with no `# budget:` header of its own -- a script that declares
+one (a leading comment, the test client's convention, e.g. `# budget: 900s`) uses ITS header value as its
+timeout regardless of -ScriptTimeoutSec, default or explicit; -ScriptTimeoutSec only ever governs the
+scripts that declare nothing. A header above 3600s is refused before the pair starts rather than honoured.
 
 .EXAMPLE
 Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet
@@ -134,7 +137,8 @@ script exited nonzero or reported a failed expect, the ready-probe timed out, th
 not actually write a fresh run\session.json -- this also covers Serve.ps1's own exit 1 (a build failure in
 -Checkout, passed through as-is); 2 Serve.ps1 refused to start (ports held, or this checkout already has a
 pair running -- its own exit 2, passed through as-is) and this script's own usage errors (a bad
--Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, TestClient.Cli project missing, dotnet not found).
+-Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, a script's `# budget:` header over the 3600s
+ceiling, TestClient.Cli project missing, dotnet not found).
 #>
 [CmdletBinding()]
 param(
@@ -149,6 +153,11 @@ param(
     [int]$ReadyTimeoutSec = 60,
     [int]$ScriptTimeoutSec = 120
 )
+
+# #146: a script's own budget always wins over -ScriptTimeoutSec (default or explicit) for that script;
+# -ScriptTimeoutSec only ever applies to a script with no header. A header above this is refused, not
+# honoured -- see Get-ScriptHeader / the ceiling check below.
+$MaxBudgetSec = 3600
 
 $ErrorActionPreference = 'Stop'
 
@@ -174,6 +183,26 @@ function Format-Args([string[]]$Parts) {
             '"' + $escaped + '"'
         } else { $s }
     }) -join ' ')
+}
+
+# #146: a selected script's own leading comment block (project1998-testclient's convention -- README.md
+# "requires bots", extended here to a budget) can declare `# budget: <N>s`. Read only from the CONTIGUOUS
+# run of comment (and blank) lines at the top of the file -- stopping at the first real script line --
+# rather than scanning the whole file with Select-String the way the test client's own one-line README
+# snippet does, because a script body line could otherwise coincidentally match the pattern inside a
+# quoted string or a later comment. Returns $null Budget when the header is absent; caller falls back to
+# -ScriptTimeoutSec.
+function Get-ScriptHeader([string]$Path) {
+    $budget = $null
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '') { continue }
+        if ($trimmed -notmatch '^#') { break }
+        if ($trimmed -imatch '^#\s*budget:\s*(\d+)\s*s?\s*$') {
+            $budget = [int]$Matches[1]
+        }
+    }
+    return [pscustomobject]@{ Budget = $budget }
 }
 
 # taskkill /T: the process this script starts is `dotnet`, which for `dotnet run` launches the built
@@ -387,6 +416,30 @@ if ($Scripts -and $Scripts.Count -gt 0) {
     foreach ($h in $hits) { $scriptFiles.Add($h.FullName) }
 }
 
+# #146: read each selected script's own leading-comment budget header (Get-ScriptHeader) once, up front,
+# so an over-ceiling header is a refusal before anything is built or started.
+$scriptInfos = New-Object System.Collections.Generic.List[object]
+$ceilingViolations = New-Object System.Collections.Generic.List[string]
+foreach ($f in $scriptFiles) {
+    $name = Split-Path -Leaf $f
+    $header = Get-ScriptHeader -Path $f
+    if ($null -ne $header.Budget -and $header.Budget -gt $MaxBudgetSec) {
+        $ceilingViolations.Add("$name declares '# budget: $($header.Budget)s', which is over the ${MaxBudgetSec}s ceiling; refusing rather than honouring it silently.")
+    }
+    $effectiveBudget = if ($null -ne $header.Budget) { $header.Budget } else { $ScriptTimeoutSec }
+    $scriptInfos.Add([pscustomobject]@{
+        Path            = $f
+        Name            = $name
+        HeaderBudget    = $header.Budget
+        EffectiveBudget = $effectiveBudget
+    })
+}
+if ($ceilingViolations.Count -gt 0) {
+    Write-Host "Refusing to start: script budget header(s) over the ${MaxBudgetSec}s ceiling."
+    foreach ($v in $ceilingViolations) { Write-Host "  $v" }
+    exit 2
+}
+
 $dotnetCmd = Get-Command dotnet.exe -ErrorAction SilentlyContinue
 if ($null -eq $dotnetCmd) { Write-Host "dotnet not found on PATH."; exit 2 }
 $Dotnet = $dotnetCmd.Source
@@ -575,15 +628,15 @@ try {
                 $exitCode = 1
             } elseif ($buildOk) {
                 $results = New-Object System.Collections.Generic.List[object]
-                foreach ($f in $scriptFiles) {
+                foreach ($si in $scriptInfos) {
                     if ([TestBranchCtrl]::Interrupted) {
-                        Write-Host "Interrupted ($([TestBranchCtrl]::LastSignal)); not starting $(Split-Path -Leaf $f)."
+                        Write-Host "Interrupted ($([TestBranchCtrl]::LastSignal)); not starting $($si.Name)."
                         break
                     }
-                    Write-Host "Running $(Split-Path -Leaf $f) ..."
+                    Write-Host "Running $($si.Name) (budget $($si.EffectiveBudget)s) ..."
                     $r = Invoke-TestScript -Dotnet $Dotnet -CliProject $CopiedCliProject `
-                                            -ScriptPath $f -LoginHost '127.0.0.1' -LoginPort $LoginPort -User $PrimaryBot -UserPass $PrimaryPass `
-                                            -TimeoutSec $ScriptTimeoutSec
+                                            -ScriptPath $si.Path -LoginHost '127.0.0.1' -LoginPort $LoginPort -User $PrimaryBot -UserPass $PrimaryPass `
+                                            -TimeoutSec $si.EffectiveBudget
                     $results.Add($r)
                     if ($r.Interrupted) { break }
                 }

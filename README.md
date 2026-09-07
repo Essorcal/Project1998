@@ -106,12 +106,18 @@ a second bot themselves), `-Passes` (one password per `-Bots` name, same order, 
 `bot1pass,bot2pass`), `-KeepRunning` (skip the stop -- for a developer who wants to poke at the pair
 afterwards, or after an interrupt), `-Json <path>` (write the same results as JSON for a reviewer to
 attach to a PR), `-ReadyTimeoutSec` (default 60) and `-ScriptTimeoutSec` (default 120, a wall-clock backstop
-independent of the client's own `--timeout-ms`).
+independent of the client's own `--timeout-ms`, applying only to a script without its own header -- see
+below).
+
+Each selected script's own leading comment header (project1998-testclient's convention) can override the
+default: `# budget: <N>s` sets that script's timeout, taking precedence over `-ScriptTimeoutSec` (default
+or explicit) for that script alone. A header over 3600s is a refusal before anything starts, not honoured.
 
 It refuses the same way `Serve.ps1` does when the ports are already held or this checkout already has a
 pair running (exit 2, and says who or what). Exit 2 also covers this script's own usage errors (a bad
-`-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, a missing `TestClient.Cli` project, no
-`dotnet` on PATH). A build failure in the checkout under test is `Serve.ps1`'s own exit 1, passed straight
+`-Checkout`/`-TestClient`/`-Scripts`/`-PortBase`/`-Bots`/`-Passes`, a script's `# budget:` header over the
+3600s ceiling, a missing `TestClient.Cli` project, no `dotnet` on PATH). A build failure in the checkout
+under test is `Serve.ps1`'s own exit 1, passed straight
 through with no test-client build and no scripts run; a test-client build failure is this script's own
 exit 1 the same way, with no scripts run either. A readiness timeout, an interrupted run (Ctrl+C or
 Ctrl+Break both stop the pair before exiting), or any script exiting nonzero or reporting a failed expect
