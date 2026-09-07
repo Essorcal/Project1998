@@ -1211,7 +1211,7 @@ public sealed partial class Session
         // Leave a one-shot "shiver" echo on the tile we fall THROUGH so the next passer-by senses a trap
         // sprang here (RTK's WarpTrapShiverNpc — tiger-only in RTK, unified onto every fall cave by design).
         // Never expires (matches RTK: the marker sits until someone steps on it). PC-only cosmetic — mobs
-        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (CastSpotTraps skips it).
+        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (RevealableTrapsNear skips it).
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, "shiver", _char.Id);
 
         Log.Info($"   -> FALL through map {_char.Map} -> {f.Map} '{dm.Name}' ({f.X},{f.Y})");

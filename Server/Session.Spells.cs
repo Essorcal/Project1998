@@ -591,8 +591,8 @@ public sealed partial class Session
     // Archetype Lua hook: if spell_verbs.lua defines `verb` (e.g. arch_damage), evaluate this spell's real
     // formula (spell_effects.csv amountExpr — no target term exists in any formula, so SpellVars(null) matches
     // what the C# archetype computed) and run the verb with the amount + mana pre-supplied. Returns the verb's
-    // success bool, or null if the verb isn't loaded so the caller falls back to the C# CastX handler. A verb
-    // that errors mid-run returns false (not null) so we don't double-apply via the fallback.
+    // success bool, or null if the verb isn't loaded, which Lua() below fails cleanly (there is no C# handler
+    // left to fall back to). A verb that errors mid-run returns false (not null) so a failed retry can't double-apply.
     private bool? CastArch(string verb, SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (!SpellScript.HasVerb(verb)) return null;
@@ -606,8 +606,9 @@ public sealed partial class Session
     }
 
     // Stance Lua hook (Tier-2 migration): rage / enchant / stealth / backstab / flank all just ARM a timed melee
-    // modifier on the caster, so — like CastArch — try the Lua verb first, falling back to the C# handler if it
-    // isn't loaded. The C# classifier has already picked the spell + its RTK numbers, passed via ctx: `amount`
+    // modifier on the caster, so — like CastArch — try the Lua verb first; a null result (verb not loaded) fails
+    // the cast via Lua() below, same as CastArch — no C# handler remains. The C# classifier has already picked
+    // the spell + its RTK numbers, passed via ctx: `amount`
     // carries the rage/enchant multiplier (0 for the flag-only stealth/backstab/flank), `mana` the resolved cost,
     // and `fx` the export row (ctx.durationMs). No per-spell formula to evaluate (unlike CastArch's amountExpr).
     private bool? CastStanceArch(string verb, SpellDef sp, SpellFx fx, int mana, double amount)
@@ -619,8 +620,9 @@ public sealed partial class Session
     // Tier-3 utility Lua hook (mana_steal/mana_gift/cleanse/revive/leap/mana_battery): these spells are classified
     // in C# (Content.IsManaStealSpell etc.), not by a SpellParams row, so the verb runs against an empty row and
     // reads its RTK constants as `row.x or <default>` (fully tunable later by adding a row). targetId reaches the
-    // verb through ctx (its target primitives). Returns null only if the verb isn't loaded -> C# fallback; a Lua
-    // error returns false (no fallback) so a half-applied mana transfer can't be re-run and duplicated.
+    // verb through ctx (its target primitives). Returns null only if the verb isn't loaded, which Lua() below
+    // fails cleanly (no C# handler remains); a Lua error returns false so a half-applied mana transfer can't
+    // be re-run and duplicated.
     private bool? CastUtilArch(string verb, SpellDef sp, uint? targetId)
     {
         if (!SpellScript.HasVerb(verb)) return null;
@@ -630,8 +632,8 @@ public sealed partial class Session
     // Tier-4 world-effecting Lua hook (gateway/return_home/divine/spot_traps/filch/set_trap/bladestorm/pet_summon/
     // propose): like CastUtilArch but carries the typed `answer` (Gateway's N/E/S/W, the set_trap dispatcher's
     // trap name). Data-bound constants reach the verb via ctx.spellMana/petMana/etc., not a CSV row. Returns null
-    // only if the verb isn't loaded -> C# fallback; a Lua error returns false (no fallback), so a world mutation
-    // that already ran (a warp, a spawn) can't be re-applied by the C# handler.
+    // only if the verb isn't loaded, which Lua() below fails cleanly (no C# handler remains); a Lua error
+    // returns false, so a world mutation that already ran (a warp, a spawn) can't be re-applied.
     /// <summary>Collapse a verb result to a plain success bool. Every spell dispatch now runs through Lua, so
     /// there is no C# handler left to fall back to and a null (= the verb isn't defined) can only mean
     /// spell_verbs.lua never loaded at all - <see cref="LuaVerbHost.Load"/> keeps the last good copy across a
@@ -2094,8 +2096,9 @@ public sealed partial class Session
 
     // ---- Tier-3 utility/target primitives (mana_steal/mana_gift/cleanse/revive/leap/mana_battery verbs) --------
     // Thin wrappers so the LOGIC (guards, formulas, ordering, messages) lives in the Lua verbs while these do the
-    // mechanical act, each mirroring the C# CastManaSteal/CastManaGift/CastCleanse/CastRevive/CastLeap/
-    // CastManaBattery they replace (kept as fallback). Self HP/MP setters clamp to the effective caps.
+    // mechanical act, each mirroring the logic the removed C# CastManaSteal/CastManaGift/CastCleanse/CastRevive/
+    // CastLeap/CastManaBattery handlers used to own (none of them remain; Lua() fails the cast if the verb isn't
+    // loaded). Self HP/MP setters clamp to the effective caps.
     internal uint LuaMaxMp        => EffMaxMp;
     internal void LuaSetHp(int n)   { _char.Hp = (uint)Math.Clamp(n, 0, (int)EffMaxHp); SendStats(); }
     internal void LuaSetMana(int n) { _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp); SendStats(); }
@@ -2271,8 +2274,8 @@ public sealed partial class Session
     }
 
     // ---- Tier-4 world-effecting primitives -----------------------------------------------------------------
-    // Each wraps the irreducible engine core of its C# CastX handler (kept as the fallback), so the Lua verb owns
-    // only guards/mana/messages. Where a constant is data-bound (per-kind trap mana, pet cap, gate boxes) the
+    // Each wraps the irreducible engine core its removed C# CastX handler used to own (none of them remain),
+    // so the Lua verb owns only guards/mana/messages. Where a constant is data-bound (per-kind trap mana, pet cap, gate boxes) the
     // primitive resolves it from Content, not a CSV row — these spells are classified in C#, not by a params row.
     internal bool LuaWarpOut          => Content.WarpOut(_char.Map);
     internal int  LuaSpellMana(SpellDef sp) { var fx = Content.FxFor(sp); return fx is not null && fx.Mana > 0 ? fx.Mana : 5; }
@@ -2304,7 +2307,7 @@ public sealed partial class Session
     // Return core (see CastReturn/ReturnToInn): the verb owns the 30-mana debit + warpOut guard.
     internal void LuaReturnHome() { ReturnToInn(); SendStats(); }
 
-    // Divination core (see CastDivination): the resolved PC target is _pcSpellTarget (set by ctx:pcTarget). Builds
+    // Divination core: the resolved PC target is _pcSpellTarget (set by ctx:pcTarget). Builds
     // the inspect popup for the caster; spy variant appends the target's inventory. Self-narrates.
     internal bool LuaIsSpy(SpellDef sp) => Content.IsDivinationSpySpell(sp);
     internal int  LuaTargetLevel => _pcSpellTarget?._char.Level ?? 0;
@@ -2334,7 +2337,7 @@ public sealed partial class Session
         Log.Info($"      Divine(lua) -> divined '{tc.Name}' (inventory={showInventory})");
     }
 
-    // Spot Traps core (see CastSpotTraps): draw a caster-only marker on every hidden trap within 15 tiles.
+    // Spot Traps core: draw a caster-only marker on every hidden trap within 15 tiles.
     internal int LuaRevealTraps()
     {
         var traps = RevealableTrapsNear();
@@ -2357,7 +2360,7 @@ public sealed partial class Session
         SyncGroundItems(_world.ItemsOn(_char.Map));   // draws every marker now in view (and any we've walked away from, hidden)
     }
 
-    // Filch core (see CastGroundLoot): grab the item on the faced tile — coins to purse, else to pack (put back if full).
+    // Filch core: grab the item on the faced tile — coins to purse, else to pack (put back if full).
     internal void LuaFilch()
     {
         int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
@@ -2409,7 +2412,7 @@ public sealed partial class Session
         return true;
     }
 
-    // Bladestorm core (see CastBladestormTrap): place the decoy; the verb owns mana/cooldown/fx.
+    // Bladestorm core: place the decoy; the verb owns mana/cooldown/fx.
     internal void LuaPlaceBladestorm(int lifetimeMs)
     {
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, "bladestorm", _char.Id, Environment.TickCount64 + lifetimeMs);
@@ -2500,8 +2503,8 @@ public sealed partial class Session
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
     // verb; these primitives do the irreducible engine ops — resolve the faced mob, armor-net + apply, the
-    // overkill backflow/overflow, and (ambush) the leap + swing. Mirror CastSacrificeStrike/CastAmbush (kept as
-    // fallback). A single stash holds the resolved target for the rest of the cast.
+    // overkill backflow/overflow, and (ambush) the leap + swing. Mirror the logic the removed CastSacrificeStrike/
+    // CastAmbush handlers used to own (neither remains). A single stash holds the resolved target for the rest of the cast.
     private Mob? _frontStrikeMob;
     private Session? _frontStrikePc;
     private int  _frontStrikeX, _frontStrikeY;
@@ -3144,39 +3147,6 @@ public sealed partial class Session
         _ => (x - 1, y),
     };
 
-    // RTK rogue/filch.lua family (see Content.IsGroundLootSpell): mana is spent and the "I'll take that"
-    // bark plays regardless of what's on the tile (RTK does both unconditionally, before ever looking at
-    // the floor) — only the actual grab is conditional on the tile being empty of other players.
-    private bool CastGroundLoot(SpellDef sp, SpellFx fx, int mana)
-    {
-        if (_char.Mp < (uint)mana) { SendMiniText("Your will is too weak."); return false; }
-        _char.Mp -= (uint)mana;
-        SendStats();
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendMiniText("I'll take that.");
-
-        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
-        int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
-        int tx = _char.X + dx, ty = _char.Y + dy;
-        if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) return true;
-
-        if (_world.PeerAt(_char.Map, tx, ty) is not null) return true;   // someone's standing on it — hands off
-
-        // …and a looter-locked death pile is off limits to a thief too (see LuaFilch's note).
-        var gi = _world.PickUp(_char.Map, tx, ty, _char.Id);
-        if (gi is null) return true;
-        if (gi.ItemId < 0) { _char.Coins += (uint)gi.Amount; SendStats(); MarkDirty(); return true; }   // coins -> purse
-        var def = Content.ItemById(gi.ItemId);
-        if (def is null) return true;
-        if (!GiveItem(def, gi.Amount, gi.Dura, gi.CustomName, owner: gi.Owner))
-            // pack full — put it straight back rather than losing it (same recovery as HandlePickup)
-            _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = gi.ItemId,
-                X = (ushort)tx, Y = (ushort)ty, Amount = gi.Amount, Dura = gi.Dura, Graphic = gi.Graphic, CustomName = gi.CustomName,
-                Owner = gi.Owner });
-        Log.Info($"      {sp.Name} -> grabbed item {gi.ItemId} from ({tx},{ty})");
-        return true;
-    }
-
     // RTK seeSpotTraps (spotTraps.lua) is CLASS-BRANCHED, and both branches route through this one reveal:
     //   * class 1 (Warrior) — watchful_eye.lua family — reveals hidden AMBUSH tiles (RTK's MobSpawnNpc), the
     //     cave mob-spawn traps; "Spots Ambushes on ground and marks them off as Steel daggers."
@@ -3201,90 +3171,6 @@ public sealed partial class Session
     // (ForgetShownMobs) or the trap it marks GOES OFF, at which point the trap's own removeTrapItem takes the
     // sword with it (World -> ClearTrapMarker). There is still no player-facing bulk-clear — RTK's own
     // removeSpotTraps is a separate GM-style command.
-    private bool CastSpotTraps(SpellDef sp, SpellFx fx, int mana)
-    {
-        if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-
-        _char.Mp -= (uint)mana;
-        SendStats();
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SetCooldown(sp.Key, fx.Aether > 0 ? fx.Aether : 25000);   // RTK setAether(key, 25000) for the warrior family — missing from the export, spot_traps' own row already has a real aether
-
-        var traps = RevealableTrapsNear();
-        MarkRevealedTraps(traps);
-
-        SendMiniText(traps.Length > 0 ? $"You sense {traps.Length} hidden trap{(traps.Length == 1 ? "" : "s")} nearby." : "You sense nothing nearby.");
-        _castNarrated = true;   // the sense-result IS the caster line — skip the generic "You cast X."
-        Log.Info($"      {sp.Name} -> revealed {traps.Length} trap(s) near ({_char.X},{_char.Y})");
-        return true;
-    }
-
-    // RTK rogue/judge.lua + spy.lua (see Content.IsDivinationSpell): a text popup showing another player's
-    // class/name/level/title/might/will/grace — the spy variant appends their full inventory. 30 mana flat,
-    // no cooldown in the Lua. Sent to the CASTER (this session), not the target — it's an inspect, not a
-    // debuff, so the target isn't notified.
-    private bool CastDivination(SpellDef sp, SpellFx fx, uint? targetId, bool showInventory)
-    {
-        const int mana = 30;
-        if (_char.Mp < mana) { SendMiniText("You do not have enough mana."); return false; }
-        var target = ResolvePcCastTarget(targetId);
-        if (target is null) { LogNoTarget(sp); return false; }
-
-        // Judge family: target must be STRICTLY lower level. Spy family: equal level is also allowed.
-        // (`target.level >= player.level` fails vs `target.level > player.level` fails — a real distinction
-        // in the Lua, not a typo.)
-        bool allowed = showInventory ? target._char.Level <= _char.Level : target._char.Level < _char.Level;
-        if (!allowed) { SendMiniText("Target player must be lower level than you for you to use this spell."); return false; }
-
-        _char.Mp -= mana;
-        SendStats();
-
-        var tc = target._char;
-        var text = new System.Text.StringBuilder();
-        text.Append(ClassTitleOf(tc)).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
-        text.Append(tc.Title ?? "").Append('\n');
-        text.Append("Might: ").Append(target.EffMight)
-            .Append(" Will: ").Append(tc.Will + target.Totals().will)
-            .Append(" Grace: ").Append(tc.Grace + target.Totals().grace).Append('\n');
-        if (showInventory)
-        {
-            text.Append("Items: ");
-            foreach (var it in tc.Inventory)
-            {
-                var def = Content.ItemById(it.ItemId);
-                if (def is not null) text.Append(def.Name).Append(' ');
-            }
-        }
-
-        BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        SendScriptMessageP(tc.Id, text.ToString(), DialogPortrait.None, prev: false, next: false);
-        _castNarrated = true;   // the inspect popup IS the caster feedback — skip the generic "You cast X."
-        Log.Info($"      {sp.Name} -> divined '{tc.Name}' (inventory={showInventory})");
-        return true;
-    }
-
-    // RTK rogue/bladestorm_trap.lua (see Content.IsBladestormTrap): places a visible step-triggered decoy on
-    // the caster's OWN tile that detonates a facing-cone AoE the instant ANYTHING steps onto it — a mob
-    // triggers it from World.Tick's movement loop (TriggerTrapLocked's "bladestorm" case); a player triggers
-    // it from HandleWalk via World.CheckPlayerTrapTrigger. Real RTK also drains the owner 5000 mana/tick via
-    // the decoy's own heartbeat for up to 21s — NOT ported (the exact drain/early-deletion formula isn't in
-    // the captured Lua), so this is the flat 1520 upfront cost only; flagged, not silently dropped.
-    private bool CastBladestormTrap(SpellDef sp)
-    {
-        const int mana = 1520, cooldownMs = 125000, lifetimeMs = 21000;
-        if (OnCooldown(sp.Key, out int wait)) { SendMiniText($"{sp.Name} isn't ready yet ({wait}s)."); return false; }
-        if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        _char.Mp -= (uint)mana;
-        SetCooldown(sp.Key, cooldownMs);
-        _world.PlaceTrap(_char.Map, _char.X, _char.Y, "bladestorm", _char.Id, Environment.TickCount64 + lifetimeMs);
-        SendStats();
-        var fx = Content.FxFor(sp);
-        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
-        // caster line centralized in HandleCast ("You cast <name>.")
-        Log.Info($"      {sp.Name} -> bladestorm trap placed at ({_char.X},{_char.Y}), expires in {lifetimeMs}ms");
-        return true;
-    }
 
     /// <summary>Called by World.CheckPlayerTrapTrigger when WE step on our own (or anyone's) bladestorm decoy.
     /// RTK's damage is ONE number — floor(health*0.5) + calculateDamage(35000 netted against our own armor,

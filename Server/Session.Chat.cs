@@ -44,7 +44,7 @@ public sealed partial class Session
         if (text == "A") { UnequipAll(); return; }
 
         // Muted players may still run '@' commands (handled above) but cannot SPEAK. The gate sits here,
-        // after the command table, so a mute silences the player without also taking away @ignore or @friend.
+        // after the command table, so a mute silences the player without also taking away any other command.
         if (IsMuted()) { ReportMuted(); return; }
 
         // Real chat (not a ! command). Broadcast the over-head bubble (0x0D) to co-located players INCLUDING
@@ -203,90 +203,6 @@ public sealed partial class Session
 
     // Case-insensitive membership check against THIS character's own ignore list (RTK strcmpi).
     private bool IsIgnoring(string name) => _char.IgnoreList.Any(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
-
-    // "@ignore" (list) / "@ignore add <name>" / "@ignore remove <name>" — RTK's ignorelist_add/remove
-    // (clif.c:7523/7551), ported as a chat command rather than the raw 0x0D-sub-opcode client packet
-    // (clif_parseignore) since that's a UI-driven right-click action from a later client's context menu —
-    // no evidence the 4.95 client has it at all. That's the bar for a chat command surviving in the player
-    // tier: no native path exists, not merely "typing it is convenient".
-    private void HandleIgnoreCommand(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { ListNames("Ignoring", _char.IgnoreList); return; }
-        string sub = parts[0].ToLowerInvariant();
-        if ((sub is "add" or "remove") && parts.Length < 2)
-        { SendLog($"usage: @ignore {sub} <name>"); return; }
-
-        switch (sub)
-        {
-            case "add":
-                string addName = parts[1];
-                if (addName.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { SendLog("You can't ignore yourself."); return; }
-                if (IsIgnoring(addName)) { SendLog($"{addName} is already on your ignore list."); return; }
-                _char.IgnoreList.Add(addName);
-                SaveChar();
-                SendLog($"Ignoring {addName}.");
-                break;
-            case "remove":
-                string remName = parts[1];
-                int removed = _char.IgnoreList.RemoveAll(n => n.Equals(remName, StringComparison.OrdinalIgnoreCase));
-                if (removed == 0) { SendLog($"{remName} isn't on your ignore list."); return; }
-                SaveChar();
-                SendLog($"No longer ignoring {remName}.");
-                break;
-            default:
-                ListNames("Ignoring", _char.IgnoreList);
-                break;
-        }
-    }
-
-    // "@friend" (list, shows who's currently online) / "@friend add <name>" / "@friend remove <name>". No
-    // RTK equivalent exists at all (see Character.Friends' doc) — a saved name list plus an online check,
-    // nothing more; there's no cross-session login/logout notification, just a live lookup when listed.
-    private void HandleFriendCommand(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 1) { ListFriends(); return; }
-        string sub = parts[0].ToLowerInvariant();
-        if ((sub is "add" or "remove") && parts.Length < 2)
-        { SendLog($"usage: @friend {sub} <name>"); return; }
-
-        switch (sub)
-        {
-            case "add":
-                string addName = parts[1];
-                if (addName.Equals(_char.Name, StringComparison.OrdinalIgnoreCase)) { SendLog("You can't friend yourself."); return; }
-                if (_char.Friends.Any(n => n.Equals(addName, StringComparison.OrdinalIgnoreCase))) { SendLog($"{addName} is already on your friend list."); return; }
-                _char.Friends.Add(addName);
-                SaveChar();
-                SendLog($"Added {addName} to your friend list.");
-                break;
-            case "remove":
-                string remName = parts[1];
-                int removed = _char.Friends.RemoveAll(n => n.Equals(remName, StringComparison.OrdinalIgnoreCase));
-                if (removed == 0) { SendLog($"{remName} isn't on your friend list."); return; }
-                SaveChar();
-                SendLog($"Removed {remName} from your friend list.");
-                break;
-            default:
-                ListFriends();
-                break;
-        }
-    }
-
-    private void ListFriends()
-    {
-        if (_char.Friends.Count == 0) { SendLog("Your friend list is empty. Try: @friend add <name>"); return; }
-        var online = _char.Friends.Where(n => _world.FindPlayer(n) is not null).ToList();
-        ListNames("Friends", _char.Friends);
-        SendLog(online.Count == 0 ? "(none online right now)" : $"Online now: {string.Join(", ", online)}");
-    }
-
-    private void ListNames(string label, List<string> names)
-    {
-        if (names.Count == 0) { SendLog($"{label} list is empty."); return; }
-        SendLog($"{label}: {string.Join(", ", names)}");
-    }
 
     /// <summary>Deliver a whisper's text to THIS session (the recipient), via the non-entity 0x0A channel
     /// (SendMiniText, type 0 = RTK's "Wisp/blue text") rather than 0x0D over-head speech: a whisper must
