@@ -63,7 +63,7 @@ public sealed partial class Session
     // NOT const: live-tunable via "@mobact <type> [time]" so the attack-pose index can be swept against the
     // client in ONE server session (the creature entity uses vtable 0x4cd098, not the player's, so its type->
     // Monster.tbl-frame mapping isn't the player's 0=stand/1=attack/2=throw table and has to be found by eye).
-    internal static byte   MobSwingActionType = 1;    // action type for a mob's attack pose (player attack = 1)
+    internal static byte   MobSwingActionType = (byte)ActionType.Attack;   // a mob's attack pose (the player's is Attack too)
     internal static ushort MobSwingActionTime = 20;   // pose length in ticks (RTK boss uses 20)
 
     // Eating/using a consumable (Session.ItemEatAnim): TWO ids played together, live 2026-08-04 — 403.wav is

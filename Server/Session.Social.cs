@@ -215,9 +215,9 @@ public sealed partial class Session
             int placed = to.GivePlaced(def, amount, snap.Dura, snap.CustomName, owner: snap.Owner);
             if (placed <= 0) continue;                  // wouldn't fit; it stays with its owner
             have.Amount -= placed;
-            // reason 9 = "You gave <item>." — a trade hand-over is exactly what that client line is for
-            // (10 is "You sold", which is the vendor's). See the table in Content.EquipDelReason.
-            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, 9); }
+            // "You gave <item>." — a trade hand-over is exactly what that client line is for (Sold is the
+            // vendor's). See the DelReason enum and the table in Content.EquipDelReason.
+            if (have.Amount <= 0) { from._char.Inventory.Remove(have); from.SendDelItem(have.Slot, DelReason.Gave); }
             else from.SendAddItem(have);                // partial take: redraw the shrunken stack
         }
     }
@@ -361,7 +361,7 @@ public sealed partial class Session
         int give = Math.Min(amount, it.Amount);
         if (give <= 0) return;
         it.Amount -= give;
-        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 12); }  // 12 = silent; the NPC already spoke
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Silent); }  // the NPC already spoke
         else SendAddItem(it);
         MarkDirty();
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
@@ -397,7 +397,7 @@ public sealed partial class Session
 
         ushort dura = it.Dura; string cname = it.CustomName; string owner = it.Owner;   // capture before the stack mutates
         it.Amount -= give;
-        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 9); }  // 9 = client "You gave %s."
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Gave); }  // the client's own "You gave %s."
         else SendAddItem(it);
         MarkDirty();
         // The creature is carrying it now; killing the creature drops it back (World.TryDamage). Through the

@@ -270,7 +270,7 @@ public sealed partial class Session
     // "@clearinv": empty the bag + gear (test reset).
     private void ClearInventory()
     {
-        foreach (var it in _char.Inventory.ToList()) SendDelItem(it.Slot, 0);
+        foreach (var it in _char.Inventory.ToList()) SendDelItem(it.Slot, DelReason.Removed);
         _char.Inventory.Clear();
         foreach (var e in _char.Equipment.ToList()) SendUnequip(e.Slot);
         EquipClear();
@@ -334,7 +334,7 @@ public sealed partial class Session
         {
             SendRawIcon(slot, 1, $"reason{r}");
             Reply($"reason {r}:");
-            SendDelItem(slot, (byte)r);
+            SendDelItem(slot, (DelReason)r);   // the whole point of the sweep is UNNAMED bytes too
             System.Threading.Thread.Sleep(700);
         }
         Reply("sweep done. Set EquipDelReason to a silent reason (or leave it) and @reload.");

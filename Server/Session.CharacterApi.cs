@@ -695,7 +695,7 @@ public sealed partial class Session
             if (remaining <= 0) break;
             int take = Math.Min(remaining, it.Amount);
             it.Amount -= take; remaining -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Removed); }
             else SendAddItem(it);
         }
 
@@ -735,7 +735,7 @@ public sealed partial class Session
             if (remaining <= 0) break;
             int take = Math.Min(remaining, it.Amount);
             it.Amount -= take; remaining -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }   // reason 0 -> "<item> removed." (see the §11c table; NOT silent)
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Removed); }   // -> "<item> removed." — NOT silent
             else SendAddItem(it);
         }
         SaveChar();

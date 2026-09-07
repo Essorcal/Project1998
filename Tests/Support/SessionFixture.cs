@@ -49,9 +49,13 @@ public sealed class SessionFixture
     /// <summary>The same session, plus the <see cref="Character"/> behind it and a hook to shape that
     /// character BEFORE the session is built — stats, gear, position. A test that asserts on damage needs
     /// both halves: the hook to set up an HP pool and an AC worth netting, and the character itself to read
-    /// the HP back (the session deliberately exposes no setter for it).</summary>
+    /// the HP back (the session deliberately exposes no setter for it).
+    /// <para><paramref name="port"/> picks which client the session speaks to: 2005 is 4.95 (V495) and 2006
+    /// is 5.33 (V533). It defaults to the 4.95 port the existing wire tests pin; pass 2006 to assert that a
+    /// layout is genuinely version-independent rather than merely untested on the other client.</para></summary>
     public (Session session, RecordingOutbound outbound, Character character) PlayerWith(
-        string name, Action<Character> configure, ushort map = HomeMap, ushort x = 5, ushort y = 10)
+        string name, Action<Character> configure, ushort map = HomeMap, ushort x = 5, ushort y = 10,
+        int port = 2005)
     {
         var character = new Character
         {
@@ -65,9 +69,8 @@ public sealed class SessionFixture
         configure(character);
 
         var outbound = new RecordingOutbound($"recorder:{name}");
-        // Port 2005 is the 4.95 game port, which is what tags the session ClientVersion.V495 — the version
-        // whose packet layouts the existing wire tests pin.
-        var session = new Session(outbound, port: 2005, Store, World, character);
+        // The port is what tags the session's ClientVersion: 2005 -> V495, 2006 -> V533 (ChannelPorts).
+        var session = new Session(outbound, port, Store, World, character);
         World.EnterMap(session, map);
         outbound.Clear();
         return (session, outbound, character);
