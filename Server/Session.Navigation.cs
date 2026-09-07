@@ -1015,15 +1015,15 @@ public sealed partial class Session
         for (int i = 0; i < n; i++)
         {
             var e = entries[i];
-            d.AddRange(Be((ushort)e.DotX));
-            d.AddRange(Be((ushort)e.DotY));
+            d.AddRange(PacketWriter.U16BEBytes((ushort)e.DotX));
+            d.AddRange(PacketWriter.U16BEBytes((ushort)e.DotY));
             AddLenStr(d, e.Name);
-            d.AddRange(Be32(e.Map));                // 5.33 keeps only the low half of this
-            d.AddRange(Be(e.X));
-            d.AddRange(Be(e.Y));
+            d.AddRange(PacketWriter.U32BEBytes(e.Map));                // 5.33 keeps only the low half of this
+            d.AddRange(PacketWriter.U16BEBytes(e.X));
+            d.AddRange(PacketWriter.U16BEBytes(e.Y));
             if (!v533) continue;
-            d.AddRange(Be((ushort)(n - 1)));        // complete graph: every other node is one hop away
-            for (int j = 0; j < n; j++) if (j != i) d.AddRange(Be((ushort)j));
+            d.AddRange(PacketWriter.U16BEBytes((ushort)(n - 1)));        // complete graph: every other node is one hop away
+            for (int j = 0; j < n; j++) if (j != i) d.AddRange(PacketWriter.U16BEBytes((ushort)j));
         }
         return d.ToArray();
     }
@@ -1074,7 +1074,7 @@ public sealed partial class Session
         _worldMapReturnMap = originMap;
         _worldMapReturnX   = originX;
         _worldMapReturnY   = originY;
-        SendMap(0x2e, _gameInc++, WorldMapBody(_ver, bgName, entries, originIndex),
+        SendMap(ServerOp.WorldMap, _gameInc++, WorldMapBody(_ver, bgName, entries, originIndex),
                 $"worldmap(0x2e) bg='{bgName}' {entries.Count} dests (origin map {originMap} @ index {originIndex}){(_ver == ClientVersion.V533 ? " +graph" : "")}");
     }
 

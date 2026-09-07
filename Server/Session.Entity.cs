@@ -18,15 +18,15 @@ public sealed partial class Session
     {
         Log.Info($"   == WORLD ENTRY burst for '{_char.Name}' (map={_char.Map} @ {_char.X},{_char.Y}) ==");
 
-        SendMap(0x1E, 0, new byte[] { 0x06, 0x00 }, "ack(0x1E)");
-        { var (h, y) = _world.Time; SendMap(0x20, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
+        SendMap(ServerOp.Ack, 0, new byte[] { 0x06, 0x00 }, "ack(0x1E)");
+        { var (h, y) = _world.Time; SendMap(ServerOp.Time, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232);
         Log.Info("   -> mapinfo(0x15)");
         SendStats();
         SendSelfLook();
         SendXy();
-        SendMap(0x22, 3, Array.Empty<byte>(), "map-done(0x22)");
+        SendMap(ServerOp.MapDone, 3, Array.Empty<byte>(), "map-done(0x22)");
         PlayMapMusic(_char.Map);   // 0x19: start this map's background track
         SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
 
@@ -48,10 +48,10 @@ public sealed partial class Session
     private void SendId()
     {
         var d = new List<byte>();
-        d.AddRange(Be32(_char.Id));   // your entity id
-        d.AddRange(Be32(2));          // field2 = 2 (per 6.x)
-        d.AddRange(Be32(0));          // field3 = 0
-        SendMap(0x05, _gameInc++, d.ToArray(), "id(0x05) — YOUR entity id");
+        d.AddRange(PacketWriter.U32BEBytes(_char.Id));   // your entity id
+        d.AddRange(PacketWriter.U32BEBytes(2));          // field2 = 2 (per 6.x)
+        d.AddRange(PacketWriter.U32BEBytes(0));          // field3 = 0
+        SendMap(ServerOp.PlayerId, _gameInc++, d.ToArray(), "id(0x05) — YOUR entity id");
     }
 
     // 0x08 self-stats -> the always-on HUD. Opcode + full byte layout decoded empirically (2026-07-24):
@@ -84,15 +84,15 @@ public sealed partial class Session
         d[1] = _char.Nation;
         d[2] = TotemWire();                 // 5.33 clamps totem to 0..3; "None" (4) must go out as 0xFF — see below
         d[4] = _char.Level;
-        WriteBe32(d, 5, maxHp);             // maxHP  (offset [5] confirmed via @hp bar-fill test) — base + gear
-        WriteBe32(d, 9, maxMp);             // maxMP  (offset [9] confirmed) — base + gear
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(5), maxHp);             // maxHP  (offset [5] confirmed via @hp bar-fill test) — base + gear
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(9), maxMp);             // maxMP  (offset [9] confirmed) — base + gear
         d[13] = (byte)Math.Clamp(_char.Might + eq.might, 0, 255);
         d[14] = (byte)Math.Clamp(_char.Will  + eq.will,  0, 255);
         d[17] = (byte)Math.Clamp(_char.Grace + eq.grace, 0, 255);
-        WriteBe32(d, 24, _char.Hp);         // current HP (confirmed)
-        WriteBe32(d, 28, _char.Mp);         // current MP (confirmed)
-        WriteBe32(d, 32, _char.Exp);        // experience (confirmed)
-        WriteBe32(d, 36, _char.Coins);      // coins      (confirmed)
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(24), _char.Hp);         // current HP (confirmed)
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(28), _char.Mp);         // current MP (confirmed)
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(32), _char.Exp);        // experience (confirmed)
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(36), _char.Coins);      // coins      (confirmed)
         if (!_mailFlagsSeeded) { _mailFlags = ComputeMailFlags(); _mailFlagsSeeded = true; }   // one SQLite read at first stats (login)
         d[45] = _mailFlags;                 // bottom-left HUD notify: 0x10=n-mail arrow, 0x01=parcel bag (body[45] confirmed live 2026-07-28)
         // body[46] = the client's RUNTIME fast-move flag. The 0x08 handler (client 0x48fc40, reached from the
@@ -114,7 +114,7 @@ public sealed partial class Session
         // "open" — so `i` could not reopen the inventory. 4.95 fast-move was never negotiated with 5.33,
         // so send 0 and leave its walk machinery alone.
         d[46] = (byte)(_ver != ClientVersion.V533 && FastMoveTrustToggle && _fastMove ? 1 : 0);
-        SendMap(0x08, _gameInc++, d, "stats(0x08)");
+        SendMap(ServerOp.Stats, _gameInc++, d, "stats(0x08)");
     }
 
     /// <summary>Totem index for the 0x08 HUD, made ROUND-TRIP STABLE for the receiving client.
@@ -166,13 +166,6 @@ public sealed partial class Session
         SendStats();   // the flag changed -> refresh body[45] on the HUD now
     }
 
-    private static void WriteBe32(byte[] d, int off, uint v)
-    {
-        d[off]     = (byte)(v >> 24);
-        d[off + 1] = (byte)(v >> 16);
-        d[off + 2] = (byte)(v >> 8);
-        d[off + 3] = (byte)v;
-    }
 
     // ---- natural HP/MP regeneration (RTK Player.regen migration) -------------------------------
     // RTK heals a resting player every 25s: Accepted/player.lua `Player.regen` fires on timerTick%50
@@ -446,7 +439,7 @@ public sealed partial class Session
     internal void UpdatePlayerLook(uint id, byte[] look, byte hairColor = 0)
     {
         var d = new List<byte>();
-        d.AddRange(Be32(id));
+        d.AddRange(PacketWriter.U32BEBytes(id));
         d.Add(0);                     // kind 0 = the player look
         // Same record, same divergence as 0x33: the 5.33 handler (0x46a6d0) calls the very same appearance
         // parser 0x449880, so an in-place patch has to carry the 11-byte form or it re-introduces exactly
@@ -454,7 +447,7 @@ public sealed partial class Session
         // symptom was reported. hairColor is the SUBJECT's (this is the viewer's session), same reason as
         // ShowPlayer/SendLook.
         WriteAppearance(d, look, hairColor);
-        SendMap(0x1d, _gameInc++, d.ToArray(), $"look-update(0x1d) id={id}");
+        SendMap(ServerOp.LookUpdate, _gameInc++, d.ToArray(), $"look-update(0x1d) id={id}");
     }
 
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
@@ -615,16 +608,16 @@ public sealed partial class Session
     {
         var nm = Encoding.ASCII.GetBytes(name);
         var d = new List<byte>();
-        d.AddRange(Be(x));
-        d.AddRange(Be(y));
+        d.AddRange(PacketWriter.U16BEBytes(x));
+        d.AddRange(PacketWriter.U16BEBytes(y));
         d.Add(dir);
-        d.AddRange(Be32(id));
+        d.AddRange(PacketWriter.U32BEBytes(id));
         d.Add(0);                                   // type = 0 (player appearance form) — same on both clients
         WriteAppearance(d, app, hairColor);         // hairColor set only when drawing a peer (the subject's, not the viewer's)
         d.Add(renderKind);
         d.Add((byte)nm.Length);
         d.AddRange(nm);
-        SendMap(0x33, _gameInc++, d.ToArray(), label);
+        SendMap(ServerOp.PlayerLook, _gameInc++, d.ToArray(), label);
     }
 
     /// <summary>Write the 0x33 type-0 appearance in the <b>11-byte 5.33 form</b>, from our canonical 7-byte
@@ -793,16 +786,16 @@ public sealed partial class Session
         ushort fromX = x;
         ushort fromY = (ushort)(y > 0 ? y - 1 : y + 1);   // 1 tile away so the walk distance != 0
         var d = new List<byte>();
-        d.AddRange(Be32(0));         // +1  owner/parent id
-        d.AddRange(Be(sprite));      // +5  graphic id
-        d.AddRange(Be32(id));        // +7  entity id
-        d.AddRange(Be(x));           // +0xb resting X
-        d.AddRange(Be(y));           // +0xd resting Y
-        d.AddRange(Be(fromX));       // +0xf walked-from X
-        d.AddRange(Be(fromY));       // +0x11 walked-from Y
-        d.AddRange(Be32(0));         // +0x13 flags
+        d.AddRange(PacketWriter.U32BEBytes(0));         // +1  owner/parent id
+        d.AddRange(PacketWriter.U16BEBytes(sprite));      // +5  graphic id
+        d.AddRange(PacketWriter.U32BEBytes(id));        // +7  entity id
+        d.AddRange(PacketWriter.U16BEBytes(x));           // +0xb resting X
+        d.AddRange(PacketWriter.U16BEBytes(y));           // +0xd resting Y
+        d.AddRange(PacketWriter.U16BEBytes(fromX));       // +0xf walked-from X
+        d.AddRange(PacketWriter.U16BEBytes(fromY));       // +0x11 walked-from Y
+        d.AddRange(PacketWriter.U32BEBytes(0));         // +0x13 flags
         d.Add(dir);                  // +0x17 dir
-        SendMap(0x16, _gameInc++, d.ToArray(), label);
+        SendMap(ServerOp.FloorItem, _gameInc++, d.ToArray(), label);
     }
 
     // *** 0x07 = the REAL creature/monster spawn (the "area characters" list). *** Handler 0x44fdb0
@@ -826,13 +819,13 @@ public sealed partial class Session
     {
         if (es.Count == 0) return;
         var d = new List<byte>();
-        d.AddRange(Be((ushort)es.Count));           // body[0..1] = entity count
+        d.AddRange(PacketWriter.U16BEBytes((ushort)es.Count));           // body[0..1] = entity count
         foreach (var e in es)
         {
-            d.AddRange(Be(e.x));                    // +0  X
-            d.AddRange(Be(e.y));                    // +2  Y
-            d.AddRange(Be32(e.id));                 // +4  entity id
-            d.AddRange(Be(e.look));                 // +8  look (0x8000|monsterId => Monster.epf)
+            d.AddRange(PacketWriter.U16BEBytes(e.x));                    // +0  X
+            d.AddRange(PacketWriter.U16BEBytes(e.y));                    // +2  Y
+            d.AddRange(PacketWriter.U32BEBytes(e.id));                 // +4  entity id
+            d.AddRange(PacketWriter.U16BEBytes(e.look));                 // +8  look (0x8000|monsterId => Monster.epf)
             // +10 palette/color — a RAMP SHIFT the client applies over the mob's own palette block, not a
             // palette index. Era-tuned colours >= 32 select SUPER{n}.PAL on 5.33 (the era client just
             // wrapped — horse colour 35 = brown ramp 3 there, SUPER0 blue on 5.33), so remap those pairs
@@ -841,7 +834,7 @@ public sealed partial class Session
             d.Add(color);
             d.Add(e.dir);                           // +11 dir/state
         }
-        SendMap(0x07, _gameInc++, d.ToArray(), $"creature-list(0x07) x{es.Count}");
+        SendMap(ServerOp.CreatureList, _gameInc++, d.ToArray(), $"creature-list(0x07) x{es.Count}");
     }
 
     // Register a monster server-side AND draw it via the real Monster.epf path (0x07). lookId is the
@@ -873,7 +866,7 @@ public sealed partial class Session
     private void SendDespawn(params uint[] ids)
     {
         foreach (var body in DespawnBodies(_ver, ids))
-            SendMap(0x0E, _gameInc++, body, $"despawn(0x0E) {body.Length}B");
+            SendMap(ServerOp.Despawn, _gameInc++, body, $"despawn(0x0E) {body.Length}B");
     }
 
     /// <summary>The 0x0E bodies to send for these ids — one list-shaped body on 4.95, one 4-byte body per
@@ -885,11 +878,11 @@ public sealed partial class Session
         if (live.Length == 0) return outp;
         if (ver == ClientVersion.V533)
         {
-            foreach (var id in live) outp.Add(Be32(id));
+            foreach (var id in live) outp.Add(PacketWriter.U32BEBytes(id));
             return outp;
         }
         var d = new List<byte> { (byte)Math.Min(live.Length, 255) };
-        foreach (var id in live) d.AddRange(Be32(id));
+        foreach (var id in live) d.AddRange(PacketWriter.U32BEBytes(id));
         outp.Add(d.ToArray());
         return outp;
     }
@@ -916,11 +909,11 @@ public sealed partial class Session
     {
         if (percent > 100) percent = 100;                 // >100 would make the client skip the bar entirely
         var d = new List<byte>();
-        d.AddRange(Be32(id));        // body[1..4] entity id (u32BE)
+        d.AddRange(PacketWriter.U32BEBytes(id));        // body[1..4] entity id (u32BE)
         d.Add(critical);            // body[5] hit type -> overlay anim 0x8f-critical
         d.Add(percent);             // body[6] HP bar fill 0..100
         d.Add(hitSound);            // body[7] optional hit sfx (0 = none)
-        SendMap(0x13, _gameInc++, d.ToArray(), $"damage(0x13) id={id} pct={percent} crit={critical}");
+        SendMap(ServerOp.Damage, _gameInc++, d.ToArray(), $"damage(0x13) id={id} pct={percent} crit={critical}");
     }
     public void DamageOver(uint id, byte percent, byte critical, byte hitSound = 0) => SendDamage(id, percent, critical, hitSound);  // peer-facing
 
@@ -1183,10 +1176,10 @@ public sealed partial class Session
         int b = effectId + EfxWireOffset;
         if (b < 1 || b > 255) return;   // outside the u8 / effect-table range — skip rather than send garbage
         var d = new List<byte>();
-        d.AddRange(Be32(id));
+        d.AddRange(PacketWriter.U32BEBytes(id));
         d.Add((byte)b);
-        d.AddRange(Be(0)); d.AddRange(Be(0)); d.AddRange(Be(0));   // A/B/C = centered, default style
-        SendMap(0x29, _gameInc++, d.ToArray(), $"effect(0x29) id={id} efx={effectId}");
+        d.AddRange(PacketWriter.U16BEBytes(0)); d.AddRange(PacketWriter.U16BEBytes(0)); d.AddRange(PacketWriter.U16BEBytes(0));   // A/B/C = centered, default style
+        SendMap(ServerOp.Effect, _gameInc++, d.ToArray(), $"effect(0x29) id={id} efx={effectId}");
     }
 
     // One-shot sound effect via 0x19. RTK's clif_playsound (type 3, a positional descriptor) is a LATER-client
@@ -1209,12 +1202,12 @@ public sealed partial class Session
         // soundId rides body[3..4] as a u16; the play wrapper reads [obj+0x134] as a WORD, so keep it in range.
         if (soundId <= 0 || soundId > 0xffff) { Log.Info($"   -x sound skipped sfx={soundId} (out of 1..65535)"); return; }
         var d = new List<byte> { 0x00, 0x03 };   // type 0 (sfx); P0=3 -> TLV tail begins after the 5-byte header
-        d.AddRange(Be((ushort)soundId));          // body[3..4] soundId (u16BE)
+        d.AddRange(PacketWriter.U16BEBytes((ushort)soundId));          // body[3..4] soundId (u16BE)
         d.Add(volume);                            // body[5] volume (0..100 -> dB gain; 100 = 0 dB)
         d.Add(0x03); d.Add(0x00); d.Add(0x01);    // body[6..8] tagA=3, B0=0, C=1 (C -> object mode 1 = "play")
         d.Add(0x00); d.Add(0x00); d.Add(0x00);    // body[9..11] B1=0, F=0, B2=0 (all skips 0 -> clean parse exit)
         d.Add(0x00);                              // trailing pad
-        SendMap(0x19, _gameInc++, d.ToArray(), $"sound(0x19) sfx={soundId}");
+        SendMap(ServerOp.Audio, _gameInc++, d.ToArray(), $"sound(0x19) sfx={soundId}");
     }
     public void SoundAt(int soundId, uint entityId) => SendSound(soundId, entityId);   // peer-facing (broadcast)
 
@@ -1330,12 +1323,12 @@ public sealed partial class Session
     {
         var (vx, vy) = ViewAnchor();
         var d = new List<byte>();
-        d.AddRange(Be(x));
-        d.AddRange(Be(y));
-        d.AddRange(Be(vx));
-        d.AddRange(Be(vy));
+        d.AddRange(PacketWriter.U16BEBytes(x));
+        d.AddRange(PacketWriter.U16BEBytes(y));
+        d.AddRange(PacketWriter.U16BEBytes(vx));
+        d.AddRange(PacketWriter.U16BEBytes(vy));
         d.Add(0);
-        SendMap(0x04, _gameInc++, d.ToArray(),
+        SendMap(ServerOp.Position, _gameInc++, d.ToArray(),
                 $"xy(0x04) pos=({x},{y}) scroll=({x - vx},{y - vy})");
     }
 
@@ -1351,12 +1344,12 @@ public sealed partial class Session
     private void SendXyCommitNoScroll()
     {
         var d = new List<byte>();
-        d.AddRange(Be(_char.X));
-        d.AddRange(Be(_char.Y));
-        d.AddRange(Be(0xFFFF));   // vx: out of viewport -> scroll-gate (0x44c8f0) fails -> camera untouched
-        d.AddRange(Be(0xFFFF));   // vy: out of viewport
+        d.AddRange(PacketWriter.U16BEBytes(_char.X));
+        d.AddRange(PacketWriter.U16BEBytes(_char.Y));
+        d.AddRange(PacketWriter.U16BEBytes(0xFFFF));   // vx: out of viewport -> scroll-gate (0x44c8f0) fails -> camera untouched
+        d.AddRange(PacketWriter.U16BEBytes(0xFFFF));   // vy: out of viewport
         d.Add(0);
-        SendMap(0x04, _gameInc++, d.ToArray(), $"xy-commit(0x04 no-scroll) pos=({_char.X},{_char.Y})");
+        SendMap(ServerOp.Position, _gameInc++, d.ToArray(), $"xy-commit(0x04 no-scroll) pos=({_char.X},{_char.Y})");
     }
 
 }

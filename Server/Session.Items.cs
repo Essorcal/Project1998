@@ -33,7 +33,7 @@ public sealed partial class Session
                     : name;
 
         var d = new List<byte> { WireSlot(it) };
-        d.AddRange(Be(IconWire(IconOf(def))));   // client Item.epf frame; encode for the +0x4000 resolver
+        d.AddRange(PacketWriter.U16BEBytes(IconWire(IconOf(def))));   // client Item.epf frame; encode for the +0x4000 resolver
         // 5.x (V533) carries an icon-color byte here; 4.95 (V495) does NOT — it reads the name length
         // right after the icon. Proven live: on 4.95 an extra byte here made the client read the name
         // one byte early (Apple iconColor=0 → empty name "You ate ."; Poison apple iconColor=12 → 12-char
@@ -54,19 +54,25 @@ public sealed partial class Session
         {
             var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
         }
-        d.AddRange(Be32((uint)it.Amount));
-        if (def.IsEquip) { d.Add(0); d.AddRange(Be32(it.Dura)); d.Add(0); }
-        else { d.Add((byte)(def.Stackable ? 1 : 0)); d.AddRange(Be32(0)); d.Add(0); }
+        d.AddRange(PacketWriter.U32BEBytes((uint)it.Amount));
+        if (def.IsEquip) { d.Add(0); d.AddRange(PacketWriter.U32BEBytes(it.Dura)); d.Add(0); }
+        else { d.Add((byte)(def.Stackable ? 1 : 0)); d.AddRange(PacketWriter.U32BEBytes(0)); d.Add(0); }
         d.Add(0);                 // owner name length (0 = unowned)
-        d.AddRange(Be(0));        // trailing u16
+        d.AddRange(PacketWriter.U16BEBytes(0));        // trailing u16
         d.Add(0);                 // trailing u8
-        SendMap(0x0F, _gameInc++, d.ToArray(), $"additem(0x0F) slot={it.Slot} '{name}' x{it.Amount}");
+        SendMap(ServerOp.AddItem, _gameInc++, d.ToArray(), $"additem(0x0F) slot={it.Slot} '{name}' x{it.Amount}");
     }
 
-    // 0x10 remove-from-slot: slot(u8=idx+1) reason(u8) 00 00. The reason picks the line the CLIENT prints;
-    // 12 is the only silent one. Full table swept live 2026-08-07 — see Content.EquipDelReason.
-    private void SendDelItem(byte slot, byte reason) =>
-        SendMap(0x10, _gameInc++, new byte[] { (byte)(slot + 1), reason, 0, 0 }, $"delitem(0x10) slot={slot} r={reason}");
+    /// <summary>The <c>0x10</c> remove-from-slot body: <c>slot(u8=idx+1) reason(u8) 00 00</c>. Identical on
+    /// both clients. Note the +1: the wire slot is the bag index plus one.</summary>
+    internal static byte[] DeleteItemBody(byte slot, DelReason reason) =>
+        new PacketWriter().U8((byte)(slot + 1)).U8((byte)reason).U8(0).U8(0).ToArray();
+
+    // The reason picks the line the CLIENT prints; 12 is the only silent one. Full table swept live
+    // 2026-08-07 — see Content.EquipDelReason and the DelReason enum, which records why that sweep is
+    // preferred over the older Inter.dat-derived table in Protocol.md §11c.
+    private void SendDelItem(byte slot, DelReason reason) =>
+        SendMap(ServerOp.DeleteItem, _gameInc++, DeleteItemBody(slot, reason), $"delitem(0x10) slot={slot} r={(byte)reason}");
 
     // 0x37 equip-window: equipType(u8) icon(u16) iconColor(u8) [name u8len+txt] [baseName u8len+txt] dura(u32) 00 00.
     private void SendEquip(InvItem worn)
@@ -75,13 +81,13 @@ public sealed partial class Session
         if (def is null) return;
         string name = string.IsNullOrEmpty(worn.CustomName) ? def.Name : worn.CustomName;
         var d = new List<byte> { worn.Slot };     // worn.Slot holds the wire equip-slot byte
-        d.AddRange(Be(IconWire(IconOf(def))));     // +0x4000 resolver encoding (see SendAddItem / IconWire)
+        d.AddRange(PacketWriter.U16BEBytes(IconWire(IconOf(def))));     // +0x4000 resolver encoding (see SendAddItem / IconWire)
         if (_ver == ClientVersion.V533) d.Add(def.IconColor);   // 4.95 omits the icon-color byte (see SendAddItem)
         var nn = Ascii(name); d.Add((byte)nn.Length); d.AddRange(nn);
         var bn = Ascii(def.Name); d.Add((byte)bn.Length); d.AddRange(bn);
-        d.AddRange(Be32(worn.Dura));
-        d.AddRange(Be(0));
-        SendMap(0x37, _gameInc++, d.ToArray(), $"equip(0x37) slot={worn.Slot} '{name}'");
+        d.AddRange(PacketWriter.U32BEBytes(worn.Dura));
+        d.AddRange(PacketWriter.U16BEBytes(0));
+        SendMap(ServerOp.Equip, _gameInc++, d.ToArray(), $"equip(0x37) slot={worn.Slot} '{name}'");
     }
 
     // The profile-screen equipment ICON cells (helm + two rings). 4.95 has no character-sprite layer for these
@@ -105,7 +111,7 @@ public sealed partial class Session
 
     // 0x38 unequip-window: spot(u8) 00.
     private void SendUnequip(byte wireSlot) =>
-        SendMap(0x38, _gameInc++, new byte[] { wireSlot, 0 }, $"unequip(0x38) slot={wireSlot}");
+        SendMap(ServerOp.Unequip, _gameInc++, new byte[] { wireSlot, 0 }, $"unequip(0x38) slot={wireSlot}");
 
     /// <summary>Draw a floor item AT REST via the 0x07 static-object path (NOT 0x16). Full RE (2026-07-24):
     /// 0x16 builds a WALK projectile (vtable 0x4cd18c, tick 0x463270) that interpolates in then drops off the
@@ -154,8 +160,8 @@ public sealed partial class Session
     private void HandlePickup(byte[] dec)
     {
         bool pickAll = dec.Length > 0 && dec[0] != 0;
-        SendAction(_char.Id, 4, 40, 0);                                                     // our crouch + sound
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 4, 40, 0), except: this);   // peers see it too
+        SendAction(_char.Id, ActionType.SitOrPickup, 40, 0);                                 // our crouch + sound
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.SitOrPickup, 40, 0), except: this);   // peers see it too
 
         // The ATTEMPT is what drops Invisible, not a successful grab — bending down in plain sight gives you
         // away whether or not there was anything there. So this sits with the crouch, ahead of the floor
@@ -227,12 +233,12 @@ public sealed partial class Session
 
         // Bend-down drop animation + sound (RTK clif_parsedropitem: type 5, time 20 — a distinct pose from
         // pickup's type 4). Fired only once the drop is allowed, on self AND peers, before the item leaves the bag.
-        SendAction(_char.Id, 5, 20, 0);                                                     // our drop crouch + sound
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 5, 20, 0), except: this);   // peers see it too
+        SendAction(_char.Id, ActionType.Drop, 20, 0);                                        // our drop crouch + sound
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Drop, 20, 0), except: this);   // peers see it too
 
         int count = dropAll ? it.Amount : 1;
         int remaining = it.Amount - count;
-        if (remaining <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 1); }  // reason 1 = Drop
+        if (remaining <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, DelReason.Dropped); }
         else { it.Amount = remaining; SendAddItem(it); }   // stack shrinks: redraw the slot with the new count
         MarkDirty();
         _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
@@ -251,10 +257,10 @@ public sealed partial class Session
         var it = InvAt(slot); if (it is null) return;
         var def = Content.ItemById(it.ItemId); if (def is null) return;
         if (def.NoDrop) { SendLog("You can't throw this item."); return; }   // same restriction as dropping (RTK itemdb_droppable)
-        SendAction(_char.Id, 2, 20, 0);                                                    // throw animation (self)
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 2, 20, 0), except: this);   // peers see the throw too
+        SendAction(_char.Id, ActionType.Throw, 20, 0);                                     // throw animation (self)
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Throw, 20, 0), except: this);   // peers see the throw too
         it.Amount -= 1;
-        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, 4); }  // reason 4 = Throw
+        if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, DelReason.Threw); }
         else SendAddItem(it);
         MarkDirty();
         // Fly up to 3 tiles in the facing direction, but STOP at the last passable tile — a thrown item
@@ -360,7 +366,7 @@ public sealed partial class Session
         // it exists and ItmText would identify them exactly (only "puffs" vs "sips" appear in the registry) —
         // user's call, 2026-08-07. Pipes take 6 like every other non-food consumable.
         bool food = def.Type == 0;   // ITM_EAT
-        byte goneReason = (byte)(food ? 2 : 6);
+        DelReason goneReason = food ? DelReason.Ate : DelReason.Used;
 
         // Charged consumables (RTK ITM_SMOKE: wine/liquor/cigarettes) hold N uses in their durability field
         // with a unit label in ItmText ("sips"/"puffs"). A use spends ONE charge, not the whole item; it is
@@ -435,8 +441,8 @@ public sealed partial class Session
     internal void ItemEatAnim()   // the shared eat/use pose + sound, self and peers (RTK action 8)
     {
         _useGesturePlayed = true;
-        SendAction(_char.Id, 8, 40, 0);
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 8, 40, 0), except: this);
+        SendAction(_char.Id, ActionType.Eat, 40, 0);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Eat, 40, 0), except: this);
         PlayEatSfx();   // the action sprite carries no sound of its own — 403+006 over 0x19 (see EatSfxA/B)
     }
 
@@ -454,11 +460,11 @@ public sealed partial class Session
     internal void ItemSipAnim()
     {
         _useGesturePlayed = true;
-        SendAction(_char.Id, 7, 20, 0);
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 7, 20, 0), except: this);
+        SendAction(_char.Id, ActionType.DrinkOrSmoke, 20, 0);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.DrinkOrSmoke, 20, 0), except: this);
     }
 
-    internal void ItemCastPose() { _useGesturePlayed = true; SendAction(_char.Id, 6, 40, 0); }   // harden-body cast pose (self only, as RTK)
+    internal void ItemCastPose() { _useGesturePlayed = true; SendAction(_char.Id, ActionType.Magic, 40, 0); }   // harden-body cast pose (self only, as RTK)
 
     internal void ItemHeal(int amt)
     {
@@ -1209,7 +1215,7 @@ public sealed partial class Session
         // item go while the client still drew it. The bag is a separate structure from the equip window: only
         // 0x48f0b0, reached from the 0x10 handler, clears a bag entry, and the 0x37 below never touches it.
         // See Content.EquipDelReason for the reason-byte options and how to sweep for a quiet one.
-        if (Content.EquipDelReason >= 0) SendDelItem((byte)slot, (byte)Content.EquipDelReason);
+        if (Content.EquipDelReason >= 0) SendDelItem((byte)slot, (DelReason)Content.EquipDelReason);
 
         var prev = _char.Equipment.FirstOrDefault(e => e.Slot == wire);
         bool replacing = prev is not null;   // swapping over worn gear sounds different than dressing a bare slot (GearSfx)
@@ -1389,7 +1395,7 @@ public sealed partial class Session
             if (def is null || !def.BreakOnDeath) continue;
             if (TryProtectFromBreak(it, def)) continue;
             _char.Inventory.Remove(it);
-            SendDelItem((byte)it.Slot, 13);                           // reason 13 = Broke (RTK clif_senddelitem table)
+            SendDelItem((byte)it.Slot, DelReason.Broken);             // "<item> broken." on the 4.95 live sweep
             SendMiniText($"Your {def.Name} was destroyed!", type: 5);
         }
         MarkDirty();
@@ -1418,7 +1424,7 @@ public sealed partial class Session
             if (def is null || def.NoDrop) continue;
             if (Random.Shared.Next(2) != 0) continue;                 // RTK: math.random(1,2) == 1
             _char.Inventory.Remove(it);
-            SendDelItem((byte)it.Slot, 1);                            // reason 1 = Drop
+            SendDelItem((byte)it.Slot, DelReason.Dropped);
             _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
                 X = _char.X, Y = _char.Y, Amount = it.Amount, Dura = it.Dura, Graphic = def.Icon, CustomName = it.CustomName,
                 Owner = it.Owner,   // a bound item stays bound through a death pile (survives the looter-lock expiring)
@@ -1547,8 +1553,8 @@ public sealed partial class Session
         if (itA is null && itB is null) return;
         if (itA is not null) itA.Slot = (byte)b;
         if (itB is not null) itB.Slot = (byte)a;
-        if (itB is not null) SendAddItem(itB); else SendDelItem((byte)a, 0);   // slot a now holds itB (or is empty)
-        if (itA is not null) SendAddItem(itA); else SendDelItem((byte)b, 0);   // slot b now holds itA (or is empty)
+        if (itB is not null) SendAddItem(itB); else SendDelItem((byte)a, DelReason.Removed);   // slot a now holds itB (or is empty)
+        if (itA is not null) SendAddItem(itA); else SendDelItem((byte)b, DelReason.Removed);   // slot b now holds itA (or is empty)
         MarkDirty();
     }
 

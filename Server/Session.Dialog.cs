@@ -78,7 +78,7 @@ public sealed partial class Session
         if (t.Length == 0) return;                     // len 0 is also rejected by the handler
         var body = new List<byte> { 0, anchorY, (byte)(t.Length >> 8), (byte)t.Length };
         body.AddRange(t);
-        SendMap(0x59, _gameInc++, body.ToArray(), $"item-tooltip(0x59) anchorY={anchorY} {t.Length}B");
+        SendMap(ServerOp.TooltipOrTownList, _gameInc++, body.ToArray(), $"item-tooltip(0x59) anchorY={anchorY} {t.Length}B");
     }
 
     // REPLY — the same opcode back, parsed by client handler 0x4511b0. **`0x66` IS A "GO TO THIS URL"
@@ -156,8 +156,8 @@ public sealed partial class Session
                 var url = PopupAscii(_itemInfoUrl.Replace("{id}", def.Id.ToString())
                                                  .Replace("{name}", Uri.EscapeDataString(def.Name)));
                 var b = new List<byte> { 0 };
-                b.AddRange(Be((ushort)url.Length)); b.AddRange(url);
-                SendMap(0x66, _gameInc++, b.ToArray(), $"item-info(0x66) browser url={Encoding.ASCII.GetString(url)}");
+                b.AddRange(PacketWriter.U16BEBytes((ushort)url.Length)); b.AddRange(url);
+                SendMap(ServerOp.ItemInfo, _gameInc++, b.ToArray(), $"item-info(0x66) browser url={Encoding.ASCII.GetString(url)}");
                 return;
             }
 
@@ -167,9 +167,9 @@ public sealed partial class Session
                 if (body.Length > 999) body = body[..999];
                 var url = PopupAscii(NoUrl);
                 var b = new List<byte> { 2 };
-                b.AddRange(Be((ushort)url.Length));  b.AddRange(url);
-                b.AddRange(Be((ushort)body.Length)); b.AddRange(body);
-                SendMap(0x66, _gameInc++, b.ToArray(), $"item-info(0x66) popup {body.Length}B");
+                b.AddRange(PacketWriter.U16BEBytes((ushort)url.Length));  b.AddRange(url);
+                b.AddRange(PacketWriter.U16BEBytes((ushort)body.Length)); b.AddRange(body);
+                SendMap(ServerOp.ItemInfo, _gameInc++, b.ToArray(), $"item-info(0x66) popup {body.Length}B");
                 return;
             }
         }
@@ -528,10 +528,11 @@ public sealed partial class Session
 
         int taken = RecoverDeathPile();
         if (taken == 0) return;   // pack was already full on the first stack — GiveItem said so
-        // RTK: sendAction(6, 20) then talk(2, "I'll take that.") — the reach-out pose, then a PUBLIC bubble
+        // RTK: sendAction(6, 20) then talk(2, "I'll take that.") — the client's MAGIC pose (type 6), reused
+        // by RTK as the reach-out gesture, and no separate pose of its own — then a PUBLIC bubble
         // (chatType 2, the same line Filch speaks), so anyone loitering over the pile sees who took it back.
-        SendAction(_char.Id, 6, 20, 0);
-        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, 6, 20, 0), except: this);
+        SendAction(_char.Id, ActionType.Magic, 20, 0);
+        _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Magic, 20, 0), except: this);
         var line = AsciiBytes("I'll take that.");   // RTK talk(2) — proximity-gated to onlookers near the pile
         _world.BroadcastArea(_char.Map, _char.X, _char.Y, SayHalfW, SayHalfH, p => p.SpeakEntity(2, _char.Id, line));
         Log.Info($"   -> death pile recovered: {taken} stack(s) by {_char.Name} @({_char.X},{_char.Y}) facing {_facing}");
@@ -767,13 +768,13 @@ public sealed partial class Session
             if (await DlgMenu(npc, $"I'll pay you {total} gold for that, is it a deal?",
                               new[] { "Yes", "No" }) != 1) continue;
             _char.Coins += (uint)total;
-            // Reason 10 is literally "You sold <item>." (9 is "You gave", for a bank deposit — an earlier
-            // comment here had those two the wrong way round). Sent only when the whole entry goes; selling
+            // Sold is literally "You sold <item>." (Gave is a bank deposit's line — an earlier comment
+            // here had those two the wrong way round). Sent only when the whole entry goes; selling
             // part of a stack redraws it and stays silent. That client line is the whole confirmation — the
             // gold figure was already quoted and accepted a step ago, so a dialog box repeating it would be
             // a second thing to dismiss between the sale and the list reappearing.
             inv.Amount -= qty;
-            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 10); }
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Sold); }
             else SendAddItem(inv);
             SendStats();
             MarkDirty();
@@ -951,14 +952,14 @@ public sealed partial class Session
     }
 
     /// <summary>Remove <paramref name="amount"/> from a bag stack and update the client (whole stack removed
-    /// with reason 7 = "You posted &lt;item&gt;.", the client's own parcel line — it was reason 4, which says
-    /// "You threw &lt;item&gt;."). False without change if the stack is gone or too small — the possession
+    /// with <see cref="DelReason.Posted"/> = "You posted &lt;item&gt;.", the client's own parcel line — it was
+    /// Threw, which says "You threw &lt;item&gt;."). False without change if the stack is gone or too small — the possession
     /// re-check after the async send prompts.</summary>
     private bool RemoveInventoryStack(InvItem inv, int amount)
     {
         if (!_char.Inventory.Contains(inv) || inv.Amount < amount) return false;
         inv.Amount -= amount;
-        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 7); }
+        if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Posted); }
         else SendAddItem(inv);
         MarkDirty();
         return true;
@@ -1002,7 +1003,7 @@ public sealed partial class Session
             sold += take;
             remaining -= take;
             inv.Amount -= take;
-            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 10); }   // "You gave X.", as above
+            if (inv.Amount <= 0) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Sold); }   // "You sold X.", as in DlgSell
             else SendAddItem(inv);
         }
         _char.Coins += earned;
@@ -1155,10 +1156,10 @@ public sealed partial class Session
             int take = Math.Min(remaining, inv.Amount);
             moved += take;
             remaining -= take;
-            // Reason 10 = "You gave <item>." — right for handing the whole entry over, and only sent when the
+            // Gave = "You gave <item>." — right for handing the whole entry over, and only sent when the
             // entry really leaves the pack. A partial deposit takes the SendAddItem branch below and stays
             // silent: nothing left your bag, the count just dropped. (See BankDepositItem for the same split.)
-            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, 9); VaultAdd(inv); }
+            if (take >= inv.Amount) { _char.Inventory.Remove(inv); SendDelItem((byte)inv.Slot, DelReason.Gave); VaultAdd(inv); }
             else { inv.Amount -= take; SendAddItem(inv); VaultAdd(new InvItem(0, def.Id, take, inv.Dura)); }
         }
         if (fee > 0) { _char.Coins -= (uint)fee; SendStats(); }
@@ -1291,9 +1292,9 @@ public sealed partial class Session
         if (take >= inv.Amount)
         {
             _char.Inventory.Remove(inv);
-            // Reason 9 = "You gave <item>." — the whole entry is leaving the pack. A partial deposit takes
+            // Gave = "You gave <item>." — the whole entry is leaving the pack. A partial deposit takes
             // the else branch, which sends no delitem and so says nothing (the count just drops).
-            SendDelItem((byte)inv.Slot, 9);
+            SendDelItem((byte)inv.Slot, DelReason.Gave);
             VaultAdd(inv);                      // whole stack goes to the vault
         }
         else
@@ -1407,12 +1408,12 @@ public sealed partial class Session
 
         var d = new List<byte>();
         d.Add(0x02); d.Add(0x02);          // [0..1] kind = menu (RTK WFIFOB(5)=2, WFIFOB(6)=2)
-        d.AddRange(Be32(npc.Id));          // [2..5] npc entity id
+        d.AddRange(PacketWriter.U32BEBytes(npc.Id));          // [2..5] npc entity id
         WriteHead(d, p);                   // [6..14] head kind + portrait descriptor + trailing descriptor
-        d.AddRange(Be32(1));               // [15..18]
+        d.AddRange(PacketWriter.U32BEBytes(1));               // [15..18]
         d.Add(0);                          // [19] prev button
         d.Add(0);                          // [20] next button
-        d.AddRange(Be((ushort)pr.Length)); // [21..22] prompt length
+        d.AddRange(PacketWriter.U16BEBytes((ushort)pr.Length)); // [21..22] prompt length
         d.AddRange(pr);                    // [23..] prompt text
         d.Add((byte)options.Count);        // [23+L] menu item count
         foreach (var label in options)
@@ -1421,7 +1422,7 @@ public sealed partial class Session
             d.Add((byte)ob.Length);
             d.AddRange(ob);
         }
-        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-menu(0x30) id={npc.Id} x{options.Count}");
+        SendMap(ServerOp.NpcDialog, _gameInc++, d.ToArray(), $"npc-menu(0x30) id={npc.Id} x{options.Count}");
     }
 
     // 0x30 clif_inputseq (type-0, graphic head): a free-text entry box. Same head as the menu; kind bytes
@@ -1436,18 +1437,18 @@ public sealed partial class Session
 
         var d = new List<byte>();
         d.Add(0x04); d.Add(0x04);          // [0..1] kind = input (RTK WFIFOB(5)=WFIFOB(6)=4)
-        d.AddRange(Be32(entityId));        // [2..5] npc entity id
+        d.AddRange(PacketWriter.U32BEBytes(entityId));        // [2..5] npc entity id
         WriteHead(d, portrait);            // [6..14] head kind + portrait descriptor + trailing descriptor
-        d.AddRange(Be32(1));               // [15..18]
+        d.AddRange(PacketWriter.U32BEBytes(1));               // [15..18]
         d.Add(0);                          // [19] prev button
         d.Add(0);                          // [20] next button
-        d.AddRange(Be((ushort)pr.Length)); // [21..22] prompt length
+        d.AddRange(PacketWriter.U16BEBytes((ushort)pr.Length)); // [21..22] prompt length
         d.AddRange(pr);                    // [23..] prompt text
         d.Add(0);                          // dialog2 length (unused)
         d.Add(42);                         // '*' separator
         d.Add(0);                          // dialog3 length (unused)
         d.Add(0); d.Add(0);                // trailing pad (RTK advances len by +3 past dialog3)
-        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-input(0x30) id={entityId}");
+        SendMap(ServerOp.NpcDialog, _gameInc++, d.ToArray(), $"npc-input(0x30) id={entityId}");
     }
 
     // 0x30 clif_scriptmes (type-0, graphic head): a plain NPC text box. Ported from RTK clif.c; the RTK
@@ -1515,10 +1516,10 @@ public sealed partial class Session
         else
         {
             d.Add(1);                         // [7] tag 1 -> plain sprite
-            d.AddRange(Be(p.Gfx));            // [8..9]
+            d.AddRange(PacketWriter.U16BEBytes(p.Gfx));            // [8..9]
             d.Add(p.Color);                   // [10]
         }
-        d.Add(1); d.AddRange(Be(p.Gfx)); d.Add(p.Color);   // trailing descriptor (parsed past, never read here)
+        d.Add(1); d.AddRange(PacketWriter.U16BEBytes(p.Gfx)); d.Add(p.Color);   // trailing descriptor (parsed past, never read here)
     }
 
     // Core 0x30 text-box sender with an EXPLICIT portrait (head kind not re-derived). Same frame as
@@ -1527,15 +1528,15 @@ public sealed partial class Session
     {
         var m = Encoding.ASCII.GetBytes(msg);
         var d = new List<byte>();
-        d.AddRange(Be(1));                 // [0..1] type/count = 1
-        d.AddRange(Be32(npcId));           // [2..5] npc entity id
+        d.AddRange(PacketWriter.U16BEBytes(1));                 // [0..1] type/count = 1
+        d.AddRange(PacketWriter.U32BEBytes(npcId));           // [2..5] npc entity id
         WriteHead(d, p);                   // [6..14] head kind + portrait descriptor + trailing descriptor
-        d.AddRange(Be32(1));               // [15..18]
+        d.AddRange(PacketWriter.U32BEBytes(1));               // [15..18]
         d.Add((byte)(prev ? 1 : 0));       // [19] prev button
         d.Add((byte)(next ? 1 : 0));       // [20] next button
-        d.AddRange(Be((ushort)m.Length));  // [21..22] message length
+        d.AddRange(PacketWriter.U16BEBytes((ushort)m.Length));  // [21..22] message length
         d.AddRange(m);                     // [23..] message text
-        SendMap(0x30, _gameInc++, d.ToArray(), $"npc-dialog(0x30) id={npcId} {m.Length}B head={p.Head}");
+        SendMap(ServerOp.NpcDialog, _gameInc++, d.ToArray(), $"npc-dialog(0x30) id={npcId} {m.Length}B head={p.Head}");
     }
 
     // ---- multi-page dialog (RTK dialogSeq): one portrait, N text pages the player clicks through. Non-final
@@ -1635,7 +1636,7 @@ public sealed partial class Session
     // isn't there.
     internal void SendResendProfilePic()
     {
-        SendMap(0x49, _gameInc++, Array.Empty<byte>(), "resend-profile-pic(0x49)");
+        SendMap(ServerOp.ProfilePictureRequest, _gameInc++, Array.Empty<byte>(), "resend-profile-pic(0x49)");
         Log.Info("   -> 0x49 asked the client to re-upload users/<name>.epf; watch for the 0x4F reply " +
                  "(picSize 0 = the client couldn't read a valid 2844-byte file)");
     }
@@ -1698,14 +1699,14 @@ public sealed partial class Session
         // otherwise (see PartyBoxText). Nothing else on the wire carries the group roster.
         AddLenStr(d, PartyBoxText());
         d.Add((byte)(_char.Grouped ? 1 : 0));   // group/sociable flag (Shift+G)
-        d.AddRange(Be32(_char.Tnl));    // experience to next level
+        d.AddRange(PacketWriter.U32BEBytes(_char.Tnl));    // experience to next level
         AddLenStr(d, ClassTitle);       // class + rank ("Inferno"), not the stored base name
 
         // The three equipment ICON cells beside the doll: helm, left ring, right ring. These slots have no
         // character-sprite layer in 4.95, so the profile shows them as ground-icon boxes fed by these u16s.
-        d.AddRange(Be(ProfileCellIcon(4)));   // helm  (wire slot 4)
-        d.AddRange(Be(ProfileCellIcon(7)));   // left ring  (wire slot 7)
-        d.AddRange(Be(ProfileCellIcon(8)));   // right ring (wire slot 8)
+        d.AddRange(PacketWriter.U16BEBytes(ProfileCellIcon(4)));   // helm  (wire slot 4)
+        d.AddRange(PacketWriter.U16BEBytes(ProfileCellIcon(7)));   // left ring  (wire slot 7)
+        d.AddRange(PacketWriter.U16BEBytes(ProfileCellIcon(8)));   // right ring (wire slot 8)
 
         // The PAGE-1 text box: active buff/debuff names + remaining seconds, empty when nothing is active.
         // TAB-separated, NOT CR like the party box above: the client rewrites TAB->CR here and only here
@@ -1728,7 +1729,7 @@ public sealed partial class Session
             d.AddRange(t);
         }
 
-        SendMap(0x39, _gameInc++, d.ToArray(),
+        SendMap(ServerOp.SelfProfile, _gameInc++, d.ToArray(),
             $"self-profile(0x39) ac={_char.Ac} class='{_char.ClassName}' buffs={_buffs.Count} legends={legs.Count}");
     }
 
@@ -1776,7 +1777,7 @@ public sealed partial class Session
         AddLenStr(d, _char.Title);                                        // line 3
         AddLenStr(d, PartyBoxText());                                     // party roster box
         d.Add((byte)(_char.Grouped ? 1 : 0));                             // group/sociable flag
-        d.AddRange(Be32(_char.Tnl));                                      // experience to next level
+        d.AddRange(PacketWriter.U32BEBytes(_char.Tnl));                                      // experience to next level
         AddLenStr(d, ClassTitle);                                         // class + rank
 
         // FIVE (icon u16, colour u8) cells. 4.95 folds the colour into the frame id; 5.x carries it as its
@@ -1807,7 +1808,7 @@ public sealed partial class Session
             d.AddRange(t);
         }
 
-        SendMap(0x39, _gameInc++, d.ToArray(),
+        SendMap(ServerOp.SelfProfile, _gameInc++, d.ToArray(),
             $"self-profile533(0x39) {d.Count}B ac={_char.Ac} class='{_char.ClassName}' " +
             $"buffs={_buffs.Count} legends={legs.Count}");
     }
@@ -1821,10 +1822,10 @@ public sealed partial class Session
     /// the target's — because the bytes have to make sense to the client that will draw them.</summary>
     private void WriteProfileCell533(List<byte> d, Session target, byte wireSlot)
     {
-        if (wireSlot == 0) { d.AddRange(Be(0)); d.Add(0); return; }
+        if (wireSlot == 0) { d.AddRange(PacketWriter.U16BEBytes(0)); d.Add(0); return; }
         var worn = target._char.Equipment.FirstOrDefault(e => e.Slot == wireSlot);
         var def = worn is null ? null : Content.ItemById(worn.ItemId);
-        d.AddRange(Be(def is null ? (ushort)0 : IconWire(IconOf(def))));
+        d.AddRange(PacketWriter.U16BEBytes(def is null ? (ushort)0 : IconWire(IconOf(def))));
         d.Add(def?.IconColor ?? 0);
     }
 
@@ -1969,7 +1970,7 @@ public sealed partial class Session
 
     private void SendProfileReplay6x()
     {
-        SendMap(0x39, _gameInc++, Profile6x, "replay6x-profile(0x39)");
+        SendMap(ServerOp.SelfProfile, _gameInc++, Profile6x, "replay6x-profile(0x39)");
         Log.Info("   -> REPLAY 6.x self-profile on 0x39 (expect: AC 99, class Peasant, legend 'Born in Hyul 31, Winter')");
     }
 
@@ -2034,9 +2035,9 @@ public sealed partial class Session
         }
         else
         {
-            d.AddRange(Be(target.ProfileCellIcon(4)));   // helm  (wire slot 4)
-            d.AddRange(Be(target.ProfileCellIcon(7)));   // left ring  (wire slot 7)
-            d.AddRange(Be(target.ProfileCellIcon(8)));   // right ring (wire slot 8)
+            d.AddRange(PacketWriter.U16BEBytes(target.ProfileCellIcon(4)));   // helm  (wire slot 4)
+            d.AddRange(PacketWriter.U16BEBytes(target.ProfileCellIcon(7)));   // left ring  (wire slot 7)
+            d.AddRange(PacketWriter.U16BEBytes(target.ProfileCellIcon(8)));   // right ring (wire slot 8)
         }
 
         // FIELD #10 — PAGE-1 gear/item list (u8 len + text). Item names are TAB-separated (client
@@ -2063,7 +2064,7 @@ public sealed partial class Session
         // `00 00 00 00 00 00` and HandleExchangeRequest's PlayerById(0) found nobody. The click that OPENS
         // this window (0x43) already carries the id, so the client never needed to remember it — it reads
         // it back out of the reply.
-        d.AddRange(Be32(tc.Id));
+        d.AddRange(PacketWriter.U32BEBytes(tc.Id));
         // The two status cells beside the name — group (sociable) and exchange (trade), in RTK's order
         // (clif_clickonplayer writes FLAG_GROUP then FLAG_EXCHANGE right after the id). 0xff renders a cell
         // as a blank WHITE box; a real 0/1 shows the off/on indicator. Note what actually gates the two
@@ -2077,7 +2078,7 @@ public sealed partial class Session
 
         // FIELD #15 — profile PICTURE bitmap: u16BE size + bytes (empty = 00 00)
         var pic = tc.ProfilePic ?? Array.Empty<byte>();
-        d.AddRange(Be((ushort)pic.Length));
+        d.AddRange(PacketWriter.U16BEBytes((ushort)pic.Length));
         d.AddRange(pic);
 
         // FIELD #16 — PAGE-2 writable profile BLURB (u8 len + text). This is the free-text box, a
@@ -2114,7 +2115,7 @@ public sealed partial class Session
         if (_ver == ClientVersion.V533)
             d.Add((byte)Math.Clamp((int)tc.Totem, 0, 3));
 
-        SendMap(0x34, _gameInc++, d.ToArray(), $"click-profile(0x34) id={tc.Id} nation={tc.Nation} blurb={blurb.Length}B legends={legs.Count}");
+        SendMap(ServerOp.PeerProfile, _gameInc++, d.ToArray(), $"click-profile(0x34) id={tc.Id} nation={tc.Nation} blurb={blurb.Length}B legends={legs.Count}");
     }
 
     // Page-1 gear/item list for the click profile (the "inspect another player" view), TAB-separated (the
@@ -2173,20 +2174,19 @@ public sealed partial class Session
     /// <summary>Build an encrypted game packet, send it, and log it.</summary>
     private void SendMap(byte opcode, byte inc, byte[] data, string label)
     {
-        var pkt = MapBuild(opcode, inc, data);
+        var pkt = TkPacket.BuildGame(opcode, inc, data);
         Send(pkt);
         Log.Info($"   -> {label}: {pkt.Length}B  {Log.Hex(pkt)}");
     }
 
-    private static byte[] Be32(uint v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
 
     private void SendMapInfo(ushort mapId, ushort xs, ushort ys, string title, ushort light, byte inc = 0)
     {
         var t = Encoding.ASCII.GetBytes(title);
         var b = new List<byte>();
-        b.AddRange(Be(mapId));
-        b.AddRange(Be(xs));
-        b.AddRange(Be(ys));
+        b.AddRange(PacketWriter.U16BEBytes(mapId));
+        b.AddRange(PacketWriter.U16BEBytes(xs));
+        b.AddRange(PacketWriter.U16BEBytes(ys));
         // Render mode. RTK's clif_sendmapinfo writes 5 normally and 4 when the player's "Weather change"
         // toggle is on (clif.c:4600), so this cell arms the map for weather drawing — the 0x1F state alone
         // isn't enough. Follows the same setting bit SendWeather gates on. Because this byte is the master
@@ -2202,10 +2202,10 @@ public sealed partial class Session
         {
             case "u8":    b.Add((byte)(lv & 0xFF)); break;                 // single byte (5.x may have narrowed it)
             case "leu16": b.Add((byte)(lv & 0xFF)); b.Add((byte)(lv >> 8)); break;  // little-endian u16
-            default:      b.AddRange(Be((ushort)lv)); break;              // big-endian u16 (4.95-proven)
+            default:      b.AddRange(PacketWriter.U16BEBytes((ushort)lv)); break;              // big-endian u16 (4.95-proven)
         }
         Log.Info($"   -> mapinfo(0x15) light={lv} fmt={LightFmt}");
-        Send(MapBuild(Opcode.MapInfo, inc, b.ToArray()));
+        Send(TkPacket.BuildGame(ServerOp.MapInfo, inc, b.ToArray()));
     }
 
     // In-world command feedback that lands in the CHAT LOG. The client's chat pane + over-head bubbles
@@ -2249,7 +2249,7 @@ public sealed partial class Session
         if (t.Length > 0x7FFF) t = t[..0x7FFF];
         var body = new List<byte> { (byte)type, (byte)(t.Length >> 8), (byte)t.Length };
         body.AddRange(t);
-        SendMap(0x0A, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type} {t.Length}B");
+        SendMap(ServerOp.MiniText, _gameInc++, body.ToArray(), $"minitext(0x0A) type={type} {t.Length}B");
     }
 
     /// <summary>RTK's clif_sendbluemessage — the whisper/wisp BLUE chat channel (0x0A type 0, the same
@@ -2279,19 +2279,6 @@ public sealed partial class Session
         Log.Info($"   -> message: {text}");
     }
 
-    /// <summary>
-    /// Game packet: AA | len(u16 BE) | op | inc | body. The body is encrypted with the SAME
-    /// simple NexonInc cipher as the login channel — confirmed by reversing NexusTK.exe: 4.95
-    /// has ONE cipher (decrypt 0x478680 / key buffer 0x50211c built only from "NexonInc.",
-    /// keylen 9, identity table 0x4f3358). No name-derived/table cipher, no 3 trailer bytes —
-    /// those are 7.x-only and were the bug in the previous version of this method.
-    /// </summary>
-    private byte[] MapBuild(byte opcode, byte inc, byte[] data)
-    {
-        var enc = TkCrypt.Crypt(data, inc, TkCrypt.LoginKey);
-        return TkPacket.Build(opcode, inc, enc);
-    }
 
-    private static byte[] Be(ushort v) => new[] { (byte)(v >> 8), (byte)(v & 0xFF) };
 
 }

@@ -695,7 +695,7 @@ public sealed partial class Session
             if (remaining <= 0) break;
             int take = Math.Min(remaining, it.Amount);
             it.Amount -= take; remaining -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Removed); }
             else SendAddItem(it);
         }
 
@@ -735,7 +735,7 @@ public sealed partial class Session
             if (remaining <= 0) break;
             int take = Math.Min(remaining, it.Amount);
             it.Amount -= take; remaining -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, 0); }   // reason 0 -> "<item> removed." (see the §11c table; NOT silent)
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)it.Slot, DelReason.Removed); }   // -> "<item> removed." — NOT silent
             else SendAddItem(it);
         }
         SaveChar();
@@ -1102,7 +1102,7 @@ public sealed partial class Session
         int old = _char.Spells.Count;
         if (!_char.Spells.Remove(spellId)) return;
         for (int slot = old - 1; slot >= 0; slot--)
-            SendMap(0x18, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
+            SendMap(ServerOp.RemoveSpell, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
         for (int i = 0; i < _char.Spells.Count; i++)
         {
             var sp = Content.SpellById(_char.Spells[i]);

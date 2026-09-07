@@ -1,3 +1,4 @@
+using Protocol.Tk495;
 using Shared;
 
 namespace Server;
@@ -196,7 +197,7 @@ public partial class Session
     private void SendExchangeOpen(Session other)
     {
         var oc = other._char;
-        SendMap(0x42, _gameInc++, ExchangeOpenBody(oc.Id, $"{oc.Name}({ClassTitleOf(oc)})", oc.Level),
+        SendMap(ServerOp.Exchange, _gameInc++, ExchangeOpenBody(oc.Id, $"{oc.Name}({ClassTitleOf(oc)})", oc.Level),
                 $"exchange-open(0x42/0) with={oc.Name} id={oc.Id}");
     }
 
@@ -206,16 +207,16 @@ public partial class Session
     public static byte[] ExchangeOpenBody(uint targetId, string label, byte level)
     {
         var d = new List<byte> { ExcOpen };
-        d.AddRange(Be32(targetId));
+        d.AddRange(PacketWriter.U32BEBytes(targetId));
         AddLenStr(d, label);
-        d.AddRange(Be(level));
+        d.AddRange(PacketWriter.U16BEBytes(level));
         return d.ToArray();
     }
 
     /// <summary>Sub-type 1 — "how many?" for a bag slot. The client owns the prompt and answers with 0x4a
     /// type 2; nothing is staged until it does.</summary>
     private void SendExchangeAskAmount(byte slot) =>
-        SendMap(0x42, _gameInc++, new[] { ExcAskAmount, slot }, $"exchange-askamount(0x42/1) slot={slot}");
+        SendMap(ServerOp.Exchange, _gameInc++, new[] { ExcAskAmount, slot }, $"exchange-askamount(0x42/1) slot={slot}");
 
     /// <summary>Sub-type 2 — draw or replace one row. <paramref name="mine"/> picks which of the two lists it
     /// lands in on THIS recipient's window.</summary>
@@ -223,7 +224,7 @@ public partial class Session
     {
         var body = ExchangeRowBody(_ver, mine, rowKey, IconWire(IconOf(def)), def.IconColor,
                                    ExchangeRowLabel(def, it, amount));
-        SendMap(0x42, _gameInc++, body,
+        SendMap(ServerOp.Exchange, _gameInc++, body,
                 $"exchange-row(0x42/2) {(mine ? "mine" : "theirs")} key={rowKey} {def.Name} x{amount}");
     }
 
@@ -236,7 +237,7 @@ public partial class Session
                                            byte iconColor, string label)
     {
         var d = new List<byte> { ExcAddRow, (byte)(mine ? 0 : 1), rowKey };
-        d.AddRange(Be(iconWire));
+        d.AddRange(PacketWriter.U16BEBytes(iconWire));
         if (ver == ClientVersion.V533) d.Add(iconColor);
         AddLenStr(d, label);
         return d.ToArray();
@@ -246,8 +247,8 @@ public partial class Session
     private void SendExchangeGold(bool mine, uint gold)
     {
         var d = new List<byte> { ExcGold, (byte)(mine ? 0 : 1) };
-        d.AddRange(Be32(gold));
-        SendMap(0x42, _gameInc++, d.ToArray(), $"exchange-gold(0x42/3) {(mine ? "mine" : "theirs")} {gold}");
+        d.AddRange(PacketWriter.U32BEBytes(gold));
+        SendMap(ServerOp.Exchange, _gameInc++, d.ToArray(), $"exchange-gold(0x42/3) {(mine ? "mine" : "theirs")} {gold}");
     }
 
     /// <summary>Sub-type 4 — pop an OK box and CLOSE the window. This is the cancel/refusal path.</summary>
@@ -255,7 +256,7 @@ public partial class Session
     {
         var d = new List<byte> { ExcMessage, 0 };
         AddLenStr(d, text);
-        SendMap(0x42, _gameInc++, d.ToArray(), $"exchange-message(0x42/4) \"{text}\"");
+        SendMap(ServerOp.Exchange, _gameInc++, d.ToArray(), $"exchange-message(0x42/4) \"{text}\"");
     }
 
     /// <summary>Sub-type 5 — the confirm latch. <paramref name="extra"/> 1 = "a side has confirmed",
@@ -264,7 +265,7 @@ public partial class Session
     {
         var d = new List<byte> { ExcFinish, extra };
         AddLenStr(d, text);
-        SendMap(0x42, _gameInc++, d.ToArray(), $"exchange-finish(0x42/5) extra={extra}");
+        SendMap(ServerOp.Exchange, _gameInc++, d.ToArray(), $"exchange-finish(0x42/5) extra={extra}");
     }
 
     /// <summary>The row caption, in RTK <c>clif_exchange_additem</c>'s order: the name is truncated to 15

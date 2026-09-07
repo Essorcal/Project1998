@@ -1,3 +1,5 @@
+using Protocol.Tk495;
+
 namespace Server;
 
 /// <summary>
@@ -42,20 +44,15 @@ public static class MapCell
     {
         if (ver == Session.ClientVersion.V533)
         {
-            Be(into, tile);
-            Be(into, pass);
-            Be(into, obj);
+            PacketWriter.AppendU16BE(into, tile);
+            PacketWriter.AppendU16BE(into, pass);
+            PacketWriter.AppendU16BE(into, obj);
         }
         else
         {
-            Be(into, (ushort)((tile & 0x3FFF) | (pass << 14)));
-            Be(into, obj);
+            PacketWriter.AppendU16BE(into, (ushort)((tile & 0x3FFF) | (pass << 14)));
+            PacketWriter.AppendU16BE(into, obj);
         }
     }
 
-    private static void Be(List<byte> into, ushort v)
-    {
-        into.Add((byte)(v >> 8));
-        into.Add((byte)(v & 0xFF));
-    }
 }

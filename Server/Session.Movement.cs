@@ -664,8 +664,8 @@ public sealed partial class Session
         var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
         if (md is null || objs.Length == 0) return;
         var d = new List<byte>();
-        d.AddRange(Be(startX));
-        d.AddRange(Be(y));
+        d.AddRange(PacketWriter.U16BEBytes(startX));
+        d.AddRange(PacketWriter.U16BEBytes(y));
         d.Add((byte)objs.Length);   // width
         d.Add(1);                   // height (single row)
         for (int i = 0; i < objs.Length; i++)
@@ -677,7 +677,7 @@ public sealed partial class Session
             MapCell.Write(d, TileTranslation.Ground(word, _ver), _noClip ? (ushort)0 : md.Pass(mx, y),
                           TileTranslation.Object(objs[i], _ver), _ver);
         }
-        SendMap(0x06, _gameInc++, d.ToArray(),
+        SendMap(ServerOp.MapCells, _gameInc++, d.ToArray(),
                 $"cellpatch(0x06) ({startX},{y}) w{objs.Length} " +
                 $"{(_ver == ClientVersion.V533 ? "3-short" : "2-short")} cells objs=[{string.Join(",", objs)}]");
     }
@@ -889,22 +889,22 @@ public sealed partial class Session
         var (vx, vy) = ViewAnchor();
         var d = new List<byte>();
         d.Add(dir);
-        d.AddRange(Be(oldX));
-        d.AddRange(Be(oldY));
-        d.AddRange(Be(vx));
-        d.AddRange(Be(vy));
+        d.AddRange(PacketWriter.U16BEBytes(oldX));
+        d.AddRange(PacketWriter.U16BEBytes(oldY));
+        d.AddRange(PacketWriter.U16BEBytes(vx));
+        d.AddRange(PacketWriter.U16BEBytes(vy));
         d.Add(0);
-        SendMap(0x26, _gameInc++, d.ToArray(), $"self-walk(0x26) ({oldX},{oldY}) dir={dir} view=({vx},{vy})");
+        SendMap(ServerOp.SelfWalk, _gameInc++, d.ToArray(), $"self-walk(0x26) ({oldX},{oldY}) dir={dir} view=({vx},{vy})");
     }
 
     // 0x11 side: entityId(u32BE) side(u8) 0. Turns the entity in place (no movement).
     private void SendSide(uint id, byte side)
     {
         var d = new List<byte>();
-        d.AddRange(Be32(id));
+        d.AddRange(PacketWriter.U32BEBytes(id));
         d.Add(side);
         d.Add(0);
-        SendMap(0x11, _gameInc++, d.ToArray(), $"side(0x11) id={id} side={side}");
+        SendMap(ServerOp.Turn, _gameInc++, d.ToArray(), $"side(0x11) id={id} side={side}");
     }
 
     // The per-cell `pass` short we STREAM to the 5.x client (honors the passtest:N diagnostic). This is
@@ -944,11 +944,11 @@ public sealed partial class Session
     private void SendMove(uint id, ushort x, ushort y, byte dir)
     {
         var d = new List<byte>();
-        d.AddRange(Be32(id));
-        d.AddRange(Be(x));
-        d.AddRange(Be(y));
+        d.AddRange(PacketWriter.U32BEBytes(id));
+        d.AddRange(PacketWriter.U16BEBytes(x));
+        d.AddRange(PacketWriter.U16BEBytes(y));
         d.Add(dir);
-        SendMap(0x0C, _gameInc++, d.ToArray(), "move(0x0C)");
+        SendMap(ServerOp.Move, _gameInc++, d.ToArray(), "move(0x0C)");
     }
 
 }

@@ -270,7 +270,7 @@ public sealed partial class Session
     // "@clearinv": empty the bag + gear (test reset).
     private void ClearInventory()
     {
-        foreach (var it in _char.Inventory.ToList()) SendDelItem(it.Slot, 0);
+        foreach (var it in _char.Inventory.ToList()) SendDelItem(it.Slot, DelReason.Removed);
         _char.Inventory.Clear();
         foreach (var e in _char.Equipment.ToList()) SendUnequip(e.Slot);
         EquipClear();
@@ -305,15 +305,15 @@ public sealed partial class Session
     private void SendRawIcon(byte slot, ushort frame, string label)
     {
         var d = new List<byte> { (byte)(slot + 1) };
-        d.AddRange(Be(IconWire(frame)));
+        d.AddRange(PacketWriter.U16BEBytes(IconWire(frame)));
         if (_ver == ClientVersion.V533) d.Add(0);          // 5.x icon-color byte (4.95 omits, see SendAddItem)
         var nn = Ascii(label);
         d.Add((byte)nn.Length); d.AddRange(nn);            // display name
         d.Add((byte)nn.Length); d.AddRange(nn);            // base name
-        d.AddRange(Be32(1));                               // amount
-        d.Add(0); d.AddRange(Be32(0)); d.Add(0);           // stack/dura/protected block
-        d.Add(0); d.AddRange(Be(0)); d.Add(0);             // owner len 0 + trailing u16 + u8
-        SendMap(0x0F, _gameInc++, d.ToArray(), $"rawicon(0x0F) slot={slot} frame={frame} wire=0x{IconWire(frame):x4}");
+        d.AddRange(PacketWriter.U32BEBytes(1));                               // amount
+        d.Add(0); d.AddRange(PacketWriter.U32BEBytes(0)); d.Add(0);           // stack/dura/protected block
+        d.Add(0); d.AddRange(PacketWriter.U16BEBytes(0)); d.Add(0);             // owner len 0 + trailing u16 + u8
+        SendMap(ServerOp.AddItem, _gameInc++, d.ToArray(), $"rawicon(0x0F) slot={slot} frame={frame} wire=0x{IconWire(frame):x4}");
     }
 
     // "@delreason [lo] [hi]" — walk the 0x10 del-item REASON byte and print the line each one narrates, to
@@ -334,7 +334,7 @@ public sealed partial class Session
         {
             SendRawIcon(slot, 1, $"reason{r}");
             Reply($"reason {r}:");
-            SendDelItem(slot, (byte)r);
+            SendDelItem(slot, (DelReason)r);   // the whole point of the sweep is UNNAMED bytes too
             System.Threading.Thread.Sleep(700);
         }
         Reply("sweep done. Set EquipDelReason to a silent reason (or leave it) and @reload.");
@@ -1424,7 +1424,7 @@ public sealed partial class Session
         var d = new byte[60];
         d[0] = 0x78;                                   // flags (full-stats)
         for (int i = 1; i < d.Length; i++) d[i] = (byte)i;
-        SendMap(0x08, _gameInc++, d, "stat-gradient(0x08)");
+        SendMap(ServerOp.Stats, _gameInc++, d, "stat-gradient(0x08)");
         Log.Info("   -> STAT GRADIENT on 0x08 (body[i]=i); read each HUD number = that field's offset");
     }
 
@@ -1454,14 +1454,14 @@ public sealed partial class Session
         var d = new byte[Math.Max(58, off + 1)];
         d[0] = 0x78;
         d[1] = _char.Nation; d[2] = TotemWire(); d[4] = _char.Level;   // TotemWire: 5.33 clamps 4->3, so send 0xFF — see SendStats
-        WriteBe32(d, 5, maxHp); WriteBe32(d, 9, maxMp);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(5), maxHp); System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(9), maxMp);
         d[13] = (byte)Math.Clamp(_char.Might + eq.might, 0, 255);
         d[14] = (byte)Math.Clamp(_char.Will  + eq.will,  0, 255);
         d[17] = (byte)Math.Clamp(_char.Grace + eq.grace, 0, 255);
-        WriteBe32(d, 24, _char.Hp); WriteBe32(d, 28, _char.Mp);
-        WriteBe32(d, 32, _char.Exp); WriteBe32(d, 36, _char.Coins);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(24), _char.Hp); System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(28), _char.Mp);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(32), _char.Exp); System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(36), _char.Coins);
         d[off] = val;
-        SendMap(0x08, _gameInc++, d, $"mailflag off={off} val=0x{val:x2}");
+        SendMap(ServerOp.Stats, _gameInc++, d, $"mailflag off={off} val=0x{val:x2}");
         Reply($"0x08 with body[{off}]=0x{val:x2} (0x11=mail+parcel). See an arrow/bag on the HUD?");
         Log.Info($"   -> MAILFLAG probe: 0x08 body[{off}]=0x{val:x2}");
     }
@@ -1497,8 +1497,8 @@ public sealed partial class Session
         d.Add(_char.Totem);          // totem
         d.Add(0);                    // unknown
         d.Add(level);                // level (sentinel)
-        d.AddRange(Be32(1000));      // maxHP
-        d.AddRange(Be32(500));       // maxMP
+        d.AddRange(PacketWriter.U32BEBytes(1000));      // maxHP
+        d.AddRange(PacketWriter.U32BEBytes(500));       // maxMP
         d.Add(11);                   // might
         d.Add(22);                   // will
         d.Add(3); d.Add(3);          // (7.x constants)
@@ -1508,15 +1508,15 @@ public sealed partial class Session
         d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0);
         d.Add(_char.MaxInv);         // maxinv
         // HPMP block
-        d.AddRange(Be32(987));       // hp
-        d.AddRange(Be32(456));       // mp
+        d.AddRange(PacketWriter.U32BEBytes(987));       // hp
+        d.AddRange(PacketWriter.U32BEBytes(456));       // mp
         // XPMONEY block — zero-free distinctive sentinels so a memory scan finds the STORED copy cleanly
-        d.AddRange(Be32(0x11223344));  // exp   -> wire 11 22 33 44 ; stored LE 44 33 22 11
-        d.AddRange(Be32(0x55667788));  // coins -> wire 55 66 77 88 ; stored LE 88 77 66 55
+        d.AddRange(PacketWriter.U32BEBytes(0x11223344));  // exp   -> wire 11 22 33 44 ; stored LE 44 33 22 11
+        d.AddRange(PacketWriter.U32BEBytes(0x55667788));  // coins -> wire 55 66 77 88 ; stored LE 88 77 66 55
         d.Add(50);                   // exp %
         // ALWAYS block
         d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0); d.Add(0);
-        d.AddRange(Be32(0));         // settingFlags
+        d.AddRange(PacketWriter.U32BEBytes(0));         // settingFlags
         SendMap(op, _gameInc++, d.ToArray(), $"statprobe(0x{op:x2})");
     }
 
@@ -1694,12 +1694,12 @@ public sealed partial class Session
             if (t[0] == ':' || t[0] == '$')
             {
                 var b = Encoding.ASCII.GetBytes(t[1..].Replace('_', ' '));
-                if (t[0] == '$') body.AddRange(Be((ushort)b.Length));
+                if (t[0] == '$') body.AddRange(PacketWriter.U16BEBytes((ushort)b.Length));
                 body.AddRange(b);
                 continue;
             }
-            if (t[0] == '#' && ushort.TryParse(t[1..], out ushort u16)) { body.AddRange(Be(u16)); continue; }
-            if (t[0] == '%' && uint.TryParse(t[1..], out uint u32)) { body.AddRange(Be32(u32)); continue; }
+            if (t[0] == '#' && ushort.TryParse(t[1..], out ushort u16)) { body.AddRange(PacketWriter.U16BEBytes(u16)); continue; }
+            if (t[0] == '%' && uint.TryParse(t[1..], out uint u32)) { body.AddRange(PacketWriter.U32BEBytes(u32)); continue; }
             if (byte.TryParse(t, System.Globalization.NumberStyles.HexNumber, null, out byte raw))
             { body.Add(raw); continue; }
             Refuse($"can't parse '{t}' — expected a hex byte, #u16, %u32, :text or $text.");
@@ -1745,10 +1745,10 @@ public sealed partial class Session
     private void SendSpeech(byte chatType, uint id, byte[] msg)
     {
         var d = new List<byte> { chatType };
-        d.AddRange(Be32(id));
+        d.AddRange(PacketWriter.U32BEBytes(id));
         d.Add((byte)msg.Length);
         d.AddRange(msg);
-        SendMap(0x0D, _gameInc++, d.ToArray(), "speech(0x0D)");
+        SendMap(ServerOp.Speech, _gameInc++, d.ToArray(), "speech(0x0D)");
     }
 
 
