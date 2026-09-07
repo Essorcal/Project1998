@@ -100,6 +100,17 @@ public sealed class CsvTests
         Assert.Empty(Csv.Open("quoted-comment.csv", file.Path, "Id", "Name"));
     }
 
+    [Fact]
+    public void QuotedHashInSecondFieldIsNotAComment()
+    {
+        using var file = new TempCsv("plain,\"# not a comment\"\n");
+
+        var row = Assert.Single(Csv.Open("quoted-comment-second-field.csv", file.Path, "Id", "Name"));
+
+        Assert.Equal("plain", row.Require("Id"));
+        Assert.Equal("# not a comment", row.Require("Name"));
+    }
+
     private sealed class TempCsv : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(
