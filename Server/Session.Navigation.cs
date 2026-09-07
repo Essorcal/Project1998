@@ -1378,8 +1378,9 @@ public sealed partial class Session
     // entry trio — 0x15 (map) + 0x04 (coords + camera) + 0x33 (our sprite). The world object (0x02) and
     // our entity id (0x05) are already established this session, so those are NOT resent.
     /// <param name="arrival">How the requested tile becomes the tile landed on. The default is what every
-    /// arrival in this file has always done — clamp to the map and take it, occupied or not. Only
-    /// <c>@approach</c>/<c>@bring</c> pass anything else; see <see cref="ArrivalPolicy"/>.</param>
+    /// arrival in this file has always done and what the original game did — clamp to the map and take it,
+    /// occupied or not (#99, settled as stacking). Only <c>@approach</c>/<c>@bring</c>/<c>@npc</c> pass
+    /// anything else; see <see cref="ArrivalPolicy"/>.</param>
     /// <returns>The tile actually landed on. Callers that report it (<c>@bring</c>) read it from here rather
     /// than from what they asked for, since a policy may have moved it.</returns>
     private (ushort x, ushort y) EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName,
