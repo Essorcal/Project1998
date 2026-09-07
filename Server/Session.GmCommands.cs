@@ -156,7 +156,7 @@ public sealed partial class Session
     }
 
     // "@clock [0-23 | real]" — read or pin the shared in-game hour. The calendar otherwise derives strictly
-    // from the real-world epoch (World.SyncClock), so the totem-time window — the thing @exp kill exists to
+    // from the real-world epoch (WorldClock.Sync), so the totem-time window — the thing @exp kill exists to
     // exercise — was only testable when the real clock happened to land in it. Pinning is WORLD-scoped (the
     // hour is one shared value; every session's 0x20 clock follows within a tick) and hour-only: day, season
     // and year keep deriving, because nothing behavioral hangs off them. `real` releases the pin.
@@ -164,18 +164,18 @@ public sealed partial class Session
     {
         if (!a.None)
         {
-            if (a.Is(0, "real")) _world.SetHourOverride(null);
-            else if (a.Int(0, out var h) && h is >= 0 and <= 23) _world.SetHourOverride(h);
+            if (a.Is(0, "real")) _world.Clock.SetHourOverride(null);
+            else if (a.Int(0, out var h) && h is >= 0 and <= 23) _world.Clock.SetHourOverride(h);
             else { Refuse(a.Usage()); return; }
             Log.Info($"   -> @clock '{_char.Name}': {(a.Is(0, "real") ? "released" : $"hour pinned to {a.Word(0)}")}");
         }
 
-        var (hour, day, year) = _world.ClockNow;
+        var (hour, day, year) = _world.Clock.ClockNow;
         var totems = string.Join(", ", Enumerable.Range(0, 4)
             .Where(t => Content.IsTotemTime(hour, t)).Select(Content.TotemName));
-        Reply($"In-game time: hour {hour} — day {day} of {_world.SeasonName}, Yuri {year}. " +
+        Reply($"In-game time: hour {hour} — day {day} of {_world.Clock.SeasonName}, Yuri {year}. " +
                 $"Totem time: {(totems.Length > 0 ? totems : "none")}." +
-                (_world.HourOverride is not null ? $"  [hour pinned — {Prefix}clock real to release]" : ""));
+                (_world.Clock.HourOverride is not null ? $"  [hour pinned — {Prefix}clock real to release]" : ""));
     }
 
     // "@killtrack [clear]" — the eight-slot kill track, most-recent-first, which is what the mythic

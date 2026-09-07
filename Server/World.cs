@@ -301,54 +301,9 @@ public sealed partial class World
     // via @reload. See TopUpForageLocked.
     private static readonly int ForageTicks = Math.Max(1, 18_000 / TickMs);   // top up ~every 18s, like RTK's periodic itemspawner
 
-    // ---- world calendar (opcode 0x20) ---------------------------------------------------------
-    // The calendar itself lives in Shared.GameCalendar — a pure function of wall-clock time since a fixed
-    // epoch, with RTK's own cadence constants and the reasoning for deriving rather than counting. It is in
-    // Shared because the LOGIN server, a separate process with no World, stamps a new character's "Born in
-    // ..." legend with the same date this server is showing.
-    //
-    // What World adds is the broadcast: RTK's change_time_char (map.c:1661) pushes clif_sendtime to every
-    // connected session on each in-game hour, so we cache the calendar and watch for the hour to roll over.
-    // Only hour+year go on the wire (see Session.SendTime); day/season are tracked because the year cadence
-    // is defined in terms of them. Nothing reports the season to a player any more (@time is gone) — it
-    // reaches them only through legend text (GameCalendar.Stamp) and whatever scripts read it.
-    private int _hour, _day = 1, _season = 1, _year = 1;
-    private long _gameHour = -1;          // whole in-game hours since the epoch; -1 = not yet synced
-    private int? _hourOverride;           // @clock pin: when set, this hour REPLACES the derived one
-    public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
-    public string SeasonName => GameCalendar.SeasonName(_season);
-    public (int hour, int day, int year) ClockNow => (_hour, _day, _year);
-    public int? HourOverride => _hourOverride;
-
-    /// <summary>Pin the shared in-game hour (@clock), or release it (null). The day/season/year keep
-    /// deriving from the real epoch — only the HOUR is pinned, because the hour is what gates behavior
-    /// (totem-time windows). Forcing <c>_gameHour = -1</c> makes the next tick's <see cref="SyncClock"/>
-    /// report a change, so every session gets a fresh 0x20 within one tick in both directions.</summary>
-    public void SetHourOverride(int? hour)
-    {
-        lock (_lock)
-        {
-            _hourOverride = hour;
-            _gameHour = -1;
-            if (hour is int h) _hour = h;   // immediate, so a readout or IsTotemTime right after is correct
-        }
-    }
-
-    /// <summary>Re-read the calendar; true when the in-game hour changed, i.e. it is time to broadcast
-    /// <c>0x20</c>.</summary>
-    private bool SyncClock()
-    {
-        long gameHour = GameCalendar.HoursNow();
-        if (gameHour == _gameHour) return false;
-        _gameHour = gameHour;
-        (_hour, _day, _season, _year) = GameCalendar.At(gameHour);
-        if (_hourOverride is int oh) _hour = oh;   // @clock pin wins over the derived hour
-        return true;
-    }
-
-    /// <summary>Whether the shared world clock is currently in <paramref name="totem"/>'s totem time
-    /// (RTK isTotemTime) — the +5% kill-exp window. Reads the live hour; see <see cref="Content.IsTotemTime"/>.</summary>
-    public bool IsTotemTime(int totem) => Content.IsTotemTime(_hour, totem);
+    // The world calendar (opcode 0x20) — the cached in-game date, the hour-rollover watch phase (1.6) drives,
+    // and the @clock pin — lives in World.WorldClock.cs (#37). Constructed before the constructor's first
+    // Sync, which is the first call into it. Sessions read it through World.Clock.
 
     // ---- weather (opcode 0x1F / RTK clif_sendweather) ------------------------------------------
     // Weather is now a deterministic function of region-zone + time-period + season (see WeatherModel) rather
@@ -465,10 +420,15 @@ public sealed partial class World
     public World()
     {
         _spawnDirector = new SpawnDirector(this);
+        Clock = new WorldClock(this);
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
-        SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
-        Log.Info($"=== clock: Yuri {_year}, {SeasonName}, day {_day}, hour {_hour}:00");
+        // Derive the in-game calendar from the fixed real-world epoch. Under _lock like the two Populate
+        // calls above it: nothing else can be holding it here (the world is still being constructed and no
+        // thread can see it yet), and it is what lets WorldClock.Sync assert its caller holds the lock.
+        lock (_lock) Clock.Sync();
+        var (hour, day, year) = Clock.ClockNow;
+        Log.Info($"=== clock: Yuri {year}, {Clock.SeasonName}, day {day}, hour {hour}:00");
         Restarts = new RestartSchedule(this);
     }
 
@@ -2529,7 +2489,7 @@ public sealed partial class World
             // and, on an in-game hour rollover, flag every connected session for a fresh 0x20 broadcast.
             // Checked every tick rather than every 750th, so the broadcast lands within 600ms of the true
             // rollover instead of drifting by however far into an hour the process happened to start.
-            if (SyncClock()) q.TimeChanged = true;
+            if (Clock.Sync()) q.TimeChanged = true;
 
             // (1.7) weather: when the deterministic weather PERIOD rolls over (WeatherModel.PeriodHours, ~15
             // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
@@ -2742,7 +2702,7 @@ public sealed partial class World
         // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
         if (q.TimeChanged)
         {
-            var (h, y) = Time;
+            var (h, y) = Clock.Time;
             foreach (var p in players2) Try(() => p.SendTime(h, y), "SendTime");
             // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }

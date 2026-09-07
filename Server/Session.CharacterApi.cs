@@ -375,7 +375,7 @@ public sealed partial class Session
         // Scoped to the ELIGIBLE members — the ones actually being paid — rather than the whole party: a
         // member out of range or on another map draws nothing from this kill, so letting their totem raise
         // everyone else's share would pay a bonus sourced from someone the kill never touched.
-        bool anyTotem = eligible.Any(m => _world.IsTotemTime(m.CharTotem));
+        bool anyTotem = eligible.Any(m => _world.Clock.IsTotemTime(m.CharTotem));
 
         foreach (var m in eligible)
         {
@@ -420,7 +420,7 @@ public sealed partial class Session
         // answer, because retail gives the bonus to everyone in the group whenever it is any member's totem
         // time (see the anyTotem comment there). Null — every other caller — means "decide from my own
         // totem", which is the solo case and identical to what this always did.
-        bool totem = killExp && (totemTime ?? _world.IsTotemTime(_char.Totem));
+        bool totem = killExp && (totemTime ?? _world.Clock.IsTotemTime(_char.Totem));
         if (totem) amount = (uint)Math.Round(amount * 1.05, MidpointRounding.AwayFromZero);
         // RTK player.lua giveXPStacked: every exp grant pops a status-box message, not just combat —
         // quest/tutorial/NPC rewards get the same notice retail players see on a kill.

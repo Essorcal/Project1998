@@ -19,7 +19,7 @@ public sealed partial class Session
         Log.Info($"   == WORLD ENTRY burst for '{_char.Name}' (map={_char.Map} @ {_char.X},{_char.Y}) ==");
 
         SendMap(ServerOp.Ack, 0, new byte[] { 0x06, 0x00 }, "ack(0x1E)");
-        { var (h, y) = _world.Time; SendMap(ServerOp.Time, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
+        { var (h, y) = _world.Clock.Time; SendMap(ServerOp.Time, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232);
         Log.Info("   -> mapinfo(0x15)");
