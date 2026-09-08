@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text;
 using Server;
+using Shared;
 using Tests.Support;
 using Xunit;
 
@@ -31,6 +33,7 @@ public class TradeTeardownTests
     private const byte ExchangeIn = 0x4a;    // client -> server (RTK clif_parse_exchange)
     private const byte ExchangeOut = 0x42;   // server -> client (the window's own packet family)
     private const byte WalkIn = 0x06;        // client -> server walk step
+    private const byte MiniTextOut = 0x0A;   // server -> client status line / message text
 
     private const byte ExcOpen = 0, ExcGold = 3, ExcConfirm = 5;
 
@@ -51,7 +54,17 @@ public class TradeTeardownTests
     /// other test on the shared World is standing there. 59000-65000 is the instance band, which
     /// <c>ApplyDeathPenalties</c> charges exp only for — so a death here spills no coin onto the floor to
     /// confuse the balances these tests assert on.</summary>
-    private const ushort DeathMap = 60020, ControlMap = 60021;
+    private const ushort DeathMap = 60020, ControlMap = 60021, RaceMap = 60022;
+
+    /// <summary>The tail of the "you are dead" line <c>Die()</c> sends after the penalties and before the
+    /// save — the last thing the death sequence puts on the wire, and therefore the cheapest proof from
+    /// another thread that the sequence had already run to its end.</summary>
+    private const string DefeatedTextPrefix = "You have been defeated";
+
+    /// <summary>What <c>DeathExpLoss</c> announces. Pinned so the ORDER of the two can be asserted.</summary>
+    private const string ExpLostTextPrefix = "You've lost";
+
+    private const string RevivedText = "A test revived you mid-death.";
 
     private readonly SessionFixture _fx;
 
@@ -73,6 +86,10 @@ public class TradeTeardownTests
     /// <summary>Sub-type 5 as it goes out: <c>05 | extra | len | text</c>.</summary>
     private static byte[] Finish(byte extra, string text) =>
         new byte[] { 5, extra, (byte)text.Length }.Concat(Encoding.ASCII.GetBytes(text)).ToArray();
+
+    /// <summary>The text of every <c>0x0A</c> recorded so far, in order: <c>type | len(u16 BE) | text</c>.</summary>
+    private static List<string> MiniTexts(RecordingOutbound o) =>
+        o.BodiesOf(MiniTextOut).Select(b => Encoding.ASCII.GetString(b, 3, (b[1] << 8) | b[2])).ToList();
 
     private static byte[] WalkPacket(byte dir, int fromX, int fromY) =>
         SessionFixture.Frame(WalkIn, new byte[]
@@ -209,5 +226,122 @@ public class TradeTeardownTests
         Assert.Equal(Finish(0, DoneText), Assert.Single(takerOut.BodiesOf(ExchangeOut)));
         Assert.Equal(0u, giverChar.Coins);
         Assert.Equal(500u, takerChar.Coins);
+    }
+
+    /// <summary>
+    /// <b>The death finishes before its own teardown lets anyone in.</b> The teardown is the LAST statement of
+    /// <c>Die()</c> rather than the first, and this is the fact that says why.
+    ///
+    /// <para><c>EndTrade</c> takes both sessions' monitors through <c>WithStatePair</c>. When the partner ranks
+    /// below the dying player, that acquisition is DESCENDING, so #29 rule 2 exits the victim's own monitor
+    /// while it blocks on the partner's — a real gap in the middle of <c>Die()</c>, not a theoretical one, and
+    /// three shipped paths walk straight into it from another thread: a GM <c>@revive &lt;other&gt;</c>, an NPC
+    /// Rebirth, and a poet's Resurrect. With the teardown FIRST (as it was at <c>2c1452a</c>) a revive landing
+    /// in that gap left <c>ClearAllTimedEffects</c>, <c>ApplyDeathPenalties</c>, "You have been defeated!" and
+    /// <c>SaveChar</c> to run on a player who was alive again: charged the death penalty, told they were
+    /// defeated, and persisted that way. With it LAST, the gap opens only after every one of those has already
+    /// happened, and the revive that follows is an ordinary revive of a completed corpse.</para>
+    ///
+    /// <para>So the assertion is about ORDER, and it is taken from inside the gap: the reviving thread records
+    /// what it can see at the instant it gets the victim's monitor. Red at <c>2c1452a</c> — the exp is still
+    /// untouched, the "defeated" line has not been sent and nothing has been saved, because the death has only
+    /// run as far as <c>_char.Mounted = false</c>.</para>
+    ///
+    /// <para>The partner stands out of view rather than beside the victim, for a reason worth stating: with a
+    /// peer in view, <c>Die()</c> -&gt; <c>ResyncPeers</c> -&gt; <c>ShowPlayer(peer)</c> reads that peer through
+    /// <c>Snapshot()</c>, which takes the PEER's monitor and so descends — and drops — one step earlier still.
+    /// That is master's behaviour too (<c>ResyncPeers</c> is untouched here), so it is not this change's to fix
+    /// or to pin; keeping the partner outside the viewport rect leaves the teardown as the only cross-session
+    /// acquisition in the sequence, which is what this fact is about.</para>
+    /// </summary>
+    [Fact]
+    public void ADeathFinishesBeforeItsOwnTradeTeardownDropsTheMonitor()
+    {
+        const uint StartExp = 1_000_000;
+
+        // The partner is created FIRST, so it ranks BELOW the victim and the pair acquisition has to descend.
+        // It is placed far off the victim's viewport rect: see the note above about ResyncPeers.
+        var (partner, partnerOut, _) = _fx.PlayerWith("TradeRacePartner", _ => { }, RaceMap, 60, 60);
+        var (victim, victimOut, victimChar) = _fx.PlayerWith("TradeRaceVictim", c => c.Exp = StartExp,
+                                                             RaceMap, 5, 10);
+        Assert.True(victim.StateRank > partner.StateRank,
+                    "the victim has to outrank the partner or the teardown never descends and never drops");
+
+        victimOut.Clear();
+        partnerOut.Clear();
+        victim.Receive(ExchangeRequest(ExcOpen, partner.PlayerId));   // same map is the only gate TryStartTrade has
+        Assert.Single(victimOut.BodiesOf(ExchangeOut));
+        Assert.Single(partnerOut.BodiesOf(ExchangeOut));
+        victimOut.Clear();
+        partnerOut.Clear();
+
+        // A third thread parks on the partner's monitor so the descending acquisition really does block.
+        var partnerHeld = new ManualResetEventSlim();
+        var releasePartner = new ManualResetEventSlim();
+        var holder = new Thread(() => partner.WithState(() => { partnerHeld.Set(); releasePartner.Wait(); }))
+        { IsBackground = true, Name = "partner-holder" };
+        holder.Start();
+        Assert.True(partnerHeld.Wait(5000), "the holder never took the partner's monitor");
+
+        // The kill, on its own thread. Environment damage has no attacker, so nothing in TakeDamage reaches
+        // the partner before Die() does — the teardown is the only thing in the sequence that can block.
+        var killer = new Thread(() => victim.ReceiveEnvironmentDamage(9999, "a cold tile, in a test"))
+        { IsBackground = true, Name = "killer" };
+        killer.Start();
+        var sw = Stopwatch.StartNew();
+        while (Volatile.Read(ref victimChar.Hp) != 0 && sw.ElapsedMilliseconds < 5000) Thread.Sleep(5);
+        Assert.Equal(0u, victimChar.Hp);
+        Thread.Sleep(300);
+        Assert.True(killer.IsAlive, "Die() should still be parked on the partner's monitor");
+
+        // The revive. It can only get in through the gap the teardown opens; what it finds when it does is
+        // the whole of this fact.
+        bool sawDead = false;
+        uint expAtEntry = StartExp, savedExpAtEntry = StartExp;
+        var textsAtEntry = new List<string>();
+        var reviverEntered = new ManualResetEventSlim();
+        var reviver = new Thread(() => victim.WithState(() =>
+        {
+            sawDead = victim.IsDead;
+            expAtEntry = victimChar.Exp;
+            textsAtEntry = MiniTexts(victimOut);
+            var saved = _fx.Store.Load("TradeRaceVictim");
+            if (saved.Status == CharacterLoadStatus.Ok) savedExpAtEntry = saved.Character!.Exp;
+            reviverEntered.Set();
+            victim.ReviveInPlace(RevivedText);
+        })) { IsBackground = true, Name = "reviver" };
+        reviver.Start();
+
+        Assert.True(reviverEntered.Wait(5000),
+                    "the reviver never got the victim's monitor: the teardown did not drop it at all");
+        Assert.True(sawDead, "the reviver landed on a living player — it never got inside the death sequence");
+        Assert.True(reviver.Join(10000), "the revive never finished");
+        // Still parked: the reviver ran entirely inside the gap, so nothing below is racing the killer thread.
+        Assert.True(killer.IsAlive, "Die() got past its teardown before the partner's monitor was released");
+
+        releasePartner.Set();
+        Assert.True(killer.Join(10000), "Die() never finished");
+        Assert.True(holder.Join(5000));
+
+        // RED at 2c1452a, where the teardown was Die()'s first statement: at this point the death had done
+        // nothing but unmount the horse.
+        Assert.Contains(textsAtEntry, t => t.StartsWith(DefeatedTextPrefix));
+        Assert.Contains(textsAtEntry, t => t.StartsWith(ExpLostTextPrefix));
+        Assert.True(expAtEntry < StartExp,
+                    $"the death penalty had not been applied when the revive got in (exp {expAtEntry})");
+        Assert.True(savedExpAtEntry < StartExp,
+                    $"SaveChar had not persisted the death when the revive got in (saved exp {savedExpAtEntry})");
+
+        // ...and what followed is an ordinary revive of a completed corpse: alive, and charged exactly once.
+        Assert.False(victim.IsDead);
+        Assert.Equal(expAtEntry, victimChar.Exp);
+        var texts = MiniTexts(victimOut);
+        Assert.Equal(1, texts.Count(t => t.StartsWith(ExpLostTextPrefix)));
+        Assert.True(texts.IndexOf(RevivedText) > texts.FindIndex(t => t.StartsWith(DefeatedTextPrefix)),
+                    $"the revive line came before the death finished; texts: {string.Join(" | ", texts)}");
+
+        // The teardown itself still did its job, on both windows, exactly once.
+        Assert.Equal(Message(CancelText), Assert.Single(victimOut.BodiesOf(ExchangeOut)));
+        Assert.Equal(Message(CancelText), Assert.Single(partnerOut.BodiesOf(ExchangeOut)));
     }
 }
