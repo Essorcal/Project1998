@@ -76,7 +76,7 @@ public sealed class TkListener
         // Both numbers, always. A failure here is a player's last state gone for good (there is no next
         // sweep past this point), so "saved N" alone — which is what this line used to print, and it
         // printed the CONNECTED count at that — would report a lossy shutdown as a clean one.
-        var (saved, failed) = _world.SaveAllPlayers();
+        var (saved, failed) = _world.AutoSave.SaveAll();
         // Warn, not Error, deliberately: this is a COUNT, not an exception, and Log.Error takes a real
         // exception on purpose (see Log). The losses themselves are already logged at Error, one line per
         // character, each with the stack that caused it — this line only makes the tally impossible to miss.

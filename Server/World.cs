@@ -405,6 +405,7 @@ public sealed partial class World
     {
         _spawnDirector = new SpawnDirector(this);
         Online = new OnlineRegistry(this);
+        AutoSave = new AutoSaveLoop(this);
         Clock = new WorldClock(this);
         Weather = new WeatherService(this);
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
@@ -438,7 +439,7 @@ public sealed partial class World
         // meantime — a multi-second, self-recovering freeze of the entire world with nothing in the log to
         // show for it. A dedicated thread cannot be starved by pool pressure.
         new Thread(TickLoop)     { IsBackground = true, Name = "world-tick" }.Start();
-        new Thread(AutoSaveLoop) { IsBackground = true, Name = "world-autosave" }.Start();
+        new Thread(AutoSave.Run) { IsBackground = true, Name = "world-autosave" }.Start();
 
         // Pool headroom + the pool-latency and client-silence probes. Started here because this is the
         // first point where a World exists for the silence scanner to walk.
@@ -1895,77 +1896,6 @@ public sealed partial class World
                     mob.ClearThreat(playerId);
                     if (mob.TargetId == playerId) { mob.TargetId = 0; mob.AttackTimer = 0; }
                 }
-    }
-
-    /// <summary>Periodic crash-safety backstop (see AutoSaveLoop): flush every connected player's pending
-    /// mutation, regardless of the per-session AutoSaveMs throttle. Its unique job is an IDLE dirty player
-    /// (mutated, then stopped sending packets, so their own read-loop FlushIfDue never gets another
-    /// iteration to fire on) — an ACTIVE player is already covered by their own on-thread flush.</summary>
-    private void AutoSaveTick()
-    {
-        foreach (var s in Online.All()) FlushIsolated(s, "autosave");
-    }
-
-    /// <summary>One player's flush, fenced so it can't take the rest of a sweep with it. Before this, one
-    /// throw from FlushNow unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the
-    /// unlucky one in that snapshot silently missed the interval. Idle dirty players are exactly who the
-    /// sweep exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
-    ///
-    /// <para>The throw it was written for was a collection mutated under the serializer by that player's own
-    /// thread; #29 closed that off — FlushNow now serializes a snapshot taken under the session's state
-    /// monitor — so what is left to catch here is a bad disk. The fence stays: "one player's failure must not
-    /// cost every later player their interval" is worth keeping whatever the cause.</para>
-    ///
-    /// <para>Returns whether the flush succeeded, because the two callers face different consequences and
-    /// must say different things. The periodic sweep genuinely does retry on its next interval. The
-    /// shutdown flush has no next interval: a throw there is the player's last state LOST, and reporting it
-    /// as "retried" — or, worse, counting it as saved — is the one thing an operator reading the final
-    /// lines of a log must not be told. <paramref name="lastChance"/> picks the wording.</para></summary>
-    private static bool FlushIsolated(Session s, string sweep, bool lastChance = false)
-    {
-        try { s.FlushNow(); return true; }
-        catch (Exception e)
-        {
-            Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — " +
-                      (lastChance ? "save LOST — process is exiting, there is no retry"
-                                  : "that player's save is retried next sweep, the others continue"), e);
-            return false;
-        }
-    }
-
-    // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
-    // a synchronous SQLite write, so a sweep of a full server is a long block. On the thread pool that was
-    // a pool thread held for the duration, competing with the heartbeat.
-    private void AutoSaveLoop()
-    {
-        while (true)
-        {
-            Thread.Sleep(Session.AutoSaveMs);
-            // AutoSaveTick isolates each player's flush; this only sees a throw from Online.All itself.
-            try { AutoSaveTick(); }
-            catch (Exception e) { Log.Error("autosave sweep threw — retrying on the next interval", e); }
-        }
-    }
-
-    /// <summary>Graceful-shutdown flush: force-save every connected player right now, ignoring the dirty
-    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Cannot help
-    /// against a hard crash/kill — that's what the periodic AutoSaveLoop sweep + each session's own
-    /// on-thread flush bound instead.
-    ///
-    /// <para>Returns (saved, failed) rather than the population count. It used to return
-    /// <c>players.Count</c> whatever happened, so the shutdown hook's "flushed N player(s)" was the number
-    /// of players CONNECTED, not the number persisted — a run that lost three characters' last hour logged
-    /// exactly what a clean one did. The caller reports both numbers (see TkListener.Shutdown).</para></summary>
-    public (int saved, int failed) SaveAllPlayers()
-    {
-        var players = Online.All();
-        int saved = 0, failed = 0;
-        foreach (var s in players)
-        {
-            if (FlushIsolated(s, "shutdown save", lastChance: true)) saved++;
-            else failed++;
-        }
-        return (saved, failed);
     }
 
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
