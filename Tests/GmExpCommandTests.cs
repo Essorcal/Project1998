@@ -1,4 +1,6 @@
+using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Server;
 using Shared;
@@ -141,6 +143,28 @@ public sealed class GmExpCommandTests
 
         Assert.Equal((uint)10, callerCharacter.Exp);
         Assert.Equal((uint)0, memberCharacter.Exp);
+    }
+
+    /// <summary>The row's description grew when the <c>kill</c> form stopped being a flag, and a description
+    /// is drawn on the ~30-column status pane. <c>CommandTableTests.NothingAListingPrintsOverrunsThePane</c>
+    /// enforces that rule over bare <c>@help</c>, which pages six commands at a time and never reaches
+    /// <c>exp</c> — so the row this change touched is checked here, through the keyword filter that does
+    /// print it in full.</summary>
+    [Fact]
+    public void TheExpHelpRowFitsThePane()
+    {
+        var (caller, outbound, _) = GmPlayer();
+
+        Run(caller, "@help exp");
+
+        var pane = CommandTableTests.Transcript(outbound)
+            .Where(l => l.StartsWith("pane", StringComparison.Ordinal))
+            .Select(l => l[(l.IndexOf('|') + 1)..])
+            .ToList();
+        Assert.Contains(pane, l => l.Contains("exp", StringComparison.Ordinal));
+        foreach (var line in pane)
+            Assert.True(line.Length <= Session.PaneWidth || !line.Trim().Contains(' '),
+                        $"@help exp printed a {line.Length}-char line that could have been broken: \"{line}\"");
     }
 
     // ---- fixture -------------------------------------------------------------------------------------
