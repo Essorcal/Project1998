@@ -204,8 +204,9 @@ public sealed partial class Session
         T("lvl",     (s, a) => s.RespecLevel(a.Int(0, s._char.Level)),
                                                    "[1-99]",              "rebuild as level n: accurate stats + the matching spellbook (bare @lvl rebuilds at the level you are)"),
         // @lvl's complement, not its rival: @lvl REBUILDS at a level, @exp earns one — it's the only way to
-        // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains).
-        T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = eligible for the totem-time bonus)"),
+        // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains),
+        // and with `kill` the only way to exercise its GROUP half without a mob to kill (#155).
+        T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = as a kill would: split across your group in range, group totem rule; no quest credit)"),
         T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
         T("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path and rebuild for it"),
         T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),

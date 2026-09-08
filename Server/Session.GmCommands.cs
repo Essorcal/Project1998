@@ -233,17 +233,28 @@ public sealed partial class Session
         Reply($"Took {def.Name}{(take > 1 ? $" x{take}" : "")} — {held - take} left.");
     }
 
-    // "@exp <n> [kill]" — award raw experience through AwardExp, the same funnel every real grant uses, so
-    // the whole leveling path runs for real: the exp curve, multi-level carries, the Peasant wall, LevelUp's
-    // stat/HP/MP gains. @lvl can't test any of that — it REBUILDS at a level. `kill` marks the grant as kill
-    // exp, which is what opts into the 1.05 totem-time bonus (quest-style grants never take it). Bare @exp
-    // reports where you stand.
+    // "@exp <n> [kill]" — award raw experience through the same funnels every real grant uses, so the whole
+    // leveling path runs for real: the exp curve, multi-level carries, the Peasant wall, LevelUp's stat/HP/MP
+    // gains. @lvl can't test any of that — it REBUILDS at a level. Bare @exp reports where you stand.
+    //
+    // The two forms are the two funnels, not one funnel with a flag (#155). Without `kill` this is a
+    // quest-style grant: AwardExp, the caller's own, no totem window. With `kill` it goes through
+    // AwardKillExp with the CALLER'S OWN TILE standing in for the corpse, so it behaves the way a mob dying
+    // there behaves — split across the group members in range by the per-head share and their standing, and
+    // the group-wide totem rule rather than the caller's own. It used to call AwardExp(n, killExp: true)
+    // directly, which bought the 1.05 totem bonus and nothing else: a grouped caller took the whole grant and
+    // the party standing next to them took nothing, which is not what "as if from a kill" says.
+    //
+    // No mobKey, deliberately: a GM grant is not the death of any creature, so no quest tally moves for
+    // anyone it pays. AwardKillExp treats a null key as a no-op ("keyless kills (debug summons) are ignored"),
+    // which is the same call shape a summoned mob's death already uses. The help text says so.
     private void ExpCmd(CommandArgs a)
     {
         // uint, not int: the grant feeds AwardExp, and a negative one has no meaning there.
         if (!uint.TryParse(a.Word(0), out var n) || n == 0)
         { Refuse($"exp is {_char.Exp:N0}. {a.Usage()}"); return; }
-        AwardExp(n, killExp: a.Is(1, "kill"));
+        if (a.Is(1, "kill")) AwardKillExp(n, _char.Map, _char.X, _char.Y);
+        else AwardExp(n);
     }
 
     // "@dura <name|id> <n>" — set an item's current durability, bag first then worn, clamped to the item's
