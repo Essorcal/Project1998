@@ -872,7 +872,7 @@ public sealed partial class Session
         else if (a.NameThenTrailingInt(out var named, out var n)) { name = named; add = n; }
 
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
 
         int now = Math.Max(0, target.QuestCounter(ArmorQuest.CarnageWinsReg) + add);
@@ -892,7 +892,7 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
@@ -925,11 +925,11 @@ public sealed partial class Session
         string name = a.Raw;
         if (name.Length == 0)
         {
-            var all = _world.AllPlayers().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            var all = _world.Online.All().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
             ReplyList($"online ({all.Count})", all.Select(Line));
             return;
         }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         Reply(Line(target));
     }
@@ -941,7 +941,7 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
@@ -965,7 +965,7 @@ public sealed partial class Session
     {
         if (a.None) { Refuse(a.Usage()); return; }
         int heard = 0;
-        foreach (var s in _world.AllPlayers())
+        foreach (var s in _world.Online.All())
         {
             try { s.SystemAnnounce(a.Raw); heard++; }
             catch (Exception e) { Log.Error($"@announce to {s.Remote} threw — the others still hear it", e); }
@@ -1037,7 +1037,7 @@ public sealed partial class Session
             ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
             return;
         }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         target.ReviveInPlace(target.IsDead ? "You have been restored to life." : "You are restored to full health.");
         Reply($"Restored {target._char.Name} to full health.");

@@ -52,7 +52,7 @@ public sealed partial class Session
 
         // Kick them off NOW if they're online. A ban that waits for the next login lets the behaviour that
         // triggered it carry on for as long as they stay connected.
-        var online = _world.FindPlayer(name);
+        var online = _world.Online.FindPlayer(name);
         if (online is not null)
         {
             online.SendMessage(LoginAuth.BanMessageFor(name));
@@ -89,7 +89,7 @@ public sealed partial class Session
         if (!Moderation.Mute(name, until, reason, _char.Name)) { SendLog("Mute FAILED — the write did not land."); return; }
 
         // Push it onto the live session so the very next line they type is already blocked.
-        var online = _world.FindPlayer(name);
+        var online = _world.Online.FindPlayer(name);
         online?.ApplyMute(until, reason);
 
         SendLog($"Muted {name} ({Moderation.Describe(until)})" + (reason.Length > 0 ? $": {reason}" : "."));
@@ -106,7 +106,7 @@ public sealed partial class Session
         if (rec?.IsMuted != true) { SendLog($"{name} is not muted."); return; }
 
         if (!Moderation.Unmute(name, _char.Name)) { SendLog("Unmute FAILED — the write did not land."); return; }
-        _world.FindPlayer(name)?.ApplyMute(0, "");
+        _world.Online.FindPlayer(name)?.ApplyMute(0, "");
 
         SendLog($"Unmuted {name}.");
         Log.Info($"   -> {Prefix}unmute by '{_char.Name}': {name}");
@@ -120,7 +120,7 @@ public sealed partial class Session
         var reason = parts.Length > 1 ? parts[1].Trim() : "";
         if (name.Length == 0) { SendLog($"Usage: {Prefix}kick <name> [reason]"); return; }
 
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { SendLog($"{name} is not online."); return; }
         if (target == this) { SendLog("You cannot kick yourself."); return; }
 

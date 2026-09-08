@@ -303,7 +303,7 @@ public sealed class RestartSchedule
 
     private void Announce(string text)
     {
-        foreach (var s in _world.AllPlayers())
+        foreach (var s in _world.Online.All())
         {
             // One player's failure must not stop the announcement reaching everyone else. (Send itself never
             // throws — see Session.Send — so anything caught here is a bug worth the stack.)

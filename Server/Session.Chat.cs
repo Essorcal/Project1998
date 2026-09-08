@@ -150,7 +150,7 @@ public sealed partial class Session
         if (name == "!!") { DoGroupChat(msg); return; }
         if (name == "!")  { DoClanChat(msg);  return; }
 
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         // RTK's literal wording, on the BLUE wisp channel (clif_sendbluemessage) — same channel the whisper
         // itself would have used, NOT self-speech.
         if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
@@ -193,7 +193,7 @@ public sealed partial class Session
         if (!_char.ClanChat) { SendBlueMessage("Clan chat is off."); return; }                            // RTK wording (blue)
         string line = $"<!{_char.Name}> ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
-        foreach (var p in _world.AllPlayers())
+        foreach (var p in _world.Online.All())
             if (p._char.ClanChat
                 && string.Equals(p._char.ClanName, _char.ClanName, StringComparison.Ordinal)
                 && !(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))

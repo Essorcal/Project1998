@@ -166,15 +166,6 @@ public sealed partial class World
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
 
-    // Server-wide online-account registry (independent of the per-map Players lists above, which a session
-    // only joins AFTER its own arrival/load logic runs). Keyed by CharacterStore.Key(username). Exists
-    // solely for the duplicate-login guard: RegisterOnline lets HandleArrival atomically detect + evict a
-    // stale session for the same account BEFORE loading, so a slow-to-unwind old session can never clobber
-    // the new one's fresher save (SQLite's persistence is blind last-write-wins). Guarded by the same _lock
-    // as everything else here — registration/eviction is rare (once per login), so sharing the lock costs
-    // nothing measurable against the map operations.
-    private readonly Dictionary<string, Session> _online = new();
-
     // The two spawn systems — the POINT roster (Spawn) and the GROUP roster (SpawnGroup) — and everything
     // that builds, materialises and refills them live in World.SpawnDirector.cs (#37). Constructed before
     // PopulateSpawns, which is the first call into it.
@@ -401,7 +392,7 @@ public sealed partial class World
     private uint _nextItemId = 500_000;
 
     /// <summary>The scheduled-restart clock (@restart, or the run/restart_at file a deploy writes). Kept on
-    /// the World because a restart warning is a server-wide broadcast and AllPlayers lives here.</summary>
+    /// the World because a restart warning is a server-wide broadcast and the online roster lives here.</summary>
     public RestartSchedule Restarts { get; }
 
     /// <summary>Builds the world's in-memory state and NOTHING that runs on its own: no tick thread, no
@@ -411,6 +402,8 @@ public sealed partial class World
     public World()
     {
         _spawnDirector = new SpawnDirector(this);
+        Online = new OnlineRegistry(this);
+        AutoSave = new AutoSaveLoop(this);
         Clock = new WorldClock(this);
         Weather = new WeatherService(this);
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
@@ -444,7 +437,7 @@ public sealed partial class World
         // meantime — a multi-second, self-recovering freeze of the entire world with nothing in the log to
         // show for it. A dedicated thread cannot be starved by pool pressure.
         new Thread(TickLoop)     { IsBackground = true, Name = "world-tick" }.Start();
-        new Thread(AutoSaveLoop) { IsBackground = true, Name = "world-autosave" }.Start();
+        new Thread(AutoSave.Run) { IsBackground = true, Name = "world-autosave" }.Start();
 
         // Pool headroom + the pool-latency and client-silence probes. Started here because this is the
         // first point where a World exists for the silence scanner to walk.
@@ -1016,7 +1009,7 @@ public sealed partial class World
             uint mobId = mob.Id;
             _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch (Exception e) { Log.Error($"delayed despawn of mob {mobId} threw", e); } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-            PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
+            Online.ById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
         }
     }
 
@@ -1053,7 +1046,7 @@ public sealed partial class World
             if (!victim.Summoned)
             {
                 uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
-                PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y, victim.Key);
+                Online.ById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y, victim.Key);
             }
             return;
         }
@@ -1290,7 +1283,7 @@ public sealed partial class World
                 var mob = m.Mobs.FirstOrDefault(mo => mo.Alive && mo.Id == id);
                 if (mob is not null) return (mob.X, mob.Y);
             }
-            var pc = PlayerByIdLocked(id);
+            var pc = Online.ByIdLocked(id);
             return pc is null ? null : ((ushort, ushort)?)(pc.PlayerX, pc.PlayerY);
         }
     }
@@ -1843,37 +1836,6 @@ public sealed partial class World
         }
     }
 
-    /// <summary>The connected player with this character name (case-insensitive, any map), or null if
-    /// they're offline. Used by whisper/tell (RTK clif_parsewisp's target lookup).</summary>
-    public Session? FindPlayer(string name)
-    {
-        // CharName, not Snapshot().Name: this runs under _lock, and Snapshot takes the session's state
-        // monitor, which is the wrong way round (#29 — session state THEN _lock). Building a whole
-        // PlayerSnapshot — face, armour, weapon, shield, dye, all off the equipment list — per player per
-        // lookup, to read one string, was never the intent either.
-        lock (_lock)
-            return _maps.Values.SelectMany(m => m.Players)
-                                .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>The connected player with this entity id (any map), or null. Used by click-profile's "view
-    /// another player" path (RTK <c>clif_clickonplayer</c>, §9.5/§11l) and the exchange-initiate opcode
-    /// <c>0x4A</c> (RTK <c>clif_parse_exchange</c> type 0), both of which address a player by id — the
-    /// client already knows it from the entity it rendered — rather than by name.</summary>
-    public Session? PlayerById(uint id)
-    {
-        lock (_lock)
-            return PlayerByIdLocked(id);
-    }
-
-    /// <summary>Same lookup for callers that already hold <c>_lock</c>. The monitor is re-entrant so taking it
-    /// twice would work, but saying which methods expect it is how this file stays readable.</summary>
-    private Session? PlayerByIdLocked(uint id)
-    {
-        Debug.Assert(Monitor.IsEntered(_lock));
-        return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
-    }
-
     // One gate covers the entire disk-to-live sequence below, not just Content.Load: cache invalidation,
     // staff reload, terrain pre-warm and population rebuild must observe the same content generation. A GM
     // invokes this on the session read loop, so contention is bounded rather than stalling packet handling.
@@ -1929,128 +1891,6 @@ public sealed partial class World
                     mob.ClearThreat(playerId);
                     if (mob.TargetId == playerId) { mob.TargetId = 0; mob.AttackTimer = 0; }
                 }
-    }
-
-    /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
-    /// Used by channels that reach beyond one map, like subpath chat (RTK clif_sendsubpathmessage loops
-    /// every session, not just one map's block list).</summary>
-    public List<Session> AllPlayers()
-    {
-        lock (_lock)
-            return _maps.Values.SelectMany(m => m.Players).ToList();
-    }
-
-    /// <summary>How many players are in the world right now. Separate from <see cref="AllPlayers"/> because
-    /// the status publisher wants only the number, and materialising every session into a list on a timer to
-    /// read <c>.Count</c> off it is pure garbage.</summary>
-    public int OnlinePlayerCount()
-    {
-        lock (_lock)
-        {
-            var n = 0;
-            foreach (var m in _maps.Values) n += m.Players.Count;
-            return n;
-        }
-    }
-
-    /// <summary>Duplicate-login guard: atomically register <paramref name="s"/> as the online session for
-    /// <paramref name="key"/> (CharacterStore.Key(username)), returning whatever session previously held
-    /// that slot via <paramref name="old"/> (null if this is a fresh login). Called from HandleArrival
-    /// BEFORE the character is loaded from disk, so a second concurrent arrival for the same account can
-    /// never both pass unnoticed — the dictionary write is atomic under _lock. The caller (HandleArrival)
-    /// is responsible for kicking <paramref name="old"/> (Session.KickForReplacement) so its state is
-    /// flushed before the new session's own Load runs.</summary>
-    public void RegisterOnline(string key, Session s, out Session? old)
-    {
-        lock (_lock)
-        {
-            _online.TryGetValue(key, out old);
-            _online[key] = s;
-        }
-    }
-
-    /// <summary>Remove <paramref name="s"/> from the online registry, but ONLY if it still owns that slot —
-    /// a compare-and-remove so a session that was already kicked/replaced (RegisterOnline overwrote its
-    /// slot with the newer session) can't accidentally evict the session that replaced it when its own
-    /// (now-stale) teardown finally runs.</summary>
-    public void Unregister(string key, Session s)
-    {
-        lock (_lock)
-        {
-            if (_online.TryGetValue(key, out var cur) && ReferenceEquals(cur, s))
-                _online.Remove(key);
-        }
-    }
-
-    /// <summary>Periodic crash-safety backstop (see AutoSaveLoop): flush every connected player's pending
-    /// mutation, regardless of the per-session AutoSaveMs throttle. Its unique job is an IDLE dirty player
-    /// (mutated, then stopped sending packets, so their own read-loop FlushIfDue never gets another
-    /// iteration to fire on) — an ACTIVE player is already covered by their own on-thread flush.</summary>
-    private void AutoSaveTick()
-    {
-        foreach (var s in AllPlayers()) FlushIsolated(s, "autosave");
-    }
-
-    /// <summary>One player's flush, fenced so it can't take the rest of a sweep with it. Before this, one
-    /// throw from FlushNow unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the
-    /// unlucky one in that snapshot silently missed the interval. Idle dirty players are exactly who the
-    /// sweep exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
-    ///
-    /// <para>The throw it was written for was a collection mutated under the serializer by that player's own
-    /// thread; #29 closed that off — FlushNow now serializes a snapshot taken under the session's state
-    /// monitor — so what is left to catch here is a bad disk. The fence stays: "one player's failure must not
-    /// cost every later player their interval" is worth keeping whatever the cause.</para>
-    ///
-    /// <para>Returns whether the flush succeeded, because the two callers face different consequences and
-    /// must say different things. The periodic sweep genuinely does retry on its next interval. The
-    /// shutdown flush has no next interval: a throw there is the player's last state LOST, and reporting it
-    /// as "retried" — or, worse, counting it as saved — is the one thing an operator reading the final
-    /// lines of a log must not be told. <paramref name="lastChance"/> picks the wording.</para></summary>
-    private static bool FlushIsolated(Session s, string sweep, bool lastChance = false)
-    {
-        try { s.FlushNow(); return true; }
-        catch (Exception e)
-        {
-            Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — " +
-                      (lastChance ? "save LOST — process is exiting, there is no retry"
-                                  : "that player's save is retried next sweep, the others continue"), e);
-            return false;
-        }
-    }
-
-    // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
-    // a synchronous SQLite write, so a sweep of a full server is a long block. On the thread pool that was
-    // a pool thread held for the duration, competing with the heartbeat.
-    private void AutoSaveLoop()
-    {
-        while (true)
-        {
-            Thread.Sleep(Session.AutoSaveMs);
-            // AutoSaveTick isolates each player's flush; this only sees a throw from AllPlayers itself.
-            try { AutoSaveTick(); }
-            catch (Exception e) { Log.Error("autosave sweep threw — retrying on the next interval", e); }
-        }
-    }
-
-    /// <summary>Graceful-shutdown flush: force-save every connected player right now, ignoring the dirty
-    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Cannot help
-    /// against a hard crash/kill — that's what the periodic AutoSaveLoop sweep + each session's own
-    /// on-thread flush bound instead.
-    ///
-    /// <para>Returns (saved, failed) rather than the population count. It used to return
-    /// <c>players.Count</c> whatever happened, so the shutdown hook's "flushed N player(s)" was the number
-    /// of players CONNECTED, not the number persisted — a run that lost three characters' last hour logged
-    /// exactly what a clean one did. The caller reports both numbers (see TkListener.Shutdown).</para></summary>
-    public (int saved, int failed) SaveAllPlayers()
-    {
-        var players = AllPlayers();
-        int saved = 0, failed = 0;
-        foreach (var s in players)
-        {
-            if (FlushIsolated(s, "shutdown save", lastChance: true)) saved++;
-            else failed++;
-        }
-        return (saved, failed);
     }
 
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
@@ -2165,7 +2005,7 @@ public sealed partial class World
             if (mob.AmnesiaBy != 0 && mob.AmnesiaBy == attackerId) { mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0; }
 
             // Lua AI hooks for this creature, if it has any (queued — see QueueHook).
-            var actor = attackerId == 0 ? null : PlayerByIdLocked(attackerId);
+            var actor = attackerId == 0 ? null : Online.ByIdLocked(attackerId);
             QueueHook(MobScript.OnAttacked, mapId, mob, actor);
             if (died) QueueHook(MobScript.AfterDeath, mapId, mob, actor);
             // Provoked -> fight back (mob_ai_normal on_attacked). Getting hit ALWAYS wins: it drops whatever
@@ -2557,13 +2397,13 @@ public sealed partial class World
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
-        foreach (var s in AllPlayers()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
+        foreach (var s in Online.All()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
 
         // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
         // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
         // same cadence as the weather roll. SendAdvice is a no-op for anyone with the option off.
         if (_tick % AdviceTicks == 0)
-            foreach (var s in AllPlayers()) Try(s.SendAdvice, "SendAdvice");
+            foreach (var s in Online.All()) Try(s.SendAdvice, "SendAdvice");
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (q.Forage is not null)
