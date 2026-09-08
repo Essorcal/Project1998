@@ -97,7 +97,7 @@ public sealed partial class Session
                $"trade {(_trade is not null ? "OPEN" : "none")}, dirty {_dirty}";
     }
     // Set once this session has been superseded by a newer login for the same account (duplicate-login
-    // guard, see World.RegisterOnline/Session.KickForReplacement). Gates the read-loop's disconnect save
+    // guard, see World.OnlineRegistry.Register/Session.KickForReplacement). Gates the read-loop's disconnect save
     // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
     private int _replaced;
     // Serializes the DATABASE WRITE for this session, and nothing else (#29). It used to be _saveGate and it
@@ -412,7 +412,7 @@ public sealed partial class Session
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
         // flushed the freshest state; saving again here from this now-stale session would clobber it —
-        // see the duplicate-login guard, World.RegisterOnline). The login-channel session never
+        // see the duplicate-login guard, World.OnlineRegistry.Register). The login-channel session never
         // populates _char, so saving it would clobber the real record with defaults.
         if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
         {
