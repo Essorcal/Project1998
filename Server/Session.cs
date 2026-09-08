@@ -344,7 +344,7 @@ public sealed partial class Session
                 if (Volatile.Read(ref _established) == 0 && !IsLoginPort && StatusResponder.LooksLikeHttp(buf))
                 {
                     await tcp.Stream.WriteAsync(StatusResponder.Build(_world));
-                    Log.Info($"   -> status probe from {_remote} answered ({_world.OnlinePlayerCount()} online)");
+                    Log.Info($"   -> status probe from {_remote} answered ({_world.Online.Count} online)");
                     break;
                 }
 
@@ -408,7 +408,7 @@ public sealed partial class Session
         // Leave the shared world: despawn us for the other players on our map. World mobs persist
         // (they belong to the map, not this session), so they keep wandering for whoever remains.
         if (_enteredWorld) _world.LeaveMap(this, _char.Map);
-        if (_enteredWorld) _world.Unregister(UserKey, this);
+        if (_enteredWorld) _world.Online.Unregister(UserKey, this);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
         // flushed the freshest state; saving again here from this now-stale session would clobber it —
@@ -951,7 +951,7 @@ public sealed partial class Session
         // FIRST — otherwise its eventual disconnect save could clobber THIS session with stale data, since
         // CharacterStore.Save is a blind last-write-wins upsert. Must run BEFORE _store.Load below so the
         // kicked session's flush (if any) is visible to our own load.
-        _world.RegisterOnline(CharacterStore.Key(_user), this, out var oldSession);
+        _world.Online.Register(CharacterStore.Key(_user), this, out var oldSession);
         if (oldSession is not null)
         {
             Log.Info($"   -> ARRIVAL: '{_user}' already online — kicking previous session");
@@ -967,21 +967,21 @@ public sealed partial class Session
         if (load.Status == CharacterLoadStatus.NotFound)
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
-            _world.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
+            _world.Online.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
             CloseConnection("arrival rejected (no character record)");
             return;
         }
         if (load.Status == CharacterLoadStatus.Unreadable)
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
-            _world.Unregister(CharacterStore.Key(_user), this);
+            _world.Online.Unregister(CharacterStore.Key(_user), this);
             CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
         if (load.Status == CharacterLoadStatus.StorageError)
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
-            _world.Unregister(CharacterStore.Key(_user), this);
+            _world.Online.Unregister(CharacterStore.Key(_user), this);
             CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }

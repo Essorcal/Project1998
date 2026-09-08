@@ -67,7 +67,7 @@ public sealed partial class Session
         if (string.Equals(name, _char.Name, StringComparison.OrdinalIgnoreCase))
         { SendMiniText("You can't mentor yourself."); return; }
 
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { SendMiniText("Player is not valid or not online."); return; }
         if (target.CharMap != CharMap)
         { SendMiniText($"{target.Snapshot().Name} must be near you when you ask to mentor."); return; }

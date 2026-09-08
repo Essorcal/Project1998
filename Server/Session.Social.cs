@@ -31,7 +31,7 @@ public sealed partial class Session
 
     private void TryPartyInvite(string name)
     {
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }   // RTK: silent nullpo_ret bail; we give feedback like whisper does — same blue channel too
         // Group-attempt feedback goes to the status pane (SendMiniText default type 3, same as NotifyGroup's
         // join/leave lines) — NOT type 11, which is the group/subpath CHAT channel and drew these as blue chat
@@ -497,14 +497,14 @@ public sealed partial class Session
             if (toName.Length == 0)  { SendBoardAck(6, false, "Who is this letter for?"); return; }
             if (subject.Length == 0) { SendBoardAck(6, false, "Mail must contain a subject."); return; }
             if (body.Length == 0)    { SendBoardAck(6, false, "Mail must contain a body."); return; }
-            if (!_store.Exists(toName) && _world.FindPlayer(toName) is null)
+            if (!_store.Exists(toName) && _world.Online.FindPlayer(toName) is null)
                 { SendBoardAck(6, false, "User does not exist."); return; }
 
             var now = DateTime.UtcNow;
             Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, -1, 0, 0);
             if (sendCopy)   // "keep a copy for myself" checkbox — RTK topics the copy "[To <name>] <topic>"
                 { Mail.Send(_char.Name, _char.Name, $"[To {toName}] {subject}", body, (byte)now.Month, (byte)now.Day, -1, 0, 0); RefreshMailFlags(); }   // the self-copy lights my own arrow
-            _world.FindPlayer(toName)?.RefreshMailFlags();   // light the recipient's HUD arrow now if they're online
+            _world.Online.FindPlayer(toName)?.RefreshMailFlags();   // light the recipient's HUD arrow now if they're online
             SendBoardAck(6, true, "Your message has been sent.");   // RTK's exact success ack — closes the compose window
         }
         catch (Exception e)

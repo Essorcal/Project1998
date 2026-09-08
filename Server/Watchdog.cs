@@ -103,7 +103,7 @@ public static class Watchdog
     {
         if (SilentMs <= 0 || _world is null) return;
         long now = Environment.TickCount64;
-        var live = _world.AllPlayers();
+        var live = _world.Online.All();
 
         foreach (var s in live)
         {

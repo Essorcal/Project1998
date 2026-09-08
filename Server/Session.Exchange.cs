@@ -85,7 +85,7 @@ public partial class Session
 
         if (sub == ExcOpen)
         {
-            var target = _world.PlayerById(targetId);
+            var target = _world.Online.ById(targetId);
             if (target is not null) TryStartTrade(target);
             return;
         }

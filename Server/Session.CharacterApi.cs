@@ -902,7 +902,7 @@ public sealed partial class Session
     /// they never separately visit a Chapel; clearing both sides avoids that permanently-stuck state.</summary>
     internal void BreakOffEngagement()
     {
-        var fiance = _world.FindPlayer(_char.Fiance);
+        var fiance = _world.Online.FindPlayer(_char.Fiance);
         RemoveLegend("engaged"); ClearEngagement();
         if (fiance is not null) { fiance.RemoveLegend("engaged"); fiance.ClearEngagement(); }
     }
@@ -911,7 +911,7 @@ public sealed partial class Session
     /// <see cref="BreakOffEngagement"/>).</summary>
     internal void FinishDivorce()
     {
-        var spouse = _world.FindPlayer(_char.Spouse);
+        var spouse = _world.Online.FindPlayer(_char.Spouse);
         RemoveLegend("married"); SetSpouse(""); TakeItem("love", 1);
         if (spouse is not null) { spouse.RemoveLegend("married"); spouse.SetSpouse(""); spouse.TakeItem("love", 1); }
     }

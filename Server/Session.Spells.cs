@@ -997,7 +997,7 @@ public sealed partial class Session
         if (text.Length == 0) return false;
         string line = $"[{_char.Name}]: {text}";
         if (line.Length > 250) line = line[..250];
-        foreach (var p in _world.AllPlayers()) p.SendMiniText(line, WorldShoutType);
+        foreach (var p in _world.Online.All()) p.SendMiniText(line, WorldShoutType);
         Log.Info($"   -> world shout by {_char.Name}: {text} (0x0A type {WorldShoutType})");
         return true;
     }
@@ -1476,7 +1476,7 @@ public sealed partial class Session
         pc = null; mob = null;
         if (targetId is uint tid && tid != 0)
         {
-            pc = _world.PlayerById(tid);
+            pc = _world.Online.ById(tid);
             if (pc is null) mob = _world.MobById(_char.Map, tid);
         }
         else
@@ -3078,7 +3078,7 @@ public sealed partial class Session
     {
         if (targetId is uint id && id != 0)
         {
-            var byId = _world.PlayerById(id);
+            var byId = _world.Online.ById(id);
             if (byId is not null) return byId;
         }
         var (fx, fy) = FrontTile();
@@ -3232,7 +3232,7 @@ public sealed partial class Session
         if (string.Equals(name, _char.Name, StringComparison.OrdinalIgnoreCase))
         { SendMiniText("You can't marry yourself."); return; }
 
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { SendMiniText("Player is not valid or not online."); return; }
         // RTK checks the beloved is physically nearby (getObjectsInArea); same-map is our practical proxy
         // for "nearby", matching the gate Trade already uses for its own "must be present" check.
@@ -3280,7 +3280,7 @@ public sealed partial class Session
     /// already messaged directly (a decline).</summary>
     internal async Task<string?> RunMarriageCeremony()
     {
-        var fiance = _world.FindPlayer(_char.Fiance);
+        var fiance = _world.Online.FindPlayer(_char.Fiance);
         if (fiance is null) return "Both parties must be present for the ceremony to commence";
         if (fiance.HasLegend("married")) return "The person is already married.";
 
@@ -3412,7 +3412,7 @@ public sealed partial class Session
         {
             var m = _world.MobById(_char.Map, id);
             if (m is not null) return (m, null);
-            return (null, _world.PlayerById(id));   // player id (incl. your own on a self-cast) — may be null
+            return (null, _world.Online.ById(id));   // player id (incl. your own on a self-cast) — may be null
         }
         var (fx, fy) = FrontTile();
         var fm = _world.MobAt(_char.Map, fx, fy);

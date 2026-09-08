@@ -61,7 +61,7 @@ public static class StatusFile
 
         while (true)
         {
-            try { Write(true, world.OnlinePlayerCount()); }
+            try { Write(true, world.Online.Count); }
             catch (Exception ex) { Log.Warn("status file write failed — retrying next interval", ex); }
             // EXPECTED: cancellation at process exit is the only thing that lands here, and stopping is the
             // correct response. A write that FAILS is a different matter and is logged above.

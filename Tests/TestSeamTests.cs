@@ -42,7 +42,7 @@ public class TestSeamTests
         var (session, outbound) = _fx.Player("SeamProbe");
 
         Assert.Equal("recorder:SeamProbe", outbound.Remote);
-        Assert.Same(session, _fx.World.PlayerById(session.PlayerId));
+        Assert.Same(session, _fx.World.Online.ById(session.PlayerId));
     }
 
     /// <summary>The read loop is the one thing that genuinely needs a socket, and it says so instead of
