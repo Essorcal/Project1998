@@ -1,4 +1,6 @@
+using System;
 using System.Text;
+using System.Threading;
 using Server;
 using Shared;
 using Tests.Support;
@@ -41,6 +43,40 @@ public sealed class GroupKillExpMonitorTests
         Assert.Equal(1, member.KillCount("monitor_test_mob"));
     }
 
+    /// <summary>The descending-rank path. <c>StateRank</c> is allocation order, so building the member
+    /// FIRST makes it outrank the killer: when the killer's thread — already holding its own monitor —
+    /// enters the member's, <see cref="Session.EnterState"/> has to drop the killer's monitor, take the
+    /// member's, and put the killer's back on top (Session.State.cs rule 2). Every other fact here builds
+    /// the killer first and so only ever exercises the ascending branch.</summary>
+    [Fact]
+    public void GroupKillPaysWhenTheMemberOutranksTheKiller()
+    {
+        var (member, _, memberCharacter) = _fx.PlayerWith("DescendExpMember", c =>
+        {
+            c.Level = 1;
+            c.Mark = 0;
+            c.Totem = 4;
+            c.Grouped = true;
+        });
+        var (killer, _, killerCharacter) = _fx.PlayerWith("DescendExpKiller", c =>
+        {
+            c.Level = 1;
+            c.Mark = 0;
+            c.Totem = 4;
+        });
+        Assert.True(member.StateRank < killer.StateRank);
+        FormParty(killer, member);
+
+        var error = Record.Exception(() =>
+            killer.WithState(() => killer.AwardKillExp(10, SessionFixture.HomeMap, 5, 10, "descend_test_mob")));
+
+        Assert.Null(error);
+        Assert.Equal((uint)8, killerCharacter.Exp);
+        Assert.Equal((uint)8, memberCharacter.Exp);
+        Assert.Equal(1, killer.KillCount("descend_test_mob"));
+        Assert.Equal(1, member.KillCount("descend_test_mob"));
+    }
+
     [Fact]
     public void SoloKillStillPaysTheFullReward()
     {
@@ -74,6 +110,27 @@ public sealed class GroupKillExpMonitorTests
     }
 
 #if DEBUG
+    /// <summary>The two world-thread callers (World.ApplyTrapDamage and World.ApplyMobOnMobHit, both
+    /// reached from FlushTick's drain) call <see cref="Session.AwardKillExp"/> holding no session monitor
+    /// at all. A SOLO player's pet or trap kill therefore ran the early-out's AwardExp -> SaveChar with
+    /// nothing held: Debug FailFast on the state guard, Release write/save race against that player's own
+    /// read loop. A bare thread stands in for the tick thread here.</summary>
+    [Fact]
+    public void SoloKillFromAThreadHoldingNoMonitorPaysTheFullReward()
+    {
+        var (killer, _, character) = _fx.PlayerWith("BareThreadSoloKiller", c => c.Totem = 4);
+
+        Exception? captured = null;
+        var thread = new Thread(() => captured = Record.Exception(() =>
+            killer.AwardKillExp(10, SessionFixture.HomeMap, 5, 10, "bare_solo_mob")));
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(captured);
+        Assert.Equal((uint)10, character.Exp);
+        Assert.Equal(1, killer.KillCount("bare_solo_mob"));
+    }
+
     [Fact]
     public void BareMemberAwardUnderAnotherSessionMonitorTripsTheGuard()
     {

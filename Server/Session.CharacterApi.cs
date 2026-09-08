@@ -335,57 +335,72 @@ public sealed partial class Session
     /// be part of a group as long as you get experience then your quest will succeed". It also closes a hole:
     /// <see cref="TallyKill"/> used to be called by hand at three of the twelve kill sites, so a mob killed by
     /// a SPELL or by a summoned pet counted toward no quest at all. Routing it through here means every path
-    /// that pays for a kill also records it, once, for the same set of people.</para></summary>
+    /// that pays for a kill also records it, once, for the same set of people.</para>
+    /// <para><b>SAFE TO CALL FROM ANY THREAD, HOLDING ANY OR NO SESSION MONITOR</b> (but never
+    /// <c>World._lock</c>): the whole body runs inside <see cref="WithState(Action)"/>, and each member's
+    /// tally and payout inside that member's own. See the comment on the wrapper.</para></summary>
     internal void AwardKillExp(uint reward, ushort mobMap, int mobX, int mobY, string? mobKey = null)
     {
         static long Eff(Session s) => s.CharLevel + s.CharMark * 10L;
 
-        // Who this kill counts for: the killer always, plus every group member alive, on the mob's map and
-        // within GroupExpRange of the corpse on both axes.
-        var eligible = new List<Session> { this };
-        if (_party is not null)
-            foreach (var m in _party.Members)
-            {
-                if (ReferenceEquals(m, this)) continue;                    // the killer, added above
-                if (m.IsDead || m.CharMap != mobMap) continue;
-                if (Math.Abs(m.CharX - mobX) > GroupExpRange || Math.Abs(m.CharY - mobY) > GroupExpRange) continue;
-                eligible.Add(m);
-            }
-
-        // Each eligible character owns its own state monitor. This is re-entrant for the killer (whose
-        // packet handler already holds it) and takes a peer's monitor before touching that peer's tally.
-        foreach (var m in eligible) m.WithState(() => m.TallyKill(mobKey));
-
-        if (reward == 0) return;
-        if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // solo, or nobody else in range
-
-        long highest = eligible.Max(Eff);
-        if (highest <= 0) highest = 1;
-        uint amount = (uint)Math.Ceiling(reward * ShareFor(eligible.Count));
-
-        // TOTEM TIME IS GROUP-WIDE (brian, played retail): if it is ANY member's totem time, EVERY member's
-        // share gets the +5%, not just the ones whose own totem is up. So the window is resolved once, here,
-        // across the group rather than per-member inside AwardExp.
-        //
-        // This is a deliberate divergence from RTK, which calls checkTotemTimeXP(finalxp) inside its
-        // per-member loop (Scripts/exp.lua:66) and so pays the bonus only to members whose own totem is in
-        // window. Retail behaviour wins over the reference server — the four windows partition the day, so
-        // under RTK's reading a mixed-totem group could never have more than one member bonused at a time,
-        // which is exactly the "group with people unlike you" incentive the tutor's stage-8 lecture is built
-        // around. Do not "fix" this back to the Lua.
-        //
-        // Scoped to the ELIGIBLE members — the ones actually being paid — rather than the whole party: a
-        // member out of range or on another map draws nothing from this kill, so letting their totem raise
-        // everyone else's share would pay a bonus sourced from someone the kill never touched.
-        bool anyTotem = eligible.Any(m => _world.IsTotemTime(m.CharTotem));
-
-        foreach (var m in eligible)
+        // THE KILLER'S OWN MONITOR IS TAKEN HERE, not left to the caller. Of the eleven callers, nine run on
+        // the killer's own handler thread and already hold it — ResolveSwing (Session.Combat.cs:234),
+        // ProcShotgun (:410) and the seven Lua verb callbacks in Session.Spells.cs (735, 780, 856, 937, 2568,
+        // 2633, 3062) — so this is the re-entrant short-circuit for them and costs nothing. The other two run
+        // on the WORLD tick thread holding no session monitor at all: ApplyTrapDamage (World.cs:1067, a
+        // player-set trap carrying its caster's OwnerId) and ApplyMobOnMobHit (:1104, a pet), both drained by
+        // FlushTick. For those the wrapper is the only thing that puts the killer's own writes — the solo
+        // early-out's AwardExp -> SaveChar below, and the tally — under a monitor. None of the eleven holds
+        // World._lock at the call, so taking a session monitor here cannot invert the world/session order.
+        WithState(() =>
         {
-            uint share = (uint)Math.Ceiling(amount * (double)Eff(m) / highest);
-            m.WithState(() => m.AwardExp(share, killExp: true, totemTime: anyTotem));
-        }
-        Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members " +
-                 $"(highest eff {highest}{(anyTotem ? ", TOTEM TIME" : "")})");
+            // Who this kill counts for: the killer always, plus every group member alive, on the mob's map and
+            // within GroupExpRange of the corpse on both axes.
+            var eligible = new List<Session> { this };
+            if (_party is not null)
+                foreach (var m in _party.Members)
+                {
+                    if (ReferenceEquals(m, this)) continue;                    // the killer, added above
+                    if (m.IsDead || m.CharMap != mobMap) continue;
+                    if (Math.Abs(m.CharX - mobX) > GroupExpRange || Math.Abs(m.CharY - mobY) > GroupExpRange) continue;
+                    eligible.Add(m);
+                }
+
+            // Each eligible character owns its own state monitor. This is re-entrant for the killer (whose
+            // packet handler already holds it) and takes a peer's monitor before touching that peer's tally.
+            foreach (var m in eligible) m.WithState(() => m.TallyKill(mobKey));
+
+            if (reward == 0) return;
+            if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // solo, or nobody else in range
+
+            long highest = eligible.Max(Eff);
+            if (highest <= 0) highest = 1;
+            uint amount = (uint)Math.Ceiling(reward * ShareFor(eligible.Count));
+
+            // TOTEM TIME IS GROUP-WIDE (brian, played retail): if it is ANY member's totem time, EVERY member's
+            // share gets the +5%, not just the ones whose own totem is up. So the window is resolved once, here,
+            // across the group rather than per-member inside AwardExp.
+            //
+            // This is a deliberate divergence from RTK, which calls checkTotemTimeXP(finalxp) inside its
+            // per-member loop (Scripts/exp.lua:66) and so pays the bonus only to members whose own totem is in
+            // window. Retail behaviour wins over the reference server — the four windows partition the day, so
+            // under RTK's reading a mixed-totem group could never have more than one member bonused at a time,
+            // which is exactly the "group with people unlike you" incentive the tutor's stage-8 lecture is built
+            // around. Do not "fix" this back to the Lua.
+            //
+            // Scoped to the ELIGIBLE members — the ones actually being paid — rather than the whole party: a
+            // member out of range or on another map draws nothing from this kill, so letting their totem raise
+            // everyone else's share would pay a bonus sourced from someone the kill never touched.
+            bool anyTotem = eligible.Any(m => _world.IsTotemTime(m.CharTotem));
+
+            foreach (var m in eligible)
+            {
+                uint share = (uint)Math.Ceiling(amount * (double)Eff(m) / highest);
+                m.WithState(() => m.AwardExp(share, killExp: true, totemTime: anyTotem));
+            }
+            Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members " +
+                     $"(highest eff {highest}{(anyTotem ? ", TOTEM TIME" : "")})");
+        });
     }
 
     /// <summary>How far from the corpse a group member may stand and still be paid, on each axis
