@@ -5,9 +5,11 @@ namespace Server;
 
 // The per-mob half of World.Tick (#36). World.cs keeps the heartbeat, the lock and the flush; this file
 // keeps what one creature does on one beat. Both types are NESTED in World rather than top-level so they
-// reach MapState, TriggerTrapLocked and the AI constants as they are; the one widening #36 needed was
-// MapState, because a field on an internal type cannot be of a private one. Since #37 section 2 the step
-// primitives (Dart, StepMobToward, DartMode, MobBlocked) are internal on World.MobMovement, reached by name.
+// reach MapState, Map(), the AI constants and the rest of World's own members as they are; the one
+// widening #36 needed was MapState, because a field on an internal type cannot be of a private one. Since #37 section 2 the step
+// primitives (Dart, StepMobToward, StepMobTo, DartMode, MobBlocked) are internal on World.MobMovement,
+// reached by name. TriggerTrapLocked is no longer called from here: since #150 the wander step commits
+// through StepMobTo like every other step, and the trap spring goes with the commit.
 public sealed partial class World
 {
     /// <summary>
@@ -583,7 +585,7 @@ public sealed partial class World
                                    // moment it reaches them, so the pursuit is self-limiting.
                                    || mob.Key == IceBeastKey
                                    || Math.Max(Math.Abs(target.PlayerX - mob.HomeX), Math.Abs(target.PlayerY - mob.HomeY)) <= ChaseLeash);
-                if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+                if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; }
                 else
                 {
                     int tdx = target!.PlayerX - mob.X, tdy = target.PlayerY - mob.Y;
@@ -736,7 +738,7 @@ public sealed partial class World
                         if (reachable.Count > 0)
                         {
                             mob.TargetId = reachable[Random.Shared.Next(reachable.Count)].PlayerId;
-                            mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+                            mob.AttackTimer = 0;
                         }
                     }
                     return;
@@ -751,7 +753,7 @@ public sealed partial class World
             {
                 var foe = m.Mobs.FirstOrDefault(o => o.Alive && o.Id == mob.TargetMobId);
                 if (foe is null || Math.Max(Math.Abs(foe.X - mob.HomeX), Math.Abs(foe.Y - mob.HomeY)) > ChaseLeash)
-                { mob.TargetMobId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+                { mob.TargetMobId = 0; mob.AttackTimer = 0; }
                 else
                 {
                     int rdx = foe.X - mob.X, rdy = foe.Y - mob.Y;
@@ -829,17 +831,12 @@ public sealed partial class World
                       && !MobMovement.MobBlocked(mapId, terrain, nx, ny, stepDir);         // pass flag / SObj wall / warp tile
             if (!ok) return;   // blocked/leashed: hold position (already facing stepDir)
 
-            ushort ox = mob.X, oy = mob.Y;                   // SOURCE tile (see the move broadcast below)
-            mobTiles.Remove((mob.X, mob.Y));                 // vacate the old tile
-            mob.X = (ushort)nx; mob.Y = (ushort)ny;
-            mobTiles.Add((nx, ny));                          // occupy the new one
-            // Broadcast the SOURCE tile, not the destination: the 4.95 client's 0x0C walk always ends
-            // one tile PAST the packet tile in the walk direction (forward-slide overshoot, proven by
-            // live trace), and for a single-stepping mob there's no 0x04 commit to correct it. Sending
-            // source makes client_final = source + forward(dir) = the real destination.
-            moves.Add((mapId, mob.Id, ox, oy, stepDir));
-            var wanderTrap = m.Traps.FirstOrDefault(t => t.X == nx && t.Y == ny && !IsPcOnlyTrap(t.Kind));
-            if (wanderTrap is not null) { m.Traps.Remove(wanderTrap); w.TriggerTrapLocked(mapId, mob, wanderTrap, trapDamage); }
+            // The validation above is the wander step's own — the leash to home is not tested anywhere else —
+            // but the COMMIT is everyone's: MobMovement.StepMobTo moves the tile index, queues the move on
+            // the source tile and springs the trap on the destination, and it also carries the Ice Beast
+            // lava melt. This block used to keep its own copy of those statements without the melt, which
+            // made the wander step the one path a beast could reach the lava on and survive (#150).
+            MobMovement.StepMobTo(w, mapId, m, mob, nx, ny, stepDir, mobTiles, moves, trapDamage);
         }
     }
 

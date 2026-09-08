@@ -257,14 +257,6 @@ public sealed class Mob
     /// sprints back to its spawn tile (RTK <c>mob.newMove = 250</c>) and ignores the leash on the way.</summary>
     public bool Returning;
 
-    // The sideways shuffle a blocked chaser is currently committed to (World.StepMobToward): which way, and
-    // how many more tiles of it are left. 0xFF = not shuffling. This exists ONLY to vary the length of the
-    // shuffle — without a run counter every shuffle is exactly one tile out and one tile back, because the
-    // step that closes on the target always wins the next tick. It is NOT wall-following and must not become
-    // it: a chaser is meant to stay stupid (see World.StepMobToward).
-    public byte DetourDir = 0xFF;
-    public byte DetourLeft;
-
     // The MOB this mob is fighting — the other half of targeting, used by owned creatures (a Poet's Call of
     // the Wild summon or an Endear'd captive) when they assist their owner against whatever is attacking
     // them. Kept as its OWN field rather than overloading TargetId: the two id spaces don't overlap (players
