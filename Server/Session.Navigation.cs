@@ -1424,7 +1424,7 @@ public sealed partial class Session
         SendSelfLook();                                          // 0x33 draw self on the new map
         PrimeViewport("warp");                                   // 0x06 fill the window before the client asks
         PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
-        SendWeather(_world.GetWeather(mapId));                   // 0x1F whatever the new map's weather already is
+        SendWeather(_world.Weather.Get(mapId));                   // 0x1F whatever the new map's weather already is
 
         // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
         var (peers, mobs) = _world.EnterMap(this, mapId);

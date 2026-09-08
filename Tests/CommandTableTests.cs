@@ -158,6 +158,17 @@ public sealed class CommandTableTests
         "bubble|usage: @stats <vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
         "bubble|  now: vita 50, mana 34, might 3, grace 3, will 3",
     })]
+    // @weather with no argument pins nothing, so it refuses — and the refusal is the weather READOUT, which
+    // is what makes it the wire pin for #37 section 3 (the weather API moved off World onto World.Weather;
+    // the reply text may not move with it). The fixture's GM stands on HomeMap (36), an INDOOR map, so
+    // "clear" here is the one answer no zone override can change and the indoor rider is part of the line.
+    // The 'Weather change' toggle reads ON because a fresh character's SettingFlags carries bit 6 (Character
+    // .SettingFlags: "Defaults match a fresh RTK character ... weather ... ON").
+    [InlineData("@weather", new[]
+    {
+        "bubble|usage: @weather clear|rain|snow|0-2 | auto | raw <0-255>",
+        "bubble|map 36 is clear (indoor - always clear); your 'Weather change' toggle is ON",
+    })]
 
     // --- confirmations: one line saying what changed. The status pane. ----------------------------------
     [InlineData("@coins 500", new[]
@@ -288,6 +299,78 @@ public sealed class CommandTableTests
 
         Assert.Equal(expected, Transcript(outbound));
     }
+
+    /// <summary>The <c>@clock</c> readout, both halves of it — pinned and released. Not an
+    /// <c>InlineData</c> case because only the HOUR is pinnable: day, season and year keep deriving from the
+    /// real epoch, so a hard-coded expectation would rot within a day (the <see cref="AListingIsItsOwnSeparator"/>
+    /// problem, solved the same way — build the expectation from the same clock the command read, and pin
+    /// the FRAME around it).
+    ///
+    /// <para>Here for #37 section 3: the calendar moved off <c>World</c> onto <c>World.Clock</c>, and this is
+    /// what would catch the reply text moving with it. What is literal, and therefore actually pinned: the
+    /// leading "In-game time: hour 7", every separator, the "Totem time:" clause, and the
+    /// "[hour pinned - @clock real to release]" marker that appears with the pin and is gone without it —
+    /// all post-wrap and post-transliteration (the source em-dashes reach the client as '-').</para>
+    ///
+    /// <para>Releasing the pin drops the marker but does NOT move the hour: <c>SetHourOverride</c> forces
+    /// <c>_gameHour = -1</c> so the next tick re-derives, rather than re-deriving on the spot. That is the
+    /// behaviour today, it is pinned here, and <c>WorldClockWeatherTests</c> drives the re-derive through a
+    /// real beat.</para>
+    ///
+    /// <para><b>What it does NOT pin, because <c>WrapForPane</c> rebuilds each line from whitespace-split
+    /// words:</b> runs of spaces. Squeezing the two spaces before "[hour pinned" down to one is invisible
+    /// here — verified, not assumed: that edit leaves the test green. The pane collapses them on the way to
+    /// the client too, so nothing observable is lost; it is simply not this test's reach.</para>
+    ///
+    /// <para>Falsified twice. Inverting the pin condition to <c>HourOverride is null</c>, so the marker
+    /// lands on the released readout instead of the pinned one: red at pos 3,
+    /// "Expected: [... "pane3|Chung Ryong. [hour pinned -", "pane3|@clock real to release]"] / Actual:
+    /// [... "pane3|Chung Ryong."]". Renaming the readout's opening words to "In-game clock:": red at
+    /// pos 1.</para></summary>
+    [Fact]
+    public void ClockReadsBackThePinnedHourAndDropsTheMarkerOnRelease()
+    {
+        var (session, outbound) = GmRoster.Session(_fx);
+        try
+        {
+            Run(session, "@clock 7");
+
+            var (hour, day, year) = _fx.World.Clock.ClockNow;
+            Assert.Equal(7, hour);
+            Assert.Equal(7, _fx.World.Clock.HourOverride);
+
+            string readout =
+                $"In-game time: hour 7 - day {day} of {_fx.World.Clock.SeasonName}, Yuri {year}. " +
+                $"Totem time: {TotemsAt(7)}.";
+            Assert.Equal(Paned(readout + "  [hour pinned - @clock real to release]"), Transcript(outbound));
+
+            outbound.Clear();
+            Run(session, "@clock real");
+
+            Assert.Null(_fx.World.Clock.HourOverride);
+            Assert.Equal(7, _fx.World.Clock.ClockNow.hour);   // still the pinned hour: the tick re-derives it
+            Assert.Equal(Paned(readout), Transcript(outbound));
+        }
+        finally
+        {
+            _fx.World.Clock.SetHourOverride(null);
+            _fx.World.UnderWorldLockForTest(() => _fx.World.Clock.Sync());
+        }
+    }
+
+    /// <summary>The totem-time clause <c>@clock</c> builds for an hour — the same four-totem walk the command
+    /// does. The totem TABLE is content (game-data), not this test's subject; the frame around it is.</summary>
+    private static string TotemsAt(int hour)
+    {
+        var totems = string.Join(", ", Enumerable.Range(0, 4)
+            .Where(t => Content.IsTotemTime(hour, t)).Select(Content.TotemName));
+        return totems.Length > 0 ? totems : "none";
+    }
+
+    /// <summary>One command's worth of status-pane output: the invocation's dashed rule, then the reply
+    /// wrapped the way <c>Reply</c> wraps it.</summary>
+    private static IEnumerable<string> Paned(string reply) =>
+        new[] { $"pane3|{Session.PaneRule}" }.Concat(Session.WrapForPane(reply).Select(l => "pane3|" + l));
 
     // ---- the split: message -> command name + ARGUMENT TAIL --------------------------------------------
     //
