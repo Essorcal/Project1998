@@ -1211,7 +1211,7 @@ public sealed partial class Session
         // Leave a one-shot "shiver" echo on the tile we fall THROUGH so the next passer-by senses a trap
         // sprang here (RTK's WarpTrapShiverNpc — tiger-only in RTK, unified onto every fall cave by design).
         // Never expires (matches RTK: the marker sits until someone steps on it). PC-only cosmetic — mobs
-        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (CastSpotTraps skips it).
+        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (RevealableTrapsNear skips it).
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, "shiver", _char.Id);
 
         Log.Info($"   -> FALL through map {_char.Map} -> {f.Map} '{dm.Name}' ({f.X},{f.Y})");
@@ -1424,7 +1424,7 @@ public sealed partial class Session
         SendSelfLook();                                          // 0x33 draw self on the new map
         PrimeViewport("warp");                                   // 0x06 fill the window before the client asks
         PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
-        SendWeather(_world.GetWeather(mapId));                   // 0x1F whatever the new map's weather already is
+        SendWeather(_world.Weather.Get(mapId));                   // 0x1F whatever the new map's weather already is
 
         // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
         var (peers, mobs) = _world.EnterMap(this, mapId);

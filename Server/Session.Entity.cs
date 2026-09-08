@@ -19,7 +19,7 @@ public sealed partial class Session
         Log.Info($"   == WORLD ENTRY burst for '{_char.Name}' (map={_char.Map} @ {_char.X},{_char.Y}) ==");
 
         SendMap(ServerOp.Ack, 0, new byte[] { 0x06, 0x00 }, "ack(0x1E)");
-        { var (h, y) = _world.Time; SendMap(ServerOp.Time, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
+        { var (h, y) = _world.Clock.Time; SendMap(ServerOp.Time, 3, new byte[] { h, y }, $"time(0x20) hour={h} year={y}"); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232);
         Log.Info("   -> mapinfo(0x15)");
@@ -28,7 +28,7 @@ public sealed partial class Session
         SendXy();
         SendMap(ServerOp.MapDone, 3, Array.Empty<byte>(), "map-done(0x22)");
         PlayMapMusic(_char.Map);   // 0x19: start this map's background track
-        SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
+        SendWeather(_world.Weather.Get(_char.Map));   // 0x1F: whatever this map's weather already is
 
         Log.Info("   == burst sent; watching for client packets (walk/request = progress, disconnect = a packet was rejected) ==");
     }

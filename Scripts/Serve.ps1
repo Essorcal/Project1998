@@ -34,6 +34,14 @@ This script performs the same launch as the bat, and answers those questions:
     session file only counts for the checkout it was written in:
     its own "checkout" field must name the -Checkout being stopped, and every path -Stop uses is derived
     from -Checkout, never from the file. A file copied into another clone cannot stop this one's pair.
+  * -Stop also writes run/last-session.json in the checkout as it removes run/session.json: { checkout,
+    base, ports, stoppedAt }, the four ports the stopped pair actually bound (read from the session file,
+    never from -PortBase). -Status reads this file, and only this one, when there is no live
+    run/session.json for the checkout AND -PortBase was not given explicitly, so a stop-then-status pair
+    on base N talks about base N throughout without a live server (#130). It is scoped to the checkout
+    the same way the session file is -- its own "checkout" field is checked against -Checkout, never
+    trusted to redirect anything -- and a later -Start ignores it entirely: only run/session.json ever
+    counts as a live session.
 
 It is not a resident process: it launches the consoles and exits, and the consoles stay visible, which
 is the rule this repo runs by. Nothing here runs a server hidden or in the background.
@@ -75,7 +83,9 @@ The base must be 1024..65000, which keeps base+6 inside the port range. Two pair
 at once on two bases, each with its own state/, run/ and logs/. One pair per checkout, though: the
 session file lives in the checkout, and so do the bin/ the pair runs from and the database it writes; a
 second pair from the same tree would share all three. The four ports a pair bound are recorded in its
-session file, and -Status and -Stop read them from there rather than from -PortBase (#93).
+session file, and -Status and -Stop read them from there rather than from -PortBase (#93). Once -Stop
+has removed that session file, -Status (given no explicit -PortBase) reports that same pair's ports from
+run/last-session.json rather than falling back to the default base (#130).
 
 .PARAMETER Checkout
 The clone to run, inspect or stop. Defaults to the repository this script lives in.
@@ -93,11 +103,14 @@ interface. Applies only to a start.
 .PARAMETER PortBase
 First login port, 1024..65000; the pair binds base, base+1, base+5 and base+6. Default 2000. Used by a
 start, and by -Status to choose which ports to scan when there is no session file; otherwise the recorded
-ports win.
+ports win, or (when -PortBase was not given explicitly and there is no live session) the ports of the
+last pair this checkout stopped, if any.
 
 .PARAMETER Status
-Report what is running: the session file if its processes are alive, otherwise "nothing running" plus
-any process listening on the ports (PID, command line, and its checkout when it can be inferred).
+Report what is running: the session file if its processes are alive; otherwise, if -PortBase was not
+given explicitly, the last pair this checkout's -Stop recorded (run/last-session.json) and where that
+came from; otherwise "nothing running" against the given or default base's ports; plus any process
+listening on the ports (PID, command line, and its checkout when it can be inferred).
 
 .PARAMETER Stop
 Close the two processes named in the checkout's run/session.json, wait for the ports to free, and delete
@@ -129,9 +142,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$SessionRel  = 'run\session.json'
-$LoginBatRel = 'run\serve-login.cmd'
-$GameBatRel  = 'run\serve-game.cmd'
+$SessionRel     = 'run\session.json'
+$LastSessionRel = 'run\last-session.json'
+$LoginBatRel    = 'run\serve-login.cmd'
+$GameBatRel     = 'run\serve-game.cmd'
 
 # ---------------------------------------------------------------------------------------------------
 # Small helpers
@@ -259,6 +273,43 @@ function Write-Session([string]$Root, $Doc) {
     # BOM is the one thing a plain json parser reliably rejects.
     [System.IO.File]::WriteAllText($file, $json + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
     return $file
+}
+
+function Read-LastSession([string]$Root) {
+    $file = Join-Path $Root $LastSessionRel
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json)
+    } catch {
+        Write-Warning "Unreadable last-session file $file ($($_.Exception.Message))"
+        return $null
+    }
+}
+
+# Written by -Stop, from the ports the session file recorded ($Plan here is always that, never
+# -PortBase). $Plan.Login[0] is the base those ports were built from (Get-PortPlan).
+function Write-LastSession([string]$Root, $Plan, [string]$StoppedAt) {
+    $file = Join-Path $Root $LastSessionRel
+    $dir = Split-Path -Parent $file
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    $doc = [ordered]@{
+        checkout  = $Root
+        base      = [int]$Plan.Login[0]
+        ports     = [ordered]@{ login495 = [int]$Plan.Login[0]; login533 = [int]$Plan.Login[1]; game495 = [int]$Plan.Game[0]; game533 = [int]$Plan.Game[1] }
+        stoppedAt = $StoppedAt
+    }
+    $json = $doc | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($file, $json + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding $false))
+    return $file
+}
+
+# The four ports the last-session file names, as a plan, or $null if it is missing or malformed.
+function Get-LastSessionPlan($Last) {
+    $p = $Last.ports
+    if ($null -eq $p) { return $null }
+    $vals = @([int]$p.login495, [int]$p.login533, [int]$p.game495, [int]$p.game533)
+    if ($vals -contains 0) { return $null }
+    return [pscustomobject]@{ Login = @($vals[0], $vals[1]); Game = @($vals[2], $vals[3]) }
 }
 
 function Remove-SessionFiles([string]$Root) {
@@ -571,7 +622,7 @@ function Stop-SessionProcess($Slot, [string]$Root) {
 # -Status
 # ---------------------------------------------------------------------------------------------------
 
-function Show-Status([string]$Root, $Plan) {
+function Show-Status([string]$Root, $Plan, [bool]$PortBaseExplicit) {
     $file = Join-Path $Root $SessionRel
     $ours = @()
 
@@ -581,8 +632,22 @@ function Show-Status([string]$Root, $Plan) {
         $s = $null
     }
     # The ports to look at are the ones the session bound; -PortBase only decides what to scan when there
-    # is no session file.
-    if ($null -ne $s) { $sp = Get-SessionPlan $s; if ($null -ne $sp) { $Plan = $sp } }
+    # is no session file. With no live session, an explicit -PortBase always wins (#130 constraint 1);
+    # otherwise fall back to the last pair this checkout's -Stop recorded, if any and if it is really
+    # this checkout's (never another clone's, same rule as the session file).
+    $provenance = $null
+    if ($null -ne $s) {
+        $sp = Get-SessionPlan $s; if ($null -ne $sp) { $Plan = $sp }
+    } elseif (-not $PortBaseExplicit) {
+        $last = Read-LastSession $Root
+        if ($null -ne $last -and (Test-SessionOwner $last $Root)) {
+            $lp = Get-LastSessionPlan $last
+            if ($null -ne $lp) {
+                $Plan = $lp
+                $provenance = "last pair from this checkout ran on base $($last.base), stopped $($last.stoppedAt)"
+            }
+        }
+    }
     $allPorts = @($Plan.Login + $Plan.Game)
     $listeners = @(Get-Listeners $allPorts)
     if ($null -ne $s) {
@@ -603,6 +668,8 @@ function Show-Status([string]$Root, $Plan) {
         Write-Host "  started:  $($s.started)"
         Write-Host "  testers:  [$(@($s.testers) -join ', ')]  gms: [$(@($s.gms) -join ', ')]"
         Write-Host "  bind:     $(if ($s.bind) { $s.bind } else { '0.0.0.0 (started before -Bind existed)' })"
+    } elseif ($null -ne $provenance) {
+        Write-Host "Nothing running from $Root via Serve.ps1 (no $SessionRel); $provenance."
     } else {
         Write-Host "Nothing running from $Root via Serve.ps1 (no $SessionRel)."
     }
@@ -689,6 +756,11 @@ function Invoke-Stop([string]$Root, $Plan) {
         foreach ($line in (Format-Listeners $held)) { Write-Host $line }
         return 1
     }
+
+    # Record the ports this pair actually bound (from the session, never from -PortBase) before the
+    # session file that carried them is deleted, so a following -Status on this checkout can still talk
+    # about this base (#130).
+    if ($null -ne $sp) { Write-LastSession $Root $sp ((Get-Date).ToString('o')) | Out-Null }
 
     Remove-SessionFiles $Root
     if ($ourPids.Count -gt 0) { Write-Host "Ports $($allPorts -join '/') released by this session; removed $file." }
@@ -886,7 +958,8 @@ try {
     exit 1
 }
 $plan = Get-PortPlan $PortBase
+$portBaseExplicit = $PSBoundParameters.ContainsKey('PortBase')
 
-if ($Status) { Show-Status $root $plan; exit 0 }
+if ($Status) { Show-Status $root $plan $portBaseExplicit; exit 0 }
 if ($Stop)   { exit (Invoke-Stop $root $plan) }
 exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms) $bindAddress.ToString())
