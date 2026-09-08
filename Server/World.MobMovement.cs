@@ -7,7 +7,7 @@ namespace Server;
 // constants and the session-facing Spook; this file keeps how one creature takes one validated step: the
 // chase step, the retreat step, the straight hop, the flee dart that strings them together, the commit that
 // moves the tile index and queues the draw, and the mob-only collision gate. Nested in World, like
-// MobAiTick and SpawnDirector, so it reaches MapState, _deferredFx, NoDetour, the Ice Beast constants,
+// MobAiTick and SpawnDirector, so it reaches MapState, _deferredFx, the Ice Beast constants,
 // IsPcOnlyTrap and TriggerTrapLocked as they are, without widening any of them.
 public sealed partial class World
 {
@@ -90,7 +90,7 @@ public sealed partial class World
             Debug.Assert(world.HoldsWorldLock, LockNote);
             towardBlocked = false;
             int dx = tx - mob.X, dy = ty - mob.Y;
-            if (dx == 0 && dy == 0) { mob.DetourDir = NoDetour; mob.DetourLeft = 0; return false; }
+            if (dx == 0 && dy == 0) return false;
 
             // Take one cardinal step if that tile is free (bounds + no player + no other mob + the two-layer
             // terrain test), turning onto it first and springing any trap it lands on. RTK's mob:move().
@@ -157,8 +157,8 @@ public sealed partial class World
             (terrain is not null && terrain.BlockedMove(nx, ny, dir))
             || Content.TryWarp(mapId, (ushort)nx, (ushort)ny, out _);
 
-        /// <summary>Commit a validated one-tile move: update the tile index, queue the broadcast, spring a trap.</summary>
-        /// <summary>One step of a RETREAT from <c>(tx,ty)</c> — the mirror image of <see cref="StepMobToward"/>, and
+        /// <summary>One step of a RETREAT from <c>(tx,ty)</c> — the mirror image of
+        /// <see cref="StepMobToward(World, ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}})"/>, and
         /// a port of RTK's <c>RunAway</c> (<c>rtklua/Accepted/Mobs/mob.lua:427</c>). Caller holds <c>_lock</c>.
         /// True if the mob moved.
         /// <para>RTK's routine has two cases and this keeps both. Standing right next to the player

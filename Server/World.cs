@@ -379,8 +379,6 @@ public sealed partial class World
         if (best is null || best.PlayerId == mob.TargetId) return;
         mob.TargetId = best.PlayerId;
         mob.TargetMobId = 0;
-        mob.DetourDir = NoDetour;
-        mob.DetourLeft = 0;
     }
 
     // Facing (0=N 1=E 2=S 3=W) toward a delta, preferring the larger axis — used to turn a mob to face
@@ -1077,7 +1075,7 @@ public sealed partial class World
             mob.Threat?.Clear();
             mob.TargetId = 0;
             mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0;   // a full reset supersedes any earlier Amnesia peel
-            mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+            mob.AttackTimer = 0;
             mob.TargetMobId = 0;
             if (!_maps.TryGetValue(mapId, out var m)) return;
             var foes = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.Id != mob.Id
@@ -1089,12 +1087,9 @@ public sealed partial class World
 
     // ---- mob movement (World.MobMovement.cs) --------------------------------------------------
     // The step primitives — StepMobToward, StepMobAway, StepMobStraight, StepMobTo, Dart and the MobBlocked
-    // gate — are World.MobMovement (#37, section 2). NoDetour stays here: ConfuseMob, TryDamage and the tick
-    // reset it, and the movement code reads it as the enclosing type's constant.
-
-    /// <summary>No sideways shuffle in progress — see <see cref="Mob.DetourDir"/>. Vestigial now the blocked
-    /// fallback is RTK's stateless random walk (see <see cref="StepMobToward(ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}}, bool)"/>); the field and its resets are harmless and kept to avoid churn.</summary>
-    private const byte NoDetour = 0xFF;
+    // gate — are World.MobMovement (#37, section 2). No movement state is left in this file: the
+    // sideways-shuffle bookkeeping a blocked chaser used to keep went with #149, having been replaced by
+    // RTK's stateless random walk on 2026-08-24 and written but never read since.
 
     /// <summary>Remaining-HP percent for a mob's over-head bar — 1..100 while alive so a living creature's
     /// bar never reads empty. Mirrors Session's own private HpPercent(Mob); the two must agree or a healed
@@ -1110,7 +1105,7 @@ public sealed partial class World
     /// <summary>A player swung at <paramref name="mob"/> — hit OR miss. A prey creature (<see cref="Mob.Flees"/>)
     /// bolts: it stays spooked for <see cref="PanicMs"/>, refreshed by each further swing, which WIDENS the
     /// distance at which it notices you (<see cref="FleeRadius"/>) rather than changing how far its dart
-    /// carries — see <see cref="Dart"/> and <see cref="PreyDartTiles"/>. No effect on anything
+    /// carries — see <see cref="MobMovement.Dart"/> and <see cref="PreyDartTiles"/>. No effect on anything
     /// else — an ordinary mob is provoked by <see cref="TryDamage"/>, which needs damage to have landed.</summary>
     public void Spook(Mob mob)
     {
@@ -2177,7 +2172,7 @@ public sealed partial class World
             // mob it was scrapping with (a pet) and re-points it at the player, and it overrides the
             // stuck-mob retarget in Tick — so zapping something always drags its aggro onto you, wall or no
             // wall, however unreachable you are.
-            if (!died && attackerId != 0) { mob.TargetId = attackerId; mob.TargetMobId = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+            if (!died && attackerId != 0) { mob.TargetId = attackerId; mob.TargetMobId = 0; }
             // Being hit wakes a sleeping creature (RTK sleep.lua on_takedamage_while_cast). Paralyze
             // deliberately does NOT clear here — a paralyzed mob stays held while you beat on it.
             if (!died && mob.HasStatus("sleeps", Environment.TickCount64))

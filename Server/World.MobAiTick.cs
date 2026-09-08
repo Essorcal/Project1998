@@ -583,7 +583,7 @@ public sealed partial class World
                                    // moment it reaches them, so the pursuit is self-limiting.
                                    || mob.Key == IceBeastKey
                                    || Math.Max(Math.Abs(target.PlayerX - mob.HomeX), Math.Abs(target.PlayerY - mob.HomeY)) <= ChaseLeash);
-                if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+                if (!inRange) { mob.TargetId = 0; mob.AttackTimer = 0; }
                 else
                 {
                     int tdx = target!.PlayerX - mob.X, tdy = target.PlayerY - mob.Y;
@@ -736,7 +736,7 @@ public sealed partial class World
                         if (reachable.Count > 0)
                         {
                             mob.TargetId = reachable[Random.Shared.Next(reachable.Count)].PlayerId;
-                            mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+                            mob.AttackTimer = 0;
                         }
                     }
                     return;
@@ -751,7 +751,7 @@ public sealed partial class World
             {
                 var foe = m.Mobs.FirstOrDefault(o => o.Alive && o.Id == mob.TargetMobId);
                 if (foe is null || Math.Max(Math.Abs(foe.X - mob.HomeX), Math.Abs(foe.Y - mob.HomeY)) > ChaseLeash)
-                { mob.TargetMobId = 0; mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+                { mob.TargetMobId = 0; mob.AttackTimer = 0; }
                 else
                 {
                     int rdx = foe.X - mob.X, rdy = foe.Y - mob.Y;
