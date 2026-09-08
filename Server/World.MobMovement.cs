@@ -15,7 +15,8 @@ public sealed partial class World
     /// The mob step primitives, called by <see cref="MobAiTick.Step"/> at exactly the moments the code was
     /// called when it lived in World.cs: <see cref="Dart"/> for the three fleers (prey, the wounded rout,
     /// Sute), <see cref="StepMobToward"/> for the chase, the pet movers and the walk home, and
-    /// <see cref="MobBlocked"/> from the tick's own wander step.
+    /// <see cref="MobBlocked"/> from the tick's own wander step — which since #150 also ends in
+    /// <see cref="StepMobTo"/>, so no step in the world commits anywhere else.
     ///
     /// <para>Static, as #37 named it: every helper is parameter-pure over the tick's per-map context — the
     /// map, the collision sets and the outbound queues — and touches no <c>World</c> field of its own. The
@@ -307,17 +308,31 @@ public sealed partial class World
         }
 
         /// <summary>Commit a validated mob step and trigger any trap on its destination. Caller holds
-        /// <c>_lock</c>.</summary>
-        private static bool StepMobTo(World world, ushort mapId, MapState m, Mob mob, int nx, int ny, byte dir,
-                                      HashSet<(int, int)> mobTiles,
-                                      List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
-                                      List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
+        /// <c>_lock</c>.
+        ///
+        /// <para><b>The only commit in the world.</b> Every step a creature takes ends here — the chase, the
+        /// retreat, the straight hop, the dart, and since #150 the tick's wander step, which used to keep a
+        /// copy of these statements and so was the one path the Ice Beast melt below could not reach. The
+        /// callers differ in how they choose and validate <c>(nx,ny)</c>; none of them may commit it
+        /// themselves.</para>
+        ///
+        /// <para><c>internal</c> rather than <c>private</c> for that last caller: the wander step lives in
+        /// <see cref="MobAiTick"/>, a sibling class nested in <c>World</c> and not in this one, which
+        /// <c>private</c> does not reach. It stays inside <c>World</c> either way.</para></summary>
+        internal static bool StepMobTo(World world, ushort mapId, MapState m, Mob mob, int nx, int ny, byte dir,
+                                       HashSet<(int, int)> mobTiles,
+                                       List<(ushort map, uint id, ushort x, ushort y, byte dir)> moves,
+                                       List<(ushort map, Mob mob, int dmg, uint ownerId)> trapDamage)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             ushort ox = mob.X, oy = mob.Y;
-            mobTiles.Remove((mob.X, mob.Y));
+            mobTiles.Remove((mob.X, mob.Y));                 // vacate the old tile
             mob.X = (ushort)nx; mob.Y = (ushort)ny;
-            mobTiles.Add((nx, ny));
+            mobTiles.Add((nx, ny));                          // occupy the new one
+            // Broadcast the SOURCE tile, not the destination: the 4.95 client's 0x0C walk always ends
+            // one tile PAST the packet tile in the walk direction (forward-slide overshoot, proven by
+            // live trace), and for a single-stepping mob there's no 0x04 commit to correct it. Sending
+            // source makes client_final = source + forward(dir) = the real destination.
             moves.Add((mapId, mob.Id, ox, oy, dir));
             // The Ice Beast melts the instant it steps onto its lava (RTK ice_beast.lua move hook). Lethal
             // self-damage is queued like a trap hit so it flows through the normal death path: its Ice heart drops
