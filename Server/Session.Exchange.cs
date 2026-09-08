@@ -180,6 +180,24 @@ public partial class Session
     {
         var mine  = trade.OfferOf(this);
         var other = trade.Other(this);
+
+        // #57: re-ask TryStartTrade's gate. It used to be asked exactly once, when the window opened, and
+        // nothing looked again — so a party who had warped away or been killed could still finalize. The
+        // teardowns in Die() and Session.EnterMap close the window at the moment either of those happens;
+        // this is the check that agrees with them, and it covers the orders they cannot: a confirm already on
+        // our read loop when the victim's Hp reaches 0 (that write and Die()'s teardown are two steps under
+        // the victim's monitor, and this runs under ours), and any future path that relocates a player
+        // without going through Session.EnterMap.
+        //
+        // Refused on BOTH confirms, not only the finalizing one: a latch a dead trade is allowed to set is a
+        // second state to reason about for no gain, and the window has to close either way. Same line the
+        // cancel and disconnect teardowns use — RTK has no separate walk-away text to port.
+        if (IsDead || other.IsDead || other.CharMap != CharMap)
+        {
+            EndTrade(trade, "Exchange cancelled.");
+            return;
+        }
+
         mine.Confirmed = true;
 
         if (trade.OfferOf(other).Confirmed) { FinalizeTrade(trade); return; }

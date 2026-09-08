@@ -172,6 +172,12 @@ public sealed partial class Session
 
     private static void FinalizeTradeLocked(Trade trade, Session a, Session b)
     {
+        // Re-read under BOTH monitors (#57). The confirm that got us here checked `trade.Ended` on the way in
+        // holding only its own side's monitor, and then blocked on the pair — so a teardown running on the
+        // other side's thread (a warp, a death, a cancel, a disconnect) could have finished in that window
+        // and this would still move the goods. The check has to be inside the pair to mean anything.
+        if (trade.Ended) return;
+
         uint goldA = Math.Min(trade.OfferA.Gold, a._char.Coins);
         uint goldB = Math.Min(trade.OfferB.Gold, b._char.Coins);
         a._char.Coins = a._char.Coins - goldA + goldB;
@@ -226,8 +232,20 @@ public sealed partial class Session
     /// packet does the closing: a finished exchange lands the second half of the 0x42 sub-5 confirm latch
     /// (sub-5 <c>extra=0</c>, which the client only acts on because it already saw <c>extra=1</c> from the
     /// first confirm), while everything else — cancel, walk-away, disconnect — uses sub-4, which pops its box
-    /// and closes unconditionally. Both are message boxes, so no status-line notify is needed.</summary>
-    private static void EndTrade(Trade trade, string message, bool done = false)
+    /// and closes unconditionally. Both are message boxes, so no status-line notify is needed.
+    ///
+    /// <para><b>Runs under BOTH sessions' monitors.</b> This is the only writer of <c>_trade</c> (Trade.cs)
+    /// and it writes BOTH sides' — a cross-session write, which #29 rule 2 says belongs under the peer's
+    /// monitor as much as our own. That was survivable while every caller was a packet from one of the two
+    /// windows or that side's own disconnect; the walk-away and death teardowns (#57) are entered from
+    /// whichever side moved, so the peer's <c>_trade</c> and the peer's send now happen under the peer's
+    /// monitor too. <see cref="WithStatePair"/> takes the two in <c>StateRank</c> order like every other
+    /// nested acquisition, so two teardowns racing from opposite sides cannot deadlock, and the finalizer —
+    /// which already holds both — sees a re-entrant no-op.</para></summary>
+    private static void EndTrade(Trade trade, string message, bool done = false) =>
+        WithStatePair(trade.A, trade.B, () => EndTradeLocked(trade, message, done));
+
+    private static void EndTradeLocked(Trade trade, string message, bool done)
     {
         if (trade.Ended) return;
         trade.Ended = true;

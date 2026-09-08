@@ -1399,6 +1399,12 @@ public sealed partial class Session
         const bool PvpEntryWarning = false;
         bool warnPvp = PvpEntryWarning && Content.IsPvpMap(mapId) && !Content.IsPvpMap(_char.Map);
 
+        // #57: an open exchange does not survive a relocation. This funnel is every position change that is
+        // not a walk step, so it covers the door, the world map, the Gateway, the GM teleports and a revive
+        // alike; TryStartTrade's same-map check was the only distance rule the trade had, and nothing asked
+        // it again. Before LeaveMap, so both windows close while we are still standing where the trade
+        // started — and outside World._lock, which LeaveMap takes for itself (Session.State.cs rule 1).
+        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
         // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
         // clear our session-local debug dummies (the client drops all foreign entities on a map change).
         _world.LeaveMap(this, _char.Map);

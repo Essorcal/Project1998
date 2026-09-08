@@ -1080,6 +1080,20 @@ public sealed partial class Session
         ApplyDeathPenalties();                                            // exp/coin/gear/pile — see below
         SendMiniText("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
         SaveChar();                                                       // the penalties above must survive a crash, not just a clean logout
+        // #57: a ghost cannot finish an exchange. TryStartTrade already refuses to OPEN a window on a dead
+        // player; until this line nothing closed one that was already open, so a corpse could still confirm
+        // and the goods moved.
+        //
+        // LAST, not first. EndTrade takes BOTH sessions' monitors through WithStatePair, and when the partner
+        // ranks BELOW us that acquisition is descending: rule 2 (Session.State.cs) exits our own monitor while
+        // it blocks on the partner's. Everything above reads state that a revive landing in that window would
+        // invalidate — a GM `@revive <us>`, an NPC Rebirth or a poet's Resurrect all run on somebody else's
+        // thread — so with the teardown first, the penalties, the "defeated" line and the save could all run
+        // on a player who was alive again, charged for a death that had already been undone. Putting it after
+        // the save means the only drop happens once every read is made. Nothing is lost by ending the trade
+        // late: a partner's confirm arriving while the penalties run is already refused by the
+        // ConfirmExchange gate (`other.IsDead`), which is exactly what that gate is for.
+        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
     }
 
     // The RTK death penalty, ported from Spells/baseFunc/death_save.lua's `uncast` (the hook that actually runs
