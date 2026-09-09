@@ -115,7 +115,7 @@ public static partial class Content
     /// <para>A nation absent from this table cannot be resolved by the client: it scans the table for the
     /// viewer's own nation id and falls back to entry 0 when it misses, at which point every row whose
     /// nation nibble isn't 0 drops out of the columns. So a player whose nation is off this list sees an
-    /// empty window, not a partial one.</para></summary>
+    /// empty window, not a partial one.</para>
     /// <para>ServerTuning holds scalars only, so this is a BITMASK over the nation ids: bit i = nation i.
     /// Default 7 = 0b111 = Neutral + Koguryo + Buya. 255 restores all eight.</para></summary>
     // User-list name colours — row byte +2, a palette index measured live (`@users hunters`). 0..15 is the

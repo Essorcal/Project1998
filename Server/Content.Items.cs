@@ -7,7 +7,7 @@ namespace Server;
 /// 7=left,8=right,9=subleft,10=subright,11=faceacc,12=crown,13=mantle,14=necklace,15=boots,16=coat,
 /// 18=etc/junk…). Stat lines feed the equip bonuses.
 /// <para><b><c>Armor</c> is an AC DELTA, signed lower-is-better</b> — the same units as
-/// <see cref="Character.Ac"/>, mobs' <c>MobArmor</c> and SpellParams.csv's <c>armor</c> buff stat. Damage
+/// <see cref="Shared.Character.Ac"/>, mobs' <c>MobArmor</c> and SpellParams.csv's <c>armor</c> buff stat. Damage
 /// taken is <c>raw x (1 + ac/100)</c>, so MORE AC = MORE DAMAGE: a spring garb is -4 (protective) and a
 /// wedding dress is +30 (a real penalty). It just ADDS to the wearer's AC — nothing negates it anywhere.</para>
 /// </summary>
@@ -109,7 +109,7 @@ public sealed record ItemDef
     public bool IsEquip => Type is >= 3 and <= 16;
 
     /// <summary>Owner-bound gear: it binds to whoever first obtains one, only that owner may equip it, and the
-    /// examine tooltip names them (<see cref="InvItem.Owner"/>). NOT the same as <see cref="NoDrop"/> — a bound
+    /// examine tooltip names them (<see cref="Shared.InvItem.Owner"/>). NOT the same as <see cref="NoDrop"/> — a bound
     /// item still drops and trades freely, it just stays bound wherever it goes (which is why the owner rides
     /// on the ground item) — and NOT the same as <see cref="Unrepairable"/> or <see cref="BreakOnDeath"/>, each
     /// of which is its own column in the registry. <see cref="BondedItemIds"/> says where the set comes

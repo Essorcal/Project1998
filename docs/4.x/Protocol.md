@@ -1459,7 +1459,7 @@ Gotchas that cost real debugging time:
   `0x48c7c7` is literally `mov eax,[edi+0xb24]` → the packet builder `0x48cd00`, 5.33 `0x4d2cb2` the same
   from `+0xa88`. The button does **not** reuse the id from the `0x43` click that opened the window, so a
   zero here makes exchange silently dead: the client sends `4a 00 00 00 00 00 00` and the server's
-  `PlayerById(0)` matches nobody. RTK agrees — `clif_clickonplayer` writes `SWAP32(bl->id)` in exactly
+  `Online.ById(0)` matches nobody. RTK agrees — `clif_clickonplayer` writes `SWAP32(bl->id)` in exactly
   this slot, immediately before the `FLAG_GROUP` / `FLAG_EXCHANGE` bytes.
 - **Group / exchange status cells.** Both views show a **group** (sociable) and **exchange** (trade)
   indicator. In `0x34` they're the two `u8` cells after the scalar (were briefly guessed as "look-selectors");
@@ -3080,7 +3080,7 @@ Previously (2026-07-25 fix) it used to fall through to `SendClickProfile`, which
 
 **Click another real player → their real profile (fixed 2026-07-26).** RTK's `clif_clickonplayer` — same
 `0x34` opcode, populated from the TARGET's own data, not the clicker's. `SendClickProfile` now takes a
-target `Session` (found via `World.PlayerById`) instead of implicitly using `_char`; its helpers
+target `Session` (found via `World.Online.ById`) instead of implicitly using `_char`; its helpers
 (`WeaponLook`/`ShieldLook`/`ProfileCellIcon`/`GearListText`) are called ON that target session, which works
 because they're private instance methods of the same `Session` class — legal to call cross-instance. This
 is more than cosmetic: the group/exchange status cells in that packet (§9.5) are what the client reads to
@@ -3253,11 +3253,10 @@ What it produces — verified by simulating the port before shipping it:
 
 One deliberate departure from `FindCoords`, in its "nothing worked" branch: RTK flails at up to **11 fully
 random sides**, which lets a stuck mob walk eleven tiles straight away from you — that does not happen in the
-real game. The mob shuffles **sideways only** instead: the two directions perpendicular to the axis it's
-stuck on, never the one straight back. Run *length* is not the constraint — `Mob.DetourDir`/`DetourLeft`
-carry a shuffle 1-3 tiles usually and occasionally up to 6, so it isn't metronomic (without a run counter
-every shuffle is exactly one tile out and one back, because the closing step always wins the next tick). It's
-the *direction* that has to stay honest.
+real game. Since 2026-08-24 the blocked-chaser fallback takes **one random step per tick** instead: sideways
+or straight away from the target with equal odds, up to 11 draws until a free tile turns up, and it carries
+no state between ticks — nothing remembers a run length or a chosen side, so a still-blocked mob re-rolls
+independently on the next tick (`Server/World.MobMovement.cs`, the comment on `StepMobToward`'s fallback).
 
 RTK's other fallback — re-rolling `mob.target` to a random nearby player when it can't reach the current one
 — **is** ported, gated on `Mob.Aggressive` (a creature fighting only because you provoked it should keep
@@ -3438,7 +3437,7 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     AND the caster's own (`CastMorph`/`RevertMorph` now call `ShowPlayer(this)` directly on top of the
     `except:this` peer broadcast, rather than skipping self). The target id is still the caster's own
     persistent player id — never added to `World`'s mob list — so `HandleClickInfo` (which checks `MobById`
-    before `PlayerById`) keeps resolving clicks to the real player profile/party/trade flow unchanged.
+    before `Online.ById`) keeps resolving clicks to the real player profile/party/trade flow unchanged.
     `Content.MorphSpells`/`MorphDispatchSpells`, `Session.CastMorph`/`RevertMorph`, `PlayerSnapshot.MorphLook`,
     `Session.ShowPlayer`'s branch, `World.Tick`'s expiry sweep. Also added: a synthetic zero-stat entry in
     `_buffs` for the active morph, so the self-profile's buff/duration box (`BuffBoxText`, issue #6) actually
@@ -3904,7 +3903,7 @@ matching RTK's wire layout exactly (`clif.c:7644`: `dstlen = RFIFOB(fd,5); msgle
 Dispatched to `Session.HandleWhisperPacket`, which is now the ONLY entry point — the `@whisper` / `@w`
 chat fallbacks were removed once this opcode was confirmed real. `Content.CanTalk`
 (RTK `cantalk`, 2/9850 maps) and the not-found message (`"<name> is nowhere to be found."`) are RTK's exact
-wording. `World.FindPlayer(name)` is the case-insensitive online-lookup this needed. **Error channels fixed
+wording. `World.Online.FindPlayer(name)` is the case-insensitive online-lookup this needed. **Error channels fixed
 2026-08-19** (they had drifted onto `SendLog` = `0x0D` self-speech, so the client spoke the failure aloud
 as the player's own words): the not-found and can't-hear lines are **blue** (`SendBlueMessage` =
 `SendMiniText` type 0 — RTK `clif_sendbluemessage`, which writes an `0x0A` with type 0), and the cantalk
@@ -4112,7 +4111,7 @@ this 4.95 client sends the same sentinel.
 **server-wide, not map-scoped** channel: every *other* online player whose `class` matches the sender's
 AND who also has subpath chat on receives `<@Name> (ClassName) message`. `Session.DoSubpathChat` ports
 this: gated on the sender's own `SubpathChat` flag and the map's `cantalk` flag (same `Content.CanTalk`
-gate whisper uses), it iterates `World.AllPlayers()` (new — a server-wide roster, unlike the map-scoped
+gate whisper uses), it iterates `World.Online.All()` (new — a server-wide roster, unlike the map-scoped
 `World.Broadcast`) and compares `ClassName` (our single string stands in for RTK's finer-grained numeric
 `class`/mark). Rendered via `SendMiniText` at the default `type=3` (proven-live mini/status pane) rather
 than RTK's literal `type=11` (its "group" channel, reused for subpath) — **unconfirmed** whether 4.95
@@ -4424,7 +4423,7 @@ click that opened the window — it re-reads it out of the field the `0x34` repl
 (`[window+0xb24]` on 4.95, `+0xa88` on 5.33), i.e. the `u32BE` this server puts in the click-profile
 packet. That field shipped as a hardcoded `0` (documented as an unknown "scalar", §9.5) until 2026-08-21,
 so **every** exchange attempt on **both** clients arrived as `4a 00 00 00 00 00 00` and died in
-`PlayerById(0)` — the button was firing correctly the whole time. `SendClickProfile` sends the real
+`Online.ById(0)` — the button was firing correctly the whole time. `SendClickProfile` sends the real
 `Character.Id` now.
 
 **Native hand-item / hand-gold — NOW WIRED (2026-08-17).** RTK's real hand gesture (select a bag item, face
@@ -4715,7 +4714,7 @@ all** — no such struct/feature exists anywhere in the C engine — so `@friend
 original addition: a saved name list plus a live online check on `@friend` (list), nothing more (no
 login/logout push notification).
 
-**Weather (`World` `MapState.Weather`/`GetWeather`/`SetWeather`, `Session.SendWeather`, opcode `0x1F`).**
+**Weather (`World` `MapState.Weather`/`Weather.Get`/`Weather.Set`, `Session.SendWeather`, opcode `0x1F`).**
 RTK's `clif_sendweather` (`clif.c:4565`) is a real, complete wire format — a single byte, 0=clear/1=WRAIN/
 2=WSNOW (`map.h`) — but it's gated by `sd->status.settingFlags & FLAG_WEATHER`, a per-player options toggle
 with no evidence either way that the 4.95 client's older UI even has it. Ported at face value (best real
@@ -4734,7 +4733,7 @@ up live.
 
 **The calendar is anchored to a real-world epoch, not counted (2026-08-12).** `Shared/GameCalendar.cs` —
 `Epoch` = `2026-08-12T00:00:00-07:00`, at which the world reads **Yuri 1, Spring, day 1, hour 0**; the
-current date is then a pure function of wall-clock time (`World.SyncClock` re-reads it every tick and
+current date is then a pure function of wall-clock time (`World.Clock.Sync` re-reads it every tick and
 broadcasts `0x20` on each in-game hour rollover). It lives in `Shared`, not `Server`, because the LOGIN
 server — a separate process with no `World` — stamps a new character's "Born in ..." legend with it (§9.5
 "Dated legend text"). This is the one deliberate divergence from RTK, which increments a counter and

@@ -213,7 +213,7 @@ public static class Combat
     /// floor, <c>1.0 + (-80/100.0)</c> evaluates to 0.19999999999999996, so a maximally armored player took
     /// 19% of a hit where the model says 20% — off by a whole point at exactly the value the clamp makes most
     /// common. The integer form is exact at every hundredth and reproduces all 19 live Spark readings
-    /// unchanged; <see cref="Tests"/>' CombatArmorTests pins both that and this case.</para></summary>
+    /// unchanged; <c>Tests.CombatArmorTests</c> pins both that and this case.</para></summary>
     public static int ApplyArmor(double rawDamage, int armor, int floor)
     {
         double deduction = (100 + Math.Max(armor, floor)) / 100.0;

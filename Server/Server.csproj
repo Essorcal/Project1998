@@ -30,6 +30,12 @@
          DOTNET_gcServer=0. The slow-tick watchdog prints a per-tick gc figure to tell if it mattered. -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+
+    <!-- #125: turns on the CS1574/CS0419 dangling-cref check that every other warning already gets
+         (TreatWarningsAsErrors above). CS1591 (missing doc comment) and CS1573 (missing a param tag) are
+         pervasive and not what this is for; suppressed rather than fixed en masse. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
   </PropertyGroup>
 
 </Project>

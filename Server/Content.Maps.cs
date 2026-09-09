@@ -208,7 +208,7 @@ public static partial class Content
         private set => Builder.PathHalls = value;
     }
 
-    // Gateway spell gate-boxes per kingdom region 0-3 (Session.CastGateway). Gates keyed by 'n'/'e'/'s'/'w'.
+    // Gateway spell gate-boxes per kingdom region 0-3 (Session.LuaGateway). Gates keyed by 'n'/'e'/'s'/'w'.
     // See GatewayGates.csv.
     public sealed record GatewayDef(ushort Map, string City,
         IReadOnlyDictionary<char, (int Xlo, int Xhi, int Ylo, int Yhi)> Gates);

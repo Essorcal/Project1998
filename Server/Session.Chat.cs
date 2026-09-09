@@ -224,7 +224,7 @@ public sealed partial class Session
     internal void NotifyGroup(string text) => SendMiniText(text, type: 3);
 
     /// <summary>Wisdom / "Listen to advice" (0x1b sub-4): stream a periodic gameplay hint into the chat channel
-    /// (SendMiniText type 11 — RTK's advice type 99 -> 11, the "group & subpath" chat channel, which is where
+    /// (SendMiniText type 11 — RTK's advice type 99 -> 11, the "group &amp; subpath" chat channel, which is where
     /// the tips belong). A no-op for anyone who turned the option off. Fired on the world's ~15-minute advice
     /// tick (World.Tick / AdviceTicks), mirroring RTK's per-player pc_timer advice cadence.</summary>
     internal void SendAdvice()

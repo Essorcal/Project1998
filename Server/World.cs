@@ -49,7 +49,7 @@ public sealed class GroundItem
 /// <summary>A hidden hazard placed by a Rogue trap spell (RTK NPCs/trap/rogue_traps/*): invisible — no
 /// ground graphic is ever drawn for it (unlike <see cref="GroundItem"/>) — until a mob steps onto its
 /// tile, at which point its effect fires once and it's removed. See <see cref="World.PlaceTrap"/>/
-/// <see cref="World.TrapAt"/> and Session.CastTrap/CastSpotTraps.</summary>
+/// <c>TrapAt</c> and Session.CastTrap/CastSpotTraps.</summary>
 public sealed class Trap
 {
     public uint   Id;
@@ -397,8 +397,9 @@ public sealed partial class World
 
     /// <summary>Builds the world's in-memory state and NOTHING that runs on its own: no tick thread, no
     /// autosave sweep, no watchdog, no restart scheduler, no status writer. Everything with a heartbeat is
-    /// in <see cref="Start"/>, which the process entry point calls (Net.cs) and a test does not — that split
-    /// is what lets a test hold a real World without the server's background machinery attached to it.</summary>
+    /// started by the process entry point (<c>TkListener.StartWorld</c>, Net.cs) and a test does not start it
+    /// — that split is what lets a test hold a real World without the server's background machinery attached
+    /// to it.</summary>
     public World()
     {
         _spawnDirector = new SpawnDirector(this);
@@ -417,36 +418,18 @@ public sealed partial class World
         Restarts = new RestartSchedule(this);
     }
 
-    private int _started;   // 0 until Start() has run; makes a second call a no-op instead of a second tick thread
+    private int _started;   // 0 until the host has started this world; makes a second start a no-op instead of a second tick thread
 
-    /// <summary>Whether <see cref="Start"/> has run — i.e. whether this world has threads attached to the
+    /// <summary>Whether the host has started this world — i.e. whether this world has threads attached to the
     /// process. Public so a test can assert the guarantee the constructor makes, rather than trusting it.</summary>
     public bool IsStarted => Volatile.Read(ref _started) != 0;
 
-    /// <summary>Start the background machinery: the tick and autosave threads, the watchdog probes, the
-    /// restart ladder and the status writer. Idempotent — a second call is a no-op rather than a duplicate
-    /// set of threads.</summary>
-    public void Start()
-    {
-        if (Interlocked.Exchange(ref _started, 1) != 0) return;
-
-        // DEDICATED THREADS, not Task.Run. Both of these used to be thread-pool work items, which put the
-        // world heartbeat behind every other pool item in the process: session read-loop continuations, the
-        // synchronous SQLite saves below, Lua, and any stray blocking call. When the pool ran out of threads
-        // the runtime injected replacements at only ~1-2 per second, and the tick simply did not run in the
-        // meantime — a multi-second, self-recovering freeze of the entire world with nothing in the log to
-        // show for it. A dedicated thread cannot be starved by pool pressure.
-        new Thread(TickLoop)     { IsBackground = true, Name = "world-tick" }.Start();
-        new Thread(AutoSave.Run) { IsBackground = true, Name = "world-autosave" }.Start();
-
-        // Pool headroom + the pool-latency and client-silence probes. Started here because this is the
-        // first point where a World exists for the silence scanner to walk.
-        Watchdog.RaiseMinThreads();
-        Watchdog.Start(this);
-
-        _ = Task.Run(Restarts.Loop);      // restart-warning ladder + the deploy's file trigger (1s cadence, not latency-critical)
-        _ = Task.Run(() => StatusFile.Loop(this));   // run/status.json for the launcher's "N online" pill
-    }
+    /// <summary>Claim the one-shot right to attach the background machinery to this world: true on the first
+    /// call, false on every later one. The threads themselves belong to the process host
+    /// (<c>TkListener.StartWorld</c>, Net.cs), but the guard stays here with the state it guards, so a second
+    /// start is a no-op rather than a duplicate set of threads and <see cref="IsStarted"/> keeps answering
+    /// "does this world have threads attached".</summary>
+    internal bool MarkStarted() => Interlocked.Exchange(ref _started, 1) == 0;
 
     // ---- persistent spawn roster --------------------------------------------------------------
 
@@ -2107,7 +2090,7 @@ public sealed partial class World
     /// grabbing the same tile can't both win — and despawn it for everyone. Null if the tile is empty.
     /// <para><paramref name="pickerId"/> is who is grabbing (0 = an anonymous/system grab, which ignores locks).
     /// Death-pile stacks reserved for someone else are SKIPPED rather than taken, and
-    /// <paramref name="blocked"/> comes back true so the caller can say why nothing happened — RTK
+    /// <c>blocked</c> comes back true so the caller can say why nothing happened — RTK
     /// <c>canLoot</c>'s "That item does not belong to you." Set <paramref name="ownOnly"/> to take ONLY the
     /// picker's own still-locked pile and pass over everything else (RTK <c>isYours</c>, the F1 recovery).</para></summary>
     public GroundItem? PickUp(ushort mapId, int x, int y, uint pickerId = 0, bool ownOnly = false)
@@ -2165,7 +2148,7 @@ public sealed partial class World
     // TickMs between iterations, so the tick's own work doesn't accumulate into drift (the old
     // `await Task.Delay(600)` loop actually ran at ~612ms). If we fall a whole period behind we resync to
     // now instead of trying to catch up — the world would rather skip a beat than run several back-to-back.
-    private void TickLoop()
+    internal void TickLoop()
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long next = TickMs;

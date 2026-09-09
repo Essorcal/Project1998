@@ -36,7 +36,7 @@ public sealed partial class Session
     /// real mob uses — the confirmed client wall is 0x33-specific (every renderKind hardcodes the player
     /// archive), so this is the one packet shape that can actually show peers an animal sprite for us. The
     /// target id is still our real player id (never added to World's mob list), so clicking it keeps
-    /// resolving through PlayerById, not the mob no-op path. Tradeoff: a 0x07 entity carries no name field.</summary>
+    /// resolving through Online.ById, not the mob no-op path. Tradeoff: a 0x07 entity carries no name field.</summary>
     public void ShowPlayer(Session other)
     {
         var s = other.Snapshot();

@@ -307,14 +307,14 @@ public class OnlineRegistryAutoSaveTests
     /// <summary>Two things this move could have broken silently, pinned at the source because neither is
     /// observable from inside the test process.
     ///
-    /// <para><b>The threads.</b> <c>World.Start</c> must still create exactly two, one named
-    /// <c>world-tick</c> running <c>TickLoop</c> and one named <c>world-autosave</c> running the sweep — now
-    /// <c>AutoSave.Run</c> rather than <c>World.AutoSaveLoop</c>. The .NET runtime exposes no way to
-    /// enumerate managed threads by name (<c>Process.Threads</c> hands out OS threads with no managed
-    /// identity), so the alternative to reading the source would be starting a second <c>World</c> in the
-    /// test process — which starts the watchdog, the status writer and the restart ladder, and that ladder
-    /// polls <c>run/restart_at</c> and calls <c>Environment.Exit</c> when it finds one. Not worth it for this
-    /// assertion.</para>
+    /// <para><b>The threads.</b> <c>TkListener.StartWorld</c> must still create exactly two, one named
+    /// <c>world-tick</c> running <c>TickLoop</c> and one named <c>world-autosave</c> running the sweep
+    /// (<c>AutoSave.Run</c>), and <c>World.cs</c> must start none: #37 section 5 moved thread start-up to the
+    /// host, so the pin moved with it. The .NET runtime exposes no way to enumerate managed threads by name
+    /// (<c>Process.Threads</c> hands out OS threads with no managed identity), so the alternative to reading
+    /// the source would be starting a second <c>World</c> in the test process — which starts the watchdog,
+    /// the status writer and the restart ladder, and that ladder polls <c>run/restart_at</c> and calls
+    /// <c>Environment.Exit</c> when it finds one. Not worth it for this assertion.</para>
     ///
     /// <para><b>The two flush wordings.</b> A sweep failure "is retried next sweep"; a shutdown failure is
     /// "save LOST". Reporting the second as the first is the one thing an operator reading the last lines of
@@ -323,23 +323,28 @@ public class OnlineRegistryAutoSaveTests
     ///
     /// <para>Falsified by renaming the thread body (<c>Run</c> to <c>Run2</c> on both sides, so the server
     /// still builds and still starts a <c>world-autosave</c> thread): red with "Assert.Matches() Failure:
-    /// Pattern not found in value / Regex: new Thread\(AutoSave\.Run\)...". Falsified again by softening the
-    /// periodic wording to "retried later": red with "Assert.Contains() Failure: Sub-string not found /
-    /// Not found: that player's save is retried next sweep,...".</para></summary>
+    /// Pattern not found in value / Regex: new Thread\(_world\.AutoSave\.Run\)...". Falsified again by
+    /// softening the periodic wording to "retried later": red with "Assert.Contains() Failure: Sub-string not
+    /// found / Not found: that player's save is retried next sweep,...". Falsified again by renaming the tick
+    /// thread in <c>Net.cs</c> and by adding a third <c>new Thread(</c> to each file: red on the
+    /// <c>world-tick</c> pattern and on the two counts.</para></summary>
     [Fact]
     public void TheThreadWiringAndTheTwoFlushWordingsAreWhereTheyWere()
     {
         string serverDir = Path.Combine(RepoRoot().FullName, "Server");
         string worldSource = File.ReadAllText(Path.Combine(serverDir, "World.cs"));
+        string hostSource = File.ReadAllText(Path.Combine(serverDir, "Net.cs"));
         string sweepSource = File.ReadAllText(Path.Combine(serverDir, "World.AutoSaveLoop.cs"));
 
-        // Exactly two threads, still started from World.Start, still named what the logs and the ops runbook
-        // call them.
-        Assert.Equal(2, Regex.Matches(worldSource, @"new Thread\(").Count);
-        Assert.Matches(@"new Thread\(TickLoop\)\s*\{[^}]*Name = ""world-tick""[^}]*\}\.Start\(\);", worldSource);
-        Assert.Matches(@"new Thread\(AutoSave\.Run\)\s*\{[^}]*Name = ""world-autosave""[^}]*\}\.Start\(\);", worldSource);
-        Assert.Contains("IsBackground = true, Name = \"world-tick\"", worldSource);
-        Assert.Contains("IsBackground = true, Name = \"world-autosave\"", worldSource);
+        // Exactly two threads, now started from TkListener.StartWorld, still named what the logs and the ops
+        // runbook call them. World.cs starts none of its own: section 5 moved thread start-up to the host,
+        // and a thread reappearing in World.cs would put the heartbeat back on the object a test constructs.
+        Assert.DoesNotContain("new Thread(", worldSource);
+        Assert.Equal(2, Regex.Matches(hostSource, @"new Thread\(").Count);
+        Assert.Matches(@"new Thread\(_world\.TickLoop\)\s*\{[^}]*Name = ""world-tick""[^}]*\}\.Start\(\);", hostSource);
+        Assert.Matches(@"new Thread\(_world\.AutoSave\.Run\)\s*\{[^}]*Name = ""world-autosave""[^}]*\}\.Start\(\);", hostSource);
+        Assert.Contains("IsBackground = true, Name = \"world-tick\"", hostSource);
+        Assert.Contains("IsBackground = true, Name = \"world-autosave\"", hostSource);
 
         // The sweep itself no longer lives in World.cs at all.
         Assert.DoesNotContain("private void AutoSaveTick()", worldSource);

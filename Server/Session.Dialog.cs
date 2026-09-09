@@ -1741,7 +1741,7 @@ public sealed partial class Session
     /// <code>
     ///   [0][1][2] u8 x3   [3] u8+str   u8+str   u8+str   u8+str   u8
     ///   u32BE             u8+str
-    ///   (u16,u8) x5                                              <- FIVE (icon, colour) cells
+    ///   (u16,u8) x5                                              &lt;- FIVE (icon, colour) cells
     ///   u8+str            u8   u8
     /// </code>
     /// <para>31 bytes minimum against 4.95's 22. The ONE structural break is the equipment cells: 4.95 puts
@@ -2061,7 +2061,7 @@ public sealed partial class Session
         // the "Exchange" button hands it straight back: 4.95 0x48c7c7 does `mov eax,[edi+0xb24]` -> the
         // 0x4a builder at 0x48cd00 (`00 targetId(u32BE) 00`), 5.33 0x4d2cb2 the same from +0xa88. Sending
         // 0 here is why exchange did nothing on either client: the button fired, but every 0x4a arrived as
-        // `00 00 00 00 00 00` and HandleExchangeRequest's PlayerById(0) found nobody. The click that OPENS
+        // `00 00 00 00 00 00` and HandleExchangeRequest's Online.ById(0) found nobody. The click that OPENS
         // this window (0x43) already carries the id, so the client never needed to remember it — it reads
         // it back out of the reply.
         d.AddRange(PacketWriter.U32BEBytes(tc.Id));

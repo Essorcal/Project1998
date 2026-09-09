@@ -14,7 +14,7 @@ public sealed partial class World
     /// <summary>
     /// The mob step primitives, called by <see cref="MobAiTick.Step"/> at exactly the moments the code was
     /// called when it lived in World.cs: <see cref="Dart"/> for the three fleers (prey, the wounded rout,
-    /// Sute), <see cref="StepMobToward"/> for the chase, the pet movers and the walk home, and
+    /// Sute), <see cref="StepMobToward(World, ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}})"/> for the chase, the pet movers and the walk home, and
     /// <see cref="MobBlocked"/> from the tick's own wander step — which since #150 also ends in
     /// <see cref="StepMobTo"/>, so no step in the world commits anywhere else.
     ///
@@ -226,7 +226,7 @@ public sealed partial class World
         {
             /// <summary>Open the gap from (tx,ty) — <see cref="StepMobAway"/>, sideways slip and all.</summary>
             Away,
-            /// <summary>Close on (tx,ty), stopping the moment the mob is in reach — <see cref="StepMobToward"/>.</summary>
+            /// <summary>Close on (tx,ty), stopping the moment the mob is in reach — <see cref="StepMobToward(World, ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}})"/>.</summary>
             Toward,
             /// <summary>Straight ahead in <see cref="Mob.Dir"/>, wherever that points (the blind rout).</summary>
             Straight,

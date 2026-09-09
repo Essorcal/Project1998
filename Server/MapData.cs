@@ -245,7 +245,7 @@ public sealed class MapData
     /// <summary>Make sure map <paramref name="id"/> is loaded, from a caller that holds NO lock. Call this
     /// before entering a critical section that will read the map: it moves the disk + SQLite cost off the
     /// locked path, so the section itself only ever hits the cache. No-op for an unknown map id or one that
-    /// is already cached. See <see cref="For"/> for why this matters.</summary>
+    /// is already cached. See <see cref="For(ushort, ushort, ushort)"/> for why this matters.</summary>
     public static void Prewarm(ushort id)
     {
         lock (Cache)
@@ -258,7 +258,7 @@ public sealed class MapData
     public static MapData? For(ushort id) =>
         Content.Maps.TryGetValue(id, out var mi) ? For(id, mi.Xs, mi.Ys) : null;
 
-    /// <summary>Drop every cached map so the next <see cref="For"/> re-reads the <c>.map</c> file from disk.
+    /// <summary>Drop every cached map so the next <see cref="For(ushort, ushort, ushort)"/> re-reads the <c>.map</c> file from disk.
     /// Called by the hot-reload path (<c>@reload</c>): a changed <c>TK&lt;id&gt;.map</c> (terrain / object edits)
     /// or a changed <c>MapCells.csv</c> then takes effect for anyone who re-enters or re-requests the map, no
     /// server restart needed. Runtime state (open doors) SURVIVES this — it is reloaded from the database on

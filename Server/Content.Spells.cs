@@ -425,7 +425,7 @@ public static partial class Content
     /// they carry <c>SplMark</c> 1-3 and are pinned to <see cref="MarkSpellLevel"/>, so a level-99 base
     /// character sees none of them and an Ee san sees ranks 1 and 2 (ranks are cumulative — you keep what Il
     /// san taught you). Before this the column was read by nothing at all, which is how every level-99
-    /// character ended up holding secrets belonging to ranks they had never earned.</para></summary>
+    /// character ended up holding secrets belonging to ranks they had never earned.</para>
     /// <para>Dog spells are NOT here and must not be added: "The guildmaster is not involved in these spells"
     /// (nexusatlas Dog Spells listing) — the class's Dog teaches them itself, in exchange for kills and goods.
     /// They carry <c>SplPthId</c> 99, which no class filter matches, so they drop out of this list naturally;
@@ -1631,8 +1631,8 @@ public static partial class Content
     // BUT that only blocks 0x33. Session.ShowPlayer is the single choke point every peer re-sync path funnels
     // through (join, map-change, equip/mount refresh — Session.cs greps confirm no other path builds a peer's
     // look). Rerouting a morphed player's entry there to the SAME 0x07 Monster.epf creature-spawn already used
-    // for real mobs (0x8000|look) works for every OTHER client's view: the click/PlayerById resolution in
-    // HandleClickInfo checks `_world.MobById` before `_world.PlayerById`, and a morphed player is never added
+    // for real mobs (0x8000|look) works for every OTHER client's view: the click/Online.ById resolution in
+    // HandleClickInfo checks `_world.MobById` before `_world.Online.ById`, and a morphed player is never added
     // to the mob list — only their RENDER packet changes — so clicks/party/trade keep resolving to the real
     // player unchanged. Deliberately accepted tradeoffs: the caster's own screen still shows themselves as
     // human (the confirmed wall above); a 0x07 entity carries no name field (§7.2), so a morphed player shows
