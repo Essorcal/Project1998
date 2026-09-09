@@ -2913,7 +2913,7 @@ public sealed partial class Session
     // of a peer's. So Session.ShowPlayer — the single choke point every peer re-sync path already funnels
     // through — now updates the CASTER's own view too (World.Broadcast with no `except`, including a
     // self-call). The caster's own id never enters World's mob list, so click/party/trade resolution
-    // (HandleClickInfo checks MobById before PlayerById) is unaffected either way.
+    // (HandleClickInfo checks MobById before Online.ById) is unaffected either way.
     private ushort _morphLook;     // 0 = not morphed; else the Monster.tbl index peers see us as (0x8000|this)
     private byte   _morphColor;
     private long   _morphUntil;

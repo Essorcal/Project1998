@@ -1631,8 +1631,8 @@ public static partial class Content
     // BUT that only blocks 0x33. Session.ShowPlayer is the single choke point every peer re-sync path funnels
     // through (join, map-change, equip/mount refresh — Session.cs greps confirm no other path builds a peer's
     // look). Rerouting a morphed player's entry there to the SAME 0x07 Monster.epf creature-spawn already used
-    // for real mobs (0x8000|look) works for every OTHER client's view: the click/PlayerById resolution in
-    // HandleClickInfo checks `_world.MobById` before `_world.PlayerById`, and a morphed player is never added
+    // for real mobs (0x8000|look) works for every OTHER client's view: the click/Online.ById resolution in
+    // HandleClickInfo checks `_world.MobById` before `_world.Online.ById`, and a morphed player is never added
     // to the mob list — only their RENDER packet changes — so clicks/party/trade keep resolving to the real
     // player unchanged. Deliberately accepted tradeoffs: the caster's own screen still shows themselves as
     // human (the confirmed wall above); a 0x07 entity carries no name field (§7.2), so a morphed player shows

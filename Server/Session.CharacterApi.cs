@@ -188,7 +188,7 @@ public sealed partial class Session
 
     /// <summary>
     /// Force-save now if dirty, ignoring the AutoSaveMs throttle. Used by SaveChar's immediate high-value
-    /// saves, World's periodic sweep (idle players), the graceful-shutdown flush (World.SaveAllPlayers), a
+    /// saves, World's periodic sweep (idle players), the graceful-shutdown flush (World.AutoSave.SaveAll), a
     /// GM kick and KickForReplacement — four different threads, which is the whole reason this is shaped the
     /// way it is.
     ///
@@ -267,7 +267,7 @@ public sealed partial class Session
     /// World's online-session registry for the duplicate-login guard. Only meaningful once _enteredWorld.</summary>
     internal string UserKey => CharacterStore.Key(_char.Name);
 
-    /// <summary>Force this session out because the same account just logged in elsewhere (World.RegisterOnline
+    /// <summary>Force this session out because the same account just logged in elsewhere (World.Online.Register
     /// detected the collision in HandleArrival). Flushes any pending mutation FIRST so the new session's
     /// upcoming _store.Load sees our latest state, marks us _replaced (so the read-loop's own disconnect
     /// save — which could otherwise fire moments later with now-stale data — is skipped), then tears the
