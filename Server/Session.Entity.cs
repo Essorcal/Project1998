@@ -388,7 +388,7 @@ public sealed partial class Session
     /// alongside the new one — exactly the "walk away and back" repro, since leaving view fully despawns
     /// (0x0E) before anything re-spawns. Fix: force the proven-reliable despawn ourselves before every
     /// peer redraw, instead of trusting the client to replace in place. Self's own view isn't affected —
-    /// SendSelfLook updates the persistent self entity directly rather than destroying/recreating it.</summary>
+    /// SendSelfLook updates the persistent self entity directly rather than destroying/recreating it.
     ///
     /// <para>SUPERSEDED for the common case (2026-08-08): <c>0x1d</c> is the packet this always wanted.
     /// Its handler <c>0x450db0</c> takes <c>id(u32BE) kind(u8) look[7]</c>, looks the entity up with
@@ -451,7 +451,7 @@ public sealed partial class Session
     }
 
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
-    /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
+    /// a ghost that can't fight, can't cast, and won't regen until <see cref="ReviveAt"/>/<see cref="ReviveInPlace"/> restores it.</summary>
     public bool IsDead => _char.Hp == 0;
 
     /// <summary>A dead player on a PvP map (Vale, the Sire Pit, any Content.IsPvpMap) is a HIDDEN ghost:

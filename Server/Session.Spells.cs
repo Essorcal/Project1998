@@ -1913,7 +1913,7 @@ public sealed partial class Session
     }
 
     /// <summary>Driven by the world heartbeat: redraw the drowse over a sleeping player, and wake them when
-    /// the timer runs out. (The mob side rides <see cref="Mob.FxRepeat"/>; a player has no Mob to hang it on.)</summary>
+    /// the timer runs out. (The mob side rides <see cref="Mob.SetFxRepeat"/>; a player has no Mob to hang it on.)</summary>
     internal void TickSleep()
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
@@ -2133,11 +2133,11 @@ public sealed partial class Session
         _pcSpellTarget.ReviveAt(_pcSpellTarget._char.Map, _pcSpellTarget._char.X, _pcSpellTarget._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
     }
 
-    /// <summary>Revive the CASTER in place, returning whether they were actually dead (so the verb can pick its
-    /// flavour line). Distinct from <see cref="LuaSetHp"/>, which only moves the number: ghost form is DERIVED
-    /// from Hp==0 but the client is only redrawn by RefreshAppearance, so raising HP through the plain setter
-    /// leaves a living player rendered as a ghost. Hyun Moo's revival is the self-revive with no relocation —
-    /// unlike Silver Thread or the poet Resurrect family, which move you to a Shaman.</summary>
+    // Revive the CASTER in place, returning whether they were actually dead (so the verb can pick its
+    // flavour line). Distinct from LuaSetHp, which only moves the number: ghost form is DERIVED
+    // from Hp==0 but the client is only redrawn by RefreshAppearance, so raising HP through the plain setter
+    // leaves a living player rendered as a ghost. Hyun Moo's revival is the self-revive with no relocation —
+    // unlike Silver Thread or the poet Resurrect family, which move you to a Shaman.
     // ---- Chung Ryong's Rage primitives -------------------------------------------------------------
     // The one fury that CLIMBS: recast inside its window to go tier 1→6, each tier costing more, hitting
     // harder, adding AC, and charging a vita price when it finally lapses. The tier can't live in Lua because
@@ -2284,7 +2284,7 @@ public sealed partial class Session
     internal bool LuaHasLegend(string mark) => HasLegend(mark);
     internal void LuaForgetSpell(SpellDef sp) => ForgetOneSpell(sp.Id);
 
-    // Gateway core (see CastGateway): region+gate lookup, random landing tile, EnterMap + self-only arrival line.
+    // Gateway core: region+gate lookup, random landing tile, EnterMap + self-only arrival line.
     internal bool LuaGateway(string? answer)
     {
         int region = Content.RegionOf(_char.Map);
@@ -2497,7 +2497,7 @@ public sealed partial class Session
         Log.Info($"      {sp.Name}(lua) -> morph look={_morphLook} for {m.dur}ms");
     }
 
-    // Propose core (see CastPropose): the verb owns the engaged/married guard; this fires the async ask flow.
+    // Propose core: the verb owns the engaged/married guard; this fires the async ask flow.
     internal bool LuaPropose(SpellDef sp) { _ = RunProposeAsync(sp); return true; }
 
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
@@ -2913,7 +2913,7 @@ public sealed partial class Session
     // of a peer's. So Session.ShowPlayer — the single choke point every peer re-sync path already funnels
     // through — now updates the CASTER's own view too (World.Broadcast with no `except`, including a
     // self-call). The caster's own id never enters World's mob list, so click/party/trade resolution
-    // (HandleClickInfo checks MobById before PlayerById) is unaffected either way.
+    // (HandleClickInfo checks MobById before Online.ById) is unaffected either way.
     private ushort _morphLook;     // 0 = not morphed; else the Monster.tbl index peers see us as (0x8000|this)
     private byte   _morphColor;
     private long   _morphUntil;

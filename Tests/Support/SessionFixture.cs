@@ -37,7 +37,7 @@ public sealed class SessionFixture
     }
 
     /// <summary>A session with no socket, standing on <paramref name="map"/> and registered with the world so
-    /// the id lookups handlers do (<c>World.PlayerById</c>) can find it. Returns its recorder with the
+    /// the id lookups handlers do (<c>World.Online.ById</c>) can find it. Returns its recorder with the
     /// world-entry chatter already cleared, so a test sees only what its own packet caused.</summary>
     public (Session session, RecordingOutbound outbound) Player(
         string name, ushort map = HomeMap, ushort x = 5, ushort y = 10)
