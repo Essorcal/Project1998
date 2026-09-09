@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text;
 
-namespace Server;
+namespace Shared;
 
 internal enum LogLevel
 {
@@ -30,6 +30,15 @@ internal enum LogLevel
 /// absorbs the backlog; if the console stays stuck long enough to fill it, we DROP lines (and say how many)
 /// rather than grow without bound or apply back-pressure to the game. Losing log lines is always better than
 /// stalling the world — that trade is the entire point of this file.</para>
+/// <para><b>Both processes.</b> This is the ONE logger: the game server and the login server share it, with
+/// the same format, the same rotation and the same non-blocking guarantee. It lives in the package-free
+/// <c>Shared.Core</c> leaf project so the internet-facing login process picks it up without taking a
+/// dependency on the game core (the reason its own copy gave for staying local). Until then the login
+/// server — the process actually exposed to the internet — was the one still holding a process-global lock
+/// across a synchronous console write, so a QuickEdit selection in ITS window blocked every login until
+/// somebody pressed Esc. The two per-process differences are declared by the entry point through
+/// <see cref="Configure"/>: the wire-dump default (ON for the game, OFF for the login channel, whose packets
+/// carry passwords in the clear — see <see cref="WireEnabled"/>) and the rotation size.</para>
 /// </summary>
 public static class Log
 {
@@ -58,10 +67,11 @@ public static class Log
 
     // Size-based rotation. With the wire dump on, this log grows by megabytes per player-hour — fine on a
     // dev box with a big disk, an availability bug on a small VPS where a full filesystem takes the SQLite
-    // database down with it. At MaxBytes the current file is renamed to <name>.1 (replacing any previous
-    // .1) and a fresh one opened, so disk use is bounded at ~2x MaxBytes. Env-tunable.
-    private static readonly long MaxBytes =
-        long.TryParse(Environment.GetEnvironmentVariable("P1998_LOG_MAX_BYTES"), out var mb) && mb > 0 ? mb : 64L * 1024 * 1024;
+    // database down with it. At the limit the current file is renamed to <name>.1 (replacing any previous
+    // .1) and a fresh one opened, so disk use is bounded at ~2x the limit. Env-tunable, per-process default
+    // through Configure (64MB game, 32MB login) — writer thread reads it, Configure writes it before the
+    // process has a file at all.
+    private static long _maxBytes = UnconfiguredMaxBytes;
 
     private static readonly Thread Writer;
 
@@ -74,6 +84,70 @@ public static class Log
         };
         Writer.Start();
     }
+
+    // ---- per-process configuration -----------------------------------------------------------------------
+
+    private static int _configured;   // Interlocked: Configure is a startup declaration, not a setting
+
+    /// <summary>The rotation limit a process that never called <see cref="Configure"/> gets: the game
+    /// server's historical 64MB. A forgotten <see cref="Configure"/> should not shrink somebody's log file
+    /// behind their back, so the unconfigured default is the more permissive of the two.</summary>
+    private const long UnconfiguredMaxBytes = 64L * 1024 * 1024;
+
+    /// <summary>Declare this process's logging defaults. Called ONCE, at the top of the entry point, before
+    /// <see cref="AttachFile"/> — the rotation limit has to be known before there is a file to rotate.
+    /// <para><paramref name="wireDefault"/> and <paramref name="maxBytesDefault"/> are DEFAULTS: the
+    /// environment still wins (<c>P1998_LOG_WIRE</c>, <c>P1998_LOG_MAX_BYTES</c>). They are the one thing the
+    /// two processes disagree about, and making the entry point say so is what let the two copies of this
+    /// class become one — the env var now has a single meaning (see <see cref="ParseWire"/>) with a
+    /// per-process default, instead of meaning <c>== "1"</c> in one process and <c>!= "0"</c> in the
+    /// other.</para>
+    /// <para>A second call throws rather than re-reading the environment: every <see cref="WireEnabled"/>
+    /// call site has already branched on the first answer, so a late change would make the log disagree with
+    /// itself about whether it is dumping passwords.</para></summary>
+    /// <exception cref="InvalidOperationException">Configure has already run in this process.</exception>
+    public static void Configure(bool wireDefault, long maxBytesDefault)
+    {
+        if (Interlocked.Exchange(ref _configured, 1) != 0)
+            throw new InvalidOperationException(
+                "Log.Configure has already run in this process; the wire-dump default is a startup " +
+                "declaration, not a setting (call sites have already branched on Log.WireEnabled).");
+
+        _wireEnabled = ParseWire(Environment.GetEnvironmentVariable("P1998_LOG_WIRE"), wireDefault, out var bad);
+        _maxBytes = ParseMaxBytes(Environment.GetEnvironmentVariable("P1998_LOG_MAX_BYTES"), maxBytesDefault);
+        // Held rather than logged here: Configure runs before AttachFile, so a line written now would reach
+        // the console only, and an operator who mistyped the variable has to be able to find it in logs/
+        // afterwards. AttachFile enqueues it straight after the open marker.
+        if (bad is not null) _pendingWarning = bad;
+    }
+
+    private static string? _pendingWarning;
+
+    /// <summary>The one meaning of <c>P1998_LOG_WIRE</c>: <c>"0"</c> off, <c>"1"</c> on, unset (or empty)
+    /// means the process's own default, and ANY other value is a mistake — it takes the default and warns,
+    /// rather than being read as a truthy string. That last row is the reason this is a method: the old
+    /// login-side test was <c>== "1"</c> and the old game-side test was <c>!= "0"</c>, so
+    /// <c>P1998_LOG_WIRE=true</c> silently turned the dump OFF in one process and ON in the other.</summary>
+    /// <param name="raw">The environment variable's value, or null when it is unset.</param>
+    /// <param name="processDefault">What this process wants when the variable says nothing.</param>
+    /// <param name="warning">A startup warning when <paramref name="raw"/> is neither "0" nor "1", else null.</param>
+    internal static bool ParseWire(string? raw, bool processDefault, out string? warning)
+    {
+        warning = null;
+        if (string.IsNullOrEmpty(raw)) return processDefault;
+        if (raw == "0") return false;
+        if (raw == "1") return true;
+        warning = $"P1998_LOG_WIRE='{raw}' is not 0 or 1 — ignored; wire dump stays " +
+                  (processDefault ? "ON" : "off");
+        return processDefault;
+    }
+
+    /// <summary>Rotation limit from <c>P1998_LOG_MAX_BYTES</c>, or the process default. Unparseable and
+    /// non-positive values fall back silently, exactly as both copies of this class already did.</summary>
+    internal static long ParseMaxBytes(string? raw, long processDefault) =>
+        long.TryParse(raw, out var mb) && mb > 0 ? mb : processDefault;
+
+    internal static long MaxBytesForTest() => Volatile.Read(ref _maxBytes);
 
     /// <summary>Tee every log line into a persistent file (logs/server.log). The console window vanishes with
     /// the process — a crash trace printed there is unrecoverable (learned the hard way debugging the nmail
@@ -92,6 +166,10 @@ public static class Log
         // owned by that thread alone, so there is no lock anywhere on the caller's side.
         _path = path;
         Enqueue(OpenMarker);
+        // Configure's startup warning, if it had one: enqueued AFTER the open marker so it lands in the file
+        // as well as on the console. Ordering is guaranteed — one FIFO queue, one writer thread.
+        var bad = Interlocked.Exchange(ref _pendingWarning, null);
+        if (bad is not null) Warn(bad);
     }
 
     private const string OpenMarker = "open";   // control line; never appears in a real message
@@ -294,7 +372,7 @@ public static class Log
         {
             _file.Write(text);
             _written += text.Length;
-            if (_written >= MaxBytes) Rotate();
+            if (_written >= _maxBytes) Rotate();
         }
         // EXEMPT: see the head of this method — the file sink is what failed.
         catch { /* disk full / handle lost — keep the console half alive rather than kill the writer */ }
@@ -348,13 +426,28 @@ public static class Log
         OpenFile(note: "rotated");
     }
 
-    /// <summary>Whether to emit the per-packet WIRE dump (raw read, opcode line, decrypted body). On by
-    /// default — it's the backbone of the protocol RE work. It no longer blocks the game (see the class
-    /// doc), but it still costs a hex-string build per packet and floods the file, so
-    /// <c>P1998_LOG_WIRE=0</c> remains the right setting for a live server (our own deployment sets it in
-    /// the unit file, in Project1998-infra). Guard call sites with this flag rather than letting Log.Hex
-    /// run and throwing the string away.</summary>
-    public static readonly bool WireEnabled = Environment.GetEnvironmentVariable("P1998_LOG_WIRE") != "0";
+    /// <summary>Whether to emit the per-packet WIRE dump (raw read, opcode line, decrypted body). It no longer
+    /// blocks either process (see the class doc), but it still costs a hex-string build per packet and floods
+    /// the file, so <c>P1998_LOG_WIRE=0</c> remains the right setting for a live server (our own deployment
+    /// sets it in the unit file, in Project1998-infra). Guard call sites with this flag rather than letting
+    /// <see cref="Hex"/> run and throwing the string away.
+    ///
+    /// <para>The DEFAULT is the calling process's, declared through <see cref="Configure"/>: ON for the game
+    /// server — it's the backbone of the protocol RE work — and OFF for the login server. That asymmetry is
+    /// deliberate, not an oversight. The login channel's packets carry the player's PASSWORD in the clear
+    /// (0x02 name-check and 0x03 login are both <c>nameLen name pwLen pw</c>), and 4.95's cipher is a fixed,
+    /// published XOR, so the "raw" dump is every bit as readable as the decrypted one. Leaving this on writes
+    /// every player's password into logs/login.log and the systemd journal in plaintext, where log shipping,
+    /// backups and a support screenshot all quietly spread it further.</para>
+    ///
+    /// <para>Set P1998_LOG_WIRE=1 to turn it back on for protocol work on a machine with no real
+    /// accounts.</para>
+    ///
+    /// <para>A process that never called <see cref="Configure"/> gets OFF: an entry point that declared no
+    /// policy is not one whose log may carry passwords.</para></summary>
+    public static bool WireEnabled => _wireEnabled;
+
+    private static bool _wireEnabled;   // Configure's answer; see the doc above for the unconfigured case
 
     public static string Hex(byte[] b)
     {
