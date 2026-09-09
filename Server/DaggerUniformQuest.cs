@@ -20,7 +20,7 @@ namespace Server;
 /// <item>Come back once they are gone. Coming back at all is the test; he tells you to watch for a
 /// <b>Blue Rooster</b>.</item>
 /// <item>Find the Blue Rooster wandering southern Buya (Spawns.csv 983, map 330 at 67/140) and LOOK at it —
-/// either way of looking counts, see <see cref="NoticeObserved"/>. Report back.</item>
+/// either way of looking counts, see <see cref="Session.ObserveMob"/>. Report back.</item>
 /// <item>Pick <b>Maro</b>'s pocket at the Kugnae Rogue Guild (NPCs.csv <see cref="MaroNpcId"/>, Maro Sanctum
 /// map 16) and walk out. Stepping into Kugnae's sunlight, a crow takes the acorn and flies east.</item>
 /// <item>Follow it to <b>Dae Shore</b> (map 1004): the crow is an enchanted boy who needs "something bright

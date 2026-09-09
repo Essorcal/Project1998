@@ -31,8 +31,8 @@ public sealed class TkListener
         // The World is constructed as a field initializer (in-memory state only); its tick thread, autosave
         // sweep, watchdog, restart ladder and status writer start HERE, at the point the process commits to
         // being a running server. Constructing a World has no side effects of its own, which is what lets a
-        // test hold one without threads — see World.Start.
-        _world.Start();
+        // test hold one without threads — see StartWorld.
+        StartWorld();
 
         // Graceful-shutdown flush hook (robust persistence, complements the per-session autosave in
         // World.AutoSaveLoop/Session.FlushIfDue): on a clean stop, save every connected player's pending
@@ -66,6 +66,33 @@ public sealed class TkListener
     }
 
     private PosixSignalRegistration? _sigterm;   // held for the process lifetime; disposing would unhook it
+
+    /// <summary>Start the world's background machinery: the tick and autosave threads, the watchdog probes,
+    /// the restart ladder and the status writer. It lives on the host rather than on <see cref="World"/>
+    /// because starting threads is process lifecycle, not world state, and this is the one place that decides
+    /// the process is a running server. Idempotent — a second call is a no-op rather than a duplicate set of
+    /// threads (the guard is <c>World.MarkStarted</c>, next to the <c>IsStarted</c> flag it sets).</summary>
+    private void StartWorld()
+    {
+        if (!_world.MarkStarted()) return;
+
+        // DEDICATED THREADS, not Task.Run. Both of these used to be thread-pool work items, which put the
+        // world heartbeat behind every other pool item in the process: session read-loop continuations, the
+        // synchronous SQLite saves below, Lua, and any stray blocking call. When the pool ran out of threads
+        // the runtime injected replacements at only ~1-2 per second, and the tick simply did not run in the
+        // meantime — a multi-second, self-recovering freeze of the entire world with nothing in the log to
+        // show for it. A dedicated thread cannot be starved by pool pressure.
+        new Thread(_world.TickLoop)     { IsBackground = true, Name = "world-tick" }.Start();
+        new Thread(_world.AutoSave.Run) { IsBackground = true, Name = "world-autosave" }.Start();
+
+        // Pool headroom + the pool-latency and client-silence probes. Started here because this is the
+        // first point where a World exists for the silence scanner to walk.
+        Watchdog.RaiseMinThreads();
+        Watchdog.Start(_world);
+
+        _ = Task.Run(_world.Restarts.Loop);      // restart-warning ladder + the deploy's file trigger (1s cadence, not latency-critical)
+        _ = Task.Run(() => StatusFile.Loop(_world));   // run/status.json for the launcher's "N online" pill
+    }
 
     private int _shutdownOnce;   // Interlocked guard: Environment.Exit(0) below re-raises ProcessExit, so
                                   // both handlers can reach Shutdown -- make sure the flush runs exactly once.

@@ -26,6 +26,11 @@ namespace Tests;
 /// <para><see cref="ATradeBetweenTwoLivingPartiesOnOneMapStillFinalizes"/> is the negative control: neither
 /// teardown fires for a trade whose parties stay put and stay alive, and the coin still moves. Without it
 /// "nothing finalizes, ever" would pass the two cases above.</para>
+///
+/// <para>The last two facts are about WHERE in <c>Die()</c> a cross-session acquisition may sit rather than
+/// about the trade itself: <see cref="ADeathFinishesBeforeItsOwnTradeTeardownDropsTheMonitor"/> for the
+/// teardown (#172) and <see cref="ADeathFinishesBeforeItsPeerReconcileDropsTheMonitor"/> for the viewport
+/// reconcile (#177), which needs no trade in it at all.</para>
 /// </summary>
 [Collection("world")]
 public class TradeTeardownTests
@@ -53,8 +58,13 @@ public class TradeTeardownTests
     /// <summary>Content-free map ids, one per test: no Maps.csv row means nothing is terrain-blocked and no
     /// other test on the shared World is standing there. 59000-65000 is the instance band, which
     /// <c>ApplyDeathPenalties</c> charges exp only for — so a death here spills no coin onto the floor to
-    /// confuse the balances these tests assert on.</summary>
-    private const ushort DeathMap = 60020, ControlMap = 60021, RaceMap = 60022;
+    /// confuse the balances these tests assert on.
+    /// <para><see cref="ReconcileMap"/> is a separate map for the same band reason AND for a second one: the
+    /// two sessions <see cref="ADeathFinishesBeforeItsOwnTradeTeardownDropsTheMonitor"/> creates stay on
+    /// <see cref="RaceMap"/> after that fact has finished — the fixture's World is shared and nothing ever
+    /// leaves it — and the reconcile fact below asserts on which peers its victim can see. Its own map keeps
+    /// them out of that viewport.</para></summary>
+    private const ushort DeathMap = 60020, ControlMap = 60021, RaceMap = 60022, ReconcileMap = 60023;
 
     /// <summary>The tail of the "you are dead" line <c>Die()</c> sends after the penalties and before the
     /// save — the last thing the death sequence puts on the wire, and therefore the cheapest proof from
@@ -343,5 +353,112 @@ public class TradeTeardownTests
         // The teardown itself still did its job, on both windows, exactly once.
         Assert.Equal(Message(CancelText), Assert.Single(victimOut.BodiesOf(ExchangeOut)));
         Assert.Equal(Message(CancelText), Assert.Single(partnerOut.BodiesOf(ExchangeOut)));
+    }
+
+    /// <summary>
+    /// <b>The death finishes before its VIEWPORT RECONCILE lets anyone in.</b> The same fact as the one above,
+    /// one step earlier and with no trade in it at all — because this drop is not the trade's. #177.
+    ///
+    /// <para><c>Die()</c> -&gt; <c>ResyncPeers</c> -&gt; <c>SyncPeers</c> -&gt; <c>ReconcilePeer</c> -&gt;
+    /// <c>ShowPlayer(peer)</c> reads every visible peer through <c>peer.Snapshot()</c>
+    /// (<c>Session.WorldApi.cs</c>), which takes THAT peer's state monitor. When the peer ranks below the dying
+    /// player that acquisition is DESCENDING, so #29 rule 2 exits the victim's own monitor while it blocks on
+    /// the peer's: the same gap the teardown used to open, reached with no trade, by nothing more than standing
+    /// next to somebody whose monitor is busy. With the reconcile before the penalties — where it sat on master
+    /// until #177 — a revive landing in the gap left <c>ApplyDeathPenalties</c>, "You have been defeated!" and
+    /// <c>SaveChar</c> to run on a player who was alive again. With it after the save, the gap opens only once
+    /// every one of those has already happened.</para>
+    ///
+    /// <para>No trade is opened here, so the reconcile is the ONLY descending acquisition in the sequence and
+    /// the drop the reviver walks through can be nothing else. The peer stands at (6,10) beside the victim at
+    /// (5,10), INSIDE the strict 17x15 rect <c>ReconcilePeer</c> gates on — outside it the peer is never drawn,
+    /// <c>ShowPlayer</c> never runs, and there is no acquisition to talk about (which is exactly how the
+    /// teardown fact above isolates its own drop).</para>
+    ///
+    /// <para>Both threads park on the peer's monitor here, unlike the teardown fact: the revive's own
+    /// <c>ResyncPeers</c> descends into the same peer. So the peer is released before either is joined, and
+    /// the proof that the death had already finished is the snapshot the reviver took on the way in.</para>
+    ///
+    /// <para>Red on <c>6fd6d3c</c>, with <c>ResyncPeers</c> still ahead of the penalties: the only minitext the
+    /// victim had received when the reviver got in was the environment-damage line.</para>
+    /// </summary>
+    [Fact]
+    public void ADeathFinishesBeforeItsPeerReconcileDropsTheMonitor()
+    {
+        const uint StartExp = 1_000_000;
+
+        // The peer is created FIRST, so it ranks BELOW the victim and the reconcile has to descend into it.
+        var (peer, _, _) = _fx.PlayerWith("ReconcileRacePeer", _ => { }, ReconcileMap, 6, 10);
+        var (victim, victimOut, victimChar) = _fx.PlayerWith("ReconcileRaceVictim", c => c.Exp = StartExp,
+                                                             ReconcileMap, 5, 10);
+        Assert.True(victim.StateRank > peer.StateRank,
+                    "the victim has to outrank the peer or the reconcile never descends and never drops");
+        victimOut.Clear();
+
+        // A third thread parks on the peer's monitor so the descending acquisition really does block.
+        var peerHeld = new ManualResetEventSlim();
+        var releasePeer = new ManualResetEventSlim();
+        var holder = new Thread(() => peer.WithState(() => { peerHeld.Set(); releasePeer.Wait(); }))
+        { IsBackground = true, Name = "peer-holder" };
+        holder.Start();
+        Assert.True(peerHeld.Wait(5000), "the holder never took the peer's monitor");
+
+        // The kill, on its own thread. Environment damage has no attacker, so nothing in TakeDamage reaches
+        // the peer before Die() does — the reconcile is the only thing in the sequence that can block.
+        var killer = new Thread(() => victim.ReceiveEnvironmentDamage(9999, "a cold tile, in a test"))
+        { IsBackground = true, Name = "killer" };
+        killer.Start();
+        var sw = Stopwatch.StartNew();
+        while (Volatile.Read(ref victimChar.Hp) != 0 && sw.ElapsedMilliseconds < 5000) Thread.Sleep(5);
+        Assert.Equal(0u, victimChar.Hp);
+        Thread.Sleep(300);
+        Assert.True(killer.IsAlive, "Die() should still be parked on the peer's monitor");
+
+        // The revive. It can only get in through the gap the reconcile opens; what it finds when it does is
+        // the whole of this fact.
+        bool sawDead = false;
+        uint expAtEntry = StartExp, savedExpAtEntry = StartExp;
+        var textsAtEntry = new List<string>();
+        var reviverEntered = new ManualResetEventSlim();
+        var reviver = new Thread(() => victim.WithState(() =>
+        {
+            sawDead = victim.IsDead;
+            expAtEntry = victimChar.Exp;
+            textsAtEntry = MiniTexts(victimOut);
+            var saved = _fx.Store.Load("ReconcileRaceVictim");
+            if (saved.Status == CharacterLoadStatus.Ok) savedExpAtEntry = saved.Character!.Exp;
+            reviverEntered.Set();
+            victim.ReviveInPlace(RevivedText);   // its own ResyncPeers parks on the peer too — see the note above
+        })) { IsBackground = true, Name = "reviver" };
+        reviver.Start();
+
+        Assert.True(reviverEntered.Wait(5000),
+                    "the reviver never got the victim's monitor: the reconcile did not drop it at all");
+        Assert.True(sawDead, "the reviver landed on a living player — it never got inside the death sequence");
+        // Both are now parked on the peer's monitor, and neither has written a byte since the drop, so the
+        // snapshot above is the state of the death at the exact moment somebody else could act on it.
+        Assert.True(killer.IsAlive, "Die() got past its reconcile before the peer's monitor was released");
+
+        releasePeer.Set();
+        Assert.True(reviver.Join(10000), "the revive never finished");
+        Assert.True(killer.Join(10000), "Die() never finished");
+        Assert.True(holder.Join(5000));
+
+        // RED at 6fd6d3c, where ResyncPeers ran before the penalties: at this point the death had done nothing
+        // but unmount the horse, wipe the timers and redraw the ghost.
+        Assert.Contains(textsAtEntry, t => t.StartsWith(DefeatedTextPrefix));
+        Assert.Contains(textsAtEntry, t => t.StartsWith(ExpLostTextPrefix));
+        Assert.True(expAtEntry < StartExp,
+                    $"the death penalty had not been applied when the revive got in (exp {expAtEntry})");
+        Assert.True(savedExpAtEntry < StartExp,
+                    $"SaveChar had not persisted the death when the revive got in (saved exp {savedExpAtEntry})");
+
+        // ...and what followed is an ordinary revive of a completed corpse: alive, and charged exactly once.
+        Assert.False(victim.IsDead);
+        Assert.Equal(expAtEntry, victimChar.Exp);
+        var texts = MiniTexts(victimOut);
+        Assert.Equal(1, texts.Count(t => t.StartsWith(ExpLostTextPrefix)));
+        Assert.True(texts.IndexOf(RevivedText) > texts.FindIndex(t => t.StartsWith(DefeatedTextPrefix)),
+                    $"the revive line came before the death finished; texts: {string.Join(" | ", texts)}");
     }
 }

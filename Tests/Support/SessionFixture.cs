@@ -10,10 +10,10 @@ namespace Tests.Support;
 /// the seam added for #27.
 ///
 /// <para>The World is CONSTRUCTED and never started: no tick thread, no autosave sweep, no watchdog, no
-/// restart ladder, no status writer (see <c>World.Start</c>). Nothing in this process moves unless a test
-/// moves it, so an assertion cannot race the world. It is shared across the collection because building one
-/// walks the whole spawn roster, and it is a class fixture rather than a static so xUnit — not a hand-rolled
-/// double-checked lock — owns when it is built.</para>
+/// restart ladder, no status writer (those are the host's, <c>TkListener.StartWorld</c>). Nothing in this
+/// process moves unless a test moves it, so an assertion cannot race the world. It is shared across the
+/// collection because building one walks the whole spawn roster, and it is a class fixture rather than a
+/// static so xUnit — not a hand-rolled double-checked lock — owns when it is built.</para>
 ///
 /// <para>The character store is the redirected test one (#23: <c>TestProcessState</c> points
 /// <c>P1998_STATE</c> at a temp directory before anything loads), so a session that autosaves cannot reach
@@ -37,7 +37,7 @@ public sealed class SessionFixture
     }
 
     /// <summary>A session with no socket, standing on <paramref name="map"/> and registered with the world so
-    /// the id lookups handlers do (<c>World.PlayerById</c>) can find it. Returns its recorder with the
+    /// the id lookups handlers do (<c>World.Online.ById</c>) can find it. Returns its recorder with the
     /// world-entry chatter already cleared, so a test sees only what its own packet caused.</summary>
     public (Session session, RecordingOutbound outbound) Player(
         string name, ushort map = HomeMap, ushort x = 5, ushort y = 10)

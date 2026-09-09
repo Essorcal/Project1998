@@ -23,7 +23,7 @@ public sealed partial class World
     /// <para><b>Takes no lock of its own.</b> Every method that touches map state asserts
     /// <see cref="HoldsWorldLock"/> — the callers already hold <c>_lock</c>, exactly as they did before the
     /// move — and the three public statics that only read <see cref="Content"/> and the terrain cache
-    /// (<see cref="PlacementBox"/>, <see cref="Placeable"/>, <see cref="OpenTiles"/>) need none.</para>
+    /// (<see cref="PlacementBox"/>, <see cref="Placeable(ushort, IReadOnlySet{ValueTuple{int, int}}, int, int)"/>, <see cref="OpenTiles"/>) need none.</para>
     /// </summary>
     internal sealed class SpawnDirector
     {

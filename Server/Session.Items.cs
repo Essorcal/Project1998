@@ -119,7 +119,7 @@ public sealed partial class Session
     /// (0x44fdb0 @ 0x44fe7f) routes any look OUTSIDE 0x8000..0xbfff to descriptor type 2 = the BASE object
     /// (vtable 0x4cd118, tick 0x4601a0 = `xor al,al;ret` no-op) built by 0x462ec0 alone: it never moves, never
     /// self-destructs, and is drawn by the shared render loop exactly like a monster but stationary. IconWire
-    /// frames (0..1310) map to 0xc000..0xc51e, all > 0xbfff, so they hit type 2 and resolve (look+0x4000)&0xffff
+    /// frames (0..1310) map to 0xc000..0xc51e, all > 0xbfff, so they hit type 2 and resolve (look+0x4000)&amp;0xffff
     /// against Item.epf -- the SAME resolver the bag/0x0F path uses. Caveat: 0x07 has a viewport gate (0x424310),
     /// so the tile must be on-screen when spawned (true for drop/throw at the player's feet).</summary>
     /// <para><see cref="GroundItem.Graphic"/> is the base <c>ItmIcon</c> (world state, shared by every viewer),
@@ -666,23 +666,23 @@ public sealed partial class Session
     // RTK swingDamage.lua's per-class flat bonus (_classFactors, 1-indexed by baseClass+1): only Warrior
     // and Rogue get one; Peasant/Mage/Poet don't (magic users deal their real damage through spells, not
     // melee). pathId -1 (no class chosen yet) falls through to the Peasant case.
-    /// <summary>SUPERSEDED 2026-08-16 — see ClassFactor below. The "measured at 0" conclusion was
-    /// correct only for the LOW-LEVEL band it was taken in (a lvl 13-18 rogue at might 12); the term is
-    /// near zero there and climbs with level, reaching 5.5 on a lvl-65 rogue. Kept for the derivation.
-    /// ORIGINAL NOTE: Flat path bonus added to the raw swing. MEASURED AT 0 (2026-08-02) — the
-    /// 9 (Warrior) / 7.5 (Rogue) from Rogue Tutor Melalye's post does not apply in this era.
-    /// Derivation: with mob AC known independently (the Spark fixed-damage probe, base ~55.5),
-    /// <c>K = observed/(1+ac/100) - (s/2 + dam*2.5 + might/8)</c> must be CONSTANT across mobs
-    /// since it's a property of the attacker. Across five mobs spanning AC 65-95 it came out
-    /// -0.71/-0.71/-0.62/-0.41/-0.31 (mean -0.55; +0.5 integer-floor bias => ~0), i.e. the rest
-    /// of the formula is exact and there is no room for a +7.5 term. Two contaminants had to be
-    /// removed first, both of which fake a positive K: the positional x2 (flee-prone mobs turn
-    /// their backs, so Mouse showed 22% doubled hits vs Bat's 6%) and mob-label/look mixing.
-    /// WHY IT MATTERED: this is a FLAT add, so at level 1 it dwarfs everything else — a wooden
-    /// saber's whole raw swing is ~6.6, so +9 was +136% and one-shot an 18hp squirrel. By level
-    /// 99 it's noise. That asymmetry is exactly why the game felt wrong only in the early game.
-    /// Rogue is measured; WARRIOR IS INFERRED — no warrior data exists, but its 9 comes from the
-    /// same post as the disproven 7.5, so it is not evidence either. Re-measure with a warrior.</summary>
+    // SUPERSEDED 2026-08-16 — see ClassFactor below. The "measured at 0" conclusion was
+    // correct only for the LOW-LEVEL band it was taken in (a lvl 13-18 rogue at might 12); the term is
+    // near zero there and climbs with level, reaching 5.5 on a lvl-65 rogue. Kept for the derivation.
+    // ORIGINAL NOTE: Flat path bonus added to the raw swing. MEASURED AT 0 (2026-08-02) — the
+    // 9 (Warrior) / 7.5 (Rogue) from Rogue Tutor Melalye's post does not apply in this era.
+    // Derivation: with mob AC known independently (the Spark fixed-damage probe, base ~55.5),
+    // K = observed/(1+ac/100) - (s/2 + dam*2.5 + might/8) must be CONSTANT across mobs
+    // since it's a property of the attacker. Across five mobs spanning AC 65-95 it came out
+    // -0.71/-0.71/-0.62/-0.41/-0.31 (mean -0.55; +0.5 integer-floor bias => ~0), i.e. the rest
+    // of the formula is exact and there is no room for a +7.5 term. Two contaminants had to be
+    // removed first, both of which fake a positive K: the positional x2 (flee-prone mobs turn
+    // their backs, so Mouse showed 22% doubled hits vs Bat's 6%) and mob-label/look mixing.
+    // WHY IT MATTERED: this is a FLAT add, so at level 1 it dwarfs everything else — a wooden
+    // saber's whole raw swing is ~6.6, so +9 was +136% and one-shot an 18hp squirrel. By level
+    // 99 it's noise. That asymmetry is exactly why the game felt wrong only in the early game.
+    // Rogue is measured; WARRIOR IS INFERRED — no warrior data exists, but its 9 comes from the
+    // same post as the disproven 7.5, so it is not evidence either. Re-measure with a warrior.
     // Per-path bonus added to the raw swing. RTK's swingDamage.lua carries a FLAT table
     // (_classFactors = {0, 9, 7.5, 0, 0} — warrior 9, rogue 7.5, everyone else 0) and Rogue Tutor
     // Melalye's board post gives the same two numbers independently. Both are right about the VALUES and

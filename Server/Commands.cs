@@ -68,7 +68,7 @@ public sealed partial class Session
         }
 
         /// <summary>The tail exactly as typed, trimmed at the ends (see <see cref="SplitCommand"/>). Interior
-        /// spacing is preserved here and nowhere else — <see cref="Rest"/> normalizes it.</summary>
+        /// spacing is preserved here and nowhere else — <see cref="Rest(int)"/> normalizes it.</summary>
         public string Raw { get; }
 
         /// <summary>How many words were given.</summary>

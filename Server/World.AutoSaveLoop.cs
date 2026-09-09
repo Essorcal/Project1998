@@ -2,10 +2,10 @@ using System.Diagnostics;
 
 namespace Server;
 
-// The crash-safety half of World (#37, section 4). World.cs still STARTS the world-autosave thread (thread
-// start-up is section 5); this file is what that thread runs — the periodic sweep, the per-player isolation
-// fence both sweeps share, and the shutdown flush TkListener reports. Nested in World, like SpawnDirector and
-// WorldClock, so it reaches Online and HoldsWorldLock as they are without widening either.
+// The crash-safety half of World (#37, section 4). TkListener.StartWorld STARTS the world-autosave thread
+// (thread start-up was section 5); this file is what that thread runs — the periodic sweep, the per-player
+// isolation fence both sweeps share, and the shutdown flush TkListener reports. Nested in World, like
+// SpawnDirector and WorldClock, so it reaches Online and HoldsWorldLock as they are without widening either.
 public sealed partial class World
 {
     /// <summary>
@@ -71,9 +71,9 @@ public sealed partial class World
             }
         }
 
-        // Own thread (see World.Start): each FlushNow serializes a multi-KB character graph to JSON and does
-        // a synchronous SQLite write, so a sweep of a full server is a long block. On the thread pool that was
-        // a pool thread held for the duration, competing with the heartbeat.
+        // Own thread (see TkListener.StartWorld): each FlushNow serializes a multi-KB character graph to JSON
+        // and does a synchronous SQLite write, so a sweep of a full server is a long block. On the thread pool
+        // that was a pool thread held for the duration, competing with the heartbeat.
         internal void Run()
         {
             while (true)
