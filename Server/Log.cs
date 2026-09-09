@@ -50,7 +50,7 @@ public static class Log
     private static StreamWriter? _file;    // writer thread only, after AttachFile hands it over
     private static string _path = "";
     private static long _written;
-    private static int _dropped;           // Interlocked: lines lost while the queue was full
+    private static readonly int[] DroppedByLevel = new int[3]; // Interlocked: refused Info, Warn, Error
 
     // Pure admission seam plus a narrow end-to-end test hook. The production path always uses Admits;
     // tests can force refusal without racing the writer to fill a 65,536-line queue.
@@ -149,7 +149,26 @@ public static class Log
         // at the boundary, while TryAdd still enforces the hard capacity. Even Error never waits, because a
         // stuck writer must never block the world tick or a packet handler through the logger.
         if (!(admit?.Invoke(level, queued) ?? Admits(level, queued)) || !Queue.TryAdd(line))
-            Interlocked.Increment(ref _dropped);
+            Interlocked.Increment(ref DroppedByLevel[(int)level]);
+    }
+
+    internal static string FormatOverflowNotice(int info, int warn, int error)
+    {
+        if (info == 0 && warn == 0 && error == 0) return "";
+        return FormattableString.Invariant(
+            $"!! log queue overflowed — dropped {info:N0} info, {warn:N0} warn, {error:N0} error");
+    }
+
+    internal static (int Info, int Warn, int Error) DroppedCountsForTest() =>
+        (Volatile.Read(ref DroppedByLevel[(int)LogLevel.Info]),
+         Volatile.Read(ref DroppedByLevel[(int)LogLevel.Warn]),
+         Volatile.Read(ref DroppedByLevel[(int)LogLevel.Error]));
+
+    internal static void ResetDroppedCountsForTest()
+    {
+        Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0);
+        Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Warn], 0);
+        Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Error], 0);
     }
 
     /// <summary>Flush the tail and stop the writer. Called from the shutdown hooks so a clean stop doesn't
@@ -190,8 +209,11 @@ public static class Log
                 // events) at a tiny fraction of the syscalls.
                 if (Queue.Count == 0) TryFlush();
 
-                int lost = Interlocked.Exchange(ref _dropped, 0);
-                if (lost > 0) Emit($"[{DateTime.Now:HH:mm:ss.fff}] !! log queue overflowed — {lost} line(s) dropped");
+                string notice = FormatOverflowNotice(
+                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0),
+                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Warn], 0),
+                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Error], 0));
+                if (notice.Length > 0) Emit($"[{DateTime.Now:HH:mm:ss.fff}] {notice}");
             }
         }
         catch (Exception e)
