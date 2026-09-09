@@ -3,6 +3,13 @@ using System.Text;
 
 namespace Server;
 
+internal enum LogLevel
+{
+    Info,
+    Warn,
+    Error,
+}
+
 /// <summary>
 /// Asynchronous, non-blocking logger. <see cref="Info"/> formats a line and ENQUEUES it; a single dedicated
 /// background thread does every console + file write.
@@ -29,7 +36,10 @@ public static class Log
     // Bounded on purpose: see the class doc. At ~120 bytes/line this caps the backlog at roughly 8MB, which
     // is minutes of a stuck console at wire-dump volume — far longer than any real stall — while still
     // guaranteeing a hung terminal can never OOM the server.
-    private const int QueueCapacity = 65_536;
+    internal const int QueueCapacity = 65_536;
+    // Keep 4,096 slots (about 480KB at the 120-bytes-per-line estimate above) for warnings and errors.
+    // That preserves thousands of diagnostic records while reducing the ordinary backlog by only 6.25%.
+    internal const int ReservedLines = 4_096;
     // How many queued lines one wake-up may coalesce into a single console + file write. Batching is what
     // makes the wire dump affordable: the cost of a console write is dominated by the call, not the bytes.
     private const int BatchLines = 512;
@@ -41,6 +51,10 @@ public static class Log
     private static string _path = "";
     private static long _written;
     private static int _dropped;           // Interlocked: lines lost while the queue was full
+
+    // Pure admission seam plus a narrow end-to-end test hook. The production path always uses Admits;
+    // tests can force refusal without racing the writer to fill a 65,536-line queue.
+    internal static Func<LogLevel, int, bool>? AdmitOverrideForTest { get; set; }
 
     // Size-based rotation. With the wire dump on, this log grows by megabytes per player-hour — fine on a
     // dev box with a big disk, an availability bug on a small VPS where a full filesystem takes the SQLite
@@ -88,7 +102,7 @@ public static class Log
         // ~30ms from one that repeats every ~300ms, which is exactly the question any "does it feel like
         // the real game" pacing bug turns into (cast spam, swing rate, walk rate). Formatting happens on the
         // CALLING thread so the timestamp is the moment of the event, not the moment it got written.
-        Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] {msg}");
+        Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] {msg}", LogLevel.Info);
     }
 
     // ---- severity ---------------------------------------------------------------------------------------
@@ -105,23 +119,37 @@ public static class Log
 
     /// <summary>Something is wrong but the server handled it — a refused reload, a slow client, a malformed
     /// packet. Recoverable, worth a look, not a bug in this process.</summary>
-    public static void Warn(string msg) => Info("!! " + msg);
+    public static void Warn(string msg) =>
+        Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] !! {msg}", LogLevel.Warn);
 
-    public static void Warn(string msg, Exception e) => Info("!! " + msg + Detail(e));
+    public static void Warn(string msg, Exception e) =>
+        Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] !! {msg}{Detail(e)}", LogLevel.Warn);
 
     /// <summary>A caught exception that should not have happened — a handler threw, a flush failed, a thread
     /// loop's body raised. Always carries the full exception; there is deliberately no string-only overload
     /// that would let a call site drop the stack again.</summary>
-    public static void Error(string msg, Exception e) => Info("!!! " + msg + Detail(e));
+    public static void Error(string msg, Exception e) =>
+        Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] !!! {msg}{Detail(e)}", LogLevel.Error);
 
     private static string Detail(Exception e) =>
         "\n      " + e.ToString().Replace("\n", "\n      ");
 
-    private static void Enqueue(string line)
+    internal static bool Admits(LogLevel level, int queued) => level switch
     {
-        // TryAdd with no wait: a full queue means the writer is stuck (see the class doc) and the ONE thing
-        // we must not do is block the caller — that caller is the world tick or a packet handler.
-        if (!Queue.TryAdd(line)) Interlocked.Increment(ref _dropped);
+        LogLevel.Info => queued < QueueCapacity - ReservedLines,
+        LogLevel.Warn or LogLevel.Error => queued < QueueCapacity,
+        _ => false,
+    };
+
+    private static void Enqueue(string line, LogLevel level = LogLevel.Info)
+    {
+        int queued = Queue.Count;
+        var admit = AdmitOverrideForTest;
+        // Count then TryAdd is deliberately not atomic: an Info line may land on either side of the reserve
+        // at the boundary, while TryAdd still enforces the hard capacity. Even Error never waits, because a
+        // stuck writer must never block the world tick or a packet handler through the logger.
+        if (!(admit?.Invoke(level, queued) ?? Admits(level, queued)) || !Queue.TryAdd(line))
+            Interlocked.Increment(ref _dropped);
     }
 
     /// <summary>Flush the tail and stop the writer. Called from the shutdown hooks so a clean stop doesn't
