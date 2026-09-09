@@ -111,7 +111,8 @@ public sealed class Party
         }
     }
 
-    /// <summary>Removes a member and hands back the last one standing — non-null exactly when THIS removal
+    /// <summary>Removes a member, and answers both halves of what the caller has to know: whether THIS call
+    /// is the one that took them out, and who the last one standing is — non-null exactly when this removal
     /// is the one that left a single straggler, who is then told the group disbanded (RTK
     /// <c>clif_leavegroup</c>: <c>group_count</c> reaching 0/1 dissolves it). Same rule as before, same
     /// texts; what changed is who computes it. The straggler is a PROPOSAL, not a verdict: the caller acts
@@ -122,22 +123,25 @@ public sealed class Party
     /// not from a re-read by the caller afterwards. That is the difference when two members leave at once:
     /// with a bool and a <c>Members.Count == 1</c> re-read, the removal that left two members could see the
     /// OTHER removal's result and disband the same person a second time, and the two could disagree about who
-    /// was last. Exactly one caller now gets a non-null answer.</para></summary>
-    public Session? Remove(Session s)
+    /// was last. A given member's departure is now reported to exactly one caller — the one whose swap took
+    /// them out — and any straggler it leaves goes to that same caller and to nobody else.</para></summary>
+    public (bool Removed, Session? Straggler) Remove(Session s)
     {
         lock (_gate)
         {
             var old = _members;
             int at = Array.IndexOf(old, s);
-            // Already gone (a double removal): nothing to swap, and the disband rule reads the same as it did
-            // when the caller re-read the count for itself.
-            if (at < 0) return old.Length == 1 ? old[0] : null;
+            // Already gone: a second, no-op removal of the same member (a leader's kick landing after that
+            // member's own leave), or a party since retired. This call swapped nothing, so it left no
+            // straggler either — the removal that DID take them out has already been handed one, and handing
+            // the same survivor back again disbanded them twice (#167 review, F2).
+            if (at < 0) return (false, null);
 
             var next = new Session[old.Length - 1];
             Array.Copy(old, next, at);
             Array.Copy(old, at + 1, next, at, next.Length - at);
             Volatile.Write(ref _members, next);
-            return next.Length == 1 ? next[0] : null;
+            return (true, next.Length == 1 ? next[0] : null);
         }
     }
 }

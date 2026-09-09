@@ -144,8 +144,8 @@ public sealed class PartyMembersRaceTests
 
             Session? fromFirst = null, fromSecond = null;
             using var gun = new Barrier(2);
-            var a = new Thread(() => { gun.SignalAndWait(); fromFirst = party.Remove(first); });
-            var b = new Thread(() => { gun.SignalAndWait(); fromSecond = party.Remove(second); });
+            var a = new Thread(() => { gun.SignalAndWait(); fromFirst = party.Remove(first).Straggler; });
+            var b = new Thread(() => { gun.SignalAndWait(); fromSecond = party.Remove(second).Straggler; });
             a.Start(); b.Start();
             a.Join(); b.Join();
 
@@ -294,6 +294,44 @@ public sealed class PartyMembersRaceTests
             $"{stranded.Count} / {RaceRounds} rounds ended stranded: {string.Join(" | ", stranded.Take(3))}");
     }
 
+    /// <summary>A leader's kick reads <c>member._party</c> on its own thread and then parks in
+    /// <c>member.Snapshot()</c>, so it can reach <c>Party.Remove</c> after the member's own leave has already
+    /// removed them. That second removal changes nothing, so it may not speak: one "disbanded" to the
+    /// straggler and one "left" to the leaver, not two of each.</summary>
+    [Fact]
+    public void AKickLandingAfterTheMembersOwnLeaveSaysNothingASecondTime()
+    {
+        var (l, lRec, _) = ConcurrentPlayer("DoubleRemovalLeader");    // built first, so the kick's thread
+        var (m, mRec, _) = ConcurrentPlayer("DoubleRemovalMember");    // keeps its own monitor while it waits
+        SessionFixture.FormParty(l, m);
+        lRec.Clear(); mRec.Clear();
+
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        // The member's own leave, run while the member's monitor is held — the shape of its real Shift+G
+        // handler, and of the disconnect teardown whose FlushNow holds that monitor for milliseconds.
+        var leave = new Thread(() => m.WithState(() =>
+        {
+            entered.Set();
+            release.Wait();
+            m.Receive(SessionFixture.GroupToggleFrame());
+        })) { IsBackground = true, Name = "member-leave" };
+        leave.Start();
+        Assert.True(entered.Wait(5000), "the leave thread never took the member's monitor");
+
+        var kick = new Thread(() => SessionFixture.FormParty(l, m)) { IsBackground = true, Name = "leader-kick" };
+        kick.Start();
+        Assert.False(kick.Join(300), "the kick did not park on the member's monitor");
+        release.Set();
+        Assert.True(leave.Join(5000), "the member's own leave hung");
+        Assert.True(kick.Join(5000), "the kick hung");
+
+        Assert.Equal(1, lRec.MiniTexts(Disbanded));
+        Assert.Equal(1, mRec.MiniTexts(Left));
+        Assert.Null(PartyOf(l));
+        Assert.Null(PartyOf(m));
+    }
+
     /// <summary>The review's definition of a stranded outcome, read from both ends: a session the roster
     /// still holds whose own <c>_party</c> is null or names another party, and a session whose
     /// <c>_party</c> names a party whose roster does not hold it.</summary>
@@ -328,6 +366,8 @@ public sealed class PartyMembersRaceTests
 
     private static Party? PartyOf(Session s) => (Party?)PartyField.GetValue(s);
     private static void SetParty(Session s, Party? p) => PartyField.SetValue(s, p);
+
+    private const string Left = "You have left the group.";
 
     /// <summary>A session on the fixture's world whose recorder IS thread-safe. <see cref="RecordingOutbound"/>
     /// deliberately is not (#188) and these facts run two real handler threads that both broadcast into the

@@ -144,7 +144,12 @@ public sealed partial class Session
         // The straggler comes back FROM the removal, computed inside Party's gate from the snapshot that
         // removal installed (#167). Re-reading party.Members afterwards instead — what this did — let two
         // members leaving at once both see "one left" and disband the same person twice.
-        var straggler = party.Remove(member);
+        var (removed, straggler) = party.Remove(member);
+        // A removal that took nobody out says nothing. The kick above reads member._party on the LEADER's
+        // thread, outside the member's monitor, and then parks in Snapshot(), so it can arrive after the
+        // member's own leave or disconnect teardown has already run all of this; repeating it told the
+        // straggler the group had disbanded twice and the leaver they had left twice (#167 review, F2).
+        if (!removed) return;
         // Each member's own removal is one critical section on THEIR session (#29): a leader kicking someone,
         // and the disband that can follow, both run on a thread that is not theirs, and SetGroupStatus writes
         // _char.Grouped and marks them dirty.
