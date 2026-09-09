@@ -2284,7 +2284,7 @@ public sealed partial class Session
     internal bool LuaHasLegend(string mark) => HasLegend(mark);
     internal void LuaForgetSpell(SpellDef sp) => ForgetOneSpell(sp.Id);
 
-    // Gateway core (see CastGateway): region+gate lookup, random landing tile, EnterMap + self-only arrival line.
+    // Gateway core: region+gate lookup, random landing tile, EnterMap + self-only arrival line.
     internal bool LuaGateway(string? answer)
     {
         int region = Content.RegionOf(_char.Map);
@@ -2497,7 +2497,7 @@ public sealed partial class Session
         Log.Info($"      {sp.Name}(lua) -> morph look={_morphLook} for {m.dur}ms");
     }
 
-    // Propose core (see CastPropose): the verb owns the engaged/married guard; this fires the async ask flow.
+    // Propose core: the verb owns the engaged/married guard; this fires the async ask flow.
     internal bool LuaPropose(SpellDef sp) { _ = RunProposeAsync(sp); return true; }
 
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------

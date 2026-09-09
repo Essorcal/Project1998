@@ -1369,7 +1369,7 @@ public sealed class ShadowStatsAbility : INpcAbility
 /// <summary>The Chapel (RTK NPCs/Common/chapel_npc.lua — "Lotus"/"Peach"/"Fen" in Kugnae/Buya/Nagnang): Buy/Sell
 /// (its <see cref="Shops"/> catalogue — love/cooked_fish/rose_petals, matching RTK's own buyItems) plus the
 /// marriage feature set. <b>Buy Engagement Ring</b> grants the companion spell "propose" (see
-/// <c>Session.CastPropose</c> — cast it near your beloved, who must already be holding a ring you gave them,
+/// <c>Session.LuaPropose</c> — cast it near your beloved, who must already be holding a ring you gave them,
 /// to send the accept/decline prompt). <b>Break Off Engagement</b>/<b>Marriage</b>/<b>Divorce</b> are
 /// conditionally shown per the player's own engagement/marriage state, mirroring the lua's own menu gating
 /// (both Break/Marriage show for EITHER side of an engagement — Marriage itself then blocks the proposer
