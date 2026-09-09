@@ -166,15 +166,6 @@ public sealed partial class World
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
 
-    // Server-wide online-account registry (independent of the per-map Players lists above, which a session
-    // only joins AFTER its own arrival/load logic runs). Keyed by CharacterStore.Key(username). Exists
-    // solely for the duplicate-login guard: RegisterOnline lets HandleArrival atomically detect + evict a
-    // stale session for the same account BEFORE loading, so a slow-to-unwind old session can never clobber
-    // the new one's fresher save (SQLite's persistence is blind last-write-wins). Guarded by the same _lock
-    // as everything else here — registration/eviction is rare (once per login), so sharing the lock costs
-    // nothing measurable against the map operations.
-    private readonly Dictionary<string, Session> _online = new();
-
     // The two spawn systems — the POINT roster (Spawn) and the GROUP roster (SpawnGroup) — and everything
     // that builds, materialises and refills them live in World.SpawnDirector.cs (#37). Constructed before
     // PopulateSpawns, which is the first call into it.
@@ -301,67 +292,15 @@ public sealed partial class World
     // via @reload. See TopUpForageLocked.
     private static readonly int ForageTicks = Math.Max(1, 18_000 / TickMs);   // top up ~every 18s, like RTK's periodic itemspawner
 
-    // ---- world calendar (opcode 0x20) ---------------------------------------------------------
-    // The calendar itself lives in Shared.GameCalendar — a pure function of wall-clock time since a fixed
-    // epoch, with RTK's own cadence constants and the reasoning for deriving rather than counting. It is in
-    // Shared because the LOGIN server, a separate process with no World, stamps a new character's "Born in
-    // ..." legend with the same date this server is showing.
-    //
-    // What World adds is the broadcast: RTK's change_time_char (map.c:1661) pushes clif_sendtime to every
-    // connected session on each in-game hour, so we cache the calendar and watch for the hour to roll over.
-    // Only hour+year go on the wire (see Session.SendTime); day/season are tracked because the year cadence
-    // is defined in terms of them. Nothing reports the season to a player any more (@time is gone) — it
-    // reaches them only through legend text (GameCalendar.Stamp) and whatever scripts read it.
-    private int _hour, _day = 1, _season = 1, _year = 1;
-    private long _gameHour = -1;          // whole in-game hours since the epoch; -1 = not yet synced
-    private int? _hourOverride;           // @clock pin: when set, this hour REPLACES the derived one
-    public (byte hour, byte year) Time => ((byte)_hour, (byte)_year);
-    public string SeasonName => GameCalendar.SeasonName(_season);
-    public (int hour, int day, int year) ClockNow => (_hour, _day, _year);
-    public int? HourOverride => _hourOverride;
+    // The world calendar (opcode 0x20) — the cached in-game date, the hour-rollover watch phase (1.6) drives,
+    // and the @clock pin — lives in World.WorldClock.cs (#37). Constructed before the constructor's first
+    // Sync, which is the first call into it. Sessions read it through World.Clock.
 
-    /// <summary>Pin the shared in-game hour (@clock), or release it (null). The day/season/year keep
-    /// deriving from the real epoch — only the HOUR is pinned, because the hour is what gates behavior
-    /// (totem-time windows). Forcing <c>_gameHour = -1</c> makes the next tick's <see cref="SyncClock"/>
-    /// report a change, so every session gets a fresh 0x20 within one tick in both directions.</summary>
-    public void SetHourOverride(int? hour)
-    {
-        lock (_lock)
-        {
-            _hourOverride = hour;
-            _gameHour = -1;
-            if (hour is int h) _hour = h;   // immediate, so a readout or IsTotemTime right after is correct
-        }
-    }
-
-    /// <summary>Re-read the calendar; true when the in-game hour changed, i.e. it is time to broadcast
-    /// <c>0x20</c>.</summary>
-    private bool SyncClock()
-    {
-        long gameHour = GameCalendar.HoursNow();
-        if (gameHour == _gameHour) return false;
-        _gameHour = gameHour;
-        (_hour, _day, _season, _year) = GameCalendar.At(gameHour);
-        if (_hourOverride is int oh) _hour = oh;   // @clock pin wins over the derived hour
-        return true;
-    }
-
-    /// <summary>Whether the shared world clock is currently in <paramref name="totem"/>'s totem time
-    /// (RTK isTotemTime) — the +5% kill-exp window. Reads the live hour; see <see cref="Content.IsTotemTime"/>.</summary>
-    public bool IsTotemTime(int totem) => Content.IsTotemTime(_hour, totem);
-
-    // ---- weather (opcode 0x1F / RTK clif_sendweather) ------------------------------------------
-    // Weather is now a deterministic function of region-zone + time-period + season (see WeatherModel) rather
-    // than the old per-map random roll: it is identical for every player, survives restarts, persists while a
-    // player steps indoors, and is driven by the season. This world only (a) broadcasts a change when the
-    // weather PERIOD rolls over for an active map and (b) holds optional admin OVERRIDES set via @weather.
-    // 0=clear, 1=WRAIN(rain), 2=WSNOW(snow) — the three states the 4.95 client can draw.
-    private static readonly int AdviceTicks = Math.Max(1, 900_000 / TickMs);   // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer)
-
-    // Admin/debug weather overrides keyed by WeatherModel.ZoneOf(map). When present, a zone shows this state
-    // instead of the seasonal model until "@weather auto" clears it (indoors still wins → clear). Guarded by _lock.
-    private readonly Dictionary<int, byte> _weatherOverride = new();
-    private long _lastWeatherPeriod = -1;          // last WeatherModel period broadcast; -1 forces the first tick to sync
+    // The weather (opcode 0x1F / RTK clif_sendweather) — the admin overrides, the per-map resolution and the
+    // period-rollover sweep phase (1.7) drives — lives in World.WeatherService.cs (#37). World keeps the
+    // per-map last-sent cache (MapState.Weather) and the flush that puts 0x1F on the wire; sessions read it
+    // through World.Weather.
+    private static readonly int AdviceTicks = Math.Max(1, 900_000 / TickMs);   // ~15 minutes — the "Listen to advice" hint cadence (RTK pc_timer, NOT weather)
 
     // Effects raised from inside the lock (a boss shrugging off a killing blow, say) and flushed by the next
     // Tick — TryDamage can't broadcast where it stands, and its callers only know how to draw the damage.
@@ -431,8 +370,6 @@ public sealed partial class World
         if (best is null || best.PlayerId == mob.TargetId) return;
         mob.TargetId = best.PlayerId;
         mob.TargetMobId = 0;
-        mob.DetourDir = NoDetour;
-        mob.DetourLeft = 0;
     }
 
     // Facing (0=N 1=E 2=S 3=W) toward a delta, preferring the larger axis — used to turn a mob to face
@@ -455,7 +392,7 @@ public sealed partial class World
     private uint _nextItemId = 500_000;
 
     /// <summary>The scheduled-restart clock (@restart, or the run/restart_at file a deploy writes). Kept on
-    /// the World because a restart warning is a server-wide broadcast and AllPlayers lives here.</summary>
+    /// the World because a restart warning is a server-wide broadcast and the online roster lives here.</summary>
     public RestartSchedule Restarts { get; }
 
     /// <summary>Builds the world's in-memory state and NOTHING that runs on its own: no tick thread, no
@@ -465,10 +402,18 @@ public sealed partial class World
     public World()
     {
         _spawnDirector = new SpawnDirector(this);
+        Online = new OnlineRegistry(this);
+        AutoSave = new AutoSaveLoop(this);
+        Clock = new WorldClock(this);
+        Weather = new WeatherService(this);
         PopulateSpawns();                 // build the persistent roster from Content.Spawns (needs Content.Load first)
         PopulateNpcs();                   // place the stationary NPCs (Content.Npcs) as non-fighting mobs
-        SyncClock();                      // derive the in-game calendar from the fixed real-world epoch
-        Log.Info($"=== clock: Yuri {_year}, {SeasonName}, day {_day}, hour {_hour}:00");
+        // Derive the in-game calendar from the fixed real-world epoch. Under _lock like the two Populate
+        // calls above it: nothing else can be holding it here (the world is still being constructed and no
+        // thread can see it yet), and it is what lets WorldClock.Sync assert its caller holds the lock.
+        lock (_lock) Clock.Sync();
+        var (hour, day, year) = Clock.ClockNow;
+        Log.Info($"=== clock: Yuri {year}, {Clock.SeasonName}, day {day}, hour {hour}:00");
         Restarts = new RestartSchedule(this);
     }
 
@@ -492,7 +437,7 @@ public sealed partial class World
         // meantime — a multi-second, self-recovering freeze of the entire world with nothing in the log to
         // show for it. A dedicated thread cannot be starved by pool pressure.
         new Thread(TickLoop)     { IsBackground = true, Name = "world-tick" }.Start();
-        new Thread(AutoSaveLoop) { IsBackground = true, Name = "world-autosave" }.Start();
+        new Thread(AutoSave.Run) { IsBackground = true, Name = "world-autosave" }.Start();
 
         // Pool headroom + the pool-latency and client-silence probes. Started here because this is the
         // first point where a World exists for the silence scanner to walk.
@@ -1064,7 +1009,7 @@ public sealed partial class World
             uint mobId = mob.Id;
             _ = Task.Run(async () => { try { await Task.Delay(600); Broadcast(mapId, p => p.DespawnEntity(mobId)); } catch (Exception e) { Log.Error($"delayed despawn of mob {mobId} threw", e); } });
             uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
-            PlayerById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
+            Online.ById(ownerId)?.AwardKillExp(reward, mapId, mob.X, mob.Y, mob.Key);
         }
     }
 
@@ -1101,7 +1046,7 @@ public sealed partial class World
             if (!victim.Summoned)
             {
                 uint reward = (uint)(victim.Exp > 0 ? victim.Exp : victim.MaxHp);
-                PlayerById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y, victim.Key);
+                Online.ById(attacker.OwnerId)?.AwardKillExp(reward, mapId, victim.X, victim.Y, victim.Key);
             }
             return;
         }
@@ -1123,7 +1068,7 @@ public sealed partial class World
             mob.Threat?.Clear();
             mob.TargetId = 0;
             mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0;   // a full reset supersedes any earlier Amnesia peel
-            mob.AttackTimer = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0;
+            mob.AttackTimer = 0;
             mob.TargetMobId = 0;
             if (!_maps.TryGetValue(mapId, out var m)) return;
             var foes = m.Mobs.Where(o => o.Alive && !o.IsNpc && o.Id != mob.Id
@@ -1135,12 +1080,9 @@ public sealed partial class World
 
     // ---- mob movement (World.MobMovement.cs) --------------------------------------------------
     // The step primitives — StepMobToward, StepMobAway, StepMobStraight, StepMobTo, Dart and the MobBlocked
-    // gate — are World.MobMovement (#37, section 2). NoDetour stays here: ConfuseMob, TryDamage and the tick
-    // reset it, and the movement code reads it as the enclosing type's constant.
-
-    /// <summary>No sideways shuffle in progress — see <see cref="Mob.DetourDir"/>. Vestigial now the blocked
-    /// fallback is RTK's stateless random walk (see <see cref="StepMobToward(ushort, MapState, Mob, int, int, ValueTuple{ushort, ushort}, MapData, HashSet{ValueTuple{ushort, ushort}}, HashSet{ValueTuple{int, int}}, List{ValueTuple{ushort, uint, ushort, ushort, byte}}, List{ValueTuple{ushort, uint, byte}}, List{ValueTuple{ushort, Mob, int, uint}}, bool)"/>); the field and its resets are harmless and kept to avoid churn.</summary>
-    private const byte NoDetour = 0xFF;
+    // gate — are World.MobMovement (#37, section 2). No movement state is left in this file: the
+    // sideways-shuffle bookkeeping a blocked chaser used to keep went with #149, having been replaced by
+    // RTK's stateless random walk on 2026-08-24 and written but never read since.
 
     /// <summary>Remaining-HP percent for a mob's over-head bar — 1..100 while alive so a living creature's
     /// bar never reads empty. Mirrors Session's own private HpPercent(Mob); the two must agree or a healed
@@ -1156,7 +1098,7 @@ public sealed partial class World
     /// <summary>A player swung at <paramref name="mob"/> — hit OR miss. A prey creature (<see cref="Mob.Flees"/>)
     /// bolts: it stays spooked for <see cref="PanicMs"/>, refreshed by each further swing, which WIDENS the
     /// distance at which it notices you (<see cref="FleeRadius"/>) rather than changing how far its dart
-    /// carries — see <see cref="Dart"/> and <see cref="PreyDartTiles"/>. No effect on anything
+    /// carries — see <see cref="MobMovement.Dart"/> and <see cref="PreyDartTiles"/>. No effect on anything
     /// else — an ordinary mob is provoked by <see cref="TryDamage"/>, which needs damage to have landed.</summary>
     public void Spook(Mob mob)
     {
@@ -1189,10 +1131,10 @@ public sealed partial class World
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
             // Seed the weather cache to what the newcomer is about to be shown (Session sends it on entry via
-            // GetWeather), so the tick's period-rollover diff compares against the on-screen state and never
+            // Weather.Get), so the tick's period-rollover diff compares against the on-screen state and never
             // skips a real change as a no-op — otherwise a player who entered mid-period could stay stuck on
             // stale weather when the period rolls to a value that happens to match the default-0 cache.
-            m.Weather = WeatherForLocked(mapId);
+            m.Weather = Weather.For(mapId);
             peers = m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray();
             mobs = m.Mobs.ToArray();
             // The newcomer's own tile is snapshotted here too: the loop below draws THEM on every peer's
@@ -1341,59 +1283,9 @@ public sealed partial class World
                 var mob = m.Mobs.FirstOrDefault(mo => mo.Alive && mo.Id == id);
                 if (mob is not null) return (mob.X, mob.Y);
             }
-            var pc = PlayerByIdLocked(id);
+            var pc = Online.ByIdLocked(id);
             return pc is null ? null : ((ushort, ushort)?)(pc.PlayerX, pc.PlayerY);
         }
-    }
-
-    /// <summary>Current weather for a map (0=clear/1=rain/2=snow), for a player entering/re-entering it.
-    /// Deterministic from the season + the map's region-zone + the time period (WeatherModel), unless an
-    /// admin override is pinned on the zone; indoors is always clear. Needs no map to be "active".</summary>
-    public byte GetWeather(ushort mapId) { lock (_lock) return WeatherForLocked(mapId); }
-
-    // The weather a map should currently show, computed under _lock: clear indoors, else a zone override if
-    // one is pinned, else the seasonal model. This is the single source of truth GetWeather and the tick share.
-    private byte WeatherForLocked(ushort mapId)
-    {
-        if (Content.IsIndoor(mapId)) return WeatherModel.Clear;
-        if (_weatherOverride.TryGetValue(WeatherModel.ZoneOf(mapId), out var forced)) return forced;
-        return WeatherModel.For(mapId);
-    }
-
-    /// <summary>Pin a weather state onto a map's whole region-zone (the "@weather" admin lever) until
-    /// <see cref="ClearWeatherOverride"/>. Broadcasts to everyone on any active map in that zone right away.</summary>
-    public void SetWeather(ushort mapId, byte weather)
-    {
-        lock (_lock) _weatherOverride[WeatherModel.ZoneOf(mapId)] = weather;
-        BroadcastZoneWeather(mapId);
-    }
-
-    /// <summary>Drop a zone's admin override so it returns to the seasonal model, and re-broadcast the now-live
-    /// weather to everyone on it.</summary>
-    public void ClearWeatherOverride(ushort mapId)
-    {
-        lock (_lock) _weatherOverride.Remove(WeatherModel.ZoneOf(mapId));
-        BroadcastZoneWeather(mapId);
-    }
-
-    // Re-broadcast the current weather to every active map sharing this map's zone, updating each map's
-    // last-sent cache. Used after an override is set or cleared so the change lands immediately, not at the
-    // next period rollover.
-    private void BroadcastZoneWeather(ushort mapId)
-    {
-        int zone = WeatherModel.ZoneOf(mapId);
-        List<(ushort map, byte w)> hits = new();
-        lock (_lock)
-        {
-            foreach (var (id, pm) in _maps)
-            {
-                if (pm.Players.Count == 0 || WeatherModel.ZoneOf(id) != zone) continue;
-                byte w = WeatherForLocked(id);
-                pm.Weather = w;
-                hits.Add((id, w));
-            }
-        }
-        foreach (var (id, w) in hits) Broadcast(id, p => p.SendWeather(w));
     }
 
     // ---- mobs ---------------------------------------------------------------------------------
@@ -1944,37 +1836,6 @@ public sealed partial class World
         }
     }
 
-    /// <summary>The connected player with this character name (case-insensitive, any map), or null if
-    /// they're offline. Used by whisper/tell (RTK clif_parsewisp's target lookup).</summary>
-    public Session? FindPlayer(string name)
-    {
-        // CharName, not Snapshot().Name: this runs under _lock, and Snapshot takes the session's state
-        // monitor, which is the wrong way round (#29 — session state THEN _lock). Building a whole
-        // PlayerSnapshot — face, armour, weapon, shield, dye, all off the equipment list — per player per
-        // lookup, to read one string, was never the intent either.
-        lock (_lock)
-            return _maps.Values.SelectMany(m => m.Players)
-                                .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>The connected player with this entity id (any map), or null. Used by click-profile's "view
-    /// another player" path (RTK <c>clif_clickonplayer</c>, §9.5/§11l) and the exchange-initiate opcode
-    /// <c>0x4A</c> (RTK <c>clif_parse_exchange</c> type 0), both of which address a player by id — the
-    /// client already knows it from the entity it rendered — rather than by name.</summary>
-    public Session? PlayerById(uint id)
-    {
-        lock (_lock)
-            return PlayerByIdLocked(id);
-    }
-
-    /// <summary>Same lookup for callers that already hold <c>_lock</c>. The monitor is re-entrant so taking it
-    /// twice would work, but saying which methods expect it is how this file stays readable.</summary>
-    private Session? PlayerByIdLocked(uint id)
-    {
-        Debug.Assert(Monitor.IsEntered(_lock));
-        return _maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
-    }
-
     // One gate covers the entire disk-to-live sequence below, not just Content.Load: cache invalidation,
     // staff reload, terrain pre-warm and population rebuild must observe the same content generation. A GM
     // invokes this on the session read loop, so contention is bounded rather than stalling packet handling.
@@ -2030,128 +1891,6 @@ public sealed partial class World
                     mob.ClearThreat(playerId);
                     if (mob.TargetId == playerId) { mob.TargetId = 0; mob.AttackTimer = 0; }
                 }
-    }
-
-    /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
-    /// Used by channels that reach beyond one map, like subpath chat (RTK clif_sendsubpathmessage loops
-    /// every session, not just one map's block list).</summary>
-    public List<Session> AllPlayers()
-    {
-        lock (_lock)
-            return _maps.Values.SelectMany(m => m.Players).ToList();
-    }
-
-    /// <summary>How many players are in the world right now. Separate from <see cref="AllPlayers"/> because
-    /// the status publisher wants only the number, and materialising every session into a list on a timer to
-    /// read <c>.Count</c> off it is pure garbage.</summary>
-    public int OnlinePlayerCount()
-    {
-        lock (_lock)
-        {
-            var n = 0;
-            foreach (var m in _maps.Values) n += m.Players.Count;
-            return n;
-        }
-    }
-
-    /// <summary>Duplicate-login guard: atomically register <paramref name="s"/> as the online session for
-    /// <paramref name="key"/> (CharacterStore.Key(username)), returning whatever session previously held
-    /// that slot via <paramref name="old"/> (null if this is a fresh login). Called from HandleArrival
-    /// BEFORE the character is loaded from disk, so a second concurrent arrival for the same account can
-    /// never both pass unnoticed — the dictionary write is atomic under _lock. The caller (HandleArrival)
-    /// is responsible for kicking <paramref name="old"/> (Session.KickForReplacement) so its state is
-    /// flushed before the new session's own Load runs.</summary>
-    public void RegisterOnline(string key, Session s, out Session? old)
-    {
-        lock (_lock)
-        {
-            _online.TryGetValue(key, out old);
-            _online[key] = s;
-        }
-    }
-
-    /// <summary>Remove <paramref name="s"/> from the online registry, but ONLY if it still owns that slot —
-    /// a compare-and-remove so a session that was already kicked/replaced (RegisterOnline overwrote its
-    /// slot with the newer session) can't accidentally evict the session that replaced it when its own
-    /// (now-stale) teardown finally runs.</summary>
-    public void Unregister(string key, Session s)
-    {
-        lock (_lock)
-        {
-            if (_online.TryGetValue(key, out var cur) && ReferenceEquals(cur, s))
-                _online.Remove(key);
-        }
-    }
-
-    /// <summary>Periodic crash-safety backstop (see AutoSaveLoop): flush every connected player's pending
-    /// mutation, regardless of the per-session AutoSaveMs throttle. Its unique job is an IDLE dirty player
-    /// (mutated, then stopped sending packets, so their own read-loop FlushIfDue never gets another
-    /// iteration to fire on) — an ACTIVE player is already covered by their own on-thread flush.</summary>
-    private void AutoSaveTick()
-    {
-        foreach (var s in AllPlayers()) FlushIsolated(s, "autosave");
-    }
-
-    /// <summary>One player's flush, fenced so it can't take the rest of a sweep with it. Before this, one
-    /// throw from FlushNow unwound the whole foreach in AutoSaveLoop's catch, and every player AFTER the
-    /// unlucky one in that snapshot silently missed the interval. Idle dirty players are exactly who the
-    /// sweep exists for (see AutoSaveTick), so a skipped sweep is a real crash-safety hole, not a delay.
-    ///
-    /// <para>The throw it was written for was a collection mutated under the serializer by that player's own
-    /// thread; #29 closed that off — FlushNow now serializes a snapshot taken under the session's state
-    /// monitor — so what is left to catch here is a bad disk. The fence stays: "one player's failure must not
-    /// cost every later player their interval" is worth keeping whatever the cause.</para>
-    ///
-    /// <para>Returns whether the flush succeeded, because the two callers face different consequences and
-    /// must say different things. The periodic sweep genuinely does retry on its next interval. The
-    /// shutdown flush has no next interval: a throw there is the player's last state LOST, and reporting it
-    /// as "retried" — or, worse, counting it as saved — is the one thing an operator reading the final
-    /// lines of a log must not be told. <paramref name="lastChance"/> picks the wording.</para></summary>
-    private static bool FlushIsolated(Session s, string sweep, bool lastChance = false)
-    {
-        try { s.FlushNow(); return true; }
-        catch (Exception e)
-        {
-            Log.Error($"{sweep}: flush of '{s.UserKey}' ({s.Remote}) threw — " +
-                      (lastChance ? "save LOST — process is exiting, there is no retry"
-                                  : "that player's save is retried next sweep, the others continue"), e);
-            return false;
-        }
-    }
-
-    // Own thread (see the constructor): each FlushNow serializes a multi-KB character graph to JSON and does
-    // a synchronous SQLite write, so a sweep of a full server is a long block. On the thread pool that was
-    // a pool thread held for the duration, competing with the heartbeat.
-    private void AutoSaveLoop()
-    {
-        while (true)
-        {
-            Thread.Sleep(Session.AutoSaveMs);
-            // AutoSaveTick isolates each player's flush; this only sees a throw from AllPlayers itself.
-            try { AutoSaveTick(); }
-            catch (Exception e) { Log.Error("autosave sweep threw — retrying on the next interval", e); }
-        }
-    }
-
-    /// <summary>Graceful-shutdown flush: force-save every connected player right now, ignoring the dirty
-    /// flag entirely is NOT needed here — FlushNow already no-ops a clean session cheaply. Cannot help
-    /// against a hard crash/kill — that's what the periodic AutoSaveLoop sweep + each session's own
-    /// on-thread flush bound instead.
-    ///
-    /// <para>Returns (saved, failed) rather than the population count. It used to return
-    /// <c>players.Count</c> whatever happened, so the shutdown hook's "flushed N player(s)" was the number
-    /// of players CONNECTED, not the number persisted — a run that lost three characters' last hour logged
-    /// exactly what a clean one did. The caller reports both numbers (see TkListener.Shutdown).</para></summary>
-    public (int saved, int failed) SaveAllPlayers()
-    {
-        var players = AllPlayers();
-        int saved = 0, failed = 0;
-        foreach (var s in players)
-        {
-            if (FlushIsolated(s, "shutdown save", lastChance: true)) saved++;
-            else failed++;
-        }
-        return (saved, failed);
     }
 
     /// <summary>NPCs (stationary, IsNpc) within <paramref name="radius"/> tiles (Chebyshev) of a point, nearest
@@ -2266,14 +2005,14 @@ public sealed partial class World
             if (mob.AmnesiaBy != 0 && mob.AmnesiaBy == attackerId) { mob.AmnesiaBy = 0; mob.AmnesiaUntil = 0; }
 
             // Lua AI hooks for this creature, if it has any (queued — see QueueHook).
-            var actor = attackerId == 0 ? null : PlayerByIdLocked(attackerId);
+            var actor = attackerId == 0 ? null : Online.ByIdLocked(attackerId);
             QueueHook(MobScript.OnAttacked, mapId, mob, actor);
             if (died) QueueHook(MobScript.AfterDeath, mapId, mob, actor);
             // Provoked -> fight back (mob_ai_normal on_attacked). Getting hit ALWAYS wins: it drops whatever
             // mob it was scrapping with (a pet) and re-points it at the player, and it overrides the
             // stuck-mob retarget in Tick — so zapping something always drags its aggro onto you, wall or no
             // wall, however unreachable you are.
-            if (!died && attackerId != 0) { mob.TargetId = attackerId; mob.TargetMobId = 0; mob.DetourDir = NoDetour; mob.DetourLeft = 0; }
+            if (!died && attackerId != 0) { mob.TargetId = attackerId; mob.TargetMobId = 0; }
             // Being hit wakes a sleeping creature (RTK sleep.lua on_takedamage_while_cast). Paralyze
             // deliberately does NOT clear here — a paralyzed mob stays held while you beat on it.
             if (!died && mob.HasStatus("sleeps", Environment.TickCount64))
@@ -2529,26 +2268,13 @@ public sealed partial class World
             // and, on an in-game hour rollover, flag every connected session for a fresh 0x20 broadcast.
             // Checked every tick rather than every 750th, so the broadcast lands within 600ms of the true
             // rollover instead of drifting by however far into an hour the process happened to start.
-            if (SyncClock()) q.TimeChanged = true;
+            if (Clock.Sync()) q.TimeChanged = true;
 
             // (1.7) weather: when the deterministic weather PERIOD rolls over (WeatherModel.PeriodHours, ~15
             // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
             // A season change lands on a period boundary too, so this pass catches those as well. Cheap: the
             // period only advances a couple of times an hour. Overrides are broadcast eagerly elsewhere.
-            long period = WeatherModel.PeriodNow();
-            if (period != _lastWeatherPeriod)
-            {
-                _lastWeatherPeriod = period;
-                q.WeatherChanges = new List<(ushort, byte)>();
-                foreach (var (mapId, pm) in _maps)
-                {
-                    if (pm.Players.Count == 0) continue;
-                    byte w = WeatherForLocked(mapId);
-                    if (w == pm.Weather) continue;
-                    pm.Weather = w;
-                    q.WeatherChanges.Add((mapId, w));
-                }
-            }
+            Weather.SweepPeriod(q);
 
             // (2) wander: each mob acts only when its own MoveTime has elapsed (RTK MobMoveTime), and even
             // then usually just turns instead of stepping — mirroring RTK mob_ai_normal (checkmove: pick a
@@ -2671,13 +2397,13 @@ public sealed partial class World
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
-        foreach (var s in AllPlayers()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
+        foreach (var s in Online.All()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
 
         // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
         // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
         // same cadence as the weather roll. SendAdvice is a no-op for anyone with the option off.
         if (_tick % AdviceTicks == 0)
-            foreach (var s in AllPlayers()) Try(s.SendAdvice, "SendAdvice");
+            foreach (var s in Online.All()) Try(s.SendAdvice, "SendAdvice");
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (q.Forage is not null)
@@ -2742,7 +2468,7 @@ public sealed partial class World
         // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
         if (q.TimeChanged)
         {
-            var (h, y) = Time;
+            var (h, y) = Clock.Time;
             foreach (var p in players2) Try(() => p.SendTime(h, y), "SendTime");
             // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }

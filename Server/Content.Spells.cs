@@ -1494,7 +1494,7 @@ public static partial class Content
     // the same seeSpotTraps() mechanic, 100 mana/6s cooldown — its own export row already carries a real
     // aether value, the warrior family's doesn't: RTK's setAether(key, 25000) never made it into the CSV).
     // Reveals nearby hidden rogue-trap NPCs (dart/snare/repeating/flash/spear/poison/death/sleep) via a
-    // caster-only marker item — see World.TrapsNear. Session.CastSpotTraps.
+    // caster-only marker item — see World.TrapsNear. Session.LuaRevealTraps.
     // (No key table: the five spells are bound to the `spot_traps` verb by their SpellParams rows.)
 
     // RTK rogue/judge.lua (Judge/Spiritual Advisor/Natural Talent/Appraise — 4 reskins) + rogue/spy.lua
@@ -1502,7 +1502,7 @@ public static partial class Content
     // inventory list): a text popup of the target's class/name/level/title/might/will/grace. The judge
     // family requires the target STRICTLY lower level than the caster (`target.level >= player.level` fails);
     // the spy family allows an EQUAL level too (`target.level > player.level` fails) — a genuine, deliberate
-    // difference in the Lua source, not a typo. Session.CastDivination.
+    // difference in the Lua source, not a typo. Session.LuaDivine.
     // All eight are bound to the `divine` verb by their SpellParams rows, so no dispatch table is needed.
     // The judge/spy SPLIT still is: it is not a binding, it's a rule the verb reads through ctx.spyMode -
     // judge needs the target STRICTLY lower level, spy allows equal. See Session.LuaIsSpy.
@@ -1602,7 +1602,7 @@ public static partial class Content
     // Level 99, 1520 mana, 125s cooldown (RTK aether), the decoy auto-expires 21s after placement if never
     // triggered. NOT ported: the Lua's NPC heartbeat implies a 5000-mana/tick owner-upkeep drain while the
     // decoy is alive — the exact drain/early-deletion formula wasn't in the captured source, so this is a
-    // documented gap (flat 1520 upfront cost only), not a guess. See Session.CastBladestormTrap/
+    // documented gap (flat 1520 upfront cost only), not a guess. See Session.LuaPlaceBladestorm/
     // ApplyBladestormSelfDamage, World.CheckPlayerTrapTrigger, World.TriggerTrapLocked's "bladestorm" case.
     // (No key table: the four are bound to the `bladestorm` verb by their SpellParams rows. The trap they
     // place is still the "bladestorm" wire kind that World.TriggerTrapLocked / CheckPlayerTrapTrigger switch on.)

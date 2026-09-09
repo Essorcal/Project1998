@@ -156,7 +156,7 @@ public sealed partial class Session
     }
 
     // "@clock [0-23 | real]" — read or pin the shared in-game hour. The calendar otherwise derives strictly
-    // from the real-world epoch (World.SyncClock), so the totem-time window — the thing @exp kill exists to
+    // from the real-world epoch (WorldClock.Sync), so the totem-time window — the thing @exp kill exists to
     // exercise — was only testable when the real clock happened to land in it. Pinning is WORLD-scoped (the
     // hour is one shared value; every session's 0x20 clock follows within a tick) and hour-only: day, season
     // and year keep deriving, because nothing behavioral hangs off them. `real` releases the pin.
@@ -164,18 +164,18 @@ public sealed partial class Session
     {
         if (!a.None)
         {
-            if (a.Is(0, "real")) _world.SetHourOverride(null);
-            else if (a.Int(0, out var h) && h is >= 0 and <= 23) _world.SetHourOverride(h);
+            if (a.Is(0, "real")) _world.Clock.SetHourOverride(null);
+            else if (a.Int(0, out var h) && h is >= 0 and <= 23) _world.Clock.SetHourOverride(h);
             else { Refuse(a.Usage()); return; }
             Log.Info($"   -> @clock '{_char.Name}': {(a.Is(0, "real") ? "released" : $"hour pinned to {a.Word(0)}")}");
         }
 
-        var (hour, day, year) = _world.ClockNow;
+        var (hour, day, year) = _world.Clock.ClockNow;
         var totems = string.Join(", ", Enumerable.Range(0, 4)
             .Where(t => Content.IsTotemTime(hour, t)).Select(Content.TotemName));
-        Reply($"In-game time: hour {hour} — day {day} of {_world.SeasonName}, Yuri {year}. " +
+        Reply($"In-game time: hour {hour} — day {day} of {_world.Clock.SeasonName}, Yuri {year}. " +
                 $"Totem time: {(totems.Length > 0 ? totems : "none")}." +
-                (_world.HourOverride is not null ? $"  [hour pinned — {Prefix}clock real to release]" : ""));
+                (_world.Clock.HourOverride is not null ? $"  [hour pinned — {Prefix}clock real to release]" : ""));
     }
 
     // "@killtrack [clear]" — the eight-slot kill track, most-recent-first, which is what the mythic
@@ -233,17 +233,28 @@ public sealed partial class Session
         Reply($"Took {def.Name}{(take > 1 ? $" x{take}" : "")} — {held - take} left.");
     }
 
-    // "@exp <n> [kill]" — award raw experience through AwardExp, the same funnel every real grant uses, so
-    // the whole leveling path runs for real: the exp curve, multi-level carries, the Peasant wall, LevelUp's
-    // stat/HP/MP gains. @lvl can't test any of that — it REBUILDS at a level. `kill` marks the grant as kill
-    // exp, which is what opts into the 1.05 totem-time bonus (quest-style grants never take it). Bare @exp
-    // reports where you stand.
+    // "@exp <n> [kill]" — award raw experience through the same funnels every real grant uses, so the whole
+    // leveling path runs for real: the exp curve, multi-level carries, the Peasant wall, LevelUp's stat/HP/MP
+    // gains. @lvl can't test any of that — it REBUILDS at a level. Bare @exp reports where you stand.
+    //
+    // The two forms are the two funnels, not one funnel with a flag (#155). Without `kill` this is a
+    // quest-style grant: AwardExp, the caller's own, no totem window. With `kill` it goes through
+    // AwardKillExp with the CALLER'S OWN TILE standing in for the corpse, so it behaves the way a mob dying
+    // there behaves — split across the group members in range by the per-head share and their standing, and
+    // the group-wide totem rule rather than the caller's own. It used to call AwardExp(n, killExp: true)
+    // directly, which bought the 1.05 totem bonus and nothing else: a grouped caller took the whole grant and
+    // the party standing next to them took nothing, which is not what "as if from a kill" says.
+    //
+    // No mobKey, deliberately: a GM grant is not the death of any creature, so no quest tally moves for
+    // anyone it pays. AwardKillExp treats a null key as a no-op ("keyless kills (debug summons) are ignored"),
+    // which is the same call shape a summoned mob's death already uses. The help text says so.
     private void ExpCmd(CommandArgs a)
     {
         // uint, not int: the grant feeds AwardExp, and a negative one has no meaning there.
         if (!uint.TryParse(a.Word(0), out var n) || n == 0)
         { Refuse($"exp is {_char.Exp:N0}. {a.Usage()}"); return; }
-        AwardExp(n, killExp: a.Is(1, "kill"));
+        if (a.Is(1, "kill")) AwardKillExp(n, _char.Map, _char.X, _char.Y);
+        else AwardExp(n);
     }
 
     // "@dura <name|id> <n>" — set an item's current durability, bag first then worn, clamped to the item's
@@ -742,14 +753,13 @@ public sealed partial class Session
         byte b = (byte)Math.Clamp(a.Int(0, 0), 0, 255);
         switch (which)
         {
-            case "level": _char.Level = (byte)Math.Clamp(a.Int(0, 1), 1, 99); break;
             case "might": _char.Might = b; break;
             case "will":  _char.Will  = b; break;
             case "grace": _char.Grace = b; break;
         }
         if (_enteredWorld) StoreSave();
         SendStats();
-        byte now = which switch { "level" => _char.Level, "will" => _char.Will, "grace" => _char.Grace, _ => _char.Might };
+        byte now = which switch { "will" => _char.Will, "grace" => _char.Grace, _ => _char.Might };
         Reply($"{which} set to {now}");
         Log.Info($"   -> {which.ToUpperInvariant()} set to {now}");
     }
@@ -862,7 +872,7 @@ public sealed partial class Session
         else if (a.NameThenTrailingInt(out var named, out var n)) { name = named; add = n; }
 
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
 
         int now = Math.Max(0, target.QuestCounter(ArmorQuest.CarnageWinsReg) + add);
@@ -882,7 +892,7 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
@@ -915,11 +925,11 @@ public sealed partial class Session
         string name = a.Raw;
         if (name.Length == 0)
         {
-            var all = _world.AllPlayers().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            var all = _world.Online.All().OrderBy(p => p._char.Name, StringComparer.OrdinalIgnoreCase).ToList();
             ReplyList($"online ({all.Count})", all.Select(Line));
             return;
         }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         Reply(Line(target));
     }
@@ -931,7 +941,7 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
@@ -955,7 +965,7 @@ public sealed partial class Session
     {
         if (a.None) { Refuse(a.Usage()); return; }
         int heard = 0;
-        foreach (var s in _world.AllPlayers())
+        foreach (var s in _world.Online.All())
         {
             try { s.SystemAnnounce(a.Raw); heard++; }
             catch (Exception e) { Log.Error($"@announce to {s.Remote} threw — the others still hear it", e); }
@@ -1027,7 +1037,7 @@ public sealed partial class Session
             ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
             return;
         }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
         target.ReviveInPlace(target.IsDead ? "You have been restored to life." : "You are restored to full health.");
         Reply($"Restored {target._char.Name} to full health.");

@@ -31,7 +31,7 @@ public static class StatusResponder
     /// <summary>The full HTTP response, built fresh per probe — the values are the point.</summary>
     public static byte[] Build(World world)
     {
-        int players = world.OnlinePlayerCount();
+        int players = world.Online.Count;
 
         // Restart countdown in whole minutes, rounded UP (a restart 30s away is "1", not "0" — the strip
         // says "restart in ~N min" and 0 would read as "now" while the server is still up).

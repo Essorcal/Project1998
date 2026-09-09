@@ -97,7 +97,7 @@ public sealed partial class Session
                $"trade {(_trade is not null ? "OPEN" : "none")}, dirty {_dirty}";
     }
     // Set once this session has been superseded by a newer login for the same account (duplicate-login
-    // guard, see World.RegisterOnline/Session.KickForReplacement). Gates the read-loop's disconnect save
+    // guard, see World.OnlineRegistry.Register/Session.KickForReplacement). Gates the read-loop's disconnect save
     // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
     private int _replaced;
     // Serializes the DATABASE WRITE for this session, and nothing else (#29). It used to be _saveGate and it
@@ -344,7 +344,7 @@ public sealed partial class Session
                 if (Volatile.Read(ref _established) == 0 && !IsLoginPort && StatusResponder.LooksLikeHttp(buf))
                 {
                     await tcp.Stream.WriteAsync(StatusResponder.Build(_world));
-                    Log.Info($"   -> status probe from {_remote} answered ({_world.OnlinePlayerCount()} online)");
+                    Log.Info($"   -> status probe from {_remote} answered ({_world.Online.Count} online)");
                     break;
                 }
 
@@ -408,11 +408,11 @@ public sealed partial class Session
         // Leave the shared world: despawn us for the other players on our map. World mobs persist
         // (they belong to the map, not this session), so they keep wandering for whoever remains.
         if (_enteredWorld) _world.LeaveMap(this, _char.Map);
-        if (_enteredWorld) _world.Unregister(UserKey, this);
+        if (_enteredWorld) _world.Online.Unregister(UserKey, this);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
         // flushed the freshest state; saving again here from this now-stale session would clobber it —
-        // see the duplicate-login guard, World.RegisterOnline). The login-channel session never
+        // see the duplicate-login guard, World.OnlineRegistry.Register). The login-channel session never
         // populates _char, so saving it would clobber the real record with defaults.
         if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
         {
@@ -951,7 +951,7 @@ public sealed partial class Session
         // FIRST — otherwise its eventual disconnect save could clobber THIS session with stale data, since
         // CharacterStore.Save is a blind last-write-wins upsert. Must run BEFORE _store.Load below so the
         // kicked session's flush (if any) is visible to our own load.
-        _world.RegisterOnline(CharacterStore.Key(_user), this, out var oldSession);
+        _world.Online.Register(CharacterStore.Key(_user), this, out var oldSession);
         if (oldSession is not null)
         {
             Log.Info($"   -> ARRIVAL: '{_user}' already online — kicking previous session");
@@ -967,21 +967,21 @@ public sealed partial class Session
         if (load.Status == CharacterLoadStatus.NotFound)
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
-            _world.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
+            _world.Online.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
             CloseConnection("arrival rejected (no character record)");
             return;
         }
         if (load.Status == CharacterLoadStatus.Unreadable)
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
-            _world.Unregister(CharacterStore.Key(_user), this);
+            _world.Online.Unregister(CharacterStore.Key(_user), this);
             CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
         if (load.Status == CharacterLoadStatus.StorageError)
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
-            _world.Unregister(CharacterStore.Key(_user), this);
+            _world.Online.Unregister(CharacterStore.Key(_user), this);
             CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }
@@ -1035,7 +1035,7 @@ public sealed partial class Session
         //   0x05 = YOUR entity id (binds camera/input to the self player)  <-- the missing piece
         //   0x15 = enter-map (loads Maps\TK<mapId>.map), 0x04 = coords, 0x33 = our appearance
         SendMap(ServerOp.Ack, _gameInc++, new byte[] { 0x06, 0x00, 0x00 }, "ack(0x1E)");
-        { var (h, y) = _world.Time; SendTime(h, y); }
+        { var (h, y) = _world.Clock.Time; SendTime(h, y); }
         SendId();
         SendMapInfo(_char.Map, _char.MapXs, _char.MapYs, MapTitle(_char.Map), 232, _gameInc++);
         Log.Info("   -> mapinfo(0x15)");
@@ -1044,7 +1044,7 @@ public sealed partial class Session
         PrimeViewport("login");   // 0x06 fill the window now — don't wait on the client's own 0x05
         SendStats();
         ArmEntryMusic();           // 0x19 music: ARMED here, sent on the client's first packet — see Handle()
-        SendWeather(_world.GetWeather(_char.Map));   // 0x1F: whatever this map's weather already is
+        SendWeather(_world.Weather.Get(_char.Map));   // 0x1F: whatever this map's weather already is
         SendSound(412, _char.Id);  // "successfully logging in" sfx, confirmed live 2026-07-27
 
         Log.Info("   == entry sent: 0x02 trigger + 0x1E/0x20 acks + 0x05 id + 0x15 map + 0x04 xy + 0x33 self + 0x08 stats + 412 login sfx (music armed) ==");

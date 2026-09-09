@@ -608,18 +608,6 @@ public sealed class MessengerAbility : INpcAbility
     }
 }
 
-/// <summary>Waypoint fast-travel. Stub — RTK's Waypoint.lua network didn't exist in 4.x/5.x NexusTK, so it
-/// isn't ported; this only exists so InnNpc's composition (which has always offered "Transport") has
-/// something to show until a period-accurate travel feature is identified.</summary>
-public sealed class TransportAbility : INpcAbility
-{
-    public static readonly TransportAbility Instance = new();
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
-    {
-        yield return ("Transport", c => c.Say("Transport isn't available yet."));
-    }
-}
-
 /// <summary>Fishing (RTK fishnpc.lua / Bate &amp; Wim). Ports the beginner branch: a chance per cast at a
 /// minnow + the <c>learned_to_fish</c> flag (the tutorial's stage-4 requirement). The level-15+ pole/bait/skill
 /// system, magical fish, and stuck-line death aren't modelled. The 25% roll applies on every cast, tutorial
@@ -1536,15 +1524,6 @@ public sealed class ReviveAbility : INpcAbility
         if (pick != 1) return;   // "No", or the player closed the dialog
         c.Revive("Your spirit returns to your body.");
         await c.Say("So shall it be! Keep yourself safe, and free from harm.");
-    }
-}
-
-public sealed class TimeAbility : INpcAbility
-{
-    public static readonly TimeAbility Instance = new();
-    public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
-    {
-        yield return ("Date & Time", c => c.Say($"It is {DateTime.Now:dddd, MMMM d} — {DateTime.Now:h:mm tt}."));
     }
 }
 

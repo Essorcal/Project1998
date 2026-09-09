@@ -50,7 +50,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `MobStationary.csv` | `P1998_MOB_STATIONARY` | 14 | 14 | from file |
 | `mobs.csv` | `P1998_MOBS` | 716 | 716 | from file |
 | `Items.csv` | `P1998_ITEMS` | 2,544 | 2,544 | from file |
-| `Warps.csv` | `P1998_WARPS` | 4,800 | 4,323 | from file |
+| `Warps.csv` | `P1998_WARPS` | 4,824 | 4,347 | from file |
 | `Spawns.csv` | `P1998_SPAWNS` | 1,175 | 1,174 | from file |
 | `AreaSpawns.csv` | `P1998_AREASPAWNS` | 2,588 | 2,588 | from file |
 | `AreaSpawnsTrap.csv` | `P1998_AREASPAWNS_TRAP` | 20 | 20 | from file |
@@ -109,7 +109,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `PathGrowth.csv` | `P1998_PATH_GROWTH` | 5 | 5 | from file |
 | `DoorObjects.csv` | `P1998_DOOR_OBJECTS` | 50 | 50 | from file |
 | `Doors.csv` | `P1998_DOORS` | 8 | 8 | from file |
-| `MapCells.csv` | `P1998_MAP_CELLS` | 32 | 29 | from file |
+| `MapCells.csv` | `P1998_MAP_CELLS` | 29 | 29 | from file |
 <!-- /generated -->
 
 Key-column guide: `mobs.csv` uses `MobLook`, `MobLookColor`, `Vita` (HP), `Exp`, `Level`,

@@ -25,7 +25,7 @@ public sealed class QuestDef
 
 /// <summary>
 /// The catalogue of single-giver quests and which NPC gives each. <see cref="ForNpc"/> drives the per-NPC quest
-/// menu. Populated by the tutorial-chain port; empty for now.
+/// menu. Populated by the tutorial-chain port: Ironheart and Jadespear both give <see cref="TutorialQuest"/>.
 /// </summary>
 public static class Quests
 {

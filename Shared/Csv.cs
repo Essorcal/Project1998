@@ -73,8 +73,12 @@ public static class Csv
     }
 
     // '#' opens a comment line, anywhere including above the header — these tables are hand-maintained and
-    // the ones carrying a derivation (ArmorDyeRamps.csv) are unusable without somewhere to write it down.
-    internal static bool IsSkippable(string s) => string.IsNullOrWhiteSpace(s) || s.TrimStart().StartsWith('#');
+    // the ones carrying a derivation (ArmorDyeRamps.csv) are unusable without somewhere to write it down. The
+    // test is against the first FIELD with its quotes already stripped, not the raw line, so a quoted
+    // "# ..." first field (game-data/MapCells.csv) is a comment too — Split is what already decides what
+    // that field's content is, and this asks it the same question.
+    internal static bool IsSkippable(string s) =>
+        string.IsNullOrWhiteSpace(s) || Split(s.TrimStart())[0].StartsWith('#');
 
     /// <summary>Split one CSV line, honouring quoted fields with embedded commas and doubled quotes.</summary>
     public static List<string> Split(string line)

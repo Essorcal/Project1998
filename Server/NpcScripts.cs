@@ -22,8 +22,6 @@ public static class NpcScripts
         ["repair"] = RepairAbility.Instance,
         ["bank"] = BankAbility.Instance,
         ["messenger"] = MessengerAbility.Instance,
-        ["transport"] = TransportAbility.Instance,
-        ["time"] = TimeAbility.Instance,
         ["fish"] = FishAbility.Instance,
         ["librarian"] = LibrarianAbility.Instance,
         ["minor_quest"] = MinorQuestAbility.Instance,

@@ -303,7 +303,7 @@ public sealed partial class Session
 
     /// <summary>Re-assert the current map's weather — used by the 0x1b sub-6 toggle, which has to take
     /// effect immediately rather than at the next map change.</summary>
-    internal void SendWeather() => SendWeather(_world.GetWeather(_char.Map));
+    internal void SendWeather() => SendWeather(_world.Weather.Get(_char.Map));
 
     // clif_sendoptions — seeds the options-menu checkboxes for the four SERVER-synced toggles. Opcode 0x23,
     // handled NOT by the main receive table (which defaults it) but by the client's SECOND dispatcher (0x4650d0
@@ -568,8 +568,8 @@ public sealed partial class Session
 
         if (a.Is(0, "auto"))
         {
-            _world.ClearWeatherOverride(_char.Map);
-            byte now = _world.GetWeather(_char.Map);
+            _world.Weather.ClearOverride(_char.Map);
+            byte now = _world.Weather.Get(_char.Map);
             Reply($"map {_char.Map} weather override cleared; season-driven weather is now {WeatherNames[Math.Min(now, (byte)2)]}");
             Log.Info($"   -> @weather auto (map {_char.Map})");
             return;
@@ -583,7 +583,7 @@ public sealed partial class Session
         }
         if (w < 0)
         {
-            byte cur = _world.GetWeather(_char.Map);
+            byte cur = _world.Weather.Get(_char.Map);
             Refuse(a.Usage());
             Refuse($"map {_char.Map} is {WeatherNames[Math.Min(cur, (byte)2)]}" +
                     (Content.IsIndoor(_char.Map) ? " (indoor - always clear)" : "") +
@@ -591,7 +591,7 @@ public sealed partial class Session
             return;
         }
 
-        _world.SetWeather(_char.Map, (byte)w);
+        _world.Weather.Set(_char.Map, (byte)w);
         Reply($"zone weather pinned to {WeatherNames[w]} (map {_char.Map} region; @weather auto to release)" +
                 (Content.IsIndoor(_char.Map) ? "   (this map is indoor - it stays clear regardless)" : "") +
                 (_char.HasSetting(0x06) ? "" : "   (your 'Weather change' toggle is OFF - @setting weather on)"));

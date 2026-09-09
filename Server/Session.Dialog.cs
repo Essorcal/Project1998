@@ -349,7 +349,7 @@ public sealed partial class Session
         // overload above). This is the real "view others" window — its Group/Exchange status cells are what
         // the client uses to enable those buttons, which is how a real player actually starts a party/trade
         // (§11l), not a chat command. An id matching nobody at all (stale/disconnected) is a no-op.
-        var target = _world.PlayerById(id);
+        var target = _world.Online.ById(id);
         if (target is not null) SendClickProfile(target);
     }
 
@@ -398,7 +398,7 @@ public sealed partial class Session
         // Speaker label is the RANK title ("Inferno"), the audience is the PATH — ranks of one class share a
         // channel, which is what makes it a subpath channel rather than a rank channel.
         string line = $"<@{_char.Name}> ({ClassTitle}) {msg}";
-        foreach (var p in _world.AllPlayers())
+        foreach (var p in _world.Online.All())
             if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
                 p.SendMiniText(line);
         Log.Info($"   -> subpath chat: \"{line}\"");
@@ -947,7 +947,7 @@ public sealed partial class Session
     private string? ResolveParcelRecipient(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
-        if (_world.FindPlayer(name) is not null) return name;
+        if (_world.Online.FindPlayer(name) is not null) return name;
         return _store.Exists(name) ? name : null;
     }
 
@@ -970,7 +970,7 @@ public sealed partial class Session
     /// their next login, driven by MailParcelFlags.</summary>
     private void NotifyParcelRecipient(string name)
     {
-        var p = _world.FindPlayer(name);
+        var p = _world.Online.FindPlayer(name);
         if (p is null) return;
         p.RefreshMailFlags();   // recompute + push the recipient's bag flag (SendStats alone would send the stale cache)
         p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
@@ -2148,7 +2148,7 @@ public sealed partial class Session
     {
         string name = text.Trim();
         if (name.Length == 0) { SendClickProfile(this); return; }
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
         SendClickProfile(target);
     }

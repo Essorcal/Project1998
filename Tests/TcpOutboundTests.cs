@@ -49,7 +49,7 @@ public sealed class TcpOutboundTests
                     : "Your character record could not be loaded. Please contact an administrator.";
                 Assert.Equal(expected, Encoding.ASCII.GetString(body, 2, body[1]));
                 await writer.WaitAsync(TimeSpan.FromSeconds(5));
-                Assert.Equal(0, world.OnlinePlayerCount());
+                Assert.Equal(0, world.Online.Count);
             }
         }
     }
@@ -75,7 +75,7 @@ public sealed class TcpOutboundTests
             Assert.Equal(bytes.Length, consumed);
             byte[] body = TkCrypt.Crypt(packet.Body, packet.Increment, TkCrypt.LoginKey);
             Assert.Equal("You were disconnected by a GM.", Encoding.ASCII.GetString(body, 2, body[1]));
-            Assert.Equal(0, world.OnlinePlayerCount());
+            Assert.Equal(0, world.Online.Count);
             await writer.WaitAsync(TimeSpan.FromSeconds(5));
         }
     }

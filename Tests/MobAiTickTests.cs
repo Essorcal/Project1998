@@ -38,7 +38,13 @@ public class MobAiTickTests
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
     private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035,
-                         OrderMap = 60036, WiringMap = 60037;
+                         OrderMap = 60036, WiringMap = 60037, WanderMap = 60038;
+
+    /// <summary>Northeast Koguryo — the one map the Ice Beast melt is wired to (<c>World.IceBeastMap</c>), so
+    /// the melt case below cannot use a content-free stand-in the way every other case here does. 36x22 by
+    /// the registry, with (29,13) and (29,14) open in all four directions and no spawn on either: read off
+    /// <c>Content.Maps</c>, <c>MapData</c> and the map's live mob list before the test was written.</summary>
+    private const ushort KoguryoMap = 3040;
 
     private Mob Registered(ushort map, Mob mob)
     {
@@ -99,6 +105,133 @@ public class MobAiTickTests
         Assert.Empty(ctx.Turns);
         Assert.Empty(ctx.Hits);
         Assert.Empty(ctx.TrapDamage);
+    }
+
+    /// <summary>The WANDER step's commit, pinned byte for byte, and the negative control for the melt case
+    /// below: a creature that wanders one tile north broadcasts its SOURCE tile (the 0x0C forward-slide
+    /// overshoot rule), vacates the tile it left and takes the one it arrived on, and springs the trap
+    /// waiting on the destination exactly once, credited to the trap's owner. Nothing about that changed
+    /// when #150 routed the commit through <c>MobMovement.StepMobTo</c>, which is the point of pinning it.
+    ///
+    /// <para><b>How it is made deterministic.</b> The wander block has no RNG seam — it rolls
+    /// <c>Random.Shared</c> for whether to reconsider its facing and for which side to face — so the test
+    /// removes the CHOICE instead of the roll. Home is the mob's own tile with <c>Leash = 1</c>, which
+    /// leaves four candidate tiles; three of them are filled in the context's collision index, so the only
+    /// tile the validation can ever pass is (5,4). The facing is forced north before each beat, which makes
+    /// a step attempt land on roughly half of them (36% straight-ahead, plus a 1-in-4 side roll on the
+    /// other 64%), and the loop stops the moment the mob moves. 200 beats is not a guess about timing: it
+    /// is the bound at which the mob failing to step has probability ~0.48^200, and any real regression
+    /// (the commit dropped, the leash test inverted, the candidate maths wrong) makes it fail every beat,
+    /// so the assertions below fire rather than the loop hanging. <c>ctx.Turns</c> collects the re-facings
+    /// of the beats that did not step and is deliberately not asserted on.</para>
+    ///
+    /// <para>Falsified by sending the DESTINATION tile instead of the source in <c>StepMobTo</c>: red,
+    /// "Assert.Equal() Failure ... Expected: (60038, ..., 5, 5, 0) Actual: (60038, ..., 5, 4, 0)".</para></summary>
+    [Fact]
+    public void WanderStepBroadcastsItsSourceTileAndSpringsTheTrapOnItsDestination()
+    {
+        var mob = Registered(WanderMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 5, "Roamer", 100)
+        {
+            Wander = true,
+            Leash = 1,      // home is where it stands, so the leash box is the four neighbours
+            MoveTime = 1,   // every beat is its turn, whatever TickMs is configured to
+        });
+        _fx.World.PlaceTrap(WanderMap, 5, 4, "dart", ownerId: 77);
+
+        World.MobTickContext ctx = null!;
+        _fx.World.UnderWorldLockForTest(() =>
+        {
+            ctx = _fx.World.MobTickContextForTest(WanderMap);
+            ctx.MobTiles.Add((4, 5)); ctx.MobTiles.Add((6, 5)); ctx.MobTiles.Add((5, 6));   // only (5,4) is left
+            for (int beat = 0; beat < 200 && mob.Y == 5; beat++)
+            {
+                mob.Dir = 0;
+                World.MobAiTick.Step(ctx, mob);
+            }
+        });
+
+        Assert.Equal(((ushort)5, (ushort)4), (mob.X, mob.Y));
+        Assert.Equal((WanderMap, mob.Id, (ushort)5, (ushort)5, (byte)0), Assert.Single(ctx.Moves));
+        Assert.Contains((5, 4), ctx.MobTiles);
+        Assert.DoesNotContain((5, 5), ctx.MobTiles);
+        var sprung = Assert.Single(ctx.TrapDamage);
+        Assert.Same(mob, sprung.mob);
+        Assert.Equal(WanderMap, sprung.map);
+        Assert.Equal(77u, sprung.ownerId);
+        Assert.True(sprung.dmg > 0);
+        Assert.Empty(_fx.World.TrapsNear(WanderMap, 5, 4, 5));   // sprung once and gone
+    }
+
+    /// <summary>#150: an Ice Beast that WANDERS onto its lava melts, the same as one that chases, retreats,
+    /// hops or darts onto it. Before this the tick's wander block committed its own step and the melt lived
+    /// only in <c>MobMovement.StepMobTo</c>, so the one commit path that skipped <c>StepMobTo</c> was the
+    /// one that skipped the melt.
+    ///
+    /// <para>Not hypothetical. <c>HomeX/HomeY</c> are written in two places — the retreat step and the
+    /// charm-expiry branch's "Re-home it where it actually is" — and the beast is charmable
+    /// (<c>mobs.csv</c> row 48, <c>MobIsBoss = 0</c>), so letting a charm lapse a tile short of the lava
+    /// re-homes a wild, wandering beast with the lava inside its leash. Reproduced on a synthetic mob by
+    /// the #151 review (<c>reviews/PR151-by-opus.md</c>, F1). This test starts from that end state — a
+    /// wandering beast homed at (29,14) standing on (29,13) — rather than replaying the charm, because what
+    /// is under test is the commit, not how the beast got there.</para>
+    ///
+    /// <para>Determinism, the collision fill and the 200-beat bound are the negative control's above. The
+    /// lethal half of the melt is asserted on the context's own queue; the animation half is asserted on the
+    /// wire, through a watcher on the same map and <c>FlushTickForTest</c>, because <c>_deferredFx</c> is
+    /// private to <c>World</c> and gets no seam for one test.</para>
+    ///
+    /// <para>Red before the change with <c>Assert.Single() Failure: The collection was empty</c> on
+    /// <c>ctx.TrapDamage</c> — the inline wander commit carried no melt.</para></summary>
+    [Fact]
+    public void AWanderingIceBeastMeltsOnItsLava()
+    {
+        // Inside the FX box the melt broadcasts over the lava tile (World.FxHalfW/FxHalfH, 19x17 either side
+        // of (29,14)) and nowhere near the four tiles the wander step chooses between.
+        var (watcher, outbound) = _fx.Player("MeltWatcher", KoguryoMap, x: 25, y: 12);
+        var beast = new Mob(_fx.World.AllocateMobId(), 1, 29, 13, "Ice Beast", 100)
+        {
+            Key = "ice_beast",   // World.IceBeastKey: the melt is keyed on this and on the map id
+            Wander = true,
+            Leash = 1,
+            MoveTime = 1,
+        };
+        beast.HomeX = 29; beast.HomeY = 14;   // re-homed onto the lava row by a lapsed charm; see the doc
+        try
+        {
+            Registered(KoguryoMap, beast);
+
+            var q = new World.TickQueues();
+            World.MobTickContext ctx = null!;
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                ctx = _fx.World.MobTickContextForTest(KoguryoMap, q);
+                ctx.MobTiles.Add((28, 13)); ctx.MobTiles.Add((30, 13));   // (29,12) is outside the leash
+                for (int beat = 0; beat < 200 && beast.Y == 13; beat++)
+                {
+                    beast.Dir = 2;
+                    World.MobAiTick.Step(ctx, beast);
+                }
+            });
+
+            Assert.Equal(((ushort)29, (ushort)14), (beast.X, beast.Y));   // stepped onto the lava (x 29-30, y 14-16)
+            Assert.Equal((KoguryoMap, beast.Id, (ushort)29, (ushort)13, (byte)2), Assert.Single(ctx.Moves));
+
+            var melt = Assert.Single(ctx.TrapDamage);
+            Assert.Same(beast, melt.mob);
+            Assert.Equal((KoguryoMap, beast.MaxHp, 0u), (melt.map, melt.dmg, melt.ownerId));
+
+            outbound.Clear();
+            _fx.World.FlushTickForTest(q);
+            var overTheBeast = outbound.BodiesOf(0x29)
+                                       .Where(b => BinaryPrimitives.ReadUInt32BigEndian(b) == beast.Id)
+                                       .ToList();
+            Assert.Equal(5, Assert.Single(overTheBeast)[4]);   // IceBeastMeltAnim, EfxWireOffset 0
+        }
+        finally
+        {
+            beast.Hp = 0;   // out of the map's live-mob set: this is a real content map the fixture shares
+            _fx.World.LeaveMap(watcher, KoguryoMap);
+        }
     }
 
     /// <summary>A venomed creature, held still: the poison tick is the first thing <c>Step</c> queues and the

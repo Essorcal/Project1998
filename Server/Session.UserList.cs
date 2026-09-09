@@ -183,7 +183,7 @@ public sealed partial class Session
     /// <summary>0x36 — the user list window.</summary>
     private void SendUserList(byte sortMode = 1)
     {
-        var players = _world.AllPlayers();
+        var players = _world.Online.All();
         var rows = new List<UserListRow>(players.Count);
 
         foreach (var p in players)

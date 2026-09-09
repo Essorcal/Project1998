@@ -1211,7 +1211,7 @@ public sealed partial class Session
         // Leave a one-shot "shiver" echo on the tile we fall THROUGH so the next passer-by senses a trap
         // sprang here (RTK's WarpTrapShiverNpc — tiger-only in RTK, unified onto every fall cave by design).
         // Never expires (matches RTK: the marker sits until someone steps on it). PC-only cosmetic — mobs
-        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (CastSpotTraps skips it).
+        // ignore it (World mob-trap lookups skip it) and Watchful Eye doesn't flag it (RevealableTrapsNear skips it).
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, "shiver", _char.Id);
 
         Log.Info($"   -> FALL through map {_char.Map} -> {f.Map} '{dm.Name}' ({f.X},{f.Y})");
@@ -1399,6 +1399,12 @@ public sealed partial class Session
         const bool PvpEntryWarning = false;
         bool warnPvp = PvpEntryWarning && Content.IsPvpMap(mapId) && !Content.IsPvpMap(_char.Map);
 
+        // #57: an open exchange does not survive a relocation. This funnel is every position change that is
+        // not a walk step, so it covers the door, the world map, the Gateway, the GM teleports and a revive
+        // alike; TryStartTrade's same-map check was the only distance rule the trade had, and nothing asked
+        // it again. Before LeaveMap, so both windows close while we are still standing where the trade
+        // started — and outside World._lock, which LeaveMap takes for itself (Session.State.cs rule 1).
+        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
         // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
         // clear our session-local debug dummies (the client drops all foreign entities on a map change).
         _world.LeaveMap(this, _char.Map);
@@ -1424,7 +1430,7 @@ public sealed partial class Session
         SendSelfLook();                                          // 0x33 draw self on the new map
         PrimeViewport("warp");                                   // 0x06 fill the window before the client asks
         PlayMapMusic(mapId);                                     // 0x19 swap to the new map's track (if different)
-        SendWeather(_world.GetWeather(mapId));                   // 0x1F whatever the new map's weather already is
+        SendWeather(_world.Weather.Get(mapId));                   // 0x1F whatever the new map's weather already is
 
         // Join the NEW map: draw the players + mobs already there for us, and broadcast us to them.
         var (peers, mobs) = _world.EnterMap(this, mapId);

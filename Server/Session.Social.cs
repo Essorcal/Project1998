@@ -31,7 +31,7 @@ public sealed partial class Session
 
     private void TryPartyInvite(string name)
     {
-        var target = _world.FindPlayer(name);
+        var target = _world.Online.FindPlayer(name);
         if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }   // RTK: silent nullpo_ret bail; we give feedback like whisper does — same blue channel too
         // Group-attempt feedback goes to the status pane (SendMiniText default type 3, same as NotifyGroup's
         // join/leave lines) — NOT type 11, which is the group/subpath CHAT channel and drew these as blue chat
@@ -172,6 +172,12 @@ public sealed partial class Session
 
     private static void FinalizeTradeLocked(Trade trade, Session a, Session b)
     {
+        // Re-read under BOTH monitors (#57). The confirm that got us here checked `trade.Ended` on the way in
+        // holding only its own side's monitor, and then blocked on the pair — so a teardown running on the
+        // other side's thread (a warp, a death, a cancel, a disconnect) could have finished in that window
+        // and this would still move the goods. The check has to be inside the pair to mean anything.
+        if (trade.Ended) return;
+
         uint goldA = Math.Min(trade.OfferA.Gold, a._char.Coins);
         uint goldB = Math.Min(trade.OfferB.Gold, b._char.Coins);
         a._char.Coins = a._char.Coins - goldA + goldB;
@@ -226,8 +232,20 @@ public sealed partial class Session
     /// packet does the closing: a finished exchange lands the second half of the 0x42 sub-5 confirm latch
     /// (sub-5 <c>extra=0</c>, which the client only acts on because it already saw <c>extra=1</c> from the
     /// first confirm), while everything else — cancel, walk-away, disconnect — uses sub-4, which pops its box
-    /// and closes unconditionally. Both are message boxes, so no status-line notify is needed.</summary>
-    private static void EndTrade(Trade trade, string message, bool done = false)
+    /// and closes unconditionally. Both are message boxes, so no status-line notify is needed.
+    ///
+    /// <para><b>Runs under BOTH sessions' monitors.</b> This is the only writer of <c>_trade</c> (Trade.cs)
+    /// and it writes BOTH sides' — a cross-session write, which #29 rule 2 says belongs under the peer's
+    /// monitor as much as our own. That was survivable while every caller was a packet from one of the two
+    /// windows or that side's own disconnect; the walk-away and death teardowns (#57) are entered from
+    /// whichever side moved, so the peer's <c>_trade</c> and the peer's send now happen under the peer's
+    /// monitor too. <see cref="WithStatePair"/> takes the two in <c>StateRank</c> order like every other
+    /// nested acquisition, so two teardowns racing from opposite sides cannot deadlock, and the finalizer —
+    /// which already holds both — sees a re-entrant no-op.</para></summary>
+    private static void EndTrade(Trade trade, string message, bool done = false) =>
+        WithStatePair(trade.A, trade.B, () => EndTradeLocked(trade, message, done));
+
+    private static void EndTradeLocked(Trade trade, string message, bool done)
     {
         if (trade.Ended) return;
         trade.Ended = true;
@@ -497,14 +515,14 @@ public sealed partial class Session
             if (toName.Length == 0)  { SendBoardAck(6, false, "Who is this letter for?"); return; }
             if (subject.Length == 0) { SendBoardAck(6, false, "Mail must contain a subject."); return; }
             if (body.Length == 0)    { SendBoardAck(6, false, "Mail must contain a body."); return; }
-            if (!_store.Exists(toName) && _world.FindPlayer(toName) is null)
+            if (!_store.Exists(toName) && _world.Online.FindPlayer(toName) is null)
                 { SendBoardAck(6, false, "User does not exist."); return; }
 
             var now = DateTime.UtcNow;
             Mail.Send(toName, _char.Name, subject, body, (byte)now.Month, (byte)now.Day, -1, 0, 0);
             if (sendCopy)   // "keep a copy for myself" checkbox — RTK topics the copy "[To <name>] <topic>"
                 { Mail.Send(_char.Name, _char.Name, $"[To {toName}] {subject}", body, (byte)now.Month, (byte)now.Day, -1, 0, 0); RefreshMailFlags(); }   // the self-copy lights my own arrow
-            _world.FindPlayer(toName)?.RefreshMailFlags();   // light the recipient's HUD arrow now if they're online
+            _world.Online.FindPlayer(toName)?.RefreshMailFlags();   // light the recipient's HUD arrow now if they're online
             SendBoardAck(6, true, "Your message has been sent.");   // RTK's exact success ack — closes the compose window
         }
         catch (Exception e)
@@ -719,7 +737,7 @@ public sealed partial class Session
     // The one read path: RTK case 3 aimed at board 0 (SendBoardReadPost) funnels through here — it marks the
     // letter read, and if it's carrying an
     // unclaimed parcel, gives the item now (pack-full falls back to dropping it at your feet, same recovery
-    // as CastGroundLoot). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
+    // as LuaFilch). Always sends the native sub-3 wire reply AND a SendLog summary: the wire reply's
     // shape is unverified (see SendBoardReadPost's doc), so the chat log stays the one channel guaranteed
     // to actually show the player what they got.
     private void ReadMail(int position)
@@ -797,13 +815,25 @@ public sealed partial class Session
     // else in the server lets a player mail an item — Mail.Send still takes the item arguments and ReadMail
     // still claims an attachment, so a scripted/quest sender works; only the player-facing path is gone.
 
+    // Whether the given (already trimmed+lowercased) chat text should be excluded from NPC speech dispatch:
+    // empty, or starting with the real command prefix (Prefix, '@' — see Commands.cs). BEHAVIOUR CHANGE (#56):
+    // this used to test for the OLD '!' prefix, which stopped meaning "GM command" when commands moved to
+    // '@' — so every '@command' typed in chat was ALSO being dispatched as NPC speech. Fixed to gate on the
+    // real prefix. Note what the flow is today: Session.Chat.cs's HandleChat runs TryRunCommand first, and it
+    // returns true for anything with the '@' prefix, so '@text' never reaches DispatchSpeech at all any more
+    // — this predicate is a second, defensive gate against a raw '@word' that somehow got past it. The
+    // practical effect of the fix: a player saying "!..." now reaches nearby NPC say handlers (it no longer
+    // gets swallowed here); "@..." still does not (it was already being intercepted upstream, and now this
+    // gate agrees with that interception instead of gating on the wrong character).
+    internal static bool IsCommandNotSpeech(string say) => say.Length == 0 || say[0] == Prefix;
+
     // Route the player's spoken words to a nearby NPC's say-handler. Nearest say-capable NPC first; the first
     // handler that consumes the speech (runs a dialog) wins, so unrelated chatter just falls through. Async
     // (dialog awaits replies), so fire-and-forget like OpenNpcDialog. See INpcSayHandler / RTK onSayClick.
     private void DispatchSpeech(string text)
     {
         string say = text.Trim().ToLowerInvariant();
-        if (say.Length == 0 || say[0] == '!') return;   // empty / GM command -> not NPC speech
+        if (IsCommandNotSpeech(say)) return;
 
         var candidates = new List<(Mob npc, NpcDef def, List<INpcSayHandler> handlers)>();
         foreach (var npc in _world.NpcsNear(_char.Map, _char.X, _char.Y, Content.SpeechRange))
