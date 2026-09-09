@@ -359,7 +359,8 @@ public class ContentReloadTests
             TestProcessState.LoadContent();
             object beforeSnapshot = Content.SnapshotIdentityForTests;
             var before = SnapshotBackedFacades();
-            Assert.Equal(64, before.Count);
+            Assert.Equal(88, before.Count);
+            Assert.Equal(64, before.Values.Count(entry => entry.Property.GetMethod!.IsPublic));
             int beforeEra = Shared.EraCalendar.RawDate;
             var beforeDoor = Doors.For(64000, 1, 1);
             bool beforeHook = MobScript.Has("content_reload_probe", MobScript.OnSpawn);
@@ -403,9 +404,14 @@ public class ContentReloadTests
                 Assert.Equal(before.Keys, after.Keys);
                 foreach (string name in before.Keys)
                 {
-                    var property = typeof(Content).GetProperty(name)!;
-                    if (property.PropertyType.IsValueType) Assert.Equal(before[name], after[name]);
-                    else Assert.Same(before[name], after[name]);
+                    if (before[name].Property.PropertyType.IsValueType)
+                        Assert.Equal(before[name].Value, after[name].Value);
+                    else
+                    {
+                        Assert.True(ReferenceEquals(before[name].Value, after[name].Value),
+                            $"ContentSnapshot member '{name}' facade '{before[name].Property.Name}' changed identity.");
+                        Assert.Same(before[name].Value, after[name].Value);
+                    }
                 }
             }
             finally
@@ -420,9 +426,62 @@ public class ContentReloadTests
         }
     }
 
-    private static SortedDictionary<string, object?> SnapshotBackedFacades() =>
-        new(typeof(Content)
-            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-            .Where(p => p.GetIndexParameters().Length == 0 && p.GetSetMethod(nonPublic: true)?.IsPrivate == true)
-            .ToDictionary(p => p.Name, p => p.GetValue(null)));
+    private static readonly IReadOnlyDictionary<string, string> SnapshotFacadeNames =
+        new Dictionary<string, string>
+        {
+            ["ItemById"] = "ItemByIdIndex",
+            ["ItemByKey"] = "ItemByKeyIndex",
+            ["MobById"] = "MobByIdIndex",
+            ["MobByKey"] = "MobByKeyIndex",
+            ["NpcById"] = "NpcByIdIndex",
+            ["PathIdByName"] = "PathIdByNameIndex",
+            ["PathRankByName"] = "PathRankByNameIndex",
+            ["SpellById"] = "SpellByIdIndex",
+            ["SpellByKey"] = "SpellByKeyIndex",
+        };
+
+    private static SortedDictionary<string, (System.Reflection.PropertyInfo Property, object? Value)>
+        SnapshotBackedFacades()
+    {
+        const System.Reflection.BindingFlags snapshotFlags =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        const System.Reflection.BindingFlags facadeFlags =
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.Static;
+
+        var snapshotMembers = Content.SnapshotIdentityForTests.GetType().GetProperties(snapshotFlags);
+        var snapshotMemberNames = snapshotMembers.Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        var facades = typeof(Content).GetProperties(facadeFlags)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .ToDictionary(p => p.Name, StringComparer.Ordinal);
+
+        foreach (var (memberName, facadeName) in SnapshotFacadeNames)
+        {
+            Assert.True(snapshotMemberNames.Contains(memberName),
+                $"Facade '{facadeName}' has no ContentSnapshot member '{memberName}'.");
+            Assert.True(facades.ContainsKey(facadeName),
+                $"ContentSnapshot member '{memberName}' has no facade '{facadeName}'.");
+        }
+
+        var facadeMembers = SnapshotFacadeNames.ToDictionary(pair => pair.Value, pair => pair.Key,
+            StringComparer.Ordinal);
+        foreach (var facade in facades.Values.Where(p =>
+                     p.GetMethod!.IsPublic && p.GetSetMethod(nonPublic: true)?.IsPrivate == true))
+        {
+            string memberName = facadeMembers.GetValueOrDefault(facade.Name, facade.Name);
+            Assert.True(snapshotMemberNames.Contains(memberName),
+                $"Facade '{facade.Name}' has no ContentSnapshot member '{memberName}'.");
+        }
+
+        var result = new SortedDictionary<string, (System.Reflection.PropertyInfo, object?)>(StringComparer.Ordinal);
+        foreach (var member in snapshotMembers)
+        {
+            string facadeName = SnapshotFacadeNames.GetValueOrDefault(member.Name, member.Name);
+            Assert.True(facades.TryGetValue(facadeName, out var facade),
+                $"ContentSnapshot member '{member.Name}' has no facade '{facadeName}'.");
+            result.Add(member.Name, (facade, facade.GetValue(null)));
+        }
+
+        return result;
+    }
 }
