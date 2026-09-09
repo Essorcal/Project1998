@@ -152,8 +152,8 @@ public static class Log
     /// (the fatal handler and the unobserved-task handler in Program.cs, SLOW TICK, the outbound-queue-full
     /// line, and 21 more). Those are precisely the records that fire when the backlog is deepest, so reading
     /// the marker is what keeps the reserve theirs too; classifying by entry point alone would refuse them
-    /// 4,096 lines earlier than before the reserve existed. Routing those sites onto <see cref="Warn"/> and
-    /// <see cref="Error"/> is a separate change; this reads what they already write.
+    /// 4,096 lines earlier than before the reserve existed. Routing those sites onto <see cref="Warn(string)"/>
+    /// and <see cref="Error(string, Exception)"/> is a separate change; this reads what they already write.
     /// <para>The trailing space is part of the marker, so <c>!!!</c> is never read as <c>!!</c> and an
     /// unspaced run of bangs is not a marker at all. The level can only rise: <see cref="Detail"/>'s indented
     /// continuation lines carry no marker and must not demote an Error.</para></summary>

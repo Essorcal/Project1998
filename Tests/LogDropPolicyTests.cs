@@ -8,13 +8,31 @@ namespace Tests;
 /// the admission override and the file sink are process-global, so two classes exercising them in parallel
 /// read each other's records: with the override set, every line the rest of the suite logs lands in
 /// <c>DroppedByLevel</c> (measured at ~240 records/second during a full run), and a second class repeating
-/// the entry-point fact broke it outright. xUnit runs one collection at a time, which is the only thing that
-/// keeps these facts honest.</para></summary>
+/// the entry-point fact broke it outright. The collection serialises the classes that use these statics
+/// against each other — but xUnit runs OTHER collections alongside this one, so the collection alone cannot
+/// keep the counters honest; see <see cref="RefuseThisThreadOnly"/>.</para></summary>
 [Collection("log")]
 public class LogDropPolicyTests
 {
     // The stamp Log's entry points write before the message text, and so before any hand-written marker.
     private const string Stamp = "[12:34:56.789] ";
+
+    /// <summary>An admission override that refuses only the records enqueued by the thread that installed
+    /// it, and leaves every other thread on the real policy.
+    /// <para>The override is one process-global field, and Log consults it inside Enqueue on the CALLING
+    /// thread — so a blanket <c>(_, _) =&gt; false</c> also refuses, and therefore counts, whatever the rest
+    /// of the suite logs while the window is open. Nothing in this class can serialise that: the collection
+    /// only orders the classes inside it, and xUnit keeps running the other collections in parallel. That is
+    /// not theoretical — one warning from a parallel collection landed inside the window on the merge with
+    /// master and read as <c>(0, 2, 1)</c> against an expected <c>(0, 1, 1)</c>, intermittently. Scoping the
+    /// refusal by thread keeps each fact exactly as strong as it was for the records it is about, while the
+    /// suite's own logging takes the production path and stays out of the counters.</para></summary>
+    private static Func<LogLevel, int, bool> RefuseThisThreadOnly()
+    {
+        int owner = Environment.CurrentManagedThreadId;
+        return (level, queued) =>
+            Environment.CurrentManagedThreadId != owner && Log.Admits(level, queued);
+    }
 
     [Fact]
     public void Reserved_threshold_refuses_info_but_admits_warn_and_error()
@@ -54,7 +72,7 @@ public class LogDropPolicyTests
     public void Real_entry_points_count_refused_info_and_warn_separately()
     {
         Log.ResetDroppedCountsForTest();
-        Log.AdmitOverrideForTest = (_, _) => false;
+        Log.AdmitOverrideForTest = RefuseThisThreadOnly();
         try
         {
             Log.Info("refused info test record");
@@ -106,7 +124,7 @@ public class LogDropPolicyTests
     public void Hand_prefixed_info_lines_are_refused_as_warnings_and_errors()
     {
         Log.ResetDroppedCountsForTest();
-        Log.AdmitOverrideForTest = (_, _) => false;
+        Log.AdmitOverrideForTest = RefuseThisThreadOnly();
         try
         {
             Log.Info("!! hand-written warning");
@@ -130,7 +148,10 @@ public class LogDropPolicyTests
         string path = Path.Combine(
             Path.GetTempPath(), "p1998-log-marker-" + Guid.NewGuid().ToString("N"), "server.log");
 
-        Log.AdmitOverrideForTest = (_, _) => false;
+        // Thread-scoped for the same reason as the counter facts above: AttachFile enqueues its control line
+        // on this thread, so refusing only this thread still refuses every record the fact is about, without
+        // swallowing what a parallel collection logs while the window is open.
+        Log.AdmitOverrideForTest = RefuseThisThreadOnly();
         try
         {
             Log.AttachFile(path);
