@@ -18,7 +18,16 @@ for (int i = 0; i < args.Length; i++)
 // knobs were 7.x-only artifacts and have been removed so the logs don't misrepresent the wire.
 // `--selftest` exercises the content registry + fuzzy lookups (the @warp/@maps/@mobs/@summon backing
 // logic) and exits, WITHOUT opening ports — a quick offline check of the data layer.
-if (Array.Exists(args, a => a == "--selftest")) { Content.SelfTest(); return; }
+if (Array.Exists(args, a => a == "--selftest"))
+{
+    int exitCode = Content.SelfTest();
+    if (exitCode != 0)
+    {
+        Log.Shutdown();
+        Environment.ExitCode = exitCode;
+    }
+    return;
+}
 
 // Crash forensics. (1) Tee all logging into logs/server.log — console output dies with the window,
 // and we lost the trace of the first native-mail-send failure exactly that way. (2) Catch-and-log

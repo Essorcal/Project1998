@@ -6,6 +6,7 @@
       "LoginServer\\LoginServer.csproj",
       "Protocol.Tk495\\Protocol.Tk495.csproj",
       "Server\\Server.csproj",
+      "Shared.Core\\Shared.Core.csproj",
       "Shared\\Shared.csproj",
       "Tests\\Tests.csproj",
       "Tools\\Tools.csproj"
