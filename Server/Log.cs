@@ -141,8 +141,49 @@ public static class Log
         _ => false,
     };
 
-    private static void Enqueue(string line, LogLevel level = LogLevel.Info)
+    // Length of the stamp every entry point above writes, "[HH:mm:ss.fff] " — where the message text, and so
+    // any hand-written marker, begins. Internal so a test can pin it against the real format string.
+    internal const int StampLength = 15;
+
+    /// <summary>The level a line is admitted at: the higher of the entry point it came through and the level
+    /// its hand-written marker claims. The class doc above already states the rule — "<c>!!</c> was already
+    /// the hand-written marker for 'something is wrong' in ~60 Info lines, so Warn formalizes exactly that" —
+    /// and 25 diagnostic sites in <c>Server/</c> still write that marker by hand through <see cref="Info"/>
+    /// (the fatal handler and the unobserved-task handler in Program.cs, SLOW TICK, the outbound-queue-full
+    /// line, and 21 more). Those are precisely the records that fire when the backlog is deepest, so reading
+    /// the marker is what keeps the reserve theirs too; classifying by entry point alone would refuse them
+    /// 4,096 lines earlier than before the reserve existed. Routing those sites onto <see cref="Warn"/> and
+    /// <see cref="Error"/> is a separate change; this reads what they already write.
+    /// <para>The trailing space is part of the marker, so <c>!!!</c> is never read as <c>!!</c> and an
+    /// unspaced run of bangs is not a marker at all. The level can only rise: <see cref="Detail"/>'s indented
+    /// continuation lines carry no marker and must not demote an Error.</para></summary>
+    internal static LogLevel LevelOf(string line, LogLevel entryPoint)
     {
+        ReadOnlySpan<char> text = line.Length > StampLength ? line.AsSpan(StampLength) : default;
+        LogLevel marker =
+            text.StartsWith("!!! ") ? LogLevel.Error :
+            text.StartsWith("!! ") ? LogLevel.Warn :
+            LogLevel.Info;
+        return marker > entryPoint ? marker : entryPoint;
+    }
+
+    /// <summary>Enqueue one formatted line. The level it is admitted at is <see cref="LevelOf"/>'s, not the
+    /// entry point's, because the class doc's marker rule means a hand-written <c>!!</c>/<c>!!!</c> line is a
+    /// warning or an error whichever method wrote it.</summary>
+    private static void Enqueue(string line, LogLevel entryPoint = LogLevel.Info)
+    {
+        // The AttachFile marker is a control line, not a log record: it carries the file path to the writer
+        // thread, which is the only thread allowed to open the handle (Append matches it by reference).
+        // Refusing it would spend the whole process running console-only with _file null, silently and
+        // permanently, to save one queue slot — so it skips admission entirely. TryAdd's hard capacity still
+        // applies; losing it there is counted as an Error because the loss is permanent, not a dropped Info.
+        if (ReferenceEquals(line, OpenMarker))
+        {
+            if (!Queue.TryAdd(line)) Interlocked.Increment(ref DroppedByLevel[(int)LogLevel.Error]);
+            return;
+        }
+
+        LogLevel level = LevelOf(line, entryPoint);
         int queued = Queue.Count;
         var admit = AdmitOverrideForTest;
         // Count then TryAdd is deliberately not atomic: an Info line may land on either side of the reserve
