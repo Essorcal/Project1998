@@ -131,7 +131,8 @@ public sealed class RestartSchedule
         return true;
     }
 
-    /// <summary>The clock. Started by <see cref="World"/>'s constructor; runs for the process lifetime.</summary>
+    /// <summary>The clock. Started by the process host (<c>TkListener.StartWorld</c>, Net.cs); runs for the
+    /// process lifetime.</summary>
     internal async Task Loop()
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
