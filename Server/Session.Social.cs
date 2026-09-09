@@ -80,8 +80,18 @@ public sealed partial class Session
             if (!target.WantsGroup || target._party is not null)
             { refusal = "They refuse to join this group."; return; }
 
-            if (party is null) { party = new Party(this, target); _party = party; forming = true; }
-            else party.Add(target);
+            // THE SEAT IS THE PARTY'S DECISION, NOT OURS. Add refuses when the roster no longer holds us or
+            // has already dropped to one — a disband decided by someone else's removal is on its way — and
+            // then this party is gone as far as we are concerned: we form a new one, exactly as an inviter
+            // with no party does. Without that, the removal's disband ran against a roster an invite had
+            // grown back to two, and seated the invitee next to a member who had just been told the group
+            // disbanded and had their own field nulled (#167 review, F1).
+            if (party is null || !party.Add(this, target))
+            {
+                party = new Party(this, target);
+                _party = party;
+                forming = true;
+            }
             // Seated FIRST, then their _party: the two become visible together under this monitor, so a leave
             // arriving right after this finds them in the snapshot and removes them cleanly, instead of
             // running past an empty slot and leaving them stranded in the roster.
@@ -140,6 +150,10 @@ public sealed partial class Session
         // _char.Grouped and marks them dirty.
         member.WithState(() =>
         {
+            // Only if they are still OURS. Between the removal above and this monitor they may have been
+            // seated in another group (the invite whose Add we refused forms one), and nulling the field or
+            // flipping the status then would take them out of a party they are a live member of.
+            if (!ReferenceEquals(member._party, party)) return;
             member._party = null;
             member.NotifyGroup("You have left the group.");
             member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
@@ -150,6 +164,12 @@ public sealed partial class Session
             var last = straggler;
             last.WithState(() =>
             {
+                // The straggler the removal proposed is only a disband if the roster is STILL just them:
+                // TryDisband re-takes the gate and retires the party, or refuses because an invite has
+                // seated someone since (#167 review, F1). Under their monitor, so their own invite handler
+                // cannot be in the middle of forming a party while we decide.
+                if (!party.TryDisband(last)) return;
+                if (!ReferenceEquals(last._party, party)) return;   // already in a new group: leave it alone
                 last._party = null;
                 last.NotifyGroup("Your group has disbanded.");
                 last.SetGroupStatus(false);   // party fully disbanded -> the last member's status goes OFF too

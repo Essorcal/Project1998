@@ -20,11 +20,29 @@ namespace Server;
 /// a lock held across those would be a second ordering to reason about against the session monitors and
 /// <c>World._lock</c>.</para>
 ///
-/// <para><b><see cref="_gate"/> is a LEAF lock.</b> It is held around the array copy and nothing else: no
-/// call into a <c>Session</c>, no session monitor, no <c>World._lock</c>, no allocation that can run user
-/// code. A thread holding it can therefore always finish, so it cannot participate in any cycle and it needs
-/// no rank in the <c>Session.State.cs</c> ordering. Keep it that way — a single <c>m.Something()</c> inside
-/// one of these <c>lock</c> blocks would make it an ordering question.</para>
+/// <para><b><see cref="_gate"/> is a LEAF lock.</b> It is held around the array copy and the decisions that
+/// have to be taken against the array it installs, and nothing else: no call into a <c>Session</c>, no
+/// session monitor, no <c>World._lock</c>, no allocation that can run user code. A thread holding it can
+/// therefore always finish, so it cannot participate in any cycle and it needs no rank in the
+/// <c>Session.State.cs</c> ordering. Keep it that way — a single <c>m.Something()</c> inside one of these
+/// <c>lock</c> blocks would make it an ordering question.</para>
+///
+/// <para><b>Seating a member and retiring the party are ONE decision, taken here (#167 review, F1).</b> A
+/// removal takes only this gate — it needs neither the leaver's nor the inviter's monitor — so it can land
+/// between an invite's <c>_party</c> read and its seat. When the disband a removal decided was simply acted
+/// on afterwards, an invite landing in between grew the roster back to two and the disband then ran against
+/// a live party: the invitee was seated next to a member who had just been told the group had disbanded and
+/// had their own <c>_party</c> nulled. So <see cref="Add"/> refuses once the array is down to one (a disband
+/// is pending) or no longer holds the inviter, and the disband itself is <see cref="TryDisband"/>, which
+/// fires only while the array is still exactly the straggler. Whichever of the two reaches the gate first
+/// wins and the other one gives up: the caller of a refused <c>Add</c> forms a new party instead, and the
+/// caller of a refused <c>TryDisband</c> tells nobody anything.</para>
+///
+/// <para>An EMPTY array marks the party RETIRED. <see cref="TryDisband"/> installs it, <see cref="Add"/>
+/// refuses one and <see cref="Remove"/> finds nothing in one, so a retired party can never come back and no
+/// session's <c>_party</c> ever points at one — <c>RemoveFromParty</c> clears the last member's field inside
+/// the same critical section that retires it. <see cref="Leader"/> is therefore never asked about a retired
+/// party; every caller reaches it through a live <c>_party</c>.</para>
 /// </summary>
 public sealed class Party
 {
@@ -54,22 +72,51 @@ public sealed class Party
         foreach (var m in Volatile.Read(ref _members)) m.NotifyGroup(text);
     }
 
-    public void Add(Session s)
+    /// <summary>Seats <paramref name="s"/> on <paramref name="inviter"/>'s behalf, and returns whether it
+    /// did. FALSE — nothing swapped — when this party is no longer the inviter's to seat anyone into: the
+    /// array does not hold them any more (they were kicked, they left, they disconnected), or it is down to
+    /// one member, which means a removal has already decided to disband it. See the class doc: the caller
+    /// treats a refusal as "that party is gone" and forms a new one, which is the same thing it does for an
+    /// inviter who had no party at all.</summary>
+    public bool Add(Session inviter, Session s)
     {
         lock (_gate)
         {
             var old = _members;
+            // Length < 2 is both cases at once: one member left is a disband on its way, none is a party
+            // already retired.
+            if (old.Length < 2 || Array.IndexOf(old, inviter) < 0) return false;
+
             var next = new Session[old.Length + 1];
             Array.Copy(old, next, old.Length);
             next[old.Length] = s;
             Volatile.Write(ref _members, next);
+            return true;
+        }
+    }
+
+    /// <summary>Retires the party on behalf of its last member — the other half of the decision
+    /// <see cref="Add"/> takes. Succeeds, emptying the roster, only while the array is still exactly
+    /// <paramref name="last"/>: if an invite has seated someone since the removal that produced the
+    /// straggler, the party is alive again and this returns false, so the caller tells nobody it
+    /// disbanded.</summary>
+    public bool TryDisband(Session last)
+    {
+        lock (_gate)
+        {
+            var old = _members;
+            if (old.Length != 1 || !ReferenceEquals(old[0], last)) return false;
+            Volatile.Write(ref _members, Array.Empty<Session>());
+            return true;
         }
     }
 
     /// <summary>Removes a member and hands back the last one standing — non-null exactly when THIS removal
     /// is the one that left a single straggler, who is then told the group disbanded (RTK
     /// <c>clif_leavegroup</c>: <c>group_count</c> reaching 0/1 dissolves it). Same rule as before, same
-    /// texts; what changed is who computes it.
+    /// texts; what changed is who computes it. The straggler is a PROPOSAL, not a verdict: the caller acts
+    /// on it through <see cref="TryDisband"/>, which re-takes the gate and only fires while the roster is
+    /// still just that one member.
     ///
     /// <para><b>The straggler comes from the array this call installed</b>, inside the same critical section,
     /// not from a re-read by the caller afterwards. That is the difference when two members leave at once:

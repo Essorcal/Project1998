@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
+using Protocol.Tk495;
 using Server;
 using Shared;
 using Tests.Support;
@@ -137,7 +140,7 @@ public sealed class PartyMembersRaceTests
         for (int round = 0; round < 200; round++)
         {
             var party = new Party(leader, first);
-            party.Add(second);
+            party.Add(leader, second);
 
             Session? fromFirst = null, fromSecond = null;
             using var gun = new Barrier(2);
@@ -219,6 +222,168 @@ public sealed class PartyMembersRaceTests
 
             // Put everyone back: the target leaves, which drops the winner's party to one and disbands it.
             target.Receive(SessionFixture.GroupToggleFrame());
+        }
+    }
+
+    // ---- the seat and the disband are ONE decision under the gate (#167, review round 1) --------------
+    // A removal takes only the leaf gate, so it needs neither the leaver's nor the inviter's monitor: it can
+    // land between an invite body's `var party = _party` and its `party.Add(...)`. When the disband decided
+    // at that swap was then acted on unconditionally, the invitee was seated into an array that still held
+    // the straggler while the straggler was told the group had disbanded and had its own field nulled.
+
+    /// <summary>How many rounds each race shape runs. The window is the handful of instructions between the
+    /// invite body's party read and its seat, so the count buys reproduction probability and nothing else —
+    /// the kick shape stranded ~1 round in 5 before the fix, the leave shape ~4 in 5.</summary>
+    private const int RaceRounds = 1000;
+
+    [Fact]
+    public void AnInviteRacingAKickStrandsNobodyInADisbandedParty()
+    {
+        var (t, _, tc) = ConcurrentPlayer("StrandKickTarget");
+        var (l, _, lc) = ConcurrentPlayer("StrandKickLeader");
+        var (a, _, ac) = ConcurrentPlayer("StrandKickMember");
+
+        var stranded = new List<string>();
+        for (int round = 0; round < RaceRounds; round++)
+        {
+            SetParty(t, null); SetParty(l, null); SetParty(a, null);
+            tc.Grouped = true; lc.Grouped = true; ac.Grouped = true;
+            SessionFixture.FormParty(l, a);
+            var old = PartyOf(l)!;
+
+            // A invites T while the LEADER re-invites A, which is the kick gesture.
+            using var gun = new Barrier(2);
+            var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(a, t); });
+            var kick   = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, a); });
+            invite.Start(); kick.Start();
+            Assert.True(invite.Join(5000) && kick.Join(5000), $"round {round}: the race hung");
+
+            var bad = Inconsistency(round, old, l, a, t);
+            if (bad is not null) stranded.Add(bad);
+        }
+        Assert.True(stranded.Count == 0,
+            $"{stranded.Count} / {RaceRounds} rounds ended stranded: {string.Join(" | ", stranded.Take(3))}");
+    }
+
+    [Fact]
+    public void AnInviteRacingAMembersLeaveStrandsNobodyInADisbandedParty()
+    {
+        var (t, _, tc) = ConcurrentPlayer("StrandLeaveTarget");
+        var (l, _, lc) = ConcurrentPlayer("StrandLeaveLeader");
+        var (a, _, ac) = ConcurrentPlayer("StrandLeaveMember");
+
+        var stranded = new List<string>();
+        for (int round = 0; round < RaceRounds; round++)
+        {
+            SetParty(t, null); SetParty(l, null); SetParty(a, null);
+            tc.Grouped = true; lc.Grouped = true; ac.Grouped = true;
+            SessionFixture.FormParty(l, a);
+            var old = PartyOf(l)!;
+
+            // The other member leaves through the real Shift+G frame while the survivor invites a third.
+            using var gun = new Barrier(2);
+            var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, t); });
+            var leave  = new Thread(() => { gun.SignalAndWait(); a.Receive(SessionFixture.GroupToggleFrame()); });
+            invite.Start(); leave.Start();
+            Assert.True(invite.Join(5000) && leave.Join(5000), $"round {round}: the race hung");
+
+            var bad = Inconsistency(round, old, l, a, t);
+            if (bad is not null) stranded.Add(bad);
+        }
+        Assert.True(stranded.Count == 0,
+            $"{stranded.Count} / {RaceRounds} rounds ended stranded: {string.Join(" | ", stranded.Take(3))}");
+    }
+
+    /// <summary>The review's definition of a stranded outcome, read from both ends: a session the roster
+    /// still holds whose own <c>_party</c> is null or names another party, and a session whose
+    /// <c>_party</c> names a party whose roster does not hold it.</summary>
+    private static string? Inconsistency(int round, Party old, params Session[] sessions)
+    {
+        var parties = new List<Party> { old };
+        foreach (var s in sessions)
+        {
+            var p = PartyOf(s);
+            if (p is not null && !parties.Any(q => ReferenceEquals(q, p))) parties.Add(p);
+        }
+        foreach (var p in parties)
+            foreach (var m in p.Members)
+                if (!ReferenceEquals(PartyOf(m), p))
+                    return $"round {round}: the roster {Roster(p)} holds {m.CharName}, whose _party is "
+                         + (PartyOf(m) is null ? "null" : "another party");
+        foreach (var s in sessions)
+        {
+            var p = PartyOf(s);
+            if (p is not null && !p.Members.Any(m => ReferenceEquals(m, s)))
+                return $"round {round}: {s.CharName}._party is a party whose roster {Roster(p)} does not hold it";
+        }
+        return null;
+    }
+
+    private static string Roster(Party p) => "[" + string.Join(",", p.Members.Select(m => m.CharName)) + "]";
+
+    /// <summary><c>Session._party</c>. Read by reflection because the roster and that field agreeing IS the
+    /// invariant these three facts are about, and nothing public exposes it.</summary>
+    private static readonly FieldInfo PartyField =
+        typeof(Session).GetField("_party", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    private static Party? PartyOf(Session s) => (Party?)PartyField.GetValue(s);
+    private static void SetParty(Session s, Party? p) => PartyField.SetValue(s, p);
+
+    /// <summary>A session on the fixture's world whose recorder IS thread-safe. <see cref="RecordingOutbound"/>
+    /// deliberately is not (#188) and these facts run two real handler threads that both broadcast into the
+    /// same recorders. Grouped starts ON, which is what an invite's <c>WantsGroup</c> gate reads.</summary>
+    private (Session session, ConcurrentRecorder recorder, Character character) ConcurrentPlayer(string name)
+    {
+        var character = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion,
+            Id = _fx.World.AllocatePlayerId(),
+            Name = name,
+            Map = SessionFixture.HomeMap,
+            X = 5,
+            Y = 10,
+            Grouped = true,
+        };
+        var recorder = new ConcurrentRecorder($"recorder:{name}");
+        var session = new Session(recorder, 2005, _fx.Store, _fx.World, character);
+        _fx.World.EnterMap(session, SessionFixture.HomeMap);
+        recorder.Clear();
+        return (session, recorder, character);
+    }
+
+    /// <summary>The recording outbound again, with a lock around the list — see above for why.</summary>
+    private sealed class ConcurrentRecorder : IOutbound
+    {
+        private readonly List<byte[]> _frames = new();
+        private readonly object _lock = new();
+
+        public ConcurrentRecorder(string remote) => Remote = remote;
+
+        public string Remote { get; }
+        public int Capacity => int.MaxValue;
+        public int QueueDepth => 0;
+        public bool Closed { get; private set; }
+
+        public bool Send(byte[] frame) { lock (_lock) _frames.Add(frame); return true; }
+        public void Close() => Closed = true;
+        public void Clear() { lock (_lock) _frames.Clear(); }
+
+        /// <summary>Every <c>0x0A</c> minitext body carrying <paramref name="needle"/>, decrypted the way
+        /// <see cref="RecordingOutbound.BodiesOf"/> does it.</summary>
+        public int MiniTexts(string needle)
+        {
+            byte[][] frames;
+            lock (_lock) frames = _frames.ToArray();
+            int n = 0;
+            foreach (var frame in frames)
+            {
+                if (!TkPacket.TryParse(frame, out var pkt, out _)) continue;
+                if (pkt.Opcode != ServerOp.MiniText) continue;
+                var body = TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey);
+                if (body.Length < 3) continue;
+                if (Encoding.ASCII.GetString(body, 3, body.Length - 3).Contains(needle)) n++;
+            }
+            return n;
         }
     }
 
