@@ -93,6 +93,71 @@ public sealed class PartyMembersRaceTests
         Assert.True(killerCharacter.Exp > before, $"the killer was not paid ({before} -> {killerCharacter.Exp})");
     }
 
+    // ---- the straggler comes back from the removal, not from a re-read (#167) -------------------------
+
+    private const string Disbanded = "Your group has disbanded.";
+
+    [Fact]
+    public void TheLastMemberLeftStandingIsToldTheGroupDisbandedExactlyOnce()
+    {
+        var (leader, leaderRec, leaderCharacter) = _fx.PlayerWith("StragglerLeader", c => { });
+        var (first, firstRec)  = _fx.Player("StragglerFirst");
+        var (second, secondRec) = _fx.Player("StragglerSecond");
+        MakeGroupable(first);
+        MakeGroupable(second);
+        SessionFixture.FormParty(leader, first);
+        SessionFixture.FormParty(leader, second);
+        leaderRec.Clear(); firstRec.Clear(); secondRec.Clear();
+
+        first.Receive(SessionFixture.GroupToggleFrame());    // three down to two: nobody disbands
+        Assert.Equal(0, MiniTexts(leaderRec, Disbanded));
+
+        second.Receive(SessionFixture.GroupToggleFrame());   // two down to one: the leader is the straggler
+
+        Assert.Equal(1, MiniTexts(leaderRec, Disbanded));
+        Assert.Equal(0, MiniTexts(firstRec, Disbanded));
+        Assert.Equal(0, MiniTexts(secondRec, Disbanded));
+        Assert.Equal(1, MiniTexts(firstRec, "You have left the group."));
+        Assert.Equal(1, MiniTexts(secondRec, "You have left the group."));
+        Assert.False(leaderCharacter.Grouped);               // the disband flipped the last member's status OFF
+    }
+
+    /// <summary>The two-thread version, on <see cref="Party.Remove"/> itself. Asserting on the notification
+    /// TEXT under two threads would be asserting on <see cref="RecordingOutbound"/>, which is deliberately
+    /// not thread-safe (both leavers broadcast into the straggler's recorder), so the assertion is on the
+    /// value <c>RemoveFromParty</c> now acts on: exactly one of two simultaneous removals is handed the
+    /// straggler, and it is the right session.</summary>
+    [Fact]
+    public void TwoSimultaneousRemovalsHandTheStragglerToExactlyOneOfThem()
+    {
+        var (leader, _) = _fx.Player("ConcurrentStragglerLeader");
+        var (first, _)  = _fx.Player("ConcurrentStragglerFirst");
+        var (second, _) = _fx.Player("ConcurrentStragglerSecond");
+
+        for (int round = 0; round < 200; round++)
+        {
+            var party = new Party(leader, first);
+            party.Add(second);
+
+            Session? fromFirst = null, fromSecond = null;
+            using var gun = new Barrier(2);
+            var a = new Thread(() => { gun.SignalAndWait(); fromFirst = party.Remove(first); });
+            var b = new Thread(() => { gun.SignalAndWait(); fromSecond = party.Remove(second); });
+            a.Start(); b.Start();
+            a.Join(); b.Join();
+
+            int handed = (fromFirst is null ? 0 : 1) + (fromSecond is null ? 0 : 1);
+            Assert.Equal(1, handed);
+            Assert.Same(leader, fromFirst ?? fromSecond);
+            Assert.Single(party.Members);
+            Assert.Same(leader, party.Members[0]);
+        }
+    }
+
+    /// <summary>The invite gate reads <c>WantsGroup</c>, which is the persisted "Join a group" flag; a
+    /// fixture character starts with it off.</summary>
+    private static void MakeGroupable(Session s) => s.Receive(SessionFixture.GroupToggleFrame());
+
     /// <summary>Every <c>0x0A</c> minitext body carrying <paramref name="needle"/>: type(u8) len(u16 BE)
     /// text[len] (Session.SendMiniText).</summary>
     private static int MiniTexts(RecordingOutbound rec, string needle)

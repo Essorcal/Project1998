@@ -98,7 +98,10 @@ public sealed partial class Session
         var party = member._party;
         if (party is null) return;
         string name = member.Snapshot().Name;
-        bool disband = party.Remove(member);
+        // The straggler comes back FROM the removal, computed inside Party's gate from the snapshot that
+        // removal installed (#167). Re-reading party.Members afterwards instead — what this did — let two
+        // members leaving at once both see "one left" and disband the same person twice.
+        var straggler = party.Remove(member);
         // Each member's own removal is one critical section on THEIR session (#29): a leader kicking someone,
         // and the disband that can follow, both run on a thread that is not theirs, and SetGroupStatus writes
         // _char.Grouped and marks them dirty.
@@ -109,9 +112,9 @@ public sealed partial class Session
             member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
         });
         party.Broadcast($"{name} is leaving the group.");
-        if (disband && party.Members.Count == 1)
+        if (straggler is not null)
         {
-            var last = party.Members[0];
+            var last = straggler;
             last.WithState(() =>
             {
                 last._party = null;

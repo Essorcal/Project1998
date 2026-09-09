@@ -66,21 +66,31 @@ public sealed class Party
         }
     }
 
-    /// <summary>Removes a member; returns true if the party is now down to a single straggler and should be
-    /// disbanded (RTK <c>clif_leavegroup</c>: <c>group_count</c> reaching 0/1 dissolves it).</summary>
-    public bool Remove(Session s)
+    /// <summary>Removes a member and hands back the last one standing — non-null exactly when THIS removal
+    /// is the one that left a single straggler, who is then told the group disbanded (RTK
+    /// <c>clif_leavegroup</c>: <c>group_count</c> reaching 0/1 dissolves it). Same rule as before, same
+    /// texts; what changed is who computes it.
+    ///
+    /// <para><b>The straggler comes from the array this call installed</b>, inside the same critical section,
+    /// not from a re-read by the caller afterwards. That is the difference when two members leave at once:
+    /// with a bool and a <c>Members.Count == 1</c> re-read, the removal that left two members could see the
+    /// OTHER removal's result and disband the same person a second time, and the two could disagree about who
+    /// was last. Exactly one caller now gets a non-null answer.</para></summary>
+    public Session? Remove(Session s)
     {
         lock (_gate)
         {
             var old = _members;
             int at = Array.IndexOf(old, s);
-            if (at < 0) return old.Length <= 1;   // already gone; the disband rule still reads the same
+            // Already gone (a double removal): nothing to swap, and the disband rule reads the same as it did
+            // when the caller re-read the count for itself.
+            if (at < 0) return old.Length == 1 ? old[0] : null;
 
             var next = new Session[old.Length - 1];
             Array.Copy(old, next, at);
             Array.Copy(old, at + 1, next, at, next.Length - at);
             Volatile.Write(ref _members, next);
-            return next.Length <= 1;
+            return next.Length == 1 ? next[0] : null;
         }
     }
 }
