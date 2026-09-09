@@ -154,9 +154,80 @@ public sealed class PartyMembersRaceTests
         }
     }
 
+    // ---- the invite writes the TARGET's field under the TARGET's monitor (#167) -----------------------
+
+    private const string Joining = "is joining the group.";
+    private const string Refused = "They refuse to join this group.";
+
+    [Fact]
+    public void TheInviteCannotSeatTheTargetWhileTheTargetsOwnMonitorIsHeld()
+    {
+        var (target, targetRec) = _fx.Player("HeldInviteTarget");
+        var (leader, _) = _fx.Player("HeldInviteLeader");
+        MakeGroupable(target);
+        targetRec.Clear();
+
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var holder = new Thread(() => target.WithState(() => { entered.Set(); release.Wait(); }))
+            { IsBackground = true, Name = "monitor-holder" };
+        holder.Start();
+        Assert.True(entered.Wait(5000), "the third thread never took the target's monitor");
+
+        var inviter = new Thread(() => SessionFixture.FormParty(leader, target))
+            { IsBackground = true, Name = "inviter" };
+        inviter.Start();
+
+        // Nothing of the invite may land while its critical section on the target is occupied. Reading the
+        // recorder here is safe precisely because the inviter is parked before its first send.
+        Assert.False(inviter.Join(500), "the invite completed while the target's monitor was held");
+        Assert.Equal(0, MiniTexts(targetRec, Joining));
+
+        release.Set();
+        Assert.True(inviter.Join(5000), "the invite never completed after the monitor was released");
+        holder.Join();
+
+        // A forming group announces both founders, so the target hears two lines.
+        Assert.Equal(2, MiniTexts(targetRec, Joining));
+    }
+
+    [Fact]
+    public void TwoInvitersRacingForOneTargetLandItInExactlyOneParty()
+    {
+        // The target is built FIRST so it outranks neither inviter: both nested acquisitions are DESCENDING
+        // (Session.State.cs rule 2), which is the branch that drops the inviter's own monitor while it waits.
+        var (target, targetRec) = _fx.Player("ContestedTarget");
+        var (one, oneRec) = _fx.Player("ContestedInviterOne");
+        var (two, twoRec) = _fx.Player("ContestedInviterTwo");
+        Assert.True(target.StateRank < one.StateRank && target.StateRank < two.StateRank);
+
+        for (int round = 0; round < 200; round++)
+        {
+            MakeGroupable(target);
+            targetRec.Clear(); oneRec.Clear(); twoRec.Clear();
+
+            using var gun = new Barrier(2);
+            var a = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(one, target); });
+            var b = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(two, target); });
+            a.Start(); b.Start();
+            a.Join(); b.Join();
+
+            // Exactly one group formed around the target (two founder lines, not four), and exactly one
+            // inviter was told no. Each recorder here is written by one thread only.
+            Assert.Equal(2, MiniTexts(targetRec, Joining));
+            Assert.Equal(1, MiniTexts(oneRec, Refused) + MiniTexts(twoRec, Refused));
+
+            // Put everyone back: the target leaves, which drops the winner's party to one and disbands it.
+            target.Receive(SessionFixture.GroupToggleFrame());
+        }
+    }
+
     /// <summary>The invite gate reads <c>WantsGroup</c>, which is the persisted "Join a group" flag; a
-    /// fixture character starts with it off.</summary>
-    private static void MakeGroupable(Session s) => s.Receive(SessionFixture.GroupToggleFrame());
+    /// fixture character starts with it off, and leaving a party turns it off again.</summary>
+    private static void MakeGroupable(Session s)
+    {
+        if (!s.WantsGroup) s.Receive(SessionFixture.GroupToggleFrame());
+    }
 
     /// <summary>Every <c>0x0A</c> minitext body carrying <paramref name="needle"/>: type(u8) len(u16 BE)
     /// text[len] (Session.SendMiniText).</summary>
