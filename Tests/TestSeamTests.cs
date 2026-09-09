@@ -27,7 +27,7 @@ public class TestSeamTests
     ///
     /// <para>The constructor does still LOG — the spawn, NPC and clock lines — and <c>Log</c> owns a
     /// process-wide writer thread that its static initializer starts. That thread is NOT world machinery and
-    /// moving <c>Log</c> inside <c>World.Start</c> would not make this assertion truer: nothing can construct
+    /// moving <c>Log</c> inside the host's start-up would not make this assertion truer: nothing can construct
     /// a World without <c>Content.Load</c> running first, and that logs several hundred lines, so the writer
     /// is always already up. Measured on this branch, <c>new World()</c> costs zero threads — the constructor
     /// is clean, and the shared logger is infrastructure the whole process depends on.</para></summary>
