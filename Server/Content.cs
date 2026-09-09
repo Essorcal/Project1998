@@ -305,7 +305,7 @@ public static partial class Content
     }
 
     /// <summary>Offline check of the registries + fuzzy lookups (run via <c>--selftest</c>).</summary>
-    public static void SelfTest()
+    public static int SelfTest()
     {
         Load();
         void Line(string s) => Log.Info(s);
@@ -503,10 +503,29 @@ public static partial class Content
                  $"level {band}{(dest ? "" : "  [NO MAP DATA]")}{(back ? "" : "  [NO RETURN WARP]")}");
         }
 
-        bool ok = Maps.Count > 0 && Mobs.Count > 0 && Items.Count > 0
-                  && FindMap("kugnae") is not null && FindMob("rabbit") is not null && spellsOk
-                  && bgmOk && bgm5xOk && sticky && doorsOk;
-        Line(ok ? "SELFTEST: PASS" : "SELFTEST: FAIL (empty registry or missing expected entry)");
+        var verdict = SelfTestVerdict(
+            ("maps", Maps.Count > 0),
+            ("mobs", Mobs.Count > 0),
+            ("items", Items.Count > 0),
+            ("map lookup", FindMap("kugnae") is not null),
+            ("mob lookup", FindMob("rabbit") is not null),
+            ("spells", spellsOk),
+            ("bgm", bgmOk && sticky),
+            ("5.x bgm", bgm5xOk),
+            ("doors", doorsOk));
+        Line(verdict.Message);
+        return verdict.ExitCode;
+    }
+
+    internal static (string Message, int ExitCode) SelfTestVerdict(
+        params (string Name, bool Passed)[] sections)
+    {
+        string[] failed = sections.Where(section => !section.Passed)
+                                  .Select(section => section.Name)
+                                  .ToArray();
+        return failed.Length == 0
+            ? ("SELFTEST: PASS", 0)
+            : ($"SELFTEST: FAIL ({string.Join(", ", failed)})", 1);
     }
 
     // ---- fuzzy ranking (shared by maps + mobs) ----
