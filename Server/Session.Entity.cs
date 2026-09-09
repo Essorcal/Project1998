@@ -388,7 +388,7 @@ public sealed partial class Session
     /// alongside the new one — exactly the "walk away and back" repro, since leaving view fully despawns
     /// (0x0E) before anything re-spawns. Fix: force the proven-reliable despawn ourselves before every
     /// peer redraw, instead of trusting the client to replace in place. Self's own view isn't affected —
-    /// SendSelfLook updates the persistent self entity directly rather than destroying/recreating it.</summary>
+    /// SendSelfLook updates the persistent self entity directly rather than destroying/recreating it.
     ///
     /// <para>SUPERSEDED for the common case (2026-08-08): <c>0x1d</c> is the packet this always wanted.
     /// Its handler <c>0x450db0</c> takes <c>id(u32BE) kind(u8) look[7]</c>, looks the entity up with

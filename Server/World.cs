@@ -2107,7 +2107,7 @@ public sealed partial class World
     /// grabbing the same tile can't both win — and despawn it for everyone. Null if the tile is empty.
     /// <para><paramref name="pickerId"/> is who is grabbing (0 = an anonymous/system grab, which ignores locks).
     /// Death-pile stacks reserved for someone else are SKIPPED rather than taken, and
-    /// <paramref name="blocked"/> comes back true so the caller can say why nothing happened — RTK
+    /// <c>blocked</c> comes back true so the caller can say why nothing happened — RTK
     /// <c>canLoot</c>'s "That item does not belong to you." Set <paramref name="ownOnly"/> to take ONLY the
     /// picker's own still-locked pile and pass over everything else (RTK <c>isYours</c>, the F1 recovery).</para></summary>
     public GroundItem? PickUp(ushort mapId, int x, int y, uint pickerId = 0, bool ownOnly = false)

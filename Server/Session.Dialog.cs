@@ -1741,7 +1741,7 @@ public sealed partial class Session
     /// <code>
     ///   [0][1][2] u8 x3   [3] u8+str   u8+str   u8+str   u8+str   u8
     ///   u32BE             u8+str
-    ///   (u16,u8) x5                                              <- FIVE (icon, colour) cells
+    ///   (u16,u8) x5                                              &lt;- FIVE (icon, colour) cells
     ///   u8+str            u8   u8
     /// </code>
     /// <para>31 bytes minimum against 4.95's 22. The ONE structural break is the equipment cells: 4.95 puts

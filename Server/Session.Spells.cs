@@ -2133,11 +2133,11 @@ public sealed partial class Session
         _pcSpellTarget.ReviveAt(_pcSpellTarget._char.Map, _pcSpellTarget._char.X, _pcSpellTarget._char.Y, $"{Snapshot().Name} cast {sp.Name} on you.");
     }
 
-    /// <summary>Revive the CASTER in place, returning whether they were actually dead (so the verb can pick its
-    /// flavour line). Distinct from <see cref="LuaSetHp"/>, which only moves the number: ghost form is DERIVED
-    /// from Hp==0 but the client is only redrawn by RefreshAppearance, so raising HP through the plain setter
-    /// leaves a living player rendered as a ghost. Hyun Moo's revival is the self-revive with no relocation —
-    /// unlike Silver Thread or the poet Resurrect family, which move you to a Shaman.</summary>
+    // Revive the CASTER in place, returning whether they were actually dead (so the verb can pick its
+    // flavour line). Distinct from LuaSetHp, which only moves the number: ghost form is DERIVED
+    // from Hp==0 but the client is only redrawn by RefreshAppearance, so raising HP through the plain setter
+    // leaves a living player rendered as a ghost. Hyun Moo's revival is the self-revive with no relocation —
+    // unlike Silver Thread or the poet Resurrect family, which move you to a Shaman.
     // ---- Chung Ryong's Rage primitives -------------------------------------------------------------
     // The one fury that CLIMBS: recast inside its window to go tier 1→6, each tier costing more, hitting
     // harder, adding AC, and charging a vita price when it finally lapses. The tier can't live in Lua because

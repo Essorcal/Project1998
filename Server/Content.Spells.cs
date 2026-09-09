@@ -425,7 +425,7 @@ public static partial class Content
     /// they carry <c>SplMark</c> 1-3 and are pinned to <see cref="MarkSpellLevel"/>, so a level-99 base
     /// character sees none of them and an Ee san sees ranks 1 and 2 (ranks are cumulative — you keep what Il
     /// san taught you). Before this the column was read by nothing at all, which is how every level-99
-    /// character ended up holding secrets belonging to ranks they had never earned.</para></summary>
+    /// character ended up holding secrets belonging to ranks they had never earned.</para>
     /// <para>Dog spells are NOT here and must not be added: "The guildmaster is not involved in these spells"
     /// (nexusatlas Dog Spells listing) — the class's Dog teaches them itself, in exchange for kills and goods.
     /// They carry <c>SplPthId</c> 99, which no class filter matches, so they drop out of this list naturally;
