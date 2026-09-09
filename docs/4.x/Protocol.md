@@ -4714,7 +4714,7 @@ all** — no such struct/feature exists anywhere in the C engine — so `@friend
 original addition: a saved name list plus a live online check on `@friend` (list), nothing more (no
 login/logout push notification).
 
-**Weather (`World` `MapState.Weather`/`GetWeather`/`SetWeather`, `Session.SendWeather`, opcode `0x1F`).**
+**Weather (`World` `MapState.Weather`/`Weather.Get`/`Weather.Set`, `Session.SendWeather`, opcode `0x1F`).**
 RTK's `clif_sendweather` (`clif.c:4565`) is a real, complete wire format — a single byte, 0=clear/1=WRAIN/
 2=WSNOW (`map.h`) — but it's gated by `sd->status.settingFlags & FLAG_WEATHER`, a per-player options toggle
 with no evidence either way that the 4.95 client's older UI even has it. Ported at face value (best real
@@ -4733,7 +4733,7 @@ up live.
 
 **The calendar is anchored to a real-world epoch, not counted (2026-08-12).** `Shared/GameCalendar.cs` —
 `Epoch` = `2026-08-12T00:00:00-07:00`, at which the world reads **Yuri 1, Spring, day 1, hour 0**; the
-current date is then a pure function of wall-clock time (`World.SyncClock` re-reads it every tick and
+current date is then a pure function of wall-clock time (`World.Clock.Sync` re-reads it every tick and
 broadcasts `0x20` on each in-game hour rollover). It lives in `Shared`, not `Server`, because the LOGIN
 server — a separate process with no `World` — stamps a new character's "Born in ..." legend with it (§9.5
 "Dated legend text"). This is the one deliberate divergence from RTK, which increments a counter and
