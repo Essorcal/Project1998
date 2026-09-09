@@ -1576,7 +1576,7 @@ public static partial class Content
     /// <c>glimpse_of_the_void_mage</c> (Kwisin), <c>bolt_mage</c> (Mingken) and <c>natures_ire_mage</c>
     /// (Ohaeng) — and the four are stored as a consecutive run of SplIds within one (SplPthId, SplType)
     /// block, alignments ascending. That adjacency is the only thing in the data that links them: they share
-    /// no name, no key stem and no level column. Walking it here means <see cref="SpellLadders"/> can be
+    /// no name, no key stem and no level column. Walking it here means <see cref="BuildSpellLadders"/> can be
     /// declared with ONE base key per tier instead of four, and stays correct for Kwisin/Mingken/Ohaeng
     /// characters for free.
     ///

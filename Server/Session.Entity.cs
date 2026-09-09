@@ -451,7 +451,7 @@ public sealed partial class Session
     }
 
     /// <summary>Hp==0 is this server's whole "dead" state (matches the pre-existing Gateway/regen checks) —
-    /// a ghost that can't fight, can't cast, and won't regen until <see cref="Revive"/> restores it.</summary>
+    /// a ghost that can't fight, can't cast, and won't regen until <see cref="ReviveAt"/>/<see cref="ReviveInPlace"/> restores it.</summary>
     public bool IsDead => _char.Hp == 0;
 
     /// <summary>A dead player on a PvP map (Vale, the Sire Pit, any Content.IsPvpMap) is a HIDDEN ghost:

@@ -1913,7 +1913,7 @@ public sealed partial class Session
     }
 
     /// <summary>Driven by the world heartbeat: redraw the drowse over a sleeping player, and wake them when
-    /// the timer runs out. (The mob side rides <see cref="Mob.FxRepeat"/>; a player has no Mob to hang it on.)</summary>
+    /// the timer runs out. (The mob side rides <see cref="Mob.SetFxRepeat"/>; a player has no Mob to hang it on.)</summary>
     internal void TickSleep()
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state

@@ -49,7 +49,7 @@ public sealed class GroundItem
 /// <summary>A hidden hazard placed by a Rogue trap spell (RTK NPCs/trap/rogue_traps/*): invisible — no
 /// ground graphic is ever drawn for it (unlike <see cref="GroundItem"/>) — until a mob steps onto its
 /// tile, at which point its effect fires once and it's removed. See <see cref="World.PlaceTrap"/>/
-/// <see cref="World.TrapAt"/> and Session.CastTrap/CastSpotTraps.</summary>
+/// <c>TrapAt</c> and Session.CastTrap/CastSpotTraps.</summary>
 public sealed class Trap
 {
     public uint   Id;

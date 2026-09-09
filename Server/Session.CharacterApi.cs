@@ -801,7 +801,7 @@ public sealed partial class Session
 
     /// <summary>Wipe the track ("When you start a Lesser or a Greater Alliance, it resets your Kill Track to
     /// zero. Therefore, you can not use bosses from a previous alliance for the new one"). Lifetime
-    /// <see cref="_char.Kills"/> is untouched — every other quest counts from that and must not be disturbed
+    /// <see cref="Character.Kills"/> is untouched — every other quest counts from that and must not be disturbed
     /// by someone starting an alliance.</summary>
     internal void ClearKillTrack() { _char.KillTrack.Clear(); SaveChar(); }
 
