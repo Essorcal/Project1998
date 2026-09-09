@@ -1075,24 +1075,38 @@ public sealed partial class Session
         Log.Info($"   -> DIED: {_char.Name} on map {_char.Map} @ ({_char.X},{_char.Y})");
         _char.Mounted = false;                                            // a horse doesn't carry a ghost
         ClearAllTimedEffects();                                           // RTK pc_diescript wipes every timer on death — buffs, curses, stances, and any morph/stealth disguise (must run before the ghost redraw so it draws from the real look, not the morph)
-        RefreshAppearance();                                              // redraw self as a ghost + everyone watching
-        ResyncPeers();                                                    // we're a ghost now — reveal the OTHER ghosts to us (PvP), and re-evaluate what we can see
+        RefreshAppearance();                                              // redraw self as a ghost + everyone watching — every one of its broadcast lambdas has US as the subject, so it takes peers' _viewLock and OUR snapshot, never a peer's monitor (which is why it stays here, where the peers need it)
         ApplyDeathPenalties();                                            // exp/coin/gear/pile — see below
         SendMiniText("You have been defeated! Press F1 and choose \"Silver Thread\" to find your way back.");
         SaveChar();                                                       // the penalties above must survive a crash, not just a clean logout
-        // #57: a ghost cannot finish an exchange. TryStartTrade already refuses to OPEN a window on a dead
-        // player; until this line nothing closed one that was already open, so a corpse could still confirm
-        // and the goods moved.
+        // ---- LAST, not first: the two acquisitions that can drop our own monitor -----------------------
         //
-        // LAST, not first. EndTrade takes BOTH sessions' monitors through WithStatePair, and when the partner
-        // ranks BELOW us that acquisition is descending: rule 2 (Session.State.cs) exits our own monitor while
-        // it blocks on the partner's. Everything above reads state that a revive landing in that window would
-        // invalidate — a GM `@revive <us>`, an NPC Rebirth or a poet's Resurrect all run on somebody else's
-        // thread — so with the teardown first, the penalties, the "defeated" line and the save could all run
-        // on a player who was alive again, charged for a death that had already been undone. Putting it after
-        // the save means the only drop happens once every read is made. Nothing is lost by ending the trade
-        // late: a partner's confirm arriving while the penalties run is already refused by the
-        // ConfirmExchange gate (`other.IsDead`), which is exactly what that gate is for.
+        // A session monitor is entered in ascending StateRank (#29 rule 2, Session.State.cs): when a nested
+        // acquisition would DESCEND, it exits every monitor this thread already holds that outranks the target
+        // while it blocks on that target, then retakes them. Both statements below descend into somebody else,
+        // so both can leave OUR state unheld in the middle of the death — and a revive reaches us on another
+        // thread from three shipped paths (a GM `@revive <us>`, an NPC Rebirth, a poet's Resurrect). Anything
+        // running after a drop can therefore be running on a player who is alive again: charged the death
+        // penalty, told they were defeated, and saved that way. So everything the death READS is above, and
+        // the two descending calls are the last things Die() does.
+        //
+        //   ResyncPeers -> SyncPeers -> ReconcilePeer -> ShowPlayer(peer) -> peer.Snapshot()  (#177)
+        //       reads every peer we can see under THAT peer's monitor (Session.WorldApi.cs). Descends for
+        //       every peer that ranks below us, which is most of them on a busy map — no trade required, just
+        //       somebody standing in our viewport whose monitor is busy. This one is older than the teardown
+        //       below; it was above the penalties until #177 moved it here.
+        //
+        //   EndTrade -> WithStatePair(partner, us)                                            (#57, #172)
+        //       #57: a ghost cannot finish an exchange. TryStartTrade already refuses to OPEN a window on a
+        //       dead player; until this line nothing closed one that was already open, so a corpse could still
+        //       confirm and the goods moved. Nothing is lost by ending the trade late — a partner's confirm
+        //       arriving while the penalties run is already refused by the ConfirmExchange gate
+        //       (`other.IsDead`), which is exactly what that gate is for.
+        //
+        // The peers still get the ghost from RefreshAppearance above, at the point they always did; what moved
+        // is only the reconcile of OUR OWN viewport (whether we can see the other PvP ghosts now that we are
+        // one), which nothing between here and there reads.
+        ResyncPeers();                                                    // we're a ghost now — reveal the OTHER ghosts to us (PvP), and re-evaluate what we can see
         if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
     }
 
