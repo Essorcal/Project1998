@@ -367,10 +367,14 @@ public static partial class Content
         Line("--- Formula sanity ---");
         foreach (var (expr, want) in new (string, double)[]
                  {
-                     ("15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4)", 48),  // spark @50/30
+                     // RTK rtklua/Accepted/Spells/mage/spark.lua @ level 50 / will 30.
+                     ("15 + math.floor(player.level / 2) + math.floor((player.will + 3) / 4)", 48),
+                     // RTK rtklua/Accepted/Spells/mage/hellfire.lua @ magic 200.
                      ("math.ceil(player.magic * 2.15)", 430),
-                     ("100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2)", 230),
-                     ("math.floor(player.maxMagic * .4)", 80),                                        // invoke cost
+                     // RTK rtklua/Accepted/Spells/mage/impact.lua @ level 50 / will 30.
+                     ("100 + (player.level * 2) + math.floor(((player.will + 1) / 2) * 2)", 231),
+                     // RTK rtklua/Accepted/Spells/mage/invoke.lua @ maxMagic 200.
+                     ("math.floor(player.maxMagic * .4)", 80),
                  })
         {
             double got = Formula.Eval(expr, vars);
@@ -392,10 +396,14 @@ public static partial class Content
 
         bool spellsOk = SpellFx.Count > 0
             && SpellFx.TryGetValue("spark_mage", out var spk) && spk.Archetype == "Damage"
-            && Math.Abs(Formula.Eval(spk.AmountExpr, vars) - 48) < 0.5
+            // game-data/spell_effects.csv spark_mage @ level 50 / will 30; its RTK disagreement is reported.
+            && Math.Abs(Formula.Eval(spk.AmountExpr, vars) - 70) < 0.5
+            // RTK rtklua/Accepted/Spells/mage/hellfire.lua @ magic 200.
             && Math.Abs(Formula.Eval("math.ceil(player.magic * 2.15)", vars) - 430) < 0.5
-            && EffectAnim(spk, 3) == 28                                          // spark → Effect.tbl 28
-            && SpellFx.TryGetValue("heal_mage", out var hl) && EffectAnim(hl, 3) == 5;   // unaligned heal → 5
+            // RTK rtklua/Accepted/Spells/common/global_zap.lua: pcalign 11 (Spark) → animation 28.
+            && EffectAnim(spk, 3) == 28
+            // RTK rtklua/Accepted/Spells/mage/heal.lua passes pcalign 0; common/global_heal.lua → animation 5.
+            && SpellFx.TryGetValue("heal_mage", out var hl) && EffectAnim(hl, 3) == 5;
 
         // --- Background music: track names + area zoning (MusicTracks.csv / MapBgm.csv) ---
         Line($"--- Music: {MusicTracks.Count(t => t.Set == MusicSet.Old && t.Name.Length > 0)} named midis + " +
