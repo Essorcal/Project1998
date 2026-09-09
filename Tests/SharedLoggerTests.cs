@@ -6,10 +6,12 @@ namespace Tests;
 
 /// <summary>The parts of <see cref="Log"/> that became shared when the game server's queue logger moved to
 /// <c>Shared.Core</c> and the login server's lock-and-console copy was deleted: the one meaning of
-/// <c>P1998_LOG_WIRE</c> with a per-process default, <see cref="Log.Configure"/>, and the non-blocking
-/// guarantee the login server did not have.
+/// <c>P1998_LOG_WIRE</c> with a per-process default, <see cref="Log.Configure"/>, the non-blocking guarantee
+/// the login server did not have, and the exit flush that pays for it.
 /// <para><b>Collection "log", for the reason <see cref="LogDropPolicyTests"/> gives:</b> the counters, the
-/// admission override, the file sink and now the configured defaults are all process-global.</para></summary>
+/// admission override, the file sink and now the configured defaults are all process-global. The shutdown
+/// fact below additionally closes the queue for real, which is why it restarts the writer before it
+/// leaves.</para></summary>
 [Collection("log")]
 public class SharedLoggerTests
 {
@@ -148,5 +150,55 @@ public class SharedLoggerTests
             Log.AdmitOverrideForTest = null;
             Log.ResetDroppedCountsForTest();
         }
+    }
+
+    // ---- the price of the queue: the tail has to be flushed -----------------------------------------------
+
+    /// <summary>Everything logged before <see cref="Log.Shutdown"/> is on disk after it returns, and a line
+    /// logged AFTER it is dropped rather than thrown at.
+    /// <para>This is what <see cref="Log.FlushOnExit"/> buys the login server. A queue logger with no exit
+    /// flush is worse than the synchronous one it replaces for the only lines anybody reads — the last ones
+    /// before a stop or a crash.</para>
+    /// <para>Like the control-line fact in <see cref="LogDropPolicyTests"/>, this attaches a real file and
+    /// there is no detach, so the sink is left pointing at a temp directory and the rest of this process's
+    /// log lines are teed there too. It also calls the REAL Shutdown, which completes the queue for good;
+    /// <c>RestartWriterForTest</c> puts a fresh queue and writer back so no later test in this process is
+    /// logging into a closed one. Falsification: drop the Shutdown call and the file is short (the writer is
+    /// a background thread with no reason to have drained); remove the _closed guard in Enqueue and the
+    /// post-shutdown Info throws InvalidOperationException instead of being dropped.</para></summary>
+    [Fact]
+    public void Shutdown_flushes_the_tail_and_a_line_after_it_is_dropped_not_thrown()
+    {
+        const int Lines = 200;
+        string tag = "flush-fact-" + Guid.NewGuid().ToString("N");
+        string path = Path.Combine(Path.GetTempPath(), "p1998-log-flush-" + tag, "login.log");
+
+        try
+        {
+            Log.AttachFile(path);
+            for (int i = 0; i < Lines; i++) Log.Info($"{tag} {i}");
+
+            Log.Shutdown();
+
+            // No throw: this is the session thread that logged one line late, on the way out.
+            Log.Info($"{tag} after shutdown");
+
+            string text = ReadSharing(path);
+            for (int i = 0; i < Lines; i++)
+                Assert.Contains($"{tag} {i}\n", text);
+            Assert.DoesNotContain($"{tag} after shutdown", text);
+        }
+        finally
+        {
+            Log.RestartWriterForTest();
+        }
+    }
+
+    /// <summary>Read the log while the writer still holds it open (there is no detach).</summary>
+    private static string ReadSharing(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(fs);
+        return reader.ReadToEnd();
     }
 }

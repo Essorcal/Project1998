@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Shared;
@@ -53,8 +54,19 @@ public static class Log
     // makes the wire dump affordable: the cost of a console write is dominated by the call, not the bytes.
     private const int BatchLines = 512;
 
-    private static readonly BlockingCollection<string> Queue =
-        new(new ConcurrentQueue<string>(), QueueCapacity);
+    // Not readonly, and the writer thread is handed its own queue rather than reading this field: Shutdown
+    // completes the collection for good, so the only way back is a fresh queue + a fresh writer. Production
+    // never takes that path (a process shuts its log down once, on the way out); RestartWriterForTest does,
+    // so the Shutdown fact does not leave the rest of the test process without a log.
+    private static BlockingCollection<string> _queue = NewQueue();
+
+    private static BlockingCollection<string> NewQueue() => new(new ConcurrentQueue<string>(), QueueCapacity);
+
+    // Set before CompleteAdding so a line that arrives during shutdown is dropped rather than met with the
+    // InvalidOperationException TryAdd throws on a completed collection. The login server logs from every
+    // session thread, and Shutdown now runs from its Ctrl+C/SIGTERM/ProcessExit hooks while those threads are
+    // still live: without this, flushing the tail would trade a lost tail for a crash on the way out.
+    private static volatile bool _closed;
 
     private static StreamWriter? _file;    // writer thread only, after AttachFile hands it over
     private static string _path = "";
@@ -73,16 +85,18 @@ public static class Log
     // process has a file at all.
     private static long _maxBytes = UnconfiguredMaxBytes;
 
-    private static readonly Thread Writer;
+    private static Thread _writer = null!;   // replaced only by RestartWriterForTest; see Shutdown
 
-    static Log()
+    static Log() => StartWriter(_queue);
+
+    private static void StartWriter(BlockingCollection<string> queue)
     {
-        Writer = new Thread(WriterLoop)
+        _writer = new Thread(() => WriterLoop(queue))
         {
             IsBackground = true,   // must never keep the process alive; Shutdown() is what flushes the tail
             Name = "log-writer",
         };
-        Writer.Start();
+        _writer.Start();
     }
 
     // ---- per-process configuration -----------------------------------------------------------------------
@@ -255,20 +269,36 @@ public static class Log
         // Refusing it would spend the whole process running console-only with _file null, silently and
         // permanently, to save one queue slot — so it skips admission entirely. TryAdd's hard capacity still
         // applies; losing it there is counted as an Error because the loss is permanent, not a dropped Info.
+        // Past Shutdown there is no sink left to reach and TryAdd would THROW on the completed collection.
+        // A late line is dropped, silently and without a counter: the queue it would be counted against has
+        // already been drained and the notice printed. See _closed.
+        if (_closed) return;
+        var queue = _queue;
+
         if (ReferenceEquals(line, OpenMarker))
         {
-            if (!Queue.TryAdd(line)) Interlocked.Increment(ref DroppedByLevel[(int)LogLevel.Error]);
+            if (!TryAdd(queue, line)) Interlocked.Increment(ref DroppedByLevel[(int)LogLevel.Error]);
             return;
         }
 
         LogLevel level = LevelOf(line, entryPoint);
-        int queued = Queue.Count;
+        int queued = queue.Count;
         var admit = AdmitOverrideForTest;
         // Count then TryAdd is deliberately not atomic: an Info line may land on either side of the reserve
         // at the boundary, while TryAdd still enforces the hard capacity. Even Error never waits, because a
         // stuck writer must never block the world tick or a packet handler through the logger.
-        if (!(admit?.Invoke(level, queued) ?? Admits(level, queued)) || !Queue.TryAdd(line))
+        if (!(admit?.Invoke(level, queued) ?? Admits(level, queued)) || !TryAdd(queue, line))
             Interlocked.Increment(ref DroppedByLevel[(int)level]);
+    }
+
+    /// <summary>TryAdd, treating "the queue closed under me" as a refusal rather than an exception. The
+    /// _closed check in <see cref="Enqueue"/> covers the ordinary case; this covers the race, where a session
+    /// thread read _closed as false a moment before Shutdown completed the collection. Logging must never be
+    /// the thing that throws on the way out of the process.</summary>
+    private static bool TryAdd(BlockingCollection<string> queue, string line)
+    {
+        try { return queue.TryAdd(line); }
+        catch (InvalidOperationException) { return false; }   // CompleteAdding raced us
     }
 
     internal static string FormatOverflowNotice(int info, int warn, int error)
@@ -297,8 +327,9 @@ public static class Log
     {
         try
         {
-            Queue.CompleteAdding();
-            Writer.Join(TimeSpan.FromSeconds(2));
+            _closed = true;   // before CompleteAdding: a line still in flight is dropped, not thrown at
+            _queue.CompleteAdding();
+            _writer.Join(TimeSpan.FromSeconds(2));
         }
         // EXEMPT (the logger cannot log through itself, and this is the log shutting down): the only thing
         // that lands here is a second Shutdown racing the first on an already-completed queue, which is the
@@ -306,27 +337,69 @@ public static class Log
         catch { /* already shutting down */ }
     }
 
+    private static int _exitHookOnce;
+    private static PosixSignalRegistration? _sigterm;   // held for the process lifetime; disposing unhooks it
+
+    /// <summary>Flush the queue on the way out, for a process whose shutdown has nothing else to do.
+    /// <para>The game server does this inside <c>TkListener.Shutdown</c>, where the log flush is the last step
+    /// after saving every connected player. The login server holds no state worth saving, so this IS its whole
+    /// shutdown — and without it, moving it onto a queue logger would have traded its console freezes for a
+    /// LOST TAIL: the last lines before a stop or a crash, which are the ones anybody reads. All three exits a
+    /// deployed process actually takes are covered — Ctrl+C in the console window, SIGTERM from
+    /// <c>systemctl restart</c>/<c>docker stop</c>, and ProcessExit for a plain return from Main — and the
+    /// Interlocked guard means running through more than one of them flushes exactly once. A fatal exception
+    /// does NOT reach ProcessExit (the runtime aborts), so that path calls <see cref="Shutdown"/> itself, in
+    /// the handler that writes the trace.</para></summary>
+    public static void FlushOnExit()
+    {
+        if (Interlocked.Exchange(ref _exitHookOnce, 1) != 0) return;
+
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;   // exit ourselves once the flush is done, not mid-write
+            Shutdown();
+            Environment.Exit(0);   // re-raises ProcessExit below; Shutdown's own guard makes that a no-op
+        };
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+        _sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx =>
+        {
+            Shutdown();
+            ctx.Cancel = false;   // let the runtime carry on terminating; we only wanted the flush first
+        });
+    }
+
+    /// <summary>Undo <see cref="Shutdown"/> with a fresh queue and a fresh writer thread. TEST ONLY: the
+    /// Shutdown fact has to call the real Shutdown, and Shutdown is one-way (a completed BlockingCollection
+    /// stays completed), so without this one fact would leave every later test in the process logging into a
+    /// closed queue. Production never calls it — a process shuts its log down once, on its way out.</summary>
+    internal static void RestartWriterForTest()
+    {
+        _queue = NewQueue();
+        _closed = false;
+        StartWriter(_queue);
+    }
+
     // ---- writer thread: the ONLY place that touches the console or the file --------------------------
 
-    private static void WriterLoop()
+    private static void WriterLoop(BlockingCollection<string> queue)
     {
         var batch = new StringBuilder(BatchLines * 96);
         try
         {
-            foreach (var first in Queue.GetConsumingEnumerable())
+            foreach (var first in queue.GetConsumingEnumerable())
             {
                 batch.Clear();
                 int n = Append(batch, first);
                 // Coalesce whatever else is already queued into this one write. At wire-dump volume this
                 // turns thousands of console calls per second into a handful.
-                while (n < BatchLines && Queue.TryTake(out var more)) n += Append(batch, more);
+                while (n < BatchLines && queue.TryTake(out var more)) n += Append(batch, more);
 
                 if (batch.Length > 0) Emit(batch.ToString());
 
                 // Idle flush: once the backlog is drained, get the tail onto disk. This replaces the old
                 // per-line AutoFlush — same durability in practice (we are almost always idle between
                 // events) at a tiny fraction of the syscalls.
-                if (Queue.Count == 0) TryFlush();
+                if (queue.Count == 0) TryFlush();
 
                 string notice = FormatOverflowNotice(
                     Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0),
