@@ -67,7 +67,7 @@ public static class MobScript
         {
             if (path is null || !File.Exists(path))
             {
-                Log.Info($"!! mob_ai.lua: no file at '{path ?? "(null)"}' — {(_mobs is null ? "Lua mob hooks disabled" : "keeping the previously-loaded hooks")}");
+                Log.Warn($"mob_ai.lua: no file at '{path ?? "(null)"}' — {(_mobs is null ? "Lua mob hooks disabled" : "keeping the previously-loaded hooks")}");
                 return (_mobs is not null, null);
             }
             try
@@ -77,7 +77,7 @@ public static class MobScript
                 var m = s.Globals.Get("mobs");
                 if (m.Type != DataType.Table)
                 {
-                    Log.Info("!! mob_ai.lua missing global `mobs` table — reload REJECTED, keeping the previous hooks");
+                    Log.Warn("mob_ai.lua missing global `mobs` table — reload REJECTED, keeping the previous hooks");
                     return (_mobs is not null, null);
                 }
 

@@ -226,7 +226,7 @@ public sealed class RestartSchedule
         var parts = raw.Split('|', 2);
         if (!long.TryParse(parts[0].Trim(), out long deadline))
         {
-            Log.Info($"!! restart_at: not a unix-ms timestamp: \"{raw}\"");
+            Log.Warn($"restart_at: not a unix-ms timestamp: \"{raw}\"");
             return;
         }
         string reason = parts.Length > 1 ? parts[1].Trim() : "";
@@ -237,7 +237,7 @@ public sealed class RestartSchedule
         long remaining = deadline - Now;
         if (remaining <= 0)
         {
-            Log.Info($"!! restart_at: deadline is {(-remaining) / 1000}s in the past — ignoring (stale file)");
+            Log.Warn($"restart_at: deadline is {(-remaining) / 1000}s in the past — ignoring (stale file)");
             return;
         }
 
