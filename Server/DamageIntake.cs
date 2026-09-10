@@ -326,24 +326,23 @@ public sealed partial class Session
         if (IsDead) Die();
         else intake.AfterSurvivedHit?.Invoke();
 
-        // ---- LAST, not in the middle: the one acquisition that can drop our own monitor -------------------
+        // ---- LAST, not in the middle: harden the one-critical-section invariant for every caller ----------
         //
-        // Marking the FOE enters the ATTACKER's state monitor while we hold our own. A session monitor is
-        // entered in ascending StateRank (#29 rule 2, Session.State.cs), so when that acquisition DESCENDS —
-        // the attacker was created before us and its monitor is busy — it exits ours while it blocks on the
-        // attacker's and retakes it afterwards. Between the exit and the retake our state is unheld and
-        // another thread can act on it, and a revive reaches us on another thread from three shipped paths
-        // (a GM `@rez <us>`, an NPC Rebirth, a poet's Resurrect).
+        // Marking the FOE enters the ATTACKER's state monitor while we hold our own. All six shipped PvP intake
+        // sites reach here on the attacker's handler thread, whose Dispatch is already wrapped in WithState, so
+        // that thread already holds the attacker's monitor. MarkPvpFoe's EnterState is therefore re-entrant
+        // under #29 rule 3 and never drops the victim's monitor on any shipped path.
         //
-        // Above this line that gap was inside a kill: the HP write at the top had already landed, so the
-        // reviving thread found a player at HP 0 whose death sequence had not run — and with the HP restored
-        // under it, the `if (IsDead)` above then read FALSE and Die() never ran at all. So the mark goes here,
-        // where the death sequence (or the survived-hit epilogue) has already finished and the only statement
-        // left is the return. Same reasoning, and the same remedy, as the two calls at the bottom of Die()
-        // (#172, #177) — this one is a step further up the damage path.
+        // A descending acquisition, and the gap rule 2 would open in our monitor, is reachable only from a
+        // caller that does not already hold the attacker's monitor. None is shipped today; a future queued or
+        // timer-driven blow, including #29's channel-drained read loop, could introduce that shape. A revive
+        // could then enter the gap between our HP write and death sequence.
         //
-        // Nothing observable moves by deferring it: the pet AI reads PvpFoeId on the world tick
-        // (World.MobAiTick.cs), 600 ms apart, and the value expires 15 s later either way.
+        // Keep the mark here as a hardening: TakeDamage through Die() remains one critical section however the
+        // blow arrives, and the death sequence (or survived-hit epilogue) finishes before a possible drop.
+        // This is the same last-statement remedy as the two calls at the bottom of Die() (#172, #177), one step
+        // earlier in the damage path. PvpDeathOrderingTests pins the invariant with a bare-thread caller, which
+        // is why its race is observable even though no production caller has that shape.
         markFoeAfterwards?.MarkPvpFoe(ourIdForFoe);
         return dmg;
     }

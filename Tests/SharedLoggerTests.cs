@@ -204,6 +204,50 @@ public class SharedLoggerTests
         }
     }
 
+    /// <summary>The second <see cref="Log.Shutdown"/> returns at the once-guard without touching the queue,
+    /// and <c>RestartWriterForTest</c> reopens the guard along with the queue.
+    /// <para>Both halves matter and they are the same fact. The guard is what the comments at BOTH call sites
+    /// have always claimed — the Ctrl+C handler's <c>Environment.Exit(0)</c> "re-raises ProcessExit below;
+    /// Shutdown's own guard makes that a no-op", and the catch inside Shutdown named the double-call as the
+    /// only thing it ever swallowed. Before this there was no guard: the second call ran the body and threw
+    /// <c>CompleteAdding</c> on a completed collection into that catch, which is a comment describing a
+    /// mechanism that did not exist. And a guard that <c>RestartWriterForTest</c> did not reset would be worse
+    /// than none: every Shutdown fact after the first in this process would return at the guard, leave the
+    /// writer running, and pass while measuring nothing.</para>
+    /// <para><c>ShutdownRunsForTest</c> counts the calls that got PAST the guard, because that is the only
+    /// observable difference — a guarded and an unguarded second call both return, and both leave the writer
+    /// stopped. Deltas, not absolutes: the counter is process-global and the fact above shuts down too.</para>
+    /// <para>Falsifications: remove the <c>Interlocked.Exchange</c> guard from Shutdown and the second call
+    /// runs the body, so the "returned at the guard" assert sees the count go up by one. Remove the reset from
+    /// <c>RestartWriterForTest</c> and the restarted writer is still alive after the third Shutdown, and the
+    /// count does not move.</para></summary>
+    [Fact]
+    public void A_second_Shutdown_returns_at_the_guard_and_the_test_restart_reopens_it()
+    {
+        try
+        {
+            Log.Shutdown();
+            Assert.False(Log.WriterRunningForTest());
+            int afterFirst = Log.ShutdownRunsForTest();
+
+            Log.Shutdown();   // the double call the two exit hooks make by design
+            Assert.Equal(afterFirst, Log.ShutdownRunsForTest());
+            Assert.False(Log.WriterRunningForTest());
+
+            Log.RestartWriterForTest();
+            Assert.True(Log.WriterRunningForTest());
+
+            Log.Shutdown();   // and this one works again, because the reset reopened the guard
+            Assert.False(Log.WriterRunningForTest(),
+                "RestartWriterForTest left the once-guard set — every later Shutdown fact is measuring nothing");
+            Assert.Equal(afterFirst + 1, Log.ShutdownRunsForTest());
+        }
+        finally
+        {
+            Log.RestartWriterForTest();
+        }
+    }
+
     /// <summary>Read the log while the writer still holds it open (there is no detach).</summary>
     private static string ReadSharing(string path)
     {
