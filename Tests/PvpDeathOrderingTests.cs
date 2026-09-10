@@ -109,13 +109,18 @@ public class PvpDeathOrderingTests
         // A third thread parks on the attacker's monitor so the descending acquisition really does block.
         var attackerHeld = new ManualResetEventSlim();
         var releaseAttacker = new ManualResetEventSlim();
-        var holder = new Thread(() => attacker.WithState(() => { attackerHeld.Set(); releaseAttacker.Wait(); }))
+        var progress = new StallWatch.RoundCounter();
+        var holder = new Thread(() =>
+        {
+            attacker.WithState(() => { attackerHeld.Set(); releaseAttacker.Wait(); });
+            progress.Bump();
+        })
         { IsBackground = true, Name = "attacker-holder" };
         holder.Start();
         Assert.True(attackerHeld.Wait(5000), "the holder never took the attacker's monitor");
 
         // The kill, on its own thread: a PvP melee blow, which is the intake that carries a foe.
-        var killer = new Thread(() => victim.ReceiveMeleeDamage(9999, attacker, crit: false))
+        var killer = new Thread(() => { victim.ReceiveMeleeDamage(9999, attacker, crit: false); progress.Bump(); })
         { IsBackground = true, Name = "killer" };
         killer.Start();
         var sw = Stopwatch.StartNew();
@@ -130,28 +135,33 @@ public class PvpDeathOrderingTests
         uint hpAtEntry = uint.MaxValue, savedHpAtEntry = NeverSaved;
         var textsAtEntry = new List<string>();
         var reviverEntered = new ManualResetEventSlim();
-        var reviver = new Thread(() => victim.WithState(() =>
+        var reviver = new Thread(() =>
         {
-            sawDead = victim.IsDead;
-            hpAtEntry = victimChar.Hp;
-            textsAtEntry = MiniTexts(victimOut);
-            var saved = _fx.Store.Load("PvpFoeVictim");
-            if (saved.Status == CharacterLoadStatus.Ok) savedHpAtEntry = saved.Character!.Hp;
-            reviverEntered.Set();
-            victim.ReviveInPlace(RevivedText);
-        })) { IsBackground = true, Name = "reviver" };
+            victim.WithState(() =>
+            {
+                sawDead = victim.IsDead;
+                hpAtEntry = victimChar.Hp;
+                textsAtEntry = MiniTexts(victimOut);
+                var saved = _fx.Store.Load("PvpFoeVictim");
+                if (saved.Status == CharacterLoadStatus.Ok) savedHpAtEntry = saved.Character!.Hp;
+                reviverEntered.Set();
+                victim.ReviveInPlace(RevivedText);
+            });
+            progress.Bump();
+        }) { IsBackground = true, Name = "reviver" };
         reviver.Start();
 
         Assert.True(reviverEntered.Wait(5000),
                     "the reviver never got the victim's monitor: the foe mark did not drop it at all");
         Assert.True(sawDead, "the reviver landed on a living player — it never got inside the kill");
-        Assert.True(reviver.Join(10000), "the revive never finished");
+        StallWatch.RunUntilDoneOrStalled(new[] { reviver }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the reviver");
         // Still parked: the reviver ran entirely inside the gap, so nothing below is racing the killer thread.
         Assert.True(killer.IsAlive, "TakeDamage got past its foe mark before the attacker's monitor was released");
 
         releaseAttacker.Set();
-        Assert.True(killer.Join(10000), "TakeDamage never finished");
-        Assert.True(holder.Join(5000));
+        StallWatch.RunUntilDoneOrStalled(new[] { killer, holder }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "TakeDamage and the attacker-monitor holder");
 
         // RED at e2938a8, where the foe mark sat between the HP write and Die(): at this point the kill had
         // written HP 0 and nothing else — no ghost, no defeated line, no save. (And with the HP restored under

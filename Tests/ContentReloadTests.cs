@@ -1,9 +1,11 @@
 using Server;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
 
 /// <summary>Regression guards for serializing reload writers and publishing every content table atomically.</summary>
+[Collection("tile-translation")]
 public class ContentReloadTests
 {
     [Fact]
@@ -296,6 +298,7 @@ public class ContentReloadTests
             using var resumeLoad = new SemaphoreSlim(0);
             Thread? reloadThread = null;
             Exception? reloadFailure = null;
+            var progress = new StallWatch.RoundCounter();
             int mismatches = 0;
 
             try
@@ -312,7 +315,11 @@ public class ContentReloadTests
                 {
                     try
                     {
-                        for (int i = 0; i < reloadCount; i++) Content.Reload();
+                        for (int i = 0; i < reloadCount; i++)
+                        {
+                            Content.Reload();
+                            progress.Bump();
+                        }
                     }
                     catch (Exception e)
                     {
@@ -333,7 +340,8 @@ public class ContentReloadTests
                     resumeLoad.Release();
                 }
 
-                Assert.True(reloadThread.Join(TimeSpan.FromSeconds(30)), "reload thread did not finish");
+                StallWatch.RunUntilDoneOrStalled(new[] { reloadThread }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, "the reload thread");
                 Assert.Null(reloadFailure);
                 Assert.Equal(0, mismatches);
                 Assert.NotSame(firstItems, Content.Items); // proves the final snapshot write was not removed
@@ -343,7 +351,8 @@ public class ContentReloadTests
                 Content.LoadStepForTests = null;
                 for (int i = 0; i < reloadCount; i++) resumeLoad.Release();
                 if (reloadThread is { IsAlive: true })
-                    Assert.True(reloadThread.Join(TimeSpan.FromSeconds(15)), "reload thread did not stop during cleanup");
+                    StallWatch.RunUntilDoneOrStalled(new[] { reloadThread }, () => progress.Rounds,
+                        StallWatch.StallQuiet, StallWatch.StallCap, "the reload thread during cleanup");
                 TestProcessState.LoadContent();
             }
         }

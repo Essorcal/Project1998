@@ -68,6 +68,7 @@ public class MobStateLockTests
         const int PerThread = 500;
         var mob = NodeOn(HandMap, "CrowdedMule");
         var start = new ManualResetEventSlim();
+        var progress = new StallWatch.RoundCounter();
         Exception? fault = null;
 
         void Hand(int itemId)
@@ -75,7 +76,11 @@ public class MobStateLockTests
             try
             {
                 start.Wait();
-                for (int i = 0; i < PerThread; i++) _fx.World.HandItemToMob(mob, new InvItem(0, itemId, 1, 0));
+                for (int i = 0; i < PerThread; i++)
+                {
+                    _fx.World.HandItemToMob(mob, new InvItem(0, itemId, 1, 0));
+                    progress.Bump();
+                }
             }
             catch (Exception e) { fault = e; }
         }
@@ -84,7 +89,8 @@ public class MobStateLockTests
         var b = new Thread(() => Hand(2)) { IsBackground = true };
         a.Start(); b.Start();
         start.Set();
-        Assert.True(a.Join(TimeSpan.FromSeconds(30)) && b.Join(TimeSpan.FromSeconds(30)), "a hand-off thread hung");
+        StallWatch.RunUntilDoneOrStalled(new[] { a, b }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the hand-off threads");
 
         Assert.Null(fault);
         Assert.Equal(PerThread * 2, mob.Handed!.Count);
@@ -164,6 +170,7 @@ public class MobStateLockTests
         var node = NodeOn(RaceMap, "Contested Vein", hp: 100);
 
         var got = new bool[2];
+        var progress = new StallWatch.RoundCounter();
         int rounds = 0, winners = 0, doubleWins = 0;
         Exception? fault = null;
 
@@ -187,13 +194,15 @@ public class MobStateLockTests
             {
                 got[slot] = world.TryClaimHarvestNode(node, id, 120_000, clock: () => 5_000_000);
                 barrier.SignalAndWait();
+                progress.Bump();
             }
         }
 
         var a = new Thread(() => Swing(0, 11)) { IsBackground = true, Name = "harvester-a" };
         var b = new Thread(() => Swing(1, 22)) { IsBackground = true, Name = "harvester-b" };
         a.Start(); b.Start();
-        Assert.True(a.Join(TimeSpan.FromSeconds(30)) && b.Join(TimeSpan.FromSeconds(30)), "a harvester hung");
+        StallWatch.RunUntilDoneOrStalled(new[] { a, b }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the harvesters");
 
         Assert.Null(fault);
         Assert.Equal(Rounds, rounds);

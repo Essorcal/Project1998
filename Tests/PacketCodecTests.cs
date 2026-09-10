@@ -78,4 +78,50 @@ public sealed class PacketCodecTests
         Assert.Equal(new byte[] { 0xAA, 0x0A, 0x94, 0x06, increment }, frame[..5]);
         Assert.Equal(TkCrypt.Crypt(plain, increment, TkCrypt.LoginKey), frame[5..]);
     }
+
+    /// <summary>A length field under <see cref="TkPacket.MinLength"/> is MALFORMED, and saying so is all the
+    /// parser does about it: no throw, nothing consumed, no packet.
+    ///
+    /// <para>This is a silent-failure guard pointing the other way. <c>3 + len</c> with <c>len</c> 0 or 1
+    /// satisfied the "have I got the bytes" check and then sliced a negative body length, so five bytes
+    /// starting <c>AA 00 00</c> from any peer threw <see cref="ArgumentOutOfRangeException"/> out of the
+    /// shared read loop and into each session's catch — the game's stackful Error clause, one line per
+    /// connection, at whatever rate a scanner could open sockets.</para>
+    ///
+    /// <para>Falsified by putting the old body back (<c>int total = 3 + length;</c> straight to the slice,
+    /// with the <c>length &lt; MinLength</c> line deleted): the two malformed rows go red with
+    /// <c>System.ArgumentOutOfRangeException : Specified argument was out of the range of valid values.</c>
+    /// out of <c>TkPacket.Parse</c>, and <c>AA 00 02 10 7F</c> and the four-byte row stay green — which is
+    /// what makes the two malformed rows the fact and the other two the controls.</para></summary>
+    [Theory]
+    // the defect: a length field of 0 and of 1, in five bytes — enough for total = 3 + len to be "satisfied"
+    [InlineData("AA00000000", (int)TkPacket.FrameStatus.Malformed, 0)]
+    [InlineData("AA00010000", (int)TkPacket.FrameStatus.Malformed, 1)]
+    // the floor itself: len = 2 is the shortest LEGAL frame, opcode + increment and no body
+    [InlineData("AA0002107F", (int)TkPacket.FrameStatus.Frame, 2)]
+    // and an ordinary partial frame still waits, rather than being called malformed
+    [InlineData("AA000310", (int)TkPacket.FrameStatus.NeedMore, 3)]
+    public void ALengthFieldUnderTwoIsMalformedRatherThanShort(string hex, int expected, int length)
+    {
+        var status = TkPacket.Parse(Convert.FromHexString(hex), out var pkt, out int consumed, out int len);
+
+        Assert.Equal((TkPacket.FrameStatus)expected, status);
+        Assert.Equal(length, len);
+        if (status == TkPacket.FrameStatus.Frame)
+        {
+            Assert.Equal(0x10, pkt.Opcode);
+            Assert.Equal(0x7F, pkt.Increment);
+            Assert.Empty(pkt.Body);
+            Assert.Equal(5, consumed);
+        }
+        else
+        {
+            Assert.Equal(0, consumed);
+            Assert.Null(pkt.Body);
+        }
+
+        // The two-out overload every other caller uses: false for both non-frames, and still no throw.
+        Assert.Equal(status == TkPacket.FrameStatus.Frame,
+            TkPacket.TryParse(Convert.FromHexString(hex), out _, out _));
+    }
 }
