@@ -399,6 +399,10 @@ scrubbing, OS SYN-flood protection, a firewall restricting the game ports to pos
   (via an `_established` flag), so an in-world / AFK / Alt+X-idle player is never disconnected. Reads after
   the handshake are untimed. The watchdog **closes the socket** (unblocking the pending read) rather than
   relying on `NetworkStream`'s unreliable read-cancellation.
+- **Unframed-buffer bounds** — the shared reader also drops a connection, before and after the handshake,
+  once its unframed buffer exceeds one maximum legal frame (`3 + 0xFFFF` = 65,538 B) or its head byte is not
+  `0xAA`, because neither state can ever produce a frame and §2's checksum-free, trailer-free framing gives
+  nothing to re-sync against.
 - **Non-blocking writes (the tick-stall fix — most important).** `Session.Send` no longer does a synchronous
   `_stream.Write` on the shared 600 ms `World.TickLoop` thread. It enqueues onto a **bounded per-session
   channel** (cap 2048) drained by one dedicated writer task that owns the only socket writes. A client whose
