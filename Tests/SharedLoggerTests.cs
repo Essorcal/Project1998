@@ -113,9 +113,12 @@ public class SharedLoggerTests
     /// sites — on the accept path and inside every login — waited for the terminal.</para>
     /// <para>The refusals are counted too: without that, a run where the override quietly stopped applying
     /// would still be fast, and the fact would be measuring nothing. The count is kept by the override
-    /// itself rather than read from <c>DroppedCountsForTest</c>, because the writer thread ZEROES those
-    /// counters every time it drains the queue to print the overflow notice — over a 10,000-line window it
-    /// reliably carries some of them away (measured: 878 of 10,000 on the first run of this fact).</para>
+    /// itself rather than read from <c>DroppedCountsForTest</c>. That began as a way round the writer thread
+    /// zeroing the drop counters every time it drained the queue to print the overflow notice — over a
+    /// 10,000-line window it reliably carried some of them away (measured: 878 of 10,000 on the first run of
+    /// this fact). The writer no longer zeroes anything, so that hazard is gone; the override keeps its own
+    /// tally anyway, because here it is the stronger fact: it counts the calls that reached the seam on THIS
+    /// thread, not what the logger recorded.</para>
     /// <para>Falsification: put a <c>Thread.Sleep(1)</c> in Enqueue and the elapsed assert fails by two
     /// orders of magnitude.</para></summary>
     [Fact]
