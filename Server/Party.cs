@@ -39,10 +39,14 @@ namespace Server;
 /// caller of a refused <c>TryDisband</c> tells nobody anything.</para>
 ///
 /// <para>An EMPTY array marks the party RETIRED. <see cref="TryDisband"/> installs it, <see cref="Add"/>
-/// refuses one and <see cref="Remove"/> finds nothing in one, so a retired party can never come back and no
-/// session's <c>_party</c> ever points at one — <c>RemoveFromParty</c> clears the last member's field inside
-/// the same critical section that retires it. <see cref="Leader"/> is therefore never asked about a retired
-/// party; every caller reaches it through a live <c>_party</c>.</para>
+/// refuses one and <see cref="Remove"/> finds nothing in one, so a retired party can never come back, and no
+/// member the roster still holds names a retired party — <c>RemoveFromParty</c> clears the last member's
+/// field inside the same critical section that retires it. A member a KICK has swapped out can still name
+/// it until that kick's <c>WithState</c> clears the field, though: the kick runs on the leader's thread and
+/// waits for the member's monitor, and in the descending-rank case rule 2 has dropped the leader's monitor
+/// for that wait, so another member's leave can retire the party inside that gap (#167 review, F3). So every
+/// reader here must survive the EMPTY array — <see cref="Leader"/> answers <c>null</c> for one rather than
+/// indexing it, and the roster text treats that as "no party".</para>
 /// </summary>
 public sealed class Party
 {
@@ -59,7 +63,18 @@ public sealed class Party
     /// ever touch again, so a kick or an invite mid-loop is invisible to it rather than fatal.</summary>
     public IReadOnlyList<Session> Members => Volatile.Read(ref _members);
 
-    public Session Leader => Volatile.Read(ref _members)[0];
+    /// <summary>The leader — always <c>Members[0]</c> — or <c>null</c> when the array is empty, i.e. the
+    /// party has been retired. A member a kick has swapped out but not yet cleared can still ask (class doc,
+    /// #167 review F3): indexing threw <c>IndexOutOfRangeException</c> out of their own packet handler.</summary>
+    public Session? Leader
+    {
+        get
+        {
+            var members = Volatile.Read(ref _members);
+            return members.Length == 0 ? null : members[0];
+        }
+    }
+
     public bool IsFull => Volatile.Read(ref _members).Length >= MaxMembers;
 
     public Party(Session leader, Session firstMember) => _members = new[] { leader, firstMember };
