@@ -25,7 +25,7 @@ namespace Tests;
 ///
 /// <para><b>Left running.</b> A production acceptor listens until the process exits — there is no stop, by
 /// design — so each fact leaves one listening socket behind for the rest of the test run. That is three
-/// loopback ports out of the 8000 block, and the reason each fact claims its own.</para></summary>
+/// ephemeral loopback ports, and the reason each fact claims its own.</para></summary>
 public class SharedListenerTests
 {
     private static readonly TimeSpan Bounded = TimeSpan.FromSeconds(10);
@@ -42,8 +42,6 @@ public class SharedListenerTests
         Environment.SetEnvironmentVariable("P1998_BIND", "127.0.0.1");
         return IPAddress.IsLoopback(NetBind.Address);
     }
-
-    private static int _nextPort = 8000;   // the block this assignment holds
 
     /// <summary>The connection reaches the delegate: the accepted socket for THIS caller, the port it came
     /// in on, a null realIp (the un-proxied path resolves no forwarded address), and NoDelay already set —
@@ -199,17 +197,20 @@ public class SharedListenerTests
             $"nothing is listening on :{port} — the acceptor either failed to bind it or returned before Start()");
     }
 
-    /// <summary>Take the next port in this assignment's block, having checked it is actually free. A port
-    /// another process owns fails inside <c>TkAcceptor.ListenAsync</c>, on a task nobody awaits, so without
-    /// this the fact would fail with nothing saying why.</summary>
+    /// <summary>Take an ephemeral loopback port: bind port 0, read what the kernel assigned, stop, and return
+    /// it for the acceptor to bind a moment later. Nothing here holds a port out of a numbered block — the
+    /// 8000s are server port bases the sprint registry hands out to other assignments, and these facts leave
+    /// their acceptors listening for the rest of the test host's life. The kernel does not reissue a port it
+    /// has just handed out while anything is bound to it; a port that somehow IS taken by the time
+    /// <c>TkAcceptor.ListenAsync</c> binds it fails on a task nobody awaits, which is what the "no longer
+    /// bindable" assert in <see cref="Start"/> is there to catch.</summary>
     private static int ClaimPort()
     {
-        for (int i = 0; i < 100; i++)
-        {
-            int port = Interlocked.Increment(ref _nextPort) - 1;
-            if (PortIsFree(port)) return port;
-        }
-        throw new InvalidOperationException("no free port in the 8000 block");
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
     }
 
     private static bool PortIsFree(int port)

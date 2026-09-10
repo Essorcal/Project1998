@@ -238,9 +238,9 @@ public class SharedLoggerTests
             Assert.True(Log.WriterRunningForTest());
 
             Log.Shutdown();   // and this one works again, because the reset reopened the guard
-            Assert.Equal(afterFirst + 1, Log.ShutdownRunsForTest());
             Assert.False(Log.WriterRunningForTest(),
                 "RestartWriterForTest left the once-guard set — every later Shutdown fact is measuring nothing");
+            Assert.Equal(afterFirst + 1, Log.ShutdownRunsForTest());
         }
         finally
         {
