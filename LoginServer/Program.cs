@@ -13,6 +13,13 @@ using Shared;
 // way to reset a password or clear a test character.
 if (Admin.TryRun(args)) return;
 
+// Declare this process's logging defaults before anything can log. The wire dump is OFF here, unlike the
+// game server: login packets carry the player's password in the clear and 4.95's cipher is a fixed published
+// XOR, so a dump writes plaintext passwords into logs/login.log — the whole reason Shared.Log.WireEnabled
+// takes its default from the entry point rather than from the environment alone. The log rotates at 32MB,
+// this process's historical limit. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES.
+Log.Configure(wireDefault: false, maxBytesDefault: 32L * 1024 * 1024);
+
 int[] ports = { 2000, 2001 };
 for (int i = 0; i < args.Length; i++)
 {
@@ -21,13 +28,21 @@ for (int i = 0; i < args.Length; i++)
 }
 
 // Persist this process's log too (the game server has done so since the nmail "crash" whose console
-// output was lost). Rotated by size — see LoginServer/Log.cs. Note WireEnabled is OFF here by default:
-// login packets carry plaintext passwords.
+// output was lost). Rotated by size — see Shared.Log.
 Log.AttachFile(Path.Combine(RepoPaths.LogsDir(), "login.log"));
+// The log is a queue drained by a background thread now, so the tail is still in memory when the process
+// stops. Flush it on Ctrl+C, SIGTERM and ProcessExit — this process has nothing else to do on the way out.
+Log.FlushOnExit();
 Csv.Warn = Log.Warn;
 CharacterStore.Warn = message => Log.Warn("[db] " + message);
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
     Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
+    // Flush here rather than leave it to Log.FlushOnExit: the runtime ABORTS after this handler and never
+    // raises ProcessExit, so the trace we just queued would die in the queue — which is the one line this
+    // whole hook exists to preserve.
+    Log.Shutdown();
+};
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
 

@@ -1,4 +1,5 @@
 using Server;
+using Shared;
 
 // GAME server. Handles the world (movement, combat, items, NPCs) for both client versions:
 //   2005 = 4.95 game (V495)   2006 = 5.33 game (V533)
@@ -6,6 +7,14 @@ using Server;
 // ports 2000/2001) so the two can crash and restart independently. The client reaches this process
 // because the login server's handoff packet redirects it here (reversed IP + game port). Session tags
 // the client version by the port it arrived on.
+
+// Declare this process's logging defaults before anything can log: the wire dump is ON here (it is the
+// backbone of the protocol RE work, and nothing on the game channel is a credential) and the log rotates at
+// 64MB. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES — see Shared.Log.Configure, which is
+// where the two processes' defaults are declared now that they share one logger. First statement in the
+// process, above --selftest, because the self-test logs too.
+Log.Configure(wireDefault: true, maxBytesDefault: 64L * 1024 * 1024);
+
 int[] ports = { 2005, 2006 };
 for (int i = 0; i < args.Length; i++)
 {

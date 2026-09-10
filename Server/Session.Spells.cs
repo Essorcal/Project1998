@@ -2192,13 +2192,21 @@ public sealed partial class Session
         if (mob is not null) BroadcastFx(mob.Id, anim, sound);
     }
 
+    /// <summary>The Hyun Moo revival's <c>ctx:reviveSelf()</c> — the third revive path, alongside
+    /// <see cref="ReviveInPlace"/> and <see cref="ReviveAt"/>: it drops the ghost form and takes
+    /// <see cref="IsDead"/> false, so it is a revive in #196's sense and ends in <c>SaveChar</c> for the same
+    /// reason. <c>MarkDirty</c> left the death's own row (Hp 0, penalised exp) on disk for up to
+    /// <c>AutoSaveMs</c>, and a crash in that window logged the player back in as a ghost.
+    /// <para>This method takes no <see cref="EnterState"/> of its own: it is reached only from the cast
+    /// handler, whose monitor is already held across the Lua verb, and that is the monitor
+    /// <c>SaveChar</c>'s <c>AssertStateHeld</c> requires (as <c>MarkDirty</c>'s did before it).</para></summary>
     internal bool LuaReviveSelf()
     {
         bool wasDead = _char.Hp == 0;
         _char.Hp = EffMaxHp;
         if (wasDead) RefreshAppearance();   // drop the ghost look for us and everyone watching
         SendStats();
-        MarkDirty();
+        SaveChar();   // #196: a revive is on disk before it returns, the way the Die() that preceded it is
         return wasDead;
     }
 

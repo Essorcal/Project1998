@@ -1848,7 +1848,11 @@ public sealed partial class Session
     private string PartyBoxText()
     {
         if (_party is null) return "";
+        // A retired party (Party.Leader null on the empty roster) reads as no party at all: a member a kick
+        // has swapped out can still be holding this field while another member's leave retires it, and
+        // indexing Members[0] there threw out of this handler and dropped the 0x2D reply (#167 review, F3).
         var leader = _party.Leader;
+        if (leader is null) return "";
         return string.Join('\r', _party.Members
             .Select(m => (Name: m.Snapshot().Name, IsLeader: ReferenceEquals(m, leader)))
             .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)

@@ -1144,7 +1144,17 @@ public sealed partial class Session
 
     // Leave ghost state: full heal (gear/buffs included) + warp to (map,x,y). Used by Silver Thread to
     // revive at the chosen Shaman; also reachable as a fresh-character/GM fallback via HomeCityFor.
-    private void ReviveAt(ushort map, ushort x, ushort y, string arrivalMsg)
+    //
+    // Ends in SaveChar, not MarkDirty (#196). A revive is the undo of a death, and Die() persists itself
+    // synchronously because its penalties must survive a crash — so a revive that only marked the character
+    // dirty left the CORPSE on disk for up to AutoSaveMs (15 s), and a crash or a hard kill in that window
+    // loaded a ghost with the death penalty still charged. Cheap and symmetric: one write per revive, of
+    // which nobody performs many.
+    //
+    // internal rather than private only so Tests/ReviveSaveTests can reach it: the only shipped caller is
+    // Session.LuaReviveTarget (the poet Resurrect family), which needs a caster, a spell row and the script
+    // gate to reach, none of which the persistence fact is about.
+    internal void ReviveAt(ushort map, ushort x, ushort y, string arrivalMsg)
     {
         using var _ = EnterState();   // #29: a resurrection spell reaches here on the CASTER's thread
         _char.Hp = EffMaxHp;
@@ -1153,6 +1163,7 @@ public sealed partial class Session
         else SendSelfLook();   // fallback: just heal in place if the map isn't loaded
         SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
         SendMiniText(arrivalMsg);
+        SaveChar();            // #196: the death that got us here ended in SaveChar, so the row on disk is a corpse until this runs
         Log.Info($"   -> REVIVED: {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
     }
 
@@ -1160,7 +1171,10 @@ public sealed partial class Session
     /// totem_npc.lua's `_resurrect`, which both do `state = 0; health = maxHealth; magic = maxMagic`). The
     /// player walked their own ghost to the NPC, so there is nothing to warp to. Same restoration as
     /// <see cref="ReviveAt"/> minus the map change; <see cref="RefreshAppearance"/> is what drops the ghost
-    /// form here (ReviveAt gets that implicitly from EnterMap).</summary>
+    /// form here (ReviveAt gets that implicitly from EnterMap).
+    /// <para>Ends in <c>SaveChar</c> for the reason given on <see cref="ReviveAt"/> (#196): the death this
+    /// undoes saved itself, so a revive that only marked the character dirty left the corpse on disk until
+    /// the next autosave sweep.</para></summary>
     internal void ReviveInPlace(string message)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
@@ -1170,7 +1184,7 @@ public sealed partial class Session
         ResyncPeers();         // living again — stop seeing the PvP ghosts we could see while dead
         SendStats();
         SendMiniText(message);
-        MarkDirty();
+        SaveChar();   // #196: MarkDirty left the death's row (Hp 0, penalised exp) on disk for up to AutoSaveMs
         Log.Info($"   -> REVIVED (in place): {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
     }
 
