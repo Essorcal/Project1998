@@ -319,7 +319,7 @@ public sealed partial class Session
         Volatile.Write(ref _lastOutboundMs, Environment.TickCount64);   // silence watchdog
         if (data.Length > 3) LastOutboundOp = data[3];                  // aa | len_hi | len_lo | op
         if (_out.Send(data)) return;
-        Log.Info($"!! {_remote} outbound queue full ({_out.Capacity}) — dropping slow client");
+        Log.Warn($"{_remote} outbound queue full ({_out.Capacity}) — dropping slow client");
         CloseConnection("slow client (outbound queue full)");
     }
 }

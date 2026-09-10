@@ -11,23 +11,20 @@ namespace Tests;
 /// #174: <b>a PvP kill's HP write and its death sequence are one critical section.</b>
 ///
 /// <para><c>TakeDamage</c> (<c>Server/DamageIntake.cs</c>) marks both halves of a PvP exchange so an arena
-/// pet knows who to go for. Our own half is our own field; the OTHER half —
-/// <c>foe.MarkPvpFoe(_char.Id)</c> — enters the ATTACKER's state monitor while the victim's is held. When the
-/// attacker ranks below the victim and its monitor is busy, #29 rule 2 (<c>Session.State.cs</c>) exits the
-/// victim's monitor while it blocks on the attacker's and retakes it afterwards. Until this fix that
-/// acquisition sat BETWEEN the HP write and the <c>if (IsDead) Die()</c> line, so the gap it opened was a gap
-/// inside a kill: another thread could take the victim's monitor and find a player at HP 0 whose death
-/// sequence had not run at all — no ghost redraw, no penalties, no "You have been defeated!", nothing saved —
-/// and a revive landing there restored the HP before <c>TakeDamage</c> re-read <c>IsDead</c>, so
-/// <c>Die()</c> never ran and the kill silently evaporated.</para>
+/// pet knows who to go for. All six shipped PvP intake sites run on the attacker's own handler thread, whose
+/// <c>Dispatch</c> is wrapped in <c>WithState</c>, so that thread already holds the attacker's monitor.
+/// <c>foe.MarkPvpFoe(_char.Id)</c> is therefore re-entrant under #29 rule 3
+/// (<c>Session.State.cs</c>) and never drops the victim's monitor on a shipped path.</para>
 ///
-/// <para>It is the same shape #172 found in <c>Die()</c>'s trade teardown and #177 found in its viewport
-/// reconcile (both in <see cref="TradeTeardownTests"/>), one step earlier in the damage path. The fix is the
-/// same one: the cross-session acquisition goes LAST, after the death sequence — or after the survived-hit
-/// epilogue — where nothing is left to invalidate.</para>
+/// <para>The descent, and the gap #29 rule 2 would open, is reachable only from a caller that does not already
+/// hold the attacker's monitor; none is shipped today, though a queued or timer-driven blow or #29's
+/// channel-drained read loop could introduce one. These facts use a bare-thread caller, so the race is
+/// observable here. It is the same shape #172 found in <c>Die()</c>'s trade teardown and #177 found in its
+/// viewport reconcile (both in <see cref="TradeTeardownTests"/>), one step earlier in the damage path.</para>
 ///
-/// <para>The two facts here are the race and its control: that the death completes before the mark's drop
-/// lets anyone in, and that a hit nobody dies from still marks both sides.</para>
+/// <para>The last-statement ordering is kept as a hardening: <c>TakeDamage</c> through <c>Die()</c> stays one
+/// critical section for any caller, with the mark after the death sequence or survived-hit epilogue. The two
+/// facts pin that invariant with the bare-thread race and its control: a nonlethal hit still marks both sides.</para>
 /// </summary>
 [Collection("world")]
 public class PvpDeathOrderingTests

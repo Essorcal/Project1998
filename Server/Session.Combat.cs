@@ -106,10 +106,12 @@ public sealed partial class Session
     internal uint PvpFoeId => Environment.TickCount64 < _pvpFoeUntil ? _pvpFoeId : 0;
     internal void MarkPvpFoe(uint playerId)
     {
-        // Reached from the OTHER side of the exchange — TakeDamage marks both parties, so this runs on the
-        // victim's thread against the attacker's session (#29). That is a DESCENDING acquisition whenever the
-        // attacker ranks below the victim, and rule 2 drops the victim's monitor to make it, which is why
-        // TakeDamage defers this call to its very last statement (#174). Do not move it back up.
+        // All six shipped paths reach this from the attacker's own handler thread, whose Dispatch is wrapped in
+        // WithState, so EnterState below is re-entrant under #29 rule 3 and never drops the victim's monitor; a
+        // descent is reachable only from a caller that does not already hold the attacker's monitor — none
+        // shipped today, though a queued or timer-driven blow or #29's channel-drained read loop could do so.
+        // TakeDamage keeps this last to harden its one-critical-section invariant for any caller, and the
+        // bare-thread PvpDeathOrderingTests pins that future-facing shape. Do not move it back up.
         using var _ = EnterState();
         _pvpFoeId = playerId;
         _pvpFoeUntil = Environment.TickCount64 + PvpFoeMs;

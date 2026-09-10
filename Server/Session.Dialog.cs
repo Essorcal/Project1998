@@ -926,7 +926,7 @@ public sealed partial class Session
                 RestoreBag(snapshot);
                 if (got is null) continue;
                 await DlgSay(npc, "I couldn't hand that over just now — try me again in a moment.");
-                Log.Info($"!! parcel claim FAILED for '{_char.Name}' pos={p.Position} — rolled back, parcel kept");
+                Log.Warn($"parcel claim FAILED for '{_char.Name}' pos={p.Position} — rolled back, parcel kept");
                 return;
             }
 

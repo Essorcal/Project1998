@@ -68,6 +68,12 @@ public class LogDropPolicyTests
         Assert.Equal(expected, Log.FormatOverflowNotice(info, warn, error));
     }
 
+    /// <summary>The two real entry points count a refusal under the level they were called at.
+    /// <para><see cref="Log.DroppedCountsForTest"/> is everything refused since the reset, and the writer
+    /// thread no longer empties those counters to build its overflow notice — it keeps its own high-water
+    /// mark instead — so this read does not race the notice. It used to: upstream CI run 34434683832 failed
+    /// the sibling fact below with (0, 0, 0) against an expected (0, 1, 1), the notice for those same two
+    /// records sitting in the captured log.</para></summary>
     [Fact]
     public void Real_entry_points_count_refused_info_and_warn_separately()
     {
@@ -120,6 +126,10 @@ public class LogDropPolicyTests
         Assert.True(Log.Admits(Log.LevelOf(Stamp + "!!! FATAL unhandled exception", LogLevel.Info), queued));
     }
 
+    /// <summary>A hand-written marker decides the counter a refused Info line lands in.
+    /// <para>This is the fact upstream run 34434683832 flaked on. Whether the writer thread emits its
+    /// overflow notice between the two refusals and the assert no longer changes the answer: the notice
+    /// reads the counters, it does not empty them.</para></summary>
     [Fact]
     public void Hand_prefixed_info_lines_are_refused_as_warnings_and_errors()
     {

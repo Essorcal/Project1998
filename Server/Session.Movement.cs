@@ -778,7 +778,7 @@ public sealed partial class Session
             // non-leader could only get out by logging off. RemoveFromParty drops you and flips your status
             // OFF (SetGroupStatus). Otherwise the key just flips your willingness-to-be-grouped preference —
             // the flag a would-be inviter's gate checks (WantsGroup) — and announces the new state.
-            if (_party is not null) RemoveFromParty(this);
+            if (_party is { } party) RemoveFromParty(this, party);   // read under our own monitor: Handle holds it
             else SetGroupStatus(!_char.Grouped);
             Log.Info($"   -> setting 0x02 Group/sociable = {(_char.Grouped ? "ON" : "OFF")}");
         }

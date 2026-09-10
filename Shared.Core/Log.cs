@@ -71,7 +71,19 @@ public static class Log
     private static StreamWriter? _file;    // writer thread only, after AttachFile hands it over
     private static string _path = "";
     private static long _written;
-    private static readonly int[] DroppedByLevel = new int[3]; // Interlocked: refused Info, Warn, Error
+    // Refused Info, Warn, Error. Interlocked, and MONOTONE: the writer thread reads it to build the overflow
+    // notice but never resets it (see TakeDropped). Only ResetDroppedCountsForTest, which no production path
+    // calls, ever puts a count back.
+    //
+    // It used to be the writer that zeroed these, which made every test that refuses a few records and then
+    // reads the counters a race against the writer's idle flush: upstream CI run 34434683832 read (0, 0, 0)
+    // against an expected (0, 1, 1), with "dropped 0 info, 1 warn, 1 error" in the same captured log.
+    private static readonly int[] DroppedByLevel = new int[3];
+
+    // How much of DroppedByLevel each notice has already accounted for. WRITER THREAD ONLY — it is the one
+    // thread that formats notices, so this needs no interlocking, and keeping the bookkeeping here instead of
+    // in the shared counter is what removes the race: there is no moment when a refusal is in neither place.
+    private static readonly int[] NoticedByLevel = new int[3];
 
     // Pure admission seam plus a narrow end-to-end test hook. The production path always uses Admits;
     // tests can force refusal without racing the writer to fill a 65,536-line queue.
@@ -301,6 +313,24 @@ public static class Log
         catch (InvalidOperationException) { return false; }   // CompleteAdding raced us
     }
 
+    /// <summary>How many refusals at this level the next overflow notice has to report: everything counted
+    /// since the previous notice. WRITER THREAD ONLY.
+    /// <para>This is a high-water mark rather than the exchange-to-zero it replaces, and that is the whole
+    /// point: the counter a test reads is never emptied, so a notice landing between a refusal and a test's
+    /// read cannot change what the test sees. The notice itself says exactly what it said before — each one
+    /// reports the refusals since the last one.</para>
+    /// <para>The subtraction is deliberately unchecked, so it stays correct if the counter ever wraps (a
+    /// console stalled long enough to refuse two billion records). A negative delta means only one thing —
+    /// <see cref="ResetDroppedCountsForTest"/> moved the counter back under the writer — and resyncing to the
+    /// current value is the right answer there: no production caller resets.</para></summary>
+    private static int TakeDropped(LogLevel level)
+    {
+        int total = Volatile.Read(ref DroppedByLevel[(int)level]);
+        int taken = unchecked(total - NoticedByLevel[(int)level]);
+        NoticedByLevel[(int)level] = total;
+        return taken > 0 ? taken : 0;
+    }
+
     internal static string FormatOverflowNotice(int info, int warn, int error)
     {
         if (info == 0 && warn == 0 && error == 0) return "";
@@ -308,11 +338,18 @@ public static class Log
             $"!! log queue overflowed — dropped {info:N0} info, {warn:N0} warn, {error:N0} error");
     }
 
+    /// <summary>Everything refused at each level since the last <see cref="ResetDroppedCountsForTest"/>,
+    /// whether or not an overflow notice has already reported it. Because <see cref="TakeDropped"/> only
+    /// reads these counters, this answer does not depend on when the writer thread last drained the
+    /// queue.</summary>
     internal static (int Info, int Warn, int Error) DroppedCountsForTest() =>
         (Volatile.Read(ref DroppedByLevel[(int)LogLevel.Info]),
          Volatile.Read(ref DroppedByLevel[(int)LogLevel.Warn]),
          Volatile.Read(ref DroppedByLevel[(int)LogLevel.Error]));
 
+    /// <summary>Put the drop counters back to zero. TEST ONLY, and the one thing that can move a counter
+    /// backwards: the writer resyncs its own high-water mark the next time it looks, so the reset costs at
+    /// most one notice for records refused right beside it (see <see cref="TakeDropped"/>).</summary>
     internal static void ResetDroppedCountsForTest()
     {
         Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0);
@@ -320,22 +357,39 @@ public static class Log
         Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Error], 0);
     }
 
+    private static int _shutdownOnce;
+    private static int _shutdownRuns;   // TEST SEAM only; see ShutdownRunsForTest.
+
     /// <summary>Flush the tail and stop the writer. Called from the shutdown hooks so a clean stop doesn't
     /// lose the last lines (a hard kill still can — that is what the file's AutoFlush-equivalent idle flush
-    /// below bounds). Waits a bounded time: shutdown must not hang on a stuck console.</summary>
+    /// below bounds). Waits a bounded time: shutdown must not hang on a stuck console.
+    /// <para>Once per process. Every exit a deployed process takes can reach this more than once — the
+    /// Ctrl+C handler flushes and then calls <c>Environment.Exit(0)</c>, which re-raises ProcessExit; the
+    /// game server arrives from <c>TkListener.Shutdown</c> under the same two hooks — and both call sites
+    /// have always been commented as if this guard existed. It does now, so the second call returns here
+    /// rather than throwing its way through <c>CompleteAdding</c> on a completed collection.</para></summary>
     public static void Shutdown()
     {
+        if (Interlocked.Exchange(ref _shutdownOnce, 1) != 0) return;
+        Interlocked.Increment(ref _shutdownRuns);
         try
         {
             _closed = true;   // before CompleteAdding: a line still in flight is dropped, not thrown at
             _queue.CompleteAdding();
             _writer.Join(TimeSpan.FromSeconds(2));
         }
-        // EXEMPT (the logger cannot log through itself, and this is the log shutting down): the only thing
-        // that lands here is a second Shutdown racing the first on an already-completed queue, which is the
-        // documented double-call from the two exit hooks. There is no failure to hide.
+        // EXEMPT (the logger cannot log through itself, and this is the log shutting down): the once-guard
+        // above means the documented double-call from the exit hooks now returns before it gets here, so
+        // nothing routine lands in this catch at all. It stays because the way out of a process is the one
+        // place a throw from the logger is unrecoverable — what is left is a stop racing the test-only
+        // writer restart, or a Join against a thread the runtime is already tearing down.
         catch { /* already shutting down */ }
     }
+
+    /// <summary>How many <see cref="Shutdown"/> calls have got PAST the once-guard and touched the queue.
+    /// TEST ONLY, and the only observable difference between a guarded second call and an unguarded one:
+    /// both return, and both leave the writer stopped.</summary>
+    internal static int ShutdownRunsForTest() => Volatile.Read(ref _shutdownRuns);
 
     private static int _exitHookOnce;
     private static PosixSignalRegistration? _sigterm;   // held for the process lifetime; disposing unhooks it
@@ -349,7 +403,13 @@ public static class Log
     /// <c>systemctl restart</c>/<c>docker stop</c>, and ProcessExit for a plain return from Main — and the
     /// Interlocked guard means running through more than one of them flushes exactly once. A fatal exception
     /// does NOT reach ProcessExit (the runtime aborts), so that path calls <see cref="Shutdown"/> itself, in
-    /// the handler that writes the trace.</para></summary>
+    /// the handler that writes the trace.</para>
+    /// <para>Each handler STAMPS the log before it flushes. Without that line the login server's exit left no
+    /// trace at all: its log simply stopped, and a reader could not tell a clean <c>systemctl restart</c>
+    /// from the process dying — which is the same confusion the game server's log already resolves (see the
+    /// note in <c>Server/Program.cs</c>: a stray Ctrl+C in the console window is a CLEAN exit that reads like
+    /// a crash). The wording is <c>TkListener.Shutdown</c>'s, minus its "flushing connected players" — this
+    /// process holds no player state, which is why this is its whole shutdown.</para></summary>
     public static void FlushOnExit()
     {
         if (Interlocked.Exchange(ref _exitHookOnce, 1) != 0) return;
@@ -357,12 +417,17 @@ public static class Log
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true;   // exit ourselves once the flush is done, not mid-write
+            Info("=== shutdown signal (Ctrl+C) ===");
             Shutdown();
             Environment.Exit(0);   // re-raises ProcessExit below; Shutdown's own guard makes that a no-op
         };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+        // The stamp goes through the queue like everything else, so on the Ctrl+C path above it is already
+        // written and the queue already closed by the time this fires — the second stamp is dropped with the
+        // second Shutdown, and the log carries exactly one shutdown line naming the signal that got there first.
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => { Info("=== shutdown signal (ProcessExit) ==="); Shutdown(); };
         _sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx =>
         {
+            Info("=== shutdown signal (SIGTERM) ===");
             Shutdown();
             ctx.Cancel = false;   // let the runtime carry on terminating; we only wanted the flush first
         });
@@ -377,11 +442,15 @@ public static class Log
     /// <summary>Undo <see cref="Shutdown"/> with a fresh queue and a fresh writer thread. TEST ONLY: the
     /// Shutdown fact has to call the real Shutdown, and Shutdown is one-way (a completed BlockingCollection
     /// stays completed), so without this one fact would leave every later test in the process logging into a
-    /// closed queue. Production never calls it — a process shuts its log down once, on its way out.</summary>
+    /// closed queue. Production never calls it — a process shuts its log down once, on its way out.
+    /// <para>It has to reset the once-guard along with the queue. The guard is what makes a second Shutdown a
+    /// no-op, and a no-op Shutdown on a FRESH queue would leave the writer running and the tail unflushed —
+    /// so without this line every Shutdown fact after the first would silently stop testing anything.</para></summary>
     internal static void RestartWriterForTest()
     {
         _queue = NewQueue();
         _closed = false;
+        Interlocked.Exchange(ref _shutdownOnce, 0);
         StartWriter(_queue);
     }
 
@@ -408,9 +477,7 @@ public static class Log
                 if (queue.Count == 0) TryFlush();
 
                 string notice = FormatOverflowNotice(
-                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0),
-                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Warn], 0),
-                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Error], 0));
+                    TakeDropped(LogLevel.Info), TakeDropped(LogLevel.Warn), TakeDropped(LogLevel.Error));
                 if (notice.Length > 0) Emit($"[{DateTime.Now:HH:mm:ss.fff}] {notice}");
             }
         }

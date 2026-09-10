@@ -28,21 +28,16 @@ public sealed class LoginSession
     private string _pendingName = "";   // name from the availability check, fallback for creation
     private string _pendingPass = "";   // password from the availability check (0x02), used at creation (0x04)
 
-    // Slow-loris defense (the login port is the internet-facing front door): a connection must send its first
-    // valid framed packet within this budget or it is dropped. Only the first packet is gated. Env-tunable,
-    // shared with the game server's P1998_HANDSHAKE_MS; 15s is far more than a real client needs.
-    private static readonly int HandshakeMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+    // Slow-loris defense (the login port is the internet-facing front door): the budget for a connection's
+    // first valid framed packet, and the watchdog that enforces it, are FrameReader's — the same
+    // P1998_HANDSHAKE_MS the game server reads (see FrameReader.DefaultHandshakeMs). The latch stays here.
     private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
-
-    // AA 00 13 7E 1B "CONNECTED SERVER\n"  (plaintext welcome, as the 6.x reference sends on connect)
-    private static readonly byte[] Welcome = BuildWelcome();
 
     // The game server the client is redirected to after a successful login. Defaults to loopback (login
     // and game on the same box); set P1998_GAME_HOST to the game server's public IP for a split
     // deployment. The client stores the host/port from our 0x03 reply, opens a FRESH connection to it,
     // and announces itself there with 0x10.
-    private static readonly byte[] GameHost = ParseHost(Environment.GetEnvironmentVariable("P1998_GAME_HOST"));
+    private static readonly byte[] GameHost = HostAddress.FromEnvironment("P1998_GAME_HOST");
 
     /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
     /// has already consumed its PROXY header. Null on a direct connection. The per-IP failed-login throttle
@@ -63,49 +58,24 @@ public sealed class LoginSession
         Log.Info($"++ CONNECT from {_remote} on login port {_port}");
         try
         {
-            await _stream.WriteAsync(Welcome);
-            Log.Info($"   -> sent welcome ({Welcome.Length}B)");
+            await _stream.WriteAsync(Welcome.Bytes);
+            Log.Info($"   -> sent welcome ({Welcome.Bytes.Length}B)");
 
-            // Handshake watchdog: drop a connection that sends no valid packet within HandshakeMs. Gated on
-            // _established so it can only ever close a still-silent connection; closing makes ReadAsync throw.
-            using var handshake = new CancellationTokenSource(HandshakeMs);
-            handshake.Token.Register(() =>
+            // The read loop is shared with the game process (Protocol.Tk495/FrameReader): the handshake
+            // watchdog, the 4KB chunk, the TkPacket framing and the two wire dumps are all its. This channel
+            // does nothing of its own per READ — only per frame — so it passes no per-read hooks.
+            var frames = new FrameReader(_stream, _port, _remote, new FrameReader.Hooks
             {
-                if (Volatile.Read(ref _established) != 0) return;
-                Log.Info($"!! {_remote} handshake timeout ({HandshakeMs}ms) — no valid packet, dropping");
-                try { _client.Close(); } catch { /* already gone */ }
+                // Gated on _established so the watchdog can only ever close a still-silent connection;
+                // closing makes the pending ReadAsync throw.
+                Established = () => Volatile.Read(ref _established) != 0,
+                OnEstablished = () => Volatile.Write(ref _established, 1),   // first valid frame parsed -> handshake satisfied
+                OnHandshakeTimeout = () => { try { _client.Close(); } catch { /* already gone */ } },
             });
 
-            var buf = new List<byte>();
-            var tmp = new byte[4096];
-            while (true)
-            {
-                int n = await _stream.ReadAsync(tmp);
-                if (n == 0) break;
-                // Wire dumps are OFF by default on this channel — these bytes contain the player's
-                // password, and 4.95's cipher is a fixed published XOR, so "encrypted" is not a defense.
-                // See Log.WireEnabled.
-                if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
-                for (int i = 0; i < n; i++) buf.Add(tmp[i]);
-
-                var arr = buf.ToArray();
-                int off = 0;
-                while (arr.Length - off >= 5 && arr[off] == 0xAA)
-                {
-                    if (!TkPacket.TryParse(arr.AsSpan(off), out var pkt, out int consumed)) break;
-                    off += consumed;
-                    Handle(pkt);
-                }
-                if (off > 0)
-                {
-                    buf.RemoveRange(0, off);
-                    Volatile.Write(ref _established, 1);   // first valid frame parsed -> handshake satisfied
-                }
-                if (buf.Count > 0 && Log.WireEnabled)
-                    Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
-            }
+            await foreach (var pkt in frames.ReadFramesAsync()) Handle(pkt);
         }
-        catch (Exception e) { Log.Info($"!! {_remote} error: {e.Message}"); }
+        catch (Exception e) { Log.Warn($"{_remote} error: {e.Message}"); }
         finally
         {
             _client.Close();
@@ -456,26 +426,4 @@ public sealed class LoginSession
 
     private void Send(byte[] data) { lock (_sendLock) _stream.Write(data, 0, data.Length); }
 
-    private static byte[] BuildWelcome()
-    {
-        var head = new byte[] { 0xAA, 0x00, 0x13, 0x7E, 0x1B };
-        var text = "CONNECTED SERVER\n"u8.ToArray();
-        var all = new byte[head.Length + text.Length];
-        head.CopyTo(all, 0);
-        text.CopyTo(all, head.Length);
-        return all;
-    }
-
-    // "a.b.c.d" -> 4 octets in normal order (the handoff packet reverses them). Falls back to loopback.
-    private static byte[] ParseHost(string? host)
-    {
-        var def = new byte[] { 127, 0, 0, 1 };
-        if (string.IsNullOrWhiteSpace(host)) return def;
-        var parts = host.Split('.');
-        if (parts.Length != 4) return def;
-        var o = new byte[4];
-        for (int i = 0; i < 4; i++)
-            if (!byte.TryParse(parts[i], out o[i])) return def;
-        return o;
-    }
 }

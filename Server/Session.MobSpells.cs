@@ -148,9 +148,9 @@ public sealed partial class Session
                 // re-applies on every cooldown — which re-prints the "Poison courses through you." line and,
                 // worse, keeps pushing the expiry out so a long venom never actually runs down.
                 if (Poisoned) return;
-                // `by` is the caster id purely for attribution; a mob-sourced venom ticks exactly like a
-                // player's, floor and all (TickPoison never deals the killing blow).
-                ReceivePoison(spell.Amount, spell.DurationMs, caster.Id, spell.Anim, $"mob_{spell.Name}", spell.Name,
+                // `by` is the PLAYER to mark as a PvP foe after a tick; a creature therefore marks nobody.
+                // Its venom otherwise ticks exactly like a player's, floor and all (TickPoison never kills).
+                ReceivePoison(spell.Amount, spell.DurationMs, 0, spell.Anim, $"mob_{spell.Name}", spell.Name,
                               spell.PerTick, spell.TickMinMs, spell.TickMaxMs);
                 break;
 
