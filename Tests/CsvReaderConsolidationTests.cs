@@ -64,14 +64,31 @@ public class CsvReaderConsolidationTests
         lock (TestProcessState.Gate)
         {
             var opens = new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            string contentRoot = RepoPaths.GameDataDir();
+            string parallelPath = Path.Combine(
+                Path.GetTempPath(), $"p1998-parallel-csv-{Guid.NewGuid():N}.csv");
+            File.WriteAllText(parallelPath, "value\nparallel\n");
             try
             {
-                Csv.OpenObserverForTests = (name, _) => opens.AddOrUpdate(name, 1, (_, n) => n + 1);
+                Csv.OpenObserverForTests = (name, path) =>
+                {
+                    if (path is not null && IsUnderDirectory(path, contentRoot))
+                        opens.AddOrUpdate(name, 1, (_, n) => n + 1);
+                };
+                // The observer is process-wide, so prove an unrelated open on another thread is ignored.
+                var parallelOpen = new Thread(() => Csv.Open("parallel-probe.csv", parallelPath));
+                parallelOpen.Start();
                 TestProcessState.LoadContent();
+                parallelOpen.Join();
             }
-            finally { Csv.OpenObserverForTests = null; }
+            finally
+            {
+                Csv.OpenObserverForTests = null;
+                try { File.Delete(parallelPath); } catch { /* best-effort cleanup of a test fixture */ }
+            }
 
             Assert.Equal(68, opens.Count);
+            Assert.False(opens.ContainsKey("parallel-probe.csv"));
             Assert.All(opens, entry => Assert.Equal(1, entry.Value));
             foreach (string name in new[]
                      {
@@ -214,6 +231,15 @@ public class CsvReaderConsolidationTests
 
     private static string Date(DateOnly? date) =>
         date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
+
+    private static bool IsUnderDirectory(string path, string directory)
+    {
+        string relative = Path.GetRelativePath(directory, path);
+        return !Path.IsPathRooted(relative)
+               && relative != ".."
+               && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+               && !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
+    }
 
     private static string Hash(IEnumerable<string> lines) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', lines))))
