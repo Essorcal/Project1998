@@ -288,14 +288,23 @@ public class TradeTeardownTests
         // A third thread parks on the partner's monitor so the descending acquisition really does block.
         var partnerHeld = new ManualResetEventSlim();
         var releasePartner = new ManualResetEventSlim();
-        var holder = new Thread(() => partner.WithState(() => { partnerHeld.Set(); releasePartner.Wait(); }))
+        var progress = new StallWatch.RoundCounter();
+        var holder = new Thread(() =>
+        {
+            partner.WithState(() => { partnerHeld.Set(); releasePartner.Wait(); });
+            progress.Bump();
+        })
         { IsBackground = true, Name = "partner-holder" };
         holder.Start();
         Assert.True(partnerHeld.Wait(5000), "the holder never took the partner's monitor");
 
         // The kill, on its own thread. Environment damage has no attacker, so nothing in TakeDamage reaches
         // the partner before Die() does — the teardown is the only thing in the sequence that can block.
-        var killer = new Thread(() => victim.ReceiveEnvironmentDamage(9999, "a cold tile, in a test"))
+        var killer = new Thread(() =>
+        {
+            victim.ReceiveEnvironmentDamage(9999, "a cold tile, in a test");
+            progress.Bump();
+        })
         { IsBackground = true, Name = "killer" };
         killer.Start();
         var sw = Stopwatch.StartNew();
@@ -310,28 +319,33 @@ public class TradeTeardownTests
         uint expAtEntry = StartExp, savedExpAtEntry = StartExp;
         var textsAtEntry = new List<string>();
         var reviverEntered = new ManualResetEventSlim();
-        var reviver = new Thread(() => victim.WithState(() =>
+        var reviver = new Thread(() =>
         {
-            sawDead = victim.IsDead;
-            expAtEntry = victimChar.Exp;
-            textsAtEntry = MiniTexts(victimOut);
-            var saved = _fx.Store.Load("TradeRaceVictim");
-            if (saved.Status == CharacterLoadStatus.Ok) savedExpAtEntry = saved.Character!.Exp;
-            reviverEntered.Set();
-            victim.ReviveInPlace(RevivedText);
-        })) { IsBackground = true, Name = "reviver" };
+            victim.WithState(() =>
+            {
+                sawDead = victim.IsDead;
+                expAtEntry = victimChar.Exp;
+                textsAtEntry = MiniTexts(victimOut);
+                var saved = _fx.Store.Load("TradeRaceVictim");
+                if (saved.Status == CharacterLoadStatus.Ok) savedExpAtEntry = saved.Character!.Exp;
+                reviverEntered.Set();
+                victim.ReviveInPlace(RevivedText);
+            });
+            progress.Bump();
+        }) { IsBackground = true, Name = "reviver" };
         reviver.Start();
 
         Assert.True(reviverEntered.Wait(5000),
                     "the reviver never got the victim's monitor: the teardown did not drop it at all");
         Assert.True(sawDead, "the reviver landed on a living player — it never got inside the death sequence");
-        Assert.True(reviver.Join(10000), "the revive never finished");
+        StallWatch.RunUntilDoneOrStalled(new[] { reviver }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the reviver");
         // Still parked: the reviver ran entirely inside the gap, so nothing below is racing the killer thread.
         Assert.True(killer.IsAlive, "Die() got past its teardown before the partner's monitor was released");
 
         releasePartner.Set();
-        Assert.True(killer.Join(10000), "Die() never finished");
-        Assert.True(holder.Join(5000));
+        StallWatch.RunUntilDoneOrStalled(new[] { killer, holder }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "Die() and the partner-monitor holder");
 
         // RED at 2c1452a, where the teardown was Die()'s first statement: at this point the death had done
         // nothing but unmount the horse.
@@ -398,14 +412,23 @@ public class TradeTeardownTests
         // A third thread parks on the peer's monitor so the descending acquisition really does block.
         var peerHeld = new ManualResetEventSlim();
         var releasePeer = new ManualResetEventSlim();
-        var holder = new Thread(() => peer.WithState(() => { peerHeld.Set(); releasePeer.Wait(); }))
+        var progress = new StallWatch.RoundCounter();
+        var holder = new Thread(() =>
+        {
+            peer.WithState(() => { peerHeld.Set(); releasePeer.Wait(); });
+            progress.Bump();
+        })
         { IsBackground = true, Name = "peer-holder" };
         holder.Start();
         Assert.True(peerHeld.Wait(5000), "the holder never took the peer's monitor");
 
         // The kill, on its own thread. Environment damage has no attacker, so nothing in TakeDamage reaches
         // the peer before Die() does — the reconcile is the only thing in the sequence that can block.
-        var killer = new Thread(() => victim.ReceiveEnvironmentDamage(9999, "a cold tile, in a test"))
+        var killer = new Thread(() =>
+        {
+            victim.ReceiveEnvironmentDamage(9999, "a cold tile, in a test");
+            progress.Bump();
+        })
         { IsBackground = true, Name = "killer" };
         killer.Start();
         var sw = Stopwatch.StartNew();
@@ -420,16 +443,21 @@ public class TradeTeardownTests
         uint expAtEntry = StartExp, savedExpAtEntry = StartExp;
         var textsAtEntry = new List<string>();
         var reviverEntered = new ManualResetEventSlim();
-        var reviver = new Thread(() => victim.WithState(() =>
+        var reviver = new Thread(() =>
         {
-            sawDead = victim.IsDead;
-            expAtEntry = victimChar.Exp;
-            textsAtEntry = MiniTexts(victimOut);
-            var saved = _fx.Store.Load("ReconcileRaceVictim");
-            if (saved.Status == CharacterLoadStatus.Ok) savedExpAtEntry = saved.Character!.Exp;
-            reviverEntered.Set();
-            victim.ReviveInPlace(RevivedText);   // its own ResyncPeers parks on the peer too — see the note above
-        })) { IsBackground = true, Name = "reviver" };
+            victim.WithState(() =>
+            {
+                sawDead = victim.IsDead;
+                expAtEntry = victimChar.Exp;
+                textsAtEntry = MiniTexts(victimOut);
+                var saved = _fx.Store.Load("ReconcileRaceVictim");
+                if (saved.Status == CharacterLoadStatus.Ok) savedExpAtEntry = saved.Character!.Exp;
+                reviverEntered.Set();
+                // Its own ResyncPeers parks on the peer too — see the note above.
+                victim.ReviveInPlace(RevivedText);
+            });
+            progress.Bump();
+        }) { IsBackground = true, Name = "reviver" };
         reviver.Start();
 
         Assert.True(reviverEntered.Wait(5000),
@@ -440,9 +468,8 @@ public class TradeTeardownTests
         Assert.True(killer.IsAlive, "Die() got past its reconcile before the peer's monitor was released");
 
         releasePeer.Set();
-        Assert.True(reviver.Join(10000), "the revive never finished");
-        Assert.True(killer.Join(10000), "Die() never finished");
-        Assert.True(holder.Join(5000));
+        StallWatch.RunUntilDoneOrStalled(new[] { reviver, killer, holder }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the revive, Die(), and the peer-monitor holder");
 
         // RED at 6fd6d3c, where ResyncPeers ran before the penalties: at this point the death had done nothing
         // but unmount the horse, wipe the timers and redraw the ghost.

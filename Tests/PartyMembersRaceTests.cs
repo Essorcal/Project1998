@@ -177,7 +177,8 @@ public sealed class PartyMembersRaceTests
         holder.Start();
         Assert.True(entered.Wait(5000), "the third thread never took the target's monitor");
 
-        var inviter = new Thread(() => SessionFixture.FormParty(leader, target))
+        var progress = new StallWatch.RoundCounter();
+        var inviter = new Thread(() => { SessionFixture.FormParty(leader, target); progress.Bump(); })
             { IsBackground = true, Name = "inviter" };
         inviter.Start();
 
@@ -187,7 +188,8 @@ public sealed class PartyMembersRaceTests
         Assert.Equal(0, MiniTexts(targetRec, Joining));
 
         release.Set();
-        Assert.True(inviter.Join(5000), "the invite never completed after the monitor was released");
+        StallWatch.RunUntilDoneOrStalled(new[] { inviter }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the invite after the target monitor was released");
         holder.Join();
 
         // A forming group announces both founders, so the target hears two lines.
@@ -244,6 +246,7 @@ public sealed class PartyMembersRaceTests
         var (a, _, ac) = ConcurrentPlayer("StrandKickMember");
 
         var stranded = new List<string>();
+        var progress = new StallWatch.RoundCounter();
         for (int round = 0; round < RaceRounds; round++)
         {
             SetParty(t, null); SetParty(l, null); SetParty(a, null);
@@ -253,10 +256,12 @@ public sealed class PartyMembersRaceTests
 
             // A invites T while the LEADER re-invites A, which is the kick gesture.
             using var gun = new Barrier(2);
-            var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(a, t); });
-            var kick   = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, a); });
+            var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(a, t); progress.Bump(); });
+            var kick   = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, a); progress.Bump(); });
             invite.Start(); kick.Start();
-            Assert.True(invite.Join(5000) && kick.Join(5000), $"round {round}: the race hung");
+            if (!invite.Join(100) || !kick.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { invite, kick }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the invite/kick race");
 
             var bad = Inconsistency(round, old, l, a, t);
             if (bad is not null) stranded.Add(bad);
@@ -273,6 +278,7 @@ public sealed class PartyMembersRaceTests
         var (a, _, ac) = ConcurrentPlayer("StrandLeaveMember");
 
         var stranded = new List<string>();
+        var progress = new StallWatch.RoundCounter();
         for (int round = 0; round < RaceRounds; round++)
         {
             SetParty(t, null); SetParty(l, null); SetParty(a, null);
@@ -282,10 +288,12 @@ public sealed class PartyMembersRaceTests
 
             // The other member leaves through the real Shift+G frame while the survivor invites a third.
             using var gun = new Barrier(2);
-            var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, t); });
-            var leave  = new Thread(() => { gun.SignalAndWait(); a.Receive(SessionFixture.GroupToggleFrame()); });
+            var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, t); progress.Bump(); });
+            var leave  = new Thread(() => { gun.SignalAndWait(); a.Receive(SessionFixture.GroupToggleFrame()); progress.Bump(); });
             invite.Start(); leave.Start();
-            Assert.True(invite.Join(5000) && leave.Join(5000), $"round {round}: the race hung");
+            if (!invite.Join(100) || !leave.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { invite, leave }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the invite/leave race");
 
             var bad = Inconsistency(round, old, l, a, t);
             if (bad is not null) stranded.Add(bad);
@@ -308,6 +316,7 @@ public sealed class PartyMembersRaceTests
 
         using var entered = new ManualResetEventSlim(false);
         using var release = new ManualResetEventSlim(false);
+        var progress = new StallWatch.RoundCounter();
         // The member's own leave, run while the member's monitor is held — the shape of its real Shift+G
         // handler, and of the disconnect teardown whose FlushNow holds that monitor for milliseconds.
         var leave = new Thread(() => m.WithState(() =>
@@ -315,16 +324,18 @@ public sealed class PartyMembersRaceTests
             entered.Set();
             release.Wait();
             m.Receive(SessionFixture.GroupToggleFrame());
+            progress.Bump();
         })) { IsBackground = true, Name = "member-leave" };
         leave.Start();
         Assert.True(entered.Wait(5000), "the leave thread never took the member's monitor");
 
-        var kick = new Thread(() => SessionFixture.FormParty(l, m)) { IsBackground = true, Name = "leader-kick" };
+        var kick = new Thread(() => { SessionFixture.FormParty(l, m); progress.Bump(); })
+            { IsBackground = true, Name = "leader-kick" };
         kick.Start();
         Assert.False(kick.Join(300), "the kick did not park on the member's monitor");
         release.Set();
-        Assert.True(leave.Join(5000), "the member's own leave hung");
-        Assert.True(kick.Join(5000), "the kick hung");
+        StallWatch.RunUntilDoneOrStalled(new[] { leave, kick }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the member's own leave and the kick");
 
         Assert.Equal(1, lRec.MiniTexts(Disbanded));
         Assert.Equal(1, mRec.MiniTexts(Left));
@@ -438,6 +449,7 @@ public sealed class PartyMembersRaceTests
 
         var rng = new Random(198);
         var wrong = new List<string>();
+        var progress = new StallWatch.RoundCounter();
         int reachedSecondGroup = 0;
         for (int round = 0; round < CrossPartyRounds; round++)
         {
@@ -454,6 +466,7 @@ public sealed class PartyMembersRaceTests
                 long until = System.Diagnostics.Stopwatch.GetTimestamp() + delay;
                 while (System.Diagnostics.Stopwatch.GetTimestamp() < until) Thread.SpinWait(1);
                 SessionFixture.FormParty(l, m);                    // the leader's re-invite: the kick gesture
+                progress.Bump();
             }) { IsBackground = true, Name = "leader-kick" };
             var move = new Thread(() =>
             {
@@ -461,9 +474,12 @@ public sealed class PartyMembersRaceTests
                 m.Receive(SessionFixture.GroupToggleFrame());      // leave L's group
                 if (!m.WantsGroup) m.Receive(SessionFixture.GroupToggleFrame());   // "Join a group" back ON
                 SessionFixture.FormParty(c, m);                    // B = [C, M], which L is not in
+                progress.Bump();
             }) { IsBackground = true, Name = "member-leave-and-join" };
             kick.Start(); move.Start();
-            Assert.True(move.Join(10000) && kick.Join(10000), $"round {round}: the race hung");
+            if (!move.Join(100) || !kick.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { move, kick }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the cross-party kick race");
 
             // The member leaves exactly one group this round — L's — so exactly one "left" line, and C is
             // the straggler of no removal at all, so no "disbanded" line. A kick that acted on the party the
@@ -511,6 +527,7 @@ public sealed class PartyMembersRaceTests
 
         int caught = -1;
         int rounds = 0;
+        var progress = new StallWatch.RoundCounter();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         for (; rounds < WindowRounds && Volatile.Read(ref caught) < 0
                && clock.ElapsedMilliseconds < WindowBudgetMs; rounds++)
@@ -537,12 +554,15 @@ public sealed class PartyMembersRaceTests
                     });
                     Thread.Yield();
                 }
+                progress.Bump();
             }) { IsBackground = true, Name = "kicked-member-handler" };
             handler.Start();
-            var kick = new Thread(() => { SessionFixture.FormParty(l, b); kickDone.Set(); })
+            var kick = new Thread(() => { SessionFixture.FormParty(l, b); kickDone.Set(); progress.Bump(); })
                 { IsBackground = true, Name = "leader-kick" };
             kick.Start();
-            Assert.True(kick.Join(15000) && handler.Join(15000), $"round {rounds}: the race hung");
+            if (!kick.Join(100) || !handler.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { kick, handler }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {rounds}: the kick/handler race");
         }
 
         Assert.True(Volatile.Read(ref caught) < 0,
