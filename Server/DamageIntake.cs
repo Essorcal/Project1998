@@ -329,7 +329,7 @@ public sealed partial class Session
         // ---- LAST, not in the middle: harden the one-critical-section invariant for every caller ----------
         //
         // Marking the FOE enters the ATTACKER's state monitor while we hold our own. All six shipped PvP intake
-        // reaches here on the attacker's handler thread, whose Dispatch is already wrapped in WithState, so
+        // sites reach here on the attacker's handler thread, whose Dispatch is already wrapped in WithState, so
         // that thread already holds the attacker's monitor. MarkPvpFoe's EnterState is therefore re-entrant
         // under #29 rule 3 and never drops the victim's monitor on any shipped path.
         //
