@@ -41,11 +41,14 @@ namespace Server;
 /// <para>An EMPTY array marks the party RETIRED. <see cref="TryDisband"/> installs it, <see cref="Add"/>
 /// refuses one and <see cref="Remove"/> finds nothing in one, so a retired party can never come back, and no
 /// member the roster still holds names a retired party — <c>RemoveFromParty</c> clears the last member's
-/// field inside the same critical section that retires it. A member a KICK has swapped out can still name
-/// it until that kick's <c>WithState</c> clears the field, though: the kick runs on the leader's thread and
-/// waits for the member's monitor, and in the descending-rank case rule 2 has dropped the leader's monitor
-/// for that wait, so another member's leave can retire the party inside that gap (#167 review, F3). So every
-/// reader here must survive the EMPTY array — <see cref="Leader"/> answers <c>null</c> for one rather than
+/// field inside the same critical section that retires it. A KICK used to be the exception: it swapped the
+/// member out on the leader's thread and only then waited for the member's monitor to clear their
+/// <c>_party</c>, and in the descending-rank case rule 2 had dropped the leader's monitor for that wait, so
+/// another member's leave could retire the party inside that gap (#167 review, F3). Since #198 the swap and
+/// that field write are ONE critical section on the member — <see cref="Remove"/> is called from inside the
+/// member's own <c>WithState</c> body — so the gap is closed and no reachable state has a member naming a
+/// party the roster has already let them go from. The readers here still survive the EMPTY array, but as
+/// defence rather than against a live window — <see cref="Leader"/> answers <c>null</c> for one rather than
 /// indexing it, and the roster text treats that as "no party".</para>
 /// </summary>
 public sealed class Party
@@ -64,8 +67,9 @@ public sealed class Party
     public IReadOnlyList<Session> Members => Volatile.Read(ref _members);
 
     /// <summary>The leader — always <c>Members[0]</c> — or <c>null</c> when the array is empty, i.e. the
-    /// party has been retired. A member a kick has swapped out but not yet cleared can still ask (class doc,
-    /// #167 review F3): indexing threw <c>IndexOutOfRangeException</c> out of their own packet handler.</summary>
+    /// party has been retired. Indexing it threw <c>IndexOutOfRangeException</c> out of the packet handler of
+    /// a member a kick had swapped out but not yet cleared (#167 review F3); #198 closed that window (class
+    /// doc), so the <c>null</c> is defensive now rather than a state a caller still reaches.</summary>
     public Session? Leader
     {
         get
