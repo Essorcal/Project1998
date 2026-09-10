@@ -45,22 +45,65 @@ public sealed partial class Session
             return;
         }
 
+        // Kept here, ahead of the critical section, so the order these three refusals are tried in — and so
+        // which line a full party aimed at a dead player gets — is exactly what it was. The cap is re-checked
+        // inside, against the membership as it stands once we hold the monitor.
         if (_party is not null && _party.IsFull) { SendMiniText("Your group is already full."); return; }
         if (target.IsDead) { SendMiniText("They are unable to join this group."); return; }
-        // Their "Join a group" toggle is off, or they're already in someone's group. ONE line for both, as
-        // RTK does — the refusal must not tell you which, or it becomes a probe for who's already grouped.
-        if (!target.WantsGroup || target._party is not null)
-        { SendMiniText("They refuse to join this group."); return; }
+
+        // THE GATE AND THE WRITE IT GUARDS ARE ONE CRITICAL SECTION ON THE TARGET (#167). The two reads
+        // below used to happen with no monitor at all, and `target._party = _party` then wrote ANOTHER
+        // session's field from our thread — the cross-session write #29 rule 2 puts under the peer's monitor,
+        // undetected here only because no MarkDirty follows it. Two inviters could both pass the gate in the
+        // same instant and both claim the same person; now exactly one does and the other gets the refusal.
+        //
+        // LOCK ORDER. This runs on our handler thread, which already holds OUR monitor (Session.Handle wraps
+        // Dispatch in WithState), and enters the target's: the same nested acquisition WithStatePair and
+        // RemoveFromParty already make, resolved by rule 2 — a DESCENDING pair drops ours, takes theirs and
+        // puts ours back. Party's own gate is a leaf lock (Party.cs), so the Add in here adds no ordering,
+        // and nothing on this path touches World._lock.
+        //
+        // That drop is also why _party is read INSIDE the body instead of before it. While we sit in
+        // Monitor.Enter our own state is unguarded, so a leader's kick can land in that window; reading our
+        // party, seating the member and writing our own field all inside the body makes them one
+        // uninterrupted critical section on us, because rule 2 has put our monitor back before the body runs
+        // and EnterState's Dispose does not take it away again.
+        Party? joined = null;
+        bool forming = false;
+        string refusal = "";
+        target.WithState(() =>
+        {
+            var party = _party;
+            if (party is not null && party.IsFull) { refusal = "Your group is already full."; return; }
+            // Their "Join a group" toggle is off, or they're already in someone's group. ONE line for both, as
+            // RTK does — the refusal must not tell you which, or it becomes a probe for who's already grouped.
+            if (!target.WantsGroup || target._party is not null)
+            { refusal = "They refuse to join this group."; return; }
+
+            // THE SEAT IS THE PARTY'S DECISION, NOT OURS. Add refuses when the roster no longer holds us or
+            // has already dropped to one — a disband decided by someone else's removal is on its way — and
+            // then this party is gone as far as we are concerned: we form a new one, exactly as an inviter
+            // with no party does. Without that, the removal's disband ran against a roster an invite had
+            // grown back to two, and seated the invitee next to a member who had just been told the group
+            // disbanded and had their own field nulled (#167 review, F1).
+            if (party is null || !party.Add(this, target))
+            {
+                party = new Party(this, target);
+                _party = party;
+                forming = true;
+            }
+            // Seated FIRST, then their _party: the two become visible together under this monitor, so a leave
+            // arriving right after this finds them in the snapshot and removes them cleanly, instead of
+            // running past an empty slot and leaving them stranded in the roster.
+            target._party = party;
+            joined = party;
+        });
+        if (joined is null) { SendMiniText(refusal); return; }
 
         // A group FORMING announces both of its founders, not just the invitee: the inviter is joining a
         // group they weren't in a moment ago either, and the announcement always reaches everyone it names.
-        bool forming = _party is null;
-        if (_party is null) _party = new Party(this, target);
-        else _party.Add(target);
-        target._party = _party;
-
-        if (forming) _party.Broadcast($"{Snapshot().Name} is joining the group.");
-        _party.Broadcast($"{target.Snapshot().Name} is joining the group.");
+        if (forming) joined.Broadcast($"{Snapshot().Name} is joining the group.");
+        joined.Broadcast($"{target.Snapshot().Name} is joining the group.");
 
         // Being in a group lights your OWN "Join a group" status (RTK shows the flag ON for every party
         // member). The invitee already had it on — the gate above required WantsGroup — so only the inviter
@@ -98,22 +141,40 @@ public sealed partial class Session
         var party = member._party;
         if (party is null) return;
         string name = member.Snapshot().Name;
-        bool disband = party.Remove(member);
+        // The straggler comes back FROM the removal, computed inside Party's gate from the snapshot that
+        // removal installed (#167). Re-reading party.Members afterwards instead — what this did — let two
+        // members leaving at once both see "one left" and disband the same person twice.
+        var (removed, straggler) = party.Remove(member);
+        // A removal that took nobody out says nothing. The kick above reads member._party on the LEADER's
+        // thread, outside the member's monitor, and then parks in Snapshot(), so it can arrive after the
+        // member's own leave or disconnect teardown has already run all of this; repeating it told the
+        // straggler the group had disbanded twice and the leaver they had left twice (#167 review, F2).
+        if (!removed) return;
         // Each member's own removal is one critical section on THEIR session (#29): a leader kicking someone,
         // and the disband that can follow, both run on a thread that is not theirs, and SetGroupStatus writes
         // _char.Grouped and marks them dirty.
         member.WithState(() =>
         {
+            // Only if they are still OURS. Between the removal above and this monitor they may have been
+            // seated in another group (the invite whose Add we refused forms one), and nulling the field or
+            // flipping the status then would take them out of a party they are a live member of.
+            if (!ReferenceEquals(member._party, party)) return;
             member._party = null;
             member.NotifyGroup("You have left the group.");
             member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
         });
         party.Broadcast($"{name} is leaving the group.");
-        if (disband && party.Members.Count == 1)
+        if (straggler is not null)
         {
-            var last = party.Members[0];
+            var last = straggler;
             last.WithState(() =>
             {
+                // The straggler the removal proposed is only a disband if the roster is STILL just them:
+                // TryDisband re-takes the gate and retires the party, or refuses because an invite has
+                // seated someone since (#167 review, F1). Under their monitor, so their own invite handler
+                // cannot be in the middle of forming a party while we decide.
+                if (!party.TryDisband(last)) return;
+                if (!ReferenceEquals(last._party, party)) return;   // already in a new group: leave it alone
                 last._party = null;
                 last.NotifyGroup("Your group has disbanded.");
                 last.SetGroupStatus(false);   // party fully disbanded -> the last member's status goes OFF too

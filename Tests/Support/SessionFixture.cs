@@ -1,3 +1,4 @@
+using System.Text;
 using Protocol.Tk495;
 using Server;
 using Shared;
@@ -81,6 +82,28 @@ public sealed class SessionFixture
     /// byte sequence the read loop would have pulled off a socket.</summary>
     public static byte[] Frame(byte opcode, byte[] body, byte inc = 0) =>
         TkPacket.Build(opcode, inc, TkCrypt.Crypt(body, inc, TkCrypt.LoginKey));
+
+    /// <summary>The profile window's "Group" button aimed at <paramref name="name"/>: the real
+    /// <c>0x2E</c> invite frame, body = <c>nameLen(u8) name[nameLen]</c>.</summary>
+    public static byte[] PartyInviteFrame(string name)
+    {
+        byte[] n = Encoding.ASCII.GetBytes(name);
+        byte[] body = new byte[n.Length + 1];
+        body[0] = (byte)n.Length;
+        n.CopyTo(body, 1);
+        return Frame(ClientOp.PartyInvite, body);
+    }
+
+    /// <summary>Shift+G, the "Join a group" toggle (<c>0x1B</c> sub-<c>0x02</c>). In a party this is the
+    /// native LEAVE gesture; out of one it flips the willingness flag an inviter's gate reads.</summary>
+    public static byte[] GroupToggleFrame() => Frame(ClientOp.Setting, new byte[] { 0x02 });
+
+    /// <summary><paramref name="inviter"/> invites <paramref name="member"/> through the real invite frame,
+    /// on the calling thread — <c>Session.Receive</c> -&gt; <c>Handle</c> -&gt; <c>WithState(Dispatch)</c>
+    /// -&gt; <c>HandlePartyInvite</c>, exactly the shape the read loop produces. Promoted out of
+    /// <c>GroupKillExpMonitorTests</c> so the party-race facts drive the same path.</summary>
+    public static void FormParty(Session inviter, Session member) =>
+        inviter.Receive(PartyInviteFrame(member.CharName));
 }
 
 /// <summary>Everything sharing the one unstarted World runs in this collection, so tests never mutate the

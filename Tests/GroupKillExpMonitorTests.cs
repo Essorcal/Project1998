@@ -1,5 +1,4 @@
 using System;
-using System.Text;
 using System.Threading;
 using Server;
 using Shared;
@@ -145,12 +144,5 @@ public sealed class GroupKillExpMonitorTests
     }
 #endif
 
-    private static void FormParty(Session leader, Session member)
-    {
-        byte[] name = Encoding.ASCII.GetBytes(member.CharName);
-        byte[] body = new byte[name.Length + 1];
-        body[0] = (byte)name.Length;
-        name.CopyTo(body, 1);
-        leader.Receive(SessionFixture.Frame(0x2E, body));
-    }
+    private static void FormParty(Session leader, Session member) => SessionFixture.FormParty(leader, member);
 }
