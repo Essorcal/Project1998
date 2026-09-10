@@ -39,11 +39,28 @@ public sealed partial class Session
         if (ReferenceEquals(target, this)) { SendMiniText("You ask yourself to group, but get declined."); return; }
 
         // RTK special case: the LEADER re-"inviting" someone already in their own party kicks them.
-        if (_party is not null && ReferenceEquals(target._party, _party) && ReferenceEquals(_party.Leader, this))
-        {
-            RemoveFromParty(target);
-            return;
-        }
+        //
+        // Decided under the TARGET's monitor (#198), because `target._party` is another session's field: read
+        // bare, it could name a party the target's own leave or disconnect teardown was in the middle of
+        // taking them out of, and the removal below then acted on whatever the field held by the time IT read
+        // it — a group the target had since joined and we were never in. The party we decide on is the one
+        // handed to the removal; it never re-reads the field. Same monitor and same lock order as the invite's
+        // own critical section further down (rule 2, a descending pair), and for the same reason our own
+        // `_party` is read inside the body: rule 2 drops our monitor while entering theirs and puts it back
+        // before the body runs, so inside the body both are held.
+        //
+        // The `_party is not null` short-circuit stays OUTSIDE, exactly where it was: that is our own field
+        // and we hold our own monitor, so someone with no party still reaches the invite without a monitor
+        // round-trip on the target. Everything the decision actually rests on is re-read inside.
+        Party? kickFrom = null;
+        if (_party is not null)
+            target.WithState(() =>
+            {
+                var mine = _party;
+                if (mine is not null && ReferenceEquals(target._party, mine) && ReferenceEquals(mine.Leader, this))
+                    kickFrom = mine;
+            });
+        if (kickFrom is not null) { RemoveFromParty(target, kickFrom); return; }
 
         // Kept here, ahead of the critical section, so the order these three refusals are tried in — and so
         // which line a full party aimed at a dead player gets — is exactly what it was. The cap is re-checked
@@ -130,39 +147,54 @@ public sealed partial class Session
         SendMiniText(SettingLine("Join a group", on));
     }
 
-    /// <summary>Removes <paramref name="member"/> from their party — the "Join a group" toggle going off
-    /// (the leave gesture), the leader-kick special case above, and disconnect cleanup all land here.
-    /// Promotes the next member to leader (Party.Remove: the leader is always Members[0]) and disbands
+    /// <summary>Removes <paramref name="member"/> from <paramref name="party"/> — the "Join a group" toggle
+    /// going off (the leave gesture), the leader-kick special case above, and disconnect cleanup all land
+    /// here. Promotes the next member to leader (Party.Remove: the leader is always Members[0]) and disbands
     /// (notifying the last straggler) if that drops the party to one person. RTK sends the exact same
     /// "You have left the group." text whether you left or were kicked (clif_addgroup's kick branch just
-    /// calls clif_leavegroup(tsd) — no separate "removed" wording exists).</summary>
-    private static void RemoveFromParty(Session member)
+    /// calls clif_leavegroup(tsd) — no separate "removed" wording exists).
+    ///
+    /// <para>The party is PASSED IN, and this never re-reads <c>member._party</c> to find one (#198). Every
+    /// caller has already read that field under the member's own monitor — the leave and the teardown run on
+    /// the member's own thread inside it, the kick decides inside <c>target.WithState</c> — so a removal
+    /// always acts on the party its caller decided about. A re-read on the leader's thread could pick up a
+    /// group the member had joined since, and then this threw them out of a party the leader was never in and
+    /// told its last member it had disbanded.</para></summary>
+    private static void RemoveFromParty(Session member, Party party)
     {
-        var party = member._party;
-        if (party is null) return;
-        string name = member.Snapshot().Name;
-        // The straggler comes back FROM the removal, computed inside Party's gate from the snapshot that
-        // removal installed (#167). Re-reading party.Members afterwards instead — what this did — let two
-        // members leaving at once both see "one left" and disband the same person twice.
-        var (removed, straggler) = party.Remove(member);
-        // A removal that took nobody out says nothing. The kick above reads member._party on the LEADER's
-        // thread, outside the member's monitor, and then parks in Snapshot(), so it can arrive after the
-        // member's own leave or disconnect teardown has already run all of this; repeating it told the
-        // straggler the group had disbanded twice and the leaver they had left twice (#167 review, F2).
-        if (!removed) return;
+        string name = "";
+        bool removed = false;
+        Session? straggler = null;
         // Each member's own removal is one critical section on THEIR session (#29): a leader kicking someone,
         // and the disband that can follow, both run on a thread that is not theirs, and SetGroupStatus writes
-        // _char.Grouped and marks them dirty.
+        // _char.Grouped and marks them dirty. Since #198 the swap out of the roster is inside it too, so the
+        // member cannot leave and be seated somewhere else between the ownership check and the removal.
+        // Re-entrant for the leave and the teardown, which are already holding this monitor (rule 3), and so
+        // is the Snapshot below.
         member.WithState(() =>
         {
-            // Only if they are still OURS. Between the removal above and this monitor they may have been
-            // seated in another group (the invite whose Add we refused forms one), and nulling the field or
-            // flipping the status then would take them out of a party they are a live member of.
+            // Only if this party is still theirs. A kick decided under this same monitor a moment ago, but
+            // the monitor was released in between: they may have left and been seated in another group since,
+            // and removing them, nulling the field or flipping the status then would take them out of a party
+            // they are a live member of.
             if (!ReferenceEquals(member._party, party)) return;
+            name = member.Snapshot().Name;
+            // The straggler comes back FROM the removal, computed inside Party's gate from the snapshot that
+            // removal installed (#167). Re-reading party.Members afterwards instead — what this did — let two
+            // members leaving at once both see "one left" and disband the same person twice.
+            (removed, straggler) = party.Remove(member);
+            // A removal that took nobody out says nothing: the member's own leave or disconnect teardown got
+            // there first and this call swapped nothing. Repeating it told the straggler the group had
+            // disbanded twice and the leaver they had left twice (#167 review, F2).
+            if (!removed) return;
             member._party = null;
             member.NotifyGroup("You have left the group.");
             member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
         });
+        if (!removed) return;
+        // OUTSIDE the member's body, both of these: Broadcast reaches every other member and the straggler's
+        // body takes a THIRD session's monitor, and neither may happen inside the member's (the nested pair
+        // #167 avoided).
         party.Broadcast($"{name} is leaving the group.");
         if (straggler is not null)
         {

@@ -332,113 +332,251 @@ public sealed class PartyMembersRaceTests
         Assert.Null(PartyOf(m));
     }
 
-    // ---- a member the kick has swapped out is still holding the party (#167, review round 2) ----------
-    // The kick is the one removal that runs on a thread that is NOT the member's: Party.Remove swaps them out
-    // at the gate, then member.WithState waits for their monitor. While that wait lasts the roster no longer
-    // holds them but their _party still names it — and in the DESCENDING case the wait has dropped the
-    // leader's monitor, so another member's leave can reach TryDisband and RETIRE the party inside the gap.
-    // Everything the swapped-out member's own packet then reads has to survive the empty array.
+    // ---- the kick acts on the party read under the MEMBER's monitor (#198) ----------------------------
+    // The kick pre-check read `target._party` with no monitor and RemoveFromParty then re-read
+    // `member._party` on the leader's thread. Between those two unsynchronised reads the member can leave
+    // the leader's group and join a different one, and the removal then acted on THAT group: the member was
+    // thrown out of a party the leader was never in, and its last member was told it had disbanded.
 
-    /// <summary>How long the kicked-member window is hunted for, and how many rounds it takes. The window is
-    /// the gap between the kick's <c>Snapshot()</c> releasing the member's monitor and its <c>WithState</c>
-    /// re-taking it, so the counts buy reproduction probability and nothing else — it landed on the first
-    /// round in the review's own run.</summary>
-    private const int WindowRounds = 20000;
-    private const int WindowBudgetMs = 60000;
-
-    /// <summary>A leader kicks B while B's own handler is mid-packet, and the third member's leave retires the
-    /// party inside that window: B's <c>_party</c> still names a party whose roster is now EMPTY. B's own
-    /// 0x2D profile request is answered from there — <c>Party.Leader</c> answers null for a retired party
-    /// instead of indexing <c>Members[0]</c>, which threw <c>IndexOutOfRangeException</c> out of the handler
-    /// and dropped the reply (#167 review, F3) — and the kick's <c>WithState</c> clears B's field when it
-    /// finally lands.</summary>
+    /// <summary>The ordinary, un-raced kick, single-threaded: the outcome the raced facts must not change.
+    /// A kick out of a three-person group tells the kicked member they left and nobody that it disbanded;
+    /// the kick that takes it down to one tells the straggler once. Same wording as a leave, because RTK's
+    /// kick branch is <c>clif_leavegroup(tsd)</c>.</summary>
     [Fact]
-    public void AKickedMembersOwnPacketSurvivesThePartyBeingRetiredUnderIt()
+    public void ALeadersKickTellsTheKickedMemberOnceAndTheStragglerOnce()
     {
-        var (b, bRec, bc) = ConcurrentPlayer("RetiredReadMember");   // lowest rank of the three
-        var (a, _, ac) = ConcurrentPlayer("RetiredReadLeaver");
-        var (l, lRec, lc) = ConcurrentPlayer("RetiredReadLeader");   // highest: the kick DESCENDS into B, so
-        Assert.True(l.StateRank > b.StateRank && l.StateRank > a.StateRank);   // rule 2 drops L's own monitor
-                                                                               // for the wait and the leave gets in
-        Exception? leaderRead = null;
-        Party? namedInWindow = null;
-        int rosterInWindow = -1, profiles = -1;
-        bool landed = false;
-        int round = 0;
+        var (leader, leaderRec, leaderCharacter) = _fx.PlayerWith("KickLeader", c => { });
+        var (first, firstRec)  = _fx.Player("KickFirst");
+        var (second, secondRec) = _fx.Player("KickSecond");
+        MakeGroupable(first);
+        MakeGroupable(second);
+        SessionFixture.FormParty(leader, first);
+        SessionFixture.FormParty(leader, second);
+        leaderRec.Clear(); firstRec.Clear(); secondRec.Clear();
+
+        // The leader re-"inviting" someone already in their own group IS the kick gesture.
+        SessionFixture.FormParty(leader, first);            // three down to two: nobody disbands
+        Assert.Equal(1, MiniTexts(firstRec, Left));
+        Assert.Equal(0, MiniTexts(leaderRec, Left) + MiniTexts(secondRec, Left));
+        Assert.Equal(0, MiniTexts(leaderRec, Disbanded) + MiniTexts(firstRec, Disbanded)
+                      + MiniTexts(secondRec, Disbanded));
+        Assert.Null(PartyOf(first));
+
+        SessionFixture.FormParty(leader, second);           // two down to one: the leader is the straggler
+        Assert.Equal(1, MiniTexts(secondRec, Left));
+        Assert.Equal(1, MiniTexts(leaderRec, Disbanded));
+        Assert.Equal(0, MiniTexts(firstRec, Disbanded) + MiniTexts(secondRec, Disbanded));
+        Assert.Null(PartyOf(leader));
+        Assert.Null(PartyOf(second));
+        Assert.False(leaderCharacter.Grouped);              // the disband flipped the last member's status OFF
+    }
+
+    /// <summary><c>Session.RemoveFromParty</c>, by reflection: it is private, and which party it acts on IS
+    /// the fact. The same reason <see cref="PartyField"/> is read this way.</summary>
+    private static readonly MethodInfo RemoveMethod =
+        typeof(Session).GetMethod("RemoveFromParty", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+    /// <summary>The removal acts on the party it was GIVEN and never re-reads <c>member._party</c> to find
+    /// one — the race above with the timing taken out of it. The kick's decision is taken under the member's
+    /// monitor and then handed over; by the time the removal runs the member may have left that party and
+    /// joined another, and the removal must be a no-op rather than throwing them out of the new one.
+    ///
+    /// <para>On <c>8ed52ac</c> this same setup, through the one-argument <c>RemoveFromParty(member)</c> that
+    /// re-read the field, removed the member from the second party, told them they had left it and told its
+    /// host it had disbanded (see the report for the red).</para></summary>
+    [Fact]
+    public void TheRemovalActsOnThePartyItWasGivenNotOnAReReadOfTheMembersField()
+    {
+        var (l, _, _) = ConcurrentPlayer("GivenPartyLeader");
+        var (m, mRec, _) = ConcurrentPlayer("GivenPartyMember");
+        var (c, cRec, _) = ConcurrentPlayer("GivenPartyHost");
+
+        SessionFixture.FormParty(l, m);                     // A = [L, M]: the party a kick would decide on
+        var a = PartyOf(m)!;
+        m.Receive(SessionFixture.GroupToggleFrame());       // ...which M then leaves, retiring it...
+        MakeGroupable(m);
+        SessionFixture.FormParty(c, m);                     // ...before joining B = [C, M], which L is not in
+        var b = PartyOf(m)!;
+        Assert.NotSame(a, b);
+        mRec.Clear(); cRec.Clear();
+
+        RemoveMethod.Invoke(null, new object[] { m, a });
+
+        Assert.Same(b, PartyOf(m));
+        Assert.Equal(new[] { c, m }, b.Members);
+        Assert.Equal(0, mRec.MiniTexts(Left));
+        Assert.Equal(0, cRec.MiniTexts(Disbanded));
+    }
+
+    /// <summary>How many rounds the cross-party kick is hunted for. The kick's start is delayed by a random
+    /// fraction of one measured leave-and-join each round, because the member's field only reaches the
+    /// SECOND party tens of microseconds into the other thread's work: a kick fired at the same instant every
+    /// round always arrives long before that and never samples the interesting part of the timeline.</summary>
+    private const int CrossPartyRounds = 6000;
+
+    /// <summary>A leader's kick may never take the member out of a group the leader is not in. The member
+    /// leaves the leader's group and joins another one on their own thread, under their own monitor, while
+    /// the kick is in flight; whichever order the two land in, the second group keeps its member and its
+    /// host is never told it disbanded.</summary>
+    [Fact]
+    public void AKickNeverRemovesTheMemberFromAGroupTheLeaderIsNotIn()
+    {
+        var (m, mRec, mc) = ConcurrentPlayer("CrossKickMember");   // lowest rank: the kick DESCENDS into M,
+        var (l, _, lc) = ConcurrentPlayer("CrossKickLeader");      // so rule 2 drops the leader's own monitor
+        var (c, cRec, cc) = ConcurrentPlayer("CrossKickHost");
+        Assert.True(l.StateRank > m.StateRank);
+
+        // Calibrate the sweep: one leave-and-join, alone and timed, is the span the kick is scattered over.
+        SetParty(l, null); SetParty(m, null); SetParty(c, null);
+        lc.Grouped = true; mc.Grouped = true; cc.Grouped = true;
+        SessionFixture.FormParty(l, m);
+        long at = System.Diagnostics.Stopwatch.GetTimestamp();
+        m.Receive(SessionFixture.GroupToggleFrame());
+        if (!m.WantsGroup) m.Receive(SessionFixture.GroupToggleFrame());
+        SessionFixture.FormParty(c, m);
+        long span = System.Diagnostics.Stopwatch.GetTimestamp() - at;
+
+        var rng = new Random(198);
+        var wrong = new List<string>();
+        int reachedSecondGroup = 0;
+        for (int round = 0; round < CrossPartyRounds; round++)
+        {
+            SetParty(l, null); SetParty(m, null); SetParty(c, null);
+            lc.Grouped = true; mc.Grouped = true; cc.Grouped = true;
+            SessionFixture.FormParty(l, m);                        // A = [L, M]
+            mRec.Clear(); cRec.Clear();
+
+            long delay = (long)(rng.NextDouble() * span * 1.5);
+            using var gun = new Barrier(2);
+            var kick = new Thread(() =>
+            {
+                gun.SignalAndWait();
+                long until = System.Diagnostics.Stopwatch.GetTimestamp() + delay;
+                while (System.Diagnostics.Stopwatch.GetTimestamp() < until) Thread.SpinWait(1);
+                SessionFixture.FormParty(l, m);                    // the leader's re-invite: the kick gesture
+            }) { IsBackground = true, Name = "leader-kick" };
+            var move = new Thread(() =>
+            {
+                gun.SignalAndWait();
+                m.Receive(SessionFixture.GroupToggleFrame());      // leave L's group
+                if (!m.WantsGroup) m.Receive(SessionFixture.GroupToggleFrame());   // "Join a group" back ON
+                SessionFixture.FormParty(c, m);                    // B = [C, M], which L is not in
+            }) { IsBackground = true, Name = "member-leave-and-join" };
+            kick.Start(); move.Start();
+            Assert.True(move.Join(10000) && kick.Join(10000), $"round {round}: the race hung");
+
+            // The member leaves exactly one group this round — L's — so exactly one "left" line, and C is
+            // the straggler of no removal at all, so no "disbanded" line. A kick that acted on the party the
+            // member had MOVED to shows up as both: a second "left" and C's group retired under it.
+            int left = mRec.MiniTexts(Left), disbanded = cRec.MiniTexts(Disbanded);
+            if (left > 1 || disbanded > 0)
+                    wrong.Add($"round {round} (delay {delay}/{span}): {m.CharName} was told they left {left} "
+                        + $"times and "
+                        + $"{c.CharName} was told their group disbanded {disbanded} times");
+            var second = PartyOf(c);
+            if (second is not null && second.Members.Any(x => ReferenceEquals(x, m))) reachedSecondGroup++;
+        }
+
+        Assert.True(reachedSecondGroup > 0, "the member never reached a second group in any round");
+        Assert.True(wrong.Count == 0,
+            $"{wrong.Count} / {CrossPartyRounds} rounds kicked the member out of a group the leader was not "
+            + $"in: {string.Join(" | ", wrong.Take(3))}");
+    }
+
+    // ---- the roster swap and the member's own field are ONE critical section (#167 review round 2, #198) --
+    // The kick is the one removal that runs on a thread that is NOT the member's. It used to swap them out at
+    // Party's gate on the LEADER's thread and only then wait for the member's monitor to write their _party,
+    // so the roster and the field disagreed for the length of that wait — and in the DESCENDING case the wait
+    // had dropped the leader's monitor, so a third member's leave could reach TryDisband and RETIRE the party
+    // inside the gap. #198 moved the swap inside the member's own body, which closes that window: the two
+    // facts below are the window being gone, and the reads that had to survive it while it was open.
+
+    /// <summary>How long the swap window is hunted for. It landed on the first round on <c>8ed52ac</c>; the
+    /// counts here buy confidence that it no longer opens at all, and nothing else.</summary>
+    private const int WindowRounds = 3000;
+    private const int WindowBudgetMs = 30000;
+
+    /// <summary>A kicked member's own handler can never see itself out of the roster while its <c>_party</c>
+    /// still names that party: <c>Party.Remove</c> and the <c>member._party = null</c> that follows it are one
+    /// critical section on the member (#198), and this hunts for a round in which they are not.</summary>
+    [Fact]
+    public void AKickedMemberIsNeverSeenOutOfTheRosterWhileStillNamingTheParty()
+    {
+        var (b, _, bc) = ConcurrentPlayer("SwapWindowMember");   // lowest rank of the three
+        var (a, _, ac) = ConcurrentPlayer("SwapWindowLeaver");
+        var (l, _, lc) = ConcurrentPlayer("SwapWindowLeader");   // highest: the kick DESCENDS into B, so rule 2
+        Assert.True(l.StateRank > b.StateRank && l.StateRank > a.StateRank);   // drops L's own monitor to wait
+
+        int caught = -1;
+        int rounds = 0;
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        for (; round < WindowRounds && !landed && clock.ElapsedMilliseconds < WindowBudgetMs; round++)
+        for (; rounds < WindowRounds && Volatile.Read(ref caught) < 0
+               && clock.ElapsedMilliseconds < WindowBudgetMs; rounds++)
         {
             SetParty(l, null); SetParty(a, null); SetParty(b, null);
             lc.Grouped = true; ac.Grouped = true; bc.Grouped = true;
             SessionFixture.FormParty(l, a);
-            SessionFixture.FormParty(l, b);
+            SessionFixture.FormParty(l, b);                      // three, so the kick disbands nothing
             var old = PartyOf(l)!;
             Assert.Equal(3, old.Members.Count);
-            lRec.Clear(); bRec.Clear();
 
-            using var inWindow = new ManualResetEventSlim(false);
-            using var release = new ManualResetEventSlim(false);
+            int round = rounds;
             using var kickDone = new ManualResetEventSlim(false);
-            bool caught = false;
-            // B's own handler thread: it re-takes B's monitor until it holds it at the moment the kick has
-            // swapped B out of the roster but has not yet written B._party — that write is under this very
-            // monitor — and then stays inside its packet while the party is retired around it.
+            // B's own handler thread: it takes and drops B's monitor as fast as it can, looking for the
+            // instant the kick has swapped B out of the roster but not yet written B._party.
             var handler = new Thread(() =>
             {
-                while (!caught && !kickDone.IsSet)
+                while (Volatile.Read(ref caught) < 0 && !kickDone.IsSet)
                 {
                     b.WithState(() =>
                     {
-                        if (!ReferenceEquals(PartyOf(b), old) || old.Members.Any(m => ReferenceEquals(m, b))) return;
-                        caught = true;
-                        inWindow.Set();
-                        release.Wait();                     // the leave retires the party while we hold B's monitor
-                        namedInWindow = PartyOf(b);
-                        rosterInWindow = old.Members.Count;
-                        try { _ = old.Leader; } catch (Exception e) { leaderRead = e; }
-                        int before = bRec.CountOf(ServerOp.SelfProfile);
-                        b.Receive(SessionFixture.Frame(ClientOp.ProfileRequest, new byte[] { 0 }));
-                        profiles = bRec.CountOf(ServerOp.SelfProfile) - before;
+                        if (!ReferenceEquals(PartyOf(b), old) || old.Members.Any(x => ReferenceEquals(x, b))) return;
+                        Volatile.Write(ref caught, round);
                     });
-                    if (!caught) Thread.Yield();
+                    Thread.Yield();
                 }
             }) { IsBackground = true, Name = "kicked-member-handler" };
             handler.Start();
             var kick = new Thread(() => { SessionFixture.FormParty(l, b); kickDone.Set(); })
                 { IsBackground = true, Name = "leader-kick" };
             kick.Start();
-            WaitHandle.WaitAny(new[] { inWindow.WaitHandle, kickDone.WaitHandle }, 15000);
-            if (!inWindow.IsSet)
-            {
-                // The kick got through B's monitor before the handler caught the gap: try again.
-                Assert.True(kick.Join(5000) && handler.Join(5000), $"round {round}: the race hung");
-                continue;
-            }
-            landed = true;
-            Assert.False(kick.Join(200), "the kick did not park on the kicked member's monitor");
-
-            // The third member leaves through the real Shift+G frame: [L] and a straggler, and the leader's
-            // monitor is free (the kick's descending wait dropped it), so TryDisband fires and retires it.
-            var leave = new Thread(() => a.Receive(SessionFixture.GroupToggleFrame()))
-                { IsBackground = true, Name = "member-leave" };
-            leave.Start();
-            Assert.True(leave.Join(5000), "the leave hung: the waiting kick never dropped the leader's monitor");
-            Assert.Empty(old.Members);
-            Assert.Null(PartyOf(l));
-            Assert.Equal(1, lRec.MiniTexts(Disbanded));
-
-            release.Set();
-            Assert.True(handler.Join(5000) && kick.Join(5000), "the window never closed");
-
-            Assert.Same(old, namedInWindow);    // B's field named the party the roster had already retired
-            Assert.Equal(0, rosterInWindow);
-            Assert.Null(leaderRead);            // Leader answered instead of throwing...
-            Assert.Equal(1, profiles);          // ...so B's own profile request was replied to, not dropped
-            Assert.Null(PartyOf(b));            // and the kick's WithState cleared the field once it landed
-            Assert.Equal(1, bRec.MiniTexts(Left));
+            Assert.True(kick.Join(15000) && handler.Join(15000), $"round {rounds}: the race hung");
         }
-        Assert.True(landed,
-            $"the kicked member never caught the window in {round} rounds / {clock.ElapsedMilliseconds} ms");
+
+        Assert.True(Volatile.Read(ref caught) < 0,
+            $"round {caught} of {rounds} ({clock.ElapsedMilliseconds} ms) saw the kicked member out of the "
+            + "roster while their _party still named it: the swap and the field write are not one critical "
+            + "section on the member");
+    }
+
+    /// <summary>What a member whose <c>_party</c> names a RETIRED party reads. <c>Party.Leader</c> answers
+    /// null for the empty array instead of indexing <c>Members[0]</c>, which threw
+    /// <c>IndexOutOfRangeException</c> out of the member's own 0x2D handler and dropped the reply (#167
+    /// review, F3). The state is built at Party's gate rather than hunted through the real handlers, because
+    /// #198 closed the kick window that used to produce it (the fact above); the reads it guards are the
+    /// same ones.</summary>
+    [Fact]
+    public void AKickedMembersOwnPacketSurvivesThePartyBeingRetiredUnderIt()
+    {
+        var (b, bRec, _) = ConcurrentPlayer("RetiredReadMember");
+        var (l, _, _) = ConcurrentPlayer("RetiredReadLeader");
+        SessionFixture.FormParty(l, b);
+        var old = PartyOf(l)!;
+        bRec.Clear();
+
+        Assert.True(old.Remove(b).Removed);      // out of the roster...
+        Assert.True(old.TryDisband(l));          // ...and the party retired under them
+        SetParty(l, null);
+        Assert.Empty(old.Members);
+        Assert.Same(old, PartyOf(b));            // B's field still names it
+
+        Exception? leaderRead = null;
+        try { _ = old.Leader; } catch (Exception e) { leaderRead = e; }
+        Assert.Null(leaderRead);                 // Leader answered instead of throwing...
+
+        int before = bRec.CountOf(ServerOp.SelfProfile);
+        b.Receive(SessionFixture.Frame(ClientOp.ProfileRequest, new byte[] { 0 }));
+        Assert.Equal(1, bRec.CountOf(ServerOp.SelfProfile) - before);   // ...so the reply went out, not dropped
     }
 
     /// <summary>The other half of the one-decision rule, pinned on its own (#167 review, F4): an inviter the
