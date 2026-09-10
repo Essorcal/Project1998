@@ -5,6 +5,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>Regression guards for serializing reload writers and publishing every content table atomically.</summary>
+[Collection("tile-translation")]
 public class ContentReloadTests
 {
     [Fact]

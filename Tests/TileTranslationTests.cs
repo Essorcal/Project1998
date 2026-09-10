@@ -17,6 +17,7 @@ namespace Tests;
 /// reported offset rather than a hardcoded number; the shipped defaults are skipped when an override is
 /// present so a tuning session cannot produce a red suite that means nothing.</para>
 /// </summary>
+[Collection("tile-translation")]
 public class TileTranslationTests
 {
     private const Session.ClientVersion V533 = Session.ClientVersion.V533;
