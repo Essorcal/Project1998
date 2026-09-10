@@ -74,7 +74,10 @@ internal static class StallWatch
 
             // Join wakes the instant this live thread exits. Unlike a sleep between polls, this adds no fixed
             // delay when short-lived threads finish, which matters to facts that wait once per race round.
-            threads.First(t => t.IsAlive).Join(StallPollMs);
+            var live = threads.FirstOrDefault(t => t.IsAlive);
+            if (live is null)
+                return;
+            live.Join(StallPollMs);
         }
     }
 }

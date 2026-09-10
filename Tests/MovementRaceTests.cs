@@ -80,6 +80,7 @@ public class MovementRaceTests
         var (east, _) = _fx.Player("RaceEast", RaceMap, 6, 5);
 
         var results = new bool[2];
+        var progress = new StallWatch.RoundCounter();
         int rounds = 0, winners = 0, doubleWins = 0, sharedTile = 0;
         Exception? fault = null;
 
@@ -111,14 +112,15 @@ public class MovementRaceTests
                     mover, RaceMap, 5, 5,
                     ghostMover: false, enforceOccupancy: true, otherwiseBlocked: false, out _));
                 barrier.SignalAndWait();
+                progress.Bump();
             }
         }
 
         var a = new Thread(() => Race(0, west)) { IsBackground = true, Name = "race-west" };
         var b = new Thread(() => Race(1, east)) { IsBackground = true, Name = "race-east" };
         a.Start(); b.Start();
-        Assert.True(a.Join(TimeSpan.FromSeconds(30)), "race thread west did not finish");
-        Assert.True(b.Join(TimeSpan.FromSeconds(30)), "race thread east did not finish");
+        StallWatch.RunUntilDoneOrStalled(new[] { a, b }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "race thread west and race thread east");
 
         Assert.Null(fault);
         Assert.Equal(RaceRounds, rounds);
@@ -164,7 +166,7 @@ public class MovementRaceTests
         const int Steps = 40_000;
         var done = new ManualResetEventSlim();
         Exception? walkerFault = null, watcherFault = null;
-        int snapshotTears = 0, observations = 0;
+        int walkerSteps = 0, snapshotTears = 0, observations = 0;
         int unlockedTears = 0, unlockedReads = 0;
 
         static bool RealTile(int x, int y) => (x == 5 && y == 5) || (x == 6 && y == 6);
@@ -179,6 +181,7 @@ public class MovementRaceTests
                     mover.WithState(() => world.TryMovePlayer(
                         mover, TornMap, nx, ny,
                         ghostMover: false, enforceOccupancy: true, otherwiseBlocked: false, out _));
+                    walkerSteps++;
                 }
             }
             catch (Exception e) { walkerFault = e; }
@@ -214,9 +217,10 @@ public class MovementRaceTests
         }) { IsBackground = true, Name = "torn-control" };
 
         walker.Start(); watcher.Start(); control.Start();
-        Assert.True(walker.Join(TimeSpan.FromSeconds(60)), "the walker never finished");
-        Assert.True(watcher.Join(TimeSpan.FromSeconds(60)), "the watcher never finished");
-        Assert.True(control.Join(TimeSpan.FromSeconds(60)), "the control reader never finished");
+        StallWatch.RunUntilDoneOrStalled(new[] { walker, watcher, control },
+            () => (long)Volatile.Read(ref walkerSteps) + Volatile.Read(ref observations) +
+                  Volatile.Read(ref unlockedReads),
+            StallWatch.StallQuiet, StallWatch.StallCap, "the walker, watcher, and control reader");
 
         Assert.Null(walkerFault);
         Assert.Null(watcherFault);

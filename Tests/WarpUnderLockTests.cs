@@ -155,6 +155,7 @@ public class WarpUnderLockTests
         var (b, _) = _fx.Player("DoorRacerB", ConcurrentMap, 2, 2);
 
         int rounds = 0, bothLanded = 0;
+        var progress = new StallWatch.RoundCounter();
         Exception? fault = null;
 
         var barrier = new Barrier(2, _ =>
@@ -178,14 +179,15 @@ public class WarpUnderLockTests
                     mover, ConcurrentMap, 12, 12, Dx, Dy,
                     ArrivalPolicy.Clamp, new FromTile(ConcurrentMap, hx, hy), out _, out _));
                 barrier.SignalAndWait();
+                progress.Bump();
             }
         }
 
         var ta = new Thread(() => Arrive(a, 1, 1)) { IsBackground = true, Name = "door-racer-a" };
         var tb = new Thread(() => Arrive(b, 2, 2)) { IsBackground = true, Name = "door-racer-b" };
         ta.Start(); tb.Start();
-        Assert.True(ta.Join(TimeSpan.FromSeconds(30)), "racer A never finished");
-        Assert.True(tb.Join(TimeSpan.FromSeconds(30)), "racer B never finished");
+        StallWatch.RunUntilDoneOrStalled(new[] { ta, tb }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "racer A and racer B");
 
         Assert.Null(fault);
         Assert.Equal(Rounds, rounds);
