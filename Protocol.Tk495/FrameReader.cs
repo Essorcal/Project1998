@@ -59,8 +59,10 @@ public sealed class FrameReader
     ///
     /// <para>The consequence, stated plainly: while the head-byte rule below stands, this cap cannot fire. The
     /// framing loop stops only with fewer than five bytes left, or on a 0xAA head whose length is not yet
-    /// satisfied — necessarily fewer than <c>3 + 0xFFFF</c> bytes, or TryParse would have taken it — or on a
-    /// non-0xAA head, which the head-byte rule drops. So the pair bounds the unframed buffer at this many bytes
+    /// satisfied — necessarily fewer than <c>3 + 0xFFFF</c> bytes, or <see cref="TkPacket.Parse"/> would have
+    /// taken it — or on a non-0xAA head, which the head-byte rule drops, or on a length field under
+    /// <see cref="TkPacket.MinLength"/>, which the malformed rule drops on the very read that first exposes
+    /// five bytes of it. So the rules bound the unframed buffer at this many bytes
     /// (plus at most one <see cref="ReadBufferBytes"/> chunk in flight), which is the guarantee, and the
     /// head-byte rule is what delivers it today. The cap states the bound in one place and is what still
     /// enforces it if that rule is ever relaxed — a re-syncing reader, say — for the cost of one comparison per
@@ -110,9 +112,10 @@ public sealed class FrameReader
         /// the connection as it would on any other exit). The game sniffs the HTTP status probe here and
         /// answers it with a direct stream write, which is why this hook is asynchronous. The buffer is the
         /// live one — read it, never mutate it.
-        /// <para>This runs BEFORE both drop rules (<see cref="MaxUnframedBytes"/> and the non-0xAA head
-        /// byte), which is what keeps the status probe working: "GET " is a non-0xAA head, so a probe the
-        /// hook did not answer first would be dropped as an unframed stream.</para></summary>
+        /// <para>This runs BEFORE all three drop rules (<see cref="MaxUnframedBytes"/>, the non-0xAA head
+        /// byte and a length field under <see cref="TkPacket.MinLength"/>), which is what keeps the status
+        /// probe working: "GET " is a non-0xAA head, so a probe the hook did not answer first would be
+        /// dropped as an unframed stream.</para></summary>
         public Func<List<byte>, ValueTask<bool>>? OnBufferedAsync { get; init; }
 
         /// <summary>The read is completely done: frames delivered, latch set, unframed tail dumped. Fires for
@@ -146,7 +149,7 @@ public sealed class FrameReader
     /// stops framing (below), or the stream throws — the caller's <c>catch</c>/<c>finally</c> handles the last
     /// of those exactly as it did when this loop was inline.
     ///
-    /// <para><b>Two bounds on a peer that is not framing.</b> Both end the enumeration with one
+    /// <para><b>Three bounds on a peer that is not framing.</b> All three end the enumeration with one
     /// <c>Log.Warn</c> line naming the peer, and each process's existing <c>finally</c> closes the
     /// socket — the same exit the status probe already takes. Both are checked AFTER
     /// <see cref="Hooks.OnBufferedAsync"/> so that hook still wins (see its doc).</para>
@@ -160,6 +163,14 @@ public sealed class FrameReader
     ///     inbound half forever — the framing loop only advances while <c>arr[off] == 0xAA</c>, so one stray
     ///     byte meant nothing was ever framed again and nothing noticed except, before the handshake, the
     ///     watchdog. Frames already parsed out of that same read are yielded first and are never lost.</item>
+    ///   <item>A <c>0xAA</c> head whose length field is under <see cref="TkPacket.MinLength"/> drops the
+    ///     connection. <see cref="TkPacket.Parse"/> calls it <see cref="TkPacket.FrameStatus.Malformed"/>
+    ///     rather than "wait for more", because <c>3 + length</c> is satisfied by the five bytes already
+    ///     here and no further byte can change the answer. It used to throw
+    ///     <see cref="ArgumentOutOfRangeException"/> straight out of this loop — a negative slice length —
+    ///     which crossed <c>MoveNextAsync</c> into each session's catch and cost the game one stackful
+    ///     Error line per connection. Frames parsed ahead of it in the same read are yielded first, as in
+    ///     the rule above.</item>
     /// </list>
     ///
     /// <para><b>Why drop and not re-sync.</b> Scanning forward to the next <c>0xAA</c> needs a stream-level
@@ -203,9 +214,12 @@ public sealed class FrameReader
 
             var arr = buf.ToArray();
             int off = 0;
+            int malformedLength = -1;
             while (arr.Length - off >= 5 && arr[off] == 0xAA)
             {
-                if (!TkPacket.TryParse(arr.AsSpan(off), out var pkt, out int consumed)) break;
+                var status = TkPacket.Parse(arr.AsSpan(off), out var pkt, out int consumed, out int length);
+                if (status == TkPacket.FrameStatus.Malformed) { malformedLength = length; break; }
+                if (status != TkPacket.FrameStatus.Frame) break;
                 off += consumed;
                 yield return pkt;
             }
@@ -230,6 +244,18 @@ public sealed class FrameReader
             if (buf.Count > 0 && buf[0] != 0xAA)
             {
                 Log.Warn($"{_remote} head byte 0x{buf[0]:x2} is not 0xAA — stream not framed, dropping");
+                yield break;
+            }
+
+            // Bound 3: a 0xAA head whose length field is under TkPacket.MinLength. The head IS 0xAA, so the
+            // rule above can never reach this and the framing loop can never advance past it: 3 + length is
+            // already satisfied by five bytes, so no further byte changes the answer. It used to be an
+            // ArgumentOutOfRangeException out of this loop (a negative slice length) and one stackful Error
+            // per connection in the game's catch; it is a drop like the other two now.
+            if (malformedLength >= 0)
+            {
+                Log.Warn($"{_remote} frame length {malformedLength} under the {TkPacket.MinLength}-byte " +
+                         "minimum — malformed, dropping");
                 yield break;
             }
 

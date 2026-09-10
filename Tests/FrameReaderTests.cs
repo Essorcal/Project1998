@@ -252,6 +252,76 @@ public sealed class FrameReaderTests
         return bytes;
     }
 
+    /// <summary>Fact 3g: a frame whose length field is under <see cref="TkPacket.MinLength"/> drops the
+    /// connection, and the good frame that shared its read is yielded first.
+    ///
+    /// <para>This is the third drop rule, and the only one whose absence was an EXCEPTION rather than a
+    /// stall: <c>3 + len</c> with <c>len</c> 0 or 1 sliced a negative body length, and the throw crossed
+    /// MoveNextAsync into each session's catch — on the game side the stackful Error clause, one line per
+    /// connection. So what this pins is that the loop ends here NORMALLY: the enumeration completes without
+    /// throwing, the timeout hook never fires (the budget is a minute), the after-read hook does not run for
+    /// the dropping read, and the frame ahead of the malformed head is delivered. The head byte here is
+    /// 0xAA, so the head-byte rule cannot be what ended it.</para>
+    ///
+    /// <para>Falsified by deleting the malformed block from ReadFramesAsync: the framing loop still breaks on
+    /// the malformed head, nothing drops it, no further bytes arrive, and the fact is red on its Completion
+    /// wait with a TimeoutException — the same wedge the head-byte rule's falsification produces, which is
+    /// exactly why returning false from the parser alone would not have been enough. Falsified a second way
+    /// by putting the old parser body back (see <c>PacketCodecTests</c>): the enumeration ends, but through
+    /// the throw, and the fact is red on IsCompletedSuccessfully.</para></summary>
+    [Theory]
+    [InlineData(0x00)]
+    [InlineData(0x01)]
+    public async Task AFrameWhoseLengthFieldIsUnderTwoDropsTheConnectionAfterTheFrameAheadOfIt(byte length)
+    {
+        var good = TkPacket.Build(0x10, 0x7F, new byte[] { 1, 2, 3 });
+        var malformed = new byte[] { 0xAA, 0x00, length, 0x00, 0x00 };
+
+        await using var h = new Harness();
+        h.Start();
+
+        h.Stream.Push(good.Concat(malformed).ToArray());
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(h.Completion.IsCompletedSuccessfully);   // it ended, and not by throwing
+        var yielded = Assert.Single(h.Frames);               // the good frame came first and was not lost
+        Assert.Equal(0x10, yielded.Opcode);
+        Assert.Equal(new byte[] { 1, 2, 3 }, yielded.Body);
+        Assert.Equal(0xAA, h.BufferedSnapshot[good.Length]);   // the head the drop was made on IS 0xAA
+        Assert.Equal(0, Volatile.Read(ref h.TimeoutCalls));
+        Assert.Equal(0, h.AfterReads);
+    }
+
+    /// <summary>Fact 3h: the buffered hook still wins over the malformed rule, as it does over the other two.
+    /// The hook is where the game answers an HTTP status probe, and a drop rule ahead of it would take that
+    /// answer away.
+    ///
+    /// <para>The probe's own bytes are a non-0xAA head, so fact 3c pins the hook against the head-byte rule
+    /// with the real thing. The malformed rule needs a 0xAA head to reach, which no HTTP request has — so
+    /// this fact stands the hook in front of a malformed frame instead and asserts the hook RAN, with the
+    /// bytes, before the connection went.</para>
+    ///
+    /// <para>Falsified by moving the malformed block above the OnBufferedAsync call: the connection is
+    /// dropped before the hook is ever called, BufferedCounts is empty and the fact is red on that
+    /// assertion.</para></summary>
+    [Fact]
+    public async Task TheBufferedHookRunsBeforeAMalformedLengthIsDropped()
+    {
+        var malformed = new byte[] { 0xAA, 0x00, 0x01, 0x00, 0x00 };
+
+        await using var h = new Harness { StopAfterBuffered = buf => buf.Count >= 5 && buf[0] == 0xAA };
+        h.Start();
+
+        h.Stream.Push(malformed);
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(h.Completion.IsCompletedSuccessfully);
+        Assert.Equal(new[] { malformed.Length }, h.BufferedCounts.ToArray());   // the hook saw the bytes
+        Assert.Equal(malformed, h.BufferedSnapshot);
+        Assert.Empty(h.Frames);
+        Assert.Equal(0, h.AfterReads);
+    }
+
     /// <summary>Fact 4a: the handshake watchdog calls the close hook EXACTLY once when no valid frame
     /// arrives inside the budget.</summary>
     [Fact]
