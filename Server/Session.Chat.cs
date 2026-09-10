@@ -176,9 +176,21 @@ public sealed partial class Session
         if (_party is null) { SendBlueMessage("You are not in a group"); return; }   // RTK's literal wording (blue, no period)
         string line = $"[!{_char.Name}] ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
+        // Each recipient's ignore reads and their send are ONE critical section on THEM (#29 rule 2).
+        // `p._char.Name` and `p.IsIgnoring(...)` are another session's state read bare from our thread, and
+        // `p.SendMiniText` writes their `_gameInc` from it — the same tear NotifyGroup was wrapped for.
+        // ONE peer monitor at a time (the guard is released before the next member), so this is the same
+        // single nested acquisition Party.Broadcast makes and rule 2 resolves it the same way, ascending or
+        // descending; nothing here ever holds two peers at once. Our OWN list and name are read inside the
+        // body deliberately: the descending case drops our monitor to take theirs and puts it back before the
+        // body runs, so inside it both are held. Our own echo is re-entrant (rule 3), so it still goes out in
+        // roster order like every other line.
         foreach (var p in _party.Members)
-            if (!(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))
+            p.WithState(() =>
+            {
+                if (IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)) return;
                 p.SendMiniText(line, type: 11);
+            });
         Log.Info($"   -> group chat: \"{line}\"");
     }
 

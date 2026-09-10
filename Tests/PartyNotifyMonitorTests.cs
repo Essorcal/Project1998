@@ -22,7 +22,8 @@ namespace Tests;
 /// <c>SendMiniText</c>, which writes THAT member's <c>_gameInc</c> — the per-packet increment of the game
 /// channel (<c>Session.cs</c>). Read-modify-write on a byte from a thread that is not its owner's: two
 /// broadcasts landing on one member from two leavers, or a broadcast racing that member's own handler, tore
-/// it, and a torn increment is a frame the client decrypts with the wrong key byte.</para>
+/// it, and a torn increment is a frame the client decrypts with the wrong key byte. <c>DoGroupChat</c> has
+/// the same shape plus bare reads of <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c>.</para>
 ///
 /// <para><b>How "under the monitor" is observed.</b> <c>SendMiniText</c> has no seam of its own, so these
 /// facts give the recipient a <see cref="MonitorProbe"/> outbound: <c>Session.Send</c> hands it the finished
@@ -90,6 +91,43 @@ public sealed class PartyNotifyMonitorTests
         Assert.True(inviteeProbe.AllHeld(Joining), inviteeProbe.Explain(Joining));
         Assert.Equal(2, inviterProbe.Count(Joining));
         Assert.True(inviterProbe.AllHeld(Joining), inviterProbe.Explain(Joining));
+    }
+
+    // ---- 2. group chat ---------------------------------------------------------------------------------
+
+    /// <summary>Group chat ("!!" as the whisper target) delivers to every member from the SENDER's thread,
+    /// skipping a pair where either side has the other on ignore (RTK <c>clif_isignore</c>). Each delivery is
+    /// now inside the recipient's monitor, and both halves of the ignore rule still hold: the recipient
+    /// ignoring the sender, and the sender ignoring the recipient.</summary>
+    [Fact]
+    public void GroupChatReachesEachRecipientInsideTheirMonitorAndStillSkipsAnIgnoringPair()
+    {
+        const string sender = "GroupChatSender", ignoredBySender = "GroupChatIgnored";
+        var (leader, leaderProbe, _) = ProbePlayer("GroupChatLeader", groupable: true);
+        var (talker, talkerProbe, _) = ProbePlayer(sender, groupable: true);
+        // Ignores the sender: RTK blocks the line when EITHER side has the other listed.
+        var (blocker, blockerProbe, _) = ProbePlayer("GroupChatBlocker", groupable: true,
+            configure: c => c.IgnoreList.Add(sender));
+        // ...and the other direction, the sender's own list.
+        var (ignored, ignoredProbe, _) = ProbePlayer(ignoredBySender, groupable: true);
+
+        SessionFixture.FormParty(leader, talker);
+        SessionFixture.FormParty(leader, blocker);
+        SessionFixture.FormParty(leader, ignored);
+        SetIgnoreList(talker, ignoredBySender);
+        leaderProbe.Clear(); talkerProbe.Clear(); blockerProbe.Clear(); ignoredProbe.Clear();
+
+        talker.Receive(GroupChatFrame("field is clear"));
+
+        const string body = "field is clear";
+        Assert.Equal(1, leaderProbe.Count(body));
+        Assert.True(leaderProbe.AllHeld(body), leaderProbe.Explain(body));
+        // The sender's own echo — you cannot ignore yourself, and the acquisition is re-entrant.
+        Assert.Equal(1, talkerProbe.Count(body));
+        Assert.True(talkerProbe.AllHeld(body), talkerProbe.Explain(body));
+        // Both ignore directions still drop the line entirely.
+        Assert.Equal(0, blockerProbe.Count(body));
+        Assert.Equal(0, ignoredProbe.Count(body));
     }
 
     // ---- 5. the races ----------------------------------------------------------------------------------
@@ -257,13 +295,37 @@ public sealed class PartyNotifyMonitorTests
         return (session, probe, character);
     }
 
-    /// <summary><c>Session._party</c> and <c>Character.IgnoreList</c>, by reflection for the field and
-    /// directly for the list — the same reason <c>PartyMembersRaceTests</c> reaches for <c>_party</c>:
-    /// nothing public exposes it and which party a session names IS what these facts are about.</summary>
+    /// <summary>The "!!" whisper — RTK's group-chat channel (<c>clif_parsewisp</c>). Wire body, live-confirmed
+    /// in <c>Session.HandleWhisperPacket</c>: <c>dstLen(u8) dst[dstLen] msgLen(u8) msg[msgLen] 00</c>.</summary>
+    private static byte[] GroupChatFrame(string msg)
+    {
+        byte[] dst = Encoding.ASCII.GetBytes("!!");
+        byte[] text = Encoding.ASCII.GetBytes(msg);
+        var body = new List<byte> { (byte)dst.Length };
+        body.AddRange(dst);
+        body.Add((byte)text.Length);
+        body.AddRange(text);
+        body.Add(0);
+        return SessionFixture.Frame(ClientOp.Whisper, body.ToArray());
+    }
+
+    /// <summary><c>Session._party</c> and <c>Character.IgnoreList</c>, by reflection: the roster and that
+    /// field agreeing IS the invariant these facts rest on and nothing public exposes either — the same
+    /// reason <c>PartyMembersRaceTests</c> reaches for <c>_party</c>.</summary>
     private static readonly FieldInfo PartyField =
         typeof(Session).GetField("_party", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
+    private static readonly FieldInfo CharField =
+        typeof(Session).GetField("_char", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
     private static void SetParty(Session s, Party? p) => PartyField.SetValue(s, p);
+
+    private static void SetIgnoreList(Session s, params string[] names)
+    {
+        var c = (Character)CharField.GetValue(s)!;
+        c.IgnoreList.Clear();
+        c.IgnoreList.AddRange(names);
+    }
 
     /// <summary>
     /// An <c>IOutbound</c> that records each <c>0x0A</c> minitext line together with the answer to
