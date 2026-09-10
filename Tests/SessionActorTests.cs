@@ -81,6 +81,7 @@ public class SessionActorTests
 
         long until = Environment.TickCount64 + 1_500;
         var start = new ManualResetEventSlim();
+        var progress = new StallWatch.RoundCounter();
         Exception? applierFault = null, tickFault = null;
         int applied = 0, ticks = 0;
 
@@ -96,6 +97,7 @@ public class SessionActorTests
                     session.ReceiveCurse("", 0, 1, $"actor_drop_{i}", "decoy", "");
                     session.ReceiveCurse("might", 1, Forever, $"actor_keep_{i}", "keeper", "");
                     applied = i + 1;
+                    progress.Bump();
                 }
             }
             catch (Exception e) { applierFault = e; }
@@ -108,7 +110,12 @@ public class SessionActorTests
             {
                 // ms: 0 keeps the 25s regen accumulator from ever firing, so this is purely the buff-expiry
                 // pass and the effective-stat walk — the parts of RegenTick that touch the list.
-                while (Environment.TickCount64 < until) { session.RegenTick(0); ticks++; }
+                while (Environment.TickCount64 < until)
+                {
+                    session.RegenTick(0);
+                    ticks++;
+                    progress.Bump();
+                }
             }
             catch (Exception e) { tickFault = e; }
         });
@@ -116,8 +123,10 @@ public class SessionActorTests
         applier.Start();
         tick.Start();
         start.Set();
-        Assert.True(applier.Join(TimeSpan.FromSeconds(60)), "the buff applier never finished");
-        Assert.True(tick.Join(TimeSpan.FromSeconds(60)), "the regen ticker never finished");
+        // The base fact's whole fixed workload measured 1 s in each detailed run; five seconds of silence is
+        // therefore more than three complete workloads, without borrowing from the old 60 s deadline.
+        StallWatch.RunUntilDoneOrStalled(new[] { applier, tick }, () => progress.Rounds,
+            TimeSpan.FromSeconds(5), StallWatch.StallCap, "the buff applier and regen ticker");
 
         Assert.Null(applierFault);
         Assert.Null(tickFault);
@@ -178,6 +187,7 @@ public class SessionActorTests
         for (int i = 0; i < 400; i++) session.ReceiveCurse("armor", 1, Forever, $"actor_prime_{i}", "prime", "");
 
         using var round = new Barrier(2);
+        var progress = new StallWatch.RoundCounter();
         Exception? saverFault = null, mutatorFault = null;
         int saves = 0, mutations = 0;
 
@@ -191,6 +201,7 @@ public class SessionActorTests
                     session.WithState(session.MarkDirty);
                     session.FlushNow();
                     saves++;
+                    progress.Bump();
                 }
             }
             catch (Exception e) { saverFault = e; Unblock(round); }
@@ -210,6 +221,7 @@ public class SessionActorTests
                         session.ItemSetStatus($"actor_ward_{i % 32}", Forever);
                         mutations++;
                     }
+                    progress.Bump();
                 }
             }
             catch (Exception e) { mutatorFault = e; Unblock(round); }
@@ -217,8 +229,10 @@ public class SessionActorTests
 
         saver.Start();
         mutator.Start();
-        Assert.True(saver.Join(TimeSpan.FromSeconds(120)), "the autosaver never finished");
-        Assert.True(mutator.Join(TimeSpan.FromSeconds(120)), "the mutator never finished");
+        // The slowest base run was 518 ms for all 120 barrier rounds (under 5 ms per round). Two seconds is
+        // over 400 measured round-times of quiet, and is independent of the former 120 s deadline.
+        StallWatch.RunUntilDoneOrStalled(new[] { saver, mutator }, () => progress.Rounds,
+            TimeSpan.FromSeconds(2), StallWatch.StallCap, "the autosaver and mutator");
 
         Assert.Null(saverFault);
         Assert.Null(mutatorFault);
