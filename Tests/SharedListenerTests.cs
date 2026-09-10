@@ -175,27 +175,50 @@ public class SharedListenerTests
 
     // ---- plumbing ---------------------------------------------------------------------------------------
 
+    /// <summary>Start an acceptor that is LISTENING by the time this returns, and then runs for the rest of
+    /// the process exactly as it does in production (there is no stop, by design).
+    /// <para><b>Not <c>Task.Run</c>.</b> <c>RunAsync</c> executes on the caller's stack as far as its first
+    /// await, which is inside <c>AcceptTcpClientAsync</c> — after <c>listener.Start()</c> — so calling it
+    /// here and discarding the task leaves the port bound with no window for the connect below to fall into.
+    /// Handing the bind to the thread pool instead is a race the caller can lose, and does: it cost three CI
+    /// reds on the Linux runner (SocketException "Connection refused" within 6ms of the connect) on the same
+    /// commit that was green on Windows, which had simply been winning it. The assert turns the assumption
+    /// into a checked one, so an await appearing before Start in TkAcceptor fails here and says why.</para>
+    /// <para>The synchronization context is suppressed for that one call so the accept loop's continuations
+    /// go to the thread pool rather than to xUnit's per-test context, which the test itself is using and
+    /// which does not outlive it.</para></summary>
     private static void Start(int port, ConnGuard guard, Func<TcpClient, int, IPAddress?, Task> runSession)
     {
         var acceptor = new TkAcceptor(new[] { port }, guard, runSession);
-        _ = Task.Run(acceptor.RunAsync);   // runs for the rest of the process, exactly as it does in production
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(null);
+        try { _ = acceptor.RunAsync(); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+
+        Assert.False(PortIsFree(port),
+            $"nothing is listening on :{port} — the acceptor either failed to bind it or returned before Start()");
     }
 
     /// <summary>Take the next port in this assignment's block, having checked it is actually free. A port
-    /// another process owns fails inside <c>TkAcceptor.ListenAsync</c>, on a task nobody awaits, so the fact
-    /// would fail as a connect timeout with nothing saying why.</summary>
+    /// another process owns fails inside <c>TkAcceptor.ListenAsync</c>, on a task nobody awaits, so without
+    /// this the fact would fail with nothing saying why.</summary>
     private static int ClaimPort()
     {
         for (int i = 0; i < 100; i++)
         {
             int port = Interlocked.Increment(ref _nextPort) - 1;
-            var probe = new TcpListener(IPAddress.Loopback, port);
-            try { probe.Start(); }
-            catch (SocketException) { continue; }
-            probe.Stop();
-            return port;
+            if (PortIsFree(port)) return port;
         }
         throw new InvalidOperationException("no free port in the 8000 block");
+    }
+
+    private static bool PortIsFree(int port)
+    {
+        var probe = new TcpListener(IPAddress.Loopback, port);
+        try { probe.Start(); }
+        catch (SocketException) { return false; }
+        probe.Stop();
+        return true;
     }
 
     /// <summary>Poll <see cref="ConnGuard.Total"/> to the expected value, or fail on the bound. The release
