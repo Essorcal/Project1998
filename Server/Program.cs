@@ -47,9 +47,15 @@ if (Array.Exists(args, a => a == "--selftest"))
 Log.AttachFile(Path.Combine(Shared.RepoPaths.LogsDir(), "server.log"));
 Shared.CharacterStore.Warn = message => Log.Warn("[db] " + message);
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-    Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
+{
+    if (e.ExceptionObject is Exception ex)
+        Log.Error("FATAL unhandled exception (process dying)", ex);
+    else
+        // Non-Exception payloads have no stack to carry, so preserve the fatal prefix through Info.
+        Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
+};
 TaskScheduler.UnobservedTaskException += (_, e) =>
-    { Log.Info($"!! unobserved task exception: {e.Exception}"); e.SetObserved(); };
+    { Log.Warn("unobserved task exception", e.Exception); e.SetObserved(); };
 
 try
 {
