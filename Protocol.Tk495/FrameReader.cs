@@ -59,14 +59,34 @@ public sealed class FrameReader
     ///
     /// <para>The consequence, stated plainly: while the head-byte rule below stands, this cap cannot fire. The
     /// framing loop stops only with fewer than five bytes left, or on a 0xAA head whose length is not yet
-    /// satisfied — necessarily fewer than <c>3 + 0xFFFF</c> bytes, or TryParse would have taken it — or on a
-    /// non-0xAA head, which the head-byte rule drops. So the pair bounds the unframed buffer at this many bytes
+    /// satisfied — necessarily fewer than <c>3 + 0xFFFF</c> bytes, or <see cref="TkPacket.Parse"/> would have
+    /// taken it — or on a non-0xAA head, which the head-byte rule drops, or on a length field under
+    /// <see cref="TkPacket.MinLength"/>, which the malformed rule drops on the very read that first exposes
+    /// five bytes of it. So the rules bound the unframed buffer at this many bytes
     /// (plus at most one <see cref="ReadBufferBytes"/> chunk in flight), which is the guarantee, and the
     /// head-byte rule is what delivers it today. The cap states the bound in one place and is what still
     /// enforces it if that rule is ever relaxed — a re-syncing reader, say — for the cost of one comparison per
     /// read.</para>
     /// </summary>
     public const int MaxUnframedBytes = 3 + 0xFFFF;
+
+    /// <summary>The most bytes of the unframed tail the per-read wire dump prints: 256.
+    ///
+    /// <para><b>What it fixes.</b> That dump used to print the WHOLE buffer on every read that left a tail,
+    /// so a peer opening a maximum-length header and streaming filler made the game log the same growing
+    /// buffer again and again — 4 KB, 8 KB, … 64 KB of hex, measured at 2,229,118 bytes of dump lines for one
+    /// 65 KB stream in the PR #220 review, quadratic in the tail. With this bound the same stream writes
+    /// about a kilobyte per read, and one connection can no longer write megabytes of log.</para>
+    ///
+    /// <para><b>Why 256 and not the exact frame header.</b> 256 bytes is roughly one screen of hex: enough to
+    /// hold any header plus the start of a body — <c>0xAA</c>, the claimed length, the opcode, the increment
+    /// and the first ~250 body bytes — which is what a protocol question asked of this line ever needs. It is
+    /// a log-volume ceiling, not a protocol fact, so unlike <see cref="MaxUnframedBytes"/> nothing is derived
+    /// from it and nothing breaks if it is changed; the whole tail's SIZE is always printed, so the line
+    /// never hides how much is buffered. The wire dump is off in deployment
+    /// (<c>P1998_LOG_WIRE=0</c>) and on by default in the game process, which is the configuration this
+    /// bound is for.</para></summary>
+    public const int MaxUnframedDumpBytes = 256;
 
     /// <summary>The default handshake budget in milliseconds, from <c>P1998_HANDSHAKE_MS</c>.
     ///
@@ -110,9 +130,10 @@ public sealed class FrameReader
         /// the connection as it would on any other exit). The game sniffs the HTTP status probe here and
         /// answers it with a direct stream write, which is why this hook is asynchronous. The buffer is the
         /// live one — read it, never mutate it.
-        /// <para>This runs BEFORE both drop rules (<see cref="MaxUnframedBytes"/> and the non-0xAA head
-        /// byte), which is what keeps the status probe working: "GET " is a non-0xAA head, so a probe the
-        /// hook did not answer first would be dropped as an unframed stream.</para></summary>
+        /// <para>This runs BEFORE all three drop rules (<see cref="MaxUnframedBytes"/>, the non-0xAA head
+        /// byte and a length field under <see cref="TkPacket.MinLength"/>), which is what keeps the status
+        /// probe working: "GET " is a non-0xAA head, so a probe the hook did not answer first would be
+        /// dropped as an unframed stream.</para></summary>
         public Func<List<byte>, ValueTask<bool>>? OnBufferedAsync { get; init; }
 
         /// <summary>The read is completely done: frames delivered, latch set, unframed tail dumped. Fires for
@@ -146,7 +167,7 @@ public sealed class FrameReader
     /// stops framing (below), or the stream throws — the caller's <c>catch</c>/<c>finally</c> handles the last
     /// of those exactly as it did when this loop was inline.
     ///
-    /// <para><b>Two bounds on a peer that is not framing.</b> Both end the enumeration with one
+    /// <para><b>Three bounds on a peer that is not framing.</b> All three end the enumeration with one
     /// <c>Log.Warn</c> line naming the peer, and each process's existing <c>finally</c> closes the
     /// socket — the same exit the status probe already takes. Both are checked AFTER
     /// <see cref="Hooks.OnBufferedAsync"/> so that hook still wins (see its doc).</para>
@@ -160,6 +181,14 @@ public sealed class FrameReader
     ///     inbound half forever — the framing loop only advances while <c>arr[off] == 0xAA</c>, so one stray
     ///     byte meant nothing was ever framed again and nothing noticed except, before the handshake, the
     ///     watchdog. Frames already parsed out of that same read are yielded first and are never lost.</item>
+    ///   <item>A <c>0xAA</c> head whose length field is under <see cref="TkPacket.MinLength"/> drops the
+    ///     connection. <see cref="TkPacket.Parse"/> calls it <see cref="TkPacket.FrameStatus.Malformed"/>
+    ///     rather than "wait for more", because <c>3 + length</c> is satisfied by the five bytes already
+    ///     here and no further byte can change the answer. It used to throw
+    ///     <see cref="ArgumentOutOfRangeException"/> straight out of this loop — a negative slice length —
+    ///     which crossed <c>MoveNextAsync</c> into each session's catch and cost the game one stackful
+    ///     Error line per connection. Frames parsed ahead of it in the same read are yielded first, as in
+    ///     the rule above.</item>
     /// </list>
     ///
     /// <para><b>Why drop and not re-sync.</b> Scanning forward to the next <c>0xAA</c> needs a stream-level
@@ -203,9 +232,12 @@ public sealed class FrameReader
 
             var arr = buf.ToArray();
             int off = 0;
+            int malformedLength = -1;
             while (arr.Length - off >= 5 && arr[off] == 0xAA)
             {
-                if (!TkPacket.TryParse(arr.AsSpan(off), out var pkt, out int consumed)) break;
+                var status = TkPacket.Parse(arr.AsSpan(off), out var pkt, out int consumed, out int length);
+                if (status == TkPacket.FrameStatus.Malformed) { malformedLength = length; break; }
+                if (status != TkPacket.FrameStatus.Frame) break;
                 off += consumed;
                 yield return pkt;
             }
@@ -233,10 +265,43 @@ public sealed class FrameReader
                 yield break;
             }
 
+            // Bound 3: a 0xAA head whose length field is under TkPacket.MinLength. The head IS 0xAA, so the
+            // rule above can never reach this and the framing loop can never advance past it: 3 + length is
+            // already satisfied by five bytes, so no further byte changes the answer. It used to be an
+            // ArgumentOutOfRangeException out of this loop (a negative slice length) and one stackful Error
+            // per connection in the game's catch; it is a drop like the other two now.
+            if (malformedLength >= 0)
+            {
+                Log.Warn($"{_remote} frame length {malformedLength} under the {TkPacket.MinLength}-byte " +
+                         "minimum — malformed, dropping");
+                yield break;
+            }
+
             if (buf.Count > 0 && Log.WireEnabled)
-                Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
+                Log.Info(UnframedDumpLine(buf));
 
             _hooks.AfterRead?.Invoke();
         }
+    }
+
+    /// <summary>The per-read dump of what is still unframed after a read, bounded to
+    /// <see cref="MaxUnframedDumpBytes"/> of hex. The count is always the WHOLE tail, and the words
+    /// <c>buffered/unframed</c> are unchanged, so the grep this line has always been read with still finds
+    /// it and still reports the real size.
+    ///
+    /// <para><b>Why a prefix of the tail and not the bytes this read appended.</b> The appended bytes are
+    /// already on the log verbatim, in this read's own <c>&lt;~ RAW</c> line — printing them again would be
+    /// the same bytes twice and would lose the FRONT of the tail, which is the part that says what the
+    /// connection is waiting for (the 0xAA header and its claimed length). The head of the tail is the
+    /// diagnostic; the middle of 64 KB of filler is not.</para></summary>
+    public static string UnframedDumpLine(List<byte> buf)
+    {
+        int shown = Math.Min(buf.Count, MaxUnframedDumpBytes);
+        // GetRange, not ToArray: the point of the bound is that a 64KB tail never becomes a 64KB copy and a
+        // ~200KB hex string once per read.
+        string hex = Log.Hex(buf.GetRange(0, shown).ToArray());
+        return buf.Count > shown
+            ? $"   (… {buf.Count}B buffered/unframed, first {shown}B: {hex} …)"
+            : $"   (… {buf.Count}B buffered/unframed: {hex})";
     }
 }
