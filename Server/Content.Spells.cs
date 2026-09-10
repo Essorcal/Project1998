@@ -643,13 +643,13 @@ public static partial class Content
             foreach (var (ladderId, rungs) in ladders)
                 for (int i = 0; i < rungs.Length; i++)
                     if (!byLeader.TryGetValue(rungs[i], out var siblings))
-                        Log.Info($"!! spell ladder {pathId}/{ladderId}: no spell keyed '{rungs[i]}' — rung ignored");
+                        Log.Warn($"spell ladder {pathId}/{ladderId}: no spell keyed '{rungs[i]}' — rung ignored");
                     // A spell on a cooldown is a different ability, not a louder version of this one — see the
                     // "A RUNG MUST HAVE NO AETHER" note on LadderRungs. Dropping it here leaves it OFF every
                     // ladder, which means RespecSpellSet keeps it outright instead of letting it displace the
                     // class's actual attack.
                     else if (siblings.Select(fxFor).FirstOrDefault(fx => fx is not null)?.Aether is > 0 and var aether)
-                        Log.Info($"!! spell ladder {pathId}/{ladderId}: '{rungs[i]}' has a {aether}ms aether — " +
+                        Log.Warn($"spell ladder {pathId}/{ladderId}: '{rungs[i]}' has a {aether}ms aether — " +
                                  $"not a rung, granted on its own instead");
                     else
                         foreach (var s in siblings) map[s.Key] = (ladderId, i);

@@ -287,7 +287,7 @@ public sealed partial class Session
         // above is careful enough that it can only ever under-deliver; this is what stops the PERSISTENCE
         // layer from undoing that care. A failed write leaves both sides dirty for the next flush to retry.
         if (!FlushPair(a, b))
-            Log.Info($"!! trade save FAILED for '{a._char.Name}' <-> '{b._char.Name}' — both left dirty for retry");
+            Log.Warn($"trade save FAILED for '{a._char.Name}' <-> '{b._char.Name}' — both left dirty for retry");
 
         EndTrade(trade, TradeDoneText, done: true);
     }
