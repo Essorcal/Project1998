@@ -368,6 +368,12 @@ public static class Log
         });
     }
 
+    /// <summary>Whether the writer thread is still running. TEST ONLY, and the load-bearing half of the
+    /// Shutdown fact: the thread only leaves <c>GetConsumingEnumerable</c> once the queue is BOTH empty and
+    /// completed, and its finally block flushes on the way out — so "not alive" is the drain and the flush,
+    /// where reading the file alone cannot tell a flushed tail from a writer that simply kept up.</summary>
+    internal static bool WriterRunningForTest() => _writer.IsAlive;
+
     /// <summary>Undo <see cref="Shutdown"/> with a fresh queue and a fresh writer thread. TEST ONLY: the
     /// Shutdown fact has to call the real Shutdown, and Shutdown is one-way (a completed BlockingCollection
     /// stays completed), so without this one fact would leave every later test in the process logging into a

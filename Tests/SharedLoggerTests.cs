@@ -163,9 +163,15 @@ public class SharedLoggerTests
     /// there is no detach, so the sink is left pointing at a temp directory and the rest of this process's
     /// log lines are teed there too. It also calls the REAL Shutdown, which completes the queue for good;
     /// <c>RestartWriterForTest</c> puts a fresh queue and writer back so no later test in this process is
-    /// logging into a closed one. Falsification: drop the Shutdown call and the file is short (the writer is
-    /// a background thread with no reason to have drained); remove the _closed guard in Enqueue and the
-    /// post-shutdown Info throws InvalidOperationException instead of being dropped.</para></summary>
+    /// logging into a closed one.</para>
+    /// <para><b>The writer-stopped assert is the load-bearing one</b>, and reading the file alone is not
+    /// enough: measured, gutting Shutdown to a no-op still left all 200 lines in the file, because on an idle
+    /// test box the writer simply keeps up. The thread leaves <c>GetConsumingEnumerable</c> only once the
+    /// queue is both empty and COMPLETED, and flushes in its finally on the way out — so "the writer has
+    /// stopped" is exactly the drain-and-flush this fact is about. Falsifications: remove
+    /// <c>CompleteAdding</c>/<c>Join</c> from Shutdown and the writer is still alive; remove the _closed
+    /// guard and the catch in Enqueue's TryAdd and the post-shutdown Info throws InvalidOperationException
+    /// instead of being dropped (both re-broken here before this fact was trusted).</para></summary>
     [Fact]
     public void Shutdown_flushes_the_tail_and_a_line_after_it_is_dropped_not_thrown()
     {
@@ -176,9 +182,13 @@ public class SharedLoggerTests
         try
         {
             Log.AttachFile(path);
+            Assert.True(Log.WriterRunningForTest());   // the state this fact starts from
             for (int i = 0; i < Lines; i++) Log.Info($"{tag} {i}");
 
             Log.Shutdown();
+
+            Assert.False(Log.WriterRunningForTest(),
+                "Shutdown returned with the writer thread still running — the queue was not drained");
 
             // No throw: this is the session thread that logged one line late, on the way out.
             Log.Info($"{tag} after shutdown");
