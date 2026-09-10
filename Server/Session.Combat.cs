@@ -107,7 +107,9 @@ public sealed partial class Session
     internal void MarkPvpFoe(uint playerId)
     {
         // Reached from the OTHER side of the exchange — TakeDamage marks both parties, so this runs on the
-        // victim's thread against the attacker's session (#29).
+        // victim's thread against the attacker's session (#29). That is a DESCENDING acquisition whenever the
+        // attacker ranks below the victim, and rule 2 drops the victim's monitor to make it, which is why
+        // TakeDamage defers this call to its very last statement (#174). Do not move it back up.
         using var _ = EnterState();
         _pvpFoeId = playerId;
         _pvpFoeUntil = Environment.TickCount64 + PvpFoeMs;

@@ -214,8 +214,9 @@ public sealed partial class Session
     /// <summary>
     /// The one player-damage pipeline (#28). Every blow a player takes runs this sequence: immunity gate,
     /// wake, attacker stamp, amplifier, armor, rear x2, deduction, HP, durability, stats, over-head bar,
-    /// sound, chat line, PvP foe mark, log, death — with the per-kind subset and ordering coming from
-    /// <see cref="DamageIntake.Terms"/>.
+    /// sound, chat line, our own PvP foe mark, log, death — and then, last of all, the foe's half of that mark
+    /// (#174: it is the one statement here that enters ANOTHER session's monitor, so it goes where dropping
+    /// ours costs nothing). The per-kind subset and ordering come from <see cref="DamageIntake.Terms"/>.
     ///
     /// <para>It replaces five hand-copied versions of that sequence. Three checked
     /// <see cref="DamageImmune"/> and two did not, which is the finding this pipeline exists to make
@@ -308,16 +309,42 @@ public sealed partial class Session
             _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(sound, _char.Id));
         }
         if (intake.MiniText is { } line) SendMiniText(line);
+        Session? markFoeAfterwards = null;
+        uint ourIdForFoe = 0;
         if (intake.PvpFoe is { } foe)
         {
             // Both sides remember the exchange — that's what a PvP-map pet reads to pick a person to go for.
+            // OUR half is our own field under the monitor we already hold (MarkPvpFoe's EnterState is
+            // re-entrant here). THEIR half is a different session's monitor, so it is deferred to the bottom
+            // of this method — see the note there. #174.
             MarkPvpFoe(foe._char.Id);
-            foe.MarkPvpFoe(_char.Id);
+            markFoeAfterwards = foe;
+            ourIdForFoe = _char.Id;   // captured, so the deferred call reads no state of ours after the drop
         }
         if (intake.LogLine is { } log) Log.Info(log(dmg));
 
-        if (IsDead) { Die(); return dmg; }
-        intake.AfterSurvivedHit?.Invoke();
+        if (IsDead) Die();
+        else intake.AfterSurvivedHit?.Invoke();
+
+        // ---- LAST, not in the middle: the one acquisition that can drop our own monitor -------------------
+        //
+        // Marking the FOE enters the ATTACKER's state monitor while we hold our own. A session monitor is
+        // entered in ascending StateRank (#29 rule 2, Session.State.cs), so when that acquisition DESCENDS —
+        // the attacker was created before us and its monitor is busy — it exits ours while it blocks on the
+        // attacker's and retakes it afterwards. Between the exit and the retake our state is unheld and
+        // another thread can act on it, and a revive reaches us on another thread from three shipped paths
+        // (a GM `@rez <us>`, an NPC Rebirth, a poet's Resurrect).
+        //
+        // Above this line that gap was inside a kill: the HP write at the top had already landed, so the
+        // reviving thread found a player at HP 0 whose death sequence had not run — and with the HP restored
+        // under it, the `if (IsDead)` above then read FALSE and Die() never ran at all. So the mark goes here,
+        // where the death sequence (or the survived-hit epilogue) has already finished and the only statement
+        // left is the return. Same reasoning, and the same remedy, as the two calls at the bottom of Die()
+        // (#172, #177) — this one is a step further up the damage path.
+        //
+        // Nothing observable moves by deferring it: the pet AI reads PvpFoeId on the world tick
+        // (World.MobAiTick.cs), 600 ms apart, and the value expires 15 s later either way.
+        markFoeAfterwards?.MarkPvpFoe(ourIdForFoe);
         return dmg;
     }
 }
