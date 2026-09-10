@@ -177,14 +177,20 @@ public sealed partial class Session
         string line = $"[!{_char.Name}] ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
         // Each recipient's ignore reads and their send are ONE critical section on THEM (#29 rule 2).
-        // `p._char.Name` and `p.IsIgnoring(...)` are another session's state read bare from our thread, and
-        // `p.SendMiniText` writes their `_gameInc` from it — the same tear NotifyGroup was wrapped for.
+        // `p._char.Name` and `p.IsIgnoring(...)` are another session's state read bare from our thread —
+        // those reads are the genuinely unguarded accesses here — and `p.SendMiniText` writes their
+        // `_gameInc`, which rule 2 covers for the same blanket reason NotifyGroup is wrapped, not because
+        // the byte tears (a lost increment is a duplicate nonce, benign per Session.WorldApi.cs:314-315).
         // ONE peer monitor at a time (the guard is released before the next member), so this is the same
         // single nested acquisition Party.Broadcast makes and rule 2 resolves it the same way, ascending or
         // descending; nothing here ever holds two peers at once. Our OWN list and name are read inside the
         // body deliberately: the descending case drops our monitor to take theirs and puts it back before the
         // body runs, so inside it both are held. Our own echo is re-entrant (rule 3), so it still goes out in
-        // roster order like every other line.
+        // roster order like every other line. That drop is also a window master did not have: a kick can
+        // land while we sit in Monitor.Enter on a lower-ranked peer, and the loop then finishes delivering
+        // the already-composed line to the roster it snapshotted before the kick. Inherent to rule 2 —
+        // holding our own monitor across the whole loop is exactly what the rule forbids — and the invite
+        // path documents the same shape at Session.Social.cs:84-88; the blast radius is one in-flight line.
         foreach (var p in _party.Members)
             p.WithState(() =>
             {
@@ -236,10 +242,17 @@ public sealed partial class Session
     ///
     /// <para><b>Wrapped at its own definition</b> — the <see cref="SendAdvice"/> shape, #29 rule 2. Almost
     /// every call is a CROSS-SESSION one: <see cref="Party.Broadcast"/> walks the roster on the thread of
-    /// whichever member invited, left, kicked or disconnected, and <c>SendMiniText</c> writes THIS session's
-    /// <c>_gameInc</c> (Session.cs), the per-packet increment of the game channel. Two broadcasts landing on
-    /// one member from two leavers, or a broadcast racing that member's own handler, tore that byte — a torn
-    /// increment is a frame the client decrypts with the wrong key byte, which is silent on the server side.
+    /// whichever member invited, left, kicked or disconnected, so the body below runs on a thread that does
+    /// not own this session. That alone is what puts it under the monitor: rule 2 is a BLANKET rule on
+    /// entering a peer's state, not a repair for a specific corruption. In particular the <c>_gameInc</c>
+    /// this ends up writing (<c>SendMiniText</c> → <c>SendMap</c>, Session.cs) is NOT a torn-byte hazard —
+    /// it is a byte, read once by <c>_gameInc++</c> and passed BY VALUE both into the body's encryption and
+    /// into the frame header, so every frame decrypts with the increment it declares and the worst a lost
+    /// update can do is emit the same nonce twice. Session.WorldApi.cs:314-315 already records that as
+    /// benign ("a rare duplicate is harmless since each packet carries its own inc in the header"), and
+    /// nothing here contradicts it. The accesses on this path that were genuinely unguarded are the foreign
+    /// READS the same slice closes: <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c> in <c>DoGroupChat</c>,
+    /// and <c>target.IsDead</c> in the invite (Session.Social.cs).
     /// Wrapping here rather than at the call sites is what rule 3 is for: the two calls already inside
     /// <c>member.WithState</c> (<c>RemoveFromParty</c>) see a re-entrant no-op and pay nothing.</para></summary>
     internal void NotifyGroup(string text)

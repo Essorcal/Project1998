@@ -18,12 +18,15 @@ namespace Tests;
 /// <c>Server/Session.State.cs</c>; the PR #210 review's F4 and the #198 author's note).
 ///
 /// <para><b>The notifications.</b> <c>Party.Broadcast</c> calls <c>NotifyGroup</c> on every member from the
-/// thread of whichever member invited, left, kicked or disconnected, and <c>NotifyGroup</c> is
-/// <c>SendMiniText</c>, which writes THAT member's <c>_gameInc</c> — the per-packet increment of the game
-/// channel (<c>Session.cs</c>). Read-modify-write on a byte from a thread that is not its owner's: two
-/// broadcasts landing on one member from two leavers, or a broadcast racing that member's own handler, tore
-/// it, and a torn increment is a frame the client decrypts with the wrong key byte. <c>DoGroupChat</c> has
-/// the same shape plus bare reads of <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c>.</para>
+/// thread of whichever member invited, left, kicked or disconnected — a thread that owns none of them. Rule 2
+/// is a blanket rule on entering a peer's state, and that is the whole justification for the monitor here.
+/// It is NOT a torn-byte repair: <c>NotifyGroup</c> is <c>SendMiniText</c>, which writes that member's
+/// <c>_gameInc</c> (<c>Session.cs</c>), but the increment is a byte read once and passed BY VALUE both into
+/// the encrypted body and into the frame header, so each frame decrypts with the increment it declares and a
+/// lost update can only repeat a nonce — recorded as harmless at <c>Session.WorldApi.cs:314-315</c>, and
+/// visible in <see cref="MonitorProbe"/> below, which decrypts with <c>pkt.Increment</c>. The accesses that
+/// were genuinely unguarded are the foreign READS this slice closes with the sends: <c>p._char.Name</c> and
+/// <c>p.IsIgnoring(...)</c> in <c>DoGroupChat</c>, and the invite's <c>target.IsDead</c> below.</para>
 ///
 /// <para><b>The dead-target read.</b> The invite's <c>target.IsDead</c> refusal is <c>target._char.Hp == 0</c>
 /// (<c>Session.Entity.cs</c>), read on the inviter's thread. It sat ahead of the invite's critical section so
