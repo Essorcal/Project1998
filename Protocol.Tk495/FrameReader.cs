@@ -70,6 +70,24 @@ public sealed class FrameReader
     /// </summary>
     public const int MaxUnframedBytes = 3 + 0xFFFF;
 
+    /// <summary>The most bytes of the unframed tail the per-read wire dump prints: 256.
+    ///
+    /// <para><b>What it fixes.</b> That dump used to print the WHOLE buffer on every read that left a tail,
+    /// so a peer opening a maximum-length header and streaming filler made the game log the same growing
+    /// buffer again and again — 4 KB, 8 KB, … 64 KB of hex, measured at 2,229,118 bytes of dump lines for one
+    /// 65 KB stream in the PR #220 review, quadratic in the tail. With this bound the same stream writes
+    /// about a kilobyte per read, and one connection can no longer write megabytes of log.</para>
+    ///
+    /// <para><b>Why 256 and not the exact frame header.</b> 256 bytes is roughly one screen of hex: enough to
+    /// hold any header plus the start of a body — <c>0xAA</c>, the claimed length, the opcode, the increment
+    /// and the first ~250 body bytes — which is what a protocol question asked of this line ever needs. It is
+    /// a log-volume ceiling, not a protocol fact, so unlike <see cref="MaxUnframedBytes"/> nothing is derived
+    /// from it and nothing breaks if it is changed; the whole tail's SIZE is always printed, so the line
+    /// never hides how much is buffered. The wire dump is off in deployment
+    /// (<c>P1998_LOG_WIRE=0</c>) and on by default in the game process, which is the configuration this
+    /// bound is for.</para></summary>
+    public const int MaxUnframedDumpBytes = 256;
+
     /// <summary>The default handshake budget in milliseconds, from <c>P1998_HANDSHAKE_MS</c>.
     ///
     /// <para>Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10
@@ -260,9 +278,30 @@ public sealed class FrameReader
             }
 
             if (buf.Count > 0 && Log.WireEnabled)
-                Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
+                Log.Info(UnframedDumpLine(buf));
 
             _hooks.AfterRead?.Invoke();
         }
+    }
+
+    /// <summary>The per-read dump of what is still unframed after a read, bounded to
+    /// <see cref="MaxUnframedDumpBytes"/> of hex. The count is always the WHOLE tail, and the words
+    /// <c>buffered/unframed</c> are unchanged, so the grep this line has always been read with still finds
+    /// it and still reports the real size.
+    ///
+    /// <para><b>Why a prefix of the tail and not the bytes this read appended.</b> The appended bytes are
+    /// already on the log verbatim, in this read's own <c>&lt;~ RAW</c> line — printing them again would be
+    /// the same bytes twice and would lose the FRONT of the tail, which is the part that says what the
+    /// connection is waiting for (the 0xAA header and its claimed length). The head of the tail is the
+    /// diagnostic; the middle of 64 KB of filler is not.</para></summary>
+    public static string UnframedDumpLine(List<byte> buf)
+    {
+        int shown = Math.Min(buf.Count, MaxUnframedDumpBytes);
+        // GetRange, not ToArray: the point of the bound is that a 64KB tail never becomes a 64KB copy and a
+        // ~200KB hex string once per read.
+        string hex = Log.Hex(buf.GetRange(0, shown).ToArray());
+        return buf.Count > shown
+            ? $"   (… {buf.Count}B buffered/unframed, first {shown}B: {hex} …)"
+            : $"   (… {buf.Count}B buffered/unframed: {hex})";
     }
 }

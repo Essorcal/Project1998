@@ -322,6 +322,55 @@ public sealed class FrameReaderTests
         Assert.Equal(0, h.AfterReads);
     }
 
+    /// <summary>Fact 3i: the per-read unframed dump is BOUNDED, and still says how much is really buffered.
+    ///
+    /// <para>The line used to hex the whole buffer on every read that left a tail, so a peer that opens a
+    /// maximum-length header and streams filler made the game write the same growing buffer again and again:
+    /// 2,229,118 bytes of dump lines for one 65 KB stream, measured in the PR #220 review (F3). Nothing
+    /// throws, and with <c>P1998_LOG_WIRE=0</c> in deployment nothing is even written — which is exactly why
+    /// this needs a fact rather than a crash to notice it.</para>
+    ///
+    /// <para>Three things are pinned: the hex is capped at <see cref="FrameReader.MaxUnframedDumpBytes"/>
+    /// bytes however big the tail is, the WHOLE tail's byte count is still in the line, and the words
+    /// <c>buffered/unframed</c> that this line has always been grepped with are unchanged.</para>
+    ///
+    /// <para>Falsified by putting the old body back (<c>shown = buf.Count</c>, i.e. the whole buffer hexed as
+    /// it was): the 257-byte and 70,000-byte rows go red on the hex-byte-count assertion
+    /// (<c>Assert.Equal() Failure: Values differ</c>), and the two rows inside the bound stay green. Raising
+    /// the constant alone does not falsify it — the assertions are written against the constant — which is
+    /// deliberate: the bound under test is "some fixed ceiling, and the count survives it", not the number
+    /// 256, which is a log-volume choice and not a protocol fact.</para></summary>
+    [Theory]
+    [InlineData(16)]                                              // under the bound: printed whole
+    [InlineData(FrameReader.MaxUnframedDumpBytes)]                // exactly at it: still whole, no ellipsis
+    [InlineData(FrameReader.MaxUnframedDumpBytes + 1)]            // one past: truncated
+    [InlineData(70_000)]                                          // the review's stream, an order past it
+    public void TheUnframedDumpPrintsAtMostABoundedPrefixAndAlwaysTheWholeCount(int tailBytes)
+    {
+        var tail = new List<byte>(new byte[tailBytes]);
+        tail[0] = 0xAA;
+
+        string line = FrameReader.UnframedDumpLine(tail);
+
+        Assert.Contains($"{tailBytes}B buffered/unframed", line);   // the count, and the old grep
+        int hexBytes = HexByteCount(line);
+        Assert.Equal(Math.Min(tailBytes, FrameReader.MaxUnframedDumpBytes), hexBytes);
+        Assert.Equal(tailBytes > FrameReader.MaxUnframedDumpBytes, line.Contains("first "));
+        // The whole line stays inside four characters per printed byte plus a short preamble, so no read can
+        // write more than a kilobyte of dump however much is buffered.
+        Assert.True(line.Length <= 4 * FrameReader.MaxUnframedDumpBytes + 64, $"dump line was {line.Length} chars");
+    }
+
+    /// <summary>How many bytes <c>Log.Hex</c> actually rendered in a line: it prints two hex digits
+    /// per byte separated by single spaces, then four spaces and the ASCII gutter.</summary>
+    private static int HexByteCount(string line)
+    {
+        int start = line.IndexOf(": ", StringComparison.Ordinal) + 2;
+        int end = line.IndexOf("    |", StringComparison.Ordinal);
+        string hex = line[start..end];
+        return hex.Length == 0 ? 0 : hex.Split(' ').Length;
+    }
+
     /// <summary>Fact 4a: the handshake watchdog calls the close hook EXACTLY once when no valid frame
     /// arrives inside the budget.</summary>
     [Fact]
