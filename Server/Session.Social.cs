@@ -194,8 +194,9 @@ public sealed partial class Session
         if (!removed) return;
         // Both of these stay OUTSIDE the member's body, where they already were. The straggler's is the one
         // that must: it enters a THIRD session's monitor, and taking that inside the member's is the nested
-        // pair #167 avoided. Broadcast enters no monitor (NotifyGroup only sends), but it walks every other
-        // member and there is nothing about it that wants the member's critical section held across it.
+        // pair #167 avoided. Broadcast enters a monitor per member too now — NotifyGroup is wrapped at its
+        // own definition — but ONE at a time, none held across another, which is the same reason it is fine
+        // out here and would not be worth the member's critical section being held across it.
         party.Broadcast($"{name} is leaving the group.");
         if (straggler is not null)
         {

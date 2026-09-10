@@ -16,8 +16,9 @@ namespace Server;
 /// As a <c>List&lt;Session&gt;</c> that was an unsynchronised collection: a kick or a disconnect landing
 /// inside the killer's <c>foreach</c> threw <c>InvalidOperationException</c> out of it, and
 /// <c>Session.Handle</c> logs and drops the packet — so that kill paid nobody. Copy-on-write rather than a
-/// lock around the readers because the readers call INTO sessions (<c>NotifyGroup</c>, <c>WithState</c>) and
-/// a lock held across those would be a second ordering to reason about against the session monitors and
+/// lock around the readers because the readers call INTO sessions — and, since the group notifications were
+/// put under their owner's monitor, into those sessions' MONITORS (<c>NotifyGroup</c>, <c>WithState</c>) — so
+/// a lock held across them would be a second ordering to reason about against the session monitors and
 /// <c>World._lock</c>.</para>
 ///
 /// <para><b><see cref="_gate"/> is a LEAF lock.</b> It is held around the array copy and the decisions that
@@ -25,7 +26,9 @@ namespace Server;
 /// session monitor, no <c>World._lock</c>, no allocation that can run user code. A thread holding it can
 /// therefore always finish, so it cannot participate in any cycle and it needs no rank in the
 /// <c>Session.State.cs</c> ordering. Keep it that way — a single <c>m.Something()</c> inside one of these
-/// <c>lock</c> blocks would make it an ordering question.</para>
+/// <c>lock</c> blocks would make it an ordering question. <see cref="Broadcast"/> is the live example and is
+/// deliberately NOT under the gate: it enters every member's monitor, so putting it there would hand the
+/// leaf a rank and make it cycle against a leave, which takes the leaver's monitor and then the gate.</para>
 ///
 /// <para><b>Seating a member and retiring the party are ONE decision, taken here (#167 review, F1).</b> A
 /// removal takes only this gate — it needs neither the leaver's nor the inviter's monitor — so it can land
@@ -85,7 +88,15 @@ public sealed class Party
 
     /// <summary>Tell every current member something (RTK <c>clif_updategroup</c>'s minitext broadcast to the
     /// whole group) on the dedicated "group" minitext channel. ONE snapshot, read before the first send: a
-    /// member who joins or leaves mid-broadcast is either told or not told, never told twice.</summary>
+    /// member who joins or leaves mid-broadcast is either told or not told, never told twice.
+    ///
+    /// <para><b>This ENTERS each member's state monitor</b> — <c>Session.NotifyGroup</c> is wrapped at its own
+    /// definition (#29 rule 2), because the send writes that member's <c>_gameInc</c> and this runs on the
+    /// thread of whichever member invited, left, kicked or disconnected. One member at a time, released before
+    /// the next, so it is a single nested acquisition per member and rule 2 resolves the ascending and the
+    /// descending case exactly as it does for <c>WithStatePair</c> and <c>Session.RemoveFromParty</c>. It
+    /// takes <see cref="_gate"/> at no point, and must not start: see the leaf-lock paragraph on the
+    /// class.</para></summary>
     public void Broadcast(string text)
     {
         foreach (var m in Volatile.Read(ref _members)) m.NotifyGroup(text);

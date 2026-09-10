@@ -220,8 +220,21 @@ public sealed partial class Session
     /// <summary>Party join/leave/kick/disband broadcasts. Delivered on the SAME type=3 mini/status channel
     /// as the "You cast X." casting info (SendMiniText's default), NOT the type=11 "group" channel: on the
     /// 4.95 client type 11 lands in the scrolling chat box as blue text, which reads as someone talking
-    /// rather than a status event. Type 3 puts it in the status/mini pane where group events belong.</summary>
-    internal void NotifyGroup(string text) => SendMiniText(text, type: 3);
+    /// rather than a status event. Type 3 puts it in the status/mini pane where group events belong.
+    ///
+    /// <para><b>Wrapped at its own definition</b> — the <see cref="SendAdvice"/> shape, #29 rule 2. Almost
+    /// every call is a CROSS-SESSION one: <see cref="Party.Broadcast"/> walks the roster on the thread of
+    /// whichever member invited, left, kicked or disconnected, and <c>SendMiniText</c> writes THIS session's
+    /// <c>_gameInc</c> (Session.cs), the per-packet increment of the game channel. Two broadcasts landing on
+    /// one member from two leavers, or a broadcast racing that member's own handler, tore that byte — a torn
+    /// increment is a frame the client decrypts with the wrong key byte, which is silent on the server side.
+    /// Wrapping here rather than at the call sites is what rule 3 is for: the two calls already inside
+    /// <c>member.WithState</c> (<c>RemoveFromParty</c>) see a re-entrant no-op and pay nothing.</para></summary>
+    internal void NotifyGroup(string text)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        SendMiniText(text, type: 3);
+    }
 
     /// <summary>Wisdom / "Listen to advice" (0x1b sub-4): stream a periodic gameplay hint into the chat channel
     /// (SendMiniText type 11 — RTK's advice type 99 -> 11, the "group &amp; subpath" chat channel, which is where
