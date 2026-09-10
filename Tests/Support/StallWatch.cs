@@ -43,6 +43,19 @@ internal static class StallWatch
     internal static void RunUntilDoneOrStalled(
         Thread[] threads, Func<long> progress, TimeSpan quiet, TimeSpan cap, string what)
     {
+        // Most per-round workers finish in milliseconds. Join each one for at most a polling slice so the
+        // common path returns as each thread exits without allocating a stopwatch or entering the poll loop.
+        // A thread that misses the slice is not failed on time: it falls through to the progress watch.
+        bool allDone = true;
+        foreach (var thread in threads)
+        {
+            if (thread.Join(StallPollMs)) continue;
+            allDone = false;
+            break;
+        }
+        if (allDone)
+            return;
+
         var elapsed = Stopwatch.StartNew();
         long last = progress();
         var lastMoved = TimeSpan.Zero;

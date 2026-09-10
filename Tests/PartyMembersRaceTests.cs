@@ -259,8 +259,9 @@ public sealed class PartyMembersRaceTests
             var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(a, t); progress.Bump(); });
             var kick   = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, a); progress.Bump(); });
             invite.Start(); kick.Start();
-            StallWatch.RunUntilDoneOrStalled(new[] { invite, kick }, () => progress.Rounds,
-                StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the invite/kick race");
+            if (!invite.Join(100) || !kick.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { invite, kick }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the invite/kick race");
 
             var bad = Inconsistency(round, old, l, a, t);
             if (bad is not null) stranded.Add(bad);
@@ -290,8 +291,9 @@ public sealed class PartyMembersRaceTests
             var invite = new Thread(() => { gun.SignalAndWait(); SessionFixture.FormParty(l, t); progress.Bump(); });
             var leave  = new Thread(() => { gun.SignalAndWait(); a.Receive(SessionFixture.GroupToggleFrame()); progress.Bump(); });
             invite.Start(); leave.Start();
-            StallWatch.RunUntilDoneOrStalled(new[] { invite, leave }, () => progress.Rounds,
-                StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the invite/leave race");
+            if (!invite.Join(100) || !leave.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { invite, leave }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the invite/leave race");
 
             var bad = Inconsistency(round, old, l, a, t);
             if (bad is not null) stranded.Add(bad);
@@ -475,8 +477,9 @@ public sealed class PartyMembersRaceTests
                 progress.Bump();
             }) { IsBackground = true, Name = "member-leave-and-join" };
             kick.Start(); move.Start();
-            StallWatch.RunUntilDoneOrStalled(new[] { move, kick }, () => progress.Rounds,
-                StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the cross-party kick race");
+            if (!move.Join(100) || !kick.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { move, kick }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {round}: the cross-party kick race");
 
             // The member leaves exactly one group this round — L's — so exactly one "left" line, and C is
             // the straggler of no removal at all, so no "disbanded" line. A kick that acted on the party the
@@ -557,8 +560,9 @@ public sealed class PartyMembersRaceTests
             var kick = new Thread(() => { SessionFixture.FormParty(l, b); kickDone.Set(); progress.Bump(); })
                 { IsBackground = true, Name = "leader-kick" };
             kick.Start();
-            StallWatch.RunUntilDoneOrStalled(new[] { kick, handler }, () => progress.Rounds,
-                StallWatch.StallQuiet, StallWatch.StallCap, $"round {rounds}: the kick/handler race");
+            if (!kick.Join(100) || !handler.Join(100))
+                StallWatch.RunUntilDoneOrStalled(new[] { kick, handler }, () => progress.Rounds,
+                    StallWatch.StallQuiet, StallWatch.StallCap, $"round {rounds}: the kick/handler race");
         }
 
         Assert.True(Volatile.Read(ref caught) < 0,
