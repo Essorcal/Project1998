@@ -71,7 +71,19 @@ public static class Log
     private static StreamWriter? _file;    // writer thread only, after AttachFile hands it over
     private static string _path = "";
     private static long _written;
-    private static readonly int[] DroppedByLevel = new int[3]; // Interlocked: refused Info, Warn, Error
+    // Refused Info, Warn, Error. Interlocked, and MONOTONE: the writer thread reads it to build the overflow
+    // notice but never resets it (see TakeDropped). Only ResetDroppedCountsForTest, which no production path
+    // calls, ever puts a count back.
+    //
+    // It used to be the writer that zeroed these, which made every test that refuses a few records and then
+    // reads the counters a race against the writer's idle flush: upstream CI run 34434683832 read (0, 0, 0)
+    // against an expected (0, 1, 1), with "dropped 0 info, 1 warn, 1 error" in the same captured log.
+    private static readonly int[] DroppedByLevel = new int[3];
+
+    // How much of DroppedByLevel each notice has already accounted for. WRITER THREAD ONLY — it is the one
+    // thread that formats notices, so this needs no interlocking, and keeping the bookkeeping here instead of
+    // in the shared counter is what removes the race: there is no moment when a refusal is in neither place.
+    private static readonly int[] NoticedByLevel = new int[3];
 
     // Pure admission seam plus a narrow end-to-end test hook. The production path always uses Admits;
     // tests can force refusal without racing the writer to fill a 65,536-line queue.
@@ -301,6 +313,24 @@ public static class Log
         catch (InvalidOperationException) { return false; }   // CompleteAdding raced us
     }
 
+    /// <summary>How many refusals at this level the next overflow notice has to report: everything counted
+    /// since the previous notice. WRITER THREAD ONLY.
+    /// <para>This is a high-water mark rather than the exchange-to-zero it replaces, and that is the whole
+    /// point: the counter a test reads is never emptied, so a notice landing between a refusal and a test's
+    /// read cannot change what the test sees. The notice itself says exactly what it said before — each one
+    /// reports the refusals since the last one.</para>
+    /// <para>The subtraction is deliberately unchecked, so it stays correct if the counter ever wraps (a
+    /// console stalled long enough to refuse two billion records). A negative delta means only one thing —
+    /// <see cref="ResetDroppedCountsForTest"/> moved the counter back under the writer — and resyncing to the
+    /// current value is the right answer there: no production caller resets.</para></summary>
+    private static int TakeDropped(LogLevel level)
+    {
+        int total = Volatile.Read(ref DroppedByLevel[(int)level]);
+        int taken = unchecked(total - NoticedByLevel[(int)level]);
+        NoticedByLevel[(int)level] = total;
+        return taken > 0 ? taken : 0;
+    }
+
     internal static string FormatOverflowNotice(int info, int warn, int error)
     {
         if (info == 0 && warn == 0 && error == 0) return "";
@@ -308,11 +338,18 @@ public static class Log
             $"!! log queue overflowed — dropped {info:N0} info, {warn:N0} warn, {error:N0} error");
     }
 
+    /// <summary>Everything refused at each level since the last <see cref="ResetDroppedCountsForTest"/>,
+    /// whether or not an overflow notice has already reported it. Because <see cref="TakeDropped"/> only
+    /// reads these counters, this answer does not depend on when the writer thread last drained the
+    /// queue.</summary>
     internal static (int Info, int Warn, int Error) DroppedCountsForTest() =>
         (Volatile.Read(ref DroppedByLevel[(int)LogLevel.Info]),
          Volatile.Read(ref DroppedByLevel[(int)LogLevel.Warn]),
          Volatile.Read(ref DroppedByLevel[(int)LogLevel.Error]));
 
+    /// <summary>Put the drop counters back to zero. TEST ONLY, and the one thing that can move a counter
+    /// backwards: the writer resyncs its own high-water mark the next time it looks, so the reset costs at
+    /// most one notice for records refused right beside it (see <see cref="TakeDropped"/>).</summary>
     internal static void ResetDroppedCountsForTest()
     {
         Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0);
@@ -440,9 +477,7 @@ public static class Log
                 if (queue.Count == 0) TryFlush();
 
                 string notice = FormatOverflowNotice(
-                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Info], 0),
-                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Warn], 0),
-                    Interlocked.Exchange(ref DroppedByLevel[(int)LogLevel.Error], 0));
+                    TakeDropped(LogLevel.Info), TakeDropped(LogLevel.Warn), TakeDropped(LogLevel.Error));
                 if (notice.Length > 0) Emit($"[{DateTime.Now:HH:mm:ss.fff}] {notice}");
             }
         }
