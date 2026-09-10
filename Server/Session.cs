@@ -44,14 +44,10 @@ public sealed partial class Session
     // to _out and never blocks, and the socket write happens on that transport's own writer task.
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
 
-    // Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10 world
-    // arrival, or 0x03 re-login) within this budget or it is dropped. A client that connects and then holds
-    // the socket open sending nothing costs us a session slot for free otherwise. Only the FIRST packet is
-    // gated — once established there is no read timeout, so an in-world player standing AFK (or an Alt+X
-    // connection idling between world-exit and re-login) is never disconnected. Env-tunable; 15s is far more
-    // than a real client needs (it speaks in milliseconds) yet kills a hold.
-    private static readonly int HandshakeMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+    // Slow-loris defense: the budget for a freshly-accepted connection's FIRST valid framed packet, and the
+    // watchdog that enforces it, are FrameReader's (P1998_HANDSHAKE_MS — see FrameReader.DefaultHandshakeMs
+    // for the whole rationale, which both processes now share). The latch stays here: the status probe below
+    // reads it from outside the read loop, and StatusResponder documents it here.
     private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
 
     // --- robust persistence (dirty-flag autosave, see MarkDirty/FlushNow) ---
@@ -234,20 +230,6 @@ public sealed partial class Session
     private static readonly byte RealmCenter =
         Environment.GetEnvironmentVariable("P1998_V495_REALM") == "1" ? (byte)1 : (byte)0;
 
-    // AA 00 13 7E 1B "CONNECTED SERVER\n"  (plaintext welcome, as the 6.x reference sends)
-    private static readonly byte[] Welcome =
-        BuildWelcome();
-
-    private static byte[] BuildWelcome()
-    {
-        var head = new byte[] { 0xAA, 0x00, 0x13, 0x7E, 0x1B };
-        var text = "CONNECTED SERVER\n"u8.ToArray();
-        var all = new byte[head.Length + text.Length];
-        head.CopyTo(all, 0);
-        text.CopyTo(all, head.Length);
-        return all;
-    }
-
     /// <summary>The production constructor. It is now an ADAPTER: it wraps the socket in a
     /// <see cref="TcpOutbound"/> — the queue, the writer task and the address bookkeeping all moved there,
     /// unchanged — and hands that to the real constructor below.</summary>
@@ -303,8 +285,8 @@ public sealed partial class Session
         {
             if (IsLoginPort)   // login channel: send the 0x7E welcome
             {
-                Send(Welcome);
-                Log.Info($"   -> sent welcome ({Welcome.Length}B)");
+                Send(Welcome.Bytes);
+                Log.Info($"   -> sent welcome ({Welcome.Bytes.Length}B)");
             }
             else                 // game channel: the client speaks first (sends 0x10). Send NOTHING now.
             {
@@ -315,57 +297,37 @@ public sealed partial class Session
                 Log.Info("   == game connect: waiting for client 0x10 arrival (no pre-arrival sends) ==");
             }
 
-            // Handshake watchdog: fires once if no valid packet arrives within HandshakeMs. Gated on
-            // _established so a late fire can never drop a connection that has already spoken; closing the
-            // socket makes the pending ReadAsync below throw and unwind into the finally cleanup.
-            using var handshake = new CancellationTokenSource(HandshakeMs);
-            handshake.Token.Register(() =>
+            // The read loop itself is shared with the login process (Protocol.Tk495/FrameReader): the
+            // handshake watchdog, the 4KB chunk, the TkPacket framing and the two wire dumps are all its.
+            // What is left here is what this process does differently, at the points it did them before.
+            var frames = new FrameReader(tcp.Stream, _port, _remote, new FrameReader.Hooks
             {
-                if (Volatile.Read(ref _established) != 0) return;
-                Log.Info($"!! {_remote} handshake timeout ({HandshakeMs}ms) — no valid packet, dropping");
-                CloseConnection("handshake timeout");
-            });
-
-            var buf = new List<byte>();
-            var tmp = new byte[4096];
-            while (true)
-            {
-                int n = await tcp.Stream.ReadAsync(tmp);
-                if (n == 0) break;
-                Volatile.Write(ref _lastInboundMs, Environment.TickCount64);   // silence watchdog
-                if (Log.WireEnabled) Log.Info($"   <~ RAW {n}B on :{_port}: {Log.Hex(tmp[..n])}");
-                for (int i = 0; i < n; i++) buf.Add(tmp[i]);
-
+                // Gated on _established so a late watchdog fire can never drop a connection that has already
+                // spoken; closing the socket makes the pending read throw and unwind into the finally cleanup.
+                Established = () => Volatile.Read(ref _established) != 0,
+                OnEstablished = () => Volatile.Write(ref _established, 1),   // first valid frame parsed -> handshake satisfied
+                OnHandshakeTimeout = () => CloseConnection("handshake timeout"),
+                OnRead = _ => Volatile.Write(ref _lastInboundMs, Environment.TickCount64),   // silence watchdog
                 // Status probe: on the GAME port the client speaks first, so a connection whose first
                 // bytes are "GET " is an HTTP status poll, never a real client (see StatusResponder).
                 // Answered with a direct stream write — safe here precisely because nothing else has
                 // been sent on a pre-established game connection (the writer task is idle) — then the
                 // loop breaks and the normal finally cleanup closes the socket.
-                if (Volatile.Read(ref _established) == 0 && !IsLoginPort && StatusResponder.LooksLikeHttp(buf))
+                OnBufferedAsync = async buf =>
                 {
+                    if (Volatile.Read(ref _established) != 0 || IsLoginPort || !StatusResponder.LooksLikeHttp(buf))
+                        return false;
                     await tcp.Stream.WriteAsync(StatusResponder.Build(_world));
                     Log.Info($"   -> status probe from {_remote} answered ({_world.Online.Count} online)");
-                    break;
-                }
+                    return true;
+                },
+                AfterRead = FlushIfDue,   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
+            });
 
-                var arr = buf.ToArray();
-                int off = 0;
-                while (arr.Length - off >= 5 && arr[off] == 0xAA)
-                {
-                    if (!TkPacket.TryParse(arr.AsSpan(off), out var pkt, out int consumed)) break;
-                    off += consumed;
-                    LastInboundOp = pkt.Opcode;
-                    Handle(pkt);
-                }
-                if (off > 0)
-                {
-                    buf.RemoveRange(0, off);
-                    Volatile.Write(ref _established, 1);   // first valid frame parsed -> handshake satisfied
-                }
-                if (buf.Count > 0 && Log.WireEnabled)
-                    Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
-
-                FlushIfDue();   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
+            await foreach (var pkt in frames.ReadFramesAsync())
+            {
+                LastInboundOp = pkt.Opcode;
+                Handle(pkt);
             }
         }
         catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
@@ -859,7 +821,7 @@ public sealed partial class Session
 
     // Game host the re-login handoff redirects to (must match how the client reached this game server).
     // Defaults to loopback; set P1998_GAME_HOST for a split-box deployment (same var the login server uses).
-    private static byte[] ParseGameHost() => ParseHost("P1998_GAME_HOST");
+    private static byte[] ParseGameHost() => HostAddress.FromEnvironment("P1998_GAME_HOST");
 
     // Login host the exit-to-select bounce redirects to. Falls back to P1998_GAME_HOST because the common
     // deployment runs both processes on one box (and behind HAProxy both front doors share the ONE public
@@ -868,19 +830,7 @@ public sealed partial class Session
     private static byte[] ParseLoginHost()
     {
         var h = Environment.GetEnvironmentVariable("P1998_LOGIN_HOST");
-        return string.IsNullOrWhiteSpace(h) ? ParseGameHost() : ParseHost("P1998_LOGIN_HOST");
-    }
-
-    private static byte[] ParseHost(string env)
-    {
-        var def = new byte[] { 127, 0, 0, 1 };
-        var h = Environment.GetEnvironmentVariable(env);
-        if (string.IsNullOrWhiteSpace(h)) return def;
-        var parts = h.Split('.');
-        if (parts.Length != 4) return def;
-        var o = new byte[4];
-        for (int i = 0; i < 4; i++) if (!byte.TryParse(parts[i], out o[i])) return def;
-        return o;
+        return string.IsNullOrWhiteSpace(h) ? ParseGameHost() : HostAddress.Parse(h);
     }
 
     // Which login port the exit-to-select bounce names. The two channels are PAIRED by client version (see
