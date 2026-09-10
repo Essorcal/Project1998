@@ -403,7 +403,7 @@ public sealed partial class Session
         // disconnect does here too — the difference is we also close the survivor's exchange window with
         // RTK's own "Exchange cancelled." box rather than leaving it open on a ghost).
         if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
-        if (_party is not null) RemoveFromParty(this);
+        if (_party is { } party) RemoveFromParty(this, party);   // read under our own monitor: this runs inside WithState
 
         // Leave the shared world: despawn us for the other players on our map. World mobs persist
         // (they belong to the map, not this session), so they keep wandering for whoever remains.
@@ -1601,7 +1601,7 @@ public sealed class TcpOutbound : IOutbound
                 // is on the network, not in the server, and no amount of server tuning shortens it.
                 // QUEUED high with WRITE low -> we were slow to pick the frame up: this task is a thread-pool
                 // work item, so that means pool starvation (cross-check the pool-latency line from Watchdog).
-                Log.Info($"!! SLOW SEND {Remote}: queued {queuedMs}ms, write {writeMs}ms, " +
+                Log.Warn($"SLOW SEND {Remote}: queued {queuedMs}ms, write {writeMs}ms, " +
                          $"{_queue.Reader.Count} frame(s) still queued" +
                          (suppressed > 0 ? $" (+{suppressed} more suppressed since the last line)" : ""));
                 suppressed = 0;

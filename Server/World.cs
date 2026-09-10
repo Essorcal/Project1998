@@ -2177,7 +2177,7 @@ public sealed partial class World
             // schedule us (machine-wide contention). WORK with lock ~= work -> a session thread was holding
             // _lock (something slow ran inside a critical section). WORK with lock ~0 -> the tick body
             // itself is genuinely too big for the population it's driving.
-            Log.Info($"!! SLOW TICK: work {work}ms (lock-wait {_lockWaitMs}ms), late {late}ms, gc {gcMs}ms — " +
+            Log.Warn($"SLOW TICK: work {work}ms (lock-wait {_lockWaitMs}ms), late {late}ms, gc {gcMs}ms — " +
                      $"{PlayerCount} player(s), {MobCount} mob(s) on {ActiveMapCount} active map(s)");
         }
     }
