@@ -56,7 +56,7 @@ public static class NpcScript
         {
             if (path is null || !File.Exists(path))
             {
-                Log.Info($"!! npc_dialog.lua: no file at '{path ?? "(null)"}' — keeping {(_npcs is null ? "the Lua NPC path disabled" : "the previously-loaded dialogs")}");
+                Log.Warn($"npc_dialog.lua: no file at '{path ?? "(null)"}' — keeping {(_npcs is null ? "the Lua NPC path disabled" : "the previously-loaded dialogs")}");
                 return (_npcs is not null, null);
             }
             try
@@ -71,7 +71,7 @@ public static class NpcScript
                     var sy = s.Globals.Get("npcs_say");            // optional — speech-trigger handlers
                     return (true, new PreparedReload(s, n.Table, sy.Type == DataType.Table ? sy.Table : null));
                 }
-                Log.Info("!! npc_dialog.lua missing global `npcs` table or `__make_ctx` — reload REJECTED, keeping the previous dialogs");
+                Log.Warn("npc_dialog.lua missing global `npcs` table or `__make_ctx` — reload REJECTED, keeping the previous dialogs");
                 return (_npcs is not null, null);
             }
             catch (Exception e)
@@ -259,7 +259,7 @@ public static class NpcScript
             case "rand":       { int lo = Int(t, "lo"), hi = Int(t, "hi"); if (hi < lo) (lo, hi) = (hi, lo); return DynValue.NewNumber(Random.Shared.Next(lo, hi + 1)); }
 
             default:
-                Log.Info($"!! npc_dialog: unknown op '{op}' — ignored");
+                Log.Warn($"npc_dialog: unknown op '{op}' — ignored");
                 return DynValue.Nil;
         }
     }
