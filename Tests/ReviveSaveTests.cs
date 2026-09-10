@@ -15,14 +15,18 @@ namespace Tests;
 /// window loaded a ghost: alive in nobody's memory, dead on disk, and dead again on the next login. That is
 /// the silent-failure shape — nothing throws, nothing logs, the player just wakes up dead.</para>
 ///
-/// <para>Both facts read the store back rather than asserting on the session, because the session was always
-/// right: the defect is entirely in what did or did not reach SQLite. The window is real but timing-bound in
-/// production, so neither fact races it — each one reads the row immediately after the revive returns, which
-/// is the instant the fix is about.</para>
+/// <para>All three facts read the store back rather than asserting on the session, because the session was
+/// always right: the defect is entirely in what did or did not reach SQLite. The window is real but
+/// timing-bound in production, so no fact races it — each one reads the row immediately after the revive
+/// returns, which is the instant the fix is about.</para>
 ///
-/// <para>Both deaths happen on a content-free map in the instance band (59000-65000), which
+/// <para>Every death happens on a content-free map in the instance band (59000-65000), which
 /// <c>ApplyDeathPenalties</c> charges exp only for: no coin spills onto the floor and no gear breaks, so the
 /// only thing moving between the two store reads is the revive itself.</para>
+///
+/// <para>Three revive paths, one per fact: <c>ReviveInPlace</c>, <c>ReviveAt</c> and
+/// <c>Session.LuaReviveSelf</c> (the Hyun Moo revival's <c>ctx:reviveSelf()</c>), which is a revive in the
+/// same sense — it drops ghost form and takes <c>IsDead</c> false — and had the same gap.</para>
 /// </summary>
 [Collection("world")]
 public class ReviveSaveTests
@@ -30,7 +34,7 @@ public class ReviveSaveTests
     /// <summary>Content-free map ids in the instance band, one per fact. No Maps.csv row means nothing is
     /// terrain-blocked and no other test on the shared World is standing there; the band means the death
     /// costs exp and nothing else.</summary>
-    private const ushort InPlaceMap = 60070, ReviveAtMap = 60071;
+    private const ushort InPlaceMap = 60070, ReviveAtMap = 60071, ReviveSelfMap = 60072;
 
     /// <summary>Mp is left well below the cap before the kill, so "the revive's Mp reached the store" is a
     /// different assertion from "the row was written at all".</summary>
@@ -122,7 +126,45 @@ public class ReviveSaveTests
         Assert.Equal(ch.Hp, saved.Hp);
         Assert.Equal(ch.Mp, saved.Mp);
         Assert.Equal(ch.Exp, saved.Exp);
-        // The warp half of the path lands in the same write.
+        // The warp half of the path lands in the same write: the row records where the player ACTUALLY
+        // landed, so a write placed before EnterMap's PlacePlayer resolved the arrival tile would fail here
+        // even on a same-map revive, which the Map assertion alone would not catch.
         Assert.Equal(SessionFixture.HomeMap, saved.Map);
+        Assert.Equal(ch.X, saved.X);
+        Assert.Equal(ch.Y, saved.Y);
+    }
+
+    /// <summary>
+    /// <b>The self-revive is on disk when it returns.</b> <c>Session.LuaReviveSelf</c> is bound to
+    /// <c>ctx:reviveSelf()</c> and cast by the shipped Hyun Moo revival (Spells.csv 31301). It is the third
+    /// revive path — <c>RefreshAppearance</c> drops the ghost form and <c>IsDead</c> goes false — and it is
+    /// the one #196's first round missed: it ended in <c>MarkDirty()</c>, so the row on disk was still the
+    /// corpse the death had saved.
+    ///
+    /// <para>Reached through <see cref="Session.WithState(System.Action)"/> because <c>LuaReviveSelf</c> has
+    /// no <c>EnterState</c> of its own — in production the cast handler's monitor is what
+    /// <c>SaveChar</c>'s <c>AssertStateHeld</c> sees, and this stands in for it.</para>
+    ///
+    /// <para>Red at <c>658ba72</c>, where the method ended in <c>MarkDirty()</c>:
+    /// <c>Assert.Equal() Failure: Values differ. Expected: 50. Actual: 0</c>.</para>
+    /// </summary>
+    [Fact]
+    public void ASelfReviveIsPersistedBeforeItReturns()
+    {
+        const string Name = "ReviveSelfSaved";
+        var (session, _, ch) = _fx.PlayerWith(Name, c => { c.Exp = StartExp; c.Mp = DrainedMp; },
+                                              ReviveSelfMap, 5, 10);
+
+        session.ReceiveEnvironmentDamage(9999, EnvText);
+        Assert.True(session.IsDead, "the kill did not land");
+        Assert.Equal(0u, Stored(Name).Hp);
+
+        session.WithState(() => session.LuaReviveSelf());
+        Assert.False(session.IsDead, "the revive did not raise the player");
+
+        var saved = Stored(Name);
+        Assert.True(ch.Hp > 0, "the revive left the character on 0 Hp in memory");
+        Assert.Equal(ch.Hp, saved.Hp);
+        Assert.Equal(ch.Exp, saved.Exp);
     }
 }
