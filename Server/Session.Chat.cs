@@ -176,9 +176,27 @@ public sealed partial class Session
         if (_party is null) { SendBlueMessage("You are not in a group"); return; }   // RTK's literal wording (blue, no period)
         string line = $"[!{_char.Name}] ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
+        // Each recipient's ignore reads and their send are ONE critical section on THEM (#29 rule 2).
+        // `p._char.Name` and `p.IsIgnoring(...)` are another session's state read bare from our thread —
+        // those reads are the genuinely unguarded accesses here — and `p.SendMiniText` writes their
+        // `_gameInc`, which rule 2 covers for the same blanket reason NotifyGroup is wrapped, not because
+        // the byte tears (a lost increment is a duplicate nonce, benign per Session.WorldApi.cs:314-315).
+        // ONE peer monitor at a time (the guard is released before the next member), so this is the same
+        // single nested acquisition Party.Broadcast makes and rule 2 resolves it the same way, ascending or
+        // descending; nothing here ever holds two peers at once. Our OWN list and name are read inside the
+        // body deliberately: the descending case drops our monitor to take theirs and puts it back before the
+        // body runs, so inside it both are held. Our own echo is re-entrant (rule 3), so it still goes out in
+        // roster order like every other line. That drop is also a window master did not have: a kick can
+        // land while we sit in Monitor.Enter on a lower-ranked peer, and the loop then finishes delivering
+        // the already-composed line to the roster it snapshotted before the kick. Inherent to rule 2 —
+        // holding our own monitor across the whole loop is exactly what the rule forbids — and the invite
+        // path documents the same shape at Session.Social.cs:84-88; the blast radius is one in-flight line.
         foreach (var p in _party.Members)
-            if (!(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))
+            p.WithState(() =>
+            {
+                if (IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)) return;
                 p.SendMiniText(line, type: 11);
+            });
         Log.Info($"   -> group chat: \"{line}\"");
     }
 
@@ -220,8 +238,28 @@ public sealed partial class Session
     /// <summary>Party join/leave/kick/disband broadcasts. Delivered on the SAME type=3 mini/status channel
     /// as the "You cast X." casting info (SendMiniText's default), NOT the type=11 "group" channel: on the
     /// 4.95 client type 11 lands in the scrolling chat box as blue text, which reads as someone talking
-    /// rather than a status event. Type 3 puts it in the status/mini pane where group events belong.</summary>
-    internal void NotifyGroup(string text) => SendMiniText(text, type: 3);
+    /// rather than a status event. Type 3 puts it in the status/mini pane where group events belong.
+    ///
+    /// <para><b>Wrapped at its own definition</b> — the <see cref="SendAdvice"/> shape, #29 rule 2. Almost
+    /// every call is a CROSS-SESSION one: <see cref="Party.Broadcast"/> walks the roster on the thread of
+    /// whichever member invited, left, kicked or disconnected, so the body below runs on a thread that does
+    /// not own this session. That alone is what puts it under the monitor: rule 2 is a BLANKET rule on
+    /// entering a peer's state, not a repair for a specific corruption. In particular the <c>_gameInc</c>
+    /// this ends up writing (<c>SendMiniText</c> → <c>SendMap</c>, Session.cs) is NOT a torn-byte hazard —
+    /// it is a byte, read once by <c>_gameInc++</c> and passed BY VALUE both into the body's encryption and
+    /// into the frame header, so every frame decrypts with the increment it declares and the worst a lost
+    /// update can do is emit the same nonce twice. Session.WorldApi.cs:314-315 already records that as
+    /// benign ("a rare duplicate is harmless since each packet carries its own inc in the header"), and
+    /// nothing here contradicts it. The accesses on this path that were genuinely unguarded are the foreign
+    /// READS the same slice closes: <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c> in <c>DoGroupChat</c>,
+    /// and <c>target.IsDead</c> in the invite (Session.Social.cs).
+    /// Wrapping here rather than at the call sites is what rule 3 is for: the two calls already inside
+    /// <c>member.WithState</c> (<c>RemoveFromParty</c>) see a re-entrant no-op and pay nothing.</para></summary>
+    internal void NotifyGroup(string text)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        SendMiniText(text, type: 3);
+    }
 
     /// <summary>Wisdom / "Listen to advice" (0x1b sub-4): stream a periodic gameplay hint into the chat channel
     /// (SendMiniText type 11 — RTK's advice type 99 -> 11, the "group &amp; subpath" chat channel, which is where
