@@ -1,3 +1,5 @@
+using Shared;
+
 namespace Server;
 
 /// <summary>

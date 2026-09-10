@@ -205,9 +205,11 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    only limits how often an address may *connect*, not what it sends once connected. The same gate is on
    the game channel's re-login path — otherwise the brute-force target just moves to port 2005.
 
-   **Logging:** the login channel's wire dump is OFF by default (`P1998_LOG_WIRE=1` to enable). These
-   packets carry the password in the clear, and the cipher is a fixed published XOR, so a "raw" dump is
-   just as readable as a decrypted one.
+   **Logging:** the login channel's wire dump is OFF by default (`P1998_LOG_WIRE=1` to enable; `0` is off,
+   and any other value takes the default and warns at startup). These packets carry the password in the
+   clear, and the cipher is a fixed published XOR, so a "raw" dump is just as readable as a decrypted one.
+   Both processes share one logger (`Shared.Core/Log.cs`) and read that variable the same way — only the
+   default differs, and the login server's is off.
 
    **Server → client `0x03` (handoff):** tell the client where the game server is. Body layout
    (as implemented and confirmed working):
