@@ -192,9 +192,10 @@ public sealed partial class Session
             member.SetGroupStatus(false);   // left or kicked out -> your "Join a group" status goes OFF (+ line)
         });
         if (!removed) return;
-        // OUTSIDE the member's body, both of these: Broadcast reaches every other member and the straggler's
-        // body takes a THIRD session's monitor, and neither may happen inside the member's (the nested pair
-        // #167 avoided).
+        // Both of these stay OUTSIDE the member's body, where they already were. The straggler's is the one
+        // that must: it enters a THIRD session's monitor, and taking that inside the member's is the nested
+        // pair #167 avoided. Broadcast enters no monitor (NotifyGroup only sends), but it walks every other
+        // member and there is nothing about it that wants the member's critical section held across it.
         party.Broadcast($"{name} is leaving the group.");
         if (straggler is not null)
         {
