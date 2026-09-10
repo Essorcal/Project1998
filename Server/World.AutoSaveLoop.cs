@@ -77,6 +77,7 @@ public sealed partial class World
         // that was a pool thread held for the duration, competing with the heartbeat.
         internal void Run()
         {
+            Log.Info($"autosave sweep running on thread '{Thread.CurrentThread.Name}' every {Session.AutoSaveMs} ms");
             while (true)
             {
                 Thread.Sleep(Session.AutoSaveMs);
