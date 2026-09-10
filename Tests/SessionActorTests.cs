@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Server;
 using Shared;
@@ -258,6 +259,84 @@ public class SessionActorTests
     }
 #endif
 
+    // =====================================================================================================
+    // The three deadlock facts below, and the one thing they all have to get right: telling a cycle apart
+    // from a busy laptop. A deadlock never finishes; a machine running four other suites finishes late. A
+    // fixed join budget reads both as the same failure, and on 2026-09-10 that is exactly what happened —
+    // two workers running this suite under load each saw LuaGateAgainstAPeerMonitorCannotDeadlock miss a
+    // 30 s join once and pass on every repeat. So the facts do not watch the clock, they watch PROGRESS.
+    // =====================================================================================================
+
+    /// <summary>How long the round counter may sit still before a deadlock fact calls it a deadlock. Any
+    /// completed round on either thread restarts this window, so slowness only makes the wait longer, never
+    /// a failure; only a thread that has stopped moving altogether spends the window.</summary>
+    private static readonly TimeSpan StallQuiet = TimeSpan.FromSeconds(10);
+
+    /// <summary>The safety net, not the detector. A run still creeping forward after this long is not the
+    /// cycle under test — it is a machine in trouble — and the fact says which of the two it saw.</summary>
+    private static readonly TimeSpan StallCap = TimeSpan.FromSeconds(600);
+
+    /// <summary>Poll interval for the progress watch. Short enough that the failure message's round count is
+    /// current, long enough that the watcher is not itself load on the two threads it is watching.</summary>
+    private const int StallPollMs = 100;
+
+    /// <summary>Rounds completed across both threads of a deadlock fact: the workers bump it once per round
+    /// they finish, the waiting test thread reads it. Interlocked on both sides, because "has anything at all
+    /// happened lately?" is the entire question and a torn or cached read answers it wrongly.</summary>
+    private sealed class RoundCounter
+    {
+        private long _rounds;
+
+        public long Rounds => Interlocked.Read(ref _rounds);
+
+        public void Bump() => Interlocked.Increment(ref _rounds);
+    }
+
+    /// <summary>
+    /// Waits for both threads of a deadlock fact to finish, and fails on a STALL rather than on a stopwatch:
+    /// <paramref name="progress"/> not moving for <paramref name="quiet"/> is a cycle, and everything else is
+    /// just a slow machine that is still allowed to finish.
+    ///
+    /// <para><paramref name="cap"/> is a backstop so a wedged run cannot hold the agent forever; reaching it
+    /// while still making progress is reported as its own, differently worded failure, because it means
+    /// something other than a deadlock (a machine at a standstill, a round that got orders of magnitude more
+    /// expensive) and should not be read as this fact's cycle having closed.</para>
+    /// </summary>
+    private static void RunUntilDoneOrStalled(Thread[] threads, Func<long> progress, TimeSpan quiet, TimeSpan cap, string what)
+    {
+        var elapsed = Stopwatch.StartNew();
+        long last = progress();
+        var lastMoved = TimeSpan.Zero;
+
+        while (true)
+        {
+            // Completion is checked before the counter is judged, so a run that has just finished returns
+            // rather than being convicted of the silence that follows its last round.
+            if (threads.All(t => t.Join(0)))
+                return;
+
+            long now = progress();
+            if (now != last)
+            {
+                last = now;
+                lastMoved = elapsed.Elapsed;
+            }
+            else if (elapsed.Elapsed - lastMoved >= quiet)
+            {
+                Assert.Fail($"{what}: no round completed for {quiet.TotalSeconds:0} s, stopped at {last} rounds " +
+                            $"{elapsed.Elapsed.TotalSeconds:0} s in — the threads are stuck, not slow");
+            }
+
+            if (elapsed.Elapsed >= cap)
+            {
+                Assert.Fail($"{what}: still running after the {cap.TotalSeconds:0} s cap at {last} rounds — still " +
+                            "moving, so not this cycle, but far past anything this machine should need");
+            }
+
+            Thread.Sleep(StallPollMs);
+        }
+    }
+
     /// <summary>
     /// Two players reaching into each other at once — the ABBA shape that a naive per-session lock deadlocks
     /// on, and the reason session monitors are only ever taken in ascending <c>StateRank</c>. On a PvP map
@@ -266,6 +345,9 @@ public class SessionActorTests
     /// <para>Also checks what the reordering owes its caller: when the inner acquisition has to drop and
     /// retake the outer one, the caller is holding it again by the time the inner body returns AND after it
     /// unwinds.</para>
+    ///
+    /// <para>The wait is a progress watch, not a deadline: the cycle this pins closes forever when it closes,
+    /// so a frozen round counter is the deadlock and a merely late one is a loaded laptop.</para>
     /// </summary>
     [Fact]
     public void PeerEntryPointsFromBothSidesAtOnceCannotDeadlock()
@@ -275,6 +357,7 @@ public class SessionActorTests
         var (b, _) = _fx.Player("ActorPeerB");
 
         var start = new ManualResetEventSlim();
+        var rounds = new RoundCounter();
         Exception? faultAb = null, faultBa = null;
 
         Thread Nest(Session outer, Session inner, Action<Exception> onFault) => new(() =>
@@ -283,6 +366,7 @@ public class SessionActorTests
             try
             {
                 for (int i = 0; i < Rounds; i++)
+                {
                     outer.WithState(() =>
                     {
                         inner.WithState(() =>
@@ -292,6 +376,8 @@ public class SessionActorTests
                         });
                         Assert.True(outer.StateHeld, "the caller's monitor was not restored after the nested body");
                     });
+                    rounds.Bump();
+                }
             }
             catch (Exception e) { onFault(e); }
         });
@@ -302,10 +388,13 @@ public class SessionActorTests
         ba.Start();
         start.Set();
 
-        Assert.True(ab.Join(TimeSpan.FromSeconds(30)), "A->B deadlocked");
-        Assert.True(ba.Join(TimeSpan.FromSeconds(30)), "B->A deadlocked");
+        RunUntilDoneOrStalled(new[] { ab, ba }, () => rounds.Rounds, StallQuiet, StallCap, "the A->B / B->A pair");
+
+        // The faults first: a thread that threw stops bumping, so it would otherwise be reported as a short
+        // count instead of as the exception it actually hit.
         Assert.Null(faultAb);
         Assert.Null(faultBa);
+        Assert.Equal(2L * Rounds, rounds.Rounds);
     }
 
     /// <summary>
@@ -319,7 +408,9 @@ public class SessionActorTests
     /// lock waiting on subject A's monitor, against A's monitor waiting on B's viewport lock. Both sides are
     /// constant traffic on a populated map.</para>
     ///
-    /// <para>These are the production calls, not stand-ins. Before the fix both threads hang.</para>
+    /// <para>These are the production calls, not stand-ins. Before the fix both threads hang — and hanging is
+    /// what the wait looks for: the round counter stops dead on the cycle, where a busy machine only slows
+    /// it down.</para>
     /// </summary>
     [Fact]
     public void ViewportReconcileAgainstADespawnBroadcastCannotDeadlock()
@@ -329,13 +420,21 @@ public class SessionActorTests
         var (b, _) = _fx.Player("ActorViewB", x: 6, y: 10);
 
         var start = new ManualResetEventSlim();
+        var rounds = new RoundCounter();
         Exception? despawnerFault = null, reconcilerFault = null;
 
         // A's read loop reverting a morph: under A's monitor, broadcast a despawn into B's viewport sets.
         var despawner = new Thread(() =>
         {
             start.Wait();
-            try { for (int i = 0; i < Rounds; i++) a.WithState(() => b.DespawnEntity(a.PlayerId)); }
+            try
+            {
+                for (int i = 0; i < Rounds; i++)
+                {
+                    a.WithState(() => b.DespawnEntity(a.PlayerId));
+                    rounds.Bump();
+                }
+            }
             catch (Exception e) { despawnerFault = e; }
         });
 
@@ -346,7 +445,14 @@ public class SessionActorTests
         var reconciler = new Thread(() =>
         {
             start.Wait();
-            try { for (int i = 0; i < Rounds; i++) b.SyncPeer(aTile); }
+            try
+            {
+                for (int i = 0; i < Rounds; i++)
+                {
+                    b.SyncPeer(aTile);
+                    rounds.Bump();
+                }
+            }
             catch (Exception e) { reconcilerFault = e; }
         });
 
@@ -354,10 +460,12 @@ public class SessionActorTests
         reconciler.Start();
         start.Set();
 
-        Assert.True(despawner.Join(TimeSpan.FromSeconds(30)), "the despawn broadcast deadlocked against the viewport reconcile");
-        Assert.True(reconciler.Join(TimeSpan.FromSeconds(30)), "the viewport reconcile deadlocked against the despawn broadcast");
+        RunUntilDoneOrStalled(new[] { despawner, reconciler }, () => rounds.Rounds, StallQuiet, StallCap,
+            "the despawn broadcast against the viewport reconcile");
+
         Assert.Null(despawnerFault);
         Assert.Null(reconcilerFault);
+        Assert.Equal(2L * Rounds, rounds.Rounds);
     }
 
 #if DEBUG
@@ -393,6 +501,10 @@ public class SessionActorTests
     /// <para>The gate's fast path (<c>TryEnter</c>, no wait) is what keeps an ordinary cast atomic; the slow
     /// path drops this thread's session monitors before waiting, which is the invariant the whole thing
     /// rests on — a thread waiting for the gate holds no monitor, so the gate holder can always finish.</para>
+    ///
+    /// <para>This is the fact that flaked on 2026-09-10, twice, on a laptop running other suites beside it.
+    /// The gate serialises both threads, so its rounds are the slowest of the three and the old fixed budget
+    /// had the least room; the progress watch removes the budget from the question entirely.</para>
     /// </summary>
     [Fact]
     public void LuaGateAgainstAPeerMonitorCannotDeadlock()
@@ -402,6 +514,7 @@ public class SessionActorTests
         var (b, _) = _fx.Player("ActorLuaB");
 
         var start = new ManualResetEventSlim();
+        var rounds = new RoundCounter();
         Exception? verbFault = null, castFault = null;
 
         // B: monitor, then the gate, then a peer's monitor from inside the verb.
@@ -411,10 +524,13 @@ public class SessionActorTests
             try
             {
                 for (int i = 0; i < Rounds; i++)
+                {
                     b.WithState(() =>
                     {
                         using (Session.EnterScriptGate()) a.ReceiveHeal(1);
                     });
+                    rounds.Bump();
+                }
             }
             catch (Exception e) { verbFault = e; }
         });
@@ -426,7 +542,10 @@ public class SessionActorTests
             try
             {
                 for (int i = 0; i < Rounds; i++)
+                {
                     a.WithState(() => { using (Session.EnterScriptGate()) { } });
+                    rounds.Bump();
+                }
             }
             catch (Exception e) { castFault = e; }
         });
@@ -435,10 +554,12 @@ public class SessionActorTests
         cast.Start();
         start.Set();
 
-        Assert.True(verb.Join(TimeSpan.FromSeconds(30)), "the peer-reaching Lua verb deadlocked");
-        Assert.True(cast.Join(TimeSpan.FromSeconds(30)), "the plain Lua cast deadlocked");
+        RunUntilDoneOrStalled(new[] { verb, cast }, () => rounds.Rounds, StallQuiet, StallCap,
+            "the peer-reaching Lua verb against the plain Lua cast");
+
         Assert.Null(verbFault);
         Assert.Null(castFault);
+        Assert.Equal(2L * Rounds, rounds.Rounds);
     }
 
     // =====================================================================================================
