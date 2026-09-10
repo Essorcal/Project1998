@@ -35,6 +35,39 @@ public sealed class FrameReader
     /// <summary>Chunk pulled off the socket per read. 4KB is what both loops have always used.</summary>
     public const int ReadBufferBytes = 4096;
 
+    /// <summary>The most unframed bytes one connection may hold before it is dropped: one maximum legal
+    /// frame, 65,538 bytes.
+    ///
+    /// <para><b>Where the number comes from.</b> 4.95 framing is <c>AA | length(u16 BE) | opcode | increment |
+    /// body</c> and "Total bytes on the wire = <c>3 + length</c>" (<c>docs/4.x/Protocol.md</c> §2, and
+    /// <see cref="TkPacket.TryParse"/> computes exactly that), so with a u16 length the largest frame this
+    /// reader can ever consume is <c>3 + 0xFFFF</c>. A buffer holding MORE than one maximum frame and framing
+    /// nothing is holding something the reader will never consume, however many more bytes arrive.</para>
+    ///
+    /// <para><b>Why not tighter.</b> There is no citable smaller maximum. A client's board post and its native
+    /// nmail carry <c>bodyLen</c>/<c>msgLen</c> as <b>u16 BE</b> (<c>Protocol.md</c> §11h, <c>0x3B</c> sub-4
+    /// and sub-6), so the wire format lets a legitimate client frame run to the u16 limit; every smaller number
+    /// would be a guess about packets we have not implemented, and a wrong guess drops a legal one. Not
+    /// env-tunable for the same reason: this is a fact about the length field, not a policy an operator could
+    /// set correctly.</para>
+    ///
+    /// <para><b>Where it is checked, and what it can catch.</b> After framing, so that a read which completes
+    /// frames shrinks the buffer first and no completable frame is ever refused. Checking the appended buffer
+    /// BEFORE framing was rejected: <see cref="TkPacket.TryParse"/> takes any frame once
+    /// <c>buf.Count &gt;= 3 + length</c>, so a pre-framing buffer over this bound ALWAYS holds a complete legal
+    /// frame, and an early check could only ever refuse one.</para>
+    ///
+    /// <para>The consequence, stated plainly: while the head-byte rule below stands, this cap cannot fire. The
+    /// framing loop stops only with fewer than five bytes left, or on a 0xAA head whose length is not yet
+    /// satisfied — necessarily fewer than <c>3 + 0xFFFF</c> bytes, or TryParse would have taken it — or on a
+    /// non-0xAA head, which the head-byte rule drops. So the pair bounds the unframed buffer at this many bytes
+    /// (plus at most one <see cref="ReadBufferBytes"/> chunk in flight), which is the guarantee, and the
+    /// head-byte rule is what delivers it today. The cap states the bound in one place and is what still
+    /// enforces it if that rule is ever relaxed — a re-syncing reader, say — for the cost of one comparison per
+    /// read.</para>
+    /// </summary>
+    public const int MaxUnframedBytes = 3 + 0xFFFF;
+
     /// <summary>The default handshake budget in milliseconds, from <c>P1998_HANDSHAKE_MS</c>.
     ///
     /// <para>Slow-loris defense: a freshly-accepted connection must send its FIRST valid framed packet (0x10
@@ -76,7 +109,10 @@ public sealed class FrameReader
         /// Return <c>true</c> to stop the loop (the enumeration ends, and the caller's <c>finally</c> closes
         /// the connection as it would on any other exit). The game sniffs the HTTP status probe here and
         /// answers it with a direct stream write, which is why this hook is asynchronous. The buffer is the
-        /// live one — read it, never mutate it.</summary>
+        /// live one — read it, never mutate it.
+        /// <para>This runs BEFORE both drop rules (<see cref="MaxUnframedBytes"/> and the non-0xAA head
+        /// byte), which is what keeps the status probe working: "GET " is a non-0xAA head, so a probe the
+        /// hook did not answer first would be dropped as an unframed stream.</para></summary>
         public Func<List<byte>, ValueTask<bool>>? OnBufferedAsync { get; init; }
 
         /// <summary>The read is completely done: frames delivered, latch set, unframed tail dumped. Fires for
@@ -106,13 +142,36 @@ public sealed class FrameReader
         _handshakeMs = handshakeMs ?? DefaultHandshakeMs;
     }
 
-    /// <summary>Read frames until the peer closes (<c>ReadAsync</c> returns 0), a hook asks to stop, or the
-    /// stream throws — the caller's <c>catch</c>/<c>finally</c> handles the last of those exactly as it did
-    /// when this loop was inline.
+    /// <summary>Read frames until the peer closes (<c>ReadAsync</c> returns 0), a hook asks to stop, the peer
+    /// stops framing (below), or the stream throws — the caller's <c>catch</c>/<c>finally</c> handles the last
+    /// of those exactly as it did when this loop was inline.
     ///
-    /// <para>Framing is deliberately unchanged from the two loops it replaces, including the part that is
-    /// arguably wrong: a byte that is not <c>0xAA</c> at the head of the buffer stalls framing forever and is
-    /// never skipped. Re-syncing the stream is a behaviour change and belongs in its own change.</para>
+    /// <para><b>Two bounds on a peer that is not framing.</b> Both end the enumeration with one
+    /// <c>Log.Warn</c> line naming the peer, and each process's existing <c>finally</c> closes the
+    /// socket — the same exit the status probe already takes. Both are checked AFTER
+    /// <see cref="Hooks.OnBufferedAsync"/> so that hook still wins (see its doc).</para>
+    /// <list type="number">
+    ///   <item>The unframed buffer may not exceed <see cref="MaxUnframedBytes"/>. Before the handshake the
+    ///     watchdog bounds the TIME but not the BYTES; after it there is no read timeout at all (an AFK player
+    ///     is never disconnected), so before this pair a connection that stopped framing grew a
+    ///     <c>List&lt;byte&gt;</c> for as long as it held the socket open. Read
+    ///     <see cref="MaxUnframedBytes"/> for which of the two rules actually delivers that bound.</item>
+    ///   <item>A head byte that is not <c>0xAA</c> after framing drops the connection. It used to stall the
+    ///     inbound half forever — the framing loop only advances while <c>arr[off] == 0xAA</c>, so one stray
+    ///     byte meant nothing was ever framed again and nothing noticed except, before the handshake, the
+    ///     watchdog. Frames already parsed out of that same read are yielded first and are never lost.</item>
+    /// </list>
+    ///
+    /// <para><b>Why drop and not re-sync.</b> Scanning forward to the next <c>0xAA</c> needs a stream-level
+    /// anchor to tell a real header from a coincidence, and 4.95 has none: the framing is
+    /// <c>AA | length(u16 BE) | opcode | increment | body</c> with "no trailer and no checksum"
+    /// (<c>docs/4.x/Protocol.md</c> §2, <see cref="TkPacket"/>), and bodies are XOR-ciphered, so a body byte
+    /// is <c>0xAA</c> about once every 256 bytes. A scan would lock onto a false header with a random u16
+    /// length and then either stall or misparse — silently, which is the failure mode this codebase is least
+    /// able to see. Dropping is loud and costs a real client nothing: every client frame starts with
+    /// <c>0xAA</c> (§2, "while at least 5 bytes and <c>buf[0]==0xAA</c>, read length, consume <c>3+length</c>,
+    /// repeat"), and <c>Protocol.md</c> documents no case in which a 4.95 client legitimately sends a leading
+    /// byte that is not <c>0xAA</c>.</para>
     /// </summary>
     public async IAsyncEnumerable<TkPacket> ReadFramesAsync()
     {
@@ -155,6 +214,25 @@ public sealed class FrameReader
                 buf.RemoveRange(0, off);
                 _hooks.OnEstablished();   // first valid frame parsed -> handshake satisfied
             }
+            // Bound 1: more unframed bytes than one maximum legal frame. Every byte here has already been
+            // offered to the framing loop, so nothing at this head is a frame more bytes could complete. It
+            // is the stated cap and the layer that keeps the buffer bounded if the head-byte rule below is
+            // ever relaxed; while that rule stands this cannot fire (see MaxUnframedBytes).
+            if (buf.Count > MaxUnframedBytes)
+            {
+                Log.Warn($"{_remote} {buf.Count}B unframed, over the {MaxUnframedBytes}B cap — dropping");
+                yield break;
+            }
+
+            // Bound 2: a head byte that is not 0xAA. Whatever the peer is speaking, it is not this protocol,
+            // and framing can never advance past this byte. A 0xAA head with fewer than five bytes, or with a
+            // length not yet satisfied, is an ordinary partial frame and waits exactly as it always has.
+            if (buf.Count > 0 && buf[0] != 0xAA)
+            {
+                Log.Warn($"{_remote} head byte 0x{buf[0]:x2} is not 0xAA — stream not framed, dropping");
+                yield break;
+            }
+
             if (buf.Count > 0 && Log.WireEnabled)
                 Log.Info($"   (… {buf.Count}B buffered/unframed: {Log.Hex(buf.ToArray())})");
 
