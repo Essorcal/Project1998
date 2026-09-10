@@ -643,7 +643,7 @@ public sealed partial class Session
     {
         if (result.HasValue) return result.Value;
         SendMiniText($"{sp.Name} is unavailable right now.");
-        Log.Info($"!! no Lua verb for spell '{sp.Key}' - is spell_verbs.lua loaded?");
+        Log.Warn($"no Lua verb for spell '{sp.Key}' - is spell_verbs.lua loaded?");
         return false;
     }
 

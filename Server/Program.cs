@@ -63,6 +63,7 @@ try
 }
 catch (ArgumentException e)
 {
+    // Log.Error deliberately requires an exception; keep this exception-free fatal text hand-prefixed.
     Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
     Log.Shutdown();
     Environment.ExitCode = 1;
@@ -82,6 +83,7 @@ Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) �
 // listens and accepts logins, and every player lands in a mapless void. Fail loudly instead of leaving it
 // to be inferred from a "0 map(s)" line among the startup counts.
 if (Content.Maps.Count == 0)
+    // Log.Error deliberately requires an exception; keep this exception-free fatal text hand-prefixed.
     Log.Info("!!! NO CONTENT LOADED — game-data was not found. Expected it under the repo root " +
              $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
              "The world will be empty. Fix: run from a full checkout, or set P1998_GAME_DATA to the " +
@@ -94,7 +96,7 @@ if (Content.Maps.Count == 0)
     var (found, total, dirs) = MapData.Availability(Content.Maps.Keys);
     Log.Info($"=== terrain: {found}/{total} map file(s) found; searched: {string.Join(" | ", dirs)}");
     if (found < total)
-        Log.Info($"!! {total - found} map(s) have NO .map file — collision and spawn placement are degraded on them. " +
+        Log.Warn($"{total - found} map(s) have NO .map file — collision and spawn placement are degraded on them. " +
                  "Copy the client's Maps directory into game-data/maps, or set P1998_MAPS to it.");
 }
 Boards.MigrateFromJsonIfNeeded();   // one-time import of any legacy state/boards.json into the shared DB

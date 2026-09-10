@@ -56,6 +56,7 @@ try
 }
 catch (ArgumentException e)
 {
+    // Log.Error deliberately requires an exception; keep this exception-free fatal text hand-prefixed.
     Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
     Environment.ExitCode = 1;
     return;
