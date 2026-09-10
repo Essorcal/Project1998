@@ -1085,7 +1085,7 @@ public sealed partial class Session
         // acquisition would DESCEND, it exits every monitor this thread already holds that outranks the target
         // while it blocks on that target, then retakes them. Both statements below descend into somebody else,
         // so both can leave OUR state unheld in the middle of the death — and a revive reaches us on another
-        // thread from three shipped paths (a GM `@revive <us>`, an NPC Rebirth, a poet's Resurrect). Anything
+        // thread from three shipped paths (a GM `@rez <us>`, an NPC Rebirth, a poet's Resurrect). Anything
         // running after a drop can therefore be running on a player who is alive again: charged the death
         // penalty, told they were defeated, and saved that way. So everything the death READS is above, and
         // the two descending calls are the last things Die() does.
