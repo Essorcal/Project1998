@@ -66,11 +66,19 @@ public sealed class FrameReaderTests
         Assert.Equal(new byte[] { 0xC0, 0xC1, 0xC2 }, h.Frames[2].Body);
     }
 
-    /// <summary>Fact 3: a buffer whose first byte is not 0xAA yields nothing, keeps every byte, and never
-    /// re-syncs — not an endorsement, a PIN. This is what both read loops have always done; changing it is a
-    /// behaviour change and belongs in its own PR (see the reader's ReadFramesAsync doc).</summary>
+    /// <summary>Fact 3: a buffer whose head byte is not 0xAA DROPS the connection — the enumeration ends, no
+    /// frame is yielded, and the after-read hook never runs for that read.
+    ///
+    /// <para>This used to be a stall: framing only advances while the head byte is 0xAA, so one stray byte
+    /// wedged the connection's inbound half forever and nothing noticed except, before the handshake, the
+    /// watchdog. The watchdog is NOT what ends this: the budget here is a minute and the hook count is
+    /// asserted at zero, so the drop is the reader's own.</para>
+    ///
+    /// <para>Falsified by deleting the head-byte block from ReadFramesAsync: the pump never completes, the
+    /// wait in Completion times out and the fact is red on the enumeration, with h.Frames still empty.</para>
+    /// </summary>
     [Fact]
-    public async Task ABufferNotStartingWithAaYieldsNothingKeepsItsBytesAndNeverResyncs()
+    public async Task ABufferWhoseHeadByteIsNotAaDropsTheConnection()
     {
         var frame = TkPacket.Build(0x10, 0x00, new byte[] { 9 });
         var junkThenFrame = new byte[] { 0x00 }.Concat(frame).ToArray();
@@ -79,13 +87,169 @@ public sealed class FrameReaderTests
         h.Start();
 
         h.Stream.Push(junkThenFrame);
-        Assert.True(await h.NextReadAsync());
-        Assert.Empty(h.Frames);
-        Assert.Equal(junkThenFrame, h.BufferedSnapshot);   // every byte still there, nothing skipped
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
 
-        h.Stream.Push(TkPacket.Build(0x11, 0x00, new byte[] { 8 }));
+        Assert.True(h.Completion.IsCompletedSuccessfully);
+        Assert.Empty(h.Frames);                            // nothing was framed past the stray byte
+        Assert.Equal(junkThenFrame, h.BufferedSnapshot);   // and nothing was skipped looking for one
+        Assert.Equal(0, Volatile.Read(ref h.TimeoutCalls));
+        Assert.Equal(0, h.AfterReads);
+    }
+
+    /// <summary>Fact 3b: the frames that shared the read with the stray byte are yielded FIRST. The drop is
+    /// checked after framing, so a client that sends two good packets and then goes wrong loses neither.
+    ///
+    /// <para>Falsified by moving the head-byte block above the framing loop: the head byte at that point is
+    /// the first frame's own 0xAA, so the read passes the rule, the two frames are yielded and the stray byte
+    /// is left for a read that never comes — the enumeration never ends and the fact is red on its
+    /// Completion wait. That is the whole content of this fact: the drop belongs to the read that exposed the
+    /// stray byte, not to the next one.</para></summary>
+    [Fact]
+    public async Task FramesAheadOfAStrayByteAreYieldedBeforeTheConnectionIsDropped()
+    {
+        var a = TkPacket.Build(0x03, 0x01, new byte[] { 0xA0 });
+        var b = TkPacket.Build(0x04, 0x02, new byte[] { 0xB0, 0xB1 });
+
+        await using var h = new Harness();
+        h.Start();
+
+        h.Stream.Push(a.Concat(b).Concat(new byte[] { 0x00 }).ToArray());
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(h.Completion.IsCompletedSuccessfully);
+        Assert.Equal(new byte[] { 0x03, 0x04 }, h.Frames.Select(f => f.Opcode).ToArray());
+        Assert.Equal(0, Volatile.Read(ref h.TimeoutCalls));
+    }
+
+    /// <summary>Fact 3c: the status probe still wins. "GET " is a non-0xAA head, so the game's probe hook has
+    /// to see those bytes BEFORE the head-byte rule does or the docs site's status poll (and Test-Branch.ps1's
+    /// readiness check) becomes a dropped connection. The hook stopping the loop is what ends this
+    /// enumeration: the hook is recorded as having run, with the probe's bytes.
+    ///
+    /// <para>No Warn line can be written on this path — the hook's <c>yield break</c> is ahead of both drop
+    /// rules in the method, so neither is reached. That ORDER is what the fact pins: move either rule above
+    /// the OnBufferedAsync call and the hook never runs, leaving BufferedCounts empty and the fact red.</para>
+    /// </summary>
+    [Fact]
+    public async Task TheStatusProbeHookRunsBeforeTheNonAaHeadIsDropped()
+    {
+        var probe = Encoding.ASCII.GetBytes("GET /status HTTP/1.1\r\n\r\n");
+
+        await using var h = new Harness { StopAfterBuffered = buf => buf.Count >= 4 && buf[0] == (byte)'G' };
+        h.Start();
+
+        h.Stream.Push(probe);
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(h.Completion.IsCompletedSuccessfully);
+        Assert.Equal(new[] { probe.Length }, h.BufferedCounts.ToArray());   // the hook saw the probe
+        Assert.Equal(probe, h.BufferedSnapshot);
+        Assert.Empty(h.Frames);
+        Assert.Equal(0, h.AfterReads);
+    }
+
+    /// <summary>Fact 3d: the unframed buffer is BOUNDED before the handshake, where the watchdog bounds the
+    /// time but not the bytes. A peer that opens a maximum-length header and then streams filler is dropped,
+    /// and the buffer it got to hold never passed one maximum frame plus the read that carried it there. The
+    /// budget here is a minute and the timeout hook is asserted at zero, so the watchdog is not what ended it.
+    ///
+    /// <para>Which rule fires, exactly: the header claims 3 + 0xFFFF bytes, so the framing loop takes that
+    /// frame on the read that completes it (garbage the session ignores — pinned below, because delivering it
+    /// at all is part of the behaviour) and leaves the filler tail, whose head byte is not 0xAA. The
+    /// <see cref="FrameReader.MaxUnframedBytes"/> cap cannot fire while that rule stands — see its doc — which
+    /// is why this fact pins the BOUND, the thing both rules exist to guarantee, rather than the cap's branch.
+    /// </para>
+    ///
+    /// <para>Falsified by deleting the head-byte block: nothing drops the tail, no further bytes arrive, the
+    /// pump sits in ReadAsync and the wait in Completion times out. Falsified a second way, for the bound
+    /// itself, by deleting BOTH blocks and pushing filler without end (300,000 bytes): the buffer peaked at
+    /// 234,462B and the last assertion went red. With the cap block alone put back, the same stream stays
+    /// inside the bound and is dropped — which is the layering its doc claims.</para></summary>
+    [Fact]
+    public async Task APeerThatOpensAMaximumHeaderAndStreamsFillerIsDroppedWithABoundedBuffer()
+    {
+        await using var h = new Harness();
+        h.Start();
+
+        h.Stream.Push(NeverFramingBytes(FrameReader.MaxUnframedBytes + 1));
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(h.Completion.IsCompletedSuccessfully);
+        Assert.Single(h.Frames);                            // the maximum-length garbage its header claimed
+        Assert.Equal(0, Volatile.Read(ref h.TimeoutCalls));
+        Assert.True(h.BufferedCounts.Max() <= FrameReader.MaxUnframedBytes + FrameReader.ReadBufferBytes,
+            $"unframed buffer peaked at {h.BufferedCounts.Max()}B");
+    }
+
+    /// <summary>Fact 3e: and the same AFTER the handshake, which is the case nothing else bounds at all —
+    /// there is no read timeout once a connection has spoken, by design. The frame that established it is
+    /// delivered and kept; the filler that follows is bounded and dropped.
+    ///
+    /// <para>Falsified exactly as 3d is.</para></summary>
+    [Fact]
+    public async Task AnEstablishedConnectionThatStopsFramingIsDroppedWithABoundedBuffer()
+    {
+        await using var h = new Harness();
+        h.Start();
+
+        h.Stream.Push(TkPacket.Build(0x10, 0x00, new byte[] { 1 }));
         Assert.True(await h.NextReadAsync());
-        Assert.Empty(h.Frames);                            // and the stall is permanent
+        Assert.Single(h.Frames);
+
+        h.Stream.Push(NeverFramingBytes(FrameReader.MaxUnframedBytes + 1));
+        await h.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(h.Completion.IsCompletedSuccessfully);
+        Assert.Equal(2, h.Frames.Count);                    // the real one, then the garbage the header claimed
+        Assert.Equal(0x10, h.Frames[0].Opcode);
+        Assert.Equal(0, Volatile.Read(ref h.TimeoutCalls));
+        Assert.True(h.BufferedCounts.Max() <= FrameReader.MaxUnframedBytes + FrameReader.ReadBufferBytes,
+            $"unframed buffer peaked at {h.BufferedCounts.Max()}B");
+    }
+
+    /// <summary>Fact 3f: the bound is not too tight. A frame of the MAXIMUM legal length — 3 + 0xFFFF bytes,
+    /// the largest the u16 length field can describe — delivered in 4KB reads is yielded whole, once, and
+    /// never trips the cap. This is the boundary case that makes the number right rather than merely large.
+    ///
+    /// <para>Falsified by shrinking <see cref="FrameReader.MaxUnframedBytes"/> below 3 + 0xFFFF — 0xFFFF, say:
+    /// the 16th read leaves 65,536 unframed bytes, the cap drops the connection two reads before the frame it
+    /// is holding completes, and the fact is red on the 16th NextReadAsync, which times out with no frame
+    /// yielded. That is the falsification that makes the NUMBER the thing under test, and it is why the
+    /// constant is not compared to the frame length until the end.</para></summary>
+    [Fact]
+    public async Task AMaximumLengthFrameIsYieldedWholeAndNeverTripsTheCap()
+    {
+        // len = 2 + body = 0xFFFF, so the whole frame is 3 + 0xFFFF bytes: the largest this wire format has.
+        var frame = TkPacket.Build(0x10, 0x00, new byte[0xFFFF - 2]);
+
+        await using var h = new Harness();
+        h.Start();
+
+        h.Stream.Push(frame);
+        int reads = (frame.Length + FrameReader.ReadBufferBytes - 1) / FrameReader.ReadBufferBytes;
+        for (int i = 0; i < reads; i++) Assert.True(await h.NextReadAsync());
+
+        Assert.False(h.Completion.IsCompleted);   // still connected: the cap did not fire
+        var yielded = Assert.Single(h.Frames);
+        Assert.Equal(0x10, yielded.Opcode);
+        Assert.Equal(0xFFFF - 2, yielded.Body.Length);
+        // Last, so that a cap set below the maximum is caught by the reads above rather than here: the cap IS
+        // one maximum legal frame, not merely at least one.
+        Assert.Equal(FrameReader.MaxUnframedBytes, frame.Length);
+    }
+
+    /// <summary>A header claiming the maximum length, then filler. Until the claim is satisfied the head byte
+    /// stays 0xAA and nothing frames, so the buffer grows one read at a time — this is the stream the bound is
+    /// about. At <paramref name="total"/> = one byte past <see cref="FrameReader.MaxUnframedBytes"/> the claim
+    /// is finally satisfied on the last read: the maximum-length garbage is framed and the single filler byte
+    /// behind it is the non-0xAA head that ends the connection.</summary>
+    private static byte[] NeverFramingBytes(int total)
+    {
+        var bytes = new byte[total];
+        bytes[0] = 0xAA;
+        bytes[1] = 0xFF;
+        bytes[2] = 0xFF;
+        return bytes;
     }
 
     /// <summary>Fact 4a: the handshake watchdog calls the close hook EXACTLY once when no valid frame
