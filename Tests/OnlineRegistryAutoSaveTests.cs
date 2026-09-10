@@ -321,6 +321,9 @@ public class OnlineRegistryAutoSaveTests
     /// a log must not be told, and the strings moved files in this PR. <c>Log</c> writes through a background
     /// writer thread with no sink to attach, so the text is pinned here.</para>
     ///
+    /// <para><b>The sweep entry log.</b> #194 pins the one-time "autosave sweep" line here because a healthy
+    /// thread otherwise leaves no evidence that it started.</para>
+    ///
     /// <para>Falsified by renaming the thread body (<c>Run</c> to <c>Run2</c> on both sides, so the server
     /// still builds and still starts a <c>world-autosave</c> thread): red with "Assert.Matches() Failure:
     /// Pattern not found in value / Regex: new Thread\(_world\.AutoSave\.Run\)...". Falsified again by
@@ -351,6 +354,7 @@ public class OnlineRegistryAutoSaveTests
         Assert.DoesNotContain("FlushIsolated", worldSource);
 
         // Both wordings, unchanged by the move.
+        Assert.Contains("autosave sweep running on thread", sweepSource);
         Assert.Contains("that player's save is retried next sweep, the others continue", sweepSource);
         Assert.Contains("save LOST — process is exiting, there is no retry", sweepSource);
         Assert.Contains("FlushIsolated(s, \"autosave\")", sweepSource);
