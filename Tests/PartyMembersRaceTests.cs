@@ -488,8 +488,10 @@ public sealed class PartyMembersRaceTests
     // Party's gate on the LEADER's thread and only then wait for the member's monitor to write their _party,
     // so the roster and the field disagreed for the length of that wait — and in the DESCENDING case the wait
     // had dropped the leader's monitor, so a third member's leave could reach TryDisband and RETIRE the party
-    // inside the gap. #198 moved the swap inside the member's own body, which closes that window: the two
-    // facts below are the window being gone, and the reads that had to survive it while it was open.
+    // inside the gap. #198 moved the swap inside the member's own body, which closes that window: the first
+    // fact below hunts the window and finds it gone, and the second — in which nobody is kicked, the
+    // retired-party state being built at Party's gate — pins the reads that had to survive it while it was
+    // open.
 
     /// <summary>How long the swap window is hunted for. It landed on the first round on <c>8ed52ac</c>; the
     /// counts here buy confidence that it no longer opens at all, and nothing else.</summary>
@@ -554,9 +556,12 @@ public sealed class PartyMembersRaceTests
     /// <c>IndexOutOfRangeException</c> out of the member's own 0x2D handler and dropped the reply (#167
     /// review, F3). The state is built at Party's gate rather than hunted through the real handlers, because
     /// #198 closed the kick window that used to produce it (the fact above); the reads it guards are the
-    /// same ones.</summary>
+    /// same ones. Nobody is kicked here, and nobody can be: the RACED reachability of this state closed with
+    /// #198 — the roster swap and the member's field write are one critical section on the member — and
+    /// <c>AKickedMemberIsNeverSeenOutOfTheRosterWhileStillNamingTheParty</c> is the fact that hunts that
+    /// window; this one keeps the reads themselves pinned.</summary>
     [Fact]
-    public void AKickedMembersOwnPacketSurvivesThePartyBeingRetiredUnderIt()
+    public void ARetiredPartysReadsSurviveUnderAMembersOwnPacket()
     {
         var (b, bRec, _) = ConcurrentPlayer("RetiredReadMember");
         var (l, _, _) = ConcurrentPlayer("RetiredReadLeader");
