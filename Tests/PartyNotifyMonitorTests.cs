@@ -14,8 +14,8 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The party path's foreign-state accesses (#29 rule 2, <c>Server/Session.State.cs</c>; the PR #210 review's
-/// F4 and the #198 author's note).
+/// The party path's foreign-state accesses, and the refusal order that must survive closing them (#29 rule 2,
+/// <c>Server/Session.State.cs</c>; the PR #210 review's F4 and the #198 author's note).
 ///
 /// <para><b>The notifications.</b> <c>Party.Broadcast</c> calls <c>NotifyGroup</c> on every member from the
 /// thread of whichever member invited, left, kicked or disconnected, and <c>NotifyGroup</c> is
@@ -25,10 +25,18 @@ namespace Tests;
 /// it, and a torn increment is a frame the client decrypts with the wrong key byte. <c>DoGroupChat</c> has
 /// the same shape plus bare reads of <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c>.</para>
 ///
+/// <para><b>The dead-target read.</b> The invite's <c>target.IsDead</c> refusal is <c>target._char.Hp == 0</c>
+/// (<c>Session.Entity.cs</c>), read on the inviter's thread. It sat ahead of the invite's critical section so
+/// that the refusal ORDER — full, then dead, then refuse — stayed put; it now sits inside that section,
+/// between the cap re-check and the in-body refusals, which is the same order under the owner's monitor.</para>
+///
 /// <para><b>How "under the monitor" is observed.</b> <c>SendMiniText</c> has no seam of its own, so these
 /// facts give the recipient a <see cref="MonitorProbe"/> outbound: <c>Session.Send</c> hands it the finished
 /// frame synchronously on the sending thread, so the probe reads <c>Session.StateHeld</c>
-/// (<c>Monitor.IsEntered(_state)</c>) at exactly the instant <c>_gameInc</c> was incremented to build it.</para>
+/// (<c>Monitor.IsEntered(_state)</c>) at exactly the instant <c>_gameInc</c> was incremented to build it. The
+/// dead-target read has no send of its own to observe — the refusal goes to the INVITER — so it is pinned the
+/// other way, the way <c>PartyMembersRaceTests</c> pins the seat: hold the target's monitor on a third thread
+/// and show the invite parks before it refuses.</para>
 /// </summary>
 [Collection("world")]
 public sealed class PartyNotifyMonitorTests
@@ -41,6 +49,9 @@ public sealed class PartyNotifyMonitorTests
     private const string Disbanded = "Your group has disbanded.";
     private const string Joining = "is joining the group.";
     private const string Leaving = "is leaving the group.";
+    private const string FullLine = "Your group is already full.";
+    private const string DeadLine = "They are unable to join this group.";
+    private const string RefuseLine = "They refuse to join this group.";
 
     // ---- 1. a broadcast enters every other member's monitor -------------------------------------------
 
@@ -128,6 +139,95 @@ public sealed class PartyNotifyMonitorTests
         // Both ignore directions still drop the line entirely.
         Assert.Equal(0, blockerProbe.Count(body));
         Assert.Equal(0, ignoredProbe.Count(body));
+    }
+
+    // ---- 3. the refusal order --------------------------------------------------------------------------
+
+    /// <summary>The three refusals, in the order the PR #210 reviewer probed on master and this branch:
+    /// FULL beats DEAD, DEAD beats the shared "refuse" line, and an alive target with the toggle off still
+    /// gets "refuse". Moving the dead read into the invite's critical section must not reorder any of them —
+    /// the order is the contract, not an accident of where the check sits.</summary>
+    [Fact]
+    public void TheInviteRefusesInTheOrderFullThenDeadThenRefuse()
+    {
+        var (leader, leaderProbe, _) = ProbePlayer("RefusalOrderLeader");
+        var fillers = Enumerable.Range(0, Party.MaxMembers - 1)
+            .Select(i => ProbePlayer($"RefusalOrderFill{i}", groupable: true).session).ToArray();
+        foreach (var f in fillers) SessionFixture.FormParty(leader, f);
+        Assert.True(PartyOf(leader)!.IsFull);
+
+        // FULL beats DEAD: a full group aimed at a dead player is told the group is full.
+        var (deadOne, _, _) = ProbePlayer("RefusalOrderDeadOne", groupable: true, configure: c => c.Hp = 0);
+        Assert.True(deadOne.IsDead);
+        leaderProbe.Clear();
+        SessionFixture.FormParty(leader, deadOne);
+        Assert.Equal(1, leaderProbe.Count(FullLine));
+        Assert.Equal(0, leaderProbe.Count(DeadLine));
+
+        // DEAD beats REFUSE, with room in the group: an inviter with no party at all.
+        var (roomy, roomyProbe, _) = ProbePlayer("RefusalOrderRoomy");
+        var (deadTwo, _, _) = ProbePlayer("RefusalOrderDeadTwo", groupable: true, configure: c => c.Hp = 0);
+        roomyProbe.Clear();
+        SessionFixture.FormParty(roomy, deadTwo);
+        Assert.Equal(1, roomyProbe.Count(DeadLine));
+        Assert.Equal(0, roomyProbe.Count(FullLine) + roomyProbe.Count(RefuseLine));
+
+        // DEAD beats REFUSE when BOTH would fire: dead AND "Join a group" off.
+        var (deadAndClosed, _, _) = ProbePlayer("RefusalOrderDeadClosed", configure: c => c.Hp = 0);
+        Assert.False(deadAndClosed.WantsGroup);
+        roomyProbe.Clear();
+        SessionFixture.FormParty(roomy, deadAndClosed);
+        Assert.Equal(1, roomyProbe.Count(DeadLine));
+        Assert.Equal(0, roomyProbe.Count(RefuseLine));
+
+        // ...and the third rung on its own, so the fact above is not just "everything says dead": alive,
+        // toggle off, gets the shared refusal.
+        var (aliveClosed, _, _) = ProbePlayer("RefusalOrderAliveClosed");
+        Assert.False(aliveClosed.IsDead);
+        roomyProbe.Clear();
+        SessionFixture.FormParty(roomy, aliveClosed);
+        Assert.Equal(1, roomyProbe.Count(RefuseLine));
+        Assert.Equal(0, roomyProbe.Count(DeadLine));
+    }
+
+    // ---- 4. the dead read happens under the TARGET's monitor -------------------------------------------
+
+    /// <summary>Nothing of the invite — the dead-target refusal included — may be decided while the target's
+    /// own critical section is occupied. Same shape as
+    /// <c>PartyMembersRaceTests.TheInviteCannotSeatTheTargetWhileTheTargetsOwnMonitorIsHeld</c>, aimed at the
+    /// refusal instead of the seat, because the refusal has no send of its own on the target to observe: the
+    /// line goes to the INVITER. A read left outside the section answers immediately and the invite finishes
+    /// while the monitor is held.</summary>
+    [Fact]
+    public void TheDeadTargetRefusalIsDecidedInsideTheTargetsOwnMonitor()
+    {
+        var (target, _, _) = ProbePlayer("HeldDeadTarget", groupable: true, configure: c => c.Hp = 0);
+        var (inviter, inviterProbe, _) = ProbePlayer("HeldDeadInviter");
+        Assert.True(target.IsDead);
+        inviterProbe.Clear();
+
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var holder = new Thread(() => target.WithState(() => { entered.Set(); release.Wait(); }))
+            { IsBackground = true, Name = "dead-target-monitor-holder" };
+        holder.Start();
+        Assert.True(entered.Wait(5000), "the third thread never took the target's monitor");
+
+        var invite = new Thread(() => SessionFixture.FormParty(inviter, target))
+            { IsBackground = true, Name = "inviter" };
+        invite.Start();
+
+        // Reading the inviter's probe here is safe precisely because the invite is parked before it speaks.
+        Assert.False(invite.Join(500), "the invite refused a dead target while that target's monitor was held");
+        Assert.Equal(0, inviterProbe.Count(DeadLine));
+
+        release.Set();
+        Assert.True(invite.Join(5000), "the invite never completed after the monitor was released");
+        holder.Join();
+
+        Assert.Equal(1, inviterProbe.Count(DeadLine));
+        Assert.Null(PartyOf(inviter));
+        Assert.Null(PartyOf(target));
     }
 
     // ---- 5. the races ----------------------------------------------------------------------------------
@@ -318,6 +418,7 @@ public sealed class PartyNotifyMonitorTests
     private static readonly FieldInfo CharField =
         typeof(Session).GetField("_char", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
+    private static Party? PartyOf(Session s) => (Party?)PartyField.GetValue(s);
     private static void SetParty(Session s, Party? p) => PartyField.SetValue(s, p);
 
     private static void SetIgnoreList(Session s, params string[] names)

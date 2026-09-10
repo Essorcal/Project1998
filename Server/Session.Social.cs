@@ -62,11 +62,12 @@ public sealed partial class Session
             });
         if (kickFrom is not null) { RemoveFromParty(target, kickFrom); return; }
 
-        // Kept here, ahead of the critical section, so the order these three refusals are tried in — and so
-        // which line a full party aimed at a dead player gets — is exactly what it was. The cap is re-checked
-        // inside, against the membership as it stands once we hold the monitor.
+        // OUR OWN party's cap, under our own monitor — the fast path that stops a full group reaching for the
+        // target's monitor at all. It is re-checked inside against the membership as it stands once we hold
+        // that monitor, and the dead-target refusal now sits BETWEEN the two checks in there, so the order
+        // the three refusals are tried in — and which line a full group aimed at a dead player gets — is
+        // exactly what it was: full, then dead, then refuse.
         if (_party is not null && _party.IsFull) { SendMiniText("Your group is already full."); return; }
-        if (target.IsDead) { SendMiniText("They are unable to join this group."); return; }
 
         // THE GATE AND THE WRITE IT GUARDS ARE ONE CRITICAL SECTION ON THE TARGET (#167). The two reads
         // below used to happen with no monitor at all, and `target._party = _party` then wrote ANOTHER
@@ -92,6 +93,12 @@ public sealed partial class Session
         {
             var party = _party;
             if (party is not null && party.IsFull) { refusal = "Your group is already full."; return; }
+            // A ghost cannot be grouped. `target.IsDead` is `target._char.Hp == 0` (Session.Entity.cs) —
+            // another session's field, and it used to be read out ahead of this body with no monitor at all:
+            // #198 left it there to keep the refusal ORDER, and the PR #210 review (F4) confirmed it as
+            // pre-existing rather than introduced. Moved in here it is read under its owner's monitor, and
+            // sitting between the cap re-check and the in-body refusals it keeps that order intact.
+            if (target.IsDead) { refusal = "They are unable to join this group."; return; }
             // Their "Join a group" toggle is off, or they're already in someone's group. ONE line for both, as
             // RTK does — the refusal must not tell you which, or it becomes a probe for who's already grouped.
             if (!target.WantsGroup || target._party is not null)
