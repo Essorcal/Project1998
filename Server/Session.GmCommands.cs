@@ -989,6 +989,15 @@ public sealed partial class Session
     // (event notices, "carnage starts in five minutes"), and staff who want to speak as themselves have
     // ordinary chat. The per-session try/catch mirrors RestartSchedule.Announce — one dead socket must not
     // stop the message reaching everyone else.
+    //
+    // Each recipient's line is built inside THEIR monitor (#29 rule 2, Server/Session.State.cs:25-33), taken by
+    // SystemAnnounce at its own definition (Session.Dialog.cs) rather than here, because the restart ladder is
+    // the other caller of exactly this loop and both are cross-session — the NotifyGroup shape. One peer monitor
+    // at a time: SystemAnnounce disposes its guard before this loop moves on, so two are never held at once and
+    // rule 2 resolves each acquisition on its own, ascending or descending. The operator is in Online.All() too,
+    // and their own copy is rule 3's re-entrant no-op, so it still goes out in roster order. Rule 1 holds:
+    // Online.All() (World.OnlineRegistry.cs:77-81) snapshots under World._lock and returns with it released, and
+    // the Reply below sits outside every peer's section.
     private void AnnounceCmd(CommandArgs a)
     {
         if (a.None) { Refuse(a.Usage()); return; }

@@ -2289,8 +2289,32 @@ public sealed partial class Session
     /// that a restart notice is worth saying twice — but SendLog is <c>SendSpeech(0, _char.Id, …)</c>, the
     /// very same call the normal say path uses, so the second copy came out as a SPEECH BUBBLE over the
     /// player's own head: the server appeared to be putting words in their mouth, and it was truncated at
-    /// SendLog's 250-char chat cap into the bargain. One channel, and it's this one.</para></summary>
-    internal void SystemAnnounce(string text) => SendMiniText(text, type: 5);
+    /// SendLog's 250-char chat cap into the bargain. One channel, and it's this one.</para>
+    ///
+    /// <para><b>Wrapped at its own definition</b> — the <see cref="NotifyGroup"/> shape, #29 rule 2
+    /// (<c>Server/Session.State.cs:25-33</c>). BOTH callers are cross-session loops over the whole online roster
+    /// on a thread that owns none of the sessions it is writing to: <c>@announce</c>
+    /// (<c>Session.GmCommands.cs</c>, the operator's handler thread) and <c>RestartSchedule.Announce</c>
+    /// (<c>Server/RestartSchedule.cs</c>, the restart ladder's <c>PeriodicTimer</c> task, the trigger-file poll,
+    /// or a GM's <c>@restart</c> handler). Because every caller is cross-session, one acquisition here covers
+    /// both at once and cannot be forgotten by a third; the caller-side wrap would be the same section written
+    /// twice. Nothing on this path reads foreign state beyond the send itself — the text is composed before
+    /// either loop — so there is no gate read that has to be pulled into the section with it, which is what makes
+    /// the definition the right place rather than the caller. The <c>_gameInc</c> this writes is not a
+    /// torn-byte hazard (read once, passed by value into both the body's encryption and the frame header, so the
+    /// worst a lost update does is repeat a nonce — <c>Session.WorldApi.cs:314-315</c>); rule 2 is a blanket rule
+    /// on entering a peer's state, not a repair for a specific corruption.</para>
+    ///
+    /// <para>ONE peer monitor at a time: both callers dispose this guard before the next player. An operator
+    /// announcing to a roster that includes themselves is rule 3's re-entrant case, a no-op, so their own copy
+    /// still goes out in roster order. Rule 1 holds at both callers: <c>World.OnlineRegistry.All()</c>
+    /// (<c>World.OnlineRegistry.cs:77-81</c>) takes <c>World._lock</c>, materialises the list and returns with it
+    /// released, so no world lock is held when this enters a session.</para></summary>
+    internal void SystemAnnounce(string text)
+    {
+        using var _ = EnterState();
+        SendMiniText(text, type: 5);
+    }
 
     // ---- helpers ----
     private void SendMessage(string text)

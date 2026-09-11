@@ -155,16 +155,43 @@ public sealed partial class Session
         // itself would have used, NOT self-speech.
         if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
 
+        // The two ignore reads, the delivery and the read of their name for our echo are ONE critical section
+        // on the TARGET (#29 rule 2, Server/Session.State.cs) — the DoClanChat shape one screen down, applied
+        // to the 1:1 case. What was genuinely unguarded here is the foreign READS: `target._char.Name` (twice)
+        // and `target.IsIgnoring(...)`, another session's character and ignore list read bare from OUR thread;
+        // `ReceiveWhisper` -> SendBlueMessage -> SendMiniText also writes their `_gameInc`, which rule 2 covers
+        // for the same blanket reason NotifyGroup is wrapped, not because the byte tears (a lost increment is a
+        // duplicate nonce, benign per Session.WorldApi.cs:314-315).
+        //
+        // Wrapped HERE rather than at ReceiveWhisper's definition (Session.Chat.cs:251): the reads that decide
+        // whether the line goes out at all have to be in the SAME section as the send, and this is
+        // ReceiveWhisper's only caller, so the definition wrap would buy nothing and would leave the gate
+        // outside.
+        //
+        // ONE peer monitor at a time and no new lock or lock order: rule 2 resolves this single nested
+        // acquisition ascending or descending, and nothing inside the body reaches a second peer. Our OWN
+        // ignore list and name are read inside the body deliberately — the descending case drops our monitor to
+        // take theirs and puts it back BEFORE the body runs (Session.State.cs:151-159), so inside it both are
+        // held. Rule 1 holds: FindPlayer takes and releases World._lock inside itself
+        // (World.OnlineRegistry.cs:45-53), so no world lock is held here. The refusal and the echo are sent
+        // OUTSIDE the section, so no peer monitor is held while we send to ourselves.
+        //
         // RTK clif_isignore: a whisper is blocked if EITHER side has the other on their ignore list — not
         // just the recipient blocking the sender, but also the sender's own list (so you can't be pestered
         // by someone you've muted even if THEY never muted you). canwhisper's real wording on failure, blue.
-        if (IsIgnoring(target._char.Name) || target.IsIgnoring(_char.Name))
-        { SendBlueMessage("They cannot hear you right now."); return; }
+        bool ignored = false;
+        string them = "";
+        target.WithState(() =>
+        {
+            if (IsIgnoring(target._char.Name) || target.IsIgnoring(_char.Name)) { ignored = true; return; }
+            target.ReceiveWhisper(_char.Name, msg);
+            them = target._char.Name;
+        });
+        if (ignored) { SendBlueMessage("They cannot hear you right now."); return; }
 
-        target.ReceiveWhisper(_char.Name, msg);
         // Sender's own echo — RTK clif_retrwisp, verbatim "%s> %s": the TARGET's name (proper-cased from
         // their session, not as typed) + "> " + the message, on the blue wisp channel.
-        SendBlueMessage($"{target._char.Name}> {msg}");
+        SendBlueMessage($"{them}> {msg}");
     }
 
     // "!!" whisper target — group/party chat (RTK clif_sendgroupmessage). Reaches every member of your group
