@@ -447,6 +447,12 @@ public sealed class LoginSession
         // One line, not one per refused frame: once the socket is closed every later Send is refused too,
         // and a handler that sends twice would otherwise print the drop twice for one dropped connection.
         if (Interlocked.Exchange(ref _dropped, 1) != 0) return;
+        // ...and one line per dropped CONNECTION, not one per bound. A refusal here does not always mean the
+        // queue is full: the writer's own bound drops the peer by closing the channel, and a handler still
+        // mid-send on the read loop then gets a refusal from an already-closed queue. It has already printed
+        // the line naming the bound that actually tripped, so printing the capacity here would be a second
+        // Warn for one dropped connection naming a bound that never fired. DropReason is how we tell.
+        if (_out.DropReason is not null) { _out.Close(); return; }
         _out.NoteQueueFull($"outbound queue full ({LoginOutbound.Capacity})");
         Log.Warn($"{_remote} outbound queue full ({LoginOutbound.Capacity}) — dropping slow client");
         _out.Close();
