@@ -333,6 +333,30 @@ public sealed partial class Session
                     if (!StatusResponder.LooksLikeHttp(buf)) return false;
                     await tcp.Stream.WriteAsync(StatusResponder.Build(_world));
                     Log.Info($"   -> status probe from {_remote} answered ({_world.Online.Count} online)");
+
+                    // Half-close, then drain, BEFORE the loop exits into CloseConnection: closing a socket that
+                    // still has unread bytes in its receive queue makes Winsock answer with an RST, which
+                    // discards the response we just wrote (measured in the PR #228 review, F2: a probe whose
+                    // request tail arrives after the fourth byte got zero bytes while the log said "answered").
+                    // Shutting the send side down instead delivers the response and a FIN, and the discarding
+                    // read loop below leaves nothing unread when the socket finally closes. Bytes read here are
+                    // CONSUMED, not appended to the live buffer: the hook returns true immediately after, so
+                    // the reader stops and would never frame them.
+                    try { tcp.Stream.Socket.Shutdown(SocketShutdown.Send); }
+                    catch (Exception e) when (e is SocketException or ObjectDisposedException)
+                    {
+                        // The peer already reset or our own CloseConnection got here first. Nothing left to
+                        // half-close, and nothing left to drain either.
+                        Log.Warn($"   -> status probe from {_remote}: send shutdown skipped ({e.GetType().Name})");
+                        return true;
+                    }
+
+                    // No new timer: the reader's handshake watchdog is the bound. A probe never frames a packet,
+                    // so _established stays 0 and the watchdog still fires on its budget, closing the socket
+                    // under this pending read; the exception unwinds into RunAsync's typed catch, exactly as it
+                    // does for the prefix wait above.
+                    var drain = new byte[FrameReader.ReadBufferBytes];
+                    while (await tcp.Stream.ReadAsync(drain) > 0) { }
                     return true;
                 },
                 AfterRead = FlushIfDue,   // throttled autosave; no-op unless MarkDirty()'d and AutoSaveMs has elapsed
