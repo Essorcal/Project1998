@@ -29,6 +29,30 @@ public sealed class StatusProbePrefixTests(SessionFixture fixture)
 
         await connection.Stream.WriteAsync(Request.AsMemory(3));
         string response = await ReadToEofAsync(connection.Stream);
+        connection.ShutdownSend();   // the hook drains to EOF now, so the peer's own close is what ends the session
+        await connection.Run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        AssertStatusResponse(response);
+        Assert.Equal(1, Count(response, "HTTP/1.1 200 OK"));
+    }
+
+    /// <summary>The F2 case from the PR #228 review: the request tail arrives AFTER the fourth byte, so it is
+    /// still unread when the session closes. The peer must receive the whole response, not an RST. Falsified by
+    /// removing the shutdown-and-drain from the hook: the read then fails with "An established connection was
+    /// aborted by the software in your host machine".</summary>
+    [Fact]
+    public async Task RequestTailArrivingAfterTheFourthByteStillReceivesTheResponse()
+    {
+        using var connection = await OpenSessionAsync();
+
+        await connection.Stream.WriteAsync(Request.AsMemory(0, 2));    // "GE"
+        await Task.Delay(100);
+        await connection.Stream.WriteAsync(Request.AsMemory(2, 2));    // "T " — the buffer is now exactly "GET "
+        await Task.Delay(100);
+        await connection.Stream.WriteAsync(Request.AsMemory(4));       // the tail, unread at close before this fix
+
+        string response = await ReadToEofAsync(connection.Stream);
+        connection.ShutdownSend();
         await connection.Run.WaitAsync(TimeSpan.FromSeconds(5));
 
         AssertStatusResponse(response);
@@ -60,10 +84,33 @@ public sealed class StatusProbePrefixTests(SessionFixture fixture)
 
         await connection.Stream.WriteAsync(Request);
         string response = await ReadToEofAsync(connection.Stream);
+        connection.ShutdownSend();
         await connection.Run.WaitAsync(TimeSpan.FromSeconds(5));
 
         AssertStatusResponse(response);
         Assert.Equal(1, Count(response, "HTTP/1.1 200 OK"));
+    }
+
+    /// <summary>A peer that is answered and then never closes its own side is ended by the existing handshake
+    /// watchdog, not held forever on the drain read — the drain adds no timer of its own. Falsified by removing
+    /// the watchdog close (the session never ends) or the drain (it ends immediately, well under the budget).
+    /// </summary>
+    [Fact]
+    public async Task AnsweredPeerThatNeverClosesIsEndedByTheHandshakeWatchdog()
+    {
+        using var connection = await OpenSessionAsync();
+        var elapsed = Stopwatch.StartNew();
+
+        await connection.Stream.WriteAsync(Encoding.ASCII.GetBytes("GET "));
+        string response = await ReadToEofAsync(connection.Stream);   // response, then our FIN — the peer stays open
+        AssertStatusResponse(response);
+        Assert.False(connection.Run.IsCompleted);
+
+        await connection.Run.WaitAsync(TimeSpan.FromMilliseconds(FrameReader.DefaultHandshakeMs + 5_000));
+        elapsed.Stop();
+
+        Assert.True(elapsed.ElapsedMilliseconds >= FrameReader.DefaultHandshakeMs - 500,
+            $"connection closed after {elapsed.ElapsedMilliseconds}ms, before the handshake watchdog");
     }
 
     /// <summary>An incomplete HTTP prefix is held only for the existing handshake budget. Falsified by
@@ -92,7 +139,9 @@ public sealed class StatusProbePrefixTests(SessionFixture fixture)
         listener.Start();
         try
         {
-            var client = new TcpClient();
+            // NoDelay: these facts depend on each small write arriving as its own read, which is the split a
+            // probe over a slow link produces and what Nagle would coalesce away.
+            var client = new TcpClient { NoDelay = true };
             Task connect = client.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
             TcpClient accepted = await listener.AcceptTcpClientAsync();
             await connect;
@@ -134,6 +183,15 @@ public sealed class StatusProbePrefixTests(SessionFixture fixture)
     {
         public NetworkStream Stream { get; } = client.GetStream();
         public Task Run { get; } = run;
+
+        /// <summary>Close the peer's send side, the way a probe that has read its response does. The hook drains
+        /// to EOF before the socket closes, so this is what lets an answered session finish promptly.</summary>
+        public void ShutdownSend()
+        {
+            try { client.Client.Shutdown(SocketShutdown.Send); }
+            catch (SocketException) { /* already gone */ }
+        }
+
         public void Dispose() => client.Dispose();
     }
 }
