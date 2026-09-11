@@ -982,8 +982,19 @@ public sealed partial class Session
     {
         var p = _world.Online.FindPlayer(name);
         if (p is null) return;
-        p.RefreshMailFlags();   // recompute + push the recipient's bag flag (SendStats alone would send the stale cache)
-        p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
+        // The icon refresh and the line are ONE critical section on the RECIPIENT (#29 rule 2,
+        // Server/Session.State.cs). RefreshMailFlags already entered their monitor for itself
+        // (Session.Entity.cs:161) and the line that explains the icon did not; entering once around both makes
+        // the flag recompute, the HUD push and the notice a single section instead of a guarded write followed
+        // by an unguarded send, and rule 3 turns RefreshMailFlags' own EnterState into the re-entrant no-op.
+        // Rule 1 holds: FindPlayer takes and releases World._lock inside itself (World.OnlineRegistry.cs:45-53),
+        // so nothing world-scoped is held here. Our own name is read inside the body, where the descending case
+        // has already put our monitor back.
+        p.WithState(() =>
+        {
+            p.RefreshMailFlags();   // recompute + push the recipient's bag flag (SendStats alone would send the stale cache)
+            p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
+        });
     }
 
     // ---- spoken shop shortcut ("buy [my] [all|N] <item>") — see ShopAbility.OnSay ----------------

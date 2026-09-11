@@ -126,6 +126,66 @@ public sealed class PeerMiniTextMonitorTests
         Assert.Equal($"<@{sender}> (Poet) field is clear", lowProbe.Only(line));
     }
 
+    // ---- 3. the parcel notice --------------------------------------------------------------------------
+
+    /// <summary>Posting a parcel to an online player lights their bag icon and tells them it arrived, both
+    /// from the SENDER's thread. <c>RefreshMailFlags</c> already took the recipient's monitor for itself; the
+    /// line that explains the icon did not. Both now sit in one section on the recipient, and the notice text
+    /// is unchanged.</summary>
+    [Fact]
+    public void TheParcelNoticeReachesTheRecipientInsideTheirMonitor()
+    {
+        var (sender, _, _) = ProbePlayer("ParcelSender");
+        var (recipient, recipientProbe, _) = ProbePlayer("ParcelRecipient");
+        recipientProbe.Clear();
+
+        NotifyParcelRecipient(sender, recipient.CharName);
+
+        const string needle = "[PARCEL]:";
+        Assert.Equal(1, recipientProbe.Count(needle));
+        Assert.True(recipientProbe.AllHeld(needle), recipientProbe.Explain(needle));
+        Assert.Equal("[PARCEL]: You got a parcel from ParcelSender!", recipientProbe.Only(needle));
+    }
+
+    // ---- 4. the mentorship culmination line ------------------------------------------------------------
+
+    /// <summary>Culminating a mentorship writes three things on the protégé inside their monitor (already
+    /// true) and then tells them so (was not). The line now goes out in the same section discipline, and the
+    /// ORDER of the two lines — the mentor's first, then the protégé's — is unchanged, which is why it is its
+    /// own section rather than an extra statement inside the mutation block.
+    ///
+    /// <para>Driven through the real flow: <c>LuaMentor</c> opens the "Who would you like to mentor?" input
+    /// box and returns at that await, then two genuine <c>0x3A</c> replies resume it on the mentor's own
+    /// read-loop thread — which is the thread shape the site actually runs on, since
+    /// <c>HandleNpcDialog</c> completes the prompt inline from inside <c>Handle</c>'s <c>WithState</c>.</para></summary>
+    [Fact]
+    public void TheMentorshipCulminationLineReachesTheProtegeInsideTheirMonitor()
+    {
+        var (mentor, mentorProbe, _) = ProbePlayer("MentorshipMentor");
+        var (protege, protegeProbe, _) = ProbePlayer("MentorshipProtege", c => c.Level = Mentorship.CulminateLevel);
+        // Already this mentor's protégé. Under their own monitor, because SetQuestStr marks the character
+        // dirty and the Debug guard on that chokepoint (Session.State.cs:308-314) rightly refuses a bare write.
+        protege.WithState(() => protege.SetQuestStr(Mentorship.MentorStr, "MentorshipMentor"));
+        mentorProbe.Clear(); protegeProbe.Clear();
+
+        mentor.LuaMentor(new SpellDef(0, "mentor", "Mentor", 1, 0, 40, 0, "Who would you like to mentor?"));
+        mentor.Receive(DialogInputFrame(protege.CharName));   // the name box
+        mentor.Receive(DialogMenuFrame(1));                   // "Yes, that's fine."
+
+        const string theirs = "This culminates your mentorship under";
+        const string ours = "This culminates your mentorship of";
+        Assert.Equal(1, protegeProbe.Count(theirs));
+        Assert.True(protegeProbe.AllHeld(theirs), protegeProbe.Explain(theirs));
+        Assert.Equal("This culminates your mentorship under MentorshipMentor. Hopefully you have learned much " +
+                     "from their teachings.", protegeProbe.Only(theirs));
+
+        // The mentor's own line still goes out, and the protégé never receives the mentor's copy.
+        Assert.Equal(1, mentorProbe.Count(ours));
+        Assert.Equal(0, protegeProbe.Count(ours));
+        // The relationship really culminated — the line is not being sent down a dead branch.
+        Assert.Equal("", protege.QuestStr(Mentorship.MentorStr));
+    }
+
     // ===== plumbing =====================================================================================
 
     /// <summary>A socket-free session whose outbound is a <see cref="MonitorProbe"/>, built the way
@@ -178,6 +238,37 @@ public sealed class PeerMiniTextMonitorTests
         body.AddRange(t);
         return SessionFixture.Frame(ClientOp.Chat, body.ToArray());
     }
+
+    /// <summary>The client's reply to a prompt (<c>0x3A</c>, RTK <c>clif_parsenpcdialog</c>):
+    /// <c>[0]=kind, [8]=step, [10]=menu index or input length, [11..]=input text</c>. Kind 2 is a menu pick,
+    /// kind 4 + step 2 a real input-box submit.</summary>
+    private static byte[] DialogMenuFrame(byte index)
+    {
+        var body = new byte[11];
+        body[0] = 0x02;
+        body[10] = index;
+        return SessionFixture.Frame(ClientOp.NpcDialog, body);
+    }
+
+    private static byte[] DialogInputFrame(string text)
+    {
+        byte[] t = Encoding.ASCII.GetBytes(text);
+        var body = new byte[11 + t.Length];
+        body[0] = 0x04;
+        body[8] = 0x02;
+        body[10] = (byte)t.Length;
+        t.CopyTo(body, 11);
+        return SessionFixture.Frame(ClientOp.NpcDialog, body);
+    }
+
+    /// <summary><c>Session.NotifyParcelRecipient</c> by reflection. The parcel post itself is a multi-step NPC
+    /// conversation with an inventory stack behind it; what this fact is about is the notice that conversation
+    /// ends in, so it is driven at that seam rather than through six dialog frames of setup.</summary>
+    private static readonly MethodInfo NotifyParcel =
+        typeof(Session).GetMethod("NotifyParcelRecipient", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    private static void NotifyParcelRecipient(Session sender, string name) =>
+        NotifyParcel.Invoke(sender, new object[] { name });
 
     private static readonly FieldInfo CharField =
         typeof(Session).GetField("_char", BindingFlags.NonPublic | BindingFlags.Instance)!;
