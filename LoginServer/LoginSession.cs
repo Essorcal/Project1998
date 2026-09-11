@@ -23,7 +23,9 @@ public sealed class LoginSession
     private readonly string _remote;
     private readonly IPAddress _ip;   // source address, for the per-IP failed-login throttle
     private readonly CharacterStore _store;
-    private readonly object _sendLock = new();
+    // Every server->client byte on this connection goes through here. See LoginOutbound: the read loop only
+    // enqueues, one writer task owns the socket, and a peer that stops reading is dropped rather than waited on.
+    private readonly LoginOutbound _out;
     private string _user = "?";
     private string _pendingName = "";   // name from the availability check, fallback for creation
     private string _pendingPass = "";   // password from the availability check (0x02), used at creation (0x04)
@@ -32,6 +34,7 @@ public sealed class LoginSession
     // first valid framed packet, and the watchdog that enforces it, are FrameReader's — the same
     // P1998_HANDSHAKE_MS the game server reads (see FrameReader.DefaultHandshakeMs). The latch stays here.
     private int _established;   // 0 until the first valid packet is parsed; gates the handshake timeout
+    private int _dropped;       // 0 until the outbound queue refuses a frame; keeps the drop line to one
 
     // The game server the client is redirected to after a successful login. Defaults to loopback (login
     // and game on the same box); set P1998_GAME_HOST to the game server's public IP for a split
@@ -45,21 +48,25 @@ public sealed class LoginSession
     public LoginSession(TcpClient client, int port, CharacterStore store, IPAddress? realIp = null)
     {
         _client = client;
-        _stream = client.GetStream();
         _port = port;
         _store = store;
         var peer = client.Client.RemoteEndPoint as IPEndPoint;
         _remote = realIp is not null ? $"{realIp} (via {peer?.Address})" : peer?.ToString() ?? "?";
         _ip = realIp ?? peer?.Address ?? IPAddress.None;
+        _out = new LoginOutbound(client, _remote);
+        _stream = _out.Stream;   // the read half; the outbound owns every write to it
     }
 
     public async Task RunAsync()
     {
         Log.Info($"++ CONNECT from {_remote} on login port {_port}");
+        // The writer starts before anything is queued, so the welcome is on the wire while the read loop is
+        // still being set up — the same order as the old pre-reader synchronous write, without the wait.
+        var writer = _out.RunWriterAsync();
         try
         {
-            await _stream.WriteAsync(Welcome.Bytes);
-            Log.Info($"   -> sent welcome ({Welcome.Bytes.Length}B)");
+            Send(Welcome.Bytes);
+            Log.Info($"   -> queued welcome ({Welcome.Bytes.Length}B)");
 
             // The read loop is shared with the game process (Protocol.Tk495/FrameReader): the handshake
             // watchdog, the 4KB chunk, the TkPacket framing and the two wire dumps are all its. This channel
@@ -78,6 +85,11 @@ public sealed class LoginSession
         catch (Exception e) { Log.Warn($"{_remote} error: {e.Message}"); }
         finally
         {
+            // Drain before closing: the last thing a successful login sends is the redirect, and the client
+            // learns the game host and port from exactly those bytes. Closing on top of an unflushed redirect
+            // is a login that silently never completes. Bounded by LoginOutbound.DrainTimeoutMs.
+            await _out.CloseAfterDrainAsync();
+            await writer;   // the socket is closed by now, so this cannot outlast the drain
             _client.Close();
             Log.Info($"-- CLOSE {_remote}");
         }
@@ -424,6 +436,20 @@ public sealed class LoginSession
         Log.Info($"   -> status 0x{code:x2}: {text}");
     }
 
-    private void Send(byte[] data) { lock (_sendLock) _stream.Write(data, 0, data.Length); }
+    // Hand one frame to the outbound queue. O(1) and never touches the socket, so no handler — and so no
+    // iteration of the read loop — can be held up by a peer that has stopped reading. A refusal means the
+    // queue is full or already closed: the peer is dropped, which makes the pending read throw and ends the
+    // session. Frames already queued behind a refusal are forfeit, and that is correct — there is nobody
+    // reading them.
+    private void Send(byte[] data)
+    {
+        if (_out.Send(data)) return;
+        // One line, not one per refused frame: once the socket is closed every later Send is refused too,
+        // and a handler that sends twice would otherwise print the drop twice for one dropped connection.
+        if (Interlocked.Exchange(ref _dropped, 1) != 0) return;
+        _out.NoteQueueFull($"outbound queue full ({LoginOutbound.Capacity})");
+        Log.Warn($"{_remote} outbound queue full ({LoginOutbound.Capacity}) — dropping slow client");
+        _out.Close();
+    }
 
 }
