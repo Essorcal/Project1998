@@ -152,9 +152,8 @@ public sealed record ItemDef
     /// NPC is wired here yet; when they are, they pass <c>owner:</c> to <see cref="Session.GivePlaced"/> rather
     /// than joining this list. Faerie light (124) is out too — the Atlas marks it Non-Bonded.</para>
     ///
-    /// <para>Four ids are kept on RTK evidence alone because no Atlas page covers them: the White moon axe
-    /// (rogue trainer / guild shaman) and the Mage's, Conjurer's and Master's wards, whose ladder-mates all
-    /// read "Bonded".</para></summary>
+    /// <para>Three ids are kept on RTK evidence alone because no Atlas page covers them: the Mage's,
+    /// Conjurer's and Master's wards, whose ladder-mates all read "Bonded".</para></summary>
     private static readonly HashSet<int> BondedItemIds = BuildBondedItemIds();
     private static HashSet<int> BuildBondedItemIds()
     {
@@ -175,10 +174,10 @@ public sealed record ItemDef
             41008, 41009, 41010, 41011,                        // totem helm   (male)   — Bonded / Unrepairable.
             41508, 41509, 41510, 41511,                        // totem helmet (female)  The circlets and casques
                                                                // read "None" and are NOT bonded.
-            47002,                                             // white_moon_axe        — corroborated 2026-08-23:
-                                                               // Rogue Moon step 3 IS the bonding ("display to me
-                                                               // your White Moon Axe… he will bond it to you"), on
-                                                               // both tswolf and Atlas. See ArmorQuest.cs.
+            // white_moon_axe (47002) is deliberately NOT here: tswolf's wma page (Wayback 2001-01-29) reads
+            // "Bonded when used in Rogue Moon Quest / Non Bonded when Aquired in WMA Buya Quest". A row bond
+            // would stamp whoever next picks it up or trades for it, so Rogue Moon stamps it by hand instead
+            // (NpcContext.GiveBound). See WhiteMoonAxeQuest.
             48018,                                             // fates_blade           — Bonded / Non-Repairable
             49026, 49027, 49028, 49029,                        // spike tiers           ) the Enchanted and san
             49032, 49033, 49034, 49035,                        // blood tiers           ) tiers BonHwaAbility

@@ -157,16 +157,17 @@ public class ArmorQuestTests
             }
     }
 
-    /// <summary>Rogue Moon rebonds the White Moon Axe rather than eating it, which only works if the axe is
-    /// a bonded row — <see cref="Session.GivePlaced"/> stamps the owner off <see cref="ItemDef.Bonded"/>.</summary>
+    /// <summary>Rogue Moon rebonds the White Moon Axe rather than eating it, stamping the owner by hand
+    /// (<see cref="NpcContext.GiveBound"/>). The row must stay LOOSE: tswolf has the axe unbonded out of the
+    /// White Moon Axe quest, and a bonded row would bond it to whoever next picks it up or trades for it.</summary>
     [Fact]
-    public void TheWhiteMoonAxeIsBondable()
+    public void TheWhiteMoonAxeIsBondedByTheStepNotTheRow()
     {
         EnsureLoaded();
 
         var step = ArmorQuest.Chains[(2, "moon")].Steps.Single(s => s.Rebond is not null);
         Assert.Equal("white_moon_axe", step.Rebond);
-        Assert.True(Content.ItemByKey("white_moon_axe")!.Bonded);
+        Assert.False(Content.ItemByKey("white_moon_axe")!.Bonded);
     }
 
     // ---- the gates ------------------------------------------------------------------------------

@@ -121,7 +121,9 @@ amber that cannot work is worse served by silence than by a sentence.
 1. Slay the **Dog item boss** — "the dog with a rose in its mouth" (Assassin / Cutthroat / Avenger by tier).
 2. **2 Whisper bracelets, 2 Steelthorns, 50 Amber, 10 Dark amber, 1 Lucky coin, 15,000 coins.**
 3. Present a **White Moon Axe** — **rebonded to you**, not consumed. Any will do, including one bonded to
-   somebody else.
+   somebody else. The axe comes from the White Moon Axe quest at Buya's Maso (`Server/WhiteMoonAxeQuest.cs`),
+   which hands it out **unbonded**; this step is what bonds it. At Maso, "moon" from a rogue of 70+ goes to the
+   axe quest, so say Moon armor's "moon" to Maro in Kugnae.
 4. Your **Star** garment · **2 Grace, 2 Karma.**
 
 ### Sun · level 86 · Bear karma *(disputed — see below)*

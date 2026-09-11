@@ -186,9 +186,10 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
         foreach (var key in offered) ctx.TakeReady(key, 1);
         if (step.Gold > 0) ctx.SpendGold(step.Gold);
 
-        // Rebonding: take the axe (whosever it was) and hand back a fresh one, which GivePlaced stamps with
-        // this character's name because white_moon_axe is a bonded row. "It will simply be rebonded to you."
-        if (step.Rebond is not null) { ctx.TakeReady(step.Rebond, 1); ctx.GiveItem(step.Rebond, 1); }
+        // Rebonding: take the axe (whosever it was, or nobody's) and hand back a fresh one stamped with this
+        // character's name. "It will simply be rebonded to you." The row itself is NOT bonded — the axe the
+        // White Moon Axe quest hands out is loose (WhiteMoonAxeQuest) — so the bond is stamped here, not by row.
+        if (step.Rebond is not null) { ctx.TakeReady(step.Rebond, 1); ctx.GiveBound(step.Rebond); }
         if (prevArmor is not null) ctx.TakeReady(prevArmor, 1);
 
         if (step.Might > 0) ctx.RaiseMight(-step.Might);
