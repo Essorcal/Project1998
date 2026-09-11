@@ -131,9 +131,18 @@ public sealed partial class Session
         // (Session.CharacterApi.cs:235-249), while the notice and Disconnect's read of their _char.Name for the
         // log line ran bare from the operator's thread. Entering once around all three closes that and makes
         // the save, the notice and the teardown one section, so nothing of theirs can move between the snapshot
-        // and the drop; FlushNow's own EnterState becomes the re-entrant case (rule 3), and it still releases
-        // the monitor before the SQLite write — that release lives inside CaptureAndWrite, which takes
-        // _writeGate only after its section ends, the same nesting KickForReplacement has had all along. No new
+        // and the drop; FlushNow's own EnterState becomes the re-entrant case (rule 3), and that is precisely
+        // why the target's monitor IS held across CaptureAndWrite's lock (_writeGate) section: the nested
+        // EnterState returns a default guard (Session.State.cs:137) whose Dispose releases nothing
+        // (Session.State.cs:175-180), so CaptureAndWrite's own using (EnterState()) exits without dropping
+        // anything and its lock (_writeGate) { _store.SaveJson(...) } (Session.CharacterApi.cs:236-261) runs
+        // with the monitor still held. That is not a new lock order. It is the nesting KickForReplacement has
+        // had all along (Session.CharacterApi.cs:277-283) and the one the read loop's own teardown takes on
+        // every ordinary disconnect (Session.cs:349 WithState(TearDownWorldState), then :382 FlushNow()), and
+        // nothing in the tree takes a session monitor while holding a _writeGate — FlushPair
+        // (Session.TimedEffects.cs:152-172) closes its WithStatePair before taking either gate — so
+        // monitor -> _writeGate cannot cycle. The cost, not a hazard: the kicked player's monitor is held
+        // across a synchronous store write, where on master FlushNow released it first. No new
         // lock and no new lock order. Rule 1 holds: FindPlayer takes and releases World._lock inside itself
         // (World.OnlineRegistry.cs:45-53), and CloseConnection takes no lock at all.
         target.WithState(() =>
