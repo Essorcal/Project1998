@@ -145,6 +145,153 @@ public sealed class AnnounceMonitorTests
         Assert.Equal("duping items", why);
     }
 
+    // ---- 3. "@announce" --------------------------------------------------------------------------------
+
+    /// <summary>"@announce &lt;message&gt;" walks the whole online roster from the OPERATOR's thread and sends
+    /// each player the type-5 system line. Every one of those sends is now inside that player's own monitor —
+    /// taken by <c>SystemAnnounce</c> at its definition, so this loop and the restart ladder's are covered by one
+    /// acquisition. The three recipients are built in <c>StateRank</c> order around the operator so the single
+    /// loop crosses both directions of rule 2, and the operator's own copy (rule 3's re-entrant case) still goes
+    /// out.</summary>
+    [Fact]
+    public void TheGmAnnouncementEntersEveryOnlineSessionsMonitor()
+    {
+        var (low, lowProbe, _) = ProbePlayer("AnnounceLow");
+        var (gm, gmProbe, _) = ProbePlayer(GmRoster.Name);
+        var (high, highProbe, _) = ProbePlayer("AnnounceHigh");
+        Assert.True(low.StateRank < gm.StateRank && gm.StateRank < high.StateRank);
+        lowProbe.Clear(); gmProbe.Clear(); highProbe.Clear();
+
+        gm.Receive(SayFrame("@announce the field is clear"));
+
+        const string line = "the field is clear";
+        foreach (var probe in new[] { lowProbe, highProbe, gmProbe })
+        {
+            Assert.Equal(1, probe.Count(line));
+            Assert.True(probe.AllHeld(line), probe.Explain(line));
+            Assert.Equal(line, probe.Only(line));   // not prefixed with the GM's name — the server speaking
+        }
+        // The operator walks out holding exactly what they walked in with: nothing, once the handler returns.
+        Assert.False(gm.StateHeld);
+    }
+
+    // ---- 4. the restart ladder's announcement, from a thread that owns no session ------------------------
+
+    /// <summary>The restart countdown is announced by <c>RestartSchedule.Announce</c>, which on a live server
+    /// runs on the <c>PeriodicTimer</c> task <c>TkListener.StartWorld</c> starts — a thread that is NOT a session
+    /// handler and holds no session monitor of its own. Driven here from a plain worker thread through the public
+    /// entries the GM command uses (<c>Schedule</c> and <c>Cancel</c>; <c>Announce</c> itself is private), with
+    /// the announcing thread checking first that it holds none of the three monitors it is about to enter — so a
+    /// held line proves <c>SystemAnnounce</c> took the monitor rather than inheriting one.
+    ///
+    /// <para>Both wordings are asserted: the booking line and the cancellation line, which are the two the ladder
+    /// and the trigger file both reach.</para></summary>
+    [Fact]
+    public void TheRestartAnnouncementEntersEverySessionsMonitorFromANonHandlerThread()
+    {
+        var (a, aProbe, _) = ProbePlayer("RestartA");
+        var (b, bProbe, _) = ProbePlayer("RestartB");
+        var (c, cProbe, _) = ProbePlayer("RestartC");
+        var probes = new[] { aProbe, bProbe, cProbe };
+        foreach (var p in probes) p.Clear();
+
+        Exception? failure = null;
+        var ladder = new Thread(() =>
+        {
+            try
+            {
+                // This thread is nobody's read loop: it walks in holding nothing at all.
+                Assert.False(a.StateHeld); Assert.False(b.StateHeld); Assert.False(c.StateHeld);
+                _fx.World.Restarts.Schedule(5, "deploying");
+                Assert.True(_fx.World.Restarts.Pending);
+                Assert.True(_fx.World.Restarts.Cancel());
+                // And out holding nothing: every guard was disposed inside the loop.
+                Assert.False(a.StateHeld); Assert.False(b.StateHeld); Assert.False(c.StateHeld);
+            }
+            catch (Exception e) { failure = e; }
+        }) { IsBackground = true, Name = "restart-ladder" };
+        ladder.Start();
+        Assert.True(ladder.Join(TimeSpan.FromSeconds(60)), "the restart announcement never finished");
+        if (failure is not null) throw failure;
+
+        const string booked = "The server will restart in 5 minutes. Please find a safe place to log out.";
+        const string called = "The scheduled server restart has been cancelled.";
+        foreach (var probe in probes)
+        {
+            Assert.Equal(1, probe.Count(booked));
+            Assert.True(probe.AllHeld(booked), probe.Explain(booked));
+            Assert.Equal(booked, probe.Only(booked));
+            Assert.Equal(1, probe.Count(called));
+            Assert.True(probe.AllHeld(called), probe.Explain(called));
+        }
+        // The reason never reaches a player — it is log-only (RestartSchedule.RestartLine).
+        Assert.Equal(0, aProbe.Count("deploying"));
+    }
+
+    // ---- 5. the ladder against a GM booking and cancelling ----------------------------------------------
+
+    /// <summary>The ordering question the ladder raises, run rather than argued. <c>RestartSchedule</c> has a
+    /// private lock, and a GM's <c>@restart</c> reaches it from a handler thread that already holds that GM's own
+    /// session monitor — session monitor -&gt; <c>_lock</c>. Announcing enters every recipient's monitor, so if any
+    /// caller held <c>_lock</c> across <c>Announce</c> the reverse edge (<c>_lock</c> -&gt; session monitor) would
+    /// exist too and <c>StateRank</c> could not break the cycle, <c>_lock</c> being outside the session ordering
+    /// entirely. Every caller announces outside the lock (<c>RestartSchedule.Schedule</c>, <c>Cancel</c>,
+    /// <c>TickWarnings</c>, which snapshots the line under the lock and announces after it), so the cycle should
+    /// not be reachable — and here are a few hundred rounds of both sides trying, with the progress watch rather
+    /// than a stopwatch deciding whether anything wedged.</summary>
+    [Fact]
+    public void TheLadderAndAGmBookingCannotDeadlockAgainstEachOther()
+    {
+        const int Rounds = 300;
+        var (gm, _, _) = ProbePlayer(GmRoster.Name);
+        var (listener, listenerProbe, _) = ProbePlayer("RestartRaceListener");
+        listenerProbe.Clear();
+
+        var counter = new StallWatch.RoundCounter();
+        var failures = new List<Exception>();
+        var start = new Barrier(2);
+
+        Thread Worker(string name, Action<int> round) => new(() =>
+        {
+            start.SignalAndWait();
+            for (int i = 0; i < Rounds; i++)
+            {
+                try { round(i); }
+                catch (Exception e) { lock (failures) failures.Add(e); return; }
+                counter.Bump();
+            }
+        }) { IsBackground = true, Name = name };
+
+        // The ladder's thread: no session monitor of its own, booking and calling off in turn.
+        var ladder = Worker("restart-ladder", i =>
+        {
+            if (i % 2 == 0) _fx.World.Restarts.Schedule(10, "ladder");
+            else _fx.World.Restarts.Cancel();
+        });
+        // The GM: a real @restart frame, so the handler holds that GM's own monitor across Schedule/Cancel.
+        var operatorThread = Worker("gm-handler", i =>
+            gm.Receive(SayFrame(i % 2 == 0 ? "@restart 30 deploying" : "@restart cancel")));
+
+        var threads = new[] { ladder, operatorThread };
+        foreach (var t in threads) t.Start();
+        StallWatch.RunUntilDoneOrStalled(threads, () => counter.Rounds, StallWatch.StallQuiet, StallWatch.StallCap,
+                                         "the restart ladder against a GM booking");
+
+        lock (failures) Assert.Empty(failures);
+        Assert.Equal(2L * Rounds, counter.Rounds);
+        // Both threads walked out holding exactly what they walked in with.
+        Assert.False(gm.StateHeld);
+        Assert.False(listener.StateHeld);
+        // And every announcement the listener actually received was built inside the listener's own monitor —
+        // from whichever of the two threads happened to send it.
+        const string booked = "The server will restart";
+        Assert.True(listenerProbe.Count(booked) > 0, "the race produced no announcement at all");
+        Assert.True(listenerProbe.AllHeld(booked), listenerProbe.Explain(booked));
+        Assert.True(listenerProbe.AllHeld("cancelled"), listenerProbe.Explain("cancelled"));
+
+        _fx.World.Restarts.Cancel();   // leave no booking behind for the rest of the collection
+    }
+
     // ===== plumbing =====================================================================================
 
     /// <summary><see cref="StaffAccounts"/> is empty by default (a fresh deployment has no staff), so the GM
@@ -296,13 +443,18 @@ public sealed class AnnounceMonitorTests
             return hits.Count > 0 && hits.All(l => l.Held);
         }
 
-        /// <summary>The failure message for <see cref="AllHeld"/>: which lines were seen and how.</summary>
+        /// <summary>The failure message for <see cref="AllHeld"/>: which lines were seen and how. Capped at a
+        /// handful of hits — the race fact sends the same line hundreds of times, and a failure there is about
+        /// whether ANY of them was unheld, not about reading all six hundred.</summary>
         internal string Explain(string needle)
         {
             var hits = Matching(needle);
             if (hits.Count == 0) return $"{Remote}: no line carrying \"{needle}\" was sent at all";
-            return $"{Remote}: " + string.Join(", ",
-                hits.Select(l => $"\"{l.Text}\" monitor {(l.Held ? "HELD" : "NOT held")}"));
+            var unheld = hits.Where(l => !l.Held).ToList();
+            var show = (unheld.Count > 0 ? unheld : hits).Take(5);
+            string more = (unheld.Count > 0 ? unheld.Count : hits.Count) > 5 ? $" (+ more of the same)" : "";
+            return $"{Remote}: {hits.Count} line(s) carrying \"{needle}\", {unheld.Count} of them NOT held: " +
+                   string.Join(", ", show.Select(l => $"\"{l.Text}\" monitor {(l.Held ? "HELD" : "NOT held")}")) + more;
         }
     }
 }
