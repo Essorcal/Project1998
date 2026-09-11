@@ -66,7 +66,7 @@ public static class EraCalendar
     private static PreparedReload? _preparing;
 
     /// <summary>Force a re-read of both files. Direct callers still receive the old one-step behaviour;
-    /// <c>Content.Load</c> uses <see cref="PrepareReload"/> and <see cref="CommitReload"/> so the calendar
+    /// <c>Content.Load</c> uses <see cref="PrepareReload()"/> and <see cref="CommitReload"/> so the calendar
     /// publishes with the rest of content.</summary>
     public static void Reload()
     {

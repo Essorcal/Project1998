@@ -26,6 +26,7 @@ namespace Tests;
 /// <para><b>Left running.</b> A production acceptor listens until the process exits — there is no stop, by
 /// design — so each fact leaves one listening socket behind for the rest of the test run. That is three
 /// ephemeral loopback ports, and the reason each fact claims its own.</para></summary>
+[Collection("log")]
 public class SharedListenerTests
 {
     private static readonly TimeSpan Bounded = TimeSpan.FromSeconds(10);
@@ -169,6 +170,43 @@ public class SharedListenerTests
 
         finish.SetResult();
         await WaitForTotal(guard, 0);
+    }
+
+    /// <summary>An occupied listener is still a process-fatal bind failure, but the error record first names
+    /// the configured bind address and exact port alongside the socket's error text.
+    /// <para>Falsification: replace the <c>listener.Start()</c> try/catch in <see cref="TkAcceptor"/> with
+    /// the bare Start call; the exception assertion stays green and the bounded log assertion fails.</para></summary>
+    [Fact]
+    public async Task An_occupied_port_is_logged_before_the_acceptor_faults()
+    {
+        Assert.True(BoundToLoopback, "P1998_BIND was already resolved by something else — see ForceLoopbackBind");
+
+        using var occupied = new TcpListener(NetBind.Address, 0);
+        occupied.Start();
+        int port = ((IPEndPoint)occupied.LocalEndpoint).Port;
+
+        var guard = new ConnGuard(globalMax: 1, perIpMax: 1, rateMax: 1, rateWindowMs: 10_000);
+        var acceptor = new TkAcceptor(new[] { port }, guard, (_, _, _) => Task.CompletedTask);
+        var captured = new StringWriter();
+        TextWriter original = Console.Out;
+        Console.SetOut(TextWriter.Synchronized(captured));
+        try
+        {
+            var error = await Assert.ThrowsAsync<SocketException>(acceptor.RunAsync);
+            Assert.Equal(SocketError.AddressAlreadyInUse, error.SocketErrorCode);
+
+            string expected = $"could not listen on {NetBind.Describe}:{port}: {error.Message}";
+            var deadline = DateTime.UtcNow + Bounded;
+            while (!captured.ToString().Contains(expected, StringComparison.Ordinal)
+                   && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
+
+            Assert.Contains(expected, captured.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
     }
 
     // ---- plumbing ---------------------------------------------------------------------------------------
