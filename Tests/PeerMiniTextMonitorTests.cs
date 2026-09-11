@@ -246,6 +246,72 @@ public sealed class PeerMiniTextMonitorTests
         Assert.Equal(0, gmProbe.Count(line));
     }
 
+    // ---- 7. the Lua world shout ------------------------------------------------------------------------
+
+    /// <summary>The Sage ladder's world channel reaches every online player from ONE caster's thread, so it
+    /// enters every online monitor in turn. Driven the way the real path drives it — the caster's own monitor
+    /// held, and the Lua gate held around it, because <c>SpellContext.worldShout</c> runs inside
+    /// <c>LuaVerbHost.Invoke</c>'s <c>EnterScriptGate</c>. Own monitor -&gt; gate -&gt; peer monitor is the
+    /// order <c>SessionActorTests.LuaGateAgainstAPeerMonitorCannotDeadlock</c> already proves cannot cycle;
+    /// this fact is the same order with the shipped loop in the middle. The three recipients are built in rank
+    /// order so the one loop crosses both directions of rule 2.</summary>
+    [Fact]
+    public void TheWorldShoutEntersEveryOnlineSessionsMonitorUnderTheLuaGate()
+    {
+        var (low, lowProbe, _) = ProbePlayer("ShoutLow");
+        var (caster, casterProbe, _) = ProbePlayer("ShoutCaster");
+        var (high, highProbe, _) = ProbePlayer("ShoutHigh");
+        Assert.True(low.StateRank < caster.StateRank && caster.StateRank < high.StateRank);
+        lowProbe.Clear(); casterProbe.Clear(); highProbe.Clear();
+
+        // Exactly what the shipped path holds before it reaches LuaWorldShout: Handle holds the caster's
+        // monitor, LuaVerbHost holds the gate.
+        caster.WithState(() =>
+        {
+            using (Session.EnterScriptGate()) Assert.True(caster.LuaWorldShout("field is clear"));
+        });
+
+        const string line = "[ShoutCaster]: field is clear";
+        foreach (var probe in new[] { lowProbe, casterProbe, highProbe })
+        {
+            Assert.Equal(1, probe.Count(line));
+            Assert.True(probe.AllHeld(line), probe.Explain(line));
+            Assert.Equal(line, probe.Only(line));
+        }
+        // The caller walks out holding exactly what it walked in with — rule 2's descending drop put it back.
+        Assert.False(caster.StateHeld);
+    }
+
+    // ---- 8. the spell flavour line ---------------------------------------------------------------------
+
+    /// <summary>A spell cast on another player sends them their flavour line from the CASTER's thread.
+    /// <c>TellTarget</c> is wrapped at its own definition (the <c>NotifyGroup</c> precedent), so all nine call
+    /// sites are covered at once; the self-cast branch is rule 3's re-entrant no-op. Driven through
+    /// <c>LuaHealTarget</c>, one of those nine, with the caster's monitor and the Lua gate held as the real
+    /// path holds them.</summary>
+    [Fact]
+    public void TheSpellFlavourLineReachesTheTargetInsideTheirMonitor()
+    {
+        var (caster, casterProbe, _) = ProbePlayer("FlavourCaster");
+        var (target, targetProbe, _) = ProbePlayer("FlavourTarget", c => { c.Hp = 10; c.MaxHp = 100; });
+        casterProbe.Clear(); targetProbe.Clear();
+
+        // Type 2 is the targeted shape ("Which target? >"); an unknown key has no recorded flavour, so the
+        // generic "<caster> casts <X> on you." is the line — the fallback half of the same branch.
+        var sp = new SpellDef(0, "monitorprobe", "Mend Wounds", 2, 0, 1, 0, "Which target?");
+        caster.WithState(() =>
+        {
+            using (Session.EnterScriptGate()) caster.LuaHealTarget(5, sp, target.PlayerId);
+        });
+
+        const string line = "FlavourCaster casts Mend Wounds on you.";
+        Assert.Equal(1, targetProbe.Count(line));
+        Assert.True(targetProbe.AllHeld(line), targetProbe.Explain(line));
+        Assert.Equal(line, targetProbe.Only(line));
+        Assert.Equal(0, casterProbe.Count(line));   // the caster never gets the target's flavour
+        Assert.False(caster.StateHeld);
+    }
+
     // ===== plumbing =====================================================================================
 
     /// <summary><see cref="StaffAccounts"/> is empty by default (a fresh deployment has no staff), so the two
