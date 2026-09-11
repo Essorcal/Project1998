@@ -312,6 +312,30 @@ public sealed class PeerMiniTextMonitorTests
         Assert.False(caster.StateHeld);
     }
 
+    // ---- 9. the kick line ------------------------------------------------------------------------------
+
+    /// <summary>"@kick &lt;name&gt; [reason]" saves the target, tells them why they are going and drops them,
+    /// all from the OPERATOR's thread. <c>FlushNow</c> took the target's monitor for its snapshot and the
+    /// notice and <c>Disconnect</c>'s read of their name did not; all three are now one section, the shape
+    /// <c>KickForReplacement</c> has always had. The notice is the <c>0x02</c> login-box channel rather than
+    /// minitext, which is why the probe decodes both, and it must still go out BEFORE the connection
+    /// closes.</summary>
+    [Fact]
+    public void TheKickLineReachesTheTargetInsideTheirMonitorBeforeTheDisconnect()
+    {
+        var (gm, _, _) = ProbePlayer(GmRoster.Name);
+        var (target, targetProbe, _) = ProbePlayer("KickTarget");
+        targetProbe.Clear();
+
+        gm.Receive(SayFrame("@kick KickTarget being a nuisance"));
+
+        const string line = "You were disconnected by a GM: being a nuisance";
+        Assert.Equal(1, targetProbe.Count(line));
+        Assert.True(targetProbe.AllHeld(line), targetProbe.Explain(line));
+        Assert.Equal(line, targetProbe.Only(line));
+        Assert.True(targetProbe.Closed, "the kick must still close the connection after the line");
+    }
+
     // ===== plumbing =====================================================================================
 
     /// <summary><see cref="StaffAccounts"/> is empty by default (a fresh deployment has no staff), so the two
