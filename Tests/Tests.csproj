@@ -1,9 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <!-- LoginServer joins Server here so the login channel's outbound queue (LoginServer/LoginOutbound.cs)
-         can be driven over a loopback socket the same way TcpOutboundTests drives the game's. -->
-    <ProjectReference Include="..\LoginServer\LoginServer.csproj" />
     <ProjectReference Include="..\Server\Server.csproj" />
     <ProjectReference Include="..\Shared\Shared.csproj" />
   </ItemGroup>
