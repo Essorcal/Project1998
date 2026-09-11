@@ -412,7 +412,10 @@ scrubbing, OS SYN-flood protection, a firewall restricting the game ports to pos
   TCP receive buffer is full (slow, or deliberately not reading) used to **block that write and freeze mob
   AI for everyone on the map**; now the tick thread does an O(1) `TryWrite` and moves on, and a client whose
   queue overflows is dropped — the world never stalls. The single-reader channel also guarantees frames
-  never interleave mid-packet (what the old per-session send lock did).
+  never interleave mid-packet (what the old per-session send lock did). The LOGIN channel now has the same
+  shape in miniature (`LoginServer/LoginOutbound.cs`: cap 64 frames plus a 10 s bound on any single write,
+  `P1998_LOGIN_WRITE_MS`), so a peer that stops reading is dropped rather than holding that session's read
+  loop, and the redirect is drained before the socket closes.
 
 ---
 
