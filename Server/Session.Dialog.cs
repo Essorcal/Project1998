@@ -398,9 +398,19 @@ public sealed partial class Session
         // Speaker label is the RANK title ("Inferno"), the audience is the PATH — ranks of one class share a
         // channel, which is what makes it a subpath channel rather than a rank channel.
         string line = $"<@{_char.Name}> ({ClassTitle}) {msg}";
+        // The recipient's two gate reads (`SubpathChat`, `ClassName`) and the send are ONE critical section on
+        // THEM — #29 rule 2 (Server/Session.State.cs), the same shape DoGroupChat and DoClanChat use. Those two
+        // reads are the genuinely unguarded accesses; the send's `_gameInc` write is covered by the same
+        // blanket rule rather than by any tear. Rule 1 holds: Online.All() hands back a snapshot taken under
+        // World._lock and released before it returns (World.OnlineRegistry.cs:77-81). One peer at a time, the
+        // guard released before the next, so two peer monitors are never held at once; our own line is the
+        // re-entrant case (rule 3).
         foreach (var p in _world.Online.All())
-            if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
-                p.SendMiniText(line);
+            p.WithState(() =>
+            {
+                if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
+                    p.SendMiniText(line);
+            });
         Log.Info($"   -> subpath chat: \"{line}\"");
     }
 

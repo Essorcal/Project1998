@@ -211,11 +211,26 @@ public sealed partial class Session
         if (!_char.ClanChat) { SendBlueMessage("Clan chat is off."); return; }                            // RTK wording (blue)
         string line = $"<!{_char.Name}> ({ClassTitle}) {msg}";
         if (line.Length > 250) line = line[..250];
+        // Same shape as DoGroupChat above, for the same reason (#29 rule 2, Server/Session.State.cs): every
+        // read of the recipient's state — their clan-chat toggle, their clan name, their name, their ignore
+        // list — and the send that follows are ONE critical section on THEM. Those four reads are the
+        // genuinely unguarded accesses here; the `_gameInc` the send writes is covered by the same blanket
+        // rule, not because the byte tears (a lost increment is a duplicate nonce, benign per
+        // Session.WorldApi.cs:314-315). Rule 1 holds: Online.All() snapshots under World._lock and returns
+        // with it released (World.OnlineRegistry.cs:77-81), so no world lock is held when we enter a peer.
+        // ONE peer monitor at a time — the guard is released before the next player — so rule 2 resolves each
+        // acquisition on its own, ascending or descending, and two peers are never held at once. Our own name
+        // and ignore list are read inside the body deliberately: the descending case drops our monitor to take
+        // theirs and puts it back before the body runs, so inside it both are held. Our own line is the
+        // re-entrant case (rule 3), so it still goes out in roster order like every other line.
         foreach (var p in _world.Online.All())
-            if (p._char.ClanChat
-                && string.Equals(p._char.ClanName, _char.ClanName, StringComparison.Ordinal)
-                && !(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))
-                p.SendMiniText(line, type: 12);
+            p.WithState(() =>
+            {
+                if (p._char.ClanChat
+                    && string.Equals(p._char.ClanName, _char.ClanName, StringComparison.Ordinal)
+                    && !(IsIgnoring(p._char.Name) || p.IsIgnoring(_char.Name)))
+                    p.SendMiniText(line, type: 12);
+            });
         Log.Info($"   -> clan chat: \"{line}\"");
     }
 
