@@ -33,15 +33,23 @@ public sealed class LoginOutboundTests
     public async Task APeerThatNeverReadsDoesNotBlockTheSenderAndIsDroppedAtTheWriteBound()
     {
         using var pair = await SocketPair.Connect(WriteBoundMs);
-        // Small buffers on both ends so a few megabytes is enough to fill the path and park the write.
-        // The client is never read from: this is the "stopped reading" peer.
-        pair.Server.SendBufferSize = 1024;
-        pair.Client.ReceiveBufferSize = 1024;
+        // Fixed buffers on both ends so a few megabytes is enough to fill the path: Windows auto-tunes the
+        // send buffer otherwise and absorbs megabytes on loopback without ever waiting for the peer. 64KB
+        // rather than a kilobyte, for fact 3's reason — the peer below has to drain whatever the kernel
+        // accepted before it can see EOF, and pushing megabytes through kilobyte buffers takes seconds on
+        // Linux. The client is never read from until then: this is the "stopped reading" peer.
+        pair.Server.SendBufferSize = 64 * 1024;
+        pair.Client.ReceiveBufferSize = 64 * 1024;
 
         Task writer = pair.Outbound.RunWriterAsync();
-        Assert.True(pair.Outbound.Send(new byte[4 * 1024 * 1024]));   // parks the writer inside one write
+        // Bulk, to fill the path rather than to park this particular write. Measured while fixing this: a
+        // multi-megabyte WriteAsync to a peer that is not reading COMPLETES in about a millisecond on
+        // Windows, because the kernel takes the bytes. What parks is a later write, once the path is
+        // genuinely full — which is why the small frames below are part of the setup and not just noise.
+        Assert.True(pair.Outbound.Send(new byte[4 * 1024 * 1024]));
 
-        // The frames behind the stalled one are what the read loop would be enqueuing while the peer sulks.
+        // The frames behind the bulk are what the read loop would be enqueuing while the peer sulks — and one
+        // of them is the write that actually parks, which is what the bound below is measured against.
         var watch = Stopwatch.StartNew();
         for (int i = 0; i < 8; i++) pair.Outbound.Send(Status(0x0F, $"frame {i}"));
         watch.Stop();
@@ -53,12 +61,14 @@ public sealed class LoginOutboundTests
         // Dropped, not merely stalled. Deliberately NOT asserted by counting delivered bytes: once the peer
         // starts reading again the loopback stack happily flushes whatever it had already accepted, so a
         // byte count measures Windows, not us. What is ours is that the connection ENDS — the peer reaches
-        // EOF promptly instead of the session hanging on it forever, and further sends are refused.
+        // EOF instead of the session hanging on it forever, and further sends are refused.
         Assert.False(pair.Outbound.Send(Status(0x0F, "after the drop")));
-        var eof = Stopwatch.StartNew();
-        await ReadToEof(pair.Client.GetStream());   // throws on its own 10s deadline if the peer is not dropped
-        Assert.True(eof.ElapsedMilliseconds < 5_000,
-                    $"the dropped peer took {eof.ElapsedMilliseconds}ms to see the connection end");
+        // ReadToEof's own 10s deadline IS the assertion: it throws if the connection never ends, which is the
+        // red for a peer that was not dropped. Deliberately no tighter sub-deadline on top of it — the peer
+        // must first drain whatever the kernel accepted before the drop, and how long that takes is the
+        // runner's property, not ours. A 5s one here is what made this fact red on upstream CI at d6a48b4
+        // ("the dropped peer took 6071ms to see the connection end") while the same commit passed on the fork.
+        await ReadToEof(pair.Client.GetStream());
     }
 
     /// <summary>Fact 1b, the other bound. With a peer that is not reading and no write bound in play, the
@@ -72,28 +82,27 @@ public sealed class LoginOutboundTests
     {
         // A generous write bound so this fact is about the queue and nothing else.
         using var pair = await SocketPair.Connect(60_000);
-        pair.Server.SendBufferSize = 1024;
-        pair.Client.ReceiveBufferSize = 1024;
 
-        Task writer = pair.Outbound.RunWriterAsync();
-        Assert.True(pair.Outbound.Send(new byte[4 * 1024 * 1024]));   // parks the writer; nothing drains after this
-        // Wait for the writer to actually PICK UP that frame before filling the queue behind it. Without
-        // this the count below races the thread pool: on a loaded Release run the writer had not been
-        // scheduled yet, the parking frame was still occupying a slot, and one fewer frame was accepted.
-        await WaitForQueueDepth(pair.Outbound, 0);
-
+        // The writer is NOT started yet, and that is the whole trick: with nothing dequeuing, the count below
+        // is the queue's own bound rather than a race against the thread pool. The first shape of this fact
+        // started the writer and tried to park it with a four-megabyte frame; on this platform that write
+        // completes in about a millisecond, so the writer went on dequeuing during the fill and `accepted`
+        // came out at 65 on any run that was not under full-suite load. Nothing here depends on timing.
         int accepted = 0;
         var watch = Stopwatch.StartNew();
-        // One more than the capacity: the queue takes Capacity of them and refuses the rest. (The parked
-        // frame is out of the channel already, which is why this is Capacity and not Capacity - 1.)
+        // Sixteen more than the capacity: the queue takes exactly Capacity of them and refuses every one
+        // after that, which is what the session turns into a drop.
         for (int i = 0; i < LoginOutbound.Capacity + 16; i++)
             if (pair.Outbound.Send(Status(0x0F, $"frame {i}"))) accepted++;
         watch.Stop();
 
         Assert.Equal(LoginOutbound.Capacity, accepted);
+        Assert.Equal(LoginOutbound.Capacity, pair.Outbound.QueueDepth);   // accepted AND still held, none lost
         Assert.True(watch.ElapsedMilliseconds < 250,
                     $"filling and overflowing the queue took {watch.ElapsedMilliseconds}ms; no Send may wait");
 
+        // Only now does anything drain: the writer picks the backlog up and the teardown closes behind it.
+        Task writer = pair.Outbound.RunWriterAsync();
         pair.Outbound.Close();
         await writer.WaitAsync(TimeSpan.FromSeconds(10));
     }
@@ -244,16 +253,6 @@ public sealed class LoginOutboundTests
 
     private static byte[] Redirect() =>
         LoginRedirect.Build(new byte[] { 127, 0, 0, 1 }, 2005, "drainprobe", new byte[] { 0, 1, 18, 17, 0 });
-
-    /// <summary>Waits for the writer to have dequeued down to <paramref name="depth"/>. The writer is a
-    /// thread-pool work item, so nothing about when it first runs is guaranteed — a count taken without this
-    /// is measuring the scheduler.</summary>
-    private static async Task WaitForQueueDepth(LoginOutbound outbound, int depth)
-    {
-        var watch = Stopwatch.StartNew();
-        while (outbound.QueueDepth > depth && watch.ElapsedMilliseconds < 10_000) await Task.Delay(1);
-        Assert.Equal(depth, outbound.QueueDepth);
-    }
 
     private static async Task<byte[]> ReadToEof(NetworkStream stream)
     {
