@@ -43,6 +43,7 @@ public static class NpcScripts
         ["nagnang_shield"] = NagnangShieldAbility.Instance,
         ["nagnang_tall_shield"] = NagnangTallShieldAbility.Instance,
         ["mage_stone"] = MageStoneAbility.Instance,
+        ["forgotten_past"] = ForgottenPastAbility.Instance,
         ["dagger_uniform"] = DaggerUniformAbility.Instance,
         ["tiger_mail"] = TigerMailAbility.Instance,
         ["armor_quest"] = ArmorQuestAbility.Instance,

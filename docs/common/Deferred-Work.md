@@ -538,3 +538,31 @@ Three things to settle when someone builds it:
 
 The enemy-ally check in `MythicAllianceAbility` already reads `greater_alliance_<animal>` alongside the
 lesser mark, so a champion of the Dog will be turned away by the Dragon the moment something grants it.
+
+---
+
+## The Geomancers' orbs are built, but four of their materials do not exist yet
+
+`Server/ForgottenPastQuest.cs` builds the whole Forgotten Past chain — twelve stages across Rotah, the Storm
+Shaman, Gruff and Thane, the five-question examination, and the one-time grant of a player-chosen orb. What
+it cannot do is let most players *pay* for one, because four of the materials it asks for have **no source in
+the world**:
+
+| Material | Asked for by | Why it is unobtainable |
+|---|---|---|
+| `ore_high` | Thane's toll (5), and it blocks the chain itself | `game-data/HarvestNodes.csv` ships RTK's **novice** mining table, which rolls poor/med only. RTK's `AI/crafting/ore.lua` first rolls high ore at *apprentice*, and there is no crafting-skill system here. |
+| `metal` | Metal orb (10) | Smelting. RTK's `NPCs/Common/smith.lua` "I'm Smelting!" branch turns ore into it; not ported. |
+| `hot_coal` | Fire orb (10) | Same smelting branch. |
+| `ice_shard` | Water orb (2) | Nothing drops or sells it (`grep -rn ice_shard game-data/` finds only its Items.csv row). |
+
+`ginko_wood`, `ore_poor`, `stardrop` and `yellow_amber` are all obtainable today, so the **Wood** and
+**Earth** orbs are fully paid-for the moment the ore toll is passable.
+
+This is the crafting system's gap, not the quest's: the costs are right (a period tutor post, the Atlas's
+per-orb captures and RTK all agree on all five), the grant works, and each orb starts working the day its
+material does. Nothing here should be "fixed" by lowering a cost or by adding high ore to the novice table —
+the Atlas's own walkthrough says "it may take a short while to get high ore if you aren't very skilled in
+mining", which is the skill gate, in period, described from the outside.
+
+The unblocking change is the mining-skill ladder, which is a crafting-system feature and is already implied
+by the header comment in `game-data/HarvestNodes.csv`.

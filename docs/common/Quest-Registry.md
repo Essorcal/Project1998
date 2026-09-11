@@ -61,6 +61,7 @@ Kinds: **stage** = a stage machine (0 = untouched), **flag** = 0/1, **counter** 
 | `newbie_area_quest` | stage | 0-10 across the newbie maps (4712-4718); stages also unlock four warps (`WarpQuestLocks.csv`) | Newbie area. Helpers: `newbie_rabbit_snapshot`, `newbie_squirrel_snapshot`, `newbie_mignok_told`, `newbie_coords_learned` (the 50-exp tile on map 4714). |
 | `tiger_armor` | stage (level-valued) | holds the rung you are ON: 0·10·20·30·40·50·60·70 = done; "i lost my tiger mail" resets to 0 | Claw / Tiger mail ladder |
 | `tiger_essence_met_claw` | flag | 1 = Claw has engaged you (also set by the level-up push); releases the tutor's repeated briefing | Tiger Essence |
+| `forgotten_path` | stage | 1 clicked "Forgotten past" · 2 blossoms · 3 sent to Buya · 4-6 the Storm Shaman · 7 Gruff · 8-9 Thane · 10 carrying the (invisible) strange metal · 11 Rotah told · 12 examination passed; **reset to 0 on completion** | Geomancers' orbs (`ForgottenPastQuest`). The one-time gate is the **legend** `forged_orb`, never the stage. |
 
 ### Armor chains (Star / Moon / Sun)
 
@@ -136,6 +137,7 @@ renders invisible. "Never removed" means no code path removes it — `@legend <k
 | `understood_the_moon` | `Understood the moon ({date})` | 5 | 128 | finishing any Moon chain | prereq for Sun | never |
 | `survived_the_sun` | `Survived the sun ({date})` | 5 | 128 | finishing any Sun chain | also short-circuits Moon as "already done" | never |
 | `slew_mighty_sute` | `Slew the mighty Sute ({date})` | 5 | 16 | hand Eldritch `sutes_key` | stops the turn-in re-firing (a repeat run keeps the key) | never |
+| `forged_orb` | `Forged an orb of {Element} ({date})` | 6 | 128 | Rotah, on paying an orb's materials | **one orb per character, ever** — every branch of the chain goes silent once it is held | never |
 | `minor_quest_info` | `On a quest to slay the {target}` | 5 | 128 | accepting a minor quest | informational | complete or abandon |
 | `minor_quests_completed` | `Completed {n} minor quests` | 5 | 128 | each completion (rewritten in place) | tally display | never |
 | `mentored` | `Mentored {n} new player(s)` | 3 | 1 | mentorship culmination | cosmetic (the gate is the registry counter) | never |

@@ -1,5 +1,5 @@
 NpcKey,Abilities
-SmithNpc,shop|repair|nagnang_tall_shield
+SmithNpc,shop|repair|nagnang_tall_shield|forgotten_past
 MessengerNpc,shop|messenger
 InnNpc,shop|bank
 InnNpc2,
@@ -16,7 +16,7 @@ ArenaMasterNpc,war_paint
 ExpSeller,shadow_stats
 BonHwaNpc,bon_hwa
 ChapelNpc,shop|chapel
-ShamanNpc,revive
+ShamanNpc,revive|forgotten_past
 BaekhoNpc,revive|totem_worship
 HyunMooNpc,revive|totem_worship
 ChungRyongNpc,revive|totem_worship
@@ -29,3 +29,5 @@ MythicAllianceNpc,mythic_alliance
 AlignmentNpc,alignment
 SummitNpc,summit
 BlackbirdNpc,dagger_uniform
+RotahNpc,shop|repair|bank|forgotten_past
+NpcSubpathGeomancerEarthsDragonNpc,shop|repair
