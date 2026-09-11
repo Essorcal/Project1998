@@ -2,14 +2,17 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using LoginServer;
 using Protocol.Tk495;
+using Shared;
 using Xunit;
 
 namespace Tests;
 
 /// <summary>
-/// The login channel's outbound queue, over real loopback sockets inside this process.
+/// The login channel's outbound queue, over real loopback sockets inside this process. Since the outbound
+/// moved into <c>Shared</c> the type under test is the game's <c>TcpOutbound</c> driven with
+/// <c>OutboundOptions.Login</c>; what these facts pin is the LOGIN profile's behaviour — its 64-frame
+/// capacity, its per-write bound, its awaited drain and its slow-send warning.
 ///
 /// <para>What these guard is a silent failure, not a crash: <c>LoginSession.Send</c> used to be a
 /// synchronous <c>_stream.Write</c> under a lock, on the session's own read loop. A peer that stops reading
@@ -17,6 +20,7 @@ namespace Tests;
 /// stuck behind it and the log showing nothing at all. Every fact below is written so that restoring the old
 /// shape makes it hang to its own timeout rather than fail an assert, which is exactly the point.</para>
 /// </summary>
+[Collection("log")]
 public sealed class LoginOutboundTests
 {
     // Short enough that a stalled write is observable in well under a second, long enough that a loaded
@@ -72,7 +76,7 @@ public sealed class LoginOutboundTests
     }
 
     /// <summary>Fact 1b, the other bound. With a peer that is not reading and no write bound in play, the
-    /// queue itself is finite: once <c>LoginOutbound.Capacity</c> frames are outstanding, Send refuses, and
+    /// queue itself is finite: once <c>OutboundOptions.Login</c>'s capacity of frames are outstanding, Send refuses, and
     /// refusing is what the session turns into a drop. Neither bound relies on the other.
     ///
     /// <para>FALSIFIED by widening the channel to unbounded: Send never returns false and the assert on the
@@ -88,16 +92,18 @@ public sealed class LoginOutboundTests
         // started the writer and tried to park it with a four-megabyte frame; on this platform that write
         // completes in about a millisecond, so the writer went on dequeuing during the fill and `accepted`
         // came out at 65 on any run that was not under full-suite load. Nothing here depends on timing.
+        int capacity = pair.Outbound.Capacity;
+        Assert.Equal(64, capacity);   // the login profile's number, not the game's 2048
         int accepted = 0;
         var watch = Stopwatch.StartNew();
         // Sixteen more than the capacity: the queue takes exactly Capacity of them and refuses every one
         // after that, which is what the session turns into a drop.
-        for (int i = 0; i < LoginOutbound.Capacity + 16; i++)
+        for (int i = 0; i < capacity + 16; i++)
             if (pair.Outbound.Send(Status(0x0F, $"frame {i}"))) accepted++;
         watch.Stop();
 
-        Assert.Equal(LoginOutbound.Capacity, accepted);
-        Assert.Equal(LoginOutbound.Capacity, pair.Outbound.QueueDepth);   // accepted AND still held, none lost
+        Assert.Equal(capacity, accepted);
+        Assert.Equal(capacity, pair.Outbound.QueueDepth);   // accepted AND still held, none lost
         Assert.True(watch.ElapsedMilliseconds < 250,
                     $"filling and overflowing the queue took {watch.ElapsedMilliseconds}ms; no Send may wait");
 
@@ -207,7 +213,7 @@ public sealed class LoginOutboundTests
         Assert.True(drain.ElapsedMilliseconds >= StallMs / 2,
                     $"the teardown returned after {drain.ElapsedMilliseconds}ms without waiting for the "
                     + $"queued frames; the peer had not even started reading until {StallMs}ms");
-        Assert.True(drain.ElapsedMilliseconds < LoginOutbound.DrainTimeoutMs,
+        Assert.True(drain.ElapsedMilliseconds < TcpOutbound.DrainTimeoutMs,
                     $"the drain took {drain.ElapsedMilliseconds}ms and hit its own bound");
         await writer.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -284,13 +290,16 @@ public sealed class LoginOutboundTests
     {
         public TcpClient Client { get; }
         public TcpClient Server { get; }
-        public LoginOutbound Outbound { get; }
+        public TcpOutbound Outbound { get; }
 
         private SocketPair(TcpClient client, TcpClient server, int writeTimeoutMs)
         {
             Client = client;
             Server = server;
-            Outbound = new LoginOutbound(server, "127.0.0.1:0 (test)", writeTimeoutMs);
+            // The login profile with a short per-write bound, so a stalled peer is observable in
+            // milliseconds rather than the ten seconds production waits.
+            Outbound = new TcpOutbound(server, OutboundOptions.Login with { WriteTimeoutMs = writeTimeoutMs },
+                                       remote: "127.0.0.1:0 (test)");
         }
 
         public static async Task<SocketPair> Connect(int writeTimeoutMs)
