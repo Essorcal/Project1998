@@ -1,5 +1,6 @@
 using Protocol.Tk495;
 using Server;
+using Shared;
 
 namespace Tests.Support;
 
