@@ -45,9 +45,9 @@ public readonly struct TkPacket
     /// <param name="pkt">The frame, when the result is <see cref="FrameStatus.Frame"/>.</param>
     /// <param name="consumed">Bytes the frame took, when the result is <see cref="FrameStatus.Frame"/>;
     /// otherwise 0.</param>
-    /// <param name="length">The value of the u16 length field, once its three bytes are present; 0 before
-    /// that. It is what a caller prints when it reports a malformed frame, so it comes back from the one
-    /// place that reads the field rather than being re-derived at the log line.</param>
+    /// <param name="length">The value of the u16 length field when the head byte is <c>0xAA</c> and at least
+    /// three bytes are present; 0 otherwise. It is what a caller prints when it reports a malformed frame,
+    /// so it comes back from the one place that reads the field rather than being re-derived at the log line.</param>
     public static FrameStatus Parse(ReadOnlySpan<byte> buf, out TkPacket pkt, out int consumed, out int length)
     {
         pkt = default;

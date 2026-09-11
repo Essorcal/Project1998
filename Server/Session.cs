@@ -315,8 +315,22 @@ public sealed partial class Session
                 // loop breaks and the normal finally cleanup closes the socket.
                 OnBufferedAsync = async buf =>
                 {
-                    if (Volatile.Read(ref _established) != 0 || IsLoginPort || !StatusResponder.LooksLikeHttp(buf))
+                    if (Volatile.Read(ref _established) != 0 || IsLoginPort)
                         return false;
+
+                    // The reader's next step drops every non-0xAA head, so finish sniffing only a proper
+                    // prefix here. Append exactly one bounded stream read at a time to this live buffer; a
+                    // coalesced request tail must be consumed too, or closing with it unread can reset the
+                    // response. The reader's handshake watchdog still closes this pending read on deadline.
+                    while (StatusResponder.IsHttpPrefix(buf))
+                    {
+                        var followUp = new byte[FrameReader.ReadBufferBytes];
+                        int n = await tcp.Stream.ReadAsync(followUp);
+                        if (n == 0) return true;
+                        for (int i = 0; i < n; i++) buf.Add(followUp[i]);
+                    }
+
+                    if (!StatusResponder.LooksLikeHttp(buf)) return false;
                     await tcp.Stream.WriteAsync(StatusResponder.Build(_world));
                     Log.Info($"   -> status probe from {_remote} answered ({_world.Online.Count} online)");
                     return true;

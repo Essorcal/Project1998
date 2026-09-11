@@ -129,7 +129,9 @@ public sealed class FrameReader
         /// Return <c>true</c> to stop the loop (the enumeration ends, and the caller's <c>finally</c> closes
         /// the connection as it would on any other exit). The game sniffs the HTTP status probe here and
         /// answers it with a direct stream write, which is why this hook is asynchronous. The buffer is the
-        /// live one — read it, never mutate it.
+        /// live one. Read it; the only legal mutation is APPENDING bytes this hook itself read from the same
+        /// stream, which the reader frames on this read (the game's status-probe prefix wait is the one
+        /// caller that does).
         /// <para>This runs BEFORE all three drop rules (<see cref="MaxUnframedBytes"/>, the non-0xAA head
         /// byte and a length field under <see cref="TkPacket.MinLength"/>), which is what keeps the status
         /// probe working: "GET " is a non-0xAA head, so a probe the hook did not answer first would be
