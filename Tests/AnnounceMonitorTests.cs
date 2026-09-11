@@ -106,6 +106,45 @@ public sealed class AnnounceMonitorTests
         Assert.Equal(0, selfProbe.Count($"{ignored.CharName}>"));
     }
 
+    // ---- 2. the ban's kick -----------------------------------------------------------------------------
+
+    /// <summary>"@ban &lt;name&gt;" writes the ban record and then, if the player is online, saves them, tells
+    /// them why they are going and drops them — all from the OPERATOR's thread, and until now with nothing held.
+    /// All three are one section on the target, the shape <c>@kick</c> and <c>KickForReplacement</c> already
+    /// have. The notice is the <c>0x02</c> login-box channel rather than minitext (which is why the probe decodes
+    /// both) and it must still go out BEFORE the connection closes; the operator's own confirmation still reports
+    /// the kick.
+    ///
+    /// <para>The target has to exist in the character store for <c>@ban</c> to get past its first gate
+    /// (<c>CharacterStore.CharacterExists</c>), so the row is written directly into the redirected test store
+    /// rather than by driving a login. The ban record itself lands in the redirected test database under a name
+    /// no other fact uses.</para></summary>
+    [Fact]
+    public void TheBanNoticeReachesTheTargetInsideTheirMonitorBeforeTheDisconnect()
+    {
+        var (gm, gmProbe, _) = ProbePlayer(GmRoster.Name);
+        var (target, targetProbe, character) = ProbePlayer("BanTarget");
+        _fx.Store.SaveJson(CharacterStore.Key(character.Name), CharacterStore.Serialize(character));
+        Assert.True(CharacterStore.CharacterExists(character.Name), "@ban refuses a name with no character row");
+        gmProbe.Clear(); targetProbe.Clear();
+
+        gm.Receive(SayFrame("@ban BanTarget duping items"));
+
+        // LoginAuth.BanMessageFor reads the record back, so this is the real banned-login wording.
+        const string needle = "This account is banned";
+        Assert.Equal(1, targetProbe.Count(needle));
+        Assert.True(targetProbe.AllHeld(needle), targetProbe.Explain(needle));
+        Assert.Equal("This account is banned: duping items", targetProbe.Only(needle));
+        Assert.True(targetProbe.Closed, "the ban must still close the connection after the notice");
+        // The target's notice is the target's alone. (The operator's own "Banned … [kicked]" confirmation goes out
+        // on SendLog — the 0x0D self-speech channel, which this probe deliberately does not decode — so it is not
+        // asserted here; what rule 2 is about is that the operator never receives the peer's line.)
+        Assert.Equal(0, gmProbe.Count(needle));
+        // The ban itself really landed, so the notice is not being read off a stale record.
+        Assert.True(Moderation.IsBanned(character.Name, out var why, out _));
+        Assert.Equal("duping items", why);
+    }
+
     // ===== plumbing =====================================================================================
 
     /// <summary><see cref="StaffAccounts"/> is empty by default (a fresh deployment has no staff), so the GM

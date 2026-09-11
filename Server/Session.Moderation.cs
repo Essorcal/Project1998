@@ -52,12 +52,42 @@ public sealed partial class Session
 
         // Kick them off NOW if they're online. A ban that waits for the next login lets the behaviour that
         // triggered it carry on for as long as they stay connected.
+        //
+        // Save, tell, drop — ONE critical section on the banned player, the same three statements in the same
+        // order as @kick eighty lines down (#29 rule 2, Server/Session.State.cs:25-33). Everything in there is an
+        // entry into ANOTHER session's state from the operator's thread: SendMessage writes their _gameInc
+        // (blanket rule 2, not a torn byte — Session.WorldApi.cs:314-315), Disconnect reads their _char.Name for
+        // its log line, and FlushNow serialises their whole character graph.
+        //
+        // THE FLUSHNOW IS NEW HERE, and it is the one behaviour change on this path. What the ban saved before:
+        // nothing at ban time — Disconnect only closes the connection, and the save came later and elsewhere,
+        // when the target's own read loop unwound into its finally and ran WithState(TearDownWorldState)
+        // (Session.cs:349), whose last act is `_dirty = true; FlushNow();` (Session.cs:389-397). That still
+        // happens and is still the backstop. What it does NOT give is the guarantee @kick's explicit FlushNow
+        // gives: a save taken at the INSTANT of the command, inside the same section as the notice and the drop,
+        // so nothing of theirs can move between the snapshot and the teardown and nothing is riding on their read
+        // loop actually getting to unwind. A ban must not cost the player progress they had earned any more than
+        // a kick must, and there was no reason for the two commands to differ. FlushNow is dirty-gated, so for a
+        // clean session it costs a flag test.
+        //
+        // No new lock and no new lock order. FlushNow's own EnterState becomes the re-entrant case (rule 3), so
+        // the target's monitor IS held across CaptureAndWrite's lock (_writeGate) section — the nested guard is
+        // `default` (Session.State.cs:137) and disposes to nothing (Session.State.cs:175-180). That nesting is
+        // not new: it is KickForReplacement's (Session.CharacterApi.cs:277-283), @kick's, and the one the read
+        // loop's own teardown takes on every ordinary disconnect. Nothing in the tree takes a session monitor
+        // while holding a _writeGate (FlushPair, Session.TimedEffects.cs:152-172, closes its WithStatePair
+        // first), so monitor -> _writeGate cannot cycle. Rule 1 holds: FindPlayer takes and releases World._lock
+        // inside itself (World.OnlineRegistry.cs:45-53) and CloseConnection takes no lock at all. The operator's
+        // own SendLog stays outside, so no peer monitor is held while we report to ourselves.
         var online = _world.Online.FindPlayer(name);
         if (online is not null)
-        {
-            online.SendMessage(LoginAuth.BanMessageFor(name));
-            online.Disconnect("banned");
-        }
+            online.WithState(() =>
+            {
+                // Save before dropping them — a ban must never cost the player progress they'd earned.
+                online.FlushNow();
+                online.SendMessage(LoginAuth.BanMessageFor(name));
+                online.Disconnect("banned");
+            });
 
         SendLog($"Banned {name} ({Moderation.Describe(until)})"
               + (reason.Length > 0 ? $": {reason}" : ".") + (online is not null ? "  [kicked]" : ""));
