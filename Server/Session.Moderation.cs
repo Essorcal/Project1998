@@ -62,7 +62,7 @@ public sealed partial class Session
         // THE FLUSHNOW IS NEW HERE, and it is the one behaviour change on this path. What the ban saved before:
         // nothing at ban time — Disconnect only closes the connection, and the save came later and elsewhere,
         // when the target's own read loop unwound into its finally and ran WithState(TearDownWorldState)
-        // (Session.cs:349), whose last act is `_dirty = true; FlushNow();` (Session.cs:389-397). That still
+        // (Session.cs:363), whose last act is `_dirty = true; FlushNow();` (Session.cs:395-396). That still
         // happens and is still the backstop. What it does NOT give is the guarantee @kick's explicit FlushNow
         // gives: a save taken at the INSTANT of the command, inside the same section as the notice and the drop,
         // so nothing of theirs can move between the snapshot and the teardown and nothing is riding on their read
@@ -78,16 +78,23 @@ public sealed partial class Session
         // while holding a _writeGate (FlushPair, Session.TimedEffects.cs:152-172, closes its WithStatePair
         // first), so monitor -> _writeGate cannot cycle. Rule 1 holds: FindPlayer takes and releases World._lock
         // inside itself (World.OnlineRegistry.cs:45-53) and CloseConnection takes no lock at all. The operator's
-        // own SendLog stays outside, so no peer monitor is held while we report to ourselves.
+        // own SendLog stays outside, so no peer monitor is held while we report to ourselves. The notice text is
+        // computed OUTSIDE the section too: BanMessageFor opens SQLite and reads the moderation row for the name
+        // we were given (Shared/LoginAuth.cs:105-112), which is none of the target's state, so holding their
+        // monitor across a database open and SELECT buys nothing. Hoisted, the section holds only the target's
+        // own work, which is the same shape @kick's sends — a string already in hand.
         var online = _world.Online.FindPlayer(name);
         if (online is not null)
+        {
+            var notice = LoginAuth.BanMessageFor(name);
             online.WithState(() =>
             {
                 // Save before dropping them — a ban must never cost the player progress they'd earned.
                 online.FlushNow();
-                online.SendMessage(LoginAuth.BanMessageFor(name));
+                online.SendMessage(notice);
                 online.Disconnect("banned");
             });
+        }
 
         SendLog($"Banned {name} ({Moderation.Describe(until)})"
               + (reason.Length > 0 ? $": {reason}" : ".") + (online is not null ? "  [kicked]" : ""));
