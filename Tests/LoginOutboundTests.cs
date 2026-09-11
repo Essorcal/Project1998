@@ -165,22 +165,27 @@ public sealed class LoginOutboundTests
     public async Task TheRedirectsLastFrameReachesASlowButReadingPeerBeforeTheClose()
     {
         const int StallMs = 150;        // shut window, then open — comfortably inside the 1s drain bound
-        const int BulkBytes = 4 * 1024 * 1024;
+        // Enough to park the writer several times over (the two 64KB buffers below are all the kernel can
+        // hold), and small enough that the peer's catch-up read is not itself a race against the drain's
+        // one-second bound. It was four megabytes, which is 4MB of catch-up through 64KB buffers on a
+        // shared Linux runner: fork run 34552742122 failed here with "the drain took 1118ms and hit its own
+        // bound". Same mis-sizing as fact 1a's, one fact further along.
+        const int BulkBytes = 512 * 1024;
 
         // A generous write bound: this fact is about the drain, and the peer's deliberate stall must not be
         // mistaken for the stalled-write drop that fact 1a covers.
         using var pair = await SocketPair.Connect(5_000);
         // Setting the socket buffers at all is what makes the sender park: Windows auto-tunes the send
         // buffer otherwise and will absorb megabytes on loopback without ever waiting for the peer (an 8MB
-        // version of this fact still passed with the drain removed, for exactly that reason). 64KB rather
-        // than the 1KB fact 1a uses, because the drain has a one-second bound and pushing four megabytes
-        // through kilobyte buffers takes longer than that on Linux — which is how CI first failed this.
+        // version of this fact still passed with the drain removed, for exactly that reason). 64KB, the same
+        // size fact 1a uses, because a bound measured in a second cannot also be waiting on kilobyte buffers
+        // to pass megabytes on Linux — which is how CI first failed this.
         pair.Server.SendBufferSize = 64 * 1024;
         pair.Client.ReceiveBufferSize = 64 * 1024;
         var expected = new List<byte>();
         // Opaque bulk, not a framed packet: TkPacket's length field is 16 bits and this is deliberately
         // larger than anything the kernel will absorb in one go. Built BEFORE the peer's stall clock starts,
-        // so that filling four megabytes is not silently charged against the stall.
+        // so that filling the buffer is not silently charged against the stall.
         byte[] bulk = Enumerable.Range(0, BulkBytes).Select(i => (byte)i).ToArray();
 
         Task writer = pair.Outbound.RunWriterAsync();
