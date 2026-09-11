@@ -104,7 +104,16 @@ public sealed partial class Session
             });
 
             SendMiniText($"This culminates your mentorship of {them}. Hopefully they have learned much from your teachings.");
-            target.SendMiniText($"This culminates your mentorship under {_char.Name}. Hopefully you have learned much from their teachings.");
+            // The protégé's own line, entered on their monitor like the three mutations above (#29 rule 2,
+            // Server/Session.State.cs — entering a peer's state happens under that peer's monitor). Its own
+            // section rather than an extra statement inside the mutation block above, so the two lines keep
+            // going out in the order they always did: the mentor's first, then the protégé's. Rule 1 holds —
+            // this runs on the mentor's 0x3A read-loop thread (HandleNpcDialog completes the prompt's
+            // TaskCompletionSource inline, so the continuation resumes under Handle's own WithState) with no
+            // world lock, no viewport lock and no Lua gate: LuaMentor fires RunMentorAsync and returns at the
+            // first prompt, so everything past that await is outside the gate the cast was under.
+            target.WithState(() =>
+                target.SendMiniText($"This culminates your mentorship under {_char.Name}. Hopefully you have learned much from their teachings."));
             Log.Info($"   -> MENTOR '{_char.Name}' culminated '{them}' (total {total})");
             return;
         }

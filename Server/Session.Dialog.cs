@@ -398,9 +398,19 @@ public sealed partial class Session
         // Speaker label is the RANK title ("Inferno"), the audience is the PATH — ranks of one class share a
         // channel, which is what makes it a subpath channel rather than a rank channel.
         string line = $"<@{_char.Name}> ({ClassTitle}) {msg}";
+        // The recipient's two gate reads (`SubpathChat`, `ClassName`) and the send are ONE critical section on
+        // THEM — #29 rule 2 (Server/Session.State.cs), the same shape DoGroupChat and DoClanChat use. Those two
+        // reads are the genuinely unguarded accesses; the send's `_gameInc` write is covered by the same
+        // blanket rule rather than by any tear. Rule 1 holds: Online.All() hands back a snapshot taken under
+        // World._lock and released before it returns (World.OnlineRegistry.cs:77-81). One peer at a time, the
+        // guard released before the next, so two peer monitors are never held at once; our own line is the
+        // re-entrant case (rule 3).
         foreach (var p in _world.Online.All())
-            if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
-                p.SendMiniText(line);
+            p.WithState(() =>
+            {
+                if (p._char.SubpathChat && string.Equals(p._char.ClassName, _char.ClassName, StringComparison.OrdinalIgnoreCase))
+                    p.SendMiniText(line);
+            });
         Log.Info($"   -> subpath chat: \"{line}\"");
     }
 
@@ -972,8 +982,19 @@ public sealed partial class Session
     {
         var p = _world.Online.FindPlayer(name);
         if (p is null) return;
-        p.RefreshMailFlags();   // recompute + push the recipient's bag flag (SendStats alone would send the stale cache)
-        p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
+        // The icon refresh and the line are ONE critical section on the RECIPIENT (#29 rule 2,
+        // Server/Session.State.cs). RefreshMailFlags already entered their monitor for itself
+        // (Session.Entity.cs:161) and the line that explains the icon did not; entering once around both makes
+        // the flag recompute, the HUD push and the notice a single section instead of a guarded write followed
+        // by an unguarded send, and rule 3 turns RefreshMailFlags' own EnterState into the re-entrant no-op.
+        // Rule 1 holds: FindPlayer takes and releases World._lock inside itself (World.OnlineRegistry.cs:45-53),
+        // so nothing world-scoped is held here. Our own name is read inside the body, where the descending case
+        // has already put our monitor back.
+        p.WithState(() =>
+        {
+            p.RefreshMailFlags();   // recompute + push the recipient's bag flag (SendStats alone would send the stale cache)
+            p.SendMiniText($"[PARCEL]: You got a parcel from {_char.Name}!");
+        });
     }
 
     // ---- spoken shop shortcut ("buy [my] [all|N] <item>") — see ShopAbility.OnSay ----------------
