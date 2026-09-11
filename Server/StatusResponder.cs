@@ -22,11 +22,24 @@ namespace Server;
 /// </summary>
 public static class StatusResponder
 {
+    private static readonly byte[] HttpGet = Encoding.ASCII.GetBytes("GET ");
+
+    /// <summary>Are the buffered bytes a non-empty proper prefix of <c>GET </c>? A game-port hook may wait
+    /// for one bounded follow-up read before the frame reader applies its non-<c>0xAA</c> head rule.</summary>
+    public static bool IsHttpPrefix(List<byte> buf)
+    {
+        if (buf.Count is 0 or >= 4) return false;
+        for (int i = 0; i < buf.Count; i++)
+            if (buf[i] != HttpGet[i]) return false;
+        return true;
+    }
+
     /// <summary>Do these first bytes open an HTTP GET? Checked only before the first valid game frame
     /// (Session._established == 0) and only on game ports, so the cost on real clients is four byte
     /// compares on their first chunk.</summary>
     public static bool LooksLikeHttp(List<byte> buf) =>
-        buf.Count >= 4 && buf[0] == (byte)'G' && buf[1] == (byte)'E' && buf[2] == (byte)'T' && buf[3] == (byte)' ';
+        buf.Count >= 4 && buf[0] == HttpGet[0] && buf[1] == HttpGet[1] &&
+        buf[2] == HttpGet[2] && buf[3] == HttpGet[3];
 
     /// <summary>The full HTTP response, built fresh per probe — the values are the point.</summary>
     public static byte[] Build(World world)

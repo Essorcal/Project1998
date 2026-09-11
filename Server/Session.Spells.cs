@@ -997,7 +997,26 @@ public sealed partial class Session
         if (text.Length == 0) return false;
         string line = $"[{_char.Name}]: {text}";
         if (line.Length > 250) line = line[..250];
-        foreach (var p in _world.Online.All()) p.SendMiniText(line, WorldShoutType);
+        // Each recipient is entered on their own monitor for their one line (#29 rule 2,
+        // Server/Session.State.cs), one at a time — the guard is disposed before the next player, so two peer
+        // monitors are never held at once and rule 2 resolves each acquisition on its own.
+        //
+        // THE LUA GATE IS HELD HERE, and the order is the proven one. This runs from spell_verbs.lua through
+        // SpellContext.worldShout, i.e. inside LuaVerbHost.Invoke's `using (Session.EnterScriptGate())`
+        // (LuaVerbHost.cs:135), on the caster's read-loop thread which already holds the caster's own monitor.
+        // Own monitor -> gate -> a peer's monitor is exactly the shape Tests/SessionActorTests.cs's
+        // LuaGateAgainstAPeerMonitorCannotDeadlock pins (b.WithState -> EnterScriptGate -> a.ReceiveHeal), and
+        // it cannot cycle because the gate's slow path drops every session monitor this thread holds BEFORE
+        // waiting (Session.State.cs:205-208): a thread waiting for the gate holds no monitor, so whoever holds
+        // the gate can always take any monitor it needs and finish. That also covers rule 2's descending
+        // branch dropping and retaking our own monitor while we hold the gate.
+        //
+        // Cost at a few hundred players: one UNCONTENDED Monitor.Enter/Exit per recipient, plus one extra
+        // Exit/Enter pair on our own monitor for each recipient ranked below us. Tens of nanoseconds each
+        // against a packet build and an encrypt per player — this loop was already O(online) and stays so.
+        // Rule 1 holds: Online.All() snapshots under World._lock and returns with it released
+        // (World.OnlineRegistry.cs:77-81).
+        foreach (var p in _world.Online.All()) p.WithState(() => p.SendMiniText(line, WorldShoutType));
         Log.Info($"   -> world shout by {_char.Name}: {text} (0x0A type {WorldShoutType})");
         return true;
     }
@@ -2687,9 +2706,24 @@ public sealed partial class Session
     // you." only if no live flavor is recorded). The caster themselves never gets flavor — only "You cast X".
     private void TellTarget(Session target, SpellDef sp)
     {
+        // Wrapped at the DEFINITION rather than at each of the nine call sites — the NotifyGroup precedent
+        // (Session.Chat.cs) — because every one of those sites reaches a peer and NONE of them is already
+        // inside that peer's section: the whole file takes exactly one other peer monitor, the wedding's
+        // WithStatePair. Rule 3 makes the self-cast branch the re-entrant no-op, since we are already under
+        // our own monitor there.
+        //
+        // #29 rule 2 (Server/Session.State.cs). Rule 1 and the Lua gate: every caller is a Lua* primitive
+        // reached from spell_verbs.lua through SpellContext on the CASTER's read-loop thread, so the gate is
+        // held and the order is own monitor -> gate -> peer monitor, the one
+        // Tests/SessionActorTests.cs's LuaGateAgainstAPeerMonitorCannotDeadlock pins. No world lock: the tick's
+        // mob casts go to Session.ApplyMobSpell (World.cs:2412) with a Content.MobSpellDef and never reach
+        // here, and DrainQueuedCasts runs inside Dispatch, on the handler thread (Session.cs:720).
         var flavor = Content.TargetTextFor(sp.Key);
-        if (ReferenceEquals(target, this)) { if (flavor.Length > 0) SendMiniText(flavor); }
-        else target.SendMiniText(flavor.Length > 0 ? flavor : $"{_char.Name} casts {sp.Name} on you.");
+        target.WithState(() =>
+        {
+            if (ReferenceEquals(target, this)) { if (flavor.Length > 0) SendMiniText(flavor); }
+            else target.SendMiniText(flavor.Length > 0 ? flavor : $"{_char.Name} casts {sp.Name} on you.");
+        });
     }
 
     /// <summary>Apply a spell's timed stat buff to THIS player — a buff someone else cast on us AND our own

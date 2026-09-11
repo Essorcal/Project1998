@@ -1,5 +1,12 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <!-- Generate the XML so CS1574/CS0419 dangling-cref warnings are enforced by TreatWarningsAsErrors.
+         CS1591 and CS1573 are pervasive completeness warnings, not the reference validation this enables. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Shared.Core\Shared.Core.csproj" />
   </ItemGroup>

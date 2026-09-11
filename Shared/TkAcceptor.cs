@@ -51,7 +51,13 @@ public sealed class TkAcceptor
     private async Task ListenAsync(int port)
     {
         var listener = new TcpListener(NetBind.Address, port);
-        listener.Start();
+        try { listener.Start(); }
+        catch (SocketException e)
+        {
+            // Binding still kills the process; add the endpoint context before preserving the same exception.
+            Log.Error($"could not listen on {NetBind.Describe}:{port}: {e.Message}", e);
+            throw;
+        }
         Log.Info($"listening on {NetBind.Describe}:{port}"
                  + (ProxyProtocol.Enabled ? $" [PROXY protocol trusted from {ProxyProtocol.DescribeAllow}]" : ""));
         while (true)
