@@ -75,6 +75,8 @@ Kinds: **stage** = a stage machine (0 = untouched), **flag** = 0/1, **counter** 
 | `carnage_wins` | counter | Carnage victories; only `@carnage` writes it (Warrior Sun needs ≥2) | |
 | `sun_armor_totem` | counter 0-4 | progress through the Chung ryong→Baekho→Ju Jak→Hyun moo worship order (Poet Sun needs ≥4; cleared on pay) | `TotemWorship` |
 | `craft_tailoring`, `craft_metalworking`, `craft_woodworking` | counter | manufacturing skill points (Adept = 3910/2040/2250). **Nothing writes them** — Poet Sun step 5 is a documented hard stop | |
+| `white_moon_axe` | stage | 1 show a Whisper bracelet · 2 five Pale scorpions · 3 Skeleton Ju · 4 pay 20,000; **reset to 0 on completion** (repeatable, no legend) | Rogue White Moon Axe at Buya's Maso (`WhiteMoonAxeAbility`). Axe is handed out UNBONDED; Rogue Moon bonds it. |
+| `wma_scorpion_base`, `wma_ju_base` | snapshot | Pale scorpion / Skeleton Ju kills when that step was asked; cleared on completion | |
 
 ### Repeatables & services
 

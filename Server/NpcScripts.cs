@@ -47,6 +47,7 @@ public static class NpcScripts
         ["dagger_uniform"] = DaggerUniformAbility.Instance,
         ["tiger_mail"] = TigerMailAbility.Instance,
         ["armor_quest"] = ArmorQuestAbility.Instance,
+        ["white_moon_axe"] = WhiteMoonAxeAbility.Instance,
         ["poet_whip"] = PoetWhipQuestAbility.Instance,
         ["stars_hint"] = StarHintAbility.Instance,
         ["totem_worship"] = TotemWorshipAbility.Instance,

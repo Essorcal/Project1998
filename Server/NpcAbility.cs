@@ -120,6 +120,9 @@ public sealed class NpcContext
     public bool TakeItem(string itemKey, int amount) => _s.TakeItem(itemKey, amount);
     /// <summary>Give a reward item by key; false if the item is unknown or the pack is full.</summary>
     public bool GiveItem(string itemKey, int amount = 1) => _s.GiveRewardItem(itemKey, amount);
+    /// <summary>Give one item bonded to this player even though its row is not (see
+    /// <see cref="Session.GiveBoundItem"/>).</summary>
+    public bool GiveBound(string itemKey) => _s.GiveBoundItem(itemKey);
 
     /// <summary>How many of an item the player could sacrifice under the armor-quest rule — bag AND worn
     /// slots, full durability only ("must be 100% and can be worn at the time or in your inventory").</summary>

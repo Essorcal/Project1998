@@ -7,7 +7,7 @@ FishNpc,fish
 LibrarianNpc,librarian
 MainTutorialNpc,stars_hint
 WarriorTrainerNpc,warrior_trainer|minor_quest|armor_quest|nagnang_shield
-RogueTrainerNpc,rogue_trainer|minor_quest|armor_quest|dagger_uniform
+RogueTrainerNpc,rogue_trainer|minor_quest|white_moon_axe|armor_quest|dagger_uniform
 MageTrainerNpc,mage_trainer|minor_quest|sute|armor_quest|mage_stone
 PoetTrainerNpc,poet_trainer|minor_quest|armor_quest|poet_whip
 BloodNpc,forget_secret

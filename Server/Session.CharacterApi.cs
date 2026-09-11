@@ -771,6 +771,17 @@ public sealed partial class Session
         return true;
     }
 
+    /// <summary>Give one item stamped with THIS character as its owner, whatever its row says — for an NPC that
+    /// bonds one particular hand-over of an item that is otherwise loose (Rogue Moon rebonding the White Moon
+    /// Axe). A row in <c>BondedItemIds</c> would instead bond it to whoever picks it up or trades for it.</summary>
+    internal bool GiveBoundItem(string itemKey)
+    {
+        var def = Content.ItemByKey(itemKey);
+        if (def is null || !GiveItem(def, owner: _char.Name)) return false;
+        SaveChar();
+        return true;
+    }
+
     /// <summary>Bump the lifetime kill tally for a mob key (RTK's per-mob kill count). Quests read a DELTA of
     /// this — kills since they were accepted — so nothing else is needed here. Keyless kills (debug summons)
     /// are ignored. Called only from <see cref="AwardKillExp"/>, for every player that kill pays; do not call
