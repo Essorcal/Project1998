@@ -875,14 +875,29 @@ public sealed partial class Session
         var target = _world.Online.FindPlayer(name);
         if (target is null) { Refuse($"'{name}' isn't online."); return; }
 
-        int now = Math.Max(0, target.QuestCounter(ArmorQuest.CarnageWinsReg) + add);
-        target.SetQuestStage(ArmorQuest.CarnageWinsReg, now);
-        // Addressed to the TARGET, so it is not a reply to the operator and does not go through Reply —
-        // see the channel rule in Commands.cs. The operator's own confirmation is the next line.
-        target.SendMiniText(add >= 0 ? "Your victory in the Carnage is recorded."
-                                     : "Your Carnage record has been amended.");
-        Reply($"{target._char.Name}: {now} carnage victory(ies).");
-        Log.Info($"   -> @carnage '{target._char.Name}' {add:+#;-#;0} -> {now}");
+        // Read, write, tell — one critical section on the TARGET (#29 rule 2, Server/Session.State.cs). The
+        // read-modify-write really is one here: `now` is their carnage counter plus `add`, and QuestCounter is
+        // a bare `_char.Quests` lookup (Session.CharacterApi.cs:303) made from the operator's thread, so two
+        // GMs scoring the same player could both have read the old tally and the second write would lose the
+        // first. SetQuestStage takes the monitor for itself (Session.CharacterApi.cs) and is now the
+        // re-entrant case (rule 3). Their NAME is read in here too, for the same reason — it is their state,
+        // and @ckm parks a marker string in _char.Name for the length of one packet. The operator's own
+        // confirmation stays OUTSIDE, so we are not holding a peer's monitor while sending to ourselves.
+        // Rule 1 holds: FindPlayer takes and releases World._lock inside itself (World.OnlineRegistry.cs:45-53).
+        int now = 0;
+        string them = "";
+        target.WithState(() =>
+        {
+            now = Math.Max(0, target.QuestCounter(ArmorQuest.CarnageWinsReg) + add);
+            target.SetQuestStage(ArmorQuest.CarnageWinsReg, now);
+            them = target._char.Name;
+            // Addressed to the TARGET, so it is not a reply to the operator and does not go through Reply —
+            // see the channel rule in Commands.cs. The operator's own confirmation is the next line.
+            target.SendMiniText(add >= 0 ? "Your victory in the Carnage is recorded."
+                                         : "Your Carnage record has been amended.");
+        });
+        Reply($"{them}: {now} carnage victory(ies).");
+        Log.Info($"   -> @carnage '{them}' {add:+#;-#;0} -> {now}");
     }
 
     // "@approach <username>" — teleport to an online player: their map, on a free tile beside them (their own
@@ -951,9 +966,22 @@ public sealed partial class Session
         // there on why the search is a policy now.
         var (x, y) = target.EnterMap(map, xs, ys, _char.X, _char.Y, mapName,
                                      ArrivalPolicy.AdjacentFreeElseStack);
-        target.SendMiniText($"You have been summoned by {_char.Name}.");   // to the TARGET, not a Reply
-        Reply($"Brought {target._char.Name} to ({x},{y}).");
-        Log.Info($"   -> @bring '{_char.Name}' <- '{target._char.Name}' to map {map} ({x},{y})");
+        // The move itself was already guarded: EnterMap opens with `using var _ = EnterState()`
+        // (Session.Navigation.cs:1389), so every write the summon makes on them happens under their monitor.
+        // What was not guarded is this line and the two reads of their NAME below — #29 rule 2, so they get a
+        // section of their own here rather than a wider one around EnterMap, which would change nothing about
+        // the writes and would hold the monitor across World._lock for longer than the move needs it. Rule 1
+        // holds: FindPlayer released World._lock before returning (World.OnlineRegistry.cs:45-53) and EnterMap
+        // has released it again by the time it returns. The operator's own Reply stays outside, so no peer
+        // monitor is held while we send to ourselves.
+        string them = "";
+        target.WithState(() =>
+        {
+            target.SendMiniText($"You have been summoned by {_char.Name}.");   // to the TARGET, not a Reply
+            them = target._char.Name;
+        });
+        Reply($"Brought {them} to ({x},{y}).");
+        Log.Info($"   -> @bring '{_char.Name}' <- '{them}' to map {map} ({x},{y})");
     }
 
     // "@announce <message>" — say something to every player online on the same 0x0A system channel the

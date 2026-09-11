@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -38,7 +39,11 @@ public sealed class PeerMiniTextMonitorTests
 {
     private readonly SessionFixture _fx;
 
-    public PeerMiniTextMonitorTests(SessionFixture fx) => _fx = fx;
+    public PeerMiniTextMonitorTests(SessionFixture fx)
+    {
+        _fx = fx;
+        GmRoster.Ensure();
+    }
 
     // ---- 1. clan chat ----------------------------------------------------------------------------------
 
@@ -186,7 +191,86 @@ public sealed class PeerMiniTextMonitorTests
         Assert.Equal("", protege.QuestStr(Mentorship.MentorStr));
     }
 
+    // ---- 5. "@carnage" -------------------------------------------------------------------------------
+
+    /// <summary>"@carnage &lt;name&gt; [n]" reads the target's carnage counter, writes counter+n back and tells
+    /// them, all from the OPERATOR's thread. The read and the write are now one section on the target — they
+    /// are a genuine read-modify-write, and <c>QuestCounter</c> is a bare <c>_char.Quests</c> lookup — and so
+    /// is the line and the read of their name. The operator's own confirmation stays outside that section and
+    /// still carries the same text.</summary>
+    [Fact]
+    public void TheCarnageLineReachesTheTargetInsideTheirMonitorAndTheTallyIsUnchanged()
+    {
+        var (gm, gmProbe, _) = ProbePlayer(GmRoster.Name);
+        var (target, targetProbe, _) = ProbePlayer("CarnageTarget");
+        gmProbe.Clear(); targetProbe.Clear();
+
+        gm.Receive(SayFrame($"@carnage CarnageTarget 2"));
+
+        const string won = "Your victory in the Carnage is recorded.";
+        Assert.Equal(1, targetProbe.Count(won));
+        Assert.True(targetProbe.AllHeld(won), targetProbe.Explain(won));
+        Assert.Equal(2, target.QuestCounter(ArmorQuest.CarnageWinsReg));
+        // The operator's own confirmation, wrapped to the 30-char status pane (Commands.cs:462).
+        Assert.Equal(1, gmProbe.Count("CarnageTarget: 2 carnage"));
+        Assert.Equal(0, gmProbe.Count(won));   // the target's line is the target's alone
+
+        // The negative form is the other half of the same branch, and the tally never goes below zero.
+        targetProbe.Clear();
+        gm.Receive(SayFrame($"@carnage CarnageTarget -5"));
+        const string amended = "Your Carnage record has been amended.";
+        Assert.Equal(1, targetProbe.Count(amended));
+        Assert.True(targetProbe.AllHeld(amended), targetProbe.Explain(amended));
+        Assert.Equal(0, target.QuestCounter(ArmorQuest.CarnageWinsReg));
+    }
+
+    // ---- 6. "@bring" ---------------------------------------------------------------------------------
+
+    /// <summary>"@bring &lt;name&gt;" runs the summon on the TARGET's session (already inside their monitor,
+    /// EnterMap opens with one) and then tells them who moved them (was not). The line now sits in its own
+    /// section on them, and the operator's confirmation — which reads the target's name — reads it from inside
+    /// that section.</summary>
+    [Fact]
+    public void TheSummonLineReachesTheTargetInsideTheirMonitor()
+    {
+        var (gm, gmProbe, _) = ProbePlayer(GmRoster.Name);
+        var (target, targetProbe, _) = ProbePlayer("BringTarget");
+        gmProbe.Clear(); targetProbe.Clear();
+
+        gm.Receive(SayFrame("@bring BringTarget"));
+
+        string line = $"You have been summoned by {GmRoster.Name}.";
+        Assert.Equal(1, targetProbe.Count(line));
+        Assert.True(targetProbe.AllHeld(line), targetProbe.Explain(line));
+        Assert.Equal(1, gmProbe.Count("Brought BringTarget"));   // the operator's confirmation, by name
+        Assert.Equal(0, gmProbe.Count(line));
+    }
+
     // ===== plumbing =====================================================================================
+
+    /// <summary><see cref="StaffAccounts"/> is empty by default (a fresh deployment has no staff), so the two
+    /// GM facts would otherwise be answered with "Unknown command". Writes the roster into the redirected test
+    /// state directory (#23 points P1998_STATE at a temp dir before anything loads) under the process-wide
+    /// gate. The name is deliberately the same one <c>CommandTableTests</c> uses and the file content is
+    /// identical, so whichever class writes it first, the other's rewrite is a no-op and neither can demote
+    /// the other's sessions mid-run.</summary>
+    private static class GmRoster
+    {
+        public const string Name = "cmdgm";
+        private static bool _done;
+
+        public static void Ensure()
+        {
+            lock (TestProcessState.Gate)
+            {
+                if (_done) return;
+                Directory.CreateDirectory(TestProcessState.StateDirectory);
+                File.WriteAllText(Path.Combine(TestProcessState.StateDirectory, "gm_accounts.txt"), Name + "\n");
+                StaffAccounts.Load();
+                _done = true;
+            }
+        }
+    }
 
     /// <summary>A socket-free session whose outbound is a <see cref="MonitorProbe"/>, built the way
     /// <c>SessionFixture.PlayerWith</c> builds one — same world, same store, same map, 4.95 port — but with
