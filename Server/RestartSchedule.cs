@@ -302,6 +302,32 @@ public sealed class RestartSchedule
 
     // ---- wording ----------------------------------------------------------------------------------
 
+    /// <summary>Say <paramref name="text"/> to every player online, one at a time.
+    ///
+    /// <para><b>This method must never be called with <see cref="_lock"/> held, and today it never is.</b>
+    /// <c>Session.SystemAnnounce</c> enters each recipient's state monitor (#29 rule 2,
+    /// <c>Server/Session.State.cs:25-33</c>), so a caller holding <c>_lock</c> across this would create the
+    /// ordering <c>_lock</c> -> session monitor. The reverse edge already exists and is unavoidable: a GM's
+    /// <c>@restart</c> runs on their read-loop thread under their OWN monitor (<c>Session.Handle</c> ->
+    /// <c>WithState(Dispatch)</c>) and calls <see cref="Schedule"/> or <see cref="Cancel"/>, which take
+    /// <c>_lock</c> — session monitor -> <c>_lock</c>. Both edges at once is a cycle, and <c>_lock</c> is a
+    /// private lock outside the session <c>StateRank</c> ordering, so rule 2 could not break it.</para>
+    ///
+    /// <para>Every caller already announces OUTSIDE the lock, and that is what has to stay true:
+    /// <see cref="Schedule"/> closes its <c>lock (_lock)</c> block before announcing, <see cref="Cancel"/> the
+    /// same, <see cref="TickWarnings"/> deliberately snapshots the line and the reason into locals under the lock
+    /// and announces after it (the <c>World.Broadcast</c> snapshot-then-send shape), and
+    /// <see cref="FireAsync"/> and <see cref="PollReloadFile"/> hold nothing at all. So nothing here is a new
+    /// lock order — the one new edge is thread -> session monitor, which is rule 2 itself.</para>
+    ///
+    /// <para><b>The thread is not a handler.</b> This runs on the <see cref="Loop"/> <c>PeriodicTimer</c> task
+    /// (started by <c>TkListener.StartWorld</c>), on the trigger-file poll, on <see cref="FireAsync"/>'s task, or
+    /// on a GM's handler thread. Only the last of those owns a session monitor, and rule 2 resolves it like any
+    /// other nested acquisition; the other three walk in holding nothing, so every acquisition is a plain
+    /// ascending one. Rule 1 holds on all of them: <c>Online.All()</c> (<c>World.OnlineRegistry.cs:77-81</c>)
+    /// snapshots under <c>World._lock</c> and returns with it released, so no world lock is held when
+    /// <c>SystemAnnounce</c> enters a session. One peer monitor at a time — <c>SystemAnnounce</c> disposes its
+    /// guard before this loop moves on.</para></summary>
     private void Announce(string text)
     {
         foreach (var s in _world.Online.All())

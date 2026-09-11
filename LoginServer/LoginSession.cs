@@ -23,9 +23,10 @@ public sealed class LoginSession
     private readonly string _remote;
     private readonly IPAddress _ip;   // source address, for the per-IP failed-login throttle
     private readonly CharacterStore _store;
-    // Every server->client byte on this connection goes through here. See LoginOutbound: the read loop only
-    // enqueues, one writer task owns the socket, and a peer that stops reading is dropped rather than waited on.
-    private readonly LoginOutbound _out;
+    // Every server->client byte on this connection goes through here. See Shared/TcpOutbound.cs, which is the
+    // ONE outbound both processes use: the read loop only enqueues, one writer task owns the socket, and a peer
+    // that stops reading is dropped rather than waited on. OutboundOptions.Login carries this channel's numbers.
+    private readonly TcpOutbound _out;
     private string _user = "?";
     private string _pendingName = "";   // name from the availability check, fallback for creation
     private string _pendingPass = "";   // password from the availability check (0x02), used at creation (0x04)
@@ -53,7 +54,7 @@ public sealed class LoginSession
         var peer = client.Client.RemoteEndPoint as IPEndPoint;
         _remote = realIp is not null ? $"{realIp} (via {peer?.Address})" : peer?.ToString() ?? "?";
         _ip = realIp ?? peer?.Address ?? IPAddress.None;
-        _out = new LoginOutbound(client, _remote);
+        _out = new TcpOutbound(client, OutboundOptions.Login, remote: _remote);
         _stream = _out.Stream;   // the read half; the outbound owns every write to it
     }
 
@@ -87,7 +88,7 @@ public sealed class LoginSession
         {
             // Drain before closing: the last thing a successful login sends is the redirect, and the client
             // learns the game host and port from exactly those bytes. Closing on top of an unflushed redirect
-            // is a login that silently never completes. Bounded by LoginOutbound.DrainTimeoutMs.
+            // is a login that silently never completes. Bounded by TcpOutbound.DrainTimeoutMs.
             await _out.CloseAfterDrainAsync();
             await writer;   // the socket is closed by now, so this cannot outlast the drain
             _client.Close();
@@ -453,8 +454,8 @@ public sealed class LoginSession
         // the line naming the bound that actually tripped, so printing the capacity here would be a second
         // Warn for one dropped connection naming a bound that never fired. DropReason is how we tell.
         if (_out.DropReason is not null) { _out.Close(); return; }
-        _out.NoteQueueFull($"outbound queue full ({LoginOutbound.Capacity})");
-        Log.Warn($"{_remote} outbound queue full ({LoginOutbound.Capacity}) — dropping slow client");
+        _out.NoteQueueFull($"outbound queue full ({_out.Capacity})");
+        Log.Warn($"{_remote} outbound queue full ({_out.Capacity}) — dropping slow client");
         _out.Close();
     }
 
