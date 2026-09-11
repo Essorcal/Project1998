@@ -161,11 +161,13 @@ public sealed class LoginOutboundTests
         // A generous write bound: this fact is about the drain, and the peer's deliberate stall must not be
         // mistaken for the stalled-write drop that fact 1a covers.
         using var pair = await SocketPair.Connect(5_000);
-        // Small socket buffers are what make the sender park at all. Windows auto-tunes the send buffer and
-        // will otherwise absorb megabytes on loopback without ever waiting for the peer — an 8MB version of
-        // this fact still passed with the drain removed, for exactly that reason.
-        pair.Server.SendBufferSize = 1024;
-        pair.Client.ReceiveBufferSize = 1024;
+        // Setting the socket buffers at all is what makes the sender park: Windows auto-tunes the send
+        // buffer otherwise and will absorb megabytes on loopback without ever waiting for the peer (an 8MB
+        // version of this fact still passed with the drain removed, for exactly that reason). 64KB rather
+        // than the 1KB fact 1a uses, because the drain has a one-second bound and pushing four megabytes
+        // through kilobyte buffers takes longer than that on Linux — which is how CI first failed this.
+        pair.Server.SendBufferSize = 64 * 1024;
+        pair.Client.ReceiveBufferSize = 64 * 1024;
         var expected = new List<byte>();
         // Opaque bulk, not a framed packet: TkPacket's length field is 16 bits and this is deliberately
         // larger than anything the kernel will absorb in one go. Built BEFORE the peer's stall clock starts,
