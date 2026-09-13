@@ -83,7 +83,12 @@ public sealed class LoginSession
 
             await foreach (var pkt in frames.ReadFramesAsync()) Handle(pkt);
         }
-        catch (Exception e) { Log.Warn($"{_remote} error: {e.Message}"); }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            // Routine socket teardown is frequent and its runtime-only stack adds no useful detail.
+            Log.Warn($"{_remote} read loop ended: {e.GetType().Name}: {e.Message}");
+        }
+        catch (Exception e) { Log.Error($"{_remote} read loop threw — dropping the connection", e); }
         finally
         {
             // Drain before closing: the last thing a successful login sends is the redirect, and the client
@@ -348,7 +353,8 @@ public sealed class LoginSession
         // record — so a byte of drift between the two processes hangs a screen instead of throwing.
         // `nonce` = the 5-byte single-use handoff token (was the static {0,1,18,17,0}); echoed back in 0x10.
         Send(LoginRedirect.Build(GameHost, gport, _user, nonce));
-        Log.Info($"   -> game handoff -> {GameHost[0]}.{GameHost[1]}.{GameHost[2]}.{GameHost[3]}:{gport} (token minted {Log.Hex(nonce)})");
+        if (Log.WireEnabled)
+            Log.Info($"   -> game handoff -> {GameHost[0]}.{GameHost[1]}.{GameHost[2]}.{GameHost[3]}:{gport} (token minted {Log.Hex(nonce)})");
     }
 
     // Login-screen password change (0x26): `nameLen name oldLen old newLen new`, the 0x03 login shape
