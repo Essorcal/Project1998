@@ -2144,6 +2144,112 @@ public sealed partial class World
 
     private long _lockWaitMs;   // how long the last Tick() waited to acquire _lock (watchdog attribution)
 
+    // ---- phase attribution for the slow-tick watchdog ------------------------------------------
+    //
+    // `work` is one number. The first bot load run (400 players on one map: work p50 132ms, max 297ms against
+    // a 333ms period, lock-wait 0ms in every line) could therefore say only that the tick BODY was too big
+    // for the population — not which part of it. These buckets answer that: one raw-timestamp delta per
+    // labelled phase of Tick/FlushTick, taken on every beat (nothing can know in advance which beat will be
+    // slow) and turned into text only inside the branch that has already decided to log.
+    //
+    // MarkPhase(X) CLOSES bucket X where it stands, so a bucket covers everything since the previous mark and
+    // every statement of the beat falls in exactly one of them. That is what makes `other` a real remainder —
+    // the beat minus what was named — rather than a number chosen to make the line add up.
+    //
+    // Cost on a healthy beat: one Stopwatch.GetTimestamp (QueryPerformanceCounter) and one array store per
+    // phase, plus an Array.Clear of PhCount longs at the top of the beat. No list, no string, no dictionary,
+    // no LINQ, nothing allocated — the allocation is in PhaseBreakdown, which only runs on a logged beat.
+    private const int PhWarm = 0, PhLockWait = 1, PhRespawns = 2, PhRefills = 3, PhMorphs = 4, PhDecoys = 5,
+                      PhForage = 6, PhClock = 7, PhWeather = 8, PhWander = 9, PhViewports = 10, PhMoves = 11,
+                      PhFx = 12, PhHooks = 13, PhStatus = 14, PhAdvice = 15, PhSwings = 16, PhCasts = 17,
+                      PhPetTrap = 18, PhExpiries = 19, PhRegen = 20, PhTime = 21,
+                      PhCount = 22, PhOther = PhCount;
+
+    /// <summary>One name per <c>Ph*</c> constant above, in that order, with <c>other</c> last. The explicit
+    /// length is the check that the two lists stay in step: a constant added without a name (or the other way
+    /// round) is a compile error, not a mislabelled log line.</summary>
+    private static readonly string[] PhaseNames = new string[PhCount + 1]
+    {
+        "(0) warm", "lock-wait", "(1) respawns", "(1.1) refills", "(1.2) morphs", "(1.3) decoys",
+        "(1.5) forage", "(1.6) clock", "(1.7) weather", "(2) wander", "(3) viewports", "(4) moves",
+        "(4.1) fx", "(4.2) hooks", "(4.3) status", "(4.4) advice/forage", "(4.5) swings", "(4.6) casts",
+        "(4.7) pet/trap", "(4.8) expiries", "(5) regen", "(6) time", "other",
+    };
+
+    private readonly long[] _phaseTicks = new long[PhCount];   // this beat, per phase, in raw Stopwatch ticks
+    private long _phaseT0;                                     // when the phase now running started
+    private long _phaseStart;                                  // when this beat started
+    private long _phaseTotal;                                  // the whole beat — what the parts are measured against
+
+    /// <summary>Open this beat's phase clock. The first statement of <see cref="Tick"/>, so every caller of
+    /// it leaves the buckets consistent; <see cref="EndPhases"/> is the caller's, because only the caller
+    /// knows that a beat which threw still has to be reported.</summary>
+    private void BeginPhases()
+    {
+        Array.Clear(_phaseTicks);
+        _phaseStart = _phaseT0 = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>Close the beat: the total the parts are measured against. Called OUTSIDE the tick's
+    /// try/catch, so a beat that threw part-way through still reports the part it ran and carries the rest
+    /// in <c>other</c>.</summary>
+    private void EndPhases() => _phaseTotal = Stopwatch.GetTimestamp() - _phaseStart;
+
+    /// <summary>Close phase <paramref name="phase"/> and open the next one.</summary>
+    private void MarkPhase(int phase) => MarkPhaseAt(phase, Stopwatch.GetTimestamp());
+
+    /// <summary>The same, at a timestamp the caller has already taken — so the lock-wait bucket and
+    /// <c>_lockWaitMs</c> are one measurement rather than two reads of the clock that could disagree.</summary>
+    private void MarkPhaseAt(int phase, long now)
+    {
+        _phaseTicks[phase] = now - _phaseT0;
+        _phaseT0 = now;
+    }
+
+    /// <summary>This beat's phases, most expensive first, as the line that follows <c>SLOW TICK</c>.
+    ///
+    /// <para>Two rules keep the arithmetic honest. A phase under 1ms is not named — it is folded into
+    /// <c>other</c> rather than dropped — and <c>other</c> is then the whole beat MINUS everything named, so
+    /// the printed numbers always sum to the beat. Anything the phases failed to account for (a gap between
+    /// two marks, the tail of a beat that threw) lands in <c>other</c> and is visible there; it is never
+    /// silently absorbed into a neighbouring phase.</para>
+    ///
+    /// <para>Allocates (a StringBuilder and the two small arrays), which is why nothing calls it except the
+    /// watchdog branch that has already decided this beat is worth a log line.</para></summary>
+    private string PhaseBreakdown()
+    {
+        long freq = Stopwatch.Frequency;
+        long[] ms = new long[PhCount + 1];
+        long named = 0;
+        for (int i = 0; i < PhCount; i++)
+        {
+            long v = _phaseTicks[i] * 1000 / freq;
+            if (v < 1) continue;             // sub-millisecond: folded into `other` below, not dropped
+            ms[i] = v;
+            named += v;
+        }
+        // Every part truncates toward zero and so does the total, and floor(a)+floor(b) <= floor(a+b), so
+        // this remainder cannot go negative from rounding alone.
+        ms[PhOther] = _phaseTotal * 1000 / freq - named;
+
+        const string head = "SLOW TICK PHASES:";
+        var sb = new System.Text.StringBuilder(head);
+        for (int printed = 0; ; printed++)
+        {
+            int best = -1;
+            for (int i = 0; i <= PhOther; i++)
+                if (ms[i] > 0 && (best < 0 || ms[i] > ms[best])) best = i;
+            if (best < 0) break;
+            sb.Append(printed == 0 ? " " : ", ").Append(PhaseNames[best]).Append(' ').Append(ms[best]).Append("ms");
+            ms[best] = 0;
+        }
+        // A beat with nothing to attribute: the watchdog fired on `late` (a GC pause, or the OS not
+        // scheduling us) while the tick body itself was under a millisecond. Say so rather than print a
+        // bare header.
+        if (sb.Length == head.Length) sb.Append(" other 0ms");
+        return sb.ToString();
+    }
+
     // Fixed-cadence heartbeat on its own thread. Schedules against an absolute deadline rather than sleeping
     // TickMs between iterations, so the tick's own work doesn't accumulate into drift (the old
     // `await Task.Delay(600)` loop actually ran at ~612ms). If we fall a whole period behind we resync to
@@ -2168,18 +2274,57 @@ public sealed partial class World
             _lockWaitMs = 0;
             try { Tick(); }
             catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
+            EndPhases();
 
             if (SlowTickMs <= 0) continue;
             long work = clock.ElapsedMilliseconds - t0;
             if (work < SlowTickMs && late < SlowTickMs) continue;
             long gcMs = (long)(GC.GetTotalPauseDuration() - gc0).TotalMilliseconds;
-            // Read this line as: LATE with gc ~= late  -> a GC pause. LATE with gc ~0 -> the OS didn't
-            // schedule us (machine-wide contention). WORK with lock ~= work -> a session thread was holding
-            // _lock (something slow ran inside a critical section). WORK with lock ~0 -> the tick body
-            // itself is genuinely too big for the population it's driving.
-            Log.Warn($"SLOW TICK: work {work}ms (lock-wait {_lockWaitMs}ms), late {late}ms, gc {gcMs}ms — " +
-                     $"{PlayerCount} player(s), {MobCount} mob(s) on {ActiveMapCount} active map(s)");
+            LogSlowTick(work, late, gcMs);
         }
+    }
+
+    /// <summary>The watchdog's report on one beat, once something has decided the beat was slow: the counts
+    /// line, then the phase breakdown that attributes its <c>work</c> number.
+    ///
+    /// <para>The counts line's format is FIXED — the load run's analysis parses it and the baseline report's
+    /// numbers have to stay comparable against future runs — so the phase attribution is a second line after
+    /// it, never a change to it. (Note for whoever greps a log next: <c>SLOW TICK</c> now matches two lines
+    /// per slow beat. <c>SLOW TICK: work</c> still matches exactly one.)</para>
+    ///
+    /// <para>Its own method only so that <see cref="TickOnceWatchedForTest"/> can drive the real emission
+    /// path; <see cref="TickLoop"/> is the production caller and owns the threshold.</para></summary>
+    private void LogSlowTick(long work, long late, long gcMs)
+    {
+        // Read this line as: LATE with gc ~= late  -> a GC pause. LATE with gc ~0 -> the OS didn't
+        // schedule us (machine-wide contention). WORK with lock ~= work -> a session thread was holding
+        // _lock (something slow ran inside a critical section). WORK with lock ~0 -> the tick body
+        // itself is genuinely too big for the population it's driving — and the line below says which part.
+        Log.Warn($"SLOW TICK: work {work}ms (lock-wait {_lockWaitMs}ms), late {late}ms, gc {gcMs}ms — " +
+                 $"{PlayerCount} player(s), {MobCount} mob(s) on {ActiveMapCount} active map(s)");
+        Log.Warn(PhaseBreakdown());
+    }
+
+    /// <summary>One beat and the watchdog that reports it, exactly as <see cref="TickLoop"/> runs them, with
+    /// the slow-tick threshold passed in rather than read from <see cref="SlowTickMs"/> — which is a static
+    /// readonly off an environment variable, fixed for the life of the process the moment this type is
+    /// initialised. Without this a test could only see the watchdog's output by running the real 333ms
+    /// scheduler on a machine slow enough to trip it. Everything past the gate IS the production path: the
+    /// same <see cref="LogSlowTick"/>, the same two lines.</summary>
+    internal void TickOnceWatchedForTest(int slowMs, long late = 0)
+    {
+        var clock = Stopwatch.StartNew();
+        var gc0 = GC.GetTotalPauseDuration();
+        _lockWaitMs = 0;
+        try { Tick(); }
+        catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
+        EndPhases();
+
+        if (slowMs <= 0) return;
+        long work = clock.ElapsedMilliseconds;
+        if (work < slowMs && late < slowMs) return;
+        long gcMs = (long)(GC.GetTotalPauseDuration() - gc0).TotalMilliseconds;
+        LogSlowTick(work, late, gcMs);
     }
 
     /// <summary>Counts for the slow-tick diagnostic. Cheap, and only read on the watchdog path.</summary>
@@ -2196,6 +2341,7 @@ public sealed partial class World
     // roster stays put. (1)-(2) are this method; (3)-(6) are FlushTick, after the lock is released.
     private void Tick()
     {
+        BeginPhases();
         _tick++;
         // This beat's outbound work, in one object: the locked phases below fill it, FlushTick drains
         // it once the lock is released (World.MobAiTick.cs).
@@ -2210,16 +2356,20 @@ public sealed partial class World
         foreach (var id in active) MapData.Prewarm(id);
 
         long lockT0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        MarkPhaseAt(PhWarm, lockT0);
         lock (_lock)
         {
             // Time spent BLOCKED here means another thread was inside a _lock critical section. The
             // slow-tick watchdog prints it, which is what distinguishes "someone else stalled us" from
             // "this tick body is too slow".
-            _lockWaitMs = (System.Diagnostics.Stopwatch.GetTimestamp() - lockT0) * 1000 / System.Diagnostics.Stopwatch.Frequency;
+            long acquired = System.Diagnostics.Stopwatch.GetTimestamp();
+            _lockWaitMs = (acquired - lockT0) * 1000 / System.Diagnostics.Stopwatch.Frequency;
+            MarkPhaseAt(PhLockWait, acquired);
 
             // (1) respawns: refill any due spawn point on a map someone is watching. Points only — the
             // hunting maps refill in batches at (1.1), not one mob at a time as they die.
             _spawnDirector.RespawnDuePoints(_tick);
+            MarkPhase(PhRespawns);
 
             // (1.1) batch refills: every due spawn group on a map someone is hunting (RTK's spawner NPC,
             // whose own `#pc > 0` test this mirrors). A map nobody is on is skipped here and caught by
@@ -2227,6 +2377,7 @@ public sealed partial class World
             // rather than filling in around them. Sampled every BatchSweepTicks — these clocks are in whole
             // seconds and the shortest is 2s, so there is nothing to gain from looking every 600ms.
             _spawnDirector.RefillDueGroups(_tick);
+            MarkPhase(PhRefills);
 
             // (1.2) morph expiry (Session.CastMorph/RevertMorph): purely cosmetic per-player visual state
             // with no server-side entity of its own — the revert broadcast is socket I/O, so it's deferred
@@ -2237,27 +2388,32 @@ public sealed partial class World
             foreach (var (_, pm) in _maps)
                 foreach (var p in pm.Players)
                     if (p.IsStealthExpired) q.ExpiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
+            MarkPhase(PhMorphs);
 
             // (1.3) bladestorm auto-expiry: an untriggered decoy despawns silently after its 21s lifetime —
             // traps have no ground graphic (same precedent as the hazard family), so this is a plain in-lock
             // removal, no broadcast/deferral needed.
             foreach (var (_, pm) in _maps)
                 pm.Traps.RemoveAll(t => t.ExpiresAt != 0 && Environment.TickCount64 >= t.ExpiresAt);
+            MarkPhase(PhDecoys);
 
             // (1.5) forage top-up: on a slow cadence, refill each forage box (chestnuts &c.) to its target count.
             if (_tick % ForageTicks == 0) q.Forage = TopUpForageLocked();
+            MarkPhase(PhForage);
 
             // (1.6) day/night clock (see the Epoch doc): re-derive the shared calendar from wall-clock time
             // and, on an in-game hour rollover, flag every connected session for a fresh 0x20 broadcast.
             // Checked every tick rather than every 750th, so the broadcast lands within 600ms of the true
             // rollover instead of drifting by however far into an hour the process happened to start.
             if (Clock.Sync()) q.TimeChanged = true;
+            MarkPhase(PhClock);
 
             // (1.7) weather: when the deterministic weather PERIOD rolls over (WeatherModel.PeriodHours, ~15
             // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
             // A season change lands on a period boundary too, so this pass catches those as well. Cheap: the
             // period only advances a couple of times an hour. Overrides are broadcast eagerly elsewhere.
             Weather.SweepPeriod(q);
+            MarkPhase(PhWeather);
 
             // (2) wander: each mob acts only when its own MoveTime has elapsed (RTK MobMoveTime), and even
             // then usually just turns instead of stepping — mirroring RTK mob_ai_normal (checkmove: pick a
@@ -2298,6 +2454,7 @@ public sealed partial class World
                     Log.Error($"mob AI sweep threw — map {mapId} is skipped this beat, the other maps continue", e);
                 }
             }
+            MarkPhase(PhWander);
         }
 
         // (3)-(6): everything queued above, sent now the lock is released.
@@ -2328,6 +2485,7 @@ public sealed partial class World
         // despawned (0x0E) rather than sent an off-screen 0x0C the client would cull — the desync that made
         // mobs vanish for good.
         ReconcileViews();
+        MarkPhase(PhViewports);
 
         // (4) Now stream moves/turns, but only to players who still have that mob in view (MoveMob/SideMob
         // are no-ops otherwise) — bounding on-wire traffic to on-screen mobs even on a 400-spawn map.
@@ -2335,6 +2493,7 @@ public sealed partial class World
             Broadcast(mv.map, p => p.MoveMob(mv.id, mv.x, mv.y, mv.dir));
         foreach (var tn in q.Turns)
             Broadcast(tn.map, p => p.SideMob(tn.id, tn.dir));
+        MarkPhase(PhMoves);
 
         // Repeating status effects queued above (venom's per-tick zap, doze/sleep's drowse) — the same 0x29 +
         // 0x19 pair a cast plays, re-sent over the afflicted creature for as long as the status holds.
@@ -2372,15 +2531,18 @@ public sealed partial class World
             if (fx.anim  > 0) BroadcastWideArea(fx.map, fx.x, fx.y, p => p.EffectOver(fx.id, fx.anim));
             if (fx.sound > 0) BroadcastSameArea(fx.map, fx.x, fx.y, p => p.SoundAt(fx.sound, fx.id));
         }
+        MarkPhase(PhFx);
 
         // Lua AI hooks, run here and only here — outside the lock (see _hooks).
         foreach (var h in hooks)
             Try(() => MobScript.Fire(h.key, h.hook, new MobContext(this, h.map, h.mob, h.actor)), $"mob hook {h.key}.{h.hook}");
+        MarkPhase(PhHooks);
 
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
         foreach (var s in Online.All()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
+        MarkPhase(PhStatus);
 
         // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
         // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
@@ -2392,6 +2554,7 @@ public sealed partial class World
         if (q.Forage is not null)
             foreach (var (map, gi) in q.Forage)
                 Broadcast(map, p => p.ShowGroundItem(gi));
+        MarkPhase(PhAdvice);
 
         // (4.5) Resolve this tick's mob swings (queued above while still under the lock) — applying player
         // damage runs Session-side (HUD update + broadcast + possible death), so it happens out here like
@@ -2406,6 +2569,7 @@ public sealed partial class World
             int dmg = MobSwingDamage(h.mob.MinDam, h.mob.MaxDam);
             Try(() => h.target.ApplyMobHit(h.mob, dmg), $"ApplyMobHit {h.mob.Name} -> {h.target.Remote}");
         }
+        MarkPhase(PhSwings);
 
         // Creature spells + idle flavour queued above — both broadcast, and a spell can kill, so neither can
         // run under the lock.
@@ -2418,6 +2582,7 @@ public sealed partial class World
             BroadcastArea(ch.map, ch.mob.X, ch.mob.Y, Session.SayHalfW, Session.SayHalfH,
                 p => p.SpeakEntity(ch.channel, ch.mob.Id, bytes));
         }
+        MarkPhase(PhCasts);
 
         // Pet swings queued above: same damage roll as any other mob swing, but landing on a mob.
         foreach (var ph in q.MobHits)
@@ -2427,6 +2592,7 @@ public sealed partial class World
         // broadcasts/exp can't run under the lock).
         foreach (var td in q.TrapDamage)
             Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
+        MarkPhase(PhPetTrap);
 
         // Expired pets queued above — plain despawn, no kill/loot.
         foreach (var ep in q.ExpiredPets)
@@ -2439,6 +2605,7 @@ public sealed partial class World
         // Expired stealth queued above — restore the normal look once the invisible-spell timer lapses w/o a hit.
         foreach (var sp in q.ExpiredStealth)
             Try(() => sp.RevertStealth(), "RevertStealth");
+        MarkPhase(PhExpiries);
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
         // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a
@@ -2446,6 +2613,7 @@ public sealed partial class World
         Session[] players2;
         lock (_lock) players2 = _maps.Values.SelectMany(m => m.Players).ToArray();
         foreach (var p in players2) Try(() => p.RegenTick(TickMs), "RegenTick");
+        MarkPhase(PhRegen);
 
         // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
         // (RTK broadcasts clif_sendtime server-wide, not per-map), each affected map hears its own weather.
@@ -2458,6 +2626,7 @@ public sealed partial class World
         if (q.WeatherChanges is not null)
             foreach (var (map, w) in q.WeatherChanges)
                 Broadcast(map, p => p.SendWeather(w));
+        MarkPhase(PhTime);
     }
 
     // Snapshot each populated map's (players, mobs) under the lock, then reconcile every player's viewport
