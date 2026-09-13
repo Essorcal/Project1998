@@ -562,6 +562,34 @@ public static partial class Content
         return i == q.Length;
     }
 
+    // ---- gameplay scalars that used to be environment variables ------------------------------------------
+    // Four wire/combat values lived in P1998_HIT_CRIT, P1998_HEAL_CRIT, P1998_DEATH_DELAY_MS and
+    // P1998_SPELLBOOK_CAP. They are gameplay, which makes them DATA under the repo's data-vs-code rule, so
+    // they are rows in game-data/ServerTuning.csv like every other tunable scalar — hand-editable, visible
+    // in the diff of a content change, and picked up by @reload without a restart. An operator who still has
+    // the old variable set is told so, loudly, at startup: see ServerConfig's retired knobs.
+    //
+    // Each keeps the exact default and the exact clamp its environment read had, so a deployment that never
+    // set the variable sees no change at all.
+
+    /// <summary>The <c>0x13</c> hit-type byte, which selects the over-head hit overlay
+    /// (<c>0x8f − critical</c>). RTK uses 33 (0x21) for a normal hit and 255 for a critical.</summary>
+    public static byte HitCritByte => (byte)Math.Clamp((int)Tune("HitCrit", 0x21), 0, 255);
+
+    /// <summary>The <c>0x13</c> critical byte a HEAL carries. RTK passes 0; the byte still selects an
+    /// overlay animation, so it stays re-pickable in case the client draws something unwanted for that id.</summary>
+    public static byte HealCritByte => (byte)Math.Clamp((int)Tune("HealCrit", 0), 0, 255);
+
+    /// <summary>How long (ms) a killed mob's corpse is held after the empty-HP-bar beat before the
+    /// <c>0x0E</c> despawn. 4.95 monsters have no death frame-set, so this beat IS the death animation.
+    /// Clamped to 0..5000 — a longer hold would leave a corpse standing through its own respawn.</summary>
+    public static int DeathDespawnMs => Math.Clamp((int)Tune("DeathDespawnMs", 600), 0, 5000);
+
+    /// <summary>Slots the 4.95 client's spellbook array holds. Unconfirmed for 4.95; RTK 7.x uses 52
+    /// (MAX_SPELLS), and the cap is deliberately conservative so an over-long teach cannot overrun the
+    /// client array. A non-positive value would teach nothing, so it floors at 1.</summary>
+    public static int SpellBookCap => Math.Max(1, (int)Tune("SpellBookCap", 52));
+
     // Resolve a content file under the game-data root: per-file env override first, else
     // <root>/game-data/<parts...>. This used to carry its own copy of the walk up to the repo root, one of
     // five that had drifted apart; Shared/RepoPaths is now the single implementation, and its class doc

@@ -9,6 +9,19 @@ REM
 REM Split deployment: set P1998_GAME_HOST to the game box's public IP before launching login, so the
 REM handoff redirects clients to the right machine (defaults to 127.0.0.1 = same box).
 REM
+REM Every P1998_* variable the server reads, with its type, default and meaning, is documented in
+REM docs\common\Configuration.md -- generated from the declarations in Shared\ServerConfig.cs, so it cannot
+REM drift from the code. Each server window also prints its effective configuration at startup: every knob,
+REM its value, and whether that value came from the environment or the default.
+REM
+REM GAMEPLAY VALUES ARE NOT ENVIRONMENT VARIABLES. P1998_HIT_CRIT, P1998_HEAL_CRIT, P1998_DEATH_DELAY_MS
+REM and P1998_SPELLBOOK_CAP are retired: they live in game-data\ServerTuning.csv now (keys HitCrit,
+REM HealCrit, DeathDespawnMs, SpellBookCap) and are picked up by @reload without a restart. Setting the old
+REM variable does nothing except print a loud warning at startup telling you which key to edit instead.
+REM
+REM The three variables below (P1998_DOTNET, P1998_NO_INSTALL, P1998_AUTO_INSTALL) belong to THIS SCRIPT,
+REM not to the server, and so are not in that reference.
+REM
 REM Optional first argument: the login port base. For example, `run-server.bat 3000` binds login to
 REM 3000/3001 and game to 3005/3006. With no argument the original 2000/2001 + 2005/2006 pair is used.
 REM

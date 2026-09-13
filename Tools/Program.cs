@@ -7,6 +7,30 @@ using System.Text;
 using Server;
 using Shared;
 
+// Regenerate the environment-knob reference from ServerConfig's declarations. Same shape as readme-tables
+// below: the committed block between two markers is replaced wholesale, and a test asserts the committed
+// text equals the generator's output, so forgetting to run this fails CI instead of shipping a stale doc.
+// Unlike readme-tables it needs no content load — the block is a function of the declarations alone.
+if (args is ["config-doc", ..])
+{
+    string docPath = args.Length > 1
+        ? args[1]
+        : Path.Combine(RepoPaths.Root(), "docs", "common", "Configuration.md");
+    string doc = File.ReadAllText(docPath).Replace("\r\n", "\n", StringComparison.Ordinal);
+    int docStart = doc.IndexOf(ServerConfig.DocStartMarker, StringComparison.Ordinal);
+    int docEnd = doc.IndexOf(ServerConfig.DocEndMarker, StringComparison.Ordinal);
+    if (docStart < 0 || docEnd < docStart)
+    {
+        Console.Error.WriteLine($"generated config markers not found in {docPath}");
+        return 1;
+    }
+    docEnd += ServerConfig.DocEndMarker.Length;
+    File.WriteAllText(docPath, doc[..docStart] + ServerConfig.RenderDocBlock() + doc[docEnd..],
+                      new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    Console.WriteLine($"wrote {ServerConfig.Knobs.All.Count} knob rows to {docPath}");
+    return 0;
+}
+
 if (args is ["readme-tables", ..])
 {
     string readmePath = args.Length > 1 ? args[1] : Path.Combine(RepoPaths.GameDataDir(), "README.md");

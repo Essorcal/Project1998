@@ -25,6 +25,12 @@ internal static class TestProcessState
         StateDirectory = Path.Combine(Path.GetTempPath(), $"project1998-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(StateDirectory);
         Environment.SetEnvironmentVariable("P1998_STATE", StateDirectory);
+        // ServerConfig reads the environment ONCE and caches it, so the redirect above only takes effect if
+        // nothing sampled the configuration before this initializer ran. Re-resolving makes that explicit
+        // rather than depending on static-initialization order: without it, one early RepoPaths.StateDir()
+        // anywhere in the process would pin the snapshot to the REAL state directory and every test that
+        // saves a character would write into the live deployment.
+        ServerConfig.ReloadForTests();
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
         {

@@ -10,10 +10,10 @@ using Shared;
 
 // Declare this process's logging defaults before anything can log: the wire dump is ON here (it is the
 // backbone of the protocol RE work, and nothing on the game channel is a credential) and the log rotates at
-// 64MB. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES — see Shared.Log.Configure, which is
-// where the two processes' defaults are declared now that they share one logger. First statement in the
-// process, above --selftest, because the self-test logs too.
-Log.Configure(wireDefault: true, maxBytesDefault: 64L * 1024 * 1024);
+// 64MB. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES, which ServerConfig declares and
+// resolves; these two arguments are the per-process defaults the environment overrides. First statement in
+// the process, above --selftest, because the self-test logs too.
+ServerConfig.ConfigureLogging(wireDefault: true, maxBytesDefault: 64L * 1024 * 1024);
 
 int[] ports = { 2005, 2006 };
 for (int i = 0; i < args.Length; i++)
@@ -70,6 +70,11 @@ catch (ArgumentException e)
     return;
 }
 
+// The effective configuration, every knob with its value and whether it came from the environment or the
+// declared default — plus a loud line for anything that was rejected or is retired. After AttachFile so it
+// reaches logs/server.log too: "what was this process actually configured with" is the first question any
+// after-the-fact investigation asks, and the console window is gone by then.
+ServerConfig.LogEffective();
 Log.Info($"=== channel pairing: game {ports[0]}/{ports[1]} -> " +
          $"login {Shared.ChannelPorts.LoginFor(ports[0])}/{Shared.ChannelPorts.LoginFor(ports[1])} ===");
 Log.Info($"=== Project1998 (C#) starting; ports={string.Join(",", ports)}; " +

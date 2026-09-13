@@ -42,22 +42,21 @@ public static class ProxyProtocol
     private static readonly byte[] Signature =
         { 0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A };
 
-    /// <summary>Read and trust a PROXY header on every accepted connection. Default off.</summary>
-    public static bool Enabled { get; } =
-        (Environment.GetEnvironmentVariable("P1998_TRUST_PROXY") ?? "0").Trim() == "1";
+    /// <summary>Read and trust a PROXY header on every accepted connection. Default off.
+    /// (<c>ServerConfig.Knobs.TrustProxy</c>.)</summary>
+    public static bool Enabled { get; } = ServerConfig.Current.TrustProxy;
 
     /// <summary>How long a trusted peer has to deliver the header before the connection is dropped. The
     /// proxy writes it immediately on connect, so this only ever fires on a broken or hostile peer; it is
     /// separate from P1998_HANDSHAKE_MS because that budget covers the first GAME packet, which cannot
     /// start being parsed until this is out of the way.</summary>
-    private static readonly int HeaderMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_PROXY_HEADER_MS"), out var v) && v > 0 ? v : 5_000;
+    private static readonly int HeaderMs = ServerConfig.Current.ProxyHeaderMs;
 
     /// <summary>Peers allowed to speak PROXY protocol, as addresses or CIDR blocks. Defaults to loopback
     /// (the same-box HAProxy case). A containerised proxy needs its bridge network added, e.g.
     /// P1998_PROXY_ALLOW=127.0.0.1/8,::1/128,172.16.0.0/12</summary>
     private static readonly (IPAddress Net, int Bits)[] Allow =
-        ParseAllow(Environment.GetEnvironmentVariable("P1998_PROXY_ALLOW"));
+        ParseAllow(ServerConfig.Current.ProxyAllow);
 
     /// <summary>Human-readable allow-list, for the startup banner.</summary>
     public static string DescribeAllow =>
@@ -132,8 +131,10 @@ public static class ProxyProtocol
 
     private static (IPAddress, int)[] ParseAllow(string? raw)
     {
-        // Loopback covers the same-box HAProxy deployment, which is the default topology.
-        if (string.IsNullOrWhiteSpace(raw)) raw = "127.0.0.0/8,::1/128";
+        // Loopback covers the same-box HAProxy deployment, which is the default topology. The default text
+        // itself is the knob's, not a second copy of it: the environment path already resolves through
+        // ServerConfig, and this branch is reached by the explicit-allow-list overload below.
+        if (string.IsNullOrWhiteSpace(raw)) raw = ServerConfig.Knobs.ProxyAllow.Default;
 
         var list = new List<(IPAddress, int)>();
         foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))

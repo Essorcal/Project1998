@@ -58,29 +58,30 @@ public static class RepoPaths
         return Directory.GetCurrentDirectory();
     }
 
-    private static string RootedDir(string envVar, string name)
-    {
-        var env = Environment.GetEnvironmentVariable(envVar);
-        return string.IsNullOrWhiteSpace(env) ? Path.Combine(Root(), name) : env;
-    }
+    // The four roots below are declared knobs now (Shared/ServerConfig.cs), so the override name, the
+    // fallback folder and the doc string all live in one place and the environment is read ONCE per process
+    // rather than on every path resolution. Root() stays here because it is a directory walk, not config.
 
     /// <summary>&lt;root&gt;/game-data — authored content. Read-only at runtime. Override: P1998_GAME_DATA.</summary>
-    public static string GameDataDir() => RootedDir("P1998_GAME_DATA", "game-data");
+    public static string GameDataDir() => ServerConfig.Current.GameDataDir;
 
     /// <summary>&lt;root&gt;/state — live instance state, and the whole of what a backup must capture.
     /// Override: P1998_STATE.</summary>
-    public static string StateDir() => RootedDir("P1998_STATE", "state");
+    public static string StateDir() => ServerConfig.Current.StateDir;
 
     /// <summary>&lt;root&gt;/logs — stdout captures. Regenerable; not backed up. Override: P1998_LOGS.</summary>
-    public static string LogsDir() => RootedDir("P1998_LOGS", "logs");
+    public static string LogsDir() => ServerConfig.Current.LogsDir;
 
     /// <summary>&lt;root&gt;/run — deploy-to-server control triggers, consumed and deleted by the running
     /// process. Not state; not backed up. Override: P1998_RUN.</summary>
-    public static string RunDir() => RootedDir("P1998_RUN", "run");
+    public static string RunDir() => ServerConfig.Current.RunDir;
 
     /// <summary>A file under <see cref="GameDataDir"/>, with a per-file environment override that wins
     /// over both. The per-file overrides predate the directory one and are how a test or a bisect points
-    /// a single table somewhere else without relocating the whole content set.</summary>
+    /// a single table somewhere else without relocating the whole content set.
+    /// <para>These 68 names are declared by <c>TableSpec</c> (Server/Content.Tables.cs) and are deliberately
+    /// NOT <see cref="ServerConfig"/> knobs: retiring them in favour of <c>P1998_GAME_DATA</c> is a behaviour
+    /// change that belongs with the TableSpec work, not with the configuration mechanism.</para></summary>
     public static string GameData(string envVar, params string[] parts) =>
         Environment.GetEnvironmentVariable(envVar) is { } e && !string.IsNullOrWhiteSpace(e)
             ? e

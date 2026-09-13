@@ -15,3 +15,7 @@ UserListColorDefault,15
 UserListColorClan,10
 UserListColorGm,12
 UserListColorSelf,14
+HitCrit,33
+HealCrit,0
+DeathDespawnMs,600
+SpellBookCap,52

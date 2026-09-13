@@ -115,17 +115,13 @@ public static class TileTranslation
 
     /// <summary>Escape hatch: a uniform shift applied to sheet-1 ground on 5.33. Defaults to 0 and should stay
     /// there — it exists so a future sheet revision can be probed without a rebuild, not because 0 is in doubt.</summary>
-    private static readonly int GroundOff533 = Env("P1998_TILE_OFF_533", 0);
-    private static readonly int GroundOff495 = Env("P1998_TILE_OFF_495", 0);
-    private static readonly int ObjectOff533 = Env("P1998_OBJ_OFF_533", 0);
-    private static readonly int ObjectOff495 = Env("P1998_OBJ_OFF_495", 0);
+    private static readonly int GroundOff533 = ServerConfig.Current.GroundOff533;
+    private static readonly int GroundOff495 = ServerConfig.Current.GroundOff495;
+    private static readonly int ObjectOff533 = ServerConfig.Current.ObjectOff533;
+    private static readonly int ObjectOff495 = ServerConfig.Current.ObjectOff495;
 
     // Superseded knob. Kept so existing run scripts keep working, but it moves the GROUND ONLY.
-    private static readonly int? LegacyGroundOff =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_TILE_OFF"), out var lo) ? lo : null;
-
-    private static int Env(string name, int fallback) =>
-        int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : fallback;
+    private static readonly int? LegacyGroundOff = ServerConfig.Current.LegacyTileOff;
 
     public static int GroundOffset(Session.ClientVersion ver) =>
         LegacyGroundOff ?? (ver == Session.ClientVersion.V533 ? GroundOff533 : GroundOff495);
@@ -207,8 +203,12 @@ public static class TileTranslation
         All = 3,
     }
 
+    // ServerConfig.Knobs.ObjFix533 owns the accepted words and rejects anything else with a startup warning;
+    // this switch maps an accepted word onto the scope. The discard arm is now unreachable for a MISTYPED
+    // value (that resolves to "free" with a complaint, instead of falling in here silently) and remains only
+    // as the exhaustiveness arm the compiler wants.
     private static readonly Obj533Scope ObjFixScope =
-        Environment.GetEnvironmentVariable("P1998_OBJ_FIX_533")?.Trim().ToLowerInvariant() switch
+        ServerConfig.Current.ObjFix533 switch
         {
             "off"        => Obj533Scope.Off,
             "decor"      => Obj533Scope.Decor,
