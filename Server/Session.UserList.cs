@@ -153,7 +153,8 @@ public sealed partial class Session
     /// request when its table already has entries.</summary>
     private void HandleTownListRequest(byte[] dec)
     {
-        Log.Info($"   -> town-list request (0x66) body={Log.Hex(dec)}");
+        if (Log.WireEnabled)
+            Log.Info($"   -> town-list request (0x66) body={Log.Hex(dec)}");
         SendTownList();
     }
 

@@ -2201,7 +2201,8 @@ public sealed partial class Session
     {
         var pkt = TkPacket.BuildGame(opcode, inc, data);
         Send(pkt);
-        Log.Info($"   -> {label}: {pkt.Length}B  {Log.Hex(pkt)}");
+        if (Log.WireEnabled)
+            Log.Info($"   -> {label}: {pkt.Length}B  {Log.Hex(pkt)}");
     }
 
 
