@@ -215,12 +215,44 @@ public class ServerConfigTests
     [Theory]
     [InlineData("0", false)]
     [InlineData("1", true)]
-    [InlineData(" 1 ", true)]     // surrounding whitespace is trimmed for every boolean, uniformly
+    [InlineData(" 1 ", true)]     // surrounding whitespace is trimmed for every plain boolean, uniformly
     public void A_recognised_boolean_is_read_the_same_whatever_the_knobs_default(string raw, bool expected)
     {
         Assert.Equal(expected, With(("P1998_TRUST_PROXY", raw)).TrustProxy);
         Assert.Equal(expected, With(("P1998_PASS", raw)).PassEnforce);
+    }
+
+    /// <summary>The exception to the trimming rule, and the reason it is an exception:
+    /// <c>P1998_LOG_WIRE</c> ON writes plaintext passwords into the login server's log, so the value must be
+    /// EXACTLY "0" or "1" and a padded one is a mistake, not an instruction. <c>set P1998_LOG_WIRE= 1</c> in
+    /// a cmd launcher produces " 1"; the rule this replaced (<c>Log.ParseWire</c>) pinned that same row as
+    /// warn-and-stay-off, and it must never be read as "on" in the process whose packets carry passwords.
+    /// <para>Falsification: trim the value in <c>OptionalBoolKnob.Resolve</c> and every row below fails.
+    /// </para></summary>
+    [Theory]
+    [InlineData(" 1")]
+    [InlineData("1 ")]
+    [InlineData(" 1 ")]
+    [InlineData(" 0 ")]
+    public void A_padded_wire_dump_value_stays_unset_and_warns(string raw)
+    {
+        var config = With(("P1998_LOG_WIRE", raw));
+
+        Assert.Null(config.LogWire);
+        // Either process's default survives it — off in the login server above all.
+        Assert.False(config.LogWire ?? false);
+        Assert.True(config.LogWire ?? true);
+        Assert.Contains(raw, Assert.Single(config.Warnings));
+    }
+
+    /// <summary>The unpadded rows still mean what they say, in both processes.</summary>
+    [Theory]
+    [InlineData("0", false)]
+    [InlineData("1", true)]
+    public void An_exact_wire_dump_value_is_read_in_both_processes(string raw, bool expected)
+    {
         Assert.Equal(expected, With(("P1998_LOG_WIRE", raw)).LogWire);
+        Assert.Empty(With(("P1998_LOG_WIRE", raw)).Warnings);
     }
 
     /// <summary>The per-process logging default composes with the knob exactly as each entry point needs:

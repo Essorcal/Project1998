@@ -80,7 +80,9 @@ public sealed class ServerConfig
             "P1998_LOG_WIRE", ConfigArea.Logging,
             "Hex-dump every frame. Unset takes the ENTRY POINT's default, which differs by process: ON in the " +
             "game server (the backbone of the protocol RE work, no credentials on that channel) and OFF in the " +
-            "login server (4.95's cipher is a fixed published XOR, so a dump writes plaintext passwords).");
+            "login server (4.95's cipher is a fixed published XOR, so a dump writes plaintext passwords). " +
+            "Must be EXACTLY `0` or `1`: surrounding whitespace is not trimmed for this one knob, so a " +
+            "padded `\" 1\"` warns and keeps the process default rather than turning the dump on.");
         public static readonly OptionalLongKnob LogMaxBytes = new(
             "P1998_LOG_MAX_BYTES", ConfigArea.Logging,
             "Rotate the log file at this many bytes. Unset takes the entry point's default: 64MB in the game " +
@@ -701,7 +703,13 @@ public sealed class BoolKnob : ConfigKnob
 }
 
 /// <summary>A boolean whose default is declared by the entry point rather than here, so "unset" has to stay
-/// distinguishable from "explicitly off". Resolves to null when unset.</summary>
+/// distinguishable from "explicitly off". Resolves to null when unset.
+/// <para>Unlike <see cref="BoolKnob"/> this type does NOT trim: the value must be exactly <c>"0"</c> or
+/// <c>"1"</c>, and a padded <c>" 1"</c> warns and keeps the entry point's default. The only knob of this
+/// type is <c>P1998_LOG_WIRE</c>, whose ON state writes plaintext passwords into the login server's log
+/// (4.95's cipher is a fixed published XOR), so the one direction that must never happen by accident is
+/// off→on. <c>set P1998_LOG_WIRE= 1</c> in a cmd launcher produces exactly that padded value, and the rule
+/// this replaced (<c>Log.ParseWire</c>) was exact-match for the same reason.</para></summary>
 public sealed class OptionalBoolKnob : ConfigKnob
 {
     /// <param name="name">The variable name.</param>
@@ -717,9 +725,8 @@ public sealed class OptionalBoolKnob : ConfigKnob
     internal override (object?, string, string?) Resolve(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return (null, "(entry point's default)", null);
-        string trimmed = raw.Trim();
-        if (trimmed == "0") return (false, "0 (off)", null);
-        if (trimmed == "1") return (true, "1 (on)", null);
+        if (raw == "0") return (false, "0 (off)", null);
+        if (raw == "1") return (true, "1 (on)", null);
         return (null, "(entry point's default)",
                 $"{Name}='{raw}' is not 0 or 1 — ignored; keeping this process's own default.");
     }

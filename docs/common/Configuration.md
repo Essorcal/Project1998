@@ -68,7 +68,7 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 
 | Variable | Type | Default | What it does |
 |---|---|---|---|
-| `P1998_LOG_WIRE` | `0` / `1` | per process (see notes) | Hex-dump every frame. Unset takes the ENTRY POINT's default, which differs by process: ON in the game server (the backbone of the protocol RE work, no credentials on that channel) and OFF in the login server (4.95's cipher is a fixed published XOR, so a dump writes plaintext passwords). |
+| `P1998_LOG_WIRE` | `0` / `1` | per process (see notes) | Hex-dump every frame. Unset takes the ENTRY POINT's default, which differs by process: ON in the game server (the backbone of the protocol RE work, no credentials on that channel) and OFF in the login server (4.95's cipher is a fixed published XOR, so a dump writes plaintext passwords). Must be EXACTLY `0` or `1`: surrounding whitespace is not trimmed for this one knob, so a padded `" 1"` warns and keeps the process default rather than turning the dump on. |
 | `P1998_LOG_MAX_BYTES` | integer ≥ 1 | per process (see notes) | Rotate the log file at this many bytes. Unset takes the entry point's default: 64MB in the game server, 32MB in the login server. |
 
 ### Transport and the accept path
