@@ -188,8 +188,8 @@ public static class ObjectFlags
     private static string? Locate()
     {
         var candidates = new List<string>();
-        var env = Environment.GetEnvironmentVariable("P1998_SOBJ");
-        if (!string.IsNullOrWhiteSpace(env)) candidates.Add(env);
+        var env = ServerConfig.Current.SObjTable;
+        if (env.Length > 0) candidates.Add(env);
 
         candidates.Add(Path.Combine(Shared.RepoPaths.GameDataDir(), "SObj.tbl"));
         candidates.Add(Path.Combine(Shared.RepoPaths.Root(), "RTK-Server", "rtk", "SObj.tbl"));
