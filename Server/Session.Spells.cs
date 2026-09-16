@@ -3273,8 +3273,8 @@ public sealed partial class Session
         if (string.Equals(name, _char.Name, StringComparison.OrdinalIgnoreCase))
         { SendMiniText("You can't marry yourself."); return; }
 
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { SendMiniText("Player is not valid or not online."); return; }
+        var target = ResolveOnlinePlayer(name, "Player is not valid or not online.", RefuseChannel.MiniText);
+        if (target is null) return;
         // RTK checks the beloved is physically nearby (getObjectsInArea); same-map is our practical proxy
         // for "nearby", matching the gate Trade already uses for its own "must be present" check.
         if (target.CharMap != CharMap)
