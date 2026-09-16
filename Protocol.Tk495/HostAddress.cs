@@ -4,6 +4,10 @@ namespace Protocol.Tk495;
 /// The four address octets a redirect carries. Both processes build a <see cref="LoginRedirect"/> — the login
 /// server pointing a client at the game server, the game server bouncing it back to login — so both had to
 /// turn a configured "a.b.c.d" into octets, and both carried their own copy of the same parser.
+///
+/// <para>The configured text comes from <c>ServerConfig</c> — <c>P1998_GAME_HOST</c> and the
+/// <c>P1998_LOGIN_HOST</c> fallback chain are resolved there, so this class takes a value and never a
+/// variable name.</para>
 /// </summary>
 public static class HostAddress
 {
@@ -22,10 +26,4 @@ public static class HostAddress
             if (!byte.TryParse(parts[i], out o[i])) return def;
         return o;
     }
-
-    /// <summary>The same parse, reading the value out of an environment variable. The game server's call
-    /// sites name the variable rather than pass its value (<c>P1998_GAME_HOST</c>, <c>P1998_LOGIN_HOST</c>),
-    /// and the fallback chain between those two is what makes the indirection worth keeping.</summary>
-    /// <param name="env">Name of the environment variable holding "a.b.c.d".</param>
-    public static byte[] FromEnvironment(string env) => Parse(Environment.GetEnvironmentVariable(env));
 }

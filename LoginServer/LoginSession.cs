@@ -41,7 +41,7 @@ public sealed class LoginSession
     // and game on the same box); set P1998_GAME_HOST to the game server's public IP for a split
     // deployment. The client stores the host/port from our 0x03 reply, opens a FRESH connection to it,
     // and announces itself there with 0x10.
-    private static readonly byte[] GameHost = HostAddress.FromEnvironment("P1998_GAME_HOST");
+    private static readonly byte[] GameHost = HostAddress.Parse(ServerConfig.Current.GameHost);
 
     /// <param name="realIp">The client's true address when a trusted proxy sits in front and the listener
     /// has already consumed its PROXY header. Null on a direct connection. The per-IP failed-login throttle
