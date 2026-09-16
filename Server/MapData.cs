@@ -185,6 +185,100 @@ public sealed class MapData
         !Doors.IsForceOpen(Id, (ushort)x, (ushort)y) &&
         (Solid(x, y) || ObjectFlags.Blocks(_obj[y * Xs + x], dir));
 
+    // ---- free-tile search ---------------------------------------------------------------------------
+    //
+    // "Where do I actually put this?" is asked in three places — the dismount path setting a horse down
+    // (Session.GmCommands.DismountTile, which @approach/@bring's arrival policy also folded into it) and the
+    // world's spawn fallback (World.FreeSpawnTile, used by NPC placement and by every respawn). Each had its
+    // own copy of the same loop: walk a list of candidate tiles in a fixed order, skip the ones out of
+    // bounds, skip the ones the terrain blocks, skip the ones something is standing on, take the first that
+    // survives, and fall back if none does.
+    //
+    // WHAT IS SHARED IS THE LOOP AND THE GEOMETRY, NOT THE POLICY. The two callers genuinely differ and are
+    // NOT being unified here:
+    //
+    //   * the WALK. The dismount walks the four CARDINAL neighbours clockwise from the rider's facing and
+    //     never considers the rider's own tile as a candidate; the spawn fallback tries the spawn tile FIRST
+    //     and then square rings at radius 1 and 2, diagonals included. Two orders, two methods below, each
+    //     the order its caller already walked.
+    //   * the BLOCKED test. The dismount uses BlockedMove (ground pass AND the directional object wall, the
+    //     same two-layer test a player's walk uses, which is why the walk carries the side it stepped in
+    //     from); the spawn fallback uses Solid (ground pass only) and skips even that for an NPC. Passed in.
+    //   * the OCCUPANCY test. The dismount rejects a tile holding a mob OR a peer; the spawn fallback rejects
+    //     only a live mob. Passed in.
+    //   * the FALLBACK. Both land on the origin tile, but for different stated reasons and with different
+    //     return shapes (the dismount also has to say which way the horse faces), so the fallback stays at
+    //     the call site and this returns null when the walk runs out.
+    //
+    // The cost is a handful of short-lived allocations per call (the walk's enumerator and the two
+    // predicates) where the inline local functions had none. Both callers are cold relative to what sits
+    // next to them — FreeSpawnTile is already doing a MapData.For dictionary probe and a Mob construction on
+    // the same path — so this is gen0 noise, not the world tick's problem.
+
+    /// <summary>The four CARDINAL neighbours of (x,y), CLOCKWISE from <paramref name="facing"/>: the faced
+    /// tile, then right, behind, left (dir, dir+1, dir+2, dir+3 in the 0=N 1=E 2=S 3=W encoding, which is
+    /// already clockwise). Each tile carries the SIDE it was reached by, which is what
+    /// <see cref="BlockedMove"/> needs and what the dismount turns into the horse's facing.
+    /// <para>Only 4, and no diagonals: this game has no diagonal adjacency anywhere — movement, melee reach
+    /// and mount range are all cardinal.</para></summary>
+    internal static IEnumerable<(int x, int y, int side)> CardinalWalk(int x, int y, int facing)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            int side = (facing + i) & 3;
+            yield return side switch
+            {
+                0 => (x, y - 1, side),
+                1 => (x + 1, y, side),
+                2 => (x, y + 1, side),
+                _ => (x - 1, y, side),
+            };
+        }
+    }
+
+    /// <summary>(x,y) itself, then every tile on the square ring at radius 1, then 2, … up to
+    /// <paramref name="maxRadius"/> — the spawn fallback's "here if it's open, else the nearest tile that
+    /// is". Diagonals included, and the ring is walked in the column-major order the inline version used
+    /// (dx outer, dy inner), because which of several equally-near tiles a spawn lands on is observable.
+    /// <para><c>side</c> is -1 throughout: a spawn arrives on a tile rather than stepping into it, so there
+    /// is no direction for a directional wall test to use.</para></summary>
+    internal static IEnumerable<(int x, int y, int side)> SelfThenRingWalk(int x, int y, int maxRadius)
+    {
+        yield return (x, y, -1);
+        for (int r = 1; r <= maxRadius; r++)
+            for (int dx = -r; dx <= r; dx++)
+                for (int dy = -r; dy <= r; dy++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != r) continue;   // the ring at radius r, not the disc
+                    yield return (x + dx, y + dy, -1);
+                }
+    }
+
+    /// <summary>The first tile of <paramref name="walk"/> that is in bounds, not blocked and not occupied, or
+    /// null if the walk runs out — the caller owns the fallback.
+    ///
+    /// <para><paramref name="xs"/>/<paramref name="ys"/> are exclusive upper bounds; pass
+    /// <see cref="int.MaxValue"/> for a map whose dimensions are unknown, which is what the spawn fallback's
+    /// inline version meant by skipping its upper-bound test when the registry had no row. Negative
+    /// coordinates are always out of bounds.</para>
+    ///
+    /// <para>The three tests are applied in that order and short-circuit, so a caller whose occupancy test is
+    /// the expensive one (a world-lock peer lookup, say) pays it only for tiles that already passed terrain —
+    /// the order both inline versions had.</para></summary>
+    internal static (int x, int y, int side)? FreeNeighbour(
+        IEnumerable<(int x, int y, int side)> walk, int xs, int ys,
+        Func<int, int, int, bool> blocked, Func<int, int, bool> occupied)
+    {
+        foreach (var t in walk)
+        {
+            if (t.x < 0 || t.y < 0 || t.x >= xs || t.y >= ys) continue;
+            if (blocked(t.x, t.y, t.side)) continue;
+            if (occupied(t.x, t.y)) continue;
+            return t;
+        }
+        return null;
+    }
+
     private static readonly Dictionary<ushort, MapData?> Cache = new();
     // One gate per map id, so a load only ever blocks callers who want THAT map. See For().
     private static readonly Dictionary<ushort, object> LoadGates = new();

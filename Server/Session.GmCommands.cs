@@ -727,21 +727,20 @@ public sealed partial class Session
     /// The old code just clamped the faced tile to the map bounds and dropped the horse there, which put it
     /// inside walls, in water, and on top of whatever already stood in front of you.
     /// Stacking on the rider is the deliberate last resort (same principle as World.FreeSpawnTile's
-    /// accept-the-overlap fallback): a boxed-in player must still get their horse back.</summary>
+    /// accept-the-overlap fallback): a boxed-in player must still get their horse back.
+    /// <para>The walk, the bounds test and the take-the-first-survivor loop are
+    /// <see cref="MapData.FreeNeighbour"/>, shared with the spawn fallback (#57 finding 31). The two
+    /// predicates and the fallback below are this path's own and are unchanged.</para></summary>
     private (ushort x, ushort y, byte dir) DismountTile()
     {
         var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        for (int i = 0; i < 4; i++)
-        {
-            int side = (_facing + i) & 3;                  // i=0 is the faced tile, then clockwise
-            var (tx, ty) = Step(_char.X, _char.Y, side);
-            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
-            if (md is not null && md.BlockedMove(tx, ty, side)) continue;
-            if (TileHasMob(tx, ty)) continue;
-            if (_world.PeerAt(_char.Map, tx, ty) is not null) continue;
-            return ((ushort)tx, (ushort)ty, (byte)Opposite(side));   // face back toward the rider
-        }
-        return (_char.X, _char.Y, (byte)Opposite(_facing));   // fully boxed in — stack it on us
+        var free = MapData.FreeNeighbour(
+            MapData.CardinalWalk(_char.X, _char.Y, _facing), _char.MapXs, _char.MapYs,
+            blocked:  (tx, ty, side) => md is not null && md.BlockedMove(tx, ty, side),
+            occupied: (tx, ty) => TileHasMob(tx, ty) || _world.PeerAt(_char.Map, tx, ty) is not null);
+
+        return free is { } t ? ((ushort)t.x, (ushort)t.y, (byte)Opposite(t.side))   // face back toward the rider
+                             : (_char.X, _char.Y, (byte)Opposite(_facing));         // fully boxed in — stack it on us
     }
 
     // "@might N" / "@will N" / "@grace N" — set one BASE character stat so wear-requirements can be exercised
