@@ -185,6 +185,212 @@ public sealed class MapData
         !Doors.IsForceOpen(Id, (ushort)x, (ushort)y) &&
         (Solid(x, y) || ObjectFlags.Blocks(_obj[y * Xs + x], dir));
 
+    // ---- free-tile search ---------------------------------------------------------------------------
+    //
+    // "Where do I actually put this?" is asked in three places — the dismount path setting a horse down
+    // (Session.GmCommands.DismountTile, which @approach/@bring's arrival policy also folded into it) and the
+    // world's spawn fallback (World.FreeSpawnTile, used by NPC placement and by every respawn). Each had its
+    // own copy of the same loop: walk a list of candidate tiles in a fixed order, skip the ones out of
+    // bounds, skip the ones the terrain blocks, skip the ones something is standing on, take the first that
+    // survives, and fall back if none does.
+    //
+    // WHAT IS SHARED IS THE LOOP AND THE GEOMETRY, NOT THE POLICY. The two callers genuinely differ and are
+    // NOT being unified here:
+    //
+    //   * the WALK. The dismount walks the four CARDINAL neighbours clockwise from the rider's facing and
+    //     never considers the rider's own tile as a candidate; the spawn fallback tries the spawn tile FIRST
+    //     and then square rings at radius 1 and 2, diagonals included. Two orders, two methods below, each
+    //     the order its caller already walked.
+    //   * the BLOCKED test. The dismount uses BlockedMove (ground pass AND the directional object wall, the
+    //     same two-layer test a player's walk uses, which is why the walk carries the side it stepped in
+    //     from); the spawn fallback uses Solid (ground pass only) and skips even that for an NPC. Passed in.
+    //   * the OCCUPANCY test. The dismount rejects a tile holding a mob OR a peer; the spawn fallback rejects
+    //     only a live mob. Passed in.
+    //   * the FALLBACK. Both land on the origin tile, but for different stated reasons and with different
+    //     return shapes (the dismount also has to say which way the horse faces), so the fallback stays at
+    //     the call site and this returns null when the walk runs out.
+    //
+    // AND IT ALLOCATES NOTHING, because the inline loops it replaced allocated nothing and FreeSpawnTile runs
+    // under World._lock on every respawn. The first shape of this code used an iterator method per walk and a
+    // captured lambda per predicate, which a Release probe measured at 240 B and about +83 ns per call (review
+    // of PR #238). What replaced it:
+    //
+    //   * each walk is a STRUCT enumerator (CardinalWalker / RingWalker below) consumed through a generic
+    //     parameter constrained `struct, IEnumerator<...>`, so the JIT specialises the search per walk and the
+    //     MoveNext calls are direct rather than interface dispatch, with nothing on the heap to dispatch to.
+    //   * the predicates come in as a STRUCT implementing ITileTest, also through a generic parameter, so the
+    //     caller's state lives in that struct's fields and the two tests are direct (and inlinable) calls
+    //     rather than delegate invocations. A delegate pair, even non-capturing static lambdas, cost about
+    //     30 ns/call in indirect calls the inline local functions never paid; this shape pays none of it.
+    //
+    // The walks also implement IEnumerable so they can be LINQ'd and foreach'd — that face boxes the struct
+    // once and is for tests and cold callers, NOT for the two paths above. If you add a third caller on a
+    // locked or per-tick path, use the state overload, and measure.
+
+    /// <summary>The four CARDINAL neighbours of (x,y), CLOCKWISE from <paramref name="facing"/>: the faced
+    /// tile, then right, behind, left (dir, dir+1, dir+2, dir+3 in the 0=N 1=E 2=S 3=W encoding, which is
+    /// already clockwise). Each tile carries the SIDE it was reached by, which is what
+    /// <see cref="BlockedMove"/> needs and what the dismount turns into the horse's facing.
+    /// <para>Only 4, and no diagonals: this game has no diagonal adjacency anywhere — movement, melee reach
+    /// and mount range are all cardinal.</para></summary>
+    internal static CardinalWalker CardinalWalk(int x, int y, int facing) => new(x, y, facing);
+
+    /// <summary>(x,y) itself, then every tile on the square ring at radius 1, then 2, … up to
+    /// <paramref name="maxRadius"/> — the spawn fallback's "here if it's open, else the nearest tile that
+    /// is". Diagonals included, and the ring is walked in the column-major order the inline version used
+    /// (dx outer, dy inner), because which of several equally-near tiles a spawn lands on is observable.
+    /// <para><c>side</c> is -1 throughout: a spawn arrives on a tile rather than stepping into it, so there
+    /// is no direction for a directional wall test to use.</para></summary>
+    internal static RingWalker SelfThenRingWalk(int x, int y, int maxRadius) => new(x, y, maxRadius);
+
+    /// <summary>The walk behind <see cref="CardinalWalk"/>. A struct so the search allocates nothing; the
+    /// <c>IEnumerable</c> face (which boxes) is for tests and cold callers only.</summary>
+    internal struct CardinalWalker : IEnumerator<(int x, int y, int side)>,
+                                    IEnumerable<(int x, int y, int side)>
+    {
+        private readonly int _x, _y, _facing;
+        private int _i;
+
+        internal CardinalWalker(int x, int y, int facing)
+        {
+            _x = x; _y = y; _facing = facing; _i = 0; Current = default;
+        }
+
+        public (int x, int y, int side) Current { get; private set; }
+
+        public bool MoveNext()
+        {
+            if (_i >= 4) return false;
+            int side = (_facing + _i) & 3;   // a facing outside 0-3 masks, as the inline `(_facing + i) & 3` did
+            _i++;
+            Current = side switch
+            {
+                0 => (_x, _y - 1, side),
+                1 => (_x + 1, _y, side),
+                2 => (_x, _y + 1, side),
+                _ => (_x - 1, _y, side),
+            };
+            return true;
+        }
+
+        public CardinalWalker GetEnumerator() => new(_x, _y, _facing);
+        IEnumerator<(int x, int y, int side)> IEnumerable<(int x, int y, int side)>.GetEnumerator() => GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        object System.Collections.IEnumerator.Current => Current;
+        public void Reset() { _i = 0; Current = default; }
+        public void Dispose() { }
+    }
+
+    /// <summary>The walk behind <see cref="SelfThenRingWalk"/>: the same `dx` outer / `dy` inner nesting the
+    /// inline loops had, unrolled into a struct state machine so the search allocates nothing.</summary>
+    internal struct RingWalker : IEnumerator<(int x, int y, int side)>,
+                                 IEnumerable<(int x, int y, int side)>
+    {
+        private readonly int _x, _y, _maxRadius;
+        private int _r, _dx, _dy;
+        private int _state;   // 0 = the origin tile is still owed, 1 = walking the rings, 2 = exhausted
+
+        internal RingWalker(int x, int y, int maxRadius)
+        {
+            _x = x; _y = y; _maxRadius = maxRadius;
+            _r = 1; _dx = -1; _dy = -2;   // the first MoveNext steps dy to -r
+            _state = 0; Current = default;
+        }
+
+        public (int x, int y, int side) Current { get; private set; }
+
+        public bool MoveNext()
+        {
+            if (_state == 0)
+            {
+                _state = 1;
+                Current = (_x, _y, -1);
+                return true;
+            }
+            while (_state == 1)
+            {
+                if (_r > _maxRadius) { _state = 2; return false; }
+                _dy++;
+                if (_dy > _r) { _dx++; _dy = -_r; }
+                if (_dx > _r) { _r++; _dx = -_r; _dy = -_r - 1; continue; }   // next ring; the top re-checks
+
+                // The ring at radius r, not the filled square. On the two EDGE columns (|dx| == r) every dy is
+                // on the ring; on an INTERIOR column only the top and bottom tiles are, so step straight from
+                // dy = -r to dy = +r. Same tiles, same order as the inline `Math.Max(|dx|,|dy|) != r` skip —
+                // this just doesn't visit the inside of the square to reject it.
+                if (_dx > -_r && _dx < _r && _dy > -_r && _dy < _r) _dy = _r;
+
+                Current = (_x + _dx, _y + _dy, -1);
+                return true;
+            }
+            return false;
+        }
+
+        public RingWalker GetEnumerator() => new(_x, _y, _maxRadius);
+        IEnumerator<(int x, int y, int side)> IEnumerable<(int x, int y, int side)>.GetEnumerator() => GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        object System.Collections.IEnumerator.Current => Current;
+        public void Reset() { _r = 1; _dx = -1; _dy = -2; _state = 0; Current = default; }
+        public void Dispose() { }
+    }
+
+    /// <summary>A caller's two policy tests, as a STRUCT so <see cref="FreeNeighbour{TWalk, TTest}"/> can call
+    /// them directly instead of through a delegate. <c>Blocked</c> is the terrain test (the <c>side</c> is the
+    /// direction the tile was reached from, -1 where there is none); <c>Occupied</c> is the "something is
+    /// standing there" test and is only ever asked about tiles that already passed the first two.</summary>
+    internal interface ITileTest
+    {
+        bool Blocked(int x, int y, int side);
+        bool Occupied(int x, int y);
+    }
+
+    /// <summary>The first tile of <paramref name="walk"/> that is in bounds, not blocked and not occupied, or
+    /// null if the walk runs out — the caller owns the fallback. This is the ALLOCATION-FREE shape and the one
+    /// the two production callers use: the walk and the tests are both value types reached through generic
+    /// parameters, so there is no iterator, no closure and no delegate on the heap per call.
+    ///
+    /// <para><paramref name="xs"/>/<paramref name="ys"/> are exclusive upper bounds; pass
+    /// <see cref="int.MaxValue"/> for a map whose dimensions are unknown, which is what the spawn fallback's
+    /// inline version meant by skipping its upper-bound test when the registry had no row. Negative
+    /// coordinates are always out of bounds.</para>
+    ///
+    /// <para>The three tests are applied in that order and short-circuit, so a caller whose occupancy test is
+    /// the expensive one (a world-lock peer lookup, say) pays it only for tiles that already passed terrain —
+    /// the order both inline versions had.</para></summary>
+    internal static (int x, int y, int side)? FreeNeighbour<TWalk, TTest>(TWalk walk, int xs, int ys, TTest test)
+        where TWalk : struct, IEnumerator<(int x, int y, int side)>
+        where TTest : struct, ITileTest
+    {
+        while (walk.MoveNext())
+        {
+            var t = walk.Current;
+            if (t.x < 0 || t.y < 0 || t.x >= xs || t.y >= ys) continue;
+            if (test.Blocked(t.x, t.y, t.side)) continue;
+            if (test.Occupied(t.x, t.y)) continue;
+            return t;
+        }
+        return null;
+    }
+
+    /// <summary>The same search with predicates that carry their own state — the convenient shape, for tests
+    /// and for callers that are not on a locked or per-tick path. A capturing lambda allocates a closure per
+    /// call; the two production callers pass their state explicitly to the overload above instead.</summary>
+    internal static (int x, int y, int side)? FreeNeighbour<TWalk>(
+        TWalk walk, int xs, int ys,
+        Func<int, int, int, bool> blocked, Func<int, int, bool> occupied)
+        where TWalk : struct, IEnumerator<(int x, int y, int side)>
+    {
+        while (walk.MoveNext())
+        {
+            var t = walk.Current;
+            if (t.x < 0 || t.y < 0 || t.x >= xs || t.y >= ys) continue;
+            if (blocked(t.x, t.y, t.side)) continue;
+            if (occupied(t.x, t.y)) continue;
+            return t;
+        }
+        return null;
+    }
+
     private static readonly Dictionary<ushort, MapData?> Cache = new();
     // One gate per map id, so a load only ever blocks callers who want THAT map. See For().
     private static readonly Dictionary<ushort, object> LoadGates = new();

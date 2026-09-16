@@ -727,21 +727,32 @@ public sealed partial class Session
     /// The old code just clamped the faced tile to the map bounds and dropped the horse there, which put it
     /// inside walls, in water, and on top of whatever already stood in front of you.
     /// Stacking on the rider is the deliberate last resort (same principle as World.FreeSpawnTile's
-    /// accept-the-overlap fallback): a boxed-in player must still get their horse back.</summary>
+    /// accept-the-overlap fallback): a boxed-in player must still get their horse back.
+    /// <para>The walk, the bounds test and the take-the-first-survivor loop are
+    /// <c>MapData.FreeNeighbour</c>'s, shared with the spawn fallback (#57 finding 31). The two
+    /// predicates and the fallback below are this path's own and are unchanged — they ride in as a STRUCT so
+    /// the search allocates nothing (see the comment over MapData.FreeNeighbour).</para></summary>
     private (ushort x, ushort y, byte dir) DismountTile()
     {
         var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        for (int i = 0; i < 4; i++)
-        {
-            int side = (_facing + i) & 3;                  // i=0 is the faced tile, then clockwise
-            var (tx, ty) = Step(_char.X, _char.Y, side);
-            if (tx < 0 || ty < 0 || tx >= _char.MapXs || ty >= _char.MapYs) continue;
-            if (md is not null && md.BlockedMove(tx, ty, side)) continue;
-            if (TileHasMob(tx, ty)) continue;
-            if (_world.PeerAt(_char.Map, tx, ty) is not null) continue;
-            return ((ushort)tx, (ushort)ty, (byte)Opposite(side));   // face back toward the rider
-        }
-        return (_char.X, _char.Y, (byte)Opposite(_facing));   // fully boxed in — stack it on us
+        var free = MapData.FreeNeighbour(
+            MapData.CardinalWalk(_char.X, _char.Y, _facing), _char.MapXs, _char.MapYs,
+            new DismountTest(this, md));
+
+        return free is { } t ? ((ushort)t.x, (ushort)t.y, (byte)Opposite(t.side))   // face back toward the rider
+                             : (_char.X, _char.Y, (byte)Opposite(_facing));         // fully boxed in — stack it on us
+    }
+
+    /// <summary>The dismount's own two tests, exactly as the inline loop wrote them: the two-layer
+    /// <see cref="MapData.BlockedMove"/> (ground pass AND the directional object wall, which is why the walk
+    /// carries the side), and a tile holding a mob OR a peer. A readonly struct rather than a pair of lambdas
+    /// because <see cref="MapData.FreeNeighbour{TWalk, TTest}"/> takes the tests by generic type and so
+    /// allocates nothing per call.</summary>
+    private readonly struct DismountTest(Session s, MapData? md) : MapData.ITileTest
+    {
+        public bool Blocked(int x, int y, int side) => md is not null && md.BlockedMove(x, y, side);
+        public bool Occupied(int x, int y) =>
+            s.TileHasMob(x, y) || s._world.PeerAt(s._char.Map, x, y) is not null;
     }
 
     // "@might N" / "@will N" / "@grace N" — set one BASE character stat so wear-requirements can be exercised
@@ -872,8 +883,8 @@ public sealed partial class Session
         else if (a.NameThenTrailingInt(out var named, out var n)) { name = named; add = n; }
 
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
 
         // Read, write, tell — one critical section on the TARGET (#29 rule 2, Server/Session.State.cs). The
         // read-modify-write really is one here: `now` is their carnage counter plus `add`, and QuestCounter is
@@ -907,8 +918,8 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
         // A peer's character is directly reachable — private is type-scoped, and the reader is a Session too

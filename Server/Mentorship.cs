@@ -67,8 +67,9 @@ public sealed partial class Session
         if (string.Equals(name, _char.Name, StringComparison.OrdinalIgnoreCase))
         { SendMiniText("You can't mentor yourself."); return; }
 
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { SendMiniText("Player is not valid or not online."); return; }
+        // Same sentence, same channel, one lookup — Session.Resolve.cs also carries the lock-discipline note.
+        var target = ResolveOnlinePlayer(name, "Player is not valid or not online.", RefuseChannel.MiniText);
+        if (target is null) return;
         if (target.CharMap != CharMap)
         { SendMiniText($"{target.Snapshot().Name} must be near you when you ask to mentor."); return; }
 

@@ -75,43 +75,6 @@ public sealed partial class Session
         DispatchSpeech(text);
     }
 
-    // ---- mute ---------------------------------------------------------------------------------------
-    //
-    // Held as an absolute unix-SECONDS deadline on the SESSION, not re-read from the database per line. A
-    // DB round-trip on every chat message would put a synchronous read on the packet path for state that
-    // changes maybe twice a week. It is loaded once at world entry (LoadModerationState) and pushed
-    // directly onto the live session by @mute/@unmute (Session.ApplyMute), so both the placement and the
-    // lifting are immediate; the deadline being absolute is what makes EXPIRY work with no timer at all.
-    private long _mutedUntil;
-    private string _muteReason = "";
-
-    internal bool IsMuted() => _mutedUntil > Moderation.Now;
-
-    /// <summary>Load this account's mute state into the session. Called once, at world entry.</summary>
-    internal void LoadModerationState()
-    {
-        if (Moderation.IsMuted(_user, out var reason, out var until)) { _mutedUntil = until; _muteReason = reason; }
-        else { _mutedUntil = 0; _muteReason = ""; }
-    }
-
-    /// <summary>Apply a mute/unmute to an ALREADY-ONLINE session, so a GM's command takes effect on the next
-    /// line the player types rather than at their next login.</summary>
-    internal void ApplyMute(long until, string reason)
-    {
-        _mutedUntil = until;
-        _muteReason = reason ?? "";
-        if (IsMuted()) ReportMuted();
-        else SendLog("You are no longer muted.");
-    }
-
-    private void ReportMuted()
-    {
-        string left = _mutedUntil >= Moderation.Forever ? "" : $" ({Moderation.Describe(_mutedUntil)} remaining)";
-        SendLog(string.IsNullOrWhiteSpace(_muteReason)
-            ? $"You are muted and cannot speak{left}."
-            : $"You are muted and cannot speak{left}: {_muteReason}");
-    }
-
     // ---- whisper/tell (RTK clif_parsewisp, clif.c:7644-7790) ---------------------------------------------
     // Native client input: Shift+' opens the whisper prompt, then a name + Enter, then a message + Enter.
     // LIVE-confirmed 2026-07-26 (real capture): op=0x19 body = dstlen(u8) dst_name[dstlen] msglen(u8)
@@ -150,10 +113,10 @@ public sealed partial class Session
         if (name == "!!") { DoGroupChat(msg); return; }
         if (name == "!")  { DoClanChat(msg);  return; }
 
-        var target = _world.Online.FindPlayer(name);
         // RTK's literal wording, on the BLUE wisp channel (clif_sendbluemessage) — same channel the whisper
         // itself would have used, NOT self-speech.
-        if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
+        var target = ResolveOnlinePlayer(name, $"{name} is nowhere to be found.", RefuseChannel.Blue);
+        if (target is null) return;
 
         // The two ignore reads, the delivery and the read of their name for our echo are ONE critical section
         // on the TARGET (#29 rule 2, Server/Session.State.cs) — the DoClanChat shape one screen down, applied

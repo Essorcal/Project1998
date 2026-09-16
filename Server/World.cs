@@ -620,23 +620,41 @@ public sealed partial class World
         var dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
         var terrain = dims.Item1 > 0 ? MapData.For(mapId, dims.Item1, dims.Item2) : null;
 
-        bool Free(int tx, int ty)
-        {
-            if (tx < 0 || ty < 0 || (dims.Item1 > 0 && (tx >= dims.Item1 || ty >= dims.Item2))) return false;
-            if (avoidSolid && terrain is not null && terrain.Solid(tx, ty)) return false;
-            foreach (var mo in m.Mobs) if (mo.Alive && mo.X == tx && mo.Y == ty) return false;
-            return true;
-        }
+        // A map with no registry row has no upper bound to test — dims are 0 and terrain is null, and the old
+        // inline Free() skipped its `tx >= xs` test in exactly that case rather than reading 0 as the width.
+        // int.MaxValue says the same thing to the shared walk without giving 0 a second meaning.
+        int xs = dims.Item1 > 0 ? dims.Item1 : int.MaxValue;
+        int ys = dims.Item1 > 0 ? dims.Item2 : int.MaxValue;
 
-        if (Free(x, y)) return (x, y);
-        for (int r = 1; r <= 2; r++)
-            for (int dx = -r; dx <= r; dx++)
-                for (int dy = -r; dy <= r; dy++)
-                {
-                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != r) continue;   // walk the ring at radius r
-                    if (Free(x + dx, y + dy)) return ((ushort)(x + dx), (ushort)(y + dy));
-                }
-        return (x, y);   // everything nearby is taken — accept the overlap rather than drop the mob
+        // The spawn tile first, then the rings at radius 1 and 2 — that order and the bounds test are
+        // MapData.FreeNeighbour's now, shared with the dismount path (#57 finding 31). The ground test, the
+        // mob test and the fallback stay this caller's: they are not the dismount's and must not become them.
+        //
+        // This runs under _lock on every respawn, so it must cost what the inline loop cost: the walk is a
+        // struct enumerator and the two tests are a struct, so there is no iterator, no closure and no
+        // delegate — nothing on the heap per call at all.
+        var free = MapData.FreeNeighbour(
+            MapData.SelfThenRingWalk(x, y, maxRadius: 2), xs, ys,
+            new SpawnTileTest(m, terrain, avoidSolid));
+
+        return free is { } t ? ((ushort)t.x, (ushort)t.y)
+                             : (x, y);   // everything nearby is taken — accept the overlap rather than drop the mob
+    }
+
+    /// <summary>The spawn fallback's own two tests, exactly as the inline <c>Free()</c> wrote them: ground pass
+    /// only (<see cref="MapData.Solid"/>, and not even that for an NPC — see the remarks on
+    /// <see cref="FreeSpawnTile"/>), and a LIVE mob standing there. A readonly struct rather than a pair of
+    /// lambdas because <see cref="MapData.FreeNeighbour{TWalk, TTest}"/> takes the tests by generic type and so
+    /// allocates nothing per call, which this path — under <c>_lock</c>, on every respawn — needs.</summary>
+    private readonly struct SpawnTileTest(MapState m, MapData? terrain, bool avoidSolid) : MapData.ITileTest
+    {
+        public bool Blocked(int x, int y, int side) => avoidSolid && terrain is not null && terrain.Solid(x, y);
+
+        public bool Occupied(int x, int y)
+        {
+            foreach (var mo in m.Mobs) if (mo.Alive && mo.X == x && mo.Y == y) return true;
+            return false;
+        }
     }
 
     // Refill every forage box to its target stack count on random passable tiles (RTK itemspawner.lua:
