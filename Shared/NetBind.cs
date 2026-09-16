@@ -27,8 +27,8 @@ public static class NetBind
 
     private static IPAddress Resolve()
     {
-        var raw = Environment.GetEnvironmentVariable("P1998_BIND");
-        return !string.IsNullOrWhiteSpace(raw) && IPAddress.TryParse(raw.Trim(), out var addr)
+        var raw = ServerConfig.Current.BindAddress;
+        return raw.Length > 0 && IPAddress.TryParse(raw.Trim(), out var addr)
             ? addr
             : IPAddress.Any;
     }
