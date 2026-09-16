@@ -15,32 +15,8 @@ public sealed partial class Session
     private const ushort NoBgm = 0xFFFF;   // "nothing sent yet this session" (0 is a real value: stop)
     private ushort _bgm = NoBgm;    // last track sent, so we don't restart the same song on a refresh
 
-    // Melee swing sfx (NexusTK.snd id). The client's action->sound table gives the swing action (0x1A type 1)
-    // NO sound (like magic/type 6 -> 0), so a weapon swing is silent unless we play one explicitly over 0x19.
-    // Calibrate the id live with "@swingsnd <id>" (auditions it), then it rides every armed swing; 0 = silent.
-    private int _swingSfx = 0;
-
-    // Unarmed ("bare fist") swing sfx fallback, used only when no weapon is equipped (EquippedWeaponSound()
-    // returns 0). RTK's own C engine special-cases this by sending the swing action with a hardcoded param
-    // (pc.c: clif_sendaction(..., 1, attackspeed, 9) when itemdb_sound(weapon)==0) — but that relies on a
-    // fixed action-type->sound table baked into the 6.x/7.x client; our own live testing already proved the
-    // 4.95 client's action-param byte is ignored for the swing (see the comment above _swingSfx), so we can't
-    // reuse that trick here either. There's no RTK item row for "fists" to port a real id from. 009.wav,
-    // calibrated live 2026-08-04 — the SAME id a mob's own swing uses (MobSwingSfx below), i.e. a bare fist
-    // and a claw/bite land on one shared "unarmed" sound. "@fistsnd <id>" recalibrates or mutes it (0).
-    private int _fistSfx = 9;
-
-    // On-connect impact sfx for a PLAYER's melee, played ONLY when a swing actually lands — it stacks with the
-    // weapon/fist swing sfx above, which plays on every swing attempt regardless of hit/miss. 349.wav,
-    // calibrated live 2026-08-04.
-    //
-    // NOT sent via the 0x13 damage packet's own hitSound byte any more (SendDamage/ShowDamageResult still carry
-    // that field — it's real, see docs §7.2 — but it's a BYTE, and 349 doesn't fit in one). It goes out as its
-    // own 0x19 broadcast instead, via PlayHitSfx below, which also means peers hear our hits land. RTK's
-    // matching per-weapon field (ItmSoundHit / itemdb_soundhit) is dead in the reference server — itemdb_read's
-    // SQL SELECT never fetches `sound_hit` — so there's no per-weapon number to port and this stays global.
-    // "@hitsnd <id>" recalibrates or mutes (0).
-    private int _hitSfx = 349;
+    // The three calibratable player melee sfx slots (@swingsnd / @fistsnd / @hitsnd) are staff overrides:
+    // they live on GmOverrides with the rest of them, comments and all, as _gm.SwingSfx / FistSfx / HitSfx.
 
     // A MOB's melee, the mirror of the two player fields above and calibrated live 2026-08-04 alongside them:
     // 009.wav on every swing (World.Tick, where the swing is decided), then 001.wav layered on top only when
@@ -52,35 +28,25 @@ public sealed partial class Session
     internal const int MobSwingSfx = 9;   // 009.wav — every mob swing, hit or miss
     internal const int MobHitSfx   = 1;   // 001.wav — additionally, when that swing connects
 
-    // The 0x1A action that makes a mob visibly SWING, not just play the sound above. RTK's native mob:attack
-    // broadcasts this from the C engine; its boss AI does the same thing explicitly with sendAction(2, 20)
-    // (rtklua Accepted/Instances/instance_boss.lua) — action type 2, pose length 20 ticks. That's the only RTK
-    // reference we have for a MONSTER's melee-pose index: players swing on type 1 (Session.HandleAttack), but a
-    // monster sprite sheet indexes its poses differently, and the boss script is a mob using type 2. Broadcast
-    // alongside MobSwingSfx wherever a mob commits to a swing (World.Tick's mob->player pass and ApplyMobOnMobHit).
-    // TODO(live): confirm type (2 vs 1) and the pose length against the 4.95 client — these two knobs are why
-    // they're named constants here rather than inline literals.
-    // NOT const: live-tunable via "@mobact <type> [time]" so the attack-pose index can be swept against the
-    // client in ONE server session (the creature entity uses vtable 0x4cd098, not the player's, so its type->
-    // Monster.tbl-frame mapping isn't the player's 0=stand/1=attack/2=throw table and has to be found by eye).
-    internal static byte   MobSwingActionType = (byte)ActionType.Attack;   // a mob's attack pose (the player's is Attack too)
-    internal static ushort MobSwingActionTime = 20;   // pose length in ticks (RTK boss uses 20)
+    // The 0x1A action that makes a mob visibly SWING, not just play the sound above, is world-wide staff
+    // state and moved to GmOverrides.MobSwingActionType / MobSwingActionTime with its remarks.
 
     // Eating/using a consumable (Session.ItemEatAnim): TWO ids played together, live 2026-08-04 — 403.wav is
     // the chew and 006.wav the gulp; the client mixes them into the one "eat" sound.
     private const int EatSfxA = 403;
     private const int EatSfxB = 6;
 
-    /// <summary>Play the landed-melee impact sfx (<see cref="_hitSfx"/>) over <paramref name="targetId"/> for
+    /// <summary>Play the landed-melee impact sfx (<see cref="GmOverrides.HitSfx"/>) over <paramref name="targetId"/> for
     /// everyone in earshot of the TARGET — RTK binds a landed hit to the thing that got hit, not to the swinger
     /// (clif.c: <c>clif_playsound(&amp;mob-&gt;bl, itemdb_soundhit(...))</c>), and clif_playsound is a SAMEAREA
     /// send. Falls back to our own tile if the target died on this very swing. Call this ONLY on a swing that
     /// connected — the swing sfx itself is fired separately, on every attempt.</summary>
     private void PlayHitSfx(uint targetId)
     {
-        if (_hitSfx <= 0) return;
+        int hit = _gm.HitSfx;
+        if (hit <= 0) return;
         var (cx, cy) = _world.EntityPos(_char.Map, targetId) ?? (_char.X, _char.Y);
-        _world.BroadcastSameArea(_char.Map, cx, cy, p => p.SoundAt(_hitSfx, targetId));
+        _world.BroadcastSameArea(_char.Map, cx, cy, p => p.SoundAt(hit, targetId));
     }
 
     /// <summary>Play the eat/use sfx pair over us, to everyone in earshot (the eat POSE is broadcast too — see
@@ -128,10 +94,11 @@ public sealed partial class Session
     {
         if (!a.Int(0, out var id) || id < 0)
         { Refuse($"{a.Usage()}   (current: {slot}; 0 = silent)"); return; }
+        int was = slot;
         slot = id;
         if (id > 0) SendSound(id, _char.Id);          // audition it now
         Reply($"{what} sfx = {id}{(id == 0 ? " (muted)" : "")}");
-        Log.Info($"   -> {what} sfx = {id}");
+        GmOverrides.Log(this, $"{what} sfx", was, id);
     }
 
     // ---- 0x19 background music ------------------------------------------------------------------------
@@ -514,38 +481,6 @@ public sealed partial class Session
         Log.Info($"   -> @music set={(wantNew ? "new" : "old")} for {_char.Name}");
     }
 
-    // Play raw client sound ids (0x19 sfx) to calibrate the 4.95 NexusTK.snd id space. RTK's per-spell sound
-    // ids may not line up with the client's 001.wav..197.wav numbering, and the user hears "shifted" variants.
-    // `@snd 4` plays one; `@snd 4 5 6` plays several; `@snd 1 197 -` (a trailing '-') is rejected — keep it to a
-    // few at a time so they don't overlap into noise. Identify each by ear to map RTK sound -> client sound.
-    private void SoundProbe(CommandArgs a)
-    {
-        if (a.None) { Refuse(a.Usage()); return; }
-        int played = 0;
-        for (int i = 0; i < a.Count && played < 8; i++)
-        {
-            if (!a.Int(i, out var id) || id <= 0) continue;
-            SendSound(id, _char.Id);
-            Reply($"playing sound {id}");
-            Log.Info($"   -> @snd {id}");
-            played++;
-        }
-        if (played == 0) Refuse("no valid sound ids (want positive integers)");
-    }
-
-    // "@mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
-    // renders each one (0=wisp/blue, 3=mini/status — the default everything else uses, 5=system — what
-    // durability warnings use, 11=group, 12=clan). No text -> a canned "test type N" line.
-    private void MiniTextProbe(CommandArgs a)
-    {
-        if (!a.Int(0, out var type)) { Refuse(a.Usage()); return; }
-        string msg = a.Count > 1 ? a.Rest(1) : $"test type {type}";
-        PayPaneRule();                     // the probe line is this command's first pane line — head it
-        SendMiniText(msg, (ushort)type);   // raw, by number: the type under test is the whole point of @mtx
-        Reply($"sent minitext type={type}: \"{msg}\"");
-        Log.Info($"   -> @mtx type={type} \"{msg}\"");
-    }
-
     // "@weather clear|rain|snow|0|1|2" — pin THIS map's whole region-zone to a weather state (an admin
     // override of the seasonal WeatherModel) and broadcast it to everyone on that zone. "@weather auto" drops
     // the override so the zone returns to season-driven weather. "@weather raw <n>" instead sends one byte
@@ -647,68 +582,6 @@ public sealed partial class Session
         if (hit.Key is 0x0E or 0x0F)
             Reply("note: 4.95's appearance has no helm/necklace slot, so this toggle draws nothing on this client");
         Log.Info($"   -> @setting {hit.Value} = {(on ? "ON" : "OFF")}");
-    }
-
-    // "@mobact <type> [time]" — calibrate the mob attack-pose action (0x1A). Sets the global MobSwingActionType/
-    // Time used by every real mob swing (World.cs), AND immediately plays that action on the mob you're facing so
-    // you can eyeball it without waiting for a swing. Sweep <type> 0..8 to find which one drives a creature's
-    // Attack frames (Monster.tbl has a per-id Attack field, so the frames exist — the question is the type index
-    // for the CREATURE entity vtable, which differs from the player's 1=attack). No mob faced = just sets + says.
-    private void MobActionProbe(CommandArgs a)
-    {
-        if (!byte.TryParse(a.Word(0), out var type))
-        { Refuse($"{a.Usage()}   (current: type={MobSwingActionType} time={MobSwingActionTime})"); return; }
-        ushort time = ushort.TryParse(a.Word(1), out var t) ? t : MobSwingActionTime;
-        MobSwingActionType = type;
-        MobSwingActionTime = time;
-
-        var (fx, fy) = FrontTile();
-        var wmob = _world.MobAt(_char.Map, fx, fy);
-        if (wmob is not null)
-        {
-            _world.BroadcastSameArea(_char.Map, wmob.X, wmob.Y, p => p.ActionOver(wmob.Id, type, time, 0));   // play it NOW on the faced mob
-            Reply($"mob action type={type} time={time} -> played on '{wmob.Name}' ({wmob.Id})");
-        }
-        else Reply($"mob action type={type} time={time} set (face a mob to preview it instantly)");
-        Log.Info($"   -> @mobact type={type} time={time} faced={(wmob?.Name ?? "none")}");
-    }
-
-    // Play raw Effect.tbl animation ids (0x29) over the caster, to calibrate the 4.95 effect id space vs RTK's
-    // sendAnimation ids. Low ids (unaligned heal 5, spark 28) are confirmed identity, but RTK's 6.x/7.x client may
-    // have inserted effects that shift mid/high ids — e.g. the aligned heals (Ohaeng 63 / Ming-Ken 64 / Kwi-Sin 65)
-    // may not line up. `@efx 5 63 64 65` plays the four heal variants so we can see which id is really which.
-    private void EffectProbe(CommandArgs a)
-    {
-        if (a.None) { Refuse(a.Usage()); return; }
-        int played = 0;
-        for (int i = 0; i < a.Count && played < 8; i++)
-        {
-            if (!a.Int(i, out var id) || id < 0 || id > 127) continue;
-            SendEffect(_char.Id, id);
-            Reply($"effect {id}");
-            Log.Info($"   -> @efx {id}");
-            played++;
-        }
-        if (played == 0) Refuse("no valid effect ids (0..127)");
-    }
-
-    // "@hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
-    // draws the over-head HP bar at <pct>% and plays the hit overlay animation 0x8f-<crit>. Use it to calibrate
-    // P1998_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
-    // HitCritByte. e.g. "@hit 50" (half bar) then "@hit 50 0" / "@hit 50 40" to compare hit animations.
-    private void HitProbe(CommandArgs a)
-    {
-        if (!a.Int(0, out var pct)) { Refuse(a.Usage()); return; }
-        byte crit = byte.TryParse(a.Word(1), out var c) ? c : HitCritByte;
-        pct = Math.Clamp(pct, 0, 100);
-
-        var (fx, fy) = FrontTile();
-        var wmob = _world.MobAt(_char.Map, fx, fy);
-        uint target = wmob?.Id ?? MobAt(fx, fy)?.Id ?? _char.Id;
-        if (wmob is not null) _world.BroadcastWideArea(_char.Map, wmob.X, wmob.Y, p => p.DamageOver(target, (byte)pct, crit));
-        else                  SendDamage(target, (byte)pct, crit);
-        Reply($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
-        Log.Info($"   -> @hit id={target} pct={pct} crit={crit}");
     }
 
 }

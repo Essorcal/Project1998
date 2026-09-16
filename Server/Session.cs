@@ -32,6 +32,14 @@ public sealed partial class Session
     private readonly string _remoteIp;   // address only (no port) — handoff tokens are bound to it
     private readonly CharacterStore _store;
     private readonly World _world;   // the shared world (players + mobs); every broadcast goes through it
+
+    /// <summary>Every staff override this session is under (#57 finding 31): @clip, @peace, @anywarp,
+    /// @showwarps and its marker frames, and the three melee sfx slots. <c>readonly</c> and never null, so
+    /// a read site is a field load through one indirection and nothing else — <c>SendMapRect</c> reads
+    /// <c>_gm.NoClip</c> once per streamed cell. All of them are OFF/default at login by design; see
+    /// <see cref="GmOverrides"/>. <c>@toggles</c> is the readout.</summary>
+    private readonly GmOverrides _gm = new();
+
     private string _user = "?";
     private bool _enteredWorld;   // true once world entry loaded _char; gates the disconnect save
 
@@ -1146,7 +1154,7 @@ public sealed partial class Session
                 // selector, so blocked terrain (water/cliffs — every blocked cell is sheet-2 there) draws
                 // as the wrong tile while clip is on; toggling off re-primes the window and the art heals.
                 tile = TileTranslation.Ground(map.GroundWord(mx, my), _ver);
-                pass = _noClip ? (ushort)0 : PassAt(map, mx, my);
+                pass = _gm.NoClip ? (ushort)0 : PassAt(map, mx, my);
                 obj  = TileTranslation.Object(map.Obj(mx, my), _ver);
             }
             // One shared writer with the door cell patch — see MapCell for why that matters. On 4.95's real

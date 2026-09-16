@@ -272,7 +272,7 @@ public sealed partial class Session
         SyncPeers(peers);
         SyncMobs(mobs);
         SyncGroundItems(_world.ItemsOn(_char.Map));
-        if (_showWarps) StampWarpMarkers();   // the rebuild dropped the @showwarps overlay — put it back
+        if (_gm.ShowWarps) StampWarpMarkers();   // the rebuild dropped the @showwarps overlay — put it back
     }
 
     // Move a peer entity one step. (x,y) is the SOURCE tile — the client's 0x0C overshoots one tile past it
