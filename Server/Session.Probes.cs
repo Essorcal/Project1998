@@ -627,6 +627,16 @@ public sealed partial class Session
         SendLog("0 sex 1 form 2 face 3 haircolour 4 armor 5 dye 6-7 weapon(u16 flat look) 8 ? 9 shield 10 shield?");
     }
 
+    // Register a creature server-side AND draw it on the client (via 0x16). Used by the mob commands.
+    private Mob SpawnMob(ushort sprite, ushort x, ushort y, string name, int hp, byte dir = 2)
+    {
+        var mob = new Mob(_nextMobId++, sprite, x, y, name, hp) { Dir = dir };
+        _mobs.Add(mob);
+        SendCreature(mob.Id, sprite, x, y, dir, $"mob '{name}' gfx={sprite}");
+        Log.Info($"   -> spawn mob {mob.Id} '{name}' gfx={sprite} @({x},{y}) hp={hp}");
+        return mob;
+    }
+
     // ---- from Session.Media.cs ------------------------------------------------------------------------------------
 
     // Play raw client sound ids (0x19 sfx) to calibrate the 4.95 NexusTK.snd id space. RTK's per-spell sound
@@ -862,5 +872,17 @@ public sealed partial class Session
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
         SpawnMonster((ushort)look, x, y, $"c{look}", hp, dir: (byte)((_facing + 2) & 3), color: (byte)color);
+    }
+
+    // ---- from Commands.cs -----------------------------------------------------------------------------------------
+
+    /// <summary>Pay the invocation's separator now, before a pane line this class is not going to see —
+    /// a raw <c>SendMiniText</c> on a type chosen by the caller. Does nothing once the rule is paid, so it
+    /// is safe to call ahead of every raw line in a command that sends several.</summary>
+    private void PayPaneRule()
+    {
+        if (!_paneRuleDue) return;
+        _paneRuleDue = false;
+        SendMiniText(PaneRule);
     }
 }

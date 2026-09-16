@@ -502,16 +502,6 @@ public sealed partial class Session
     /// top of a command's output; there is no case where it appears anywhere else.</para></summary>
     private bool _paneRuleDue;
 
-    /// <summary>Pay the invocation's separator now, before a pane line this class is not going to see —
-    /// a raw <c>SendMiniText</c> on a type chosen by the caller. Does nothing once the rule is paid, so it
-    /// is safe to call ahead of every raw line in a command that sends several.</summary>
-    private void PayPaneRule()
-    {
-        if (!_paneRuleDue) return;
-        _paneRuleDue = false;
-        SendMiniText(PaneRule);
-    }
-
     /// <summary>Break one logical line into pane-width lines at SPACES ONLY.
     ///
     /// <para>A token is never split: if one is longer than the whole pane (a long map name, a hex dump, a

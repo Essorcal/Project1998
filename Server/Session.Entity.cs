@@ -1192,16 +1192,6 @@ public sealed partial class Session
     /// or sounds (see <see cref="BroadcastFx"/>). On by default (SettingBit(5) is in the SettingFlags seed).</summary>
     internal bool WantsMagicFx => _char.HasSetting(0x05);
 
-    // Register a creature server-side AND draw it on the client (via 0x16). Used by the mob commands.
-    private Mob SpawnMob(ushort sprite, ushort x, ushort y, string name, int hp, byte dir = 2)
-    {
-        var mob = new Mob(_nextMobId++, sprite, x, y, name, hp) { Dir = dir };
-        _mobs.Add(mob);
-        SendCreature(mob.Id, sprite, x, y, dir, $"mob '{name}' gfx={sprite}");
-        Log.Info($"   -> spawn mob {mob.Id} '{name}' gfx={sprite} @({x},{y}) hp={hp}");
-        return mob;
-    }
-
     // Screen tile where the self is drawn (viewport anchor): the client's own tile->screen conversion
     // centers the player around here, NOT at a fixed spot -- it's edge-aware (clamped near map borders),
     // per Mithia 7.x's clif_sendxy. We previously hardcoded a flat (5,5), which only roughly matched near
