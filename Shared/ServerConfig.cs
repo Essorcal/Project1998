@@ -291,8 +291,14 @@ public sealed class ServerConfig
         {
             string? raw = source(knob.Name);
             var (value, text, warning) = knob.Resolve(raw);
+            // "From the environment" means the environment actually supplied the value in force. A blank or
+            // whitespace-only variable supplied nothing, and a REJECTED one supplied nothing either — the
+            // declared default is what the process is running with, so the banner must not tag it
+            // "(environment)" or count it in "N set from the environment". The `!!` warning line printed
+            // above the banner is where a rejected value gets named.
             entries.Add(new Entry(knob, raw, value, text,
-                                  FromEnvironment: !string.IsNullOrEmpty(raw), warning));
+                                  FromEnvironment: !string.IsNullOrWhiteSpace(raw) && warning is null,
+                                  warning));
         }
         Entries = entries;
         _byName = entries.ToDictionary(e => e.Knob.Name, StringComparer.Ordinal);
@@ -445,15 +451,19 @@ public sealed class ServerConfig
                   "(see docs/common/Configuration.md) ===");
         foreach (var area in Entries.Select(e => e.Knob.Area).Distinct())
         {
-            // A retired knob nobody set is not news; the whole point of retiring it is that it is gone.
+            // A retired knob nobody set is not news; the whole point of retiring it is that it is gone. One
+            // that IS set always carries a warning, so this row asks whether the variable is present rather
+            // than whether it supplied the value in force — which for a retired knob it never does.
             var inArea = Entries.Where(e => e.Knob.Area == area)
-                                .Where(e => area != ConfigArea.Retired || e.FromEnvironment)
+                                .Where(e => area != ConfigArea.Retired || !string.IsNullOrEmpty(e.Raw))
                                 .ToArray();
             if (inArea.Length == 0) continue;
             lines.Add($"    [{area}]");
             foreach (var entry in inArea)
                 lines.Add($"      {entry.Knob.Name,-34} = {entry.Text}" +
-                          (entry.FromEnvironment ? "   (environment)" : "   (default)"));
+                          // A retired knob's value comes from neither source — its own text says IGNORED.
+                          (area == ConfigArea.Retired ? ""
+                           : entry.FromEnvironment ? "   (environment)" : "   (default)"));
         }
         return lines;
     }

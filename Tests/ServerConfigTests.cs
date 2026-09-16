@@ -364,6 +364,50 @@ public class ServerConfigTests
             Assert.Contains(knob.Name, banner);
     }
 
+    /// <summary>A value the server REFUSED did not configure anything: the declared default is what the
+    /// process is running with, so its row says "(default)" and it is not counted in "N set from the
+    /// environment". The banner's whole job is to answer "what is this process actually doing" — a row
+    /// reading <c>P1998_V495_WALK_MS = 200 (environment)</c> for a deployment that set <c>abc</c> answers
+    /// the wrong question, and hides the mistake behind a plausible-looking number. The `!!` warning line
+    /// is where the rejected value is named.
+    /// <para>The same goes for a variable set to whitespace, which supplied nothing at all.</para>
+    /// <para>Falsification: make FromEnvironment <c>!IsNullOrEmpty(raw)</c> again and both rows fail.
+    /// </para></summary>
+    [Theory]
+    [InlineData("abc")]
+    [InlineData("   ")]
+    public void A_rejected_value_is_marked_default_and_not_counted_as_set(string raw)
+    {
+        var config = With(("P1998_V495_WALK_MS", raw), ("P1998_AUTOSAVE_MS", "3000"));
+        var banner = config.Describe();
+
+        Assert.Equal(200, config.WalkMs);
+        string row = Assert.Single(banner, line => line.Contains("P1998_V495_WALK_MS"));
+        Assert.Contains("= 200", row);
+        Assert.EndsWith("(default)", row, StringComparison.Ordinal);
+        // One knob was really set, and only that one is counted.
+        Assert.Contains("1 set from the environment", banner[0]);
+        // ... and the one that WAS set still says so.
+        Assert.EndsWith("(environment)", Assert.Single(banner, line => line.Contains("P1998_AUTOSAVE_MS")),
+                        StringComparison.Ordinal);
+    }
+
+    /// <summary>A retired variable that is still set keeps its banner row — it is the loudest thing the
+    /// banner has to say — but carries no source tag, because a retired value is in force from neither the
+    /// environment nor a default. It is also not counted as configured.</summary>
+    [Fact]
+    public void A_set_retired_variable_still_appears_in_the_banner_without_a_source_tag()
+    {
+        var config = With(("P1998_HIT_CRIT", "33"));
+        var banner = config.Describe();
+
+        string row = Assert.Single(banner, line => line.Contains("P1998_HIT_CRIT"));
+        Assert.Contains("IGNORED, was '33'", row);
+        Assert.DoesNotContain("(environment)", row);
+        Assert.DoesNotContain("(default)", row);
+        Assert.Contains("0 set from the environment", banner[0]);
+    }
+
     // ---- the declaration table itself ---------------------------------------------------------------------
 
     /// <summary>Two knobs sharing a name would have one silently shadow the other in the lookup, and would
