@@ -38,9 +38,19 @@ public class SharedListenerTests
     /// sockets on every interface of whichever box is running it.</summary>
     private static readonly bool BoundToLoopback = ForceLoopbackBind();
 
+    /// <summary>Set the variable AND re-resolve the configuration snapshot before touching
+    /// <see cref="NetBind"/>.
+    /// <para>The write alone is no longer enough and, worse, would fail silently: P1998_BIND is a declared
+    /// knob now, so NetBind reads <c>ServerConfig.Current</c>, and that snapshot is taken the first time
+    /// anything in the process touches it — which <see cref="TestProcessState"/>'s module initializer
+    /// already did, long before this class loaded. <c>ReloadForTests</c> is the seam for exactly this: the
+    /// environment write has to land in a fresh snapshot. Re-reading the environment is safe here because
+    /// nothing else in the process has changed a variable since that initializer ran, so every other knob
+    /// resolves to the same value it already had.</para></summary>
     private static bool ForceLoopbackBind()
     {
         Environment.SetEnvironmentVariable("P1998_BIND", "127.0.0.1");
+        ServerConfig.ReloadForTests();
         return IPAddress.IsLoopback(NetBind.Address);
     }
 

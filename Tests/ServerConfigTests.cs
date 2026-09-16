@@ -1,3 +1,4 @@
+using System.Globalization;
 using Shared;
 using Xunit;
 
@@ -298,6 +299,227 @@ public class ServerConfigTests
         string warning = Assert.Single(config.Warnings);
         Assert.Contains("decore", warning);
         Assert.Contains("off, free, decor, all, structural", warning);
+    }
+
+    // ---- the knobs part 2 declared ------------------------------------------------------------------------
+    //
+    // Every fact below transcribes the inline rule the knob had at upstream/master b73c879, so a declared
+    // default or a clamp that drifted from it fails here rather than silently retuning a live server. The
+    // old rule is quoted in each summary; the boundary of every clamp is pinned on both sides.
+
+    /// <summary>The reads part 2 converted keep the exact fallback their inline <c>TryParse</c> carried.
+    /// These numbers and strings are transcribed from the old expressions, knob by knob:
+    /// <c>P1998_TICK_MS</c> 333, <c>P1998_SLOW_SEND_MS</c> 250, <c>P1998_LOGIN_WRITE_MS</c> 10000,
+    /// <c>P1998_POOL_LAG_MS</c> 100, <c>P1998_SILENT_MS</c> 4000, <c>P1998_STATUS_MS</c> 10000,
+    /// <c>P1998_HANDSHAKE_MS</c> 15000, the four ConnGuard numbers 2000 / 8 / 30 / 10000 on each of the two
+    /// front doors, both loopback exemptions ON, trust-on-first-use OFF, and seven knobs whose "unset" is a
+    /// blank string the call site turns into its own fallback.</summary>
+    [Fact]
+    public void Every_knob_part_two_declared_keeps_its_old_inline_default()
+    {
+        var config = Defaults();
+
+        Assert.Equal(333, config.TickMs);
+        Assert.Null(config.SlowTickMs);           // the caller derives TickMs / 4
+        Assert.Equal(250, config.SlowSendMs);
+        Assert.Equal(10_000, config.LoginWriteMs);
+        Assert.Equal(100, config.PoolLagMs);
+        Assert.Equal(4_000, config.SilentMs);
+        Assert.Equal(10_000, config.StatusMs);
+        Assert.Equal(15_000, config.HandshakeMs);
+
+        Assert.Equal(2_000, config.LoginMaxConn);
+        Assert.Equal(8, config.LoginPerIp);
+        Assert.Equal(30, config.LoginRate);
+        Assert.Equal(10_000, config.LoginRateWindowMs);
+        Assert.True(config.LoginExemptLoopback);
+        Assert.Equal(2_000, config.GameMaxConn);
+        Assert.Equal(8, config.GamePerIp);
+        Assert.Equal(30, config.GameRate);
+        Assert.Equal(10_000, config.GameRateWindowMs);
+        Assert.True(config.GameExemptLoopback);
+
+        Assert.False(config.AllowTofu);
+
+        Assert.Equal("", config.BindAddress);     // NetBind turns blank into IPAddress.Any
+        Assert.Equal("", config.MapsDir);
+        Assert.Equal("", config.SObjTable);
+        Assert.Equal("", config.StatusFile);      // StatusFile turns blank into <run>/status.json
+        Assert.Equal("", config.StatusMessage);
+        Assert.Equal("", config.Gms);
+        Assert.Equal("", config.Testers);
+
+        Assert.Empty(config.Warnings);
+    }
+
+    /// <summary>Each clamp pinned on BOTH sides of its edge: the smallest value the old inline rule accepted
+    /// is still accepted, and the one below it still falls back to the same default. These are the exact
+    /// comparisons the old expressions used - <c>tm &gt;= 50</c>, <c>ss &gt;= 0</c>, <c>wt &gt; 0</c>,
+    /// <c>pl &gt;= 0</c>, <c>sm &gt;= 0</c>, <c>ms &gt;= 1000</c>, <c>hs &gt; 0</c> and ConnGuard's
+    /// <c>v &gt; 0</c> - so a <c>min</c> off by one would change what a live deployment accepts.
+    /// <para>Falsification: change any declared <c>min</c> by one and the row for that knob fails on one
+    /// side or the other.</para></summary>
+    [Theory]
+    [InlineData("P1998_TICK_MS", 50, 49, 333)]
+    [InlineData("P1998_SLOW_SEND_MS", 0, -1, 250)]
+    [InlineData("P1998_LOGIN_WRITE_MS", 1, 0, 10_000)]
+    [InlineData("P1998_POOL_LAG_MS", 0, -1, 100)]
+    [InlineData("P1998_SILENT_MS", 0, -1, 4_000)]
+    [InlineData("P1998_STATUS_MS", 1_000, 999, 10_000)]
+    [InlineData("P1998_HANDSHAKE_MS", 1, 0, 15_000)]
+    [InlineData("P1998_LOGIN_MAXCONN", 1, 0, 2_000)]
+    [InlineData("P1998_LOGIN_PERIP", 1, 0, 8)]
+    [InlineData("P1998_LOGIN_RATE", 1, 0, 30)]
+    [InlineData("P1998_LOGIN_RATEWIN_MS", 1, 0, 10_000)]
+    [InlineData("P1998_GAME_MAXCONN", 1, 0, 2_000)]
+    [InlineData("P1998_GAME_PERIP", 1, 0, 8)]
+    [InlineData("P1998_GAME_RATE", 1, 0, 30)]
+    [InlineData("P1998_GAME_RATEWIN_MS", 1, 0, 10_000)]
+    public void The_smallest_accepted_value_is_taken_and_the_one_below_it_is_refused(
+        string name, int lowest, int below, int fallback)
+    {
+        var accepted = With((name, lowest.ToString(CultureInfo.InvariantCulture)));
+        Assert.Equal(lowest, Assert.Single(accepted.Entries, e => e.Knob.Name == name).Value);
+        Assert.Empty(accepted.Warnings);
+
+        var refused = With((name, below.ToString(CultureInfo.InvariantCulture)));
+        Assert.Equal(fallback, Assert.Single(refused.Entries, e => e.Knob.Name == name).Value);
+        Assert.Contains("below the minimum", Assert.Single(refused.Warnings));
+    }
+
+    /// <summary>The one knob in the set whose default is DERIVED from another: the old rule was
+    /// <c>int.TryParse(env, out var st) &amp;&amp; st &gt;= 0 ? st : TickMs / 4</c>, so 0 is a real value
+    /// meaning "watchdog off" and only an absent or refused value derives the quarter. That is why it is an
+    /// <c>OptionalIntKnob</c> with <c>min: 0</c> and the divide stays at the call site in
+    /// <c>Server/World.cs</c> - a declared constant would stop tracking a retuned heartbeat.
+    /// <para>Falsification: give the knob <c>min: 1</c> and the "0 disables" row fails; declare it a plain
+    /// <c>IntKnob(83)</c> and the retuned-heartbeat row fails.</para></summary>
+    [Theory]
+    [InlineData(null, "333", 83)]      // unset at the stock heartbeat: a quarter of 333
+    [InlineData(null, "400", 100)]     // ... and it tracks a retuned heartbeat rather than staying at 83
+    [InlineData("", "333", 83)]
+    [InlineData("nonsense", "333", 83)]
+    [InlineData("-1", "333", 83)]      // below the old rule's st >= 0, so it derives
+    [InlineData("0", "333", 0)]        // 0 is a VALUE: the watchdog is off, not a quarter of the heartbeat
+    [InlineData("150", "333", 150)]
+    public void The_slow_tick_threshold_derives_a_quarter_of_the_heartbeat_only_when_it_is_not_set(
+        string? raw, string tick, int expected)
+    {
+        var config = With(("P1998_SLOW_TICK_MS", raw), ("P1998_TICK_MS", tick));
+
+        Assert.Equal(expected, config.SlowTickMs ?? config.TickMs / 4);
+    }
+
+    /// <summary>The two loopback exemptions, against the rule they replaced verbatim:
+    /// <c>(Environment.GetEnvironmentVariable(name) ?? "1").Trim() != "0"</c>. Because that rule read
+    /// EVERYTHING except a trimmed "0" as on, and <c>BoolKnob(true)</c> also keeps its ON default for an
+    /// unrecognised value, the accepted-value set is identical row for row - the only difference is that a
+    /// garbage value now says so on the startup warning line instead of passing for a deliberate "on".
+    /// <para>Falsification: declare either knob <c>BoolKnob(false)</c> and every row but the "0" ones fails.
+    /// </para></summary>
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("   ", true)]
+    [InlineData("1", true)]
+    [InlineData(" 1 ", true)]
+    [InlineData("0", false)]
+    [InlineData(" 0 ", false)]
+    [InlineData("true", true)]         // the old rule read it as on; so does the default
+    [InlineData("2", true)]
+    public void A_loopback_exemption_is_on_unless_the_value_is_exactly_zero(string? raw, bool expected)
+    {
+        Assert.Equal(expected, With(("P1998_LOGIN_EXEMPT_LOOPBACK", raw)).LoginExemptLoopback);
+        Assert.Equal(expected, With(("P1998_GAME_EXEMPT_LOOPBACK", raw)).GameExemptLoopback);
+    }
+
+    /// <summary>The trust switch, against ITS old rule verbatim:
+    /// <c>(Environment.GetEnvironmentVariable("P1998_ALLOW_TOFU") ?? "0").Trim() == "1"</c>. That rule read
+    /// everything except a trimmed "1" as off, and <c>BoolKnob(false)</c> keeps its OFF default for an
+    /// unrecognised value, so again the accepted set is identical. It matters more here than anywhere else
+    /// in the set: while this is on, a login for a legacy character with no accounts row adopts whatever
+    /// password was sent, so the direction that must never happen by accident is off-to-on.
+    /// <para>Falsification: declare it <c>BoolKnob(true)</c> and every row but "1" fails.</para></summary>
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    [InlineData("0", false)]
+    [InlineData("true", false)]        // the old rule read it as OFF; so does the default
+    [InlineData("yes", false)]
+    [InlineData("2", false)]
+    [InlineData("1", true)]
+    [InlineData(" 1 ", true)]
+    public void Trust_on_first_use_is_off_unless_the_value_is_exactly_one(string? raw, bool expected)
+    {
+        Assert.Equal(expected, With(("P1998_ALLOW_TOFU", raw)).AllowTofu);
+    }
+
+    /// <summary>Which text knobs trim and which do not is transcribed, not chosen. The status path and the
+    /// status message were read as <c>value.Trim()</c> and a whitespace-only value counted as unset, so they
+    /// trim; the maps directory, the SObj path and the two staff rosters were yielded RAW to a
+    /// <c>File.Exists</c> or a comma split, so they must stay raw or a path with a meaningful trailing space
+    /// would resolve differently than it did. None of them case-folds - <c>normalize</c> would break every
+    /// one of them on a case-sensitive filesystem.</summary>
+    [Fact]
+    public void A_text_knob_trims_only_where_its_old_read_did()
+    {
+        var config = With(
+            ("P1998_STATUS_FILE", "  /srv/p1998/Status.json  "),
+            ("P1998_STATUS_MESSAGE", "  Back At Eight  "),
+            ("P1998_MAPS", "  /srv/Maps  "),
+            ("P1998_SOBJ", "  /srv/SObj.tbl  "),
+            ("P1998_GMS", " Alice , Bob ,, "));
+
+        Assert.Equal("/srv/p1998/Status.json", config.StatusFile);
+        Assert.Equal("Back At Eight", config.StatusMessage);
+        Assert.Equal("  /srv/Maps  ", config.MapsDir);
+        Assert.Equal("  /srv/SObj.tbl  ", config.SObjTable);
+        Assert.Equal(" Alice , Bob ,, ", config.Gms);
+        Assert.Empty(config.Warnings);
+    }
+
+    /// <summary>A whitespace-only value on any of those is "unset", exactly as the old
+    /// <c>IsNullOrWhiteSpace</c> / <c>Trim().Length &gt; 0</c> tests had it, so the call site's own fallback
+    /// applies rather than an empty path being tried and failing.</summary>
+    [Theory]
+    [InlineData("P1998_STATUS_FILE")]
+    [InlineData("P1998_STATUS_MESSAGE")]
+    [InlineData("P1998_MAPS")]
+    [InlineData("P1998_SOBJ")]
+    [InlineData("P1998_GMS")]
+    [InlineData("P1998_TESTERS")]
+    [InlineData("P1998_BIND")]
+    public void A_whitespace_only_text_value_is_unset(string name)
+    {
+        var config = With((name, "   "));
+
+        Assert.Equal("", Assert.Single(config.Entries, e => e.Knob.Name == name).Value);
+        Assert.Empty(config.Warnings);
+    }
+
+    /// <summary>The status file's one sentinel. <c>-</c> is not a path and never was: it survives the trim
+    /// intact so <c>StatusFile.Disabled</c> still recognises it, which is the documented way to turn
+    /// publishing off without deleting the run directory.</summary>
+    [Theory]
+    [InlineData("-")]
+    [InlineData("  -  ")]
+    public void The_status_file_sentinel_survives_the_trim(string raw)
+    {
+        Assert.Equal("-", With(("P1998_STATUS_FILE", raw)).StatusFile);
+    }
+
+    /// <summary>The bind address is the one knob whose value is validated at the call site rather than by
+    /// its knob type, because <c>Shared/NetBind.cs</c> owns the <c>IPAddress.TryParse</c> and a configuration
+    /// type that imported <c>System.Net</c> to re-do it would be the wrong place for it. The knob therefore
+    /// accepts any text and never warns; the fallback to 0.0.0.0 for an unparseable value is NetBind's, and
+    /// is unchanged. This fact exists so that difference is pinned rather than discovered.</summary>
+    [Fact]
+    public void The_bind_address_knob_passes_text_through_without_validating_it()
+    {
+        Assert.Equal("192.168.1.50", With(("P1998_BIND", "192.168.1.50")).BindAddress);
+        Assert.Equal("not-an-address", With(("P1998_BIND", "not-an-address")).BindAddress);
+        Assert.Empty(With(("P1998_BIND", "not-an-address")).Warnings);
     }
 
     // ---- retired gameplay variables -----------------------------------------------------------------------

@@ -98,8 +98,7 @@ public sealed class FrameReader
     /// and re-login) is never disconnected. The login port is the internet-facing front door, which is why it
     /// is gated too. Env-tunable and shared by both processes; 15s is far more than a real client needs (it
     /// speaks in milliseconds) yet kills a hold.</para></summary>
-    public static int DefaultHandshakeMs { get; } =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_HANDSHAKE_MS"), out var hs) && hs > 0 ? hs : 15_000;
+    public static int DefaultHandshakeMs { get; } = ServerConfig.Current.HandshakeMs;
 
     /// <summary>The few things the two processes do differently around the shared loop. Everything here is
     /// called on the reading thread, in the order the class doc describes.</summary>

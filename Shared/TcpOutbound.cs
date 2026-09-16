@@ -20,14 +20,12 @@ public sealed record OutboundOptions(int Capacity, int WriteTimeoutMs, int SlowS
 {
     /// <summary><c>P1998_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player would
     /// notice, so the log names the stall before anyone complains about it.</summary>
-    private static readonly int DefaultSlowSendMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_SEND_MS"), out var ss) && ss >= 0 ? ss : 250;
+    private static readonly int DefaultSlowSendMs = ServerConfig.Current.SlowSendMs;
 
     /// <summary><c>P1998_LOGIN_WRITE_MS</c> tunes it. The login conversation is a few hundred bytes: a peer
     /// that cannot accept them inside ten seconds is not a client anyone is waiting on, and holding the
     /// connection open for it is the slow-loris the read-side handshake watchdog already refuses.</summary>
-    private static readonly int DefaultLoginWriteMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_LOGIN_WRITE_MS"), out var wt) && wt > 0 ? wt : 10_000;
+    private static readonly int DefaultLoginWriteMs = ServerConfig.Current.LoginWriteMs;
 
     /// <summary>The game channel: a burst of world-entry packets is well under 2048 frames; a truly stuck
     /// socket hits it and we drop the connection. No per-write bound — the queue is the bound here, and a

@@ -17,7 +17,8 @@ namespace Shared;
 ///
 /// Loopback is exempt from the per-IP and rate gates by default (local dev, the client test box, and a
 /// same-box login->game hop all originate from 127.0.0.1 and must never be throttled); it still counts
-/// toward the global cap so load-shedding stays uniform. All limits are env-tunable via <see cref="FromEnv"/>.
+/// toward the global cap so load-shedding stays uniform. All limits are configuration knobs, declared by
+/// name in <see cref="ServerConfig.Knobs"/> and selected per front door by <see cref="From"/>.
 ///
 /// This is deliberately not a token bucket or a sliding log — under a flood the guard itself must stay O(1)
 /// and bounded, so it uses interlocked counters + a fixed-window counter per IP, with the rate table capped
@@ -49,22 +50,52 @@ public sealed class ConnGuard
         _rateTableCap = rateTableCap;
     }
 
-    /// <summary>Build a guard from environment variables, all with sane defaults so an unconfigured deploy
-    /// is still protected. <paramref name="prefix"/> namespaces the vars per process (e.g. "LOGIN"/"GAME"):
-    ///   P1998_&lt;prefix&gt;_MAXCONN (global, default 2000), _PERIP (default 8),
-    ///   _RATE (opens per window, default 30), _RATEWIN_MS (window, default 10000),
-    ///   _EXEMPT_LOOPBACK (default 1).
-    ///   PERIP=8 is sized to reliably SUPPORT ~2 players per IP — 2 steady game sockets, the brief login->game
-    ///   overlap where one player holds two, a lingering half-open "ghost" socket, plus margin — without being
-    ///   a hard 2-player quota (enforcing that at the socket layer would falsely reject legit pairs; real
-    ///   per-IP player limits belong in the login logic). Raise PERIP if you expect NAT'd IPs sharing more
-    ///   players. RATE=30/10s already covers 2 players logging in / reconnecting with retries.</summary>
-    public static ConnGuard FromEnv(string prefix)
+    /// <summary>The prefix each front door's knobs are named with: <c>"LOGIN"</c> for the login process,
+    /// <c>"GAME"</c> for the game process.
+    /// <para>These used to be the only knobs in the server with no literal name anywhere in the source —
+    /// the old <c>FromEnv</c> built <c>$"P1998_{prefix}_MAXCONN"</c> at runtime, so the abuse-control caps
+    /// could not appear in any generated reference and an operator could not grep for them. The cross
+    /// product is declared by name in <see cref="ServerConfig.Knobs"/> instead, and this type resolves a
+    /// prefix to the five knobs that belong to it.</para></summary>
+    public enum Door
     {
-        int I(string k, int d) => int.TryParse(Environment.GetEnvironmentVariable($"P1998_{prefix}_{k}"), out var v) && v > 0 ? v : d;
-        bool loop = (Environment.GetEnvironmentVariable($"P1998_{prefix}_EXEMPT_LOOPBACK") ?? "1").Trim() != "0";
-        return new ConnGuard(I("MAXCONN", 2000), I("PERIP", 8), I("RATE", 30), I("RATEWIN_MS", 10_000), loop);
+        /// <summary>The login front door: <c>P1998_LOGIN_*</c>.</summary>
+        Login,
+        /// <summary>The game front door: <c>P1998_GAME_*</c>.</summary>
+        Game,
     }
+
+    /// <summary>Build a guard from this process's configuration, all with sane defaults so an unconfigured
+    /// deploy is still protected.
+    /// <para>PERIP=8 is sized to reliably SUPPORT ~2 players per IP — 2 steady game sockets, the brief
+    /// login-&gt;game overlap where one player holds two, a lingering half-open "ghost" socket, plus margin —
+    /// without being a hard 2-player quota (enforcing that at the socket layer would falsely reject legit
+    /// pairs; real per-IP player limits belong in the login logic). Raise PERIP if you expect NAT'd IPs
+    /// sharing more players. RATE=30/10s already covers 2 players logging in / reconnecting with
+    /// retries.</para></summary>
+    /// <param name="config">The resolved configuration to read the five knobs from. Passed in rather than
+    /// reached for, so a test can build a guard from a pinned source without touching the process
+    /// environment.</param>
+    /// <param name="door">Which front door's knobs to select.</param>
+    public static ConnGuard From(ServerConfig config, Door door) => door switch
+    {
+        Door.Login => new ConnGuard(config.LoginMaxConn, config.LoginPerIp, config.LoginRate,
+                                    config.LoginRateWindowMs, config.LoginExemptLoopback),
+        Door.Game => new ConnGuard(config.GameMaxConn, config.GamePerIp, config.GameRate,
+                                   config.GameRateWindowMs, config.GameExemptLoopback),
+        _ => throw new ArgumentOutOfRangeException(nameof(door), door, "no such front door"),
+    };
+
+    /// <summary>Build a guard for one front door from this process's configuration. The two entry points
+    /// call this; <see cref="From"/> is the seam a test uses.</summary>
+    /// <param name="prefix">The knob prefix, <c>"LOGIN"</c> or <c>"GAME"</c>; anything else is a
+    /// programming error, not a configuration one, and throws.</param>
+    public static ConnGuard FromEnv(string prefix) => From(ServerConfig.Current, prefix switch
+    {
+        "LOGIN" => Door.Login,
+        "GAME" => Door.Game,
+        _ => throw new ArgumentOutOfRangeException(nameof(prefix), prefix, "no such front door"),
+    });
 
     /// <summary>Try to admit a connection from <paramref name="ip"/>. On success the caller MUST pair it with
     /// exactly one <see cref="Release"/> when the connection ends. On failure nothing is reserved and

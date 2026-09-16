@@ -39,8 +39,7 @@ public static class LoginAuth
     // Escape hatch for the handful of characters that predate the accounts table (they exist in
     // `characters` with no `accounts` row). Off by default; set P1998_ALLOW_TOFU=1 for one login to adopt a
     // password for such a record, then turn it back off. Never applies to a name with NO character.
-    private static bool AllowLegacyAdopt =>
-        (Environment.GetEnvironmentVariable("P1998_ALLOW_TOFU") ?? "0").Trim() == "1";
+    private static bool AllowLegacyAdopt => ServerConfig.Current.AllowTofu;
 
     /// <summary>Parse the `pwLen pw` that follows the length-prefixed username at <paramref name="off"/> in
     /// a decrypted 0x02/0x03 body. Returns "" if the password field is absent/malformed.</summary>

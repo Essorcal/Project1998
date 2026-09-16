@@ -77,8 +77,8 @@ public static class StaffAccounts
     /// previous roster in place rather than silently promoting or demoting everyone.</summary>
     public static void Load()
     {
-        var gms = ReadRoster(GmPath, "P1998_GMS");
-        var testers = ReadRoster(TesterPath, "P1998_TESTERS");
+        var gms = ReadRoster(GmPath, ServerConfig.Current.Gms);
+        var testers = ReadRoster(TesterPath, ServerConfig.Current.Testers);
         if (gms is null && testers is null) { lock (Gate) _loaded = true; return; }
 
         lock (Gate)
@@ -95,13 +95,16 @@ public static class StaffAccounts
 
     /// <summary>One roster file UNIONed with its environment override. Null means "the read failed" — the
     /// caller keeps the previous set rather than emptying it.</summary>
-    private static HashSet<string>? ReadRoster(string path, string envVar)
+    /// <param name="path">The roster file under the state directory.</param>
+    /// <param name="configured">The resolved comma-separated override (<c>P1998_GMS</c> /
+    /// <c>P1998_TESTERS</c>, declared in <see cref="ServerConfig"/>), or "" when unset. The caller passes the
+    /// VALUE, not the variable name, so this method reads no environment of its own.</param>
+    private static HashSet<string>? ReadRoster(string path, string configured)
     {
         var keys = new HashSet<string>();
 
-        var env = Environment.GetEnvironmentVariable(envVar);
-        if (!string.IsNullOrWhiteSpace(env))
-            foreach (var n in env.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        if (configured.Length > 0)
+            foreach (var n in configured.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 keys.Add(Auth.Key(n));
 
         try
