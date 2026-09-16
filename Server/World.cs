@@ -187,8 +187,7 @@ public sealed partial class World
     /// slow-tick watchdog (<see cref="SlowTickMs"/>, which scales off this) has never fired in this repo's
     /// logs, so the headroom was there. If it starts firing, raise this back — nothing but Sute's cadence
     /// depends on the smaller value.</para></summary>
-    private static readonly int TickMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_TICK_MS"), out var tm) && tm >= 50 ? tm : 333;
+    private static readonly int TickMs = ServerConfig.Current.TickMs;
 
     /// <summary>Poison/venom damage cadence, RTK's <c>while_cast_1500</c>. Shared by the mob DoT, the Rogue
     /// poison trap and the player-side venom, so the rate NexusAtlas quotes ("1000 damage a second") converts
@@ -2139,8 +2138,7 @@ public sealed partial class World
     /// <summary>A tick this slow (work OR scheduling delay, ms) gets a diagnostic line. 150ms is a quarter of
     /// the heartbeat — well clear of normal jitter, low enough to catch a stall long before a player would
     /// call it lag. <c>P1998_SLOW_TICK_MS</c> tunes it; 0 disables the watchdog.</summary>
-    private static readonly int SlowTickMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_SLOW_TICK_MS"), out var st) && st >= 0 ? st : TickMs / 4;
+    private static readonly int SlowTickMs = ServerConfig.Current.SlowTickMs ?? TickMs / 4;
 
     private long _lockWaitMs;   // how long the last Tick() waited to acquire _lock (watchdog attribution)
 
