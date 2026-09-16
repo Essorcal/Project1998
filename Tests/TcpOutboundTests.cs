@@ -93,6 +93,34 @@ public sealed class TcpOutboundTests
     }
 
     [Fact]
+    public async Task SixteenFireAndForgetClosesStartExactlyOneDrain()
+    {
+        using var pair = await SocketPair.Connect();
+
+        await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => Task.Run(pair.Outbound.CloseAfterDrain)));
+
+        Assert.Equal(1, pair.Outbound.DrainStarts);
+        await pair.Outbound.RunWriterAsync(_ => { }).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task AwaitedDrainStillWaitsForBytesWhileAFireAndForgetDrainIsRunning()
+    {
+        using var pair = await SocketPair.Connect();
+        byte[] expected = Enumerable.Range(0, 4096).Select(i => (byte)i).ToArray();
+        Assert.True(pair.Outbound.Send(expected));
+        pair.Outbound.CloseAfterDrain();
+
+        Task awaitedDrain = pair.Outbound.CloseAfterDrainAsync();
+        Assert.False(awaitedDrain.IsCompleted);
+
+        Task writer = pair.Outbound.RunWriterAsync(_ => { });
+        await awaitedDrain.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(expected, await ReadToEof(pair.Client.GetStream()));
+        await writer.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task OrdinaryCloseDoesNotWaitForAWriterOrQueuedData()
     {
         using var pair = await SocketPair.Connect();

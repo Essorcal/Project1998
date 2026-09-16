@@ -75,6 +75,7 @@ public sealed class TcpOutbound : IOutbound
     private readonly TaskCompletionSource _writerFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _socketClosed;
     private int _draining;
+    private int _drainStarts;
     internal const int DrainTimeoutMs = 1000;
 
     /// <param name="client">The accepted connection. This type owns every write to it.</param>
@@ -124,6 +125,9 @@ public sealed class TcpOutbound : IOutbound
     /// <inheritdoc/>
     public int QueueDepth => _queue.Reader.Count;
 
+    /// <summary>How many drain operations actually started. Test evidence for the fire-and-forget gate.</summary>
+    internal int DrainStarts => Volatile.Read(ref _drainStarts);
+
     /// <summary>Why the peer was dropped, or null if it was not. Set once, by the per-write bound or by the
     /// session through <see cref="NoteQueueFull"/>; the same text the Warn line carries. Only a channel with
     /// two drop paths needs it (the login's), so that one line per dropped CONNECTION can name the bound that
@@ -167,6 +171,7 @@ public sealed class TcpOutbound : IOutbound
 
     private async Task DrainAndCloseAsync()
     {
+        Interlocked.Increment(ref _drainStarts);
         try { await _writerFinished.Task.WaitAsync(TimeSpan.FromMilliseconds(DrainTimeoutMs)); }
         catch (TimeoutException) { /* A stalled peer or an unscheduled writer must not retain the socket. */ }
         finally { Close(); }
