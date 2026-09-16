@@ -574,11 +574,11 @@ public static partial class Content
 
     /// <summary>The <c>0x13</c> hit-type byte, which selects the over-head hit overlay
     /// (<c>0x8f − critical</c>). RTK uses 33 (0x21) for a normal hit and 255 for a critical.</summary>
-    public static byte HitCritByte => (byte)Math.Clamp((int)Tune("HitCrit", 0x21), 0, 255);
+    public static byte HitCritByte => CritByte("HitCrit", 0x21);
 
     /// <summary>The <c>0x13</c> critical byte a HEAL carries. RTK passes 0; the byte still selects an
     /// overlay animation, so it stays re-pickable in case the client draws something unwanted for that id.</summary>
-    public static byte HealCritByte => (byte)Math.Clamp((int)Tune("HealCrit", 0), 0, 255);
+    public static byte HealCritByte => CritByte("HealCrit", 0);
 
     /// <summary>How long (ms) a killed mob's corpse is held after the empty-HP-bar beat before the
     /// <c>0x0E</c> despawn. 4.95 monsters have no death frame-set, so this beat IS the death animation.
@@ -587,8 +587,27 @@ public static partial class Content
 
     /// <summary>Slots the 4.95 client's spellbook array holds. Unconfirmed for 4.95; RTK 7.x uses 52
     /// (MAX_SPELLS), and the cap is deliberately conservative so an over-long teach cannot overrun the
-    /// client array. A non-positive value would teach nothing, so it floors at 1.</summary>
-    public static int SpellBookCap => Math.Max(1, (int)Tune("SpellBookCap", 52));
+    /// client array.</summary>
+    public static int SpellBookCap => CapOrDefault("SpellBookCap", 52);
+
+    /// <summary>A 0x13 critical byte from its tuning row, keeping the old <c>byte.TryParse</c> rule exactly:
+    /// a row outside 0..255 is not a byte at all, so it is REFUSED and the default stands. Saturating instead
+    /// would turn a mistyped 300 into 255 — the critical overlay — rather than leaving the normal hit
+    /// alone.</summary>
+    private static byte CritByte(string key, byte dflt)
+    {
+        int value = (int)Tune(key, dflt);
+        return value is >= 0 and <= byte.MaxValue ? (byte)value : dflt;
+    }
+
+    /// <summary>A positive count from its tuning row, keeping the old <c>c &gt; 0 ? c : 52</c> rule exactly:
+    /// a non-positive row is refused and the default stands. Flooring at 1 instead would hand a deployment
+    /// that typed <c>SpellBookCap,0</c> a one-slot spellbook rather than the 52 it had before.</summary>
+    private static int CapOrDefault(string key, int dflt)
+    {
+        int value = (int)Tune(key, dflt);
+        return value > 0 ? value : dflt;
+    }
 
     // Resolve a content file under the game-data root: per-file env override first, else
     // <root>/game-data/<parts...>. This used to carry its own copy of the walk up to the repo root, one of
