@@ -872,8 +872,8 @@ public sealed partial class Session
         else if (a.NameThenTrailingInt(out var named, out var n)) { name = named; add = n; }
 
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
 
         // Read, write, tell — one critical section on the TARGET (#29 rule 2, Server/Session.State.cs). The
         // read-modify-write really is one here: `now` is their carnage counter plus `add`, and QuestCounter is
@@ -907,8 +907,8 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
         // A peer's character is directly reachable — private is type-scoped, and the reader is a Session too

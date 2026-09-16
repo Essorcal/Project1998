@@ -157,8 +157,8 @@ public sealed partial class Session
         var reason = parts.Length > 1 ? parts[1].Trim() : "";
         if (name.Length == 0) { SendLog($"Usage: {Prefix}kick <name> [reason]"); return; }
 
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { SendLog($"{name} is not online."); return; }
+        var target = ResolveOnlinePlayer(name, $"{name} is not online.", RefuseChannel.Log);
+        if (target is null) return;
         if (target == this) { SendLog("You cannot kick yourself."); return; }
 
         // Save, tell, drop — one critical section on the TARGET (#29 rule 2, Server/Session.State.cs), which

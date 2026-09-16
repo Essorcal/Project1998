@@ -150,10 +150,10 @@ public sealed partial class Session
         if (name == "!!") { DoGroupChat(msg); return; }
         if (name == "!")  { DoClanChat(msg);  return; }
 
-        var target = _world.Online.FindPlayer(name);
         // RTK's literal wording, on the BLUE wisp channel (clif_sendbluemessage) — same channel the whisper
         // itself would have used, NOT self-speech.
-        if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
+        var target = ResolveOnlinePlayer(name, $"{name} is nowhere to be found.", RefuseChannel.Blue);
+        if (target is null) return;
 
         // The two ignore reads, the delivery and the read of their name for our echo are ONE critical section
         // on the TARGET (#29 rule 2, Server/Session.State.cs) — the DoClanChat shape one screen down, applied
