@@ -188,6 +188,10 @@ public sealed partial class Session
         T("peace",   (s, a) => s.PeaceCmd(a),      "[0|1]",               "unprovoked mobs don't notice you (this session only; anything you attack still fights back)"),
         T("anywarp", (s, a) => s.AnyWarpCmd(a),    "[0|1]",               "use any warp despite level/mark/path/quest requirements (this session only; echoes the denial it waived)"),
         T("showwarps", (s, a) => s.ShowWarpsCmd(a), "[0|1] | look [warpFrame] [doorFrame]", "mark every warp + scripted doorway on the map (you only; follows across maps; lists destinations)"),
+        // The readout for the four toggles above plus every other staff override on the session (the melee
+        // sfx slots, the world-wide mob swing pose, the @wmpos dots) and the two world pins @clock/@weather.
+        // See Server/GmOverrides.cs, which is the class it enumerates.
+        G("toggles", (s, a) => s.TogglesCmd(),     "",                    "every staff override you are under, in one readout"),
         T("maps",    (s, a) => s.ListMaps(a),      "[filter]",            "list/fuzzy-search maps"),
         G("mobs",    (s, a) => s.ListMobs(a),      "[filter]",            "list/fuzzy-search the mob registry"),
         G("summon",  (s, a) => s.Summon(a),        "<mob name|id>",       "spawn a registry mob in front of you"),
@@ -301,9 +305,9 @@ public sealed partial class Session
                                                     "play a music track, or pick the soundtrack (vol 0-255, default 100; no argument lists them)"),
         G("snd",      (s, a) => s.SoundProbe(a),    "<id> [id2 ...]", "play raw client sound ids, up to 8 at once (NexusTK.snd holds 001..197.wav)"),
         // One handler, three slots (Session.Media.SetSfx): these differed only in the field they wrote.
-        G("swingsnd", (s, a) => s.SetSfx(a, ref s._swingSfx, "swing"),      "<id>", "set + audition the melee swing sfx (0 mutes it)"),
-        G("fistsnd",  (s, a) => s.SetSfx(a, ref s._fistSfx,  "fist swing"), "<id>", "set + audition the unarmed swing sfx (0 mutes it)"),
-        G("hitsnd",   (s, a) => s.SetSfx(a, ref s._hitSfx,   "hit"),        "<id>", "set + audition the on-connect impact sfx (0 mutes it)"),
+        G("swingsnd", (s, a) => s.SetSfx(a, ref s._gm.SwingSfx, "swing"),      "<id>", "set + audition the melee swing sfx (0 mutes it)"),
+        G("fistsnd",  (s, a) => s.SetSfx(a, ref s._gm.FistSfx,  "fist swing"), "<id>", "set + audition the unarmed swing sfx (0 mutes it)"),
+        G("hitsnd",   (s, a) => s.SetSfx(a, ref s._gm.HitSfx,   "hit"),        "<id>", "set + audition the on-connect impact sfx (0 mutes it)"),
         G("mobact",   (s, a) => s.MobActionProbe(a), "<type> [time]", "set + preview the mob attack-pose action (0x1A) on the faced mob"),
         G("efx",      (s, a) => s.EffectProbe(a),   "<id> [id2 ...]", "play raw Effect.tbl animations over yourself, ids 0-127, up to 8 at once"),
         G("mtx",      (s, a) => s.MiniTextProbe(a), "<type> [text...]", "audition a raw SendMiniText channel (0 wisp, 3 mini/status, 5 system, 11 group, 12 clan)"),

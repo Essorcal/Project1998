@@ -172,7 +172,7 @@ public sealed partial class Session
             };
             // @anywarp: unqualified for EVERY tier, so the waiver carries them into tier 1 (the base cave) —
             // the deepest-unlocked rule has nothing to pick from, and the shallowest is the predictable choice.
-            if (_waiveWarpGate)
+            if (_gm.WaiveWarpGate)
             {
                 tier = 1;
                 SendMiniText($"[anywarp] mythic gate waived — would have said: {denyMsg}");
@@ -253,7 +253,7 @@ public sealed partial class Session
         {
             // Below the ladder's floor. @anywarp waives that with the usual echo and takes tier 1 — no band
             // means no depth to read off the character, so the shallowest copy is the predictable choice.
-            if (!_waiveWarpGate)
+            if (!_gm.WaiveWarpGate)
             {
                 // RTK bumps the player two tiles clear of the doorway; we already held them at the
                 // from-tile, so all that is left is the line.
@@ -356,7 +356,7 @@ public sealed partial class Session
             if (CharClassId != hall.BaseClass)
             {
                 // @anywarp waives the class gate with the usual echo; otherwise refuse as RTK does.
-                if (_waiveWarpGate)
+                if (_gm.WaiveWarpGate)
                 {
                     SendMiniText("[anywarp] class gate waived — would have said: You are not the right class to enter here.");
                     Log.Info($"   -> PATHHALL guild door WAIVED (@anywarp, class {CharClassId} vs {hall.BaseClass})");
@@ -414,7 +414,7 @@ public sealed partial class Session
         {
             string denyMsg = low ? "Nightmarish visions of your own death repel you."
                                  : "Your honor forbids you from entering.";
-            if (_waiveWarpGate)
+            if (_gm.WaiveWarpGate)
             {
                 SendMiniText($"[anywarp] arena gate waived — would have said: {denyMsg}");
                 Log.Info($"   -> ARENA '{door.Label}' door WAIVED (@anywarp, {(low ? "under" : "over")}-qualified: level {_char.Level}, vita {_char.MaxHp}, mana {_char.MaxMp})");
@@ -481,7 +481,7 @@ public sealed partial class Session
 
         // @anywarp: the row becomes plain ground — no shove, no forced return-hop, and the shoes are NOT
         // spent — so a tester can walk the whole map. The branch that would have fired is echoed instead.
-        if (_waiveWarpGate)
+        if (_gm.WaiveWarpGate)
         {
             if (CountItem("ice_heart") > 0)
                 SendMiniText("[anywarp] lava return-crossing waived — would have spent your shoes and landed you on the south bank.");
@@ -701,7 +701,7 @@ public sealed partial class Session
         if (!HasLegend(LeviathanQuest.LegendFreed))
         {
             // @anywarp: waive the legend gate with the usual echo and let the door open below.
-            if (_waiveWarpGate)
+            if (_gm.WaiveWarpGate)
             {
                 SendMiniText("[anywarp] quest gate waived — would have said: Go AWAY!");
                 Log.Info($"   -> HERMIT door WAIVED (@anywarp) for {_char.Name}");
@@ -735,7 +735,7 @@ public sealed partial class Session
 
         // @anywarp: the seal becomes a plain portal — nothing checked, nothing spent, so a coated tester
         // keeps the powder — with the usual echo of what the seal would have done.
-        if (_waiveWarpGate)
+        if (_gm.WaiveWarpGate)
         {
             SendMiniText(QuestCounter(SuteQuest.DyeReg) == 1
                 ? "[anywarp] Sute's seal waived — passed without spending the powder."
@@ -782,7 +782,7 @@ public sealed partial class Session
         {
             // @anywarp: the mouth becomes a plain portal into the tier the level would have picked (or the
             // shallowest, below the ladder's floor), with the usual echo of what it would have done.
-            if (!_waiveWarpGate)
+            if (!_gm.WaiveWarpGate)
             {
                 Log.Info($"   -> GAUNTLET mouth REFUSED for {_char.Name} (path {CharBasePathId} level {_char.Level} " +
                          $"stage {QuestStage(NagnangShieldQuest.StageReg)} done={HasLegend(NagnangShieldQuest.Legend)})");
@@ -930,11 +930,6 @@ public sealed partial class Session
     // there with --move/--add, then bake the numbers into WorldMapDests.csv. ("@wmpos <i> <x> <y>" still
     // works for a live in-client nudge, but the plot tool is the faster loop.)
 
-    // Ephemeral live-tuning overrides for the world-map dot pixels, set by "@wmpos <i> <x> <y>" (index into
-    // Content.WorldDests). Not persisted — you eyeball a dot live, then bake the final number into
-    // WorldMapDests.csv and @reload. Empty = every dot uses its CSV DotX/DotY.
-    private static readonly Dictionary<int, (int X, int Y)> WorldDotOverride = new();
-
     // True while a world-map screen we sent is (as far as we know) still open on the client, so a stray
     // 0x3F that happens to coincide with a real destination can't be mistaken for a real click.
     private bool _worldMapPending;
@@ -1057,7 +1052,7 @@ public sealed partial class Session
             // Dot position is field10's own pixel coordinate (WorldMapDests.csv DotX/DotY), unless a live
             // "@wmpos" tweak is overriding it this session -- placed directly on the displayed map, not scaled
             // from RTK. Clamp defensively to the 640x480 art.
-            var (dotX, dotY) = WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dest.DotX, dest.DotY);
+            var (dotX, dotY) = GmOverrides.WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dest.DotX, dest.DotY);
             // The current-continent entry (position 0) lands on the EXACT origin tile, so an ESC that
             // selects it returns the player precisely where they stood -- not the continent's default tile.
             bool isOrigin = dest.Map == originMap;
@@ -1258,7 +1253,7 @@ public sealed partial class Session
         if (!HasLegend(PoetWhipQuest.LegendAcolyte))
         {
             // @anywarp waives the legend gate with the usual echo, as every other quest door here does.
-            if (_waiveWarpGate)
+            if (_gm.WaiveWarpGate)
             {
                 SendMiniText("[anywarp] pagoda gate waived — would have said: Only Nangen Acolyte may enter.");
                 Log.Info($"   -> NANGEN pagoda WAIVED (@anywarp) for {_char.Name}");
@@ -1437,7 +1432,7 @@ public sealed partial class Session
         SyncPeers(peers);   // stream the in-view players of the new map (0x33, viewport-gated + tracked)
         SyncMobs(mobs);   // stream the in-view mobs of the new map
         SyncGroundItems(_world.ItemsOn(mapId));   // in-view floor items of the new map (0x07, viewport-gated)
-        if (_showWarps) StampWarpMarkers();       // @showwarps follows across maps: overlay the NEW map's doorways
+        if (_gm.ShowWarps) StampWarpMarkers();   // @showwarps follows across maps: overlay the NEW map's doorways
         SyncMapDoors(mapId);
         if (warnPvp)
         {

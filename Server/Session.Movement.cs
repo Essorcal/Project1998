@@ -188,7 +188,7 @@ public sealed partial class Session
         // @clip waives every collision source except the map edge — walls, object-walls, mobs and players
         // alike. The streamed pass layer is doctored in lockstep (see SendMapRect), because the client
         // predicts against its own copy and would refuse the step before this check ever saw it.
-        bool terrainBlocked = !offMap && !_noClip
+        bool terrainBlocked = !offMap && !_gm.NoClip
             && PassEnforce && map != null && (Blocked(map, nx, ny) || ObjectFlags.Blocks(map.Obj(nx, ny), dir & 3));
 
         // Doors/portals take precedence over collision: if the tile we're stepping toward is a warp
@@ -204,7 +204,7 @@ public sealed partial class Session
         {
             // @anywarp waives the quest lock too — the tester is carried through, but the denial that WOULD
             // have fired is still echoed, so gate behaviour stays verifiable while passing through it.
-            if (_waiveWarpGate)
+            if (_gm.WaiveWarpGate)
             {
                 SendMiniText($"[anywarp] quest lock waived — would have said: {lockMsg}");
                 Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {lockedDest.m} quest lock WAIVED (@anywarp): {lockMsg}");
@@ -225,7 +225,7 @@ public sealed partial class Session
                 // @anywarp: the gate still RUNS (that's the point — its verdict is the thing under test),
                 // but a failing one no longer pushes back. The denial it would have shown is echoed instead,
                 // and the warp proceeds below as if the gate had passed.
-                if (_waiveWarpGate)
+                if (_gm.WaiveWarpGate)
                 {
                     SendMiniText($"[anywarp] entry requirement waived — would have said: {denyMsg}");
                     Log.Info($"   -> WARP ({nx},{ny}) map {_char.Map} -> {dest.m} gate WAIVED (@anywarp): {denyMsg}");
@@ -306,7 +306,7 @@ public sealed partial class Session
         var why = BlockReason.None;
         bool moved = !offMap && _world.TryMovePlayer(this, _char.Map, nx, ny,
                                                      ghostMover: PvpGhostHidden,
-                                                     enforceOccupancy: !_noClip,
+                                                     enforceOccupancy: !_gm.NoClip,
                                                      otherwiseBlocked: terrainBlocked,
                                                      out why);
         if (!moved)
@@ -674,7 +674,7 @@ public sealed partial class Session
             // Source the WHOLE ground word: its top two bits are the legacy sheet selector, and
             // TileTranslation needs them.
             ushort word = md.GroundWord(mx, y);
-            MapCell.Write(d, TileTranslation.Ground(word, _ver), _noClip ? (ushort)0 : md.Pass(mx, y),
+            MapCell.Write(d, TileTranslation.Ground(word, _ver), _gm.NoClip ? (ushort)0 : md.Pass(mx, y),
                           TileTranslation.Object(objs[i], _ver), _ver);
         }
         SendMap(ServerOp.MapCells, _gameInc++, d.ToArray(),

@@ -497,6 +497,33 @@ public sealed partial class Session
         Log.Info($"   -> MOUNT {( _char.Mounted ? "on" : "off")}");
     }
 
+    /// <summary>Every staff override this session is under, in one place — the readout half of the
+    /// <see cref="GmOverrides"/> gathering (#57 finding 31). Session-scoped overrides first in the order
+    /// they are declared, then the two world-wide groups (the mob swing pose and the @wmpos dots), then the
+    /// two pins that deliberately live elsewhere and are shown READ-ONLY here: the @clock hour on
+    /// <c>World.Clock</c> and the zone weather, read back exactly as @weather reads it.
+    ///
+    /// <para>Sits next to @clip because that is where the toggles a GM actually hunts for live; the sfx and
+    /// mob-pose lines are the ones nothing else would ever show you.</para></summary>
+    private void TogglesCmd()
+    {
+        ReplyList("overrides", new[]
+        {
+            SettingLine("No-clip", _gm.NoClip),
+            SettingLine("Peace", _gm.Peace),
+            SettingLine("Any-warp", _gm.WaiveWarpGate),
+            SettingLine("Show warps", _gm.ShowWarps),
+            $"marker frames {_gm.WarpMarkFrame}/{_gm.DoorMarkFrame}",
+            $"swing sfx {_gm.SwingSfx}",
+            $"fist sfx {_gm.FistSfx}",
+            $"hit sfx {_gm.HitSfx}",
+            $"mob swing type {GmOverrides.MobSwingActionType} time {GmOverrides.MobSwingActionTime}",
+            $"world-map dots pinned {GmOverrides.WorldDotOverride.Count}",
+            $"clock hour {(_world.Clock.HourOverride?.ToString() ?? "real")}",
+            $"zone weather {WeatherNames[Math.Min(_world.Weather.Get(_char.Map), (byte)2)]}",
+        });
+    }
+
     // "@clip [0|1]" — no-clip, for walking quest routes without fighting the geometry. Session-scoped and
     // always OFF at login (a persisted flag could strand a tester's ordinary character inside a wall on a
     // later login with no staff around). Two layers must move together, because collision is enforced twice:
@@ -511,13 +538,13 @@ public sealed partial class Session
     // Warps deliberately still fire — @clip changes collision, not doorways; a tester walking a quest route
     // still wants portals to carry them. Mob/AI behaviour is untouched: you can share a tile with a mob and
     // it can still hit you.
-    private bool _noClip;
     private void ClipCmd(CommandArgs a)
     {
-        _noClip = a.Toggle(0, _noClip);
+        bool was = _gm.NoClip;
+        _gm.NoClip = a.Toggle(0, was);
         PrimeViewport("clip");   // re-stamp the visible window so the client's pass layer flips NOW, not next strip
-        Reply(SettingLine("No-clip", _noClip));
-        Log.Info($"   -> NOCLIP {(_noClip ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+        Reply(SettingLine("No-clip", _gm.NoClip));
+        GmOverrides.Log(this, "no-clip", was, _gm.NoClip);
     }
 
     // "@peace [0|1]" — unprovoked mobs don't notice you: the survey companion to @clip, for walking a
@@ -526,14 +553,18 @@ public sealed partial class Session
     // (World.PacifyPlayer clears target + threat); staying ignored is the aggro-scan exclusions in
     // World.Tick. Deliberately NOT invulnerability: anything you attack re-acquires you through TryDamage
     // and fights back — combat stays testable with the toggle on.
-    private bool _peace;
-    internal bool PeaceMode => _peace;
+    /// <summary>The name <c>World.MobAiTick</c>'s aggro scans read, unchanged by #57 part 3's gathering:
+    /// the field behind it is now <c>_gm.Peace</c>, and this still compiles to a field load (through the
+    /// session's readonly <c>_gm</c>) with no lock of its own — the tick reads it under
+    /// <c>World._lock</c> exactly as it did before.</summary>
+    internal bool PeaceMode => _gm.Peace;
     private void PeaceCmd(CommandArgs a)
     {
-        _peace = a.Toggle(0, _peace);
-        if (_peace) _world.PacifyPlayer(PlayerId);
-        Reply(SettingLine("Peace", _peace));
-        Log.Info($"   -> PEACE {(_peace ? "on" : "off")} for '{_char.Name}'");
+        bool was = _gm.Peace;
+        _gm.Peace = a.Toggle(0, was);
+        if (_gm.Peace) _world.PacifyPlayer(PlayerId);
+        Reply(SettingLine("Peace", _gm.Peace));
+        GmOverrides.Log(this, "peace", was, _gm.Peace);
     }
 
     // "@anywarp [0|1]" — use any walk-onto warp or gated doorway regardless of the destination's
@@ -551,12 +582,12 @@ public sealed partial class Session
     // sealed cave mouth, the lava row) are waived too — while on, each behaves as plain ground or a plain
     // portal, and NOTHING is spent (the powder and the shoes are kept): the command exists to test the map
     // behind a gate, not the gate's economy, so the mechanic is only narrated, never run.
-    private bool _waiveWarpGate;
     private void AnyWarpCmd(CommandArgs a)
     {
-        _waiveWarpGate = a.Toggle(0, _waiveWarpGate);
-        Reply(SettingLine("Any-warp", _waiveWarpGate));
-        Log.Info($"   -> ANYWARP {(_waiveWarpGate ? "on" : "off")} for '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+        bool was = _gm.WaiveWarpGate;
+        _gm.WaiveWarpGate = a.Toggle(0, was);
+        Reply(SettingLine("Any-warp", _gm.WaiveWarpGate));
+        GmOverrides.Log(this, "any-warp", was, _gm.WaiveWarpGate);
     }
 
     // "@showwarps [0|1]" — overlay a marker on every warp and gated doorway of the current map, visible to
@@ -580,10 +611,6 @@ public sealed partial class Session
     // operator's call ("doors are basically warps"), and the two-argument form still splits them for anyone
     // who wants warp and doorway told apart. Frames are per-CLIENT art: 877 exists on both shipped clients,
     // but anything found on a 5.33 sheet past 1310 simply does not exist in 4.95's Item.epf.
-    private bool _showWarps;
-    private ushort _warpMarkFrame = 877;
-    private ushort _doorMarkFrame = 877;
-
     private void ShowWarpsCmd(CommandArgs a)
     {
         if (a.Is(0, "look"))
@@ -591,13 +618,15 @@ public sealed partial class Session
             // Per-version bound: 4.95's Item.epf has 1310 frames, 5.33's 2304 (counted from the shipped
             // Misc.dat) — an id past the client's own count draws blank, so clamp to the session's client.
             int maxId = _ver == ClientVersion.V533 ? 2303 : 1310;
-            if (a.Int(1, out var warpFrame)) _warpMarkFrame = (ushort)Math.Clamp(warpFrame, 0, maxId);
-            if (a.Int(2, out var doorFrame)) _doorMarkFrame = (ushort)Math.Clamp(doorFrame, 0, maxId);
-            Reply($"Marker look: warp frame {_warpMarkFrame}, doorway frame {_doorMarkFrame} " +
+            string wasFrames = MarkerFrames();
+            if (a.Int(1, out var warpFrame)) _gm.WarpMarkFrame = (ushort)Math.Clamp(warpFrame, 0, maxId);
+            if (a.Int(2, out var doorFrame)) _gm.DoorMarkFrame = (ushort)Math.Clamp(doorFrame, 0, maxId);
+            GmOverrides.Log(this, "marker frames", wasFrames, MarkerFrames());
+            Reply($"Marker look: warp frame {_gm.WarpMarkFrame}, doorway frame {_gm.DoorMarkFrame} " +
                     $"(find frames with {Prefix}icons <start>; ids run 0..{maxId} on this client).");
             // Say what the re-stamp actually painted: "look <n> did nothing" has already been reported once
             // when every marker in view was the OTHER kind and the changed frame had nothing to redraw.
-            if (_showWarps)
+            if (_gm.ShowWarps)
             {
                 var (w, d) = StampWarpMarkers();
                 Reply($"Re-stamped {w} warp + {d} doorway marker(s) on this map.");
@@ -605,12 +634,17 @@ public sealed partial class Session
             return;
         }
 
-        _showWarps = a.Toggle(0, _showWarps);
-        Reply(SettingLine("Show warps", _showWarps));
-        if (_showWarps) StampWarpMarkers(list: true);
+        bool was = _gm.ShowWarps;
+        _gm.ShowWarps = a.Toggle(0, was);
+        Reply(SettingLine("Show warps", _gm.ShowWarps));
+        if (_gm.ShowWarps) StampWarpMarkers(list: true);
         else ClearWarpMarkers();
-        Log.Info($"   -> SHOWWARPS {(_showWarps ? "on" : "off")} for '{_char.Name}' at map {_char.Map}");
+        GmOverrides.Log(this, "show warps", was, _gm.ShowWarps);
     }
+
+    /// <summary>The two @showwarps marker frames as one value, so the override log line can say what the
+    /// pair was and what it became in one breath (the "look" form may set either or both).</summary>
+    private string MarkerFrames() => $"warp {_gm.WarpMarkFrame} door {_gm.DoorMarkFrame}";
 
     /// <summary>Stamp the @showwarps overlay for the CURRENT map (replacing any previous overlay). Doorway
     /// sources: Warps.csv, plus every scripted walk-onto doorway with a tile index — mythic zodiac caves,
@@ -630,14 +664,14 @@ public sealed partial class Session
         foreach (var (from, to) in Content.Warps.Where(w => w.Key.m == map)
                                                 .OrderBy(w => w.Key.y).ThenBy(w => w.Key.x))
         {
-            Mark(from.x, from.y, _warpMarkFrame);
+            Mark(from.x, from.y, _gm.WarpMarkFrame);
             string dest = Content.TryMap(to.m, out var dm) ? dm.Name : $"map {to.m}";
             lines.Add($"  ({from.x},{from.y}) -> {dest} ({to.x},{to.y})" +
                       (Content.WarpQuestLocks.ContainsKey((map, to.m)) ? "  [quest-locked]" : ""));
         }
         int warpCount = marks.Count;   // everything added past here is a scripted doorway
 
-        void Door(ushort x, ushort y, string what) { Mark(x, y, _doorMarkFrame); lines.Add($"  ({x},{y}) {what}"); }
+        void Door(ushort x, ushort y, string what) { Mark(x, y, _gm.DoorMarkFrame); lines.Add($"  ({x},{y}) {what}"); }
 
         foreach (var (k, cave) in Content.MythicCaveTiles) if (k.Map == map) Door(k.X, k.Y, $"mythic {cave.Animal} cave (tiered)");
         foreach (var (k, cave) in Content.EventCaveTiles)  if (k.Map == map) Door(k.X, k.Y, $"event cave '{cave.Key}' (tiered)");
@@ -1586,12 +1620,14 @@ public sealed partial class Session
     private void WorldMapPosCmd(CommandArgs a)
     {
         var dests = Content.WorldDests;
-        (int X, int Y) DotOf(int i) => WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dests[i].DotX, dests[i].DotY);
+        (int X, int Y) DotOf(int i) => GmOverrides.WorldDotOverride.TryGetValue(i, out var ov) ? ov : (dests[i].DotX, dests[i].DotY);
         if (a.Int(0, out var wi) && a.Int(1, out var wx) && a.Int(2, out var wy)
             && wi >= 0 && wi < dests.Count)
         {
-            WorldDotOverride[wi] = (Math.Clamp(wx, 0, 639), Math.Clamp(wy, 0, 479));
+            var wasDot = DotOf(wi);
+            GmOverrides.WorldDotOverride[wi] = (Math.Clamp(wx, 0, 639), Math.Clamp(wy, 0, 479));
             var dot = DotOf(wi);
+            GmOverrides.Log(this, $"world-map dot {wi}", $"({wasDot.X},{wasDot.Y})", $"({dot.X},{dot.Y})");
             Reply($"{wi} {dests[wi].Name} -> ({dot.X},{dot.Y})  [bake into WorldMapDests.csv + {Prefix}reload]");
             SendWorldMap("field10");
         }

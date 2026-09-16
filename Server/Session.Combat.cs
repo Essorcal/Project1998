@@ -164,12 +164,12 @@ public sealed partial class Session
 
         // Weapon swing sfx: the client plays no sound for the swing action itself, so send one over 0x19 on
         // EVERY swing, armed or not — weapon in hand -> its own ItmSound (RTK's per-weapon mapping — most
-        // swords 331, Sword of power 337, …); bare hands -> the calibratable fist fallback (_fistSfx, see its
-        // doc — no real RTK id exists to port for "no weapon"). @swingsnd overrides either case for
-        // calibration. Everyone within earshot hears it, bound to us — RTK's clif_playsound is a SAMEAREA
+        // swords 331, Sword of power 337, …); bare hands -> the calibratable fist fallback (see
+        // GmOverrides.FistSfx's own doc — no real RTK id exists to port for "no weapon"). @swingsnd
+        // overrides either case for calibration. Everyone within earshot hears it, bound to us — RTK's clif_playsound is a SAMEAREA
         // send (the +/-9/+/-8 box around the swinger), not a map-wide one.
         int weaponSwing = EquippedWeaponSound();
-        int swing = _swingSfx > 0 ? _swingSfx : weaponSwing > 0 ? weaponSwing : _fistSfx;
+        int swing = _gm.SwingSfx > 0 ? _gm.SwingSfx : weaponSwing > 0 ? weaponSwing : _gm.FistSfx;
         if (swing > 0) _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.SoundAt(swing, _char.Id));
 
         FireWeaponProcs();   // RTK item on_swing: rolls before damage resolves, and on a miss too
@@ -274,7 +274,7 @@ public sealed partial class Session
         mob.Hp -= dummyDmg;
         bool dummyDied = !mob.Alive;
         SendDamage(mob.Id, dummyDied ? (byte)0 : HpPercent(mob), dummyCrit ? (byte)0xFF : HitCritByte);   // 0x13: over-head HP bar + hit anim (dummy is session-local)
-        if (_hitSfx > 0) SendSound(_hitSfx, mob.Id);                                                     // 0x19: on-connect impact sfx (self-only — so is the dummy)
+        if (_gm.HitSfx > 0) SendSound(_gm.HitSfx, mob.Id);                                                 // 0x19: on-connect impact sfx (self-only — so is the dummy)
         Log.Info($"   -> hit dummy {mob.Id} '{mob.Name}' for {dummyDmg}{(dummyCrit ? " (CRIT)" : "")} -> {mob.Hp}/{mob.MaxHp}");
         if (dummyDied)
         {
