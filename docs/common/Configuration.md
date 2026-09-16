@@ -43,10 +43,9 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
   generated table block in [`game-data/README.md`](../../game-data/README.md). Retiring them in favour of
   `P1998_GAME_DATA` is a behaviour change that belongs with the `TableSpec` work.
 - **Reads still inline in a handful of files** — `Shared/TcpOutbound.cs`, `LoginServer/LoginSession.cs`,
-  `Server/Session.Dialog.cs`, `Server/Session.UserList.cs`, `Server/World.cs`, `Server/Watchdog.cs`,
-  `Server/StatusFile.cs`, `Server/StaffAccounts.cs`, `Server/MapData.cs`, `Server/ObjectFlags.cs`,
-  `Shared/NetBind.cs`, `Shared/ConnGuard.cs`, `Shared/LoginAuth.cs`, `Shared/EraCalendar.cs`,
-  `Shared/TkAcceptor.cs`, `Protocol.Tk495/FrameReader.cs`. Those knobs are real and supported; they are
+  `Server/World.cs`, `Server/Watchdog.cs`, `Server/StatusFile.cs`, `Server/StaffAccounts.cs`,
+  `Server/MapData.cs`, `Server/ObjectFlags.cs`, `Shared/NetBind.cs`, `Shared/ConnGuard.cs`,
+  `Shared/LoginAuth.cs`, `Protocol.Tk495/FrameReader.cs`. Those knobs are real and supported; they are
   simply not declared here yet. (`Protocol.Tk495` does not reference `Shared`, so `P1998_HANDSHAKE_MS`
   needs a project-structure decision rather than a one-line move.)
 - **Launcher-only variables**, read by `run-server.bat` and never by the server: `P1998_DOTNET` (path to a
