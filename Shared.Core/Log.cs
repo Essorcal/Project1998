@@ -120,58 +120,31 @@ public static class Log
     /// behind their back, so the unconfigured default is the more permissive of the two.</summary>
     private const long UnconfiguredMaxBytes = 64L * 1024 * 1024;
 
-    /// <summary>Declare this process's logging defaults. Called ONCE, at the top of the entry point, before
-    /// <see cref="AttachFile"/> — the rotation limit has to be known before there is a file to rotate.
-    /// <para><paramref name="wireDefault"/> and <paramref name="maxBytesDefault"/> are DEFAULTS: the
-    /// environment still wins (<c>P1998_LOG_WIRE</c>, <c>P1998_LOG_MAX_BYTES</c>). They are the one thing the
-    /// two processes disagree about, and making the entry point say so is what let the two copies of this
-    /// class become one — the env var now has a single meaning (see <see cref="ParseWire"/>) with a
-    /// per-process default, instead of meaning <c>== "1"</c> in one process and <c>!= "0"</c> in the
-    /// other.</para>
-    /// <para>A second call throws rather than re-reading the environment: every <see cref="WireEnabled"/>
-    /// call site has already branched on the first answer, so a late change would make the log disagree with
-    /// itself about whether it is dumping passwords.</para></summary>
+    /// <summary>Declare this process's effective logging settings. Called ONCE, at the top of the entry
+    /// point, before <see cref="AttachFile"/> — the rotation limit has to be known before there is a file to
+    /// rotate.
+    /// <para>The values are ALREADY RESOLVED. <c>P1998_LOG_WIRE</c> and <c>P1998_LOG_MAX_BYTES</c> are
+    /// declared in <c>Shared/ServerConfig.cs</c> like every other knob, and an entry point reaches this
+    /// through <c>ServerConfig.ConfigureLogging</c>, which supplies its own per-process default for the two
+    /// things the processes disagree about. This class used to read the environment itself, which is why the
+    /// variable once meant <c>== "1"</c> in one process and <c>!= "0"</c> in the other; the one meaning now
+    /// lives with the declaration, and every other boolean knob in the server shares it.</para>
+    /// <para>A second call throws: every <see cref="WireEnabled"/> call site has already branched on the
+    /// first answer, so a late change would make the log disagree with itself about whether it is dumping
+    /// passwords.</para></summary>
+    /// <param name="wireEnabled">Whether this process dumps frame hex.</param>
+    /// <param name="maxBytes">Rotation limit in bytes.</param>
     /// <exception cref="InvalidOperationException">Configure has already run in this process.</exception>
-    public static void Configure(bool wireDefault, long maxBytesDefault)
+    public static void Configure(bool wireEnabled, long maxBytes)
     {
         if (Interlocked.Exchange(ref _configured, 1) != 0)
             throw new InvalidOperationException(
                 "Log.Configure has already run in this process; the wire-dump default is a startup " +
                 "declaration, not a setting (call sites have already branched on Log.WireEnabled).");
 
-        _wireEnabled = ParseWire(Environment.GetEnvironmentVariable("P1998_LOG_WIRE"), wireDefault, out var bad);
-        _maxBytes = ParseMaxBytes(Environment.GetEnvironmentVariable("P1998_LOG_MAX_BYTES"), maxBytesDefault);
-        // Held rather than logged here: Configure runs before AttachFile, so a line written now would reach
-        // the console only, and an operator who mistyped the variable has to be able to find it in logs/
-        // afterwards. AttachFile enqueues it straight after the open marker.
-        if (bad is not null) _pendingWarning = bad;
+        _wireEnabled = wireEnabled;
+        _maxBytes = maxBytes;
     }
-
-    private static string? _pendingWarning;
-
-    /// <summary>The one meaning of <c>P1998_LOG_WIRE</c>: <c>"0"</c> off, <c>"1"</c> on, unset (or empty)
-    /// means the process's own default, and ANY other value is a mistake — it takes the default and warns,
-    /// rather than being read as a truthy string. That last row is the reason this is a method: the old
-    /// login-side test was <c>== "1"</c> and the old game-side test was <c>!= "0"</c>, so
-    /// <c>P1998_LOG_WIRE=true</c> silently turned the dump OFF in one process and ON in the other.</summary>
-    /// <param name="raw">The environment variable's value, or null when it is unset.</param>
-    /// <param name="processDefault">What this process wants when the variable says nothing.</param>
-    /// <param name="warning">A startup warning when <paramref name="raw"/> is neither "0" nor "1", else null.</param>
-    internal static bool ParseWire(string? raw, bool processDefault, out string? warning)
-    {
-        warning = null;
-        if (string.IsNullOrEmpty(raw)) return processDefault;
-        if (raw == "0") return false;
-        if (raw == "1") return true;
-        warning = $"P1998_LOG_WIRE='{raw}' is not 0 or 1 — ignored; wire dump stays " +
-                  (processDefault ? "ON" : "off");
-        return processDefault;
-    }
-
-    /// <summary>Rotation limit from <c>P1998_LOG_MAX_BYTES</c>, or the process default. Unparseable and
-    /// non-positive values fall back silently, exactly as both copies of this class already did.</summary>
-    internal static long ParseMaxBytes(string? raw, long processDefault) =>
-        long.TryParse(raw, out var mb) && mb > 0 ? mb : processDefault;
 
     internal static long MaxBytesForTest() => Volatile.Read(ref _maxBytes);
 
@@ -192,10 +165,11 @@ public static class Log
         // owned by that thread alone, so there is no lock anywhere on the caller's side.
         _path = path;
         Enqueue(OpenMarker);
-        // Configure's startup warning, if it had one: enqueued AFTER the open marker so it lands in the file
-        // as well as on the console. Ordering is guaranteed — one FIFO queue, one writer thread.
-        var bad = Interlocked.Exchange(ref _pendingWarning, null);
-        if (bad is not null) Warn(bad);
+        // This used to replay a warning Configure had held back, because Configure runs before there is a
+        // file and an operator who mistyped P1998_LOG_WIRE has to be able to find the complaint in logs/
+        // afterwards. That reason still holds and is still satisfied: the environment read moved to
+        // ServerConfig, whose warnings are logged by ServerConfig.LogEffective — which entry points call
+        // AFTER this, so every configuration complaint lands in the file.
     }
 
     private const string OpenMarker = "open";   // control line; never appears in a real message

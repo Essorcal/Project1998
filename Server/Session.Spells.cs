@@ -19,10 +19,9 @@ public sealed partial class Session
     // (name/class/level/type/prompt) come from the RTK Spells table (Content.Spells) — real NexusTK data.
 
     // The client's spellbook array size is unconfirmed for 4.95; RTK 7.x uses 52 (MAX_SPELLS). Cap
-    // conservatively so an over-long teach can't overrun the client array; raise via P1998_SPELLBOOK_CAP
-    // once a live test confirms the real limit.
-    private static readonly int SpellBookCap =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_SPELLBOOK_CAP"), out var c) && c > 0 ? c : 52;
+    // conservatively so an over-long teach can't overrun the client array; raise the SpellBookCap row in
+    // game-data/ServerTuning.csv once a live test confirms the real limit.
+    private static int SpellBookCap => Content.SpellBookCap;
 
     // Re-send every learned spell/skill on world entry (the client's book starts empty each login). Slot =
     // list index, matching the 0x0F cast "pos" the client sends back.
@@ -93,7 +92,7 @@ public sealed partial class Session
         if (announce)
             SendLog($"Spellbook rebuilt for {ClassTitle} lvl {_char.Level} " +
                     $"({Character.AlignmentName(_char.Alignment)}): {_char.Spells.Count} ability(ies) — {spells} spell / {skills} skill." +
-                    (capped ? $"  Hit the {SpellBookCap}-slot cap (raise P1998_SPELLBOOK_CAP)." : ""));
+                    (capped ? $"  Hit the {SpellBookCap}-slot cap (raise SpellBookCap in ServerTuning.csv)." : ""));
         Log.Info($"   -> spellbook resync: {ClassTitle} ({Content.PathName(path)}/{path}) align {_char.Alignment} " +
                  $"mark {_char.Mark} lvl {_char.Level} dog {(dogFlag ? "yes" : "no")} -> " +
                  $"{_char.Spells.Count}{(capped ? " (CAPPED)" : "")}");
@@ -196,7 +195,7 @@ public sealed partial class Session
         if (_char.Spells.Count >= SpellBookCap)
         {
             SendLog($"Spellbook is full at {SpellBookCap} slots — rebuild it ({Prefix}lvl {_char.Level}) to clear " +
-                    $"room, or raise P1998_SPELLBOOK_CAP.");
+                    $"room, or raise SpellBookCap in game-data/ServerTuning.csv.");
             return;
         }
 
@@ -1102,9 +1101,9 @@ public sealed partial class Session
 
     /// <summary>The <c>0x13</c> critical byte a HEAL carries. RTK passes 0 (see <see cref="ReceiveHeal"/>);
     /// the byte still selects an overlay animation (<c>0x8f − critical</c>), so it is exposed here in case the
-    /// 4.95 client draws something unwanted for that id and it needs re-picking live.</summary>
-    private static readonly byte HealBarCritByte =
-        byte.TryParse(Environment.GetEnvironmentVariable("P1998_HEAL_CRIT"), out var hc) ? hc : (byte)0;
+    /// 4.95 client draws something unwanted for that id and it needs re-picking live — the HealCrit row in
+    /// <c>game-data/ServerTuning.csv</c>.</summary>
+    private static byte HealBarCritByte => Content.HealCritByte;
 
     /// <summary>Current HP of the mob this cast is aimed at (0 if the target isn't a living mob) — Drain reads it
     /// to decide whether the creature is weak enough to absorb, and how much life that yields.</summary>

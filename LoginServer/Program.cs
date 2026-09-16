@@ -17,8 +17,9 @@ if (Admin.TryRun(args)) return;
 // game server: login packets carry the player's password in the clear and 4.95's cipher is a fixed published
 // XOR, so a dump writes plaintext passwords into logs/login.log — the whole reason Shared.Log.WireEnabled
 // takes its default from the entry point rather than from the environment alone. The log rotates at 32MB,
-// this process's historical limit. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES.
-Log.Configure(wireDefault: false, maxBytesDefault: 32L * 1024 * 1024);
+// this process's historical limit. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES, which
+// ServerConfig declares and resolves.
+ServerConfig.ConfigureLogging(wireDefault: false, maxBytesDefault: 32L * 1024 * 1024);
 
 int[] ports = { 2000, 2001 };
 for (int i = 0; i < args.Length; i++)
@@ -62,6 +63,9 @@ catch (ArgumentException e)
     return;
 }
 
+// The effective configuration, every knob with its value and its source. After AttachFile so it reaches
+// logs/login.log as well as the console window.
+ServerConfig.LogEffective();
 Log.Info($"=== channel pairing: login {ports[0]}/{ports[1]} -> " +
          $"game {ChannelPorts.GameFor(ports[0])}/{ChannelPorts.GameFor(ports[1])} ===");
 var store = new CharacterStore(RepoPaths.CharsDir());
