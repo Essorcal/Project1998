@@ -1648,7 +1648,7 @@ public class ContentSmokeTests
         ["NpcAbilities.csv"]       = 23,    // 29 kept today
         ["PathGrowth.csv"]         = 1,     // 5 kept today
         ["DoorObjects.csv"]        = 40,    // 50 kept today
-        ["ServerTuning.csv"]       = 12,    // 16 kept today
+        ["ServerTuning.csv"]       = 12,    // 20 kept today
         ["Doors.csv"]              = 1,     // 8 kept today
         ["MapCells.csv"]           = 23,    // 29 kept today
     };

@@ -59,8 +59,7 @@ public sealed partial class Session
     // dirty player (one who mutated state, then stopped sending packets) on the same cadence.
     // Internal (not private) so World.AutoSaveLoop ticks on the exact same cadence as this session's own
     // FlushIfDue, instead of duplicating the env-var parsing and risking the two drifting apart.
-    internal static readonly int AutoSaveMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_AUTOSAVE_MS"), out var asv) && asv > 0 ? asv : 15_000;
+    internal static readonly int AutoSaveMs = ServerConfig.Current.AutoSaveMs;
     private volatile bool _dirty;
     private long _lastSaveAtMs;
 
@@ -120,10 +119,8 @@ public sealed partial class Session
     //   P1998_LIGHT_FMT  how to encode it on the 0x15: "beu16" (default, 4.95), "leu16", or "u8"
     // 5.33 draws terrain black with the 4.95-proven be-u16 232; sweeping these isolates whether the
     // client reads the light field at a different width/endianness (leading 00 -> light 0 -> black).
-    private static readonly int LightValue =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_LIGHT"), out var lv) ? lv : 232;
-    private static readonly string LightFmt =
-        (Environment.GetEnvironmentVariable("P1998_LIGHT_FMT") ?? "beu16").Trim().ToLowerInvariant();
+    private static readonly int LightValue = ServerConfig.Current.LightValue;
+    private static readonly string LightFmt = ServerConfig.Current.LightFormat;
 
     // Per-version tile translation lives in TileTranslation. A 4.x ground word selects one of TWO legacy
     // sheets (>= 0xC000 means "sheet 2, index v-0xC000"), which 5.33 merged into one: sheet 1 comes out as
@@ -143,13 +140,11 @@ public sealed partial class Session
     // consecutive frames are often the same material and one screenshot can be consistent with three
     // different offsets at once. The authoritative check is the offline both-pipelines render comparison
     // in docs/5.x/Reverse-Engineering.md, which never involves the client.
-    private static readonly string MapDiag =
-        (Environment.GetEnvironmentVariable("P1998_MAP_DIAG") ?? "").Trim().ToLowerInvariant();
+    private static readonly string MapDiag = ServerConfig.Current.MapDiag;
 
     // Server-side passability (collision). P1998_PASS=0 disables it (walk through anything) if the 4.x
     // top-2-bits polarity turns out wrong for a given map. Default on. Mithia 7.x: read_pass!=0 => blocked.
-    private static readonly bool PassEnforce =
-        (Environment.GetEnvironmentVariable("P1998_PASS") ?? "1").Trim() != "0";
+    private static readonly bool PassEnforce = ServerConfig.Current.PassEnforce;
     // Parsed block value for the passtest:N diagnostic (default 1); shared by the map stream + collision.
     private static readonly int PassTestN =
         MapDiag.StartsWith("passtest:") && int.TryParse(MapDiag.AsSpan(9), out var ptn) ? ptn : 1;
@@ -161,8 +156,7 @@ public sealed partial class Session
     // to completion. So 0x04 must land just AFTER that natural ~180ms window: too early truncates the
     // prediction (looks like an instant snap); too late just prolongs the freeze before the snap.
     // P1998_V495_WALK_MS tunes it (0 = old same-frame slide, sent before ANY tick can play).
-    private static readonly int V495WalkMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_WALK_MS"), out var wm) ? wm : 200;
+    private static readonly int V495WalkMs = ServerConfig.Current.WalkMs;
 
     // Self-walk drive mode for 4.95, chosen by static RE of the client's animation path.
     //   start-walk @0x462320  sets walk-active [+0x18c]=1 and registers the anim timer (0x41b5d0)
@@ -186,14 +180,12 @@ public sealed partial class Session
     //   7 = nothing on a good walk (RTK-faithful) -> DEFAULT: client moves/animates/scrolls locally; 0x04
     //       is sent ONLY as a correction (desync/block). Stops our per-step 0x04 from re-scrolling the
     //       camera the client already moved (the residual "wonkiness" + fighting realm-center).
-    private static readonly int V495SelfMove =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_SELF_MOVE"), out var sm) ? sm : 7;
+    private static readonly int V495SelfMove = ServerConfig.Current.SelfMove;
 
     // Delay (ms) before the mode-5 unblock 0x04. Must be >= the client's local walk animation (~4 frames,
     // ~360ms) so the 0x04 lands AFTER the legs finish and doesn't cancel them. Too short => truncated legs;
     // too long => sluggish walk cadence (the client gates the next step on this ack).
-    private static readonly int V495AckMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_ACK_MS"), out var am) ? am : 360;
+    private static readonly int V495AckMs = ServerConfig.Current.AckMs;
 
     // FAST-MOVE OFF (server-authoritative) response strategy for 4.95. When fast-move is off the client
     // makes NO local prediction — it sends the walk request and waits for the server to assign the step
@@ -218,8 +210,7 @@ public sealed partial class Session
     //   5 = 0x26 self-walk (DEFAULT) -> the real smooth primitive: routes to handlerB (0x4903d0) which
     //       move-commits the step + starts the next locally ([+0x65f3]=1, no wait, no 0x04, no forced
     //       scroll). Same packet 5.33 uses; respects realm-center. See HandleWalk for the full RE trail.
-    private static readonly int V495SlowMove =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_SLOW_MOVE"), out var slm) ? slm : 5;
+    private static readonly int V495SlowMove = ServerConfig.Current.SlowMove;
 
     // "Realm center" (F4 in RTK) — a CLIENT camera mode signalled by a flag byte in the 0x15 mapinfo
     // packet (RTK clif_sendmapinfo byte +12; our SendMapInfo body[7]). When ON the client locks the camera
@@ -227,8 +218,7 @@ public sealed partial class Session
     // edge-aware/offset behavior that can lag during a walk. The 4.95 client honors it: its 0x15 handler
     // (@0x44f8b0) reads this byte, computes (realm==0), and feeds it to the view/camera rebuild (@0x44c570).
     // P1998_V495_REALM=1 enables it to test whether a locked camera fixes the walk "wonkiness".
-    private static readonly byte RealmCenter =
-        Environment.GetEnvironmentVariable("P1998_V495_REALM") == "1" ? (byte)1 : (byte)0;
+    private static readonly byte RealmCenter = ServerConfig.Current.RealmCenter ? (byte)1 : (byte)0;
 
     /// <summary>The production constructor. It is now an ADAPTER: it wraps the socket in a
     /// <see cref="TcpOutbound"/> — the queue, the writer task and the address bookkeeping all moved there,
@@ -485,7 +475,7 @@ public sealed partial class Session
     // only authority available. Treat it as a working reconstruction: if a real 4.95 source ever contradicts
     // it, the source wins. Depth is capped at the budget and keeps the NEWEST casts, so the queue means
     // "the key is still down", never a 30-deep backlog that keeps firing after you let go.
-    private static readonly bool CastQueueEnabled = Environment.GetEnvironmentVariable("P1998_CAST_QUEUE") != "0";
+    private static readonly bool CastQueueEnabled = ServerConfig.Current.CastQueue;
     // How long a queued cast stays valid. Depth-capping bounds how MANY casts wait; this bounds how LONG,
     // which is the part that matters once the key comes up: the client stops sending, so nothing triggers a
     // drain, and the next packet of ANY kind (a walk step, seconds later) would otherwise fire casts from
@@ -812,7 +802,7 @@ public sealed partial class Session
         LoginThrottle.RecordSuccess(ip);
 
         var nonce = HandoffTokens.Mint(user, _remoteIp);
-        var host = ParseGameHost();
+        var host = GameHostOctets;
         int gport = _port;   // redirect back to this same game port (2005 V495 / 2006 V533)
         Send(LoginRedirect.Build(host, gport, user, nonce));
         Log.Info($"   -> RE-LOGIN ok for '{user}' — handoff back to {host[0]}.{host[1]}.{host[2]}.{host[3]}:{gport} (token minted)");
@@ -844,7 +834,7 @@ public sealed partial class Session
     // HandleReLogin above still answers the 0x03 — the old behaviour, unchanged, as a fallback.
     private void HandleExitToSelect()
     {
-        var host = ParseLoginHost();
+        var host = LoginHostOctets;
         int lport = LoginRedirectPort;
         // No handoff token: this redirect points at the LOGIN server, and the next real handoff mints its
         // own nonce when the player logs back in. The 5 bytes are padding that keeps the reply the exact
@@ -859,26 +849,23 @@ public sealed partial class Session
 
     // Game host the re-login handoff redirects to (must match how the client reached this game server).
     // Defaults to loopback; set P1998_GAME_HOST for a split-box deployment (same var the login server uses).
-    private static byte[] ParseGameHost() => HostAddress.FromEnvironment("P1998_GAME_HOST");
+    // Parsed ONCE now: this used to re-read the environment and re-parse the string on every redirect, and
+    // the environment does not change under a running process. Read-only by convention — every consumer
+    // copies octets out of it (LoginRedirect.Build reverses them into a fresh frame).
+    private static readonly byte[] GameHostOctets = HostAddress.Parse(ServerConfig.Current.GameHost);
 
     // Login host the exit-to-select bounce redirects to. Falls back to P1998_GAME_HOST because the common
     // deployment runs both processes on one box (and behind HAProxy both front doors share the ONE public
     // address — see the infra split), so a single var usually covers both. P1998_LOGIN_HOST overrides for a
     // genuinely split deployment. Either way this must be the address the CLIENT can reach, not the bind.
-    private static byte[] ParseLoginHost()
-    {
-        var h = Environment.GetEnvironmentVariable("P1998_LOGIN_HOST");
-        return string.IsNullOrWhiteSpace(h) ? ParseGameHost() : HostAddress.Parse(h);
-    }
+    // ServerConfig.LoginHost holds that fallback, so the rule is stated once rather than per call site.
+    private static readonly byte[] LoginHostOctets = HostAddress.Parse(ServerConfig.Current.LoginHost);
 
     // Which login port the exit-to-select bounce names. The two channels are PAIRED by client version (see
     // Shared/ChannelPorts), so the default is derived from the port this session arrived on rather than
     // hardcoded — bouncing a 5.33 player onto the 4.95 login would round-trip them back to the 4.95 game
-    // port. P1998_LOGIN_PORT overrides for a custom layout.
-    private int LoginRedirectPort =>
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_LOGIN_PORT"), out var lp) && lp > 0
-            ? lp
-            : ChannelPorts.LoginFor(_port);
+    // port. P1998_LOGIN_PORT overrides for a custom layout; unset it resolves to null and the pairing wins.
+    private int LoginRedirectPort => ServerConfig.Current.LoginPort ?? ChannelPorts.LoginFor(_port);
 
     private void HandleArrival(TkPacket pkt)
     {
@@ -911,7 +898,9 @@ public sealed partial class Session
         // deployment hits a token problem); the default is to enforce.
         if (!HandoffTokens.Consume(token, _user, _remoteIp))
         {
-            bool enforce = (Environment.GetEnvironmentVariable("P1998_ENFORCE_HANDOFF") ?? "1").Trim() != "0";
+            // Resolved at startup, not per arrival — this was one of the four knobs the issue names as
+            // re-read from the environment on every call.
+            bool enforce = ServerConfig.Current.EnforceHandoff;
             if (enforce)
             {
                 Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' from {_remoteIp} " +
@@ -1207,10 +1196,8 @@ public sealed partial class Session
     // one ~100-byte strip per step; NoteStreamed no longer lets a client request shrink the tracked window,
     // so a request costs one margin fill, not a full re-send every time. P1998_V495_PUSHGRACE restores the
     // old deferral, P1998_V495_PUSHMAP=0 disables the push entirely.
-    private static readonly bool PushMap =
-        (Environment.GetEnvironmentVariable("P1998_V495_PUSHMAP") ?? "1").Trim() != "0";
-    private static readonly int PushGraceSteps =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_V495_PUSHGRACE"), out var g) && g >= 0 ? g : 0;
+    private static readonly bool PushMap = ServerConfig.Current.PushMap;
+    private static readonly int PushGraceSteps = ServerConfig.Current.PushGraceSteps;
     private int _stepsSinceMapReq;
 
     // Deliberately the LAST window, not a running union of everything sent. A union is a bounding box, and a
@@ -1326,8 +1313,7 @@ public sealed partial class Session
     private bool _fastMove = FastMoveDefault;
 
 
-    private static readonly bool FastMoveDefault =
-        Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_DEFAULT") == "1";
+    private static readonly bool FastMoveDefault = ServerConfig.Current.FastMoveDefault;
 
     // Fast-move engagement model. The per-walk high-bit read (dec[1] & 0x80) HandleWalk originally shipped
     // with is never true on the wire — the client sets that 0x80 only on a LOCAL self-move command, never in
@@ -1345,8 +1331,7 @@ public sealed partial class Session
     // 0x23 re-seed nudged the flag via the options apply path -> removed (HandleSetting 0x09); (3) the per-walk
     // high-bit (dec[1] & 0x80) is never set on the wire -> drive off _fastMove (FastMoveTrustToggle). DEFAULT ON
     // (proven smooth on a horse); P1998_V495_FASTMOVE_TRUST_TOGGLE=0 forces the old always-0x26 behavior.
-    private static readonly bool FastMoveTrustToggle =
-        Environment.GetEnvironmentVariable("P1998_V495_FASTMOVE_TRUST_TOGGLE") != "0";
+    private static readonly bool FastMoveTrustToggle = ServerConfig.Current.FastMoveTrustToggle;
 
     // Viewport-streamed world mobs: the set of shared-mob ids currently drawn on THIS client. The client's
     // 0x07 spawn silently drops entities outside the camera rect, so a 400-mob map can't be blanket-sent —
