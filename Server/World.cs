@@ -630,17 +630,32 @@ public sealed partial class World
         // The spawn tile first, then the rings at radius 1 and 2 — that order and the bounds test are
         // MapData.FreeNeighbour's now, shared with the dismount path (#57 finding 31). The ground test, the
         // mob test and the fallback stay this caller's: they are not the dismount's and must not become them.
+        //
+        // This runs under _lock on every respawn, so it must cost what the inline loop cost: the walk is a
+        // struct enumerator and the two tests are a struct, so there is no iterator, no closure and no
+        // delegate — nothing on the heap per call at all.
         var free = MapData.FreeNeighbour(
             MapData.SelfThenRingWalk(x, y, maxRadius: 2), xs, ys,
-            blocked:  (tx, ty, _) => avoidSolid && terrain is not null && terrain.Solid(tx, ty),
-            occupied: (tx, ty) =>
-            {
-                foreach (var mo in m.Mobs) if (mo.Alive && mo.X == tx && mo.Y == ty) return true;
-                return false;
-            });
+            new SpawnTileTest(m, terrain, avoidSolid));
 
         return free is { } t ? ((ushort)t.x, (ushort)t.y)
                              : (x, y);   // everything nearby is taken — accept the overlap rather than drop the mob
+    }
+
+    /// <summary>The spawn fallback's own two tests, exactly as the inline <c>Free()</c> wrote them: ground pass
+    /// only (<see cref="MapData.Solid"/>, and not even that for an NPC — see the remarks on
+    /// <see cref="FreeSpawnTile"/>), and a LIVE mob standing there. A readonly struct rather than a pair of
+    /// lambdas because <see cref="MapData.FreeNeighbour{TWalk, TTest}"/> takes the tests by generic type and so
+    /// allocates nothing per call, which this path — under <c>_lock</c>, on every respawn — needs.</summary>
+    private readonly struct SpawnTileTest(MapState m, MapData? terrain, bool avoidSolid) : MapData.ITileTest
+    {
+        public bool Blocked(int x, int y, int side) => avoidSolid && terrain is not null && terrain.Solid(x, y);
+
+        public bool Occupied(int x, int y)
+        {
+            foreach (var mo in m.Mobs) if (mo.Alive && mo.X == x && mo.Y == y) return true;
+            return false;
+        }
     }
 
     // Refill every forage box to its target stack count on random passable tiles (RTK itemspawner.lua:
