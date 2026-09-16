@@ -481,38 +481,6 @@ public sealed partial class Session
         Log.Info($"   -> @music set={(wantNew ? "new" : "old")} for {_char.Name}");
     }
 
-    // Play raw client sound ids (0x19 sfx) to calibrate the 4.95 NexusTK.snd id space. RTK's per-spell sound
-    // ids may not line up with the client's 001.wav..197.wav numbering, and the user hears "shifted" variants.
-    // `@snd 4` plays one; `@snd 4 5 6` plays several; `@snd 1 197 -` (a trailing '-') is rejected — keep it to a
-    // few at a time so they don't overlap into noise. Identify each by ear to map RTK sound -> client sound.
-    private void SoundProbe(CommandArgs a)
-    {
-        if (a.None) { Refuse(a.Usage()); return; }
-        int played = 0;
-        for (int i = 0; i < a.Count && played < 8; i++)
-        {
-            if (!a.Int(i, out var id) || id <= 0) continue;
-            SendSound(id, _char.Id);
-            Reply($"playing sound {id}");
-            Log.Info($"   -> @snd {id}");
-            played++;
-        }
-        if (played == 0) Refuse("no valid sound ids (want positive integers)");
-    }
-
-    // "@mtx <type> [text...]" — fire a raw SendMiniText with any type tag, to see how the client actually
-    // renders each one (0=wisp/blue, 3=mini/status — the default everything else uses, 5=system — what
-    // durability warnings use, 11=group, 12=clan). No text -> a canned "test type N" line.
-    private void MiniTextProbe(CommandArgs a)
-    {
-        if (!a.Int(0, out var type)) { Refuse(a.Usage()); return; }
-        string msg = a.Count > 1 ? a.Rest(1) : $"test type {type}";
-        PayPaneRule();                     // the probe line is this command's first pane line — head it
-        SendMiniText(msg, (ushort)type);   // raw, by number: the type under test is the whole point of @mtx
-        Reply($"sent minitext type={type}: \"{msg}\"");
-        Log.Info($"   -> @mtx type={type} \"{msg}\"");
-    }
-
     // "@weather clear|rain|snow|0|1|2" — pin THIS map's whole region-zone to a weather state (an admin
     // override of the seasonal WeatherModel) and broadcast it to everyone on that zone. "@weather auto" drops
     // the override so the zone returns to season-driven weather. "@weather raw <n>" instead sends one byte
@@ -614,69 +582,6 @@ public sealed partial class Session
         if (hit.Key is 0x0E or 0x0F)
             Reply("note: 4.95's appearance has no helm/necklace slot, so this toggle draws nothing on this client");
         Log.Info($"   -> @setting {hit.Value} = {(on ? "ON" : "OFF")}");
-    }
-
-    // "@mobact <type> [time]" — calibrate the mob attack-pose action (0x1A). Sets the global MobSwingActionType/
-    // Time used by every real mob swing (World.cs), AND immediately plays that action on the mob you're facing so
-    // you can eyeball it without waiting for a swing. Sweep <type> 0..8 to find which one drives a creature's
-    // Attack frames (Monster.tbl has a per-id Attack field, so the frames exist — the question is the type index
-    // for the CREATURE entity vtable, which differs from the player's 1=attack). No mob faced = just sets + says.
-    private void MobActionProbe(CommandArgs a)
-    {
-        if (!byte.TryParse(a.Word(0), out var type))
-        { Refuse($"{a.Usage()}   (current: type={GmOverrides.MobSwingActionType} time={GmOverrides.MobSwingActionTime})"); return; }
-        ushort time = ushort.TryParse(a.Word(1), out var t) ? t : GmOverrides.MobSwingActionTime;
-        string was = $"type={GmOverrides.MobSwingActionType} time={GmOverrides.MobSwingActionTime}";
-        GmOverrides.MobSwingActionType = type;
-        GmOverrides.MobSwingActionTime = time;
-        GmOverrides.Log(this, "mob swing action", was, $"type={type} time={time}");
-
-        var (fx, fy) = FrontTile();
-        var wmob = _world.MobAt(_char.Map, fx, fy);
-        if (wmob is not null)
-        {
-            _world.BroadcastSameArea(_char.Map, wmob.X, wmob.Y, p => p.ActionOver(wmob.Id, type, time, 0));   // play it NOW on the faced mob
-            Reply($"mob action type={type} time={time} -> played on '{wmob.Name}' ({wmob.Id})");
-        }
-        else Reply($"mob action type={type} time={time} set (face a mob to preview it instantly)");
-    }
-
-    // Play raw Effect.tbl animation ids (0x29) over the caster, to calibrate the 4.95 effect id space vs RTK's
-    // sendAnimation ids. Low ids (unaligned heal 5, spark 28) are confirmed identity, but RTK's 6.x/7.x client may
-    // have inserted effects that shift mid/high ids — e.g. the aligned heals (Ohaeng 63 / Ming-Ken 64 / Kwi-Sin 65)
-    // may not line up. `@efx 5 63 64 65` plays the four heal variants so we can see which id is really which.
-    private void EffectProbe(CommandArgs a)
-    {
-        if (a.None) { Refuse(a.Usage()); return; }
-        int played = 0;
-        for (int i = 0; i < a.Count && played < 8; i++)
-        {
-            if (!a.Int(i, out var id) || id < 0 || id > 127) continue;
-            SendEffect(_char.Id, id);
-            Reply($"effect {id}");
-            Log.Info($"   -> @efx {id}");
-            played++;
-        }
-        if (played == 0) Refuse("no valid effect ids (0..127)");
-    }
-
-    // "@hit <pct> [crit]" — audition the 0x13 combat packet over the mob you're facing (or yourself if none):
-    // draws the over-head HP bar at <pct>% and plays the hit overlay animation 0x8f-<crit>. Use it to calibrate
-    // P1998_HIT_CRIT (which hit spark looks right) and to confirm the HP bar renders. Default crit = the baked-in
-    // HitCritByte. e.g. "@hit 50" (half bar) then "@hit 50 0" / "@hit 50 40" to compare hit animations.
-    private void HitProbe(CommandArgs a)
-    {
-        if (!a.Int(0, out var pct)) { Refuse(a.Usage()); return; }
-        byte crit = byte.TryParse(a.Word(1), out var c) ? c : HitCritByte;
-        pct = Math.Clamp(pct, 0, 100);
-
-        var (fx, fy) = FrontTile();
-        var wmob = _world.MobAt(_char.Map, fx, fy);
-        uint target = wmob?.Id ?? MobAt(fx, fy)?.Id ?? _char.Id;
-        if (wmob is not null) _world.BroadcastWideArea(_char.Map, wmob.X, wmob.Y, p => p.DamageOver(target, (byte)pct, crit));
-        else                  SendDamage(target, (byte)pct, crit);
-        Reply($"hit id={target} pct={pct} crit={crit} (anim {0x8f - (sbyte)crit})");
-        Log.Info($"   -> @hit id={target} pct={pct} crit={crit}");
     }
 
 }

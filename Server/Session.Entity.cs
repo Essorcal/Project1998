@@ -250,69 +250,6 @@ public sealed partial class Session
         if (any) SendStats();   // effective caps/attributes dropped back -> refresh the HUD
     }
 
-    // "@nat <n>" — send stats with nation byte = n so we can read which kingdom name/crest the HUD shows.
-    // Nation names live in a client data file (no strings in the exe; NATION_E.EPF is a graphic set), so
-    // the id -> nation mapping can only be built empirically. Sweep 0,1,2,... and record each.
-    private void StatNation(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        byte n = 0;
-        if (parts.Length > 0) byte.TryParse(parts[0], out n);
-        byte save = _char.Nation;
-        _char.Nation = n;
-        SendStats();
-        _char.Nation = save;
-        Log.Info($"   -> NATION probe: sent nation={n}; read the HUD nation name/crest");
-    }
-
-    // "@totem <n>" — same idea as @nat, for the totem crest: send stats with totem byte = n and read which
-    // name/graphic the HUD shows. Our documented table (0=JuJak 1=Baekho 2=HyunMoo 3=ChungRyong 4=None) was
-    // NEVER actually swept like nation was (§9/§16) — a live report showed a fresh character (Totem defaults
-    // to 4, "None" per that table) rendering as ChungRyong, so the table is probably wrong. Sweep 0..4 here
-    // to pin the real mapping before wiring totem selection up from the creation packet.
-    private void StatTotem(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        byte n = 0;
-        if (parts.Length > 0) byte.TryParse(parts[0], out n);
-        byte save = _char.Totem;
-        _char.Totem = n;
-        SendStats();
-        _char.Totem = save;
-        Log.Info($"   -> TOTEM probe: sent totem={n}; read the HUD totem name/crest");
-    }
-
-    // "@dye <n>" — calibrate the war-paint dye. Sets the persistent armor-dye byte (0x33 appearance[4]) to n
-    // and redraws, so we can catalogue which palette index renders as which visible color on THIS 4.95 client
-    // (the look-lab confirmed 16/32/64/128/255 recolor and 0..8 stay base, but 9..31 — the range RTK's team
-    // colors live in — was never swept). Wear an armor/coat first, or there's nothing to recolor. "@dye" with
-    // no number resets to 0 (undyed). Feeds the real color values back into WarPaintAbility's team table.
-    private void DyeProbe(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        byte n = 0;
-        if (parts.Length > 0) byte.TryParse(parts[0], out n);
-        SetArmorColor(n);
-        SendMiniText($"dye = {n}" + (HasVisibleArmor ? "" : "  (no armor/coat worn — nothing to recolor)"), type: 3);
-        Log.Info($"   -> DYE probe: appearance[4] = {n}");
-    }
-
-    // "@hp <cur> <max>" — send stats with HP=cur, maxHP=max (and the same for MP) to PIN the maxHP/maxMP
-    // offsets: if [5]/[9] are really maxHP/maxMP, the HP/MP bar fill becomes cur/max (e.g. 100/1000 = 10%
-    // full) and any "cur/max" text shows those numbers. If the bar stays full, the offset is wrong.
-    private void StatHpTest(string text)
-    {
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        uint cur = 100, max = 1000;
-        if (parts.Length > 0) uint.TryParse(parts[0], out cur);
-        if (parts.Length > 1) uint.TryParse(parts[1], out max);
-        var (sh, sm, smh, smm) = (_char.Hp, _char.Mp, _char.MaxHp, _char.MaxMp);
-        _char.Hp = cur; _char.MaxHp = max; _char.Mp = cur; _char.MaxMp = max;
-        SendStats();
-        (_char.Hp, _char.Mp, _char.MaxHp, _char.MaxMp) = (sh, sm, smh, smm);
-        Log.Info($"   -> HP/MAX probe: sent HP={cur}/max={max}; expect bar fill = {cur}/{max} and text '{cur}/{max}' if offsets [5]/[9] are correct");
-    }
-
     /// <summary>
     /// 0x33 self/character appearance. Format decoded from handler 0x44fef0:
     ///   X(u16BE) Y(u16BE) dir(u8) entityId(u32BE) type(u8=0)
@@ -736,32 +673,6 @@ public sealed partial class Session
     /// that carries one (0x33 look, 0x1d in-place patch, 0x30 dialog paperdoll) goes through here, because
     /// the 5.33 client resolves all three to the same parser (0x449880) and they must not disagree.</summary>
     private void WriteAppearance(List<byte> d, byte[] app, byte? hairColor = null) => d.AddRange(AppearanceFor(app, hairColor));
-
-    /// <summary>"@look533" — show the 11 bytes we're sending; "@look533 &lt;i&gt; &lt;v&gt;" — pin byte i to v
-    /// and redraw; "@look533 clear" — drop the pins. Each set redraws self and every peer watching, so the
-    /// effect is visible immediately without a server restart.</summary>
-    internal void Look533Cmd(string args)
-    {
-        var a = (args ?? "").Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length >= 1 && a[0].Equals("clear", StringComparison.OrdinalIgnoreCase))
-        {
-            Array.Clear(_look533Override);
-            RefreshAppearance();
-            SendLog("look533: overrides cleared");
-            return;
-        }
-        if (a.Length >= 2 && int.TryParse(a[0], out var idx) && int.TryParse(a[1], out var val))
-        {
-            if (idx < 0 || idx >= Look533Len) { SendLog($"look533: index must be 0..{Look533Len - 1}"); return; }
-            _look533Override[idx] = (byte)(val & 0xFF);
-            RefreshAppearance();
-            SendLog($"look533: [{idx}] = {val & 0xFF}");
-            return;
-        }
-        var cur = AppearanceFor(SelfAppearance());
-        SendLog("look533 " + string.Join(" ", cur.Select((b, i) => $"{i}:{b}")));
-        SendLog("0 sex 1 form 2 face 3 haircolour 4 armor 5 dye 6-7 weapon(u16 flat look) 8 ? 9 shield 10 shield?");
-    }
 
     // 0x16 CREATURE spawn (handler 0x450a00 -> builder 0x44dbc0 -> ctor 0x463020 -> base 0x462ec0).
     // Unlike 0x33 (which ALWAYS draws from the player sprite archive 0x4f2a84, so it can only render

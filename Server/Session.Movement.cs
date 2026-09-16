@@ -534,28 +534,6 @@ public sealed partial class Session
         return true;
     }
 
-    // "@boardobj" — board-sign calibration probe. Reports the tile you're FACING, the object sprite id sitting
-    // there (RTK's board sprites are 1619/1620; the 4.95 id is TBD), and whether a BoardLocations row already
-    // matches. Stand below a board looking north and run this to capture the (map,x,y) for BoardLocations.csv.
-    private void BoardObjProbe()
-    {
-        int dx = 0, dy = 0;
-        switch (_facing & 3) { case 0: dy = -1; break; case 1: dx = 1; break; case 2: dy = 1; break; case 3: dx = -1; break; }
-        int fx = _char.X + dx, fy = _char.Y + dy;
-        string dir = (_facing & 3) switch { 0 => "N", 1 => "E", 2 => "S", _ => "W" };
-        var md = MapData.For(_char.Map, _char.MapXs, _char.MapYs);
-        int obj = (md != null && fx >= 0 && fy >= 0 && fx < _char.MapXs && fy < _char.MapYs) ? md.Obj(fx, fy) : -1;
-        bool match = Content.TryBoardAt(_char.Map, fx, fy, out var bid);
-        string boardName = match ? (Boards.Find(bid)?.Name ?? "?") : "-";
-        SendLog($"boardobj: map {_char.Map} you@({_char.X},{_char.Y}) facing {dir} -> tile ({fx},{fy}) obj={obj} | board={(match ? $"{bid} \"{boardName}\"" : "none")}");
-        SendLog($"  to register: add  {_char.Map},{fx},{fy},<BoardId>  to BoardLocations.csv then @reload");
-        // Board ids come straight from Boards.All so this hint can't go stale when the roster changes; a few
-        // per line because one chat line can't hold the whole roster.
-        foreach (var chunk in Boards.All.Select(b => $"{b.Id}={b.Name}").Chunk(4))
-            SendLog("  boards: " + string.Join("  ", chunk));
-        Log.Info($"   -> @boardobj map {_char.Map} facing {dir} tile ({fx},{fy}) obj={obj} match={match} board={bid}");
-    }
-
     // 0x20 = the 'o' / Open key. In NexusTK this TOGGLES the door object I'm facing between its closed and open
     // graphic in place (RTK open.lua `openDoors`: setObject(m,x,y, closed<->open) — e.g. Buya door 342<->364;
     // some doors are 3 tiles wide). The graphic swap itself is shared world state (everyone on the map is told

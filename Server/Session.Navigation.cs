@@ -22,20 +22,6 @@ public sealed partial class Session
     //   "@kill"                 despawn every mob.
 
 
-    // "@cre <lookId> [hp] [color]": spawn ONE real monster (Monster.epf, via 0x07) on the tile in front
-    // of you, so you can see it AND immediately melee it (combat is unchanged — it hits any Mob on the
-    // tile). [color] is the 0x07 color byte we're trying to identify as a recolor/palette selector.
-    private void CreatureOne(CommandArgs a)
-    {
-        int look = a.Int(0, 0);
-        int hp = a.Int(1, 6);
-        int color = a.Int(2, 0);
-        var (fx, fy) = FrontTile();
-        ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
-        ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
-        SpawnMonster((ushort)look, x, y, $"c{look}", hp, dir: (byte)((_facing + 2) & 3), color: (byte)color);
-    }
-
     // ===== MVP: spawn a rabbit, watch it wander, kill it =====================================
     // The whole lifecycle end-to-end, kept deliberately hardcoded (one rabbit, look 21, 6 HP, random
     // wander near its spawn) before generalizing into a real mob/AI/spawn system. It mirrors how the RTK

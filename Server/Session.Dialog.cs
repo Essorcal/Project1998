@@ -1972,33 +1972,6 @@ public sealed partial class Session
         d.AddRange(b);
     }
 
-    // "@leg" — replay the EXACT 0x39 self-profile captured from a real 6.x server (jeedee/TkServer),
-    // decrypted with the shared NexonInc cipher. Known-good content: AC 99, class "Peasant", legend
-    // "Born in Hyul 31, Winter". If the 4.95 profile window opens and shows these, the format is shared
-    // and our native SendSelfProfile is correct; if it garbles, we diff against this capture.
-    private static readonly byte[] Profile6x =
-    {
-        0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x2b, 0x07,
-        0x50, 0x65, 0x61, 0x73, 0x61, 0x6e, 0x74,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x80, 0x17,
-        0x42, 0x6f, 0x72, 0x6e, 0x20, 0x69, 0x6e, 0x20, 0x48, 0x79, 0x75, 0x6c, 0x20, 0x33, 0x31, 0x2c,
-        0x20, 0x57, 0x69, 0x6e, 0x74, 0x65, 0x72,
-    };
-
-    private void SendProfileReplay6x()
-    {
-        SendMap(ServerOp.SelfProfile, _gameInc++, Profile6x, "replay6x-profile(0x39)");
-        Log.Info("   -> REPLAY 6.x self-profile on 0x39 (expect: AC 99, class Peasant, legend 'Born in Hyul 31, Winter')");
-    }
-
     // 0x34 = the "click" profile: the public view shown when you click a character. Distinct from the
     // profile-key window (0x39, stats/legend), it carries the character PORTRAIT, the writable profile
     // TEXT + PICTURE, nation, and legend. Layout REVERSED from the 4.95 client's own parser (0x48b6a0,
@@ -2176,24 +2149,6 @@ public sealed partial class Session
         var target = _world.Online.FindPlayer(name);
         if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
         SendClickProfile(target);
-    }
-
-    // "@ckm" — send a 0x34 click-profile with DISTINCT MARKER strings in every text field, so we can
-    // read off which window slot each field lands in and pin the true 4.95 layout (the 7.x port
-    // misaligns). Numeric appearance (nation/totem/sprite) is handled by the parser RE separately.
-    private void SendClickMarker()
-    {
-        var save = (_char.Title, _char.ClanName, _char.ClanTitle, _char.ClassName, _char.Name, _char.ProfileText, _char.Legends);
-        _char.Title     = "TTL";
-        _char.ClanName  = "CLAN";
-        _char.ClanTitle = "CRANK";
-        _char.ClassName = "CLASS";
-        _char.Name      = "NAME";
-        _char.ProfileText = "BLURBTEXT";
-        _char.Legends   = new List<Legend> { new Legend(0, 0, "LEGEND") };
-        SendClickProfile(this);
-        (_char.Title, _char.ClanName, _char.ClanTitle, _char.ClassName, _char.Name, _char.ProfileText, _char.Legends) = save;
-        Log.Info("   -> MARKER click-profile sent (TTL/CLAN/CRANK/CLASS/NAME/BLURBTEXT/LEGEND)");
     }
 
     /// <summary>Build an encrypted game packet, send it, and log it.</summary>

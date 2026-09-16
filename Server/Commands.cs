@@ -224,6 +224,7 @@ public sealed partial class Session
         T("legend",  (s, a) => s.LegendCmd(a),     "[key] [0 | <icon> <color> <text...>]", "list legend marks with their internal keys; remove one, or (re)create one by key (colour 128 is the usual white; 0 renders invisible)"),
         // 0x0A's `type` decides which pane/colour a line lands in, and a wrong one is INVISIBLE from the
         // server side — the packet sends, the log says so, the client draws nothing. See TextChannelCmd.
+        // A probe filed under character for want of a better home: handler in Server/Session.Probes.cs.
         T("text",    (s, a) => s.TextChannelCmd(a), "[0-255] [message]",   "send yourself one 0x0A line on a channel; bare @text sweeps them to compare panes/colours"),
         T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
@@ -247,6 +248,7 @@ public sealed partial class Session
         T("take",     (s, a) => s.TakeItemCmd(a),   "<name|id> [amount|all]", "remove an item from the bag (worn gear untouched; browse with @items)"),
         T("dura",     (s, a) => s.DuraCmd(a),       "<name|id> <n>",      "set an item's durability, bag first then worn (repair/breakage testing)"),
         T("clearinv", (s, a) => s.ClearInventory(), "",                   "empty the bag and gear"),
+        // A probe: handler in Server/Session.Probes.cs, with @delreason, which shares its raw-0x0F helper.
         G("icons",    (s, a) => s.IconSweep(a),     "[start]",            "fill the bag with client Item.epf frames"),
 
         // ---- spells ---------------------------------------------------------------------------------
@@ -286,6 +288,8 @@ public sealed partial class Session
         G("era",   (s, a) => s.EraCmd(a),         "", "target date + which dated content it includes"),
 
         // ---- sprite / appearance lab ----------------------------------------------------------------
+        // Every handler in this block is an RE probe and lives in Server/Session.Probes.cs, except @mob
+        // and @spawn, which spawn real shared monsters and stayed with the entity code.
         G("look",   (s, a) => s.LookOne(a),          "b0..b6",          "spawn a dummy with those appearance bytes"),
         G("row",    (s, a) => s.LookRow(a),          "<i> <lo> <hi>",   "sweep appearance byte i"),
         G("cre",    (s, a) => s.CreatureOne(a),      "[look] [hp] [color]", "spawn one real monster (0x07)"),
@@ -303,6 +307,9 @@ public sealed partial class Session
         // and the client's own Options menu has no way to pick a track. The rest of the block stays GM-only.
         P("music",    (s, a) => s.PlayMusicCmd(a),  "[name|id] [vol] [mp3|midi] | old|new | stop",
                                                     "play a music track, or pick the soundtrack (vol 0-255, default 100; no argument lists them)"),
+        // @snd, @mobact, @efx, @mtx and @hit are RE probes and live in Server/Session.Probes.cs; the rest
+        // of this block (@music, the three @*snd slots, @weather, @clock, @setting, @doze) are operator
+        // tools and stayed where they were.
         G("snd",      (s, a) => s.SoundProbe(a),    "<id> [id2 ...]", "play raw client sound ids, up to 8 at once (NexusTK.snd holds 001..197.wav)"),
         // One handler, three slots (Session.Media.SetSfx): these differed only in the field they wrote.
         G("swingsnd", (s, a) => s.SetSfx(a, ref s._gm.SwingSfx, "swing"),      "<id>", "set + audition the melee swing sfx (0 mutes it)"),
@@ -317,6 +324,8 @@ public sealed partial class Session
         G("doze",     (s, a) => s.DozeSelfCmd(a),   "[secs|off]", "put YOURSELF to sleep (Doze can't be self-targeted on the wire)"),
 
         // ---- protocol probes ------------------------------------------------------------------------
+        // Handlers in Server/Session.Probes.cs, except the four with production callers or a native
+        // client gesture behind them: @users (Session.UserList.cs), @askpic, @self and @click.
         G("hit",      (s, a) => s.HitProbe(a),          "<pct 0-100> [crit 0-255]", "0x13 over-head HP bar + hit animation on the faced mob"),
         G("hpprobe",  (s, a) => s.StatHpTest(a),        "<cur> <max>", "diag: pin the maxHP/maxMP offsets (@hp is the setter)"),
         G("s",        (s, a) => s.StatProbe(a),         "<hexop> [hexflags]", "fire a sentinel status packet"),
