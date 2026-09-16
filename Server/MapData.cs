@@ -375,8 +375,8 @@ public sealed class MapData
 
     private static IEnumerable<string> SearchDirs()
     {
-        var env = Environment.GetEnvironmentVariable("P1998_MAPS");
-        if (!string.IsNullOrWhiteSpace(env)) yield return env;
+        var env = ServerConfig.Current.MapsDir;
+        if (env.Length > 0) yield return env;
 
         // game-data/maps — terrain is authored CONTENT, versioned with the CSVs it has to agree with.
         yield return Path.Combine(Shared.RepoPaths.GameDataDir(), "maps");

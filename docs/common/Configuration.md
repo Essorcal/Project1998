@@ -38,19 +38,20 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 
 ## What this file does not cover yet
 
+Three sets, and nothing else. Every other `P1998_*` variable either server process reads is in the
+generated table below.
+
 - **The 68 per-table content path overrides** (`P1998_MOBS`, `P1998_SPELLS`, `P1998_MAP_CELLS`, …). They are
   declared by `TableSpec` in [`Server/Content.Tables.cs`](../../Server/Content.Tables.cs) and listed in the
   generated table block in [`game-data/README.md`](../../game-data/README.md). Retiring them in favour of
   `P1998_GAME_DATA` is a behaviour change that belongs with the `TableSpec` work.
-- **Reads still inline in a handful of files** — `Shared/TcpOutbound.cs`, `LoginServer/LoginSession.cs`,
-  `Server/World.cs`, `Server/Watchdog.cs`, `Server/StatusFile.cs`, `Server/StaffAccounts.cs`,
-  `Server/MapData.cs`, `Server/ObjectFlags.cs`, `Shared/NetBind.cs`, `Shared/ConnGuard.cs`,
-  `Shared/LoginAuth.cs`, `Protocol.Tk495/FrameReader.cs`. Those knobs are real and supported; they are
-  simply not declared here yet. (`Protocol.Tk495` does not reference `Shared`, so `P1998_HANDSHAKE_MS`
-  needs a project-structure decision rather than a one-line move.)
 - **Launcher-only variables**, read by `run-server.bat` and never by the server: `P1998_DOTNET` (path to a
   `dotnet.exe` with a .NET 8 SDK), `P1998_NO_INSTALL` (refuse to fetch an SDK), `P1998_AUTO_INSTALL` (fetch
   one without prompting).
+- **Desktop-tool variables**, read by `MapEditor` and `IconStudio` and never by either server process:
+  `P1998_REPO` (repository root when the tool is run from elsewhere) and `P1998_CLIENT5` (path to a 5.33
+  client install for its art). Those projects are outside `Project1998.Server.slnf` and outside CI, and
+  declaring them here would put two knobs no server reads into the startup banner.
 
 <!-- generated: config -->
 
@@ -62,6 +63,8 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 | `P1998_STATE` | path | `<root>/state` | Live instance state: the SQLite database, the character store, the staff rosters. The whole of what a backup must capture. |
 | `P1998_LOGS` | path | `<root>/logs` | Append-only stdout captures. Grows without bound, regenerable, never backed up. |
 | `P1998_RUN` | path | `<root>/run` | Deploy-to-server control triggers (restart_at, reload_now), consumed and deleted by the running process. Not state. |
+| `P1998_MAPS` | text | *(blank — search `<game-data>/maps` then the client installs)* | First directory searched for the 4.x headerless `.map` terrain files. Blank searches only the built-in list: `<game-data>/maps`, then the two Windows client installs. Point this at a client's `Maps` directory on a host that has no client installed. The value is used as given, not trimmed. |
+| `P1998_SOBJ` | text | *(blank — try `<game-data>/SObj.tbl` then the RTK-Server copy)* | First path tried for the client's `SObj.tbl` object-collision table. Blank tries `<game-data>/SObj.tbl`, then the RTK-Server copy. Prefer the client extract: its object-id space is the one the `.map` files index. The value is used as given, not trimmed. |
 
 ### Logging
 
@@ -77,6 +80,27 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 | `P1998_TRUST_PROXY` | `0` / `1` | `0` (off) | Read and trust a PROXY protocol v2 header on every accepted connection. Off means the accept path behaves exactly as it always has, so a bare clone with no proxy in front never waits for a header that is not coming. |
 | `P1998_PROXY_HEADER_MS` | integer ≥ 1 | `5000` | How long a trusted peer has to deliver its PROXY header before the connection is dropped. Separate from the handshake budget, which covers the first GAME packet and cannot start until this is done. |
 | `P1998_PROXY_ALLOW` | text | `127.0.0.0/8,::1/128` | Peers allowed to send a PROXY header, as comma-separated addresses or CIDR blocks. This gate is the entire security model — a header is just bytes, so anyone who can reach the port could otherwise claim any source address. A containerised proxy needs its bridge network added. |
+| `P1998_BIND` | text | *(blank — 0.0.0.0, every interface)* | Local interface both listeners bind to. Blank binds every interface (0.0.0.0), which is right for a real deployment. Set a specific LAN address to keep the servers OFF loopback, which matters only when the launcher's loopback proxy runs on the same box and would otherwise compete with the server for the client's connection. An address this server cannot parse falls back to 0.0.0.0 — the parse lives in `Shared/NetBind.cs`, so a bad value is not reported on the startup warning line. |
+| `P1998_HANDSHAKE_MS` | integer ≥ 1 | `15000` | Slow-loris budget: a freshly accepted connection must send its first VALID framed packet within this long or it is dropped. Only the first packet is gated, so an in-world player standing AFK is never disconnected. Shared by both processes. 15s is far more than a real client needs. |
+| `P1998_SLOW_SEND_MS` | integer ≥ 0 | `250` | Warn when a frame waits this long to reach the socket, or when the socket write itself takes that long. 0 disables the warning. 250ms is well under the ~1s a player would notice, so the log names the stall before anyone complains about it. |
+| `P1998_LOGIN_WRITE_MS` | integer ≥ 1 | `10000` | How long ONE socket write on the LOGIN channel may take before the peer is dropped. The login conversation is a few hundred bytes: a peer that cannot accept them inside ten seconds is not a client anyone is waiting on. The game channel has no per-write bound — there the queue filling is what drops a stuck peer — so this knob does not apply to it. |
+
+### Abuse control — connection admission and login throttling
+
+| Variable | Type | Default | What it does |
+|---|---|---|---|
+| `P1998_LOGIN_MAXCONN` | integer ≥ 1 | `2000` | Concurrent connections the LOGIN process will hold before it sheds load by accepting and immediately closing. Load-shedding, not a player cap: past the ceiling an overload costs a closed socket rather than exhausted threads and memory. |
+| `P1998_LOGIN_PERIP` | integer ≥ 1 | `8` | Live LOGIN connections one address may hold at once. 8 is sized to reliably SUPPORT about two players per address — two steady sockets, the brief login-to-game overlap, a lingering half-open ghost — without being a hard two-player quota. Raise it for NAT'd addresses sharing more players. |
+| `P1998_LOGIN_RATE` | integer ≥ 1 | `30` | LOGIN connections one address may OPEN per window, which is what catches a connect/disconnect churn flood that the concurrent cap alone would not. 30 per 10s already covers two players logging in and reconnecting with retries. |
+| `P1998_LOGIN_RATEWIN_MS` | integer ≥ 1 | `10000` | Length of that fixed rate window on the LOGIN front door, in milliseconds. |
+| `P1998_LOGIN_EXEMPT_LOOPBACK` | `0` / `1` | `1` (on) | Exempt loopback from BOTH login-side per-address gates: the accept path's per-IP and rate caps, and the failed-login throttle. Local dev, the client test box and a same-box login-to-game hop all originate from 127.0.0.1 and must never be throttled; loopback still counts toward the global cap so load-shedding stays uniform. Set 0 on a host where loopback is not trusted. |
+| `P1998_GAME_MAXCONN` | integer ≥ 1 | `2000` | The same concurrent-connection load-shedding ceiling for the GAME process. |
+| `P1998_GAME_PERIP` | integer ≥ 1 | `8` | Live GAME connections one address may hold at once. Same sizing as the login door. |
+| `P1998_GAME_RATE` | integer ≥ 1 | `30` | GAME connections one address may OPEN per window. |
+| `P1998_GAME_RATEWIN_MS` | integer ≥ 1 | `10000` | Length of that fixed rate window on the GAME front door, in milliseconds. |
+| `P1998_GAME_EXEMPT_LOOPBACK` | `0` / `1` | `1` (on) | Exempt loopback from the GAME accept path's per-IP and rate caps. Loopback still counts toward the global cap. |
+| `P1998_LOGIN_FAILS` | integer ≥ 1 | `10` | Failed logins one source IP may spend inside the window before further attempts are refused without touching the password hash. |
+| `P1998_LOGIN_FAIL_WINDOW_MS` | integer ≥ 1 | `300000` | Length of that rolling failure window, in milliseconds. A successful login clears the counter. |
 
 ### Login, handoff and redirects
 
@@ -86,9 +110,7 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 | `P1998_LOGIN_HOST` | text | *(blank)* | The login server's address for the exit-to-select bounce. Blank falls back to P1998_GAME_HOST, because the common deployment runs both processes on one box and behind a proxy both front doors share one public address. |
 | `P1998_LOGIN_PORT` | integer ≥ 1 | paired with the arrival channel | Login port the exit-to-select bounce names. Unset derives it from the port the session arrived on, because the channels are PAIRED by client version — bouncing a 5.33 player onto the 4.95 login would round-trip them straight back. |
 | `P1998_ENFORCE_HANDOFF` | `0` / `1` | `1` (on) | Refuse a game connection whose single-use handoff token does not verify. 0 downgrades the failure to a warning and lets the connection in — a fallback for a deployment with a token problem, and the only thing standing between the game port and a client claiming any username. |
-| `P1998_LOGIN_FAILS` | integer ≥ 1 | `10` | Failed logins one source IP may spend inside the window before further attempts are refused without touching the password hash. |
-| `P1998_LOGIN_FAIL_WINDOW_MS` | integer ≥ 1 | `300000` | Length of that rolling failure window, in milliseconds. A successful login clears the counter. |
-| `P1998_LOGIN_EXEMPT_LOOPBACK` | `0` / `1` | `1` (on) | Exempt loopback from the failed-login throttle (local dev and the same-box login->game hop). Set 0 on a host where loopback is not automatically trusted. |
+| `P1998_ALLOW_TOFU` | `0` / `1` | `0` (off) | TRUST SWITCH — leave it off. On, a login for a name that exists in `characters` with NO `accounts` row adopts whatever password was sent as that character's password, permanently. It is the escape hatch for the handful of characters that predate the accounts table: set it, log in once as that character, turn it back off. While it is on, anyone who guesses such a name claims the character. It never applies to a name with no character at all, so it cannot create an account. |
 
 ### Session behaviour
 
@@ -97,6 +119,35 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 | `P1998_AUTOSAVE_MS` | integer ≥ 1 | `15000` | Ceiling on how often a dirty character is flushed to the store, and so on worst-case data loss in a hard crash. The session's own read loop and World's idle sweep both use this one cadence. |
 | `P1998_CAST_QUEUE` | `0` / `1` | `1` (on) | Hold over-budget casts until the next action window instead of discarding them, so a held cast key lands as one animation and one sound rather than an audible flam. 0 restores the plain drop-gate. |
 | `P1998_PASS` | `0` / `1` | `1` (on) | Server-side passability (collision). 0 lets players walk through anything — an escape hatch for a map whose 4.x top-2-bits polarity turns out wrong. |
+
+### World heartbeat
+
+| Variable | Type | Default | What it does |
+|---|---|---|---|
+| `P1998_TICK_MS` | integer ≥ 50 | `333` | The world heartbeat in milliseconds — the smallest action interval the world can express at all. Mob timers are carried, not reset, so a 2000ms creature moves every 2000ms whatever this is; what changes is GRANULARITY. 333 divides Sute's observed 333/333/rest rhythm exactly. The tick body runs proportionally more often, so raising this back is the lever if the slow-tick watchdog starts firing. |
+| `P1998_SLOW_TICK_MS` | integer ≥ 0 | a quarter of the heartbeat (83 at the default 333) | A tick this slow — work OR scheduling delay, in milliseconds — gets a diagnostic line. 0 disables the watchdog. Unset derives a quarter of the heartbeat, which is well clear of normal jitter and low enough to catch a stall long before a player would call it lag, and which is why it is derived rather than a fixed number: retuning the heartbeat retunes this with it. |
+
+### Process-health probes
+
+| Variable | Type | Default | What it does |
+|---|---|---|---|
+| `P1998_POOL_LAG_MS` | integer ≥ 0 | `100` | Report thread-pool scheduling latency at or above this many milliseconds. 0 disables the probe entirely. Read alongside SLOW SEND: high pool latency with a high queued time means starvation, and something is blocking pool threads. |
+| `P1998_SILENT_MS` | integer ≥ 0 | `4000` | Report a client that has sent NOTHING for this long while the server is still actively sending to it. That asymmetry is the exact shape of "the mobs keep moving but my character cannot act". 0 disables the probe. |
+
+### The status document
+
+| Variable | Type | Default | What it does |
+|---|---|---|---|
+| `P1998_STATUS_FILE` | text | `<run>/status.json` | Where to publish the small document the launcher polls for "N online". Blank publishes `<run>/status.json`. The single value `-` disables publishing entirely. Trimmed. |
+| `P1998_STATUS_MS` | integer ≥ 1000 | `10000` | How often that document is rewritten, in milliseconds. The launcher polls every 30s, so the 10s default means the number is never more than one poll stale. Values below the 1000ms floor are refused: this is a file write on a timer, not a metric. |
+| `P1998_STATUS_MESSAGE` | text | *(blank — the launcher's own wording)* | Optional operator note published beside the player count. Blank leaves the launcher's own wording. Trimmed. |
+
+### Staff rosters
+
+| Variable | Type | Default | What it does |
+|---|---|---|---|
+| `P1998_GMS` | text | *(blank)* | GM account names, comma-separated. UNIONED with `<state>/gms.txt` rather than replacing it, so this adds a GM for one run without editing the file. Entries are trimmed and blank ones dropped. With no GM configured anywhere, the GM tier is disabled for everyone. |
+| `P1998_TESTERS` | text | *(blank)* | Tester account names, comma-separated, unioned with `<state>/testers.txt` on the same rules as the GM roster above. Tester is the tier below GM. |
 
 ### 4.95 movement calibration
 

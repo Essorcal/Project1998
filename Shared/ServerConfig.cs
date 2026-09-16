@@ -9,12 +9,25 @@ public enum ConfigArea
     Paths,
     /// <summary>What the logger writes and how big it lets the file get.</summary>
     Logging,
-    /// <summary>The accept path: PROXY protocol and the peers allowed to speak it.</summary>
+    /// <summary>The accept path: the bind address, PROXY protocol and the peers allowed to speak it, the
+    /// handshake budget, and the bounds on one outbound socket write.</summary>
     Transport,
-    /// <summary>Login throttling, the handoff gate and the addresses a redirect names.</summary>
+    /// <summary>Abuse control: the connection-admission caps on each front door and the failed-login
+    /// throttle. These are the numbers a flood runs into, so they are named here one by one rather than
+    /// built from a prefix at runtime.</summary>
+    Abuse,
+    /// <summary>The handoff gate and the addresses a redirect names.</summary>
     Login,
     /// <summary>Per-session behaviour the operator may retune without a rebuild.</summary>
     Session,
+    /// <summary>The world heartbeat and the watchdog that reports a slow one.</summary>
+    World,
+    /// <summary>Process-health probes: thread-pool scheduling latency and client input silence.</summary>
+    Diagnostics,
+    /// <summary>The status document the launcher polls.</summary>
+    Status,
+    /// <summary>Staff rosters, unioned with the files under the state directory.</summary>
+    Staff,
     /// <summary>4.95 self-walk calibration — diagnostics, not gameplay values.</summary>
     Movement,
     /// <summary>Tile/object translation and the world-light probes.</summary>
@@ -46,7 +59,8 @@ public enum ConfigArea
 /// <para><b>What is NOT here yet.</b> The 68 per-table content-path overrides (<c>P1998_&lt;TABLE&gt;</c>,
 /// see <c>Server/Content.Tables.cs</c>) are declared by <c>TableSpec</c> and stay there: retiring them in
 /// favour of <see cref="ServerConfig.GameDataDir"/> is a behaviour change entangled with the TableSpec work.
-/// A handful of reads in files that were being edited alongside this one are also still inline. Both sets
+/// That family, and the three variables <c>run-server.bat</c> reads before any server process exists, are
+/// now the only <c>P1998_*</c> names outside this file. Both sets
 /// are named in the generated reference so the gap is visible rather than assumed closed.</para>
 /// </summary>
 public sealed class ServerConfig
@@ -74,6 +88,19 @@ public sealed class ServerConfig
             "P1998_RUN", ConfigArea.Paths, "run",
             "Deploy-to-server control triggers (restart_at, reload_now), consumed and deleted by the running " +
             "process. Not state.");
+        public static readonly StringKnob MapsDir = new(
+            "P1998_MAPS", ConfigArea.Paths, "",
+            "First directory searched for the 4.x headerless `.map` terrain files. Blank searches only the " +
+            "built-in list: `<game-data>/maps`, then the two Windows client installs. Point this at a " +
+            "client's `Maps` directory on a host that has no client installed. The value is used as given, " +
+            "not trimmed.",
+            defaultText: "*(blank — search `<game-data>/maps` then the client installs)*");
+        public static readonly StringKnob SObjTable = new(
+            "P1998_SOBJ", ConfigArea.Paths, "",
+            "First path tried for the client's `SObj.tbl` object-collision table. Blank tries " +
+            "`<game-data>/SObj.tbl`, then the RTK-Server copy. Prefer the client extract: its object-id " +
+            "space is the one the `.map` files index. The value is used as given, not trimmed.",
+            defaultText: "*(blank — try `<game-data>/SObj.tbl` then the RTK-Server copy)*");
 
         // --- logging ---
         public static readonly OptionalBoolKnob LogWire = new(
@@ -104,6 +131,97 @@ public sealed class ServerConfig
             "Peers allowed to send a PROXY header, as comma-separated addresses or CIDR blocks. This gate is the " +
             "entire security model — a header is just bytes, so anyone who can reach the port could otherwise " +
             "claim any source address. A containerised proxy needs its bridge network added.");
+        public static readonly StringKnob BindAddress = new(
+            "P1998_BIND", ConfigArea.Transport, "",
+            "Local interface both listeners bind to. Blank binds every interface (0.0.0.0), which is right " +
+            "for a real deployment. Set a specific LAN address to keep the servers OFF loopback, which " +
+            "matters only when the launcher's loopback proxy runs on the same box and would otherwise " +
+            "compete with the server for the client's connection. An address this server cannot parse " +
+            "falls back to 0.0.0.0 — the parse lives in `Shared/NetBind.cs`, so a bad value is not " +
+            "reported on the startup warning line.",
+            defaultText: "*(blank — 0.0.0.0, every interface)*");
+        public static readonly IntKnob HandshakeMs = new(
+            "P1998_HANDSHAKE_MS", ConfigArea.Transport, 15_000,
+            "Slow-loris budget: a freshly accepted connection must send its first VALID framed packet within " +
+            "this long or it is dropped. Only the first packet is gated, so an in-world player standing AFK " +
+            "is never disconnected. Shared by both processes. 15s is far more than a real client needs.",
+            min: 1);
+        public static readonly IntKnob SlowSendMs = new(
+            "P1998_SLOW_SEND_MS", ConfigArea.Transport, 250,
+            "Warn when a frame waits this long to reach the socket, or when the socket write itself takes " +
+            "that long. 0 disables the warning. 250ms is well under the ~1s a player would notice, so the " +
+            "log names the stall before anyone complains about it.",
+            min: 0);
+        public static readonly IntKnob LoginWriteMs = new(
+            "P1998_LOGIN_WRITE_MS", ConfigArea.Transport, 10_000,
+            "How long ONE socket write on the LOGIN channel may take before the peer is dropped. The login " +
+            "conversation is a few hundred bytes: a peer that cannot accept them inside ten seconds is not a " +
+            "client anyone is waiting on. The game channel has no per-write bound — there the queue filling " +
+            "is what drops a stuck peer — so this knob does not apply to it.",
+            min: 1);
+
+        // --- abuse control: connection admission and the failed-login throttle ---
+        //
+        // ConnGuard used to build these ten names from a prefix at runtime ($"P1998_{prefix}_MAXCONN"), which
+        // is why none of them appeared in any reference: there was no literal to find. The cross product is
+        // written out instead. P1998_LOGIN_EXEMPT_LOOPBACK is declared ONCE and read by two consumers — the
+        // accept-path gates here and the failed-login throttle below — which is what the old code did too.
+        public static readonly IntKnob LoginMaxConn = new(
+            "P1998_LOGIN_MAXCONN", ConfigArea.Abuse, 2_000,
+            "Concurrent connections the LOGIN process will hold before it sheds load by accepting and " +
+            "immediately closing. Load-shedding, not a player cap: past the ceiling an overload costs a " +
+            "closed socket rather than exhausted threads and memory.",
+            min: 1);
+        public static readonly IntKnob LoginPerIp = new(
+            "P1998_LOGIN_PERIP", ConfigArea.Abuse, 8,
+            "Live LOGIN connections one address may hold at once. 8 is sized to reliably SUPPORT about two " +
+            "players per address — two steady sockets, the brief login-to-game overlap, a lingering half-open " +
+            "ghost — without being a hard two-player quota. Raise it for NAT'd addresses sharing more players.",
+            min: 1);
+        public static readonly IntKnob LoginRate = new(
+            "P1998_LOGIN_RATE", ConfigArea.Abuse, 30,
+            "LOGIN connections one address may OPEN per window, which is what catches a connect/disconnect " +
+            "churn flood that the concurrent cap alone would not. 30 per 10s already covers two players " +
+            "logging in and reconnecting with retries.",
+            min: 1);
+        public static readonly IntKnob LoginRateWindowMs = new(
+            "P1998_LOGIN_RATEWIN_MS", ConfigArea.Abuse, 10_000,
+            "Length of that fixed rate window on the LOGIN front door, in milliseconds.",
+            min: 1);
+        public static readonly BoolKnob LoginExemptLoopback = new(
+            "P1998_LOGIN_EXEMPT_LOOPBACK", ConfigArea.Abuse, true,
+            "Exempt loopback from BOTH login-side per-address gates: the accept path's per-IP and rate caps, " +
+            "and the failed-login throttle. Local dev, the client test box and a same-box login-to-game hop " +
+            "all originate from 127.0.0.1 and must never be throttled; loopback still counts toward the " +
+            "global cap so load-shedding stays uniform. Set 0 on a host where loopback is not trusted.");
+        public static readonly IntKnob GameMaxConn = new(
+            "P1998_GAME_MAXCONN", ConfigArea.Abuse, 2_000,
+            "The same concurrent-connection load-shedding ceiling for the GAME process.",
+            min: 1);
+        public static readonly IntKnob GamePerIp = new(
+            "P1998_GAME_PERIP", ConfigArea.Abuse, 8,
+            "Live GAME connections one address may hold at once. Same sizing as the login door.",
+            min: 1);
+        public static readonly IntKnob GameRate = new(
+            "P1998_GAME_RATE", ConfigArea.Abuse, 30,
+            "GAME connections one address may OPEN per window.",
+            min: 1);
+        public static readonly IntKnob GameRateWindowMs = new(
+            "P1998_GAME_RATEWIN_MS", ConfigArea.Abuse, 10_000,
+            "Length of that fixed rate window on the GAME front door, in milliseconds.",
+            min: 1);
+        public static readonly BoolKnob GameExemptLoopback = new(
+            "P1998_GAME_EXEMPT_LOOPBACK", ConfigArea.Abuse, true,
+            "Exempt loopback from the GAME accept path's per-IP and rate caps. Loopback still counts toward " +
+            "the global cap.");
+        public static readonly IntKnob LoginFails = new(
+            "P1998_LOGIN_FAILS", ConfigArea.Abuse, 10,
+            "Failed logins one source IP may spend inside the window before further attempts are refused " +
+            "without touching the password hash.", min: 1);
+        public static readonly LongKnob LoginFailWindowMs = new(
+            "P1998_LOGIN_FAIL_WINDOW_MS", ConfigArea.Abuse, 300_000,
+            "Length of that rolling failure window, in milliseconds. A successful login clears the counter.",
+            min: 1);
 
         // --- login / handoff ---
         public static readonly StringKnob GameHost = new(
@@ -127,18 +245,14 @@ public sealed class ServerConfig
             "Refuse a game connection whose single-use handoff token does not verify. 0 downgrades the failure " +
             "to a warning and lets the connection in — a fallback for a deployment with a token problem, and " +
             "the only thing standing between the game port and a client claiming any username.");
-        public static readonly IntKnob LoginFails = new(
-            "P1998_LOGIN_FAILS", ConfigArea.Login, 10,
-            "Failed logins one source IP may spend inside the window before further attempts are refused " +
-            "without touching the password hash.", min: 1);
-        public static readonly LongKnob LoginFailWindowMs = new(
-            "P1998_LOGIN_FAIL_WINDOW_MS", ConfigArea.Login, 300_000,
-            "Length of that rolling failure window, in milliseconds. A successful login clears the counter.",
-            min: 1);
-        public static readonly BoolKnob LoginExemptLoopback = new(
-            "P1998_LOGIN_EXEMPT_LOOPBACK", ConfigArea.Login, true,
-            "Exempt loopback from the failed-login throttle (local dev and the same-box login->game hop). " +
-            "Set 0 on a host where loopback is not automatically trusted.");
+        public static readonly BoolKnob AllowTofu = new(
+            "P1998_ALLOW_TOFU", ConfigArea.Login, false,
+            "TRUST SWITCH — leave it off. On, a login for a name that exists in `characters` with NO " +
+            "`accounts` row adopts whatever password was sent as that character's password, permanently. It " +
+            "is the escape hatch for the handful of characters that predate the accounts table: set it, log " +
+            "in once as that character, turn it back off. While it is on, anyone who guesses such a name " +
+            "claims the character. It never applies to a name with no character at all, so it cannot create " +
+            "an account.");
 
         // --- session ---
         public static readonly IntKnob AutoSaveMs = new(
@@ -154,6 +268,66 @@ public sealed class ServerConfig
             "P1998_PASS", ConfigArea.Session, true,
             "Server-side passability (collision). 0 lets players walk through anything — an escape hatch for a " +
             "map whose 4.x top-2-bits polarity turns out wrong.");
+
+        // --- world heartbeat ---
+        public static readonly IntKnob TickMs = new(
+            "P1998_TICK_MS", ConfigArea.World, 333,
+            "The world heartbeat in milliseconds — the smallest action interval the world can express at " +
+            "all. Mob timers are carried, not reset, so a 2000ms creature moves every 2000ms whatever this " +
+            "is; what changes is GRANULARITY. 333 divides Sute's observed 333/333/rest rhythm exactly. The " +
+            "tick body runs proportionally more often, so raising this back is the lever if the slow-tick " +
+            "watchdog starts firing.",
+            min: 50);
+        public static readonly OptionalIntKnob SlowTickMs = new(
+            "P1998_SLOW_TICK_MS", ConfigArea.World,
+            "A tick this slow — work OR scheduling delay, in milliseconds — gets a diagnostic line. 0 " +
+            "disables the watchdog. Unset derives a quarter of the heartbeat, which is well clear of normal " +
+            "jitter and low enough to catch a stall long before a player would call it lag, and which is why " +
+            "it is derived rather than a fixed number: retuning the heartbeat retunes this with it.",
+            defaultText: "a quarter of the heartbeat (83 at the default 333)", min: 0);
+
+        // --- process-health probes ---
+        public static readonly IntKnob PoolLagMs = new(
+            "P1998_POOL_LAG_MS", ConfigArea.Diagnostics, 100,
+            "Report thread-pool scheduling latency at or above this many milliseconds. 0 disables the probe " +
+            "entirely. Read alongside SLOW SEND: high pool latency with a high queued time means starvation, " +
+            "and something is blocking pool threads.",
+            min: 0);
+        public static readonly IntKnob SilentMs = new(
+            "P1998_SILENT_MS", ConfigArea.Diagnostics, 4_000,
+            "Report a client that has sent NOTHING for this long while the server is still actively sending " +
+            "to it. That asymmetry is the exact shape of \"the mobs keep moving but my character cannot act\". " +
+            "0 disables the probe.",
+            min: 0);
+
+        // --- the status document ---
+        public static readonly StringKnob StatusFile = new(
+            "P1998_STATUS_FILE", ConfigArea.Status, "",
+            "Where to publish the small document the launcher polls for \"N online\". Blank publishes " +
+            "`<run>/status.json`. The single value `-` disables publishing entirely. Trimmed.",
+            trim: true, defaultText: "`<run>/status.json`");
+        public static readonly IntKnob StatusMs = new(
+            "P1998_STATUS_MS", ConfigArea.Status, 10_000,
+            "How often that document is rewritten, in milliseconds. The launcher polls every 30s, so the " +
+            "10s default means the number is never more than one poll stale. Values below the 1000ms floor " +
+            "are refused: this is a file write on a timer, not a metric.",
+            min: 1_000);
+        public static readonly StringKnob StatusMessage = new(
+            "P1998_STATUS_MESSAGE", ConfigArea.Status, "",
+            "Optional operator note published beside the player count. Blank leaves the launcher's own " +
+            "wording. Trimmed.",
+            trim: true, defaultText: "*(blank — the launcher's own wording)*");
+
+        // --- staff rosters ---
+        public static readonly StringKnob Gms = new(
+            "P1998_GMS", ConfigArea.Staff, "",
+            "GM account names, comma-separated. UNIONED with `<state>/gms.txt` rather than replacing it, so " +
+            "this adds a GM for one run without editing the file. Entries are trimmed and blank ones " +
+            "dropped. With no GM configured anywhere, the GM tier is disabled for everyone.");
+        public static readonly StringKnob Testers = new(
+            "P1998_TESTERS", ConfigArea.Staff, "",
+            "Tester account names, comma-separated, unioned with `<state>/testers.txt` on the same rules as " +
+            "the GM roster above. Tester is the tier below GM.");
 
         // --- 4.95 movement calibration ---
         public static readonly IntKnob WalkMs = new(
@@ -257,12 +431,18 @@ public sealed class ServerConfig
         /// <summary>Declaration order — the generated reference and the startup banner both walk this.</summary>
         public static readonly IReadOnlyList<ConfigKnob> All =
         [
-            GameData, State, Logs, Run,
+            GameData, State, Logs, Run, MapsDir, SObjTable,
             LogWire, LogMaxBytes,
-            TrustProxy, ProxyHeaderMs, ProxyAllow,
-            GameHost, LoginHost, LoginPort, EnforceHandoff,
-            LoginFails, LoginFailWindowMs, LoginExemptLoopback,
+            TrustProxy, ProxyHeaderMs, ProxyAllow, BindAddress, HandshakeMs, SlowSendMs, LoginWriteMs,
+            LoginMaxConn, LoginPerIp, LoginRate, LoginRateWindowMs, LoginExemptLoopback,
+            GameMaxConn, GamePerIp, GameRate, GameRateWindowMs, GameExemptLoopback,
+            LoginFails, LoginFailWindowMs,
+            GameHost, LoginHost, LoginPort, EnforceHandoff, AllowTofu,
             AutoSaveMs, CastQueue, PassEnforce,
+            TickMs, SlowTickMs,
+            PoolLagMs, SilentMs,
+            StatusFile, StatusMs, StatusMessage,
+            Gms, Testers,
             WalkMs, SelfMove, AckMs, SlowMove, RealmCenter,
             FastMoveDefault, FastMoveTrustToggle, PushMap, PushGraceSteps,
             LightValue, LightFormat, MapDiag,
@@ -354,6 +534,10 @@ public sealed class ServerConfig
     public string LogsDir => Get<string>(Knobs.Logs);
     /// <summary>&lt;root&gt;/run, or the override.</summary>
     public string RunDir => Get<string>(Knobs.Run);
+    /// <summary>First directory searched for <c>.map</c> terrain, or "" for the built-in search list.</summary>
+    public string MapsDir => Get<string>(Knobs.MapsDir);
+    /// <summary>First path tried for <c>SObj.tbl</c>, or "" for the built-in candidates.</summary>
+    public string SObjTable => Get<string>(Knobs.SObjTable);
 
     /// <summary>Wire dump, or null to take the entry point's per-process default.</summary>
     public bool? LogWire => GetOrNull<bool>(Knobs.LogWire);
@@ -366,6 +550,33 @@ public sealed class ServerConfig
     public int ProxyHeaderMs => Get<int>(Knobs.ProxyHeaderMs);
     /// <summary>Raw allow-list text; <c>ProxyProtocol</c> owns the CIDR parse.</summary>
     public string ProxyAllow => Get<string>(Knobs.ProxyAllow);
+    /// <summary>Configured bind address as text, or "" for every interface; <c>NetBind</c> owns the parse.</summary>
+    public string BindAddress => Get<string>(Knobs.BindAddress);
+    /// <summary>Budget for a new connection's first valid frame.</summary>
+    public int HandshakeMs => Get<int>(Knobs.HandshakeMs);
+    /// <summary>Slow-send warning threshold; 0 disables the warning.</summary>
+    public int SlowSendMs => Get<int>(Knobs.SlowSendMs);
+    /// <summary>Per-write bound on the login channel.</summary>
+    public int LoginWriteMs => Get<int>(Knobs.LoginWriteMs);
+
+    /// <summary>Login-door concurrent connection ceiling.</summary>
+    public int LoginMaxConn => Get<int>(Knobs.LoginMaxConn);
+    /// <summary>Login-door live connections per address.</summary>
+    public int LoginPerIp => Get<int>(Knobs.LoginPerIp);
+    /// <summary>Login-door connection opens per address per window.</summary>
+    public int LoginRate => Get<int>(Knobs.LoginRate);
+    /// <summary>Length of the login-door rate window.</summary>
+    public int LoginRateWindowMs => Get<int>(Knobs.LoginRateWindowMs);
+    /// <summary>Game-door concurrent connection ceiling.</summary>
+    public int GameMaxConn => Get<int>(Knobs.GameMaxConn);
+    /// <summary>Game-door live connections per address.</summary>
+    public int GamePerIp => Get<int>(Knobs.GamePerIp);
+    /// <summary>Game-door connection opens per address per window.</summary>
+    public int GameRate => Get<int>(Knobs.GameRate);
+    /// <summary>Length of the game-door rate window.</summary>
+    public int GameRateWindowMs => Get<int>(Knobs.GameRateWindowMs);
+    /// <summary>Exempt loopback from the game door's per-address gates.</summary>
+    public bool GameExemptLoopback => Get<bool>(Knobs.GameExemptLoopback);
 
     /// <summary>Game host a redirect names, as configured text.</summary>
     public string GameHost => Get<string>(Knobs.GameHost);
@@ -386,8 +597,10 @@ public sealed class ServerConfig
     public int LoginFails => Get<int>(Knobs.LoginFails);
     /// <summary>Length of that window in milliseconds.</summary>
     public long LoginFailWindowMs => Get<long>(Knobs.LoginFailWindowMs);
-    /// <summary>Exempt loopback from the failed-login throttle.</summary>
+    /// <summary>Exempt loopback from the login door's per-address gates and the failed-login throttle.</summary>
     public bool LoginExemptLoopback => Get<bool>(Knobs.LoginExemptLoopback);
+    /// <summary>Adopt a password for a legacy character that has no accounts row. A trust switch.</summary>
+    public bool AllowTofu => Get<bool>(Knobs.AllowTofu);
 
     /// <summary>Dirty-character flush cadence in milliseconds.</summary>
     public int AutoSaveMs => Get<int>(Knobs.AutoSaveMs);
@@ -395,6 +608,29 @@ public sealed class ServerConfig
     public bool CastQueue => Get<bool>(Knobs.CastQueue);
     /// <summary>Enforce server-side collision.</summary>
     public bool PassEnforce => Get<bool>(Knobs.PassEnforce);
+
+    /// <summary>The world heartbeat in milliseconds.</summary>
+    public int TickMs => Get<int>(Knobs.TickMs);
+    /// <summary>Slow-tick threshold, or null to derive a quarter of <see cref="TickMs"/>.</summary>
+    public int? SlowTickMs => GetOrNull<int>(Knobs.SlowTickMs);
+
+    /// <summary>Pool-latency warning threshold; 0 disables the probe.</summary>
+    public int PoolLagMs => Get<int>(Knobs.PoolLagMs);
+    /// <summary>Input-silence warning threshold; 0 disables the probe.</summary>
+    public int SilentMs => Get<int>(Knobs.SilentMs);
+
+    /// <summary>Status document path as configured, or "" for <c>&lt;run&gt;/status.json</c>. <c>-</c>
+    /// disables publishing.</summary>
+    public string StatusFile => Get<string>(Knobs.StatusFile);
+    /// <summary>How often the status document is rewritten.</summary>
+    public int StatusMs => Get<int>(Knobs.StatusMs);
+    /// <summary>Operator note published beside the count, or "" for none.</summary>
+    public string StatusMessage => Get<string>(Knobs.StatusMessage);
+
+    /// <summary>GM names from the environment, comma-separated and unparsed, or "".</summary>
+    public string Gms => Get<string>(Knobs.Gms);
+    /// <summary>Tester names from the environment, comma-separated and unparsed, or "".</summary>
+    public string Testers => Get<string>(Knobs.Testers);
 
     /// <summary>Delay before the 0x04 completing a 4.95 self-walk.</summary>
     public int WalkMs => Get<int>(Knobs.WalkMs);
@@ -530,8 +766,13 @@ public sealed class ServerConfig
         ConfigArea.Paths => "Deployment roots",
         ConfigArea.Logging => "Logging",
         ConfigArea.Transport => "Transport and the accept path",
+        ConfigArea.Abuse => "Abuse control — connection admission and login throttling",
         ConfigArea.Login => "Login, handoff and redirects",
         ConfigArea.Session => "Session behaviour",
+        ConfigArea.World => "World heartbeat",
+        ConfigArea.Diagnostics => "Process-health probes",
+        ConfigArea.Status => "The status document",
+        ConfigArea.Staff => "Staff rosters",
         ConfigArea.Movement => "4.95 movement calibration",
         ConfigArea.Rendering => "Rendering and tile diagnostics",
         ConfigArea.Retired => "Retired — moved into ServerTuning.csv",
@@ -603,22 +844,33 @@ public sealed class PathKnob : ConfigKnob
 }
 
 /// <summary>Free text. The <c>normalize</c> flag trims and lowercases, for the knobs whose call sites
-/// always did.</summary>
+/// always did; <c>trim</c> trims only, for the ones that trimmed a path or a message but obviously must not
+/// case-fold it. Which of the three a knob gets is not a style choice — it is the rule its old inline read
+/// had, transcribed.</summary>
 public sealed class StringKnob : ConfigKnob
 {
     private readonly string _default;
     private readonly bool _normalize;
+    private readonly bool _trim;
+    private readonly string? _defaultText;
 
     /// <param name="name">The variable name.</param>
     /// <param name="area">Reference section.</param>
     /// <param name="default">Value when unset or blank.</param>
     /// <param name="doc">What it does.</param>
     /// <param name="normalize">Trim and lowercase the value.</param>
-    public StringKnob(string name, ConfigArea area, string @default, string doc, bool normalize = false)
+    /// <param name="trim">Trim the value without case-folding it.</param>
+    /// <param name="defaultText">How the reference describes the default, when the value in force for a
+    /// blank knob is computed by the call site (a path under another knob's directory, say) rather than
+    /// being the declared string itself.</param>
+    public StringKnob(string name, ConfigArea area, string @default, string doc, bool normalize = false,
+                      bool trim = false, string? defaultText = null)
         : base(name, area, doc)
     {
         _default = @default;
         _normalize = normalize;
+        _trim = trim;
+        _defaultText = defaultText;
     }
 
     /// <summary>The value in force when the variable is unset — exposed so a call site with its own blank
@@ -628,12 +880,14 @@ public sealed class StringKnob : ConfigKnob
     /// <inheritdoc/>
     public override string TypeName => "text";
     /// <inheritdoc/>
-    public override string DefaultText => _default.Length == 0 ? "*(blank)*" : $"`{_default}`";
+    public override string DefaultText =>
+        _defaultText ?? (_default.Length == 0 ? "*(blank)*" : $"`{_default}`");
 
     internal override (object?, string, string?) Resolve(string? raw)
     {
         string value = string.IsNullOrWhiteSpace(raw) ? _default : raw;
         if (_normalize) value = value.Trim().ToLowerInvariant();
+        else if (_trim) value = value.Trim();
         return (value, value.Length == 0 ? "(blank)" : value, null);
     }
 }
