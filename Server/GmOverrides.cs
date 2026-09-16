@@ -77,9 +77,9 @@ internal sealed class GmOverrides
     // ---- world-wide overrides ---------------------------------------------------------------------
     //
     // STATIC on purpose, and kept static by the #57 gathering: World decides a mob's swing with no session in
-    // hand (World.cs, under World._lock), so there is nothing per-session to hang these on. No lock: a byte
-    // and a ushort written by one GM command and read by the tick, where a torn read is a wrong attack POSE
-    // for one frame and nothing else.
+    // hand, so there is nothing per-session to hang these on. The pair is read by World.FlushTick — the back
+    // half of the heartbeat, which runs OUTSIDE World._lock — and written by "@mobact" on a session thread.
+    // No lock: a byte and a ushort, where a torn read is a wrong attack POSE for one frame and nothing else.
 
     // The 0x1A action that makes a mob visibly SWING, not just play the sound. RTK's native mob:attack
     // broadcasts this from the C engine; its boss AI does the same thing explicitly with sendAction(2, 20)
