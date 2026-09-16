@@ -856,8 +856,8 @@ public sealed partial class Session
             ReplyList($"online ({all.Count})", all.Select(Line));
             return;
         }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
         Reply(Line(target));
     }
 
@@ -868,8 +868,8 @@ public sealed partial class Session
     {
         string name = a.Raw;
         if (name.Length == 0) { Refuse(a.Usage()); return; }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
         if (ReferenceEquals(target, this)) { Refuse("You're already right here."); return; }
 
         ushort map = _char.Map, xs = _char.MapXs, ys = _char.MapYs;
@@ -986,8 +986,8 @@ public sealed partial class Session
             ReviveInPlace(IsDead ? "You have been restored to life." : "You are restored to full health.");
             return;
         }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { Refuse($"'{name}' isn't online."); return; }
+        var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
+        if (target is null) return;
         target.ReviveInPlace(target.IsDead ? "You have been restored to life." : "You are restored to full health.");
         Reply($"Restored {target._char.Name} to full health.");
         Log.Info($"   -> @rez '{_char.Name}' -> '{target._char.Name}'");

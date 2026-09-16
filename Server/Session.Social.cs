@@ -31,8 +31,8 @@ public sealed partial class Session
 
     private void TryPartyInvite(string name)
     {
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }   // RTK: silent nullpo_ret bail; we give feedback like whisper does — same blue channel too
+        var target = ResolveOnlinePlayer(name, $"{name} is nowhere to be found.", RefuseChannel.Blue);
+        if (target is null) return;   // RTK: silent nullpo_ret bail; we give feedback like whisper does — same blue channel too
         // Group-attempt feedback goes to the status pane (SendMiniText default type 3, same as NotifyGroup's
         // join/leave lines) — NOT type 11, which is the group/subpath CHAT channel and drew these as blue chat
         // text. Matches the trade-error lines just below, which already use the default.

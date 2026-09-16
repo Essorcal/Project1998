@@ -2146,8 +2146,8 @@ public sealed partial class Session
     {
         string name = text.Trim();
         if (name.Length == 0) { SendClickProfile(this); return; }
-        var target = _world.Online.FindPlayer(name);
-        if (target is null) { SendBlueMessage($"{name} is nowhere to be found."); return; }
+        var target = ResolveOnlinePlayer(name, $"{name} is nowhere to be found.", RefuseChannel.Blue);
+        if (target is null) return;
         SendClickProfile(target);
     }
 
