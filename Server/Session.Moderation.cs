@@ -114,6 +114,43 @@ public sealed partial class Session
         Log.Info($"   -> {Prefix}unban by '{_char.Name}': {name}");
     }
 
+    // ---- mute ---------------------------------------------------------------------------------------
+    //
+    // Held as an absolute unix-SECONDS deadline on the SESSION, not re-read from the database per line. A
+    // DB round-trip on every chat message would put a synchronous read on the packet path for state that
+    // changes maybe twice a week. It is loaded once at world entry (LoadModerationState) and pushed
+    // directly onto the live session by @mute/@unmute (Session.ApplyMute), so both the placement and the
+    // lifting are immediate; the deadline being absolute is what makes EXPIRY work with no timer at all.
+    private long _mutedUntil;
+    private string _muteReason = "";
+
+    internal bool IsMuted() => _mutedUntil > Moderation.Now;
+
+    /// <summary>Load this account's mute state into the session. Called once, at world entry.</summary>
+    internal void LoadModerationState()
+    {
+        if (Moderation.IsMuted(_user, out var reason, out var until)) { _mutedUntil = until; _muteReason = reason; }
+        else { _mutedUntil = 0; _muteReason = ""; }
+    }
+
+    /// <summary>Apply a mute/unmute to an ALREADY-ONLINE session, so a GM's command takes effect on the next
+    /// line the player types rather than at their next login.</summary>
+    internal void ApplyMute(long until, string reason)
+    {
+        _mutedUntil = until;
+        _muteReason = reason ?? "";
+        if (IsMuted()) ReportMuted();
+        else SendLog("You are no longer muted.");
+    }
+
+    private void ReportMuted()
+    {
+        string left = _mutedUntil >= Moderation.Forever ? "" : $" ({Moderation.Describe(_mutedUntil)} remaining)";
+        SendLog(string.IsNullOrWhiteSpace(_muteReason)
+            ? $"You are muted and cannot speak{left}."
+            : $"You are muted and cannot speak{left}: {_muteReason}");
+    }
+
     // @mute <name> [minutes] [reason]
     private void MuteCmd(string args)
     {
