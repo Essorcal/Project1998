@@ -41,8 +41,8 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     if (e.ExceptionObject is Exception ex)
         Log.Error("FATAL unhandled exception (process dying)", ex);
     else
-        // Non-Exception payloads have no stack to carry, so preserve the fatal prefix through Info.
-        Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
+        // Non-Exception payloads have no stack to carry.
+        Log.Error($"FATAL unhandled exception (process dying): {e.ExceptionObject}");
     // Flush here rather than leave it to Log.FlushOnExit: the runtime ABORTS after this handler and never
     // raises ProcessExit, so the trace we just queued would die in the queue — which is the one line this
     // whole hook exists to preserve.
@@ -57,8 +57,7 @@ try
 }
 catch (ArgumentException e)
 {
-    // Log.Error deliberately requires an exception; keep this exception-free fatal text hand-prefixed.
-    Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
+    Log.Error($"invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
     Environment.ExitCode = 1;
     return;
 }

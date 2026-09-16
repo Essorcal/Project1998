@@ -51,8 +51,8 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     if (e.ExceptionObject is Exception ex)
         Log.Error("FATAL unhandled exception (process dying)", ex);
     else
-        // Non-Exception payloads have no stack to carry, so preserve the fatal prefix through Info.
-        Log.Info($"!!! FATAL unhandled exception (process dying): {e.ExceptionObject}");
+        // Non-Exception payloads have no stack to carry.
+        Log.Error($"FATAL unhandled exception (process dying): {e.ExceptionObject}");
 };
 TaskScheduler.UnobservedTaskException += (_, e) =>
     { Log.Warn("unobserved task exception", e.Exception); e.SetObserved(); };
@@ -63,8 +63,7 @@ try
 }
 catch (ArgumentException e)
 {
-    // Log.Error deliberately requires an exception; keep this exception-free fatal text hand-prefixed.
-    Log.Info($"!!! invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
+    Log.Error($"invalid --ports: {e.Message.ReplaceLineEndings(" ")}");
     Log.Shutdown();
     Environment.ExitCode = 1;
     return;
@@ -88,11 +87,10 @@ Doors.LoadUnlocks(); // locked doors players have already opened (map_unlocks) �
 // listens and accepts logins, and every player lands in a mapless void. Fail loudly instead of leaving it
 // to be inferred from a "0 map(s)" line among the startup counts.
 if (Content.Maps.Count == 0)
-    // Log.Error deliberately requires an exception; keep this exception-free fatal text hand-prefixed.
-    Log.Info("!!! NO CONTENT LOADED — game-data was not found. Expected it under the repo root " +
-             $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
-             "The world will be empty. Fix: run from a full checkout, or set P1998_GAME_DATA to the " +
-             "content directory.");
+    Log.Error("NO CONTENT LOADED — game-data was not found. Expected it under the repo root " +
+              $"(searched up from the binary, then the working directory: {Directory.GetCurrentDirectory()}). " +
+              "The world will be empty. Fix: run from a full checkout, or set P1998_GAME_DATA to the " +
+              "content directory.");
 
 // Terrain availability. Missing .map files don't throw — collision and spawn placement just silently
 // degrade (players and mobs walk through walls) — so say so at startup instead. The Windows fallback dirs
