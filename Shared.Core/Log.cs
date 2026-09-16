@@ -204,10 +204,15 @@ public static class Log
         Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] !! {msg}{Detail(e)}", LogLevel.Warn);
 
     /// <summary>A caught exception that should not have happened — a handler threw, a flush failed, a thread
-    /// loop's body raised. Always carries the full exception; there is deliberately no string-only overload
-    /// that would let a call site drop the stack again.</summary>
+    /// loop's body raised. Always carries the full exception.</summary>
     public static void Error(string msg, Exception e) =>
         Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] !!! {msg}{Detail(e)}", LogLevel.Error);
+
+    /// <summary>A fatal condition with no exception object to carry — an unhandled-exception payload that
+    /// was not an <see cref="Exception"/>, or a startup abort before there was one to catch. Same prefix and
+    /// admission as the two-argument overload, minus the stack there is nothing to print.</summary>
+    public static void Error(string msg) =>
+        Enqueue($"[{DateTime.Now:HH:mm:ss.fff}] !!! {msg}", LogLevel.Error);
 
     private static string Detail(Exception e) =>
         "\n      " + e.ToString().Replace("\n", "\n      ");

@@ -95,13 +95,13 @@ public sealed class TkAcceptor
                 // likes — which would make this a bypass of the per-IP gates rather than a fix for them.
                 if (!ProxyProtocol.IsTrustedPeer(peer))
                 {
-                    Log.Info($"!! REJECT {peer} on :{port} (not in P1998_PROXY_ALLOW); {_guard.Total} live");
+                    Log.Warn($"REJECT {peer} on :{port} (not in P1998_PROXY_ALLOW); {_guard.Total} live");
                     try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                     continue;
                 }
                 if (!_guard.TryReserveGlobal(out var greason))
                 {
-                    Log.Info($"!! REJECT {peer} on :{port} ({greason}); {_guard.Total} live");
+                    Log.Warn($"REJECT {peer} on :{port} ({greason}); {_guard.Total} live");
                     try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                     continue;
                 }
@@ -112,7 +112,7 @@ public sealed class TkAcceptor
             // Admission control BEFORE spawning a session: shed load / throttle floods at the cheapest point.
             if (!_guard.TryAdmit(peer, out var reason))
             {
-                Log.Info($"!! REJECT {peer} on :{port} ({reason}); {_guard.Total} live");
+                Log.Warn($"REJECT {peer} on :{port} ({reason}); {_guard.Total} live");
                 try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
                 continue;
             }
@@ -141,7 +141,7 @@ public sealed class TkAcceptor
 
         if (!_guard.BindIp(ip, out var reason))
         {
-            Log.Info($"!! REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
+            Log.Warn($"REJECT {ip} on :{port} ({reason}); {_guard.Total} live");
             _guard.ReleaseGlobal();
             try { client.Close(); } catch { /* EXPECTED: closing a socket we are rejecting anyway */ }
             return;
