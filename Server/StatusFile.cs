@@ -25,20 +25,19 @@ namespace Server;
 /// </summary>
 public static class StatusFile
 {
-    /// <summary>Where to publish. Empty or "-" disables publishing entirely.</summary>
+    /// <summary>Where to publish. "-" disables publishing entirely; an unset knob resolves blank here and
+    /// takes the run directory's own default, which is why the fallback lives at this call site rather than
+    /// in the declaration — it is computed from another knob.</summary>
     private static readonly string Path =
-        Environment.GetEnvironmentVariable("P1998_STATUS_FILE") is { } p && p.Trim().Length > 0
-            ? p.Trim()
+        ServerConfig.Current.StatusFile is { Length: > 0 } configured
+            ? configured
             : System.IO.Path.Combine(Shared.RepoPaths.RunDir(), "status.json");
 
-    private static readonly int IntervalMs =
-        int.TryParse(Environment.GetEnvironmentVariable("P1998_STATUS_MS"), out var ms) && ms >= 1000
-            ? ms : 10_000;
+    private static readonly int IntervalMs = ServerConfig.Current.StatusMs;
 
     /// <summary>Optional operator note shown beside the count. Null leaves the launcher's own wording.</summary>
     private static readonly string? Message =
-        Environment.GetEnvironmentVariable("P1998_STATUS_MESSAGE") is { } m && m.Trim().Length > 0
-            ? m.Trim() : null;
+        ServerConfig.Current.StatusMessage is { Length: > 0 } note ? note : null;
 
     private static bool Disabled => Path == "-";
 
