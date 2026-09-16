@@ -34,9 +34,36 @@ public class ResolveOnlinePlayerTests
 
     private const byte WhisperIn = 0x19;
 
+    /// <summary>The staff name the routed GM commands below run as. Same roster file and same content
+    /// <see cref="CommandTableTests"/> writes, deliberately: <c>StaffAccounts.Load</c> replaces the roster
+    /// wholesale, so a second class declaring a different name would demote the first one's sessions
+    /// depending on run order.</summary>
+    private const string GmName = "cmdgm";
+
     private readonly SessionFixture _fx;
 
-    public ResolveOnlinePlayerTests(SessionFixture fx) => _fx = fx;
+    public ResolveOnlinePlayerTests(SessionFixture fx)
+    {
+        _fx = fx;
+        lock (TestProcessState.Gate)
+        {
+            Directory.CreateDirectory(TestProcessState.StateDirectory);
+            File.WriteAllText(Path.Combine(TestProcessState.StateDirectory, "gm_accounts.txt"), GmName + "\n");
+            StaffAccounts.Load();
+        }
+    }
+
+    /// <summary>A command the way the read loop runs one: a framed <c>0x0E</c> chat packet, so the tier gate
+    /// and the table lookup are part of what is under test.</summary>
+    private static void Run(Session session, string command)
+    {
+        var text = Encoding.ASCII.GetBytes(command);
+        var body = new byte[2 + text.Length];
+        body[0] = 0;
+        body[1] = (byte)text.Length;
+        text.CopyTo(body, 2);
+        session.Receive(SessionFixture.Frame(0x0E, body));
+    }
 
     /// <summary>The text of every <c>0x0A</c> minitext frame recorded, paired with its type byte — the
     /// channel and the sentence are asserted together, because either one alone would pass a routing bug.
@@ -130,6 +157,58 @@ public class ResolveOnlinePlayerTests
 
         // RTK's literal wording on the blue wisp channel (0x0A type 0) — byte for byte what the retyped
         // copy sent before it was routed through the resolver.
+        Assert.Equal(new[] { ((byte)0, "GhostOfNobody is nowhere to be found.") }, MiniTexts(outbound));
+    }
+
+    /// <summary>The three GM commands routed through the resolver by #57 part 3 — <c>@where</c>,
+    /// <c>@bring</c> and <c>@rez</c> — still refuse an offline name with the sentence they always sent, on
+    /// the command-reply channel (<c>Refuse</c> -&gt; <c>0x0D</c>), and nothing lands on the status pane.
+    ///
+    /// <para>Driven through the real chat frame rather than the seam, because what the routing could break
+    /// is the CALLER: a site that passed the wrong channel enum, or let the sentence drift, compiles.
+    /// Falsification: change one of the three call sites to <c>RefuseChannel.MiniText</c> and its row fails
+    /// on the empty-pane assertion. Run it, confirm red, restore.</para></summary>
+    [Theory]
+    [InlineData("@where")]
+    [InlineData("@bring")]
+    [InlineData("@rez")]
+    public void ARoutedGmCommandRefusesAnOfflineNameOnTheCommandChannel(string command)
+    {
+        var (session, outbound) = _fx.Player(GmName, ResolveMap, 9, 9);
+        outbound.Clear();
+
+        Run(session, command + " GhostOfNobody");
+
+        Assert.Empty(MiniTexts(outbound));
+        Assert.Contains(SpeechText(outbound), t => t.Contains("'GhostOfNobody' isn't online."));
+    }
+
+    /// <summary>"@click &lt;name&gt;" keeps the BLUE channel for an offline name — the same wisp channel the
+    /// whisper refusal uses, and a different type byte on the same opcode as the status pane, which is the
+    /// pair this whole file exists to keep apart.</summary>
+    [Fact]
+    public void ClickProfileRefusesAnOfflineNameOnTheBlueChannel()
+    {
+        var (session, outbound) = _fx.Player(GmName, ResolveMap, 10, 10);
+        outbound.Clear();
+
+        Run(session, "@click GhostOfNobody");
+
+        Assert.Equal(new[] { ((byte)0, "GhostOfNobody is nowhere to be found.") }, MiniTexts(outbound));
+    }
+
+    /// <summary>The profile window's "Group" button aimed at someone who is not online: the real
+    /// <c>0x2E</c> invite frame, refused on the blue channel exactly as it was before the routing. RTK bails
+    /// silently here; the feedback is ours, and the comment at the call site is the record of that choice.
+    /// </summary>
+    [Fact]
+    public void APartyInviteToAnOfflineNameRefusesOnTheBlueChannel()
+    {
+        var (session, outbound) = _fx.Player("ResolveInviter", ResolveMap, 11, 11);
+        outbound.Clear();
+
+        session.Receive(SessionFixture.PartyInviteFrame("GhostOfNobody"));
+
         Assert.Equal(new[] { ((byte)0, "GhostOfNobody is nowhere to be found.") }, MiniTexts(outbound));
     }
 }

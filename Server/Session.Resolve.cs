@@ -3,13 +3,17 @@ namespace Server;
 /// <summary>
 /// One lookup-or-refuse gate for the "find this online player or tell me why not" sites (#57 finding 31).
 ///
-/// <para><b>Why one method.</b> <c>_world.Online.FindPlayer(name)</c> is called at a dozen sites. Six of them
-/// are literally the same three statements — look the name up, send one line if it came back null, carry on
-/// with the peer if it did not — and each had retyped its own copy, three of them with a refusal string that
-/// had drifted into three different wordings for the same condition. What made that worth collapsing is not
-/// the line count: it is that every one of those sites also carries the SAME lock-discipline claim in a
-/// comment ("Rule 1 holds: FindPlayer takes and releases World._lock inside itself"), and a claim repeated six
-/// times is a claim nobody checks. Stated once, here, it is checkable once.</para>
+/// <para><b>Why one method.</b> <c>_world.Online.FindPlayer(name)</c> is called at a couple of dozen sites.
+/// Eleven of them are literally the same three statements — look the name up, send one line if it came back
+/// null, carry on with the peer if it did not — and each had retyped its own copy, several with a refusal
+/// string that had drifted into different wordings for the same condition. What made that worth collapsing is
+/// not the line count: it is that every one of those sites also carries the SAME lock-discipline claim in a
+/// comment ("Rule 1 holds: FindPlayer takes and releases World._lock inside itself"), and a claim repeated
+/// eleven times is a claim nobody checks. Stated once, here, it is checkable once.</para>
+///
+/// <para>Six routed in the first pass (PR #238); #57 part 3 added <c>@where</c>, <c>@bring</c>, <c>@rez</c>,
+/// <c>@click</c> and the party invite, each of which kept its own sentence and its own channel byte for
+/// byte.</para>
 ///
 /// <para><b>What is NOT unified.</b> The refusal TEXT and the CHANNEL stay the caller's, passed in. These are
 /// RTK-sourced strings a player reads and, at the GM sites, the command-reply channel <c>Commands.cs</c>
