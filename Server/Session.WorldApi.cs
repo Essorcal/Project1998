@@ -127,9 +127,10 @@ public sealed partial class Session
     /// decision can use a rect older than the viewer's tile at the moment it is made.
     ///
     /// <para>By reference, and that is a measurement rather than a style: this runs 705 times per viewer per
-    /// beat at 400 players, and returning the rect instead cost a 12-byte copy at every one of them —
-    /// 15 to 21% on the whole-sweep scratch bench against the 6 to 8% the reference form costs. In the common
-    /// case (a viewer that did not move) it is one field read, one compare and a not-taken branch.</para></summary>
+    /// beat at 400 players, and a form that RETURNED the rect copied twelve bytes at every one of them, which
+    /// the whole-sweep scratch bench could see (the numbers are in briefs/reports/load-run-2-fix-1.md). In the
+    /// common case — a viewer that did not move — this is one field read, one compare and a branch that is
+    /// not taken.</para></summary>
     private void Reanchor(ref ViewRect view)
     {
         if (Volatile.Read(ref _viewGen) != view.Gen) view = CurrentView();
