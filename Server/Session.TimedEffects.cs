@@ -119,9 +119,16 @@ public sealed partial class Session
     /// so there is one definition of a consistent row (snapshot under the state monitor, write outside it)
     /// and one sequence deciding which snapshot wins. It used to serialize inline under no lock at all.
     ///
-    /// <para>It still leaves the dirty flag and the AutoSaveMs throttle exactly where it found them, which is
-    /// what it always did. Clearing them would arguably be more correct — the whole character has just been
-    /// written — but it is a behaviour change, and #29 is not the ticket for it.</para></summary>
+    /// <para>On success it leaves the dirty flag and the AutoSaveMs throttle exactly where it found them,
+    /// which is what it always did. Clearing them would arguably be more correct — the whole character has
+    /// just been written — but it is a behaviour change, and #29 is not the ticket for it.</para>
+    ///
+    /// <para>On failure the flag is SET, not left alone: <see cref="CaptureAndWrite"/> re-dirties the session
+    /// whether or not the write was dirty-gated, so a failed unconditional write is retried by the next
+    /// FlushIfDue or autosave sweep exactly as a failed gated one is. Without that the edit would simply be
+    /// gone, because nothing else was going to write it — and since the database's command timeout now gives
+    /// up after about five seconds instead of thirty, a contended write fails where it used to be waited
+    /// out.</para></summary>
     private bool StoreSave() => CaptureAndWrite(dirtyGated: false);
 
     /// <summary>

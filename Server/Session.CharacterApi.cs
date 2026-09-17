@@ -259,7 +259,10 @@ public sealed partial class Session
                 if (dirtyGated) _lastSaveAtMs = Environment.TickCount64;
             }
         }
-        if (!ok && dirtyGated) _dirty = true;    // retried by the next FlushIfDue / autosave sweep
+        if (!ok) _dirty = true;                  // retried by the next FlushIfDue / autosave sweep — an
+                                                 // unconditional write (StoreSave) is re-dirtied too, so a
+                                                 // failed spellbook/legend/profile edit is retried rather
+                                                 // than lost until something else happens to dirty us
         return ok;
     }
 
