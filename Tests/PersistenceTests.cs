@@ -269,6 +269,94 @@ public class PersistenceTests : IDisposable
             $"the save returned in {clock.Elapsed.TotalMilliseconds:F0}ms, so it never contended at all");
     }
 
+    /// <summary>
+    /// The other half of shortening the timeout: a failed UNCONDITIONAL save must be retried, not lost. The
+    /// throttled autosave path always put the dirty flag back when a write failed, but
+    /// <c>Session.StoreSave</c> — the spellbook, legend and profile writes that persist whether or not the
+    /// flag happens to be set — did not, because <c>CaptureAndWrite</c> only re-dirtied under
+    /// <c>dirtyGated</c>. A write lock held between five and thirty seconds used to be waited out and the
+    /// save landed; with the shorter bound it fails, and without the re-dirty there is nothing left to
+    /// retry it.
+    ///
+    /// <para>Driven through the real 0x4F change-profile frame rather than a helper, because the player-
+    /// facing half is part of the same fact: the reply must not claim the profile was saved when it was
+    /// not. Then the lock goes and the next flush — <c>FlushNow</c>, the same call World's autosave sweep
+    /// makes — has to land the row.</para>
+    ///
+    /// <para>Red without the re-dirty in <c>CaptureAndWrite</c>: the session reports dirty False and
+    /// <c>FlushNow</c> finds nothing pending, so the profile never reaches the database.</para>
+    /// </summary>
+    [Fact]
+    public void FailedUnconditionalSave_IsRetriedByTheNextFlush_AndNotReportedAsSaved()
+    {
+        const string blurb = "written while the database was locked";
+
+        TestProcessState.LoadContent();      // World's constructor reads the spawn roster out of Content
+        Assert.True(_store.SaveMany(new[] { Make(_a, 100) }));
+
+        var character = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion,
+            Name = _a,
+        };
+        var outbound = new RecordingOutbound($"recorder:{_a}");
+        // The five-argument constructor is the one that hands the session a loaded character, which is what
+        // sets _enteredWorld — and _enteredWorld is what gates StoreSave at the 0x4F handler.
+        var session = new Session(outbound, 2005, _store, new World(), character);
+        outbound.Clear();
+
+        // A second thread holds the write lock until this one says it may let go, so the save below fails
+        // for the real reason (SQLITE_BUSY after the provider's window) rather than a synthetic error.
+        using var locked = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = Db.Open();
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            begin.ExecuteNonQuery();
+            locked.Set();
+            release.Wait(TimeSpan.FromSeconds(60));
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }) { IsBackground = true };
+        holder.Start();
+        Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the write lock");
+
+        session.Receive(SessionFixture.Frame(ClientOp.ChangeProfile, ChangeProfileBody(blurb)));
+
+        // The player is told the truth: not "saved", and in plain words that it will be written again.
+        string reply = MessageText(Assert.Single(outbound.BodiesOf(0x02)));
+        Assert.DoesNotContain("has been saved", reply);
+        Assert.Contains("saved again shortly", reply);
+
+        // Nothing reached the database, and the session knows it still owes a write.
+        Assert.NotEqual(blurb, LoadOk(_a).ProfileText);
+        Assert.Contains("dirty True", session.DiagState());
+
+        release.Set();
+        Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never released the write lock");
+
+        // The retry the dirty flag buys: the same call World.AutoSaveLoop makes on an idle dirty session.
+        session.FlushNow();
+        Assert.Equal(blurb, LoadOk(_a).ProfileText);
+    }
+
+    /// <summary>The 0x4F body the profile editor sends: picSize(u16 BE) pic[] blurbLen(u8) blurb[] 00. No
+    /// picture here — the blurb is the part that has to survive, and an empty picture is a legal frame.</summary>
+    private static byte[] ChangeProfileBody(string blurb)
+    {
+        byte[] text = Encoding.ASCII.GetBytes(blurb);
+        var body = new List<byte> { 0x00, 0x00, (byte)text.Length };
+        body.AddRange(text);
+        body.Add(0x00);
+        return body.ToArray();
+    }
+
+    /// <summary>The text out of a 0x02 message body: kind(0x0F) len(u8) text[] 00.</summary>
+    private static string MessageText(byte[] body) => Encoding.ASCII.GetString(body, 2, body[1]);
+
     /// <summary>The parcel guarantee: the queue row and the character save commit together. Here the
     /// callback reports failure, standing in for "the parcel was already claimed by another path".</summary>
     [Fact]
