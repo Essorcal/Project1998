@@ -124,7 +124,13 @@ public sealed class AnnounceMonitorTests
     {
         var (gm, gmProbe, _) = ProbePlayer(GmRoster.Name);
         var (target, targetProbe, character) = ProbePlayer("BanTarget");
-        _fx.Store.SaveJson(CharacterStore.Key(character.Name), CharacterStore.Serialize(character));
+        // The setup save reports its own success. SaveJson swallows a failed write and returns false (it logs
+        // a "[db] !! Save(...) failed" line and carries on), so without this the assertion below reads a
+        // missing row as the PRODUCT refusing the name — which is exactly how fork CI run 35170089187
+        // attempt 1 reported a database locked by another collection's test.
+        Assert.True(_fx.Store.SaveJson(CharacterStore.Key(character.Name), CharacterStore.Serialize(character)),
+                    "the setup save failed — see the '[db] !!' line in the captured log for why. That is a "
+                    + "broken test setup, not @ban refusing anything.");
         Assert.True(CharacterStore.CharacterExists(character.Name), "@ban refuses a name with no character row");
         gmProbe.Clear(); targetProbe.Clear();
 

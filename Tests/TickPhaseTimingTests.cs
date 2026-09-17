@@ -24,10 +24,10 @@ namespace Tests;
 /// the moment the type initialises, so a test cannot lower it. Everything past that gate is the production
 /// emission path.</para>
 ///
-/// <para>The log is captured with the <c>ConsoleTap</c> pattern from <c>Tests/MobAiTickTests.cs</c> (the
-/// same <c>Console.SetOut</c> swap restored in a <c>finally</c>, and the same <c>WaitFor</c>, because
-/// <c>Log</c> is a queue drained by its own writer thread). No new logging seam: that is separately queued
-/// work.</para>
+/// <para>The log is captured with <c>Tests/Support/ConsoleTap.cs</c>, which is exclusive across the whole
+/// test process (<c>Console.Out</c> is one global slot, and two collections swapping it at once lose each
+/// other's redirect) and waits for <c>Log</c>'s writer thread to reach the console. No new logging seam:
+/// that is separately queued work.</para>
 ///
 /// <para>Hygiene, as in every class in the <c>world</c> collection: the fixture's <c>World</c> is shared
 /// and has no teardown, so the creatures and the player seeded here are removed in a <c>finally</c>.</para>
@@ -173,15 +173,9 @@ public class TickPhaseTimingTests
     /// what was missing).</summary>
     private static string Captured(Action body, string needle)
     {
-        var tap = new ConsoleTap();
-        var prior = Console.Out;
-        Console.SetOut(tap);
-        try
-        {
-            body();
-            return tap.WaitFor(needle, TimeSpan.FromSeconds(10));
-        }
-        finally { Console.SetOut(prior); }
+        using var tap = ConsoleTap.Acquire();
+        body();
+        return tap.WaitFor(needle, TimeSpan.FromSeconds(10));
     }
 
     private static string[] Lines(string log) =>
@@ -191,28 +185,4 @@ public class TickPhaseTimingTests
     private static IEnumerable<long> Parts(string line) =>
         Regex.Matches(line, @"(\d+)ms").Select(m => long.Parse(m.Groups[1].Value));
 
-    /// <summary>A <c>Console.Out</c> stand-in that can be read back safely while <c>Log</c>'s writer thread
-    /// is still appending to it — the same one <c>MobAiTickTests</c> uses.</summary>
-    private sealed class ConsoleTap : TextWriter
-    {
-        private readonly StringBuilder _text = new();
-
-        public override Encoding Encoding => Encoding.UTF8;
-        public override void Write(char value) { lock (_text) _text.Append(value); }
-        public override void Write(string? value) { lock (_text) _text.Append(value); }
-        public override void Write(char[] buffer, int index, int count) { lock (_text) _text.Append(buffer, index, count); }
-
-        private string Snapshot() { lock (_text) return _text.ToString(); }
-
-        public string WaitFor(string needle, TimeSpan deadline)
-        {
-            var until = DateTime.UtcNow + deadline;
-            while (true)
-            {
-                string s = Snapshot();
-                if (s.Contains(needle) || DateTime.UtcNow >= until) return s;
-                Thread.Sleep(20);
-            }
-        }
-    }
 }
