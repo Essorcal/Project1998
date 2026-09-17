@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Shared;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
@@ -197,26 +198,15 @@ public class SharedListenerTests
 
         var guard = new ConnGuard(globalMax: 1, perIpMax: 1, rateMax: 1, rateWindowMs: 10_000);
         var acceptor = new TkAcceptor(new[] { port }, guard, (_, _, _) => Task.CompletedTask);
-        var captured = new StringWriter();
-        TextWriter original = Console.Out;
-        Console.SetOut(TextWriter.Synchronized(captured));
-        try
-        {
-            var error = await Assert.ThrowsAsync<SocketException>(acceptor.RunAsync);
-            Assert.Equal(SocketError.AddressAlreadyInUse, error.SocketErrorCode);
+        // Exclusive: Console.Out is one process-global slot, and a class in another collection swapping it
+        // while this one holds it would take the redirect away (Tests/Support/ConsoleTap.cs).
+        using var captured = await ConsoleTap.AcquireAsync();
 
-            string expected = $"could not listen on {NetBind.Describe}:{port}: {error.Message}";
-            var deadline = DateTime.UtcNow + Bounded;
-            while (!captured.ToString().Contains(expected, StringComparison.Ordinal)
-                   && DateTime.UtcNow < deadline)
-                await Task.Delay(10);
+        var error = await Assert.ThrowsAsync<SocketException>(acceptor.RunAsync);
+        Assert.Equal(SocketError.AddressAlreadyInUse, error.SocketErrorCode);
 
-            Assert.Contains(expected, captured.ToString(), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Console.SetOut(original);
-        }
+        string expected = $"could not listen on {NetBind.Describe}:{port}: {error.Message}";
+        Assert.Contains(expected, await captured.WaitForAsync(expected, Bounded), StringComparison.Ordinal);
     }
 
     // ---- plumbing ---------------------------------------------------------------------------------------

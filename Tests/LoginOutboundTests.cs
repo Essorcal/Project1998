@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using Protocol.Tk495;
 using Shared;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
@@ -269,9 +270,17 @@ public sealed class LoginOutboundTests
     ///
     /// <para><c>Log</c> writes on its own thread and only reaches this tap through <c>Console.Out</c>, which
     /// is process-global — the reason this class is in the <c>log</c> collection, as
-    /// <c>SharedListenerTests</c> is. The attempts below exist because a class in ANOTHER collection may tap
-    /// Console for a moment (<c>MobAiTickTests</c> does) and swallow one window; they cannot mask a missing
-    /// line, only a stolen window, since a channel that does not warn fails all of them.</para></summary>
+    /// <c>SharedListenerTests</c> is. The collection is not enough on its own, because a class in ANOTHER
+    /// collection runs concurrently and its own save/restore of <c>Console.Out</c> discards this one's
+    /// redirect for good; that is how fork CI run 35164315790 attempt 1 failed here with all three SLOW SEND
+    /// lines present in the job's stdout. <see cref="ConsoleTap"/> is the fix — while this test holds it, no
+    /// other test can swap the console — and it is why one window is now enough where three were not.</para>
+    ///
+    /// <para>The frame is also read off the peer before the teardown, rather than trusting
+    /// <c>CloseAfterDrainAsync</c> to outlast the writer's first scheduling: the drain gives up after
+    /// <c>DrainTimeoutMs</c> and closes the socket, and a writer that reaches its <c>WriteAsync</c> after
+    /// that writes into a closed socket, logs "writer stopped" and never measures the queued time at all. The
+    /// received bytes are the proof that the write this fact is about actually happened.</para></summary>
     [Fact]
     public async Task AFrameThatWaitsTooLongToReachTheSocketIsNamedOnTheLoginChannel()
     {
@@ -281,32 +290,25 @@ public sealed class LoginOutboundTests
 
         const int SlowSendMs = 50;
         const int HoldMs = 120;      // > SlowSendMs by enough that no scheduler jitter can decide the outcome
-        var captured = new StringWriter();
-        TextWriter original = Console.Out;
-        Console.SetOut(TextWriter.Synchronized(captured));
-        try
-        {
-            for (int attempt = 0; attempt < 3; attempt++)
-            {
-                using var pair = await SocketPair.Connect(60_000, SlowSendMs);
-                Assert.True(pair.Outbound.Send(Status(0x0F, "the frame that waited")));
-                await Task.Delay(HoldMs);    // nothing is dequeuing: the queued time IS this delay
-                Task writer = pair.Outbound.RunWriterAsync();
-                await pair.Outbound.CloseAfterDrainAsync();
-                await writer.WaitAsync(TimeSpan.FromSeconds(10));
-                Assert.Null(pair.Outbound.DropReason);   // warned about, never dropped: nothing stalled
+        using var captured = await ConsoleTap.AcquireAsync();
 
-                string wanted = $"SLOW SEND {pair.Outbound.Remote}: queued ";
-                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
-                while (!captured.ToString().Contains(wanted, StringComparison.Ordinal)
-                       && DateTime.UtcNow < deadline)
-                    await Task.Delay(10);
-                if (captured.ToString().Contains(wanted, StringComparison.Ordinal)) return;
-            }
-            Assert.Fail("no SLOW SEND line for a frame that waited "
-                        + $"{HoldMs}ms against a {SlowSendMs}ms threshold, in three attempts");
-        }
-        finally { Console.SetOut(original); }
+        using var pair = await SocketPair.Connect(60_000, SlowSendMs);
+        byte[] frame = Status(0x0F, "the frame that waited");
+        Assert.True(pair.Outbound.Send(frame));
+        await Task.Delay(HoldMs);    // nothing is dequeuing: the queued time IS this delay
+        Task writer = pair.Outbound.RunWriterAsync();
+        // The peer reads the frame: the write completed, so the watchdog has measured its queued time and
+        // the warning is on Log's queue. Everything after this is waiting for that line, not racing for it.
+        Assert.Equal(frame, await ReadExactly(pair.Client.GetStream(), frame.Length));
+        await pair.Outbound.CloseAfterDrainAsync();
+        await writer.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Null(pair.Outbound.DropReason);   // warned about, never dropped: nothing stalled
+
+        string wanted = $"SLOW SEND {pair.Outbound.Remote}: queued ";
+        string log = await captured.WaitForAsync(wanted, TimeSpan.FromSeconds(3));
+        Assert.True(log.Contains(wanted, StringComparison.Ordinal),
+                    $"no SLOW SEND line for a frame that waited {HoldMs}ms against a {SlowSendMs}ms "
+                    + $"threshold; the console carried:\n{log}");
     }
 
     /// <summary>The login channel's one server-&gt;client frame, built exactly as
@@ -322,6 +324,16 @@ public sealed class LoginOutboundTests
 
     private static byte[] Redirect() =>
         LoginRedirect.Build(new byte[] { 127, 0, 0, 1 }, 2005, "drainprobe", new byte[] { 0, 1, 18, 17, 0 });
+
+    /// <summary>Exactly <paramref name="count"/> bytes from the peer, or a failure inside the deadline — the
+    /// caller uses it as evidence that the writer really put those bytes on the wire.</summary>
+    private static async Task<byte[]> ReadExactly(NetworkStream stream, int count)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var buffer = new byte[count];
+        await stream.ReadExactlyAsync(buffer, timeout.Token);
+        return buffer;
+    }
 
     private static async Task<byte[]> ReadToEof(NetworkStream stream)
     {

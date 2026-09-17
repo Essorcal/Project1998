@@ -391,17 +391,16 @@ public class MobAiTickTests
             });
             outbound.Clear();   // both spawns are drawn already; only the beat's own traffic from here
 
-            var tap = new ConsoleTap();
-            var prior = Console.Out;
-            Console.SetOut(tap);
             string log;
-            try
+            // Exclusive while held: this class is in the `world` collection and the log tests are in `log`,
+            // so the two run at the same time, and an unguarded save/restore of Console.Out here is what
+            // silently discarded THEIR redirect (see Tests/Support/ConsoleTap.cs).
+            using (var tap = ConsoleTap.Acquire())
             {
                 _fx.World.TickOnceForTest();
                 // Log is a queue drained by its own writer thread; give the line a moment to reach the console.
                 log = tap.WaitFor($"#{faulty.Id}", TimeSpan.FromSeconds(10));
             }
-            finally { Console.SetOut(prior); }
 
             Assert.Equal(watcher.PlayerId, chaser.TargetId);   // it locked onto the watcher
             Assert.Equal(((ushort)5, (ushort)6), (chaser.X, chaser.Y));
@@ -650,30 +649,4 @@ public class MobAiTickTests
         return -1;
     }
 
-    /// <summary>A <c>Console.Out</c> stand-in that can be read back safely while <c>Log</c>'s writer thread is
-    /// still appending to it.</summary>
-    private sealed class ConsoleTap : TextWriter
-    {
-        private readonly StringBuilder _text = new();
-
-        public override Encoding Encoding => Encoding.UTF8;
-        public override void Write(char value) { lock (_text) _text.Append(value); }
-        public override void Write(string? value) { lock (_text) _text.Append(value); }
-        public override void Write(char[] buffer, int index, int count) { lock (_text) _text.Append(buffer, index, count); }
-
-        private string Snapshot() { lock (_text) return _text.ToString(); }
-
-        /// <summary>Everything written so far once <paramref name="needle"/> has appeared, or whatever was
-        /// written when the deadline passed — the caller's assertion then names what was missing.</summary>
-        public string WaitFor(string needle, TimeSpan deadline)
-        {
-            var until = DateTime.UtcNow + deadline;
-            while (true)
-            {
-                string s = Snapshot();
-                if (s.Contains(needle) || DateTime.UtcNow >= until) return s;
-                Thread.Sleep(20);
-            }
-        }
-    }
 }
