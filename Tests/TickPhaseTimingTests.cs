@@ -41,7 +41,7 @@ public class TickPhaseTimingTests
     public TickPhaseTimingTests(SessionFixture fx, ITestOutputHelper output) { _fx = fx; _out = output; }
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
-    private const ushort PhaseMap = 60050, QuietMap = 60051;
+    private const ushort PhaseMap = 60050, QuietMap = 60051, SnapshotMap = 60052;
 
     /// <summary>Enough wandering creatures that one beat costs whole milliseconds on any machine, so the
     /// phase line has something to name. They are spread over a 64-tile square with the watcher in the
@@ -151,6 +151,73 @@ public class TickPhaseTimingTests
         }
     }
 
+    /// <summary>The viewport phase is two different things and the line now says which is which: the
+    /// <c>lock (_lock)</c> snapshot at the top of <c>ReconcileViews</c> is <c>(3.0) view snapshot</c>, and
+    /// the lockless per-player sweep after it is <c>(3) viewports</c>.
+    ///
+    /// <para>Why this matters: load-run-2 measured <c>(3) viewports</c> leading 37 of 38 slow beats at 400
+    /// players on one map, p50 111ms, while the whole-sweep bench models ~11ms of it. The snapshot contends
+    /// with 400 session read-loop threads for <c>_lock</c> and is invisible to the <c>lock-wait</c> figure,
+    /// which measures only <c>Tick</c>'s own acquisition — so until the bucket was split nobody could say
+    /// which half the missing 100ms was in. A mark on the wrong side of the block would make the next load
+    /// run answer that question wrongly and confidently, which is the silent failure this test exists for.</para>
+    ///
+    /// <para>The fact: with another thread holding <c>_lock</c> for a known interval, the snapshot bucket
+    /// carries at least half of it and the sweep bucket does not. The beat is driven through
+    /// <c>FlushTickWatchedForTest</c> rather than the whole tick, because <c>Tick</c> releases <c>_lock</c> a
+    /// few instructions before <c>ReconcileViews</c> re-takes it and a thread re-entering a monitor it just
+    /// released beats a blocked waiter essentially every time — through the whole beat the hold would land in
+    /// <c>lock-wait</c> and never in the bucket under test.</para></summary>
+    [Fact]
+    public void TheViewSnapshotBucketCarriesTheWorldLockAndTheSweepDoesNot()
+    {
+        var (watcher, outbound) = _fx.Player("SnapshotWatcher", SnapshotMap, x: 32, y: 32);
+        try
+        {
+            Seed(SnapshotMap, 200);   // the map has to qualify for the snapshot, and the sweep has to be real
+            outbound.Clear();
+
+            // Long enough that the milliseconds between the holder signalling and the tick thread reaching
+            // ReconcileViews cannot account for the assertion. The assertion is on half of it for the same
+            // reason: what is being pinned is which side of the block the mark is on, not a stopwatch.
+            const int HoldMs = 200;
+
+            using var holding = new ManualResetEventSlim(false);
+            var holder = new Thread(() => _fx.World.UnderWorldLockForTest(() =>
+            {
+                holding.Set();
+                Thread.Sleep(HoldMs);
+            })) { IsBackground = true, Name = "world-lock holder" };
+            holder.Start();
+            Assert.True(holding.Wait(TimeSpan.FromSeconds(10)), "the holder thread never took the world lock");
+
+            string log = Captured(() => _fx.World.FlushTickWatchedForTest(slowMs: 1), Head);
+            holder.Join();
+
+            string[] lines = Lines(log);
+            int phases = Array.FindIndex(lines, l => l.Contains(Head));
+            Assert.True(phases >= 0, $"no phase line in:\n{log}");
+            _out.WriteLine(lines[phases]);
+
+            long snapshot = Phase(lines[phases], @"\(3\.0\) view snapshot");
+            long sweep = Phase(lines[phases], @"\(3\) viewports");
+
+            Assert.True(snapshot >= HoldMs / 2,
+                $"`_lock` was held by another thread for {HoldMs}ms across the snapshot, so " +
+                $"`(3.0) view snapshot` should carry it; it says {snapshot}ms:\n{lines[phases]}");
+            Assert.True(sweep < HoldMs / 2,
+                $"the sweep runs with no lock held and must not be inflated by the hold; " +
+                $"`(3) viewports` says {sweep}ms:\n{lines[phases]}");
+            Assert.True(snapshot > sweep,
+                $"the wait belongs to the snapshot, not the sweep:\n{lines[phases]}");
+        }
+        finally
+        {
+            _fx.World.ClearMap(SnapshotMap);
+            _fx.World.LeaveMap(watcher, SnapshotMap);
+        }
+    }
+
     // =====================================================================================================
 
     /// <summary>Creatures that all want to act on the very next beat (<c>MoveTime = 1</c>), so the wander
@@ -180,6 +247,15 @@ public class TickPhaseTimingTests
 
     private static string[] Lines(string log) =>
         log.Replace("\r\n", "\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+    /// <summary>One named phase's figure off the line, or 0 when the phase is not named (under a
+    /// millisecond, folded into <c>other</c>). The name is matched as an anchored pattern so
+    /// <c>(3) viewports</c> cannot accidentally read <c>(3.0) view snapshot</c>'s number.</summary>
+    private static long Phase(string line, string namePattern)
+    {
+        var m = Regex.Match(line, $@"(?<![\d.]){namePattern} (\d+)ms");
+        return m.Success ? long.Parse(m.Groups[1].Value) : 0;
+    }
 
     /// <summary>Every millisecond figure on the phase line, `other` included.</summary>
     private static IEnumerable<long> Parts(string line) =>

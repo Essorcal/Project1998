@@ -171,6 +171,22 @@ public sealed partial class World
     // PopulateSpawns, which is the first call into it.
     private readonly SpawnDirector _spawnDirector;
     private long _tick;                                                  // heartbeat counter (TickMs each)
+    private long _slowTicks;                                             // beats the watchdog reported (see SlowTicks)
+
+    /// <summary>Beats run since start, and beats the slow-tick watchdog reported, for <c>run/status.json</c>.
+    ///
+    /// <para>Both load reports state their headline — the share of beats that were slow — as a wall-clock
+    /// span divided by the 333ms period, because the server published no tick total. These two make it a
+    /// count: <c>slowTicks / ticks</c> over a span is measured rather than derived, and the derivation can
+    /// finally be checked against it.</para>
+    ///
+    /// <para>Written by the tick thread only, read on the status writer's thread every 10s.
+    /// <c>Volatile.Read</c> rather than a plain read, so the status thread cannot be handed a hoisted value
+    /// indefinitely; a 64-bit read is already atomic on every runtime this targets, so there is no tearing to
+    /// guard against and nothing to interlock on this side. Not under <c>_lock</c> on purpose — the status
+    /// writer must never queue behind the world.</para></summary>
+    internal long Ticks     => Volatile.Read(ref _tick);
+    internal long SlowTicks => Volatile.Read(ref _slowTicks);
 
     /// <summary>World heartbeat period, and the unit every mob timer accumulates in — so it is also the
     /// FLOOR on how often any creature can act. Override with <c>P1998_TICK_MS</c>.
@@ -2176,10 +2192,10 @@ public sealed partial class World
     // phase, plus an Array.Clear of PhCount longs at the top of the beat. No list, no string, no dictionary,
     // no LINQ, nothing allocated — the allocation is in PhaseBreakdown, which only runs on a logged beat.
     private const int PhWarm = 0, PhLockWait = 1, PhRespawns = 2, PhRefills = 3, PhMorphs = 4, PhDecoys = 5,
-                      PhForage = 6, PhClock = 7, PhWeather = 8, PhWander = 9, PhViewports = 10, PhMoves = 11,
-                      PhFx = 12, PhHooks = 13, PhStatus = 14, PhAdvice = 15, PhSwings = 16, PhCasts = 17,
-                      PhPetTrap = 18, PhExpiries = 19, PhRegen = 20, PhTime = 21,
-                      PhCount = 22, PhOther = PhCount;
+                      PhForage = 6, PhClock = 7, PhWeather = 8, PhWander = 9, PhViewSnapshot = 10,
+                      PhViewports = 11, PhMoves = 12, PhFx = 13, PhHooks = 14, PhStatus = 15, PhAdvice = 16,
+                      PhSwings = 17, PhCasts = 18, PhPetTrap = 19, PhExpiries = 20, PhRegen = 21, PhTime = 22,
+                      PhCount = 23, PhOther = PhCount;
 
     /// <summary>One name per <c>Ph*</c> constant above, in that order, with <c>other</c> last. The explicit
     /// length is the check that the two lists stay in step: a constant added without a name (or the other way
@@ -2187,9 +2203,9 @@ public sealed partial class World
     private static readonly string[] PhaseNames = new string[PhCount + 1]
     {
         "(0) warm", "lock-wait", "(1) respawns", "(1.1) refills", "(1.2) morphs", "(1.3) decoys",
-        "(1.5) forage", "(1.6) clock", "(1.7) weather", "(2) wander", "(3) viewports", "(4) moves",
-        "(4.1) fx", "(4.2) hooks", "(4.3) status", "(4.4) advice/forage", "(4.5) swings", "(4.6) casts",
-        "(4.7) pet/trap", "(4.8) expiries", "(5) regen", "(6) time", "other",
+        "(1.5) forage", "(1.6) clock", "(1.7) weather", "(2) wander", "(3.0) view snapshot", "(3) viewports",
+        "(4) moves", "(4.1) fx", "(4.2) hooks", "(4.3) status", "(4.4) advice/forage", "(4.5) swings",
+        "(4.6) casts", "(4.7) pet/trap", "(4.8) expiries", "(5) regen", "(6) time", "other",
     };
 
     private readonly long[] _phaseTicks = new long[PhCount];   // this beat, per phase, in raw Stopwatch ticks
@@ -2312,6 +2328,15 @@ public sealed partial class World
     /// path; <see cref="TickLoop"/> is the production caller and owns the threshold.</para></summary>
     private void LogSlowTick(long work, long late, long gcMs)
     {
+        // Counted HERE rather than at TickLoop's threshold test, because this method is the one place a slow
+        // beat is reported from: TickLoop and TickOnceWatchedForTest each own their own gate and both arrive
+        // here exactly once when that gate opens. So `slowTicks` can never disagree with the number of
+        // `SLOW TICK: work` lines in the log — which is the whole point of publishing it, since the load run
+        // counts those lines and has until now had to divide them by a wall-clock estimate. Interlocked
+        // because a test seam can drive this from a thread other than the tick's; it is off the healthy path
+        // entirely, once per logged beat.
+        Interlocked.Increment(ref _slowTicks);
+
         // Read this line as: LATE with gc ~= late  -> a GC pause. LATE with gc ~0 -> the OS didn't
         // schedule us (machine-wide contention). WORK with lock ~= work -> a session thread was holding
         // _lock (something slow ran inside a critical section). WORK with lock ~0 -> the tick body
@@ -2341,6 +2366,36 @@ public sealed partial class World
         if (work < slowMs && late < slowMs) return;
         long gcMs = (long)(GC.GetTotalPauseDuration() - gc0).TotalMilliseconds;
         LogSlowTick(work, late, gcMs);
+    }
+
+    /// <summary>The BACK half of a beat — <see cref="FlushTick"/> alone — under the same watchdog, with the
+    /// phase clock opened for it.
+    ///
+    /// <para>Only <c>(3.0) view snapshot</c> needs this, and only because of how <c>Monitor</c> behaves.
+    /// That bucket measures <see cref="ReconcileViews"/>'s own <c>_lock</c> acquisition, so a test that wants
+    /// to see time in it has to be holding <c>_lock</c> when the tick thread gets there. Through
+    /// <see cref="TickOnceWatchedForTest"/> that is not arrangeable: <see cref="Tick"/> takes and RELEASES
+    /// <c>_lock</c> a few instructions earlier, and a thread that has just released a monitor and re-enters
+    /// it wins the race against a blocked waiter essentially every time — so the hold would land in
+    /// <c>lock-wait</c> and never in <c>(3.0)</c>. Entering at <see cref="FlushTick"/> makes
+    /// <c>ReconcileViews</c>' acquisition the first one this thread takes, which a holder can actually
+    /// contend.</para>
+    ///
+    /// <para>Everything past the threshold gate is the production path — the same <see cref="LogSlowTick"/>,
+    /// the same two lines. What is missing is the beat's front half, which is exactly what
+    /// <see cref="FlushTickForTest"/> already leaves out.</para></summary>
+    internal void FlushTickWatchedForTest(int slowMs)
+    {
+        var clock = Stopwatch.StartNew();
+        BeginPhases();
+        try { FlushTick(new TickQueues()); }
+        catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
+        EndPhases();
+
+        if (slowMs <= 0) return;
+        long work = clock.ElapsedMilliseconds;
+        if (work < slowMs) return;
+        LogSlowTick(work, late: 0, gcMs: 0);
     }
 
     /// <summary>Counts for the slow-tick diagnostic. Cheap, and only read on the watchdog path.</summary>
@@ -2500,6 +2555,8 @@ public sealed partial class World
         // despawn any that stepped out. Doing this before the moves means a mob that just left the screen is
         // despawned (0x0E) rather than sent an off-screen 0x0C the client would cull — the desync that made
         // mobs vanish for good.
+        // ReconcileViews closes `(3.0) view snapshot` at the end of its own `lock (_lock)` block, so this
+        // mark closes the lockless per-player sweep alone.
         ReconcileViews();
         MarkPhase(PhViewports);
 
@@ -2669,6 +2726,15 @@ public sealed partial class World
                               m.Mobs.ToArray(), m.Items.ToArray()))
                 .ToArray();
         }
+        // (3.0) The snapshot closes here, and the sweep below is then `(3) viewports` on its own. Load-run-2
+        // is why the bucket was split: `(3) viewports` led 37 of the 38 slow beats at 400 players on one map,
+        // at p50 111ms, while the whole-sweep bench models ~11ms of that — and the phase spanned two things
+        // with nothing in common. This block is the acquisition of `_lock` against 400 session read-loop
+        // threads plus the LINQ copy of every populated map's roster; everything after it is lockless
+        // per-player work. The `lock-wait` figure on the counts line cannot see this one: it measures only
+        // `Tick`'s own acquisition, taken and released before FlushTick starts. The mark is AFTER the block
+        // because MarkPhase CLOSES the bucket it names.
+        MarkPhase(PhViewSnapshot);
         foreach (var (players, mobs, items) in snapshot)
             foreach (var p in players) Try(() => { p.Session.SyncPeers(players); p.Session.SyncMobs(mobs); p.Session.SyncGroundItems(items); }, "ReconcileViews");
     }
