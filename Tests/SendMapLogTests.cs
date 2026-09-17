@@ -26,39 +26,35 @@ public sealed class SendMapLogTests
             new World(),
             new Character { Name = "WireGuard" });
         bool original = Log.WireEnabled;
-        var captured = new StringWriter();
-        TextWriter prior = Console.Out;
-        Console.SetOut(TextWriter.Synchronized(captured));
+        // Exclusive: Console.Out is one process-global slot and an unguarded swap here loses, or is lost by,
+        // a capture running in another collection at the same time (Tests/Support/ConsoleTap.cs).
+        using var captured = await ConsoleTap.AcquireAsync();
         try
         {
             string offLabel = "wire-off-" + Guid.NewGuid().ToString("N");
             WireFlag.SetValue(null, false);
             SendMap.Invoke(session, new object[] { (byte)0x0A, (byte)0, Array.Empty<byte>(), offLabel });
             await WaitForBarrier(captured);
-            Assert.DoesNotContain(offLabel, captured.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain(offLabel, captured.Text, StringComparison.Ordinal);
 
             string onLabel = "wire-on-" + Guid.NewGuid().ToString("N");
             WireFlag.SetValue(null, true);
             SendMap.Invoke(session, new object[] { (byte)0x0A, (byte)1, Array.Empty<byte>(), onLabel });
             await WaitForBarrier(captured);
-            Assert.Contains(onLabel, captured.ToString(), StringComparison.Ordinal);
+            Assert.Contains(onLabel, captured.Text, StringComparison.Ordinal);
             Assert.Equal(2, outbound.Frames.Count);
         }
         finally
         {
             WireFlag.SetValue(null, original);
-            Console.SetOut(prior);
         }
     }
 
-    private static async Task WaitForBarrier(StringWriter captured)
+    private static async Task WaitForBarrier(ConsoleTap captured)
     {
         string barrier = "send-map-log-barrier-" + Guid.NewGuid().ToString("N");
         Log.Info(barrier);
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!captured.ToString().Contains(barrier, StringComparison.Ordinal)
-               && DateTime.UtcNow < deadline)
-            await Task.Delay(10);
-        Assert.Contains(barrier, captured.ToString(), StringComparison.Ordinal);
+        Assert.Contains(barrier, await captured.WaitForAsync(barrier, TimeSpan.FromSeconds(10)),
+                        StringComparison.Ordinal);
     }
 }
