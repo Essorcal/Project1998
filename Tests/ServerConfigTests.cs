@@ -655,6 +655,23 @@ public class ServerConfigTests
         Assert.Contains("0 set from the environment", banner[0]);
     }
 
+    /// <summary>The header counts knobs, and a retired content override name is not a knob: it has no value,
+    /// no default and no row in <c>docs/common/Configuration.md</c>, which is the document the very same line
+    /// tells the reader to go and read. Counting the 72 retired names there advertised 140 against a generated
+    /// document listing 68. Setting one changes nothing about the count either — it is reported by its warning
+    /// and by its [Retired] row, not by the header.
+    /// <para>Falsification: add <c>+ RetiredContentOverrides.Count</c> back to the header and both cases
+    /// fail.</para></summary>
+    [Fact]
+    public void The_banner_header_counts_knobs_only_whether_or_not_a_retired_name_is_set()
+    {
+        string expected = $"config: {ServerConfig.Knobs.All.Count} knob(s),";
+
+        Assert.Contains(expected, Defaults().Describe()[0]);
+        Assert.Contains(expected,
+            With(("P1998_MOB_FLEES", @"D:\retired\MobFlees.csv")).Describe()[0]);
+    }
+
     // ---- the declaration table itself ---------------------------------------------------------------------
 
     /// <summary>Two knobs sharing a name would have one silently shadow the other in the lookup, and would

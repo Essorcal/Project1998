@@ -710,7 +710,10 @@ public sealed class ServerConfig
     {
         var lines = new List<string>();
         int fromEnv = Entries.Count(e => e.FromEnvironment && e.Knob.Area != ConfigArea.Retired);
-        lines.Add($"=== config: {Knobs.All.Count + RetiredContentOverrides.Count} knob(s), " +
+        // The retired content override names are not knobs — they have no value, no default and no row in
+        // the generated document this line points at — so they are counted nowhere here. A set one is
+        // reported by its startup warning and by the [Retired] line below.
+        lines.Add($"=== config: {Knobs.All.Count} knob(s), " +
                   $"{fromEnv} set from the environment " +
                   "(see docs/common/Configuration.md) ===");
         foreach (var area in Entries.Select(e => e.Knob.Area).Distinct())
