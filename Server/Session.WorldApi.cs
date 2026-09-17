@@ -141,39 +141,79 @@ public sealed partial class Session
 
     /// <summary>Reconcile the mobs drawn on this client against what's in view: spawn (0x07) any that
     /// entered the camera rect, despawn (0x0E) any that left (with hysteresis so a mob loitering on the
-    /// edge doesn't flicker). Called on world entry, after each of our walk steps, and every world tick.</summary>
+    /// edge doesn't flicker). Called on world entry, after each of our walk steps, and every world tick.
+    ///
+    /// <para>Capture outside the lock, decide for every mob under ONE acquisition, send after releasing it and
+    /// only if the decision is still current — the shape <see cref="SyncPeers"/> has since PR #245, and the
+    /// three sweeps now share it. What it buys here is not the acquisition count (this method already took one
+    /// for the whole loop): it is that <see cref="ShowMob"/> and <see cref="SendDespawn"/> no longer run under
+    /// <c>_viewLock</c>. Every packet build the sweep produces — the <c>List&lt;byte&gt;</c>, the palette
+    /// remap, the cipher, the channel write — used to happen with the viewer's viewport lock held, so on the
+    /// beats that DO send (map entry, a step that crosses many mobs, a spawn wave) the hold span was the whole
+    /// sweep. Measured on 400 viewers and 305 mobs of which 40 leave and 40 enter every beat: 51.5us of a
+    /// 51.7us sweep held in Debug, 30.0us of 30.1us in Release (briefs/reports/sweep-deferred-sends-opus.md).
+    /// It also makes true of this method the rule <c>SyncPeers</c> and <c>ReconcilePeer</c> already state —
+    /// a send never happens under <c>_viewLock</c> (#29).</para></summary>
     public void SyncMobs(IReadOnlyList<Mob> mobs)
     {
-        using (EnterView())
+        // CAPTURE, OUTSIDE THE LOCK, and for two reasons. `mobs` is an interface, so enumerating it is
+        // arbitrary code — Tests/ViewportRectStalenessTests.cs drives a real World.SetPlayerPosition from
+        // inside GetEnumerator, and arbitrary code must not run under a view lock (Session.EnterState asserts
+        // !HoldsAnyViewLock, and World._lock would be taken second). And capturing the tile ONCE closes a tear
+        // the per-entity shape had: it read m.X/m.Y twice, once per pad, while the mob's only writer holds
+        // World._lock rather than this one, so the two rect tests could see different tiles. Now they cannot.
+        var buf = ViewScratch<Mob>.Rent(mobs.Count);
+        int n = 0;
+        try
         {
-            // Inside the lock, not before it: the whole loop decides under this acquisition, so a sweep that
-            // queued behind a walk reconcile anchors on the tile it finds when it gets in, not on the one the
-            // viewer stood on when the tick reached this line (F1).
-            var view = CurrentView();                        // once for the sweep, not once per mob per pad
             foreach (var m in mobs)
             {
-                if (!m.Alive) continue;
-                Reanchor(ref view);                          // the viewer walks on its own thread; it takes
-                                                             // World._lock and its own monitor, not this one
-                bool core = view.Contains(m.X, m.Y, ShowPad); // strict 17x15 — where a 0x07 is accepted
-                if (!_shownMobs.Contains(m.Id))
-                {
-                    if (core) { ShowMob(m); _shownMobs.Add(m.Id); }
-                }
-                else if (!view.Contains(m.X, m.Y, HidePad))   // left the DRAWN 19x17 rect — now really gone
-                {
-                    SendDespawn(m.Id); _shownMobs.Remove(m.Id); _edgeMobs.Remove(m.Id);
-                }
-                else if (core)
-                {
-                    // Back inside the strict rect after loitering in the overdraw band. We don't know whether
-                    // the client culled it out there, so re-send the spawn: 0x07 on a live id is an in-place
-                    // update, and this is strictly cheaper than the despawn+respawn pair the old HidePad=0
-                    // sent on every boundary crossing.
-                    if (_edgeMobs.Remove(m.Id)) ShowMob(m);
-                }
-                else _edgeMobs.Add(m.Id);                     // in the band: keep it drawn, flag it as suspect
+                if (!m.Alive) continue;                      // a dead mob's despawn is the world's broadcast
+                if (n == buf.Length) buf = ViewScratch<Mob>.Grow(buf);
+                buf[n++] = new EntityDecision<Mob>(m, m.Id, m.X, m.Y);
             }
+
+            using (EnterView())
+            {
+                // Inside the lock, not before it: the whole loop decides under this acquisition, so a sweep
+                // that queued behind a walk reconcile anchors on the tile it finds when it gets in, not on the
+                // one the viewer stood on when the tick reached this line (PR #240's F1).
+                var view = CurrentView();                    // once for the sweep, not once per mob per pad
+                for (int i = 0; i < n; i++)
+                {
+                    Reanchor(ref view);                      // the viewer walks on its own thread; it takes
+                                                             // World._lock and its own monitor, not this one
+                    buf[i].Draw = DecideTrackedUnderViewLock(_shownMobs, _edgeMobs, buf[i].Id, buf[i].X, buf[i].Y,
+                                                             in view, out buf[i].ShownAfter, out buf[i].Stamp);
+                }
+            }
+
+            // THE SENDS, outside the lock, in sweep order, each revalidated immediately before it goes out.
+            // THE INVARIANT: a deferred send is sent only if the decision it carries is still what the sets
+            // say at the moment of sending. Nothing on this path blocks on another session the way
+            // ShowPlayer -> Snapshot does, so the window is a scheduling one rather than a monitor one — but
+            // the viewer's OWN read loop reconciles its walk steps on another thread and can decide the
+            // opposite about this mob inside it, which is PR #245's F1 with a different way in.
+            //
+            // The frame carries a FRESH read of the mob (x, y, sprite, colour, dir), not the tile the decision
+            // tested. That is the base's behaviour — ShowMob always re-read the mob when it built the packet —
+            // and it is the better of the two here, because a mob moves on the world thread every beat and the
+            // client anchors the following 0x0C moves on whatever tile this 0x07 put it on.
+            for (int i = 0; i < n; i++)
+            {
+                if (buf[i].Draw == EntityDraw.Nothing) continue;   // the steady state: no lock, no frame
+                bool current;
+                using (EnterView())
+                    current = SendStillCurrentUnderViewLock(_shownMobs, buf[i].Id, buf[i].ShownAfter, buf[i].Stamp);
+                if (!current) continue;                      // a newer reconcile decided otherwise while we waited
+                if (buf[i].Draw == EntityDraw.Show) ShowMob(buf[i].Subject);
+                else SendDespawn(buf[i].Id);
+            }
+        }
+        finally
+        {
+            Array.Clear(buf, 0, n);                          // do not let scratch pin a despawned Mob
+            ViewScratch<Mob>.Return(buf);
         }
     }
 
@@ -185,33 +225,83 @@ public sealed partial class Session
     /// "not spawning". Called on world entry, after each of our walk steps, and every world tick.
     ///
     /// <para>No <c>_edgeMobs</c> equivalent: a stationary item can only leave or enter the band by US moving,
-    /// and re-showing it is a single idempotent 0x07, so the plain show/hide pair is enough.</para></summary>
+    /// and re-showing it is a single idempotent 0x07, so the plain show/hide pair is enough.</para>
+    ///
+    /// <para>Same shape as the other two sweeps since this PR, and here the acquisition count IS the cut: this
+    /// method took <b>one <c>EnterView</c> per item</b> (plus a second on every despawn, plus one for the
+    /// markers) to read one set and, on most beats, find nothing to do — the per-entity shape
+    /// <c>ReconcilePeer</c> had before PR #245. It costs nothing on the 400-player load map, which has no
+    /// floor items at all, and 109ns per item per viewer per beat in Debug on a map that has some (measured,
+    /// 50 items: 5,470ns of sweep for 50 decisions). It is now one acquisition for the whole sweep, and the
+    /// sends — which were already outside the lock — are revalidated, which they were not.</para></summary>
     public void SyncGroundItems(IReadOnlyList<GroundItem> items)
     {
-        // Our own spot-traps markers ride along: they are drawn through the identical viewport-gated 0x07
-        // path, and the reveal radius (15) is nearly twice the view rect, so they need the same walk-into-view
-        // draw the world's floor items get. They live only on this session — no other client ever sees them.
-        // The @showwarps overlay markers ride along for the same reason: they span the whole map.
-        GroundItem[]? markers = null;
-        using (EnterView())
-            if (_trapMarkers.Count > 0 || _warpMarkers.Count > 0)
-                markers = _trapMarkers.Values.Concat(_warpMarkers).ToArray();
-        var view = CurrentView();                            // once for the sweep, not once per item per pad
-        foreach (var gi in markers is null ? items : items.Concat(markers))
+        // CAPTURE, OUTSIDE THE LOCK — `items` is an interface, so enumerating it is arbitrary code; see the
+        // note in SyncMobs. Items never move, so the captured tile is the item's tile for good.
+        var buf = ViewScratch<GroundItem>.Rent(items.Count + 8);
+        int n = 0;
+        try
         {
-            bool shown;
-            // The rect is re-anchored in the same acquisition that reads the tracking set, so this item's
-            // decision and the state it is made against are both as of one moment (F1's shape, on items).
-            using (EnterView()) { Reanchor(ref view); shown = _shownItems.Contains(gi.Id); }
-            if (!shown)
+            foreach (var gi in items)
             {
-                if (view.Contains(gi.X, gi.Y, ShowPad)) ShowGroundItem(gi);
+                if (n == buf.Length) buf = ViewScratch<GroundItem>.Grow(buf);
+                buf[n++] = new EntityDecision<GroundItem>(gi, gi.Id, gi.X, gi.Y);
             }
-            else if (!view.Contains(gi.X, gi.Y, HidePad))
+
+            using (EnterView())
             {
-                using (EnterView()) _shownItems.Remove(gi.Id);
-                SendDespawn(gi.Id);
+                // Our own spot-traps markers ride along: they are drawn through the identical viewport-gated
+                // 0x07 path, and the reveal radius (15) is nearly twice the view rect, so they need the same
+                // walk-into-view draw the world's floor items get. They live only on this session — no other
+                // client ever sees them. The @showwarps overlay markers ride along for the same reason: they
+                // span the whole map. They are appended HERE, inside the sweep's own acquisition, rather than
+                // copied to an array before it: they are this session's own state guarded by this very lock,
+                // so no arbitrary code runs, the sweep keeps to ONE acquisition, and the GroundItem[] the
+                // base allocated on every sweep that had a marker is gone. World items first, then markers —
+                // the order the base's Concat produced.
+                foreach (var marker in _trapMarkers.Values)
+                {
+                    if (n == buf.Length) buf = ViewScratch<GroundItem>.Grow(buf);
+                    buf[n++] = new EntityDecision<GroundItem>(marker, marker.Id, marker.X, marker.Y);
+                }
+                foreach (var marker in _warpMarkers)
+                {
+                    if (n == buf.Length) buf = ViewScratch<GroundItem>.Grow(buf);
+                    buf[n++] = new EntityDecision<GroundItem>(marker, marker.Id, marker.X, marker.Y);
+                }
+
+                var view = CurrentView();                    // once for the sweep, not once per item per pad
+                for (int i = 0; i < n; i++)
+                {
+                    // The rect is re-anchored in the same acquisition that reads the tracking set, so this
+                    // item's decision and the state it is made against are both as of one moment (F1's shape,
+                    // on items).
+                    Reanchor(ref view);
+                    buf[i].Draw = DecideItemUnderViewLock(buf[i].Id, buf[i].X, buf[i].Y,
+                                                          in view, out buf[i].ShownAfter, out buf[i].Stamp);
+                }
             }
+
+            // THE SENDS, outside the lock, in sweep order, each revalidated. The sends were already outside
+            // the lock here; what is new is that they are checked. Items do not move, so the only thing that
+            // can invalidate a deferred item frame is the viewer's own walk reconcile completing in between —
+            // and that reconcile calls this same method, so before this PR it could remove an id from
+            // _shownItems that a parked pass then despawned again, or draw one a parked pass then re-drew.
+            for (int i = 0; i < n; i++)
+            {
+                if (buf[i].Draw == EntityDraw.Nothing) continue;
+                bool current;
+                using (EnterView())
+                    current = SendStillCurrentUnderViewLock(_shownItems, buf[i].Id, buf[i].ShownAfter, buf[i].Stamp);
+                if (!current) continue;
+                if (buf[i].Draw == EntityDraw.Show) ShowGroundItem(buf[i].Subject);
+                else SendDespawn(buf[i].Id);
+            }
+        }
+        finally
+        {
+            Array.Clear(buf, 0, n);                          // do not let scratch pin a picked-up GroundItem
+            ViewScratch<GroundItem>.Return(buf);
         }
     }
 
@@ -250,7 +340,7 @@ public sealed partial class Session
         // The decisions themselves are not made any staler by this: Reanchor still runs per peer, inside the
         // acquisition, against the same _viewGen handshake, so no decision uses a rect older than the viewer's
         // tile at the moment it is made (F1/F2, PR #240's review).
-        var buf = RentPeerDecisions(peers.Count);
+        var buf = ViewScratch<Session>.Rent(peers.Count);
         int n = 0;
         try
         {
@@ -258,15 +348,16 @@ public sealed partial class Session
             {
                 var other = peer.Session;
                 if (ReferenceEquals(other, this)) continue;
-                if (n == buf.Length) buf = GrowPeerDecisions(buf);
-                buf[n++] = new PeerDecision(other, other.PlayerId, peer.X, peer.Y);
+                if (n == buf.Length) buf = ViewScratch<Session>.Grow(buf);
+                buf[n++] = new EntityDecision<Session>(other, other.PlayerId, peer.X, peer.Y);
             }
 
             using (EnterView())
                 for (int i = 0; i < n; i++)
                 {
                     Reanchor(ref view);                      // no decision on a rect older than the step
-                    buf[i].Draw = DecidePeerUnderViewLock(buf[i].Id, buf[i].X, buf[i].Y, in view, out buf[i].Stamp);
+                    buf[i].Draw = DecideTrackedUnderViewLock(_shownPeers, _edgePeers, buf[i].Id, buf[i].X, buf[i].Y,
+                                                             in view, out buf[i].ShownAfter, out buf[i].Stamp);
                 }
 
             // THE SENDS, outside the lock, in sweep order — each one revalidated against the sets first.
@@ -291,70 +382,86 @@ public sealed partial class Session
             // send pays one acquisition around two set reads, next to a packet build and a socket write.
             for (int i = 0; i < n; i++)
             {
-                var draw = buf[i].Draw;
-                if (draw == PeerDraw.Nothing) continue;      // the steady state: no lock, no frame
+                if (buf[i].Draw == EntityDraw.Nothing) continue;   // the steady state: no lock, no frame
                 bool current;
-                using (EnterView()) current = PeerSendStillCurrentUnderViewLock(buf[i].Id, draw, buf[i].Stamp);
+                using (EnterView())
+                    current = SendStillCurrentUnderViewLock(_shownPeers, buf[i].Id, buf[i].ShownAfter, buf[i].Stamp);
                 if (!current) continue;                      // a newer reconcile decided otherwise while we waited
-                if (draw == PeerDraw.Show) ShowPlayer(buf[i].Other);
+                if (buf[i].Draw == EntityDraw.Show) ShowPlayer(buf[i].Subject);
                 else SendDespawn(buf[i].Id);
             }
         }
         finally
         {
             Array.Clear(buf, 0, n);                          // do not let scratch pin a disconnected Session
-            ReturnPeerDecisions(buf);
+            ViewScratch<Session>.Return(buf);
         }
     }
 
-    /// <summary>One peer's identity and tile, captured outside <c>_viewLock</c>, plus what the decide pass
-    /// decided about it. A struct in a reused array: the sweep must not allocate per beat.</summary>
-    private struct PeerDecision
+    /// <summary>One entity's identity and tile, captured outside <c>_viewLock</c>, plus what the decide pass
+    /// decided about it. A struct in a reused array: the sweep must not allocate per beat.
+    ///
+    /// <para>One type for all three sweeps — <typeparamref name="T"/> is the <see cref="Session"/>,
+    /// <see cref="Mob"/> or <see cref="GroundItem"/> the deferred frame is built from, and it is carried
+    /// rather than the frame's fields because all three builders re-read their subject, which is the base's
+    /// behaviour.</para></summary>
+    private struct EntityDecision<T> where T : class
     {
-        internal Session Other;
+        /// <summary>What <see cref="ShowPlayer"/>/<see cref="ShowMob"/>/<see cref="ShowGroundItem"/> is handed
+        /// if this decision produces a show.</summary>
+        internal T Subject;
         internal uint Id;
         internal ushort X, Y;
-        internal PeerDraw Draw;
+        internal EntityDraw Draw;
+        /// <summary>What the drawn set said about <see cref="Id"/> immediately AFTER this decision was taken.
+        /// The send pass re-reads the set and drops the frame if it no longer says this — half of the
+        /// still-current test; see <see cref="SendStillCurrentUnderViewLock"/>.</summary>
+        internal bool ShownAfter;
         /// <summary>The serial the decide pass stamped this decision with, compared against the session's
-        /// <c>_peerSendStamp</c> before the frame goes out. 0 when there is nothing to send.</summary>
+        /// <c>_sendStamp</c> before the frame goes out. 0 when there is nothing to send.</summary>
         internal uint Stamp;
 
-        internal PeerDecision(Session other, uint id, ushort x, ushort y)
+        internal EntityDecision(T subject, uint id, ushort x, ushort y)
         {
-            Other = other; Id = id; X = x; Y = y; Draw = PeerDraw.Nothing; Stamp = 0;
+            Subject = subject; Id = id; X = x; Y = y; Draw = EntityDraw.Nothing; ShownAfter = false; Stamp = 0;
         }
     }
 
-    /// <summary>The sweep's scratch buffer. <b>Thread-static, not per-session</b>, and that is the whole
-    /// safety argument: two threads sweep the SAME viewer concurrently all the time — the world tick's
-    /// reconcile and the viewer's own read loop reconciling a walk step — so a buffer hanging off the session
-    /// would be two sweeps writing one array. It is a property of the sweep in flight, which is a property of
-    /// the thread.
+    /// <summary>The sweep's scratch buffer, one per entity kind per thread. <b>Thread-static, not
+    /// per-session</b>, and that is the whole safety argument: two threads sweep the SAME viewer concurrently
+    /// all the time — the world tick's reconcile and the viewer's own read loop reconciling a walk step — so a
+    /// buffer hanging off the session would be two sweeps writing one array. It is a property of the sweep in
+    /// flight, which is a property of the thread. (A static field of a generic type gets its own storage per
+    /// closed type, so <c>ViewScratch&lt;Mob&gt;</c> and <c>ViewScratch&lt;Session&gt;</c> are separate
+    /// buffers even though the JIT shares their code.)
     ///
     /// <para>Rented by nulling the slot, so a sweep that somehow re-entered on this thread would get a fresh
-    /// array instead of the one being iterated. Nothing on the send path reaches <see cref="SyncPeers"/>
-    /// today (<c>ShowPlayer</c> and <c>SendDespawn</c> both end at <c>Send</c>), so this is belt and braces,
-    /// not a known case.</para></summary>
-    [ThreadStatic] private static PeerDecision[]? _peerScratch;
-
-    private static PeerDecision[] RentPeerDecisions(int want)
+    /// array instead of the one being iterated. Nothing on the send path reaches a sweep today
+    /// (<c>ShowPlayer</c>, <c>ShowMob</c>, <c>ShowGroundItem</c> and <c>SendDespawn</c> all end at
+    /// <c>Send</c>), so this is belt and braces, not a known case.</para></summary>
+    private static class ViewScratch<T> where T : class
     {
-        var buf = _peerScratch;
-        _peerScratch = null;                                 // rented: a re-entrant sweep gets its own
-        if (buf is null || buf.Length < want) buf = new PeerDecision[Math.Max(want, 64)];
-        return buf;
-    }
+        [ThreadStatic] private static EntityDecision<T>[]? _buf;
 
-    private static PeerDecision[] GrowPeerDecisions(PeerDecision[] buf)
-    {
-        var bigger = new PeerDecision[buf.Length * 2];
-        Array.Copy(buf, bigger, buf.Length);
-        return bigger;
-    }
+        internal static EntityDecision<T>[] Rent(int want)
+        {
+            var buf = _buf;
+            _buf = null;                                     // rented: a re-entrant sweep gets its own
+            if (buf is null || buf.Length < want) buf = new EntityDecision<T>[Math.Max(want, 64)];
+            return buf;
+        }
 
-    private static void ReturnPeerDecisions(PeerDecision[] buf)
-    {
-        if (_peerScratch is null || _peerScratch.Length < buf.Length) _peerScratch = buf;
+        internal static EntityDecision<T>[] Grow(EntityDecision<T>[] buf)
+        {
+            var bigger = new EntityDecision<T>[buf.Length * 2];
+            Array.Copy(buf, bigger, buf.Length);
+            return bigger;
+        }
+
+        internal static void Return(EntityDecision<T>[] buf)
+        {
+            if (_buf is null || _buf.Length < buf.Length) _buf = buf;
+        }
     }
 
     /// <summary>Re-evaluate from scratch which peers WE can see — needed when OUR OWN state flips a per-viewer
@@ -364,7 +471,7 @@ public sealed partial class Session
     /// Map changes get this for free via EnterMap; this covers an in-place death/revive that stays on the map.</summary>
     public void ResyncPeers()
     {
-        using (EnterView()) { _shownPeers.Clear(); _edgePeers.Clear(); _peerSendStamp.Clear(); }
+        using (EnterView()) { _shownPeers.Clear(); _edgePeers.Clear(); _sendStamp.Clear(); }
         SyncPeers(_world.View(this, _char.Map).peers);
     }
 
@@ -377,8 +484,8 @@ public sealed partial class Session
         ReconcilePeer(other, ref view);
     }
 
-    /// <summary>What reconciling one peer decided to do about them, once the bookkeeping is settled.</summary>
-    private enum PeerDraw { Nothing, Show, Despawn }
+    /// <summary>What reconciling one entity decided to do about it, once the bookkeeping is settled.</summary>
+    private enum EntityDraw { Nothing, Show, Despawn }
 
     // DECIDE UNDER _viewLock, SEND OUTSIDE IT — the shape SyncGroundItems above already uses, and since #29 a
     // requirement rather than a style: ShowPlayer reads the SUBJECT through other.Snapshot(), which takes that
@@ -414,91 +521,140 @@ public sealed partial class Session
         // walking on another thread both tests are taken from ONE re-anchored rect inside the acquisition
         // that decides, so they agree with each other AND with where the viewer is standing when they are
         // taken. There is no longer a point between the two tests where a step can land unseen.
-        PeerDraw draw;
+        EntityDraw draw;
         uint stamp;
+        bool shownAfter;
         using (EnterView())
         {
             Reanchor(ref view);                                    // no decision on a rect older than the step
-            draw = DecidePeerUnderViewLock(id, peer.X, peer.Y, in view, out stamp);
+            draw = DecideTrackedUnderViewLock(_shownPeers, _edgePeers, id, peer.X, peer.Y, in view, out shownAfter, out stamp);
         }
 
-        if (draw == PeerDraw.Nothing) return;
+        if (draw == EntityDraw.Nothing) return;
         // The same revalidation the sweep does, for the same reason: this send is outside the lock too, so a
         // reconcile on another thread can decide the opposite about this peer between the release and the
         // frame. One acquisition, and only on the path that actually sends.
         bool current;
-        using (EnterView()) current = PeerSendStillCurrentUnderViewLock(id, draw, stamp);
+        using (EnterView()) current = SendStillCurrentUnderViewLock(_shownPeers, id, shownAfter, stamp);
         if (!current) return;
 
-        if (draw == PeerDraw.Show) ShowPlayer(other);
+        if (draw == EntityDraw.Show) ShowPlayer(other);
         else SendDespawn(id);
     }
 
-    /// <summary>The peer half of the reconcile's decision, and the ONLY place it is written: both the sweep
-    /// (<see cref="SyncPeers"/>, one acquisition for every peer) and the single-peer path
-    /// (<see cref="ReconcilePeer"/>, one acquisition for one peer) call it, so the two cannot drift.
+    /// <summary>The reconcile's decision for a TRACKED-WITH-HYSTERESIS entity — peers and mobs, which have the
+    /// identical rule (show inside the strict rect, despawn past the drawn rect, re-assert on re-entry from
+    /// the overdraw band) and differ only in which pair of sets they keep it in. It is the ONLY place that
+    /// rule is written: the peer sweep, the single-peer path <see cref="ReconcilePeer"/> and the mob sweep all
+    /// call it, so none of the three can drift from the others.
     ///
     /// <para><b>The caller holds this session's <c>_viewLock</c> and has just re-anchored
     /// <paramref name="view"/>.</b> Nothing in here acquires anything or touches another session: the id and
-    /// the tile were captured by the caller, and the two sets are ours. That is what lets the sweep hold the
-    /// lock across every peer without any risk of the #29 cycle (ShowPlayer -> the subject's monitor) — the
-    /// send is the caller's job, after the release.</para></summary>
-    private PeerDraw DecidePeerUnderViewLock(uint id, ushort px, ushort py, in ViewRect view, out uint stamp)
+    /// the tile were captured by the caller, and the sets are ours. That is what lets a sweep hold the lock
+    /// across every entity without any risk of the #29 cycle (ShowPlayer -> the subject's monitor) — the send
+    /// is the caller's job, after the release.</para>
+    ///
+    /// <para><paramref name="shownAfter"/> is what <paramref name="shown"/> says about the id when this
+    /// returns, which is what the send pass revalidates against.</para></summary>
+    private EntityDraw DecideTrackedUnderViewLock(HashSet<uint> shown, HashSet<uint> edge,
+                                                  uint id, ushort px, ushort py, in ViewRect view,
+                                                  out bool shownAfter, out uint stamp)
     {
-        bool core = view.Contains(px, py, ShowPad);       // strict 17x15 — where a 0x33 is accepted
+        bool core = view.Contains(px, py, ShowPad);       // strict 17x15 — where a 0x33 / 0x07 is accepted
         bool drawn = view.Contains(px, py, HidePad);      // the wider 19x17 the client renders
         stamp = 0;                                        // nothing to send, nothing to revalidate
 
-        if (!_shownPeers.Contains(id))
+        if (!shown.Contains(id))
         {
-            if (!core) return PeerDraw.Nothing;
-            _shownPeers.Add(id);
-            stamp = StampPeerDecisionUnderViewLock(id);
-            return PeerDraw.Show;
+            shownAfter = false;
+            if (!core) return EntityDraw.Nothing;
+            shown.Add(id);
+            shownAfter = true;
+            stamp = StampUnderViewLock(id);
+            return EntityDraw.Show;
         }
         if (!drawn)                                       // left the drawn rect — really gone
         {
-            _shownPeers.Remove(id); _edgePeers.Remove(id);
-            stamp = StampPeerDecisionUnderViewLock(id);
-            return PeerDraw.Despawn;
+            shown.Remove(id); edge.Remove(id);
+            shownAfter = false;
+            stamp = StampUnderViewLock(id);
+            return EntityDraw.Despawn;
         }
+        shownAfter = true;
         if (core)
         {
-            if (!_edgePeers.Remove(id)) return PeerDraw.Nothing;
-            stamp = StampPeerDecisionUnderViewLock(id);   // back inside after loitering — re-assert
-            return PeerDraw.Show;
+            // Back inside the strict rect after loitering in the overdraw band. We don't know whether the
+            // client culled it out there, so re-send the spawn: a 0x07/0x33 on a live id is an in-place
+            // update, and this is strictly cheaper than the despawn+respawn pair HidePad=0 sent on every
+            // boundary crossing.
+            if (!edge.Remove(id)) return EntityDraw.Nothing;
+            stamp = StampUnderViewLock(id);
+            return EntityDraw.Show;
         }
-        _edgePeers.Add(id);                               // in the band: keep drawn, flag suspect
-        return PeerDraw.Nothing;
+        edge.Add(id);                                     // in the band: keep drawn, flag suspect
+        return EntityDraw.Nothing;
+    }
+
+    /// <summary>The same decision for a GROUND ITEM, which has no overdraw band — a stationary item can only
+    /// leave or enter the band by US moving, and re-showing it is a single idempotent 0x07, so the plain
+    /// show/hide pair is enough (see <see cref="SyncGroundItems"/>).
+    ///
+    /// <para>The show branch deliberately does NOT add the id to <c>_shownItems</c>, because
+    /// <see cref="ShowGroundItem"/> does — it re-tests the viewport itself (it is also called straight from
+    /// <c>World.Broadcast</c>, which has no rect) and adds only if the 0x07 was actually accepted. Keeping
+    /// that ownership is what makes this sweep's frames identical to the per-item shape's: a draw the
+    /// viewport gate rejects leaves the item untracked and the next sweep tries again. So a show's
+    /// <paramref name="shownAfter"/> is <c>false</c>, and the send pass's test reads as "nobody else has drawn
+    /// it while we waited".</para></summary>
+    private EntityDraw DecideItemUnderViewLock(uint id, ushort px, ushort py, in ViewRect view,
+                                               out bool shownAfter, out uint stamp)
+    {
+        stamp = 0;
+        shownAfter = _shownItems.Contains(id);
+        if (!shownAfter)
+        {
+            if (!view.Contains(px, py, ShowPad)) return EntityDraw.Nothing;
+            stamp = StampUnderViewLock(id);
+            return EntityDraw.Show;
+        }
+        if (view.Contains(px, py, HidePad)) return EntityDraw.Nothing;
+        _shownItems.Remove(id);
+        shownAfter = false;
+        stamp = StampUnderViewLock(id);
+        return EntityDraw.Despawn;
     }
 
     /// <summary>Record that THIS is now the current decision about <paramref name="id"/> and return its
     /// serial. Called under <c>_viewLock</c>, and only on the branches that produce a frame — a decision with
     /// nothing to send has nothing to be overtaken by.</summary>
-    private uint StampPeerDecisionUnderViewLock(uint id)
+    private uint StampUnderViewLock(uint id)
     {
         // 0 is reserved for "nothing to send", so the counter never hands it out (it wraps past it).
-        if (++_peerSendSeq == 0) _peerSendSeq = 1;
-        _peerSendStamp[id] = _peerSendSeq;
-        return _peerSendSeq;
+        if (++_sendSeq == 0) _sendSeq = 1;
+        _sendStamp[id] = _sendSeq;
+        return _sendSeq;
     }
 
     /// <summary>Is the decision a send pass is holding still the one the sets agree with? Called under
-    /// <c>_viewLock</c>, immediately before the frame goes out, for every deferred send.
+    /// <c>_viewLock</c>, immediately before the frame goes out, for every deferred send of every kind.
     ///
     /// <para><b>The invariant, in one sentence: a deferred send is sent only if the decision it carries is
-    /// still what the sets say at the moment of sending.</b> A show is current when the id is still in
-    /// <c>_shownPeers</c> AND this decision is still the latest one stamped for it — the second half is what
-    /// separates "nobody touched this peer" from "somebody despawned it and drew it again while we were
-    /// parked", which would otherwise pass the membership test and put a redundant 0x33 on the wire. A
-    /// despawn is current when the id is NOT in <c>_shownPeers</c> and the stamp still matches; it then drops
-    /// the stamp, because an undrawn peer with no send in flight needs no entry.</para></summary>
-    private bool PeerSendStillCurrentUnderViewLock(uint id, PeerDraw draw, uint stamp)
+    /// still what the sets say at the moment of sending.</b> Two halves, and both are needed. The stamp
+    /// separates "nobody touched this entity" from "somebody despawned it and drew it again while we were
+    /// parked", which the membership test alone would pass and which would put a redundant frame on the wire.
+    /// The membership test catches the reconciles that changed the set without stamping — a wholesale clear,
+    /// a <see cref="DespawnEntity"/> broadcast — and is stated as "the set still says what it said when this
+    /// decision was taken" rather than as a per-kind rule, which is what lets items (whose show does not add)
+    /// use the same test as peers and mobs (whose show does).</para>
+    ///
+    /// <para>When the decision leaves the id undrawn the stamp entry goes with it: an entity nobody has drawn
+    /// and nobody has a send in flight for needs no entry. An entry therefore lives exactly as long as the id
+    /// is drawn or has a send in flight.</para></summary>
+    private bool SendStillCurrentUnderViewLock(HashSet<uint> shown, uint id, bool shownAfter, uint stamp)
     {
-        if (!_peerSendStamp.TryGetValue(id, out uint latest) || latest != stamp) return false;
-        if (draw == PeerDraw.Show) return _shownPeers.Contains(id);
-        if (_shownPeers.Contains(id)) return false;       // redrawn while we waited — this despawn is stale
-        _peerSendStamp.Remove(id);
+        if (!_sendStamp.TryGetValue(id, out uint latest) || latest != stamp) return false;
+        if (shown.Contains(id) != shownAfter) return false;
+        if (!shownAfter) _sendStamp.Remove(id);
         return true;
     }
 
@@ -511,7 +667,7 @@ public sealed partial class Session
     // _warpMarkers goes with them too — but unlike trap markers, the @showwarps overlay SURVIVES as a toggle:
     // EnterMap and RedrawWorld re-stamp it for whatever map the client rebuilds, so only the stale marker set
     // dies here, not the feature.
-    private void ForgetShownMobs() { using (EnterView()) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _peerSendStamp.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
+    private void ForgetShownMobs() { using (EnterView()) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _sendStamp.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
 
     /// <summary>Rub out the spot-traps marker for one trap, if this client ever revealed it — RTK
     /// <c>removeTrapItem(npc)</c>, which every trap NPC calls right before deleting itself. Broadcast to the
@@ -576,7 +732,7 @@ public sealed partial class Session
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, (ActionType)type, time, param);  // 0x1A
     public void ActionOver(uint id, ActionType type, ushort time, byte param) => SendAction(id, type, time, param);        // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
-    public void DespawnEntity(uint id) { using (EnterView()) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); _peerSendStamp.Remove(id); } SendDespawn(id); }  // 0x0E
+    public void DespawnEntity(uint id) { using (EnterView()) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); _sendStamp.Remove(id); } SendDespawn(id); }  // 0x0E
 
     // The one funnel every outbound packet in the server goes through, and the top half of the test seam:
     // it hands the frame to _out and does nothing transport-specific itself. TcpOutbound is a non-blocking
