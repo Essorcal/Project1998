@@ -225,9 +225,108 @@ public sealed partial class Session
     public void SyncPeers(IReadOnlyList<PeerTile> peers)
     {
         var view = CurrentView();                            // once for the sweep, not once per peer per pad
-        // By reference so a re-anchor one peer paid for is kept by the rest of the sweep — otherwise every
-        // remaining peer would find the counter changed and rebuild the same rect again.
-        foreach (var other in peers) ReconcilePeer(other, ref view);
+
+        // ONE ACQUISITION FOR THE SWEEP, not one per peer. ReconcilePeer took EnterView() per peer, which at
+        // 400 players on one map is 400 viewers x 400 peers = 160,000 acquire/release pairs a beat for, in the
+        // steady state, zero frames. EnterView is not a bare Monitor.Enter: it also writes the [ThreadStatic]
+        // _viewDepth counter that makes the "session monitors are outside _viewLock" assert possible, and a
+        // thread-static access is a helper call the Debug build does not inline. The Step 1 profile measured
+        // the per-peer acquisition at ~38us of a ~51us modelled peer sweep in Debug and ~3.3us of ~7.5us in
+        // Release, per viewer per beat (briefs/reports/viewport-sweep-opus.md).
+        //
+        // THE INVARIANT, and it is what makes this legal: nothing under the lock calls into another session.
+        // The copy pass below takes the peer's id and tile OUTSIDE the lock, so the decide pass touches only
+        // this session's own sets, its own rect and its own _viewGen; it acquires nothing. The lock order
+        // (session monitor OUTSIDE _viewLock, Session.State.cs) is therefore unchanged, and so is the #29 rule
+        // that a send never happens under _viewLock — the sends are still after the release, exactly as
+        // ReconcilePeer did them.
+        //
+        // WHY THE COPY PASS EXISTS AT ALL. `peers` is an interface, so enumerating it is arbitrary code — the
+        // reviewer's interleaving harness (Tests/ViewportRectStalenessTests.cs) runs a real world-lock position
+        // write from inside GetEnumerator. Arbitrary code must not run under a view lock: Session.EnterState
+        // asserts !HoldsAnyViewLock and World._lock would be taken second. So the enumeration stays where it
+        // already was, outside the lock, and only the decisions move inside one acquisition.
+        //
+        // The decisions themselves are not made any staler by this: Reanchor still runs per peer, inside the
+        // acquisition, against the same _viewGen handshake, so no decision uses a rect older than the viewer's
+        // tile at the moment it is made (F1/F2, PR #240's review).
+        var buf = RentPeerDecisions(peers.Count);
+        int n = 0;
+        try
+        {
+            foreach (var peer in peers)                      // outside _viewLock — see above
+            {
+                var other = peer.Session;
+                if (ReferenceEquals(other, this)) continue;
+                if (n == buf.Length) buf = GrowPeerDecisions(buf);
+                buf[n++] = new PeerDecision(other, other.PlayerId, peer.X, peer.Y);
+            }
+
+            using (EnterView())
+                for (int i = 0; i < n; i++)
+                {
+                    Reanchor(ref view);                      // no decision on a rect older than the step
+                    buf[i].Draw = DecidePeerUnderViewLock(buf[i].Id, buf[i].X, buf[i].Y, in view);
+                }
+
+            for (int i = 0; i < n; i++)                      // the sends, outside the lock, in sweep order
+            {
+                if (buf[i].Draw == PeerDraw.Show) ShowPlayer(buf[i].Other);
+                else if (buf[i].Draw == PeerDraw.Despawn) SendDespawn(buf[i].Id);
+            }
+        }
+        finally
+        {
+            Array.Clear(buf, 0, n);                          // do not let scratch pin a disconnected Session
+            ReturnPeerDecisions(buf);
+        }
+    }
+
+    /// <summary>One peer's identity and tile, captured outside <c>_viewLock</c>, plus what the decide pass
+    /// decided about it. A struct in a reused array: the sweep must not allocate per beat.</summary>
+    private struct PeerDecision
+    {
+        internal Session Other;
+        internal uint Id;
+        internal ushort X, Y;
+        internal PeerDraw Draw;
+
+        internal PeerDecision(Session other, uint id, ushort x, ushort y)
+        {
+            Other = other; Id = id; X = x; Y = y; Draw = PeerDraw.Nothing;
+        }
+    }
+
+    /// <summary>The sweep's scratch buffer. <b>Thread-static, not per-session</b>, and that is the whole
+    /// safety argument: two threads sweep the SAME viewer concurrently all the time — the world tick's
+    /// reconcile and the viewer's own read loop reconciling a walk step — so a buffer hanging off the session
+    /// would be two sweeps writing one array. It is a property of the sweep in flight, which is a property of
+    /// the thread.
+    ///
+    /// <para>Rented by nulling the slot, so a sweep that somehow re-entered on this thread would get a fresh
+    /// array instead of the one being iterated. Nothing on the send path reaches <see cref="SyncPeers"/>
+    /// today (<c>ShowPlayer</c> and <c>SendDespawn</c> both end at <c>Send</c>), so this is belt and braces,
+    /// not a known case.</para></summary>
+    [ThreadStatic] private static PeerDecision[]? _peerScratch;
+
+    private static PeerDecision[] RentPeerDecisions(int want)
+    {
+        var buf = _peerScratch;
+        _peerScratch = null;                                 // rented: a re-entrant sweep gets its own
+        if (buf is null || buf.Length < want) buf = new PeerDecision[Math.Max(want, 64)];
+        return buf;
+    }
+
+    private static PeerDecision[] GrowPeerDecisions(PeerDecision[] buf)
+    {
+        var bigger = new PeerDecision[buf.Length * 2];
+        Array.Copy(buf, bigger, buf.Length);
+        return bigger;
+    }
+
+    private static void ReturnPeerDecisions(PeerDecision[] buf)
+    {
+        if (_peerScratch is null || _peerScratch.Length < buf.Length) _peerScratch = buf;
     }
 
     /// <summary>Re-evaluate from scratch which peers WE can see — needed when OUR OWN state flips a per-viewer
@@ -266,6 +365,12 @@ public sealed partial class Session
     // draw-vs-despawn for stealth/morph; we only gate on geometry here. The set updates happen at the same
     // points they always did — _shownPeers gains the id on a show, which ShowPlayer cannot fail — so the only
     // thing that moved is WHERE the packet is built.
+    //
+    // ONE PEER ONLY. The sweep no longer comes through here: SyncPeers decides for every peer under a single
+    // acquisition and sends afterwards, because 400 viewers x 400 peers was 160,000 acquire/release pairs a
+    // beat. This is World.EnterMap's newcomer path, one peer at a time, and it keeps the acquire-decide-release
+    // -send shape because for one peer there is nothing to amortise. Both call DecidePeerUnderViewLock, so the
+    // decision itself exists once.
     private void ReconcilePeer(PeerTile peer, ref ViewRect view)
     {
         var other = peer.Session;
@@ -285,30 +390,43 @@ public sealed partial class Session
         using (EnterView())
         {
             Reanchor(ref view);                                    // no decision on a rect older than the step
-            bool core = view.Contains(peer.X, peer.Y, ShowPad);    // strict 17x15 — where a 0x33 is accepted
-            bool drawn = view.Contains(peer.X, peer.Y, HidePad);   // the wider 19x17 the client renders
-
-            if (!_shownPeers.Contains(id))
-            {
-                if (!core) return;
-                _shownPeers.Add(id);
-                draw = PeerDraw.Show;
-            }
-            else if (!drawn)                                          // left the drawn rect — really gone
-            {
-                _shownPeers.Remove(id); _edgePeers.Remove(id);
-                draw = PeerDraw.Despawn;
-            }
-            else if (core)
-            {
-                draw = _edgePeers.Remove(id) ? PeerDraw.Show          // back inside after loitering — re-assert
-                                             : PeerDraw.Nothing;
-            }
-            else { _edgePeers.Add(id); return; }                      // in the band: keep drawn, flag suspect
+            draw = DecidePeerUnderViewLock(id, peer.X, peer.Y, in view);
         }
 
         if (draw == PeerDraw.Show) ShowPlayer(other);
         else if (draw == PeerDraw.Despawn) SendDespawn(id);
+    }
+
+    /// <summary>The peer half of the reconcile's decision, and the ONLY place it is written: both the sweep
+    /// (<see cref="SyncPeers"/>, one acquisition for every peer) and the single-peer path
+    /// (<see cref="ReconcilePeer"/>, one acquisition for one peer) call it, so the two cannot drift.
+    ///
+    /// <para><b>The caller holds this session's <c>_viewLock</c> and has just re-anchored
+    /// <paramref name="view"/>.</b> Nothing in here acquires anything or touches another session: the id and
+    /// the tile were captured by the caller, and the two sets are ours. That is what lets the sweep hold the
+    /// lock across every peer without any risk of the #29 cycle (ShowPlayer -> the subject's monitor) — the
+    /// send is the caller's job, after the release.</para></summary>
+    private PeerDraw DecidePeerUnderViewLock(uint id, ushort px, ushort py, in ViewRect view)
+    {
+        bool core = view.Contains(px, py, ShowPad);       // strict 17x15 — where a 0x33 is accepted
+        bool drawn = view.Contains(px, py, HidePad);      // the wider 19x17 the client renders
+
+        if (!_shownPeers.Contains(id))
+        {
+            if (!core) return PeerDraw.Nothing;
+            _shownPeers.Add(id);
+            return PeerDraw.Show;
+        }
+        if (!drawn)                                       // left the drawn rect — really gone
+        {
+            _shownPeers.Remove(id); _edgePeers.Remove(id);
+            return PeerDraw.Despawn;
+        }
+        if (core)
+            return _edgePeers.Remove(id) ? PeerDraw.Show  // back inside after loitering — re-assert
+                                         : PeerDraw.Nothing;
+        _edgePeers.Add(id);                               // in the band: keep drawn, flag suspect
+        return PeerDraw.Nothing;
     }
 
     /// <summary>Reset the drawn-mob set (before a full 0x15 map rebuild, which drops all foreign entities
