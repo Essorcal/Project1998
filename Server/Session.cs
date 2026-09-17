@@ -1387,6 +1387,17 @@ public sealed partial class Session
     // _edgeMobs. Guarded by _viewLock alongside the mob/item sets.
     private readonly HashSet<uint> _shownPeers = new();
     private readonly HashSet<uint> _edgePeers = new();
+    // The companion of _shownPeers that makes a DEFERRED send safe: peer id -> the serial number of the most
+    // recent decision taken about that peer. The sweep decides for every peer under one acquisition and sends
+    // after releasing it, so a send can be parked (ShowPlayer -> the subject's Snapshot, which takes that
+    // session's monitor) while another thread's walk reconcile decides the opposite about the SAME peer. The
+    // send pass re-takes _viewLock immediately before each frame and drops a decision that is no longer the
+    // latest one for that id — PR #245's finding F1. Touched ONLY when a decision produces a frame, which in
+    // the steady state is never, so the sweep's hot path neither reads nor writes it. An entry lives exactly
+    // as long as the id is drawn or has a send in flight: the send pass drops it when it sends the despawn,
+    // DespawnEntity drops it, and the wholesale clears clear it with the sets. Guarded by _viewLock.
+    private readonly Dictionary<uint, uint> _peerSendStamp = new();
+    private uint _peerSendSeq;                    // last serial handed out; read and written under _viewLock only
     private readonly object _viewLock = new();
     // SHOW at the strict 17x15 edge, HIDE at the drawn edge one tile further out.
     //
