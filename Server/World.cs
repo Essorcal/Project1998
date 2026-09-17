@@ -171,6 +171,22 @@ public sealed partial class World
     // PopulateSpawns, which is the first call into it.
     private readonly SpawnDirector _spawnDirector;
     private long _tick;                                                  // heartbeat counter (TickMs each)
+    private long _slowTicks;                                             // beats the watchdog reported (see SlowTicks)
+
+    /// <summary>Beats run since start, and beats the slow-tick watchdog reported, for <c>run/status.json</c>.
+    ///
+    /// <para>Both load reports state their headline — the share of beats that were slow — as a wall-clock
+    /// span divided by the 333ms period, because the server published no tick total. These two make it a
+    /// count: <c>slowTicks / ticks</c> over a span is measured rather than derived, and the derivation can
+    /// finally be checked against it.</para>
+    ///
+    /// <para>Written by the tick thread only, read on the status writer's thread every 10s.
+    /// <c>Volatile.Read</c> rather than a plain read, so the status thread cannot be handed a hoisted value
+    /// indefinitely; a 64-bit read is already atomic on every runtime this targets, so there is no tearing to
+    /// guard against and nothing to interlock on this side. Not under <c>_lock</c> on purpose — the status
+    /// writer must never queue behind the world.</para></summary>
+    internal long Ticks     => Volatile.Read(ref _tick);
+    internal long SlowTicks => Volatile.Read(ref _slowTicks);
 
     /// <summary>World heartbeat period, and the unit every mob timer accumulates in — so it is also the
     /// FLOOR on how often any creature can act. Override with <c>P1998_TICK_MS</c>.
@@ -2312,6 +2328,15 @@ public sealed partial class World
     /// path; <see cref="TickLoop"/> is the production caller and owns the threshold.</para></summary>
     private void LogSlowTick(long work, long late, long gcMs)
     {
+        // Counted HERE rather than at TickLoop's threshold test, because this method is the one place a slow
+        // beat is reported from: TickLoop and TickOnceWatchedForTest each own their own gate and both arrive
+        // here exactly once when that gate opens. So `slowTicks` can never disagree with the number of
+        // `SLOW TICK: work` lines in the log — which is the whole point of publishing it, since the load run
+        // counts those lines and has until now had to divide them by a wall-clock estimate. Interlocked
+        // because a test seam can drive this from a thread other than the tick's; it is off the healthy path
+        // entirely, once per logged beat.
+        Interlocked.Increment(ref _slowTicks);
+
         // Read this line as: LATE with gc ~= late  -> a GC pause. LATE with gc ~0 -> the OS didn't
         // schedule us (machine-wide contention). WORK with lock ~= work -> a session thread was holding
         // _lock (something slow ran inside a critical section). WORK with lock ~0 -> the tick body

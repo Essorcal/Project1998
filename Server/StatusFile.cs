@@ -14,8 +14,9 @@ namespace Server;
 /// web server already in front of us can serve costs a timer and nothing else, and the blast radius of a bug
 /// here is a stale number rather than a crashed world.
 ///
-/// The shape is fixed by the launcher's <c>ServerStatus</c> DTO (camelCase, case-insensitive):
-/// <code>{ "online": true, "players": 12, "message": null }</code>
+/// The first three fields are fixed by the launcher's <c>ServerStatus</c> DTO (camelCase, case-insensitive);
+/// the last two are for whoever is reading a load run, and the launcher ignores what it does not know:
+/// <code>{ "online": true, "players": 12, "message": null, "ticks": 41233, "slowTicks": 66 }</code>
 /// Its poll runs every 30s, so a 10s cadence here means the number is never more than one poll stale.
 ///
 /// The launcher treats this as ENRICHMENT, not truth: it proves reachability by opening a socket to the login
@@ -41,12 +42,23 @@ public static class StatusFile
 
     private static bool Disabled => Path == "-";
 
+    /// <summary>The launcher's three fields, then the tick counters. Order matters only for readability —
+    /// the launcher's DTO is case-insensitive and ignores what it does not know — so the new pair goes on
+    /// the end, where a reader of an old document and a reader of a new one see the same first three.</summary>
     private sealed record Doc(
-        [property: JsonPropertyName("online")]  bool Online,
-        [property: JsonPropertyName("players")] int Players,
-        [property: JsonPropertyName("message")] string? Message);
+        [property: JsonPropertyName("online")]     bool Online,
+        [property: JsonPropertyName("players")]    int Players,
+        [property: JsonPropertyName("message")]    string? Message,
+        [property: JsonPropertyName("ticks")]      long Ticks,
+        [property: JsonPropertyName("slowTicks")]  long SlowTicks);
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
+
+    /// <summary>The document, as text, without touching the disk — the seam the counter test drives, and the
+    /// one place the world's two counters are read, so a test of this method is a test of what the timer
+    /// publishes rather than of a copy of it.</summary>
+    internal static string Render(World world, bool online, int players) =>
+        JsonSerializer.Serialize(new Doc(online, players, Message, world.Ticks, world.SlowTicks), Json);
 
     public static async Task Loop(World world)
     {
@@ -57,11 +69,11 @@ public static class StatusFile
         // Mark the server down on the way out. A stale file claiming online:true is harmless on the normal
         // path (the socket probe is what decides), but a launcher configured WITHOUT a proxy mapping has no
         // probe to fall back on and would show a dead server as up until someone noticed.
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => Write(false, 0);
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Write(world, false, 0);
 
         while (true)
         {
-            try { Write(true, world.Online.Count); }
+            try { Write(world, true, world.Online.Count); }
             catch (Exception ex) { Log.Warn("status file write failed — retrying next interval", ex); }
             // EXPECTED: cancellation at process exit is the only thing that lands here, and stopping is the
             // correct response. A write that FAILS is a different matter and is logged above.
@@ -74,14 +86,14 @@ public static class StatusFile
     /// eventually catch a half-written file and parse-fail, which surfaces as the status pill flickering to
     /// "unreachable" for no reason anybody can reproduce.
     /// </summary>
-    private static void Write(bool online, int players)
+    private static void Write(World world, bool online, int players)
     {
         if (Disabled) return;
         var dir = System.IO.Path.GetDirectoryName(Path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
         var tmp = Path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(new Doc(online, players, Message), Json));
+        File.WriteAllText(tmp, Render(world, online, players));
         File.Move(tmp, Path, overwrite: true);
     }
 }
