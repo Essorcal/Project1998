@@ -5708,8 +5708,8 @@ The generated CSVs above are loaded once at startup by the static, load-once, re
 `Content` registry (`Content.Load()` in `Program.cs`; `--selftest` exercises it offline without opening
 ports). It powers the navigation commands (§11): fuzzy `FindMap`/`FindMob`/`SearchMaps`/`SearchMobs`
 (score: exact < prefix < substring < subsequence), `TryWarp((map,x,y)→(map,x,y))`, and `TryMap(id)`.
-Paths are env-overridable: `P1998_MAP_INDEX` → `map_index.csv`, `P1998_MOBS` → `mobs.csv`,
-`P1998_WARPS` → `Warps.csv`.
+Every one of these files (`map_index.csv`, `mobs.csv`, `Warps.csv`, …) lives under the game-data
+directory, which is `P1998_GAME_DATA`.
 
 **Map dims are client-authoritative** (`re/build_map_index.py`): every one of the client's ~1750
 `TK<id>.map` files is emitted — a map the client ships is warpable, period. The `.map` is headerless, so
