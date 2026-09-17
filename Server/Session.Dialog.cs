@@ -1634,9 +1634,17 @@ public sealed partial class Session
                 _char.ProfileText = Encoding.ASCII.GetString(dec, off, tlen);
         }
 
-        if (_enteredWorld) StoreSave();
-        Log.Info($"   -> CHANGE-PROFILE (0x4F) saved: pic={_char.ProfilePic?.Length ?? 0}B text=\"{_char.ProfileText}\"");
-        SendMessage("Your profile has been saved.");
+        // The save's result is what the player is told. A contended write now gives up after about five
+        // seconds rather than thirty, so a false here is a real possibility; CaptureAndWrite re-dirties the
+        // session on failure, so the edit is still in memory and the next flush or autosave sweep writes it.
+        bool saved = !_enteredWorld || StoreSave();
+        Log.Info($"   -> CHANGE-PROFILE (0x4F) {(saved ? "saved" : "NOT saved (write failed, retry pending)")}: " +
+                 $"pic={_char.ProfilePic?.Length ?? 0}B text=\"{_char.ProfileText}\"");
+        if (!saved)
+            Log.Warn($"profile save FAILED for '{_char.Name}' — kept in memory, retried on the next flush");
+        SendMessage(saved
+            ? "Your profile has been saved."
+            : "I couldn't write your profile down just now — it will be saved again shortly.");
     }
 
     // ---- 0x49 — "resend your profile picture" (server -> client) ---------------------------------------
