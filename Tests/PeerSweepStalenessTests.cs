@@ -55,7 +55,7 @@ public class PeerSweepStalenessTests
     public PeerSweepStalenessTests(SessionFixture fx, ITestOutputHelper output) { _fx = fx; _out = output; }
 
     // Content-free maps, one per fact so nothing is shared. The character hook widens them to 100x100.
-    private const ushort StaleDespawnMap = 60101, StaleShowMap = 60102;
+    private const ushort StaleDespawnMap = 60101, StaleShowMap = 60102, RedrawnMap = 60103;
 
     private static void Wide(Character c) { c.MapXs = 100; c.MapYs = 100; }
 
@@ -220,6 +220,74 @@ public class PeerSweepStalenessTests
         {
             if (sweep is not null) sweep.Join(5000);
             foreach (var s in new[] { viewer, blocker, edge }) _fx.World.LeaveMap(s, StaleShowMap);
+        }
+    }
+
+    /// <summary>And the case the membership test alone cannot catch, which is why each decision carries a
+    /// stamp: a parked SHOW must not go out after another reconcile despawned that peer AND drew it again,
+    /// because the peer is back in <c>_shownPeers</c> and the frame would be a second 0x33 for one draw.
+    ///
+    /// <para>Same schedule as the mirror above, with the walk continued: 22 -&gt; 21 -&gt; 20 despawns the
+    /// edge peer (0x0E), then 21 -&gt; 22 draws it again (0x33) and tracks it. The parked pass is released
+    /// holding a show whose id IS drawn — but it is not the decision that drew it, and its stamp is no longer
+    /// the latest for that id, so it is dropped.</para>
+    ///
+    /// <para>Red with "one draw must put one frame on the wire" if the stamp comparison is dropped from
+    /// <c>PeerSendStillCurrentUnderViewLock</c> and the membership test is left, and red on the reviewed head
+    /// <c>ca89709</c>, which revalidates nothing at all.</para></summary>
+    [Fact]
+    public void AParkedShowDoesNotRedrawAPeerAnotherReconcileAlreadyRedrew()
+    {
+        var (blocker, _, _) = _fx.PlayerWith("RedrawBlocker", Wide, RedrawnMap, 20, 19);
+        var (viewer, outbound, character) = _fx.PlayerWith("RedrawViewer", Wide, RedrawnMap, 22, 20);
+        var (edge, _, _) = _fx.PlayerWith("RedrawEdge", Wide, RedrawnMap, 30, 20);
+        Exception? failed = null;
+        Thread? sweep = null;
+        try
+        {
+            Assert.Equal((100, 100), (character.MapXs, character.MapYs));
+            Assert.True(blocker.StateRank < viewer.StateRank, "the blocker must be seated before the viewer");
+
+            var peers = new[] { new PeerTile(blocker, 20, 19), new PeerTile(edge, 30, 20) };
+            viewer.DespawnEntity(blocker.PlayerId);
+            viewer.DespawnEntity(edge.PlayerId);
+
+            outbound.Clear();
+            blocker.WithState(() =>
+            {
+                sweep = new Thread(() =>
+                {
+                    try { viewer.SyncPeers(peers); }
+                    catch (Exception ex) { failed = ex; }
+                }) { IsBackground = true };
+                sweep.Start();
+                Assert.True(SpinWait.SpinUntil(
+                    () => sweep.ThreadState.HasFlag(System.Threading.ThreadState.WaitSleepJoin), 5000),
+                    "the sweep never blocked on the first peer's Snapshot");
+
+                // Out of the drawn rect and back into the strict one: despawned, then drawn again by a
+                // reconcile that is not the one the parked pass is holding.
+                viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncPeers(peers); });
+                viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 20, 20); viewer.SyncPeers(peers); });
+                viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncPeers(peers); });
+                viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 22, 20); viewer.SyncPeers(peers); });
+            });
+
+            Assert.True(sweep!.Join(5000), "the sweep thread never finished");
+            Assert.Null(failed);
+
+            var seq = FramesFor(outbound, edge.PlayerId);
+            _out.WriteLine("edge frames after the completed walk: " + string.Join(",", seq));
+
+            Assert.True(seq.SequenceEqual(new[] { "0x0E", "0x33" }),
+                $"one draw must put one frame on the wire: the parked pass is holding a show for a peer that " +
+                $"another reconcile despawned and drew again (#{edge.PlayerId}), so its frame must be dropped; " +
+                $"frames for that peer: {string.Join(",", seq)}");
+        }
+        finally
+        {
+            if (sweep is not null) sweep.Join(5000);
+            foreach (var s in new[] { viewer, blocker, edge }) _fx.World.LeaveMap(s, RedrawnMap);
         }
     }
 }
