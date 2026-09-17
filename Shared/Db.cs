@@ -8,11 +8,36 @@ namespace Shared;
 /// concurrently: WAL allows many readers plus one writer across processes, and a per-connection
 /// busy_timeout absorbs the brief lock waits when both write at once.
 ///
+/// The bound on a contended write is <see cref="BusyTimeoutMs"/>: after about five seconds of waiting for
+/// another writer's lock, the statement fails with "database is locked" rather than blocking the calling
+/// thread any longer. Two separate timeouts have to agree for that to be true —
+/// <c>PRAGMA busy_timeout</c> is how long SQLite itself retries inside one step, and
+/// <c>SqliteConnection.DefaultTimeout</c> (30 seconds if nothing sets it) is how long
+/// Microsoft.Data.Sqlite keeps re-running a statement that came back SQLITE_BUSY. They compound, so a
+/// connection with only the pragma set waits the full thirty seconds. <see cref="Open"/> therefore sets
+/// both from the same constant.
+///
+/// A failed save is not a lost one. <c>CharacterStore.SaveJson</c>/<c>SaveManyJson</c>/<c>SaveWith</c>
+/// catch the exception, log it and return false; <c>Session.CaptureAndWrite</c> puts the dirty flag back
+/// so the next flush or autosave sweep retries, and the trade path re-dirties both sides. Failing in five
+/// seconds rather than thirty means the session thread is released twenty-five seconds sooner and the
+/// retry happens on the next sweep instead.
+///
 /// Content (items/mobs/warps/…) stays in flat files — this DB is only for MUTABLE state that must be
 /// crash-safe and shared between the two processes.
 /// </summary>
 public static class Db
 {
+    /// <summary>How long a contended write waits before it gives up, in milliseconds. Feeds BOTH
+    /// <c>PRAGMA busy_timeout</c> and <see cref="SqliteConnection.DefaultTimeout"/> so the two cannot
+    /// disagree — see the class summary for why having only one of them set is not the same bound.</summary>
+    internal const int BusyTimeoutMs = 5000;
+
+    /// <summary><see cref="SqliteConnection.DefaultTimeout"/> is in whole seconds, so this is
+    /// <see cref="BusyTimeoutMs"/> rounded UP: a sub-second remainder must not round the provider's
+    /// retry window down below SQLite's own, which would make the pragma unreachable.</summary>
+    private const int BusyTimeoutSeconds = (BusyTimeoutMs + 999) / 1000;
+
     private sealed record Migration(string Table, string Column, string Sql);
 
     private static readonly Migration[] Migrations =
@@ -31,7 +56,6 @@ public static class Db
     /// <summary>Absolute path of the database file (&lt;root&gt;/state/project1998.db).</summary>
     public static string Path => _path ??= RepoPaths.DbPath();
 
-    /// <summary>Open a ready-to-use connection (schema guaranteed to exist, busy_timeout set).</summary>
     /// <summary>
     /// Refuse to start on a deployment that still has the pre-rename <c>nexus.db</c> beside an absent
     /// <c>project1998.db</c>.
@@ -66,16 +90,22 @@ public static class Db
             "(-wal and -shm may not exist if the server was stopped cleanly; that is fine.)");
     }
 
+    /// <summary>Open a ready-to-use connection: the schema is guaranteed to exist, and both halves of the
+    /// contention bound are set from <see cref="BusyTimeoutMs"/>, so a write blocked by another writer
+    /// fails after about five seconds instead of thirty.</summary>
     public static SqliteConnection Open()
     {
         EnsureInitialized();
         var cn = new SqliteConnection($"Data Source={Path}");
+        // The provider's retry window, which bounds the whole statement. Without this it is 30s and the
+        // busy_timeout below bounds nothing that a caller can observe.
+        cn.DefaultTimeout = BusyTimeoutSeconds;
         cn.Open();
         using var pragma = cn.CreateCommand();
         // synchronous=NORMAL is per-connection (unlike journal_mode=WAL, which is a persistent DB-file
         // setting) — reapply it on every connection, else this connection silently runs at SQLite's
         // default FULL.
-        pragma.CommandText = "PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;";
+        pragma.CommandText = $"PRAGMA busy_timeout={BusyTimeoutMs}; PRAGMA synchronous=NORMAL;";
         pragma.ExecuteNonQuery();
         return cn;
     }
@@ -96,16 +126,25 @@ public static class Db
         }
     }
 
-    /// <summary>Build or migrate one database file. Internal so tests can exercise a fresh, isolated file.</summary>
+    /// <summary>Build or migrate one database file. Internal so tests can exercise a fresh, isolated file.
+    ///
+    /// <para>This connection CAN contend: <see cref="ApplyMigrations"/> takes the write reservation
+    /// (<c>BEGIN IMMEDIATE</c>) deliberately, and login and game initialize the same shared file
+    /// independently, so one of them can be holding it while the other starts. It therefore gets the same
+    /// paired timeouts as <see cref="Open"/>. The consequence of losing the race is different here — a
+    /// startup that cannot take the reservation within the window throws out of
+    /// <see cref="EnsureInitialized"/> rather than returning false — and that is the intended shape: a
+    /// process that cannot confirm the schema should fail loudly at startup, not serve a world.</para></summary>
     internal static void InitializeDatabase(string path)
     {
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
         using var cn = new SqliteConnection($"Data Source={path}");
+        cn.DefaultTimeout = BusyTimeoutSeconds;
         cn.Open();
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = @"
+        cmd.CommandText = $@"
 PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
+PRAGMA busy_timeout={BusyTimeoutMs};
 PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS accounts (

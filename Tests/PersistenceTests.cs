@@ -111,7 +111,12 @@ public class PersistenceTests : IDisposable
     ///
     /// <para>The failure is induced the way it would really happen: another connection holds the write lock,
     /// so SaveMany's transaction cannot commit. That exercises the actual contention path (SQLITE_BUSY after
-    /// the busy_timeout) rather than a synthetic serializer error, which is why this test takes ~5s.</para>
+    /// the busy_timeout) rather than a synthetic serializer error, which is why this test spends about
+    /// <see cref="Db.BusyTimeoutMs"/> waiting before it gets its answer. The comment here used to claim "~5s"
+    /// while the test actually took 30: the connection's DefaultTimeout was the provider's 30s default, and
+    /// the busy_timeout pragma bounded nothing a caller could observe. <c>Db.Open</c> now sets both from one
+    /// constant, and <see cref="SaveMany_FailsWithinTheBusyTimeout_WhenTheWriteLockIsHeld"/> is the fact that
+    /// holds that true — this one is about the ROLLBACK, not about the clock.</para>
     /// </summary>
     [Fact]
     public void SaveMany_LeavesNothingWritten_WhenTheWriteFails()
@@ -149,6 +154,119 @@ public class PersistenceTests : IDisposable
         Assert.Equal(10, reloadedA.Inventory.Single().Amount);
         Assert.Equal(100u, reloadedB.Coins);
         Assert.Empty(reloadedB.Inventory);
+    }
+
+    /// <summary>
+    /// The BOUND on a contended write, which is the number the whole design rests on: a save that cannot get
+    /// the write lock gives up after about <see cref="Db.BusyTimeoutMs"/>, not after the provider's 30s
+    /// default. That difference is twenty-five seconds of a session thread — the save paths run on the
+    /// session's own thread and on the autosave sweep.
+    ///
+    /// <para>Both ends are asserted on purpose. The upper bound is the regression that matters: it is red at
+    /// ~30s if <c>Db.Open</c>'s <c>DefaultTimeout</c> line goes away, because <c>PRAGMA busy_timeout</c> alone
+    /// does not bound the statement. The lower bound is the opposite failure — a timeout trimmed so far that
+    /// SQLite's own retry never gets to run, which would turn ordinary momentary contention into failed
+    /// saves; see <see cref="SaveMany_StillSucceeds_WhenTheContentionClearsInsideTheWindow"/> for the
+    /// behavioural half of that.</para>
+    ///
+    /// <para>Bounds are derived from the constant rather than written as literals, so changing the timeout
+    /// moves this fact with it instead of breaking it.</para>
+    /// </summary>
+    [Fact]
+    public void SaveMany_FailsWithinTheBusyTimeout_WhenTheWriteLockIsHeld()
+    {
+        var a = Make(_a, 100);
+        Assert.True(_store.SaveMany(new[] { a }));
+        a.Coins = 200;
+
+        var elapsed = TimeSpan.Zero;
+        bool saved;
+        using (var blocker = Db.Open())
+        {
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";   // held for the whole attempt: this never clears
+            begin.ExecuteNonQuery();
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            saved = _store.SaveMany(new[] { a });
+            clock.Stop();
+            elapsed = clock.Elapsed;
+
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }
+
+        Assert.False(saved);
+
+        // Generous both ways: a loaded CI runner can stretch a wait, and the provider rounds to whole
+        // seconds. What is being pinned is the ORDER OF MAGNITUDE — five seconds, not thirty.
+        var floor   = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 0.8);
+        var ceiling = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 2);
+        Assert.True(elapsed >= floor,
+            $"a contended save gave up after {elapsed.TotalSeconds:F1}s, before SQLite's own busy_timeout of " +
+            $"{Db.BusyTimeoutMs}ms could retry — momentary contention will now lose saves");
+        Assert.True(elapsed <= ceiling,
+            $"a contended save took {elapsed.TotalSeconds:F1}s to fail, against a busy_timeout of " +
+            $"{Db.BusyTimeoutMs}ms. The connection's DefaultTimeout is not being set from it, so the provider " +
+            "is retrying the statement for its own default of 30s and the pragma bounds nothing.");
+
+        // The failed save changed nothing, and the row is still writable afterwards.
+        Assert.Equal(100u, LoadOk(_a).Coins);
+        Assert.True(_store.SaveMany(new[] { a }));
+    }
+
+    /// <summary>
+    /// The negative control for the shorter timeout: a contention that CLEARS inside the window must still
+    /// end in a successful save, not a failed one. Two writers overlapping for a moment is the ordinary case
+    /// — the login process stamping last_login while the game autosaves, two sessions flushing together —
+    /// and shortening the bound must not convert those into lost writes that wait for the next sweep.
+    ///
+    /// <para>The lock is held for a second, well inside <see cref="Db.BusyTimeoutMs"/>, on another thread;
+    /// the save must block and then succeed once the lock goes.</para>
+    /// </summary>
+    [Fact]
+    public void SaveMany_StillSucceeds_WhenTheContentionClearsInsideTheWindow()
+    {
+        var a = Make(_a, 100);
+        Assert.True(_store.SaveMany(new[] { a }));
+        a.Coins = 777;
+
+        const int holdMs = 1000;
+        Assert.True(holdMs < Db.BusyTimeoutMs, "the hold has to be inside the window for this to test anything");
+
+        using var locked = new ManualResetEventSlim(false);
+        // A plain thread rather than a Task: nothing here is awaited, and the test body has to block on the
+        // save itself, which is what is being measured.
+        var holder = new Thread(() =>
+        {
+            using var blocker = Db.Open();
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            begin.ExecuteNonQuery();
+            locked.Set();
+            Thread.Sleep(holdMs);
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }) { IsBackground = true };
+        holder.Start();
+
+        Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the write lock");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        bool saved = _store.SaveMany(new[] { a });
+        clock.Stop();
+        Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never released the write lock");
+
+        Assert.True(saved,
+            $"a save contended for {holdMs}ms — well inside the {Db.BusyTimeoutMs}ms window — failed after " +
+            $"{clock.Elapsed.TotalSeconds:F1}s instead of waiting the lock out");
+        Assert.Equal(777u, LoadOk(_a).Coins);
+        // It really did wait rather than slipping in before the lock was taken, which would make the pass
+        // meaningless.
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.5),
+            $"the save returned in {clock.Elapsed.TotalMilliseconds:F0}ms, so it never contended at all");
     }
 
     /// <summary>The parcel guarantee: the queue row and the character save commit together. Here the
