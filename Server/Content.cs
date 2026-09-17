@@ -51,7 +51,7 @@ public static partial class Content
             {
                 if (spec.Kind != ContentTableKind.Lua)
                     throw new InvalidOperationException($"Programming error: {spec.File} is not a Lua script");
-                var scriptPath = ResolvePath(spec.EnvironmentVariable, spec.File);
+                var scriptPath = ResolvePath(spec);
                 bool present = scriptPath is not null && File.Exists(scriptPath);
                 var (ok, prepared) = prepare(scriptPath);
                 if (prepared is not null) stage(prepared);
@@ -609,12 +609,13 @@ public static partial class Content
         return value > 0 ? value : dflt;
     }
 
-    // Resolve a content file under the game-data root: per-file env override first, else
-    // <root>/game-data/<parts...>. This used to carry its own copy of the walk up to the repo root, one of
+    // Resolve a content file under the game-data root. This used to carry its own copy of the walk up to
+    // the repo root, one of
     // five that had drifted apart; Shared/RepoPaths is now the single implementation, and its class doc
     // explains why every resolver has to agree on the fallback (briefly: a layout where the database
     // resolved but the content did not gave a server that started, listened and accepted logins into a
     // world with zero maps, zero mobs and zero NPCs, with nothing in the log that read as an error).
-    private static string? ResolvePath(string envVar, params string[] parts) =>
-        RepoPaths.GameData(envVar, parts);
+    private static string ResolvePath(params string[] parts) => RepoPaths.GameData(parts);
+
+    private static string ResolvePath(TableSpec spec) => spec.PathOverride ?? ResolvePath(spec.File);
 }

@@ -173,9 +173,13 @@ public static class EraCalendar
     // The login server has no Content.Load, so its lazy path opens both files here. The game server passes
     // the value and feature table already opened by Content.Load, keeping one read of each file per load.
 
+    internal static Func<string, string?>? PathOverrideForTests { get; set; }
+
+    private static string ResolvePath(string file) => PathOverrideForTests?.Invoke(file) ?? RepoPaths.GameData(file);
+
     private static int ReadEraDate()
     {
-        foreach (var row in Csv.Open("ServerTuning.csv", RepoPaths.GameData("P1998_SERVER_TUNING", "ServerTuning.csv")))
+        foreach (var row in Csv.Open("ServerTuning.csv", ResolvePath("ServerTuning.csv")))
             if (row.Require("key").Trim().Equals("EraDate", StringComparison.OrdinalIgnoreCase)
                 && double.TryParse(row.Require("value").Trim(), System.Globalization.NumberStyles.Float,
                                    System.Globalization.CultureInfo.InvariantCulture, out var d))
@@ -187,7 +191,7 @@ public static class EraCalendar
     }
 
     private static CsvTable OpenFeatures() =>
-        Csv.Open("EraFeatures.csv", RepoPaths.GameData("P1998_ERA_FEATURES", "EraFeatures.csv"));
+        Csv.Open("EraFeatures.csv", ResolvePath("EraFeatures.csv"));
 
     private static Dictionary<string, EraWindow> ReadFeatures(CsvTable csv)
     {
