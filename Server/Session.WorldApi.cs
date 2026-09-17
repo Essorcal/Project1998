@@ -143,25 +143,27 @@ public sealed partial class Session
     /// entered the camera rect, despawn (0x0E) any that left (with hysteresis so a mob loitering on the
     /// edge doesn't flicker). Called on world entry, after each of our walk steps, and every world tick.
     ///
-    /// <para>Capture outside the lock, decide for every mob under ONE acquisition, send after releasing it and
-    /// only if the decision is still current — the shape <see cref="SyncPeers"/> has since PR #245, and the
-    /// three sweeps now share it. What it buys here is not the acquisition count (this method already took one
-    /// for the whole loop): it is that <see cref="ShowMob"/> and <see cref="SendDespawn"/> no longer run under
-    /// <c>_viewLock</c>. Every packet build the sweep produces — the <c>List&lt;byte&gt;</c>, the palette
-    /// remap, the cipher, the channel write — used to happen with the viewer's viewport lock held, so on the
-    /// beats that DO send (map entry, a step that crosses many mobs, a spawn wave) the hold span was the whole
-    /// sweep. Measured on 400 viewers and 305 mobs of which 40 leave and 40 enter every beat: 51.5us of a
-    /// 51.7us sweep held in Debug, 30.0us of 30.1us in Release (briefs/reports/sweep-deferred-sends-opus.md).
-    /// It also makes true of this method the rule <c>SyncPeers</c> and <c>ReconcilePeer</c> already state —
-    /// a send never happens under <c>_viewLock</c> (#29).</para></summary>
+    /// <para>Decide for every mob under ONE acquisition, then send after releasing it and only if the decision
+    /// is still current — the deferred-send half of the shape <see cref="SyncPeers"/> has had since PR #245.
+    /// What it buys here is not the acquisition count (this method already took one for the whole loop): it is
+    /// that <see cref="ShowMob"/> and <see cref="SendDespawn"/> no longer run under <c>_viewLock</c>. Every
+    /// packet build the sweep produces — the <c>List&lt;byte&gt;</c>, the palette remap, the cipher, the
+    /// channel write — used to happen with the viewer's viewport lock held, so on the beats that DO send (map
+    /// entry, a step that crosses many mobs, a spawn wave) the hold span was the whole sweep. It also makes
+    /// true of this method the rule <c>SyncPeers</c> and <c>ReconcilePeer</c> already state — a send never
+    /// happens under <c>_viewLock</c> (#29).</para>
+    ///
+    /// <para><b>What this sweep does NOT copy from <c>SyncPeers</c>, and it is a measurement rather than an
+    /// oversight.</b> The peer sweep copies each peer's id and tile OUTSIDE the lock, because it must: its
+    /// decide pass would otherwise read another session under the viewer's view lock. Nothing here does —
+    /// a <c>Mob</c> is a plain object with plain fields — so the enumeration stays under the acquisition,
+    /// exactly where the base had it. Moving it out was tried and measured on 400 viewers and 305 mobs that
+    /// produce no frames: +38% on the sweep, with no acquisition saving to pay for it. The mob decision also
+    /// stays written out here rather than going through the peer half's helper, for the same reason — that
+    /// helper is an eight-argument call neither build inlines, once per mob. See
+    /// briefs/reports/sweep-deferred-sends-opus.md.</para></summary>
     public void SyncMobs(IReadOnlyList<Mob> mobs)
     {
-        // CAPTURE, OUTSIDE THE LOCK, and for two reasons. `mobs` is an interface, so enumerating it is
-        // arbitrary code — Tests/ViewportRectStalenessTests.cs drives a real World.SetPlayerPosition from
-        // inside GetEnumerator, and arbitrary code must not run under a view lock (Session.EnterState asserts
-        // !HoldsAnyViewLock, and World._lock would be taken second). And capturing the tile ONCE closes a tear
-        // the per-entity shape had: it read m.X/m.Y twice, once per pad, while the mob's only writer holds
-        // World._lock rather than this one, so the two rect tests could see different tiles. Now they cannot.
         var pend = Scratch<PendingSend<Mob>>.Rent(PendingSeed);
         int p = 0;
         try
@@ -172,7 +174,7 @@ public sealed partial class Session
                 // that queued behind a walk reconcile anchors on the tile it finds when it gets in, not on the
                 // one the viewer stood on when the tick reached this line (PR #240's F1).
                 var view = CurrentView();                    // once for the sweep, not once per mob per pad
-                foreach (var m in mobs)
+                foreach (var m in mobs)                      // under the lock, as the base had it — see above
                 {
                     if (!m.Alive) continue;                  // a dead mob's despawn is the world's broadcast
                     Reanchor(ref view);                      // the viewer walks on its own thread; it takes
