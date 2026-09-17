@@ -78,10 +78,26 @@ public sealed partial class Session
     // 800 distinct answers. `(3) viewports` led 65 of the 66 slow beats in the 400-player hold at p50 119ms
     // of a p50 129ms beat (briefs/reports/load-run-2.md), which is what this is cutting. The rect is taken
     // once per sweep in <see cref="CurrentView"/> and the per-entity test is then four integer compares.
+    //
+    // ONE RECT PER SWEEP IS NOT ONE RECT PER DECISION. A sweep that takes the rect and then waits on
+    // _viewLock decides on a tile the viewer may already have left, and that is not a cosmetic difference:
+    // PR #240's reviewer showed a delayed mob sweep despawning a mob a completed walk reconcile had just
+    // drawn, then redrawing it on the next beat (F1, HIGH). The per-entity shape this replaces never had
+    // that problem, because it re-read the viewer's tile at every test. So the rect carries the value of a
+    // per-session counter bumped by every write of this player's tile (Session.SetPositionUnderWorldLock,
+    // the one seam all three world writers go through), and every decision re-compares it under _viewLock:
+    // equal means the rect is still the viewer's current tile and the sweep keeps it; different means the
+    // viewer moved and the rect is rebuilt. That is one anchor computation per sweep in the common case, one
+    // int compare per entity, and one recomputation per step the viewer actually took.
     private readonly struct ViewRect
     {
         private readonly int _ox, _oy;
-        internal ViewRect(int ox, int oy) { _ox = ox; _oy = oy; }
+
+        /// <summary>The value <see cref="_viewGen"/> had when this rect was built. Compared, never
+        /// interpreted — see <see cref="Current"/>.</summary>
+        internal readonly int Gen;
+
+        internal ViewRect(int ox, int oy, int gen) { _ox = ox; _oy = oy; Gen = gen; }
 
         /// <summary>The identical test the per-entity <see cref="InView"/> ran, against an origin already
         /// computed. `pad` widens the rect (spawn early / despawn late).</summary>
@@ -90,13 +106,27 @@ public sealed partial class Session
          && my >= _oy - pad && my < _oy + ViewH + pad;
     }
 
+    /// <summary>How many times this player's tile has been written. Incremented by
+    /// <see cref="SetPositionUnderWorldLock"/> AFTER the two stores, which is the half of the handshake that
+    /// matters: a reader that samples the counter BEFORE reading the tile and finds the same value later has
+    /// seen no write complete in between. (A counter bumped before the stores would let exactly the stale
+    /// read this exists to catch through.)</summary>
+    private int _viewGen;
+
     /// <summary>This viewer's on-screen rect right now — one <see cref="ViewAnchor"/> read, for a whole
-    /// sweep. Taken OUTSIDE <c>_viewLock</c>, where the per-entity calls it replaces already read it.</summary>
+    /// sweep.</summary>
     private ViewRect CurrentView()
     {
-        var (vx, vy) = ViewAnchor();
-        return new ViewRect(_char.X - vx, _char.Y - vy);
+        int gen = Volatile.Read(ref _viewGen);   // sampled BEFORE the tile read, so a write that lands after
+        var (vx, vy) = ViewAnchor();             // this point is guaranteed to change the counter
+        return new ViewRect(_char.X - vx, _char.Y - vy, gen);
     }
+
+    /// <summary><paramref name="view"/> if the viewer has not moved since it was taken, a freshly built rect
+    /// if it has. Called at every decision, under the <c>_viewLock</c> that decision is made under, so no
+    /// decision can use a rect older than the viewer's tile at the moment it is made.</summary>
+    private ViewRect Current(ViewRect view) =>
+        Volatile.Read(ref _viewGen) == view.Gen ? view : CurrentView();
 
     /// <summary>The single-entity form, for the callers that test one tile and are not in a sweep.</summary>
     private bool InView(int mx, int my, int pad) => CurrentView().Contains(mx, my, pad);
@@ -106,12 +136,17 @@ public sealed partial class Session
     /// edge doesn't flicker). Called on world entry, after each of our walk steps, and every world tick.</summary>
     public void SyncMobs(IReadOnlyList<Mob> mobs)
     {
-        var view = CurrentView();                            // once for the sweep, not once per mob per pad
         using (EnterView())
         {
+            // Inside the lock, not before it: the whole loop decides under this acquisition, so a sweep that
+            // queued behind a walk reconcile anchors on the tile it finds when it gets in, not on the one the
+            // viewer stood on when the tick reached this line (F1).
+            var view = CurrentView();                        // once for the sweep, not once per mob per pad
             foreach (var m in mobs)
             {
                 if (!m.Alive) continue;
+                view = Current(view);                        // the viewer walks on its own thread; it takes
+                                                             // World._lock and its own monitor, not this one
                 bool core = view.Contains(m.X, m.Y, ShowPad); // strict 17x15 — where a 0x07 is accepted
                 if (!_shownMobs.Contains(m.Id))
                 {
@@ -157,7 +192,9 @@ public sealed partial class Session
         foreach (var gi in markers is null ? items : items.Concat(markers))
         {
             bool shown;
-            using (EnterView()) shown = _shownItems.Contains(gi.Id);
+            // The rect is re-anchored in the same acquisition that reads the tracking set, so this item's
+            // decision and the state it is made against are both as of one moment (F1's shape, on items).
+            using (EnterView()) { view = Current(view); shown = _shownItems.Contains(gi.Id); }
             if (!shown)
             {
                 if (view.Contains(gi.X, gi.Y, ShowPad)) ShowGroundItem(gi);
@@ -180,7 +217,9 @@ public sealed partial class Session
     public void SyncPeers(IReadOnlyList<PeerTile> peers)
     {
         var view = CurrentView();                            // once for the sweep, not once per peer per pad
-        foreach (var other in peers) ReconcilePeer(other, view);
+        // By reference so a re-anchor one peer paid for is kept by the rest of the sweep — otherwise every
+        // remaining peer would find the counter changed and rebuild the same rect again.
+        foreach (var other in peers) ReconcilePeer(other, ref view);
     }
 
     /// <summary>Re-evaluate from scratch which peers WE can see — needed when OUR OWN state flips a per-viewer
@@ -197,7 +236,11 @@ public sealed partial class Session
     /// <summary>Reconcile a SINGLE peer into our view (view-gated + tracked). Used when the world tells one
     /// client about one newcomer (World.EnterMap) so the newcomer is drawn only if in view AND recorded in
     /// _shownPeers — so a later step out of view despawns cleanly, like every other tracked entity.</summary>
-    public void SyncPeer(PeerTile other) => ReconcilePeer(other, CurrentView());
+    public void SyncPeer(PeerTile other)
+    {
+        var view = CurrentView();
+        ReconcilePeer(other, ref view);
+    }
 
     /// <summary>What reconciling one peer decided to do about them, once the bookkeeping is settled.</summary>
     private enum PeerDraw { Nothing, Show, Despawn }
@@ -215,7 +258,7 @@ public sealed partial class Session
     // draw-vs-despawn for stealth/morph; we only gate on geometry here. The set updates happen at the same
     // points they always did — _shownPeers gains the id on a show, which ShowPlayer cannot fail — so the only
     // thing that moved is WHERE the packet is built.
-    private void ReconcilePeer(PeerTile peer, ViewRect view)
+    private void ReconcilePeer(PeerTile peer, ref ViewRect view)
     {
         var other = peer.Session;
         if (ReferenceEquals(other, this)) return;
@@ -227,14 +270,16 @@ public sealed partial class Session
         // unaffected either way: ShowPlayer takes it from other.Snapshot(), under the peer's own monitor.
         // `view` is OUR rect, taken once by the caller for the whole sweep (SyncPeers) rather than rebuilt per
         // pad inside each test. Same arithmetic, same answer for a viewer standing still — and for a viewer
-        // walking on another thread the two tests below now agree with each other, which the per-call shape
-        // could not promise any more than it could for the peer's tile.
-        bool core = view.Contains(peer.X, peer.Y, ShowPad);    // strict 17x15 — where a 0x33 is accepted
-        bool drawn = view.Contains(peer.X, peer.Y, HidePad);   // the wider 19x17 the client actually renders
-
+        // walking on another thread both tests are taken from ONE re-anchored rect inside the acquisition
+        // that decides, so they agree with each other AND with where the viewer is standing when they are
+        // taken. There is no longer a point between the two tests where a step can land unseen.
         PeerDraw draw;
         using (EnterView())
         {
+            view = Current(view);                                  // no decision on a rect older than the step
+            bool core = view.Contains(peer.X, peer.Y, ShowPad);    // strict 17x15 — where a 0x33 is accepted
+            bool drawn = view.Contains(peer.X, peer.Y, HidePad);   // the wider 19x17 the client renders
+
             if (!_shownPeers.Contains(id))
             {
                 if (!core) return;

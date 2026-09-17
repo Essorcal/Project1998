@@ -104,6 +104,11 @@ public sealed partial class Session
             "reaches it in Session.WithState, the way the packet dispatcher does.");
         _char.X = x;
         _char.Y = y;
+        // AFTER the stores, and the reason is in Session.WorldApi.cs: a viewport sweep samples this counter
+        // before it reads the tile and compares it again at every decision it makes under _viewLock, so a
+        // sweep that queued behind this write cannot decide on the tile the viewer just left. Bumping it
+        // before the stores would leave exactly that hole open. One interlocked increment per step.
+        Interlocked.Increment(ref _viewGen);
     }
 
     private void HandleWalk(byte[] dec)
