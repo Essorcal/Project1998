@@ -56,17 +56,38 @@ public enum ConfigArea
 /// toggles — so <see cref="Describe"/> prints values verbatim; that was checked knob by knob when this file
 /// was written, and a future knob that IS a secret must not be printed.</para>
 ///
-/// <para><b>What is NOT here yet.</b> The 68 per-table content-path overrides (<c>P1998_&lt;TABLE&gt;</c>,
-/// see <c>Server/Content.Tables.cs</c>) are declared by <c>TableSpec</c> and stay there: retiring them in
-/// favour of <see cref="ServerConfig.GameDataDir"/> is a behaviour change entangled with the TableSpec work.
-/// That family, and the three variables <c>run-server.bat</c> reads before any server process exists, are
-/// now the only <c>P1998_*</c> names outside this file. Both sets
-/// are named in the generated reference so the gap is visible rather than assumed closed.</para>
+/// <para>The retired per-file content overrides remain declared here only so a deployment that still sets
+/// one receives a startup warning. They no longer affect path resolution; <see cref="GameDataDir"/> is the
+/// single content-path override.</para>
 /// </summary>
 public sealed class ServerConfig
 {
     // ---- declarations ----------------------------------------------------------------------------------
     // One entry per knob. Name, area, default, doc string. Nothing else declares a P1998_ literal.
+
+    /// <summary>Retired per-file content overrides. The 68 CSV tables and four Lua inputs now all resolve
+    /// beneath <c>P1998_GAME_DATA</c>; these names remain only to warn operators who still set them.</summary>
+    public static IReadOnlyList<string> RetiredContentOverrides { get; } = Array.AsReadOnly(new[]
+    {
+        "P1998_OBJECT_FLAG_OVERRIDES", "P1998_OBJ533_FIX", "P1998_TILE533_MAP", "P1998_MAP_INDEX",
+        "P1998_MOB_FLEES", "P1998_MOB_STATIONARY", "P1998_MOBS", "P1998_ITEMS", "P1998_WARPS",
+        "P1998_SPAWNS", "P1998_AREASPAWNS", "P1998_AREASPAWNS_TRAP", "P1998_AREASPAWNS_CRAFT",
+        "P1998_SERVER_TUNING", "P1998_ERA_FEATURES", "P1998_NPCS", "P1998_MINORQUESTS",
+        "P1998_SHOPSTOCK", "P1998_SHOPBUYSFROM", "P1998_PATHS", "P1998_LEVELEXP",
+        "P1998_SPELL_LEVELS", "P1998_SPELLS", "P1998_SPELL_FX", "P1998_SPELL_TEXT",
+        "P1998_SPELL_COSTS", "P1998_MOB_PALETTES_5X", "P1998_ARMOR_DYE_RAMPS", "P1998_MAPS_FULL",
+        "P1998_MOB_DROPS", "P1998_CRAFTING_TOGGLES", "P1998_WARP_QUEST_LOCKS", "P1998_ARMOR_QUESTS",
+        "P1998_MYTHIC_CAVES", "P1998_MYTHIC_ALLIANCES", "P1998_ARENA_DOORS",
+        "P1998_EVENT_CAVE_TIERS", "P1998_EVENT_CAVES", "P1998_MUSIC_TRACKS", "P1998_MAP_BGM",
+        "P1998_INNS", "P1998_FORAGE", "P1998_HARVEST", "P1998_MOB_SPELLS", "P1998_MOB_CHATTER",
+        "P1998_MOB_SPAWN_RULES", "P1998_MOB_BOSSES", "P1998_PATHHALLS", "P1998_GATEWAY",
+        "P1998_WORLDMAP_DESTS", "P1998_WORLDMAP_TRIGGERS", "P1998_FALLROOMS",
+        "P1998_AMBUSH_BURSTS", "P1998_AMBUSH_CONFIG", "P1998_BOARD_LOCATIONS",
+        "P1998_SHOP_CATALOGUES", "P1998_SPELL_PARAMS", "P1998_SPELL_VERBS", "P1998_ITEM_PARAMS",
+        "P1998_ITEM_VERBS", "P1998_NPC_DIALOG", "P1998_MOB_AI", "P1998_PETS", "P1998_WEAPON_PROCS",
+        "P1998_TRAPS", "P1998_MORPHS", "P1998_SPELL_MODS", "P1998_NPC_ABILITIES",
+        "P1998_PATH_GROWTH", "P1998_DOOR_OBJECTS", "P1998_DOORS", "P1998_MAP_CELLS",
+    });
 
     /// <summary>Every declared knob. The generated reference and the startup banner both walk this list, in
     /// this order, so adding a knob below is the whole of adding a knob.</summary>
@@ -460,6 +481,7 @@ public sealed class ServerConfig
                                bool FromEnvironment, string? Warning);
 
     private readonly Dictionary<string, Entry> _byName;
+    private readonly IReadOnlyList<(string Name, string Raw)> _setRetiredContentOverrides;
 
     /// <summary>Every knob's resolved state, in declaration order.</summary>
     public IReadOnlyList<Entry> Entries { get; }
@@ -482,6 +504,11 @@ public sealed class ServerConfig
         }
         Entries = entries;
         _byName = entries.ToDictionary(e => e.Knob.Name, StringComparer.Ordinal);
+        _setRetiredContentOverrides = RetiredContentOverrides
+            .Select(name => (Name: name, Raw: source(name)))
+            .Where(entry => !string.IsNullOrEmpty(entry.Raw))
+            .Select(entry => (entry.Name, entry.Raw!))
+            .ToArray();
     }
 
     /// <summary>Resolve a configuration against an arbitrary source. Exists so a test can pin a knob's
@@ -683,7 +710,11 @@ public sealed class ServerConfig
     {
         var lines = new List<string>();
         int fromEnv = Entries.Count(e => e.FromEnvironment && e.Knob.Area != ConfigArea.Retired);
-        lines.Add($"=== config: {Knobs.All.Count} knob(s), {fromEnv} set from the environment " +
+        // The retired content override names are not knobs — they have no value, no default and no row in
+        // the generated document this line points at — so they are counted nowhere here. A set one is
+        // reported by its startup warning and by the [Retired] line below.
+        lines.Add($"=== config: {Knobs.All.Count} knob(s), " +
+                  $"{fromEnv} set from the environment " +
                   "(see docs/common/Configuration.md) ===");
         foreach (var area in Entries.Select(e => e.Knob.Area).Distinct())
         {
@@ -701,13 +732,24 @@ public sealed class ServerConfig
                           (area == ConfigArea.Retired ? ""
                            : entry.FromEnvironment ? "   (environment)" : "   (default)"));
         }
+        if (_setRetiredContentOverrides.Count > 0)
+        {
+            if (!lines.Contains("    [Retired]")) lines.Add("    [Retired]");
+            foreach (var entry in _setRetiredContentOverrides)
+                lines.Add($"      {entry.Name,-34} = (retired — IGNORED, was '{entry.Raw}')");
+        }
         return lines;
     }
 
     /// <summary>Every warning the resolution produced: an unparseable number, an out-of-range value, a
     /// boolean that is neither 0 nor 1, or a retired gameplay variable that is still set.</summary>
     public IReadOnlyList<string> Warnings =>
-        Entries.Where(e => e.Warning is not null).Select(e => e.Warning!).ToArray();
+        Entries.Where(e => e.Warning is not null).Select(e => e.Warning!)
+            .Concat(_setRetiredContentOverrides.Select(entry =>
+                $"{entry.Name}='{entry.Raw}' is RETIRED and is being IGNORED. Content files now resolve " +
+                "under P1998_GAME_DATA; set P1998_GAME_DATA to relocate the content directory. " +
+                "Unset the variable to silence this."))
+            .ToArray();
 
     /// <summary>Log the effective configuration and any warnings. Called once per process, after
     /// <c>Log.AttachFile</c> so the banner reaches the file as well as the console.</summary>

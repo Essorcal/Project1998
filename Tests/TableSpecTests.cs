@@ -35,8 +35,8 @@ public sealed class TableSpecTests
             Assert.Equal(68, Content.TableSpecifications.Count(spec => spec.Kind == ContentTableKind.Csv));
             Assert.Equal(4, Content.TableSpecifications.Count(spec => spec.Kind == ContentTableKind.Lua));
             Assert.Equal(Content.TableSpecifications.Count,
-                Content.TableSpecifications.Select(spec => spec.EnvironmentVariable)
-                    .Distinct(StringComparer.Ordinal).Count());
+                Content.TableSpecifications.Select(spec => spec.File)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Count());
 
             TestProcessState.LoadContent();
 
@@ -69,10 +69,11 @@ public sealed class TableSpecTests
         lock (TestProcessState.Gate)
         {
             string missing = Path.Combine(Path.GetTempPath(), $"p1998-readme-not-here-{Guid.NewGuid():N}.csv");
-            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_FLEES");
+            var id = Content.TableId.MobFlees;
+            var original = Content.Spec(id);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_FLEES", missing);
+                Content.ReplaceSpecForTests(id, original with { PathOverride = missing });
                 TestProcessState.LoadContent();
 
                 var error = Assert.Throws<InvalidOperationException>(() => Content.RenderTableReadmeBlock(out _));
@@ -82,14 +83,14 @@ public sealed class TableSpecTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_FLEES", previous);
+                Content.ReplaceSpecForTests(id, original);
                 TestProcessState.LoadContent();
             }
         }
     }
 
     /// <summary>The pre-load fallbacks use the same spec objects as <see cref="Content.Load"/>. Changing a
-    /// spec's environment-variable name must redirect the fallback without changing the fallback itself.</summary>
+    /// spec's in-process path seam must redirect the fallback without changing the fallback itself.</summary>
     [Fact]
     public void LazyFallbacksResolveTheirFilesThroughTheSpec()
     {
@@ -108,12 +109,10 @@ public sealed class TableSpecTests
     public void EmptySuppliedHeaderUsesTheFilesOwnHeader()
     {
         string path = Path.Combine(Path.GetTempPath(), $"p1998-empty-spec-header-{Guid.NewGuid():N}.csv");
-        string environmentVariable = $"P1998_TEST_EMPTY_HEADER_{Guid.NewGuid():N}";
         try
         {
             File.WriteAllText(path, "Id,Name\n1,alpha\n");
-            Environment.SetEnvironmentVariable(environmentVariable, path);
-            var spec = new TableSpec(environmentVariable, "empty-header.csv", header: []);
+            var spec = new TableSpec("empty-header.csv", header: []) { PathOverride = path };
 
             var table = Content.OpenTable(spec);
 
@@ -124,8 +123,32 @@ public sealed class TableSpecTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable(environmentVariable, null);
             try { File.Delete(path); } catch { /* best-effort cleanup of a test fixture */ }
+        }
+    }
+
+    /// <summary>A retired per-file variable cannot redirect a table. The file still opens beneath
+    /// <c>P1998_GAME_DATA</c>; restoring the old environment read makes this fact fail on the missing path.</summary>
+    [Fact]
+    public void A_retired_per_table_override_is_ignored()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_FLEES");
+            try
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_FLEES",
+                    Path.Combine(Path.GetTempPath(), $"p1998-retired-{Guid.NewGuid():N}.csv"));
+
+                var table = Content.OpenTable(Content.TableId.MobFlees);
+
+                Assert.Equal(Shared.RepoPaths.GameData("MobFlees.csv"), table.Path);
+                Assert.NotEmpty(table);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("P1998_MOB_FLEES", previous);
+            }
         }
     }
 
@@ -143,16 +166,14 @@ public sealed class TableSpecTests
         lock (TestProcessState.Gate)
         {
             const string consequence = "test script consequence";
-            string environmentVariable = $"P1998_TEST_SCRIPT_{Guid.NewGuid():N}";
             string missing = Path.Combine(Path.GetTempPath(), $"p1998-script-not-here-{Guid.NewGuid():N}.lua");
             var id = Content.TableId.SpellVerbs;
             var original = Content.Spec(id);
             try
             {
-                Environment.SetEnvironmentVariable(environmentVariable, missing);
                 Content.ReplaceSpecForTests(id, original with
                 {
-                    EnvironmentVariable = environmentVariable,
+                    PathOverride = missing,
                     MissingConsequence = consequence,
                 });
                 TestProcessState.LoadContent();
@@ -163,7 +184,6 @@ public sealed class TableSpecTests
             finally
             {
                 Content.ReplaceSpecForTests(id, original);
-                Environment.SetEnvironmentVariable(environmentVariable, null);
                 TestProcessState.LoadContent();
             }
         }
@@ -173,14 +193,11 @@ public sealed class TableSpecTests
                                                string contents, string column, string expected)
     {
         string path = Path.Combine(Path.GetTempPath(), $"p1998-spec-fallback-{Guid.NewGuid():N}.csv");
-        string environmentVariable = $"P1998_TEST_FALLBACK_{Guid.NewGuid():N}";
         var original = Content.Spec(id);
-        string? previous = Environment.GetEnvironmentVariable(environmentVariable);
         try
         {
             File.WriteAllText(path, contents);
-            Environment.SetEnvironmentVariable(environmentVariable, path);
-            Content.ReplaceSpecForTests(id, original with { EnvironmentVariable = environmentVariable });
+            Content.ReplaceSpecForTests(id, original with { PathOverride = path });
 
             var table = open();
 
@@ -190,7 +207,6 @@ public sealed class TableSpecTests
         finally
         {
             Content.ReplaceSpecForTests(id, original);
-            Environment.SetEnvironmentVariable(environmentVariable, previous);
             try { File.Delete(path); } catch { /* best-effort cleanup of a test fixture */ }
         }
     }

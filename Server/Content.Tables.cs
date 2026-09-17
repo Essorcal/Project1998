@@ -13,18 +13,18 @@ internal enum ContentTableKind
 /// optional supplied header, missing-file consequence and position in the load report.</summary>
 internal sealed record TableSpec
 {
-    internal string EnvironmentVariable { get; init; }
     internal string File { get; init; }
     internal ContentTableKind Kind { get; init; }
     internal IReadOnlyList<string>? Header { get; init; }
     internal string? MissingConsequence { get; init; }
+    /// <summary>In-process path seam for tests that exercise one file without relocating all content.</summary>
+    internal string? PathOverride { get; init; }
 
-    internal TableSpec(string environmentVariable, string file,
+    internal TableSpec(string file,
                        ContentTableKind kind = ContentTableKind.Csv,
                        IReadOnlyList<string>? header = null,
                        string? missingConsequence = null)
     {
-        EnvironmentVariable = environmentVariable;
         File = file;
         Kind = kind;
         Header = header is { Count: > 0 } ? Array.AsReadOnly(header.ToArray()) : null;
@@ -115,81 +115,81 @@ public static partial class Content
 
     private static readonly TableSpec[] TableSpecs =
     [
-        new("P1998_OBJECT_FLAG_OVERRIDES", "ObjectFlagOverrides.csv", header: ["Obj", "Flag", "Note"]),
-        new("P1998_OBJ533_FIX", "Obj533Fix.csv",
+        new("ObjectFlagOverrides.csv", header: ["Obj", "Flag", "Note"]),
+        new("Obj533Fix.csv",
             header: ["Legacy", "Action", "Replacement", "FiveId", "Flag495", "Flag533", "Scope"],
             missingConsequence: "5.33 will over-block ~18k cells"),
-        new("P1998_TILE533_MAP", "Tile533Map.csv", header: ["StartLegacy", "Count", "Start533"],
+        new("Tile533Map.csv", header: ["StartLegacy", "Count", "Start533"],
             missingConsequence: "5.33 sheet-2 cells (30% of terrain) will be blank"),
-        new("P1998_MAP_INDEX", "map_index.csv"),
-        new("P1998_MOB_FLEES", "MobFlees.csv"),
-        new("P1998_MOB_STATIONARY", "MobStationary.csv"),
-        new("P1998_MOBS", "mobs.csv"),
-        new("P1998_ITEMS", "Items.csv"),
-        new("P1998_WARPS", "Warps.csv"),
-        new("P1998_SPAWNS", "Spawns.csv"),
-        new("P1998_AREASPAWNS", "AreaSpawns.csv"),
-        new("P1998_AREASPAWNS_TRAP", "AreaSpawnsTrap.csv"),
-        new("P1998_AREASPAWNS_CRAFT", "AreaSpawnsCrafting.csv"),
-        new("P1998_SERVER_TUNING", "ServerTuning.csv"),
-        new("P1998_ERA_FEATURES", "EraFeatures.csv"),
-        new("P1998_NPCS", "NPCs.csv"),
-        new("P1998_MINORQUESTS", "MinorQuests.csv"),
-        new("P1998_SHOPSTOCK", "ShopStock.csv"),
-        new("P1998_SHOPBUYSFROM", "ShopBuysFrom.csv"),
-        new("P1998_PATHS", "Paths.csv"),
-        new("P1998_LEVELEXP", "LevelExp.csv"),
-        new("P1998_SPELL_LEVELS", "SpellLevels.csv"),
-        new("P1998_SPELLS", "Spells.csv"),
-        new("P1998_SPELL_FX", "spell_effects.csv"),
-        new("P1998_SPELL_TEXT", "SpellText.csv"),
-        new("P1998_SPELL_COSTS", "SpellLearnCosts.csv"),
-        new("P1998_MOB_PALETTES_5X", "Mob5xPalettes.csv"),
-        new("P1998_ARMOR_DYE_RAMPS", "ArmorDyeRamps.csv"),
-        new("P1998_MAPS_FULL", "Maps.csv"),
-        new("P1998_MOB_DROPS", "MobDrops.csv"),
-        new("P1998_CRAFTING_TOGGLES", "CraftingToggles.csv"),
-        new("P1998_WARP_QUEST_LOCKS", "WarpQuestLocks.csv"),
-        new("P1998_ARMOR_QUESTS", "ArmorQuests.csv"),
-        new("P1998_MYTHIC_CAVES", "MythicCaves.csv"),
-        new("P1998_MYTHIC_ALLIANCES", "MythicAlliances.csv"),
-        new("P1998_ARENA_DOORS", "ArenaDoors.csv"),
-        new("P1998_EVENT_CAVE_TIERS", "EventCaveTiers.csv"),
-        new("P1998_EVENT_CAVES", "EventCaves.csv"),
-        new("P1998_MUSIC_TRACKS", "MusicTracks.csv"),
-        new("P1998_MAP_BGM", "MapBgm.csv"),
-        new("P1998_INNS", "Inns.csv"),
-        new("P1998_FORAGE", "ForageAreas.csv"),
-        new("P1998_HARVEST", "HarvestNodes.csv"),
-        new("P1998_MOB_SPELLS", "MobSpells.csv"),
-        new("P1998_MOB_CHATTER", "MobChatter.csv"),
-        new("P1998_MOB_SPAWN_RULES", "MobSpawnRules.csv"),
-        new("P1998_MOB_BOSSES", "MobBosses.csv"),
-        new("P1998_PATHHALLS", "PathHalls.csv"),
-        new("P1998_GATEWAY", "GatewayGates.csv"),
-        new("P1998_WORLDMAP_DESTS", "WorldMapDests.csv"),
-        new("P1998_WORLDMAP_TRIGGERS", "WorldMapTriggers.csv"),
-        new("P1998_FALLROOMS", "FallRooms.csv"),
-        new("P1998_AMBUSH_BURSTS", "AmbushBursts.csv"),
-        new("P1998_AMBUSH_CONFIG", "AmbushConfig.csv"),
-        new("P1998_BOARD_LOCATIONS", "BoardLocations.csv"),
-        new("P1998_SHOP_CATALOGUES", "ShopCatalogues.csv"),
-        new("P1998_SPELL_PARAMS", "SpellParams.csv"),
-        new("P1998_SPELL_VERBS", "spell_verbs.lua", ContentTableKind.Lua),
-        new("P1998_ITEM_PARAMS", "ItemParams.csv"),
-        new("P1998_ITEM_VERBS", "item_verbs.lua", ContentTableKind.Lua),
-        new("P1998_NPC_DIALOG", "npc_dialog.lua", ContentTableKind.Lua),
-        new("P1998_MOB_AI", "mob_ai.lua", ContentTableKind.Lua),
-        new("P1998_PETS", "Pets.csv"),
-        new("P1998_WEAPON_PROCS", "WeaponProcs.csv"),
-        new("P1998_TRAPS", "Traps.csv"),
-        new("P1998_MORPHS", "Morphs.csv"),
-        new("P1998_SPELL_MODS", "SpellMods.csv"),
-        new("P1998_NPC_ABILITIES", "NpcAbilities.csv"),
-        new("P1998_PATH_GROWTH", "PathGrowth.csv"),
-        new("P1998_DOOR_OBJECTS", "DoorObjects.csv"),
-        new("P1998_DOORS", "Doors.csv"),
-        new("P1998_MAP_CELLS", "MapCells.csv"),
+        new("map_index.csv"),
+        new("MobFlees.csv"),
+        new("MobStationary.csv"),
+        new("mobs.csv"),
+        new("Items.csv"),
+        new("Warps.csv"),
+        new("Spawns.csv"),
+        new("AreaSpawns.csv"),
+        new("AreaSpawnsTrap.csv"),
+        new("AreaSpawnsCrafting.csv"),
+        new("ServerTuning.csv"),
+        new("EraFeatures.csv"),
+        new("NPCs.csv"),
+        new("MinorQuests.csv"),
+        new("ShopStock.csv"),
+        new("ShopBuysFrom.csv"),
+        new("Paths.csv"),
+        new("LevelExp.csv"),
+        new("SpellLevels.csv"),
+        new("Spells.csv"),
+        new("spell_effects.csv"),
+        new("SpellText.csv"),
+        new("SpellLearnCosts.csv"),
+        new("Mob5xPalettes.csv"),
+        new("ArmorDyeRamps.csv"),
+        new("Maps.csv"),
+        new("MobDrops.csv"),
+        new("CraftingToggles.csv"),
+        new("WarpQuestLocks.csv"),
+        new("ArmorQuests.csv"),
+        new("MythicCaves.csv"),
+        new("MythicAlliances.csv"),
+        new("ArenaDoors.csv"),
+        new("EventCaveTiers.csv"),
+        new("EventCaves.csv"),
+        new("MusicTracks.csv"),
+        new("MapBgm.csv"),
+        new("Inns.csv"),
+        new("ForageAreas.csv"),
+        new("HarvestNodes.csv"),
+        new("MobSpells.csv"),
+        new("MobChatter.csv"),
+        new("MobSpawnRules.csv"),
+        new("MobBosses.csv"),
+        new("PathHalls.csv"),
+        new("GatewayGates.csv"),
+        new("WorldMapDests.csv"),
+        new("WorldMapTriggers.csv"),
+        new("FallRooms.csv"),
+        new("AmbushBursts.csv"),
+        new("AmbushConfig.csv"),
+        new("BoardLocations.csv"),
+        new("ShopCatalogues.csv"),
+        new("SpellParams.csv"),
+        new("spell_verbs.lua", ContentTableKind.Lua),
+        new("ItemParams.csv"),
+        new("item_verbs.lua", ContentTableKind.Lua),
+        new("npc_dialog.lua", ContentTableKind.Lua),
+        new("mob_ai.lua", ContentTableKind.Lua),
+        new("Pets.csv"),
+        new("WeaponProcs.csv"),
+        new("Traps.csv"),
+        new("Morphs.csv"),
+        new("SpellMods.csv"),
+        new("NpcAbilities.csv"),
+        new("PathGrowth.csv"),
+        new("DoorObjects.csv"),
+        new("Doors.csv"),
+        new("MapCells.csv"),
     ];
 
     private static readonly IReadOnlyList<TableSpec> ReadOnlyTableSpecs = Array.AsReadOnly(TableSpecs);
@@ -212,13 +212,23 @@ public static partial class Content
         }
     }
 
+    internal static TableSpec OverridePathForTests(TableId id, string path)
+    {
+        lock (TableSpecs)
+        {
+            var previous = TableSpecs[(int)id];
+            TableSpecs[(int)id] = previous with { PathOverride = path };
+            return previous;
+        }
+    }
+
     internal static CsvTable OpenTable(TableId id) => OpenTable(Spec(id));
 
     internal static CsvTable OpenTable(TableSpec spec)
     {
         if (spec.Kind != ContentTableKind.Csv)
             throw new InvalidOperationException($"Programming error: {spec.File} is not a CSV table");
-        string? path = ResolvePath(spec.EnvironmentVariable, spec.File);
+        string? path = ResolvePath(spec);
         return spec.Header is null
             ? Csv.Open(spec.File, path)
             : Csv.Open(spec.File, path, spec.Header.ToArray());
@@ -245,8 +255,8 @@ public static partial class Content
         var lines = new List<string>
         {
             TableReadmeStartMarker,
-            "| File | Environment override | Rows read | Rows kept | Header |",
-            "|---|---|---:|---:|---|",
+            "| File | Rows read | Rows kept | Header |",
+            "|---|---:|---:|---|",
         };
         foreach (var spec in csvSpecs)
         {
@@ -256,7 +266,7 @@ public static partial class Content
                 ? "from file"
                 : $"supplied (`{string.Join("`, `", spec.Header)}`)";
             lines.Add(FormattableString.Invariant(
-                $"| `{spec.File}` | `{spec.EnvironmentVariable}` | {load.Read:N0} | {load.Kept:N0} | {header} |"));
+                $"| `{spec.File}` | {load.Read:N0} | {load.Kept:N0} | {header} |"));
         }
         lines.Add(TableReadmeEndMarker);
         return string.Join('\n', lines);

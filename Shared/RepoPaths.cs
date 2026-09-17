@@ -76,16 +76,10 @@ public static class RepoPaths
     /// process. Not state; not backed up. Override: P1998_RUN.</summary>
     public static string RunDir() => ServerConfig.Current.RunDir;
 
-    /// <summary>A file under <see cref="GameDataDir"/>, with a per-file environment override that wins
-    /// over both. The per-file overrides predate the directory one and are how a test or a bisect points
-    /// a single table somewhere else without relocating the whole content set.
-    /// <para>These 68 names are declared by <c>TableSpec</c> (Server/Content.Tables.cs) and are deliberately
-    /// NOT <see cref="ServerConfig"/> knobs: retiring them in favour of <c>P1998_GAME_DATA</c> is a behaviour
-    /// change that belongs with the TableSpec work, not with the configuration mechanism.</para></summary>
-    public static string GameData(string envVar, params string[] parts) =>
-        Environment.GetEnvironmentVariable(envVar) is { } e && !string.IsNullOrWhiteSpace(e)
-            ? e
-            : Path.Combine(new[] { GameDataDir() }.Concat(parts).ToArray());
+    /// <summary>A file under <see cref="GameDataDir"/>. <c>P1998_GAME_DATA</c> is the single content-path
+    /// override; individual files cannot be relocated independently.</summary>
+    public static string GameData(params string[] parts) =>
+        Path.Combine(new[] { GameDataDir() }.Concat(parts).ToArray());
 
     /// <summary>A file under <see cref="StateDir"/>.</summary>
     public static string State(params string[] parts) =>

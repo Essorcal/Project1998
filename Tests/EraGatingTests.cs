@@ -27,16 +27,16 @@ public class EraGatingTests
             var tuning = Path.Combine(dir, "ServerTuning.csv");
             File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");
 
-            var prev = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
+            var previous = EraCalendar.PathOverrideForTests;
             try
             {
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
+                EraCalendar.PathOverrideForTests = file => file == "ServerTuning.csv" ? tuning : null;
                 EraCalendar.Reload();
                 body();
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", prev);
+                EraCalendar.PathOverrideForTests = previous;
                 EraCalendar.Reload();       // put the real calendar back for whatever runs next
                 try { Directory.Delete(dir, true); } catch { /* temp dir; not worth failing a test over */ }
             }
