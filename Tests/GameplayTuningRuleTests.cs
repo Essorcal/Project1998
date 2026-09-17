@@ -29,16 +29,15 @@ public class GameplayTuningRuleTests
             string tuning = Path.Combine(dir, "ServerTuning.csv");
             File.WriteAllText(tuning, "key,value\n" + row + "\n");
 
-            string? previous = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
+            var previous = Content.OverridePathForTests(Content.TableId.ServerTuning, tuning);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
                 Content.Reload();
                 body();
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", previous);
+                Content.ReplaceSpecForTests(Content.TableId.ServerTuning, previous);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a fixture */ }
             }

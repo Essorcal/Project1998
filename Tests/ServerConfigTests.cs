@@ -553,6 +553,31 @@ public class ServerConfigTests
         Assert.DoesNotContain(Defaults().Describe(), line => line.Contains("P1998_HIT_CRIT"));
     }
 
+    /// <summary>A retired content override is still read once for diagnostics, but it cannot become an
+    /// effective path. The warning names both the ignored variable and the only replacement.</summary>
+    [Fact]
+    public void A_retired_content_override_that_is_still_set_warns_once()
+    {
+        var config = With(("P1998_MOB_FLEES", @"D:\retired\MobFlees.csv"));
+
+        string warning = Assert.Single(config.Warnings);
+        Assert.Contains("P1998_MOB_FLEES", warning);
+        Assert.Contains("RETIRED", warning);
+        Assert.Contains("IGNORED", warning);
+        Assert.Contains("P1998_GAME_DATA", warning);
+        Assert.Single(config.Describe(), line => line.Contains("P1998_MOB_FLEES"));
+    }
+
+    [Fact]
+    public void Retired_content_override_names_are_complete_and_unique()
+    {
+        Assert.Equal(72, ServerConfig.RetiredContentOverrides.Count);
+        Assert.Equal(ServerConfig.RetiredContentOverrides.Count,
+            ServerConfig.RetiredContentOverrides.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(ServerConfig.RetiredContentOverrides,
+            name => Assert.StartsWith("P1998_", name, StringComparison.Ordinal));
+    }
+
     /// <summary>Every retired knob names a key that actually exists in the shipped tuning file. A rename on
     /// one side without the other would send an operator to a key the loader ignores.</summary>
     [Fact]
@@ -628,6 +653,23 @@ public class ServerConfigTests
         Assert.DoesNotContain("(environment)", row);
         Assert.DoesNotContain("(default)", row);
         Assert.Contains("0 set from the environment", banner[0]);
+    }
+
+    /// <summary>The header counts knobs, and a retired content override name is not a knob: it has no value,
+    /// no default and no row in <c>docs/common/Configuration.md</c>, which is the document the very same line
+    /// tells the reader to go and read. Counting the 72 retired names there advertised 140 against a generated
+    /// document listing 68. Setting one changes nothing about the count either — it is reported by its warning
+    /// and by its [Retired] row, not by the header.
+    /// <para>Falsification: add <c>+ RetiredContentOverrides.Count</c> back to the header and both cases
+    /// fail.</para></summary>
+    [Fact]
+    public void The_banner_header_counts_knobs_only_whether_or_not_a_retired_name_is_set()
+    {
+        string expected = $"config: {ServerConfig.Knobs.All.Count} knob(s),";
+
+        Assert.Contains(expected, Defaults().Describe()[0]);
+        Assert.Contains(expected,
+            With(("P1998_MOB_FLEES", @"D:\retired\MobFlees.csv")).Describe()[0]);
     }
 
     // ---- the declaration table itself ---------------------------------------------------------------------

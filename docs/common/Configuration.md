@@ -38,13 +38,11 @@ startup banner prints values verbatim. A future knob that IS a secret must not b
 
 ## What this file does not cover yet
 
-Three sets, and nothing else. Every other `P1998_*` variable either server process reads is in the
-generated table below.
+Two sets, and nothing else. Every other active `P1998_*` variable either server process reads is in the
+generated table below. The 68 per-table CSV overrides and four Lua-file overrides are retired by this
+change; `P1998_GAME_DATA` is now the sole content-path override, and any retired per-file name still set is
+ignored with one startup warning.
 
-- **The 68 per-table content path overrides** (`P1998_MOBS`, `P1998_SPELLS`, `P1998_MAP_CELLS`, …). They are
-  declared by `TableSpec` in [`Server/Content.Tables.cs`](../../Server/Content.Tables.cs) and listed in the
-  generated table block in [`game-data/README.md`](../../game-data/README.md). Retiring them in favour of
-  `P1998_GAME_DATA` is a behaviour change that belongs with the `TableSpec` work.
 - **Launcher-only variables**, read by `run-server.bat` and never by the server: `P1998_DOTNET` (path to a
   `dotnet.exe` with a .NET 8 SDK), `P1998_NO_INSTALL` (refuse to fetch an SDK), `P1998_AUTO_INSTALL` (fetch
   one without prompting).

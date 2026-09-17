@@ -83,10 +83,9 @@ public class ContentReloadTests
                 "bad_rare_rate,,amber:Infinity\n" +
                 "after_bad_row,,amber:12.5\n");
 
-            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_DROPS");
+            var original = Content.OverridePathForTests(Content.TableId.MobDrops, path);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_DROPS", path);
                 TestProcessState.LoadContent();
 
                 var valid = Assert.IsType<MobDropDef>(Content.MobDrops["valid_drop_row"]);
@@ -102,7 +101,7 @@ public class ContentReloadTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_DROPS", previous);
+                Content.ReplaceSpecForTests(Content.TableId.MobDrops, original);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
@@ -138,17 +137,12 @@ public class ContentReloadTests
             File.WriteAllText(mobAi,
                 "mobs = { content_reload_probe = { on_spawn = function(ctx) end } }\n");
 
-            string? previousCaves = Environment.GetEnvironmentVariable("P1998_MYTHIC_CAVES");
-            string? previousTuning = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
-            string? previousDoors = Environment.GetEnvironmentVariable("P1998_DOORS");
-            string? previousMobAi = Environment.GetEnvironmentVariable("P1998_MOB_AI");
+            var previousCaves = Content.OverridePathForTests(Content.TableId.MythicCaves, caves);
+            var previousTuning = Content.OverridePathForTests(Content.TableId.ServerTuning, tuning);
+            var previousDoors = Content.OverridePathForTests(Content.TableId.Doors, doors);
+            var previousMobAi = Content.OverridePathForTests(Content.TableId.MobAi, mobAi);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", caves);
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
-                Environment.SetEnvironmentVariable("P1998_DOORS", doors);
-                Environment.SetEnvironmentVariable("P1998_MOB_AI", mobAi);
-
                 var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
 
                 Assert.Contains("Reload failed (previous content kept).", error.Message);
@@ -159,10 +153,10 @@ public class ContentReloadTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", previousCaves);
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", previousTuning);
-                Environment.SetEnvironmentVariable("P1998_DOORS", previousDoors);
-                Environment.SetEnvironmentVariable("P1998_MOB_AI", previousMobAi);
+                Content.ReplaceSpecForTests(Content.TableId.MythicCaves, previousCaves);
+                Content.ReplaceSpecForTests(Content.TableId.ServerTuning, previousTuning);
+                Content.ReplaceSpecForTests(Content.TableId.Doors, previousDoors);
+                Content.ReplaceSpecForTests(Content.TableId.MobAi, previousMobAi);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
@@ -193,25 +187,32 @@ public class ContentReloadTests
                 "Animal,EntranceMap,EntranceTiles,DestMap,DestX,DestY,T1Level,T1Vita,T1Mana,T2Level,T2Vita,T2Mana,T3Level,T3Vita,T3Mana,Sources\n" +
                 "Broken,41,1:1;1:1,201,1,1,1,0,0,1,0,0,1,0,0,test\n");
 
-            string? previousOverrides = Environment.GetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES");
-            string? previousObj533 = Environment.GetEnvironmentVariable("P1998_OBJ533_FIX");
-            string? previousSheet2 = Environment.GetEnvironmentVariable("P1998_TILE533_MAP");
-            string? previousCaves = Environment.GetEnvironmentVariable("P1998_MYTHIC_CAVES");
+            var previousOverrides = Content.Spec(Content.TableId.ObjectFlagOverrides);
+            var previousObj533 = Content.Spec(Content.TableId.Obj533Fix);
+            var previousSheet2 = Content.Spec(Content.TableId.Tile533Map);
+            var previousCaves = Content.Spec(Content.TableId.MythicCaves);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", oldOverrides);
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", oldObj533);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", oldSheet2);
+                Content.ReplaceSpecForTests(Content.TableId.ObjectFlagOverrides,
+                    previousOverrides with { PathOverride = oldOverrides });
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix,
+                    previousObj533 with { PathOverride = oldObj533 });
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map,
+                    previousSheet2 with { PathOverride = oldSheet2 });
                 TestProcessState.LoadContent();
 
                 Assert.Equal((60000, (byte)1), Assert.Single(ObjectFlags.OverridesForTests));
                 Assert.Equal((ushort)60000, Assert.Single(TileTranslation.Obj533ForTests).Legacy);
                 Assert.Equal((ushort)61000, TileTranslation.Sheet2ForTests[60000]);
 
-                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", newOverrides);
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", newObj533);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", newSheet2);
-                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", caves);
+                Content.ReplaceSpecForTests(Content.TableId.ObjectFlagOverrides,
+                    previousOverrides with { PathOverride = newOverrides });
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix,
+                    previousObj533 with { PathOverride = newObj533 });
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map,
+                    previousSheet2 with { PathOverride = newSheet2 });
+                Content.ReplaceSpecForTests(Content.TableId.MythicCaves,
+                    previousCaves with { PathOverride = caves });
 
                 var error = Assert.Throws<InvalidOperationException>(() => Content.Reload());
 
@@ -223,10 +224,10 @@ public class ContentReloadTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", previousOverrides);
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", previousObj533);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", previousSheet2);
-                Environment.SetEnvironmentVariable("P1998_MYTHIC_CAVES", previousCaves);
+                Content.ReplaceSpecForTests(Content.TableId.ObjectFlagOverrides, previousOverrides);
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix, previousObj533);
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map, previousSheet2);
+                Content.ReplaceSpecForTests(Content.TableId.MythicCaves, previousCaves);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
@@ -253,19 +254,25 @@ public class ContentReloadTests
             File.WriteAllText(oldSheet2, "60000,1,61000\n");
             File.WriteAllText(newSheet2, "60001,1,61001\n");
 
-            string? previousOverrides = Environment.GetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES");
-            string? previousObj533 = Environment.GetEnvironmentVariable("P1998_OBJ533_FIX");
-            string? previousSheet2 = Environment.GetEnvironmentVariable("P1998_TILE533_MAP");
+            var previousOverrides = Content.Spec(Content.TableId.ObjectFlagOverrides);
+            var previousObj533 = Content.Spec(Content.TableId.Obj533Fix);
+            var previousSheet2 = Content.Spec(Content.TableId.Tile533Map);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", oldOverrides);
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", oldObj533);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", oldSheet2);
+                Content.ReplaceSpecForTests(Content.TableId.ObjectFlagOverrides,
+                    previousOverrides with { PathOverride = oldOverrides });
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix,
+                    previousObj533 with { PathOverride = oldObj533 });
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map,
+                    previousSheet2 with { PathOverride = oldSheet2 });
                 TestProcessState.LoadContent();
 
-                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", newOverrides);
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", newObj533);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", newSheet2);
+                Content.ReplaceSpecForTests(Content.TableId.ObjectFlagOverrides,
+                    previousOverrides with { PathOverride = newOverrides });
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix,
+                    previousObj533 with { PathOverride = newObj533 });
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map,
+                    previousSheet2 with { PathOverride = newSheet2 });
                 Content.Reload();
 
                 Assert.Equal((60001, (byte)2), Assert.Single(ObjectFlags.OverridesForTests));
@@ -275,9 +282,9 @@ public class ContentReloadTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_OBJECT_FLAG_OVERRIDES", previousOverrides);
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", previousObj533);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", previousSheet2);
+                Content.ReplaceSpecForTests(Content.TableId.ObjectFlagOverrides, previousOverrides);
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix, previousObj533);
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map, previousSheet2);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
@@ -386,15 +393,18 @@ public class ContentReloadTests
             File.WriteAllText(mobAi,
                 "mobs = { content_reload_probe = { on_spawn = function(ctx) end } }\n");
 
-            string? previousTuning = Environment.GetEnvironmentVariable("P1998_SERVER_TUNING");
-            string? previousDoors = Environment.GetEnvironmentVariable("P1998_DOORS");
-            string? previousMobAi = Environment.GetEnvironmentVariable("P1998_MOB_AI");
+            var previousTuning = Content.Spec(Content.TableId.ServerTuning);
+            var previousDoors = Content.Spec(Content.TableId.Doors);
+            var previousMobAi = Content.Spec(Content.TableId.MobAi);
 
             try
             {
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", tuning);
-                Environment.SetEnvironmentVariable("P1998_DOORS", doors);
-                Environment.SetEnvironmentVariable("P1998_MOB_AI", mobAi);
+                Content.ReplaceSpecForTests(Content.TableId.ServerTuning,
+                    previousTuning with { PathOverride = tuning });
+                Content.ReplaceSpecForTests(Content.TableId.Doors,
+                    previousDoors with { PathOverride = doors });
+                Content.ReplaceSpecForTests(Content.TableId.MobAi,
+                    previousMobAi with { PathOverride = mobAi });
                 Content.LoadStepForTests = step =>
                 {
                     if (step == "BeforePublish") throw new InvalidOperationException("injected loader failure");
@@ -426,9 +436,9 @@ public class ContentReloadTests
             finally
             {
                 Content.LoadStepForTests = null;
-                Environment.SetEnvironmentVariable("P1998_SERVER_TUNING", previousTuning);
-                Environment.SetEnvironmentVariable("P1998_DOORS", previousDoors);
-                Environment.SetEnvironmentVariable("P1998_MOB_AI", previousMobAi);
+                Content.ReplaceSpecForTests(Content.TableId.ServerTuning, previousTuning);
+                Content.ReplaceSpecForTests(Content.TableId.Doors, previousDoors);
+                Content.ReplaceSpecForTests(Content.TableId.MobAi, previousMobAi);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }

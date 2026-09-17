@@ -104,12 +104,11 @@ public class CsvReaderConsolidationTests
     {
         lock (TestProcessState.Gate)
         {
-            string? previous = Environment.GetEnvironmentVariable("P1998_ERA_FEATURES");
             string missing = Path.Combine(Path.GetTempPath(), $"p1998-era-not-here-{Guid.NewGuid():N}.csv");
+            var previous = Content.OverridePathForTests(Content.TableId.EraFeatures, missing);
             var warnings = new ConcurrentQueue<string>();
             try
             {
-                Environment.SetEnvironmentVariable("P1998_ERA_FEATURES", missing);
                 Csv.WarningObserverForTests = warnings.Enqueue;
                 TestProcessState.LoadContent();
 
@@ -126,7 +125,7 @@ public class CsvReaderConsolidationTests
             finally
             {
                 Csv.WarningObserverForTests = null;
-                Environment.SetEnvironmentVariable("P1998_ERA_FEATURES", previous);
+                Content.ReplaceSpecForTests(Content.TableId.EraFeatures, previous);
                 TestProcessState.LoadContent();
             }
         }
@@ -143,10 +142,9 @@ public class CsvReaderConsolidationTests
             File.WriteAllText(path,
                 "5,suppress,7\n" +
                 "6,suppress,8,10,0x00,0x0F,structural\n");
-            string? previous = Environment.GetEnvironmentVariable("P1998_OBJ533_FIX");
+            var previous = Content.OverridePathForTests(Content.TableId.Obj533Fix, path);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", path);
                 TestProcessState.LoadContent();
 
                 var entry = Assert.IsType<TableLoad>(Content.LoadReport["Obj533Fix.csv"]);
@@ -157,7 +155,7 @@ public class CsvReaderConsolidationTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", previous);
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix, previous);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
@@ -175,10 +173,9 @@ public class CsvReaderConsolidationTests
             File.WriteAllText(path,
                 "0,2,900,\n" +
                 "2,2,902\n");
-            string? previous = Environment.GetEnvironmentVariable("P1998_TILE533_MAP");
+            var previous = Content.OverridePathForTests(Content.TableId.Tile533Map, path);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", path);
                 TestProcessState.LoadContent();
 
                 var entry = Assert.IsType<TableLoad>(Content.LoadReport["Tile533Map.csv"]);
@@ -191,7 +188,7 @@ public class CsvReaderConsolidationTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", previous);
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map, previous);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
@@ -205,12 +202,10 @@ public class CsvReaderConsolidationTests
         {
             string missingObj = Path.Combine(Path.GetTempPath(), $"p1998-obj533-not-here-{Guid.NewGuid():N}.csv");
             string missingSheet = Path.Combine(Path.GetTempPath(), $"p1998-tile533-not-here-{Guid.NewGuid():N}.csv");
-            string? previousObj = Environment.GetEnvironmentVariable("P1998_OBJ533_FIX");
-            string? previousSheet = Environment.GetEnvironmentVariable("P1998_TILE533_MAP");
+            var previousObj = Content.OverridePathForTests(Content.TableId.Obj533Fix, missingObj);
+            var previousSheet = Content.OverridePathForTests(Content.TableId.Tile533Map, missingSheet);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", missingObj);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", missingSheet);
                 TestProcessState.LoadContent();
 
                 Assert.Contains(Content.LoadReport.Problems,
@@ -222,8 +217,8 @@ public class CsvReaderConsolidationTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_OBJ533_FIX", previousObj);
-                Environment.SetEnvironmentVariable("P1998_TILE533_MAP", previousSheet);
+                Content.ReplaceSpecForTests(Content.TableId.Obj533Fix, previousObj);
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map, previousSheet);
                 TestProcessState.LoadContent();
             }
         }

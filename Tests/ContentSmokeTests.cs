@@ -1702,11 +1702,10 @@ public class ContentSmokeTests
     {
         lock (TestProcessState.Gate)
         {
-            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_CHATTER");
+            var previous = Content.OverridePathForTests(Content.TableId.MobChatter,
+                Path.Combine(Path.GetTempPath(), $"p1998-not-here-{Guid.NewGuid():N}.csv"));
             try
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER",
-                    Path.Combine(Path.GetTempPath(), $"p1998-not-here-{Guid.NewGuid():N}.csv"));
                 TestProcessState.LoadContent();
 
                 var entry = Content.LoadReport["MobChatter.csv"];
@@ -1719,7 +1718,7 @@ public class ContentSmokeTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER", previous);
+                Content.ReplaceSpecForTests(Content.TableId.MobChatter, previous);
                 TestProcessState.LoadContent();
             }
         }
@@ -1739,10 +1738,9 @@ public class ContentSmokeTests
             File.WriteAllText(path, "MobIdentifier,Lines,Chance,Channel\n" +   // MobKey renamed
                                     "rat,Squeak!,4,0\n");
 
-            string? previous = Environment.GetEnvironmentVariable("P1998_MOB_CHATTER");
+            var previous = Content.OverridePathForTests(Content.TableId.MobChatter, path);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER", path);
                 TestProcessState.LoadContent();
 
                 var entry = Content.LoadReport["MobChatter.csv"];
@@ -1756,7 +1754,7 @@ public class ContentSmokeTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_MOB_CHATTER", previous);
+                Content.ReplaceSpecForTests(Content.TableId.MobChatter, previous);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
             }
@@ -1790,12 +1788,10 @@ public class ContentSmokeTests
             File.WriteAllText(trap, "Map,MobId,Count,MinX,MinY,MaxX,MaxY,RespawnSeconds\n" +
                                     "330,1,2,10,10,20,20,900\n");
 
-            string? prevGrouped = Environment.GetEnvironmentVariable("P1998_AREASPAWNS");
-            string? prevTrap = Environment.GetEnvironmentVariable("P1998_AREASPAWNS_TRAP");
+            var prevGrouped = Content.OverridePathForTests(Content.TableId.AreaSpawns, grouped);
+            var prevTrap = Content.OverridePathForTests(Content.TableId.AreaSpawnsTrap, trap);
             try
             {
-                Environment.SetEnvironmentVariable("P1998_AREASPAWNS", grouped);
-                Environment.SetEnvironmentVariable("P1998_AREASPAWNS_TRAP", trap);
                 TestProcessState.LoadContent();
 
                 var g = Content.LoadReport["AreaSpawns.csv"]!;
@@ -1814,8 +1810,8 @@ public class ContentSmokeTests
             }
             finally
             {
-                Environment.SetEnvironmentVariable("P1998_AREASPAWNS", prevGrouped);
-                Environment.SetEnvironmentVariable("P1998_AREASPAWNS_TRAP", prevTrap);
+                Content.ReplaceSpecForTests(Content.TableId.AreaSpawns, prevGrouped);
+                Content.ReplaceSpecForTests(Content.TableId.AreaSpawnsTrap, prevTrap);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
             }
