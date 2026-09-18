@@ -118,9 +118,14 @@ public class TickStepIsolationTests
     /// capture three arrays and two bytes respectively). 10,000 calls, so a single stray allocation of any
     /// size is 10,000 bytes rather than something a tolerance could hide.</para>
     ///
-    /// <para>Falsification: make either lambda capture — drop the <c>static</c> and use a local from the
-    /// enclosing method inside it — and the count goes to 10,000 × the display class plus its delegate,
-    /// which is what the old call sites were paying. Run it, confirm red, restore.</para></summary>
+    /// <para>Falsification, and it has a trap in it worth writing down. Dropping the <c>static</c> and
+    /// capturing a variable of the ENCLOSING METHOD is not enough: Roslyn caches that delegate in the
+    /// display class, the display class is built once on the way into the method, and the run still measures
+    /// zero. The cost appears only when the captured variable is NEW ON EVERY ITERATION — which is precisely
+    /// the production case, where the capture was the loop's own <c>p</c> or <c>s</c>. Declaring
+    /// <c>var per = subject;</c> inside the loop and capturing <c>per</c> took this red at
+    /// <b>880,000 B over 10,000 calls — 88 B a call</b>, the same 88 B the profile measured at the old
+    /// <c>RegenTick</c> site. Run it, confirm red, restore.</para></summary>
     [Fact]
     public void TheIsolationHelperAllocatesNothingWithAStaticLambda()
     {
